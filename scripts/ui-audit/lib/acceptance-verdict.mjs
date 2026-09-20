@@ -1,8 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { inspectResults, precedence, collectVisualRequirements, reviewablePng } from './acceptance-results.mjs';
+import { inspectResults, precedence, collectVisualRequirements, reviewablePng, scenarioVisualPlacement } from './acceptance-results.mjs';
 import { inspectIncidents } from './acceptance-incidents.mjs';
-import { inspectSource, inspectBuild } from './acceptance-provenance.mjs';
+import { inspectSource, inspectBuild, inspectExecutionContext } from './acceptance-provenance.mjs';
 import { canonicalRunId, verifyArtifacts, digest } from './acceptance-io.mjs';
 const list = value => Array.isArray(value) ? value : [];
 const parse = file => { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; } };
@@ -14,13 +14,18 @@ export function acceptanceVerdict(run, { components = [], end, manifest, policyR
     if (!canonicalRunId(run.runId)) missing('noncanonical run identity');
     if (list(run.retainedFailures).length) { verdicts.push('failed'); reasons.push('retained original acceptance failure'); }
     const bound = file => typeof file === 'string' && list(run.artifacts).some(a => a?.path === file);
+    if (run.schemaVersion === 2 || run.executionContext) {
+        if (run.schemaVersion !== 2 || !bound(run.executionContextPath) || JSON.stringify(parse(run.executionContextPath)) !== JSON.stringify(run.executionContext)) missing('external execution context is not bound to this run');
+        for (const message of inspectExecutionContext(run.executionContext, { head: run.start?.head, observation: run.executionEnd })) missing(message);
+    }
     if (manifest && (!bound(run.manifestPath) || JSON.stringify(parse(run.manifestPath)) !== JSON.stringify(manifest))) missing('incident manifest is not bound to its retained artifact');
     if (!run.reference) missing('explicit baseline/reference commit is required');
     if (!Array.isArray(run.start?.dirty) || run.start.dirty.length || !Array.isArray(end?.dirty) || end.dirty.length || run.start?.head !== end?.head) missing('source is dirty, untracked, or changed during verification');
     const plan = parse(run.planPath);
-    if (!bound(run.planPath) || plan?.schemaVersion !== 1 || plan.runId !== run.runId || plan.head !== run.start?.head || plan.reference !== run.reference || !Array.isArray(plan?.components) || plan.components.length === 0) missing('bound execution plan is absent or does not match this run');
+    if (!bound(run.planPath) || ![1,2].includes(plan?.schemaVersion) || plan.schemaVersion !== run.schemaVersion || JSON.stringify(plan.executionContext) !== JSON.stringify(run.executionContext) || plan.runId !== run.runId || plan.head !== run.start?.head || plan.reference !== run.reference || !Array.isArray(plan?.components) || plan.components.length === 0) missing('bound execution plan is absent or does not match this run');
     const expected = list(plan?.components);
     const buildReceipt = bound(run.buildReceiptPath) ? parse(run.buildReceiptPath) : null;
+    if (JSON.stringify(buildReceipt?.executionContext) !== JSON.stringify(run.executionContext)) missing('build receipt harness/target context differs from frozen run');
     if (!list(components).length) missing('no checks executed');
     if (new Set(expected.map(c => c?.label)).size !== expected.length) missing('duplicate planned component identity');
     for (const component of expected) if (list(components).filter(c => c?.label === component?.label).length !== 1) missing(`planned component missing or duplicated: ${component?.label}`);
@@ -44,17 +49,17 @@ export function acceptanceVerdict(run, { components = [], end, manifest, policyR
                 const raw = parse(e.path), approvedVisuals = [];
                 const selection = index === 0 ? spec?.selection : e.selection;
                 const requirements = collectVisualRequirements(e.kind, raw, selection, e.path);
-                const signoffs = e.kind === 'scenario' ? list(manifest?.scenarioVisualSignoffs) : list(manifest?.auditVisualSignoffs);
+                const signoffs = e.kind === 'scenario' ? list(manifest?.scenarioVisualSignoffs) : e.kind === 'smoke' ? list(manifest?.smokeVisualSignoffs) : list(manifest?.auditVisualSignoffs);
                 for (const signoff of signoffs) {
                     const visual = requirements.find(v => v.id === signoff?.id);
                     if (!visual || signoff.runId !== run.runId || signoff.head !== run.start.head) continue;
                     // Scenario IDs can recur in retries; bind the exact raw attempt as well.
-                    if (e.kind === 'scenario' && (signoff.report?.path !== e.path || signoff.report?.sha256 !== digest(fs.readFileSync(e.path)))) continue;
+                    if (['scenario','smoke'].includes(e.kind) && (signoff.report?.path !== e.path || signoff.report?.sha256 !== digest(fs.readFileSync(e.path)))) continue;
                     if (signoff.verdict === 'failed') { attemptVerdicts.push('failed'); reasons.push(`visual review failed: ${visual.id}`); continue; }
                     const shots = visual.shots;
-                    const visible = visual.placement !== 'hidden' && (e.kind !== 'scenario' || visual.placement === 'onscreen') && shots.length > 0 && shots.every(shot =>
+                    const visible = visual.placement !== 'hidden' && (e.kind !== 'scenario' || scenarioVisualPlacement(visual)) && shots.length > 0 && shots.every(shot =>
                         shot?.blank !== true && shot?.placement !== 'hidden' && typeof shot?.path === 'string' && reviewablePng(shot.path) &&
-                        (e.kind !== 'scenario' || shot.placement === 'onscreen' && typeof shot.sha256 === 'string') &&
+                        (e.kind !== 'scenario' || typeof shot.sha256 === 'string') &&
                         list(signoff.artifacts).some(a => a.path === shot.path && (!shot.sha256 || a.sha256 === shot.sha256)) &&
                         list(run.artifacts).some(a => a.path === shot.path && list(signoff.artifacts).some(s => s.path === a.path && s.sha256 === a.sha256)));
                     if (signoff.verdict === 'passed' && typeof signoff.reviewer === 'string' && signoff.reviewer.trim() && Date.parse(signoff.at) >= e.finishedAt && visible && verifyArtifacts(signoff.artifacts)) approvedVisuals.push(visual.id);

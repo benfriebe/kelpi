@@ -5,12 +5,14 @@ import { execFileSync } from 'node:child_process';
 import { captureSource, captureOutputs } from './acceptance-provenance.mjs';
 import { bindPackagedRuntime } from './incident-diagnostics-packaged.mjs';
 import { BUNDLE_OUTPUTS, bundleHash, bundleOutputHashes, readBuildReceipt } from './build-cache.mjs';
+import { executionRoots, observeExecutionRoots, executionRootErrors } from './execution-roots.mjs';
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const startedAt = new Date().toISOString();
 const runId = process.env.KELPI_ACCEPTANCE_RUN_ID ?? randomUUID();
 
 export function captureProvenance(repoRoot, files = [], runtime = {}) {
+    const roots = executionRoots({ targetRoot: repoRoot });
     const git = args => execFileSync('git', ['-C', repoRoot, ...args], { encoding: 'utf8' }).trim();
     const hashes = {};
     const visit = relative => {
@@ -22,7 +24,11 @@ export function captureProvenance(repoRoot, files = [], runtime = {}) {
     };
     for (const directory of ['packages/client/dist', 'packages/daemon/dist', 'packages/cli/dist', 'packages/shell/dist']) visit(directory);
     for (const file of git(['ls-files', '--cached', '--others', '--exclude-standard', '--', 'scripts']).split('\n').filter(Boolean)) visit(file);
-    for (const file of files) hashes[path.relative(repoRoot, file)] = hash(fs.readFileSync(file));
+    for (const file of files) {
+        const relative = path.relative(roots.context ? roots.harnessRoot : repoRoot, fs.realpathSync(file));
+        if (roots.context && (relative.startsWith('..' + path.sep) || path.isAbsolute(relative))) throw new Error('selected test source escapes pinned harness');
+        hashes[(roots.context ? 'harness/' : '') + relative] = hash(fs.readFileSync(file));
+    }
     for (const file of ['examples/plugins/terminal-lab/ui/bundle.js', 'examples/plugins/terminal-lab/ui/bundle.css']) {
         if (fs.existsSync(path.join(repoRoot,file)) || files.some(file => /plugin-terminal-(features|geometry)\.mjs$/.test(file))) visit(file);
     }
@@ -37,6 +43,7 @@ export function captureProvenance(repoRoot, files = [], runtime = {}) {
         if (hash(bytes) !== process.env.KELPI_ACCEPTANCE_BUILD_SHA256) throw new Error('build receipt digest differs');
         const receipt = JSON.parse(bytes);
         if (receipt.runId !== runId || receipt.head !== head || receipt.exitStatus !== 0 || JSON.stringify(receipt.source) !== JSON.stringify(source)) throw new Error('build receipt source/run differs');
+        if (JSON.stringify(receipt.executionContext ?? null) !== JSON.stringify(roots.context)) throw new Error('build receipt harness/target context differs');
         build = receipt.build;
         if (JSON.stringify(build?.outputs) !== JSON.stringify(executedOutputs)) throw new Error('executed outputs differ from build receipt');
     } else {
@@ -51,6 +58,12 @@ export function captureProvenance(repoRoot, files = [], runtime = {}) {
     }
     const provenance = { schemaVersion:2, runId, head, requestedHead, startedAt, dirtyFiles:git(['status', '--porcelain=v1', '--untracked-files=all']).split('\n').filter(Boolean),
         trackedDiffSha256:source.trackedDiffSha256, buildHashes:hashes, source, build, executedOutputs, complete:errors.length === 0, errors, runtimeBindings:[] };
+    if (roots.context) {
+        provenance.executionContext = roots.context;
+        provenance.executionRoots = observeExecutionRoots(roots.context);
+        errors.push(...executionRootErrors(roots.context, provenance.executionRoots));
+        provenance.complete = errors.length === 0;
+    }
     const binding=bindPackagedRuntime(repoRoot,provenance,runtime);
     if(binding) { provenance.runtimeBindings.push(binding); if(!binding.complete) {provenance.complete=false;provenance.errors.push(...binding.errors);} }
     return provenance;
@@ -59,6 +72,13 @@ export function captureProvenance(repoRoot, files = [], runtime = {}) {
 /** Observe actual bytes without replacing the original receipt, even when capture fails. */
 export function bindCoreExecution(repoRoot, provenance, {boundary, replaySource, runtime = {}} = {}) {
     const observation = {boundary, source:null, executedOutputs:[], errors:[]};
+    if (provenance.executionContext) {
+        try {
+            observation.executionRoots = observeExecutionRoots(provenance.executionContext);
+            observation.errors.push(...executionRootErrors(provenance.executionContext, observation.executionRoots));
+            provenance.executionRoots = observation.executionRoots;
+        } catch (error) { observation.errors.push(`execution roots: ${error.message}`); }
+    }
     try { observation.source = captureSource(repoRoot); }
     catch (error) { observation.errors.push(`source capture: ${error.message}`); }
     try { observation.executedOutputs = captureOutputs(repoRoot); }
@@ -94,6 +114,7 @@ export function bindCoreExecution(repoRoot, provenance, {boundary, replaySource,
 
 /** Both manifests must be full, non-null sets; an omitted key cannot become a replay exemption. */
 export function validateReplayProvenance(original, current) {
+    if (JSON.stringify(original?.executionContext ?? null) !== JSON.stringify(current?.executionContext ?? null)) throw new Error('replay harness/target context differs');
     if (!original || original.head !== current.head || original.trackedDiffSha256 !== current.trackedDiffSha256) throw new Error('replay source revision differs; restore the recorded commit and source diff first');
     const compare = (left,right,label) => {
         if (!left || !right || !Object.keys(left).length || JSON.stringify(Object.keys(left).sort()) !== JSON.stringify(Object.keys(right).sort())) throw new Error(`replay ${label} manifest is incomplete`);
@@ -110,7 +131,7 @@ export function validateReplayProvenance(original, current) {
 export function shardProvenanceErrors(parent, child) {
     const errors = [];
     for (const field of ['runId','head','requestedHead','trackedDiffSha256']) if (child?.[field] !== parent?.[field]) errors.push(`shard ${field} differs`);
-    for (const field of ['source','build','executedOutputs','buildHashes','dirtyFiles','runtimeBindings']) if (!child || JSON.stringify(child[field]) !== JSON.stringify(parent[field])) errors.push(`shard ${field} differs or is absent`);
+    for (const field of ['source','build','executedOutputs','buildHashes','dirtyFiles','runtimeBindings','executionContext','executionRoots']) if (!child || JSON.stringify(child[field]) !== JSON.stringify(parent[field])) errors.push(`shard ${field} differs or is absent`);
     if (!Number.isFinite(Date.parse(child?.startedAt)) || typeof child?.runId !== 'string' || !child.runId) errors.push('shard run identity incomplete');
     if (!child || child.complete !== true || !Array.isArray(child.errors) || child.errors.length) errors.push('shard provenance incomplete');
     if (!Array.isArray(child?.dirtyFiles) || child.dirtyFiles.length) errors.push('shard source not clean');

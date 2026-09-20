@@ -53,7 +53,14 @@ const rank = (placement) => PLACEMENT_ORDER.indexOf(String(placement));
  * made and could not be honoured or could not be read. A declaration is never fatal - a scenario
  * suite that refuses to start over a placement hint would be worse than the occlusion it is about.
  */
-export function resolveScenarioPlacement(runPlacement, declared) {
+export function resolveScenarioPlacement(runPlacement, declared, { requiresNativeFocus = false } = {}) {
+    // Every lane placement is nonfocusable, including onscreen. Clipboard calls
+    // in the host of an opaque iframe need a real focused window; CDP emulation
+    // does not satisfy that browser precondition. undefined boots the shipped
+    // focusable window, independently of the native-page visibility floor.
+    if (requiresNativeFocus && rank(runPlacement) >= 0) {
+        return { placement: undefined, raised: true, warning: null };
+    }
     if (declared === undefined || declared === null) return { placement: runPlacement, raised: false, warning: null };
     if (rank(declared) < 0) {
         return {

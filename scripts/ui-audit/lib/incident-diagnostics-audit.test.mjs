@@ -19,7 +19,7 @@ it.each(['healthy','dirty-child','missing-provenance','missing-assertions','malf
     try {
         const p={runId:'run',startedAt:new Date().toISOString(),head:'1'.repeat(40),requestedHead:null,trackedDiffSha256:'2'.repeat(64),dirtyFiles:[],source:{inputManifestSha256:'3'.repeat(64)},build:{outputs:[{path:'bundle',sha256:'4'.repeat(64)}]},executedOutputs:[{path:'bundle',sha256:'4'.repeat(64)}],buildHashes:{bundle:'4'.repeat(64)},complete:true,errors:[],runtimeBindings:[]};
         const processStub={execPath:process.execPath,env:{},stdout:{write(){}},exitCode:0};
-        const vars={fs,path,repoRoot:root,outDir,options:{build:false,packaged:false,shards:1,window:'hidden'},fileURLToPath,
+        const vars={fs,path,repoRoot:root,harnessRoot:root,outDir,options:{build:false,packaged:false,shards:1,window:'hidden'},fileURLToPath,
             captureProvenance:()=>structuredClone(p),aggregateShards,process:processStub,CANONICAL_ORDER:['fixture'],selection,
             planShards:()=>({groups:[['fixture']],supports:[[]]}),shardPlanOptions:()=>({}),describePartition:()=>'',shardArgs:()=>[],clearBackgroundTaskPolicy:()=>{},gitCommit:()=>p.head,
             shardProvenanceErrors,inspectSelection,auditPlan:()=>selection,

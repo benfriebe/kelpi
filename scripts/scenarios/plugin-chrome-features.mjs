@@ -1,13 +1,13 @@
+import { executionRoots } from '../ui-audit/lib/execution-roots.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
 import { makeSandbox, startDaemon, waitForHealthz, makeCli, PROTOCOL_VERSION } from '../ui-audit/lib/stack.mjs';
 import { daemonIDFromSandbox, openPlacementSettings, phoneToLanding, restoreBundledSlots } from '../ui-audit/lib/workbench.mjs';
 
 export const covers = ['examples/plugins/chrome-lab/', 'packages/plugin-sdk/', 'packages/client/src/features/',
     'packages/client/src/plugins/', 'packages/client/src/interaction/', 'packages/client/src/App.tsx', 'packages/client/src/chrome/'];
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+const { targetRoot: repoRoot, harnessRoot } = executionRoots();
 const pluginID = 'example.chrome-lab', packagePath = path.join(repoRoot, 'examples/plugins/chrome-lab');
 const toolbar = '[data-workbench-slot="topbar"] iframe', status = '[data-workbench-slot="statusbar"] iframe';
 

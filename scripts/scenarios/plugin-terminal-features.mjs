@@ -1,8 +1,8 @@
+import { executionRoots } from '../ui-audit/lib/execution-roots.mjs';
 import fs from 'node:fs';
 import { armIncidentDiagnostics, redactFixtureText, removeOwnedRemoteStore } from '../ui-audit/lib/incident-diagnostics.mjs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { fileURLToPath } from 'node:url';
 import { buildBoundTerminalLab } from '../ui-audit/lib/incident-diagnostics-runtime.mjs';
 import { makeSandbox, startDaemon, waitForHealthz, makeCli, PROTOCOL_VERSION } from '../ui-audit/lib/stack.mjs';
 import { daemonIDFromSandbox, phoneToLanding, restoreBundledSlots } from '../ui-audit/lib/workbench.mjs';
@@ -10,9 +10,12 @@ import { daemonIDFromSandbox, phoneToLanding, restoreBundledSlots } from '../ui-
 export const covers = ['examples/plugins/terminal-lab/', 'packages/plugin-sdk/', 'packages/client/src/features/',
     'packages/client/src/plugins/', 'packages/client/src/connection/pty.ts', 'packages/client/src/terminal/',
     'packages/client/src/phone/', 'packages/client/src/App.tsx', 'packages/client/src/app/RemoteWorkspaceView.tsx'];
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+// Clipboard API calls run in the host while input belongs to an opaque iframe.
+// CDP focus emulation cannot satisfy that host focus check in a nonfocusable lane.
+export const requiresNativeFocus = true;
+const { targetRoot: repoRoot, harnessRoot } = executionRoots();
 const pluginID = 'example.terminal-lab', viewID = `${pluginID}.terminal`;
-const fixture = path.join(repoRoot, 'scripts/fixtures/plugin-terminal.cjs');
+const fixture = path.join(harnessRoot, 'scripts/fixtures/plugin-terminal.cjs');
 const quote = value => `'${String(value).replaceAll("'", "'\\''")}'`;
 const frame = id => `[data-testid="plugin-view-${id}"] iframe`;
 const normal = value => value.replaceAll('\r', '').split('\n').map(line => line.trimEnd()).join('\n').trimEnd();
@@ -106,6 +109,11 @@ export default async function ({ page, cli, sandbox, rec, d, harness, sleep, dia
                 onTheRenderer: caretProbe(id)
             })
         );
+    const clipboardFocus = async id => {
+        const host = await d.caretNow(page, id, { onTheRenderer: caretProbe(id) });
+        const rendererHasFocus = await inside(id, 'document.hasFocus()');
+        return { ...host, rendererHasFocus, ready: host.hasFocus && host.appFocusedPane && host.onTheRenderer === true && rendererHasFocus };
+    };
     const selectWorkspace = (id, workspaceID, hostName) => inside(id, `void (async () => { const navigation = await kelpi.ui.getNavigation(); const host = navigation.hosts.find(host => ${hostName ? `host.name === ${JSON.stringify(hostName)}` : `host.kind === 'local'`}); await kelpi.ui.selectWorkspace(host.id, ${JSON.stringify(workspaceID)}); })(); true`);
     const diagnostics = async label => {
         const items = [];
@@ -138,6 +146,9 @@ export default async function ({ page, cli, sandbox, rec, d, harness, sleep, dia
         await page.insertText('日本語');
         rec.check('CDP keyboard and injected composition commit reach the same raw process', await d.settle(() => input(local).subarray(offset).includes(Buffer.from('k')) && input(local).subarray(offset).includes(Buffer.from('日本語'))));
         offset = input(local).length;
+        const localClipboardFocus = await clipboardFocus(local.paneID);
+        rec.check('local CDP clipboard focus precondition is satisfied', localClipboardFocus.ready, JSON.stringify(localClipboardFocus), 'harness');
+        await rec.flushFirstFailure();
         await harness.clipboardWrite('TERMINAL-PASTE-α');
         await clipboardCaret('platform paste', local.paneID);
         let caret = await caretNow(local.paneID);
@@ -415,6 +426,9 @@ export default async function ({ page, cli, sandbox, rec, d, harness, sleep, dia
         await page.key('KeyR', { key: 'r', text: 'r', keyCode: 82 });
         rec.check('remote keyboard input reaches only its owning daemon process', await d.settle(() => input(remote).subarray(offset).includes(Buffer.from('r'))) && input(local).length === localBeforeRemoteInput);
         offset = input(remote).length;
+        const remoteClipboardFocus = await clipboardFocus(remote.paneID);
+        rec.check('remote CDP clipboard focus precondition is satisfied', remoteClipboardFocus.ready, JSON.stringify(remoteClipboardFocus), 'harness');
+        await rec.flushFirstFailure();
         await harness.clipboardWrite('REMOTE-PASTE-β'); await page.key('KeyV', { key: 'v', modifiers: d.MOD.meta });
         rec.check('remote platform paste targets only the remote process', await d.settle(() => input(remote).subarray(offset).includes(Buffer.from('\x1b[200~REMOTE-PASTE-β\x1b[201~'))) && input(local).length === localBeforeRemoteInput, JSON.stringify(redactFixtureText(input(remote).subarray(offset).toString(), ['\x1b[200~REMOTE-PASTE-β\x1b[201~'])));
         // Finish first-failure capture before another frame lookup, selection or clipboard mutation.

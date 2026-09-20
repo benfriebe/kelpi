@@ -1,3 +1,4 @@
+import { executionRoots } from '../ui-audit/lib/execution-roots.mjs';
 /**
  * An SDK-only renderer that does NOT own PTY sizing shows the owner's screen, not a scramble of it.
  *
@@ -46,7 +47,6 @@
 import fs from 'node:fs';
 import { cleanupSteps, removeOwnedRemoteStore } from '../ui-audit/lib/incident-diagnostics.mjs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { daemonIDFromSandbox, restoreBundledSlots } from '../ui-audit/lib/workbench.mjs';
 import { buildBoundTerminalLab } from '../ui-audit/lib/incident-diagnostics-runtime.mjs';
 import { makeSandbox, startDaemon, waitForHealthz, makeCli, PROTOCOL_VERSION } from '../ui-audit/lib/stack.mjs';
@@ -65,9 +65,9 @@ export const covers = [
     'packages/client/src/chrome/TopBar.tsx'
 ];
 
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+const { targetRoot: repoRoot, harnessRoot } = executionRoots();
 const pluginID = 'example.terminal-lab', viewID = `${pluginID}.terminal`;
-const fixturePath = path.join(repoRoot, 'scripts/fixtures/plugin-terminal.cjs');
+const fixturePath = path.join(harnessRoot, 'scripts/fixtures/plugin-terminal.cjs');
 const quote = value => `'${String(value).replaceAll("'", "'\\''")}'`;
 const frame = id => `[data-testid="plugin-view-${id}"] iframe`;
 const paneRoot = id => `[data-pane-id="${id}"][data-terminal-status]`;

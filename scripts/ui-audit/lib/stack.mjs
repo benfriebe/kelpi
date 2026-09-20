@@ -1,3 +1,4 @@
+import { assertTargetExecution } from './execution-roots.mjs';
 /**
  * A throwaway full stack for the audit: a private daemon, a private shell, a private CLI.
  *
@@ -166,6 +167,7 @@ function releaseChild(child) {
  * skip is never a silent one.
  */
 export async function buildAll(repoRoot, { log = () => {}, force = false } = {}) {
+    assertTargetExecution(repoRoot);
     const steps = [
         ['daemon', ['pnpm', ['--filter', '@kelpi/daemon', 'build'], { cwd: repoRoot }]],
         ['cli', ['pnpm', ['--filter', '@kelpi/cli', 'build'], { cwd: repoRoot }]],
@@ -196,6 +198,7 @@ export async function buildAll(repoRoot, { log = () => {}, force = false } = {})
 // ── sandbox ─────────────────────────────────────────────────────────────────────────
 
 export async function makeSandbox(repoRoot, { label = 'audit', clientDir, auditWindow, harnessWindow } = {}) {
+    assertTargetExecution(repoRoot);
     const root = fs.mkdtempSync(path.join(os.tmpdir(), `nexaudit-${label}-`));
     const home = path.join(root, 'home');
     const userData = path.join(root, 'electron');
@@ -345,6 +348,7 @@ export async function makeSandbox(repoRoot, { label = 'audit', clientDir, auditW
  * tree's build would have quietly re-introduced exactly the gap N22 is about.
  */
 export function startDaemon(sandbox, { repoRoot, verbose = false, packaged = false }) {
+    assertTargetExecution(repoRoot);
     assertDesktopActive();
     const entry = packaged ? path.join(packagedResource(repoRoot, 'daemon'), 'kelpid.js') : path.join(repoRoot, 'packages', 'daemon', 'dist', 'kelpid.js');
     const runtime = packaged ? packagedResource(repoRoot, 'node') : process.execPath;
@@ -645,6 +649,7 @@ export function packagedBinary(repoRoot) {
  * DMG on top of it would add a minute for nothing.
  */
 export async function packageApp(repoRoot, { log = () => {} } = {}) {
+    assertTargetExecution(repoRoot);
     log('packaging Kelpi.app… (~1 min)');
     const result = await run('pnpm', ['--filter', '@kelpi/shell', 'package'], { cwd: repoRoot });
     if (result.code !== 0) {
@@ -691,6 +696,7 @@ export async function assertPackagedSignature(repoRoot) {
  * fresh bundle and no 90-second repackage between runs.
  */
 export function startShell(sandbox, { repoRoot, packaged = false, verbose = false, extraEnv = {} }) {
+    assertTargetExecution(repoRoot);
     assertDesktopActive();
     const shellRoot = path.join(repoRoot, 'packages', 'shell');
     const binary = packaged ? packagedBinary(repoRoot) : electronBinary(repoRoot);
@@ -824,6 +830,7 @@ export function cliUsageRefusal({ code, stderr = '' } = {}) {
  * the running instance), every call fails loudly instead of addressing the wrong daemon.
  */
 export function makeCli(sandbox, { repoRoot }) {
+    assertTargetExecution(repoRoot);
     const entry = path.join(repoRoot, 'packages', 'cli', 'dist', 'kelpi.js');
     const invoke = (args, opts = {}) =>
         new Promise((resolve) => {

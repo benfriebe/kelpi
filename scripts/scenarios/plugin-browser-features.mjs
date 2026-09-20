@@ -1,8 +1,8 @@
+import { executionRoots } from '../ui-audit/lib/execution-roots.mjs';
 /** Browser Lab against real daemon, shell, native page targets and opaque plugin frames. */
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { fileURLToPath } from 'node:url';
 import { connect, listTargets } from '../ui-audit/lib/cdp.mjs';
 import { PROTOCOL_VERSION } from '../ui-audit/lib/stack.mjs';
 import { startBrowserFixture } from '../fixtures/plugin-browser.mjs';
@@ -31,7 +31,7 @@ export const covers = ['examples/plugins/browser-lab/', 'packages/plugin-sdk/', 
  * attribute it.
  */
 export const windowPlacement = 'offscreen';
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+const { targetRoot: repoRoot, harnessRoot } = executionRoots();
 const pluginID = 'example.browser-lab', viewID = `${pluginID}.browser`;
 const packagePath = path.join(repoRoot, 'examples/plugins/browser-lab');
 const frame = id => `[data-testid="plugin-view-${id}"] iframe`;

@@ -1,3 +1,4 @@
+import { executionRoots } from '../ui-audit/lib/execution-roots.mjs';
 /**
  * Selectable interaction presenters, against a real window.
  *
@@ -86,7 +87,6 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { phoneToLanding } from '../ui-audit/lib/workbench.mjs';
 
 /*
@@ -110,7 +110,7 @@ export const covers = ['examples/plugins/interaction-lab/', 'packages/client/src
     // machine and its backoff are things this scenario would now catch a regression in.
     'packages/client/src/connection/'];
 
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+const { targetRoot: repoRoot, harnessRoot } = executionRoots();
 const labID = 'example.interaction-lab', uiID = 'example.ui-lab';
 const labPath = path.join(repoRoot, 'examples/plugins/interaction-lab');
 const uiPath = path.join(repoRoot, 'examples/plugins/ui-lab');

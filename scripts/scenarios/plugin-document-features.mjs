@@ -1,16 +1,16 @@
+import { executionRoots } from '../ui-audit/lib/execution-roots.mjs';
 import fs from 'node:fs';
 import { cleanupSteps, removeOwnedRemoteStore } from '../ui-audit/lib/incident-diagnostics.mjs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { spawnDesktopHelper } from '../ui-audit/lib/desktop-lifecycle.mjs';
-import { fileURLToPath } from 'node:url';
 import { makeSandbox, startDaemon, waitForHealthz, makeCli, PROTOCOL_VERSION } from '../ui-audit/lib/stack.mjs';
 import { daemonIDFromSandbox, phoneToLanding } from '../ui-audit/lib/workbench.mjs';
 
 export const covers = ['examples/plugins/document-lab/', 'packages/plugin-sdk/', 'packages/client/src/features/',
     'packages/client/src/plugins/', 'packages/client/src/content/', 'packages/client/src/app/RemoteWorkspaceView.tsx',
     'packages/client/src/phone/PhoneRemoteWorkspace.tsx', 'packages/client/src/App.tsx', 'packages/daemon/src/plugins/documents.ts'];
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+const { targetRoot: repoRoot, harnessRoot } = executionRoots();
 const pluginID = 'example.document-lab', viewID = `${pluginID}.editor`, packagePath = path.join(repoRoot, 'examples/plugins/document-lab');
 const frame = id => `[data-testid="plugin-view-${id}"] iframe`;
 

@@ -3,13 +3,15 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { inspectResults as inspectRawResults, precedence, exitCode } from './acceptance-results.mjs';
+import { inspectResults as inspectRawResults, precedence, exitCode, scenarioVisualPlacement } from './acceptance-results.mjs';
 import { digest, startRun, readArtifact, writeAcceptance, resolveRef } from './acceptance-io.mjs';
 import { inspectIncidents, inspectRegression } from './acceptance-incidents.mjs';
 import { acceptanceVerdict } from './acceptance-verdict.mjs';
 import { runRegression } from '../../acceptance-regression.mjs';
 import { finalizeAcceptance } from '../../acceptance-report.mjs';
 import { publicationPayload, publishAcceptance } from '../../acceptance-publish.mjs';
+import { recorder } from './driver.mjs';
+import { assertionIdentities, inspectSelection } from './acceptance-selection.mjs';
 const root = path.resolve(import.meta.dirname, '../../..');
 const cleanup = () => ({ attempted: true, completed: true, errors: [], leaks: [] });
 const context = { runId: 'run-1', head: 'a'.repeat(40), startedAt: Date.now() - 1000 };
@@ -69,6 +71,71 @@ describe('raw structured result boundaries', () => {
         raw.testResults[0].assertionResults[0].status = 'failed';
         expect(inspectResults('vitest', raw, context).verdict).toBe('failed');
     });
+    it('keeps repeated assertion prose as distinct frozen identities and rejects an exact-set drift', () => {
+        const raw = audit(); raw.steps[0].assertions.push({ name: 'clipboard equals selected text', ok: true }); raw.summary.assertions = 2;
+        const selection = { kind: 'audit', ordered: true, complete: true, members: [{ id: 'copy', mode: 'assert', requiredAssertions: ['clipboard equals selected text [1]', 'clipboard equals selected text [2]'], minAssertions: 2, expectedAssertionDigest: '0'.repeat(64) }] };
+        const result = inspectRawResults('audit', raw, { selection, buildReceipt: buildReceipt(provenance()), ...context });
+        expect(result.verdict).toBe('unverified');
+        expect(result.missing).toContain('copy: exact selected assertion identity set differs from frozen contract');
+    });
+    it('accepts uniquely identified smoke checks but rejects duplicate smoke IDs and counter drift', () => {
+        const selection = { kind: 'smoke', ordered: true, complete: true, members: [{id:'shell',mode:'assert',requiredAssertions:['daemon stays alive'],assertionPaths:[['daemon stays alive']],minAssertions:1}] };
+        const raw = { name: 'shell', provenance: provenance(), cleanup: cleanup(), exitStatus: 0, selection, assertions: [{ id: 'shell:1', name: 'daemon stays alive', ok: true }], summary: { assertions: 1, passed: 1, failed: 0 } };
+        const options = { selection, buildReceipt: buildReceipt(provenance()), ...context };
+        expect(inspectRawResults('smoke', raw, options).verdict).toBe('verified');
+        for (const omitted of ['cleanup', 'provenance']) {
+            const broken = structuredClone(raw); delete broken[omitted];
+            expect(inspectRawResults('smoke', broken, options).verdict).toBe('unverified');
+        }
+        expect(inspectRawResults('smoke', {...raw, cleanup:{...cleanup(),leaks:['owned child']}}, options).verdict).toBe('failed');
+        const truncated = structuredClone(raw); truncated.assertions=[]; truncated.summary={assertions:0,passed:0,failed:0};
+        expect(inspectRawResults('smoke', truncated, options).verdict).toBe('unverified');
+        raw.assertions.push({ id: 'shell:1', name: 'second check', ok: true }); raw.summary = { assertions: 2, passed: 2, failed: 0 };
+        expect(inspectRawResults('smoke', raw, options).missing).toContain('smoke assertion identities are absent or duplicated');
+    });
+    it('qualifies repeated prose without colliding with literal suffix or escape labels', () => {
+        const names = ['x','x','x [1]','@assertion:["x",1]','@assertion:["x",1]','@@assertion:["x",1]'];
+        const ids = assertionIdentities(names);
+        expect(new Set(ids).size).toBe(names.length);
+        expect(assertionIdentities(ids)).toEqual(ids);
+        expect(ids[2]).toBe('x [1]');
+    });
+    it('requires the complete ordered assertion path, rejecting extra or reordered passes', () => {
+        const selection = {kind:'smoke',ordered:true,complete:true,members:[{id:'shell',mode:'assert',requiredAssertions:['a'],assertionPaths:[['a','b']],minAssertions:2}]};
+        const report = names => ({name:'shell', assertions:names.map(name=>({name,ok:true}))});
+        expect(inspectSelection('smoke',report(['a','b']),selection)).toEqual([]);
+        for (const names of [['b','a'],['a','b','c'],['a']]) expect(inspectSelection('smoke',report(names),selection).length).toBeGreaterThan(0);
+    });
+    it('requires every ordered segment without permitting extra or omitted dynamic checks', () => {
+        const segments = [{reason:'fixed prefix',alternatives:[['begin']]},{reason:'explicit geometry alternatives',alternatives:[['left covered','right exposed'],['left exposed','right covered']]},{reason:'fixed teardown',alternatives:[['end']]}];
+        const selection = {kind:'audit',ordered:true,complete:true,members:[{id:'popup',mode:'assert',requiredAssertions:['begin','end'],minAssertions:4,assertionPathSegments:segments}]};
+        const raw = labels => ({steps:[{id:'popup',assertions:labels.map(name=>({name,ok:true}))}]});
+        expect(inspectSelection('audit',raw(['begin','left covered','right exposed','end']),selection)).toEqual([]);
+        expect(inspectSelection('audit',raw(['begin','left exposed','right covered','end']),selection)).toEqual([]);
+        for (const labels of [['begin','end'],['begin','left covered','end'],['begin','right exposed','left covered','end'],['begin','left covered','right exposed','end','extra']]) expect(inspectSelection('audit',raw(labels),selection)).not.toEqual([]);
+        selection.members[0].assertionPathSegments[1].alternatives.push([]);
+        expect(inspectSelection('audit',raw(['begin','left covered','right exposed','end']),selection)).not.toEqual([]);
+    });
+    it('records actual owned default-window observations around capture and refuses unproved visual placement', async () => {
+        const windowRuntime={private:true,sourceRoot:'/target',shellPid:123,sandboxRoot:'/tmp/private',harnessSocket:'/tmp/private/harness.sock',placement:'default',focusEmulated:false};
+        const events=[], state={focused:true,visible:true,minimized:false,bounds:{x:0,y:0,width:800,height:600}};
+        const rec=recorder({name:'copy',outDir:temp(),placement:'default',windowRuntime,observeWindow:async()=>{events.push('observe');return structuredClone(state);}});
+        await rec.shot({screenshot:async file=>{events.push('capture');fs.writeFileSync(file,'fixture image bytes');}},'native');
+        expect(events).toEqual(['observe','capture','observe']);
+        const shot=rec.summary().screenshots[0], visual={placement:'default',requiresNativeFocus:true,windowRuntime,shots:[shot]};
+        expect(scenarioVisualPlacement(visual)).toBe(true);
+        for(const patch of [{placement:'hidden'},{placement:'offscreen'},{placement:'attached'},{placement:'unknown'},{requiresNativeFocus:false},{windowRuntime:undefined},{windowRuntime:{...windowRuntime,private:false}},{windowRuntime:{...windowRuntime,focusEmulated:true}}]) expect(scenarioVisualPlacement({...visual,...patch})).toBe(false);
+        for(const patch of [{visible:false},{minimized:true},{focused:false},{bounds:{x:0,y:0,width:0,height:0}}]) {
+            const broken=structuredClone(visual);Object.assign(broken.shots[0].windowProof.before.state,patch);expect(scenarioVisualPlacement(broken)).toBe(false);
+        }
+        const raw=scenario(), selection=structuredClone(selections.scenario);
+        Object.assign(raw.summaries[0],{placement:'default',windowRuntime,screenshots:[shot]});
+        Object.assign(selection.members[0],{requiredVisuals:['copy:shot:native'],requiresNativeFocus:true});
+        const options={...context,selection,approvedVisuals:['copy:shot:native']};
+        expect(inspectResults('scenario',raw,options).verdict).toBe('verified');
+        delete raw.summaries[0].windowRuntime;
+        expect(inspectResults('scenario',raw,options).verdict).toBe('unverified');
+    });
     it('enforces failed > unverified > verified and only verified exits zero', () => {
         expect(precedence(['verified', 'unverified', 'failed'])).toBe('failed');
         expect(precedence(['verified', 'unverified'])).toBe('unverified');
@@ -84,12 +151,15 @@ function cleanRepo(parent, name, state) {
     fs.writeFileSync(path.join(dir, 'behavior.txt'), state); git(['add', 'behavior.txt']); git(['commit', '-qm', state]);
     return dir;
 }
-function regressionFixture({ crash = false, synthetic = false } = {}) {
+function regressionFixture({ crash = false, synthetic = false, visual = null } = {}) {
     const dir = temp(), baseline = cleanRepo(dir, 'baseline', 'broken'), candidate = cleanRepo(dir, 'candidate', 'fixed'), test = path.join(dir, 'test.mjs');
     fs.writeFileSync(test, `import fs from 'node:fs'; import path from 'node:path';
 const ok = fs.readFileSync(path.join(process.env.KELPI_REGRESSION_ROOT, 'behavior.txt'), 'utf8') === 'fixed';
 ${crash ? "if (!ok) throw new Error('cannot import fixture');" : ''}
 const report = { schemaVersion:1, assertions:[{name:'copy exactly selected text',ok}], errors:[], environment:{id:'fixture-machine',kind:'local',details:'unit boundary fixture; not installed app evidence'}, cleanup:{attempted:true,completed:true,errors:[],leaks:[]} };
+${visual ? `const visualFile = process.env.KELPI_REGRESSION_REPORT + '.png';
+const pixels = ${visual === 'text' ? "Buffer.from('text cannot establish pixels')" : `Buffer.from('${visual === 'blank' ? 'iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAIAAAB7QOjdAAAAC0lEQVR4nGP4DwYAFPIF+6QNfF4AAAAASUVORK5CYII=' : 'iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAIAAAB7QOjdAAAAD0lEQVR4nGP4//8/AwMDAA74Av7Ji4P1AAAAAElFTkSuQmCC'}','base64')`};
+fs.writeFileSync(visualFile,pixels); report.environment.evidence = {facts:[{role:'visual',path:visualFile,sha256:(await import('node:crypto')).createHash('sha256').update(pixels).digest('hex')}]};` : ''}
 fs.writeFileSync(process.env.KELPI_REGRESSION_REPORT, JSON.stringify(report)); process.exitCode = ok ? 0 : 1;
 `);
     const result = runRegression({ baseline, candidate, test, assertions: ['copy exactly selected text'], outRoot: path.join(dir, 'runs') });
@@ -97,6 +167,45 @@ fs.writeFileSync(process.env.KELPI_REGRESSION_REPORT, JSON.stringify(report)); p
     const manifest = { schemaVersion: 1, incidents: [{ id: 'fixture', behavior: 'fixture behavior text changes', scope: synthetic ? 'synthetic-probe' : 'incident', assertions: ['copy exactly selected text'], regression: { path: result.path, sha256: result.sha256 }, requiredEnvironments: ['local'], requiredVisuals: [], visualSignoffs: [] }] };
     return { dir, baseline, candidate, result, report, manifest };
 }
+describe('incident screenshots bind candidate pixels to their exact reviewed regression', () => {
+    // Synthetic two-pixel images exercise the validator, not a product visual claim.
+    const prepare = visual => {
+        const fixture = regressionFixture({ visual });
+        const { report, result, manifest } = fixture;
+        const incident = manifest.incidents[0], head = report.candidate.before.head;
+        incident.requiredVisuals = ['incident-view'];
+        incident.visualSignoffs = [{ id: 'incident-view', head, runId: report.runId,
+            regression: { path: result.path, sha256: result.sha256 }, reviewer: 'fixture-reviewer',
+            at: new Date().toISOString(), verdict: 'passed',
+            artifacts: report.candidate.result.environment.evidence.facts.filter(f => f.role === 'visual').map(({ path, sha256 }) => ({ path, sha256 })) }];
+        return { ...fixture, options: { head, reference: report.baseline.before.head } };
+    };
+    it('accepts a review of retained nonblank candidate pixels and rejects substituted identity or evidence', () => {
+        const f = prepare('image');
+        expect(inspectIncidents(f.manifest, f.options).verdict).toBe('verified');
+        for (const mode of ['old-time','future-time','run','receipt','receipt-digest','baseline','unbound','reviewer','empty']) {
+            const m = structuredClone(f.manifest), signoff = m.incidents[0].visualSignoffs[0];
+            if (mode === 'old-time') signoff.at = '2000-01-01T00:00:00Z';
+            if (mode === 'future-time') signoff.at = '2999-01-01T00:00:00Z';
+            if (mode === 'run') signoff.runId += '-wrong';
+            if (mode === 'receipt') signoff.regression.path += '-wrong';
+            if (mode === 'receipt-digest') signoff.regression.sha256 = '0'.repeat(64);
+            if (mode === 'baseline') signoff.artifacts = f.report.baseline.result.environment.evidence.facts;
+            if (mode === 'unbound') {
+                const file = path.join(temp(), 'unrelated.png'); fs.copyFileSync(signoff.artifacts[0].path, file);
+                signoff.artifacts[0].path = file;
+            }
+            if (mode === 'reviewer') signoff.reviewer = '';
+            if (mode === 'empty') signoff.artifacts = [];
+            expect(inspectIncidents(m, f.options).verdict, mode).toBe('unverified');
+        }
+    });
+    it.each(['text', 'blank'])('rejects %s even when retained as a candidate visual artifact', visual => {
+        const f = prepare(visual);
+        expect(inspectIncidents(f.manifest, f.options).verdict).toBe('unverified');
+    });
+});
+
 describe('executable same-test regression evidence', () => {
     it('retains exact immutable source, arguments, raw named baseline failure and candidate pass', () => {
         const { result, report, manifest } = regressionFixture();

@@ -1,0 +1,17 @@
+[
+  {
+    "file": "scripts/scenarios/terminal-selection-trim.mjs",
+    "originHead": "72e119642989157bbc59da9b905f9ceff1ae0408",
+    "originSha256": "f78d15949759e69d3af0aedab96f6b32754c8facaf761dc6e60b9dd16c80d625"
+  },
+  {
+    "file": "scripts/scenarios/remote-workspace-reorder.mjs",
+    "originHead": "b783f0ff15d3fdbc32a0780dda7b3460e39152dc",
+    "originSha256": "35105a03b7d0ceae17a399a4baeb6bcdd55024f7c4df4b92947f8e8a223807cc"
+  },
+  {
+    "file": "scripts/scenarios/workspace-agent-delete.mjs",
+    "originHead": "0a99f250436dc00621fbbebfd344008918bbc548",
+    "originSha256": "76b37c0bbef57fb136da964b7f4c2702f823c7b2623ed1cd709e5f7ec13385eb"
+  }
+]

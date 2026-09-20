@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import { digest, verifyArtifacts } from './acceptance-io.mjs';
 import { ENVIRONMENTS, inspectEnvironment } from './acceptance-environment.mjs';
 export { ENVIRONMENTS } from './acceptance-environment.mjs';
-import { precedence } from './acceptance-results.mjs';
+import { precedence, reviewablePng } from './acceptance-results.mjs';
 const nonempty = v => typeof v === 'string' && v.trim().length > 0;
 const array = v => Array.isArray(v) ? v : [];
 export const RUNNER_SOURCES = { runner: 'acceptance-regression.mjs', io: 'ui-audit/lib/acceptance-io.mjs', incidents: 'ui-audit/lib/acceptance-incidents.mjs', results: 'ui-audit/lib/acceptance-results.mjs', environment: 'ui-audit/lib/acceptance-environment.mjs', provenance: 'ui-audit/lib/acceptance-provenance.mjs', selection: 'ui-audit/lib/acceptance-selection.mjs' };
@@ -61,6 +61,22 @@ export function inspectRegression(report, { head, reference, assertionNames = []
     return { verdict: failures.length ? 'failed' : missing.length ? 'unverified' : 'verified', failures, missing };
 }
 
+/** A review signs actual candidate screenshots from one retained regression run. */
+export function incidentVisualApproved(signoff, { id, head, regressions }) {
+    if (signoff?.id !== id || signoff.head !== head || signoff.verdict !== 'passed' || !nonempty(signoff.reviewer)) return false;
+    const entry = regressions.find(({ receipt, report, verified }) => verified &&
+        receipt.path === signoff.regression?.path && receipt.sha256 === signoff.regression?.sha256 && report.runId === signoff.runId);
+    if (!entry) return false;
+    const at = Date.parse(signoff.at), finished = Date.parse(entry.report.finishedAt);
+    if (!Number.isFinite(at) || !Number.isFinite(finished) || at < finished || at > Date.now()) return false;
+    const artifacts = array(signoff.artifacts);
+    const shots = array(entry.report.candidate?.result?.environment?.evidence?.facts).filter(fact => fact?.role === 'visual');
+    return artifacts.length > 0 && new Set(artifacts.map(a => a?.path)).size === artifacts.length && verifyArtifacts(artifacts) &&
+        artifacts.every(artifact => reviewablePng(artifact.path) &&
+            shots.some(shot => shot.path === artifact.path && shot.sha256 === artifact.sha256) &&
+            array(entry.report.artifacts).some(bound => bound.path === artifact.path && bound.sha256 === artifact.sha256));
+}
+
 export function inspectIncidents(manifest, { head, reference } = {}) {
     const reasons = [], verdicts = [], evidence = [], assessments = [];
     if (manifest?.schemaVersion !== 1 || !Array.isArray(manifest?.incidents) || manifest.incidents.length === 0) return { verdict: 'unverified', reasons: ['incident manifest with concrete reproduction evidence is required'], evidence };
@@ -73,7 +89,7 @@ export function inspectIncidents(manifest, { head, reference } = {}) {
         if (!Array.isArray(incident?.assertions) || !incident.assertions.length || incident.assertions.some(n => !nonempty(n))) missing.push('named incident assertions required');
         const incidentReference = incident?.reference ?? reference;
         if (!/^[a-f0-9]{40}$/.test(incidentReference ?? '') || incidentReference === head) missing.push('explicit incident baseline must be a different exact commit');
-        const regressions = [];
+        const regressions = [], regressionEvidence = [];
         const receipts = incident?.regressions ?? (incident?.regression ? [incident.regression] : []);
         if (!Array.isArray(receipts) || receipts.length === 0) missing.push('regression evidence required');
         for (const receipt of array(receipts)) {
@@ -85,6 +101,7 @@ export function inspectIncidents(manifest, { head, reference } = {}) {
                 evidence.push({ path: receipt.path, sha256: receipt.sha256 }, ...array(regression.artifacts));
                 const checked = inspectRegression(regression, { head, reference: incidentReference, assertionNames: array(incident.assertions) });
                 missing.push(...checked.missing); failed.push(...checked.failures);
+                regressionEvidence.push({ receipt, report: regression, verified: checked.verdict === 'verified' });
             } catch (error) { missing.push(`regression evidence: ${error.message}`); }
         }
         if (!Array.isArray(incident?.requiredEnvironments) || incident.requiredEnvironments.length === 0) missing.push('explicit relevant environments required');
@@ -94,8 +111,8 @@ export function inspectIncidents(manifest, { head, reference } = {}) {
         }
         if (!Array.isArray(incident?.requiredVisuals) || !Array.isArray(incident?.visualSignoffs)) missing.push('explicit visual review requirements/signoffs required');
         for (const id of array(incident?.requiredVisuals)) {
-            const signoff = array(incident.visualSignoffs).find(s => s?.id === id && s.head === head && nonempty(s.reviewer) && Number.isFinite(Date.parse(s.at)) && s.verdict === 'passed');
-            if (!signoff || !verifyArtifacts(array(signoff.artifacts)) || !array(signoff.artifacts).length) missing.push(`visual signoff outstanding: ${id}`);
+            const signoff = array(incident.visualSignoffs).find(s => incidentVisualApproved(s, { id, head, regressions: regressionEvidence }));
+            if (!signoff) missing.push(`visual signoff outstanding: ${id}`);
             else evidence.push(...signoff.artifacts);
         }
         for (const signoff of array(incident?.visualSignoffs)) if (signoff?.verdict === 'failed') failed.push(`visual review failed: ${signoff.id}`);

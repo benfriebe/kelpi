@@ -69,6 +69,7 @@ import { runDesktopTest, ownDesktopResource, spawnDesktopHelper, listenDesktopSe
 const isClientWindow = (target) => String(target?.url ?? '').includes('shellWindow=');
 import { captureProvenance, shardProvenanceErrors } from './lib/incident-diagnostics-replay.mjs';
 import { inspectSelection } from './lib/acceptance-selection.mjs';
+import { executionRoots } from './lib/execution-roots.mjs';
 import { auditPlan } from './lib/incident-diagnostics-plan.mjs';
 import { cleanupSteps } from './lib/incident-diagnostics.mjs';
 import { createReport } from './lib/report.mjs';
@@ -98,7 +99,7 @@ import {
 } from './lib/web-batch.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const repoRoot = path.resolve(here, '..', '..');
+const { harnessRoot, targetRoot: repoRoot } = executionRoots();
 
 // ── options ─────────────────────────────────────────────────────────────────────────
 
@@ -106,7 +107,7 @@ const planOnly = process.argv.includes('--plan');
 const options = parseArgs(process.argv.slice(2).filter(arg => arg !== '--plan'));
 const selectedPlan = planShards(CANONICAL_ORDER,options.shards,shardPlanOptions(options));
 const selectedIDs = options.shard === null ? CANONICAL_ORDER.filter(id => selectedPlan.groups.some(group => group.includes(id)) || selectedPlan.supports.some(group => group.includes(id))) : CANONICAL_ORDER.filter(id => selectedPlan.groups[options.shard]?.includes(id) || selectedPlan.supports[options.shard]?.includes(id));
-const selection = auditPlan(repoRoot,[...selectedIDs,'renderer-console']);
+const selection = auditPlan(harnessRoot,[...selectedIDs,'renderer-console']);
 if (planOnly) { console.log(JSON.stringify(selection)); process.exit(0); }
 
 function timestamp() {
@@ -1799,7 +1800,7 @@ async function runShardedParent() {
         let child=null, errors=[];
         try {
             child=JSON.parse(fs.readFileSync(file,'utf8')); errors=shardProvenanceErrors(auditProvenance,child.provenance);
-            const expected=auditPlan(repoRoot,[...CANONICAL_ORDER.filter(id=>plan.groups[index].includes(id) || plan.supports?.[index]?.includes(id)),'renderer-console']);
+            const expected=auditPlan(harnessRoot,[...CANONICAL_ORDER.filter(id=>plan.groups[index].includes(id) || plan.supports?.[index]?.includes(id)),'renderer-console']);
             errors.push(...inspectSelection('audit',child,expected));
         }
         catch(error) { errors.push(`shard report unreadable: ${String(error.message)}`); }
@@ -4533,13 +4534,17 @@ function buildFlows(ctx) {
                                 `${String(paint.ink)} ink pixels on screen (budget ${String(budget)})`
                         );
                         const correct = recorder.check(
-                            `the revealed pane ${paneID.slice(0, 8)} paints its own screen, not a leftover one`,
+                            `the revealed terminal ${String(eligible)} paints its own screen, not a leftover one`,
                             paint.ink <= budget,
-                            `${String(paint.ink)} ink pixels for a capture using ${String(cells)} cells — a remounted pane wearing another pane's grid is what this catches`
+                            `pane=${paneID}; ${String(paint.ink)} ink pixels for a capture using ${String(cells)} cells — a remounted pane wearing another pane's grid is what this catches`
                         );
                         allCorrect = correct && allCorrect;
                     }
-                    return eligible > 0 && allCorrect;
+                    // Scoped selections inherit different rosters. Every actual pane was
+                    // checked above; the reviewed contract enumerates complete paths for this
+                    // explicit finite fixture bound without generating a plan from results.
+                    recorder.check(`fixture: the switch revealed ${String(eligible)} eligible terminals within the declared bound`, eligible >= 1 && eligible <= 16, `eligible=${String(eligible)}`);
+                    return eligible >= 1 && eligible <= 16 && allCorrect;
                 })());
 
                 await page.key('Digit2', { modifiers: MOD.meta });
@@ -8294,7 +8299,7 @@ function buildFlows(ctx) {
                                      focused: pane?.getAttribute('data-focused') === 'true',
                                      x: Math.round(r.x), y: Math.round(r.y),
                                      w: Math.round(r.width), h: Math.round(r.height) };
-                        }))()`
+                        })).sort((a, b) => ([${JSON.stringify(left)}, ${JSON.stringify(right)}].indexOf(a.id) - [${JSON.stringify(left)}, ${JSON.stringify(right)}].indexOf(b.id)))()`
                     );
                 /*
                  * §N27 — where the native view SHOULD sit for a given hole.
@@ -8539,7 +8544,7 @@ function buildFlows(ctx) {
                 for (const flip of flips.slice(1)) {
                     for (const before of first.rows) {
                         const after = flip.rows.find((row) => row.id === before.id);
-                        const tag = `${before.id.slice(0, 8)} @ ${flip.label}`;
+                        const tag = `${before.id === left ? 'left page' : before.id === right ? 'right page' : 'unexpected page'} @ ${flip.label}`;
                         if (after === undefined) {
                             recorder.check(`§N27a: ${tag} survived the focus change`, false, 'pane vanished');
                             continue;
@@ -8649,7 +8654,7 @@ function buildFlows(ctx) {
 
                     const covered = during.filter((hole) => overlaps(rect, hole));
                     recorder.check(
-                        `${name.label}: it lands over a live page at all (else this proves nothing)`,
+                        `${name.label}: it lands over ${String(covered.length)} live pages (else this proves nothing)`,
                         covered.length > 0,
                         `${String(covered.length)} of ${String(during.length)}`
                     );
@@ -8661,7 +8666,7 @@ function buildFlows(ctx) {
                     for (const hole of covered) {
                         const line = embedOf(hole.id);
                         recorder.check(
-                            `${name.label}: the SHELL took ${hole.id.slice(0, 8)}'s view back to the holder`,
+                            `${name.label}: the SHELL took ${hole.id === left ? 'left page' : hole.id === right ? 'right page' : 'unexpected page'}'s view back to the holder`,
                             line.includes('owner=holder'),
                             line
                         );
@@ -8679,7 +8684,7 @@ function buildFlows(ctx) {
                          */
                         for (const hole of covered) {
                             recorder.check(
-                                `${name.label}: ${hole.id.slice(0, 8)}'s parked hole is wearing a still frame of its page (issue #12)`,
+                                `${name.label}: ${hole.id === left ? 'left page' : hole.id === right ? 'right page' : 'unexpected page'}'s parked hole is wearing a still frame of its page (issue #12)`,
                                 typeof hole.poster === 'string' &&
                                     hole.poster.startsWith('data:image/jpeg') &&
                                     hole.posterBytes > 1000,
@@ -8702,7 +8707,7 @@ function buildFlows(ctx) {
                                     ? null
                                     : `${placed[1]},${placed[2]} ${placed[3]}×${placed[4]}`;
                             recorder.check(
-                                `${name.label}: ${hole.id.slice(0, 8)}'s frame stands on the box the view was placed at`,
+                                `${name.label}: ${hole.id === left ? 'left page' : hole.id === right ? 'right page' : 'unexpected page'}'s frame stands on the box the view was placed at`,
                                 want !== null && hole.posterBox === want,
                                 `poster ${String(hole.posterBox)} vs view ${String(want)}`
                             );
@@ -8712,7 +8717,7 @@ function buildFlows(ctx) {
                         // The rect's whole point: a surface parks what it covers and nothing else.
                         for (const hole of during.filter((entry) => !overlaps(rect, entry))) {
                             recorder.check(
-                                `${name.label}: the page it does NOT cover (${hole.id.slice(0, 8)}) is still placed`,
+                                `${name.label}: the page it does NOT cover (${hole.id === left ? 'left page' : hole.id === right ? 'right page' : 'unexpected page'}) is still placed`,
                                 hole.visible === 'true',
                                 `${String(hole.visible)} · ${embedOf(hole.id)}`
                             );
@@ -8759,7 +8764,7 @@ function buildFlows(ctx) {
                         // which is why this is also a valid restore-to-the-SAME-bounds check.
                         const want = expectedPlacement(hole);
                         recorder.check(
-                            `${name.label}: ${hole.id.slice(0, 8)}'s view is back in the window at the right bounds`,
+                            `${name.label}: ${hole.id === left ? 'left page' : hole.id === right ? 'right page' : 'unexpected page'}'s view is back in the window at the right bounds`,
                             line.includes('owner=main') && line.includes(`${String(want.x)},${String(want.y)}`),
                             `${line} · want ${String(want.x)},${String(want.y)} (ring-inset, focused=${String(hole.focused)})`
                         );
@@ -9135,7 +9140,7 @@ function buildFlows(ctx) {
                         (entry) => entry.id.toLowerCase() !== String(right).toLowerCase()
                     )) {
                         recorder.check(
-                            `the page the highlight does NOT cover (${hole.id.slice(0, 8)}) is still placed`,
+                            `the page the highlight does NOT cover (${hole.id === left ? 'left page' : hole.id === right ? 'right page' : 'unexpected page'}) is still placed`,
                             hole.visible === 'true',
                             `${String(hole.visible)} · ${embedOf(hole.id)}`
                         );
@@ -14839,7 +14844,7 @@ function buildFlows(ctx) {
                         );
                         handedBack = back.split('\n').some((line) => line.trim() === probe);
                     }
-                    recorder.check(`pane ${paneID} is handed back with a live shell, not a reader on the tty`, handedBack);
+                    recorder.check(`${paneID === focusedPane ? 'focused' : 'unfocused'} pane is handed back with a live shell, not a reader on the tty`, handedBack, paneID);
                     await runInTerminal(page, "printf '\\033[2J\\033[3J\\033[H'", { settleMs: 400 });
                 }
 
@@ -15858,9 +15863,9 @@ function buildFlows(ctx) {
                 const duringSettings = await page.eval(paneCountExpr);
                 await recorder.shot(page, 'settings-swallows-chord');
                 recorder.check(
-                    `${String(splitBinding.display)} does not split a pane while Settings is the key window (§TERM-154)`,
+                    'the configured split shortcut does not split a pane while Settings is the key window (§TERM-154)',
                     duringSettings === beforeSettings,
-                    `${String(beforeSettings)} → ${String(duringSettings)} panes`
+                    `${String(splitBinding.display)}: ${String(beforeSettings)} → ${String(duringSettings)} panes`
                 );
                 await page.click('[data-testid="settings-close"]');
                 await page.waitFor(`document.querySelector('${PAGE.settingsPanel}') === null`, {
@@ -18068,7 +18073,7 @@ function buildFlows(ctx) {
                     recorder.check(
                         rebound === null
                             ? 'Split Right shows its default ⌘D'
-                            : `Split Right shows the REBOUND trigger from the config file (${rebound})`,
+                            : 'Split Right shows the rebound trigger from the config file',
                         rebound === null
                             ? help.splitRight === '⌘D'
                             : help.splitRight !== '' && help.splitRight !== '⌘D',
@@ -29051,9 +29056,9 @@ function buildFlows(ctx) {
                         attribute = String(await view.eval(`document.documentElement.dataset.formFactor ?? '(unset)'`));
                     }
                     recorder.check(
-                        `the client reports data-form-factor="phone" under a phone viewport, via ${took}`,
+                        'the client reports data-form-factor="phone" under a phone viewport',
                         attribute === 'phone',
-                        `data-form-factor=${attribute}`
+                        `data-form-factor=${attribute}; route=${took}`
                     );
 
                     /*
@@ -30643,9 +30648,9 @@ function buildFlows(ctx) {
                     const bracketed = bracketedRaw.replace(/\n/g, '');
                     recorder.block('after tapping Paste with DEC 2004 set (cat -v)', bracketedRaw.slice(-400));
                     recorder.check(
-                        `the tap put the clipboard into the terminal, via ${took}`,
+                        'the tap put the clipboard into the terminal',
                         bracketed.includes(PAYLOAD),
-                        bracketed.includes(PAYLOAD) ? `${PAYLOAD} is at the PTY` : 'the payload never arrived'
+                        `route=${took}; ` + (bracketed.includes(PAYLOAD) ? `${PAYLOAD} is at the PTY` : 'the payload never arrived')
                     );
                     recorder.check(
                         'and it is WRAPPED, because the ENGINE decided that, not the key bar',
@@ -31225,7 +31230,7 @@ function buildFlows(ctx) {
                 const paneID = shell.id;
                 const body = `[data-testid="pane-body-${paneID}"]`;
                 const hostSelector = `${body} [data-terminal-host]`;
-                const probePath = path.join(repoRoot, 'scripts', 'ui-audit', 'fixtures', 'mouse-report-probe.mjs');
+                const probePath = path.join(harnessRoot, 'scripts', 'ui-audit', 'fixtures', 'mouse-report-probe.mjs');
 
                 /**
                  * The trail, and the mark that makes it per-gesture.

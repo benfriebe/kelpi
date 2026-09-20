@@ -16,6 +16,7 @@ export function captureOutputs(root, directories = outputDirectories) {
     const outputs = [];
     const visit = relative => {
         const file = path.join(root, relative);
+        if (fs.lstatSync(file).isSymbolicLink()) throw new Error(`build output must not be a symlink: ${relative}`);
         if (fs.statSync(file).isDirectory()) for (const name of fs.readdirSync(file).sort()) { if (name !== '.build-hash.json') visit(path.posix.join(relative, name)); }
         else outputs.push({ path: relative, sha256: digest(fs.readFileSync(file)) });
     };
@@ -34,11 +35,26 @@ export function inspectBuild(source, build, executedOutputs, { requireCore = tru
     if (requireCore && outputDirectories.some(dir => !list(build?.outputs).some(o => typeof o?.path === 'string' && o.path.startsWith(`${dir}/`)))) missing.push('required core build output identity absent');
     return missing;
 }
+export function inspectExecutionContext(context, { head, observation } = {}) {
+    const missing = [];
+    if (context?.schemaVersion !== 1 || context?.target?.expectedHead !== head) missing.push('external execution context absent or target differs');
+    for (const role of ['target', 'harness']) {
+        const binding = context?.[role], seen = observation?.[role];
+        if (!path.isAbsolute(binding?.root ?? '') || binding?.state?.head !== binding?.expectedHead || !Array.isArray(binding?.state?.dirty) || binding.state.dirty.length) missing.push(`${role} root/clean commit identity absent`);
+        missing.push(...inspectSource(binding?.source, binding?.expectedHead).map(message => `${role}: ${message}`));
+        if (!seen || seen.root !== binding?.root || seen.state?.head !== binding?.expectedHead || !Array.isArray(seen.state?.dirty) || seen.state.dirty.length || JSON.stringify(seen.source) !== JSON.stringify(binding?.source)) missing.push(`${role} execution observation differs or is absent`);
+    }
+    return missing;
+}
 export function inspectProvenance(p, { head, buildReceipt } = {}) {
     const missing = [...inspectSource(p?.source, head), ...inspectBuild(p?.source, p?.build, p?.executedOutputs)];
     if (p?.complete !== true || !Array.isArray(p?.errors) || p.errors.length || !Array.isArray(p?.runtimeBindings)) missing.push('runtime provenance capture incomplete');
     if (!sha(p?.trackedDiffSha256) || p.trackedDiffSha256 !== p?.source?.trackedDiffSha256 || !p?.buildHashes || Array.isArray(p.buildHashes) || !Object.keys(p.buildHashes).length || Object.values(p.buildHashes).some(h => !sha(h)) || !entries(p?.executedOutputs) || !list(p?.executedOutputs).every(o => p.buildHashes[o.path] === o.sha256)) missing.push('legacy source/build observations absent or contradictory');
     if (!buildReceipt || buildReceipt.exitStatus !== 0 || buildReceipt.head !== head || buildReceipt.runId !== p?.runId || JSON.stringify(buildReceipt.source) !== JSON.stringify(p?.source) || JSON.stringify(buildReceipt.build) !== JSON.stringify(p?.build)) missing.push('observed runtime is not bound to the retained build receipt');
+    if (buildReceipt?.executionContext || p?.executionContext) {
+        if (JSON.stringify(buildReceipt?.executionContext) !== JSON.stringify(p?.executionContext)) missing.push('runtime harness/target context differs from build receipt');
+        missing.push(...inspectExecutionContext(p?.executionContext, { head, observation: p?.executionRoots }));
+    }
     for (const binding of list(p?.runtimeBindings)) {
         if (!binding?.id || binding.complete !== true || !Array.isArray(binding.errors) || binding.errors.length) missing.push('runtime artifact binding incomplete');
         missing.push(...inspectSource(binding?.source, head), ...inspectBuild(binding?.source, binding?.build, binding?.executedOutputs, { requireCore: false }));

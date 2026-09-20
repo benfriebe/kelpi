@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import { inspectSelection } from './acceptance-selection.mjs';
+import { inspectSelection, assertionIdentities } from './acceptance-selection.mjs';
 import { inspectProvenance } from './acceptance-provenance.mjs';
 /** Strict interpretation of raw runner records. Summary booleans are never authority. */
 export const precedence = (values) => values.includes('failed') ? 'failed' : values.includes('unverified') || values.length === 0 ? 'unverified' : 'verified';
@@ -26,13 +26,13 @@ export function inspectResults(kind, report, { exitStatus = 0, runId, head, star
         const reportStart = Date.parse(p?.startedAt ?? report.startedAt ?? report.meta?.startedAt);
         if (!Number.isFinite(reportStart) || reportStart < startedAt - 1000 || reportStart > finishedAt) absent('stale or absent report start time');
     }
-    const check = (entry, prefix, vitest = false) => {
+    const check = (entry, prefix, vitest = false, identity = null) => {
         const id = vitest ? entry?.fullName ?? entry?.title : kind === 'scenario' ? entry?.label : entry?.name;
         const status = vitest ? entry?.status : entry?.ok === true ? 'passed' : entry?.ok === false ? 'failed' : 'unknown';
         if (!named(id)) absent(`${prefix}: assertion has no name`);
         if (status === 'failed') bad(`${prefix}: ${id}`);
         else if (status !== 'passed') absent(`${prefix}: ${id ?? 'assertion'} ${status}`);
-        assertions.push({ id: `${prefix} > ${id}`, name: id, status });
+        assertions.push({ id: `${prefix} > ${identity ?? id}`, name: id, status });
     };
     if (kind === 'vitest') {
         if (!Array.isArray(report?.testResults) || report.testResults.length === 0) absent('no test files executed');
@@ -41,7 +41,8 @@ export function inspectResults(kind, report, { exitStatus = 0, runId, head, star
             if (!named(file?.name) || !Array.isArray(file?.assertionResults)) absent('malformed test file');
             if (file?.status === 'failed' || file?.message) bad(`${file?.name}: test file error`);
             if (!['passed', 'failed'].includes(file?.status)) absent(`${file?.name}: incomplete test file`);
-            for (const entry of list(file?.assertionResults)) check(entry, file.name, true);
+            const entries = list(file?.assertionResults);
+            for (const [index, entry] of entries.entries()) check(entry, file.name, true, assertionIdentities(entries.map(value => value?.fullName ?? value?.title))[index]);
         }
         const counts = { numTotalTests: assertions.length, numPassedTests: assertions.filter(a => a.status === 'passed').length, numFailedTests: assertions.filter(a => a.status === 'failed').length };
         for (const [key, count] of Object.entries(counts)) if (report?.[key] !== count) absent(`vitest ${key} counter mismatch`);
@@ -52,7 +53,8 @@ export function inspectResults(kind, report, { exitStatus = 0, runId, head, star
         for (const step of list(report?.steps)) {
             if (!named(step?.id) || !Array.isArray(step?.assertions)) absent('malformed audit step');
             if (step?.error) bad(`${step.id}: step error: ${step.error}`);
-            for (const entry of list(step?.assertions)) check(entry, step.id);
+            const entries = list(step?.assertions);
+            for (const [index, entry] of entries.entries()) check(entry, step.id, false, assertionIdentities(entries.map(value => value?.name))[index]);
         }
         const counts = { total: list(report?.steps).length, assertions: assertions.length, failedAssertions: assertions.filter(a => a.status === 'failed').length, errored: list(report?.steps).filter(s => s?.error).length, eyes: list(report?.steps).filter(s => s?.needsEyes).length };
         for (const [key, count] of Object.entries(counts)) if (report?.summary?.[key] !== count) absent(`audit ${key} counter mismatch`);
@@ -61,15 +63,24 @@ export function inspectResults(kind, report, { exitStatus = 0, runId, head, star
         for (const summary of list(report?.summaries)) {
             const entries = summary?.results;
             if (!named(summary?.name) || !Array.isArray(entries)) absent('missing raw scenario assertions');
-            for (const entry of list(entries)) check(entry, summary.name);
+            for (const [index, entry] of list(entries).entries()) check(entry, summary.name, false, assertionIdentities(list(entries).map(value => value?.label))[index]);
             const failed = list(entries).filter(a => a?.ok === false).length;
             if (summary?.checks !== list(entries).length || summary?.failed !== failed) absent(`${summary?.name}: scenario counter mismatch`);
             if (Number(summary?.failed) > 0 || summary?.error) bad(`${summary?.name}: scenario failed`);
             if (list(summary?.leaked).length > 0) bad(`${summary.name}: cleanup leak`);
         }
         if (list(report?.leaks).length > 0) bad('scenario cleanup leaks');
+    } else if (kind === 'smoke') {
+        if (!named(report?.name) || !Array.isArray(report?.assertions) || report.assertions.length === 0) absent('no smoke assertions executed');
+        const entries = list(report?.assertions);
+        if (entries.some(entry => !named(entry?.id)) || new Set(entries.map(entry => entry?.id)).size !== entries.length) absent('smoke assertion identities are absent or duplicated');
+        for (const [index, entry] of entries.entries()) check(entry, report?.name ?? 'smoke', false, entry?.id ?? assertionIdentities(entries.map(value => value?.name))[index]);
+        const passed = entries.filter(entry => entry?.ok === true).length;
+        const failed = entries.filter(entry => entry?.ok === false).length;
+        if (report?.summary?.assertions !== entries.length || report?.summary?.passed !== passed || report?.summary?.failed !== failed) absent('smoke assertion counter mismatch');
+        if (report?.exitStatus !== exitStatus) absent('smoke exit status differs from process receipt');
     } else absent(`unsupported structured report kind: ${kind}`);
-    if (kind === 'audit' || kind === 'scenario') {
+    if (kind === 'audit' || kind === 'scenario' || kind === 'smoke') {
         const cleanup = report?.cleanup ?? report?.meta?.cleanup;
         if (!cleanup || cleanup.attempted !== true || cleanup.completed !== true || !Array.isArray(cleanup.errors) || !Array.isArray(cleanup.leaks)) absent('cleanup was not fully evidenced');
         if (list(cleanup?.errors).length > 0 || list(cleanup?.leaks).length > 0) bad('cleanup errors or unresolved leaks');
@@ -77,7 +88,7 @@ export function inspectResults(kind, report, { exitStatus = 0, runId, head, star
     missing.push(...inspectSelection(kind, report, selection ?? expectedPlan));
     if (assertions.length === 0 && !(selection ?? expectedPlan)?.members?.every(m => ['setup','visual'].includes(m?.mode))) absent('no named assertions executed');
     if (new Set(assertions.map(a => a.id)).size !== assertions.length) absent('duplicate assertion identities');
-    for(const visual of visualRequirements) if(!approvedVisuals.includes(visual.id) || !visual.shots.length || visual.placement === 'hidden' || visual.shots.some(s => s?.blank || s?.placement === 'hidden') || kind === 'scenario' && visual.placement !== 'onscreen') visuals.push(visual.id);
+    for(const visual of visualRequirements) if(!approvedVisuals.includes(visual.id) || !visual.shots.length || visual.placement === 'hidden' || visual.shots.some(s => s?.blank || s?.placement === 'hidden') || kind === 'scenario' && !scenarioVisualPlacement(visual)) visuals.push(visual.id);
     if (visuals.length > 0) absent(`outstanding visual review: ${visuals.join(', ')}`);
     return { verdict: failures.length ? 'failed' : missing.length ? 'unverified' : 'verified', failures, missing, assertions, visuals, visualRequirements, counts: { total: assertions.length, failed: assertions.filter(a => a.status === 'failed').length, stepErrors: kind === 'audit' ? list(report?.steps).filter(s => s?.error).length : 0, harnessErrors: report?.harnessFailure ? 1 : 0, cleanupErrors: list((report?.cleanup ?? report?.meta?.cleanup)?.errors).length, cleanupLeaks: list((report?.cleanup ?? report?.meta?.cleanup)?.leaks).length + list(report?.leaks).length } };
 }
@@ -87,9 +98,9 @@ export function inspectResults(kind, report, { exitStatus = 0, runId, head, star
 export function collectVisualRequirements(kind, report, selection, reportPath) {
     const requirements = [];
     const resolveShot = shot => typeof shot === 'string' ? {path: path.resolve(path.dirname(reportPath ?? '.'),shot)} : shot;
-    for (const member of kind === 'scenario' ? list(report?.summaries) : kind === 'audit' ? list(report?.steps) : []) {
+    for (const member of kind === 'scenario' ? list(report?.summaries) : kind === 'audit' ? list(report?.steps) : kind === 'smoke' ? [report] : []) {
         if (!member || typeof member !== 'object') continue;
-        const id = kind === 'scenario' ? member.name : member.id;
+        const id = kind === 'audit' ? member.id : member.name;
         const spec = list(selection?.members).find(m => m?.id === id);
         const byId = new Map();
         const add = visual => { if(named(visual?.id)) byId.set(visual.id, {...byId.get(visual.id), ...visual}); };
@@ -118,11 +129,24 @@ export function collectVisualRequirements(kind, report, selection, reportPath) {
                 v.placement ??= member.placement;
             }
         }
-        for(const v of byId.values()) requirements.push({...v,memberId:id,kind,shots:list(v.shots).map(resolveShot)});
+        for(const v of byId.values()) requirements.push({...v,memberId:id,kind,shots:list(v.shots).map(resolveShot), requiresNativeFocus: spec?.requiresNativeFocus === true, windowRuntime: member.windowRuntime});
     }
     // Absent selected members retain their visual obligations as well.
     for(const spec of list(selection?.members)) for(const id of list(spec?.requiredVisuals)) if(!requirements.some(v=>v.id===id))requirements.push({id,memberId:spec.id,kind,shots:[]});
     return requirements;
+}
+
+/** A shipped focusable window keeps its real placement name. Default visuals need a
+ * prospective native-focus contract and observations of the exact private window around
+ * each capture; unknown/attached/default-by-assertion cannot satisfy this exception. */
+export function scenarioVisualPlacement(visual) {
+    const shots = list(visual?.shots);
+    if (!shots.length) return false;
+    if (visual.placement === 'onscreen') return shots.every(shot => shot?.placement === 'onscreen');
+    const runtime = visual.windowRuntime;
+    if (visual.placement !== 'default' || visual.requiresNativeFocus !== true || runtime?.private !== true || runtime.placement !== 'default' || runtime.focusEmulated !== false || !Number.isSafeInteger(runtime.shellPid) || runtime.shellPid <= 0 || !path.isAbsolute(runtime.sourceRoot ?? '') || !path.isAbsolute(runtime.sandboxRoot ?? '') || !path.isAbsolute(runtime.harnessSocket ?? '') || !runtime.harnessSocket.startsWith(runtime.sandboxRoot + path.sep)) return false;
+    const visible = observation => Number.isFinite(observation?.at) && observation.at > 0 && observation.state?.visible === true && observation.state.focused === true && observation.state.minimized === false && ['x','y','width','height'].every(key => Number.isFinite(observation.state.bounds?.[key])) && observation.state.bounds.width > 0 && observation.state.bounds.height > 0;
+    return shots.every(shot => shot?.placement === 'default' && JSON.stringify(shot.windowProof?.runtime) === JSON.stringify(runtime) && visible(shot.windowProof?.before) && visible(shot.windowProof?.after) && shot.windowProof.after.at >= shot.windowProof.before.at);
 }
 
 /** Decode the bounded 8-bit RGB/RGBA PNGs emitted by CDP; unsupported images fail closed.

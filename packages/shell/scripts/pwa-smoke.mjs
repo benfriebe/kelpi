@@ -46,6 +46,8 @@
  */
 
 import { runDesktopTest, spawnDesktopHelper, ownDesktopResource, assertDesktopActive, waitForDesktopChildExit } from '../../../scripts/ui-audit/lib/desktop-lifecycle.mjs';
+import { executionRoots } from '../../../scripts/ui-audit/lib/execution-roots.mjs';
+import { installSmokeEvidence } from '../../../scripts/ui-audit/lib/smoke-evidence.mjs';
 import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -57,8 +59,8 @@ import { fileURLToPath } from 'node:url';
 
 import { connect, waitForPageTarget } from '../../../scripts/ui-audit/lib/cdp.mjs';
 
-const shellRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const repoRoot = path.resolve(shellRoot, '..', '..');
+const { targetRoot: repoRoot, harnessRoot } = executionRoots();
+const shellRoot = path.join(repoRoot, 'packages/shell');
 const daemonEntry = path.join(repoRoot, 'packages', 'daemon', 'dist', 'kelpid.js');
 const clientDist = path.join(repoRoot, 'packages', 'client', 'dist');
 const PROTOCOL_VERSION = 2;
@@ -73,6 +75,7 @@ const options = {
 // ── tiny test harness (same shape as scripts/smoke.mjs) ─────────────────────────────
 
 const results = [];
+const finishEvidence = installSmokeEvidence({ repoRoot, name: 'pwa', results });
 
 function pass(name, detail = '') {
     results.push({ name, ok: true, detail });
@@ -205,6 +208,7 @@ async function makeSandbox() {
 }
 
 function startDaemon(sandbox) {
+    finishEvidence.beforeExecution('startDaemon');
     assertDesktopActive();
     const log = [];
     const child = spawn(process.execPath, [daemonEntry, 'start', '--foreground'], {
@@ -363,6 +367,7 @@ app.whenReady().then(() => {
 }
 
 function startProbe(sandbox) {
+    finishEvidence.beforeExecution('startProbe');
     assertDesktopActive();
     const lines = [];
     const child = spawn(
@@ -504,9 +509,9 @@ async function main() {
         const cachedPaths = cached.urls.map((url) => url.slice(origin.length)).sort();
         check('exactly one cache, named for this build', cached.names.length === 1 && /^kelpi-shell-[0-9a-f]{12}$/.test(cached.names[0]), String(cached.names));
         check(
-            `the cache holds this build's precache list (${String(expected.length)} entries)`,
+            "the cache holds this build's precache list",
             JSON.stringify(cachedPaths) === JSON.stringify([...expected].sort()),
-            `cached ${String(cachedPaths.length)}: ${cachedPaths.filter((p) => !expected.includes(p)).join(' ') || 'no extras'}`
+            `expected ${String(expected.length)}; cached ${String(cachedPaths.length)}: ${cachedPaths.filter((p) => !expected.includes(p)).join(' ') || 'no extras'}`
         );
 
         // 4. the token stays out of the caches ─────────────────────────────────────────
@@ -594,7 +599,7 @@ async function main() {
             { timeoutMs: 30_000, label: 'the client`s own connection splash' }
         );
         const elapsed = Date.now() - startedAt;
-        pass(`with the daemon dead, the reload paints connection-splash (${String(splash)})`, `${String(elapsed)}ms`);
+        pass('with the daemon dead, the reload paints connection-splash', `status=${String(splash)} ${String(elapsed)}ms`);
 
         const offline = await phone.eval(
             `({
@@ -636,8 +641,8 @@ async function main() {
             { timeoutMs: 30_000, label: 'the connection splash behind a 502 proxy' }
         );
         pass(
-            `behind a 502 proxy, the reload still paints connection-splash (${String(proxiedSplash)})`,
-            `${String(Date.now() - proxiedAt)}ms`
+            'behind a 502 proxy, the reload still paints connection-splash',
+            `status=${String(proxiedSplash)} ${String(Date.now() - proxiedAt)}ms`
         );
 
         const proxied = await phone.eval(
@@ -707,15 +712,15 @@ function precacheFromDist() {
     return JSON.parse(JSON.parse(found[1]));
 }
 
-runDesktopTest(main)
+runDesktopTest(main, { onCleanup: finishEvidence.recordCleanup })
     .then(() => {
         const failed = results.filter((entry) => !entry.ok);
         process.stdout.write(
             `\nphone-pwa-shell: ${String(results.length - failed.length)}/${String(results.length)} passed\n`
         );
-        process.exit(failed.length === 0 ? 0 : 1);
+        finishEvidence(failed.length === 0 ? 0 : 1); process.exit(failed.length === 0 ? 0 : 1);
     })
     .catch((error) => {
         process.stderr.write(`\nphone-pwa-shell failed: ${String(error?.stack ?? error)}\n`);
-        process.exit(1);
+        finishEvidence(1, { failureClass: 'harness', detail: String(error?.stack ?? error) }); process.exit(1);
     });

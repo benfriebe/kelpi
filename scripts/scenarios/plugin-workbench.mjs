@@ -1,5 +1,5 @@
+import { executionRoots } from '../ui-audit/lib/execution-roots.mjs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { cleanupSteps } from '../ui-audit/lib/incident-diagnostics.mjs';
 import { daemonIDFromSandbox } from '../ui-audit/lib/workbench.mjs';
 
@@ -10,7 +10,7 @@ export const covers = [
     'packages/daemon/src/plugins/', 'packages/daemon/src/ws/sync.ts', 'packages/daemon/src/db/',
     'packages/cli/src/commands/plugin.ts', 'packages/plugin-sdk/'
 ];
-const packagePath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../examples/plugins/agent-board');
+const packagePath = path.join(executionRoots().targetRoot, 'examples/plugins/agent-board');
 const pluginID = 'example.agent-board', viewID = `${pluginID}.board`;
 
 async function captureWorkbenchStore(page, daemonID) {

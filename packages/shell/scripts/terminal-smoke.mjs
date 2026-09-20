@@ -33,6 +33,8 @@
  */
 
 import { runDesktopTest, ownDesktopResource, assertDesktopActive, waitForDesktopChildExit } from '../../../scripts/ui-audit/lib/desktop-lifecycle.mjs';
+import { executionRoots } from '../../../scripts/ui-audit/lib/execution-roots.mjs';
+import { installSmokeEvidence } from '../../../scripts/ui-audit/lib/smoke-evidence.mjs';
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
@@ -41,8 +43,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
-const shellRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const repoRoot = path.resolve(shellRoot, '..', '..');
+const { targetRoot: repoRoot, harnessRoot } = executionRoots();
+const shellRoot = path.join(repoRoot, 'packages/shell');
 const require = createRequire(path.join(shellRoot, 'package.json'));
 const WebSocket = require('ws');
 
@@ -69,6 +71,7 @@ const SIZES = [
 // ── tiny harness (same shape as the other smokes) ───────────────────────────────────
 
 const results = [];
+const finishEvidence = installSmokeEvidence({ repoRoot, name: 'terminal', results });
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function check(name, condition, detail = '') {
@@ -210,6 +213,7 @@ async function makeSandbox() {
 }
 
 function startDaemon(sandbox) {
+    finishEvidence.beforeExecution('startDaemon');
     assertDesktopActive();
     const log = [];
     const child = spawn(process.execPath, [daemonEntry, 'start', '--foreground'], {
@@ -252,6 +256,7 @@ function electronBinary() {
 }
 
 function startShell(sandbox) {
+    finishEvidence.beforeExecution('startShell');
     assertDesktopActive();
     const child = spawn(
         electronBinary(),
@@ -454,7 +459,11 @@ async function session(sandbox, label, size, { type }) {
         }
 
         const settled = await cdp.evaluate(PANE_PROBE);
-        if (options.outDir !== null) await cdp.screenshot(path.join(options.outDir, `${label}.png`));
+        if (options.outDir !== null) {
+            const file = path.join(options.outDir, `${label}.png`);
+            await cdp.screenshot(file);
+            finishEvidence.recordScreenshot(label, file);
+        }
         const text = cli(sandbox, ['pane', 'capture', '--target', paneID]);
         cdp.close();
         return { probe: settled ?? probe, stats: analyse(text), text };
@@ -596,7 +605,7 @@ async function main() {
     process.exitCode = failed.length === 0 ? 0 : 1;
 }
 
-runDesktopTest(main).then(() => process.exit(process.exitCode ?? 0)).catch((error) => {
+runDesktopTest(main, { onCleanup: finishEvidence.recordCleanup }).then(() => { finishEvidence(process.exitCode ?? 0); process.exit(process.exitCode ?? 0); }).catch((error) => {
     process.stderr.write(`${String(error?.stack ?? error)}\n`);
-    process.exit(1);
+    finishEvidence(1, { failureClass: 'harness', detail: String(error?.stack ?? error) }); process.exit(1);
 });

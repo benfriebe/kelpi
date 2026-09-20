@@ -193,7 +193,7 @@ it('collects all real selected identities, generated settings tabs, and mandator
     try {
         const file=path.join(base,'fixture.mjs');
         fs.writeFileSync(file,`throw Error('must never import');export default async({rec})=>{rec.check('mandatory',true);if(false)rec.check('optional',true);};`);
-        const p=scenarioPlan(root,[file]);expect(p.members[0].requiredAssertions).toEqual(['mandatory']);expect(p.members[0].minAssertions).toBe(1);
+        const p=scenarioPlan(root,[file]);expect(p.members[0].requiredAssertions).toEqual(['mandatory','the renderer threw nothing and logged no error']);expect(p.members[0].minAssertions).toBe(2);
     }finally{fs.rmSync(base,{recursive:true,force:true});}
 });
 it.each(['invalid JSON','unreadable'])('does not treat a %s workbench store as clean',mode=>{

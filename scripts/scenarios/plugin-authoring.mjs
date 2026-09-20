@@ -1,16 +1,16 @@
+import { executionRoots } from '../ui-audit/lib/execution-roots.mjs';
 /** An external author's complete package → develop → update → recover workflow. */
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnDesktopHelper } from '../ui-audit/lib/desktop-lifecycle.mjs';
-import { fileURLToPath } from 'node:url';
 import { daemonIDFromSandbox, restoreBundledSlots } from '../ui-audit/lib/workbench.mjs';
 import { createHash } from 'node:crypto';
 import { connect, listTargets } from '../ui-audit/lib/cdp.mjs';
 import { startBrowserFixture } from '../fixtures/plugin-browser.mjs';
 
 export const covers = ['packages/core/src/plugin-package/', 'packages/cli/src/commands/plugin', 'packages/daemon/src/plugins/', 'packages/client/src/plugins/PluginRevisions', 'packages/client/src/plugins/PluginsTab', 'packages/plugin-sdk/'];
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+const { targetRoot: repoRoot, harnessRoot } = executionRoots();
 const pluginID = 'example.external-author', viewID = pluginID + '.home', browserViewID = pluginID + '.browser', terminalViewID = pluginID + '.terminal';
 const quote = JSON.stringify;
 const shellQuote = value => "'" + value.replaceAll("'", "'\\''") + "'";
@@ -169,7 +169,7 @@ export default async function ({ page, cli, sandbox, rec, d, shell }) {
          * path is the one the scenario that is running wrote, pointing at its own fixture root.
          */
         const editorCommand = path.join(sandbox.root, 'scenario-external-editor');
-        fs.writeFileSync(editorCommand, '#!/bin/sh\nexec ' + shellQuote(process.execPath) + ' ' + shellQuote(path.join(repoRoot, 'scripts/fixtures/plugin-terminal.cjs')) + ' ' + shellQuote(editorRoot) + ' "$@"\n', { mode: 0o755 });
+        fs.writeFileSync(editorCommand, '#!/bin/sh\nexec ' + shellQuote(process.execPath) + ' ' + shellQuote(path.join(harnessRoot, 'scripts/fixtures/plugin-terminal.cjs')) + ' ' + shellQuote(editorRoot) + ' "$@"\n', { mode: 0o755 });
         for (const profile of ['.zshenv', '.bash_profile', '.profile']) {
             const file = path.join(sandbox.home, profile);
             editorProfiles.set(file, fs.existsSync(file) ? fs.readFileSync(file) : null);

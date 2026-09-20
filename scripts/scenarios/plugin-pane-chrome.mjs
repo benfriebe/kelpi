@@ -1,3 +1,4 @@
+import { executionRoots } from '../ui-audit/lib/execution-roots.mjs';
 /**
  * A plugin drawing every pane's header, against a real window and a real daemon.
  *
@@ -78,7 +79,6 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { phoneToLanding } from '../ui-audit/lib/workbench.mjs';
 
 /*
@@ -114,7 +114,7 @@ export const covers = ['examples/plugins/pane-lab/', 'packages/client/src/pane-c
  */
 export const windowPlacement = 'offscreen';
 
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+const { targetRoot: repoRoot, harnessRoot } = executionRoots();
 const labID = 'example.pane-lab', uiID = 'example.ui-lab';
 const labPath = path.join(repoRoot, 'examples/plugins/pane-lab');
 const uiPath = path.join(repoRoot, 'examples/plugins/ui-lab');

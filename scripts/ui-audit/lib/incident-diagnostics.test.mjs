@@ -573,7 +573,7 @@ function boundaryRenderer(terminal){
 }
 
 const BoundaryAsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
-const boundaryCases = ['local-paste','local-copy','remote-paste'].flatMap(label =>
+const boundaryCases = ['local-paste','local-copy','remote-paste','local-focus','remote-focus'].flatMap(label =>
     ['delayed-capture','unavailable-target'].map(mode => [label,mode]));
 it.each(boundaryCases)('freezes %s evidence before later input (%s)', async (label, mode) => {
     const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-capture-boundary-'));
@@ -581,17 +581,21 @@ it.each(boundaryCases)('freezes %s evidence before later input (%s)', async (lab
     try {
         const source = fs.readFileSync(process.env.KELPI_CAPTURE_SCENARIO_UNDER_TEST ??
             new URL('../../scenarios/plugin-terminal-features.mjs', import.meta.url), 'utf8');
-const startLocal=source.indexOf("        offset = input(local).length;\n        await harness.clipboardWrite('TERMINAL-PASTE-α');");
+const localSeed=source.indexOf("        await harness.clipboardWrite('TERMINAL-PASTE-α');");
+const startLocal=source.lastIndexOf("        offset = input(local).length;",localSeed);
 const endLocal=source.indexOf("        await incident.retireRenderer('local terminal');",startLocal);
-const startRemote=source.indexOf("        offset = input(remote).length;\n        await harness.clipboardWrite('REMOTE-PASTE-β');");
+const remoteSeed=source.indexOf("        await harness.clipboardWrite('REMOTE-PASTE-β');");
+const startRemote=source.lastIndexOf("        offset = input(remote).length;",remoteSeed);
 const endRemote=source.indexOf('        const remoteCopyBefore = {',startRemote);
-assert(startLocal>=0 && endLocal>startLocal && startRemote>=0 && endRemote>startRemote);
+assert(localSeed>=0 && startLocal>=0 && endLocal>localSeed && remoteSeed>=0 && startRemote>=0 && endRemote>remoteSeed);
 const localBody=source.slice(startLocal,endLocal);
 const remoteBody=source.slice(startRemote,endRemote);
 const bodies={
  'local-paste':localBody.slice(0,localBody.indexOf("        await clipboardCaret('cleared-selection Copy'")),
  'local-copy':localBody,
- 'remote-paste':remoteBody
+ 'remote-paste':remoteBody,
+ 'local-focus':localBody,
+ 'remote-focus':remoteBody
 };
  let selected='',clipboard='',capturePending=false,captureFinished=false,captureCount=0;
  let failureSelection, failureClipboard, capturedSelection,capturedClipboard;
@@ -625,13 +629,13 @@ const bodies={
  const local={paneID:'local'},remote={paneID:'remote'};
  const input=item=>label==='remote-paste'&&item===local ? Buffer.alloc(0):data;
  const d={MOD:{meta:4},settle:async predicate=>await predicate()};
- const bindings={page,harness,rec,d,local,remote,input,inside,clipboardCaret,caretNow,redactFixtureText,sleep:async()=>{},localBeforeRemoteInput:0};
+ const bindings={page,harness,rec,d,local,remote,input,inside,clipboardCaret,caretNow,clipboardFocus:async()=>({ready:!label.endsWith('-focus')}),redactFixtureText,sleep:async()=>{},localBeforeRemoteInput:0};
  const fn=new BoundaryAsyncFunction(...Object.keys(bindings),'let offset;\n'+bodies[label]);
  await fn(...Object.values(bindings));
  await rec.flushFirstFailure();
  assert(captureFinished);assert.equal(captureCount,1,'never retry the snapshot');
  const saved=JSON.parse(fs.readFileSync(path.join(outDir,`${label}-first-incident.json`),'utf8'));
- const expectedLabel={'local-paste':'platform paste preserves the application bracketed-paste envelope','local-copy':'platform Copy obtains live renderer selection','remote-paste':'remote platform paste targets only the remote process'}[label];
+ const expectedLabel={'local-paste':'platform paste preserves the application bracketed-paste envelope','local-copy':'platform Copy obtains live renderer selection','remote-paste':'remote platform paste targets only the remote process','local-focus':'local CDP clipboard focus precondition is satisfied','remote-focus':'remote CDP clipboard focus precondition is satisfied'}[label];
  assert.equal(saved.reason,expectedLabel);
  assert.equal(rec.summary().firstFailure.label,expectedLabel);
  assert.equal(rec.results.find(r=>r.label===expectedLabel).ok,false,'behavior failure must survive');

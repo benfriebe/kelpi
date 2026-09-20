@@ -1,3 +1,4 @@
+import { assertTargetExecution } from './execution-roots.mjs';
 /**
  * The driver: everything an agent needs to drive a Kelpi instance and check what happened, in
  * one import, against either a freshly booted sandbox or a dev instance that is already up.
@@ -525,7 +526,7 @@ export async function clickDialogButton(page, label) {
  * from a lane that is not painting truthfully carries the caveat, so a picture is never silently
  * worth less than it looks.
  */
-export function recorder({ name, outDir, placement }) {
+export function recorder({ name, outDir, placement, windowRuntime, observeWindow }) {
     const shotCaveat = {
         hidden: 'BLANK: a zero-opacity window composites to white through CDP; assertions only',
         offscreen: '1x backing store: half resolution, sub-pixel geometry quantised differently'
@@ -583,8 +584,10 @@ export function recorder({ name, outDir, placement }) {
         async shot(page, label) {
             shots += 1;
             const file = path.join(outDir, `${name}-${String(shots).padStart(2, '0')}-${label.replace(/[^a-z0-9-]+/gi, '-')}.png`);
+            const observedBefore = observeWindow ? { at: Date.now(), state: await observeWindow() } : undefined;
             await page.screenshot(file);
-            screenshots.push({ id: `${name}:shot:${label.replace(/[^a-z0-9-]+/gi, '-')}`, label, path: path.resolve(file), sha256: createHash('sha256').update(fs.readFileSync(file)).digest('hex'), placement: placement ?? 'unknown', blank: placement === 'hidden' });
+            const observedAfter = observeWindow ? { at: Date.now(), state: await observeWindow() } : undefined;
+            screenshots.push({ ...(observeWindow ? { windowProof: { runtime: windowRuntime, before: observedBefore, after: observedAfter } } : {}), id: `${name}:shot:${label.replace(/[^a-z0-9-]+/gi, '-')}`, label, path: path.resolve(file), sha256: createHash('sha256').update(fs.readFileSync(file)).digest('hex'), placement: placement ?? 'unknown', blank: placement === 'hidden' });
             const note = shotCaveat === undefined ? `shot: ${file}` : `shot: ${file}  [${placement}: ${shotCaveat}]`;
             notes.push(note);
             if (shotCaveat !== undefined) process.stdout.write(`         ${note}\n`);
@@ -597,6 +600,7 @@ export function recorder({ name, outDir, placement }) {
             return {
                 name,
                 ...(placement === undefined ? {} : { placement }),
+                ...(windowRuntime ? { windowRuntime } : {}),
                 checks: results.length,
                 failed: results.filter((r) => !r.ok).length,
                 results,
@@ -712,6 +716,7 @@ export const SHIPPED_WINDOW_PLACEMENT = 'default';
  * key". `setPageFocusEmulation` above has the measurement.
  */
 export async function boot({ repoRoot, label = 'scenario', build = true, log = () => {}, timeoutMs = 60_000, window, beforeLoad, beforeStart } = {}) {
+    assertTargetExecution(repoRoot);
     assertDesktopActive();
     if (window !== undefined && !WINDOW_PLACEMENTS.includes(window)) {
         throw new Error(`unknown window placement: ${String(window)} (want ${WINDOW_PLACEMENTS.join(' | ')})`);
@@ -738,14 +743,23 @@ export async function boot({ repoRoot, label = 'scenario', build = true, log = (
     const cleanup = { attempted: false, completed: false, errors: [], leaks: [] };
     const { stop } = ownDesktopResource({ stop: async () => {
         cleanup.attempted = true;
+        // quit()/stop() acknowledge owned process/group exit before resolving. A
+        // rejected stop leaves ownership uncertain, so keep its diagnostic files.
+        const stopped = { shell: false, daemon: false };
         cleanup.errors = await cleanupSteps([
             ['harness connection', () => rawHarness?.close()],
             ['CDP connection', () => page?.close()],
-            ['shell process', () => shell?.quit()],
-            ['daemon process', () => daemon.stop()],
-            ['sandbox files', () => sandbox.cleanup()]
+            ['shell process', async () => { await shell?.quit(); stopped.shell = true; }],
+            ['daemon process', async () => { await daemon.stop(); stopped.daemon = true; }],
+            ['sandbox files', () => {
+                if (!stopped.shell || !stopped.daemon) {
+                    cleanup.leaks.push({ path: sandbox.root, stopped: { ...stopped } });
+                    throw new Error('preserving sandbox because owned process exit is unverified');
+                }
+                sandbox.cleanup();
+            }]
         ]);
-        cleanup.completed = cleanup.errors.length === 0;
+        cleanup.completed = cleanup.errors.length === 0 && cleanup.leaks.length === 0;
         if (!cleanup.completed) throw new Error(`sandbox cleanup failed: ${cleanup.errors.join('; ')}`);
     } });
     try {
@@ -869,6 +883,7 @@ export async function boot({ repoRoot, label = 'scenario', build = true, log = (
             /** The placement this instance is actually running at, proven by the shell's own log line. */
             windowPlacement: window ?? SHIPPED_WINDOW_PLACEMENT,
             windowLogLine,
+            windowRuntime: { private: true, sourceRoot: repoRoot, shellPid: shell.child?.pid, sandboxRoot: sandbox.root, harnessSocket, placement: window ?? SHIPPED_WINDOW_PLACEMENT, focusEmulated: laneFocus },
             debugPort: sandbox.debugPort,
             cleanup,
             stop

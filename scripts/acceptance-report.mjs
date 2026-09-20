@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { executionRoots, observeExecutionRoots, executionRootErrors } from './ui-audit/lib/execution-roots.mjs';
 /** Re-evaluate an explicit retained run after adding incident receipts or visual signoffs. */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -21,12 +22,18 @@ export function completeManifest(original, addition, reference) {
         delete merged.regression; return merged;
     });
     for (const next of addition.incidents) if (!incidents.some(i => i.id === next.id)) incidents.push(next);
-    return { ...original, ...addition, incidents, auditVisualSignoffs: union(original.auditVisualSignoffs, addition.auditVisualSignoffs), scenarioVisualSignoffs: union(original.scenarioVisualSignoffs, addition.scenarioVisualSignoffs) };
+    return { ...original, ...addition, incidents, auditVisualSignoffs: union(original.auditVisualSignoffs, addition.auditVisualSignoffs), scenarioVisualSignoffs: union(original.scenarioVisualSignoffs, addition.scenarioVisualSignoffs), smokeVisualSignoffs: union(original.smokeVisualSignoffs, addition.smokeVisualSignoffs) };
 }
 export function finalizeAcceptance({ root, reportPath, manifestPath, outRoot }) {
     const originalBytes = fs.readFileSync(reportPath);
     const original = JSON.parse(originalBytes);
-    if (original.schemaVersion !== 1 || original.scope !== 'commit') throw new Error('requires an explicit commit acceptance report');
+    if (![1,2].includes(original.schemaVersion) || original.scope !== 'commit') throw new Error('requires an explicit commit acceptance report');
+    if (original.executionContext) {
+        if (!path.isAbsolute(original.executionContextPath ?? '')) throw new Error('external acceptance context path is absent');
+        executionRoots({ targetRoot: root, contextPath: original.executionContextPath, contextSha256: original.artifacts?.find(a => a.path === original.executionContextPath)?.sha256 });
+        const harnessErrors = executionRootErrors(original.executionContext, observeExecutionRoots(original.executionContext)).filter(message => message.startsWith('harness '));
+        if (harnessErrors.length) throw new Error(harnessErrors.join('; '));
+    }
     const review = startRun(root, { outRoot, args: ['--report', reportPath, '--manifest', manifestPath], reference: original.reference });
     const originalReceipt = readArtifact(reportPath, review, { startedAt: 0, kind: 'original-acceptance' });
     const receipt = readArtifact(manifestPath, review, { startedAt: 0, kind: 'incident-manifest' });
@@ -44,6 +51,7 @@ export function finalizeAcceptance({ root, reportPath, manifestPath, outRoot }) 
     readArtifact(mergedPath, review, { startedAt: 0, kind: 'completed-incident-manifest' });
     const current = snapshot(root), policyReasons = [...(original.policyReasons ?? [])];
     if (current.head !== original.start.head || current.dirty.length) policyReasons.push('review is not on the unchanged clean accepted commit');
+    if (original.executionContext) policyReasons.push(...executionRootErrors(original.executionContext, observeExecutionRoots(original.executionContext)));
     const run = { ...original, outDir: review.outDir, reviewedAt: review.startedAt, reviewRunId: review.runId, manifestPath: mergedPath, retainedFailures: [...(original.retainedFailures ?? []), ...(original.verdict === 'failed' ? [originalReceipt.artifact] : [])], artifacts: [...original.artifacts, ...review.artifacts] };
     const result = acceptanceVerdict(run, { components: original.components, end: original.end, manifest: merged, policyReasons });
     run.artifacts.push(...result.incidentArtifacts);

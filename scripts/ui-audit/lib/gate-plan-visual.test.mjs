@@ -5,6 +5,7 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { scenarioPlan, auditPlan } from './incident-diagnostics-plan.mjs';
 import { inspectResults, reviewablePng } from './acceptance-results.mjs';
 import { recorder } from './driver.mjs';
+import { createHash } from 'node:crypto';
 const root=path.resolve(import.meta.dirname,'../../..');
 const out=fs.mkdtempSync(path.join(process.env.KELPI_GATE_FIXTURE_ROOT ?? os.tmpdir(),'gate-plan-visual-'));
 afterAll(()=>{if(!process.env.KELPI_GATE_FIXTURE_ROOT)fs.rmSync(out,{recursive:true,force:true});});
@@ -41,7 +42,6 @@ const labels={
     "direct browser attachment supports its own document preference",
     "disable restores all native documents without replacing panes",
     "reenabling restores saved per-type renderer choices",
-    "cleanup: workbench placements restored",
     "cleanup: private remote workbench store removed",
     "the renderer threw nothing and logged no error"
   ],
@@ -50,6 +50,7 @@ const labels={
     "ANSI and Unicode viewport agrees exactly with daemon capture",
     "application terminal modes cross the renderer bridge",
     "CDP keyboard and injected composition commit reach the same raw process",
+    "local CDP clipboard focus precondition is satisfied",
     "platform paste preserves the application bracketed-paste envelope",
     "platform Copy obtains live renderer selection",
     "cleared selection cannot copy a stale cached value",
@@ -84,6 +85,7 @@ const labels={
     "exiting the external editor restores the same document with saved source",
     "embedded remote terminal replays through the remote runtime",
     "remote keyboard input reaches only its owning daemon process",
+    "remote CDP clipboard focus precondition is satisfied",
     "remote platform paste targets only the remote process",
     "remote platform Copy resolves the remote renderer selection",
     "a remote pane hidden by zoom retains its renderer and attachment",
@@ -181,7 +183,20 @@ const source=(name)=>path.join(root,'scripts/scenarios',name+'.mjs');
 function actual(names) {
  const selection=scenarioPlan(root,names.map(source));
  const raw={files:names.map(source),cleanup,summaries:names.map(name=>({name,checks:labels[name].length,failed:0,results:labels[name].map(label=>({label,ok:true})),notes:[]}))};
- return {raw,selection,requireProvenance:false};
+ // Positive fixtures include explicit reviewable visual receipts; raw assertion-only
+ // fixtures remain unverified when the selected source requires screenshots.
+ const approvedVisuals=[];
+ for(const member of selection.members) {
+  const summary=raw.summaries.find(s=>s.name===member.id),native=member.requiresNativeFocus===true;
+  summary.placement=native?'default':'onscreen';
+  summary.windowRuntime={private:true,sourceRoot:root,shellPid:123,sandboxRoot:'/tmp/fixture-window',harnessSocket:'/tmp/fixture-window/harness.sock',placement:'default',focusEmulated:false};
+  const state={focused:true,visible:true,minimized:false,bounds:{x:0,y:0,width:800,height:600}};
+  summary.screenshots=(member.requiredVisuals??[]).map((id,index)=>{
+   const file=path.join(out,`${member.id}-${index}.png`);fs.writeFileSync(file,png);approvedVisuals.push(id);
+   return {id,path:file,sha256:createHash('sha256').update(png).digest('hex'),placement:summary.placement,...(native?{windowProof:{runtime:summary.windowRuntime,before:{at:1,state},after:{at:2,state}}}:{})};
+  });
+ }
+ return {raw,selection,requireProvenance:false,approvedVisuals};
 }
 const checked=f=>inspectResults('scenario',f.raw,f);
 describe('successful paths derived from actual selected sources and reports',()=>{
@@ -200,7 +215,7 @@ describe('successful paths derived from actual selected sources and reports',()=
   const file=path.join(out,'branches.mjs');
   const plan=text=>{fs.writeFileSync(file,text);return scenarioPlan(out,[file]);};
   const selection=plan("export default ({rec,flag})=>{rec.check('setup',true);if(flag){rec.check('a',true)}else{rec.check('b',true)}rec.check('end',true)}");
-  expect(selection.complete).toBe(true);expect(selection.members[0].assertionPaths).toEqual([['setup','a','end'],['setup','b','end']]);
+  expect(selection.complete).toBe(true);expect(selection.members[0].assertionPaths).toEqual([['setup','a','end','the renderer threw nothing and logged no error'],['setup','b','end','the renderer threw nothing and logged no error']]);
   for(const code of ["items.forEach(x=>rec.check('nested',true))","for(const x of items) rec.check(x,true)","rec.check(dynamic,true)"]){const p=plan(`export default ({rec,items,dynamic})=>{rec.check('setup',true);${code}}`);expect(p.complete).toBe(false);}
  });
  it('keeps explicit source-derived audit setup and visual-only modes',()=>{
@@ -212,14 +227,17 @@ describe('successful paths derived from actual selected sources and reports',()=
 });
 describe('source and recorder visual requirements',()=>{
  it('retains all six actual geometry EYES even when raw visual markers disappear',()=>{
-  const f=actual(['plugin-terminal-geometry']);expect(f.selection.complete).toBe(true);
+  const f=actual(['plugin-terminal-geometry']);f.approvedVisuals=[];f.raw.summaries[0].screenshots=[];expect(f.selection.complete).toBe(true);
   const expected=['terminal-lab-owns-its-box','terminal-lab-live-scrollback','terminal-lab-letterboxed-mirror','terminal-lab-clipped-narrow-viewer','terminal-lab-after-take-size-control','terminal-lab-remote-mirror'].map(id=>`plugin-terminal-geometry:shot:${id}`);
   expect(f.selection.members[0].requiredVisuals).toEqual(expected);expect(checked(f).visuals).toEqual(expected);expect(checked(f).verdict).toBe('unverified');
  });
  it('freezes audit source needsEyes and its executable pane aggregate',()=>{
   const selection=auditPlan(root,['workspace-switch','renderer-console']);expect(selection.complete).toBe(true);expect(selection.members[0].requiredAssertions).toContain('every eligible revealed terminal paints its own screen');
-  const raw={cleanup,steps:selection.members.map(m=>({id:m.id,assertions:m.requiredAssertions.map(name=>({name,ok:true})),shots:['reviewed.png']})),summary:{total:2,assertions:selection.members.reduce((n,m)=>n+m.requiredAssertions.length,0),failedAssertions:0,errored:0,eyes:0}};
+  const workspaceLabels=['clicking a sidebar row activates that workspace daemon-side','the title bar names the active workspace','every pane the switch brought back has a live terminal','the revealed terminal 1 paints its own screen, not a leftover one','the revealed terminal 2 paints its own screen, not a leftover one','fixture: the switch revealed 2 eligible terminals within the declared bound','every eligible revealed terminal paints its own screen','⌘2 activated the second workspace','the title bar followed'];
+  const raw={cleanup,steps:[{id:'workspace-switch',assertions:workspaceLabels.map(name=>({name,ok:true})),shots:['reviewed.png']},{id:'renderer-console',assertions:[{name:'no renderer console errors/warnings',ok:true}]}],summary:{total:2,assertions:workspaceLabels.length+1,failedAssertions:0,errored:0,eyes:0}};
   const opts={selection,requireProvenance:false};expect(inspectResults('audit',raw,opts).visuals).toEqual(['workspace-switch']);expect(inspectResults('audit',raw,{...opts,approvedVisuals:['workspace-switch']}).verdict).toBe('verified');
+  const missingLast=structuredClone(raw);missingLast.steps[0].assertions.splice(4,1);missingLast.summary.assertions--;expect(inspectResults('audit',missingLast,{...opts,approvedVisuals:['workspace-switch']}).verdict).toBe('unverified');
+  raw.steps[0].assertions.splice(3,1);raw.summary.assertions--;expect(inspectResults('audit',raw,{...opts,approvedVisuals:['workspace-switch']}).verdict).toBe('unverified');
  });
  it.each(['hidden','onscreen'])('records legacy EYES and screenshot hashes at %s placement',async placement=>{
   const rec=recorder({name:'geometry',outDir:out,placement});await rec.shot({screenshot:async file=>fs.writeFileSync(file,placement==='hidden'?blank:png)},'view');rec.note('EYES - inspect the screenshot above');rec.check('geometry is present',true);const s=rec.summary();expect(s.visuals[0].id).toBe('geometry:shot:view');expect(s.screenshots[0].sha256).toMatch(/^[a-f0-9]{64}$/);expect(s.screenshots[0].blank).toBe(placement==='hidden');

@@ -45,6 +45,8 @@
  */
 
 import { runDesktopTest, spawnDesktopHelper, ownDesktopResource, assertDesktopActive, waitForDesktopChildExit, ownShellSpawnedDaemon } from '../../../scripts/ui-audit/lib/desktop-lifecycle.mjs';
+import { executionRoots } from '../../../scripts/ui-audit/lib/execution-roots.mjs';
+import { installSmokeEvidence } from '../../../scripts/ui-audit/lib/smoke-evidence.mjs';
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
@@ -55,14 +57,14 @@ import { fileURLToPath } from 'node:url';
 
 import { FuseState, FuseV1Options, getCurrentFuseWire } from '@electron/fuses';
 
-const shellRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const { targetRoot: repoRoot, harnessRoot } = executionRoots();
+const shellRoot = path.join(repoRoot, 'packages/shell');
 /**
  * The build-time helpers, from the same compiled module `forge.config.cjs` uses — so the fuse
  * rule asserted below is literally the rule the packager applied, not a copy of it. Resolved
  * lazily: `dist/packaging.cjs` is a build output, and `ensureBuilds()` may be what creates it.
  */
 const packagingHelpers = () => createRequire(import.meta.url)(path.join(shellRoot, 'dist', 'packaging.cjs'));
-const repoRoot = path.resolve(shellRoot, '..', '..');
 const daemonBundle = path.join(repoRoot, 'packages', 'daemon', 'dist', 'kelpid.js');
 const clientBundle = path.join(repoRoot, 'packages', 'client', 'dist', 'index.html');
 const cliBundle = path.join(repoRoot, 'packages', 'cli', 'dist', 'kelpi.js');
@@ -94,6 +96,7 @@ const signingIdentity = (process.env.KELPI_MACOS_IDENTITY ?? '').trim();
 // ── tiny test harness (same shape as scripts/smoke.mjs) ─────────────────────────────
 
 const results = [];
+const finishEvidence = installSmokeEvidence({ repoRoot, name: 'packaged', results });
 
 function pass(name, detail = '') {
     results.push({ name, ok: true, detail });
@@ -112,6 +115,7 @@ function check(name, condition, detail = '') {
 }
 
 function skip(name, detail) {
+    results.push({ name, ok: true, skipped: true, detail });
     process.stdout.write(`  – ${name}  (skipped: ${detail})\n`);
 }
 
@@ -597,6 +601,7 @@ async function makeSandbox() {
 }
 
 function startApp(sandbox) {
+    finishEvidence.beforeExecution('startApp');
     assertDesktopActive();
     const lines = [];
     const args = [`--user-data-dir=${sandbox.userData}`];
@@ -992,7 +997,14 @@ async function main() {
     if (failed.length > 0) process.exitCode = 1;
 }
 
-await runDesktopTest(main);
+try {
+    await runDesktopTest(main, { onCleanup: finishEvidence.recordCleanup });
+    finishEvidence(process.exitCode ?? 0);
+} catch (error) {
+    finishEvidence(1, { failureClass: 'harness', detail: String(error?.stack ?? error) });
+    process.exitCode = 1;
+    console.error(error);
+}
 // Every child is dead and released by here; exit explicitly so a stray handle from a torn-down
 // Electron helper cannot turn a finished run into a hang.
 process.exit(process.exitCode ?? 0);

@@ -1,9 +1,9 @@
+import { executionRoots } from '../ui-audit/lib/execution-roots.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 export const covers = ['packages/protocol/src/plugin', 'packages/daemon/src/plugins/', 'packages/daemon/src/boot/dispatch.ts', 'packages/daemon/src/ws/sync.ts', 'packages/client/src/plugins/', 'packages/client/src/App.tsx', 'packages/client/src/grid/', 'packages/plugin-sdk/', 'packages/cli/src/commands/plugin'];
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+const { targetRoot: root } = executionRoots();
 const lab = 'example.workbench-lab', dependency = 'example.agent-board';
 
 export default async function ({ page, cli, sandbox, harness, rec, d }) {

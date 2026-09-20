@@ -1,10 +1,10 @@
+import { executionRoots } from '../ui-audit/lib/execution-roots.mjs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 export const covers = ['examples/plugins/ui-lab/', 'packages/protocol/src/plugin', 'packages/daemon/src/plugins/',
     'packages/client/src/plugins/', 'packages/client/src/interaction/', 'packages/client/src/App.tsx', 'packages/client/src/chrome/',
     'packages/client/src/grid/', 'packages/plugin-sdk/'];
-const packagePath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../examples/plugins/ui-lab');
+const packagePath = path.join(executionRoots().targetRoot, 'examples/plugins/ui-lab');
 const id = 'example.ui-lab';
 
 export default async function ({ page, cli, rec, d }) {

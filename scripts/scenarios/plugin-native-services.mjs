@@ -1,10 +1,10 @@
+import { executionRoots } from '../ui-audit/lib/execution-roots.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
 
 export const covers = ['packages/daemon/src/plugins/', 'packages/daemon/src/content/', 'packages/daemon/src/git/', 'packages/daemon/src/graft/associations', 'packages/daemon/src/boot/compose.ts', 'packages/client/src/app/inspector', 'packages/plugin-sdk/', 'examples/plugins/service-lab/'];
-const example = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../examples/plugins/service-lab');
+const example = path.join(executionRoots().targetRoot, 'examples/plugins/service-lab');
 const pluginID = 'example.service-lab';
 
 export default async function ({ page, cli, sandbox, rec, d }) {

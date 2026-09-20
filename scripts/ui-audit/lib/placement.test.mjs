@@ -11,6 +11,18 @@ import { PLACEMENT_ORDER, resolveAuditPlacement, resolveScenarioPlacement } from
  * "this run is exactly what it was before the lane existed".
  */
 describe('resolveScenarioPlacement', () => {
+    it.each(PLACEMENT_ORDER)('gives native-focus input its own focusable window from %s', placement => {
+        expect(resolveScenarioPlacement(placement, undefined, { requiresNativeFocus: true }))
+            .toEqual({ placement: undefined, raised: true, warning: null });
+    });
+
+    it('leaves an existing default window alone and prioritizes focus over a visibility floor', () => {
+        expect(resolveScenarioPlacement('default', undefined, { requiresNativeFocus: true }))
+            .toEqual({ placement: 'default', raised: false, warning: null });
+        expect(resolveScenarioPlacement('onscreen', 'offscreen', { requiresNativeFocus: true }))
+            .toEqual({ placement: undefined, raised: true, warning: null });
+    });
+
     it('leaves a scenario that declares nothing on the run\'s own placement', () => {
         expect(resolveScenarioPlacement('hidden', undefined)).toEqual({ placement: 'hidden', raised: false, warning: null });
         expect(resolveScenarioPlacement(undefined, undefined)).toEqual({ placement: undefined, raised: false, warning: null });

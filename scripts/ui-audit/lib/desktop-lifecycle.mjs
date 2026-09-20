@@ -36,7 +36,7 @@ export function ownDesktopResource(resource, method = 'stop') {
 }
 
 /** Leaf only: parents must not reserve a slot while awaiting their leaf children. */
-export async function runDesktopTest(run) {
+export async function runDesktopTest(run, { onCleanup = () => {} } = {}) {
     if (active) throw new Error('nested desktop run would deadlock');
     const slot = await holdDesktopTestSlot();
     const scope = { cleanups: new Set(), closing: false };
@@ -62,6 +62,12 @@ export async function runDesktopTest(run) {
         for (const stop of [...scope.cleanups].reverse()) {
             try { await stop(); } catch (error) { failures.push(error); }
         }
+        // Emit the observed teardown even when failure deliberately retains the desktop slot.
+        // Receipts are append-only at the consumer; later cleanup cannot erase this failure.
+        const cleanup = { attempted: true, completed: failures.length === 0 && scope.cleanups.size === 0,
+            errors: failures.map(error => String(error?.stack ?? error)),
+            leaks: [...scope.cleanups].map((_, index) => `owned desktop resource ${index + 1} did not release`) };
+        try { onCleanup(cleanup); } catch (error) { failures.push(error); }
         if (failures.length) {
             console.error('Desktop cleanup failed; retaining the slot because resources may still be live:', failures);
             // An operator may hard-kill a broken runner, but ordinary cancellation must never

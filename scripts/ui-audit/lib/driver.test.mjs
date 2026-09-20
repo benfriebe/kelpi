@@ -149,13 +149,29 @@ describe('boot watches the first client navigation', () => {
     });
 });
 
-it('reports cleanup errors while still attempting every remaining owned resource', async () => {
-    state.shell.quit.mockRejectedValue(new Error('shell refused cleanup'));
+it.each(['shell', 'daemon', 'both'])('preserves primary sandbox after %s exit cannot be verified and still attempts both stops', async failed => {
+    if (failed !== 'daemon') state.shell.quit.mockRejectedValue(Object.assign(new Error('shell stop denied'), { code: 'EPERM' }));
+    if (failed !== 'shell') state.daemon.stop.mockRejectedValue(Object.assign(new Error('daemon stop denied'), { code: 'EPERM' }));
     const instance = await boot({ repoRoot: '/repo', build: false });
-    await expect(instance.stop()).rejects.toThrow('shell refused cleanup');
+    await expect(instance.stop()).rejects.toThrow('preserving sandbox');
+    expect(state.shell.quit).toHaveBeenCalledTimes(1);
+    expect(state.daemon.stop).toHaveBeenCalledTimes(1);
+    expect(state.sandbox.cleanup).not.toHaveBeenCalled();
+    expect(instance.cleanup.completed).toBe(false);
+    expect(instance.cleanup.leaks).toEqual([{ path: state.sandbox.root, stopped: { shell: failed === 'daemon', daemon: failed === 'shell' } }]);
+    if (failed !== 'daemon') expect(instance.cleanup.errors).toContain('shell process: shell stop denied');
+    if (failed !== 'shell') expect(instance.cleanup.errors).toContain('daemon process: daemon stop denied');
+});
+
+it('retains connection cleanup failure while removing a sandbox whose owned processes did exit', async () => {
+    state.page.close.mockRejectedValue(new Error('CDP close denied'));
+    const instance = await boot({ repoRoot: '/repo', build: false });
+    await expect(instance.stop()).rejects.toThrow('CDP close denied');
+    expect(state.shell.quit).toHaveBeenCalledTimes(1);
     expect(state.daemon.stop).toHaveBeenCalledTimes(1);
     expect(state.sandbox.cleanup).toHaveBeenCalledTimes(1);
-    expect(instance.cleanup).toEqual({ attempted: true, completed: false, leaks: [], errors: ['shell process: shell refused cleanup'] });
+    expect(instance.cleanup.completed).toBe(false);
+    expect(instance.cleanup.leaks).toEqual([]);
 });
 
 it('checks build identity before starting any daemon or shell and leaves no acquired fixture on rejection',async()=>{

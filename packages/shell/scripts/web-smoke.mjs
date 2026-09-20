@@ -46,6 +46,8 @@
  */
 
 import { runDesktopTest, spawnDesktopHelper, listenDesktopServer, ownDesktopResource, assertDesktopActive, waitForDesktopChildExit } from '../../../scripts/ui-audit/lib/desktop-lifecycle.mjs';
+import { executionRoots } from '../../../scripts/ui-audit/lib/execution-roots.mjs';
+import { installSmokeEvidence } from '../../../scripts/ui-audit/lib/smoke-evidence.mjs';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -54,8 +56,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const shellRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const repoRoot = path.resolve(shellRoot, '..', '..');
+const { targetRoot: repoRoot, harnessRoot } = executionRoots();
+const shellRoot = path.join(repoRoot, 'packages/shell');
 const daemonEntry = path.join(repoRoot, 'packages', 'daemon', 'dist', 'kelpid.js');
 const shellEntry = path.join(shellRoot, 'dist', 'main.js');
 const PROTOCOL_VERSION = 2;
@@ -73,6 +75,7 @@ const options = {
 // ── tiny test harness (same shape as scripts/smoke.mjs) ─────────────────────────────
 
 const results = [];
+const finishEvidence = installSmokeEvidence({ repoRoot, name: 'web', results });
 
 function pass(name, detail = '') {
     results.push({ name, ok: true, detail });
@@ -303,6 +306,7 @@ async function makeSandbox(label) {
 }
 
 function startDaemon(sandbox) {
+    finishEvidence.beforeExecution('startDaemon');
     assertDesktopActive();
     const log = [];
     const child = spawn(process.execPath, [daemonEntry, 'start', '--foreground'], {
@@ -370,6 +374,7 @@ function electronBinary() {
 }
 
 function startShell(sandbox) {
+    finishEvidence.beforeExecution('startShell');
     assertDesktopActive();
     const lines = [];
     const child = spawn(
@@ -1497,5 +1502,12 @@ async function main() {
     if (failed.length > 0) process.exitCode = 1;
 }
 
-await runDesktopTest(main);
+try {
+    await runDesktopTest(main, { onCleanup: finishEvidence.recordCleanup });
+    finishEvidence(process.exitCode ?? 0);
+} catch (error) {
+    finishEvidence(1, { failureClass: 'harness', detail: String(error?.stack ?? error) });
+    process.exitCode = 1;
+    console.error(error);
+}
 process.exit(process.exitCode ?? 0);

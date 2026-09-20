@@ -2,6 +2,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { assertionIdentities } from './acceptance-selection.mjs';
+import { declarationReader } from './assertion-declarations.mjs';
 const require = createRequire(import.meta.url);
 const viteRequire = createRequire(require.resolve('vite/package.json', {paths:[path.resolve(import.meta.dirname, '../../../packages/client')]}));
 const { parse } = viteRequire('acorn');
@@ -91,6 +93,13 @@ const directFixtureCleanupReceipt = (node, expected) => {
 };
 function contract(id, body, bindings={}, kind='scenario', knownCleanupHelpers=new Set(), parameters=[], enclosingShadowed=new Set()) {
     const errors = new Set(), visuals = new Set();
+    // An initializer is not the value of a label after a later mutation. Conservative
+    // invalidation also covers writes inside callbacks/loops that discovery cannot run.
+    const mutableBindings = new Set();
+    walk(body, node => {
+        if (node.type === 'AssignmentExpression') for (const name of namesInPattern(node.left)) mutableBindings.add(name);
+        if (node.type === 'UpdateExpression') for (const name of namesInPattern(node.argument)) mutableBindings.add(name);
+    });
     const shadowedHelpers = new Set([...enclosingShadowed, ...shadowedCleanupAliases(body, knownCleanupHelpers, parameters)]);
     const trustedCleanupHelpers = new Set([...knownCleanupHelpers].filter(name => !shadowedHelpers.has(name)));
     const initial = { assertions: [], facts: new Set(), bindings: {...bindings} };
@@ -157,6 +166,9 @@ function contract(id, body, bindings={}, kind='scenario', knownCleanupHelpers=ne
             }
         }
         if(method(node,'check')) {
+            // Nested producers in a predicate execute before this outer receipt. Their
+            // local returns must not end the scenario, but their evidence cannot vanish.
+            if (node.arguments.some(argument => hasEvidence(argument))) errors.add('assertion or visual inside an unresolved callback');
             if(literal(node.arguments[1]) === false) return [];
             for(const state of states) {
                 const name=literal(node.arguments[0],state.bindings);
@@ -177,7 +189,7 @@ function contract(id, body, bindings={}, kind='scenario', knownCleanupHelpers=ne
             return unique(left.flatMap(state=>[copy(state),...expression(node.right,[state])]));
         }
         if(node.type === 'VariableDeclarator') {
-            for(const state of states) if(node.id.type === 'Identifier') {const value=literal(node.init,state.bindings); if(value!==undefined)state.bindings[node.id.name]=value;}
+            for(const state of states) if(node.id.type === 'Identifier' && !mutableBindings.has(node.id.name)) {const value=literal(node.init,state.bindings); if(value!==undefined)state.bindings[node.id.name]=value;}
         }
         for(const child of children(node)) states=expression(child,states);
         return states;
@@ -222,14 +234,48 @@ function contract(id, body, bindings={}, kind='scenario', knownCleanupHelpers=ne
         return expression(node,states);
     };
     const paths=unique(body?.type==='BlockStatement' ? statement(body,[initial]) : expression(body,[initial]));
-    const assertionPaths=[...new Map(paths.map(s=>[JSON.stringify([...new Set(s.assertions)]),[...new Set(s.assertions)]])).values()];
+    const assertionPaths=[...new Map(paths.map(s=>[JSON.stringify(s.assertions),s.assertions])).values()];
     const requiredAssertions=assertionPaths[0]?.filter(name=>assertionPaths.every(p=>p.includes(name))) ?? [];
     const checks=hasEvidence(body) && assertionPaths.some(p=>p.length);
     if(!paths.length || checks && assertionPaths.some(p=>!p.length))errors.add('no complete successful assertion path');
     if(!checks && hasEvidence(body) && !visuals.size)errors.add('assertion contract cannot be derived');
     return {id, mode:checks ? 'assert' : visuals.size ? 'visual' : 'setup', complete:errors.size===0, contractErrors:[...errors], requiredAssertions, assertionPaths, minAssertions:assertionPaths.length ? Math.min(...assertionPaths.map(p=>p.length)) : 0, requiredVisuals:[...visuals]};
 }
+// The runner reports occurrence-qualified identities.  Preserve every dynamic/parameterised
+// probe rather than treating repeated prose as one assertion.
+const qualifyContract = selected => {
+    const assertionPaths = selected.assertionPaths.map(assertionIdentities);
+    return {...selected, assertionPaths, requiredAssertions: selected.assertionPathSegments ? selected.requiredAssertions : assertionPaths[0]?.filter(name => assertionPaths.every(labels => labels.includes(name))) ?? []};
+};
+// Only an immutable literal export can grant the default-window visual exception.
+// Runtime summaries cannot establish this prospective source requirement.
+function nativeFocusDeclaration(parsed) {
+    const binding = name => {
+        for (const item of parsed.body) {
+            const node = item.type === 'ExportNamedDeclaration' ? item.declaration : item;
+            if (node?.type !== 'VariableDeclaration' || node.kind !== 'const') continue;
+            const entry = node.declarations.find(declaration => declaration.id.type === 'Identifier' && declaration.id.name === name);
+            if (entry?.init?.type === 'Literal' && typeof entry.init.value === 'boolean') return entry.init.value;
+        }
+    };
+    let present = false, value;
+    for (const node of parsed.body) {
+        if (node.type === 'ExportAllDeclaration' && (node.exported?.name ?? node.exported?.value) === 'requiresNativeFocus') present = true;
+        if (node.type !== 'ExportNamedDeclaration') continue;
+        const declaration = node.declaration;
+        const declared = declaration?.type === 'VariableDeclaration'
+            ? declaration.declarations.some(entry => namesInPattern(entry.id).has('requiresNativeFocus'))
+            : declaration?.id?.name === 'requiresNativeFocus';
+        if (declared) { present = true; value = binding('requiresNativeFocus'); }
+        for (const specifier of node.specifiers) if ((specifier.exported.name ?? specifier.exported.value) === 'requiresNativeFocus') {
+            present = true;
+            value = node.source ? undefined : binding(specifier.local.name);
+        }
+    }
+    return { value: value === true, error: present && typeof value !== 'boolean' ? 'requiresNativeFocus must be an immutable literal boolean export' : null };
+}
 export function scenarioPlan(repoRoot, files) {
+    const reviewed = declarationReader(repoRoot);
     const plan = {kind:'scenario',complete:true,ordered:true,runtimeRequirements:[...new Set(files.filter(file=>/plugin-terminal-(features|geometry)\.mjs$/.test(file)).map(file=>`terminal-lab:${path.basename(file,'.mjs')}`))],members:files.map(file => {
         const parsed = ast(file), exported = parsed.body.find(node => node.type === 'ExportDefaultDeclaration');
         let fn = exported?.declaration;
@@ -240,14 +286,22 @@ export function scenarioPlan(repoRoot, files) {
             }
         }
         if (!fn?.body) throw new Error(`cannot discover scenario contract: ${file}`);
-        const selected = contract(path.basename(file,'.mjs'),fn.body);
-        return {...selected, complete:selected.complete && selected.mode === 'assert', mode:'assert', minAssertions:Math.max(1,selected.minAssertions), file:path.resolve(file)};
+        const focus = nativeFocusDeclaration(parsed), discovered = contract(path.basename(file,'.mjs'),fn.body);
+        if (focus.error) { discovered.complete = false; discovered.contractErrors.push(focus.error); }
+        const bodyContract = reviewed('scenario', file, discovered);
+        // scenario.mjs always calls rendererErrors.finish(rec) after the scenario body.
+        // This runner receipt is part of the prospective full path, including setup-only
+        // source bodies, and cannot be supplied by a later retry or another scenario.
+        const selected = qualifyContract({...bodyContract, minAssertions:bodyContract.minAssertions + 1, assertionPaths:bodyContract.assertionPaths.map(labels => [...labels, 'the renderer threw nothing and logged no error'])});
+        return {...selected, complete:selected.complete && selected.mode === 'assert', mode:'assert', requiresNativeFocus:focus.value, minAssertions:Math.max(1,selected.minAssertions), file:path.resolve(file)};
     })};
     plan.complete=plan.members.every(member=>member.complete);
     return plan;
 }
 export function auditPlan(repoRoot, ids) {
-    const parsed = ast(path.join(repoRoot,'scripts/ui-audit/audit.mjs'));
+    const file = path.join(repoRoot,'scripts/ui-audit/audit.mjs');
+    const reviewed = declarationReader(repoRoot);
+    const parsed = ast(file);
     const knownCleanupHelpers = new Set(parsed.body
         .filter(node => node.type === 'ImportDeclaration' && node.source?.value === './lib/incident-diagnostics.mjs')
         .flatMap(node => node.specifiers)
@@ -259,10 +313,12 @@ export function auditPlan(repoRoot, ids) {
         const id=literal(node.properties.find(item=>item.key?.name==='id')?.value,bindings);
         const run=node.properties.find(item=>item.key?.name==='run')?.value;
         if(typeof id==='string' && run?.body) {
-            const selected=contract(id,run.body,bindings,'audit',knownCleanupHelpers,run.params,enclosingShadowed);
+            let selected=contract(id,run.body,bindings,'audit',knownCleanupHelpers,run.params,enclosingShadowed);
             const needsEyes=literal(node.properties.find(item=>item.key?.name==='needsEyes')?.value,bindings) === true;
             if(needsEyes || selected.requiredVisuals.length)selected.requiredVisuals=[id];
             if(needsEyes && selected.mode==='setup')selected.mode='visual';
+            selected=qualifyContract(reviewed('audit',file,selected));
+            if (entries.has(id)) throw new Error(`duplicate audit step identity ${id}`);
             entries.set(id,selected);
         }
     };
@@ -282,7 +338,7 @@ export function auditPlan(repoRoot, ids) {
         for (const child of children(node)) visit(child, nextShadowed);
     };
     visit(parsed);
-    entries.set('renderer-console',{id:'renderer-console',mode:'assert',requiredAssertions:['no renderer console errors/warnings'],minAssertions:1});
+    entries.set('renderer-console',{id:'renderer-console',mode:'assert',complete:true,requiredAssertions:['no renderer console errors/warnings'],assertionPaths:[['no renderer console errors/warnings']],minAssertions:1,requiredVisuals:[]});
     const members=ids.map(id => { if (!entries.has(id)) throw new Error(`unknown audit step ${id}`); return entries.get(id); });
     return {kind:'audit',complete:members.every(member=>member.complete!==false),ordered:true,members};
 }

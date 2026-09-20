@@ -27,6 +27,10 @@ export function bindPackagedRuntime(repoRoot, provenance, {packaged=false,client
     if(!packaged && !clientDir) return null;
     const resource=path.join('packages/shell/out',`Kelpi-darwin-${process.arch}`,'Kelpi.app/Contents/Resources');
     const outputs=[],executedOutputs=[],mappings=[],errors=[];
+    if (provenance.executionContext && clientDir) {
+        const relative = path.relative(fs.realpathSync(repoRoot), fs.realpathSync(clientDir));
+        if (relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) errors.push('strict target client override escapes target root');
+    }
     const bind=(built,relative,read)=>{
         mappings.push({builtPath:built.path,runtimePath:relative});
         outputs.push({path:relative,sha256:built.sha256});

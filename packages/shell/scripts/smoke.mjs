@@ -34,6 +34,8 @@
  */
 
 import { runDesktopTest, spawnDesktopHelper, ownDesktopResource, assertDesktopActive, waitForDesktopChildExit, ownShellSpawnedDaemon } from '../../../scripts/ui-audit/lib/desktop-lifecycle.mjs';
+import { executionRoots } from '../../../scripts/ui-audit/lib/execution-roots.mjs';
+import { installSmokeEvidence } from '../../../scripts/ui-audit/lib/smoke-evidence.mjs';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
@@ -42,8 +44,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const shellRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const repoRoot = path.resolve(shellRoot, '..', '..');
+const { targetRoot: repoRoot, harnessRoot } = executionRoots();
+const shellRoot = path.join(repoRoot, 'packages/shell');
 const daemonEntry = path.join(repoRoot, 'packages', 'daemon', 'dist', 'kelpid.js');
 const shellEntry = path.join(shellRoot, 'dist', 'main.js');
 const clientDist = path.join(repoRoot, 'packages', 'client', 'dist');
@@ -59,6 +61,7 @@ const options = {
 // ── tiny test harness ───────────────────────────────────────────────────────────────
 
 const results = [];
+const finishEvidence = installSmokeEvidence({ repoRoot, name: 'shell', results });
 
 function pass(name, detail = '') {
     results.push({ name, ok: true, detail });
@@ -383,6 +386,7 @@ async function makeSandbox(label, { skill = 'marked-edited' } = {}) {
 }
 
 function startDaemon(sandbox) {
+    finishEvidence.beforeExecution('startDaemon');
     assertDesktopActive();
     const log = [];
     const child = spawn(process.execPath, [daemonEntry, 'start', '--foreground'], {
@@ -452,6 +456,7 @@ function electronBinary() {
 }
 
 function startShell(sandbox) {
+    finishEvidence.beforeExecution('startShell');
     assertDesktopActive();
     const lines = [];
     const child = spawn(electronBinary(), ['.', `--user-data-dir=${sandbox.userData}`], {
@@ -1147,7 +1152,14 @@ async function main() {
     if (failed.length > 0) process.exitCode = 1;
 }
 
-await runDesktopTest(main);
+try {
+    await runDesktopTest(main, { onCleanup: finishEvidence.recordCleanup });
+    finishEvidence(process.exitCode ?? 0);
+} catch (error) {
+    finishEvidence(1, { failureClass: 'harness', detail: String(error?.stack ?? error) });
+    process.exitCode = 1;
+    console.error(error);
+}
 // Every child has been killed and released by here; exit explicitly so a stray handle from a
 // torn-down Electron helper can never turn a finished run into a hang.
 process.exit(process.exitCode ?? 0);

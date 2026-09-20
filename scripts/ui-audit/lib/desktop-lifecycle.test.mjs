@@ -177,7 +177,7 @@ for (const [file, factories] of [
             if (u !== ${JSON.stringify(target)}) return loaded;
             let source = String(loaded.source);
             if (!u.endsWith('/stack.mjs')) {
-                const start = source.search(/\\n(?:await )?runDesktopTest\\(main\\)/);
+                const start = source.search(/\\n(?:try \{|runDesktopTest\\(main,)/);
                 if (start < 0) throw new Error('entrypoint seam missing');
                 source = source.slice(0,start) + '\\nexport { ${factories.join(', ')} };';
             }

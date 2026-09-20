@@ -114,7 +114,7 @@ export default async function ({ page, harness, cli, rec, d, sleep }) {
             JSON.stringify({ actions: first?.actions, silent: first?.silent })
         );
         rec.check(
-            `§7.5: it is tagged with the pane and the identifier ${dedupeKey(paneID)}`,
+            '§7.5: it is tagged with the pane and its deduplication identifier',
             first?.paneID === paneID && first?.key === dedupeKey(paneID),
             JSON.stringify({ paneID: first?.paneID, key: first?.key })
         );

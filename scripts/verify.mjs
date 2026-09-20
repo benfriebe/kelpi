@@ -31,14 +31,17 @@ import { acceptanceVerdict } from './ui-audit/lib/acceptance-verdict.mjs';
 import { captureSource, captureOutputs } from './ui-audit/lib/acceptance-provenance.mjs';
 import { CANONICAL_ORDER, expandChains } from './ui-audit/lib/shards.mjs';
 import { scenarioPlan, auditPlan } from './ui-audit/lib/incident-diagnostics-plan.mjs';
+import { smokePlan } from './ui-audit/lib/smoke-plan.mjs';
+import { assertionIdentities } from './ui-audit/lib/acceptance-selection.mjs';
+import { executionRoots, captureExecutionRoots, observeExecutionRoots, executionRootErrors, targetWorkspaceLinkErrors, prepareTargetBuild } from './ui-audit/lib/execution-roots.mjs';
 
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
 const has = (flag) => args.includes(flag);
 const value = (flag) => {
     const index = args.indexOf(flag);
     return index >= 0 ? args[index + 1] : undefined;
 };
+const { harnessRoot, targetRoot: repoRoot } = executionRoots({ targetRoot: value('--target-root') });
 
 // ── the surface map ─────────────────────────────────────────────────────────────────
 // prefix → { tests: vitest paths, steps: audit step ids, smokes: shell-package scripts }
@@ -279,19 +282,37 @@ const changed = has('--full') ? [] : [...new Set([
     ...gitOutput(['diff', '--name-only', reference ?? 'HEAD', '--']).split('\n'),
     ...gitOutput(['ls-files', '--others', '--exclude-standard']).split('\n')
 ].filter(Boolean))];
-const acceptedFlags = new Set(['--since', '--acceptance', '--no-scenario', '--full', '--plan', '--scenario-window']);
+const acceptedFlags = new Set(['--since', '--acceptance', '--no-scenario', '--full', '--plan', '--scenario-window', '--target-root', '--target-head', '--harness-head', '--out']);
 for (let i = 0; i < args.length; i++) {
     if (!acceptedFlags.has(args[i])) throw new Error(`unsupported argument: ${args[i]}`);
-    if (['--since', '--acceptance', '--no-scenario', '--scenario-window'].includes(args[i])) {
+    if (['--since', '--acceptance', '--no-scenario', '--scenario-window', '--target-root', '--target-head', '--harness-head', '--out'].includes(args[i])) {
         if (!args[i + 1] || args[i + 1].startsWith('--')) throw new Error(`${args[i]} requires a value`);
         i++;
     }
 }
 const scenarioWindow = value('--scenario-window') ?? 'hidden';
 if (!['hidden', 'onscreen'].includes(scenarioWindow)) throw new Error('--scenario-window must be hidden or onscreen');
-const acceptanceRun = has('--plan') ? null : startRun(repoRoot, { args, reference });
+const acceptanceRun = has('--plan') ? null : startRun(repoRoot, { args, reference, ...(value('--out') ? { outRoot: path.resolve(value('--out')) } : {}) });
 const reportDir = acceptanceRun?.outDir;
 const policyReasons = [];
+let executionContext = null, executionContextReceipt = null, executionPreflightError = null;
+if (has('--target-root') || has('--target-head') || has('--harness-head')) {
+    if (acceptanceRun) acceptanceRun.schemaVersion = 2;
+    try {
+    executionContext = captureExecutionRoots({ targetRoot: repoRoot, harnessRoot, targetHead: value('--target-head'), harnessHead: value('--harness-head') });
+    const links = targetWorkspaceLinkErrors(repoRoot);
+    if (links.length) throw new Error(links.join('; '));
+    if (acceptanceRun) {
+        acceptanceRun.schemaVersion = 2;
+        acceptanceRun.executionContext = executionContext;
+        const contextPath = path.join(reportDir, 'execution-context.json');
+        fs.writeFileSync(contextPath, `${JSON.stringify(executionContext, null, 2)}\n`, { flag: 'wx' });
+        executionContextReceipt = { path: contextPath, sha256: digest(fs.readFileSync(contextPath)), kind: 'execution-context' };
+        acceptanceRun.artifacts.push(executionContextReceipt);
+        acceptanceRun.executionContextPath = contextPath;
+    }
+    } catch (error) { executionPreflightError = `external execution preflight: ${error.message}`; policyReasons.push(executionPreflightError); }
+}
 let incidentManifest = null;
 if (value('--acceptance') && acceptanceRun) {
     const evidence = readArtifact(path.resolve(value('--acceptance')), acceptanceRun, { startedAt: 0, kind: 'incident-manifest' });
@@ -301,6 +322,11 @@ if (value('--acceptance') && acceptanceRun) {
 }
 const finish = (components = [], extraReasons = []) => {
     const end = snapshot(repoRoot);
+    if (executionContext) {
+        try { acceptanceRun.executionEnd = observeExecutionRoots(executionContext); }
+        catch (error) { extraReasons.push(`execution sources: ${error.message}`); }
+        extraReasons.push(...executionRootErrors(executionContext, acceptanceRun.executionEnd));
+    }
     const result = acceptanceVerdict(acceptanceRun, { components, end, manifest: incidentManifest, policyReasons: [...policyReasons, ...extraReasons] });
     acceptanceRun.artifacts.push(...result.incidentArtifacts);
     const report = writeAcceptance(acceptanceRun, { ...result, end, components, manifest: incidentManifest, policyReasons: [...policyReasons, ...extraReasons], scope: 'commit' });
@@ -309,6 +335,11 @@ const finish = (components = [], extraReasons = []) => {
     process.exitCode = exitCode(report.verdict);
     return report;
 };
+if (executionPreflightError) {
+    if (acceptanceRun) finish();
+    else console.error(executionPreflightError);
+    process.exit(2);
+}
 
 const plan = { tests: new Set(), steps: new Set(), smokes: new Set(), escalations: [], harness: [], skipped: [] };
 for (const file of changed) {
@@ -343,9 +374,13 @@ if (changed.length === 0 && !has('--full')) {
 // only a regex can see is one a rename silently breaks. Importing a scenario is safe by contract
 // (a scenario is a default-exported function and nothing else runs at module scope), and a broken
 // one is reported instead of taking the whole run down with it.
-const scenariosDir = path.join(repoRoot, 'scripts', 'scenarios');
+const scenariosDir = path.join(harnessRoot, 'scripts', 'scenarios');
+const targetScenarioNames = executionContext ? fs.readdirSync(path.join(repoRoot, 'scripts/scenarios')).filter(file => file.endsWith('.mjs')).sort() : null;
+if (targetScenarioNames) for (const file of targetScenarioNames) {
+    if (!fs.existsSync(path.join(scenariosDir, file))) policyReasons.push(`target scenario has no reviewed harness implementation: ${file}`);
+}
 const scenarios = [];
-for (const base of fs.existsSync(scenariosDir) ? fs.readdirSync(scenariosDir).filter((f) => f.endsWith('.mjs')).sort() : []) {
+for (const base of fs.existsSync(scenariosDir) ? fs.readdirSync(scenariosDir).filter((f) => f.endsWith('.mjs') && (!targetScenarioNames || targetScenarioNames.includes(f))).sort() : []) {
     const entry = { name: base.replace(/\.mjs$/, ''), file: `${SCENARIO_PREFIX}${base}`, covers: [] };
     try {
         const mod = await import(pathToFileURL(path.join(scenariosDir, base)).href);
@@ -431,6 +466,10 @@ let lastExecution = null, retainedBuild = null;
 const spawn = (command, options = {}) => {
     const startedAt = Date.now();
     const env = { ...process.env, KELPI_ACCEPTANCE_RUN_ID: acceptanceRun.runId, KELPI_ACCEPTANCE_HEAD: acceptanceRun.start.head, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null', ...options.env };
+    if (executionContextReceipt) {
+        env.KELPI_ACCEPTANCE_CONTEXT = executionContextReceipt.path;
+        env.KELPI_ACCEPTANCE_CONTEXT_SHA256 = executionContextReceipt.sha256;
+    }
     // A battery launched from inside a Kelpi pane inherits that pane's injected route to the
     // LIVE daemon (KELPI_SOCKET, and NEX_SOCKET under the old name). No battery child may
     // carry it: anything that legitimately talks to a daemon pins its own sandbox route, and
@@ -501,7 +540,7 @@ const SCENARIO_LANE = `--no-build --window ${scenarioWindow}`;
  * Child runners receive that retained receipt and must observe exactly those outputs.
  */
 const retainBuild = (exitStatus, startedAt, source, outputs, error = null) => {
-    const receipt = { command: 'buildAll(repoRoot, force=true)', runId: acceptanceRun.runId, head: acceptanceRun.start.head, exitStatus, startedAt, finishedAt: Date.now(), source, build: { inputManifestSha256: source?.inputManifestSha256, outputs, forced: true }, error };
+    const receipt = { command: 'buildAll(repoRoot, force=true)', runId: acceptanceRun.runId, head: acceptanceRun.start.head, exitStatus, startedAt, finishedAt: Date.now(), source, build: { inputManifestSha256: source?.inputManifestSha256, outputs, forced: true }, ...(executionContext ? { executionContext } : {}), error };
     const file = path.join(reportDir, 'build-result.json');
     fs.writeFileSync(file, `${JSON.stringify(receipt)}\n`, { flag: 'wx' });
     retainedBuild = { path: file, sha256: digest(fs.readFileSync(file)), kind: 'build' };
@@ -514,6 +553,14 @@ const buildBundlesComponent = {
         const startedAt = Date.now(); let source;
         try {
             source = captureSource(repoRoot);
+            if (executionContext) {
+                const changedRoots = executionRootErrors(executionContext, observeExecutionRoots(executionContext));
+                if (changedRoots.length) throw new Error(changedRoots.join('; '));
+                const preparation = prepareTargetBuild(repoRoot, reportDir);
+                const file = path.join(reportDir, 'build-preparation.json');
+                fs.writeFileSync(file, `${JSON.stringify(preparation, null, 2)}\n`, { flag: 'wx' });
+                acceptanceRun.artifacts.push({ path: file, sha256: digest(fs.readFileSync(file)), kind: 'build-preparation' });
+            }
             await buildAll(repoRoot, { force: true, log: (line) => log(`  ${line}`) });
             if (JSON.stringify(captureSource(repoRoot)) !== JSON.stringify(source)) throw new Error('source changed during forced build');
             const outputs = captureOutputs(repoRoot);
@@ -572,6 +619,14 @@ const structuredAttempt = (kind, reportPath, command, options = {}) => {
     const evidence = { kind, path: reportPath, command, exitStatus: status, startedAt, finishedAt, selection };
     const buildReceipt = retainedBuild ? readJson(retainedBuild.path) : null;
     const checked = inspectResults(kind, raw.data, { ...evidence, runId: acceptanceRun.runId, head: acceptanceRun.start.head, selection, buildReceipt });
+    for (const visual of checked.visualRequirements) for (const shot of visual.shots) {
+        try {
+            const bytes = fs.readFileSync(shot.path), sha256 = digest(bytes);
+            if (shot.sha256 && shot.sha256 !== sha256) throw new Error('screenshot digest differs from runner');
+            if (fs.statSync(shot.path).mtimeMs < startedAt - 1000) throw new Error('screenshot predates attempt');
+            if (!acceptanceRun.artifacts.some(a => a.path === shot.path && a.sha256 === sha256)) acceptanceRun.artifacts.push({ path: shot.path, sha256, bytes: bytes.length, kind: 'visual' });
+        } catch (error) { checked.missing.push(`visual retention: ${error.message}`); if (checked.verdict === 'verified') checked.verdict = 'unverified'; }
+    }
     return { execution: lastExecution, ok: checked.verdict === 'verified', verdict: checked.verdict, detail: [...checked.failures, ...checked.missing, ...(raw.error ? [raw.error] : [])].join('; '), evidence };
 };
 const vitestComponent = (label, command, { filters = [], cwd } = {}) => ({
@@ -598,11 +653,11 @@ const vitestComponent = (label, command, { filters = [], cwd } = {}) => ({
  * first run's evidence (screenshots, notes, per-check results) survives the second.
  */
 const scenarioComponent = (label, names) => ({
-    selection: scenarioPlan(repoRoot, (names.length ? names.map(name => scenarios.find(s => s.name === name)?.file ?? name) : scenarios.map(s => s.file)).map(file => path.resolve(repoRoot, file))),
-    label, kind: 'scenario', command: `node scripts/scenario.mjs ${SCENARIO_LANE} --out ${q(path.join(batteryDir, 'scenarios'))} ${names.map(q).join(' ')}`, reportPath: path.join(batteryDir, 'scenarios/results.json'),
+    selection: scenarioPlan(harnessRoot, (names.length ? names.map(name => scenarios.find(s => s.name === name)?.file ?? name) : scenarios.map(s => s.file)).map(file => path.resolve(harnessRoot, file))),
+    label, kind: 'scenario', command: `node ${q(path.join(harnessRoot, 'scripts/scenario.mjs'))} ${SCENARIO_LANE} --out ${q(path.join(batteryDir, 'scenarios'))} ${(names.length ? names : scenarios.map(s => s.name)).map(q).join(' ')}`, reportPath: path.join(batteryDir, 'scenarios/results.json'),
     run: () => {
         const out = path.join(batteryDir, 'scenarios');
-        const outcome = structuredAttempt('scenario', path.join(out, 'results.json'), `node scripts/scenario.mjs ${SCENARIO_LANE} --out ${q(out)} ${names.map(q).join(' ')}`, { env: SANDBOX_GUARD });
+        const outcome = structuredAttempt('scenario', path.join(out, 'results.json'), `node ${q(path.join(harnessRoot, 'scripts/scenario.mjs'))} ${SCENARIO_LANE} --out ${q(out)} ${(names.length ? names : scenarios.map(s => s.name)).map(q).join(' ')}`, { env: SANDBOX_GUARD });
         const results = readJson(path.join(out, 'results.json'));
         if (names.length === 0) laneObservations = scenarioObservations(results, { stillRed: failedScenariosFromResults(results) });
         const failedNames = failedScenariosFromResults(results);
@@ -610,10 +665,10 @@ const scenarioComponent = (label, names) => ({
         return { ...outcome, retryOf: failedNames, retry: () => {
             const replayOut = path.join(batteryDir, 'scenario-prefix-replay');
             const failureIndex = results?.sequence?.firstFailure?.index;
-            const replay = Number.isInteger(failureIndex) ? structuredAttempt('scenario', path.join(replayOut, 'results.json'), `node scripts/scenario.mjs ${SCENARIO_LANE} --out ${q(replayOut)} --replay ${q(path.join(out, 'results.json'))} --through ${failureIndex}`, { env: SANDBOX_GUARD, selection: scenarioPlan(repoRoot, results.files.slice(0, failureIndex + 1)) }) : { ok: false, verdict: 'unverified', detail: 'original failure sequence unavailable for replay' };
+            const replay = Number.isInteger(failureIndex) ? structuredAttempt('scenario', path.join(replayOut, 'results.json'), `node ${q(path.join(harnessRoot, 'scripts/scenario.mjs'))} ${SCENARIO_LANE} --out ${q(replayOut)} --replay ${q(path.join(out, 'results.json'))} --through ${failureIndex}`, { env: SANDBOX_GUARD, selection: scenarioPlan(harnessRoot, results.files.slice(0, failureIndex + 1)) }) : { ok: false, verdict: 'unverified', detail: 'original failure sequence unavailable for replay' };
             const isolated = failedNames.map((name, index) => {
                 const retryOut = path.join(batteryDir, `scenario-retry-${index}`);
-                return structuredAttempt('scenario', path.join(retryOut, 'results.json'), `node scripts/scenario.mjs ${SCENARIO_LANE} --out ${q(retryOut)} ${q(name)}`, { env: SANDBOX_GUARD, selection: scenarioPlan(repoRoot, [path.join(scenariosDir, `${name}.mjs`)]) });
+                return structuredAttempt('scenario', path.join(retryOut, 'results.json'), `node ${q(path.join(harnessRoot, 'scripts/scenario.mjs'))} ${SCENARIO_LANE} --out ${q(retryOut)} ${q(name)}`, { env: SANDBOX_GUARD, selection: scenarioPlan(harnessRoot, [path.join(scenariosDir, `${name}.mjs`)]) });
             });
             const stillRed = failedNames.filter((_, index) => !isolated[index].ok);
             if (names.length === 0) laneObservations = scenarioObservations(results, { stillRed });
@@ -624,26 +679,34 @@ const scenarioComponent = (label, names) => ({
 });
 
 const auditComponent = (label, only = '') => ({
-    selection: auditPlan(repoRoot, [...(only ? expandChains(only.split(',')) : CANONICAL_ORDER), 'renderer-console']),
-    label, kind: 'audit', command: `node scripts/ui-audit/audit.mjs --no-build ${only ? `--only ${q(only)}` : ''} --out ${q(path.join(batteryDir, 'audit'))}`, reportPath: path.join(batteryDir, 'audit/results.json'),
+    selection: auditPlan(harnessRoot, [...(only ? expandChains(only.split(',')) : CANONICAL_ORDER), 'renderer-console']),
+    label, kind: 'audit', command: `node ${q(path.join(harnessRoot, 'scripts/ui-audit/audit.mjs'))} --no-build ${only ? `--only ${q(only)}` : ''} --out ${q(path.join(batteryDir, 'audit'))}`, reportPath: path.join(batteryDir, 'audit/results.json'),
     run: () => {
         const out = path.join(batteryDir, 'audit');
-        return structuredAttempt('audit', path.join(out, 'results.json'), `node scripts/ui-audit/audit.mjs --no-build ${only ? `--only ${q(only)}` : ''} --out ${q(out)}`, { env: SANDBOX_GUARD });
+        return structuredAttempt('audit', path.join(out, 'results.json'), `node ${q(path.join(harnessRoot, 'scripts/ui-audit/audit.mjs'))} --no-build ${only ? `--only ${q(only)}` : ''} --out ${q(out)}`, { env: SANDBOX_GUARD });
     }
 });
 
 /** A whole-command component with no way to isolate a part of it: run it, retry it once, done. */
-const retryWholeComponent = (label, command, options = {}) => ({
-    label, kind: 'unsupported-smoke', command,
-    run: () => {
-        if (spawn(command, options) === 0) return { ok: false, execution: lastExecution, verdict: 'unverified', detail: 'smoke has no supported structured assertion report' };
-        return {
-            ok: false, execution: lastExecution,
-            retryOf: ['the whole component (it has no per-check rerun)'],
-            retry: () => { const status = spawn(command, options); return { ok: false, verdict: status === 0 ? 'unverified' : 'failed', execution: lastExecution, detail: 'diagnostic smoke has no supported structured report' }; }
-        };
-    }
-});
+const retryWholeComponent = (label, script, options = {}) => {
+    const smokeFiles = { smoke: 'smoke.mjs', 'smoke:web':'web-smoke.mjs', 'smoke:pwa':'pwa-smoke.mjs', 'smoke:terminal':'terminal-smoke.mjs', 'smoke:packaged':'packaged-smoke.mjs' };
+    const source = path.join(harnessRoot, 'packages/shell/scripts', smokeFiles[script]);
+    const name = script === 'smoke' ? 'shell' : script.split(':')[1];
+    const selection = smokePlan(harnessRoot, name);
+    const report = artifact(`${label}-smoke`);
+    const commandFor = file => `node ${q(source)} --no-build --acceptance-report ${q(file)}${name === 'terminal' ? ` --out ${q(file + '.screenshots')}` : ''}`;
+    return {
+        label, kind: 'smoke', command: commandFor(report), selection, reportPath: report,
+        run: () => {
+            const first = structuredAttempt('smoke', report, commandFor(report), { ...options, selection });
+            if (first.ok) return first;
+            return { ...first, retryOf: ['the whole smoke; original attempt retained'], retry: () => {
+                const retryReport = artifact(`${label}-smoke-retry`);
+                return structuredAttempt('smoke', retryReport, commandFor(retryReport), { ...options, selection });
+            } };
+        }
+    };
+};
 
 /** A component that is run once and judged once: no isolation is possible or wanted. */
 const plainComponent = (label, command, options = {}) => ({
@@ -665,7 +728,7 @@ if (full) {
         scenarioComponent(`scenarios (all, ${SCENARIO_LANE})`, []),
         // Audit assertions, step errors, cleanup and visual review are interpreted from raw JSON.
         auditComponent('full audit'),
-        retryWholeComponent('packaged smoke (repackages + 69 checks)', 'pnpm run smoke:packaged', {
+        retryWholeComponent('packaged smoke (repackages + 69 checks)', 'smoke:packaged', {
             cwd: shellPackage,
             env: SANDBOX_GUARD
         })
@@ -684,8 +747,9 @@ if (full) {
             auditComponent('scoped audit', [...plan.steps].join(','))
         );
     }
+    if (plan.smokes.size > 0 && !components.includes(buildBundlesComponent)) components.push(buildBundlesComponent);
     for (const smoke of plan.smokes) {
-        components.push(retryWholeComponent(smoke, `pnpm run ${smoke}`, { cwd: shellPackage, env: SANDBOX_GUARD }));
+        components.push(retryWholeComponent(smoke, smoke, { cwd: shellPackage, env: SANDBOX_GUARD }));
     }
 }
 
@@ -707,12 +771,16 @@ for (const component of components.filter(c => c.kind === 'vitest')) {
     if (Array.isArray(collection.data)) for (const test of collection.data) {
         if (typeof test?.file !== 'string' || typeof test?.name !== 'string') continue;
         if (!members.has(test.file)) members.set(test.file, { id: test.file, mode: 'assert', requiredAssertions: [], minAssertions: 1 });
+        // Vitest permits repeated display names (notably parameterised cases).  The frozen plan
+        // records the per-file occurrence, matching the raw JSON interpreter, so a later run
+        // cannot make one case disappear behind its neighbour's prose.
         members.get(test.file).requiredAssertions.push(test.name);
     }
+    for (const member of members.values()) member.requiredAssertions = assertionIdentities(member.requiredAssertions);
     component.selection = { kind: 'vitest', ordered: false, complete: status === 0 && fileStatus === 0 && Array.isArray(selectedFiles.data) && Array.isArray(collection.data) && members.size > 0, members: [...members.values()] };
     component.collectionReceipt = { files: fileCollectionReceipt, tests: lastExecution };
 }
-const executionPlan = { schemaVersion: 1, runId: acceptanceRun.runId, head: acceptanceRun.start.head, reference, args, changed, scenarioWindow, scenarioRule: rule, components: components.map(({ label, kind, command, reportPath, selection, collectionReceipt }) => ({ label, kind, command, ...(reportPath ? { reportPath } : {}), ...(selection ? { selection } : {}), ...(collectionReceipt ? { collectionReceipt } : {}) })) };
+const executionPlan = { schemaVersion: acceptanceRun.schemaVersion, ...(executionContext ? { executionContext } : {}), runId: acceptanceRun.runId, head: acceptanceRun.start.head, reference, args, changed, scenarioWindow, scenarioRule: rule, components: components.map(({ label, kind, command, reportPath, selection, collectionReceipt }) => ({ label, kind, command, ...(reportPath ? { reportPath } : {}), ...(selection ? { selection } : {}), ...(collectionReceipt ? { collectionReceipt } : {}) })) };
 const planPath = path.join(reportDir, 'verification-plan.json');
 fs.writeFileSync(planPath, `${JSON.stringify(executionPlan, null, 2)}\n`, { flag: 'wx' });
 acceptanceRun.planPath = planPath;

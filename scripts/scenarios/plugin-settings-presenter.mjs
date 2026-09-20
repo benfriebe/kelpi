@@ -1,3 +1,4 @@
+import { executionRoots } from '../ui-audit/lib/execution-roots.mjs';
 /**
  * A plugin drawing the Settings dialog, against a real window and a real daemon.
  *
@@ -84,7 +85,6 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { phoneToLanding } from '../ui-audit/lib/workbench.mjs';
 
 /*
@@ -106,7 +106,7 @@ export const covers = ['examples/plugins/settings-lab/', 'packages/client/src/se
     // machine and its backoff are things this scenario would now catch a regression in.
     'packages/client/src/connection/'];
 
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+const { targetRoot: repoRoot, harnessRoot } = executionRoots();
 const labID = 'example.settings-lab', uiID = 'example.ui-lab';
 const labPath = path.join(repoRoot, 'examples/plugins/settings-lab');
 const uiPath = path.join(repoRoot, 'examples/plugins/ui-lab');

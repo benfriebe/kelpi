@@ -1,12 +1,12 @@
+import { executionRoots } from '../ui-audit/lib/execution-roots.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
 import { daemonIDFromSandbox, restoreBundledSlots } from '../ui-audit/lib/workbench.mjs';
 import { makeSandbox, startDaemon, waitForHealthz, makeCli, PROTOCOL_VERSION } from '../ui-audit/lib/stack.mjs';
 
 export const covers = ['examples/plugins/sidebar-lab/', 'packages/plugin-sdk/', 'packages/client/src/plugins/', 'packages/client/src/App.tsx', 'packages/client/src/app/RemoteWorkspaceView.tsx'];
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+const { targetRoot: repoRoot, harnessRoot } = executionRoots();
 const packagePath = path.join(repoRoot, 'examples/plugins/sidebar-lab');
 const pluginID = 'example.sidebar-lab', workspacesView = `${pluginID}.workspaces`, inspectorView = `${pluginID}.inspector`;
 

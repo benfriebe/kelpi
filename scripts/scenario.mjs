@@ -43,6 +43,11 @@
  * And it may declare the WEAKEST window placement it can be trusted at, which a run below that
  * floor honours by giving it an instance of its own at the declared placement:
  *   export const windowPlacement = 'offscreen';
+ *
+ * Clipboard checks that need native host focus may declare `requiresNativeFocus = true`.
+ * Every lane placement, including onscreen, is nonfocusable; these checks get a dedicated
+ * default window. The scenario must still assert focus before input. This is CDP mechanism
+ * coverage in a focusable window, not physical keyboard or native menu-input proof.
  * A floor, never a ceiling: a stronger run is never dragged down, and a run that opened no lane is
  * left exactly alone. `ui-audit/lib/placement.mjs` has the rule, the reason (#206: a zero-opacity
  * frame with another window in front of it is occluded, and Chromium then drops the input CDP
@@ -60,13 +65,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { captureProvenance, bindCoreExecution, validateReplayProvenance, replayFiles, firstFailureSequence } from './ui-audit/lib/incident-diagnostics-replay.mjs';
+import { executionRoots } from './ui-audit/lib/execution-roots.mjs';
 import { scenarioPlan } from './ui-audit/lib/incident-diagnostics-plan.mjs';
 import { runDesktopTest, ownDesktopResource } from './ui-audit/lib/desktop-lifecycle.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const repoRoot = path.resolve(here, '..');
-const driver = await import(path.join(repoRoot, 'scripts', 'ui-audit', 'lib', 'driver.mjs'));
-const { resolveScenarioPlacement } = await import(path.join(repoRoot, 'scripts', 'ui-audit', 'lib', 'placement.mjs'));
+const { harnessRoot, targetRoot: repoRoot, context: executionContext } = executionRoots();
+const driver = await import(path.join(harnessRoot, 'scripts', 'ui-audit', 'lib', 'driver.mjs'));
+const { resolveScenarioPlacement } = await import(path.join(harnessRoot, 'scripts', 'ui-audit', 'lib', 'placement.mjs'));
 
 const args = process.argv.slice(2);
 const has = (flag) => args.includes(flag);
@@ -76,8 +82,9 @@ const value = (flag) => {
 };
 const flagsWithValues = new Set(['--attach', '--harness', '--out', '--window', '--replay', '--through']);
 const positional = args.filter((a, i) => !a.startsWith('--') && !flagsWithValues.has(args[i - 1] ?? ''));
+if (executionContext && has('--attach')) throw new Error('strict external acceptance requires a private target runtime; --attach is unsupported');
 
-const scenariosDir = path.join(repoRoot, 'scripts', 'scenarios');
+const scenariosDir = path.join(harnessRoot, 'scripts', 'scenarios');
 const resolveScenario = (name) => {
     if (name.endsWith('.mjs') && fs.existsSync(name)) return path.resolve(name);
     const candidate = path.join(scenariosDir, `${name.replace(/\.mjs$/, '')}.mjs`);
@@ -104,7 +111,7 @@ if (placement !== undefined && !driver.WINDOW_PLACEMENTS.includes(placement)) {
     process.exit(2);
 }
 
-const selection = scenarioPlan(repoRoot, files);
+const selection = scenarioPlan(harnessRoot, files);
 if (has('--plan')) { console.log(JSON.stringify(selection)); process.exit(0); }
 const stamp = new Date().toISOString().replace(/[:.]/g, '-');
 let outDir = value('--out') ?? path.join(repoRoot, 'docs', 'audit', 'scenarios', stamp);
@@ -369,14 +376,21 @@ for (const file of files) {
         observeExecutionBoundary(`${name}:before-scenario-import`);
         mod = await import(pathToFileURL(file).href);
         if (typeof mod.default !== 'function') throw new Error(`${file} has no default export function`);
+        if (mod.requiresNativeFocus !== undefined && typeof mod.requiresNativeFocus !== 'boolean') {
+            throw new Error('requiresNativeFocus must be undefined, false or true');
+        }
     } catch (error) {
         importError = error;
     }
-    const resolved = resolveScenarioPlacement(t.windowPlacement, mod?.windowPlacement);
+    const requiresNativeFocus = mod?.requiresNativeFocus === true;
+    const resolved = resolveScenarioPlacement(t.windowPlacement, mod?.windowPlacement, { requiresNativeFocus });
     let dedicated = null;
-    let fixtureError = null;
+    // An attached target has no owned window-creation policy. Do not silently
+    // certify it as the focusable fixture this scenario explicitly requires.
+    let fixtureError = requiresNativeFocus && attachPort !== undefined
+        ? new Error('requiresNativeFocus needs a private focusable window; --attach is unsupported') : null;
     if (resolved.raised && importError === null && attachPort === undefined) {
-        log(`▶ ${name}: it declares ${String(resolved.placement)} and this run is ${String(t.windowPlacement)}; booting an instance of its own`);
+        log(`▶ ${name}: it requires ${requiresNativeFocus ? 'a focusable default window' : String(resolved.placement)} and this run is ${String(t.windowPlacement)}; booting an instance of its own`);
         try {
             dedicated = ownDesktopResource(await scenarioDriver.boot({
                 repoRoot,
@@ -391,14 +405,15 @@ for (const file of files) {
             }));
         } catch (error) {
             fixtureError = error;
-            log(`✗ ${name}: required ${String(resolved.placement)} fixture did not boot; scenario not run`);
+            log(`✗ ${name}: required ${requiresNativeFocus ? 'focusable default' : String(resolved.placement)} fixture did not boot; scenario not run`);
         }
     }
     const instance = dedicated ?? t;
     const placement = instance.windowPlacement;
     log(`▶ ${name}  [window ${String(placement ?? 'attached')}${dedicated === null ? '' : ', its own instance'}]`);
     if (resolved.warning !== null) log(`⚠ ${name}: ${resolved.warning}`);
-    const rec = driver.recorder({ name, outDir, placement });
+    const rec = driver.recorder({ name, outDir, placement, windowRuntime: instance.windowRuntime,
+        ...(requiresNativeFocus && attachPort === undefined ? { observeWindow: () => instance.harness.window() } : {}) });
     if (watchForLeaks && summaries.length === 0 && (startingWorld.pageError || startingWorld.cliError)) {
         rec.check('fixture: initial shared sandbox state is readable', false, startingWorld.pageError ?? startingWorld.cliError, 'fixture');
     }
@@ -430,7 +445,7 @@ for (const file of files) {
                 diagnosticsProvenance: {provenance,replaySource,bindExecution:observeExecutionBoundary},
                 d: scenarioDriver,
                 sleep: driver.sleep,
-                repoRoot
+                repoRoot, harnessRoot
             });
         }
     } catch (error) {

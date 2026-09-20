@@ -221,7 +221,7 @@ describe('visual review completion is exact-run evidence', () => {
         const start = regression.candidate.before;
         const run = { schemaVersion: 1, scope: 'commit', runId: context.runId, start, end: start, reference: regression.baseline.before.head, artifacts: [], manifest, policyReasons: [] };
         const raw = audit(); raw.provenance.head = start.head; raw.provenance.requestedHead = start.head; raw.provenance.source.head = start.head; raw.steps[0].needsEyes = true; raw.steps[0].shots = ['copy.png']; raw.summary.eyes = 1;
-        fs.writeFileSync(rawPath, JSON.stringify(raw)); fs.writeFileSync(shotPath, 'test screenshot bytes');
+        fs.writeFileSync(rawPath, JSON.stringify(raw)); fs.writeFileSync(shotPath, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAIAAAB7QOjdAAAAD0lEQVR4nGP4//8/AwMDAA74Av7Ji4P1AAAAAElFTkSuQmCC','base64'));
         run.artifacts.push(...[rawPath, shotPath].map(file => ({ path: file, sha256: digest(fs.readFileSync(file)) })));
         const components = [{ label: 'audit', kind: 'audit', command: 'run audit', reportPath: rawPath, firstAttempt: { ok: false, verdict: 'unverified' } }];
         attachPlan(run, components);

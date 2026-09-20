@@ -4514,25 +4514,33 @@ function buildFlows(ctx) {
                     failedSwitch.length === 0,
                     `panes showing "terminal renderer failed to start": ${JSON.stringify(failedSwitch)}`
                 );
-                for (const paneID of await domPaneIDs(page)) {
-                    // Ink first: a pane with no canvas is a content pane, and `pane capture`
-                    // rejects those — so the absence of a canvas is the skip condition, not an
-                    // error to recover from.
-                    const paint = await paneInkPixels(page, paneID);
-                    if (paint === null) continue;
-                    const capture = await cli.ok(['pane', 'capture', '--target', paneID]);
-                    const cells = capturedCells(capture);
-                    const budget = INK_FLOOR_PIXELS + INK_PER_CELL_PIXELS * cells;
-                    recorder.note(
-                        `pane ${paneID.slice(0, 8)}: ${String(cells)} cells in use in the daemon's VT, ` +
-                            `${String(paint.ink)} ink pixels on screen (budget ${String(budget)})`
-                    );
-                    recorder.check(
-                        `the revealed pane ${paneID.slice(0, 8)} paints its own screen, not a leftover one`,
-                        paint.ink <= budget,
-                        `${String(paint.ink)} ink pixels for a capture using ${String(cells)} cells — a remounted pane wearing another pane's grid is what this catches`
-                    );
-                }
+                // The fixed aggregate is the executable source contract for this dynamic
+                // inventory. Keep every pane result, and fail if no terminal was eligible.
+                recorder.check('every eligible revealed terminal paints its own screen', await (async () => {
+                    let eligible = 0, allCorrect = true;
+                    for (const paneID of await domPaneIDs(page)) {
+                        // Ink first: a pane with no canvas is a content pane, and `pane capture`
+                        // rejects those — so the absence of a canvas is the skip condition, not an
+                        // error to recover from.
+                        const paint = await paneInkPixels(page, paneID);
+                        if (paint === null) continue;
+                        eligible += 1;
+                        const capture = await cli.ok(['pane', 'capture', '--target', paneID]);
+                        const cells = capturedCells(capture);
+                        const budget = INK_FLOOR_PIXELS + INK_PER_CELL_PIXELS * cells;
+                        recorder.note(
+                            `pane ${paneID.slice(0, 8)}: ${String(cells)} cells in use in the daemon's VT, ` +
+                                `${String(paint.ink)} ink pixels on screen (budget ${String(budget)})`
+                        );
+                        const correct = recorder.check(
+                            `the revealed pane ${paneID.slice(0, 8)} paints its own screen, not a leftover one`,
+                            paint.ink <= budget,
+                            `${String(paint.ink)} ink pixels for a capture using ${String(cells)} cells — a remounted pane wearing another pane's grid is what this catches`
+                        );
+                        allCorrect = correct && allCorrect;
+                    }
+                    return eligible > 0 && allCorrect;
+                })());
 
                 await page.key('Digit2', { modifiers: MOD.meta });
                 await sleep(1200);

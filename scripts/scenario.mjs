@@ -59,7 +59,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
-import { captureProvenance, validateReplayProvenance, replayFiles, firstFailureSequence } from './ui-audit/lib/incident-diagnostics-replay.mjs';
+import { captureProvenance, bindCoreExecution, validateReplayProvenance, replayFiles, firstFailureSequence } from './ui-audit/lib/incident-diagnostics-replay.mjs';
 import { scenarioPlan } from './ui-audit/lib/incident-diagnostics-plan.mjs';
 import { runDesktopTest, ownDesktopResource } from './ui-audit/lib/desktop-lifecycle.mjs';
 
@@ -127,13 +127,31 @@ const log = (line) => console.log(`[scenario] ${line}`);
 // The real driver calls this after any build and before daemon/shell acquisition. Keep the
 // same bound outputs for dedicated/remote instances and compare again before scenario input.
 let observedStart = false;
-const observeExecutionBoundary = () => {
-    const current=captureProvenance(repoRoot,replaySource?.files ?? files);
-    if(replaySource) validateReplayProvenance(replaySource.provenance,current);
-    if(observedStart && (JSON.stringify(current.source)!==JSON.stringify(provenance.source) || JSON.stringify(current.executedOutputs)!==JSON.stringify(provenance.executedOutputs))) throw new Error('runtime source/build changed between instance boundaries');
-    if(!observedStart) {provenance=current;observedStart=true;}
+const observeExecutionBoundary = (boundary = 'instance-before-start') => {
+    // Only the initial explicitly requested local build may establish a new receipt. An
+    // inherited receipt, replay, or any later acquisition must retain the first binding.
+    if (!observedStart && !has('--no-build') && !replaySource && !process.env.KELPI_ACCEPTANCE_BUILD_RECEIPT && !has('--attach')) {
+        provenance = captureProvenance(repoRoot, files);
+    }
+    observedStart = true;
+    return bindCoreExecution(repoRoot, provenance, {boundary,replaySource});
 };
-const scenarioDriver={...driver,boot:options=>driver.boot({...options,beforeStart:observeExecutionBoundary})};
+const scenarioDriver={...driver,boot:async options=>{
+    if (observedStart) observeExecutionBoundary(`${options?.label ?? 'instance'}:before-boot`);
+    const instance = await driver.boot({...options,beforeStart:async()=>{
+        observeExecutionBoundary(`${options?.label ?? 'instance'}:before-start`);
+        if (options?.beforeStart) { await options.beforeStart(); observeExecutionBoundary('after-scenario-before-start'); }
+    }});
+    // restart() calls this same handle's start(), so restarts also bind the acquired bytes.
+    if (instance.daemon?.start) {
+        const start = instance.daemon.start;
+        instance.daemon.start = function (...args) {
+            observeExecutionBoundary(`${options?.label ?? 'instance'}:daemon-start`);
+            return start.apply(this,args);
+        };
+    }
+    return instance;
+}};
 
 // ── the instance ────────────────────────────────────────────────────────────────────
 
@@ -179,12 +197,15 @@ const stop = async () => {
         if (fs.existsSync(resultsPath)) {
             const retained = JSON.parse(fs.readFileSync(resultsPath, 'utf8'));
             retained.cleanup = cleanup;
+            try { observeExecutionBoundary('after-teardown-final-report'); }
+            catch (error) { retained.harnessFailure ??= {failureClass:'harness',detail:String(error)}; anyFailed = true; }
+            retained.provenance = provenance;
             fs.writeFileSync(resultsPath, JSON.stringify(retained, null, 2) + '\n');
         }
     }
 };
 ownDesktopResource(t);
-observeExecutionBoundary();
+observeExecutionBoundary('after-main-acquisition');
 
 // ── the post-condition: what a scenario must hand on unchanged ──────────────────────
 
@@ -345,6 +366,7 @@ for (const file of files) {
     let mod = null;
     let importError = null;
     try {
+        observeExecutionBoundary(`${name}:before-scenario-import`);
         mod = await import(pathToFileURL(file).href);
         if (typeof mod.default !== 'function') throw new Error(`${file} has no default export function`);
     } catch (error) {
@@ -386,29 +408,31 @@ for (const file of files) {
     try {
         if (importError !== null || fixtureError !== null) {
             rec.check('required scenario fixture started', false, String(importError ?? fixtureError), 'fixture');
-        } else
-        await mod.default({
-            page: instance.page,
-            harness: instance.harness,
-            cli: instance.cli,
-            sandbox: instance.sandbox,
-            // The shell's own stdout, for behaviour whose only external evidence is a log line
-            // (the web-pane placement trail, `web pane <id> view owner=main|holder`). Null under
-            // `--attach`, where this runner did not launch the shell and cannot read its pipe; a
-            // scenario that needs it must say so rather than assume.
-            shell: instance.shell ?? null,
-            // The sandbox's own daemon, for the arms whose only honest gesture is stopping it
-            // (#199): the presenter slots' disconnected fallback, the reconnect, and what happens
-            // to a promise a plugin was awaiting when the socket died. Null under `--attach` for
-            // a stronger reason than `shell` is: that instance belongs to whoever started it, and
-            // a scenario that stopped its daemon would take a developer's session down.
-            daemon: instance.daemon ?? null,
-            rec,
-            diagnosticsProvenance: {provenance,replaySource},
-            d: scenarioDriver,
-            sleep: driver.sleep,
-            repoRoot
-        });
+        } else {
+            observeExecutionBoundary(`${name}:before-scenario-input`);
+            await mod.default({
+                page: instance.page,
+                harness: instance.harness,
+                cli: instance.cli,
+                sandbox: instance.sandbox,
+                // The shell's own stdout, for behaviour whose only external evidence is a log line
+                // (the web-pane placement trail, `web pane <id> view owner=main|holder`). Null under
+                // `--attach`, where this runner did not launch the shell and cannot read its pipe; a
+                // scenario that needs it must say so rather than assume.
+                shell: instance.shell ?? null,
+                // The sandbox's own daemon, for the arms whose only honest gesture is stopping it
+                // (#199): the presenter slots' disconnected fallback, the reconnect, and what happens
+                // to a promise a plugin was awaiting when the socket died. Null under `--attach` for
+                // a stronger reason than `shell` is: that instance belongs to whoever started it, and
+                // a scenario that stopped its daemon would take a developer's session down.
+                daemon: instance.daemon ?? null,
+                rec,
+                diagnosticsProvenance: {provenance,replaySource,bindExecution:observeExecutionBoundary},
+                d: scenarioDriver,
+                sleep: driver.sleep,
+                repoRoot
+            });
+        }
     } catch (error) {
         rec.check('the scenario ran to completion', false, error instanceof Error ? error.stack ?? error.message : String(error), 'harness');
         await rec.flushFirstFailure();
@@ -467,9 +491,13 @@ if (watchForLeaks && leakReport.length > 0) {
 // The placement goes in the file, not just the terminal: a results.json read a week later must
 // say whether its blank screenshots are a bug or the lane. So does the leak report: a scenario
 // that goes red behind a leak is only readable next to the scenario that made it (#205).
+let finalBoundaryFailure;
+try { observeExecutionBoundary('before-final-report'); }
+catch (error) { finalBoundaryFailure = {failureClass:'harness',detail:String(error)}; anyFailed = true; }
 fs.writeFileSync(
     path.join(outDir, 'results.json'),
     `${JSON.stringify({ stamp, windowPlacement: t.windowPlacement ?? 'attached', files, selection, provenance, cleanup, summaries, leaks: leakReport,
+        ...(finalBoundaryFailure ? {harnessFailure:finalBoundaryFailure} : {}),
         cleanupSemantics: watchForLeaks ? 'shared sandbox postconditions enforced' : 'standalone private sandbox state removed at teardown; no shared-state assertion',
         replayOf: replaySourcePath ? path.resolve(replaySourcePath) : null,
         sequence: firstFailureSequence({ files, summaries, resultsPath, windowPlacement: t.windowPlacement }) }, null, 2)}\n`

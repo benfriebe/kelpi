@@ -286,7 +286,41 @@ it('rolls back a listener acquisition that throws after installing and attempts 
     expect(cleanup.errors.length).toBe(1);
     expect(host.listeners.size).toBe(0);
     expect(host.clipboard.readText).toBe(read);
-    expect(await host.eval('globalThis.incident')).toBeUndefined();
+    expect(await host.eval('Boolean(globalThis.incident)')).toBe(true);
+});
+
+it.each([false,true])('retains partial arm cleanup errors and unresolved ownership (transient removal: %s)',async transient=>{
+    const outDir=fs.mkdtempSync(path.join(os.tmpdir(),'incident-partial-undo-'));
+    try {
+        const host=renderer(), document=host.context.document, add=document.addEventListener, remove=document.removeEventListener;
+        const attempted=[];let failures=0;
+        document.addEventListener=(type,fn)=>{add(type,fn);if(type==='copy')throw Error('ACQUISITION_FAILURE');};
+        document.removeEventListener=(type,fn)=>{
+            attempted.push(type);
+            if(type==='keydown' && (!transient || failures++===0))throw Error('REMOVAL_FAILURE');
+            remove(type,fn);
+        };
+        const rec=recorder({name:'partial',outDir});
+        await expect(armIncidentDiagnostics({page:{eval:host.eval},rec})).rejects.toThrow('ACQUISITION_FAILURE');
+        await rec.flushFirstFailure();
+        const firstFile=path.join(outDir,'partial-first-incident.json'), first=fs.readFileSync(firstFile,'utf8'), saved=JSON.parse(first);
+        expect(saved.complete).toBe(false);
+        expect(saved.renderers[0]).toMatchObject({acquisitionFailed:true,cleanupErrors:['REMOVAL_FAILURE'],outstandingRestores:1});
+        expect(saved.renderers[0].historyError).toBeUndefined();
+        expect(attempted).toEqual(expect.arrayContaining(['copy','keyup','keydown']));
+        const cleanup=JSON.parse(fs.readFileSync(path.join(outDir,'partial-incident-cleanup.json'))).find(item=>item.name==='host');
+        expect(cleanup.contextReplaced).toBeUndefined();expect(cleanup.errors).toContain('REMOVAL_FAILURE');
+        expect(cleanup.restored).toBe(transient);expect(cleanup.ownerRetained).toBe(!transient);
+        expect(host.listeners.size).toBe(transient?0:1);
+        expect(rec.results.some(item=>item.failureClass==='cleanup'&&!item.ok)).toBe(true);
+        document.removeEventListener=remove;
+        if(!transient) {
+            const released=await host.eval('__kelpiIncidentRecorder.restore()');
+            expect(released.restored).toBe(true);expect(released.errors).toContain('REMOVAL_FAILURE');
+        }
+        expect(fs.readFileSync(firstFile,'utf8')).toBe(first);
+        expect(host.listeners.size).toBe(0);expect(await host.eval('Boolean(globalThis.__kelpiIncidentRecorder)')).toBe(false);
+    }finally{fs.rmSync(outDir,{recursive:true,force:true});}
 });
 
 it('retains navigation loss and bounded history loss separately from current target availability', async () => {

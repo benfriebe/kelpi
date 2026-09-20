@@ -15,7 +15,7 @@ export function redactFixtureText(value, allowed = [], limit = 160) {
 export function installRendererRecorder({ key, allowed, capacity, ownerId }) {
     if (globalThis[key]) throw new Error('incident recorder already armed');
     const generation = `${performance.timeOrigin}:${Math.random()}`;
-    let sequence = 0, frozen = false;
+    let sequence = 0, frozen = false, acquisitionFailed = false;
     const events = [], restores = [], diagnosticErrors = [];
     const observedTerminal = globalThis.terminalLab?.terminal;
     const originalSelection = observedTerminal?.getSelection;
@@ -88,10 +88,12 @@ export function installRendererRecorder({ key, allowed, capacity, ownerId }) {
             try { undo(); } catch (error) { failed.unshift(undo); cleanupErrors.push(String(error?.message ?? error)); }
         }
         restores.push(...failed);
-        if (globalThis[key] === recorder) {
+        // Keep the owner's handle while any undo is unresolved, so close can retry it.
+        if (restores.length === 0 && globalThis[key] === recorder) {
             try { delete globalThis[key]; } catch (error) { cleanupErrors.push(String(error?.message ?? error)); }
         }
-        return { restored: restores.length === 0 && globalThis[key] !== recorder, errors: cleanupErrors.slice() };
+        return { restored: restores.length === 0 && globalThis[key] !== recorder,
+            outstandingRestores: restores.length, ownerRetained: globalThis[key] === recorder, errors: cleanupErrors.slice() };
     };
     const recorder = { ownerId, generation, snapshot: () => {
         frozen = true;
@@ -99,7 +101,8 @@ export function installRendererRecorder({ key, allowed, capacity, ownerId }) {
         try { observed = state(); } catch (error) { diagnosticError('snapshot', error); observed = { unavailable: 'diagnostic state read failed' }; }
         const dropped = Math.max(0, sequence - events.length);
         return { ownerId, generation, events: events.slice(), state: observed, diagnosticErrors: diagnosticErrors.slice(),
-            targetAvailable: true, historyRetained: dropped === 0, incomplete: diagnosticErrors.length > 0 || dropped > 0,
+            acquisitionFailed, cleanupErrors: cleanupErrors.slice(), outstandingRestores: restores.length,
+            targetAvailable: true, historyRetained: dropped === 0, incomplete: acquisitionFailed || cleanupErrors.length > 0 || diagnosticErrors.length > 0 || dropped > 0,
             dropped, timeOrigin: performance.timeOrigin };
     }, restore };
     try {
@@ -114,6 +117,7 @@ export function installRendererRecorder({ key, allowed, capacity, ownerId }) {
         record('armed');
         return { ownerId, generation };
     } catch (error) {
+        acquisitionFailed = true;
         const cleanup = restore();
         if (cleanup.errors.length) diagnosticError('installation cleanup', error);
         throw error;
@@ -171,7 +175,7 @@ export async function armIncidentDiagnostics({ page, harness, rec, allowed = [],
         if (target.retired) return { ...target.retired, name: target.name };
         try {
             const saved = await target.evaluate(ownedExpression('return recorder.snapshot();'));
-            const replaced = target.generation !== saved?.generation;
+            const replaced = target.generation !== undefined && target.generation !== saved?.generation;
             return { name: target.name, ...saved, ...(replaced ? { incomplete:true, historyRetained:false,
                 missingGeneration:target.generation ?? null, historyError:'document replaced without retained history' } : {}) };
         } catch (error) { return { name:target.name, targetAvailable:false, historyRetained:false, unavailable:String(error?.message ?? error) }; }
@@ -206,9 +210,16 @@ export async function armIncidentDiagnostics({ page, harness, rec, allowed = [],
         record('host-rearmed-before-input', { priorDocumentHistoryRetained: target?.retired?.historyRetained === true });
     };
     const restoreTarget = async target => {
-        const result = await target.evaluate(ownedExpression('return recorder.restore();'));
+        const result = await target.evaluate(ownedExpression(`
+            let result = recorder.restore();
+            // A bounded retry of only unresolved undos can release a transient fault. The
+            // recorder retains every original cleanup error even when the retry succeeds.
+            if (!result.restored) result = recorder.restore();
+            return result;`));
         if (result?.unavailable) return { contextReplaced:true };
-        if (result?.restored !== true || result.errors?.length) throw new Error(JSON.stringify(result));
+        if (result?.restored !== true || result.errors?.length) {
+            const error = new Error(JSON.stringify(result)); error.cleanup = result; throw error;
+        }
         return result;
     };
     const retireRenderer = async name => {
@@ -237,7 +248,7 @@ export async function armIncidentDiagnostics({ page, harness, rec, allowed = [],
         const cleanup = [];
         const attempt = async (name, action) => {
             try { cleanup.push({name,...await action()}); }
-            catch (error) { cleanup.push({name,error:String(error)}); rec.check(`diagnostic cleanup: ${name}`, false, String(error), 'cleanup'); }
+            catch (error) { cleanup.push({name,...error.cleanup,error:String(error)}); rec.check(`diagnostic cleanup: ${name}`, false, String(error), 'cleanup'); }
         };
         await attempt('failure observer', () => { off(); return {restored:true}; });
         for (const [name, restore] of restores.reverse()) await attempt(name, () => {restore();return {restored:true};});

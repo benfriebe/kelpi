@@ -531,6 +531,7 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, diagnosticsP
             throw new Error('The local renderer never un-mirrored after the last observer left');
         }
         remoteSandbox = await makeSandbox(repoRoot, { label: 'geometry-remote', clientDir: path.join(repoRoot, 'packages/client/dist') });
+        diagnosticsProvenance?.bindExecution?.('plugin-terminal-geometry:remote-daemon-before-start');
         remoteDaemon = startDaemon(remoteSandbox, { repoRoot }); await waitForHealthz(remoteSandbox.base);
         const remoteCLI = makeCli(remoteSandbox, { repoRoot });
         bindExecution('remote-plugin-install');

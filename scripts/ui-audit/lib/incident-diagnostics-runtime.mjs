@@ -15,6 +15,7 @@ export async function buildBoundTerminalLab(repoRoot, {rec, diagnosticsProvenanc
     diagnosticsProvenance?.provenance.runtimeBindings.push(binding);
     const original=diagnosticsProvenance?.replaySource?.provenance?.runtimeBindings?.find(item=>item.id===binding.id);
     const bindExecution = boundary => {
+        diagnosticsProvenance?.bindExecution?.(`terminal-lab:${boundary}`);
         binding.executedOutputs=captureOutputs(repoRoot,[pluginDirectory]);
         const errors=[];
         if (JSON.stringify(captureSource(repoRoot))!==JSON.stringify(source)) errors.push('plugin build inputs changed before execution');

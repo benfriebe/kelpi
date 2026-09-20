@@ -393,6 +393,7 @@ export default async function ({ page, cli, sandbox, rec, d, harness, sleep, dia
 
         rec.note('Validating remote runtime ownership, phone controls and direct browser attachment');
         remoteSandbox = await makeSandbox(repoRoot, { label: 'terminal-remote', clientDir: path.join(repoRoot, 'packages/client/dist') });
+        diagnosticsProvenance?.bindExecution?.('plugin-terminal-features:remote-daemon-before-start');
         remoteDaemon = startDaemon(remoteSandbox, { repoRoot }); await waitForHealthz(remoteSandbox.base);
         const remoteCLI = makeCli(remoteSandbox, { repoRoot });
         bindExecution('remote-plugin-install');

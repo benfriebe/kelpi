@@ -56,6 +56,42 @@ export function captureProvenance(repoRoot, files = [], runtime = {}) {
     return provenance;
 }
 
+/** Observe actual bytes without replacing the original receipt, even when capture fails. */
+export function bindCoreExecution(repoRoot, provenance, {boundary, replaySource, runtime = {}} = {}) {
+    const observation = {boundary, source:null, executedOutputs:[], errors:[]};
+    try { observation.source = captureSource(repoRoot); }
+    catch (error) { observation.errors.push(`source capture: ${error.message}`); }
+    try { observation.executedOutputs = captureOutputs(repoRoot); }
+    catch (error) { observation.errors.push(`output capture: ${error.message}`); }
+    if (JSON.stringify(observation.source) !== JSON.stringify(provenance.source)) observation.errors.push('runtime source changed after binding');
+    if (JSON.stringify(observation.executedOutputs) !== JSON.stringify(provenance.build?.outputs)) observation.errors.push('runtime outputs differ from original build receipt');
+    // The latest observation and every earlier failure survive, including a later restoration
+    // of the original bytes. build/buildHashes remain the original bound identity.
+    provenance.executedOutputs = observation.executedOutputs;
+    const packaged = bindPackagedRuntime(repoRoot, provenance, runtime);
+    if (packaged) {
+        observation.runtimeBinding = structuredClone(packaged);
+        observation.errors.push(...packaged.errors);
+        const prior = provenance.runtimeBindings.find(binding => binding.id === packaged.id);
+        if (prior) {
+            prior.executedOutputs = packaged.executedOutputs;
+            prior.errors.push(...packaged.errors);
+            prior.complete = prior.complete && packaged.complete;
+        } else provenance.runtimeBindings.push(packaged);
+    }
+    if (replaySource) {
+        try {
+            validateReplayProvenance(replaySource.provenance, {...provenance, source:observation.source,
+                buildHashes:{...provenance.buildHashes,...Object.fromEntries(observation.executedOutputs.map(output => [output.path,output.sha256]))}});
+        } catch (error) { observation.errors.push(error.message); }
+    }
+    (provenance.executionBoundaries ??= []).push(observation);
+    provenance.errors.push(...observation.errors.map(error => `${boundary}: ${error}`));
+    if (observation.errors.length) provenance.complete = false;
+    if (provenance.executionBoundaries.some(entry => entry.errors.length)) throw new Error(`runtime execution identity failed at ${boundary}: ${observation.errors.join('; ') || 'prior boundary mismatch retained'}`);
+    return observation;
+}
+
 /** Both manifests must be full, non-null sets; an omitted key cannot become a replay exemption. */
 export function validateReplayProvenance(original, current) {
     if (!original || original.head !== current.head || original.trackedDiffSha256 !== current.trackedDiffSha256) throw new Error('replay source revision differs; restore the recorded commit and source diff first');

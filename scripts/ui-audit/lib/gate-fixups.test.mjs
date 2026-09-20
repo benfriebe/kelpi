@@ -134,7 +134,7 @@ describe('complete aggregate controls and adverse mutations', () => {
     it('G1 accepts declared setup/visual-only audit steps and rejects asserting steps changed to empty', () => {
         const {raw,context}=structured('audit');raw.steps[1].assertions=[];raw.summary.assertions=1;
         context.expectedPlan.members[1]={id:'b',mode:'setup',requiredAssertions:[],minAssertions:0};expect(inspectResults('audit',raw,context).verdict).toBe('verified');
-        context.expectedPlan.members[1].mode='visual';raw.steps[1].needsEyes=true;raw.summary.eyes=1;
+        raw.steps[1].shots=['reviewable-fixture.png'];context.expectedPlan.members[1].mode='visual';raw.steps[1].needsEyes=true;raw.summary.eyes=1;
         expect(inspectResults('audit',raw,context).verdict).toBe('unverified');
         expect(inspectResults('audit',raw,{...context,approvedVisuals:['b']}).verdict).toBe('verified');
     });
@@ -226,4 +226,49 @@ it('malformed provenance collections and selected members remain unverified', ()
     const {run,raw,replaceRaw,plan}=bindStructured('scenario');
     for(const mutate of [p=>p.build.outputs={},p=>p.executedOutputs={},p=>p.runtimeBindings={},p=>p.runtimeBindings=[null],p=>p.shardProvenance={}]){const bad=clone(raw);mutate(bad.provenance);replaceRaw(bad);expect(acceptanceVerdict(run,run).verdict).toBe('unverified');}
     replaceRaw(raw);plan.components[0].selection.members=[null];fs.writeFileSync(run.planPath,JSON.stringify(plan));run.artifacts.find(a=>a.path===run.planPath).sha256=digest(fs.readFileSync(run.planPath));expect(acceptanceVerdict(run,run).verdict).toBe('unverified');
+});
+
+// Full aggregate and additive-finalization coverage for scenario visuals. These
+// images are synthetic two-pixel PNGs; they are schema controls, never product evidence.
+const visiblePNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAIAAAB7QOjdAAAAD0lEQVR4nGP4//8/AwMDAA74Av7Ji4P1AAAAAElFTkSuQmCC','base64');
+const blankPNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAIAAAB7QOjdAAAAC0lEQVR4nGP4DwYAFPIF+6QNfF4AAAAASUVORK5CYII=','base64');
+function replaceBound(run,file,value) {
+    fs.writeFileSync(file, typeof value === 'string' || Buffer.isBuffer(value) ? value : JSON.stringify(value));
+    run.artifacts.find(a=>a.path===file).sha256=digest(fs.readFileSync(file));
+}
+function scenarioVisualFixture({placement='onscreen',blank=false}={}) {
+    const f=bindStructured('scenario'),{run,raw,plan}=f;
+    const id='a:shot:view',file=path.join(run.outDir,'view.png');fs.writeFileSync(file,blank?blankPNG:visiblePNG);
+    const artifact={path:file,sha256:digest(fs.readFileSync(file)),kind:'screenshot'};run.artifacts.push(artifact);
+    plan.components[0].selection.members[0].requiredVisuals=[id];replaceBound(run,run.planPath,plan);
+    Object.assign(raw.summaries[0],{placement,screenshots:[{id,path:file,sha256:artifact.sha256,placement,blank}],visuals:[{id,screenshotId:id,reason:'EYES private visual requirement'}]});f.replaceRaw(raw);
+    const e=run.components[0].firstAttempt.evidence;
+    const signoff={id,runId:run.runId,head:run.start.head,report:{path:e.path,sha256:digest(fs.readFileSync(e.path))},at:new Date(e.finishedAt+1).toISOString(),reviewer:'independent fixture reviewer',verdict:'passed',artifacts:[artifact]};
+    const apply=signoffs=>{run.manifest.scenarioVisualSignoffs=signoffs;replaceBound(run,run.manifestPath,run.manifest);};
+    return {...f,signoff,apply,file};
+}
+describe('exact scenario image review and additive completion',()=>{
+    it('verifies exact visible review while retaining raw attempts and prior outputs',()=>{
+        const {run,signoff}=scenarioVisualFixture();const original=complete(run);expect(original.verdict).toBe('unverified');
+        const before=run.artifacts.map(a=>[a.path,digest(fs.readFileSync(a.path))]);
+        const addition={schemaVersion:1,incidents:[],scenarioVisualSignoffs:[signoff]},m=put(temp(),'review.json',addition);
+        const final=finalizeAcceptance({root:candidate,reportPath:path.join(run.outDir,'acceptance.json'),manifestPath:m.path,outRoot:temp()});
+        expect(final.verdict,JSON.stringify(final.reasons)).toBe('verified');expect(final.components).toEqual(run.components);
+        for(const [file,hash] of before)expect(digest(fs.readFileSync(file))).toBe(hash);
+        const reduced=put(temp(),'reduced-review.json',{schemaVersion:1,incidents:[]});
+        const again=finalizeAcceptance({root:candidate,reportPath:path.join(final.outDir,'acceptance.json'),manifestPath:reduced.path,outRoot:temp()});expect(again.verdict).toBe('verified');expect(again.manifest.scenarioVisualSignoffs).toEqual([signoff]);
+    });
+    it.each(['run','head','report','report-hash','time','reviewer','artifacts','missing','changed','wrong-shot'])('rejects %s screenshot signoff evidence',mode=>{
+        const {run,signoff,apply,file}=scenarioVisualFixture();
+        if(mode==='run')signoff.runId='wrong-run';if(mode==='head')signoff.head='0'.repeat(40);if(mode==='report')signoff.report.path+='other';if(mode==='report-hash')signoff.report.sha256='0'.repeat(64);if(mode==='time')signoff.at='2000-01-01T00:00:00Z';if(mode==='reviewer')signoff.reviewer='';if(mode==='artifacts')signoff.artifacts=[];if(mode==='missing')fs.unlinkSync(file);if(mode==='changed')fs.writeFileSync(file,blankPNG);if(mode==='wrong-shot')signoff.artifacts=[put(temp(),'other.png',visiblePNG)];
+        apply([signoff]);expect(acceptanceVerdict(run,run).verdict).toBe('unverified');
+    });
+    it.each([{placement:'hidden'},{placement:'offscreen'},{blank:true}])('refuses nonreviewable image %j',options=>{const {run,signoff,apply}=scenarioVisualFixture(options);apply([signoff]);expect(acceptanceVerdict(run,run).verdict).toBe('unverified');});
+    it('retains failed visual reviews and functional attempts despite later passes',()=>{
+        for(const mode of ['visual','functional']) {const {run,signoff,apply}=scenarioVisualFixture();apply(mode==='visual'?[{...signoff,verdict:'failed'},signoff]:[signoff]);if(mode==='functional')run.components[0].firstAttempt.verdict='failed';expect(acceptanceVerdict(run,run).verdict).toBe('failed');}
+    });
+    it('publishes sanitized scenario requirements, image identities and outstanding counts',()=>{
+        const {run}=scenarioVisualFixture();const report=complete(run),payload=publicationPayload(report,{state:'open',head:{sha:run.start.head}});
+        expect(payload.outstandingScenarioVisuals).toHaveLength(1);expect(payload.outstandingAuditVisuals).toEqual([]);expect(payload.components[0].attempts[0].visualEvidence[0]).toMatchObject({placement:'onscreen',screenshotCount:1});expect(JSON.stringify(payload)).not.toContain('EYES private');expect(JSON.stringify(payload)).not.toContain(run.outDir);
+    });
 });

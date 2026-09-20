@@ -21,7 +21,7 @@ export function completeManifest(original, addition, reference) {
         delete merged.regression; return merged;
     });
     for (const next of addition.incidents) if (!incidents.some(i => i.id === next.id)) incidents.push(next);
-    return { ...original, ...addition, incidents, auditVisualSignoffs: union(original.auditVisualSignoffs, addition.auditVisualSignoffs) };
+    return { ...original, ...addition, incidents, auditVisualSignoffs: union(original.auditVisualSignoffs, addition.auditVisualSignoffs), scenarioVisualSignoffs: union(original.scenarioVisualSignoffs, addition.scenarioVisualSignoffs) };
 }
 export function finalizeAcceptance({ root, reportPath, manifestPath, outRoot }) {
     const originalBytes = fs.readFileSync(reportPath);

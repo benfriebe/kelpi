@@ -279,14 +279,16 @@ const changed = has('--full') ? [] : [...new Set([
     ...gitOutput(['diff', '--name-only', reference ?? 'HEAD', '--']).split('\n'),
     ...gitOutput(['ls-files', '--others', '--exclude-standard']).split('\n')
 ].filter(Boolean))];
-const acceptedFlags = new Set(['--since', '--acceptance', '--no-scenario', '--full', '--plan']);
+const acceptedFlags = new Set(['--since', '--acceptance', '--no-scenario', '--full', '--plan', '--scenario-window']);
 for (let i = 0; i < args.length; i++) {
     if (!acceptedFlags.has(args[i])) throw new Error(`unsupported argument: ${args[i]}`);
-    if (['--since', '--acceptance', '--no-scenario'].includes(args[i])) {
+    if (['--since', '--acceptance', '--no-scenario', '--scenario-window'].includes(args[i])) {
         if (!args[i + 1] || args[i + 1].startsWith('--')) throw new Error(`${args[i]} requires a value`);
         i++;
     }
 }
+const scenarioWindow = value('--scenario-window') ?? 'hidden';
+if (!['hidden', 'onscreen'].includes(scenarioWindow)) throw new Error('--scenario-window must be hidden or onscreen');
 const acceptanceRun = has('--plan') ? null : startRun(repoRoot, { args, reference });
 const reportDir = acceptanceRun?.outDir;
 const policyReasons = [];
@@ -486,14 +488,11 @@ let laneObservations = null;
 const SANDBOX_GUARD = { KELPI_REQUIRE_SOCKET: '1' };
 
 /**
- * `--window hidden` for every scenario a battery runs, always (#66). The functional lane keeps the
- * machine's screen for its owner and lets runs overlap, and it costs a scenario nothing: the
- * assertions are DOM state, CDP input, the CLI, the harness channel and the app's own activity
- * signalling, all of which behave identically there. What it does cost is the screenshots, which
- * come back blank; that is why pixel checks live in the audit, which still opens a real window.
- * ui-audit/README.md ▸ "The functional lane" has the measurements.
+ * Hidden is the default functional lane. Visual requirements remain unverified
+ * there because CDP captures a blank window. --scenario-window onscreen requests
+ * reviewable captures under the same desktop reservation and freezes that choice.
  */
-const SCENARIO_LANE = '--no-build --window hidden';
+const SCENARIO_LANE = `--no-build --window ${scenarioWindow}`;
 
 /**
  * Bundles, once, before anything drives a real app. Both the scenario step and the audit below run
@@ -713,7 +712,7 @@ for (const component of components.filter(c => c.kind === 'vitest')) {
     component.selection = { kind: 'vitest', ordered: false, complete: status === 0 && fileStatus === 0 && Array.isArray(selectedFiles.data) && Array.isArray(collection.data) && members.size > 0, members: [...members.values()] };
     component.collectionReceipt = { files: fileCollectionReceipt, tests: lastExecution };
 }
-const executionPlan = { schemaVersion: 1, runId: acceptanceRun.runId, head: acceptanceRun.start.head, reference, args, changed, scenarioRule: rule, components: components.map(({ label, kind, command, reportPath, selection, collectionReceipt }) => ({ label, kind, command, ...(reportPath ? { reportPath } : {}), ...(selection ? { selection } : {}), ...(collectionReceipt ? { collectionReceipt } : {}) })) };
+const executionPlan = { schemaVersion: 1, runId: acceptanceRun.runId, head: acceptanceRun.start.head, reference, args, changed, scenarioWindow, scenarioRule: rule, components: components.map(({ label, kind, command, reportPath, selection, collectionReceipt }) => ({ label, kind, command, ...(reportPath ? { reportPath } : {}), ...(selection ? { selection } : {}), ...(collectionReceipt ? { collectionReceipt } : {}) })) };
 const planPath = path.join(reportDir, 'verification-plan.json');
 fs.writeFileSync(planPath, `${JSON.stringify(executionPlan, null, 2)}\n`, { flag: 'wx' });
 acceptanceRun.planPath = planPath;

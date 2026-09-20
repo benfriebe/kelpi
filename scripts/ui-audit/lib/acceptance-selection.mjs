@@ -11,9 +11,11 @@ export function inspectSelection(kind, report, selection) {
     if (JSON.stringify(selection.ordered ? ids : [...ids].sort()) !== JSON.stringify(selection.ordered ? wanted : [...wanted].sort())) missing.push('selected member identities/order differ from frozen plan');
     for (const spec of expected) {
         if (!['assert', 'setup', 'visual'].includes(spec?.mode) || !Array.isArray(spec.requiredAssertions) || spec.requiredAssertions.some(n => !named(n)) || new Set(spec.requiredAssertions).size !== spec.requiredAssertions.length || !Number.isInteger(spec.minAssertions) || spec.minAssertions < (spec.mode === 'assert' ? 1 : 0) || (kind !== 'audit' && spec.mode !== 'assert')) { missing.push('invalid selected member assertion contract'); continue; }
+        if (spec.mode === 'assert' && !spec.requiredAssertions.length && !spec.assertionPaths?.length || spec.complete === false || (spec.assertionPaths !== undefined && (!Array.isArray(spec.assertionPaths) || !spec.assertionPaths.length || spec.assertionPaths.some(p => !Array.isArray(p) || p.some(n => !named(n)) || spec.mode === 'assert' && !p.length))) || spec.requiredVisuals !== undefined && (!Array.isArray(spec.requiredVisuals) || spec.requiredVisuals.some(n => !named(n)))) { missing.push('incomplete selected member contract'); continue; }
         const actual = members.find(s => s.id === spec.id);
         if (!actual || actual.entries.length < spec.minAssertions || spec.requiredAssertions.some(n => !actual.entries.includes(n))) missing.push(`${spec.id}: required selected assertions absent`);
-        if (spec.mode === 'visual' && actual?.visual !== true) missing.push(`${spec.id}: visual-only step did not request review`);
+        if (spec.assertionPaths && !spec.assertionPaths.some(p => p.every(n => actual?.entries.includes(n)))) missing.push(`${spec.id}: complete successful assertion path absent`);
+        if (!spec.requiredVisuals?.length && spec.mode === 'visual' && actual?.visual !== true) missing.push(`${spec.id}: visual-only step did not request review`);
     }
     if (kind === 'scenario' && expected.some(s => s?.file) && JSON.stringify(list(report?.files)) !== JSON.stringify(expected.map(s => s?.file))) missing.push('selected scenario files/order differ from frozen plan');
     const emitted = report?.expectedPlan ?? report?.meta?.expectedPlan ?? report?.selection ?? report?.meta?.selection;

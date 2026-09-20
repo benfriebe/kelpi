@@ -40,6 +40,7 @@
 
 import { ownDesktopResource, assertDesktopActive } from './desktop-lifecycle.mjs';
 import fs from 'node:fs';
+import { createHash } from 'node:crypto';
 import net from 'node:net';
 import path from 'node:path';
 
@@ -532,6 +533,12 @@ export function recorder({ name, outDir, placement }) {
     fs.mkdirSync(outDir, { recursive: true });
     const results = [];
     const notes = [];
+    const screenshots = [], visuals = [];
+    const recordEyes = message => {
+        const shot = screenshots.at(-1);
+        const id = shot?.id ?? `${name}:eyes:missing-shot`;
+        visuals.push({ id, reason: String(message), screenshotId: shot?.id ?? null });
+    };
     let shots = 0;
     let firstFailure = null;
     const failureListeners = new Set(), pendingEvidence = [];
@@ -566,12 +573,18 @@ export function recorder({ name, outDir, placement }) {
         },
         note(message) {
             notes.push(String(message));
+            if (/^EYES\b/.test(String(message))) recordEyes(message);
             process.stdout.write(`         ${String(message)}\n`);
+        },
+        eyes(reason) {
+            const message = `EYES - ${String(reason ?? 'review required')}`;
+            notes.push(message); recordEyes(message);
         },
         async shot(page, label) {
             shots += 1;
             const file = path.join(outDir, `${name}-${String(shots).padStart(2, '0')}-${label.replace(/[^a-z0-9-]+/gi, '-')}.png`);
             await page.screenshot(file);
+            screenshots.push({ id: `${name}:shot:${label.replace(/[^a-z0-9-]+/gi, '-')}`, label, path: path.resolve(file), sha256: createHash('sha256').update(fs.readFileSync(file)).digest('hex'), placement: placement ?? 'unknown', blank: placement === 'hidden' });
             const note = shotCaveat === undefined ? `shot: ${file}` : `shot: ${file}  [${placement}: ${shotCaveat}]`;
             notes.push(note);
             if (shotCaveat !== undefined) process.stdout.write(`         ${note}\n`);
@@ -588,6 +601,8 @@ export function recorder({ name, outDir, placement }) {
                 failed: results.filter((r) => !r.ok).length,
                 results,
                 firstFailure,
+                screenshots,
+                visuals,
                 notes
             };
         }

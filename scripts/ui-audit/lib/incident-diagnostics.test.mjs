@@ -406,3 +406,23 @@ it('attempts remaining cleanup again after cleanup reporting and navigation undo
         expect(fs.existsSync(path.join(outDir,'report-cleanup-incident-cleanup-attempt-2.json'))).toBe(true);
     } finally { fs.rmSync(outDir,{recursive:true,force:true}); }
 });
+
+it('keeps a successfully reported recovered renderer undo nonthrowing', async () => {
+    const outDir=fs.mkdtempSync(path.join(os.tmpdir(),'incident-close-compat-'));
+    try {
+        const host=renderer(), rec=recorder({name:'close-compat',outDir});
+        await host.eval(`let undoFailures=0; terminalLab.terminal=new Proxy(terminalLab.terminal,{defineProperty(target,name,descriptor){
+            if(globalThis.failRestore&&name==='getSelection'&&undoFailures++===0)throw Error('TRANSIENT_UNDO_FAILURE');
+            return Reflect.defineProperty(target,name,descriptor);
+        }});`);
+        const incident=await armIncidentDiagnostics({page:{eval:host.eval},rec});
+        await host.eval('globalThis.failRestore=true');
+        await expect(incident.close()).resolves.toBeUndefined();
+        const cleanup=JSON.parse(fs.readFileSync(path.join(outDir,'close-compat-incident-cleanup.json'),'utf8')).find(entry=>entry.name==='host');
+        expect(cleanup).toMatchObject({restored:true, outstandingRestores:0, ownerRetained:false});
+        expect(cleanup.errors).toContain('TRANSIENT_UNDO_FAILURE');
+        expect(rec.results.some(entry=>entry.failureClass==='cleanup'&&!entry.ok&&entry.detail.includes('TRANSIENT_UNDO_FAILURE'))).toBe(true);
+        expect(host.listeners.size).toBe(0);
+        expect(await host.eval('Boolean(globalThis.__kelpiIncidentRecorder)')).toBe(false);
+    } finally { fs.rmSync(outDir,{recursive:true,force:true}); }
+});

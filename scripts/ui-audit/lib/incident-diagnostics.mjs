@@ -304,7 +304,13 @@ export async function armIncidentDiagnostics({ page, harness, rec, allowed = [],
             const unresolved = failureObserverActive || navigationScript !== undefined || restores.some(entry => !entry.restored) || targets.some(target => !target.restored);
             // A close that leaves an owned resource behind remains retryable; it is never a no-op.
             closed = !unresolved;
-            const failure = combineErrors('incident diagnostics cleanup/reporting failed', [...errors, ...reportingErrors.slice(reportingStart)]);
+            // Cleanup and evidence faults have already been durably classified above. Keep
+            // close compatible with its long-standing best-effort contract when that
+            // classification succeeds, but do surface a reporting fault: without it the
+            // ordinary failure may not have reached the recorder at all.
+            const failure = combineErrors('incident diagnostics cleanup/reporting failed', reportingErrors.slice(reportingStart).length
+                ? [...errors, ...reportingErrors.slice(reportingStart)]
+                : []);
             surfacedReporting = reportingErrors.length;
             if (failure) throw failure;
         })();

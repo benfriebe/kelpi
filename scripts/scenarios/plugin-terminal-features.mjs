@@ -143,6 +143,8 @@ export default async function ({ page, cli, sandbox, rec, d, harness, sleep, dia
         let caret = await caretNow(local.paneID);
         await page.key('KeyV', { key: 'v', modifiers: d.MOD.meta });
         rec.check('platform paste preserves the application bracketed-paste envelope', await d.settle(() => input(local).subarray(offset).includes(Buffer.from('\x1b[200~TERMINAL-PASTE-α\x1b[201~'))), `${JSON.stringify(redactFixtureText(input(local).subarray(offset).toString(), ['\x1b[200~TERMINAL-PASTE-α\x1b[201~']))} · at the press ${caret}`);
+        // Finish first-failure capture before another frame lookup, selection or clipboard mutation.
+        await rec.flushFirstFailure();
         // Observe the caret without repair; selection and first input remain the operation under test.
         await clipboardCaret('platform Copy', local.paneID);
         await inside(local.paneID, `terminalLab.terminal.select(0, 0, 5); true`);
@@ -150,6 +152,8 @@ export default async function ({ page, cli, sandbox, rec, d, harness, sleep, dia
         caret = await caretNow(local.paneID);
         await page.key('KeyC', { key: 'c', modifiers: d.MOD.meta });
         rec.check('platform Copy obtains live renderer selection', await d.settle(async () => String((await harness.clipboardRead()).text) === 'KELPI'), `clipboard holds [see redacted incident evidence] · at the press ${caret}`);
+        // Finish first-failure capture before another frame lookup, selection or clipboard mutation.
+        await rec.flushFirstFailure();
         await clipboardCaret('cleared-selection Copy', local.paneID);
         await inside(local.paneID, `terminalLab.terminal.clearSelection(); true`);
         await harness.clipboardWrite('CLEARED-SELECTION');
@@ -413,6 +417,8 @@ export default async function ({ page, cli, sandbox, rec, d, harness, sleep, dia
         offset = input(remote).length;
         await harness.clipboardWrite('REMOTE-PASTE-β'); await page.key('KeyV', { key: 'v', modifiers: d.MOD.meta });
         rec.check('remote platform paste targets only the remote process', await d.settle(() => input(remote).subarray(offset).includes(Buffer.from('\x1b[200~REMOTE-PASTE-β\x1b[201~'))) && input(local).length === localBeforeRemoteInput, JSON.stringify(redactFixtureText(input(remote).subarray(offset).toString(), ['\x1b[200~REMOTE-PASTE-β\x1b[201~'])));
+        // Finish first-failure capture before another frame lookup, selection or clipboard mutation.
+        await rec.flushFirstFailure();
         await inside(remote.paneID, `terminalLab.terminal.select(0, 0, 5); true`);
         await harness.clipboardWrite('REMOTE-COPY-SENTINEL');
         const remoteCopyBefore = {

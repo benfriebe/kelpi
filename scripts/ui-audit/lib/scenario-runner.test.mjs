@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { fixtureAcceptanceProvenance } from './fixture-acceptance-provenance.mjs';
 
 // Exercise the real runner/recorder and watcher without launching Electron. Only the private
 // instance boundary is replaced, so attribution, exit status, JSON and teardown remain real.
@@ -11,6 +12,7 @@ it.each([false, true])('records enforced cleanup=%s and boot errors on their own
     const root = fileURLToPath(new URL('../../../', import.meta.url));
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-runner-test-'));
     try {
+        const provenance = fixtureAcceptanceProvenance({ root, temp });
         const driver = pathToFileURL(path.join(root, 'scripts/ui-audit/lib/driver.mjs')).href;
         const watcher = pathToFileURL(path.join(root, 'scripts/ui-audit/lib/renderer-errors.mjs')).href;
         const stub = path.join(temp, 'driver.mjs');
@@ -50,6 +52,8 @@ it.each([false, true])('records enforced cleanup=%s and boot errors on their own
                     return { url: ${JSON.stringify(pathToFileURL(slot).href)}, shortCircuit: true };
                 if (specifier === ${JSON.stringify(path.join(root, 'scripts/ui-audit/lib/driver.mjs'))})
                     return { url: ${JSON.stringify(pathToFileURL(stub).href)}, shortCircuit: true };
+                if (specifier === './acceptance-provenance.mjs' && context.parentURL?.endsWith('/incident-diagnostics-replay.mjs'))
+                    return { url: ${JSON.stringify(pathToFileURL(provenance.module).href)}, shortCircuit: true };
                 return nextResolve(specifier, context);
             } });
         `);
@@ -59,7 +63,7 @@ it.each([false, true])('records enforced cleanup=%s and boot errors on their own
             return file;
         });
         const run = spawnSync(process.execPath, ['--import', hook, process.env.SCENARIO_RUNNER_UNDER_TEST ?? path.join(root, 'scripts/scenario.mjs'),
-            '--no-build', '--window', 'hidden', '--out', path.join(temp, 'out'), ...scenarios], { encoding: 'utf8', timeout: 20_000 });
+            '--no-build', '--window', 'hidden', '--out', path.join(temp, 'out'), ...scenarios], { env: provenance.env, encoding: 'utf8', timeout: 20_000 });
         expect(run.status, run.stdout + run.stderr).toBe(1);
         expect(fs.existsSync(path.join(temp, 'out/results.json')), run.stdout + run.stderr).toBe(true);
         const output = JSON.parse(fs.readFileSync(path.join(temp, 'out/results.json'), 'utf8'));
@@ -86,6 +90,7 @@ it.each(['startup', 'dedicated'])('retains %s fixture failure and never runs the
     const root = fileURLToPath(new URL('../../../', import.meta.url));
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-required-fixture-'));
     try {
+        const provenance = fixtureAcceptanceProvenance({ root, temp });
         const driver = pathToFileURL(path.join(root, 'scripts/ui-audit/lib/driver.mjs')).href;
         const ran = path.join(temp, 'ran'), stopped = path.join(temp, 'stopped');
         const stub = path.join(temp, 'driver.mjs'), slot = path.join(temp, 'slot.mjs'), hook = path.join(temp, 'hook.mjs');
@@ -104,11 +109,12 @@ it.each(['startup', 'dedicated'])('retains %s fixture failure and never runs the
             registerHooks({resolve(s,c,next) {
                 if(s.endsWith('/desktop-slot.mjs')) return {url:${JSON.stringify(pathToFileURL(slot).href)},shortCircuit:true};
                 if(s===${JSON.stringify(path.join(root,'scripts/ui-audit/lib/driver.mjs'))}) return {url:${JSON.stringify(pathToFileURL(stub).href)},shortCircuit:true};
+                if(s==='./acceptance-provenance.mjs'&&c.parentURL?.endsWith('/incident-diagnostics-replay.mjs')) return {url:${JSON.stringify(pathToFileURL(provenance.module).href)},shortCircuit:true};
                 return next(s,c);
             }});`);
         const scenario = path.join(temp, 'required.mjs');
         fs.writeFileSync(scenario, `import fs from 'node:fs'; export const windowPlacement='offscreen'; export default async () => fs.writeFileSync(${JSON.stringify(ran)},'ran');`);
-        const run = spawnSync(process.execPath, ['--import', hook, path.join(root, 'scripts/scenario.mjs'), '--no-build', '--window', 'hidden', '--out', path.join(temp, 'out'), scenario], { encoding: 'utf8', timeout: 10_000 });
+        const run = spawnSync(process.execPath, ['--import', hook, path.join(root, 'scripts/scenario.mjs'), '--no-build', '--window', 'hidden', '--out', path.join(temp, 'out'), scenario], { env: provenance.env, encoding: 'utf8', timeout: 10_000 });
         expect(run.status, run.stdout + run.stderr).toBe(1);
         expect(fs.existsSync(ran)).toBe(false);
         expect(fs.existsSync(path.join(temp, 'out/results.json')), run.stdout + run.stderr).toBe(true);
@@ -122,4 +128,26 @@ it.each(['startup', 'dedicated'])('retains %s fixture failure and never runs the
         }
         expect(result.provenance.head).toMatch(/^[a-f0-9]{40}$/);
     } finally { fs.rmSync(temp, {recursive:true,force:true}); }
+});
+
+it('uses scoped fixture build evidence but the real execution guard rejects runtime drift', () => {
+    const root = fileURLToPath(new URL('../../../', import.meta.url));
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-provenance-guard-'));
+    try {
+        const provenance = fixtureAcceptanceProvenance({ root, temp });
+        const hook = path.join(temp, 'hook.mjs');
+        const replay = pathToFileURL(path.join(root, 'scripts/ui-audit/lib/incident-diagnostics-replay.mjs')).href;
+        fs.writeFileSync(hook, `import {registerHooks} from 'node:module';registerHooks({resolve(s,c,next){
+            return s==='./acceptance-provenance.mjs'&&c.parentURL?.endsWith('/incident-diagnostics-replay.mjs')
+                ? {url:${JSON.stringify(pathToFileURL(provenance.module).href)},shortCircuit:true}:next(s,c);}});`);
+        const script = `import {captureProvenance,bindCoreExecution} from ${JSON.stringify(replay)};
+            const p=captureProvenance(${JSON.stringify(root)}); console.log('complete='+p.complete);
+            process.env.KELPI_UNIT_FIXTURE_DRIFT='1';
+            try { bindCoreExecution(${JSON.stringify(root)},p,{boundary:'fixture-drift'}); process.exitCode=2; }
+            catch(error) { console.log(error.message); }`;
+        const run = spawnSync(process.execPath, ['--import', hook, '--input-type=module', '-e', script], { env: provenance.env, encoding: 'utf8', timeout: 10_000 });
+        expect(run.status, run.stdout + run.stderr).toBe(0);
+        expect(run.stdout).toContain('complete=true');
+        expect(run.stdout).toContain('runtime outputs differ from original build receipt');
+    } finally { fs.rmSync(temp, { recursive: true, force: true }); }
 });

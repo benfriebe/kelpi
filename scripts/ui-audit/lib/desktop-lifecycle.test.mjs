@@ -8,6 +8,7 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { holdDesktopTestSlot } from './desktop-slot.mjs';
+import { fixtureAcceptanceProvenance } from './fixture-acceptance-provenance.mjs';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 const url = (p) => pathToFileURL(p).href;
@@ -31,6 +32,7 @@ for (const sample of [
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-cancel-'));
     const ledger = path.join(temp, 'ledger');
     const portFile = path.join(temp, 'port');
+    const provenance = fixtureAcceptanceProvenance({ root, temp });
     fs.writeFileSync(ledger, '');
     const events = () => fs.readFileSync(ledger, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
     const write = (name, content) => { const file = path.join(temp, name + '.mjs'); fs.writeFileSync(file, content); return file; };
@@ -94,14 +96,15 @@ for (const sample of [
             const target = s.endsWith('/desktop-slot.mjs') && (c.parentURL?.endsWith('/desktop-lifecycle.mjs') || c.parentURL?.endsWith('/scenario.mjs')) ? ${JSON.stringify(url(slot))}
                 : driver && s === './stack.mjs' ? ${JSON.stringify(url(stack))}
                 : driver && s === './cdp.mjs' ? ${JSON.stringify(url(cdp))}
-                : driver && s === 'node:net' ? ${JSON.stringify(url(net))} : null;
+                : driver && s === 'node:net' ? ${JSON.stringify(url(net))}
+                : s === './acceptance-provenance.mjs' && c.parentURL?.endsWith('/incident-diagnostics-replay.mjs') ? ${JSON.stringify(url(provenance.module))} : null;
             return target ? { url: target, shortCircuit: true } : next(s, c);
         }});`);
     const scenario = write('scenario', `${sample.dedicated ? "export const windowPlacement = 'offscreen';" : ''}
         export default async () => { ${sample.keep ? '' : "console.log('FIXTURE_READY'); await new Promise(() => {});"} };`);
     const child = spawn(process.execPath, ['--import', hook, path.join(root, 'scripts/scenario.mjs'),
         '--no-build', '--window', 'hidden', '--out', path.join(temp, 'out'), ...(sample.keep ? ['--keep'] : []), scenario],
-        { stdio: ['ignore', 'pipe', 'pipe'] });
+        { env: provenance.env, stdio: ['ignore', 'pipe', 'pipe'] });
     let output = '';
     child.stdout.on('data', b => { output += b; }); child.stderr.on('data', b => { output += b; });
     const exit = once(child, 'exit');
@@ -319,6 +322,8 @@ it('cancels the actual plugin-dev helper through the real scenario runner before
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-direct-helper-'));
     const portFile = path.join(temp, 'port');
     const pidFile = path.join(temp, 'pid');
+    const provenance = fixtureAcceptanceProvenance({ root, temp });
+    const fixtureRepo = path.join(temp, 'fixture-repo');
     const write = (name, body) => { const p = path.join(temp, name + '.mjs'); fs.writeFileSync(p, body); return p; };
     const server = net.createServer(socket => socket.on('data', () => socket.end(JSON.stringify({ok:true,result:{daemonID:'private-fixture',capabilities:['plugin-dev']}}) + '\n')));
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -333,16 +338,23 @@ it('cancels the actual plugin-dev helper through the real scenario runner before
         export async function holdDesktopTestSlot(){const s=await hold({port:0});fs.writeFileSync(${JSON.stringify(portFile)},String(s.port));return s;}`);
     const hook = write('hook', `import {registerHooks} from 'node:module';registerHooks({resolve(s,c,next){
         if(s==='./desktop-slot.mjs'&&c.parentURL?.endsWith('/desktop-lifecycle.mjs'))return {url:${JSON.stringify(url(slot))},shortCircuit:true};
-        if(s===${JSON.stringify(path.join(lib,'driver.mjs'))})return {url:${JSON.stringify(url(driver))},shortCircuit:true};return next(s,c);}});`);
+        if(s===${JSON.stringify(path.join(lib,'driver.mjs'))})return {url:${JSON.stringify(url(driver))},shortCircuit:true};
+        if(s==='./acceptance-provenance.mjs'&&c.parentURL?.endsWith('/incident-diagnostics-replay.mjs'))return {url:${JSON.stringify(url(provenance.module))},shortCircuit:true};return next(s,c);}});`);
     const source = fs.readFileSync(path.join(root, 'scripts/scenarios/plugin-authoring.mjs'), 'utf8');
     const startAt = source.indexOf('        dev = spawn');
     const spawning = source.slice(startAt, source.indexOf('        dev.stdout.setEncoding', startAt));
     const stopping = source.slice(source.indexOf('    const stopDev = async () => {'), source.indexOf('    const writeVersion'));
+    // The production helper owns a Node CLI child. Its fixture is deliberately local so this
+    // cancellation test does not need the checkout's compiled CLI output.
+    const fixtureCLI = path.join(fixtureRepo, 'packages/cli/dist/kelpi.js');
+    fs.mkdirSync(path.dirname(fixtureCLI), { recursive: true });
+    fs.writeFileSync(fixtureCLI, `console.log('watching');process.on('SIGINT',()=>{
+        console.log(JSON.stringify({type:'stopped'}));process.exit(0);});setInterval(()=>{},1000);`);
     // Exact production helper call and stop function, with UI/setup omitted.
     const scenario = write('scenario', `import fs from 'node:fs';import path from 'node:path';import {spawn} from 'node:child_process';
         import * as lifecycle from ${JSON.stringify(url(path.join(lib,'desktop-lifecycle.mjs')))};
         const {spawnDesktopHelper} = lifecycle;
-        const repoRoot=${JSON.stringify(root)};
+        const repoRoot=${JSON.stringify(fixtureRepo)};
         export default async function({sandbox}) {const external=${JSON.stringify(temp)},source=external;let dev;
             ${stopping}
             try {${spawning}
@@ -351,7 +363,7 @@ it('cancels the actual plugin-dev helper through the real scenario runner before
                 console.log('FIXTURE_READY');await new Promise(()=>{});
             } finally {await stopDev();}
         }`);
-    const child = spawn(process.execPath, ['--import',hook,path.join(root,'scripts/scenario.mjs'),'--no-build','--window','hidden','--out',path.join(temp,'out'),scenario], {stdio:['ignore','pipe','pipe']});
+    const child = spawn(process.execPath, ['--import',hook,path.join(root,'scripts/scenario.mjs'),'--no-build','--window','hidden','--out',path.join(temp,'out'),scenario], {env:provenance.env,stdio:['ignore','pipe','pipe']});
     let output='';child.stdout.on('data',b=>output+=b);child.stderr.on('data',b=>output+=b);
     const exit=once(child,'exit');let pid;
     try {

@@ -21,6 +21,9 @@ body { color: #ddd; font: 13px ui-monospace, monospace; }
  */
 #terminal .xterm-viewport { background-color: transparent; overflow-y: scroll; scrollbar-width: none; }
 #terminal .xterm-viewport::-webkit-scrollbar { display: none; }
+/* xterm 6 owns a separate virtual scroller. Hide its slider chrome while leaving
+ * the scrollable element and its wheel/keyboard handling active. */
+#terminal .xterm-scrollable-element > .scrollbar { display: none; }
 /*
  * While mirroring, the emulator root wraps the mirrored screen instead of the view. xterm's
  * scrolling viewport is absolutely positioned to this element, so stretching it would give the

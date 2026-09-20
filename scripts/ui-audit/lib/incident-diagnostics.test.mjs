@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -561,4 +562,86 @@ it('keeps a successfully reported recovered renderer undo nonthrowing', async ()
         expect(host.listeners.size).toBe(0);
         expect(await host.eval('Boolean(globalThis.__kelpiIncidentRecorder)')).toBe(false);
     } finally { fs.rmSync(outDir,{recursive:true,force:true}); }
+});
+
+// Execute the actual clipboard boundaries against delayed recorder snapshots. These are
+// control-flow regressions, not a model of Chromium node lifetimes or native clipboard input.
+function boundaryRenderer(terminal){
+ const document={activeElement:{tagName:'TEXTAREA',getAttribute:()=>null},visibilityState:'visible',hasFocus:()=>false,querySelectorAll:()=>[],body:{dataset:{}},addEventListener(){},removeEventListener(){}};
+ const context=vm.createContext({document,navigator:{clipboard:{readText:async()=>'',writeText:async()=>{}}},terminalLab:{terminal,replayCount:1},performance});
+ return expression=>vm.runInContext(expression,context);
+}
+
+const BoundaryAsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
+const boundaryCases = ['local-paste','local-copy','remote-paste'].flatMap(label =>
+    ['delayed-capture','unavailable-target'].map(mode => [label,mode]));
+it.each(boundaryCases)('freezes %s evidence before later input (%s)', async (label, mode) => {
+    const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-capture-boundary-'));
+    let incident;
+    try {
+        const source = fs.readFileSync(process.env.KELPI_CAPTURE_SCENARIO_UNDER_TEST ??
+            new URL('../../scenarios/plugin-terminal-features.mjs', import.meta.url), 'utf8');
+const startLocal=source.indexOf("        offset = input(local).length;\n        await harness.clipboardWrite('TERMINAL-PASTE-α');");
+const endLocal=source.indexOf("        await incident.retireRenderer('local terminal');",startLocal);
+const startRemote=source.indexOf("        offset = input(remote).length;\n        await harness.clipboardWrite('REMOTE-PASTE-β');");
+const endRemote=source.indexOf('        const remoteCopyBefore = {',startRemote);
+assert(startLocal>=0 && endLocal>startLocal && startRemote>=0 && endRemote>startRemote);
+const localBody=source.slice(startLocal,endLocal);
+const remoteBody=source.slice(startRemote,endRemote);
+const bodies={
+ 'local-paste':localBody.slice(0,localBody.indexOf("        await clipboardCaret('cleared-selection Copy'")),
+ 'local-copy':localBody,
+ 'remote-paste':remoteBody
+};
+ let selected='',clipboard='',capturePending=false,captureFinished=false,captureCount=0;
+ let failureSelection, failureClipboard, capturedSelection,capturedClipboard;
+ let data=Buffer.alloc(0);const trace=[],overlap=[],keys=[];
+ const note=(action,detail={})=>trace.push({sequence:trace.length+1,action,...detail});
+ const continuation=action=>{if(capturePending) overlap.push(action);note(action);};
+ const terminal={getSelection:()=>selected,getSelectionPosition:()=>null,select(){continuation('selection:select');selected='KELPI';},clearSelection(){continuation('selection:clear');selected='';},write(){},resize(){},reset(){}};
+ const host=boundaryRenderer({getSelection:()=>'',write(){},resize(){},reset(){}}), inner=boundaryRenderer(terminal);
+ const rec=recorder({name:label,outDir});
+ // Registered before the diagnostics listener so these are the exact assertion-boundary values.
+ rec.onFirstFailure(()=>{failureSelection=selected;failureClipboard=clipboard;note('assertion:first-failure',{selection:selected,clipboard});});
+ const page={eval:async expression=>host(expression),key:async key=>{
+   continuation('key:'+key);keys.push(key);
+   if(key==='KeyV' && label==='local-copy') data=Buffer.from('\x1b[200~TERMINAL-PASTE-α\x1b[201~');
+ }};
+ const harness={clipboardWrite:async value=>{continuation('mock-clipboard:write');clipboard=value;return {text:value};},clipboardRead:async()=>({text:clipboard})};
+ incident=await armIncidentDiagnostics({page,harness,rec,journal:true,allowed:['','KELPI','TERMINAL-PASTE-α','COPY-SENTINEL','CLEARED-SELECTION','REMOTE-PASTE-β','REMOTE-COPY-SENTINEL']});
+ await incident.addRenderer('terminal',async expression=>{
+   if(expression.includes('return recorder.snapshot();')){
+     ++captureCount;capturePending=true;note('capture:begin');
+     await new Promise(resolve=>setImmediate(resolve));
+     capturedSelection=selected;capturedClipboard=clipboard;
+     capturePending=false;captureFinished=true;note('capture:end',{selection:selected,clipboard});
+     if(mode==='unavailable-target') throw new Error('fixture: renderer permanently unavailable');
+   }
+   return inner(expression);
+ });
+ const inside=async(_id,expression)=>{continuation('frame:lookup');return inner(expression);};
+ const clipboardCaret=async()=>{continuation('caret:frame-lookup');return '{}';};
+ const caretNow=async()=>{continuation('caret:frame-lookup');return '{}';};
+ const local={paneID:'local'},remote={paneID:'remote'};
+ const input=item=>label==='remote-paste'&&item===local ? Buffer.alloc(0):data;
+ const d={MOD:{meta:4},settle:async predicate=>await predicate()};
+ const bindings={page,harness,rec,d,local,remote,input,inside,clipboardCaret,caretNow,redactFixtureText,sleep:async()=>{},localBeforeRemoteInput:0};
+ const fn=new BoundaryAsyncFunction(...Object.keys(bindings),'let offset;\n'+bodies[label]);
+ await fn(...Object.values(bindings));
+ await rec.flushFirstFailure();
+ assert(captureFinished);assert.equal(captureCount,1,'never retry the snapshot');
+ const saved=JSON.parse(fs.readFileSync(path.join(outDir,`${label}-first-incident.json`),'utf8'));
+ const expectedLabel={'local-paste':'platform paste preserves the application bracketed-paste envelope','local-copy':'platform Copy obtains live renderer selection','remote-paste':'remote platform paste targets only the remote process'}[label];
+ assert.equal(saved.reason,expectedLabel);
+ assert.equal(rec.summary().firstFailure.label,expectedLabel);
+ assert.equal(rec.results.find(r=>r.label===expectedLabel).ok,false,'behavior failure must survive');
+ assert.equal(keys.filter(k=>k==='KeyV').length,1,'never retry input');
+ assert.equal(saved.complete,mode==='delayed-capture','unavailable target must stay incomplete');
+ assert.equal(rec.results.find(r=>r.label==='incident diagnostics complete without observer errors').ok,mode==='delayed-capture');
+ const boundaryPreserved=overlap.length===0 && capturedSelection===failureSelection && capturedClipboard===failureClipboard;
+ expect(boundaryPreserved, JSON.stringify({overlap,failureSelection,capturedSelection,failureClipboard,capturedClipboard})).toBe(true);
+
+    } finally {
+        try { await incident?.close(); } finally { fs.rmSync(outDir,{recursive:true,force:true}); }
+    }
 });

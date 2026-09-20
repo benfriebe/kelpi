@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { connect, listTargets } from '../ui-audit/lib/cdp.mjs';
 import { PROTOCOL_VERSION } from '../ui-audit/lib/stack.mjs';
 import { startBrowserFixture } from '../fixtures/plugin-browser.mjs';
+import { cleanupSteps, removeOwnedRemoteStore } from '../ui-audit/lib/incident-diagnostics.mjs';
 import { daemonIDFromSandbox, phoneToLanding, restoreBundledSlots } from '../ui-audit/lib/workbench.mjs';
 
 export const covers = ['examples/plugins/browser-lab/', 'packages/plugin-sdk/', 'packages/client/src/features/',
@@ -41,14 +42,45 @@ function placementOf(shell, paneID) {
     return value;
 }
 
+async function captureWorkbenchStore(page, daemonID) {
+    if (daemonID === null) throw new Error('the fixture daemon identity is unavailable');
+    const key = `kelpi.workbench.v1:${daemonID}`;
+    const snapshot = await page.eval(`({ origin: location.origin, value: localStorage.getItem(${JSON.stringify(key)}) })`);
+    if (typeof snapshot?.origin !== 'string' || (snapshot.value !== null && typeof snapshot.value !== 'string')) throw new Error('the incoming workbench store could not be captured');
+    return { key, ...snapshot };
+}
+
+async function requireWorkbenchOrigin(page, snapshot) {
+    if (!await page.eval(`location.origin === ${JSON.stringify(snapshot.origin)} && document.querySelector('[data-testid="kelpi-app"]')?.getAttribute('data-connection') === 'connected'`)) {
+        throw new Error('the original connected workbench origin is unavailable');
+    }
+}
+
+const workbenchSettled = page => page.eval(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))`);
+
+async function restoreWorkbenchStore(page, snapshot) {
+    await requireWorkbenchOrigin(page, snapshot);
+    // Plugin/workspace teardown can queue a persistence write. Let it finish before restoring raw bytes.
+    await workbenchSettled(page);
+    await page.eval(`(() => {
+        if (location.origin !== ${JSON.stringify(snapshot.origin)}) throw new Error('workbench origin changed before restoration');
+        const key = ${JSON.stringify(snapshot.key)}, value = ${JSON.stringify(snapshot.value)};
+        if (value === null) localStorage.removeItem(key); else localStorage.setItem(key, value);
+        window.dispatchEvent(new CustomEvent('kelpi-workbench-selections', { detail: key }));
+    })()`);
+    await workbenchSettled(page);
+    await requireWorkbenchOrigin(page, snapshot);
+    const restored = await page.eval(`localStorage.getItem(${JSON.stringify(snapshot.key)})`);
+    if (restored !== snapshot.value) throw new Error(`workbench store ${snapshot.key} did not return to its incoming value`);
+}
+
 export default async function ({ page, cli, sandbox, rec, d, harness, shell, sleep }) {
     if (!shell) throw new Error('Browser native-placement validation needs a launched private shell, not --attach');
-    await page.watchFrames();
-    const fixture = await startBrowserFixture();
-    const nativeTargets = [];
-    const originalURL = await page.eval('location.href'), originalDPR = await page.eval('devicePixelRatio'), config = fs.readFileSync(sandbox.configPath, 'utf8');
+    const nativeTargets = [], nativeSessions = new Set();
+    let fixture, originalURL, originalDPR, config, initial, incomingWorkbenchStore, incomingRemoteWorkbenchStore, remoteDaemonID;
+    let local, native, remote, remoteNative, bodyFailure;
+    let bodyStarted = false, pluginInstallAttempted = false;
     const json = async (args, target = cli) => JSON.parse(await target.ok(args));
-    const initial = new Set((await json(['workspace', 'list', '--json'])).map(item => item.id));
     const inside = (id, expression) => page.evalInFrame(frame(id), expression);
     const check = (id, expression, ceilingMs = 15_000) => d.settle(async () => {
         try { return await inside(id, expression); } catch { return false; }
@@ -94,9 +126,11 @@ export default async function ({ page, cli, sandbox, rec, d, harness, shell, sle
     const targetFor = async (port, url, excludeID) => {
         let found;
         if (!await d.settle(async () => { found = (await listTargets(port)).find(target => target.type === 'page' && target.url === url && target.id !== excludeID); return found; }, {ceilingMs:20_000})) throw new Error(`No native page target for ${url}`);
+        // The private target exists even if connecting or initialization subsequently fails.
+        nativeTargets.push({id:found.id,url,debugPort:port,at:Date.now()});
         const session = await connect(found.webSocketDebuggerUrl, {repoRoot});
+        nativeSessions.add(session);
         if (!await d.settle(async () => { try { return await session.eval('!!globalThis.browserFixture'); } catch { return false; } })) throw new Error('Native fixture did not initialize');
-        nativeTargets.push({id:found.id,url,at:Date.now()});
         return {id:found.id,page:session};
     };
     const owner = (id, expected = 'main', process = shell) => d.settle(() => placementOf(process, id)?.owner === expected, {ceilingMs:15_000});
@@ -116,12 +150,6 @@ export default async function ({ page, cli, sandbox, rec, d, harness, shell, sle
     const sameState = async (native, before) => {
         try { const after = await snapshot(native); return ['instance','note','clicks','cookies','storage'].every(key => after[key] === before[key]); } catch { return false; }
     };
-    const builtFiles = ['packages/daemon/dist/kelpid.js','packages/cli/dist/kelpi.js','packages/client/dist/index.html','packages/shell/dist/main.js','packages/plugin-sdk/browser.js','packages/plugin-sdk/api.js',
-        'examples/plugins/browser-lab/kelpi.plugin.json','examples/plugins/browser-lab/ui/index.html','examples/plugins/browser-lab/ui/browser.js','examples/plugins/browser-lab/ui/style.css',
-        'scripts/fixtures/plugin-browser.mjs','scripts/scenarios/plugin-browser-features.mjs',
-        ...fs.readdirSync(path.join(repoRoot,'packages/client/dist/assets')).filter(file => /\.(js|css)$/.test(file)).map(file => `packages/client/dist/assets/${file}`)];
-    fs.writeFileSync(path.join(rec.outDir,'build-manifest.json'), JSON.stringify(Object.fromEntries(builtFiles.sort().map(file => [file,createHash('sha256').update(fs.readFileSync(path.join(repoRoot,file))).digest('hex')])),null,2)+'\n');
-    let local, native, remote, remoteNative;
     const diagnostics = async label => {
         const data = { requests:fixture.requests, nativeTargets, placements:shell.lines.filter(line => /web pane .* view owner=/.test(line)),
             local:local && {pane:local,placement:placementOf(shell,local.paneID),native:native && await snapshot(native).catch(error => ({error:String(error)})),
@@ -134,6 +162,18 @@ export default async function ({ page, cli, sandbox, rec, d, harness, shell, sle
         fs.writeFileSync(file,Buffer.from(shot.data,'base64')); return file;
     }},label);
     try {
+        await page.watchFrames();
+        originalURL = await page.eval('location.href'); originalDPR = await page.eval('devicePixelRatio');
+        config = fs.readFileSync(sandbox.configPath, 'utf8');
+        incomingWorkbenchStore = await captureWorkbenchStore(page, daemonIDFromSandbox(sandbox));
+        initial = new Set((await json(['workspace', 'list', '--json'])).map(item => item.id));
+        fixture = await startBrowserFixture();
+        const builtFiles = ['packages/daemon/dist/kelpid.js','packages/cli/dist/kelpi.js','packages/client/dist/index.html','packages/shell/dist/main.js','packages/plugin-sdk/browser.js','packages/plugin-sdk/api.js',
+            'examples/plugins/browser-lab/kelpi.plugin.json','examples/plugins/browser-lab/ui/index.html','examples/plugins/browser-lab/ui/browser.js','examples/plugins/browser-lab/ui/style.css',
+            'scripts/fixtures/plugin-browser.mjs','scripts/scenarios/plugin-browser-features.mjs',
+            ...fs.readdirSync(path.join(repoRoot,'packages/client/dist/assets')).filter(file => /\.(js|css)$/.test(file)).map(file => `packages/client/dist/assets/${file}`)];
+        fs.writeFileSync(path.join(rec.outDir,'build-manifest.json'), JSON.stringify(Object.fromEntries(builtFiles.sort().map(file => [file,createHash('sha256').update(fs.readFileSync(path.join(repoRoot,file))).digest('hex')])),null,2)+'\n');
+        bodyStarted = true;
         rec.note('Native page lifecycle and plugin browser controls');
         local = await open(cli,'Browser Lab','local');
         native = await targetFor(sandbox.debugPort,local.url);
@@ -142,6 +182,7 @@ export default async function ({ page, cli, sandbox, rec, d, harness, shell, sle
         await native.page.click('#increment'); await native.page.click('#cookie');
         const original = await snapshot(native);
         rec.check('fixture has actual page input, JS state, cookies and local storage', original.clicks === 1 && original.note.includes('東京') && original.cookies.includes('kelpi_browser_fixture=saved') && original.storage === 'persistent fixture value');
+        pluginInstallAttempted = true;
         await cli.ok(['plugin','install',packagePath,'--trust']);
         await choose(local.paneID); if (!await ready(local.paneID)) throw new Error('Browser Lab did not attach');
         rec.check('browser replacement is an isolated SDK-only view of the existing native pane', await inside(local.paneID,`(() => { try { parent.document.body; return false; } catch { return true; } })()`) && (await json(['plugin','list','--json'])).find(item => item.manifest.id === pluginID).manifest.backend === undefined && (await json(['pane','list','--workspace',local.workspaceID,'--json']))[0].type === 'web');
@@ -301,6 +342,11 @@ export default async function ({ page, cli, sandbox, rec, d, harness, shell, sle
         // pick appears in the remote bundled pickup panel" is the check that was red on it, and it
         // is the one intermittent #205's triage table recorded for this scenario.
         remote = await d.boot({repoRoot,label:'browser-remote',build:false,window:'offscreen',log:message => rec.note(`remote: ${message}`)});
+        remoteDaemonID = daemonIDFromSandbox(remote.sandbox);
+        incomingRemoteWorkbenchStore = await captureWorkbenchStore(page, remoteDaemonID);
+        if (incomingRemoteWorkbenchStore.key === incomingWorkbenchStore.key || incomingRemoteWorkbenchStore.value !== null || incomingRemoteWorkbenchStore.origin !== incomingWorkbenchStore.origin) {
+            throw new Error('the private remote workbench store is not a new owned key in the original origin');
+        }
         const remotePane = await open(remote.cli,'Remote Browser Lab','remote');
         remoteNative = await targetFor(remote.sandbox.debugPort,remotePane.url);
         await remote.cli.ok(['plugin','install',packagePath,'--trust']);
@@ -354,41 +400,102 @@ export default async function ({ page, cli, sandbox, rec, d, harness, shell, sle
         await page.send('Page.navigate',{url:originalURL});
         rec.check('returning to the original shell restores its same local page', await ready(local.paneID) && await owner(local.paneID) && await sameState(native,localBeforeRemote));
         rec.note('The onscreen harness captures the composed native window, including its sibling WebContentsView. A separate native-page capture and placement logs corroborate page composition and ownership. Hidden screenshots are not visual evidence. Phone coverage uses emulation; physical-device keyboards and OS IME remain manual.');
-    } catch (error) { await diagnostics('failure').catch(() => {}); await rec.shot(page,'browser-failure').catch(() => {}); throw error; }
+    } catch (error) { bodyFailure = error; await diagnostics('failure').catch(() => {}); await rec.shot(page,'browser-failure').catch(() => {}); throw error; }
     finally {
-        /*
-         * The sandbox, its daemon AND its window are shared with every scenario after this one, so
-         * each step here is an undo and none is allowed to skip the rest: a throw mid-run leaves
-         * the phone remembering a remote workspace on a host this block is about to stop, the
-         * `browser` slot naming a view that is about to be removed, and the window emulating a
-         * 390px phone (#205).
-         */
-        const safely = async (what, step) => {
-            try { await step(); } catch (error) { rec.note(`cleanup: ${what} — ${error instanceof Error ? error.message : String(error)}`); }
-        };
-        await diagnostics('final').catch(() => {});
-        // First, while the shell is still mounted and the host it is on is still configured: the
-        // config restore below takes that host out of the navigation and the widening after it
-        // unmounts the shell, and neither can be undone from here (#205, `lib/workbench.mjs`).
-        await safely('the phone returns to its landing page', async () => { if (!await phoneToLanding(page, d, { note: message => rec.note(`cleanup: ${message}`) })) rec.note('cleanup: the phone shell never reached its landing page'); });
-        fs.writeFileSync(sandbox.configPath,config);
-        await page.send('Emulation.clearDeviceMetricsOverride').catch(() => {}); await page.send('Emulation.setTouchEmulationEnabled',{enabled:false}).catch(() => {});
-        await safely('the window returns to the shell this runner launched', async () => {
-            await page.send('Page.navigate',{url:originalURL});
-            await d.settleDom(page, `document.querySelector('[data-testid="kelpi-app"]')?.getAttribute('data-connection') === 'connected'`, {ceilingMs:20_000});
-        });
-        await safely('the browser placement goes back to bundled', async () => {
-            const restored = await restoreBundledSlots(page, d, { browser: 'kelpi.web' }, { daemonID: daemonIDFromSandbox(sandbox) });
-            if (!restored.ok) rec.note(`cleanup: the browser placement was not restored — ${String(restored.detail)}`);
-            if (restored.others !== null) rec.note(`cleanup: a stopped daemon's store still holds ${String(restored.others)}`);
-        });
-        await safely('the Settings overlay is closed', async () => {
-            if (await page.eval(`!!document.querySelector('[data-testid="settings-close"]')`)) await page.click('[data-testid="settings-close"]');
-        });
-        native?.page.close(); remoteNative?.page.close();
-        if (remote) await remote.stop();
-        await cli.run(['plugin','remove',pluginID]);
-        for (const workspace of await json(['workspace','list','--json'])) if (!initial.has(workspace.id)) await cli.run(['workspace','delete',workspace.id,'--force']);
-        await fixture.close();
+        let originalWindowReady = false, configRestored = false, remoteStopped = remote === undefined;
+        const cleanupFailures = await cleanupSteps([
+            ['final diagnostics', () => fixture === undefined ? undefined : diagnostics('final')],
+            // Leave the phone while its remote is still configured, before widening/navigating.
+            ['phone landing', async () => {
+                if (bodyStarted && !await phoneToLanding(page, d, { note: message => rec.note(`cleanup: ${message}`) })) throw new Error('phone did not return to landing');
+            }],
+            ['config restored', () => { if (config !== undefined) { fs.writeFileSync(sandbox.configPath, config); configRestored = true; } }],
+            ['device metrics', () => bodyStarted ? page.send('Emulation.clearDeviceMetricsOverride') : undefined],
+            ['touch emulation', () => bodyStarted ? page.send('Emulation.setTouchEmulationEnabled', { enabled: false }) : undefined],
+            ['original window', async () => {
+                if (!bodyStarted) return;
+                await page.send('Page.navigate', { url: originalURL });
+                if (!await d.settleDom(page, `location.href === ${JSON.stringify(originalURL)} && document.querySelector('[data-testid="kelpi-app"]')?.getAttribute('data-connection') === 'connected'`, { ceilingMs: 20_000 })) throw new Error('original window did not reconnect');
+                originalWindowReady = true;
+            }],
+            ['bundled browser placement released', async () => {
+                if (!bodyStarted || !pluginInstallAttempted) return;
+                if (!originalWindowReady) throw new Error('original window is not ready to release plugin browser placement');
+                // Release the plugin's native placement while the view and workspace still exist.
+                // Final raw restoration below remains authoritative for the incoming preference.
+                const restored = await restoreBundledSlots(page, d, { browser: 'kelpi.web' }, { daemonID: daemonIDFromSandbox(sandbox) });
+                if (!restored.ok) throw new Error(`bundled browser placement was not restored: ${String(restored.detail)}`);
+                await workbenchSettled(page);
+            }],
+            ['Settings overlay', async () => {
+                if (!bodyStarted) return;
+                if (!originalWindowReady) throw new Error('original window is not ready for Settings cleanup');
+                if (await page.eval(`!!document.querySelector('[data-testid="settings-close"]')`)) {
+                    await page.click('[data-testid="settings-close"]');
+                    if (!await d.settleDom(page, `!document.querySelector('[data-testid="settings-close"]')`)) throw new Error('Settings overlay did not close');
+                }
+            }],
+            ...[...nativeSessions].map((session, index) => [`native CDP session ${index + 1}`, () => session.close()]),
+            ['private remote stopped', async () => { if (remote) { await remote.stop(); remoteStopped = true; } }],
+            ['plugin removed', () => pluginInstallAttempted ? cli.ok(['plugin', 'remove', pluginID]) : undefined],
+            ['fixture workspaces removed', async () => {
+                if (initial === undefined || !bodyStarted) return;
+                const failures = [];
+                for (const workspace of await json(['workspace', 'list', '--json'])) {
+                    if (initial.has(workspace.id)) continue;
+                    try { await cli.ok(['workspace', 'delete', workspace.id, '--force']); }
+                    catch (error) { failures.push(`${workspace.id}: ${String(error?.message ?? error)}`); }
+                }
+                if (failures.length > 0) throw new Error(failures.join('; '));
+            }],
+            ['native fixture pages', async () => {
+                if (!fixture) return;
+                const fixtureOrigin = new URL(fixture.url).origin;
+                const fixtureURL = value => { try { return new URL(value).origin === fixtureOrigin; } catch { return false; } };
+                const acquired = new Set(nativeTargets.filter(target => target.debugPort === sandbox.debugPort && fixtureURL(target.url)).map(target => target.id));
+                const owns = target => target.type === 'page' && acquired.has(target.id);
+                await d.settle(async () => !(await listTargets(sandbox.debugPort)).some(owns), { ceilingMs: 5000 });
+                const leaked = (await listTargets(sandbox.debugPort)).filter(owns);
+                const errors = [];
+                try {
+                    rec.check('cleanup: workspace teardown releases its native fixture pages', leaked.length === 0,
+                        leaked.map(target => target.id).join(', '), 'cleanup');
+                } catch (error) { errors.push(`native cleanup reporting: ${String(error?.message ?? error)}`); }
+                // A failed teardown stays failed. Close only exact owned targets so its native
+                // pixels cannot cover subsequent scenarios and hide their visual evidence.
+                for (const target of leaked) {
+                    try {
+                        // An earlier close can yield while another owned target navigates.
+                        const current = (await listTargets(sandbox.debugPort)).find(item => item.id === target.id);
+                        if (!current) continue;
+                        if (!owns(current) || !fixtureURL(current.url)) throw new Error('owned target left the private fixture origin; refusing corrective close');
+                        if ((await page.send('Target.closeTarget', { targetId: current.id }))?.success !== true) throw new Error('close refused');
+                    } catch (error) { errors.push(`${target.id}: ${String(error?.message ?? error)}`); }
+                }
+                if (!await d.settle(async () => !(await listTargets(sandbox.debugPort)).some(owns), { ceilingMs: 5000 })) errors.push('owned native targets remain after cleanup');
+                if (errors.length) throw new Error(errors.join('; '));
+            }],
+            ['fixture server closed', () => fixture?.close()],
+            ['private remote workbench store', async () => {
+                if (!remote) return;
+                if (!originalWindowReady || !configRestored || !remoteStopped) throw new Error('private remote teardown did not establish store-removal preconditions');
+                if (!incomingRemoteWorkbenchStore || incomingRemoteWorkbenchStore.value !== null || incomingRemoteWorkbenchStore.key === incomingWorkbenchStore?.key) throw new Error('private remote store absence and ownership were not established');
+                await requireWorkbenchOrigin(page, incomingRemoteWorkbenchStore);
+                await workbenchSettled(page);
+                await removeOwnedRemoteStore(page, remoteDaemonID, rec);
+                await workbenchSettled(page);
+                await requireWorkbenchOrigin(page, incomingRemoteWorkbenchStore);
+                if (await page.eval(`localStorage.getItem(${JSON.stringify(incomingRemoteWorkbenchStore.key)})`) !== null) throw new Error('private remote store was recreated after removal');
+            }],
+            ['incoming workbench preferences', async () => {
+                if (!bodyStarted || incomingWorkbenchStore === undefined) return;
+                if (!originalWindowReady) throw new Error('original window is not ready for workbench restoration');
+                await restoreWorkbenchStore(page, incomingWorkbenchStore);
+            }]
+        ], (label, detail) => rec.check(`cleanup: ${label}`, false, detail, 'cleanup'));
+        // A broken recorder must not make an unreported cleanup failure look like success.
+        if (cleanupFailures.some(detail => detail.startsWith('cleanup reporting:'))) {
+            throw new AggregateError([...(bodyFailure ? [bodyFailure] : []), new Error(cleanupFailures.join('; '))], 'Browser Lab cleanup reporting failed');
+        }
     }
 }

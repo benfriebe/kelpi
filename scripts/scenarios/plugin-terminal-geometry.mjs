@@ -330,52 +330,100 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, diagnosticsP
         await rec.shot(page, 'terminal-lab-owns-its-box');
         rec.note('EYES - the screenshot above: one terminal pane filling its workspace, its picker reading "Terminal renderer: Terminal Lab", the fixture header (KELPI TERMINAL LAB / PID / 赤 緑 🐙 café / READY) painted at the top-left, and terminal background filling the pane edge to edge with no second shade, no scrollbar and no "Take size control" chip in the top bar. This is the baseline every later shot is compared against.');
 
-        // Hiding Chromium's scrollbar is only a visual treatment, never proof that xterm lost
-        // scrollback. Put actual fixture output into xterm's normal buffer, explicitly disable
-        // the fixture's DEC mouse reporting there (otherwise xterm correctly sends wheel input to
-        // the application), and make both a bounded wheel and a Shift+PageUp move its viewport.
-        // The fixture then repaints the original alt screen and its original mouse modes so every
-        // later ownership check starts from the same state.
-        let scrollbackRestored = false;
-        try {
-            if (!await control(local, { op: 'burst', bytes: 512 * 1024, delayMs: 0, scrollback: true, label: 'GEOMETRY-SCROLLBACK-LIVE' })) {
-                throw new Error('The fixture did not finish the live scrollback burst');
+        // Wait for the fixture's final PTY repaint, then switch its retained normal buffer into
+        // view. The control file completing does not mean the renderer consumed that repaint.
+        // xterm 6 synchronizes its virtual scroller on an animation frame; the legacy
+        // .xterm-viewport is not its scrollback container. Read the pinned adapter's actual
+        // scroller so neither its stale zero position nor an alt-screen transition can pass.
+        const scrollbackLabel = 'GEOMETRY-SCROLLBACK-LIVE';
+        const scrollbackState = () => inside(local.paneID, `(() => {
+            const t = terminalLab.terminal, b = t.buffer.active;
+            const scroller = t._core._viewport?._scrollableElement;
+            return { type:b.type, baseY:b.baseY, viewportY:b.viewportY, rows:t.rows,
+                position:scroller?.getScrollPosition() ?? null,
+                dimensions:scroller?.getScrollDimensions() ?? null,
+                cellHeight:t._core._renderService.dimensions.css.cell.height,
+                mouseTracking:t.modes.mouseTrackingMode,
+                textareaFocused:document.activeElement === t.textarea,
+                documentFocused:document.hasFocus() };
+        })()`);
+        const nextPaint = () => inside(local.paneID, `new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))`);
+        const atBottom = value => value?.type === 'normal' && value.baseY > value.rows * 2 &&
+            value.viewportY === value.baseY && value.mouseTracking === 'none' && value.textareaFocused &&
+            value.dimensions?.scrollHeight > value.dimensions?.height &&
+            Math.abs(value.position?.scrollTop - value.viewportY * value.cellHeight) <= value.cellHeight;
+        const prepareScrollback = async () => {
+            await inside(local.paneID, `(() => { const t = terminalLab.terminal; t.focus(); t.scrollToBottom(); })()`);
+            await nextPaint();
+            let observed;
+            if (!await d.settle(async () => { observed = await scrollbackState(); return atBottom(observed); }, { ceilingMs: 5000 })) {
+                throw new Error(`Live scrollback preconditions failed: ${JSON.stringify(observed)}`);
             }
-            const beforeScrollback = await inside(local.paneID, `(() => new Promise(resolve => {
-                const t = terminalLab.terminal;
-                t.write(String.fromCharCode(27) + '[?1049l' + String.fromCharCode(27) + '[?1000l' + String.fromCharCode(27) + '[?1002l' + String.fromCharCode(27) + '[?1006l', () => { t.focus(); const v = document.querySelector('#terminal .xterm-viewport'); resolve({ baseY:t.buffer.active.baseY, viewportY:t.buffer.active.viewportY, scrollTop:v?.scrollTop ?? null, scrollHeight:v?.scrollHeight ?? null, clientHeight:v?.clientHeight ?? null, mouseTracking:terminalLab.modes.mouseTracking, mouseFormat:terminalLab.modes.mouseFormat }); });
+            return observed;
+        };
+        let scrollbackRestored = false, scrollbackFailure;
+        try {
+            if (!await control(local, { op: 'burst', bytes: 512 * 1024, delayMs: 0, scrollback: true, label: scrollbackLabel }) ||
+                !await agrees(local, scrollbackLabel)) {
+                throw new Error('The fixture final scrollback repaint was not consumed by the renderer');
+            }
+            await inside(local.paneID, `(() => new Promise(resolve => {
+                terminalLab.terminal.write(String.fromCharCode(27) + '[?1049l' + String.fromCharCode(27) + '[?1000l' + String.fromCharCode(27) + '[?1002l' + String.fromCharCode(27) + '[?1006l', resolve);
             }))()`);
+            await nextPaint();
+            const beforeWheel = await prepareScrollback();
             const iframeBox = await page.box(frame(local.paneID));
             const scrollProbe = await probe(local.paneID);
-            const wheelX = iframeBox.x + Math.max(1, (scrollProbe.viewport?.left ?? 0) + Math.min(20, Math.max(1, (scrollProbe.viewport?.width ?? 20) / 2)));
-            const wheelY = iframeBox.y + Math.max(1, (scrollProbe.viewport?.top ?? 0) + Math.min(20, Math.max(1, (scrollProbe.viewport?.height ?? 20) / 2)));
-            let wheelDispatched = false;
-            try {
-                await page.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: wheelX, y: wheelY, deltaX: 0, deltaY: -240, modifiers: 0 }, 4000);
-                wheelDispatched = true;
-            } catch {
-                rec.note('scrollback wheel dispatch did not acknowledge within 4 s');
-            }
+            const wheelX = iframeBox.x + scrollProbe.screenLeft + Math.min(20, scrollProbe.screenWidth / 2);
+            const wheelY = iframeBox.y + scrollProbe.screenTop + Math.min(20, scrollProbe.screenHeight / 2);
+            await page.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: wheelX, y: wheelY, deltaX: 0, deltaY: -240, modifiers: 0 }, 4000);
+            let wheelState;
             const afterWheel = await d.settle(async () => {
-                const value = await inside(local.paneID, `({ viewportY:terminalLab.terminal.buffer.active.viewportY, scrollTop:document.querySelector('#terminal .xterm-viewport')?.scrollTop ?? null })`);
-                return value.viewportY < beforeScrollback.viewportY ? value : null;
+                wheelState = await scrollbackState();
+                return wheelState.type === 'normal' && wheelState.baseY === beforeWheel.baseY &&
+                    wheelState.viewportY > 0 && wheelState.viewportY < beforeWheel.viewportY;
             }, { ceilingMs: 5000 });
-            const wheelState = afterWheel ? await inside(local.paneID, `({ viewportY:terminalLab.terminal.buffer.active.viewportY, scrollTop:document.querySelector('#terminal .xterm-viewport')?.scrollTop ?? null })`) : null;
+            rec.check('the hidden xterm scrollbar retains live fixture scrollback through wheel input',
+                afterWheel === true, JSON.stringify({ before:beforeWheel, after:wheelState }));
+
+            // Establish a fresh bottom position before testing the other input. This reset is
+            // setup only: each assertion requires movement caused by its subsequent real CDP input.
+            const beforeKeyboard = await prepareScrollback();
             await page.key('PageUp', { key: 'PageUp', keyCode: 33, modifiers: d.MOD.shift });
-            let keyboardState = null;
+            let keyboardState;
             const afterKeyboard = await d.settle(async () => {
-                const value = await inside(local.paneID, `({ viewportY:terminalLab.terminal.buffer.active.viewportY, scrollTop:document.querySelector('#terminal .xterm-viewport')?.scrollTop ?? null })`);
-                if (value.viewportY >= (wheelState?.viewportY ?? beforeScrollback.viewportY)) return false;
-                keyboardState = value;
-                return true;
+                keyboardState = await scrollbackState();
+                return keyboardState.type === 'normal' && keyboardState.baseY === beforeKeyboard.baseY &&
+                    keyboardState.viewportY > 0 && keyboardState.viewportY < beforeKeyboard.viewportY;
             }, { ceilingMs: 5000 });
-            rec.check('the hidden xterm scrollbar retains live fixture scrollback through wheel and Shift+PageUp',
-                beforeScrollback.baseY > 0 && wheelDispatched && wheelState !== null && afterKeyboard === true,
-                JSON.stringify({ before: beforeScrollback, wheel: wheelState, keyboard: keyboardState, afterKeyboard, wheelDispatched }));
+            rec.check('the hidden xterm scrollbar retains live fixture scrollback through Shift+PageUp',
+                afterKeyboard === true, JSON.stringify({ before:beforeKeyboard, after:keyboardState }));
+            const chromeHidden = await inside(local.paneID, `(() => {
+                const scroller = document.querySelector('#terminal .xterm-scrollable-element');
+                const bars = Array.from(scroller?.querySelectorAll(':scope > .scrollbar') ?? []);
+                return !!scroller && scroller.getBoundingClientRect().height > 0 && bars.length > 0 &&
+                    bars.every(bar => getComputedStyle(bar).display === 'none');
+            })()`);
+            rec.check('live xterm 6 scrollbar chrome is hidden while its scroller remains mounted', chromeHidden === true);
+            await rec.shot(page, 'terminal-lab-live-scrollback');
+            rec.note('EYES - live normal-buffer fixture output remains readable after wheel and Shift+PageUp, with no visible scrollbar chrome or second-shade edge strip. This uses trusted CDP input; OS-native focus, physical wheel/keyboard and native IME are not certified.');
+        } catch (error) {
+            scrollbackFailure = error;
+            throw error;
         } finally {
-            await inside(local.paneID, `(() => new Promise(resolve => terminalLab.terminal.write(String.fromCharCode(27) + '[?1049h', resolve)))()`).catch(() => {});
-            scrollbackRestored = await control(local, { op: 'paint', label: 'READY' }).catch(() => false);
-            rec.check('the live scrollback check restores the original terminal screen', scrollbackRestored === true && await ready(local.paneID), String(scrollbackRestored));
+            let restorationError;
+            try {
+                scrollbackRestored = await control(local, { op: 'paint', label: 'READY' }) === true &&
+                    await ready(local.paneID) && await agrees(local, 'READY') &&
+                    await inside(local.paneID, `terminalLab.terminal.buffer.active.type === 'alternate' && terminalLab.terminal.modes.mouseTrackingMode === 'drag'`);
+            } catch (error) { restorationError = error; }
+            try {
+                rec.check('the live scrollback check restores the original terminal screen',
+                    scrollbackRestored === true && restorationError === undefined,
+                    restorationError?.message ?? String(scrollbackRestored), 'cleanup');
+            } catch (reportingError) {
+                throw new AggregateError([scrollbackFailure, restorationError, reportingError].filter(Boolean), 'Scrollback cleanup reporting failed');
+            }
         }
 
         await page.send('Network.enable');

@@ -27,7 +27,7 @@ test('shared acceptance: geometry records xterm viewport evidence for lower-righ
         assert.match(geometry, new RegExp(`\\b${field}: viewport\\.${field}`));
     }
     assert.match(geometry, /afterKeyboard === true/, 'a timed-out settle returns false and must not satisfy the keyboard scrollback check');
-    assert.match(geometry, /keyboard: keyboardState/, 'the final keyboard viewport diagnostics must be retained');
+    assert.match(geometry, /JSON\.stringify\(\{\s*before:\s*beforeKeyboard,\s*after:\s*keyboardState\s*\}\)/, 'both starting and final keyboard viewport diagnostics must be retained');
     assert.match(geometry, /\[\?1002l/, 'the normal-buffer wheel setup must disable fixture mouse reporting before asserting scrollback');
 });
 

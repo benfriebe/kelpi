@@ -211,8 +211,10 @@ describe('successful paths derived from actual selected sources and reports',()=
  });
 });
 describe('source and recorder visual requirements',()=>{
- it('retains the five actual geometry EYES even when raw visual markers disappear',()=>{
-  const f=actual(['plugin-terminal-geometry']);expect(f.selection.complete).toBe(true);expect(f.selection.members[0].requiredVisuals).toHaveLength(5);expect(checked(f).visuals).toHaveLength(5);expect(checked(f).verdict).toBe('unverified');
+ it('retains all six actual geometry EYES even when raw visual markers disappear',()=>{
+  const f=actual(['plugin-terminal-geometry']);expect(f.selection.complete).toBe(true);
+  const expected=['terminal-lab-owns-its-box','terminal-lab-live-scrollback','terminal-lab-letterboxed-mirror','terminal-lab-clipped-narrow-viewer','terminal-lab-after-take-size-control','terminal-lab-remote-mirror'].map(id=>`plugin-terminal-geometry:shot:${id}`);
+  expect(f.selection.members[0].requiredVisuals).toEqual(expected);expect(checked(f).visuals).toEqual(expected);expect(checked(f).verdict).toBe('unverified');
  });
  it('freezes audit source needsEyes and its executable pane aggregate',()=>{
   const selection=auditPlan(root,['workspace-switch','renderer-console']);expect(selection.complete).toBe(true);expect(selection.members[0].requiredAssertions).toContain('every eligible revealed terminal paints its own screen');

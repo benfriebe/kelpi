@@ -5,7 +5,7 @@ import { execFileSync } from 'node:child_process';
 import { spawnDesktopHelper } from '../ui-audit/lib/desktop-lifecycle.mjs';
 import { fileURLToPath } from 'node:url';
 import { makeSandbox, startDaemon, waitForHealthz, makeCli, PROTOCOL_VERSION } from '../ui-audit/lib/stack.mjs';
-import { daemonIDFromSandbox, phoneToLanding, restoreBundledSlots } from '../ui-audit/lib/workbench.mjs';
+import { daemonIDFromSandbox, phoneToLanding } from '../ui-audit/lib/workbench.mjs';
 
 export const covers = ['examples/plugins/document-lab/', 'packages/plugin-sdk/', 'packages/client/src/features/',
     'packages/client/src/plugins/', 'packages/client/src/content/', 'packages/client/src/app/RemoteWorkspaceView.tsx',
@@ -14,10 +14,28 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../
 const pluginID = 'example.document-lab', viewID = `${pluginID}.editor`, packagePath = path.join(repoRoot, 'examples/plugins/document-lab');
 const frame = id => `[data-testid="plugin-view-${id}"] iframe`;
 
+async function captureWorkbenchStore(page, daemonID) {
+    if (daemonID === null) throw new Error('the fixture daemon identity is unavailable');
+    const key = `kelpi.workbench.v1:${daemonID}`;
+    return { key, value: await page.eval(`localStorage.getItem(${JSON.stringify(key)})`) };
+}
+
+async function restoreWorkbenchStore(page, snapshot) {
+    await page.eval(`(() => {
+        const key = ${JSON.stringify(snapshot.key)}, value = ${JSON.stringify(snapshot.value)};
+        if (value === null) localStorage.removeItem(key); else localStorage.setItem(key, value);
+        window.dispatchEvent(new CustomEvent('kelpi-workbench-selections', { detail: key }));
+    })()`);
+    await page.eval(`new Promise(resolve => requestAnimationFrame(() => resolve(true)))`);
+    const restored = await page.eval(`localStorage.getItem(${JSON.stringify(snapshot.key)})`);
+    if (restored !== snapshot.value) throw new Error(`workbench store ${snapshot.key} did not return to its incoming value`);
+}
+
 export default async function ({ page, cli, sandbox, rec, d }) {
     await page.watchFrames();
     const json = async (args, opts) => JSON.parse(await cli.ok(args, opts));
     const originalURL = await page.eval('location.href'), config = fs.readFileSync(sandbox.configPath, 'utf8');
+    const incomingWorkbenchStore = await captureWorkbenchStore(page, daemonIDFromSandbox(sandbox));
     const initial = new Set((await json(['workspace', 'list', '--json'])).map(workspace => workspace.id));
     const inside = (id, expression) => page.evalInFrame(frame(id), expression);
     const check = (id, expression, ceilingMs = 12_000) => d.settle(async () => {
@@ -211,17 +229,20 @@ export default async function ({ page, cli, sandbox, rec, d }) {
                 await page.send('Page.navigate', { url: originalURL });
                 if (!await d.settleDom(page, `document.querySelector('[data-testid="kelpi-app"]')?.getAttribute('data-connection') === 'connected'`, { ceilingMs: 20_000 })) throw new Error('original window did not reconnect');
             }],
-            ['workbench placements', async () => {
-                const restored = await restoreBundledSlots(page, d, { 'document.markdown': 'kelpi.markdown', 'document.scratchpad': 'kelpi.scratchpad', 'document.diff': 'kelpi.diff' }, { daemonID: daemonIDFromSandbox(sandbox) });
-                rec.check('cleanup: workbench placements restored', restored.ok, restored.detail, 'cleanup');
-            }],
             ['private remote workbench store', async () => { if (remote) await removeOwnedRemoteStore(page, daemonIDFromSandbox(remote), rec); }],
             ['plugin removed', () => cli.ok(['plugin', 'remove', pluginID])],
             ['fixture workspaces removed', async () => {
-                for (const workspace of await json(['workspace', 'list', '--json'])) if (!initial.has(workspace.id)) await cli.ok(['workspace', 'delete', workspace.id, '--force']);
+                const failures = [];
+                for (const workspace of await json(['workspace', 'list', '--json'])) {
+                    if (initial.has(workspace.id)) continue;
+                    try { await cli.ok(['workspace', 'delete', workspace.id, '--force']); }
+                    catch (error) { failures.push(`${workspace.id}: ${String(error?.message ?? error)}`); }
+                }
+                if (failures.length > 0) throw new Error(failures.join('; '));
             }],
             ['remote daemon stopped', () => remoteDaemon?.stop()],
-            ['remote sandbox removed', () => remote?.cleanup()]
+            ['remote sandbox removed', () => remote?.cleanup()],
+            ['incoming workbench preferences', () => restoreWorkbenchStore(page, incomingWorkbenchStore)]
         ], (label, detail) => rec.check(`cleanup: ${label}`, false, detail, 'cleanup'));
     }
 }

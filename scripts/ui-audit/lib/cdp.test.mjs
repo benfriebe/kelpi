@@ -108,9 +108,10 @@ describe('the KEYS table', () => {
         // A regex that quietly stopped matching would make the assertions below vacuous.
         expect(named.has('KeyC')).toBe(true);
         expect(named.has('KeyV')).toBe(true);
-        // Only the positional tuple table names these two, so this is the third regex's own proof.
-        expect(named.get('PageUp')).toBe('scripts/ui-audit/audit.mjs');
-        expect(named.get('PageDown')).toBe('scripts/ui-audit/audit.mjs');
+        // Prove tuple discovery directly: a new scenario may name either key before audit.mjs.
+        expect(keyCodesNamedIn("[['PageUp', {}], ['PageDown', {}]]")).toEqual(new Set(['PageUp', 'PageDown']));
+        expect(named.has('PageUp')).toBe(true);
+        expect(named.has('PageDown')).toBe(true);
         expect(named.size).toBeGreaterThan(20);
     });
 

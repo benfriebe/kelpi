@@ -20,7 +20,7 @@
  */
 
 import fs from 'node:fs';
-import { armIncidentDiagnostics, redactFixtureText } from '../ui-audit/lib/incident-diagnostics.mjs';
+import { armIncidentDiagnostics, redactFixtureText, cleanupSteps } from '../ui-audit/lib/incident-diagnostics.mjs';
 import path from 'node:path';
 
 /**
@@ -40,7 +40,8 @@ const MARK = `KELPI-COPY-${TAG}`;
 const LINE = `${MARK}-0123456789ABCDEF`;
 const POISON = `KELPI-POISON-${TAG}`;
 
-export default async function ({ page, harness, cli, rec, d, sleep }) {
+export default async function ({ page, harness, cli, rec, d, sleep, clipboardChord }) {
+    const chord = clipboardChord ?? ((code, options) => page.key(code, options));
     /*
      * The workspace this scenario opens for itself goes when this scenario does. In a battery every
      * scenario shares one sandbox, and a workspace left behind is not inert: it changes what
@@ -50,6 +51,7 @@ export default async function ({ page, harness, cli, rec, d, sleep }) {
     const startingWorkspaces = JSON.parse(await cli.ok(['workspace', 'list', '--json']));
     const startingWorkspace = startingWorkspaces.find((workspace) => workspace.is_active === true)?.id ?? null;
     const initialWorkspaceIDs = new Set(startingWorkspaces.map((workspace) => workspace.id));
+    const originalClipboard = String((await harness.clipboardRead()).text);
     const safeText = value => redactFixtureText(value, [MARK, LINE, LINE.slice(0, 25), POISON]);
     let incident;
     try {
@@ -188,13 +190,13 @@ export default async function ({ page, harness, cli, rec, d, sleep }) {
         rec.check('the sentinel really is on the clipboard before ⌘C', (await readClipboard()) === POISON);
 
         const caretAtCopy = await d.caretNow(page, paneA);
-        await page.key('KeyC', { modifiers: d.MOD.meta, key: 'c' });
+        await chord('KeyC', { modifiers: d.MOD.meta, key: 'c' });
         await sleep(250);
         const copied = await readClipboard();
         rec.note(`clipboard after ⌘C: ${JSON.stringify(safeText(copied))}`);
         rec.check(
             '⌘C put the terminal selection on the clipboard (#81)',
-            copied.includes(MARK),
+            copied === LINE.slice(0, 25),
             `holds ${JSON.stringify(safeText(copied))} · at the press ${JSON.stringify(caretAtCopy)}`
         );
         rec.check(
@@ -243,12 +245,16 @@ export default async function ({ page, harness, cli, rec, d, sleep }) {
         const clipboardAtPaste = await readClipboard();
         rec.check(
             'the copied text was still on the clipboard at the moment of ⌘V',
-            clipboardAtPaste.includes(MARK),
+            clipboardAtPaste === LINE.slice(0, 25),
             `holds ${JSON.stringify(safeText(clipboardAtPaste))}`
         );
         const caretAtPaste = await d.caretNow(page, paneB);
-        await page.key('KeyV', { modifiers: d.MOD.meta, key: 'v' });
-        const pasted = await captureUntil(paneB, (text) => text.includes(MARK), 3_000);
+        const beforePasteCapture = (await capture(paneB)).replaceAll('\r', '').trimEnd();
+        await chord('KeyV', { modifiers: d.MOD.meta, key: 'v' });
+        const pasted = await captureUntil(paneB, (text) => text.includes(clipboardAtPaste), 3_000);
+        // Keep observing after first arrival so a delayed duplicate cannot pass an early read.
+        await sleep(250);
+        const stablePaste = await capture(paneB);
         rec.note(`pane B tail: ${JSON.stringify(safeText(pasted))}`);
         /*
          * The toast is read only when the sentinel is missing, and promptly: a refused or
@@ -260,7 +266,7 @@ export default async function ({ page, harness, cli, rec, d, sleep }) {
          * reading, and the whole capture goes to a file beside the screenshots rather than being
          * cut to a 160-character detail.
          */
-        const landed = pasted.includes(MARK);
+        const landed = clipboardAtPaste === LINE.slice(0, 25) && stablePaste.includes(clipboardAtPaste);
         rec.check('the first paste operation delivered the synthetic marker', landed);
         await rec.flushFirstFailure();
         const reading = landed
@@ -286,11 +292,13 @@ export default async function ({ page, harness, cli, rec, d, sleep }) {
                 ? JSON.stringify(safeText(pasted))
                 : `tail ${JSON.stringify(safeText(pasted))} · toast ${JSON.stringify(reading.toast)} · clipboard at the press ${JSON.stringify(reading.clipboardBeforePress)} · and after ${JSON.stringify(reading.clipboardAfterPress)} · caret ${JSON.stringify(caretAtPaste)}`
         );
-        const occurrences = (pasted.match(new RegExp(MARK, 'g')) ?? []).length;
+        const occurrences = clipboardAtPaste.length > 0 ? stablePaste.split(clipboardAtPaste).length - 1 : 0;
+        const normalizedPaste = stablePaste.replaceAll('\r', '').trimEnd();
+        const appended = normalizedPaste.startsWith(beforePasteCapture) ? normalizedPaste.slice(beforePasteCapture.length).replace(/^\n/, '') : null;
         rec.check(
             'and it arrived exactly once, so the Edit menu Paste did not also fire',
-            occurrences === 1,
-            `${String(occurrences)} occurrence(s)`
+            occurrences === 1 && appended === clipboardAtPaste,
+            `${String(occurrences)} occurrence(s); appended ${JSON.stringify(safeText(appended))}`
         );
         await rec.shot(page, 'after-paste');
 
@@ -324,14 +332,23 @@ export default async function ({ page, harness, cli, rec, d, sleep }) {
         rec.check('clipboard scenario exception', false, error?.message ?? error, 'harness');
         throw error;
     } finally {
-        await rec.flushFirstFailure();
-        await incident?.close();
-        for (const workspace of JSON.parse(await cli.ok(['workspace', 'list', '--json']))) {
-            if (!initialWorkspaceIDs.has(workspace.id)) await cli.ok(['workspace', 'delete', workspace.id, '--force']);
-        }
-        if (startingWorkspace !== null) {
-            const row = `[data-testid="workspace-row"][data-workspace-id="${startingWorkspace}"]`;
-            if (await d.settleDom(page, `document.querySelector(${JSON.stringify(row)})`, { ceilingMs: 8_000 })) await page.click(row);
-        }
+        await cleanupSteps([
+            ['first failure evidence', () => rec.flushFirstFailure()],
+            ['incident observers', () => incident?.close()],
+            ['original clipboard', async () => {
+                if (String((await harness.clipboardWrite(originalClipboard)).text) !== originalClipboard) throw new Error('original clipboard restoration did not read back exactly');
+            }],
+            ['private workspaces', async () => {
+                for (const workspace of JSON.parse(await cli.ok(['workspace', 'list', '--json']))) {
+                    if (!initialWorkspaceIDs.has(workspace.id)) await cli.ok(['workspace', 'delete', workspace.id, '--force']);
+                }
+            }],
+            ['starting workspace', async () => {
+                if (startingWorkspace !== null) {
+                    const row = `[data-testid="workspace-row"][data-workspace-id="${startingWorkspace}"]`;
+                    if (await d.settleDom(page, `document.querySelector(${JSON.stringify(row)})`, { ceilingMs: 8_000 })) await page.click(row);
+                }
+            }]
+        ], (label, detail) => rec.check(`cleanup: ${label}`, false, detail, 'cleanup'));
     }
 }

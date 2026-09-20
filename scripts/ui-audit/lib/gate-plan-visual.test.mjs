@@ -150,8 +150,8 @@ const labels={
     "the first document was intercepted",
     "boot returned despite the missing app root",
     "startup errors fail the named renderer check",
-    "the first document exception is preserved",
-    "the first document console error is preserved",
+    "the first document exception is preserved exactly once",
+    "the first document console error is preserved exactly once",
     "startup errors are consumed once",
     "the renderer threw nothing and logged no error"
   ],

@@ -1,5 +1,7 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { cleanupSteps } from '../ui-audit/lib/incident-diagnostics.mjs';
+import { daemonIDFromSandbox } from '../ui-audit/lib/workbench.mjs';
 
 export const covers = [
     'packages/client/src/App.tsx', 'packages/client/src/plugins/', 'packages/client/src/settings/',
@@ -11,17 +13,28 @@ export const covers = [
 const packagePath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../examples/plugins/agent-board');
 const pluginID = 'example.agent-board', viewID = `${pluginID}.board`;
 
-export default async function ({ page, harness, cli, rec, d }) {
+async function captureWorkbenchStore(page, daemonID) {
+    if (daemonID === null) throw new Error('the fixture daemon identity is unavailable');
+    const key = `kelpi.workbench.v1:${daemonID}`;
+    return { key, value: await page.eval(`localStorage.getItem(${JSON.stringify(key)})`) };
+}
+
+async function restoreWorkbenchStore(page, snapshot) {
+    await page.eval(`(() => {
+        const key = ${JSON.stringify(snapshot.key)}, value = ${JSON.stringify(snapshot.value)};
+        if (value === null) localStorage.removeItem(key); else localStorage.setItem(key, value);
+        window.dispatchEvent(new CustomEvent('kelpi-workbench-selections', { detail: key }));
+    })()`);
+    await page.eval(`new Promise(resolve => requestAnimationFrame(() => resolve(true)))`);
+    const restored = await page.eval(`localStorage.getItem(${JSON.stringify(snapshot.key)})`);
+    if (restored !== snapshot.value) throw new Error(`workbench store ${snapshot.key} did not return to its incoming value`);
+}
+
+export default async function ({ page, harness, cli, sandbox, rec, d }) {
     await page.watchFrames();
     const failures = [];
-    const offException = page.on('Runtime.exceptionThrown', details => failures.push(JSON.stringify(details)));
-    const offLog = page.on('Log.entryAdded', details => failures.push(JSON.stringify(details)));
-    await page.send('Log.enable');
-    const created = JSON.parse(await cli.ok(['workspace', 'create', '--name', 'Plugin validation', '--json']));
-    const workspaceID = created.workspace_id;
-    const installed = await cli.run(['plugin', 'install', packagePath, '--trust']);
-    rec.check('local plugin installs and activates through the shipped CLI', installed.code === 0, installed.stderr || installed.stdout);
-    if (installed.code !== 0) return;
+    let offException = null, offLog = null, incomingWorkbenchStore;
+    let workspaceID = null, pluginInstalled = false;
     const painted = () => page.eval(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))`);
     const chooseSidebar = async (side, id) => {
         await painted();
@@ -53,6 +66,16 @@ export default async function ({ page, harness, cli, rec, d }) {
         if (!open) throw new Error('the right sidebar did not finish opening');
     };
     try {
+        offException = page.on('Runtime.exceptionThrown', details => failures.push(JSON.stringify(details)));
+        offLog = page.on('Log.entryAdded', details => failures.push(JSON.stringify(details)));
+        await page.send('Log.enable');
+        incomingWorkbenchStore = await captureWorkbenchStore(page, daemonIDFromSandbox(sandbox));
+        const created = JSON.parse(await cli.ok(['workspace', 'create', '--name', 'Plugin validation', '--json']));
+        workspaceID = created.workspace_id;
+        const installed = await cli.run(['plugin', 'install', packagePath, '--trust']);
+        rec.check('local plugin installs and activates through the shipped CLI', installed.code === 0, installed.stderr || installed.stdout);
+        if (installed.code !== 0) return;
+        pluginInstalled = true;
         const pane = JSON.parse(await cli.ok(['plugin', 'open', pluginID, viewID, '--workspace', workspaceID]));
         const frame = `[data-testid="plugin-view-${pane.paneID}"] iframe`;
         rec.check('plugin pane appears in the normal grid', await d.settleDom(page, `document.querySelector(${JSON.stringify(frame)})?.getAttribute('srcdoc')?.includes('Agent Board')`, { ceilingMs: 10_000 }));
@@ -134,31 +157,12 @@ export default async function ({ page, harness, cli, rec, d }) {
         const history = JSON.parse(await cli.ok(['plugin', 'run', `${pluginID}.history`]));
         rec.check('backend retained activity independently of view mounts', history.length > 0, JSON.stringify(history.slice(-3)));
     } finally {
-        offException(); offLog();
-        /*
-         * `sidebar.primary` still names the plugin's board here, and `kelpi plugin remove` does not
-         * touch it: the selection is the WINDOW's, saved in `localStorage` under
-         * `kelpi.workbench.v1:<daemon>`, so it outlives both the plugin and this scenario. The next
-         * scenario to install `agent-board` - `plugin-extensions` pulls it in as a dependency -
-         * then finds a plugin drawing the sidebar where it expected the native one, and its "typed
-         * workspace operations update the native sidebar" check goes red (#205 ▸ cleanup
-         * discipline). Through Settings rather than the sidebar's own picker, because that picker
-         * is only drawn while a plugin is the one drawing the sidebar.
-         */
-        try {
-            await page.key('Comma', { modifiers: 4, key: ',' });
-            if (await d.settleDom(page, `document.querySelector('[data-testid="settings-tab-button-plugins"]')`)) {
-                await page.click('[data-testid="settings-tab-button-plugins"]');
-                if (await d.settleDom(page, `document.querySelector('[data-testid="plugin-placements"]')`)) {
-                    await chooseSidebarSetting('primary', 'kelpi.workspaces');
-                    await chooseSidebarSetting('secondary', 'kelpi.inspector');
-                }
-            }
-            if (await page.eval(`!!document.querySelector('[data-testid="settings-close"]')`)) await page.click('[data-testid="settings-close"]');
-        } catch (error) {
-            rec.note(`cleanup: both sidebars go back to bundled — ${error instanceof Error ? error.message : String(error)}`);
-        }
-        await cli.run(['plugin', 'remove', pluginID]);
-        await cli.run(['workspace', 'delete', workspaceID, '--force']);
+        await cleanupSteps([
+            ['runtime exception listener', () => offException?.()],
+            ['log listener', () => offLog?.()],
+            ['plugin removed', () => pluginInstalled ? cli.ok(['plugin', 'remove', pluginID]) : undefined],
+            ['fixture workspace removed', () => workspaceID === null ? undefined : cli.ok(['workspace', 'delete', workspaceID, '--force'])],
+            ['incoming workbench preferences', () => incomingWorkbenchStore === undefined ? undefined : restoreWorkbenchStore(page, incomingWorkbenchStore)]
+        ], (label, detail) => rec.check(`cleanup: ${label}`, false, detail, 'cleanup'));
     }
 }

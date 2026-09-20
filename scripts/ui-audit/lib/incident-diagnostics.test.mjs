@@ -22,6 +22,142 @@ function renderer() {
 }
 
 describe('first incident evidence', () => {
+    it('leaves frozen SDK sessions untouched while retaining the available renderer evidence', async () => {
+        const host=renderer(), write=vi.fn(() => 7), session=Object.freeze({write,writeDirect:write,resize:write});
+        host.context.terminalLab.session=session;
+        await host.eval(`(${installRendererRecorder.toString()})(${JSON.stringify({key:'incident',allowed:['KELPI'],capacity:20})})`);
+        expect(session.write('KELPI')).toBe(7);
+        expect(write).toHaveBeenCalledExactlyOnceWith('KELPI');
+        expect(session.write).toBe(write);
+        expect((await host.eval('incident.snapshot()')).incomplete).toBe(false);
+        await host.eval('incident.restore()');
+    });
+
+    it.each([false, true])('retains every journaled event and fails closed on journal write loss (%s)', async failWrite => {
+        const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'incident-journal-'));
+        let spy;
+        try {
+            const host = renderer(), original = vi.fn(async () => ({text:'private clipboard secret'}));
+            const rec = recorder({name:'journal',outDir}), harness = {clipboardRead:original};
+            const incident = await armIncidentDiagnostics({page:{eval:host.eval},harness,rec,capacity:4,journal:true});
+            if (failWrite) spy = vi.spyOn(fs,'writeSync').mockReturnValue(0);
+            for (let i=0;i<6;i++) expect(await harness.clipboardRead()).toEqual({text:'private clipboard secret'});
+            spy?.mockRestore(); spy=undefined;
+            await incident.close();
+            const saved=JSON.parse(fs.readFileSync(path.join(outDir,'journal-first-incident.json'),'utf8'));
+            const log=fs.readFileSync(path.join(outDir,'journal-incident-events.jsonl'),'utf8');
+            expect(original).toHaveBeenCalledTimes(6);
+            expect(saved.complete).toBe(!failWrite);
+            expect(saved.historyRetained).toBe(!failWrite);
+            expect(saved.dropped).toBe(8);
+            expect(saved.journal.records).toBe(failWrite ? 0 : 12);
+            expect(log).not.toContain('private clipboard secret');
+            if (!failWrite) expect(log.trim().split('\n').map(line=>JSON.parse(line).sequence)).toEqual(Array.from({length:12},(_,i)=>i+1));
+            expect(harness.clipboardRead).toBe(original);
+        } finally { spy?.mockRestore(); fs.rmSync(outDir,{recursive:true,force:true}); }
+    });
+
+    it('observes promised Clipboard.write without reading items or replacing its rejected promise', async () => {
+        const host = renderer(), error = new Error('permission denied');
+        error.name = 'NotAllowedError';
+        const pending = Promise.reject(error), original = vi.fn(() => pending);
+        host.clipboard.write = original;
+        const item = { getType: vi.fn(() => { throw new Error('must not consume clipboard representation'); }) };
+        await host.eval(`(${installRendererRecorder.toString()})(${JSON.stringify({key:'incident',allowed:['KELPI'],capacity:20})})`);
+        const returned = host.clipboard.write([item]);
+        expect(returned).toBe(pending);
+        await expect(returned).rejects.toBe(error);
+        const saved = await host.eval('incident.snapshot()');
+        expect(saved.events.map(event => event.kind)).toEqual(['armed', 'clipboard.write:call', 'clipboard.write:rejected']);
+        expect(original).toHaveBeenCalledExactlyOnceWith([item]);
+        expect(item.getType).not.toHaveBeenCalled();
+        await host.eval('incident.restore()');
+        expect(host.clipboard.write).toBe(original);
+    });
+
+    it('observes bridge traffic without starting a port or changing arguments, return values or exceptions', async () => {
+        const host = renderer(), returned = {}, failure = new Error('original send failed');
+        const listeners = new Set(), start = vi.fn();
+        class Port {
+            addEventListener(_type, fn) { listeners.add(fn); }
+            removeEventListener(_type, fn) { listeners.delete(fn); }
+            start = start;
+            postMessage = undefined;
+        }
+        delete Port.prototype.postMessage;
+        const original = vi.fn(function (message, transfer) { if (message.fail) throw failure; return returned; });
+        Port.prototype.postMessage = original;
+        host.context.MessagePort = Port;
+        const port = new Port(); delete port.postMessage;
+        await host.eval(`(${installRendererRecorder.toString()})(${JSON.stringify({key:'incident',allowed:['KELPI'],capacity:20})})`);
+        const message = {type:'terminal-action',action:{type:'getSelection'},private:'secret transcript'}, transfer = [];
+        expect(port.postMessage(message, transfer)).toBe(returned);
+        for (const fn of listeners) fn({data:{type:'terminal-action-reply',result:'private clipboard secret'}});
+        expect(() => port.postMessage({type:'terminal-input',fail:true})).toThrow(failure);
+        expect(original.mock.calls[0]).toEqual([message, transfer]);
+        expect(original.mock.contexts[0]).toBe(port);
+        expect(start).not.toHaveBeenCalled();
+        const saved = await host.eval('incident.snapshot()');
+        expect(saved.events.map(event => event.kind)).toContain('bridge:received');
+        expect(JSON.stringify(saved)).not.toContain('secret');
+        await host.eval('incident.restore()');
+        expect(Port.prototype.postMessage).toBe(original);
+        expect(listeners.size).toBe(0);
+    });
+
+    it('does not publish custom error names or changing bridge metadata getters, while preserving the original calls', async () => {
+        const host=renderer(), secret='private clipboard secret', error=new Error(secret);
+        error.name=secret;
+        const write=vi.fn(() => {throw error;}); host.clipboard.write=write;
+        const terminalWrite=vi.fn(() => 19); host.terminal.write=terminalWrite;
+        const original=vi.fn(() => 17);
+        class Port {addEventListener() {} removeEventListener() {} postMessage(...args) {return original(...args);}}
+        host.context.MessagePort=Port;
+        await host.eval(`(${installRendererRecorder.toString()})(${JSON.stringify({key:'incident',allowed:['KELPI'],capacity:20})})`);
+        let caught;
+        try {host.clipboard.write([]);} catch (value) {caught=value;}
+        expect(caught).toBe(error);
+        let reads=0;
+        const message={get type() {return ++reads===1 ? 'terminal-action' : secret;},action:{type:'copy'},data:{byteLength:secret},generation:secret,sequence:secret};
+        expect(new Port().postMessage(message)).toBe(17);
+        const payload={byteLength:secret};
+        expect(host.terminal.write(payload)).toBe(19);
+        const saved=await host.eval('incident.snapshot()');
+        expect(JSON.stringify(saved)).not.toContain(secret);
+        expect(reads).toBe(0);
+        expect(saved.diagnosticErrors).toContainEqual({phase:'bridge metadata accessor skipped',error:'Error'});
+        expect(original).toHaveBeenCalledExactlyOnceWith(message);
+        expect(write).toHaveBeenCalledTimes(1);
+        expect(terminalWrite).toHaveBeenCalledExactlyOnceWith(payload);
+        await host.eval('incident.restore()');
+    });
+
+    it.each(['type','action','generation','sequence','data','result','action.type','data.byteLength'])('never invokes the outgoing bridge %s accessor or changes original operation ordering', async field => {
+        const host=renderer(), returned={}, failure=new Error('exact original send failure');
+        const getter=vi.fn(() => {throw new Error('observer invoked user getter');});
+        const original=vi.fn(() => returned);
+        class Port {addEventListener() {} removeEventListener() {} postMessage(...args) {return original(...args);}}
+        host.context.MessagePort=Port;
+        const message={type:'terminal-action',action:{type:'copy'},data:{byteLength:5},generation:1,sequence:2,result:'KELPI'};
+        const [outer,inner]=field.split('.');
+        Object.defineProperty(inner ? message[outer] : message,inner ?? outer,{get:getter,configurable:true,enumerable:true});
+        await host.eval(`(${installRendererRecorder.toString()})(${JSON.stringify({key:'incident',allowed:['KELPI'],capacity:30})})`);
+        const port=new Port(), transfer=[];
+        expect(port.postMessage(message,transfer)).toBe(returned);
+        expect(original).toHaveBeenCalledTimes(1);
+        expect(original.mock.calls[0][0]).toBe(message);
+        expect(original.mock.calls[0][1]).toBe(transfer);
+        expect(getter).not.toHaveBeenCalled();
+        original.mockImplementationOnce(() => {throw failure;});
+        let caught;try {port.postMessage(message,transfer);} catch(error) {caught=error;}
+        expect(caught).toBe(failure);
+        expect(original).toHaveBeenCalledTimes(2);
+        expect(getter).not.toHaveBeenCalled();
+        const saved=await host.eval('incident.snapshot()');
+        expect(saved.incomplete).toBe(true);
+        await host.eval('incident.restore()');
+    });
+
     it('arms host and remote before input, freezes the first failure before cleanup, bounds and redacts events, and restores instrumentation', async () => {
         const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'incident-unit-'));
         try {

@@ -25,8 +25,74 @@ function literal(node, bindings={}) {
 const functionNode = node => /Function/.test(node?.type ?? '');
 const key = node => JSON.stringify(node, (name, value) => ['start', 'end', 'loc'].includes(name) ? undefined : value);
 const eyeText = node => typeof literal(node) === 'string' ? /^EYES\b/.test(literal(node)) : node?.type === 'TemplateLiteral' && /^EYES\b/.test(node.quasis[0]?.value.cooked ?? '');
-function contract(id, body, bindings={}, kind='scenario') {
+const namesInPattern = (node, names = new Set()) => {
+    if (!node) return names;
+    if (node.type === 'Identifier') names.add(node.name);
+    else if (node.type === 'RestElement' || node.type === 'AssignmentPattern') namesInPattern(node.argument ?? node.left, names);
+    else if (node.type === 'ArrayPattern') for (const item of node.elements) namesInPattern(item, names);
+    else if (node.type === 'ObjectPattern') for (const item of node.properties) namesInPattern(item.value ?? item.argument, names);
+    return names;
+};
+// An import proves identity only until a binding in the analysed function shadows it.  Be
+// conservative for nested blocks: rejecting an ambiguous helper is preferable to accepting a
+// local look-alike as the cleanup primitive whose callbacks certify the gate.
+const shadowedCleanupAliases = (body, aliases, parameters = []) => {
+    const shadowed = new Set();
+    for (const parameter of parameters) for (const name of namesInPattern(parameter)) if (aliases.has(name)) shadowed.add(name);
+    const visit = node => {
+        if (!node) return;
+        if (node.type === 'VariableDeclarator') for (const name of namesInPattern(node.id)) if (aliases.has(name)) shadowed.add(name);
+        if ((node.type === 'FunctionDeclaration' || node.type === 'ClassDeclaration') && aliases.has(node.id?.name)) shadowed.add(node.id.name);
+        if (node.type === 'CatchClause') for (const name of namesInPattern(node.param)) if (aliases.has(name)) shadowed.add(name);
+        // A declaration itself binds in this lexical scope; its body is a different scope.
+        if (node !== body && functionNode(node)) return;
+        for (const child of children(node)) visit(child);
+    };
+    visit(body);
+    return shadowed;
+};
+const fixtureCleanupReceipt = (node, expected) => {
+    if (!method(node, 'check') || node.arguments.length < 2) return false;
+    // A direct cleanup success check normally has a dynamic predicate (for example, a post-close
+    // roster comparison). It is still a receipt: the recorder will retain either outcome. Failure
+    // reporters, conversely, must unambiguously record false.
+    if (expected === false ? literal(node.arguments[1]) !== false : literal(node.arguments[1]) === false) return false;
+    const label = literal(node.arguments[0]);
+    return typeof label === 'string'
+        ? label.startsWith('fixture cleanup:')
+        : node.arguments[0]?.type === 'TemplateLiteral' && node.arguments[0].quasis[0]?.value.cooked.startsWith('fixture cleanup:');
+};
+// A receipt nested in a conditional or a second, uncalled function is not proven to execute when
+// cleanupSteps catches a failing step.  Only a direct callback-body check is certification.
+const directFixtureCleanupReceipt = (node, expected) => {
+    // cleanupSteps awaits each step but invokes its failure reporter synchronously.
+    // An async reporter can finish after the helper, losing the only failed receipt.
+    if (!functionNode(node) || node.generator === true || (expected === false && node.async === true)) return false;
+    const direct = statement => {
+        const expression = statement?.type === 'ExpressionStatement' ? statement.expression : statement;
+        const unwrapped = expression?.type === 'AwaitExpression' ? expression.argument : expression;
+        return fixtureCleanupReceipt(unwrapped, expected);
+    };
+    if (node.body?.type !== 'BlockStatement') return direct(node.body);
+    // A cleanup step may throw before its success receipt; cleanupSteps catches that branch and
+    // invokes the separately verified failure reporter. Its normal branch is still certified by
+    // the direct success check, so do not confuse conditional failure handling with a missing
+    // success postcondition.
+    if (expected !== false) return node.body.body.some(direct);
+    for (const statement of node.body.body) {
+        if (direct(statement)) return true;
+        // Any return path before the receipt can suppress the report for a caught cleanup error.
+        // Reject rather than trying to prove arbitrary predicates or nested control flow safe.
+        let returns = false;
+        walk(statement, child => { if (child.type === 'ReturnStatement' || child.type === 'ThrowStatement') returns = true; });
+        if (returns) return false;
+    }
+    return false;
+};
+function contract(id, body, bindings={}, kind='scenario', knownCleanupHelpers=new Set(), parameters=[], enclosingShadowed=new Set()) {
     const errors = new Set(), visuals = new Set();
+    const shadowedHelpers = new Set([...enclosingShadowed, ...shadowedCleanupAliases(body, knownCleanupHelpers, parameters)]);
+    const trustedCleanupHelpers = new Set([...knownCleanupHelpers].filter(name => !shadowedHelpers.has(name)));
     const initial = { assertions: [], facts: new Set(), bindings: {...bindings} };
     const copy = state => ({ assertions: [...state.assertions], facts: new Set(state.facts), bindings: {...state.bindings} });
     const unique = states => {
@@ -48,8 +114,34 @@ function contract(id, body, bindings={}, kind='scenario') {
         for(const child of children(node)) discoverVisuals(child);
     };
     discoverVisuals(body);
-    const expression = (node, states) => {
+    const cleanupCallName = node => node?.type === 'CallExpression' && node.callee.type === 'Identifier' && knownCleanupHelpers.has(node.callee.name) ? node.callee.name : null;
+    const knownCleanupCall = node => trustedCleanupHelpers.has(cleanupCallName(node));
+    const expression = (node, states, context = {}) => {
         if (!node) return states;
+        // Only the exact helper imported from incident-diagnostics is cleanup machinery.
+        // Its statically named callbacks stay in the contract so their successful cleanup
+        // checks are required in the result; its failure reporter is separately required to
+        // emit a failing `fixture cleanup:` receipt. Arbitrary same-named helpers fail closed.
+        if (knownCleanupCall(node)) {
+            if (context.awaited !== true) errors.add('known cleanup helper must be awaited');
+            const entries = node.arguments[0], reporter = node.arguments[1];
+            if (entries?.type !== 'ArrayExpression') errors.add('known cleanup helper requires a static step list');
+            else for (const entry of entries.elements) {
+                const label = entry?.type === 'ArrayExpression' ? literal(entry.elements[0]) : undefined;
+                const callback = entry?.type === 'ArrayExpression' ? entry.elements[1] : undefined;
+                if (!functionNode(callback) || callback.generator === true) { errors.add('known cleanup helper requires non-generator static callbacks'); continue; }
+                if (typeof label !== 'string') errors.add('known cleanup helper requires static step labels');
+                if (!directFixtureCleanupReceipt(callback, true)) errors.add(`known cleanup helper step ${typeof label === 'string' ? label : '(unknown)'} requires a fixture cleanup success receipt`);
+                states = statement(callback.body, states);
+            }
+            if (!directFixtureCleanupReceipt(reporter, false)) errors.add('known cleanup helper requires a fixture cleanup failure receipt');
+            return states;
+        }
+        if (cleanupCallName(node) !== null) {
+            errors.add('cleanup helper import is shadowed or lexical identity is unproven');
+            return states;
+        }
+        if (node.type === 'AwaitExpression') return expression(node.argument, states, {...context, awaited:true});
         if (functionNode(node)) {
             // Cleanup callbacks have a separate required runtime cleanup receipt.
             if(hasEvidence(node.body)) errors.add('assertion or visual inside an unresolved callback');
@@ -155,28 +247,41 @@ export function scenarioPlan(repoRoot, files) {
     return plan;
 }
 export function auditPlan(repoRoot, ids) {
+    const parsed = ast(path.join(repoRoot,'scripts/ui-audit/audit.mjs'));
+    const knownCleanupHelpers = new Set(parsed.body
+        .filter(node => node.type === 'ImportDeclaration' && node.source?.value === './lib/incident-diagnostics.mjs')
+        .flatMap(node => node.specifiers)
+        .filter(specifier => specifier.type === 'ImportSpecifier' && specifier.imported?.name === 'cleanupSteps')
+        .map(specifier => specifier.local.name));
     const entries = new Map();
-    const collect=(node,bindings={})=>{
+    const collect=(node,bindings={},enclosingShadowed=new Set())=>{
         if(node.type!=='ObjectExpression')return;
         const id=literal(node.properties.find(item=>item.key?.name==='id')?.value,bindings);
         const run=node.properties.find(item=>item.key?.name==='run')?.value;
         if(typeof id==='string' && run?.body) {
-            const selected=contract(id,run.body,bindings,'audit');
+            const selected=contract(id,run.body,bindings,'audit',knownCleanupHelpers,run.params,enclosingShadowed);
             const needsEyes=literal(node.properties.find(item=>item.key?.name==='needsEyes')?.value,bindings) === true;
             if(needsEyes || selected.requiredVisuals.length)selected.requiredVisuals=[id];
             if(needsEyes && selected.mode==='setup')selected.mode='visual';
             entries.set(id,selected);
         }
     };
-    walk(ast(path.join(repoRoot,'scripts/ui-audit/audit.mjs')), node => {
-        collect(node);
+    const functionScopeShadows = node => shadowedCleanupAliases(node.body, knownCleanupHelpers, node.params);
+    const visit = (node, enclosingShadowed = new Set()) => {
+        if (!node) return;
+        collect(node, {}, enclosingShadowed);
         if(node.type==='CallExpression' && node.callee.type==='MemberExpression' && node.callee.property.name==='map' && node.callee.object.type==='ArrayExpression') {
             const callback=node.arguments[0];
             if(callback?.params?.length===1 && callback.body.type==='ObjectExpression') {
-                for(const value of node.callee.object.elements) collect(callback.body,{[callback.params[0].name]:literal(value)});
+                for(const value of node.callee.object.elements) collect(callback.body,{[callback.params[0].name]:literal(value)},enclosingShadowed);
             }
         }
-    });
+        const nextShadowed = functionNode(node)
+            ? new Set([...enclosingShadowed, ...functionScopeShadows(node)])
+            : enclosingShadowed;
+        for (const child of children(node)) visit(child, nextShadowed);
+    };
+    visit(parsed);
     entries.set('renderer-console',{id:'renderer-console',mode:'assert',requiredAssertions:['no renderer console errors/warnings'],minAssertions:1});
     const members=ids.map(id => { if (!entries.has(id)) throw new Error(`unknown audit step ${id}`); return entries.get(id); });
     return {kind:'audit',complete:members.every(member=>member.complete!==false),ordered:true,members};

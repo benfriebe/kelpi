@@ -33371,6 +33371,10 @@ function buildFlows(ctx) {
             id: 'phone-shell',
             expect:
                 'Under a 390x844 phone viewport the desktop chrome (title bar, sidebar, pane grid, status footer) is gone and the phone shell is on screen: a 44 px header whose controls are all at least 44 px tall, naming the active workspace and the focused pane, and exactly ONE pane body - the focused pane\'s - filling the content box. The view toggle switches to the full layout (the workspace\'s own pane grid with every pane body) and back to one pane, remembering the choice. The workspace drawer opens by button (never by an edge swipe, which is the phone\'s own back gesture) and is the phone\'s WHOLE host tree (B9): the origin open with the active workspace row marked active, a second, unreachable host shut to a 44 px header that still carries its name and how to reach it, Add host at the end and no `All hosts` row; one tap opens the shut host without shutting the other, and the phone remembers that. It closes on its scrim. The pane sheet lists every pane of the workspace with the shown one marked; tapping a sibling row focuses it (the sibling\'s body replaces the shown one, the header renames) and the daemon zooms nothing. With the emulation cleared the desktop tree is back and the roster, the focused pane and the active workspace are exactly what they were.',
+            // This flow captures pane, layout, drawer, and pane-sheet states.  Without an
+            // explicit visual requirement the acceptance result incorrectly treated those four
+            // screenshots as optional even though the phone contract retains visible claims.
+            needsEyes: true,
             async run(recorder) {
                 // `reattach-after-relaunch` replaces the CDP session, and this step is after it.
                 const view = runtime.page ?? page;
@@ -33740,7 +33744,11 @@ function buildFlows(ctx) {
                         });
                     }
                 } finally {
-                    await cleanupSteps([['phone emulation',()=>clearPhoneEmulation(view)]],(label,detail)=>recorder.check(`fixture cleanup: ${label}`,false,detail));
+                    await cleanupSteps([['phone emulation', async () => {
+                        await clearPhoneEmulation(view);
+                        const restored = await view.eval(`document.querySelector('[data-testid="top-bar"]') !== null && document.querySelector('[data-testid="phone-shell"]') === null && document.documentElement.dataset.formFactor !== 'phone' && localStorage.getItem(${JSON.stringify(PHONE_PLACE_KEY)}) === null && localStorage.getItem(${JSON.stringify(PHONE_HOSTS_KEY)}) === null`);
+                        recorder.check('fixture cleanup: phone emulation cleared', restored === true, String(restored));
+                    }]],(label,detail)=>recorder.check(`fixture cleanup: ${label}`,false,detail));
                 }
 
                 await view.waitFor(`document.querySelector('[data-testid="top-bar"]') !== null && document.querySelector('[data-testid="phone-shell"]') === null`, {
@@ -33756,7 +33764,11 @@ function buildFlows(ctx) {
                 );
                 } finally {
                     await cleanupSteps([
-                        ['phone emulation', () => clearPhoneEmulation(view)],
+                        ['phone emulation', async () => {
+                            await clearPhoneEmulation(view);
+                            const restored = await view.eval(`document.querySelector('[data-testid="top-bar"]') !== null && document.querySelector('[data-testid="phone-shell"]') === null && document.documentElement.dataset.formFactor !== 'phone' && localStorage.getItem(${JSON.stringify(PHONE_PLACE_KEY)}) === null && localStorage.getItem(${JSON.stringify(PHONE_HOSTS_KEY)}) === null`);
+                            recorder.check('fixture cleanup: phone emulation cleared', restored === true, String(restored));
+                        }],
                         ['terminal sibling', async () => {
                             const closed = await cli.run(['pane', 'close', '--target', sibling]);
                             if (closed.code !== 0) throw new Error(closed.stderr);

@@ -139,6 +139,7 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, diagnosticsP
     const probe = id => inside(id, `(() => {
         const root = document.getElementById('terminal');
         const screen = root.querySelector('.xterm-screen');
+        const viewport = root.querySelector('.xterm-viewport');
         const cell = terminalLab.terminal._core._renderService.dimensions?.css?.cell ?? null;
         const style = getComputedStyle(root);
         const pad = { x: parseFloat(style.paddingLeft) || 0, y: parseFloat(style.paddingTop) || 0 };
@@ -158,6 +159,23 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, diagnosticsP
             contentOverflow: root.scrollWidth - root.clientWidth,
             transform: style.transform,
             xtermTransform: emulator === null ? 'none' : getComputedStyle(emulator).transform,
+            // A retained screenshot has a short lower-right bar.  Keep the viewport's own
+            // geometry with every visual capture so review can distinguish xterm viewport chrome
+            // from terminal content overflow or an unpainted host pane.  Do not infer absence
+            // from a zero-sized overlay scrollbar: the raw dimensions are the evidence.
+            viewport: viewport === null ? null : (() => {
+                const rect = viewport.getBoundingClientRect();
+                const computed = getComputedStyle(viewport);
+                return {
+                    left: Math.round(rect.left), top: Math.round(rect.top),
+                    width: Math.round(rect.width), height: Math.round(rect.height),
+                    clientWidth: viewport.clientWidth, clientHeight: viewport.clientHeight,
+                    scrollWidth: viewport.scrollWidth, scrollHeight: viewport.scrollHeight,
+                    offsetWidth: viewport.offsetWidth, offsetHeight: viewport.offsetHeight,
+                    scrollLeft: viewport.scrollLeft, scrollTop: viewport.scrollTop,
+                    overflowX: computed.overflowX, overflowY: computed.overflowY
+                };
+            })(),
             // What the letterbox is actually made of, for a reader of this record: the emulator
             // root, the scrolling viewport and the screen element xterm sizes from cols x rows.
             layers: ['.xterm', '.xterm-viewport', '.xterm-screen'].map(selector => {
@@ -311,6 +329,54 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, diagnosticsP
         const windowCols = own.cols;
         await rec.shot(page, 'terminal-lab-owns-its-box');
         rec.note('EYES - the screenshot above: one terminal pane filling its workspace, its picker reading "Terminal renderer: Terminal Lab", the fixture header (KELPI TERMINAL LAB / PID / 赤 緑 🐙 café / READY) painted at the top-left, and terminal background filling the pane edge to edge with no second shade, no scrollbar and no "Take size control" chip in the top bar. This is the baseline every later shot is compared against.');
+
+        // Hiding Chromium's scrollbar is only a visual treatment, never proof that xterm lost
+        // scrollback. Put actual fixture output into xterm's normal buffer, explicitly disable
+        // the fixture's DEC mouse reporting there (otherwise xterm correctly sends wheel input to
+        // the application), and make both a bounded wheel and a Shift+PageUp move its viewport.
+        // The fixture then repaints the original alt screen and its original mouse modes so every
+        // later ownership check starts from the same state.
+        let scrollbackRestored = false;
+        try {
+            if (!await control(local, { op: 'burst', bytes: 512 * 1024, delayMs: 0, scrollback: true, label: 'GEOMETRY-SCROLLBACK-LIVE' })) {
+                throw new Error('The fixture did not finish the live scrollback burst');
+            }
+            const beforeScrollback = await inside(local.paneID, `(() => new Promise(resolve => {
+                const t = terminalLab.terminal;
+                t.write(String.fromCharCode(27) + '[?1049l' + String.fromCharCode(27) + '[?1000l' + String.fromCharCode(27) + '[?1002l' + String.fromCharCode(27) + '[?1006l', () => { t.focus(); const v = document.querySelector('#terminal .xterm-viewport'); resolve({ baseY:t.buffer.active.baseY, viewportY:t.buffer.active.viewportY, scrollTop:v?.scrollTop ?? null, scrollHeight:v?.scrollHeight ?? null, clientHeight:v?.clientHeight ?? null, mouseTracking:terminalLab.modes.mouseTracking, mouseFormat:terminalLab.modes.mouseFormat }); });
+            }))()`);
+            const iframeBox = await page.box(frame(local.paneID));
+            const scrollProbe = await probe(local.paneID);
+            const wheelX = iframeBox.x + Math.max(1, (scrollProbe.viewport?.left ?? 0) + Math.min(20, Math.max(1, (scrollProbe.viewport?.width ?? 20) / 2)));
+            const wheelY = iframeBox.y + Math.max(1, (scrollProbe.viewport?.top ?? 0) + Math.min(20, Math.max(1, (scrollProbe.viewport?.height ?? 20) / 2)));
+            let wheelDispatched = false;
+            try {
+                await page.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: wheelX, y: wheelY, deltaX: 0, deltaY: -240, modifiers: 0 }, 4000);
+                wheelDispatched = true;
+            } catch {
+                rec.note('scrollback wheel dispatch did not acknowledge within 4 s');
+            }
+            const afterWheel = await d.settle(async () => {
+                const value = await inside(local.paneID, `({ viewportY:terminalLab.terminal.buffer.active.viewportY, scrollTop:document.querySelector('#terminal .xterm-viewport')?.scrollTop ?? null })`);
+                return value.viewportY < beforeScrollback.viewportY ? value : null;
+            }, { ceilingMs: 5000 });
+            const wheelState = afterWheel ? await inside(local.paneID, `({ viewportY:terminalLab.terminal.buffer.active.viewportY, scrollTop:document.querySelector('#terminal .xterm-viewport')?.scrollTop ?? null })`) : null;
+            await page.key('PageUp', { key: 'PageUp', keyCode: 33, modifiers: d.MOD.shift });
+            let keyboardState = null;
+            const afterKeyboard = await d.settle(async () => {
+                const value = await inside(local.paneID, `({ viewportY:terminalLab.terminal.buffer.active.viewportY, scrollTop:document.querySelector('#terminal .xterm-viewport')?.scrollTop ?? null })`);
+                if (value.viewportY >= (wheelState?.viewportY ?? beforeScrollback.viewportY)) return false;
+                keyboardState = value;
+                return true;
+            }, { ceilingMs: 5000 });
+            rec.check('the hidden xterm scrollbar retains live fixture scrollback through wheel and Shift+PageUp',
+                beforeScrollback.baseY > 0 && wheelDispatched && wheelState !== null && afterKeyboard === true,
+                JSON.stringify({ before: beforeScrollback, wheel: wheelState, keyboard: keyboardState, afterKeyboard, wheelDispatched }));
+        } finally {
+            await inside(local.paneID, `(() => new Promise(resolve => terminalLab.terminal.write(String.fromCharCode(27) + '[?1049h', resolve)))()`).catch(() => {});
+            scrollbackRestored = await control(local, { op: 'paint', label: 'READY' }).catch(() => false);
+            rec.check('the live scrollback check restores the original terminal screen', scrollbackRestored === true && await ready(local.paneID), String(scrollbackRestored));
+        }
 
         await page.send('Network.enable');
         offReports = page.on('Network.webSocketFrameSent', ({ response }) => {

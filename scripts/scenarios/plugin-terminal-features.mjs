@@ -120,7 +120,7 @@ export default async function ({ page, cli, sandbox, rec, d, harness, sleep, dia
     };
     let remoteSandbox, remoteDaemon, local, sizeObserver, incident;
     try {
-        incident = await armIncidentDiagnostics({ page, harness, rec, allowed: ['TERMINAL-PASTE-α', 'COPY-SENTINEL', 'KELPI', 'REMOTE-PASTE-β', 'REMOTE-COPY-SENTINEL', 'NON-MAC-COPY-SENTINEL', 'CLEARED-SELECTION'] });
+        incident = await armIncidentDiagnostics({ page, harness, rec, journal: true, allowed: ['TERMINAL-PASTE-α', 'COPY-SENTINEL', 'KELPI', 'REMOTE-PASTE-β', 'REMOTE-COPY-SENTINEL', 'NON-MAC-COPY-SENTINEL', 'CLEARED-SELECTION'] });
         rec.note('Attaching an SDK-only terminal renderer to a persistent full-screen process');
         local = await create(cli, path.join(sandbox.root, 'terminal-fixture'), 'Terminal Lab');
         bindExecution('local-plugin-install');
@@ -414,8 +414,21 @@ export default async function ({ page, cli, sandbox, rec, d, harness, sleep, dia
         await harness.clipboardWrite('REMOTE-PASTE-β'); await page.key('KeyV', { key: 'v', modifiers: d.MOD.meta });
         rec.check('remote platform paste targets only the remote process', await d.settle(() => input(remote).subarray(offset).includes(Buffer.from('\x1b[200~REMOTE-PASTE-β\x1b[201~'))) && input(local).length === localBeforeRemoteInput, JSON.stringify(redactFixtureText(input(remote).subarray(offset).toString(), ['\x1b[200~REMOTE-PASTE-β\x1b[201~'])));
         await inside(remote.paneID, `terminalLab.terminal.select(0, 0, 5); true`);
-        await harness.clipboardWrite('REMOTE-COPY-SENTINEL'); await page.key('KeyC', { key: 'c', modifiers: d.MOD.meta });
-        rec.check('remote platform Copy resolves the remote renderer selection', await d.settle(async () => String((await harness.clipboardRead()).text) === 'KELPI'));
+        await harness.clipboardWrite('REMOTE-COPY-SENTINEL');
+        const remoteCopyBefore = {
+            caret: await caretNow(remote.paneID),
+            clipboard: redactFixtureText((await harness.clipboardRead()).text, ['REMOTE-COPY-SENTINEL', 'KELPI']),
+            selection: await inside(remote.paneID, `({text:terminalLab.terminal.getSelection(),position:terminalLab.terminal.getSelectionPosition(),session:terminalLab.session.id})`),
+            daemonID: daemonIDFromSandbox(remoteSandbox), paneID: remote.paneID, workspaceID: remote.workspaceID,
+            inputBytes: input(remote).length
+        };
+        remoteCopyBefore.selection.text = redactFixtureText(remoteCopyBefore.selection.text, ['KELPI']);
+        await page.key('KeyC', { key: 'c', modifiers: d.MOD.meta });
+        const remoteCopied = await d.settle(async () => String((await harness.clipboardRead()).text) === 'KELPI');
+        const remoteCopyAfter = {caret:await caretNow(remote.paneID),clipboard:redactFixtureText((await harness.clipboardRead()).text, ['REMOTE-COPY-SENTINEL','KELPI']),inputBytes:input(remote).length};
+        fs.writeFileSync(path.join(rec.outDir, `${rec.name}-remote-copy.json`), JSON.stringify({before:remoteCopyBefore,after:remoteCopyAfter,copied:remoteCopied},null,2)+'\n', {flag:'wx'});
+        rec.check('remote platform Copy resolves the remote renderer selection', remoteCopied, JSON.stringify({before:remoteCopyBefore,after:remoteCopyAfter}));
+        await rec.flushFirstFailure();
         await incident.retireRenderer('remote terminal');
         await incident.retireRenderer('host');
         await remoteCLI.ok(['pane', 'split', '--target', remote.paneID, '--direction', 'horizontal']);

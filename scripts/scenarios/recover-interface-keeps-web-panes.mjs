@@ -31,6 +31,8 @@
  * ask and the reconciler rule that lets a held park stand, none of which a unit test can reach
  * because they read a real `BrowserWindow` and a real socket.
  */
+import { cleanupSteps } from '../ui-audit/lib/incident-diagnostics.mjs';
+
 export const covers = [
     'packages/shell/src/main.ts',
     'packages/shell/src/unresponsive.ts',
@@ -66,6 +68,7 @@ export default async function ({ page, harness, cli, shell, rec, d, sleep }) {
      */
     const startingWorkspaces = JSON.parse(await cli.ok(['workspace', 'list', '--json']));
     const startingWorkspace = startingWorkspaces.find((workspace) => workspace.is_active === true)?.id ?? null;
+    if (startingWorkspace === null) throw new Error('the recover-interface fixture needs an active incoming workspace');
     const initial = new Set(startingWorkspaces.map((workspace) => workspace.id));
     let openedPane = null;
     try {
@@ -138,15 +141,31 @@ export default async function ({ page, harness, cli, shell, rec, d, sleep }) {
             rec.note(line.trim());
         }
     } finally {
-        if (openedPane !== null) await cli.run(['pane', 'close', '--target', openedPane]);
-        for (const workspace of JSON.parse(await cli.ok(['workspace', 'list', '--json']))) {
-            if (!initial.has(workspace.id)) await cli.run(['workspace', 'delete', workspace.id, '--force']);
-        }
-        // The window follows `workspace create`, so it is looking at the workspace just deleted:
-        // put it back on the one this scenario found it on.
-        if (startingWorkspace !== null) {
-            const row = `[data-testid="workspace-row"][data-workspace-id="${startingWorkspace}"]`;
-            if (await d.settleDom(page, `document.querySelector(${JSON.stringify(row)})`, { ceilingMs: 8_000 })) await page.click(row);
-        }
+        await cleanupSteps([
+            ['fixture web pane closed', () => openedPane === null ? undefined : cli.ok(['pane', 'close', '--target', openedPane])],
+            ['incoming workspace selected', async () => {
+                const row = `[data-testid="workspace-row"][data-workspace-id="${startingWorkspace}"]`;
+                if (!await d.settleDom(page, `document.querySelector(${JSON.stringify(row)})`, { ceilingMs: 8_000 })) throw new Error(`incoming workspace ${startingWorkspace} is not present in the sidebar`);
+                await page.click(row);
+                if (!await d.settle(async () => JSON.parse(await cli.ok(['workspace', 'list', '--json'])).find((workspace) => workspace.is_active === true)?.id === startingWorkspace, { ceilingMs: 8_000 })) {
+                    throw new Error(`incoming workspace ${startingWorkspace} did not become active`);
+                }
+            }],
+            ['fixture workspaces removed', async () => {
+                const failures = [];
+                for (const workspace of JSON.parse(await cli.ok(['workspace', 'list', '--json']))) {
+                    if (initial.has(workspace.id)) continue;
+                    try { await cli.ok(['workspace', 'delete', workspace.id, '--force']); }
+                    catch (error) { failures.push(`${workspace.id}: ${String(error?.message ?? error)}`); }
+                }
+                if (failures.length > 0) throw new Error(failures.join('; '));
+            }],
+            ['incoming workspace state restored', async () => {
+                const workspaces = JSON.parse(await cli.ok(['workspace', 'list', '--json']));
+                const ids = new Set(workspaces.map((workspace) => workspace.id));
+                if (ids.size !== initial.size || [...initial].some((id) => !ids.has(id))) throw new Error('workspace membership did not return to its incoming state');
+                if (workspaces.find((workspace) => workspace.is_active === true)?.id !== startingWorkspace) throw new Error(`active workspace did not return to ${startingWorkspace}`);
+            }]
+        ], (label, detail) => rec.check(`cleanup: ${label}`, false, detail, 'cleanup'));
     }
 }

@@ -44,6 +44,7 @@ import { restartUI } from '../app/reload';
 import { defaultFormFactorWindow, useFormFactor, type FormFactorWindow } from '../chrome/form-factor';
 import { readKeyboardViewportMode } from '../chrome/keyboard-viewport';
 import { CLIENT_MAC_LIKE } from '../chrome/keys';
+import { modalPresenceCount } from '../chrome/modal-presence';
 import type { PtyStreamHandle, PtySubscription } from '../connection';
 import { offerSelection } from '../state/clipboard';
 import { dispatchPaste } from './KeyBar';
@@ -2126,7 +2127,10 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
              * C5: and `claimCaret` is what actually makes it, so a phone coming back from
              * another app does not come back with the software keyboard up.
              */
-            if (latest.current.focused === true && shouldGrabFocus(hostRef.current)) {
+            // Leaving a modal iframe also fires parent-window focus, before the clicked host
+            // field takes the caret. The engine's delayed focus would steal that field next.
+            // Keep geometry current, but leave the modal in charge of every focus transition.
+            if (modalPresenceCount() === 0 && latest.current.focused === true && shouldGrabFocus(hostRef.current)) {
                 claimCaret();
             }
         };

@@ -18,18 +18,22 @@ import { describe, expect, it } from 'vitest';
 
 import { openSqliteDatabase } from './adapter.js';
 import { createPersistence } from './persistence.js';
-import { appliedMigrations, MIGRATION_IDENTIFIERS } from './schema.js';
+import { appliedMigrations, DAEMON_ONLY_MIGRATIONS, MIGRATION_IDENTIFIERS } from './schema.js';
 
 const fixture = process.env['KELPID_LEGACY_DB_FIXTURE'];
 const available = fixture !== undefined && fixture.length > 0 && fs.existsSync(fixture);
 
 describe.skipIf(!available)('adopting a real Swift-written nex.db', () => {
     it('reads the whole database without losing rows', () => {
+        const originalBytes = fs.readFileSync(fixture as string);
         const db = openSqliteDatabase(fixture as string, { readOnly: true, wal: false });
         try {
-            // Every migration this daemon owns is already recorded — nothing to apply.
+            // Swift cannot have applied the daemon-only extensions. Require every shared
+            // migration, then read the legacy columns without migrating the fixture.
             const ledger = appliedMigrations(db);
-            for (const identifier of MIGRATION_IDENTIFIERS) expect(ledger).toContain(identifier);
+            for (const identifier of MIGRATION_IDENTIFIERS) {
+                if (!DAEMON_ONLY_MIGRATIONS.includes(identifier)) expect(ledger).toContain(identifier);
+            }
 
             const store = createPersistence({ db, path: fixture as string, migrate: false });
             const snapshot = store.load();
@@ -54,8 +58,10 @@ describe.skipIf(!available)('adopting a real Swift-written nex.db', () => {
                 expect(workspace.createdAt).toBeGreaterThan(1e9);
             }
             expect(snapshot.topLevelOrder.length).toBeGreaterThan(0);
+            expect(appliedMigrations(db)).toEqual(ledger);
         } finally {
             db.close();
         }
+        expect(fs.readFileSync(fixture as string).equals(originalBytes)).toBe(true);
     });
 });

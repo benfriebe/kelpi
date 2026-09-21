@@ -21,7 +21,7 @@
     "scripts/scenarios/plugin-browser-features.mjs": "e7b2fc40585b64f756b2e5c3a51b85f4dff470698e5ba66d5238e3b13d311391",
     "scripts/scenarios/plugin-document-features.mjs": "ac3247014c1e7967645cc4fe2a57a961d3de1bedd71eecb8fd5aafaa693f7079",
     "scripts/scenarios/plugin-interaction-presenters.mjs": "79942da5c643064d96159bc17900bd65da3f67fee65c3aac64893eb28f47670c",
-    "scripts/scenarios/plugin-pane-chrome.mjs": "3d17959c1a80d53130910e56eb181f963f243691e4fb3c11beae08c48c4352ed",
+    "scripts/scenarios/plugin-pane-chrome.mjs": "f9719df467033c9e21eaeaec69e9ec01118169df041b540e71fb55f5a2f28b65",
     "scripts/scenarios/plugin-settings-presenter.mjs": "8e30c7b13f0a37b282892f1d7d18b65ff60fc144ac07b715165dbf2f2ae0e16d",
     "scripts/scenarios/plugin-terminal-features.mjs": "2fe6bc813555355b33c41968fac566898ff7d85850a9f6507c217012164cf94d",
     "scripts/scenarios/plugin-terminal-geometry.mjs": "ebbfced55c55388af6d325d989442e9ee6d32aeeb5a7a54684ced6f8c2755875",

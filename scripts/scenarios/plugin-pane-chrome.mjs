@@ -349,16 +349,25 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
          */
         for (let attempt = 0; attempt < 2; attempt += 1) {
             const marker = `ROWS${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
-            await cli.ok(['pane', 'send', '--target', paneID, `echo "${marker} $(stty size | tr ' ' '-')"`]);
-            await cli.run(['pane', 'send-key', '--target', paneID, 'enter']);
+            const startedAt = Date.now();
+            const sent = await cli.ok(['pane', 'send', '--target', paneID, `echo "${marker} $(stty size | tr ' ' '-')"`]);
+            const sentAt = Date.now();
+            const enter = await cli.run(['pane', 'send-key', '--target', paneID, 'enter']);
+            const enteredAt = Date.now();
+            let firstCapture = null, lastCapture = null, captureReads = 0;
             let answer = null;
             await d.settle(async () => {
                 const capture = await cli.ok(['pane', 'capture', '--target', paneID, '--scrollback']);
+                const observation = { at: Date.now(), raw: capture };
+                firstCapture ??= observation;
+                lastCapture = observation;
+                captureReads += 1;
                 const match = new RegExp(`${marker} (\\d+)-(\\d+)`).exec(capture);
                 if (match === null) return false;
                 answer = { rows: Number(match[1]), cols: Number(match[2]) };
                 return true;
             }, { ceilingMs: 20_000 });
+            rec.note(`DIAGNOSTIC stty ${JSON.stringify({ label, paneID, marker, attempt: attempt + 1, startedAt, sentAt, enteredAt, finishedAt: Date.now(), send: { code: 0, stdout: sent }, enter, captureReads, firstCapture, lastCapture, answer })}`);
             if (answer !== null) return answer;
             rec.note(`${label} never echoed its stty marker on attempt ${String(attempt + 1)}; retrying once`);
         }
@@ -771,6 +780,17 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
          * whole property, and the find bar below is what proves the chords came back with it.
          */
         const itemButton = `[data-testid="lab-pane-item"]`;
+        const caretDiagnostic = async phase => {
+            const host = await page.eval(`(() => {
+                const active = document.activeElement;
+                return { at: Date.now(), activeTag: active?.tagName ?? null, activeTestID: active?.getAttribute('data-testid') ?? null,
+                    activePane: active?.closest('[data-pane-id]')?.getAttribute('data-pane-id') ?? null,
+                    surface: active?.closest('[data-pane-surface]')?.getAttribute('data-pane-surface') ?? null,
+                    focusedPane: document.querySelector('[data-pane-id][data-focused="true"]')?.getAttribute('data-pane-id') ?? null };
+            })()`);
+            rec.note(`DIAGNOSTIC caret ${JSON.stringify({ phase, shellPane, host, projectedFocusedPane: (await labSnapshot())?.focusedPaneID ?? null })}`);
+        };
+        await caretDiagnostic('before-presenter-click');
         let caretBack = null;
         if (await frameCheck(`!!document.querySelector('${band(shellPane)} ${itemButton}')`, 6_000)) {
             await clickFrame(`${band(shellPane)} ${itemButton}`);
@@ -784,6 +804,7 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
         rec.check('the caret goes back to the pane after a click on the presenter\'s own control',
             caretBack === true,
             `active ${String(await page.eval(`(() => { const a = document.activeElement; return a === null ? 'none' : `+"`${a.tagName}${a.closest('[data-pane-surface]') ? ' (pane surface)' : ''}${document.querySelector('[data-testid=\"pane-chrome-presenter\"]')?.contains(a) ? ' (inside the presenter)' : ''}`"+`; })()`))}`);
+        await caretDiagnostic('after-presenter-click-and-original-check');
 
         /*
          * ── H3 · the find bar is still reachable under a declared band ───────────────

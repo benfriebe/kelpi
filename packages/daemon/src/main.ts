@@ -35,6 +35,7 @@ import {
     type DaemonInfo
 } from './boot/index.js';
 import { resolveControlEndpoints } from './control/index.js';
+import { connectTestOwner, type TestOwner } from './lifecycle/test-owner.js';
 import { expandTilde, legacyDataDir, LEGACY_DATABASE_FILENAME, legacyMacAppDatabasePath, resolveDatabasePath } from './db/index.js';
 import { isLegacyImportError, runImport, type ImportReport } from './import/index.js';
 import {
@@ -491,7 +492,11 @@ function warnIfDegraded(io: CliIO, probe: DaemonProbe, headline?: string, repair
     return true;
 }
 
-async function commandStart(io: CliIO, args: ParsedArgs): Promise<number> {
+async function commandStart(io: CliIO, args: ParsedArgs, owner?: TestOwner): Promise<number> {
+    if (owner?.stopRequested) {
+        await owner.confirmStopped();
+        return 0;
+    }
     const env = io.env ?? process.env;
     const paths = runPathsFor(env);
 
@@ -505,13 +510,19 @@ async function commandStart(io: CliIO, args: ParsedArgs): Promise<number> {
         const url = runDirClientURL(env, paths);
         if (url !== undefined) io.out(`  url: ${url}`);
         // Adopting a daemon that cannot save is not success.
+        await owner?.confirmStopped();
         return warnIfDegraded(io, existing) ? 1 : 0;
     }
 
     if (args.foreground) {
+        // Cancellation during discovery has not created any resources yet.
+        if (owner?.stopRequested) {
+            await owner.confirmStopped();
+            return 0;
+        }
         const daemon = createDaemon({
             env,
-            installSignalHandlers: true,
+            installSignalHandlers: owner === undefined,
             onError: (error, context) => io.err(`kelpid error [${context}]: ${error.message}`),
             onLog: (message) => io.out(message)
         });
@@ -537,9 +548,18 @@ async function commandStart(io: CliIO, args: ParsedArgs): Promise<number> {
                 );
             }
             await daemon.stop();
+            await owner?.confirmStopped();
             return 1;
         }
         printInfo(io, info);
+        if (owner !== undefined) {
+            // A stop requested during start waits for that start to settle. If it stalls,
+            // the owner keeps its slot; never race teardown against later resource creation.
+            await owner.whenStopRequested;
+            await daemon.stop();
+            await owner.confirmStopped();
+            return daemon.persistenceHealth().degraded ? 1 : 0;
+        }
         // The listeners keep the loop alive; SIGTERM/SIGINT run the daemon's own shutdown
         // and exit the process, so this never resolves in production.
         await (io.waitForever ?? (() => new Promise<void>(() => {})))();
@@ -1130,7 +1150,7 @@ export async function runKelpid(argv: readonly string[], io: CliIO = defaultIO()
             io.out(resolveDaemonVersion(io.env ?? process.env).version);
             return 0;
         case 'start':
-            return commandStart(io, args);
+            return commandStart(io, args, args.foreground ? await connectTestOwner(io.env ?? process.env) : undefined);
         case 'stop':
             return commandStop(io, args);
         case 'status':

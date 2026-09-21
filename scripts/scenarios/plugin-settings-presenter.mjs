@@ -634,7 +634,10 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
             && (remainderText.includes(sandbox.configPath) || remainderText.includes('Config:')
                 || await page.eval(`!!document.querySelector('${remainder} [data-testid="compat-degraded-note"]')`)),
             `fields ${JSON.stringify(generalFields)} · lab note remainder ${String(generalNote)} · remainder ${JSON.stringify(remainderText.trim().slice(0, 140))}`);
-        await shot('lab-settings-general', 'Settings, drawn by the LAB: its own rail down the left with all ten sections, the General cards (Base path, Auto-detect, the workspace placement selects) inside the frame, and the host\u2019s native remainder underneath it naming the config file. No bundled rail anywhere.');
+        await frameVisual(fieldRow('general.worktreeBasePath'), [fieldRow('general.worktreeBasePath'), fieldRow('general.autoDetectRepos')]);
+        await shot('lab-settings-general', 'Settings, drawn by the LAB: its own rail down the left with all ten sections, the General Base path and Auto-detect cards inside the frame, and the host\u2019s native remainder underneath it naming the config file. The paired required capture continues to both workspace placement selects. No bundled rail anywhere.');
+        await frameVisual(fieldRow('general.newWorkspacePlacement'), [fieldRow('general.newWorkspacePlacement'), fieldRow('general.newGroupPlacement')]);
+        await shot('lab-settings-general-placement', 'The same LAB General state, honestly scrolled inside the presenter frame until both complete workspace placement select rows (New workspace placement and New group placement) are visible, with the lab rail and host native remainder retained. Together with the preceding capture this preserves all General cards claimed there; no bundled rail appears.');
 
         await routeTo('plugins');
         const pluginsFrame = await labSnapshot();
@@ -699,7 +702,6 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
         rec.check('a segmented Appearance value committed in the frame round-trips through the config file',
             segmentBefore === 'system' && wroteSegment && segmentFollows,
             `committed via ${segmentCommit}; config tail ${tail(readConfig())}`);
-        const fieldRow = id => `[data-testid="lab-settings-field"][data-field-id="${id}"]`;
         await frameVisual(fieldRow('appearance.chromeAppearance'), [fieldRow('appearance.chromeAppearance')]);
         await nativeVisual('[data-testid="appearance-presets"]', ['[data-testid="appearance-presets"]']);
         await shot('lab-settings-appearance', 'the LAB drawing the top of Appearance with the Chrome segmented control wholly visible and reading Dark, while the host\u2019s real native remainder shows the complete preset gallery underneath the frame.');

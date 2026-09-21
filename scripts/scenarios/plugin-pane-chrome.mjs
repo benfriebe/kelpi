@@ -668,6 +668,15 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
         await d.settle(async () => ((await headerBox(shellPane))?.height ?? 99) <= 24, { ceilingMs: 10_000 });
 
         // ── 4 (continued) · rename and close, both the host's ────────────────────────
+        // The preceding native-web click deliberately leaves Web focused. The inline input
+        // stops pointer propagation, so clicking it cannot focus its pane. Give the real host
+        // field room beside the agent/contribution badges without hiding any other pane band.
+        await cli.ok(['layout', 'select', 'even-vertical'], { paneID: shellPane });
+        if (!await d.settle(async () => ((await headerBox(shellPane))?.width ?? 0) > 700, { ceilingMs: 10_000 })) {
+            throw new Error('The rename header did not receive the full-width layout');
+        }
+        await clickFrame(band(shellPane));
+        if (!await d.settle(async () => await focusedNow() === shellPane, { ceilingMs: 8_000 })) throw new Error('The rename pane did not take focus');
         await refusal(`kelpi.ui.renamePane(${JSON.stringify(shellPane)})`);
         const fieldUp = await d.settleDom(page, `document.querySelector('[data-testid="pane-rename-input-${shellPane}"]')`, { ceilingMs: 8_000 });
         if (fieldUp) {
@@ -676,13 +685,41 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
         }
         // Capture while the HOST field is still editable. The old shot ran after Enter, when the
         // very control named by the visual requirement had already unmounted.
+        const renameVisual = async () => {
+            await page.eval('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))');
+            const state = await page.eval(`(() => {
+                const input = document.querySelector('[data-testid="pane-rename-input-${shellPane}"]');
+                const header = document.querySelector('[data-testid="pane-header-${shellPane}"]');
+                if (!input || !header) return { visible: false, reason: 'missing host field' };
+                const box = input.getBoundingClientRect();
+                const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+                const others = [...document.querySelectorAll('[data-testid^="pane-header-"]')].filter(node => {
+                    const r = node.getBoundingClientRect();
+                    return node !== header && getComputedStyle(node).visibility === 'visible' && r.width > 0 && r.height > 0;
+                });
+                return { visible: box.width > 0 && box.height > 0 && box.left >= 0 && box.right <= innerWidth && box.top >= 0 && box.bottom <= innerHeight && hit === input,
+                    value: input.value, editable: !input.disabled && !input.readOnly, active: document.activeElement === input,
+                    focused: header.dataset.focused, presented: header.dataset.presented, height: header.getBoundingClientRect().height,
+                    width: box.width, clientWidth: input.clientWidth, scrollWidth: input.scrollWidth,
+                    otherBands: others.length, othersPresented: others.every(node => node.dataset.presented === 'true') };
+            })()`);
+            rec.note(`MEASURED rename capture ${JSON.stringify(state)}`);
+            if (!state.visible || !state.editable || !state.active || state.value !== 'renamed-by-presenter'
+                || state.focused !== 'true' || state.presented !== 'false' || state.height > 24
+                || state.clientWidth < state.scrollWidth || state.otherBands !== 4 || !state.othersPresented) {
+                throw new Error(`The host rename visual is not fully visible and editable: ${JSON.stringify(state)}`);
+            }
+        };
+        await renameVisual();
         await shot('host-rename-field', 'The focused pane\'s band showing the HOST\'s own inline rename text field holding "renamed-by-presenter" - a plain editable box in a bundled 24 px header - while every OTHER pane in the tiled grid still wears its Pane Lab band. The renaming pane is the one place the presenter is standing off.');
+        await renameVisual();
         if (fieldUp) await page.key('Enter');
         const renamed = await d.settle(async () =>
             (await json(['pane', 'list', '--workspace', workspaceID, '--json']))
                 .some(pane => pane.id === shellPane && pane.label === 'renamed-by-presenter'), { ceilingMs: 12_000 });
         rec.check('renamePane opens the HOST\'s inline field and its commit reaches the daemon',
             fieldUp && renamed, `field ${String(fieldUp)} · renamed ${String(renamed)}`);
+        await cli.ok(['layout', 'select', 'tiled'], { paneID: shellPane });
 
         /*
          * Close, and what "the host's existing confirmation" actually IS.

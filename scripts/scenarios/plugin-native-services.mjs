@@ -9,6 +9,7 @@ const pluginID = 'example.service-lab';
 
 export default async function ({ page, cli, sandbox, rec, d }) {
     await page.watchFrames();
+    const inspectorWasOpen = await page.eval(`document.querySelector('[data-testid="toggle-inspector"]')?.getAttribute('aria-pressed') === 'true'`);
     const repo = path.join(sandbox.root, 'native-service-repo');
     fs.mkdirSync(repo);
     const git = args => execFileSync('git', args, { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
@@ -169,10 +170,18 @@ export default async function ({ page, cli, sandbox, rec, d }) {
         await command({ command: 'remove-repo-association', workspace_id: worktreeWorkspaceID, association_id: association.id, delete_worktree: true });
         rec.check('native worktree removal delegates once and removes the real directory', !fs.existsSync(worktree.worktree_path) && (await json(['plugin', 'run', `${pluginID}.history`])).some(entry => entry.method === 'removeWorktree'));
     } finally {
-        socket.close();
-        for (const service of ['kelpi.git', 'kelpi.content.render', 'kelpi.process']) await cli.run(['plugin', 'service-select', service, 'default']);
-        await cli.run(['plugin', 'remove', pluginID]);
-        if (worktreeWorkspaceID) await cli.run(['workspace', 'delete', worktreeWorkspaceID, '--force']);
-        if (workspaceID) await cli.run(['workspace', 'delete', workspaceID, '--force']);
+        try {
+            socket.close();
+            for (const service of ['kelpi.git', 'kelpi.content.render', 'kelpi.process']) await cli.run(['plugin', 'service-select', service, 'default']);
+            await cli.run(['plugin', 'remove', pluginID]);
+            if (worktreeWorkspaceID) await cli.run(['workspace', 'delete', worktreeWorkspaceID, '--force']);
+            if (workspaceID) await cli.run(['workspace', 'delete', workspaceID, '--force']);
+        } finally {
+            // Inspector belongs to the shared window, not to either deleted workspace.
+            const inspectorOpen = () => page.eval(`document.querySelector('[data-testid="toggle-inspector"]')?.getAttribute('aria-pressed') === 'true'`);
+            if (await inspectorOpen() !== inspectorWasOpen) await page.click('[data-testid="toggle-inspector"]');
+            if (!await d.settle(async () => await inspectorOpen() === inspectorWasOpen)) throw new Error('Inspector did not return to its incoming state');
+            rec.note(`cleanup: Inspector restored to ${inspectorWasOpen ? 'open' : 'closed'}`);
+        }
     }
 }

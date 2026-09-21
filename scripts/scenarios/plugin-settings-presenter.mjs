@@ -116,6 +116,15 @@ const labView = `${labID}.window`;
 /** The recovery floor's own view id and the slot both of them are selected into. */
 const bundledView = 'kelpi.settings.window', slot = 'settings.window';
 
+/** The signed scroll adjustment that centers the full required-row union in a viewport. */
+export function visualUnionScrollDelta(panel, rows) {
+    const boxes = rows.map(row => row.box).filter(box => box !== null);
+    if (panel === null || boxes.length === 0 || boxes.length !== rows.length) return 0;
+    const top = Math.min(...boxes.map(box => box.top));
+    const bottom = Math.max(...boxes.map(box => box.bottom));
+    return (top + bottom - panel.top - panel.bottom) / 2;
+}
+
 /** Whichever wrapper draws carries the test id; `data-settings-presenter` names who it is. */
 const presenterSlot = `[data-testid="settings-presenter"][data-settings-presenter="${labView}"]`;
 const presenterFrame = `${presenterSlot} iframe`;
@@ -261,12 +270,22 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
      * the screenshot.
      */
     const frameVisual = async (anchor, required) => {
-        const found = await inFrame(`(() => {
+        const before = JSON.parse(String(await inFrame(`(() => {
             const node = document.querySelector(${JSON.stringify(anchor)});
-            node?.scrollIntoView({block:'center',inline:'nearest'});
-            return node !== null;
-        })()`);
-        if (!found) throw new Error(`missing visual anchor ${anchor}`);
+            const panel = document.querySelector('.panel');
+            if (node === null || panel === null) return JSON.stringify({ found: node !== null, panel: null, rows: [] });
+            const viewport = panel.getBoundingClientRect();
+            const rows = ${JSON.stringify(required)}.map((selector) => {
+                const row = document.querySelector(selector);
+                if (row === null) return { selector, box: null };
+                const box = row.getBoundingClientRect();
+                return { selector, box: { top: box.top, bottom: box.bottom } };
+            });
+            return JSON.stringify({ found: true, panel: { top: viewport.top, bottom: viewport.bottom }, rows });
+        })()`)));
+        if (!before.found) throw new Error(`missing visual anchor ${anchor}`);
+        const delta = visualUnionScrollDelta(before.panel, before.rows);
+        await inFrame(`(() => { const panel = document.querySelector('.panel'); if (panel !== null) panel.scrollTop += ${JSON.stringify(delta)}; return panel !== null; })()`);
         await page.eval('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))');
         const raw = await inFrame(`(() => {
             const panel = document.querySelector('.panel');
@@ -284,7 +303,11 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
                     box: { top: Math.round(box.top), bottom: Math.round(box.bottom) }
                 };
             });
-            return JSON.stringify({ panel: { top: Math.round(viewport.top), bottom: Math.round(viewport.bottom) }, rows });
+            const boxes = rows.map(row => row.box).filter(box => box !== null);
+            const union = boxes.length === rows.length && boxes.length > 0
+                ? { top: Math.min(...boxes.map(box => box.top)), bottom: Math.max(...boxes.map(box => box.bottom)) }
+                : null;
+            return JSON.stringify({ panel: { top: Math.round(viewport.top), bottom: Math.round(viewport.bottom) }, union, rows });
         })()`);
         const visibility = JSON.parse(String(raw));
         if (visibility.rows.length !== required.length || visibility.rows.some((row) => row.visible !== true)) {
@@ -293,12 +316,22 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
     };
     /** The same bounded precondition for the host-owned native remainder below the iframe. */
     const nativeVisual = async (anchor, required) => {
-        const found = await page.eval(`(() => {
+        const before = JSON.parse(String(await page.eval(`(() => {
             const node = document.querySelector(${JSON.stringify(anchor)});
-            node?.scrollIntoView({block:'center',inline:'nearest'});
-            return node !== null;
-        })()`);
-        if (!found) throw new Error(`missing native visual anchor ${anchor}`);
+            const panel = document.querySelector('${remainder}');
+            if (node === null || panel === null) return JSON.stringify({ found: node !== null, panel: null, rows: [] });
+            const viewport = panel.getBoundingClientRect();
+            const rows = ${JSON.stringify(required)}.map((selector) => {
+                const row = document.querySelector(selector);
+                if (row === null) return { selector, box: null };
+                const box = row.getBoundingClientRect();
+                return { selector, box: { top: box.top, bottom: box.bottom } };
+            });
+            return JSON.stringify({ found: true, panel: { top: viewport.top, bottom: viewport.bottom }, rows });
+        })()`)));
+        if (!before.found) throw new Error(`missing native visual anchor ${anchor}`);
+        const delta = visualUnionScrollDelta(before.panel, before.rows);
+        await page.eval(`(() => { const panel = document.querySelector('${remainder}'); if (panel !== null) panel.scrollTop += ${JSON.stringify(delta)}; return panel !== null; })()`);
         await page.eval('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))');
         const raw = await page.eval(`(() => {
             const panel = document.querySelector('${remainder}');
@@ -316,7 +349,11 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
                     box: { top: Math.round(box.top), bottom: Math.round(box.bottom) }
                 };
             });
-            return JSON.stringify({ panel: { top: Math.round(viewport.top), bottom: Math.round(viewport.bottom) }, rows });
+            const boxes = rows.map(row => row.box).filter(box => box !== null);
+            const union = boxes.length === rows.length && boxes.length > 0
+                ? { top: Math.min(...boxes.map(box => box.top)), bottom: Math.max(...boxes.map(box => box.bottom)) }
+                : null;
+            return JSON.stringify({ panel: { top: Math.round(viewport.top), bottom: Math.round(viewport.bottom) }, union, rows });
         })()`);
         const visibility = JSON.parse(String(raw));
         if (visibility.rows.length !== required.length || visibility.rows.some((row) => row.visible !== true)) {

@@ -22,7 +22,7 @@
     "scripts/scenarios/plugin-document-features.mjs": "ac3247014c1e7967645cc4fe2a57a961d3de1bedd71eecb8fd5aafaa693f7079",
     "scripts/scenarios/plugin-interaction-presenters.mjs": "79942da5c643064d96159bc17900bd65da3f67fee65c3aac64893eb28f47670c",
     "scripts/scenarios/plugin-pane-chrome.mjs": "1f9b60333ba0a91721d0eca8df93bc460cf58c02bdda9d70427d6e7a565cf01e",
-    "scripts/scenarios/plugin-settings-presenter.mjs": "5ae61489b9a0a6c23cb62417a0692890397d7083a9280d9aa2ce8dd48be2bc73",
+    "scripts/scenarios/plugin-settings-presenter.mjs": "13b6af82f98ca271963986a3a1dbb53f8046c0f0c890e24ab9a322e9dd2c9c1b",
     "scripts/scenarios/plugin-terminal-features.mjs": "2fe6bc813555355b33c41968fac566898ff7d85850a9f6507c217012164cf94d",
     "scripts/scenarios/plugin-terminal-geometry.mjs": "ebbfced55c55388af6d325d989442e9ee6d32aeeb5a7a54684ced6f8c2755875",
     "scripts/scenarios/terminal-copy-paste-chords.mjs": "0da7aef3914163d95e4af981b70fa2bf670b50a76be89ada82a06b7a58c59806",

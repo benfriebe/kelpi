@@ -188,7 +188,7 @@ export interface PaneGridProps extends PaneActions, GridLayoutCallbacks {
     /** A pane chrome presenter failed and every pane is back on its native header. */
     readonly onPaneChromeFailure?: ((detail: string) => void) | undefined;
     /**
-     * Put the caret back on a pane after it landed in the presenter's frame.
+     * Put the caret back on a pane after presenter focus or keyboard completion of a rename.
      *
      * A header band is never a keyboard surface, and the presenter's frame claims no chords, so a
      * click on one of its controls otherwise swallowed every keystroke until the user clicked the
@@ -1167,6 +1167,7 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
                             onHeaderPointerDown={startPaneDrag}
                             onClosePane={props.onClosePane}
                             onRenamePane={props.onRenamePane}
+                            onReleaseChromeCaret={props.onReleaseChromeCaret}
                             onSplitPane={props.onSplitPane}
                             onToggleZoom={props.onToggleZoom}
                             onToggleMarkdownEdit={props.onToggleMarkdownEdit}

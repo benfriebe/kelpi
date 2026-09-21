@@ -79,6 +79,7 @@ import { executionRoots } from '../ui-audit/lib/execution-roots.mjs';
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { phoneToLanding } from '../ui-audit/lib/workbench.mjs';
 
 /*
@@ -375,6 +376,8 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
     /** The web pane check 5 measures, hoisted so the cleanup can close it after a throw. */
     let webPaneID = null;
     let uiFrame = '';
+    const metadataRepo = path.join(sandbox.home, 'pane-meta');
+    let metadataPane = null;
 
     try {
         // ── 1 · the placement is offered, and the lab attaches ───────────────────────
@@ -386,8 +389,17 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
             try { return await page.evalInFrame(uiFrame, `document.body.dataset.ready === 'true'`); } catch { return false; }
         }, { ceilingMs: 20_000 })) throw new Error('UI Lab did not attach');
 
+        // A real private repository and hook-reported agent give the metadata row actual data.
+        // Keep it below the sandbox HOME so the existing privacy check still sees only ~/pane-meta.
+        fs.mkdirSync(metadataRepo);
+        const git = args => execFileSync('git', args, { cwd: metadataRepo, stdio: ['ignore', 'pipe', 'pipe'] });
+        git(['init', '--initial-branch=visual-band']);
+        fs.writeFileSync(path.join(metadataRepo, 'notes.md'), '# Pane chrome fixture\n');
+        git(['add', 'notes.md']);
+        git(['-c', 'user.name=Kelpi Scenario', '-c', 'user.email=scenario@localhost', 'commit', '-m', 'Private fixture']);
         // A shell pane beside it: the one whose PTY check 5 measures.
-        const shellPane = (await json(['pane', 'create', '--workspace', workspaceID, '--json'])).pane_id;
+        const shellPane = (await json(['pane', 'create', '--workspace', workspaceID, '--path', metadataRepo, '--json'])).pane_id;
+        metadataPane = shellPane;
         await d.settleDom(page, `document.querySelector('[data-testid="pane-header-${shellPane}"]')`, { ceilingMs: 15_000 });
 
         await openPlugins();
@@ -463,11 +475,17 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
             `carried ${String(carried.size)}, withheld ${String(crowdedSnapshot?.withheld)}, first withheld ${JSON.stringify(keptNative[0])}`);
         // Reflow through the app's own layout control before asking a reviewer to inspect the
         // withheld header. Repeated right splits make the final panes progressively narrower; the
-        // tiled preset keeps the exact same six panes and frame budget while giving every bundled
+        // full-width row preset keeps the exact same six panes and frame budget while giving every bundled
         // title, ZOOM/SYNC area, split control and close button honest pixels of its own.
-        await cli.ok(['layout', 'select', 'tiled'], { paneID: crowdedPanes[0] });
-        await d.settle(async () => ((await headerBox(missing[0]))?.width ?? 0) > 250, { ceilingMs: 10_000 });
-        await shot('withheld-pane', 'The "Pane chrome crowded" workspace: the first panes wearing Pane Lab bands with an enormous "wwwww…" title, and the LAST pane (bottom right) wearing the bundled 24 px header instead - its own truncated title, its ZOOM/SYNC area, its split buttons and its ✕. The lab prints "N panes on the bundled header" at the top left of the grid.');
+        await cli.ok(['layout', 'select', 'even-vertical'], { paneID: crowdedPanes[0] });
+        if (!await frameCheck(`(() => {
+            const count = document.querySelector('[data-testid="lab-pane-withheld"]');
+            return count !== null && count.clientWidth >= count.scrollWidth && Number(count.dataset.count) > 0;
+        })()`)) throw new Error('The bundled-pane count is still clipped');
+        if (!await d.settle(async () => ((await headerBox(missing[0]))?.width ?? 0) > 700, { ceilingMs: 10_000 })) {
+            throw new Error('The withheld native header did not receive the full-width layout');
+        }
+        await shot('withheld-pane', 'The "Pane chrome crowded" workspace: the first panes wearing Pane Lab bands with an enormous "wwwww…" title, and the LAST pane (bottom) wearing the bundled 24 px header instead - its own truncated title, its ZOOM/SYNC area, its split buttons and its ✕. The first carried Pane Lab band shows the full "+N bundled" count, identifying how many panes retain their native header.');
 
         // Back to the working workspace for the gestures, through the sidebar row, which is the
         // gesture a user makes and the only one the window has (there is no `workspace activate`).
@@ -560,6 +578,14 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
         await d.settle(async () => await focusedNow() === shellPane, { ceilingMs: 8_000 });
         await cli.ok(['layout', 'select', 'tiled'], { paneID: shellPane });
         await d.settle(async () => ((await headerBox(shellPane))?.width ?? 0) > 250, { ceilingMs: 10_000 });
+        await cli.ok(['event', 'session-start', '--agent', 'codex'], {
+            paneID: shellPane, stdin: JSON.stringify({ session_id: 'pane-visual-fixture' })
+        });
+        await cli.ok(['event', 'start', '--agent', 'codex'], { paneID: shellPane });
+        if (!await d.settle(async () => {
+            const pane = await labPane(shellPane);
+            return pane?.branch === 'visual-band' && pane?.directory === '~/pane-meta' && Boolean(pane?.agent?.text);
+        }, { ceilingMs: 15_000 })) throw new Error('The live repository/agent metadata did not reach Pane Lab');
         const bandBefore = await headerBox(shellPane);
         const bodyBefore = await bodyBox(shellPane);
         const rowsBefore = await shellRows(shellPane, 'the shell before the declaration');
@@ -575,6 +601,13 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
             grew && moved && rowsBefore !== null && rowsAfter !== null && rowsAfter.rows < rowsBefore.rows,
             `band ${String(bandBefore?.height)} -> ${String(bandAfter?.height)} px, body y ${String(bodyBefore?.y)} -> ${String(bodyAfter?.y)}, stty ${JSON.stringify(rowsBefore)} -> ${JSON.stringify(rowsAfter)}${rowsBefore === null || rowsAfter === null ? ' (the shell never echoed the marker; see the note above)' : ''}`);
         rec.note(`MEASURED band ${String(bandBefore?.height)} -> ${String(bandAfter?.height)} px; body top ${String(bodyBefore?.y)} -> ${String(bodyAfter?.y)}; PTY ${String(rowsBefore?.rows)} -> ${String(rowsAfter?.rows)} rows at ${String(rowsAfter?.cols)} cols`);
+        if (!await frameCheck(`(() => {
+            const row = document.querySelector('${band(shellPane)} .line-two');
+            return ['dir', 'branch', 'agent'].every(kind => {
+                const chip = row?.querySelector('[data-chip="' + kind + '"]');
+                return chip && chip.textContent.trim() && chip.clientWidth >= chip.scrollWidth;
+            });
+        })()`)) throw new Error('The declared band metadata is missing or clipped');
         await shot('declared-band', 'The focused shell pane wearing a TALL two-line Pane Lab band (roughly four times the bundled header): the title row on top and the directory, branch and agent row under it, with the terminal starting lower down the pane and its content unbroken. Every other pane still on a one-line band.');
 
         // A web pane under the same declaration: its native view has to move with the band.
@@ -1125,7 +1158,14 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
         rec.check('the failure is reported on screen, naming the surface and the reason',
             toast && toastText.includes('Pane header presenter') && /crashed on purpose/i.test(toastText),
             toastText);
+        // Later split probes rebuild a narrow tail. Reflow only after the crash/PTY assertions.
+        await cli.ok(['layout', 'select', 'even-vertical'], { paneID: shellPane });
+        if (!await d.settleDom(page, `[...document.querySelectorAll('[data-testid^="pane-header-"]')].filter(node => node.getBoundingClientRect().width > 0).every(node => node.getBoundingClientRect().width > 700)`, { ceilingMs: 10_000 })) {
+            throw new Error('Fallback headers did not receive the full-width layout');
+        }
         await shot('fallback-after-crash', 'Every pane back on the bundled 24 px header at once - status dot or glyph, title, split buttons and ✕ on each - with a failure toast in the corner reading "Pane header presenter". No Pane Lab band anywhere, and no pane left taller than the others.');
+
+        await cli.ok(['layout', 'select', 'tiled'], { paneID: shellPane });
 
         await openPlugins();
         const failedRow = await statusRow();
@@ -1295,6 +1335,11 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
         await d.settleDom(page, `!document.querySelector('[data-testid="phone-shell"]')`, { ceilingMs: 20_000 });
         await attached(25_000);
         await ready(20_000);
+        await cli.ok(['layout', 'select', 'even-vertical'], { paneID: shellPane });
+        if (!await frameCheck(`(() => {
+            const bands = [...document.querySelectorAll('[data-testid="lab-pane-header"]')];
+            return bands.length > 0 && bands.every(node => node.getBoundingClientRect().width > 700);
+        })()`)) throw new Error('Restored lab headers did not receive the full-width layout');
         await shot('desktop-restored', 'Back on the desktop after the phone emulation: the "Pane chrome" workspace with every pane wearing a Pane Lab band again, no toast, and the title bar reading connected.');
 
         rec.note('LIMIT: the 240-calls-per-second budget breach is not pressed live; driving it from CDP measures the harness. See the header.');
@@ -1349,10 +1394,14 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
             if (webPaneID === null) return;
             await cli.run(['pane', 'close', '--target', webPaneID]);
         });
+        await safely('the fixture agent session ends', async () => {
+            if (metadataPane !== null) await cli.ok(['event', 'session-end', '--agent', 'codex'], { paneID: metadataPane });
+        });
         await safely('every workspace this scenario created is deleted', async () => {
             if (crowdedID !== null) await cli.run(['workspace', 'delete', crowdedID, '--force']);
             await cli.run(['workspace', 'delete', workspaceID, '--force']);
         });
+        await safely('the private metadata repository is removed', () => fs.rmSync(metadataRepo, { recursive: true, force: true }));
         await safely('the window returns to the workspace it started on', async () => {
             if (startingWorkspace === null) return;
             const row = `[data-testid="workspace-row"][data-workspace-id="${startingWorkspace}"]`;

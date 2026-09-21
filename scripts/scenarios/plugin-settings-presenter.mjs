@@ -35,7 +35,7 @@ import { executionRoots } from '../ui-audit/lib/execution-roots.mjs';
  *  11. the PRIMARY daemon stopped and replaced with the dialog open on a projected section and a
  *      half-typed draft in it: the bundled dialog takes over on the same section still holding the
  *      draft, the presenter comes back with it, nothing latches, and neither config file changes;
- *  12. fifteen screenshots for the eyes, each with a note saying what to look for. Appearance's
+ *  12. sixteen screenshots for the eyes, each with a note saying what to look for. Appearance's
  *      projected panel and rail are deliberately scrollable, so paired captures retain the whole
  *      visual claim instead of pretending mutually exclusive scroll positions fit in one frame.
  *
@@ -722,12 +722,14 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
         ]);
         await shot('lab-settings-appearance-terminal', 'the same LAB Appearance state with the start of its Terminal card wholly in view: Background opacity and Font family are visible together without claiming that the shorter frame also contains every sizing row.');
 
+        await frameVisual(fieldRow('appearance.fontSize'), [fieldRow('appearance.fontSize')]);
+        await shot('lab-settings-appearance-font-size', 'the same LAB Terminal card with its complete Font size row wholly visible; the next required capture shows both padding controls.');
+
         await frameVisual(fieldRow('appearance.windowPaddingX'), [
-            fieldRow('appearance.fontSize'),
             fieldRow('appearance.windowPaddingX'),
             fieldRow('appearance.windowPaddingY')
         ]);
-        await shot('lab-settings-appearance-terminal-sizing', 'the same LAB Terminal card at its sizing rows: Font size and both horizontal and vertical padding controls are wholly visible in the presenter viewport.');
+        await shot('lab-settings-appearance-terminal-sizing', 'the same LAB Terminal card with both horizontal and vertical padding controls wholly visible; the preceding required Font size capture completes the sizing rows.');
 
         await frameVisual(fieldRow('appearance.searchMatchColor'), [
             fieldRow('appearance.searchMatchColor'),

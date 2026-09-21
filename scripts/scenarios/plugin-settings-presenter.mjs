@@ -35,7 +35,9 @@ import { executionRoots } from '../ui-audit/lib/execution-roots.mjs';
  *  11. the PRIMARY daemon stopped and replaced with the dialog open on a projected section and a
  *      half-typed draft in it: the bundled dialog takes over on the same section still holding the
  *      draft, the presenter comes back with it, nothing latches, and neither config file changes;
- *  12. five screenshots for the eyes, each with a note saying what to look for.
+ *  12. eight screenshots for the eyes, each with a note saying what to look for. Appearance's
+ *      projected panel and rail are deliberately scrollable, so paired captures retain the whole
+ *      visual claim instead of pretending mutually exclusive scroll positions fit in one frame.
  *
  * ── What it depends on ──────────────────────────────────────────────────────────────
  *
@@ -591,7 +593,13 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
         rec.check('a segmented Appearance value committed in the frame round-trips through the config file',
             segmentBefore === 'system' && wroteSegment && segmentFollows,
             `committed via ${segmentCommit}; config tail ${tail(readConfig())}`);
-        await shot('lab-settings-appearance', 'the LAB drawing Appearance: its projected rows (Appearance segmented control, the sidebar and terminal sliders, the search colours) inside the frame, with the host\u2019s native remainder below them holding the preset gallery, the theme picker and the Resets. The chrome appearance reads Dark.');
+        await shot('lab-settings-appearance', 'the LAB drawing the top of Appearance: the Chrome segmented control reads Dark and the Sidebar controls begin below it, with the host\u2019s native remainder holding the preset gallery underneath the frame. The paired required captures continue through every projected terminal and search-colour row.');
+        await inFrame(`(() => { const node = document.querySelector('[data-testid="lab-settings-field"][data-field-id="appearance.backgroundOpacity"]'); node?.scrollIntoView({block:'start'}); return node !== null; })()`);
+        await page.eval('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))');
+        await shot('lab-settings-appearance-terminal', 'the same live LAB Appearance state, scrolled within the presenter frame to its Terminal card: Background opacity, Font family, Font size and padding sliders are visibly reviewable, while the host\u2019s native Appearance remainder stays below the frame.');
+        await inFrame(`(() => { const node = document.querySelector('[data-testid="lab-settings-field"][data-field-id="appearance.searchMatchColor"]'); node?.scrollIntoView({block:'start'}); return node !== null; })()`);
+        await page.eval('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))');
+        await shot('lab-settings-appearance-search', 'the same live LAB Appearance state, scrolled within the presenter frame to its Search highlight card: the projected Match, Match text, Current match and Current match text colour rows are visibly reviewable, with the native remainder still below.');
 
         /*
          * Off the step grid, and therefore refused.
@@ -737,6 +745,10 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
         ]);
         const sameSection = await d.settleDom(page, `document.querySelector('[data-testid="settings-tab-appearance"]')`, { ceilingMs: 10_000 });
         const draftKept = await d.settleDom(page, `document.querySelector('[data-testid="terminal-font-family-input"]')?.value === 'Half typed craft'`, { ceilingMs: 10_000 });
+        // The bundled Appearance panel is much taller than the modal. Put the retained draft in
+        // view before recording it; `scrollIntoView` changes only the fixture's honest viewport.
+        await page.eval(`document.querySelector('[data-testid="terminal-font-family-input"]')?.scrollIntoView({block:'center',inline:'nearest'})`);
+        await page.eval('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))');
         await shot('bundled-after-failure', 'the BUNDLED Settings dialog back on screen, still on Appearance, with the terminal Font family field holding the half-typed "Half typed craft" that was never committed, and the failure toast ("Settings presenter \u00b7 Uncaught Error: \u2026") in the bottom-right corner. No plugin frame anywhere in the dialog.');
         rec.check('a presenter crash hands the dialog back on the same section with the draft intact and nothing written',
             tookOver && toast && sameSection && draftKept && readConfig() === beforeCrash,
@@ -977,7 +989,12 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
                 && JSON.stringify(keyCounts(configAfter)) === JSON.stringify(keyCounts(configBefore))
                 && /chrome-appearance\s*=\s*dark/.test(configAfter),
                 `kelpi config ${String(configBefore.length)} → ${String(configAfter.length)} bytes (identical ${String(configAfter === configBefore)}), ghostty config identical ${String(ghosttyAfter === ghosttyBefore)}; keys ${JSON.stringify(keyCounts(configAfter))}; the value committed in check 4 is still there once`);
-            await shot('after-daemon-restart', 'Settings drawn by the LAB again after its daemon was stopped and replaced: the lab’s own rail with all ten sections, its "SETTINGS LAB Appearance" header carrying the "1 unsaved" badge for the draft nobody committed (the terminal Font family row holding it is below the fold), the host’s native remainder underneath with the preset gallery, the title bar reading "connected" with no reconnect banner, and no toast and no bundled rail anywhere.');
+            await inFrame(`(() => { const rail = document.querySelector('[data-testid="lab-settings-rail"]'); const panel = document.querySelector('.panel'); if (rail) rail.scrollTop = 0; if (panel) panel.scrollTop = 0; return rail !== null; })()`);
+            await page.eval('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))');
+            await shot('after-daemon-restart', 'Settings drawn by the LAB again after its daemon was stopped and replaced: the TOP of the lab’s rail beginning at General, its "SETTINGS LAB Appearance" header carrying the "1 unsaved" badge, the host’s native remainder underneath, connected chrome, no toast and no bundled rail. The paired required capture shows the rail’s remaining entries.');
+            await inFrame(`(() => { const rail = document.querySelector('[data-testid="lab-settings-rail"]'); if (rail) rail.scrollTop = rail.scrollHeight; return rail !== null; })()`);
+            await page.eval('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))');
+            await shot('after-daemon-restart-rail-end', 'the same restored LAB state and "1 unsaved" draft, with the BOTTOM of the lab rail scrolled through Remote and Plugins. Together with the immediately preceding top-of-rail capture, all ten sections are visibly reviewable; connected chrome remains clear and no toast or bundled rail is present.');
             await resetField('appearance.fontFamily');
         }
         rec.note('LIMIT: the 240-calls-per-second budget breach is not pressed live; driving it from CDP measures the harness. See the header.');

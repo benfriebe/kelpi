@@ -461,6 +461,12 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
         rec.check('a pane the 256 KiB budget withheld keeps its bundled header, and the frame counts it',
             withheld && missing.length === crowdedSnapshot.withheld && keptNative[0]?.presented === 'false' && keptNative[0]?.title === true && keptNative[0]?.close === true,
             `carried ${String(carried.size)}, withheld ${String(crowdedSnapshot?.withheld)}, first withheld ${JSON.stringify(keptNative[0])}`);
+        // Reflow through the app's own layout control before asking a reviewer to inspect the
+        // withheld header. Repeated right splits make the final panes progressively narrower; the
+        // tiled preset keeps the exact same six panes and frame budget while giving every bundled
+        // title, ZOOM/SYNC area, split control and close button honest pixels of its own.
+        await cli.ok(['layout', 'select', 'tiled'], { paneID: crowdedPanes[0] });
+        await d.settle(async () => ((await headerBox(missing[0]))?.width ?? 0) > 250, { ceilingMs: 10_000 });
         await shot('withheld-pane', 'The "Pane chrome crowded" workspace: the first panes wearing Pane Lab bands with an enormous "wwwww…" title, and the LAST pane (bottom right) wearing the bundled 24 px header instead - its own truncated title, its ZOOM/SYNC area, its split buttons and its ✕. The lab prints "N panes on the bundled header" at the top left of the grid.');
 
         // Back to the working workspace for the gestures, through the sidebar row, which is the
@@ -547,6 +553,13 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
             `frame entry ${JSON.stringify(hiddenFrame)} · answer ${String(hiddenAnswer)} · band ${JSON.stringify(hiddenBefore)} -> ${JSON.stringify(hiddenAfter)} · pages ${JSON.stringify(webHoleBefore)} -> ${JSON.stringify(webHoleAfter)} -> ${JSON.stringify(webHoleAfterZoom)}`);
 
         // ── 5 · a declared 96 px band, measured against a live shell ─────────────────
+        // The app's tiled preset keeps the five live panes and all geometry assertions intact,
+        // while avoiding the exponentially narrow tail produced by repeatedly splitting right.
+        // That makes the two-line band and the host overlays reviewable in the screenshots below.
+        await clickFrame(band(shellPane));
+        await d.settle(async () => await focusedNow() === shellPane, { ceilingMs: 8_000 });
+        await cli.ok(['layout', 'select', 'tiled'], { paneID: shellPane });
+        await d.settle(async () => ((await headerBox(shellPane))?.width ?? 0) > 250, { ceilingMs: 10_000 });
         const bandBefore = await headerBox(shellPane);
         const bodyBefore = await bodyBox(shellPane);
         const rowsBefore = await shellRows(shellPane, 'the shell before the declaration');
@@ -627,14 +640,16 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
         if (fieldUp) {
             await clickHost(`[data-testid="pane-rename-input-${shellPane}"]`);
             await page.insertText('renamed-by-presenter');
-            await page.key('Enter');
         }
+        // Capture while the HOST field is still editable. The old shot ran after Enter, when the
+        // very control named by the visual requirement had already unmounted.
+        await shot('host-rename-field', 'The focused pane\'s band showing the HOST\'s own inline rename text field holding "renamed-by-presenter" - a plain editable box in a bundled 24 px header - while every OTHER pane in the tiled grid still wears its Pane Lab band. The renaming pane is the one place the presenter is standing off.');
+        if (fieldUp) await page.key('Enter');
         const renamed = await d.settle(async () =>
             (await json(['pane', 'list', '--workspace', workspaceID, '--json']))
                 .some(pane => pane.id === shellPane && pane.label === 'renamed-by-presenter'), { ceilingMs: 12_000 });
         rec.check('renamePane opens the HOST\'s inline field and its commit reaches the daemon',
             fieldUp && renamed, `field ${String(fieldUp)} · renamed ${String(renamed)}`);
-        await shot('host-rename-field', 'The focused pane\'s band showing the HOST\'s own inline rename text field - a plain editable box in a bundled 24 px header - while every OTHER pane in the grid still wears its Pane Lab band. The renaming pane is the one place the presenter is standing off.');
 
         /*
          * Close, and what "the host's existing confirmation" actually IS.

@@ -21,8 +21,8 @@
     "scripts/scenarios/plugin-browser-features.mjs": "e7b2fc40585b64f756b2e5c3a51b85f4dff470698e5ba66d5238e3b13d311391",
     "scripts/scenarios/plugin-document-features.mjs": "ac3247014c1e7967645cc4fe2a57a961d3de1bedd71eecb8fd5aafaa693f7079",
     "scripts/scenarios/plugin-interaction-presenters.mjs": "79942da5c643064d96159bc17900bd65da3f67fee65c3aac64893eb28f47670c",
-    "scripts/scenarios/plugin-pane-chrome.mjs": "81dff2b2f1a70b0f6716fb16856958bb0bc4e22756b4aac6b5b8b9dfbc040250",
-    "scripts/scenarios/plugin-settings-presenter.mjs": "9d259a8a8162a1ce10c5e64ec156ef116b254d067ccecf0fa4b14943080a60cc",
+    "scripts/scenarios/plugin-pane-chrome.mjs": "1f9b60333ba0a91721d0eca8df93bc460cf58c02bdda9d70427d6e7a565cf01e",
+    "scripts/scenarios/plugin-settings-presenter.mjs": "f2241ac25ae5d0089b26a463a2b53f44b50218bb3a3eee2a17f0f4ef54abca02",
     "scripts/scenarios/plugin-terminal-features.mjs": "2fe6bc813555355b33c41968fac566898ff7d85850a9f6507c217012164cf94d",
     "scripts/scenarios/plugin-terminal-geometry.mjs": "ebbfced55c55388af6d325d989442e9ee6d32aeeb5a7a54684ced6f8c2755875",
     "scripts/scenarios/terminal-copy-paste-chords.mjs": "0da7aef3914163d95e4af981b70fa2bf670b50a76be89ada82a06b7a58c59806",
@@ -756,9 +756,12 @@
       "requiredVisuals": [
         "plugin-settings-presenter:shot:lab-settings-general",
         "plugin-settings-presenter:shot:lab-settings-appearance",
+        "plugin-settings-presenter:shot:lab-settings-appearance-terminal",
+        "plugin-settings-presenter:shot:lab-settings-appearance-search",
         "plugin-settings-presenter:shot:bundled-after-failure",
         "plugin-settings-presenter:shot:settings-presenter-status",
-        "plugin-settings-presenter:shot:after-daemon-restart"
+        "plugin-settings-presenter:shot:after-daemon-restart",
+        "plugin-settings-presenter:shot:after-daemon-restart-rail-end"
       ],
       "review": "The only unresolved evidence callback is shot(label, eyes), which awaits rec.shot then emits EYES. Every called screenshot is retained as a visual obligation. Full sandbox completion requires the daemon restart arm; attach-mode skip notes do not certify this contract. Both explicit palette branches are fully enumerated (peer palette owns Escape, or the painted frame consumes the chord)."
     },

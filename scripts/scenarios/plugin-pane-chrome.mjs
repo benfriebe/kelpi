@@ -675,6 +675,10 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
         if (!await d.settle(async () => ((await headerBox(shellPane))?.width ?? 0) > 700, { ceilingMs: 10_000 })) {
             throw new Error('The rename header did not receive the full-width layout');
         }
+        // null releases the lab's width rule: a wide pane automatically asks for 44 px.
+        // Pin the native height through this capture, using the same real declaration API.
+        await inFrame(`(() => { globalThis.paneLab.declare(${JSON.stringify(shellPane)}, 24); return true; })()`);
+        if (!await d.settle(async () => (await headerBox(shellPane))?.height === 24, { ceilingMs: 10_000 })) throw new Error('The rename header did not settle at the native height');
         await clickHost(`[data-testid="pane-body-${shellPane}"]`);
         if (!await d.settle(async () => await focusedNow() === shellPane, { ceilingMs: 8_000 })) throw new Error('The rename pane did not take focus');
         await refusal(`kelpi.ui.renamePane(${JSON.stringify(shellPane)})`);
@@ -719,6 +723,7 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
                 .some(pane => pane.id === shellPane && pane.label === 'renamed-by-presenter'), { ceilingMs: 12_000 });
         rec.check('renamePane opens the HOST\'s inline field and its commit reaches the daemon',
             fieldUp && renamed, `field ${String(fieldUp)} · renamed ${String(renamed)}`);
+        await inFrame(`(() => { globalThis.paneLab.declare(${JSON.stringify(shellPane)}, null); return true; })()`);
         await cli.ok(['layout', 'select', 'tiled'], { paneID: shellPane });
 
         /*

@@ -386,7 +386,14 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
     let webPaneID = null;
     let uiFrame = '';
     const metadataRepo = path.join(sandbox.home, 'pane-meta');
+    const metadataSessionID = 'pane-visual-fixture';
     let metadataPane = null;
+    const endMetadataSession = async () => {
+        if (metadataPane === null) return;
+        await cli.ok(['event', 'session-end', '--agent', 'codex'], {
+            paneID: metadataPane, stdin: JSON.stringify({ session_id: metadataSessionID })
+        });
+    };
 
     try {
         // ── 1 · the placement is offered, and the lab attaches ───────────────────────
@@ -588,7 +595,7 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
         await cli.ok(['layout', 'select', 'tiled'], { paneID: shellPane });
         await d.settle(async () => ((await headerBox(shellPane))?.width ?? 0) > 250, { ceilingMs: 10_000 });
         await cli.ok(['event', 'session-start', '--agent', 'codex'], {
-            paneID: shellPane, stdin: JSON.stringify({ session_id: 'pane-visual-fixture' })
+            paneID: shellPane, stdin: JSON.stringify({ session_id: metadataSessionID })
         });
         await cli.ok(['event', 'start', '--agent', 'codex'], { paneID: shellPane });
         if (!await d.settle(async () => {
@@ -882,7 +889,7 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
             rec.note(`find bar aim: ${JSON.stringify(aim)}`);
             // The shot is taken while the bar is UP: a picture of the pane after it closed is a
             // picture of nothing this check is about.
-            await shot('find-bar-over-band', 'The focused shell pane wearing a TALL Pane Lab band with the host\'s own find bar drawn OVER it at the top right - the search field holding FINDABLE-ANCHOR, its match counter and its close button all fully visible above the plugin band rather than sliced by it.');
+            await shot('find-bar-over-band', 'The focused shell retains a TALL declared band reservation while the lifted host Find overlay shows FINDABLE-ANCHOR, its match counter, previous/next and close controls wholly visible and reachable at the top right.');
             await page.key('Escape');
         }
         rec.check('the terminal find bar is on top of a declared band, clickable, and counts its matches',
@@ -1305,6 +1312,16 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
         // ── 10 · the daemon replaced under the presenter ─────────────────────────────
         if (daemon === null) rec.note('LIMIT: no sandbox daemon handle (--attach), so the disconnect check was skipped');
         else {
+            // The display-only metadata session must not launch Codex into H1's shell on restore.
+            await endMetadataSession();
+            let metadataState = null;
+            const metadataEnded = await d.settle(async () => {
+                metadataState = (await json(['pane', 'list', '--workspace', workspaceID, '--json']))
+                    .find(pane => pane.id === metadataPane) ?? null;
+                return metadataState !== null && metadataState.agent_session_id == null;
+            }, { ceilingMs: 10_000 });
+            rec.note(`metadata session before restart ${JSON.stringify({ at: Date.now(), paneID: metadataPane, present: metadataState !== null, sessionID: metadataState?.agent_session_id ?? null })}`);
+            if (!metadataEnded) throw new Error('The display-only metadata session did not end before daemon restart');
             const pidBefore = daemon.pid, generationBefore = daemon.generation;
             const transitionBegan = Date.now();
             let stoppedAt = null, offlineAt = null, offline = false, offlineState = null;
@@ -1457,9 +1474,7 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
             if (webPaneID === null) return;
             await cli.run(['pane', 'close', '--target', webPaneID]);
         });
-        await safely('the fixture agent session ends', async () => {
-            if (metadataPane !== null) await cli.ok(['event', 'session-end', '--agent', 'codex'], { paneID: metadataPane });
-        });
+        await safely('the fixture agent session ends', endMetadataSession);
         await safely('every workspace this scenario created is deleted', async () => {
             if (crowdedID !== null) await cli.run(['workspace', 'delete', crowdedID, '--force']);
             await cli.run(['workspace', 'delete', workspaceID, '--force']);

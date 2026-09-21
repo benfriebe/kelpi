@@ -31,7 +31,7 @@
     "scripts/scenarios/terminal-scrollback-resize.mjs": "e49dab97b245a2eb517de69fa975611aa321639450eca99847fe18deb9058fc2",
     "scripts/scenarios/terminal-text-size-shortcuts.mjs": "8a9442b2bfcc243d9a368240d04bffa3daef983c5971c3a21f08d88088446374",
     "scripts/scenarios/workspace-switch-keeps-the-caret.mjs": "a526c999fbe79fcc5c55d8b4871b1998028534d3e541fa0f6c6e32bf468a1822",
-    "scripts/ui-audit/audit.mjs": "d9a3c1de318331959623dca8a7f25c5d91e452608a8a1e83ed031ad1820ae4c8",
+    "scripts/ui-audit/audit.mjs": "26048c785cada1342bf8218528c1f4e770d5ccbb69642a470b35b2f439ae752a",
     "scripts/ui-audit/fixtures/acceptance-regression.mjs": "6ad144c13e3a34ee26a7a75f706278c84dc8db7c849c36ac316f1077fa00e4b1",
     "scripts/ui-audit/fixtures/cleanup-regression.mjs": "5cf6c75fee6b9dbd07f0f75a233688d1beca9f34940ce2f3d5a779ac5eed0ecd",
     "scripts/ui-audit/fixtures/mirrored-pan-incident.mjs": "16dd65bf2dbeaf3019180d36a6b4fe8337462aa4931fd880f5a9c455a40ba65c",

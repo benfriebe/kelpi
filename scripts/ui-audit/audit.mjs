@@ -8216,9 +8216,17 @@ function buildFlows(ctx) {
             needsEyes: true,
             async run(recorder) {
                 const workspaceName = 'n26-popup-layering';
+                const activeBefore =
+                    (await cli.json(['workspace', 'list', '--json'], { timeoutMs: 40_000 })).find(
+                        (workspace) => workspace.is_active === true
+                    )?.id ?? null;
                 const created = await cli.run(['workspace', 'create', '--name', workspaceName], { timeoutMs: 40_000 });
                 recorder.check('a scratch workspace for this step exists', created.code === 0, created.stdout.trim() || created.stderr.trim());
                 if (created.code !== 0) return;
+                const workspaceID = (/\(([0-9a-f-]{36})\)/i.exec(created.stdout) ?? [])[1] ?? null;
+                const target = workspaceID ?? workspaceName;
+                let stepError = null;
+                try {
                 // SETTLE-WAIT (was sleep(1500)): the new workspace is the ACTIVE one on screen —
                 // every `web open` below lands in whichever workspace is active, so this is the
                 // precondition for the whole step rather than a courtesy pause.
@@ -8299,7 +8307,7 @@ function buildFlows(ctx) {
                                      focused: pane?.getAttribute('data-focused') === 'true',
                                      x: Math.round(r.x), y: Math.round(r.y),
                                      w: Math.round(r.width), h: Math.round(r.height) };
-                        })).sort((a, b) => ([${JSON.stringify(left)}, ${JSON.stringify(right)}].indexOf(a.id) - [${JSON.stringify(left)}, ${JSON.stringify(right)}].indexOf(b.id)))()`
+                        }).sort((a, b) => ([${JSON.stringify(left)}, ${JSON.stringify(right)}].indexOf(a.id) - [${JSON.stringify(left)}, ${JSON.stringify(right)}].indexOf(b.id))))()`
                     );
                 /*
                  * §N27 — where the native view SHOULD sit for a given hole.
@@ -9408,23 +9416,75 @@ function buildFlows(ctx) {
                     'in `delete-confirm` and `emoji-sheet` the dialog is WHOLE — message and both buttons — over blanked panes rather than sliced at a page edge; in `sidebar-menu`, `sidebar-submenu`, `layout-menu`, `pane-header-menu` and `bucket-popover` the surface is whole AND the page it does not cover is still painted; in `pane-drop-zone` the accent half-pane highlight and its outline are visible inside the target web pane; and in `labels-flyover` the §N38 colour popover is whole — chip preview, Background swatch grid, ✎ Custom row, the Auto/Black/White triple — sitting over blanked pages rather than sliced at one'
                 );
 
-                // Leave the app as this step found it: the scratch workspace and its panes go.
-                const removed = await cli.run(['workspace', 'delete', workspaceName, '--force'], { timeoutMs: 60_000 });
-                recorder.check(
-                    'the scratch workspace was removed again',
-                    removed.code === 0,
-                    removed.stdout.trim() || removed.stderr.trim()
-                );
-                // SETTLE-WAIT (was sleep(1500)): the scratch workspace's row is off the sidebar
-                // and another workspace has taken the screen — "leave the app as this step found
-                // it" is a fact about the screen, and the next step inherits it.
-                await settleDom(
-                    page,
-                    `![...document.querySelectorAll('[data-testid="workspace-row"]')]
-                        .some((row) => (row.textContent ?? '').includes(${JSON.stringify(workspaceName)})) &&
-                     document.querySelector('[data-testid="workspace-row"][data-active="true"]') !== null`,
-                    { ceilingMs: 1500, intervalMs: 60 }
-                );
+                } catch (error) {
+                    stepError = error;
+                } finally {
+                    /*
+                     * This workspace is a fixture, not state for the next step. `report.guard`
+                     * deliberately continues after a step error, so end-of-body cleanup leaked
+                     * the active two-page workspace whenever any popup probe threw. Delete the
+                     * exact workspace the create reported, then put the run back on the exact
+                     * workspace that was active on entry. The existing cleanup receipt covers
+                     * every part of that promise so a partial cleanup cannot read green.
+                     */
+                    let cleanupError = null;
+                    let removed = null;
+                    let rowGone = false;
+                    let restored = false;
+                    let daemonClean = false;
+                    try {
+                        removed = await cli.run(['workspace', 'delete', target, '--force'], { timeoutMs: 60_000 });
+                        rowGone = await settleDom(
+                            page,
+                            workspaceID === null
+                                ? `![...document.querySelectorAll('[data-testid="workspace-row"]')]
+                                    .some((row) => (row.textContent ?? '').includes(${JSON.stringify(workspaceName)}))`
+                                : `document.querySelector('[data-workspace-id=${JSON.stringify(workspaceID)}]') === null`,
+                            { ceilingMs: 1500, intervalMs: 60 }
+                        );
+                        if (activeBefore !== null) {
+                            for (let attempt = 0; attempt < 6; attempt++) {
+                                restored = await settleDom(
+                                    page,
+                                    `document.querySelector('[data-testid="workspace-row"][data-active="true"]')
+                                        ?.getAttribute('data-workspace-id') === ${JSON.stringify(String(activeBefore))}`,
+                                    { ceilingMs: attempt === 0 ? 200 : 700, intervalMs: 50 }
+                                );
+                                if (restored) break;
+                                await page.eval(
+                                    `document.querySelector('[data-workspace-id=${JSON.stringify(String(activeBefore))}]')?.click()`
+                                );
+                            }
+                        }
+                        const after = await cli.json(['workspace', 'list', '--json'], { timeoutMs: 40_000 });
+                        daemonClean =
+                            after.every((workspace) =>
+                                workspaceID === null
+                                    ? String(workspace.name) !== workspaceName
+                                    : String(workspace.id) !== String(workspaceID)
+                            ) &&
+                            activeBefore !== null &&
+                            after.some(
+                                (workspace) =>
+                                    String(workspace.id) === String(activeBefore) && workspace.is_active === true
+                            );
+                    } catch (error) {
+                        cleanupError = error;
+                    }
+                    const cleanupOK =
+                        removed?.code === 0 && rowGone && restored && daemonClean && cleanupError === null;
+                    recorder.check(
+                        'the scratch workspace was removed again',
+                        cleanupOK,
+                        cleanupOK
+                            ? `deleted ${target}; restored ${String(activeBefore)}`
+                            : `delete=${String(removed?.code ?? 'not run')} rowGone=${String(rowGone)} ` +
+                              `restored=${String(restored)} daemonClean=${String(daemonClean)}` +
+                              (cleanupError === null ? '' : ` error=${String(cleanupError)}`)
+                    );
+                    if (stepError !== null) throw stepError;
+                    if (cleanupError !== null) throw cleanupError;
+                }
             }
         },
 

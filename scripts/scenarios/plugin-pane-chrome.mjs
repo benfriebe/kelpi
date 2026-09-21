@@ -675,7 +675,7 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
         if (!await d.settle(async () => ((await headerBox(shellPane))?.width ?? 0) > 700, { ceilingMs: 10_000 })) {
             throw new Error('The rename header did not receive the full-width layout');
         }
-        await clickFrame(band(shellPane));
+        await clickHost(`[data-testid="pane-body-${shellPane}"]`);
         if (!await d.settle(async () => await focusedNow() === shellPane, { ceilingMs: 8_000 })) throw new Error('The rename pane did not take focus');
         await refusal(`kelpi.ui.renamePane(${JSON.stringify(shellPane)})`);
         const fieldUp = await d.settleDom(page, `document.querySelector('[data-testid="pane-rename-input-${shellPane}"]')`, { ceilingMs: 8_000 });

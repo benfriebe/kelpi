@@ -394,6 +394,8 @@ function ControlButton({
 export interface PaneHeaderProps extends PaneActions {
     readonly pane: PaneModel;
     readonly focused: boolean;
+    /** Return the caret after keyboard completion removes the host's inline rename field. */
+    readonly onReleaseChromeCaret?: ((paneID: string) => void) | undefined;
     /** This pane is the workspace's zoomed pane. */
     readonly zoomed?: boolean | undefined;
     /** The workspace has more than one pane, so the ZOOM badge is meaningful. */
@@ -523,6 +525,16 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
     // blur that follows an Enter (or an unmount) can never fire the callback twice.
     const [renameDraft, setRenameDraft] = useState<string | null>(null);
     const renaming = renameDraft !== null;
+    const returnRenameCaret = useRef(false);
+    useEffect(() => {
+        if (renaming || !returnRenameCaret.current) return;
+        returnRenameCaret.current = false;
+        // Enter/Escape remove the active input without a blur. Wait for that removal, then
+        // use the host's existing handback (including native web focus and phone policy).
+        // A blur commit never requests this, and a new owner or a lost pane focus wins.
+        if (!focused || !visible || document.activeElement !== document.body) return;
+        props.onReleaseChromeCaret?.(pane.id);
+    }, [renaming, focused, visible, pane.id, props.onReleaseChromeCaret]);
 
     /*
      * §S40 — where the `•••` menu is open, if it is.
@@ -555,6 +567,9 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
     const cancelRename = (): void => setRenameDraft(null);
 
     const onRenameKeyDown = (event: KeyboardEvent<HTMLInputElement>): void => {
+        if (event.key === 'Enter' || event.key === 'Escape') {
+            returnRenameCaret.current = document.activeElement === event.currentTarget;
+        }
         if (event.key === 'Enter') {
             event.preventDefault();
             commitRename();

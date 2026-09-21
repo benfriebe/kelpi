@@ -35,7 +35,7 @@ import { executionRoots } from '../ui-audit/lib/execution-roots.mjs';
  *  11. the PRIMARY daemon stopped and replaced with the dialog open on a projected section and a
  *      half-typed draft in it: the bundled dialog takes over on the same section still holding the
  *      draft, the presenter comes back with it, nothing latches, and neither config file changes;
- *  12. eight screenshots for the eyes, each with a note saying what to look for. Appearance's
+ *  12. fifteen screenshots for the eyes, each with a note saying what to look for. Appearance's
  *      projected panel and rail are deliberately scrollable, so paired captures retain the whole
  *      visual claim instead of pretending mutually exclusive scroll positions fit in one frame.
  *
@@ -253,6 +253,75 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
         const file = await rec.shot(page, label);
         rec.note(`EYES ${path.basename(file)}: ${eyes}`);
         return file;
+    };
+    /**
+     * Move one of the presenter's real scrollers, then require every named row to be wholly inside
+     * its painted viewport before a visual claim names it. Appearance is taller than this frame:
+     * a successful DOM assertion that a row exists says nothing about whether its pixels are in
+     * the screenshot.
+     */
+    const frameVisual = async (anchor, required) => {
+        const found = await inFrame(`(() => {
+            const node = document.querySelector(${JSON.stringify(anchor)});
+            node?.scrollIntoView({block:'center',inline:'nearest'});
+            return node !== null;
+        })()`);
+        if (!found) throw new Error(`missing visual anchor ${anchor}`);
+        await page.eval('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))');
+        const raw = await inFrame(`(() => {
+            const panel = document.querySelector('.panel');
+            if (panel === null) return JSON.stringify({ panel: null, rows: [] });
+            const viewport = panel.getBoundingClientRect();
+            const rows = ${JSON.stringify(required)}.map((selector) => {
+                const node = document.querySelector(selector);
+                if (node === null) return { selector, visible: false, box: null };
+                const box = node.getBoundingClientRect();
+                return {
+                    selector,
+                    visible: box.width > 0 && box.height > 0 &&
+                        box.top >= viewport.top - 1 && box.bottom <= viewport.bottom + 1 &&
+                        box.left >= viewport.left - 1 && box.right <= viewport.right + 1,
+                    box: { top: Math.round(box.top), bottom: Math.round(box.bottom) }
+                };
+            });
+            return JSON.stringify({ panel: { top: Math.round(viewport.top), bottom: Math.round(viewport.bottom) }, rows });
+        })()`);
+        const visibility = JSON.parse(String(raw));
+        if (visibility.rows.length !== required.length || visibility.rows.some((row) => row.visible !== true)) {
+            throw new Error(`visual rows are not wholly in the presenter viewport: ${JSON.stringify(visibility)}`);
+        }
+    };
+    /** The same bounded precondition for the host-owned native remainder below the iframe. */
+    const nativeVisual = async (anchor, required) => {
+        const found = await page.eval(`(() => {
+            const node = document.querySelector(${JSON.stringify(anchor)});
+            node?.scrollIntoView({block:'center',inline:'nearest'});
+            return node !== null;
+        })()`);
+        if (!found) throw new Error(`missing native visual anchor ${anchor}`);
+        await page.eval('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))');
+        const raw = await page.eval(`(() => {
+            const panel = document.querySelector('${remainder}');
+            if (panel === null) return JSON.stringify({ panel: null, rows: [] });
+            const viewport = panel.getBoundingClientRect();
+            const rows = ${JSON.stringify(required)}.map((selector) => {
+                const node = document.querySelector(selector);
+                if (node === null) return { selector, visible: false, box: null };
+                const box = node.getBoundingClientRect();
+                return {
+                    selector,
+                    visible: box.width > 0 && box.height > 0 &&
+                        box.top >= viewport.top - 1 && box.bottom <= viewport.bottom + 1 &&
+                        box.left >= viewport.left - 1 && box.right <= viewport.right + 1,
+                    box: { top: Math.round(box.top), bottom: Math.round(box.bottom) }
+                };
+            });
+            return JSON.stringify({ panel: { top: Math.round(viewport.top), bottom: Math.round(viewport.bottom) }, rows });
+        })()`);
+        const visibility = JSON.parse(String(raw));
+        if (visibility.rows.length !== required.length || visibility.rows.some((row) => row.visible !== true)) {
+            throw new Error(`native visual rows are not wholly in the remainder viewport: ${JSON.stringify(visibility)}`);
+        }
     };
 
     // ── the dialog ──────────────────────────────────────────────────────────────────
@@ -593,13 +662,56 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
         rec.check('a segmented Appearance value committed in the frame round-trips through the config file',
             segmentBefore === 'system' && wroteSegment && segmentFollows,
             `committed via ${segmentCommit}; config tail ${tail(readConfig())}`);
-        await shot('lab-settings-appearance', 'the LAB drawing the top of Appearance: the Chrome segmented control reads Dark and the Sidebar controls begin below it, with the host\u2019s native remainder holding the preset gallery underneath the frame. The paired required captures continue through every projected terminal and search-colour row.');
-        await inFrame(`(() => { const node = document.querySelector('[data-testid="lab-settings-field"][data-field-id="appearance.backgroundOpacity"]'); node?.scrollIntoView({block:'start'}); return node !== null; })()`);
-        await page.eval('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))');
-        await shot('lab-settings-appearance-terminal', 'the same live LAB Appearance state, scrolled within the presenter frame to its Terminal card: Background opacity, Font family, Font size and padding sliders are visibly reviewable, while the host\u2019s native Appearance remainder stays below the frame.');
-        await inFrame(`(() => { const node = document.querySelector('[data-testid="lab-settings-field"][data-field-id="appearance.searchMatchColor"]'); node?.scrollIntoView({block:'start'}); return node !== null; })()`);
-        await page.eval('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))');
-        await shot('lab-settings-appearance-search', 'the same live LAB Appearance state, scrolled within the presenter frame to its Search highlight card: the projected Match, Match text, Current match and Current match text colour rows are visibly reviewable, with the native remainder still below.');
+        const fieldRow = id => `[data-testid="lab-settings-field"][data-field-id="${id}"]`;
+        await frameVisual(fieldRow('appearance.chromeAppearance'), [fieldRow('appearance.chromeAppearance')]);
+        await nativeVisual('[data-testid="appearance-presets"]', ['[data-testid="appearance-presets"]']);
+        await shot('lab-settings-appearance', 'the LAB drawing the top of Appearance with the Chrome segmented control wholly visible and reading Dark, while the host\u2019s real native remainder shows the complete preset gallery underneath the frame.');
+
+        await frameVisual(fieldRow('appearance.sidebarAvatarFill'), [
+            fieldRow('appearance.sidebarColorIntensity'),
+            fieldRow('appearance.sidebarAvatarFill')
+        ]);
+        await shot('lab-settings-appearance-sidebar', 'the same LAB Appearance state, scrolled within the presenter frame until the Sidebar colour-intensity and avatar-fill slider rows are both wholly visible. Later captures continue through the terminal and search controls.');
+
+        await frameVisual(fieldRow('appearance.sidebarGroupStroke'), [
+            fieldRow('appearance.sidebarAvatarStroke'),
+            fieldRow('appearance.sidebarGroupStroke')
+        ]);
+        await shot('lab-settings-appearance-sidebar-strokes', 'the same LAB Sidebar cards continued to the remaining projected sliders: avatar stroke and group-band stroke are both wholly visible in the presenter viewport.');
+
+        await frameVisual(fieldRow('appearance.backgroundOpacity'), [
+            fieldRow('appearance.backgroundOpacity'),
+            fieldRow('appearance.fontFamily')
+        ]);
+        await shot('lab-settings-appearance-terminal', 'the same LAB Appearance state with the start of its Terminal card wholly in view: Background opacity and Font family are visible together without claiming that the shorter frame also contains every sizing row.');
+
+        await frameVisual(fieldRow('appearance.windowPaddingX'), [
+            fieldRow('appearance.fontSize'),
+            fieldRow('appearance.windowPaddingX'),
+            fieldRow('appearance.windowPaddingY')
+        ]);
+        await shot('lab-settings-appearance-terminal-sizing', 'the same LAB Terminal card at its sizing rows: Font size and both horizontal and vertical padding controls are wholly visible in the presenter viewport.');
+
+        await frameVisual(fieldRow('appearance.searchMatchColor'), [
+            fieldRow('appearance.searchMatchColor'),
+            fieldRow('appearance.searchMatchTextColor')
+        ]);
+        await shot('lab-settings-appearance-search', 'the same LAB Appearance state at the first half of Search highlight: the Match and Match text colour rows are wholly visible.');
+
+        await frameVisual(fieldRow('appearance.searchMatchCurrentColor'), [
+            fieldRow('appearance.searchMatchCurrentColor'),
+            fieldRow('appearance.searchMatchCurrentTextColor')
+        ]);
+        await shot('lab-settings-appearance-search-current', 'the same LAB Search highlight card at its second half: Current match and Current match text colour rows are wholly visible.');
+
+        await nativeVisual('[data-testid="chrome-colors-reset"]', ['[data-testid="chrome-colors-reset"]']);
+        await shot('lab-settings-appearance-native-chrome-reset', 'the host-owned native Appearance remainder scrolled to its visibly bounded Chrome colours Reset control; the lab frame remains mounted above it.');
+
+        await nativeVisual('[data-testid="terminal-theme"]', ['[data-testid="terminal-theme"]']);
+        await shot('lab-settings-appearance-native-theme', 'the host-owned native Appearance remainder scrolled to its wholly visible Terminal theme picker, preserving the hand-built theme claim that is intentionally absent from the projected field list.');
+
+        await nativeVisual('[data-testid="search-colors-reset"]', ['[data-testid="search-colors-reset"]']);
+        await shot('lab-settings-appearance-native-search-reset', 'the host-owned native Appearance remainder scrolled to its wholly visible Reset search colours control. Together with the Chrome colours Reset capture, the original native Resets claim remains reviewable.');
 
         /*
          * Off the step grid, and therefore refused.

@@ -9427,36 +9427,64 @@ function buildFlows(ctx) {
                      * workspace that was active on entry. The existing cleanup receipt covers
                      * every part of that promise so a partial cleanup cannot read green.
                      */
-                    let cleanupError = null;
+                    const cleanupErrors = [];
+                    const attemptCleanup = async (stage, operation, fallback = null) => {
+                        try {
+                            return await operation();
+                        } catch (error) {
+                            cleanupErrors.push({ stage, error });
+                            return fallback;
+                        }
+                    };
                     let removed = null;
                     let rowGone = false;
                     let restored = false;
                     let daemonClean = false;
-                    try {
-                        removed = await cli.run(['workspace', 'delete', target, '--force'], { timeoutMs: 60_000 });
-                        rowGone = await settleDom(
-                            page,
-                            workspaceID === null
-                                ? `![...document.querySelectorAll('[data-testid="workspace-row"]')]
-                                    .some((row) => (row.textContent ?? '').includes(${JSON.stringify(workspaceName)}))`
-                                : `document.querySelector('[data-workspace-id=${JSON.stringify(workspaceID)}]') === null`,
-                            { ceilingMs: 1500, intervalMs: 60 }
-                        );
-                        if (activeBefore !== null) {
-                            for (let attempt = 0; attempt < 6; attempt++) {
-                                restored = await settleDom(
-                                    page,
-                                    `document.querySelector('[data-testid="workspace-row"][data-active="true"]')
-                                        ?.getAttribute('data-workspace-id') === ${JSON.stringify(String(activeBefore))}`,
-                                    { ceilingMs: attempt === 0 ? 200 : 700, intervalMs: 50 }
-                                );
-                                if (restored) break;
-                                await page.eval(
-                                    `document.querySelector('[data-workspace-id=${JSON.stringify(String(activeBefore))}]')?.click()`
-                                );
-                            }
+                    removed = await attemptCleanup(
+                        'delete fixture',
+                        () => cli.run(['workspace', 'delete', target, '--force'], { timeoutMs: 60_000 })
+                    );
+                    rowGone =
+                        (await attemptCleanup(
+                            'verify fixture row removed',
+                            () => settleDom(
+                                page,
+                                workspaceID === null
+                                    ? `![...document.querySelectorAll('[data-testid="workspace-row"]')]
+                                        .some((row) => (row.textContent ?? '').includes(${JSON.stringify(workspaceName)}))`
+                                    : `document.querySelector('[data-workspace-id=${JSON.stringify(workspaceID)}]') === null`,
+                                { ceilingMs: 1500, intervalMs: 60 }
+                            ),
+                            false
+                        )) === true;
+                    if (activeBefore !== null) {
+                        for (let attempt = 0; attempt < 6; attempt++) {
+                            restored =
+                                (await attemptCleanup(
+                                    `verify prior workspace active (attempt ${String(attempt + 1)})`,
+                                    () => settleDom(
+                                        page,
+                                        `document.querySelector('[data-testid="workspace-row"][data-active="true"]')
+                                            ?.getAttribute('data-workspace-id') === ${JSON.stringify(String(activeBefore))}`,
+                                        { ceilingMs: attempt === 0 ? 200 : 700, intervalMs: 50 }
+                                    ),
+                                    false
+                                )) === true;
+                            if (restored) break;
+                            await attemptCleanup(
+                                `request prior workspace restoration (attempt ${String(attempt + 1)})`,
+                                () =>
+                                    page.eval(
+                                        `document.querySelector('[data-workspace-id=${JSON.stringify(String(activeBefore))}]')?.click()`
+                                    )
+                            );
                         }
-                        const after = await cli.json(['workspace', 'list', '--json'], { timeoutMs: 40_000 });
+                    }
+                    const after = await attemptCleanup(
+                        'verify daemon workspace state',
+                        () => cli.json(['workspace', 'list', '--json'], { timeoutMs: 40_000 })
+                    );
+                    if (Array.isArray(after)) {
                         daemonClean =
                             after.every((workspace) =>
                                 workspaceID === null
@@ -9468,11 +9496,18 @@ function buildFlows(ctx) {
                                 (workspace) =>
                                     String(workspace.id) === String(activeBefore) && workspace.is_active === true
                             );
-                    } catch (error) {
-                        cleanupError = error;
                     }
+                    const cleanupFailure =
+                        cleanupErrors.length === 0
+                            ? null
+                            : cleanupErrors.length === 1
+                              ? cleanupErrors[0].error
+                              : new AggregateError(
+                                    cleanupErrors.map((entry) => entry.error),
+                                    `popup cleanup failed: ${cleanupErrors.map((entry) => entry.stage).join(', ')}`
+                                );
                     const cleanupOK =
-                        removed?.code === 0 && rowGone && restored && daemonClean && cleanupError === null;
+                        removed?.code === 0 && rowGone && restored && daemonClean && cleanupErrors.length === 0;
                     recorder.check(
                         'the scratch workspace was removed again',
                         cleanupOK,
@@ -9480,10 +9515,14 @@ function buildFlows(ctx) {
                             ? `deleted ${target}; restored ${String(activeBefore)}`
                             : `delete=${String(removed?.code ?? 'not run')} rowGone=${String(rowGone)} ` +
                               `restored=${String(restored)} daemonClean=${String(daemonClean)}` +
-                              (cleanupError === null ? '' : ` error=${String(cleanupError)}`)
+                              (cleanupErrors.length === 0
+                                  ? ''
+                                  : ` errors=${cleanupErrors
+                                        .map((entry) => `${entry.stage}: ${String(entry.error)}`)
+                                        .join(' | ')}`)
                     );
                     if (stepError !== null) throw stepError;
-                    if (cleanupError !== null) throw cleanupError;
+                    if (cleanupFailure !== null) throw cleanupFailure;
                 }
             }
         },

@@ -30,6 +30,7 @@ import { mirroredPaneClip, subscribeTerminalPanes } from './pane-registry';
 import { TERMINAL_MIRROR_ATTRIBUTE, TerminalPane } from './TerminalPane';
 import {
     createFakePtyApi,
+    createFakePhoneWindow,
     createFakeRendererFactory,
     installFakeResizeObserver,
     type FakePtyApi,
@@ -144,7 +145,7 @@ interface Mounted {
 }
 
 async function mount(
-    props: { ownsSize?: boolean; width?: number; height?: number; visible?: boolean } = {}
+    props: { ownsSize?: boolean; width?: number; height?: number; visible?: boolean; phone?: boolean } = {}
 ): Promise<Mounted> {
     const pty = createFakePtyApi();
     const renderers = createFakeRendererFactory({ cell: CELL });
@@ -155,6 +156,7 @@ async function mount(
         visible: props.visible ?? true,
         createRenderer: renderers.factory,
         measure: box(props.width ?? 1200, props.height ?? 600),
+        ...(props.phone ? { formFactorWindow: createFakePhoneWindow({ width: 390, height: 844, coarse: true }) } : {}),
         ...(props.ownsSize === undefined ? {} : { ownsSize: props.ownsSize })
     };
     const view = render(<TerminalPane {...base} />);
@@ -562,9 +564,159 @@ describe('the pane that owns sizing, and the daemon that cannot say (#166)', () 
  *
  * So: an edge on the clipped side, the count on the chip's tooltip, and - the half that matters
  * as much - NOTHING AT ALL when nothing is clipped, which is every pane that sizes its own PTY
- * and every mirror that fits. Option 2 of the ticket (panning the mirrored canvas) is a separate
- * change; these cases pin only what is discoverable today.
+ * and every mirror that fits. The pan cases also pin how the indicators follow the currently clipped side.
  */
+describe('a mirrored pane can pan without taking size control (#178)', () => {
+    async function viewer(height = 600, phone = false, width = 840) {
+        const mounted = await mount({ ownsSize: false, width, height, phone });
+        mounted.pty.last().replay('owner', { cols: 120, rows: 30 });
+        await settle();
+        const host = mounted.root.querySelector<HTMLElement>('[data-terminal-host]')!;
+        const canvas = document.createElement('canvas');
+        host.append(canvas);
+        // jsdom has no scrolling layout; model the browser's canvas rect, which moves with
+        // the viewport offset. The live scenario verifies that relationship in Chromium.
+        vi.spyOn(canvas, 'getBoundingClientRect').mockImplementation(() => ({
+            left: -host.scrollLeft, top: -host.scrollTop, width: 1200, height: 600,
+            right: 1200 - host.scrollLeft, bottom: 600 - host.scrollTop, x: -host.scrollLeft, y: -host.scrollTop,
+            toJSON: () => ({})
+        }));
+        return { ...mounted, host, canvas };
+    }
+
+    it('pans and clamps both axes, moves the edge indicators, and never reports a resize', async () => {
+        const { host, canvas, root, pty, renderers } = await viewer(400);
+        const before = [...pty.last().resizes];
+        const engineWheel = vi.fn();
+        host.addEventListener('wheel', engineWheel, true);
+        fireEvent.wheel(canvas, { deltaX: 1000, deltaY: 1000 });
+        expect(engineWheel).not.toHaveBeenCalled();
+        expect([host.scrollLeft, host.scrollTop]).toEqual([360, 200]);
+        expect([root.scrollLeft, root.scrollTop]).toEqual([0, 0]);
+        expect(root.querySelector('[data-testid="terminal-clip-right-pane-1"]')).toBeNull();
+        expect(root.querySelector('[data-testid="terminal-clip-bottom-pane-1"]')).toBeNull();
+        expect(root.querySelector('[data-testid="terminal-clip-left-pane-1"]')).not.toBeNull();
+        expect(root.querySelector('[data-testid="terminal-clip-top-pane-1"]')).not.toBeNull();
+        expect(root.getAttribute('data-terminal-clip')).toBe('36x10');
+        fireEvent.wheel(canvas, { deltaX: -1000, deltaY: -1000 });
+        expect([host.scrollLeft, host.scrollTop]).toEqual([0, 0]);
+        expect(pty.last().resizes).toEqual(before);
+        expect([renderers.last().cols, renderers.last().rows]).toEqual([120, 30]);
+    });
+
+    it('forwards only the vertical part of a diagonal wheel to the engine when rows fit', async () => {
+        const { host, canvas } = await viewer();
+        const seen: number[][] = [];
+        // ghostty-web registers its wheel handler in capture on this same host.
+        host.addEventListener('wheel', (event) => seen.push([event.deltaX, event.deltaY]), true);
+        fireEvent.wheel(canvas, { deltaX: 45, deltaY: 25 });
+        expect(host.scrollLeft).toBe(45);
+        expect(host.scrollTop).toBe(0);
+        expect(seen).toEqual([[0, 25]]);
+        fireEvent.wheel(canvas, { deltaY: -20 });
+        expect(seen).toEqual([[0, 25], [0, -20]]);
+    });
+
+    it('forwards horizontal application wheel input when only the vertical axis pans', async () => {
+        const { host, canvas, pty } = await viewer(400, false, 1200);
+        act(() => pty.last().modes({ mouseTracking: 'vt200', mouseFormat: 'sgr' }));
+        const wheel = { deltaX: 1, deltaMode: 1, clientX: 45, clientY: 61 };
+        fireEvent.wheel(canvas, wheel);
+        expect(pty.last().directInput).toEqual(['\u001b[<67;5;4M']);
+        fireEvent.wheel(canvas, { ...wheel, deltaY: 1 });
+        expect([host.scrollLeft, host.scrollTop]).toEqual([0, 20]);
+        expect(pty.last().directInput).toEqual(['\u001b[<67;5;4M', '\u001b[<67;5;5M']);
+    });
+
+    it('refreshes edges on sub-cell resizes without reporting an unchanged grid', async () => {
+        const mounted = await viewer(409, false, 849);
+        fireEvent.wheel(mounted.canvas, { deltaX: 1000, deltaY: 1000 });
+        expect([mounted.host.scrollLeft, mounted.host.scrollTop]).toEqual([351, 191]);
+        expect(mounted.root.querySelector('[data-testid="terminal-clip-right-pane-1"]')).toBeNull();
+        const resizes = [...mounted.pty.last().resizes];
+        await mounted.update({ measure: box(840, 400) });
+        await act(async () => {
+            observers.trigger();
+            await new Promise((resolve) => setTimeout(resolve, 150));
+        });
+        expect(mounted.root.querySelector('[data-testid="terminal-clip-right-pane-1"]')).not.toBeNull();
+        expect(mounted.root.querySelector('[data-testid="terminal-clip-bottom-pane-1"]')).not.toBeNull();
+        expect([mounted.host.scrollLeft, mounted.host.scrollTop]).toEqual([351, 191]);
+        expect(mounted.pty.last().resizes).toEqual(resizes);
+    });
+
+    it('pans before mouse reporting, but retains vertical reports and scroll-aware click cells', async () => {
+        const { host, canvas, pty } = await viewer();
+        act(() => pty.last().modes({ mouseTracking: 'vt200', mouseFormat: 'sgr' }));
+        fireEvent.wheel(canvas, { deltaX: 200, clientX: 45, clientY: 61 });
+        expect(pty.last().directInput).toEqual([]);
+        fireEvent.mouseDown(canvas, { clientX: 45, clientY: 61, button: 0 });
+        expect(pty.last().directInput).toEqual(['\u001b[<0;25;4M']);
+        fireEvent.wheel(canvas, { deltaY: 1, deltaMode: 1, clientX: 45, clientY: 61 });
+        expect(pty.last().directInput.at(-1)).toBe('\u001b[<65;25;4M');
+    });
+
+    it('handles line/page units and leaves control-wheel available to browser zoom', async () => {
+        const { host, canvas } = await viewer(400);
+        Object.defineProperties(host, { clientWidth: { value: 840 }, clientHeight: { value: 400 } });
+        fireEvent.wheel(canvas, { deltaX: 2, deltaY: 2, deltaMode: 1 });
+        expect([host.scrollLeft, host.scrollTop]).toEqual([20, 40]);
+        fireEvent.wheel(canvas, { deltaX: 1, deltaY: 1, deltaMode: 2 });
+        expect([host.scrollLeft, host.scrollTop]).toEqual([360, 200]);
+        fireEvent.wheel(canvas, { deltaX: -100, deltaY: -100, ctrlKey: true });
+        expect([host.scrollLeft, host.scrollTop]).toEqual([360, 200]);
+    });
+
+    it('clamps after an owner shrink and resets scrolling when size control returns', async () => {
+        const mounted = await viewer(400);
+        fireEvent.wheel(mounted.canvas, { deltaX: 1000, deltaY: 1000 });
+        mounted.pty.last().replay('smaller owner', { cols: 90, rows: 22 });
+        await settle();
+        expect([mounted.host.scrollLeft, mounted.host.scrollTop]).toEqual([60, 40]);
+        await mounted.update({ ownsSize: true });
+        expect([mounted.host.scrollLeft, mounted.host.scrollTop]).toEqual([0, 0]);
+        expect(mounted.host.style.overflow).toBe('');
+        fireEvent.wheel(mounted.canvas, { deltaX: 80, deltaY: 80 });
+        expect([mounted.host.scrollLeft, mounted.host.scrollTop]).toEqual([0, 0]);
+    });
+
+    it('clamps when the viewer grows and clears the host scroll state on renderer teardown', async () => {
+        const mounted = await viewer(400);
+        fireEvent.wheel(mounted.canvas, { deltaX: 1000, deltaY: 1000 });
+        await mounted.update({ measure: box(1000, 500) });
+        await act(async () => {
+            observers.trigger();
+            await new Promise((resolve) => setTimeout(resolve, 150));
+        });
+        expect([mounted.host.scrollLeft, mounted.host.scrollTop]).toEqual([200, 100]);
+        act(() => mounted.renderers.last().poison());
+        expect([mounted.host.scrollLeft, mounted.host.scrollTop]).toEqual([0, 0]);
+        expect(mounted.host.style.overflow).toBe('');
+    });
+
+    it.each([[400, false], [600, false], [400, true], [600, true]] as const)(
+        'pans with two fingers on a phone with height %i and mouse reporting %s without synthesizing taps', async (height, reportsMouse) => {
+        const { host, canvas, pty, renderers } = await viewer(height, true);
+        if (reportsMouse) act(() => pty.last().modes({ mouseTracking: 'vt200', mouseFormat: 'sgr' }));
+        const points = (x: number, y: number) => [{ clientX: x, clientY: y }, { clientX: x + 40, clientY: y }];
+        const scroll = vi.spyOn(renderers.last(), 'scrollLines');
+        const start = points(240, 220);
+        fireEvent.touchStart(canvas, { touches: start.slice(0, 1), changedTouches: start.slice(0, 1) });
+        fireEvent.touchStart(canvas, { touches: start, changedTouches: start.slice(1) });
+        fireEvent.touchMove(canvas, { touches: points(140, 120), changedTouches: points(140, 120) });
+        expect(host.scrollLeft).toBe(100);
+        expect(host.scrollTop).toBe(height === 400 ? 100 : 0);
+        if (height === 600 && !reportsMouse) expect(scroll).toHaveBeenCalledWith(5);
+        else expect(scroll).not.toHaveBeenCalled();
+        fireEvent.touchEnd(canvas, { touches: points(140, 120).slice(0, 1), changedTouches: points(140, 120).slice(1) });
+        fireEvent.touchEnd(canvas, { touches: [], changedTouches: points(140, 120).slice(0, 1) });
+        if (height === 600 && reportsMouse) {
+            expect(pty.last().directInput.join('')).toBe('\u001b[<65;27;7M'.repeat(5));
+        } else expect(pty.last().directInput).toEqual([]);
+        expect(pty.last().input).toEqual([]);
+    });
+});
+
 describe('a mirrored pane marks the edge it is clipping (#178)', () => {
     /** Which edge indicators the pane is drawing. */
     function edges(root: HTMLElement): { right: boolean; bottom: boolean } {

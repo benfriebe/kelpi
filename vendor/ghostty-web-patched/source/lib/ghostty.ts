@@ -620,6 +620,30 @@ export class GhosttyTerminal {
     return { cols: this._cols, rows: this._rows };
   }
 
+  /** Track selection endpoints natively while a write can move or remove buffer rows. */
+  trackSelection(startCol: number, startRow: number, endCol: number, endRow: number): boolean {
+    return this.exports.ghostty_terminal_track_selection(
+      this.handle, startCol, startRow, endCol, endRow
+    );
+  }
+
+  /** Consume the native pins after a write; null when selected rows no longer exist. */
+  readTrackedSelection(): { startCol: number; startRow: number; endCol: number; endRow: number } | null {
+    const ptr = this.exports.ghostty_wasm_alloc_u8_array(16);
+    try {
+      if (!this.exports.ghostty_terminal_read_selection(this.handle, ptr)) return null;
+      const coords = new DataView(this.memory.buffer, ptr, 16);
+      return {
+        startCol: coords.getUint32(0, true),
+        startRow: coords.getUint32(4, true),
+        endCol: coords.getUint32(8, true),
+        endRow: coords.getUint32(12, true)
+      };
+    } finally {
+      this.exports.ghostty_wasm_free_u8_array(ptr, 16);
+    }
+  }
+
   /** Get number of scrollback lines (history, not including active screen) */
   getScrollbackLength(): number {
     return this.exports.ghostty_terminal_get_scrollback_length(this.handle);

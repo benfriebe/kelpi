@@ -822,7 +822,7 @@ describe('KeyBar in a terminal pane', () => {
         // …and the pane inside the grid is untouched by any of it: no flex column, no shrinking
         // host, which is the whole of C9 (the bar is not a piece of one pane's box any more).
         expect(h.root.className).toBe('relative h-full w-full overflow-hidden ');
-        expect(h.host.className).toBe('h-full w-full');
+        expect(h.host.className).toBe('relative h-full w-full');
     });
 
     it('AND NOT ON DESKTOP: no bar, nothing written on the row, and the pane renders what it always has', async () => {
@@ -835,7 +835,7 @@ describe('KeyBar in a terminal pane', () => {
         expect(h.row?.style.paddingBottom).toBe('');
         expect(h.row?.querySelector(`[${PHONE_KEY_BAR_SLOT_ATTR}]`)).toBeNull();
         expect(h.root.className).toBe('relative h-full w-full overflow-hidden ');
-        expect(h.host.className).toBe('h-full w-full');
+        expect(h.host.className).toBe('relative h-full w-full');
     });
 
     it('does not render for an unfocused pane, and comes back when focus returns', async () => {

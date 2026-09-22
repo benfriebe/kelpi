@@ -38,8 +38,8 @@ export class SelectionManager {
   private wasmTerm: GhosttyTerminal;
   private textarea: HTMLTextAreaElement;
 
-  // Selection state - coordinates are in ABSOLUTE buffer space (viewportY + viewportRow)
-  // This ensures selection persists correctly when scrolling
+  // Absolute buffer rows = scrollbackLength - viewportY + viewportRow. Native pins
+  // reconcile these indices across writes that trim or otherwise move buffer rows.
   private selectionStart: { col: number; absoluteRow: number } | null = null;
   private selectionEnd: { col: number; absoluteRow: number } | null = null;
   private isSelecting: boolean = false;
@@ -222,11 +222,41 @@ export class SelectionManager {
     );
   }
 
+  /** Pin both endpoints before output can prune or move their buffer rows (#170). */
+  trackSelectionForWrite(): boolean {
+    if (!this.selectionStart || !this.selectionEnd) return false;
+    this.markCurrentSelectionDirty();
+    const tracked = this.wasmTerm.trackSelection(
+      this.selectionStart.col, this.selectionStart.absoluteRow,
+      this.selectionEnd.col, this.selectionEnd.absoluteRow
+    );
+    if (!tracked) this.clearSelection();
+    return tracked;
+  }
+
+  /** Reconcile the copy reader and highlight with the same surviving native endpoints. */
+  restoreSelectionAfterWrite(): void {
+    const coords = this.wasmTerm.readTrackedSelection();
+    if (!coords) {
+      // Never silently re-point a selection whose text was discarded at the history cap.
+      this.clearSelection();
+      return;
+    }
+    const changed = this.selectionStart?.col !== coords.startCol ||
+      this.selectionStart?.absoluteRow !== coords.startRow ||
+      this.selectionEnd?.col !== coords.endCol ||
+      this.selectionEnd?.absoluteRow !== coords.endRow;
+    this.selectionStart = { col: coords.startCol, absoluteRow: coords.startRow };
+    this.selectionEnd = { col: coords.endCol, absoluteRow: coords.endRow };
+    this.markCurrentSelectionDirty();
+    if (changed) this.selectionChangedEmitter.fire();
+  }
+
   /**
    * Clear the selection
    */
   clearSelection(): void {
-    if (!this.hasSelection()) return;
+    if (!this.selectionStart && !this.selectionEnd) return;
 
     // Mark current selection rows as dirty for redraw
     const coords = this.normalizeSelection();
@@ -239,9 +269,11 @@ export class SelectionManager {
     this.selectionStart = null;
     this.selectionEnd = null;
     this.isSelecting = false;
+    this.stopAutoScroll();
 
     // Force redraw of previously selected lines to clear the overlay
     this.requestRender();
+    this.selectionChangedEmitter.fire();
   }
 
   /**
@@ -333,7 +365,6 @@ export class SelectionManager {
    */
   deselect(): void {
     this.clearSelection();
-    this.selectionChangedEmitter.fire();
   }
 
   /**
@@ -342,7 +373,7 @@ export class SelectionManager {
   focus(): void {
     const canvas = this.renderer.getCanvas();
     if (canvas.parentElement) {
-      canvas.parentElement.focus();
+      canvas.parentElement.focus({ preventScroll: true });
     }
   }
 
@@ -436,7 +467,7 @@ export class SelectionManager {
         // CRITICAL: Focus the terminal so it can receive keyboard input
         // The canvas doesn't have tabindex, but the parent container does
         if (canvas.parentElement) {
-          canvas.parentElement.focus();
+          canvas.parentElement.focus({ preventScroll: true });
         }
 
         const cell = this.pixelToCell(e.offsetX, e.offsetY);
@@ -610,7 +641,7 @@ export class SelectionManager {
       }
 
       // Focus the textarea so the context menu appears on it
-      this.textarea.focus();
+      this.textarea.focus({ preventScroll: true });
 
       // After a short delay, restore the textarea to its hidden state
       // This allows the context menu to appear first
@@ -885,7 +916,7 @@ export class SelectionManager {
       textarea.style.opacity = '0';
 
       // Select all text and copy
-      textarea.focus();
+      textarea.focus({ preventScroll: true });
       textarea.select();
       textarea.setSelectionRange(0, text.length);
 
@@ -893,7 +924,7 @@ export class SelectionManager {
 
       // Restore focus
       if (previouslyFocused) {
-        previouslyFocused.focus();
+        previouslyFocused.focus({ preventScroll: true });
       }
 
       if (!success) {
@@ -903,7 +934,7 @@ export class SelectionManager {
       console.error('❌ Fallback copy failed:', err);
       // Still try to restore focus even on error
       if (previouslyFocused) {
-        previouslyFocused.focus();
+        previouslyFocused.focus({ preventScroll: true });
       }
     }
   }

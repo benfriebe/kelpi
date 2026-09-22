@@ -359,6 +359,15 @@ export function createWebPaneService(options: WebPaneServiceOptions = {}): WebPa
         }
         for (const paneID of pages.keys()) if (!live.has(paneID)) {
             pages.delete(paneID); tabGenerations.delete(paneID); navStates.delete(paneID); findRequests.delete(paneID); inspectionRevisions.delete(paneID); stateChanged(paneID);
+            // Workspace deletion emits workspace-removed, not a pane-removed event for
+            // each child. Reconcile against final ownership so every removal closes its
+            // native views, while moving a page to another workspace keeps them alive.
+            consoleStore.disposePane(paneID);
+            inspectState.disposePane(paneID);
+            findState.disposePane(paneID);
+            batchState.disposePane(paneID);
+            rebuiltAt.delete(paneID);
+            if (announced.delete(paneID)) host.notify('pane-close', { paneID });
         }
     };
     trackPages();
@@ -441,20 +450,6 @@ export function createWebPaneService(options: WebPaneServiceOptions = {}): WebPa
             : store.subscribe((events) => {
                   trackPages();
                   for (const event of events) {
-                      if (event.kind === 'pane-removed') {
-                          // A workspace move emits removal from the old workspace before its
-                          // upsert in the new one. The final state still owns the same page.
-                          if (pages.has(event.paneID)) continue;
-                          consoleStore.disposePane(event.paneID);
-                          inspectState.disposePane(event.paneID);
-                          findState.disposePane(event.paneID);
-                          batchState.disposePane(event.paneID);
-                          rebuiltAt.delete(event.paneID);
-                          if (announced.delete(event.paneID)) {
-                              host.notify('pane-close', { paneID: event.paneID });
-                          }
-                          continue;
-                      }
                       if (event.kind !== 'pane-upserted') continue;
                       if (event.pane.type !== 'web') continue;
                       if (announced.has(event.paneID)) continue;

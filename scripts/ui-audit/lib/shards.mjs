@@ -93,6 +93,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { summarize, writeReport } from './report.mjs';
+import { resolveAuditPlacement } from './placement.mjs';
 
 /**
  * The step that is not a flow: `main()` appends it after the loop, in every process. Each shard
@@ -173,15 +174,15 @@ export const STEP_MANIFEST = [
     { id: 'web-pane', lane: 'spine', chain: 'webPane', cost: 12.2, reason: 'writes state.webPane, which web-find reads' },
     { id: 'web-find', lane: 'spine', chain: 'webPane', cost: 6.2, reason: 'reads state.webPane' },
     { id: 'web-url-bar-shortcut', lane: 'spine', chain: 'webPane', cost: 1.9, reason: 'reads state.webPane' },
-    { id: 'web-batch-pickup', lane: 'spine', chain: 'webPane', cost: 9.4, reason: 'reads state.webPane' },
-    { id: 'web-batch-internals', lane: 'spine', chain: 'webPane', cost: 9.0, reason: 'reads state.webPane' },
+    { id: 'web-batch-pickup', lane: 'spine', chain: 'webPane', cost: 9.4, windowPlacement: 'offscreen', reason: 'reads state.webPane; drives a native page, whose CDP input is dropped when the audit window is covered (#206)' },
+    { id: 'web-batch-internals', lane: 'spine', chain: 'webPane', cost: 9.0, windowPlacement: 'offscreen', reason: 'reads state.webPane; drives a native page, whose CDP input is dropped when the audit window is covered (#206)' },
     { id: 'web-tab-strip', lane: 'spine', chain: 'webPane', cost: 22.1, reason: 'reads state.webPane' },
     { id: 'web-loading-strip', lane: 'spine', chain: 'webPane', cost: 6.1, reason: 'reads state.webPane' },
     { id: 'web-focus-handoff', lane: 'spine', chain: 'webPane', cost: 11.1, reason: 'reads state.webPane' },
     { id: 'web-page-click-focus', lane: 'spine', chain: 'webPane', cost: 8.4, reason: 'reads state.webPane' },
     { id: 'web-favourite', lane: 'spine', chain: 'webPane', cost: 16.6, reason: 'reads state.webPane' },
     { id: 'web-cookie-panel', lane: 'spine', chain: 'webPane', cost: 9.6, reason: 'reads state.webPane' },
-    { id: 'web-console-frames', lane: 'free', chain: null, cost: 11.7, reason: 'opens its own web pane and closes it' },
+    { id: 'web-console-frames', lane: 'free', chain: null, cost: 11.7, windowPlacement: 'offscreen', reason: 'opens its own web pane and closes it; drives a native page, whose CDP input is dropped when the audit window is covered (#206)' },
     { id: 'web-popup-layering', lane: 'spine', chain: null, cost: 52.3, reason: 'provisions its own workspace, panes and popups, and tears them down; not roster-neutral in aggregate and never reproduced in a sharded run; held in the spine until it is' },
     { id: 'poster-swap', lane: 'spine', chain: null, cost: 18.0, reason: 'issue #12’s timing net: provisions its own workspace and web pane, samples per rAF against the shell’s own placement lines, and tears them down; roster-neutral only if it completes, so it sits beside `web-popup-layering` in the spine' },
     { id: 'settings-open', lane: 'free', chain: null, cost: 2.3, reason: 'opens Settings from the menu; reads nothing accumulated' },
@@ -282,6 +283,9 @@ const BY_ID = new Map(STEP_MANIFEST.map((entry) => [entry.id, entry]));
 
 /** The canonical step order — the order `buildFlows` returns and `results.json` must preserve. */
 export const CANONICAL_ORDER = STEP_MANIFEST.map((entry) => entry.id);
+
+/** A flow's weakest safe audit-window placement, if it has one. */
+export const windowPlacementOf = (id) => BY_ID.get(id)?.windowPlacement;
 
 export function manifestEntry(id) {
     return BY_ID.get(id);
@@ -427,7 +431,7 @@ export function balanceBlocks(items, count) {
  */
 export const ONSCREEN_STEPS = new Set([]);
 
-export function planShards(stepIDs, shardCount) {
+export function planShards(stepIDs, shardCount, { windowPlacement = 'default', only = null, chain = true } = {}) {
     const known = new Set(stepIDs);
     const missing = CANONICAL_ORDER.filter((id) => !known.has(id));
     if (missing.length > 0) {
@@ -439,18 +443,63 @@ export function planShards(stepIDs, shardCount) {
     const undeclared = stepIDs.filter((id) => !BY_ID.has(id));
     const entries = stepIDs.map((id) => BY_ID.get(id) ?? { id, lane: 'spine', chain: null, cost: 10, reason: 'not declared in the shard manifest — a new step joins the serial spine until it is measured and declared free' });
 
+    /*
+     * Electron fixes placement at window construction. A flow that drives a native page cannot
+     * stay in an audit process whose visible or hidden window might be covered: Chromium drops
+     * CDP input to the covered WebContentsView. Run such flows in their declared placement, with
+     * chain writers as setup in that private process. The aggregate retains the normal process's
+     * writer result; failed setup duplicates remain separately attributed in the report.
+     */
+    const isolatedByPlacement = new Map();
+    const normalEntries = [];
+    for (const entry of entries) {
+        const resolved = resolveAuditPlacement(windowPlacement, entry.windowPlacement);
+        if (!resolved.raised) {
+            normalEntries.push(entry);
+            continue;
+        }
+        const group = isolatedByPlacement.get(resolved.placement) ?? [];
+        group.push(entry);
+        isolatedByPlacement.set(resolved.placement, group);
+    }
+    const appendPlacementGroups = (plan) => {
+        plan.supports ??= plan.groups.map(() => []);
+        for (const [placement, isolated] of isolatedByPlacement) {
+            const ids = isolated.map((entry) => entry.id);
+            const setup = expandChains(ids).filter((id) => !ids.includes(id));
+            plan.groups.push(ids);
+            plan.placements.push(placement);
+            plan.supports.push(setup);
+        }
+        // Select before launch: dependencies belong to the process that consumes them.
+        // An automatically added web-pane must not start an otherwise unrelated normal child.
+        if (only !== null) {
+            const wanted = new Set(only);
+            plan.groups = plan.groups.map((ids) => ids.filter((id) => wanted.has(id)));
+            plan.supports = plan.groups.map((ids) => chain
+                ? expandChains(ids).filter((id) => !ids.includes(id))
+                : []);
+        } else if (!chain) {
+            plan.supports = plan.groups.map(() => []);
+        }
+        plan.shardCount = plan.groups.length;
+        plan.isolated = [...isolatedByPlacement.values()].flat().map((entry) => entry.id);
+        return plan;
+    };
+
     if (shardCount <= 1) {
-        return {
+        return appendPlacementGroups({
             shardCount: 1,
-            groups: [entries.map((entry) => entry.id)],
+            groups: [normalEntries.map((entry) => entry.id)],
             placements: [null],
+            supports: [[]],
             entries,
             undeclared,
-            spine: entries.map((e) => e.id),
+            spine: normalEntries.map((e) => e.id),
             free: [],
             phone: [],
-            onscreen: entries.filter((entry) => ONSCREEN_STEPS.has(entry.id)).map((entry) => entry.id)
-        };
+            onscreen: normalEntries.filter((entry) => ONSCREEN_STEPS.has(entry.id)).map((entry) => entry.id)
+        });
     }
     /*
      * The fidelity class first: it is pinned to a placement, so it cannot share a process with
@@ -458,7 +507,7 @@ export function planShards(stepIDs, shardCount) {
      * would pin the whole spine, and that is a decision for whoever adds one, not for this code
      * to make silently — hence the check below).
      */
-    const pinned = FREE_LANE_ENABLED ? entries.filter((entry) => ONSCREEN_STEPS.has(entry.id)) : [];
+    const pinned = FREE_LANE_ENABLED ? normalEntries.filter((entry) => ONSCREEN_STEPS.has(entry.id)) : [];
     const pinnedSpine = pinned.filter((entry) => entry.lane === 'spine');
     if (pinnedSpine.length > 0) {
         throw new Error(
@@ -471,9 +520,9 @@ export function planShards(stepIDs, shardCount) {
     // serial run rather than a differently-broken one. The phone lane rides the same switch: with
     // it off, a phone step is a spine step that happens to emulate and restore a viewport, which
     // is exactly what it does in the serial run today.
-    const spine = entries.filter((entry) => FREE_LANE_ENABLED ? entry.lane === 'spine' : true);
+    const spine = normalEntries.filter((entry) => FREE_LANE_ENABLED ? entry.lane === 'spine' : true);
     const free = FREE_LANE_ENABLED
-        ? entries.filter((entry) => entry.lane === 'free' && !ONSCREEN_STEPS.has(entry.id))
+        ? normalEntries.filter((entry) => entry.lane === 'free' && !ONSCREEN_STEPS.has(entry.id))
         : [];
     /*
      * The phone lane gets a group of its own, not a block of the free lane. Its steps emulate a
@@ -483,7 +532,7 @@ export function planShards(stepIDs, shardCount) {
      * override applied per step, which is the whole reason `--window phone` does not exist
      * (`audit.mjs` ▸ the phone viewport block).
      */
-    const phone = FREE_LANE_ENABLED ? entries.filter((entry) => entry.lane === 'phone') : [];
+    const phone = FREE_LANE_ENABLED ? normalEntries.filter((entry) => entry.lane === 'phone') : [];
     const extraGroups = (pinned.length > 0 ? 1 : 0) + (phone.length > 0 ? 1 : 0);
     const freeShards = Math.max(1, shardCount - 1 - extraGroups);
     const blocks = balanceBlocks(free, freeShards);
@@ -497,18 +546,19 @@ export function planShards(stepIDs, shardCount) {
         groups.push(pinned.map((entry) => entry.id));
         placements.push('onscreen');
     }
-    return {
+    return appendPlacementGroups({
         shardCount: groups.length,
         groups,
         /** Per-shard window placement override, or null for "whatever the run was asked for". */
         placements,
+        supports: groups.map(() => []),
         entries,
         undeclared,
         spine: spine.map((entry) => entry.id),
         free: free.map((entry) => entry.id),
         phone: phone.map((entry) => entry.id),
         onscreen: pinned.map((entry) => entry.id)
-    };
+    });
 }
 
 /** A human-readable partition table, printed before a sharded run starts. */
@@ -524,7 +574,7 @@ export function describePartition(plan) {
             plan.groups.length === 1
                 ? 'serial (all steps)'
                 : placement !== null
-                  ? `fidelity class (window ${placement})`
+                ? `placement-isolated (window ${placement})`
                   : i === 0
                     ? 'spine (serial, canonical order)'
                     : isPhone
@@ -533,7 +583,7 @@ export function describePartition(plan) {
         lines.push(`  shard ${String(i)} — ${lane}: ${String(ids.length)} steps, ~${cost(ids).toFixed(0)}s of measured step time`);
     }
     if (!FREE_LANE_ENABLED) {
-        lines.push('  (the free lane is off — see FREE_LANE_ENABLED in lib/shards.mjs; this run is the serial run)');
+        lines.push('  (the free lane is off — see FREE_LANE_ENABLED in lib/shards.mjs; only declared placement-isolated flows run separately)');
     }
     if (plan.undeclared.length > 0) {
         lines.push(`  ⚠ ${String(plan.undeclared.length)} undeclared step(s) placed in the spine: ${plan.undeclared.join(', ')}`);
@@ -557,31 +607,39 @@ function renameArtefact(shardDir, outDir, name, fromSlug, toSlug) {
 }
 
 /**
- * Fold every shard's run directory into one that is indistinguishable from a serial run's.
+ * Fold every shard's run directory into one canonical report.
  *
  * Byte-compatibility with the serial `results.json` is the contract — the campaign's
  * reconciliation tooling reads it — so this does not invent a shard-shaped schema. It re-orders
  * the steps into the canonical order, renumbers `index`/`slug` as a single-process run would,
  * copies every PNG and text artefact across under its canonical name, and rewrites the `shots`
  * list and the `artifact: …` notes to match. `meta` gains one extra key (`shards`) and keeps
- * every key it had.
+ * every key it had. Failed duplicate setup gets an additional, shard-attributed entry so
+ * an otherwise green canonical writer cannot hide a failure in its private placement process.
  */
 export function aggregateShards({ outDir, shardDirs, canonicalOrder, meta }) {
     const collected = new Map();
+    const support = [];
+    fs.mkdirSync(outDir, { recursive: true });
     const consoleEntries = [];
     const shardMeta = [];
     for (let i = 0; i < shardDirs.length; i++) {
         const dir = shardDirs[i];
+        const shard = Number(path.basename(dir).match(/^shard-(\d+)$/)?.[1] ?? i);
         const file = path.join(dir, 'results.json');
         if (!fs.existsSync(file)) {
-            shardMeta.push({ shard: i, dir, ok: false, error: 'no results.json' });
+            shardMeta.push({ shard, dir, ok: false, error: 'no results.json' });
             continue;
         }
         const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
-        shardMeta.push({ shard: i, dir: path.basename(dir), ok: true, steps: parsed.steps.length, summary: parsed.summary });
+        shardMeta.push({ shard, dir: path.basename(dir), ok: true, steps: parsed.steps.length, summary: parsed.summary });
         for (const step of parsed.steps) {
             if (step.id === CONSOLE_STEP_ID) {
                 consoleEntries.push({ step, dir });
+                continue;
+            }
+            if (step.support === true) {
+                support.push({ step, dir, shard: path.basename(dir) });
                 continue;
             }
             if (collected.has(step.id)) {
@@ -593,7 +651,28 @@ export function aggregateShards({ outDir, shardDirs, canonicalOrder, meta }) {
         // question they exist to answer.
         for (const log of ['daemon.log', 'shell.log', 'cli-invocations.jsonl', 'state-timeline.jsonl']) {
             const from = path.join(dir, log);
-            if (fs.existsSync(from)) fs.copyFileSync(from, path.join(outDir, `shard-${String(i)}-${log}`));
+            if (fs.existsSync(from)) fs.copyFileSync(from, path.join(outDir, `shard-${String(shard)}-${log}`));
+        }
+    }
+
+    // Keep one canonical writer; retain every failed duplicate as a distinct setup result.
+    // A green canonical writer says nothing about setup in a different private process.
+    const failedSupport = [];
+    for (const found of support) {
+        const { step, shard } = found;
+        if (!collected.has(step.id)) {
+            collected.set(step.id, found);
+        } else if (step.error != null || step.assertions.some((assertion) => !assertion.ok)) {
+            failedSupport.push({
+                ...found,
+                step: {
+                    ...step,
+                    id: `${step.id}-setup-${shard}`,
+                    setupFor: step.id,
+                    sourceShard: shard,
+                    notes: [`Setup for ${step.id} in ${shard}; the canonical result came from another process.`, ...step.notes]
+                }
+            });
         }
     }
 
@@ -622,6 +701,8 @@ export function aggregateShards({ outDir, shardDirs, canonicalOrder, meta }) {
     // Anything the canonical order does not name (a step added since the manifest was written)
     // still lands in the report, after the known ones, rather than vanishing.
     for (const [, found] of collected) emit(found.step, found.dir);
+
+    for (const found of failedSupport) emit(found.step, found.dir);
 
     if (consoleEntries.length > 0) {
         /*

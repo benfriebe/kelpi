@@ -1,6 +1,10 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
-import { CANONICAL_ORDER, STEP_MANIFEST, expandChains, manifestEntry, writesOf } from './shards.mjs';
+import { CANONICAL_ORDER, STEP_MANIFEST, aggregateShards, expandChains, manifestEntry, planShards, windowPlacementOf, writesOf } from './shards.mjs';
 
 /**
  * `--only` against the chains the manifest already declares (#203).
@@ -89,4 +93,90 @@ describe('expandChains', () => {
         expect(writesOf(manifestEntry('web-pane'))).toEqual(['webPane']);
         expect(writesOf(manifestEntry('web-batch-pickup'))).toEqual([]);
     });
+});
+
+describe('native-page placement floors', () => {
+    const sensitive = ['web-batch-pickup', 'web-batch-internals', 'web-console-frames'];
+
+    it('declares the three native-page flows offscreen, alongside their audit definitions', () => {
+        expect(sensitive.map(windowPlacementOf)).toEqual(['offscreen', 'offscreen', 'offscreen']);
+    });
+
+    it('gives those flows an offscreen process when the audit default may be covered', () => {
+        const plan = planShards(CANONICAL_ORDER, 1, { windowPlacement: 'default' });
+        const isolatedAt = plan.groups.findIndex((group) => group.includes('web-batch-pickup'));
+
+        expect(isolatedAt).toBeGreaterThan(0);
+        expect(plan.groups[0]).not.toEqual(expect.arrayContaining(sensitive));
+        expect(plan.groups[isolatedAt]).toEqual(sensitive);
+        expect(plan.placements[isolatedAt]).toBe('offscreen');
+        expect(plan.supports[isolatedAt]).toEqual(['web-pane']);
+    });
+
+    it('does not split an audit already running at a non-occludable placement', () => {
+        const plan = planShards(CANONICAL_ORDER, 1, { windowPlacement: 'onscreen' });
+        expect(plan.groups).toEqual([CANONICAL_ORDER]);
+        expect(plan.supports).toEqual([[]]);
+    });
+
+    it('keeps a normal chain writer in the aggregate and drops its isolated setup duplicate', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-shards-'));
+        const first = path.join(root, 'first');
+        const second = path.join(root, 'second');
+        const step = (id, support = false) => ({
+            index: '01', id, slug: `01-${id}`, expect: '', needsEyes: false, notes: [], assertions: [], shots: [], blocks: [], error: null,
+            startedAt: '2026-09-19T00:00:00.000Z', finishedAt: '2026-09-19T00:00:00.000Z', ...(support ? { support: true } : {})
+        });
+        try {
+            fs.mkdirSync(first); fs.mkdirSync(second);
+            fs.writeFileSync(path.join(first, 'results.json'), JSON.stringify({ summary: {}, steps: [step('web-pane')] }));
+            fs.writeFileSync(path.join(second, 'results.json'), JSON.stringify({ summary: {}, steps: [step('web-pane', true), step('web-batch-pickup')] }));
+
+            aggregateShards({ outDir: path.join(root, 'out'), shardDirs: [first, second], canonicalOrder: CANONICAL_ORDER, meta: {} });
+            const ids = JSON.parse(fs.readFileSync(path.join(root, 'out', 'results.json'), 'utf8')).steps.map((entry) => entry.id);
+            expect(ids).toEqual(['web-pane', 'web-batch-pickup']);
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+    });
+});
+
+describe('failed placement setup aggregation', () => {
+    for (const mode of ['assertion', 'error', 'multiple']) {
+        it(`keeps ${mode} failures with shard attribution and artifacts`, () => {
+            const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-support-'));
+            const makeStep = (support, failed, error = null) => ({
+                id: 'web-pane', index: '01', slug: '01-web-pane', support,
+                expect: 'setup', needsEyes: false, notes: ['artifact: 01-web-pane-detail.txt'],
+                assertions: [{ name: 'setup ready', ok: !failed, detail: '' }],
+                shots: ['01-web-pane-page.png'], blocks: [], error,
+                startedAt: '2026-09-19T00:00:00Z', finishedAt: '2026-09-19T00:00:00Z'
+            });
+            try {
+                const entries = [makeStep(false, false), makeStep(true, mode !== 'error', mode === 'error' ? 'setup failed' : null)];
+                if (mode === 'multiple') entries.push(makeStep(true, false, 'second setup failed'));
+                const dirs = entries.map((step, index) => {
+                    const dir = path.join(root, `shard-${index}`);
+                    fs.mkdirSync(dir);
+                    fs.writeFileSync(path.join(dir, 'results.json'), JSON.stringify({ summary: {}, steps: [step] }));
+                    fs.writeFileSync(path.join(dir, '01-web-pane-detail.txt'), `detail ${index}`);
+                    fs.writeFileSync(path.join(dir, '01-web-pane-page.png'), `image ${index}`);
+                    return dir;
+                });
+                const outDir = path.join(root, 'out');
+                const summary = aggregateShards({ outDir, shardDirs: dirs, canonicalOrder: CANONICAL_ORDER, meta: {} });
+                expect(summary.failedAssertions).toBe(mode === 'error' ? 0 : 1);
+                expect(summary.errored).toBe(mode === 'assertion' ? 0 : 1);
+                const { steps } = JSON.parse(fs.readFileSync(path.join(outDir, 'results.json'), 'utf8'));
+                expect(steps.filter((step) => step.id === 'web-pane')).toHaveLength(1);
+                expect(steps).toHaveLength(entries.length);
+                for (let index = 1; index < steps.length; index++) {
+                    expect(steps[index].setupFor).toBe('web-pane');
+                    expect(steps[index].sourceShard).toBe(`shard-${index}`);
+                    expect(fs.readFileSync(path.join(outDir, steps[index].shots[0]), 'utf8')).toBe(`image ${index}`);
+                    expect(fs.readFileSync(path.join(outDir, steps[index].notes.find((note) => note.startsWith('artifact: ')).slice(10)), 'utf8')).toBe(`detail ${index}`);
+                }
+            } finally { fs.rmSync(root, { recursive: true, force: true }); }
+        });
+    }
 });

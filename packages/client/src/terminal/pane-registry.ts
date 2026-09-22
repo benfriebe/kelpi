@@ -10,12 +10,11 @@
  * for a `data-` attribute.
  *
  * The obvious repair, wiring that prop and caching the last selection in the app, is wrong here,
- * and the vendored engine says exactly why. `SelectionManager.clearSelection()` does **not** fire
- * the change emitter (`vendor/ghostty-web-patched/source/lib/selection-manager.ts:227`), and the
- * mousedown that starts a new selection calls it directly (`:439`). So clicking on blank space
- * after selecting something clears the highlight and tells nobody. A cached selection would still
- * hold the old text, and ⌘C would copy something the user can no longer see highlighted, which is
- * a worse bug than the one being fixed. `renderer.selection()` is already a live read
+ * and older engines showed why: `SelectionManager.clearSelection()` did not fire the change
+ * emitter, including when mousedown started a new selection. A cached selection could survive a
+ * click that visibly cleared it. `0.4.0-nex.14` announces clearing and reconciles history trims
+ * (#170), but notifications still do not replace the live answer at copy time.
+ * `renderer.selection()` is already a live read
  * (`renderer.ts:170`, `§TERM-034`); this module is only the wire that lets the app reach it.
  *
  * ## Why module-level rather than a prop or a context

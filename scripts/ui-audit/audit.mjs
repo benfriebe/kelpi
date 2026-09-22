@@ -29858,6 +29858,10 @@ function buildFlows(ctx) {
                 // Focus and tidy at DESKTOP size: the pane has to be the focused one for the bar
                 // to mount at all, and a clear screen makes the capture below readable.
                 await focusPaneBody(view, paneID);
+                // Earlier steps may leave the shell in a continuation prompt. Interrupt that
+                // input first, or `clear` and `cat` below become continuation lines rather than
+                // commands, and the later prompt check no longer proves that cat was killed.
+                await cli.ok(['pane', 'send-key', '--target', paneID, 'ctrl-c']);
                 await runInTerminal(view, 'clear', { settleMs: 400 });
                 // The window this step is handed, for the hand-back in the `finally`.
                 const handedIn = await readPhoneFrame(view);
@@ -30076,11 +30080,9 @@ function buildFlows(ctx) {
                         capture.includes('KB-42'),
                         capture.includes('KB-42') ? 'the shell evaluated $((6*7))' : 'no KB-42 in the capture - cat is probably still running'
                     );
-                    recorder.check(
-                        'the terminal echoed the interrupt',
-                        capture.includes('^C'),
-                        capture.includes('^C') ? '^C is on screen' : 'no ^C (ECHOCTL off?) - the prompt check above is the load-bearing one'
-                    );
+                    // ^C is line-discipline echo (ECHOCTL), not the interrupt itself. The
+                    // evaluated command above is the PTY-level proof that cat exited.
+                    recorder.note(capture.includes('^C') ? 'the terminal echoed ^C' : 'the terminal did not echo ^C (ECHOCTL may be off)');
                     recorder.eyes('does the bar read as one row of keys above the keyboard, with Ctrl visibly latched and the prompt still legible?');
 
                     /*
@@ -33375,14 +33377,18 @@ function buildFlows(ctx) {
                  * roster is the fallback when no sidebar row is marked active, and it is the same
                  * question asked of the client instead of the daemon.
                  */
-                const workspacePanes =
+                const workspacePaneRows =
                     rosterBefore.workspace.length === 0
-                        ? rosterBefore.panes.map((id) => String(id))
-                        : (await cli.json(['pane', 'list', '--workspace', rosterBefore.workspace, '--json'])).map((pane) => String(pane.id));
+                        ? (await cli.json(['pane', 'list', '--json'])).filter((pane) => rosterBefore.panes.includes(pane.id))
+                        : await cli.json(['pane', 'list', '--workspace', rosterBefore.workspace, '--json']);
+                const workspacePanes = workspacePaneRows.map((pane) => String(pane.id));
                 recorder.note(
                     `the workspace on screen: ${rosterBefore.workspace || '(none marked active)'} with ${String(workspacePanes.length)} pane(s)`
                 );
-                const sibling = rosterBefore.panes.find((id) => id !== paneID) ?? null;
+                const sibling = rosterBefore.panes.find((id) => id !== paneID && workspacePaneRows.some((pane) => pane.id === id && pane.type === 'shell'))
+                    ?? rosterBefore.panes.find((id) => id !== paneID)
+                    ?? null;
+                const siblingIsShell = workspacePaneRows.some((pane) => pane.id === sibling && pane.type === 'shell');
 
                 try {
                     /*
@@ -33622,24 +33628,31 @@ function buildFlows(ctx) {
                          * `reserve` holds the room; this samples the new pane's rows through the
                          * settle and asserts one value, with no paint hold that ended on a timeout.
                          */
-                        const rowSamples = [];
-                        for (let sample = 0; sample < 24; sample++) {
-                            rowSamples.push(
-                                String(
-                                    await view.eval(
-                                        `(() => { const el = document.querySelector('[data-pane-id="${sibling}"][data-terminal-status]'); return el === null ? '(none)' : (el.getAttribute('data-terminal-rows') ?? '(unset)') + '/' + (el.getAttribute('data-terminal-status') ?? '') + '/' + (el.getAttribute('data-terminal-paint-hold-timeouts') ?? '0'); })()`
+                        if (siblingIsShell) {
+                            const rowSamples = [];
+                            for (let sample = 0; sample < 24; sample++) {
+                                rowSamples.push(
+                                    String(
+                                        await view.eval(
+                                            `(() => { const el = document.querySelector('[data-pane-id="${sibling}"][data-terminal-status]'); return el === null ? '(none)' : (el.getAttribute('data-terminal-rows') ?? '(unset)') + '/' + (el.getAttribute('data-terminal-status') ?? '') + '/' + (el.getAttribute('data-terminal-paint-hold-timeouts') ?? '0'); })()`
+                                        )
                                     )
-                                )
+                                );
+                                await sleep(30);
+                            }
+                            const liveRows = new Set(rowSamples.filter((entry) => entry.includes('/live/')).map((entry) => entry.split('/')[0]));
+                            const holdTimeouts = new Set(rowSamples.map((entry) => entry.split('/')[2]));
+                            recorder.check(
+                                'the new terminal attaches at one grid and stays there: its rows never change across the switch, and no paint hold timed out',
+                                liveRows.size === 1 && !liveRows.has('(unset)') && [...holdTimeouts].every((count) => count === '0' || count === undefined),
+                                `rows seen while live: ${[...liveRows].join(',') || '(none)'}; samples: ${rowSamples.join(' ')}`
                             );
-                            await sleep(30);
+                        } else {
+                            // A markdown or web pane has no terminal host or row count. The
+                            // switch itself is still checked below; the terminal grid property
+                            // is only meaningful for a shell sibling.
+                            recorder.note(`pane ${sibling} is not a shell; terminal row sampling does not apply`);
                         }
-                        const liveRows = new Set(rowSamples.filter((entry) => entry.includes('/live/')).map((entry) => entry.split('/')[0]));
-                        const holdTimeouts = new Set(rowSamples.map((entry) => entry.split('/')[2]));
-                        recorder.check(
-                            'the new pane attaches at one grid and stays there: its rows never change across the switch, and no paint hold timed out',
-                            liveRows.size === 1 && !liveRows.has('(unset)') && [...holdTimeouts].every((count) => count === '0' || count === undefined),
-                            `rows seen while live: ${[...liveRows].join(',') || '(none)'}; samples: ${rowSamples.join(' ')}`
-                        );
                         const switched = await readShell();
                         const zoomed = (await cli.json(['pane', 'list', '--json'])).filter((pane) => pane.is_zoomed === true).length;
                         recorder.check(

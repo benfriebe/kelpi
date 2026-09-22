@@ -28,6 +28,9 @@
  * stores only its hash, so a re-ask is impossible by design and the UI says so.
  */
 
+import path from 'node:path';
+
+import { resolveRunDir } from '../lifecycle/rundir.js';
 import {
     deleteDevice,
     loadDevices,
@@ -39,7 +42,8 @@ import {
 } from '../lifecycle/devices.js';
 import {
     defaultTailscaleRunner,
-    parseServeProxies,
+    firstLine,
+    inspectServeConfig,
     parseTailscaleStatus,
     resolveTailnetURL,
     tailscaleProbeDiagnostics,
@@ -82,7 +86,7 @@ export interface RemoteStatusReply {
         readonly dns_name?: string;
         /** `tailscale serve` currently fronts the daemon's port. */
         readonly serving: boolean;
-        /** Why `available` is false, when it is — words for the status card. */
+        /** Why the tailnet is unavailable or forwarding could not be inspected. */
         readonly reason?: string;
         /**
          * How the CLI was looked for. Present whenever the runner reported its search (the
@@ -127,8 +131,12 @@ export interface RemoteChannelOptions {
      * port at all (#130).
      */
     readonly port: () => number | undefined;
+    /** Actual kernel-reported bind address; unknown must never imply IPv4 loopback. */
+    readonly host: () => string | undefined;
     /** Injected for tests; production shells out to the tailscale CLI. */
     readonly tailscale?: TailscaleRunner | undefined;
+    /** Actual daemon run directory, including programmatic overrides at boot. */
+    readonly runDir?: string | undefined;
     readonly now?: (() => Date) | undefined;
 }
 
@@ -187,7 +195,10 @@ export function createRemoteChannel(options: RemoteChannelOptions): RemoteChanne
                 return { ok: false, error: failure instanceof Error ? failure.message : String(failure) };
             }
             const port = boundPort();
-            const probe = await run(['status', '--json']);
+            // Both invocations share 12 s, leaving room to deliver diagnostics inside the
+            // client's 15 s command timeout, including when the first invocation pins a CLI.
+            const deadline = Date.now() + 12_000;
+            const probe = await run(['status', '--json'], { deadline });
             // Every answer below carries the search that produced it: which binaries were
             // tried, which one answered, and what the first one that ran and refused said.
             // Without it a detection failure is one word ("unknown") and no way forward (#169).
@@ -195,7 +206,7 @@ export function createRemoteChannel(options: RemoteChannelOptions): RemoteChanne
             // It rides BESIDE `reason` rather than inside it. `reason` is the one short sentence
             // the tab's status row has room for (that row is a right-hand column that does not
             // wrap); the search is long, is a list, and belongs on the detail row under it.
-            const searched = wireProbe(probe);
+            let searched = wireProbe(probe);
             if (probe.code === -1 && probe.stderr === 'ENOENT') {
                 return {
                     ok: true,
@@ -238,11 +249,22 @@ export function createRemoteChannel(options: RemoteChannelOptions): RemoteChanne
             // Read-only serve probe: an unreadable config reads as "not serving", never as an
             // error — status is a dashboard, and pair() fails closed on its own.
             let serving = false;
+            let serveFailure: string | undefined;
             if (port !== undefined) {
-                const serveStatus = await run(['serve', 'status', '--json']);
+                const serveStatus = await run(['serve', 'status', '--json'], { deadline });
+                if (serveStatus.code !== 0) {
+                    serveFailure = `could not inspect forwarding: ${firstLine(serveStatus.stderr) || `exit ${String(serveStatus.code)}`}`;
+                    // Keep the failing invocation visible on the Remote tab detail row, even
+                    // if the budget expired before another candidate could be executed.
+                    const failedSearch = wireProbe(serveStatus).probe;
+                    searched = { probe: {
+                        tried: failedSearch?.tried ?? searched.probe?.tried ?? [],
+                        failure: failedSearch?.failure ?? serveFailure
+                    } };
+                }
                 serving =
                     serveStatus.code === 0 &&
-                    parseServeProxies(serveStatus.stdout).some((proxy) => proxy.targetPort === port);
+                    inspectServeConfig(serveStatus.stdout, identity.dnsName, port, options.host()).kind === 'serving';
             }
             return {
                 ok: true,
@@ -252,6 +274,7 @@ export function createRemoteChannel(options: RemoteChannelOptions): RemoteChanne
                     backend: identity.backend,
                     dns_name: identity.dnsName,
                     serving,
+                    ...(serveFailure !== undefined ? { reason: serveFailure } : {}),
                     ...searched
                 }
             };
@@ -277,7 +300,10 @@ export function createRemoteChannel(options: RemoteChannelOptions): RemoteChanne
                     notes: ['This URL is loopback-only - it works in a browser on this machine.']
                 };
             }
-            const result = await resolveTailnetURL({ port, token: minted.token, run });
+            const result = await resolveTailnetURL({
+                port, host: options.host(), token: minted.token, run,
+                forwardingFile: path.join(options.runDir ?? resolveRunDir({ env }), 'tailscale-serve.json')
+            });
             if (result.kind === 'error') {
                 // Delete, not revoke: the token never left this process (`kelpid pair`'s rule).
                 let rolledBack = `the "${minted.device.name}" device was rolled back - nothing was paired`;

@@ -2,9 +2,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { loadDevices } from '../lifecycle/devices.js';
+import * as forwarding from '../lifecycle/tailnet-forwarding.js';
+import { readForwardingRecord } from '../lifecycle/tailnet-forwarding.js';
 import type { TailscaleRunner } from '../lifecycle/tailnet.js';
 import { createRemoteChannel } from './remote.js';
 
@@ -17,6 +19,7 @@ function registryFile(): string {
 }
 
 afterEach(() => {
+    vi.restoreAllMocks();
     for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -50,13 +53,67 @@ const RUNNING = JSON.stringify({ BackendState: 'Running', Self: { DNSName: 'werk
 
 function channel(file: string, ts: { run: TailscaleRunner }, port: number | undefined = 61154) {
     return createRemoteChannel({
-        env: { KELPID_DEVICES_PATH: file } as NodeJS.ProcessEnv,
-        port: () => port,
+        env: { KELPID_DEVICES_PATH: file, KELPID_RUN_DIR: path.dirname(file) } as NodeJS.ProcessEnv,
+        port: () => port, host: () => '127.0.0.1',
         tailscale: ts.run
     });
 }
 
 describe('remote-status', () => {
+    it.each([
+        ['IPv6', { '/': { Proxy: 'http://[::1]:61154' } }],
+        ['localhost', { '/': { Proxy: 'http://localhost:61154' } }],
+        ['TLS upstream', { '/': { Proxy: 'https://127.0.0.1:61154' } }],
+        ['foreign root', { '/': { Proxy: 'http://127.0.0.1:3000' }, '/kelpi/': { Proxy: 'http://127.0.0.1:61154' } }],
+        ['intercepted websocket', { '/': { Proxy: 'http://127.0.0.1:61154' }, '/ws': { Proxy: 'http://127.0.0.1:3000' } }]
+    ])('does not report %s as serving and rolls back a refused pairing', async (_name, handlers) => {
+        // Socket behavior has its own real-listener suite. This channel test must not connect
+        // to any unrelated listener that happens to use a fixture's port on the test machine.
+        vi.spyOn(forwarding, 'probeForwardTarget').mockResolvedValue('unknown');
+        const file = registryFile();
+        const ts = tailscale({ status: { code: 0, stdout: RUNNING }, serveStatus: { code: 0, stdout: JSON.stringify({
+            TCP: { '443': { HTTPS: true } }, Web: { 'werk.taila.ts.net:443': { Handlers: handlers } }
+        }) } });
+        const remote = channel(file, ts);
+        expect(await remote.status()).toMatchObject({ ok: true, tailnet: { serving: false } });
+        expect(await remote.pair('phone', true)).toMatchObject({ ok: false });
+        expect(loadDevices(file)).toEqual([]);
+        expect(readForwardingRecord(path.join(path.dirname(file), 'tailscale-serve.json'))).toBeUndefined();
+        expect(ts.calls.some((args) => args.includes('--bg'))).toBe(false);
+    });
+
+    it('rolls back a pair instead of replacing a file service that has no proxy target', async () => {
+        const file = registryFile();
+        const ts = tailscale({ status: { code: 0, stdout: RUNNING }, serveStatus: { code: 0, stdout: JSON.stringify({
+            TCP: { '443': { HTTPS: true } }, Web: { 'werk.taila.ts.net:443': { Handlers: { '/': { Path: '/tmp/site' } } } }
+        }) } });
+        expect(await channel(file, ts).pair('phone', true)).toMatchObject({ ok: false });
+        expect(loadDevices(file)).toEqual([]);
+        expect(ts.calls).toEqual([['status', '--json'], ['serve', 'status', '--json']]);
+        expect(readForwardingRecord(path.join(path.dirname(file), 'tailscale-serve.json'))).toBeUndefined();
+    });
+
+    it('shares one 12 s deadline across identity and forwarding probes', async () => {
+        const now = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
+        try {
+            const deadlines: (number | undefined)[] = [];
+            const run: TailscaleRunner = async (args, options) => {
+                deadlines.push(options?.deadline);
+                if (args[0] === 'status') {
+                    now.mockReturnValue(1_011_000);
+                    return { code: 0, stdout: RUNNING, stderr: '' };
+                }
+                return { code: -1, stdout: '', stderr: 'timed out after 1s' };
+            };
+            const reply = await channel(registryFile(), { run }).status();
+            expect(deadlines).toEqual([1_012_000, 1_012_000]);
+            expect(reply).toMatchObject({ ok: true, tailnet: {
+                available: true, serving: false, reason: 'could not inspect forwarding: timed out after 1s',
+                probe: { tried: [], failure: 'could not inspect forwarding: timed out after 1s' }
+            } });
+        } finally { now.mockRestore(); }
+    });
+
     it('reports devices plus an unavailable tailnet when tailscale is not installed', async () => {
         const file = registryFile();
         const remote = channel(file, tailscale({}));
@@ -77,6 +134,7 @@ describe('remote-status', () => {
             serveStatus: {
                 code: 0,
                 stdout: JSON.stringify({
+                    TCP: { '443': { HTTPS: true } },
                     Web: { 'werk.taila.ts.net:443': { Handlers: { '/': { Proxy: 'http://127.0.0.1:61154' } } } }
                 })
             }
@@ -166,6 +224,29 @@ describe('remote-status', () => {
 });
 
 describe('remote-pair', () => {
+    it('honours the boot run-directory override rather than an inherited path', async () => {
+        const file = registryFile();
+        const runDir = path.join(path.dirname(file), 'private-run');
+        const ts = tailscale({ status: { code: 0, stdout: RUNNING } });
+        const remote = createRemoteChannel({
+            env: { KELPID_DEVICES_PATH: file, KELPID_RUN_DIR: path.join(path.dirname(file), 'wrong-run') },
+            runDir, port: () => 61154, host: () => '127.0.0.1', tailscale: ts.run
+        });
+        expect(await remote.pair('phone', true)).toMatchObject({ ok: true });
+        expect(readForwardingRecord(path.join(runDir, 'tailscale-serve.json'))?.port).toBe(61154);
+        expect(fs.existsSync(path.join(path.dirname(file), 'wrong-run'))).toBe(false);
+    });
+
+    it('records the successful forwarding port in this daemon instance run directory', async () => {
+        const file = registryFile();
+        const ts = tailscale({ status: { code: 0, stdout: RUNNING } });
+        const remote = channel(file, ts);
+        expect(await remote.pair('phone', true)).toMatchObject({ ok: true });
+        expect(readForwardingRecord(path.join(path.dirname(file), 'tailscale-serve.json'))).toMatchObject({
+            dnsName: 'werk.taila.ts.net', port: 61154
+        });
+    });
+
     it('mints a loopback pairing when tailnet is off: the URL carries the token exactly once', async () => {
         const file = registryFile();
         const remote = channel(file, tailscale({}));

@@ -173,8 +173,8 @@ function rawToText(data: RawData): string {
     return Buffer.from(data as ArrayBuffer).toString('utf8');
 }
 
-function listenAsync(server: Server, host: string, port: number): Promise<number> {
-    return new Promise<number>((resolve, reject) => {
+function listenAsync(server: Server, host: string, port: number): Promise<WsServerAddress> {
+    return new Promise<WsServerAddress>((resolve, reject) => {
         const onError = (error: Error): void => {
             server.removeListener('listening', onListening);
             reject(error);
@@ -182,7 +182,12 @@ function listenAsync(server: Server, host: string, port: number): Promise<number
         const onListening = (): void => {
             server.removeListener('error', onError);
             const address = server.address();
-            resolve(typeof address === 'object' && address !== null ? address.port : port);
+            if (typeof address !== 'object' || address === null) {
+                reject(new Error('HTTP listener did not report its bound address'));
+                return;
+            }
+            // A requested hostname (notably localhost) does not establish an address family.
+            resolve({ host: address.address, port: address.port });
         };
         server.once('error', onError);
         server.once('listening', onListening);
@@ -447,16 +452,17 @@ export function createWsServer(options: WsServerOptions): WsServer {
 
             const primary = makeListener();
             listeners.push(primary);
-            boundPort = await listenAsync(primary.server, host, requestedPort);
-            addresses.push({ host, port: boundPort });
+            const primaryAddress = await listenAsync(primary.server, host, requestedPort);
+            boundPort = primaryAddress.port;
+            addresses.push(primaryAddress);
 
             for (const extra of options.extraHosts ?? []) {
                 if (extra === host) continue;
                 const listener = makeListener();
                 try {
-                    const port = await listenAsync(listener.server, extra, boundPort);
+                    const address = await listenAsync(listener.server, extra, boundPort);
                     listeners.push(listener);
-                    addresses.push({ host: extra, port });
+                    addresses.push(address);
                 } catch (error) {
                     // A tailnet address can disappear between config and bind; the daemon
                     // must still come up on loopback.

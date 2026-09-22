@@ -16,6 +16,7 @@ import path from 'node:path';
 import {
     probeControlPing,
     type ControlPingCompat,
+    type ControlPingHttp,
     type ControlPingPersistence,
     type ControlPingProbe,
     type ControlPingTcp
@@ -99,6 +100,8 @@ export interface DaemonProbe {
     readonly compat?: ControlPingCompat | undefined;
     /** The `KELPI_SOCKET` the daemon injects into pane envs. Undefined = it did not say. */
     readonly paneRoute?: string | undefined;
+    /** Authoritative live HTTP bind from ping; disk metadata and CLI env are not substitutes. */
+    readonly http?: ControlPingHttp | undefined;
     readonly reason?: string | undefined;
 }
 
@@ -124,6 +127,7 @@ export async function probeDaemon(paths: RunPaths, options: DaemonProbeOptions =
         ...(ping.tcp !== undefined ? { tcp: ping.tcp } : {}),
         ...(ping.compat !== undefined ? { compat: ping.compat } : {}),
         ...(ping.paneRoute !== undefined ? { paneRoute: ping.paneRoute } : {}),
+        ...(ping.http !== undefined ? { http: ping.http } : {}),
         ...(ping.reason !== undefined ? { reason: ping.reason } : {})
     };
 }

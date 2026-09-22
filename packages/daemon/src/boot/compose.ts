@@ -978,6 +978,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         // `ping` reports this: a daemon that cannot save must never answer a health check as if
         // it could.
         persistenceHealth: () => persistence.health(),
+        httpEndpoint: () => ws?.addresses[0],
         // §SET-021: `ping` reports this too — a `tcp-port` that never bound is otherwise a log
         // line nobody reads, and every `NEX_SOCKET=tcp:…` client just times out. `compat` and
         // `paneRoute` ride along so a doctor can see where events actually route.
@@ -1452,7 +1453,8 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
                 // listener BOUND (what the port file records), never `build`'s argument: that is
                 // `0` on a first boot and on the bind-failure fallback, and a pairing built from
                 // it configured `tailscale serve --bg 0`, a proxy to nothing (#130).
-                remote: createRemoteChannel({ env, port: () => ws?.port }),
+                remote: createRemoteChannel({ env, runDir: paths.dir,
+                    port: () => ws?.port, host: () => ws?.addresses[0]?.host }),
                 // ⇧⌘T reopen-closed-pane, ⇧⌘N scratchpad, and the context menu's Open in
                 // Finder. All three need the pane handler context (a PTY to spawn into, a
                 // `TerminalInput` for the reopened agent's resume command, the broadcast seam),

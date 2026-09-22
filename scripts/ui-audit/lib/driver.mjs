@@ -26,9 +26,9 @@
  * Both give `{ page, harness, ... }`; `boot` also gives `cli`, `sandbox`, `stop()`.
  *
  * `window` is the functional lane: `hidden`, `offscreen` or `onscreen`, and unset is the window
- * every scenario got before the lane existed. Hidden frees the machine's screen and lets several
- * runs overlap, at the cost of the screenshots; `boot`'s own doc has what each placement is worth
- * and the README has the measurements.
+ * every scenario got before the lane existed. Hidden keeps the lane window out of view, at the
+ * cost of the screenshots; the desktop and clipboard still need the runner reservation.
+ * `boot`'s own doc and the README describe what each placement is worth.
  *
  * The page object is `lib/cdp.mjs`'s: eval / waitFor / click(selector) / clickAt / rightClick /
  * key(code, {modifiers}) / type / drag / box / screenshot. `harness` is the shell channel:
@@ -38,6 +38,7 @@
  * clipboardWrite(text). See ../README.md for the scenario contract.
  */
 
+import { ownDesktopResource, assertDesktopActive } from './desktop-lifecycle.mjs';
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
@@ -738,6 +739,7 @@ export const SHIPPED_WINDOW_PLACEMENT = 'default';
  * key". `setPageFocusEmulation` above has the measurement.
  */
 export async function boot({ repoRoot, label = 'scenario', build = true, log = () => {}, timeoutMs = 60_000, window, beforeLoad } = {}) {
+    assertDesktopActive();
     if (window !== undefined && !WINDOW_PLACEMENTS.includes(window)) {
         throw new Error(`unknown window placement: ${String(window)} (want ${WINDOW_PLACEMENTS.join(' | ')})`);
     }
@@ -760,16 +762,13 @@ export async function boot({ repoRoot, label = 'scenario', build = true, log = (
     let shell;
     let page;
     let rawHarness;
-    let stopped = false;
-    const stop = async () => {
-        if (stopped) return;
-        stopped = true;
+    const { stop } = ownDesktopResource({ stop: async () => {
         try { rawHarness?.close(); } catch { /* already gone */ }
         try { page?.close(); } catch { /* already gone */ }
         try { await shell?.quit(); } catch { /* already gone */ }
         try { await daemon.stop(); } catch { /* already gone */ }
         sandbox.cleanup();
-    };
+    } });
     try {
         await daemon.start();
         shell = startShell(sandbox, { repoRoot, extraEnv: {

@@ -35,6 +35,7 @@ interface FixtureOptions {
     readonly sync?: boolean;
     /** A running agent in PANE_A, so the delete gate fires. */
     readonly agent?: boolean;
+    readonly inactive?: 'visible' | 'parked';
     /**
      * PANE_A's status as `setPaneStatus` leaves it: the daemon's answer to the Status submenu,
      * built by the real reducer rather than a hand-written pane.
@@ -112,6 +113,17 @@ function snapshotState(options: FixtureOptions = {}): JsonObject {
             now: NOW,
             event: { type: 'setPaneStatus', status: options.status }
         });
+    }
+    if (options.inactive !== undefined) {
+        const paneID = options.inactive === 'parked' ? PANE_B : PANE_A;
+        if (options.inactive === 'parked') {
+            store.dispatch({ type: 'split-pane', workspaceID: W1, paneID: PANE_B, direction: 'horizontal', now: NOW });
+        }
+        store.dispatch({ type: 'pane-agent-event', paneID, now: NOW,
+            event: { type: 'sessionStarted', sessionID: 'resumable', agent: 'codex' } });
+        if (options.inactive === 'parked') {
+            store.dispatch({ type: 'park-pane', workspaceID: W1, paneID: PANE_B });
+        }
     }
     if (options.search !== undefined) {
         store.dispatch({ type: 'focus-pane', workspaceID: W1, paneID: PANE_A });
@@ -463,6 +475,19 @@ describe('reopen-closed-pane and the scratchpad', () => {
 });
 
 describe('the ⌘W active-agents gate (TERM-077 / WS-109)', () => {
+    it.each(['visible', 'parked'] as const)('guards an inactive %s session before closing the last pane', async (inactive) => {
+        const h = setup({ inactive });
+        const before = h.commands().length;
+        fireEvent.keyDown(window, { code: 'KeyW', key: 'w', metaKey: true });
+        const gate = await screen.findByTestId('agent-delete-gate');
+        expect(gate.textContent).toContain('This workspace has 1 inactive agent. Deleting it will close it.');
+        expect(h.commands()).toHaveLength(before);
+        fireEvent.click(screen.getByTestId('agent-delete-confirm'));
+        await waitFor(() => expect(h.commands().at(-1)).toMatchObject({
+            command: 'delete-workspace', workspace_id: W1, force: true, allow_last: true
+        }));
+    });
+
     it('asks before deleting a workspace whose agent is still running', async () => {
         const h = setup({ agent: true });
         const before = h.commands().length;
@@ -470,8 +495,8 @@ describe('the ⌘W active-agents gate (TERM-077 / WS-109)', () => {
 
         const gate = await screen.findByTestId('agent-delete-gate');
         expect(gate.dataset['activeAgents']).toBe('1');
-        expect(gate.textContent).toContain('1 active agent');
-        expect(gate.textContent).toContain('will terminate it');
+        expect(gate.textContent).toContain('1 running agent');
+        expect(gate.textContent).toContain('will close it');
         // Nothing has gone out yet — the alert is IN FRONT of the delete, not after it.
         expect(h.commands()).toHaveLength(before);
 

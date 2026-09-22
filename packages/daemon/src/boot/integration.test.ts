@@ -220,8 +220,10 @@ describe('kelpid end to end', () => {
         // ── workspace-delete guard, then --force ────────────────────────────
         const refused = await request(paths.socketPath, { command: 'workspace-delete', name: 'agents' });
         expect(refused['ok']).toBe(false);
-        expect(String(refused['error'])).toContain('running agent');
-        expect(refused['active_agents']).toBe(1);
+        expect(refused).toMatchObject({
+            error: 'workspace agents has 1 agent waiting for input; pass --force to delete anyway',
+            active_agents: 1, running: 0, waiting: 1, inactive: 0
+        });
         expect(daemon.store.getState().workspaces).toHaveLength(2);
 
         // Something to find again after the restart.

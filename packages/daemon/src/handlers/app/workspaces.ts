@@ -10,12 +10,13 @@
  *     unreachable workspace appended so the CLI can never lose one (§6.1);
  *   - create replies BEFORE the effect on the two synchronous branches and AFTER the git work
  *     on the worktree branch (§1 reply-before-effect, §6.2a);
- *   - delete's guards run in order (resolve → last-workspace → running agents) and the `path`
+ *   - delete's guards run in order (resolve → last-workspace → agent panes) and the `path`
  *     field is the first SHELL pane's cwd (port note 17 — `--prune-worktree` depends on it).
  */
 
 import path from 'node:path';
 
+import { describeAgentSummary } from '@kelpi/core/agent';
 import { workspaceSidebarID } from '@kelpi/core/codec';
 import {
     groupsMatchingName,
@@ -34,7 +35,7 @@ import {
 
 import type { ReplyHandle } from '../../seams.js';
 import {
-    activeAgentCount,
+    workspaceAgentSummary,
     groupIDForWorkspace,
     nextRandomColor,
     resolveStateOf,
@@ -477,12 +478,12 @@ function handleWorkspaceDelete(
         return;
     }
 
-    const active = activeAgentCount(workspace);
-    if (!force && active > 0) {
+    const agents = workspaceAgentSummary(workspace);
+    if (!force && agents.total > 0) {
         fail(
             reply,
-            `workspace ${workspace.name} has ${String(active)} running ${active === 1 ? 'agent' : 'agents'}; pass --force to delete anyway`,
-            { active_agents: active }
+            `workspace ${workspace.name} has ${describeAgentSummary(agents)}; pass --force to delete anyway`,
+            { active_agents: agents.total, running: agents.running, waiting: agents.waiting, inactive: agents.inactive }
         );
         return;
     }

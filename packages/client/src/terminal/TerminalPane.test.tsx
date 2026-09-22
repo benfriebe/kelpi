@@ -15,6 +15,7 @@ import {
 } from './TerminalPane';
 import { PhoneKeyBar } from './PhoneKeyBar';
 import { restartUI } from '../app/reload';
+import { registerModal } from '../chrome/modal-presence';
 import { paneHandle } from './pane-registry';
 import {
     createFakePhoneWindow,
@@ -518,6 +519,55 @@ describe('TerminalPane — input and focus', () => {
 
         expect(renderer.focusCount).toBe(before + 1);
     });
+
+    it.each(['focus', 'visibilitychange'] as const)(
+        'keeps a modal iframe-to-search transition out of terminal %s resync',
+        async (event) => {
+            const renderers = createFakeRendererFactory();
+            render(
+                <TerminalPane paneID="pane-1" ptyApi={createFakePtyApi()} focused visible
+                    createRenderer={renderers.factory} measure={box(800, 480)} />
+            );
+            await settle();
+            await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+            const renderer = renderers.last();
+            const area = document.createElement('textarea');
+            renderer.opened!.appendChild(area);
+            const dialog = document.createElement('div');
+            dialog.setAttribute('role', 'dialog');
+            const frame = document.createElement('iframe');
+            const search = document.createElement('input');
+            dialog.append(frame, search);
+            document.body.append(dialog);
+            const release = registerModal();
+            // Real ghostty focus first claims its textarea, then repeats on a zero-delay timer.
+            // The browser reports parent-window focus before its iframe-to-input move finishes.
+            const focus = vi.spyOn(renderer, 'focus').mockImplementation(() => {
+                area.focus();
+                setTimeout(() => area.focus(), 0);
+            });
+            try {
+                frame.focus();
+                const repaints = renderer.repaints;
+                fireEvent(event === 'focus' ? window : document, new Event(event));
+                search.focus(); // Complete the browser's pending pointer-driven focus move.
+                await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+                expect(document.activeElement).toBe(search);
+                expect(focus).not.toHaveBeenCalled();
+                expect(renderer.repaints).toBe(repaints + 1);
+
+                release();
+                dialog.remove();
+                fireEvent.focus(window);
+                expect(focus).toHaveBeenCalledTimes(1);
+                expect(document.activeElement).toBe(area);
+            } finally {
+                release();
+                dialog.remove();
+                area.remove();
+            }
+        }
+    );
 
     it('leaves the caret alone on window focus when a chrome field holds it', async () => {
         const renderers = createFakeRendererFactory();

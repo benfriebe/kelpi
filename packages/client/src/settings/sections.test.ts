@@ -14,11 +14,13 @@ import {
     WS_WRITABLE_GHOSTTY_KEYS,
     type WsSettingsSnapshot
 } from '@kelpi/protocol';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { DEFAULT_TCP_PORT } from './GeneralTab';
 import { FOCUS_DELAY_MAX, FOCUS_DELAY_STEP } from './WorkspacesTab';
-import { SETTINGS_TABS } from './catalog';
+import { ACTION_CATALOG, SETTINGS_TABS, VISIBLE_CATEGORIES } from './catalog';
 import { SETTINGS_LIMITS } from './contract';
 import {
     SETTINGS_DEFAULT_TCP_PORT,
@@ -26,6 +28,8 @@ import {
     SETTINGS_FOCUS_DELAY_MAX,
     SETTINGS_FOCUS_DELAY_STEP,
     SETTINGS_GROUPS,
+    SETTINGS_INDEX,
+    SETTINGS_INDEX_EXTRAS,
     SETTINGS_SECTIONS,
     describeSettingsField,
     encodeSettingsFieldValue,
@@ -33,6 +37,7 @@ import {
     settingsFieldDefinition,
     settingsFieldsInSection,
     settingsGroupsInSection,
+    searchSettingsIndex,
     settingsSection,
     settingsSectionHasNative,
     settingsTransportCaption
@@ -109,6 +114,64 @@ describe('the section catalog', () => {
             'panes-section'
         ]);
         expect(settingsGroupsInSection('plugins')).toEqual([]);
+    });
+});
+
+describe('the Settings search index', () => {
+    it('finds Group band fill from the words users use for it', () => {
+        for (const query of ['group', 'fill', 'workspace header background']) {
+            expect(searchSettingsIndex(query)).toContainEqual(
+                expect.objectContaining({ label: 'Group band fill', testID: 'sidebar-group-fill' })
+            );
+        }
+    });
+
+    it('searches aliases inherited only from a group', () => {
+        expect(searchSettingsIndex('header border')).toContainEqual(
+            expect.objectContaining({ testID: 'sidebar-group-stroke' })
+        );
+    });
+
+    it('is a complete navigation index, never a second write surface', () => {
+        expect(SETTINGS_INDEX).toHaveLength(
+            SETTINGS_FIELD_DEFINITIONS.length +
+                SETTINGS_INDEX_EXTRAS.length +
+                ACTION_CATALOG.filter((entry) => VISIBLE_CATEGORIES.includes(entry.category)).length * 2
+        );
+        for (const entry of SETTINGS_INDEX) {
+            expect(entry.label).not.toBe('');
+            expect(entry.testID).not.toBe('');
+            expect('target' in entry).toBe(false);
+            expect('read' in entry).toBe(false);
+            expect(Object.isFrozen(entry)).toBe(true);
+        }
+        for (const field of SETTINGS_FIELD_DEFINITIONS)
+            expect(SETTINGS_INDEX).toContainEqual(
+                expect.objectContaining({ label: field.label, testID: field.rowTestID ?? field.testID })
+            );
+    });
+
+    it('indexes every static row label left in the hand-built tabs', () => {
+        const tabFiles = [
+            'AppearanceTab.tsx',
+            'RepositoriesTab.tsx',
+            'LabelsTab.tsx',
+            'ProfilesTab.tsx',
+            'KeybindingsTab.tsx',
+            'GlobalHotkeySection.tsx',
+            'WebTab.tsx',
+            'RemoteTab.tsx',
+            'GeneralTab.tsx',
+            'WorkspacesTab.tsx'
+        ];
+        const indexedLabels = new Set(SETTINGS_INDEX.map((entry) => entry.label));
+        for (const file of tabFiles) {
+            const source = readFileSync(resolve('packages/client/src/settings', file), 'utf8');
+            for (const match of source.matchAll(/(?:\blabel|aria-label|ariaLabel)=["']([^"']+)["']/g)) {
+                const label = match[1];
+                if (label !== undefined && label !== '') expect.soft(indexedLabels, `${file}: ${label}`).toContain(label);
+            }
+        }
     });
 });
 

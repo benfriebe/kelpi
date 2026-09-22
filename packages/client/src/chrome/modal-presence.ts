@@ -73,7 +73,7 @@ export function registerModal(): () => void {
     };
 }
 
-/** How many modal surfaces are mounted. Test seam; the app reads `useAnyModalOpen`. */
+/** Current modal count for imperative focus decisions; rendering reads `useAnyModalOpen`. */
 export function modalPresenceCount(): number {
     return mounted;
 }

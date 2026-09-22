@@ -445,9 +445,9 @@ function focusedPane(s: WorkspaceState): Pane | null {
 }
 
 // Count of in-progress agents: panes (visible AND parked) whose status != "idle"
-// ("running" or "waitingForInput" both count). Drives the running-agents guard on
-// workspace deletion (CLI --force gate, GUI "Delete anyway?" dialog) and the
-// app-level active-agent summary.
+// ("running" or "waitingForInput" both count). Drives the app-level active-agent
+// summary and quit gate. Workspace deletion uses workspaceAgentSummary instead,
+// including idle panes with a bound session (agent-lifecycle §11).
 function activeAgentCount(s: WorkspaceState): number {
   return [...s.panes, ...s.parkedPanes].filter(p => p.status !== "idle").length;
 }
@@ -1216,7 +1216,8 @@ Notes:
 - Closing the LAST pane leaves the workspace with `panes = []`, `layout = empty`,
   `focusedPaneID = null`. The reducer permits this; the app-level ⌘W handler maps
   "close last pane" to workspace deletion (with the active-agents confirm gate). The
-  workspace-delete CLI/GUI guard uses `activeAgentCount` (1.10).
+  workspace-delete CLI/GUI guard uses `workspaceAgentSummary` (agent-lifecycle §11),
+  including idle panes with bound sessions and parked panes; quit counts remain status-only.
 - Closing an id that names NO visible pane still resets `currentLayoutIndex`, scrubs
   history, runs the (no-op) layout removal, and fires a destroySurface effect (type
   defaults to shell); all harmless.

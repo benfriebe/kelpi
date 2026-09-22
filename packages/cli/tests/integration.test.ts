@@ -457,13 +457,13 @@ describe('workspace delete', () => {
         expect(server.requests[0]).toEqual({ command: 'workspace-delete', name: 'alpha', force: false });
     });
 
-    it('carries active_agents through a running-agents refusal', async () => {
+    it('carries the complete agent breakdown through a delete refusal', async () => {
         server.respond(() => ({
             lines: [
                 {
                     ok: false,
-                    error: 'workspace agents has 1 running agent; pass --force to delete anyway',
-                    active_agents: 1
+                    error: 'workspace agents has 1 running agent, 2 agents waiting for input and 1 inactive agent; pass --force to delete anyway',
+                    active_agents: 4, running: 1, waiting: 2, inactive: 1
                 }
             ]
         }));
@@ -473,8 +473,8 @@ describe('workspace delete', () => {
             {
                 id: 'agents',
                 ok: false,
-                error: 'workspace agents has 1 running agent; pass --force to delete anyway',
-                active_agents: 1
+                error: 'workspace agents has 1 running agent, 2 agents waiting for input and 1 inactive agent; pass --force to delete anyway',
+                active_agents: 4, running: 1, waiting: 2, inactive: 1
             }
         ]);
 

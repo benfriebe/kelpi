@@ -201,7 +201,7 @@ names are listed per command below). Rules:
   client's EOF signal / end-of-reply marker).
 - Success replies always contain `"ok": true`; failures always contain `"ok": false` and a
   human-readable `"error": "<message>"` string. Failure replies may carry extra fields
-  (e.g. `active_agents` on the workspace-delete running-agents refusal).
+  (e.g. `active_agents` on the workspace-delete agent-panes refusal).
 - Reply writes go through `socket.write`; on any write error (e.g. `EPIPE`) the reply is
   abandoned and the error reported as non-fatal (`packages/daemon/src/control/reply.ts:63-72`).
 - If the client disconnects before the reply is written, the reply handle goes stale and
@@ -919,13 +919,14 @@ no-op silently.
 #### `workspace-delete` (R/R)
 
 `name` (required non-empty) = workspace name-or-id; `force` (bool, default false).
-Refusals: last remaining workspace; ambiguous name; unknown name; running-agents guard
-without force —
+Refusals: last remaining workspace; ambiguous name; unknown name; agent-panes guard
+without force (running, waiting for input, or idle with a bound session, including
+parked panes; see agent-lifecycle §11) —
 
 ```json
 {"command":"workspace-delete","name":"feat-x","force":false}
 → {"ok":false,"error":"workspace feat-x has 2 running agents; pass --force to delete anyway",
-   "active_agents":2}
+   "active_agents":2,"running":2,"waiting":0,"inactive":0}
 ```
 
 Success (the `path` field — a shell pane's cwd, else the first pane's cwd, absent for

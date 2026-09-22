@@ -20,6 +20,9 @@ export {
 export { reduceAgentEvent } from './machine.js';
 export type { AgentEventContext } from './machine.js';
 export {
+    summarizeAgentPanes,
+    describeAgentSummary,
+    workspaceAgentDeleteWarning,
     agentKindFromWire,
     captureResumeTuple,
     displayAgentKind,
@@ -30,6 +33,6 @@ export {
     MAX_SESSION_ID_LENGTH,
     RESUME_SETTLE_DELAY_MS
 } from './session.js';
-export type { ResumeTuple } from './session.js';
+export type { ResumeTuple, WorkspaceAgentSummary } from './session.js';
 export { notificationDecision } from './notifications.js';
 export type { NotificationContext, NotificationDecision } from './notifications.js';

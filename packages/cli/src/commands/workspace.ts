@@ -255,8 +255,10 @@ async function handleWorkspaceDelete(args: string[], options: DeleteOptions = {}
             anyFailed = true;
             const error = asString(reply['error']) ?? 'unknown error';
             record['error'] = error;
-            const activeAgents = asInt(reply['active_agents']);
-            if (activeAgents !== undefined) record['active_agents'] = activeAgents;
+            for (const key of ['active_agents', 'running', 'waiting', 'inactive']) {
+                const count = asInt(reply[key]);
+                if (count !== undefined) record[key] = count;
+            }
             if (!asJSON) errLine(`kelpi workspace delete: ${error}`);
         }
         results.push(record);

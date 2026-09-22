@@ -6,7 +6,7 @@
  * activeAgentCount), §3.6 (pane lookup across lanes).
  */
 
-import { isActiveAgentStatus } from '@kelpi/core/agent';
+import { isActiveAgentStatus, summarizeAgentPanes, type WorkspaceAgentSummary } from '@kelpi/core/agent';
 import type { ResolveState } from '@kelpi/core/resolve';
 import { allPaneIDs, type Pane } from '@kelpi/core/layout';
 import { WORKSPACE_COLORS, type WorkspaceColor } from '@kelpi/protocol';
@@ -190,6 +190,11 @@ export function activeAgentCount(workspace: WorkspaceState): number {
     return [...workspace.panes, ...workspace.parkedPanes].filter((pane) =>
         isActiveAgentStatus(pane.status)
     ).length;
+}
+
+/** Workspace delete gate (§11): visible AND parked resumable/live agent panes. */
+export function workspaceAgentSummary(workspace: WorkspaceState): WorkspaceAgentSummary {
+    return summarizeAgentPanes([...workspace.panes, ...workspace.parkedPanes]);
 }
 
 export interface ActiveAgentSummary {

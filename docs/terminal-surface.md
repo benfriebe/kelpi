@@ -520,14 +520,30 @@ follows exactly **one client at a time**, the *size owner*:
   the bytes, because the bytes are only meaningful at it: the serializer glues a soft-wrapped row
   to its continuation, and every byte the PTY emits afterwards was composed for the owner's
   screen. The engine sizes its own canvas from cols×rows, so the result is letterboxed top-left
-  inside the pane where the box is bigger and **clipped** by the pane's `overflow-hidden` where it
-  is smaller. Clipping is the deliberate answer for a viewer narrower than the owner: scaling the
-  canvas would desynchronize the engine's own pointer arithmetic (it resolves cells from client
-  coordinates against an unscaled cell), nothing in the terminal layer pans horizontally, and
-  re-wrapping the owner's rows is the defect. The way out is to take size control, which every
-  form factor can reach: the top bar's chip on a desktop, the overflow menu's "Take size control"
+  inside the pane where the box is bigger and **pannable** inside the engine host where it
+  is smaller (#178). The host uses explicitly driven `scrollLeft` / `scrollTop` with
+  `overflow: hidden` only while mirroring; the pane root, padding, chrome and indicators stay
+  fixed. The host is also the containing block for the engine's absolute IME textarea and
+  composition overlay, so they pan with the canvas. Engine and selection focus use
+  `preventScroll` to keep a click or phone tap from revealing an offscreen caret by moving
+  the viewport. The canvas remains unscaled, and pointer coordinates use its scroll-aware client rect.
+  Scaling remains rejected, and the owner's rows never re-wrap. Taking size control is still
+  available on every form factor: the top bar's chip on a desktop, the overflow menu's "Take size control"
   on a phone (`packages/client/src/phone/PhoneShell.tsx`), and
   `kelpi.window.takeSizeControl` for a plugin chrome.
+- **Pan gestures** (#178): horizontal wheel/trackpad deltas pan the mirrored canvas. Vertical
+  deltas pan only when the canvas is taller than the host; otherwise they retain the terminal's
+  scrollback or application mouse-wheel behavior, including the vertical part of a diagonal
+  gesture. The horizontal part likewise reaches the application when columns fit and only
+  the vertical axis pans. Pixel, line and page deltas are normalized; control-wheel stays on its existing path.
+  A pan axis consumes its gesture even at the edge, so it cannot unexpectedly send terminal
+  input there. On phones, a two-finger drag pans in the same axes; vertical movement when rows
+  fit goes to scrollback or mouse-wheel reports, with mouse mode latched at gesture start.
+  Two-finger pans do not generate clicks, long presses or momentum; the existing one-finger
+  gestures keep their behavior. Offsets clamp when the owner grid or viewer box shrinks and
+  reset when mirroring ends, including taking size control and rebuilding the renderer.
+  Pixel-only resizes refresh those offsets and indicators even when the measured whole-cell
+  grid is unchanged; they do not send redundant PTY size reports.
 - **What a mirror does NOT change**: the pane keeps measuring its own box and keeps reporting it,
   because that report is the daemon's takeover cache and the request for this viewer's own fresh
   snapshot. It reports a measurement, never the mirrored grid.
@@ -551,8 +567,10 @@ follows exactly **one client at a time**, the *size owner*:
 - **The clipped side is visible** (#178, `data-terminal-clip` on the pane root): `<cols>x<rows>`
   of the mirrored grid this pane's box is CUTTING OFF, in whole cells, absent when nothing is cut
   off. The mirror attribute says what the canvas is; this says how much of it the user cannot
-  see, and each non-zero axis also draws an edge marker inside the pane
-  (`data-testid="terminal-clip-right-<paneID>"`, `"terminal-clip-bottom-<paneID>"`), both
+  see, and the count stays constant while panning (hidden cells on either side combined). Each
+  clipped side draws an edge marker inside the fixed pane; panning can reveal left/top markers
+  and clear right/bottom markers at the far edge
+  (`data-testid="terminal-clip-<left|right|top|bottom>-<paneID>"`), all
   `pointer-events-none` and `aria-hidden` so neither the engine's pointer arithmetic nor the
   pane's accessible content changes. The count is repeated where it can be acted on: the desktop
   take-size-control chip's tooltip (`chrome/TopBar.tsx`) and the phone's take-size-control menu
@@ -1351,7 +1369,8 @@ and the kitty forms when a pane has negotiated the protocol.
   thing, e.g. selection extension per ghostty config).
 - Drag / move: position updates with mods (enables hover reporting + drag-selection).
 - Scroll: delta x/y, with trackpad pixel-precise scrolling distinguished from wheel-line
-  scrolling. When no mouse mode is set the engine scrolls its own scrollback; when a mouse
+  scrolling. Mirror pan axes are consumed first (section 5.1). For the remaining deltas,
+  when no mouse mode is set the engine scrolls its own scrollback; when a mouse
   mode is set the wheel becomes button 64/65 reports (horizontal 66/67), accumulated against
   the cell height so each whole cell is one press.
 - **Mouse reporting** is implemented in Kelpi's own layer, not the engine's

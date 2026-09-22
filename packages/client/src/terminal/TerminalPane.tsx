@@ -345,7 +345,7 @@ export interface TerminalPaneProps {
      * to the grid each replay states (`adoptReplayGrid`) and the canvas, which the engine sizes
      * from cols×rows (`vendor/ghostty-web-patched` renderer: `cssWidth = dims.cols *
      * metrics.width`), sits top-left inside the pane — letterboxed where the box is bigger,
-     * clipped by the pane's own `overflow-hidden` where it is smaller. What the user sees is the
+     * pannable inside the host's `overflow-hidden` where it is smaller (#178). What the user sees is the
      * owner's screen, exactly, instead of a scramble of it.
      *
      * That holds because NOTHING IN THIS CLIENT ARMS THE ENGINE'S OWN FIT: the vendored bundle
@@ -617,6 +617,7 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
      */
     const clipRef = useRef<TerminalMirrorClip | null>(null);
     const [clip, setClip] = useState<TerminalMirrorClip | null>(null);
+    const [pan, setPan] = useState({ left: false, top: false, right: true, bottom: true });
     /**
      * #166 — the grid the LAST replay stated, whoever owned sizing when it arrived.
      *
@@ -784,12 +785,36 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
         resizeTimer.current = null;
     }, []);
 
+    // Scroll only the engine host, leaving the pane's chrome and edge markers fixed. The
+    // unscaled canvas's client rect moves with scrolling, as both mouse encoders expect.
+    const panMirror = useCallback((dx = 0, dy = 0): { x: boolean; y: boolean } => {
+        const host = hostRef.current;
+        const renderer = rendererRef.current;
+        const grid = mirrorRef.current;
+        if (host === null) return { x: false, y: false };
+        const cell = renderer?.cellSize() ?? { width: 0, height: 0 };
+        const box = latest.current.measure?.(host) ?? { width: host.clientWidth, height: host.clientHeight };
+        const maxX = grid === null ? 0 : Math.max(0, grid.cols * cell.width - box.width);
+        const maxY = grid === null ? 0 : Math.max(0, grid.rows * cell.height - box.height);
+        host.style.overflow = grid === null ? '' : 'hidden';
+        host.scrollLeft = Math.max(0, Math.min(maxX, host.scrollLeft + dx));
+        host.scrollTop = Math.max(0, Math.min(maxY, host.scrollTop + dy));
+        // CSS scroll extents round to pixels, while font metrics can be fractional.
+        const next = {
+            left: host.scrollLeft > 0, top: host.scrollTop > 0,
+            right: host.scrollLeft < maxX - 1, bottom: host.scrollTop < maxY - 1
+        };
+        setPan((previous) => previous.left === next.left && previous.top === next.top &&
+            previous.right === next.right && previous.bottom === next.bottom ? previous : next);
+        return { x: maxX > 0, y: maxY > 0 };
+    }, []);
+
     /**
      * #178 - restate how much of a mirrored canvas this box is clipping off.
      *
      * Derived from the two grids the pane already holds: the one the engine was moved to (the
      * owner's, while a mirror is in force) and the one this box measures. Their difference in
-     * whole cells is exactly what the root's `overflow-hidden` is cutting - a box WIDER than the
+     * whole cells is what the host viewport is cutting - a box WIDER than the
      * canvas letterboxes and hides nothing, which is what the floor at zero says, and a mirror
      * that fits reports null so that a pane which is not clipped is the pane it has always been,
      * indicator and attribute absent.
@@ -800,6 +825,7 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
      * rendering anything at all.
      */
     const publishClip = useCallback((): void => {
+        panMirror();
         const mirror = mirrorRef.current;
         const measured = geometryRef.current;
         const cols = mirror === null || measured === null ? 0 : Math.max(0, mirror.cols - measured.cols);
@@ -812,7 +838,7 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
         // The window's take-size-control chip says the same number in its tooltip and lives in
         // another tree entirely, so it is told the way every other cross-tree read is told.
         notifyTerminalPanes();
-    }, []);
+    }, [panMirror]);
 
     /**
      * Publish (or clear) the mirrored-grid attribute on the pane root (#166).
@@ -879,10 +905,11 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
         }
         const previous = geometryRef.current;
         const unchanged = previous !== null && previous.cols === next.cols && previous.rows === next.rows;
-        if (unchanged && !force) return;
         geometryRef.current = next;
-        // #178: the box moved, so what a mirror is clipping off moved with it.
+        // Pixel bounds can move without changing the whole-cell grid. Refresh the pan edges
+        // before skipping an unchanged PTY measurement (e.g. a 679px box shrinking to 672px).
         publishClip();
+        if (unchanged && !force) return;
         const cell = renderer.cellSize();
         setCellHint(
             cell.width > 0 && cell.height > 0 ? `${cell.width.toFixed(2)}x${cell.height.toFixed(2)}` : ''
@@ -1103,6 +1130,8 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
                 // A no-op when the engine is already at this grid (`renderer.resize` short
                 // circuits, and does not open a paint hold for a grid that did not move).
                 current.resize(grid.cols, grid.rows);
+                // The browser clamps against the old canvas until resize has updated its size.
+                panMirror();
             };
 
             const subscription: PtySubscription = {
@@ -1513,6 +1542,27 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
             if (reporter.up(event)) consume(event);
         };
         const onWheel = (event: WheelEvent): void => {
+            if (inside(event) && mirrorRef.current !== null && !event.ctrlKey) {
+                const cell = rendererRef.current?.cellSize();
+                const xUnit = event.deltaMode === 1 ? cell?.width ?? 1 : event.deltaMode === 2 ? host.clientWidth : 1;
+                const yUnit = event.deltaMode === 1 ? cell?.height ?? 1 : event.deltaMode === 2 ? host.clientHeight : 1;
+                const axes = panMirror(event.deltaX * xUnit, event.deltaY * yUnit);
+                if ((axes.x && event.deltaX !== 0) || (axes.y && event.deltaY !== 0)) {
+                    consume(event);
+                    // Each axis keeps its own destination: the unused component of a diagonal
+                    // gesture still belongs to terminal scrollback or application mouse reports.
+                    const deltaX = axes.x ? 0 : event.deltaX;
+                    const deltaY = axes.y ? 0 : event.deltaY;
+                    if ((deltaX !== 0 || deltaY !== 0) && event.target instanceof EventTarget) {
+                        event.target.dispatchEvent(new WheelEvent('wheel', {
+                            bubbles: true, cancelable: true, deltaX, deltaY, deltaMode: event.deltaMode,
+                            clientX: event.clientX, clientY: event.clientY,
+                            shiftKey: event.shiftKey, altKey: event.altKey, metaKey: event.metaKey
+                        }));
+                    }
+                    return;
+                }
+            }
             if (!reporter.active || !inside(event)) return;
             if (reporter.wheel(event)) consume(event);
         };
@@ -1531,20 +1581,22 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
         host.addEventListener('mousedown', onDown, true);
         host.addEventListener('mousemove', onMove, true);
         host.addEventListener('mouseup', onUp, true);
-        // `passive: false` or `preventDefault()` is ignored and the page scrolls underneath.
-        host.addEventListener('wheel', onWheel, { capture: true, passive: false });
+        // The engine also listens in capture on the host. Intercept at its parent so a pan
+        // cannot reach that listener (stopPropagation does not stop same-node listeners).
+        const wheelTarget = rootRef.current ?? host;
+        wheelTarget.addEventListener('wheel', onWheel, { capture: true, passive: false });
         window.addEventListener('mousemove', onWindowMove, true);
         window.addEventListener('mouseup', onWindowUp, true);
         return () => {
             host.removeEventListener('mousedown', onDown, true);
             host.removeEventListener('mousemove', onMove, true);
             host.removeEventListener('mouseup', onUp, true);
-            host.removeEventListener('wheel', onWheel, { capture: true });
+            wheelTarget.removeEventListener('wheel', onWheel, { capture: true });
             window.removeEventListener('mousemove', onWindowMove, true);
             window.removeEventListener('mouseup', onWindowUp, true);
             reporter.reset();
         };
-    }, []);
+    }, [panMirror]);
 
     // ── C3: a finger on the terminal (docs/MOBILE-PLAN.md §4) ───────────────────────
     //
@@ -1672,7 +1724,20 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
          * value is unchanged in meaning - "the engine must not also see this" - and it says yes
          * for every event of a reported gesture, which is what the old branch did too.
          */
+        let panTouch: { x: number; y: number; remainder: number; reportsMouse: boolean } | null = null;
+        const midpoint = (event: TouchEvent): { x: number; y: number } => ({
+            x: (event.touches[0]!.clientX + event.touches[1]!.clientX) / 2,
+            y: (event.touches[0]!.clientY + event.touches[1]!.clientY) / 2
+        });
         const onStart = (event: TouchEvent): void => {
+            if (panTouch !== null || (event.touches.length === 2 && mirrorRef.current !== null && clipRef.current !== null)) {
+                scroller.cancel();
+                if (event.touches.length === 2) {
+                    panTouch = { ...midpoint(event), remainder: 0, reportsMouse: reporter?.active === true };
+                }
+                consume(event);
+                return;
+            }
             // A new contact clears the word the last long press left highlighted, and the mirror
             // is written by hand BOTH ways. Older engines did not announce `clearSelection()`
             // (#81), leaving a stale `data-terminal-selection` in the audit. The current engine
@@ -1687,12 +1752,40 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
             if (scroller.start(event)) consume(event);
         };
         const onMove = (event: TouchEvent): void => {
+            if (panTouch !== null) {
+                if (event.touches.length === 2 && mirrorRef.current !== null) {
+                    const point = midpoint(event);
+                    const axes = panMirror(panTouch.x - point.x, panTouch.y - point.y);
+                    if (!axes.y) {
+                        const height = rendererRef.current?.cellSize().height ?? 0;
+                        panTouch.remainder += panTouch.y - point.y;
+                        const lines = height > 0 ? Math.trunc(panTouch.remainder / height) : 0;
+                        panTouch.remainder -= lines * height;
+                        if (lines !== 0) {
+                            if (panTouch.reportsMouse) reporter?.wheel({ clientX: point.x, clientY: point.y,
+                                deltaX: 0, deltaY: lines, deltaMode: 1 });
+                            else rendererRef.current?.scrollLines(lines);
+                        }
+                    }
+                    panTouch.x = point.x;
+                    panTouch.y = point.y;
+                }
+                consume(event);
+                return;
+            }
             if (scroller.move(event)) consume(event);
         };
         const onEnd = (event: TouchEvent): void => {
+            if (panTouch !== null) {
+                // Consume through the final lift; the remaining finger must never become a tap.
+                if (event.touches.length === 0) panTouch = null;
+                consume(event);
+                return;
+            }
             if (scroller.end(event)) consume(event);
         };
         const onCancel = (): void => {
+            panTouch = null;
             scroller.cancel();
             reporter?.reset();
         };
@@ -2374,31 +2467,33 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
                 {TERMINAL_ACCESSIBILITY_HELP}
             </span>
             {/* N19: `data-pane-surface` marks the subtree that legitimately owns this pane's
-                caret — the engine's hidden `<textarea>` lives in here. It is what tells the
-                politeness rule in `app/pane-focus.ts` that a focused terminal is a SURFACE and
+                caret — the engine's hidden `<textarea>` lives in here. Positioning the host
+                also makes it the containing block for that textarea and the IME preedit, so
+                they scroll with the canvas instead of staying anchored to the pane root.
+                It is what tells the politeness rule in `app/pane-focus.ts` that a focused terminal is a SURFACE and
                 not a chrome text field, and it is what `focusPaneSurface` hands the caret to. */}
             <div
                 ref={hostRef}
-                className="h-full w-full"
+                className="relative h-full w-full"
                 data-terminal-host=""
+                onScroll={() => panMirror()}
                 {...{ [PANE_SURFACE_ATTR]: '' }}
             />
             {/*
               * #178 - the clipped EDGE, on the side that is clipped.
               *
-              * A mirrored canvas that is bigger than this box is cut off by the root's
-              * `overflow-hidden` with nothing to say so, and the report this answers is "my
+              * A mirrored canvas that is bigger than this box is clipped by the host viewport
+              * and can be panned, and the report this answers is "my
               * terminal is broken": the owner's right-hand columns are simply missing. A wash
               * into the pane's own border colour plus a hairline is the smallest honest mark
               * that says the screen continues past the edge. `pointer-events-none` and
               * `aria-hidden` because it is a hint about the canvas, not a control and not
-              * content - the count itself is on the take-size-control chip, which is the thing
-              * that can undo the clip, and on `data-terminal-clip` for the audit.
+              * content - the count itself is on the take-size-control chip, which can remove the clip by resizing the PTY, and on `data-terminal-clip` for the audit.
               *
               * Rendered only while `clip` is non-null, so a pane that is not mirroring, and a
               * mirror that fits, keep exactly the DOM they had.
               */}
-            {clip !== null && clip.cols > 0 ? (
+            {clip !== null && clip.cols > 0 && pan.right ? (
                 <div
                     aria-hidden
                     data-testid={`terminal-clip-right-${paneID}`}
@@ -2409,7 +2504,7 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
                     }}
                 />
             ) : null}
-            {clip !== null && clip.rows > 0 ? (
+            {clip !== null && clip.rows > 0 && pan.bottom ? (
                 <div
                     aria-hidden
                     data-testid={`terminal-clip-bottom-${paneID}`}
@@ -2419,6 +2514,18 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
                         borderBottom: '1px solid var(--kelpi-fg-tertiary, #6A6A72)'
                     }}
                 />
+            ) : null}
+            {clip !== null && pan.left ? (
+                <div aria-hidden data-testid={`terminal-clip-left-${paneID}`}
+                    className="pointer-events-none absolute top-0 bottom-0 left-0 w-2"
+                    style={{ background: 'linear-gradient(to left, transparent, var(--kelpi-border, #24242B))',
+                        borderLeft: '1px solid var(--kelpi-fg-tertiary, #6A6A72)' }} />
+            ) : null}
+            {clip !== null && pan.top ? (
+                <div aria-hidden data-testid={`terminal-clip-top-${paneID}`}
+                    className="pointer-events-none absolute top-0 right-0 left-0 h-2"
+                    style={{ background: 'linear-gradient(to top, transparent, var(--kelpi-border, #24242B))',
+                        borderTop: '1px solid var(--kelpi-fg-tertiary, #6A6A72)' }} />
             ) : null}
             {status === 'error' ? (
                 // Interactive on purpose (it used to be `pointer-events-none`): the placeholder

@@ -2176,7 +2176,7 @@ const S = class q {
    */
   focus() {
     const A = this.renderer.getCanvas();
-    A.parentElement && A.parentElement.focus();
+    A.parentElement && A.parentElement.focus({ preventScroll: !0 });
   }
   /**
    * Get current selection coordinates (for rendering)
@@ -2218,7 +2218,7 @@ const S = class q {
     const A = this.renderer.getCanvas();
     A.addEventListener("mousedown", (Q) => {
       if (Q.button === 0) {
-        A.parentElement && A.parentElement.focus();
+        A.parentElement && A.parentElement.focus({ preventScroll: !0 });
         const g = this.pixelToCell(Q.offsetX, Q.offsetY);
         this.hasSelection() && this.clearSelection();
         const C = this.viewportRowToAbsolute(g.row);
@@ -2268,7 +2268,7 @@ const S = class q {
         this.textarea.value = E, this.textarea.select(), this.textarea.setSelectionRange(0, E.length);
       } else
         this.textarea.value = "";
-      this.textarea.focus(), setTimeout(() => {
+      this.textarea.focus({ preventScroll: !0 }), setTimeout(() => {
         const E = () => {
           this.textarea.style.pointerEvents = "none", this.textarea.style.zIndex = "-10", this.textarea.style.width = "0", this.textarea.style.height = "0", this.textarea.style.left = "0", this.textarea.style.top = "0", this.textarea.value = "", document.removeEventListener("click", E), document.removeEventListener("contextmenu", E), this.textarea.removeEventListener("blur", E);
         };
@@ -2385,11 +2385,11 @@ const S = class q {
     const Q = document.activeElement;
     try {
       const g = this.textarea;
-      g.value = A, g.style.position = "fixed", g.style.left = "-9999px", g.style.top = "0", g.style.width = "1px", g.style.height = "1px", g.style.opacity = "0", g.focus(), g.select(), g.setSelectionRange(0, A.length);
+      g.value = A, g.style.position = "fixed", g.style.left = "-9999px", g.style.top = "0", g.style.width = "1px", g.style.height = "1px", g.style.opacity = "0", g.focus({ preventScroll: !0 }), g.select(), g.setSelectionRange(0, A.length);
       const E = document.execCommand("copy");
-      Q && Q.focus(), E || console.error("❌ execCommand copy failed");
+      Q && Q.focus({ preventScroll: !0 }), E || console.error("❌ execCommand copy failed");
     } catch (g) {
-      console.error("❌ Fallback copy failed:", g), Q && Q.focus();
+      console.error("❌ Fallback copy failed:", g), Q && Q.focus({ preventScroll: !0 });
     }
   }
   /**
@@ -2648,13 +2648,13 @@ class oA {
       });
       const g = this.textarea;
       this.canvas.addEventListener("mousedown", (C) => {
-        C.preventDefault(), g.focus();
+        C.preventDefault(), g.focus({ preventScroll: !0 });
       }), this.canvas.addEventListener("touchend", (C) => {
-        C.preventDefault(), g.focus();
+        C.preventDefault(), g.focus({ preventScroll: !0 });
       }), A.addEventListener("mousedown", (C) => {
-        C.target === A && (C.preventDefault(), g.focus());
+        C.target === A && (C.preventDefault(), g.focus({ preventScroll: !0 }));
       }), A.addEventListener("focus", () => {
-        g.focus();
+        g.focus({ preventScroll: !0 });
       }), this.renderer = new n(this.canvas, {
         fontSize: this.options.fontSize,
         fontFamily: this.options.fontFamily,
@@ -2799,8 +2799,8 @@ class oA {
   focus() {
     if (this.isOpen) {
       const A = this.textarea || this.element;
-      A && (A.focus(), setTimeout(() => {
-        A == null || A.focus();
+      A && (A.focus({ preventScroll: !0 }), setTimeout(() => {
+        A == null || A.focus({ preventScroll: !0 });
       }, 0));
     }
   }

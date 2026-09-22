@@ -6,7 +6,7 @@ import type { KelpiRuntime } from '../state';
 import { tokens } from '../chrome/tokens';
 import { pluginRequest, usePlugins } from './client';
 import { pluginDocument } from './document';
-import { PluginHostUIContext, requestHostUI, HOST_UI_METHODS } from './host-ui';
+import { canAccessNavigation, PluginHostUIContext, requestHostUI, HOST_UI_METHODS } from './host-ui';
 import { createPluginNavigationFeed, type PluginNavigationFeed } from './navigation';
 import { WINDOW_UI_METHODS, type UIServiceScope } from './ui-services';
 import { getDocumentDraft, runDocumentEdit, stageDocumentDraft } from './document-drafts';
@@ -73,7 +73,7 @@ export function PluginView(props: PluginViewProps): ReactElement {
     const hostUI = useContext(PluginHostUIContext);
     const latestHostUI = useRef(hostUI); latestHostUI.current = hostUI;
     const chrome = hostUI?.runtime === runtime ? hostUI.chrome : undefined;
-    const navigation = hostUI?.runtime === runtime ? hostUI.navigation : undefined;
+    const navigation = canAccessNavigation(hostUI, runtime) ? hostUI?.navigation : undefined;
     const services = hostUI?.runtime === runtime ? hostUI.services : undefined;
     const [documentHTML, setDocumentHTML] = useState('');
     const [error, setError] = useState<string | null>(null);
@@ -312,7 +312,11 @@ export function PluginView(props: PluginViewProps): ReactElement {
             if (grantedSettings) settingsFeed = createWindowFeed('settings', (listener, onError) => grantedSettings.subscribe(listener, onError), message => channel.port1.postMessage(message));
             const grantedPaneChrome = paneChromeHost;
             if (grantedPaneChrome) paneChromeFeed = createWindowFeed('pane-chrome', (listener, onError) => grantedPaneChrome.subscribe(listener, onError), message => channel.port1.postMessage(message));
-            if (navigation) navigationFeed = createPluginNavigationFeed(navigation, message => channel.port1.postMessage(message));
+            if (navigation) navigationFeed = createPluginNavigationFeed(navigation, message => {
+                // Recheck at delivery as well as attachment: a queued snapshot must not escape
+                // after a settings render revokes trust, even before effect cleanup runs.
+                if (canAccessNavigation(latestHostUI.current, runtime)) channel.port1.postMessage(message);
+            });
         };
         ownerWindow.addEventListener('message', handleReady);
         const offEvents = runtime.connection.on('message', message => { if (message['type'] === 'plugin-event') { events.push(message['event'] as unknown as PluginEvent); drain(); } });

@@ -7,6 +7,7 @@ import { createFakeSocketFactory, completeHandshake } from '../connection/testin
 import { PluginView } from './PluginView';
 import { PluginHostUIContext } from './host-ui';
 import { createUIServices } from './ui-services';
+import type { PluginNavigation, NavigationSnapshot } from './navigation';
 import type { InteractionPlacement } from '../interaction/contract';
 import type { InteractionPresenterHost, InteractionPresenterSnapshot } from '../interaction/presenter';
 import type { SettingsPresenterHost, SettingsPresenterSnapshot } from '../settings/presenter';
@@ -66,7 +67,7 @@ function fakeSettingsPresenter() {
 }
 
 async function setup(options: {
-    crossRuntime?: boolean; disposedServices?: boolean;
+    crossRuntime?: boolean; disposedServices?: boolean; trustedForNavigation?: boolean;
     presenter?: InteractionPresenterHost; settingsPresenter?: SettingsPresenterHost; placements?: readonly string[];
 } = {}) {
     vi.stubGlobal('MessageChannel', MessageChannel);
@@ -85,27 +86,103 @@ async function setup(options: {
             : { ok: true, result: null });
     const services = createUIServices();
     if (options.disposedServices) services.dispose();
-    const view = render(<PluginHostUIContext.Provider value={{ runtime: options.crossRuntime ? other : runtime, services, request: () => null }}>
+    const navigationListeners = new Set<(value: NavigationSnapshot) => void>();
+    const navigationSnapshot: NavigationSnapshot = { hosts: [{ id: 'local', name: 'Local', kind: 'local', connection: 'connected',
+        workspaces: [{ id: 'home', name: 'Home', color: null, paneCount: 1, group: null }] }], active: null };
+    const navigation: PluginNavigation = {
+        getNavigation: vi.fn(() => navigationSnapshot), selectWorkspace: vi.fn(), update() {}, dispose() {},
+        subscribe(listener) { navigationListeners.add(listener); listener(navigationSnapshot); return () => { navigationListeners.delete(listener); }; }
+    };
+    const content = (trusted: boolean) => <PluginHostUIContext.Provider value={{ runtime: options.crossRuntime ? other : runtime,
+        navigationTrustedRuntimes: new Set(trusted ? [runtime] : []), navigation, services, request: () => null }}>
         <PluginView runtime={runtime} pluginID={manifest.id} viewID={manifest.contributes.views[0]!.id} presenter={options.presenter} settingsPresenter={options.settingsPresenter} />
-    </PluginHostUIContext.Provider>);
+    </PluginHostUIContext.Provider>;
+    const view = render(content(options.trustedForNavigation === true));
     await waitFor(() => expect(screen.getByTitle('Prompt View').getAttribute('srcdoc')).toContain('kelpi-plugin-ready'));
     const frame = screen.getByTitle('Prompt View') as HTMLIFrameElement;
-    const nonce = /"nonce":"([^"]+)"/.exec(frame.srcdoc)![1];
-    const send = vi.spyOn(frame.contentWindow!, 'postMessage');
-    act(() => window.dispatchEvent(new MessageEvent('message', { source: frame.contentWindow, data: { type: 'kelpi-plugin-ready', nonce } })));
-    const child = (send.mock.calls as unknown as Array<[unknown, unknown, MessagePort[]]>)[0]?.[2][0];
     const replies: Array<{ id: string; result?: unknown; error?: string }> = [];
     const frames: Array<{ type: string; sequence: number; value?: InteractionPresenterSnapshot }> = [];
     const settingsFrames: Array<{ type: string; sequence: number; value?: SettingsPresenterSnapshot }> = [];
-    child?.on('message', message => {
-        if (message.type === 'reply') replies.push(message);
-        else if (String(message.type).startsWith('interaction')) frames.push(message);
-        else if (String(message.type).startsWith('settings')) settingsFrames.push(message);
-    });
-    return { view, services, requests, child, replies, frames, settingsFrames, dispose: () => { cleanup(); child?.close(); services.dispose(); runtime.dispose(); other.dispose(); } };
+    const navigationFrames: unknown[] = [];
+    const ports: MessagePort[] = [];
+    let child: MessagePort | undefined;
+    const connect = () => {
+        const nonce = /"nonce":"([^"]+)"/.exec(frame.srcdoc)![1];
+        const send = vi.spyOn(frame.contentWindow!, 'postMessage');
+        act(() => window.dispatchEvent(new MessageEvent('message', { source: frame.contentWindow, data: { type: 'kelpi-plugin-ready', nonce } })));
+        child = (send.mock.calls as unknown as Array<[unknown, unknown, MessagePort[]]>).at(-1)?.[2][0];
+        if (child) ports.push(child);
+        child?.on('message', message => {
+            if (message.type === 'reply') replies.push(message);
+            else if (String(message.type).startsWith('interaction')) frames.push(message);
+            else if (String(message.type).startsWith('settings')) settingsFrames.push(message);
+            else if (String(message.type).startsWith('navigation')) navigationFrames.push(message);
+        });
+    };
+    connect();
+    return { view, services, requests, get child() { return child; }, replies, frames, settingsFrames, navigation, navigationFrames, navigationListeners,
+        publishNavigation: () => { for (const listener of navigationListeners) listener(navigationSnapshot); },
+        setTrust: async (trusted: boolean) => {
+            const previous = frame.srcdoc;
+            view.rerender(content(trusted));
+            await waitFor(() => expect(frame.srcdoc).not.toBe(previous));
+            connect();
+        },
+        dispose: () => { cleanup(); for (const port of ports) port.close(); services.dispose(); runtime.dispose(); other.dispose(); } };
+
 }
 
 describe('shared UI through the isolated view bridge', () => {
+    it('refuses navigation reads, selection and subscriptions for an untrusted remote view', async () => {
+        const h = await setup({ crossRuntime: true });
+        try {
+            for (const method of ['ui.getNavigation', 'ui.selectWorkspace']) {
+                h.child!.postMessage({ type: 'call', id: method, method, args: { hostID: 'local', workspaceID: 'home' } });
+                await waitFor(() => expect(h.replies.find(reply => reply.id === method)?.error).toContain('unavailable for this daemon'));
+            }
+            expect(h.navigationFrames).toEqual([]);
+            expect(h.navigationListeners.size).toBe(0);
+            expect(h.navigation.getNavigation).not.toHaveBeenCalled();
+            expect(h.navigation.selectWorkspace).not.toHaveBeenCalled();
+        } finally { h.dispose(); }
+    });
+
+    it('grants trusted remote views navigation only, including the live subscription', async () => {
+        const h = await setup({ crossRuntime: true, trustedForNavigation: true });
+        try {
+            await waitFor(() => expect(h.navigationFrames).toHaveLength(1));
+            h.child!.postMessage({ type: 'call', id: 'read', method: 'ui.getNavigation', args: {} });
+            await waitFor(() => expect(h.replies.find(reply => reply.id === 'read')?.result).toMatchObject({ hosts: [{ id: 'local' }] }));
+            h.child!.postMessage({ type: 'call', id: 'select', method: 'ui.selectWorkspace', args: { hostID: 'local', workspaceID: 'home' } });
+            await waitFor(() => expect(h.navigation.selectWorkspace).toHaveBeenCalledWith('local', 'home'));
+            for (const method of ['ui.getWorkbench', 'ui.getChrome', 'ui.showInput']) {
+                h.child!.postMessage({ type: 'call', id: method, method, args: { title: 'Unavailable' } });
+                await waitFor(() => expect(h.replies.find(reply => reply.id === method)?.error).toContain('unavailable for this daemon'));
+            }
+            expect(h.requests.mock.calls.some(([payload]) => payload['action'] === 'api')).toBe(false);
+        } finally { h.dispose(); }
+    });
+
+    it('clears navigation access and subscriptions on an already mounted remote view, then allows regrant', async () => {
+        const h = await setup({ crossRuntime: true, trustedForNavigation: true });
+        try {
+            await waitFor(() => expect(h.navigationFrames).toHaveLength(1));
+            await h.setTrust(false);
+            expect(h.navigationListeners.size).toBe(0);
+            for (const method of ['ui.getNavigation', 'ui.selectWorkspace']) {
+                h.child!.postMessage({ type: 'call', id: method, method, args: { hostID: 'local', workspaceID: 'home' } });
+                await waitFor(() => expect(h.replies.find(reply => reply.id === method)?.error).toContain('unavailable for this daemon'));
+            }
+            h.publishNavigation();
+            expect(h.navigationFrames).toHaveLength(1);
+            expect(h.navigation.selectWorkspace).not.toHaveBeenCalled();
+            await h.setTrust(true);
+            await waitFor(() => expect(h.navigationFrames).toHaveLength(2));
+            h.child!.postMessage({ type: 'call', id: 'regranted', method: 'ui.getNavigation', args: {} });
+            await waitFor(() => expect(h.replies.find(reply => reply.id === 'regranted')?.result).toMatchObject({ hosts: [{ id: 'local' }] }));
+        } finally { h.dispose(); }
+    });
+
     it('routes prompts locally, answers through the private channel and cancels the owner on detach', async () => {
         const h = await setup();
         try {

@@ -382,6 +382,8 @@ export interface WsSettingsSnapshot {
 export interface WsRemoteDaemon {
     readonly name: string;
     readonly url: string;
+    /** Explicit permission for this host’s plugin views to read/watch and select window navigation. */
+    readonly trustedForNavigation?: boolean;
 }
 
 /** Matches the web client's `--kelpi-term-bg` fallback and the daemon's content-render default. */

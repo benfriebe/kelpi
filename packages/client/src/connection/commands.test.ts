@@ -301,3 +301,16 @@ describe('CommandClient close preparation', () => {
         h.connection.close();
     });
 });
+
+it('preserves explicit remote navigation trust grants and clears on the settings command wire', async () => {
+    const h = harness();
+    try {
+        for (const trustedForNavigation of [true, false]) {
+            const daemon = { name: 'werk', url: 'https://werk/', trustedForNavigation };
+            const pending = h.client.setRemoteDaemons({ daemons: [daemon] });
+            expect(h.lastCommand()).toEqual({ command: 'set-remote-daemons', daemons: [daemon] });
+            h.answer({ ok: true });
+            expect(await pending).toEqual({ ok: true });
+        }
+    } finally { h.client.dispose(); h.connection.close(); }
+});

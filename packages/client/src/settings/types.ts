@@ -35,7 +35,7 @@ export interface SettingsActions {
     setProfiles(profiles: readonly WsProfile[]): void;
     /** `set-remote-daemons` — the WHOLE §1.7 registry (multi-daemon groups). Optional:
      *  a fixture or older surface without it renders the Daemons card read-only. */
-    setRemoteDaemons?(daemons: readonly { name: string; url: string }[]): void;
+    setRemoteDaemons?(daemons: readonly { name: string; url: string; trustedForNavigation?: boolean }[]): void;
     /**
      * `add-label-preset`; `color` is §6.2's one-string encoding (`"blue"` / `"#ff8800"`).
      *

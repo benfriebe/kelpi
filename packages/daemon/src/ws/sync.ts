@@ -1140,7 +1140,9 @@ export function decodeRemoteDaemonsPayload(raw: unknown): readonly WsRemoteDaemo
         const name = entry['name'];
         const url = entry['url'];
         if (typeof name !== 'string' || typeof url !== 'string') return null;
-        daemons.push({ name, url });
+        const trusted = entry['trustedForNavigation'];
+        if (trusted !== undefined && typeof trusted !== 'boolean') return null;
+        daemons.push({ name, url, ...(trusted === true ? { trustedForNavigation: true } : {}) });
     }
     return daemons;
 }

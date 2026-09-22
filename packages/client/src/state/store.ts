@@ -441,7 +441,8 @@ export function hydrateSettings(raw: unknown): WsSettingsSnapshot | null {
         remoteDaemons: array(raw['remoteDaemons']).flatMap((entry) => {
             if (!isRecord(entry) || typeof entry['name'] !== 'string' || typeof entry['url'] !== 'string') return [];
             if (entry['name'] === '' || entry['url'] === '') return [];
-            return [{ name: entry['name'], url: entry['url'] }];
+            return [{ name: entry['name'], url: entry['url'],
+                ...(entry['trustedForNavigation'] === true ? { trustedForNavigation: true } : {}) }];
         }),
         general: {
             focusFollowsMouse: bool(general['focusFollowsMouse'], fallbackGeneral.focusFollowsMouse),

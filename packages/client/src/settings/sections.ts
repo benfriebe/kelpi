@@ -28,7 +28,7 @@ import {
     type WsWritableGhosttyKey
 } from '@kelpi/protocol';
 
-import { SETTINGS_TABS } from './catalog';
+import { ACTION_CATALOG, SETTINGS_TABS, VISIBLE_CATEGORIES } from './catalog';
 import {
     settingsGroupDescriptor,
     settingsSectionDescriptor,
@@ -179,6 +179,8 @@ export const SETTINGS_GROUPS: readonly SettingsGroupDescriptor[] = Object.freeze
                 sectionID: 'appearance',
                 title: 'Sidebar fill & stroke',
                 hint: 'Fill = colour wash, border = outline. The intensity above multiplies these.',
+                // Phrase aliases preserve the projection rule: no bare writable config key.
+                keywords: ['workspace group', 'header background'],
                 testID: 'appearance-sidebar-style'
             },
             {
@@ -230,6 +232,7 @@ interface DefinitionBase {
     readonly sectionID: SettingsSectionID;
     readonly groupID: string;
     readonly label: string;
+    readonly keywords?: readonly string[] | undefined;
     readonly detail: string;
     readonly testID: string;
     readonly rowTestID?: string | undefined;
@@ -959,6 +962,177 @@ export function settingsFieldsInSection(
     );
 }
 
+/**
+ * A non-writeable search hit. It deliberately has no field id, read function or write target:
+ * search navigates to a control the bundled panel already owns, it does not become another edit
+ * path into settings.
+ */
+export interface SettingsIndexEntry {
+    readonly sectionID: SettingsSectionID;
+    readonly groupID: string;
+    readonly label: string;
+    readonly detail: string;
+    readonly testID: string;
+    readonly keywords?: readonly string[] | undefined;
+}
+
+/**
+ * Hand-built rows which are not in `SETTINGS_FIELD_DEFINITIONS`.
+ *
+ * Keep this explicit. A field descriptor is intentionally one write target; these rows either
+ * write several values, are derived, or are verbs and must never be smuggled into that table.
+ */
+export const SETTINGS_INDEX_EXTRAS: readonly SettingsIndexEntry[] = Object.freeze(([
+    { sectionID: 'appearance', groupID: 'appearance-colors', label: 'Window gaps', detail: 'Change the window gaps colour in the current appearance palette.', testID: 'chrome-color-windowBackground', keywords: ['color', 'colour', 'background'] },
+    { sectionID: 'appearance', groupID: 'appearance-colors', label: 'Sidebar', detail: 'Change the sidebar colour in the current appearance palette.', testID: 'chrome-color-sidebarBackground', keywords: ['color', 'colour', 'background'] },
+    { sectionID: 'appearance', groupID: 'appearance-colors', label: 'Status bar / footer', detail: 'Change the status bar / footer colour in the current appearance palette.', testID: 'chrome-color-footerBackground', keywords: ['color', 'colour', 'background'] },
+    { sectionID: 'appearance', groupID: 'appearance-colors', label: 'Pane header / title bar', detail: 'Change the pane header / title bar colour in the current appearance palette.', testID: 'chrome-color-headerBackground', keywords: ['color', 'colour', 'background'] },
+    { sectionID: 'appearance', groupID: 'appearance-colors', label: 'Surface (Settings, sheets, palette)', detail: 'Change the surface (settings, sheets, palette) colour in the current appearance palette.', testID: 'chrome-color-surfaceBackground', keywords: ['color', 'colour', 'background'] },
+    { sectionID: 'appearance', groupID: 'appearance-colors', label: 'Sidebar highlight', detail: 'Change the sidebar highlight colour in the current appearance palette.', testID: 'chrome-color-accent', keywords: ['color', 'colour', 'background'] },
+    { sectionID: 'appearance', groupID: 'appearance-colors', label: 'Pane focus', detail: 'Change the pane focus colour in the current appearance palette.', testID: 'chrome-color-paneFocus', keywords: ['color', 'colour', 'background'] },
+    { sectionID: 'appearance', groupID: 'appearance-colors', label: 'Dividers / borders', detail: 'Change the dividers / borders colour in the current appearance palette.', testID: 'chrome-color-divider', keywords: ['color', 'colour', 'background'] },
+    { sectionID: 'appearance', groupID: 'appearance-agent-colors', label: 'Running', detail: 'Change the running colour in the current appearance palette.', testID: 'chrome-color-statusRunning', keywords: ['color', 'colour', 'agent'] },
+    { sectionID: 'appearance', groupID: 'appearance-agent-colors', label: 'Awaiting input', detail: 'Change the awaiting input colour in the current appearance palette.', testID: 'chrome-color-statusWaiting', keywords: ['color', 'colour', 'agent'] },
+    { sectionID: 'appearance', groupID: 'appearance-agent-colors', label: 'Inactive', detail: 'Change the inactive colour in the current appearance palette.', testID: 'chrome-color-statusInactive', keywords: ['color', 'colour', 'agent'] },
+    { sectionID: 'appearance', groupID: 'appearance-status-bar', label: 'CPU', detail: 'Show this system metric in the status bar.', testID: 'stats-kind-cpu', keywords: ['metric', 'system stats'] },
+    { sectionID: 'appearance', groupID: 'appearance-status-bar', label: 'Memory', detail: 'Show this system metric in the status bar.', testID: 'stats-kind-memory', keywords: ['metric', 'system stats'] },
+    { sectionID: 'appearance', groupID: 'appearance-status-bar', label: 'Load average', detail: 'Show this system metric in the status bar.', testID: 'stats-kind-load', keywords: ['metric', 'system stats'] },
+    { sectionID: 'appearance', groupID: 'appearance-status-bar', label: 'Network', detail: 'Show this system metric in the status bar.', testID: 'stats-kind-network', keywords: ['metric', 'system stats'] },
+    { sectionID: 'appearance', groupID: 'appearance-status-bar', label: 'Disk I/O', detail: 'Show this system metric in the status bar.', testID: 'stats-kind-diskIO', keywords: ['metric', 'system stats'] },
+    { sectionID: 'appearance', groupID: 'appearance-status-bar', label: 'Disk space', detail: 'Show this system metric in the status bar.', testID: 'stats-kind-diskSpace', keywords: ['metric', 'system stats'] },
+    { sectionID: 'keybindings', groupID: 'global-hotkey-section', label: 'Global hotkey', detail: 'Record a system-wide shortcut to show Kelpi.', testID: 'global-hotkey-row', keywords: ['shortcut', 'keyboard', 'hotkey'] },
+    { sectionID: 'keybindings', groupID: 'global-hotkey-section', label: 'Press again to hide', detail: 'Press the global shortcut again to hide Kelpi.', testID: 'global-hotkey-repress-row', keywords: ['shortcut', 'keyboard', 'hotkey'] },
+    { sectionID: 'keybindings', groupID: 'global-hotkey-section', label: 'Clear the global hotkey', detail: 'Remove the current system-wide shortcut.', testID: 'global-hotkey-clear', keywords: ['shortcut', 'keyboard', 'hotkey'] },
+    { sectionID: 'keybindings', groupID: 'global-hotkey-section', label: 'Record global hotkey', detail: 'Choose a system-wide keyboard shortcut.', testID: 'global-hotkey-record', keywords: ['shortcut', 'keyboard', 'hotkey'] },
+    { sectionID: 'profiles', groupID: 'profiles-list-section', label: 'Profile name', detail: 'Rename the selected terminal profile.', testID: 'profile-name', keywords: ['environment', 'env'] },
+    { sectionID: 'profiles', groupID: 'profiles-list-section', label: 'Remove profile', detail: 'Select a non-default profile to remove it; the default profile cannot be removed.', testID: 'profiles-list', keywords: ['environment', 'env'] },
+    { sectionID: 'profiles', groupID: 'profiles-list-section', label: 'Marker variable key', detail: 'The automatic profile marker variable name.', testID: 'profile-marker-key', keywords: ['environment', 'env'] },
+    { sectionID: 'profiles', groupID: 'profiles-list-section', label: 'Marker variable value', detail: 'The automatic marker always follows the profile name.', testID: 'profile-marker-value', keywords: ['environment', 'env'] },
+    { sectionID: 'profiles', groupID: 'profiles-list-section', label: 'Add variable', detail: 'Add an environment variable to the selected profile.', testID: 'profile-var-add', keywords: ['environment', 'env'] },
+    { sectionID: 'profiles', groupID: 'profiles-list-section', label: 'Remove variable', detail: 'Select a profile, then remove an environment variable from its list.', testID: 'profile-detail', keywords: ['environment', 'env'] },
+    { sectionID: 'profiles', groupID: 'profiles-list-section', label: 'Variable key', detail: 'Select a profile to edit its environment variable keys.', testID: 'profile-detail', keywords: ['environment', 'env'] },
+    { sectionID: 'profiles', groupID: 'profiles-list-section', label: 'Variable value', detail: 'Select a profile to edit its environment variable values.', testID: 'profile-detail', keywords: ['environment', 'env'] },
+    { sectionID: 'labels', groupID: 'label-presets', label: 'Rename label', detail: 'Choose a label name to edit it.', testID: 'label-presets', keywords: ['tag', 'reorder'] },
+    { sectionID: 'labels', groupID: 'label-presets', label: 'Move label up', detail: 'Choose a label and move it earlier in the list.', testID: 'label-presets', keywords: ['tag', 'reorder'] },
+    { sectionID: 'labels', groupID: 'label-presets', label: 'Move label down', detail: 'Choose a label and move it later in the list.', testID: 'label-presets', keywords: ['tag', 'reorder'] },
+    { sectionID: 'web', groupID: 'settings-favourites', label: 'Move favourite up', detail: 'Choose a saved web address and change its position.', testID: 'settings-favourites', keywords: ['bookmark', 'reorder'] },
+    { sectionID: 'web', groupID: 'settings-favourites', label: 'Move favourite down', detail: 'Choose a saved web address and change its position.', testID: 'settings-favourites', keywords: ['bookmark', 'reorder'] },
+    { sectionID: 'remote', groupID: 'remote-daemons-registry', label: 'Trust plugins with navigation', detail: 'Allow a saved host’s plugins to read hosts and workspaces and switch this window’s workspace selection.', testID: 'remote-daemon-navigation-trust', keywords: ['remote', 'trust', 'permission', 'plugins', 'navigation'] },
+    { sectionID: 'remote', groupID: 'remote-daemons-registry', label: 'Remove daemon', detail: 'Choose a saved remote daemon connection to remove.', testID: 'remote-daemons-registry', keywords: ['remote', 'server'] },
+    { sectionID: 'remote', groupID: 'remote-daemons-registry', label: 'Daemon name', detail: 'Name a new remote daemon connection.', testID: 'remote-daemon-add-name', keywords: ['remote', 'server'] },
+    { sectionID: 'remote', groupID: 'remote-daemons-registry', label: 'Daemon URL', detail: 'Enter the remote daemon pairing URL.', testID: 'remote-daemon-add-url', keywords: ['remote', 'server'] },
+    { sectionID: 'remote', groupID: 'remote-pair', label: 'Copy pairing link', detail: 'Pair a device first, then copy its connection link.', testID: 'remote-pair-copy', keywords: ['remote', 'device'] },
+    { sectionID: 'remote', groupID: 'remote-pair', label: 'Pairing QR code', detail: 'Pair a device first, then scan its connection code.', testID: 'remote-pair-qr', keywords: ['remote', 'device'] },
+    { sectionID: 'remote', groupID: 'remote-devices', label: 'Delete revoked device', detail: 'Choose a revoked device to remove its record.', testID: 'remote-devices', keywords: ['remote', 'server'] },
+    { sectionID: 'general', groupID: 'general-network', label: 'TCP listener failed to bind', detail: 'Shows any reported TCP bind failure; Unix-socket clients are unaffected.', testID: 'tcp-bind-error', keywords: ['network', 'port', 'address in use'] },
+    { sectionID: 'appearance', groupID: 'appearance-presets', label: 'Preset themes', detail: 'Apply a complete chrome palette.', testID: 'appearance-presets', keywords: ['theme', 'colour', 'color'] },
+    { sectionID: 'appearance', groupID: 'appearance-share', label: 'Save & share', detail: 'Export, import, copy or paste a chrome theme.', testID: 'appearance-share', keywords: ['theme', 'export', 'import', 'code'] },
+    { sectionID: 'appearance', groupID: 'appearance-share', label: 'Export theme', detail: 'Save the current chrome theme as a file.', testID: 'theme-export', keywords: ['save'] },
+    { sectionID: 'appearance', groupID: 'appearance-share', label: 'Import theme', detail: 'Load a saved chrome theme file.', testID: 'theme-import', keywords: ['open'] },
+    { sectionID: 'appearance', groupID: 'appearance-share', label: 'Copy theme code', detail: 'Copy a shareable chrome-theme code.', testID: 'theme-copy-code', keywords: ['share'] },
+    { sectionID: 'appearance', groupID: 'appearance-share', label: 'Paste theme code', detail: 'Apply a shareable chrome-theme code from the clipboard.', testID: 'theme-paste-code', keywords: ['share'] },
+    { sectionID: 'appearance', groupID: 'appearance-colors', label: 'Chrome colours', detail: 'Edit the window chrome colour map.', testID: 'appearance-colors', keywords: ['colors', 'palette', 'sidebar', 'title bar'] },
+    { sectionID: 'appearance', groupID: 'appearance-colors', label: 'Reset chrome colours', detail: 'Restore the chrome colour map.', testID: 'chrome-colors-reset', keywords: ['reset', 'colors'] },
+    { sectionID: 'appearance', groupID: 'appearance-agent-colors', label: 'Agent status colours', detail: 'Set each agent-state colour.', testID: 'appearance-agent-colors', keywords: ['colors', 'badge', 'dot'] },
+    { sectionID: 'appearance', groupID: 'appearance-sidebar-style', label: 'Group band fill', detail: 'Controls the workspace group header background fill; it can follow the appearance preset.', testID: 'sidebar-group-fill', keywords: ['group', 'workspace group', 'header', 'background', 'opacity'] },
+    { sectionID: 'appearance', groupID: 'appearance-terminal', label: 'Theme', detail: 'Choose the terminal theme and let it own the terminal background.', testID: 'terminal-theme', keywords: ['terminal'] },
+    { sectionID: 'appearance', groupID: 'appearance-terminal', label: 'Background colour', detail: 'Set the terminal background when no terminal theme is selected.', testID: 'terminal-background', keywords: ['color', 'terminal'] },
+    { sectionID: 'appearance', groupID: 'appearance-terminal', label: 'Resolved appearance', detail: 'Shows whether the daemon resolved panes as light or dark.', testID: 'appearance-bucket', keywords: ['light', 'dark'] },
+    { sectionID: 'appearance', groupID: 'appearance-search', label: 'Preview', detail: 'Preview ordinary and current search-match colours.', testID: 'search-preview-row', keywords: ['find', 'highlight', 'search'] },
+    { sectionID: 'appearance', groupID: 'appearance-search', label: 'Reset search colours', detail: 'Restore the search highlight colours.', testID: 'search-colors-reset', keywords: ['find', 'highlight', 'reset'] },
+    { sectionID: 'appearance', groupID: 'appearance-status-bar', label: 'System stats shown', detail: 'Choose the individual status-bar metrics to show.', testID: 'stats-kinds', keywords: ['cpu', 'memory', 'network', 'metric'] },
+    { sectionID: 'appearance', groupID: 'appearance-status-bar', label: 'Mini graphs', detail: 'Configure status-bar graph colours and style.', testID: 'stats-graphs', keywords: ['sparkline'] },
+    { sectionID: 'appearance', groupID: 'appearance-status-bar', label: 'Graph colour', detail: 'Set the status-bar sparkline colour.', testID: 'sparkline-color', keywords: ['sparkline', 'color'] },
+    { sectionID: 'appearance', groupID: 'appearance-status-bar', label: 'Reset graph colour', detail: 'Return the sparkline colour to its adaptive default.', testID: 'sparkline-color-reset', keywords: ['sparkline', 'reset'] },
+    { sectionID: 'repositories', groupID: 'registry-section', label: 'Repository registry', detail: 'Filter, browse, scan and add repositories.', testID: 'registry-section', keywords: ['repo', 'git'] },
+    { sectionID: 'repositories', groupID: 'auto-detect-section', label: 'Auto-detect from pane directories', detail: 'Register repositories found in terminal pane directories.', testID: 'auto-detect-row', keywords: ['repo', 'git'] },
+    { sectionID: 'repositories', groupID: 'registry-section', label: 'Repository name', detail: 'Choose a repository and use Rename to edit its name.', testID: 'repo-list', keywords: ['repo', 'rename'] },
+    { sectionID: 'repositories', groupID: 'registry-section', label: 'Filter repos', detail: 'Find a repository in the registry.', testID: 'repo-filter', keywords: ['search', 'repo'] },
+    { sectionID: 'repositories', groupID: 'registry-section', label: 'Show auto-detected', detail: 'Include repositories detected from pane directories.', testID: 'repo-show-auto', keywords: ['repository', 'repo'] },
+    { sectionID: 'repositories', groupID: 'registry-section', label: 'Repository path', detail: 'A directory to scan or add as a repository.', testID: 'repo-path', keywords: ['folder', 'directory'] },
+    { sectionID: 'repositories', groupID: 'registry-section', label: 'Browse for folder', detail: 'Choose a directory for repository discovery.', testID: 'repo-browse', keywords: ['directory'] },
+    { sectionID: 'repositories', groupID: 'registry-section', label: 'Scan directory', detail: 'Find repositories below a directory.', testID: 'repo-scan', keywords: ['folder', 'discover'] },
+    { sectionID: 'repositories', groupID: 'registry-section', label: 'Add repository', detail: 'Register one repository directly.', testID: 'repo-add', keywords: ['repo', 'git'] },
+    { sectionID: 'repositories', groupID: 'registry-section', label: 'Rename repository', detail: 'Choose a repository in the list to rename it.', testID: 'repo-list', keywords: ['repo'] },
+    { sectionID: 'repositories', groupID: 'registry-section', label: 'Remove repository', detail: 'Choose a repository in the list to remove it.', testID: 'repo-list', keywords: ['repo', 'delete'] },
+    { sectionID: 'labels', groupID: 'label-presets', label: 'Labels', detail: 'Define reusable workspace labels and their colours.', testID: 'label-presets', keywords: ['tag', 'color'] },
+    { sectionID: 'labels', groupID: 'label-presets', label: 'New label', detail: 'Create a reusable workspace label.', testID: 'label-add', keywords: ['tag', 'add'] },
+    { sectionID: 'labels', groupID: 'label-orphans', label: 'Labels not defined here', detail: 'Adopt labels already applied to workspaces.', testID: 'label-orphans', keywords: ['tag', 'workspace'] },
+    { sectionID: 'labels', groupID: 'label-presets', label: 'Edit label colours', detail: 'Choose a label to edit its foreground and background colours.', testID: 'label-presets', keywords: ['tag', 'color'] },
+    { sectionID: 'labels', groupID: 'label-presets', label: 'Remove label', detail: 'Choose a label to remove it from the list.', testID: 'label-presets', keywords: ['tag', 'delete'] },
+    { sectionID: 'profiles', groupID: 'profiles-list-section', label: 'Profiles', detail: 'Create and edit terminal profiles and environment variables.', testID: 'profiles-list-section', keywords: ['environment', 'variables'] },
+    { sectionID: 'profiles', groupID: 'profiles-list-section', label: 'Add profile', detail: 'Create a terminal profile.', testID: 'profile-add', keywords: ['new'] },
+    { sectionID: 'profiles', groupID: 'profiles-list-section', label: 'Profile environment variables', detail: 'Add, edit and remove variables for a terminal profile.', testID: 'profile-detail', keywords: ['environment', 'env'] },
+    { sectionID: 'web', groupID: 'settings-favourites', label: 'Favourites', detail: 'Rename, reorder and remove saved web addresses.', testID: 'settings-favourites', keywords: ['bookmark', 'url'] },
+    { sectionID: 'web', groupID: 'settings-favourites', label: 'Rename favourite', detail: 'Change a saved web address title.', testID: 'settings-favourites', keywords: ['bookmark', 'url'] },
+    { sectionID: 'web', groupID: 'settings-favourites', label: 'Remove favourite', detail: 'Delete a saved web address.', testID: 'settings-favourites', keywords: ['bookmark', 'url', 'delete'] },
+    { sectionID: 'remote', groupID: 'remote-tailnet', label: 'Tailnet status', detail: 'Check Tailnet reachability for remote access.', testID: 'remote-tailnet', keywords: ['network', 'vpn'] },
+    { sectionID: 'remote', groupID: 'remote-tailnet', label: 'Status', detail: 'Check Tailnet reachability for remote access.', testID: 'remote-tailnet-status', keywords: ['network', 'vpn'] },
+    { sectionID: 'remote', groupID: 'remote-pair', label: 'Pair a device', detail: 'Pair another device to this Kelpi daemon.', testID: 'remote-pair', keywords: ['remote', 'device'] },
+    { sectionID: 'remote', groupID: 'remote-pair', label: 'Device name', detail: 'Name the device being paired.', testID: 'remote-pair-name', keywords: ['remote'] },
+    { sectionID: 'remote', groupID: 'remote-pair', label: 'Over the tailnet', detail: 'Prefer a Tailnet route when pairing a device.', testID: 'remote-pair-tailnet', keywords: ['network', 'vpn'] },
+    { sectionID: 'remote', groupID: 'remote-devices', label: 'Paired devices', detail: 'Review and revoke paired devices.', testID: 'remote-devices', keywords: ['remote'] },
+    { sectionID: 'remote', groupID: 'remote-devices', label: 'Revoke paired device', detail: 'Choose a paired device to revoke its remote-access permission.', testID: 'remote-devices', keywords: ['remote', 'delete'] },
+    { sectionID: 'remote', groupID: 'remote-daemons-registry', label: 'Daemons', detail: 'Manage saved remote daemon connections.', testID: 'remote-daemons-registry', keywords: ['remote', 'server'] },
+    { sectionID: 'remote', groupID: 'remote-daemons-registry', label: 'Add a daemon', detail: 'Save a remote daemon connection.', testID: 'remote-daemon-add', keywords: ['remote', 'server'] },
+    { sectionID: 'plugins', groupID: 'settings-tab-plugins', label: 'Plugin management', detail: 'Manage installed Settings presenters and plugins.', testID: 'settings-tab-plugins', keywords: ['extension'] },
+    { sectionID: 'keybindings', groupID: 'keybindings-footer', label: 'Reset all keybindings', detail: 'Restore every keyboard shortcut to its default.', testID: 'reset-all-keybindings', keywords: ['shortcut', 'keyboard', 'reset'] }
+] satisfies SettingsIndexEntry[]).map((entry) => Object.freeze({
+    ...entry,
+    ...(entry.keywords === undefined ? {} : { keywords: Object.freeze(entry.keywords) })
+})));
+
+const KEYBINDING_INDEX_ENTRIES: readonly SettingsIndexEntry[] = ACTION_CATALOG
+    .filter((entry) => VISIBLE_CATEGORIES.includes(entry.category))
+    .flatMap((entry) => [
+        Object.freeze({
+            sectionID: 'keybindings' as const,
+            groupID: entry.category,
+            label: entry.label,
+            detail: `${entry.category} keyboard shortcut.`,
+            testID: `keybinding-row-${entry.action}`,
+            keywords: Object.freeze(['shortcut', 'keyboard', 'hotkey'])
+        }),
+        Object.freeze({
+            sectionID: 'keybindings' as const,
+            groupID: entry.category,
+            label: `Reset shortcut: ${entry.label}`,
+            detail: 'Restore this keyboard shortcut to its default.',
+            testID: `keybinding-reset-${entry.action}`,
+            keywords: Object.freeze(['shortcut', 'keyboard', 'hotkey', 'reset'])
+        })
+    ]);
+
+/** Every searchable Settings control; the host groups matches in section order. */
+export const SETTINGS_INDEX: readonly SettingsIndexEntry[] = Object.freeze([
+    ...SETTINGS_FIELD_DEFINITIONS.map((field) =>
+        Object.freeze({
+            sectionID: field.sectionID,
+            groupID: field.groupID,
+            label: field.label,
+            detail: field.captionFrom === 'transport' ? 'Enable or inspect the TCP control listener.' : field.detail,
+            testID: field.rowTestID ?? field.testID,
+            ...(field.keywords === undefined ? {} : { keywords: field.keywords })
+        })
+    ),
+    ...SETTINGS_INDEX_EXTRAS,
+    ...KEYBINDING_INDEX_ENTRIES
+]);
+
+/** Pure, token-based search used by the desktop and phone settings hosts. */
+export function searchSettingsIndex(query: string): readonly SettingsIndexEntry[] {
+    const terms = query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
+    if (terms.length === 0) return [];
+    return SETTINGS_INDEX.filter((entry) => {
+        const section = settingsSection(entry.sectionID)?.title ?? '';
+        const group = SETTINGS_GROUPS.find((candidate) => candidate.id === entry.groupID);
+        const haystack = [entry.label, entry.detail, section, group?.title ?? '', group?.hint ?? '', ...(group?.keywords ?? []), ...(entry.keywords ?? [])]
+            .join(' ')
+            .toLocaleLowerCase();
+        return terms.every((term) => haystack.includes(term));
+    });
+}
+
 export function isVisible(definition: SettingsFieldDefinition, settings: WsSettingsSnapshot): boolean {
     return definition.visible === undefined || definition.visible(settings);
 }
@@ -1043,6 +1217,7 @@ export function describeSettingsField(
         sectionID: definition.sectionID,
         groupID: definition.groupID,
         label: definition.label,
+        ...(definition.keywords === undefined ? {} : { keywords: definition.keywords }),
         detail: state.detail ?? definition.detail,
         testID: definition.testID,
         ...(definition.rowTestID === undefined ? {} : { rowTestID: definition.rowTestID }),

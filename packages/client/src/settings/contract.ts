@@ -82,6 +82,8 @@ export interface SettingsGroupDescriptor {
     readonly sectionID: SettingsSectionID;
     readonly title: string;
     readonly hint: string | null;
+    /** Extra words people use for this card that do not occur in its visible copy. */
+    readonly keywords?: readonly string[] | undefined;
     /** The existing `data-testid` of the card, so a rewired tab keeps its audit selectors. */
     readonly testID: string;
 }
@@ -138,6 +140,8 @@ interface SettingsFieldBase {
     readonly sectionID: SettingsSectionID;
     readonly groupID: string;
     readonly label: string;
+    /** Extra words people use for this control that do not occur in its visible copy. */
+    readonly keywords?: readonly string[] | undefined;
     /**
      * The row's caption: catalog copy, or a sentence the SURFACE composed.
      *
@@ -476,6 +480,7 @@ export function settingsFieldDescriptor(field: SettingsFieldDescriptor): Setting
         sectionID: field.sectionID,
         groupID: field.groupID,
         label: field.label,
+        ...(field.keywords === undefined ? {} : { keywords: Object.freeze([...field.keywords]) }),
         detail: field.detail,
         testID: field.testID,
         ...(field.rowTestID === undefined ? {} : { rowTestID: field.rowTestID }),
@@ -551,6 +556,7 @@ export function settingsGroupDescriptor(group: SettingsGroupDescriptor): Setting
         sectionID: group.sectionID,
         title: group.title,
         hint: group.hint,
+        ...(group.keywords === undefined ? {} : { keywords: Object.freeze([...group.keywords]) }),
         testID: group.testID
     });
 }

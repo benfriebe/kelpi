@@ -123,6 +123,17 @@ describe('the Settings sheet on a phone', () => {
         expect(screen.getByTestId('settings-close').style.minHeight).toBe('44px');
     });
 
+    it('keeps search on the tab-list screen and pushes a matching result', () => {
+        renderPhone();
+        fireEvent.change(screen.getByTestId('settings-search'), { target: { value: 'group fill' } });
+        expect(screen.getByTestId('settings-phone-list')).toBeDefined();
+        expect(screen.getByTestId('settings-search-results').textContent).toContain('Group band fill');
+
+        fireEvent.click(screen.getByTestId('settings-search-result-sidebar-group-fill'));
+        expect(screen.getByTestId('settings-tab-appearance')).toBeDefined();
+        expect(screen.getByTestId('settings-phone-back')).toBeDefined();
+    });
+
     it('pushes a tab, shows its content behind a back button, and comes back to the list', () => {
         renderPhone();
         fireEvent.click(screen.getByTestId('settings-tab-button-labels'));
@@ -280,17 +291,16 @@ describe('the Settings sheet on a phone', () => {
  * The guardrail MOBILE-PLAN.md §3.1 states: "a desktop window, an Electron shell and a tablet in
  * landscape must render byte-identical DOM to today". Pinned as the rendered markup rather than as
  * a list of properties, because a property list only catches the properties somebody thought to
- * list. The snapshot was generated from the component as it stood BEFORE B5 (the branch point,
- * `origin/feat/phone-e1-e2-form-factor-harness`) and committed; it passing after the change is the
- * measurement.
+ * list. The original pre-B5 snapshot has been intentionally updated for Settings search (#173):
+ * the persistent host search head now sits above the replaceable rail and panel.
  */
 describe('the Settings window on a desktop', () => {
-    it('renders byte-identical markup to the one that shipped before B5', () => {
+    it('pins desktop markup including the persistent host search', () => {
         render(<SettingsOverlay {...baseProps()} onClose={vi.fn()} />);
         expect(screen.getByTestId('settings-backdrop').outerHTML).toMatchSnapshot();
     });
 
-    it('renders byte-identical markup on a deep-linked tab too', () => {
+    it('pins desktop search markup on a deep-linked tab too', () => {
         render(<SettingsOverlay {...baseProps()} initialTab="workspaces" onClose={vi.fn()} />);
         expect(screen.getByTestId('settings-backdrop').outerHTML).toMatchSnapshot();
     });

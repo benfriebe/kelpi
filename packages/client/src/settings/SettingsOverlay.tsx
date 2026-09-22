@@ -16,8 +16,7 @@
  *   - **Focus is trapped**: Tab cycles inside the dialog. The tab rail is a roving-tabindex
  *     `tablist` — ↑/↓ (and ←/→) move between tabs, Home/End jump to the ends.
  *
- * The tabs themselves render from props and push verbs; the only state here is which tab is
- * showing.
+ * The tabs render from props and push verbs; this host owns tab navigation, search and focus.
  *
  * ── On a phone it is a full-screen sheet (B5) ───────────────────────────────────────
  *
@@ -83,8 +82,13 @@ import {
 import { WebTab, type WebTabActions } from './WebTab';
 import { WorkspacesTab } from './WorkspacesTab';
 import { NO_SETTINGS_CHORDS, SettingsPresenterSlot } from './presenter-slot';
-import { settingsSectionHasNative } from './sections';
+import {
+    searchSettingsIndex,
+    settingsSectionHasNative,
+    type SettingsIndexEntry
+} from './sections';
 import type { SettingsSurface } from './surface';
+import { settingsSearchDestination } from './search-navigation';
 import {
     DEFAULT_SETTINGS_PATHS,
     type SettingsActions,
@@ -256,6 +260,11 @@ export function SettingsOverlay(props: SettingsOverlayProps): ReactElement | nul
     const dialogRef = useRef<HTMLDivElement | null>(null);
     const tabRefs = useRef(new Map<SettingsTabID, HTMLButtonElement>());
     const backRef = useRef<HTMLButtonElement | null>(null);
+    const searchRef = useRef<HTMLInputElement | null>(null);
+    const [searchQuery, setSearchQuery] = useState('');
+    const [searchOwnsPanel, setSearchOwnsPanel] = useState(false);
+    const [missingSearchTarget, setMissingSearchTarget] = useState(false);
+    const [pendingSearchTarget, setPendingSearchTarget] = useState<SettingsIndexEntry | null>(null);
     const paths = props.paths ?? DEFAULT_SETTINGS_PATHS;
 
     const formFactorWindow = props.formFactorWindow ?? defaultFormFactorWindow();
@@ -342,6 +351,72 @@ export function SettingsOverlay(props: SettingsOverlayProps): ReactElement | nul
     }, [props.open, phone, pushed, tab]);
 
     const bindings = useMemo(() => clientKeyBindings(props.settings.keybindLines), [props.settings.keybindLines]);
+    const searchResults = useMemo(() => searchSettingsIndex(searchQuery), [searchQuery]);
+
+    useEffect(() => {
+        if (props.open) return;
+        setSearchQuery('');
+        setSearchOwnsPanel(false);
+        setPendingSearchTarget(null);
+    }, [props.open]);
+
+    const searchDestination = pendingSearchTarget === null
+        ? null
+        : settingsSearchDestination(pendingSearchTarget, props);
+
+    /*
+     * Search results are navigation, not duplicate controls. Once the bundled tab is back in the
+     * tree, centre its existing row and mark it briefly so a long Appearance panel has an obvious
+     * destination. `testID` is the durable bridge: no config target or field closure crosses into
+     * the index.
+     */
+    useEffect(() => {
+        if (!props.open || pendingSearchTarget === null || searchQuery.trim() !== '' ||
+            tab !== pendingSearchTarget.sectionID) return;
+        const root = dialogRef.current;
+        // Dynamic targets include saved host names. Compare the attribute literally so quotes,
+        // backslashes and Unicode names are never interpreted as CSS selector syntax.
+        const target = Array.from(root?.querySelectorAll<HTMLElement>('[data-testid]') ?? [])
+            .find(element => element.getAttribute('data-testid') === searchDestination?.testID);
+        setMissingSearchTarget(target == null);
+        if (target == null) {
+            root?.querySelector<HTMLElement>('[data-testid="settings-search-notice"]')?.focus();
+            return;
+        }
+        // A row in a collapsed disclosure has a DOM node but cannot be seen or focused.
+        for (let ancestor = target.parentElement; ancestor !== null; ancestor = ancestor.parentElement) {
+            if (ancestor instanceof HTMLDetailsElement) ancestor.open = true;
+        }
+        const focusTarget = target.matches(FOCUSABLE) ? target : target.querySelector<HTMLElement>(FOCUSABLE);
+        // A disabled Reset is still a valid destination, but native disabled buttons cannot
+        // receive focus even with tabindex. Focus its containing row while highlighting the button.
+        const focusContainer = target.matches(':disabled') ? (target.parentElement ?? target) : target;
+        const oldTabIndex = focusContainer.getAttribute('tabindex');
+        if (focusTarget === null) focusContainer.tabIndex = -1;
+        (focusTarget ?? focusContainer).focus({ preventScroll: true });
+        target.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
+        target.dataset['settingsSearchHit'] = 'true';
+        const previousOutline = target.style.outline;
+        const previousOutlineOffset = target.style.outlineOffset;
+        target.style.outline = `2px solid ${tokens.accent}`;
+        target.style.outlineOffset = '3px';
+        const restore = (): void => {
+            delete target.dataset['settingsSearchHit'];
+            target.style.outline = previousOutline;
+            target.style.outlineOffset = previousOutlineOffset;
+        };
+        const timer = window.setTimeout(restore, 1400);
+        // Keep the destination mounted until navigation or Done searching. Clearing it here
+        // would cancel our timer and also hand the control back to a plugin before it is used.
+        return () => {
+            window.clearTimeout(timer);
+            restore();
+            if (focusTarget === null) {
+                if (oldTabIndex === null) focusContainer.removeAttribute('tabindex');
+                else focusContainer.setAttribute('tabindex', oldTabIndex);
+            }
+        };
+    }, [props.open, pendingSearchTarget, searchQuery, tab, searchDestination?.testID]);
 
     const moveTab = useCallback(
         (delta: number, absolute?: 'first' | 'last'): void => {
@@ -355,6 +430,8 @@ export function SettingsOverlay(props: SettingsOverlayProps): ReactElement | nul
                       : (at + delta + ids.length) % ids.length;
             const id = ids[next];
             if (id === undefined) return;
+            setSearchQuery('');
+            setPendingSearchTarget(null);
             setTab(id);
             tabRefs.current.get(id)?.focus();
         },
@@ -390,6 +467,15 @@ export function SettingsOverlay(props: SettingsOverlayProps): ReactElement | nul
     };
 
     const currentLabel = SETTINGS_TABS.find((entry) => entry.id === tab)?.label ?? '';
+    const searchActive = searchQuery.trim() !== '';
+    const chooseSearchResult = (entry: SettingsIndexEntry): void => {
+        setSearchOwnsPanel(true);
+        setMissingSearchTarget(false);
+        setPendingSearchTarget(entry);
+        setSearchQuery('');
+        setTab(entry.sectionID);
+        if (phone) setPushed(true);
+    };
 
     /*
      * The tab CONTENT, lifted out of the desktop panel so the phone sheet renders the SAME
@@ -494,10 +580,23 @@ export function SettingsOverlay(props: SettingsOverlayProps): ReactElement | nul
     /*
      * The rail and the panel, as ONE node.
      *
-     * It is the bundled half of `SettingsPresenterSlot` on a desktop, and the whole dialog body on
-     * a phone or without a surface, so there is exactly one copy of this markup whoever draws
-     * around it. Nothing in it moved: same nodes, same classes, same test ids.
+     * The bundled rail and panel share their content with the phone sheet. The search input
+     * stays in the host above the replaceable desktop body, so switching presenters cannot
+     * remove it or its focus.
      */
+    const searchNotice = pendingSearchTarget === null || pendingSearchTarget.sectionID !== tab ? null : (
+        <p
+            data-testid="settings-search-notice"
+            role="status"
+            tabIndex={-1}
+            className="mb-3 text-[12px]"
+            style={{ color: tokens.textSecondary }}
+        >
+            {searchDestination?.message ?? (missingSearchTarget
+                ? `${pendingSearchTarget.label} is not currently available. ${pendingSearchTarget.detail}`
+                : `Showing ${pendingSearchTarget.label}.`)}
+        </p>
+    );
     const panelRow = (
         <div className="flex min-h-0 flex-1">
             <div
@@ -512,7 +611,7 @@ export function SettingsOverlay(props: SettingsOverlayProps): ReactElement | nul
                  * 4 px puts the pitch at 32.8, still far denser than the Swift's
                  * icon-over-title `.tabItem`s (~50 × 40 pt).
                  */
-                className="flex w-44 shrink-0 flex-col gap-1 border-r p-2"
+                className="flex min-h-0 w-44 shrink-0 flex-col gap-1 overflow-y-auto border-r p-2"
                 style={{ borderColor: tokens.divider, background: tokens.sidebarBackground }}
                 onKeyDown={(event) => {
                     if (event.key === 'ArrowDown' || event.key === 'ArrowRight') {
@@ -548,6 +647,8 @@ export function SettingsOverlay(props: SettingsOverlayProps): ReactElement | nul
                             else tabRefs.current.set(entry.id, node);
                         }}
                         onSelect={() => {
+                            setSearchQuery('');
+                            setPendingSearchTarget(null);
                             setTab(entry.id);
                         }}
                     />
@@ -561,7 +662,11 @@ export function SettingsOverlay(props: SettingsOverlayProps): ReactElement | nul
                 data-testid="settings-panel"
                 className="min-w-0 flex-1 overflow-y-auto p-4"
             >
-                {tabContent(false)}
+                {searchActive ? (
+                    <SettingsSearchResults query={searchQuery} results={searchResults} context={props} onChoose={chooseSearchResult} />
+                ) : (
+                    <>{searchNotice}{tabContent(false)}</>
+                )}
             </div>
         </div>
     );
@@ -670,6 +775,7 @@ export function SettingsOverlay(props: SettingsOverlayProps): ReactElement | nul
                                 testID="settings-phone-back"
                                 ariaLabel="Back to Settings"
                                 onClick={() => {
+                                    setPendingSearchTarget(null);
                                     setPushed(false);
                                 }}
                             >
@@ -703,6 +809,7 @@ export function SettingsOverlay(props: SettingsOverlayProps): ReactElement | nul
                             data-testid="settings-panel"
                             className="min-h-0 min-w-0 flex-1 overflow-y-auto p-4"
                         >
+                            {searchNotice}
                             {tabContent(false)}
                         </div>
                     ) : (
@@ -718,7 +825,22 @@ export function SettingsOverlay(props: SettingsOverlayProps): ReactElement | nul
                             aria-label="Settings sections"
                             className="min-h-0 flex-1 overflow-y-auto"
                         >
-                            {SETTINGS_TABS.map((entry) => (
+                            <label className="block border-b p-3" htmlFor="settings-search-phone" style={{ borderColor: tokens.divider }}>
+                                <span className="sr-only">Search Settings</span>
+                                <input
+                                    id="settings-search-phone"
+                                    data-testid="settings-search"
+                                    type="search"
+                                    placeholder="Search Settings"
+                                    value={searchQuery}
+                                    onChange={(event) => setSearchQuery(event.target.value)}
+                                    className="w-full rounded border bg-transparent px-3 py-2 text-[15px] outline-none"
+                                    style={{ borderColor: tokens.divider, color: tokens.textPrimary }}
+                                />
+                            </label>
+                            {searchActive ? (
+                                <SettingsSearchResults query={searchQuery} results={searchResults} context={props} onChoose={chooseSearchResult} />
+                            ) : SETTINGS_TABS.map((entry) => (
                                 <PhoneTabRow
                                     key={entry.id}
                                     id={entry.id}
@@ -729,6 +851,8 @@ export function SettingsOverlay(props: SettingsOverlayProps): ReactElement | nul
                                         else tabRefs.current.set(entry.id, node);
                                     }}
                                     onSelect={() => {
+                                        setSearchQuery('');
+                                        setPendingSearchTarget(null);
                                         setTab(entry.id);
                                         setPushed(true);
                                     }}
@@ -801,21 +925,37 @@ export function SettingsOverlay(props: SettingsOverlayProps): ReactElement | nul
                     </span>
                 </div>
 
-                {/*
-                  * Who draws the rail and the panel.
-                  *
-                  * The slot is the ONE decision point: with no surface, on a phone, with nothing
-                  * selected, with the connection down or with this generation latched, it renders
-                  * `panelRow` inside a `display: contents` wrapper - so the bundled dialog is the
-                  * markup it has always been, node for node. With a presenter painting, the frame
-                  * takes the row's box and the host draws the native remainder below it.
-                  */}
-                {surface === null ? (
-                    panelRow
-                ) : (
+                {/* This host rail head stays mounted when search or a custom view changes the body. */}
+                <div className="flex shrink-0 items-center border-b" style={{ borderColor: tokens.divider, background: tokens.sidebarBackground }}>
+                    <label className="block w-44 shrink-0 p-2" htmlFor="settings-search">
+                        <span className="sr-only">Search Settings</span>
+                        <input
+                            ref={searchRef}
+                            id="settings-search"
+                            data-testid="settings-search"
+                            type="search"
+                            placeholder="Search Settings"
+                            value={searchQuery}
+                            onChange={(event) => setSearchQuery(event.target.value)}
+                            className="w-full rounded border bg-transparent px-2 py-1 text-[12px] outline-none"
+                            style={{ borderColor: tokens.divider, color: tokens.textPrimary }}
+                        />
+                    </label>
+                    {!searchOwnsPanel ? null : (
+                        <SettingsButton testID="settings-search-done" onClick={() => {
+                            searchRef.current?.focus();
+                            setSearchOwnsPanel(false);
+                            setPendingSearchTarget(null);
+                            setSearchQuery('');
+                        }}>
+                            Done searching
+                        </SettingsButton>
+                    )}
+                </div>
+                {surface === null ? panelRow : (
                     <SettingsPresenterSlot
                         surface={surface}
-                        enabled={props.presenters === true}
+                        enabled={props.presenters === true && !searchActive && !searchOwnsPanel}
                         visible
                         chords={props.presenterChords ?? NO_SETTINGS_CHORDS}
                         ownModals={props.modalPresence ?? 0}
@@ -843,6 +983,62 @@ interface RailTabProps {
     readonly selected: boolean;
     readonly registerRef: (node: HTMLButtonElement | null) => void;
     readonly onSelect: () => void;
+}
+
+interface SettingsSearchResultsProps {
+    readonly query: string;
+    readonly results: readonly SettingsIndexEntry[];
+    readonly onChoose: (entry: SettingsIndexEntry) => void;
+    readonly context: SettingsOverlayProps;
+}
+
+/** Flat hits, grouped only by the section a result will open. */
+function SettingsSearchResults(props: SettingsSearchResultsProps): ReactElement {
+    const groups = new Map<SettingsTabID, SettingsIndexEntry[]>();
+    for (const entry of props.results) {
+        const entries = groups.get(entry.sectionID);
+        if (entries === undefined) groups.set(entry.sectionID, [entry]);
+        else entries.push(entry);
+    }
+    return (
+        <div data-testid="settings-search-results" className="flex flex-col gap-4">
+            {props.results.length === 0 ? (
+                <p data-testid="settings-search-empty" className="text-[12px]" style={{ color: tokens.textSecondary }}>
+                    No settings match “{props.query.trim()}”.
+                </p>
+            ) : (
+                SETTINGS_TABS.filter((tab) => groups.has(tab.id)).map((section) => (
+                    <section key={section.id} aria-label={`${section.label} search results`} className="flex flex-col gap-1">
+                        <h2 className="text-[12px] font-semibold" style={{ color: tokens.textPrimary }}>
+                            {section.label}
+                        </h2>
+                        {groups.get(section.id)?.map((entry) => (
+                            <button
+                                key={`${entry.testID}-${entry.label}`}
+                                type="button"
+                                data-testid={`settings-search-result-${entry.testID}`}
+                                className="rounded border px-3 py-2 text-left"
+                                style={{ borderColor: tokens.divider, color: tokens.textPrimary }}
+                                onClick={() => props.onChoose(entry)}
+                            >
+                                <span className="block text-[12px] font-medium">{entry.label}</span>
+                                {settingsSearchDestination(entry, props.context).message === undefined ? null : (
+                                    <span className="block text-[11px]" style={{ color: tokens.textSecondary }}>
+                                        {settingsSearchDestination(entry, props.context).message}
+                                    </span>
+                                )}
+                                {entry.detail === '' ? null : (
+                                    <span className="mt-0.5 block text-[11px]" style={{ color: tokens.textSecondary }}>
+                                        {entry.detail}
+                                    </span>
+                                )}
+                            </button>
+                        ))}
+                    </section>
+                ))
+            )}
+        </div>
+    );
 }
 
 /**

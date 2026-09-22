@@ -1,5 +1,6 @@
 /** Owned loopback content for browser renderer scenarios. No network content or user profile. */
 import http from 'node:http';
+import { assertDesktopActive, listenDesktopServer, ownDesktopResource } from '../ui-audit/lib/desktop-lifecycle.mjs';
 
 function documentFor(url) {
     const page = url.pathname.split('/').pop() || 'one';
@@ -35,6 +36,7 @@ function documentFor(url) {
 }
 
 export async function startBrowserFixture() {
+    assertDesktopActive();
     const requests = [];
     const timers = new Set();
     const server = http.createServer((request, response) => {
@@ -52,14 +54,15 @@ export async function startBrowserFixture() {
             const timer = setTimeout(() => { timers.delete(timer); if (!response.destroyed) send(); }, 1200); timers.add(timer);
         } else send();
     });
-    await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
+    const listener = listenDesktopServer(server, 0, '127.0.0.1');
+    const resource = ownDesktopResource({ async close() {
+        for (const timer of timers) clearTimeout(timer);
+        await listener.stop();
+    } }, 'close');
+    await listener.ready;
     return {
         url: `http://127.0.0.1:${server.address().port}`,
         requests,
-        async close() {
-            for (const timer of timers) clearTimeout(timer);
-            server.closeAllConnections();
-            await new Promise(resolve => server.close(resolve));
-        }
+        close: resource.close
     };
 }

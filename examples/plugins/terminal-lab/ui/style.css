@@ -11,8 +11,19 @@ body { color: #ddd; font: 13px ui-monospace, monospace; }
  * a hidden box is still a scroll container, so script, a wheel gesture and a `focus()` without
  * `preventScroll` can all pan it, sliding the emulator's own pixels under the host's chrome.
  */
-#terminal { box-sizing: border-box; width: 100%; height: 100%; padding: 4px 6px; outline: none; overflow: clip; }
+#terminal { box-sizing: border-box; width: 100%; height: 100%; padding: 0; outline: none; overflow: clip; }
 #terminal .xterm { height: 100%; }
+/*
+ * xterm's pinned base CSS deliberately makes its viewport black and permanently scrollable.
+ * That produced a second-shade padding strip plus macOS's lower-right scroll indicator in a
+ * pane that promises edge-to-edge terminal paint. Keep the scroll container (wheel/keyboard
+ * scrollback still works), but make its backdrop inherit the pane and hide only its chrome.
+ */
+#terminal .xterm-viewport { background-color: transparent; overflow-y: scroll; scrollbar-width: none; }
+#terminal .xterm-viewport::-webkit-scrollbar { display: none; }
+/* xterm 6 owns a separate virtual scroller. Hide its slider chrome while leaving
+ * the scrollable element and its wheel/keyboard handling active. */
+#terminal .xterm-scrollable-element > .scrollbar { display: none; }
 /*
  * While mirroring, the emulator root wraps the mirrored screen instead of the view. xterm's
  * scrolling viewport is absolutely positioned to this element, so stretching it would give the

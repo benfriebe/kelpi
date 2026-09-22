@@ -44,6 +44,7 @@
  * Exit code 0 = every check passed.
  */
 
+import { runDesktopTest, spawnDesktopHelper, ownDesktopResource, assertDesktopActive, waitForDesktopChildExit, ownShellSpawnedDaemon } from '../../../scripts/ui-audit/lib/desktop-lifecycle.mjs';
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
@@ -152,7 +153,7 @@ async function waitFor(label, predicate, timeoutMs = 30_000, intervalMs = 100) {
 
 function run(command, args, opts = {}) {
     return new Promise((resolve, reject) => {
-        const child = spawn(command, args, {
+        const child = spawnDesktopHelper(command, args, {
             cwd: opts.cwd ?? repoRoot,
             env: { ...process.env, ...opts.env },
             stdio: ['ignore', 'pipe', 'pipe']
@@ -596,6 +597,7 @@ async function makeSandbox() {
 }
 
 function startApp(sandbox) {
+    assertDesktopActive();
     const lines = [];
     const args = [`--user-data-dir=${sandbox.userData}`];
     // Only when asked for: see `--mock-keychain` in the header. A default-on switch here would
@@ -633,7 +635,7 @@ function startApp(sandbox) {
         exitSignal = signal;
     });
 
-    return {
+    return ownDesktopResource({
         child,
         lines,
         get exited() {
@@ -671,15 +673,16 @@ function startApp(sandbox) {
             }
             signalGroup(child, 'SIGKILL');
             await sleep(150);
+            await waitForDesktopChildExit(child, { group: true });
             releaseChild(child);
         }
-    };
+    }, 'quit');
 }
 
 /** The shipped CLI, pointed at the sandbox daemon over TCP (its only non-hardcoded transport). */
 function cli(sandbox, args, timeoutMs = 20_000) {
     return new Promise((resolve) => {
-        const child = spawn(KELPI_CLI, args, {
+        const child = spawnDesktopHelper(KELPI_CLI, args, {
             cwd: sandbox.home,
             env: {
                 PATH: sandbox.env.PATH,
@@ -713,7 +716,9 @@ async function launchPhase() {
     const sandbox = await makeSandbox();
     let app;
     let daemonPid;
+    const spawnedDaemon = ownShellSpawnedDaemon(() => app, null, { env: sandbox.env });
     try {
+        await spawnedDaemon.ready;
         // Nothing to adopt: the run dir does not exist yet, so a daemon can only come from the
         // app's own Resources. (This is also the isolation guarantee — the developer's real
         // daemon lives in a different run dir and is never touched.)
@@ -946,24 +951,7 @@ async function launchPhase() {
 
         return { appLog: app.text() };
     } finally {
-        await app?.quit('SIGKILL');
-        // The daemon is DETACHED by design, so the harness stops it explicitly. This is the one
-        // place a shell-started daemon gets signalled, and it is the test doing it.
-        if (daemonPid !== undefined && processAlive(daemonPid)) {
-            try {
-                process.kill(daemonPid, 'SIGTERM');
-            } catch {
-                // Already gone.
-            }
-            for (let attempt = 0; attempt < 60 && processAlive(daemonPid); attempt += 1) await sleep(100);
-            if (processAlive(daemonPid)) {
-                try {
-                    process.kill(daemonPid, 'SIGKILL');
-                } catch {
-                    // Already gone.
-                }
-            }
-        }
+        await spawnedDaemon.stop();
         sandbox.cleanup();
     }
 }
@@ -1004,7 +992,7 @@ async function main() {
     if (failed.length > 0) process.exitCode = 1;
 }
 
-await main();
+await runDesktopTest(main);
 // Every child is dead and released by here; exit explicitly so a stray handle from a torn-down
 // Electron helper cannot turn a finished run into a hang.
 process.exit(process.exitCode ?? 0);

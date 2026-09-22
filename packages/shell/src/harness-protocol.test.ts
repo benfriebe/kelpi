@@ -10,6 +10,7 @@ import {
     encodeResponse,
     findByAccelerator,
     findMenuItem,
+    harnessLoadGate,
     harnessQuietNotifications,
     harnessSocketPath,
     menuClickVerdict,
@@ -762,6 +763,19 @@ describe('parseDialogArm', () => {
 // ── the ops, end to end over a fake surface ─────────────────────────────────────────
 
 describe('respond', () => {
+    it('load-client releases only a deferred initial navigation', () => {
+        const { surface } = fakeSurface();
+        expect(respond(request('load-client'), surface)).toEqual({ id: 1, ok: true, result: { released: false } });
+        const gate = harnessLoadGate({ KELPI_HARNESS_SOCKET: '/tmp/test.sock', KELPI_HARNESS_DEFER_LOAD: '1' });
+        let loads = 0;
+        gate.defer(() => { loads += 1; });
+        const held = { ...surface, loadClient: () => gate.release() };
+        expect(respond(request('load-client'), held)).toEqual({ id: 1, ok: true, result: { released: true } });
+        expect(loads).toBe(1);
+        expect(respond(request('load-client'), held)).toEqual({ id: 1, ok: true, result: { released: false } });
+        expect(loads).toBe(1);
+    });
+
     it('ping', () => {
         const { surface } = fakeSurface();
         expect(respond(request('ping', {}, 'p'), surface)).toEqual({ id: 'p', ok: true, result: { pid: 4242, version: '0.1.0-test' } });

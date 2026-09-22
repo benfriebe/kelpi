@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawnDesktopHelper } from '../ui-audit/lib/desktop-lifecycle.mjs';
 import { fileURLToPath } from 'node:url';
 import { daemonIDFromSandbox, restoreBundledSlots } from '../ui-audit/lib/workbench.mjs';
 import { createHash } from 'node:crypto';
@@ -59,11 +59,7 @@ export default async function ({ page, cli, sandbox, rec, d, shell }) {
     let devOutput = '', devErrors = '';
     const events = () => devOutput.split('\n').slice(0, -1).filter(Boolean).map(line => JSON.parse(line));
     const stopDev = async () => {
-        if (!dev || dev.exitCode !== null || dev.signalCode !== null) return;
-        const ended = new Promise(resolve => dev.once('close', (code, signal) => resolve({ code, signal })));
-        dev.kill('SIGINT');
-        const timeout = setTimeout(() => dev.kill('SIGKILL'), 40_000);
-        try { return await ended; } finally { clearTimeout(timeout); }
+        return await dev?.stop();
     };
     const writeVersion = (version, { fail = false, stateVersion = 1 } = {}) => {
         manifest.version = version;
@@ -188,9 +184,9 @@ export default async function ({ page, cli, sandbox, rec, d, shell }) {
         await closeEditor();
         rec.check('leaving external-editor mode preserves the native document before plugin development resumes', (await json(['document', 'get', editorPaneID])).text === fs.readFileSync(editorFile, 'utf8'));
 
-        dev = spawn(process.execPath, [path.join(repoRoot, 'packages/cli/dist/kelpi.js'), 'plugin', 'dev', source, '--trust'], {
+        dev = spawnDesktopHelper(process.execPath, [path.join(repoRoot, 'packages/cli/dist/kelpi.js'), 'plugin', 'dev', source, '--trust'], {
             cwd: external, env: { PATH: sandbox.env.PATH, HOME: sandbox.home, KELPI_SOCKET: 'tcp:127.0.0.1:' + sandbox.controlPort, KELPI_REQUIRE_SOCKET: '1' }, stdio: ['ignore', 'pipe', 'pipe'],
-        });
+        }, { signal: 'SIGINT', timeoutMs: 40_000 });
         dev.stdout.setEncoding('utf8'); dev.stderr.setEncoding('utf8');
         dev.stdout.on('data', data => { devOutput += data; }); dev.stderr.on('data', data => { devErrors += data; });
         if (!await d.settle(() => events().some(event => event.type === 'applied'), { ceilingMs: 15_000 })) throw new Error('Dev did not start: ' + devOutput + devErrors);

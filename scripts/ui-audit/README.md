@@ -16,7 +16,7 @@ The audit measures. A scenario checks one thing, is written by whoever changes t
 node scripts/scenario.mjs                      # every scenario, in a fresh sandbox (builds first)
 node scripts/scenario.mjs confirm-dialog-keys  # one, by name, --no-build to skip the build
 node scripts/scenario.mjs --keep <name>        # leave the sandbox up to poke at afterwards
-node scripts/scenario.mjs --window hidden      # without taking the screen, and in parallel (below)
+node scripts/scenario.mjs --window hidden      # without taking the screen (runs serialize; below)
 ```
 
 Against a dev instance you already have up (`node scripts/dev-instance.mjs` prints both values):
@@ -55,6 +55,27 @@ export default async function ({ page, harness, cli, sandbox, shell, daemon, rec
 `openSidebarMenu` (shared with the audit, in `lib/aim.mjs`) scrolls its row into view, re-measures it immediately before pressing, refuses a point outside the sidebar's scroller, waits for the menu rather than sleeping past it and retries once. A row measured where it could no longer be clicked is what #204 was: in a full run the list outgrew the scroller, the press landed on the footer, and all the harness could say was `(no-menu)`. It now names the point, both rects and what `elementFromPoint` found there.
 
 Rules that keep scenarios honest: wait on a condition (`settle`, `settleDom`, `page.waitFor`), not on a sleep, except where the wait IS the assertion (a negative check needs a dwell). Prefer `data-testid` anchors; add one to the client rather than matching on text or CSS. A scenario that fails should say what it saw: pass the detail to `rec.check`.
+
+Every instance returned by `d.boot()` carries `rendererErrors`. Boot sets
+`KELPI_HARNESS_DEFER_LOAD=1` alongside the private harness socket: the shell loads an inert
+`about:blank` document, giving CDP a running renderer while holding the first client document.
+The driver waits for that blank target and subscribes to `Runtime.exceptionThrown` and
+`console.error` before enabling Runtime, then releases the first app navigation through
+`harness.loadClient()` only after Runtime acknowledges. A refused or timed-out watcher setup
+rejects boot and tears down the private instance; it cannot substitute for app readiness.
+A failed first mount therefore reaches the first scenario's named renderer check even when no
+app root appears. `beforeLoad(page)` is an optional boot hook for CDP setup after the watcher is
+armed and before navigation; `renderer-errors-at-boot` uses it to inject a failing first document.
+Failed boots close their partial private instances.
+
+The runner calls `instance.rendererErrors.finish(rec)` after each scenario, consuming that
+instance's accumulated lines once. Dedicated placement instances get their own watcher from
+boot. The shared lane continues watching while a dedicated instance runs; its idle-period errors
+remain attributed to the next shared-lane scenario, preserving the existing attribution rule. `d.attach()` starts watching as soon as it connects, but cannot recover errors that
+predate attachment. Callers that boot additional instances can drain those watchers into their own
+recorders. The standalone audit has its own startup and console collector; it does not call
+`driver.boot()` and does not opt into the deferred-load gate.
+
 
 ### The daemon handle: stopping the primary daemon
 
@@ -135,10 +156,16 @@ Under the channel the shell still posts for real, which is harmless. `KELPI_HARN
 ```bash
 node scripts/scenario.mjs --no-build --window hidden                  # every scenario, no screen
 node scripts/scenario.mjs --no-build --window hidden a & \
-node scripts/scenario.mjs --no-build --window hidden b ; wait         # two at once, own sandbox each
+node scripts/scenario.mjs --no-build --window hidden b ; wait         # queued, own sandbox each
 ```
 
-Each run already gets its own run dir, socket, database and ephemeral ports, so parallelism was only ever blocked by the window. Measured on this machine: **four full runs at once, 4 × 23 checks, all green, each scenario at its serial time** (3.4 s / 1.7 s / 1.6 s per run against a 3.4 / 1.8 / 1.6 serial control). The results directory is stamped to the millisecond and disambiguated by pid, so parallel runs never write over each other.
+Each run gets its own run dir, socket, database and ephemeral ports. **The desktop and clipboard are still shared.** The earlier four-run measurement (4 × 23 checks green) did not establish clipboard isolation. Scenario runners (including `--attach`), audit runs and the five shell smokes now acquire one machine-wide desktop test slot before starting their work (#207), across worktrees and window placements. A waiting run prints its wait every 30 seconds and fails after 30 minutes without starting a desktop test. `verify.mjs` invokes these guarded runners; it does not hold a second slot. Audit shard children acquire individually, and their parent never owns the slot.
+
+`lib/desktop-slot.mjs` reserves loopback TCP port **19735** for the runner lifetime, through teardown and `--keep`. Binding is atomic; process exit releases the reservation in the kernel. `lib/desktop-lifecycle.mjs` installs SIGINT/SIGTERM handling before private resources start, registers partial boots and each shared/dedicated/restarted process, and holds the slot until their teardown settles. Repeated signals do not bypass cleanup; a failed cleanup retains the slot with an explicit diagnostic. New process creation is refused once teardown begins. `--keep` remains protected until cancellation finishes cleanup. There is no inherited bypass or stale lock file to delete. An unrelated listener on that port also blocks tests and yields the same explicit timeout; the harness never stops it. This cooperative guard cannot isolate the pasteboard from a person, an older checkout, a standalone driver probe or another unguarded tool. SIGKILL and runtime crashes cannot run this cleanup and may leave orphan descendants after the kernel releases the slot; there is no PID-based recovery of a dead runner. Coordinate those uses separately. Non-desktop unit tests and typechecks do not acquire it.
+
+**Issue #207 remains an unconfirmed intermittent failure.** Serialization removes an allowed source of interference; it does not prove what caused the historical missing paste or lone `/`. PR #228's clipboard-at-press, caret, toast and full-capture diagnostics remain in `terminal-copy-paste-chords`. The image-paste path is specified product behavior and is unchanged. A green run under the guard is not a reproduction or a root-cause finding.
+
+The results directory is stamped to the millisecond and disambiguated by pid, so queued runs never write over each other.
 
 **Safe for**: everything a scenario asserts, which is DOM state, CDP input, the CLI, the harness channel's menu / accelerators / dialogs / dock counters / notification records, and the app's own activity signalling. **Not safe for**: anything that measures pixels. Under `hidden` a screenshot comes back blank white (`Page.captureScreenshot` composites the window's alpha), under `offscreen` it comes back at half resolution with sub-pixel geometry quantised differently. `rec.shot` writes that caveat into the note it records, and `results.json` carries the placement, so a picture is never silently worth less than it looks. Pixel checks belong in the audit.
 
@@ -166,6 +193,12 @@ export const windowPlacement = 'offscreen';
 | any | not a placement | the lane's window, with a warning |
 
 The placement each scenario ran at is printed beside its name (`▶ name  [window offscreen, its own instance]`) and written into `results.json`. A scenario on its own instance cannot leak into the shared sandbox, so the runner records its post-condition as `leaked: null` rather than as an empty list. Declare it only from a measurement: the cost is a 20 s boot, and `offscreen` also halves the screenshots' resolution.
+
+### An audit flow can declare the placement it needs
+
+The full audit normally uses one visible `default` window because its screenshots are visual evidence. That window can still be covered, which makes Chromium drop CDP input sent to a native `WebContentsView`. A flow declares its floor in `lib/shards.mjs`; `web-batch-pickup`, `web-batch-internals`, and `web-console-frames` declare `offscreen` after #206's reproduced occlusion evidence.
+
+When the audit is at `default` or `hidden`, the parent runs those declarations in one private offscreen process and runs each chain writer there as setup. Placement children run serially, each finishing cleanup before the next starts, because private instances still share the machine's screen and clipboard. The aggregate retains the normal process's canonical writer entry and omits successful setup duplicates; failed duplicates remain as attributed `web-pane-setup-shard-N` entries, including their assertions, errors and artifacts. A narrow `--only` run starts only groups containing requested steps and runs their chain writers in that same process; `--no-chain` explicitly disables that setup. An audit already requested at `offscreen` or `onscreen` is not split; those placements cannot be covered, and `onscreen` keeps its higher-fidelity screenshots. Before pickup clicks, both batch flows check the native page’s `document.visibilityState`; a hidden page produces one environmental step error naming occlusion and an actionable `--window onscreen` rerun, while retaining the existing post-click diagnostics for races.
 
 ### What was measured
 
@@ -314,3 +347,7 @@ Its machine-readable evidence lands in `docs/audit/verify-latest/battery/` (the 
 - Nothing runs the rule at commit or push time. It is a `verify.mjs` gate, which means it is on the promote path (`--full`) and on the path of anyone who runs verify, and nowhere else.
 - The retry is per COMPONENT, not per check. A vitest run that dies without naming a failed file (a crash, a config error, an OOM-killed worker) has nothing to isolate, so it is not retried and it is not excused: the battery fails and the summary says the report named nothing. The full audit is not retried at all, because its exit status is not its verdict: it exits 0 with failed assertions, and the REPORT read against the previous one with `compare-runs` is the gate.
 - A retry that goes green is a pass, and nothing files an issue about it. The run says which components needed one, twice, and `verify-report.json` keeps the record, but a check that wobbles every battery will keep wobbling until a person reads that line. A scenario that keeps needing the retry is now named for what it is on the second consecutive lane (`ordering-dependent`, above), which is the one case where the wobble was never a wobble.
+
+The shell-spawned-daemon phases in `smoke.mjs` and `packaged-smoke.mjs` use a fresh private owner channel (`KELPI_TEST_OWNER_PORT` / `KELPI_TEST_OWNER_TOKEN`). The daemon authenticates before startup and consumes these variables so panes and plugins cannot inherit the capability. The channel outlives the shell: the test still exercises the real detached spawn and bundled Node selection, and quitting the app still leaves its daemon running. Cleanup requests shutdown through that live channel; foreground test daemons queue that request (and catchable signals) until startup settles, then await their own resource cleanup. They acknowledge successful teardown explicitly, including startup failures after cleanup and cancellation before boot. Startup and teardown never run concurrently: a stuck startup retains the slot rather than allowing resources to appear after cleanup. Ordinary daemon launches keep their existing signal handling. Logs and PID files remain diagnostic evidence and never authorize a kill. The runner requires the teardown receipt, channel closure and process disappearance; PID reuse can conservatively block cleanup but cannot cause an unrelated process to be signalled. If a shell launch dies before ownership can be established, cleanup reports the unknown state and retains the desktop slot; it does not guess that no daemon was started. This includes partial startup before the channel handshake. An unresponsive owned daemon likewise retains the slot instead of inviting a recovery PID kill.
+
+Direct helper subprocesses (including plugin development and document-watch CLIs, build/CLI probes) use `spawnDesktopHelper`, which registers them before the first await, refuses launches during cancellation, and shares one awaited stop with ordinary scenario cleanup. Fixture servers use `listenDesktopServer` for the same reason. A cancelled scenario's eventual `finally` is not the owner of these resources: the leaf scope stops them even when its cancellation race finishes first.

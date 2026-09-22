@@ -9,6 +9,7 @@
  * `packages/shell/scripts/web-smoke.mjs`, which has the same constraints.
  */
 
+import { ownDesktopResource, assertDesktopActive, waitForDesktopChildExit, spawnDesktopHelper } from './desktop-lifecycle.mjs';
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
@@ -16,11 +17,12 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { bundleHash, cacheDecision, writeRecordedHash } from './build-cache.mjs';
+import { DESKTOP_TEST_PORT } from './desktop-slot.mjs';
 
 export const PROTOCOL_VERSION = 2;
 
-/** The user's own dev stack. The audit must never bind or connect to these. */
-export const RESERVED_PORTS = new Set([19733, 19734, 9223, 19400]);
+/** The user's dev stack and the desktop reservation: never allocate these to a sandbox. */
+export const RESERVED_PORTS = new Set([19733, 19734, 9223, 19400, DESKTOP_TEST_PORT]);
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -56,7 +58,7 @@ export async function waitFor(label, predicate, timeoutMs = 30_000, intervalMs =
 
 export function run(command, args, opts = {}) {
     return new Promise((resolve, reject) => {
-        const child = spawn(command, args, { cwd: opts.cwd, env: { ...process.env, ...opts.env } });
+        const child = spawnDesktopHelper(command, args, { cwd: opts.cwd, env: { ...process.env, ...opts.env } });
         // Every child, not just the ones that host a window — see `clearBackgroundTaskPolicy`.
         // `buildAll`, `packageApp` and the `codesign` check all come through here, and
         // `packageApp` in particular is a minute of first-touch I/O over a 250 MB bundle, which
@@ -344,6 +346,7 @@ export async function makeSandbox(repoRoot, { label = 'audit', clientDir, auditW
  * tree's build would have quietly re-introduced exactly the gap N22 is about.
  */
 export function startDaemon(sandbox, { repoRoot, verbose = false, packaged = false }) {
+    assertDesktopActive();
     const entry = packaged ? path.join(packagedResource(repoRoot, 'daemon'), 'kelpid.js') : path.join(repoRoot, 'packages', 'daemon', 'dist', 'kelpid.js');
     const runtime = packaged ? packagedResource(repoRoot, 'node') : process.execPath;
     const lines = [];
@@ -365,7 +368,7 @@ export function startDaemon(sandbox, { repoRoot, verbose = false, packaged = fal
     let exited = false;
     child.on('exit', () => (exited = true));
 
-    return {
+    return ownDesktopResource({
         child,
         text: () => lines.join(''),
         get exited() {
@@ -379,9 +382,10 @@ export function startDaemon(sandbox, { repoRoot, verbose = false, packaged = fal
             child.kill('SIGTERM');
             await Promise.race([new Promise((resolve) => child.on('exit', resolve)), raceTimeout(8000)]);
             if (!exited) child.kill('SIGKILL');
+            await waitForDesktopChildExit(child);
             releaseChild(child);
         }
-    };
+    }, 'stop');
 }
 
 /**
@@ -688,6 +692,7 @@ export async function assertPackagedSignature(repoRoot) {
  * fresh bundle and no 90-second repackage between runs.
  */
 export function startShell(sandbox, { repoRoot, packaged = false, verbose = false, extraEnv = {} }) {
+    assertDesktopActive();
     const shellRoot = path.join(repoRoot, 'packages', 'shell');
     const binary = packaged ? packagedBinary(repoRoot) : electronBinary(repoRoot);
     if (packaged && !fs.existsSync(binary)) {
@@ -725,7 +730,7 @@ export function startShell(sandbox, { repoRoot, packaged = false, verbose = fals
         exitCode = code ?? (signal === null ? null : -1);
     });
 
-    return {
+    return ownDesktopResource({
         child,
         lines,
         get exited() {
@@ -752,9 +757,10 @@ export function startShell(sandbox, { repoRoot, packaged = false, verbose = fals
             }
             signalGroup(child, 'SIGKILL');
             await sleep(200);
+            await waitForDesktopChildExit(child, { group: true });
             releaseChild(child);
         }
-    };
+    }, 'quit');
 }
 
 // ── the CLI, pointed at the sandbox daemon ──────────────────────────────────────────
@@ -822,7 +828,7 @@ export function makeCli(sandbox, { repoRoot }) {
     const entry = path.join(repoRoot, 'packages', 'cli', 'dist', 'kelpi.js');
     const invoke = (args, opts = {}) =>
         new Promise((resolve) => {
-            const child = spawn(process.execPath, [entry, ...args], {
+            const child = spawnDesktopHelper(process.execPath, [entry, ...args], {
                 cwd: opts.cwd ?? sandbox.home,
                 env: {
                     PATH: sandbox.env.PATH,

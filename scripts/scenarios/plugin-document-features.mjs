@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
+import { spawnDesktopHelper } from '../ui-audit/lib/desktop-lifecycle.mjs';
 import { fileURLToPath } from 'node:url';
 import { makeSandbox, startDaemon, waitForHealthz, makeCli, PROTOCOL_VERSION } from '../ui-audit/lib/stack.mjs';
 import { daemonIDFromSandbox, phoneToLanding, restoreBundledSlots } from '../ui-audit/lib/workbench.mjs';
@@ -106,7 +107,7 @@ export default async function ({ page, cli, sandbox, rec, d }) {
         await inside(scratch, `(() => { const editor = document.getElementById('editor'); for (let i = 1; i <= 24; i++) { editor.value = 'Rapid input ' + i; editor.dispatchEvent(new Event('input', {bubbles:true})); } })()`);
         rec.check('rapid input preserves the newest draft through serialized revision checks', await savedText(scratch, 'Rapid input 24') && await check(scratch, `document.body.dataset.pending === 'false' && !document.body.dataset.error`));
         const watched = []; let streamBuffer = '';
-        watcher = spawn(process.execPath, [path.join(repoRoot, 'packages/cli/dist/kelpi.js'), 'document', 'watch', scratch], {
+        watcher = spawnDesktopHelper(process.execPath, [path.join(repoRoot, 'packages/cli/dist/kelpi.js'), 'document', 'watch', scratch], {
             env: { PATH: sandbox.env.PATH, HOME: sandbox.home, KELPI_SOCKET: `tcp:127.0.0.1:${sandbox.controlPort}`, KELPI_REQUIRE_SOCKET: '1' }, stdio: ['ignore', 'pipe', 'pipe']
         });
         watcher.stdout.on('data', chunk => {
@@ -117,7 +118,7 @@ export default async function ({ page, cli, sandbox, rec, d }) {
         const streamed = await snapshot(scratch);
         await json(['document', 'edit', scratch, '--revision', streamed.revision, '--text', 'Streamed edit']);
         rec.check('CLI watch streams initial and subsequently saved source snapshots', await d.settle(() => watched.some(reply => reply.result?.text === 'Streamed edit')));
-        watcher.kill('SIGTERM'); watcher = null;
+        await watcher.stop(); watcher = null;
         await click(scratch, '#wrap');
         await cli.ok(['plugin', 'reload', pluginID]); if (!await ready(scratch)) throw new Error('Reload did not attach');
         rec.check('renderer UI state persists independently of native document source', await check(scratch, `document.getElementById('wrap').getAttribute('aria-pressed') === 'false' && document.getElementById('editor').value === 'Streamed edit'`));
@@ -200,7 +201,7 @@ export default async function ({ page, cli, sandbox, rec, d }) {
         await rec.shot(page, 'document-lab-ready');
     } catch (error) { await rec.shot(page, 'failure-live'); throw error; }
     finally {
-        watcher?.kill('SIGTERM');
+        await watcher?.stop();
         /*
          * The phone goes home FIRST, before anything else in this block (#205). Every phone
          * scenario's cleanup now opens this way; what was unique here is how far out of order it

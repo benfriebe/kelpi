@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { PLACEMENT_ORDER, resolveScenarioPlacement } from './placement.mjs';
+import { PLACEMENT_ORDER, resolveAuditPlacement, resolveScenarioPlacement } from './placement.mjs';
 
 /**
  * The placement floor a scenario may declare, decided without a window (#206).
@@ -39,5 +39,17 @@ describe('resolveScenarioPlacement', () => {
         expect(resolved.placement).toBe('hidden');
         expect(resolved.raised).toBe(false);
         expect(resolved.warning).toContain(PLACEMENT_ORDER.join(' | '));
+    });
+});
+
+describe('resolveAuditPlacement', () => {
+    it('moves a native-page flow out of both coverable audit placements', () => {
+        expect(resolveAuditPlacement('default', 'offscreen')).toEqual({ placement: 'offscreen', raised: true, warning: null });
+        expect(resolveAuditPlacement('hidden', 'offscreen')).toEqual({ placement: 'offscreen', raised: true, warning: null });
+    });
+
+    it('keeps an already non-occludable audit placement', () => {
+        expect(resolveAuditPlacement('offscreen', 'offscreen')).toEqual({ placement: 'offscreen', raised: false, warning: null });
+        expect(resolveAuditPlacement('onscreen', 'offscreen')).toEqual({ placement: 'onscreen', raised: false, warning: null });
     });
 });

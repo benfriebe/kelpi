@@ -101,7 +101,7 @@ describe('shared toolbar and status feature contracts', () => {
         const keymap = boundKeymap(buildKeymap({ bindings, native, plugins: resolvePluginChords([command], native.keys(), true), macLike: true }));
         const model = createPluginChrome(createChromeFeatureSource({ ...h.host, keymap })), published = model.getChrome().keymap;
         expect(published.sections.flatMap(section => section.actions).find(row => row.action === 'split_right')?.shortcut).toBe('⇧⌘K');
-        expect(published.plugins).toEqual([{ name: 'Sample Keys', commands: [{ id: 'sample.keys.run', title: 'Run example', shortcut: '⌃⌥B', shadowed: null }] }]);
+        expect(published.plugins).toEqual([{ name: 'Sample Keys', commands: [{ id: 'sample.keys.run', title: 'Run example', shortcut: '⌃⌥B', shadowed: null, currently: null }] }]);
         expect(Object.isFrozen(published.plugins[0])).toBe(true);
         // Discovery only: nothing in the command registry reads or writes a binding.
         expect(model.getChrome().commands.some(entry => /key/i.test(entry.id))).toBe(false);

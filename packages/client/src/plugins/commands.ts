@@ -52,7 +52,13 @@ export function usePluginCommands(runtime: KelpiRuntime, reservedChords: readonl
             run: (paneID?: string) => run(command.id, paneID) };
     })), [runtime, plugins, overrides, states, mirror]);
     // Help reads this same resolution, so it cannot name a chord the dispatcher would not honour.
-    const shortcuts = useMemo(() => resolvePluginChords(commands, reservedChords, /Mac|iPhone|iPad/.test(navigator.platform)), [commands, reservedChords]);
+    // `commands` is re-derived on every mirror tick, but the resolution reads only the shortcuts and
+    // names (plugins, overrides), the reserved chords and which commands apply, so it is keyed on
+    // those and keeps its identity through the ticks that change none of them. A retained `run`
+    // closure is safe: it rereads the current plugins and store for its runtime when called.
+    const applicability = commands.map(command => (command.visible ? 1 : 0) + (command.enabled ? 2 : 0)).join('');
+    const shortcuts = useMemo(() => resolvePluginChords(commands, reservedChords, /Mac|iPhone|iPad/.test(navigator.platform)),
+        [runtime, plugins, overrides, reservedChords, applicability]);
     const bindings = useMemo(() => shortcuts.flatMap(({ command, keys }) =>
         command.visible && command.enabled ? keys.map(key => ({ key, run: command.run })) : []), [shortcuts]);
     useEffect(() => {

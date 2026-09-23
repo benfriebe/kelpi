@@ -91,6 +91,11 @@ function shadowNote(shadowed: NonNullable<ChromeKeymapCommand['shadowed']>): str
     return `${shadowed.shortcut} runs ${shadowed.by}${shadowed.plugin === null ? '' : ` (${shadowed.plugin})`}`;
 }
 
+/** What that shortcut runs right now, while the command it belongs to does not apply. */
+function currentlyNote(shortcut: string, currently: NonNullable<ChromeKeymapCommand['currently']>): string {
+    return `${shortcut} currently runs ${currently.by} (${currently.plugin})`;
+}
+
 export function HelpOverlay(props: HelpOverlayProps): ReactElement {
     const closeRef = useRef<HTMLButtonElement | null>(null);
 
@@ -253,6 +258,15 @@ export function HelpOverlay(props: HelpOverlayProps): ReactElement {
                                                             style={{ color: tokens.textTertiary }}
                                                         >
                                                             {shadowNote(row.shadowed)}
+                                                        </span>
+                                                    )}
+                                                    {row.currently === null || row.shortcut === null ? null : (
+                                                        <span
+                                                            data-help-currently-by={row.currently.by}
+                                                            className="text-[11px] break-words"
+                                                            style={{ color: tokens.textTertiary }}
+                                                        >
+                                                            {currentlyNote(row.shortcut, row.currently)}
                                                         </span>
                                                     )}
                                                 </span>

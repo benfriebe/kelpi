@@ -38,7 +38,10 @@ export interface ChromeSnapshot {
 export interface ChromeKeymap {
     /** Native actions by Settings category, in Help's order. */
     readonly sections: readonly ChromeKeymapSection[];
-    /** The primary daemon's enabled, running plugins in palette order, each command listed whatever its `when`. */
+    /**
+     * The primary daemon's enabled, running plugins in plugin and declaration order (the order that
+     * wins a collision), each command listed whatever its `when`.
+     */
     readonly plugins: readonly ChromeKeymapPlugin[];
     /** Plugin commands after the carried ones that this snapshot had no room for. Usually zero. */
     readonly withheld: number;
@@ -62,6 +65,11 @@ export interface ChromeKeymapCommand {
      * earlier plugin command (`plugin` names its plugin). `shortcut` is then null.
      */
     readonly shadowed: { readonly shortcut: string; readonly by: string; readonly plugin: string | null } | null;
+    /**
+     * Set when the command does not apply right now and a later plugin command holds its
+     * `shortcut` meanwhile: pressing it runs that command until this one applies again.
+     */
+    readonly currently: { readonly by: string; readonly plugin: string } | null;
 }
 export interface ChromeCommand {
     readonly id: string; readonly title: string; readonly enabled: boolean;

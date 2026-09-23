@@ -12,8 +12,9 @@
  *
  * Help is reference rather than a menu, so a command is listed whatever its `when` says, with the
  * shortcut it runs on while it applies. A plugin shortcut a native chord or an earlier plugin
- * command claims first is listed with what that chord runs instead, because that is what the user
- * will see happen.
+ * command claims first is listed with what that chord runs instead, and one a later plugin command
+ * holds while this command does not apply is listed with what it runs right now, because that is
+ * what the user will see happen.
  */
 
 import { canonicalTriggerForPlatform, parseKeyTrigger, type KeyBindingMap } from '@kelpi/core/config';
@@ -67,7 +68,7 @@ export interface KeymapInput {
     readonly bindings: KeyBindingMap;
     /** `nativeChordOwners` for the same map: what a shadowed plugin shortcut runs, by name. */
     readonly native: ReadonlyMap<string, string>;
-    /** The dispatcher's resolution (`usePluginCommands().shortcuts`), in palette order. */
+    /** The dispatcher's resolution (`usePluginCommands().shortcuts`), in plugin and declaration order (the order that wins a collision). */
     readonly plugins: readonly ResolvedPluginChord<KeymapPluginCommand>[];
     readonly macLike?: boolean | undefined;
 }
@@ -85,7 +86,7 @@ export function buildKeymap(input: KeymapInput): ChromeKeymap {
     })).filter((section) => section.actions.length > 0);
     // Grouped by plugin identity, labelled by display name: two plugins may share a name.
     const groups = new Map<string, { name: string; commands: ChromeKeymapCommand[] }>();
-    for (const { command, trigger, keys, takenBy } of input.plugins) {
+    for (const { command, trigger, keys, takenBy, heldBy } of input.plugins) {
         let group = groups.get(command.pluginID);
         if (group === undefined) groups.set(command.pluginID, (group = { name: command.pluginName, commands: [] }));
         const chord = trigger === null ? null : displayKeyTrigger(trigger, macLike);
@@ -101,19 +102,20 @@ export function buildKeymap(input: KeymapInput): ChromeKeymap {
                           shortcut: chord,
                           by: owner === null ? input.native.get(takenBy.chord) ?? 'Kelpi' : owner.title,
                           plugin: owner === null ? null : owner.pluginName
-                      }
+                      },
+            currently: heldBy === null ? null : { by: heldBy.title, plugin: heldBy.pluginName }
         });
     }
     return { sections, plugins: [...groups.values()], withheld: 0 };
 }
 
 /**
- * The snapshot's share of the 256 KiB chrome frame.
+ * The whole keymap's share of the 256 KiB chrome frame.
  *
  * The native half is a few KiB and fixed. The plugin half is not: a hundred plugins may each
  * declare a hundred commands, and an oversized snapshot is undeliverable, which would fail every
- * replacement toolbar over somebody else's command titles. A quarter of the frame is room for
- * several hundred commands.
+ * replacement toolbar over somebody else's command titles. A quarter of the frame leaves room for
+ * several hundred commands after the native half.
  */
 export const KEYMAP_SNAPSHOT_BYTES = 64 * 1024;
 
@@ -123,10 +125,13 @@ const bytes = (value: unknown): number => encoder.encode(JSON.stringify(value)).
 /**
  * The keymap cut to a byte budget, measured as `pluginJSON` measures it. The carried plugin
  * commands are always a prefix of the list, so `withheld` means "everything after these", the
- * same rule the pane chrome frame keeps for its panes.
+ * same rule the pane chrome frame keeps for its panes. The native sections are always carried.
  */
 export function boundKeymap(keymap: ChromeKeymap, budget: number = KEYMAP_SNAPSHOT_BYTES): ChromeKeymap {
-    let used = bytes({ ...keymap, plugins: [], withheld: 0 });
+    // The envelope is measured with the largest `withheld` this cut could report, so the count's
+    // digits can never push the result past the budget.
+    const total = keymap.plugins.reduce((sum, group) => sum + group.commands.length, 0);
+    let used = bytes({ ...keymap, plugins: [], withheld: total + keymap.withheld });
     let withheld = 0;
     const plugins: ChromeKeymap['plugins'][number][] = [];
     for (const group of keymap.plugins) {

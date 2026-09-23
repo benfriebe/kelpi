@@ -237,6 +237,17 @@ describe('HelpOverlay (APP-027 / APP-063)', () => {
         expect(document.querySelector('[data-help-action="split_right"] [data-help-shortcut]')?.getAttribute('data-help-shortcut')).toBe('');
     });
 
+    it('says what a command\'s shortcut runs right now while the command does not apply', () => {
+        const other = { id: 'example.other.run', pluginID: 'example.other', pluginName: 'Other Lab', title: 'Other: run' };
+        renderHelp([], [labCommand('run', 'ctrl+alt+r', { visible: false }), labCommand('run', 'ctrl+alt+r', other)]);
+        const row = (id: string) => document.querySelector(`[data-help-command="${id}"]`);
+        // Still its chord, not struck through: it takes the chord back the moment it applies.
+        expect(row('example.lab.run')?.querySelector('[data-help-shortcut]')?.getAttribute('data-help-shortcut')).toBe('⌃⌥R');
+        expect(row('example.lab.run')?.querySelector('[data-help-currently-by]')?.textContent).toBe('⌃⌥R currently runs Other: run (Other Lab)');
+        expect(row('example.other.run')?.querySelector('[data-help-currently-by]')).toBeNull();
+        expect(row('example.other.run')?.querySelector('[data-help-shadowed-by]')).toBeNull();
+    });
+
     it('keeps long plugin names and titles inside the dialog and scrolls many plugins', () => {
         const commands = Array.from({ length: 40 }, (_, plugin) =>
             Array.from({ length: 5 }, (_, index) =>

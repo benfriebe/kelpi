@@ -4,6 +4,9 @@ declare const ui: WindowChromeAPI;
 
 /** The keymap is what Help draws: native sections, then each plugin's commands under its name. */
 function describeShortcut(command: ChromeKeymapCommand): string {
+    if (command.shortcut !== null && command.currently !== null) {
+        return `${command.title} ${command.shortcut}, currently ${command.currently.by} (${command.currently.plugin})`;
+    }
     if (command.shortcut !== null) return `${command.title} ${command.shortcut}`;
     if (command.shadowed === null) return command.title;
     const owner = command.shadowed.plugin === null ? command.shadowed.by : `${command.shadowed.by} (${command.shadowed.plugin})`;

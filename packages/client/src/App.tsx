@@ -3056,12 +3056,10 @@ function Shell(props: AppProps): ReactElement {
     const allViewChords = useMemo(() => [...contentPaneChords, ...pluginCommands.chords], [contentPaneChords, pluginCommands.chords.join('|')]);
     /**
      * The keyboard map Help draws and the chrome snapshot publishes, bounded, from one build. Plugin
-     * rows are the dispatcher's own resolution, which is rebuilt on every mirror tick, so the key is
-     * what a row renders rather than that array's identity.
+     * rows are the dispatcher's own resolution, which keeps its identity until a shortcut, a name or
+     * a command's applicability changes, so neither is rebuilt on an ordinary mirror tick.
      */
-    const keymapKey = JSON.stringify(pluginCommands.shortcuts.map(({ command, keys, takenBy }) =>
-        [command.pluginID, command.pluginName, command.id, command.title, keys, takenBy?.chord ?? null, takenBy?.command?.id ?? null]));
-    const keymap = useMemo(() => buildKeymap({ bindings, native: nativeChords, plugins: pluginCommands.shortcuts }), [bindings, nativeChords, keymapKey]);
+    const keymap = useMemo(() => buildKeymap({ bindings, native: nativeChords, plugins: pluginCommands.shortcuts }), [bindings, nativeChords, pluginCommands.shortcuts]);
     const snapshotKeymap = useMemo(() => boundKeymap(keymap), [keymap]);
     const contributionItems = (placement: 'statusbar' | 'workspace.header' | 'pane.header', paneID?: string): ReactNode => {
         const items = placement === 'pane.header' && paneID !== undefined ? paneHeaderItems.items(paneID) : pluginCommands.items(placement, paneID);

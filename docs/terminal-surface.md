@@ -179,7 +179,10 @@ with an **ordered** list built as follows (`mergedEnvVars`,
   think it was a child of a session that no longer existed. The daemon's own `$TERM` is never
   inherited: the pane gets the configured default (`xterm-256color`) unless the overlay carries
   a `TERM` of its own. `COLORTERM=truecolor` is set when absent. The overlay applies after the
-  filter, so a profile that deliberately sets `CLAUDE_CONFIG_DIR` still lands.
+  filter, so a profile that deliberately sets `CLAUDE_CONFIG_DIR` still lands. On macOS, if
+  neither the daemon nor the pane/profile provides `LC_ALL`, `LC_CTYPE`, or `LANG`, the pane
+  gets `LC_CTYPE=UTF-8`; this keeps Unicode prompt widths correct for daemons launched without
+  a locale (such as from Finder) while preserving every explicit locale choice.
 - Injection is **spawn-time only**. Live PTYs keep their birth env; changing a workspace's
   profile affects only later spawns.
 

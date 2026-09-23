@@ -86,6 +86,7 @@ import {
 import { CANONICAL_ORDER, aggregateShards, describePartition, planShards, windowPlacementOf } from './lib/shards.mjs';
 import { parseArgs, shardArgs, shardPlanOptions } from './lib/audit-options.mjs';
 import { resolveAuditPlacement } from './lib/placement.mjs';
+import { MULTIBYTE_RESIZE_STORM_SCRIPT, multibyteResizeStormLine } from './lib/resize-storm-fixture.mjs';
 import {
     requireVisiblePage,
     describePickGuards,
@@ -2856,6 +2857,12 @@ function buildFlows(ctx) {
                     path.join(zdotdir, '.zshrc'),
                     "setopt prompt_subst\n" + "PROMPT=$'┌KELPITRAIL ${(l:$((COLUMNS - 12))::.:)}\n└KELPIPROMPT%% '\n"
                 );
+                // The spawned pane starts in the sandbox home. Keep the typed command short:
+                // a long absolute path rewraps through zle's full-width prompt and the baseline
+                // run lost the fixture's stdout before the resize comparison could observe it.
+                const multibyteFixturePath = path.join(sandbox.home, 'r.sh');
+                const multibyteSidecarPath = path.join(sandbox.home, 'r.out');
+                fs.writeFileSync(multibyteFixturePath, MULTIBYTE_RESIZE_STORM_SCRIPT);
 
                 const split = await cli.json(['pane', 'split', '--direction', 'vertical', '--target', anchor, '--json']);
                 const paneID = String(split.pane_id ?? '');
@@ -2949,6 +2956,10 @@ function buildFlows(ctx) {
                 try {
                     // ── 1. a shell whose prompt fills the width ──────────────────────
                     await focusPaneBody(page, paneID);
+                    // The sandbox daemon starts with no locale, as a Finder-launched app can.
+                    // This Unicode prompt tests that the pane itself received the daemon's
+                    // UTF-8 default: with a C locale, zle's SIGWINCH redraw erases the
+                    // preceding command output. Do not set a locale in this command.
                     await runInTerminal(page, `exec env ZDOTDIR=${zdotdir} zsh`, { settleMs: 0 });
                     // NOTHING may run in this pane between here and the storm: the trail count
                     // below is over the whole scrollback, and every command a shell runs leaves
@@ -3174,15 +3185,23 @@ function buildFlows(ctx) {
                         // under test has actually been re-measured by the time we type into it.
                         if (siblingID !== '') await settleDom(page, paneLiveExpr(siblingID), { ceilingMs: 260 });
                         await focusPaneBody(page, paneID);
-                        await runInTerminal(
-                            page,
-                            `printf '┌── 日本語テスト %s ✅ 🚀 あいうえお漢字 ──┐\\n' ${String(round)}`,
-                            { settleMs: 180 }
+                        await runInTerminal(page, `sh r.sh ${String(round)}`, { settleMs: 180 });
+                        recorder.artifact(
+                            `round-${String(round)}-before-close-server.txt`,
+                            await cli.ok(['pane', 'capture', '--target', paneID, '--scrollback'])
+                        );
+                        recorder.artifact(
+                            `round-${String(round)}-fixture-sidecar.txt`,
+                            fs.existsSync(multibyteSidecarPath) ? fs.readFileSync(multibyteSidecarPath, 'utf8') : '(missing)'
                         );
                         if (siblingID !== '') await cli.run(['pane', 'close', '--target', siblingID]);
                         // SETTLE-WAIT (was sleep(320)): the sibling is GONE from the grid, which
                         // is the event this round exists to provoke.
                         if (siblingID !== '') await settleDom(page, paneGoneExpr(siblingID), { ceilingMs: 320 });
+                        recorder.artifact(
+                            `round-${String(round)}-after-close-server.txt`,
+                            await cli.ok(['pane', 'capture', '--target', paneID, '--scrollback'])
+                        );
                     }
                     /*
                      * SETTLE-WAIT (was sleep(2500), "past the client's debounce and the daemon's
@@ -3202,6 +3221,13 @@ function buildFlows(ctx) {
                             await cli.ok(['pane', 'capture', '--target', paneID])
                         ],
                         { ceilingMs: 2500, stableMs: 300, intervalMs: 120 }
+                    );
+                    const afterClosesHistory = await cli.ok(['pane', 'capture', '--target', paneID, '--scrollback']);
+                    recorder.check(
+                        'the multibyte resize fixture reached the PTY intact',
+                        afterClosesHistory.includes(multibyteResizeStormLine(9)) &&
+                            !/<00[0-9a-f]{2}>/iu.test(afterClosesHistory),
+                        `last output present=${String(afterClosesHistory.includes(multibyteResizeStormLine(9)))}; octet escapes=${String(/<00[0-9a-f]{2}>/iu.test(afterClosesHistory))}`
                     );
                     await recorder.shot(page, 'after-close-storm');
                     await focusPaneBody(page, paneID);
@@ -3298,10 +3324,10 @@ function buildFlows(ctx) {
                             // close below is a real LEFT/RIGHT close and not a no-op.
                             if (siblingID !== '') await settleDom(page, paneLiveExpr(siblingID), { ceilingMs: 300 });
                             await focusPaneBody(page, paneID);
-                            await runInTerminal(
-                                page,
-                                `printf '┌── 日本語テスト %s ✅ 🚀 あいうえお漢字 你好世界 ──┐\\n' ${String(round)}`,
-                                { settleMs: 160 }
+                            await runInTerminal(page, `sh r.sh ${String(round)}`, { settleMs: 160 });
+                            recorder.artifact(
+                                `n24-round-${String(round)}-before-close-server.txt`,
+                                await cli.ok(['pane', 'capture', '--target', paneID, '--scrollback'])
                             );
                             if (siblingID !== '') await cli.run(['pane', 'close', '--target', siblingID]);
                             // DURATION-ASSERTION: long enough to cover the daemon's 150 ms settle
@@ -3309,6 +3335,10 @@ function buildFlows(ctx) {
                             // probe's watch, and the assertion below counts those windows. A poll
                             // that left early would shorten the very window being measured.
                             await sleep(700);
+                            recorder.artifact(
+                                `n24-round-${String(round)}-after-close-server.txt`,
+                                await cli.ok(['pane', 'capture', '--target', paneID, '--scrollback'])
+                            );
                         }
                         /*
                          * SETTLE-WAIT (was sleep(1200)): the last hold window has opened AND
@@ -3350,12 +3380,20 @@ function buildFlows(ctx) {
                             String(timeouts) === '0',
                             `data-terminal-paint-hold-timeouts=${String(timeouts)}`
                         );
+                        const n24History = await cli.ok(['pane', 'capture', '--target', paneID, '--scrollback']);
+                        recorder.check(
+                            'the N24 multibyte fixture reached the PTY intact',
+                            n24History.includes(multibyteResizeStormLine(7)) &&
+                                !/<00[0-9a-f]{2}>/iu.test(n24History),
+                            `last output present=${String(n24History.includes(multibyteResizeStormLine(7)))}; octet escapes=${String(/<00[0-9a-f]{2}>/iu.test(n24History))}`
+                        );
                         await recorder.shot(page, 'after-n24-close-storm');
                     }
 
                     recorder.eyes(
-                        'after ten split/close rounds the pane must read as clean text — no rows of ' +
-                            'replacement characters (\u{fffd}), no half-drawn box glyphs, no two lines spliced onto one row'
+                        'after the split/close rounds, earlier command prompts are expected history; ' +
+                            'the live prompt and UTF-8 output must be clean, with no replacement characters, ' +
+                            'octet escapes, half-drawn glyphs or spliced lines'
                     );
 
                     // ── 5. still a live shell when the window is handed back ─────────
@@ -3377,7 +3415,8 @@ function buildFlows(ctx) {
                     );
                     await recorder.shot(page, 'restored');
                     recorder.eyes(
-                        'the stormed pane must show ONE two-line prompt (┌KELPITRAIL …dots… / └KELPIPROMPT), not a ladder of ┌KELPITRAIL rows climbing the pane'
+                        'the restored pane must end in a clean live two-line prompt; earlier prompts remain in history ' +
+                            'because the split/close phases ran shell commands'
                     );
 
                     // Put the machine's clipboard back (this step wrote to the real one).
@@ -3396,6 +3435,8 @@ function buildFlows(ctx) {
                     // SETTLE-WAIT (was sleep(1500)): the stormed pane is off the grid, which is
                     // what "hand the run back what it lent" actually means.
                     await settleDom(page, paneGoneExpr(paneID), { ceilingMs: 1500 });
+                    fs.rmSync(multibyteFixturePath, { force: true });
+                    fs.rmSync(multibyteSidecarPath, { force: true });
                     if (anchor) await focusPaneBody(page, anchor);
                 }
             }

@@ -176,6 +176,52 @@ const WINDOW_CONTROL_BUTTONS = [
     readonly label: string;
 }[];
 
+export interface WindowControlsProps {
+    readonly connection: ConnectionStatus;
+    readonly maximized?: boolean | undefined;
+    readonly onWindowControl?: ((action: 'minimize' | 'maximize' | 'close') => void) | undefined;
+    readonly className?: string | undefined;
+}
+
+/** Keep the shell's controls outside replaceable toolbar content as well as inside the bundled bar. */
+export function WindowControls(props: WindowControlsProps): ReactElement {
+    const [hovered, hover] = useHoverKey();
+    const live = props.connection === 'connected';
+    return <div
+        data-testid="window-controls"
+        className={props.className ?? '-mr-3 ml-1 flex items-center self-stretch'}
+        /* A disabled button does not receive pointer events, so its parent owns the offline tooltip. */
+        title={live ? undefined : WINDOW_CONTROLS_OFFLINE_TITLE}
+    >
+        {WINDOW_CONTROL_BUTTONS.map(control => {
+            const isClose = control.action === 'close';
+            const label = control.action === 'maximize' && props.maximized === true ? 'Restore' : control.label;
+            const active = hovered === `window:${control.action}` && live;
+            return <button
+                key={control.action}
+                type="button"
+                data-testid={`window-${control.action}`}
+                aria-label={label}
+                disabled={!live}
+                title={live ? label : WINDOW_CONTROLS_OFFLINE_TITLE}
+                className="flex h-full items-center justify-center"
+                data-hovered={active ? 'true' : 'false'}
+                style={{
+                    width: WINDOW_CONTROL_WIDTH_PX,
+                    opacity: live ? 1 : 0.4,
+                    cursor: live ? undefined : 'default',
+                    color: active ? isClose ? '#FFFFFF' : tokens.textPrimary : tokens.textSecondary,
+                    background: active ? isClose ? WINDOW_CLOSE_HOVER : withAlpha('#E6E6EA', 0.1) : 'transparent'
+                }}
+                {...hover(`window:${control.action}`)}
+                onClick={() => props.onWindowControl?.(control.action)}
+            >
+                <ChromeIcon name={control.action === 'maximize' && props.maximized === true ? 'window-restore' : control.icon} size={11} />
+            </button>;
+        })}
+    </div>;
+}
+
 /**
  * SPACING-REVIEW S4 — how much room the identity must leave on EACH side.
  *
@@ -712,72 +758,7 @@ export function TopBar(props: TopBarProps): ReactElement {
                  * `button` is already in `styles.css`'s `no-drag` list, so these stay clickable
                  * inside the drag region that surrounds them.
                  */}
-                {props.windowControls === true ? (
-                    <div
-                        data-testid="window-controls"
-                        className="-mr-3 ml-1 flex items-center self-stretch"
-                        /* The explanation has to live HERE while the cluster is dim, not only on
-                           the buttons. Chromium shows no `title` tooltip for a `disabled` control
-                           (it dispatches no mouse events for one, and the hit falls through to
-                           this parent), so a title carried only by the buttons would be invisible
-                           in the one app that ever draws them, which is an Electron window. Kept
-                           on the buttons as well: they are the specific answer where a renderer
-                           does show it, and they are what a screen reader reads. */
-                        title={windowControlsLive ? undefined : WINDOW_CONTROLS_OFFLINE_TITLE}
-                    >
-                        {WINDOW_CONTROL_BUTTONS.map((control) => {
-                            const maximized = props.windowMaximized === true;
-                            const isClose = control.action === 'close';
-                            const label = control.action === 'maximize' && maximized ? 'Restore' : control.label;
-                            const active = hovered === `window:${control.action}` && windowControlsLive;
-                            return (
-                                <button
-                                    key={control.action}
-                                    type="button"
-                                    data-testid={`window-${control.action}`}
-                                    aria-label={label}
-                                    disabled={!windowControlsLive}
-                                    title={windowControlsLive ? label : WINDOW_CONTROLS_OFFLINE_TITLE}
-                                    className="flex h-full items-center justify-center"
-                                    data-hovered={active ? 'true' : 'false'}
-                                    style={{
-                                        width: WINDOW_CONTROL_WIDTH_PX,
-                                        /* Dimmed, not hidden: the buttons are where the user
-                                           expects them and say why they cannot be pressed. */
-                                        opacity: windowControlsLive ? 1 : 0.4,
-                                        cursor: windowControlsLive ? undefined : 'default',
-                                        /* The close button's hover is the one colour in this bar
-                                           that is not a tint of the chrome: every desktop paints
-                                           it red, and a × that highlights like its neighbours
-                                           reads as "another glyph" at exactly the moment the user
-                                           wants to be sure which one they are about to press. */
-                                        color: active
-                                            ? isClose
-                                                ? '#FFFFFF'
-                                                : tokens.textPrimary
-                                            : tokens.textSecondary,
-                                        background: active
-                                            ? isClose
-                                                ? WINDOW_CLOSE_HOVER
-                                                : withAlpha('#E6E6EA', 0.1)
-                                            : 'transparent'
-                                    }}
-                                    {...hover(`window:${control.action}`)}
-                                    onClick={() => props.onWindowControl?.(control.action)}
-                                >
-                                    <ChromeIcon
-                                        name={
-                                            control.action === 'maximize' && maximized
-                                                ? 'window-restore'
-                                                : control.icon
-                                        }
-                                        size={11}
-                                    />
-                                </button>
-                            );
-                        })}
-                    </div>
-                ) : null}
+                {props.windowControls === true ? <WindowControls connection={props.connection} maximized={props.windowMaximized} onWindowControl={props.onWindowControl} /> : null}
             </div>
         </div>
     );

@@ -5,6 +5,7 @@ import { flushSync } from 'react-dom';
 import { isPluginID, isPluginPlacement, type JsonObject, type JsonValue, type PluginPlacement } from '@kelpi/protocol';
 import type { KelpiRuntime } from '../state';
 import { ChromeIcon } from '../chrome/icons';
+import { WindowControls, type WindowControlsProps } from '../chrome/TopBar';
 import { ContextMenu, menuAnchorFromEvent } from '../chrome/ContextMenu';
 import { tokens } from '../chrome/tokens';
 import { PluginView } from './PluginView';
@@ -220,16 +221,18 @@ function WorkbenchContainer(props: { view: ViewContribution; path: string; ances
 }
 
 /** Native and external renderers use one resolution path, including named container slots. */
-export function WorkbenchSlot(props: { placement: WorkbenchSlotID; children?: ReactNode | ((context: ViewRenderContext) => ReactNode); className?: string; trafficLightInset?: number }): ReactElement {
+export function WorkbenchSlot(props: { placement: WorkbenchSlotID; children?: ReactNode | ((context: ViewRenderContext) => ReactNode); className?: string; trafficLightInset?: number; windowControls?: Omit<WindowControlsProps, 'className'> | undefined }): ReactElement {
     const host = useWorkbench();
     const selected = resolveSlot(host.views, props.placement, host.selections[props.placement]);
     const native = (context: ViewRenderContext): ReactNode => typeof props.children === 'function' ? props.children(context)
         : props.children ?? host.features.get(DEFAULT_SLOTS[props.placement] ?? '')?.render(context);
     if (!selected?.pluginID) return <>{native({ visible: true, trafficLightInset: props.trafficLightInset ?? 0 })}</>;
     const height = props.placement === 'topbar' ? 44 : props.placement === 'statusbar' ? 32 : props.placement === 'panel.bottom' ? 220 : undefined;
+    const view = <NativeRendererScope selected={selected} compact={props.placement === 'topbar' || props.placement === 'statusbar'} adapters={DEFAULT_SLOTS[props.placement] ? { [DEFAULT_SLOTS[props.placement]!]: native } : {}}><RegisteredView view={selected} path="root" /></NativeRendererScope>;
     return <div data-workbench-slot={props.placement} data-view-id={selected.id} className={props.className ?? 'flex h-full min-h-0 w-full'} style={height ? { height, flexShrink: 0 } : undefined}>
         {props.placement === 'topbar' && props.trafficLightInset ? <div data-titlebar-drag="true" style={{ width: props.trafficLightInset, flexShrink: 0, height: '100%' }} /> : null}
-        <NativeRendererScope selected={selected} compact={props.placement === 'topbar' || props.placement === 'statusbar'} adapters={DEFAULT_SLOTS[props.placement] ? { [DEFAULT_SLOTS[props.placement]!]: native } : {}}><RegisteredView view={selected} path="root" /></NativeRendererScope>
+        {props.placement === 'topbar' && props.windowControls ? <div className="min-w-0 flex-1">{view}</div> : view}
+        {props.placement === 'topbar' && props.windowControls ? <WindowControls {...props.windowControls} className="ml-auto flex shrink-0 items-center self-stretch" /> : null}
     </div>;
 }
 

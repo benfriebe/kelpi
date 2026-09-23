@@ -25,7 +25,7 @@ import { usePluginNavigation } from './plugins/use-navigation';
 import { useRemoteWorkspaceSelection } from './app/remote-selection';
 import { PluginView } from './plugins/PluginView';
 import { WorkbenchProvider, WorkbenchSidebar, WorkbenchSlot, useWorkbenchLayout, type WorkbenchSlotID } from './plugins/Workbench';
-import { resolveSidebarViews, selectWorkbenchView } from './plugins/registry';
+import { resolveSidebarViews, resolveSlot, selectWorkbenchView } from './plugins/registry';
 import { PluginsTab } from './plugins/PluginsTab';
 import { usePluginCommands } from './plugins/commands';
 import { renderRegisteredView } from './plugins/renderers';
@@ -3645,6 +3645,7 @@ function Shell(props: AppProps): ReactElement {
         shellAction: act.shellAction, restartControlServer: act.restartControlServer, restartUI, selectPane: statusActions.selectPane
     });
     const chromeModel = chromeSource.snapshot();
+    const pluginTopbarSelected = resolveSlot(workbench.views, 'topbar', workbench.selections.topbar)?.pluginID !== undefined;
     const pluginChrome = usePluginChrome(runtime, chromeSource);
     const executeChrome = (id: string, target: { workspaceID?: string; paneID?: string } = workspace ? { workspaceID: workspace.id } : {}): void => {
         const failed = (error: unknown): void => notifyFailure('Window chrome', error instanceof Error ? error.message : String(error));
@@ -3670,7 +3671,7 @@ function Shell(props: AppProps): ReactElement {
                 bindInspectorFeature({ model: inspectorData, actions: act, focusedPaneID,
                     profiles: settings.profiles, labelPresets: daemon.state.labelPresets, bucket }),
                 bindToolbarFeature({ model: chromeModel, presentation: { panes, bucket, connectionError: ui.connectionError,
-                    dragRegion: shellWindowID !== null, windowControls, windowMaximized: ui.windowMaximized,
+                    dragRegion: shellWindowID !== null, windowControls: windowControls && !pluginTopbarSelected, windowMaximized: ui.windowMaximized,
                     onWindowControl: requestWindowControl },
                     contributions: contributionItems('workspace.header'), execute: executeChrome }),
                 bindStatusbarFeature({ model: statusModel, presentation: { bucket }, contributions: contributionItems('statusbar'),
@@ -3771,7 +3772,8 @@ function Shell(props: AppProps): ReactElement {
                 />
             ) : (
             <>
-            <WorkbenchSlot placement="topbar" trafficLightInset={trafficLightInset} />
+            <WorkbenchSlot placement="topbar" trafficLightInset={trafficLightInset}
+                windowControls={windowControls ? { connection: chromeModel.connection, maximized: ui.windowMaximized, onWindowControl: requestWindowControl } : undefined} />
 
             {/*
               * §WS-075's create sheet for the case the sidebar cannot cover: a plugin view

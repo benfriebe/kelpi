@@ -261,6 +261,7 @@ describe('the presented interaction placements in Settings', () => {
 
 describe('registered toolbar and status hosts', () => {
     it('resolves root bindings, retains hidden native tabs, bounds ownership and restores missing providers', () => {
+        const onWindowControl = vi.fn();
         plugins = [{ manifest: decodePluginManifest({ id: 'sample.chrome', version: '1.0.0', apiVersion: 1, trust: 'full', contributes: {
             views: [{ id: 'sample.chrome.bar', title: 'Replacement bar', entry: 'ui/index.html', placements: ['topbar', 'statusbar', 'sample.chrome.custom'] }],
             containers: [{ id: 'sample.chrome.tabs', title: 'Toolbar tabs', placements: ['topbar'], layout: 'tabs', slots: [
@@ -275,13 +276,18 @@ describe('registered toolbar and status hosts', () => {
             const features = [TOOLBAR_FEATURE, STATUSBAR_FEATURE].map(definition => ({ definition,
                 render: (context: FeatureRenderContext) => <NativeFeature id={definition.id} context={context} /> }));
             return <WorkbenchProvider layout={layout} runtime={runtime} chords={[]} features={features}>
-                <PlacementSettings /><WorkbenchSlot placement="topbar" trafficLightInset={86} /><WorkbenchSlot placement="statusbar" />
+                <PlacementSettings /><WorkbenchSlot placement="topbar" trafficLightInset={86}
+                    windowControls={{ connection: 'connected', maximized: true, onWindowControl }} /><WorkbenchSlot placement="statusbar" />
             </WorkbenchProvider>;
         }
         const h = render(<ChromeHarness />);
         expect(screen.getByTestId('kelpi.topbar').dataset.inset).toBe('86');
         expect(screen.getByTestId('kelpi.statusbar')).toBeDefined();
         fireEvent.change(screen.getByLabelText('topbar'), { target: { value: 'sample.chrome.tabs' } });
+        expect(screen.getByTestId('window-controls')).toBeDefined();
+        expect(screen.getByRole('button', { name: 'Restore' })).toBeDefined();
+        fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+        expect(onWindowControl).toHaveBeenCalledWith('close');
         expect(screen.getAllByTestId('kelpi.topbar')).toHaveLength(1);
         expect(screen.getAllByTestId('kelpi.statusbar')).toHaveLength(1);
         expect(screen.getByTestId('kelpi.topbar').dataset.inset).toBe('0');

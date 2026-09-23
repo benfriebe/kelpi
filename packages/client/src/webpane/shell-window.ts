@@ -75,6 +75,29 @@ export function readTrafficLightInset(search?: string): number {
     return Math.min(parsed, MAX_TRAFFIC_LIGHT_INSET);
 }
 
+/**
+ * "Must I draw the window's own minimise / maximise / close buttons?" (§APP-046b).
+ *
+ * The fourth of the same family as the three above, and the only one that is a plain yes/no. The
+ * shell creates its window `titleBarStyle: 'hidden'` on Windows and Linux, where — unlike macOS —
+ * there is no native cluster it can position and no working overlay to defer to, so the page's own
+ * strip has to carry the buttons. `shell/src/titlebar.ts` decides which platforms those are and
+ * says so with `?windowControls=1`.
+ *
+ * Absent ⇒ false, which is right for macOS (AppKit draws real traffic lights over this strip),
+ * for a browser tab (the browser's own frame has them), and for any platform the shell left with
+ * an ordinary frame. Drawing a close button that does nothing would be worse than drawing none,
+ * so silence means no.
+ */
+export const WINDOW_CONTROLS_PARAM = 'windowControls';
+
+export function readWindowControls(search?: string): boolean {
+    const value = readParam(WINDOW_CONTROLS_PARAM, search);
+    if (value === null) return false;
+    const trimmed = value.trim().toLowerCase();
+    return trimmed === '1' || trimmed === 'true';
+}
+
 function readParam(name: string, search?: string): string | null {
     const raw =
         search ??

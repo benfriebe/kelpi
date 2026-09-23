@@ -37,6 +37,9 @@ import {
     WS_HOTKEY_STATUS_MESSAGE,
     WS_PROTOCOL_VERSION,
     WS_SHELL_ACTIVATION_MESSAGE,
+    WS_WINDOW_CONTROL_ACTIONS,
+    WS_WINDOW_CONTROL_MESSAGE,
+    WS_WINDOW_FRAME_STATE_MESSAGE,
     WS_WORKSPACE_SELECTION_MESSAGE,
     WS_SETTINGS_CHANGED_MESSAGE,
     WS_SETTINGS_COMMANDS,
@@ -54,7 +57,8 @@ import {
     type WsRejectionReason,
     type WsSettingsCommand,
     type WsSettingsSnapshot,
-    type WsTransportStatus
+    type WsTransportStatus,
+    type WsWindowControlAction
 } from '@kelpi/protocol';
 
 import { formatIconString, newUUID, normalizeIconEmoji, parseIconString } from '@kelpi/core/codec';
@@ -1366,6 +1370,17 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
      * daemon has no registrar, so there is nothing to say and Settings shows no warning.
      */
     let lastHotkeyStatus: JsonObject | null = null;
+    /**
+     * §APP-046b: the last `window-frame-state` per shell window, so a client that attaches later
+     * can be told. Keyed by `windowID`, because two windows are independently maximised; a report
+     * with no window id is kept under `''` and applies to whoever hears it.
+     *
+     * Each entry remembers the session that reported it so `close` can drop it. The shell's
+     * `windowID` is a fresh `randomUUID()` per launch and the daemon outlives the app, so an
+     * entry that is never removed is not merely stale — it is unreachable forever (no future
+     * client can match that id) while still being replayed on every single `hello`.
+     */
+    const lastWindowFrameState = new Map<string, { reporter: SessionImpl; message: JsonObject }>();
 
     const report = (error: unknown, context: string): void => {
         options.onError?.(toError(error), context);
@@ -1592,6 +1607,12 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                 case WS_WORKSPACE_SELECTION_MESSAGE:
                     workspaceSelectionReport(parsed);
                     return;
+                case WS_WINDOW_CONTROL_MESSAGE:
+                    windowControlRequest(parsed);
+                    return;
+                case WS_WINDOW_FRAME_STATE_MESSAGE:
+                    windowFrameStateReport(parsed, this);
+                    return;
                 case 'ping': {
                     const id = text(parsed['id']);
                     this.send({ type: 'pong', id: id ?? '' });
@@ -1673,6 +1694,13 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             }
             this.consoleSubs.clear();
             this.panes?.close();
+            // §APP-046b: and a departed shell's maximised-window reports go with it. The window
+            // it described cannot come back — `shellWindowID` is minted per launch — so keeping
+            // the entry would only lengthen every future `hello` by one dead frame. A shell whose
+            // socket merely dropped re-reports its current state on its next `welcome`.
+            for (const [key, state] of lastWindowFrameState) {
+                if (state.reporter === this) lastWindowFrameState.delete(key);
+            }
             sessions.delete(this);
             // The departing owner hands size control to the most recent remaining UI that has
             // reported any geometry, and that UI's cached layout applies at once — panes must
@@ -1833,6 +1861,21 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             // client that attaches nothing (a content-only workspace) still knows whose
             // window the terminals follow. This client's own first attach supersedes it.
             if (sizeOwnerID !== null) this.send({ type: 'size-control', ownerClientID: sizeOwnerID });
+
+            /*
+             * §APP-046b: and the maximised state of every window we have heard about.
+             *
+             * Here rather than on the shell's own `welcome` for the reason the hotkey status is
+             * here: the two connections are independent, and the one that RELOADS is the page.
+             * A client that reloads while its window is maximised would otherwise draw (and
+             * announce, to a screen reader) "Maximise" on a button that restores, until the user
+             * toggled it by hand.
+             *
+             * Sending every window's is safe and is what keeps this cheap: the client applies
+             * only the report whose `windowID` matches its own `?shellWindow=`, so a stale entry
+             * for a window that has since closed reaches nobody who would act on it.
+             */
+            for (const state of lastWindowFrameState.values()) this.send(state.message);
 
             // Sugar for the Electron shell: claiming the host role in the handshake saves a
             // round-trip and removes the window where the daemon has a client but no host.
@@ -2920,6 +2963,60 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             selected: Math.floor(selected),
             ...(windowID === undefined ? {} : { windowID })
         });
+    }
+
+    /**
+     * §APP-046b: `window-control` from a client → the shell that owns that window.
+     *
+     * `workspace-selection` with a verb instead of a count, and the daemon has exactly as little
+     * opinion about it: it owns no windows, cannot minimise anything, and is here only because it
+     * is the one party the page and the shell both hold a socket to. Nothing is stored — a window
+     * command is about a window that may already be gone.
+     *
+     * An unrecognised action is DROPPED rather than forwarded. The shell would have to refuse it
+     * anyway, and a daemon that forwards anything a page types leaves the guess about what
+     * `{"action":"destroy"}` means to whichever end is newer.
+     */
+    function windowControlRequest(message: Record<string, unknown>): void {
+        const action = text(message['action']);
+        if (action === undefined || !WS_WINDOW_CONTROL_ACTIONS.includes(action as WsWindowControlAction)) return;
+        const windowID = text(message['windowID']);
+        revealPane({
+            type: WS_WINDOW_CONTROL_MESSAGE,
+            action,
+            ...(windowID === undefined ? {} : { windowID })
+        });
+    }
+
+    /**
+     * §APP-046b: `window-frame-state` from the shell → the client drawing that window's buttons.
+     *
+     * `shell-activation`'s twin in shape and scoping, and its opposite in one respect: this one
+     * IS remembered, because the two facts differ. Activation describes a moment that has passed
+     * by the time anyone could replay it; a window that is maximised STAYS maximised while nobody
+     * is looking, so the last report is still true when the next client attaches. A client that
+     * has heard nothing still assumes "not maximised", which is what a freshly created window is.
+     *
+     * A non-boolean is refused rather than defaulted — guessing would draw the wrong glyph, and
+     * the next real report is never far away. Refusing it here is also what keeps the memo clean:
+     * a malformed frame is never stored, so no bad report is ever replayed.
+     */
+    function windowFrameStateReport(message: Record<string, unknown>, reporter: SessionImpl): void {
+        const maximized = message['maximized'];
+        if (typeof maximized !== 'boolean') return;
+        const windowID = text(message['windowID']);
+        const relayed: JsonObject = {
+            type: WS_WINDOW_FRAME_STATE_MESSAGE,
+            maximized,
+            ...(windowID === undefined ? {} : { windowID })
+        };
+        // Kept against the SESSION that reported it, not just the window id, so the entry can be
+        // dropped when that shell goes (see `close`). `shellWindowID` is a fresh `randomUUID()`
+        // per shell launch, so without that the map would gain a permanent entry every time the
+        // app restarts under a daemon that outlives it — and every one of them would be replayed
+        // to every client that ever connects again.
+        lastWindowFrameState.set(windowID ?? '', { reporter, message: relayed });
+        revealPane(relayed);
     }
 
     const unsubscribe = store.subscribe((events) => {

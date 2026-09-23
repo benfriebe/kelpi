@@ -1,6 +1,6 @@
 import { pluginJSON, type JsonObject } from '@kelpi/protocol';
 import type { ChromeSnapshot } from '../../../plugin-sdk/chrome';
-export type { ChromeSnapshot, ChromeCommand, ChromeItem } from '../../../plugin-sdk/chrome';
+export type { ChromeSnapshot, ChromeCommand, ChromeItem, ChromeKeymap, ChromeKeymapCommand, ChromeKeymapPlugin, ChromeKeymapSection } from '../../../plugin-sdk/chrome';
 
 export const CHROME_UI_METHODS = ['ui.getChrome', 'ui.executeChromeCommand'] as const;
 export interface ChromeSource {

@@ -28,6 +28,40 @@ export interface ChromeSnapshot {
     /** Null until the primary daemon supplies a sample. Values are display-ready, daemon-owned metrics. */
     readonly systemStats: readonly { readonly id: string; readonly title: string; readonly text: string; readonly detail: string }[] | null;
     readonly items: readonly ChromeItem[];
+    /** The live keyboard map Help draws, native and plugin. Read-only: rebinding stays in Settings. */
+    readonly keymap: ChromeKeymap;
+}
+/**
+ * Every shortcut in this window's own spelling (`⌘D` on macOS, `Ctrl+D` elsewhere), after the
+ * user's rebinds and unbinds. Nothing here can change a binding.
+ */
+export interface ChromeKeymap {
+    /** Native actions by Settings category, in Help's order. */
+    readonly sections: readonly ChromeKeymapSection[];
+    /** The primary daemon's enabled, running plugins in palette order, each command listed whatever its `when`. */
+    readonly plugins: readonly ChromeKeymapPlugin[];
+    /** Plugin commands after the carried ones that this snapshot had no room for. Usually zero. */
+    readonly withheld: number;
+}
+export interface ChromeKeymapSection {
+    readonly category: string;
+    readonly actions: readonly { readonly action: string; readonly title: string; readonly shortcut: string | null }[];
+}
+export interface ChromeKeymapPlugin {
+    /** The plugin's display name. */
+    readonly name: string;
+    readonly commands: readonly ChromeKeymapCommand[];
+}
+export interface ChromeKeymapCommand {
+    readonly id: string;
+    readonly title: string;
+    /** The chord that runs this command while it applies; null when it has none, or loses it. */
+    readonly shortcut: string | null;
+    /**
+     * Set when the command's own shortcut runs something else first: a native action, or an
+     * earlier plugin command (`plugin` names its plugin). `shortcut` is then null.
+     */
+    readonly shadowed: { readonly shortcut: string; readonly by: string; readonly plugin: string | null } | null;
 }
 export interface ChromeCommand {
     readonly id: string; readonly title: string; readonly enabled: boolean;

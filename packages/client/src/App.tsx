@@ -14,6 +14,7 @@ import { settingsPresenterChords } from './settings/presenter-slot';
 // §APP-071's change counts, shared rather than recomputed: the pane chrome frame carries the same
 // `doc N +A -B` the status footer draws, resolved by the same longest-worktree-path match.
 import { footerGitStats } from './chrome/StatusFooter';
+import { boundKeymap, buildKeymap, nativeChordOwners } from './chrome/keymap';
 import { useInteractionSurface } from './interaction/use-interaction';
 import { createUIServiceAdapter } from './plugins/ui-services';
 import { PluginContributionItems } from './plugins/contributions-ui';
@@ -180,7 +181,6 @@ import {
 } from './connection';
 import {
     chordKeysForBindings,
-    chordKeysForTrigger,
     createContentClient,
     type FontSizeStep
 } from './content';
@@ -3038,15 +3038,13 @@ function Shell(props: AppProps): ReactElement {
     const searchChords = useMemo(() => paneSearchPresenterChords(bindings), [bindings]);
 
     // A plugin shortcut must reserve every native binding, including the copy/paste and
-    // text-editing chords intentionally omitted from the sandboxed content-frame relay.
-    const reservedPluginChords = useMemo(() => {
-        const globalTrigger = settings.general.globalHotkey ? parseKeyTrigger(settings.general.globalHotkey) : null;
-        return [...new Set([
-            ...contentPaneChords,
-            ...[...bindings.values()].flatMap(binding => chordKeysForTrigger(binding.trigger)),
-            ...(globalTrigger ? chordKeysForTrigger(canonicalTriggerForPlatform(globalTrigger, /Mac|iPhone|iPad/.test(navigator.platform))) : [])
-        ])].sort();
-    }, [bindings, contentPaneChords, settings.general.globalHotkey]);
+    // text-editing chords intentionally omitted from the sandboxed content-frame relay. The
+    // names are what Help says a shadowed plugin shortcut runs instead.
+    const nativeChords = useMemo(
+        () => nativeChordOwners(bindings, settings.general.globalHotkey, /Mac|iPhone|iPad/.test(navigator.platform)),
+        [bindings, settings.general.globalHotkey]
+    );
+    const reservedPluginChords = useMemo(() => [...nativeChords.keys()].sort(), [nativeChords]);
     // Publish the assembly-owned surfaces so shared plugin prompts wait for their turn. The
     // palette is NOT one of them any more: `InteractionHost` holds the single registration that
     // covers the palette and a painted prompt alike (§2.3).
@@ -3056,6 +3054,15 @@ function Shell(props: AppProps): ReactElement {
         surface.blocksWindowInput() || settingsOpenRef.current || helpOpenRef.current ||
         createSheetOpenRef.current || anyModalMounted || remoteSelectionRef.current !== null);
     const allViewChords = useMemo(() => [...contentPaneChords, ...pluginCommands.chords], [contentPaneChords, pluginCommands.chords.join('|')]);
+    /**
+     * The keyboard map Help draws and the chrome snapshot publishes, bounded, from one build. Plugin
+     * rows are the dispatcher's own resolution, which is rebuilt on every mirror tick, so the key is
+     * what a row renders rather than that array's identity.
+     */
+    const keymapKey = JSON.stringify(pluginCommands.shortcuts.map(({ command, keys, takenBy }) =>
+        [command.pluginID, command.pluginName, command.id, command.title, keys, takenBy?.chord ?? null, takenBy?.command?.id ?? null]));
+    const keymap = useMemo(() => buildKeymap({ bindings, native: nativeChords, plugins: pluginCommands.shortcuts }), [bindings, nativeChords, keymapKey]);
+    const snapshotKeymap = useMemo(() => boundKeymap(keymap), [keymap]);
     const contributionItems = (placement: 'statusbar' | 'workspace.header' | 'pane.header', paneID?: string): ReactNode => {
         const items = placement === 'pane.header' && paneID !== undefined ? paneHeaderItems.items(paneID) : pluginCommands.items(placement, paneID);
         return items.length ? <PluginContributionItems items={items} paneID={paneID} compact={placement === 'pane.header'}
@@ -3789,7 +3796,7 @@ function Shell(props: AppProps): ReactElement {
         runtime, sidebars: workbench.sidebars, sidebarVisible, inspectorVisible,
         remoteWorkspaceSelected: () => remoteSelectionRef.current !== null, shellAvailable: shellWindowID !== null,
         associations: { workspaceID: workspace?.id ?? null, values: inspectorData.associations }, plugins: pluginCommands,
-        toggleSidebar: act.toggleSidebar, toggleInspector: act.toggleInspector,
+        keymap: snapshotKeymap, toggleSidebar: act.toggleSidebar, toggleInspector: act.toggleInspector,
         openSettings, openHelp: () => setHelpOpen(true),
         openPalette: () => { surface.palette.open({ id: 'native:chrome-command', kind: 'native', displayName: 'Command Palette' }); },
         shellAction: act.shellAction, restartControlServer: act.restartControlServer, restartUI, selectPane: statusActions.selectPane
@@ -4351,7 +4358,7 @@ function Shell(props: AppProps): ReactElement {
 
             {helpOpen ? (
                 <HelpOverlay
-                    bindings={bindings}
+                    keymap={keymap}
                     version={daemon.info?.version ?? 'unknown'}
                     onClose={() => {
                         setHelpOpen(false);
@@ -4360,6 +4367,10 @@ function Shell(props: AppProps): ReactElement {
                     onOpenKeybindings={() => {
                         setHelpOpen(false);
                         openSettings('keybindings');
+                    }}
+                    onOpenPlugins={() => {
+                        setHelpOpen(false);
+                        openSettings('plugins');
                     }}
                 />
             ) : null}

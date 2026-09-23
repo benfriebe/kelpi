@@ -6,6 +6,8 @@ import { App } from './App';
 import { SHELL_CLOSE_GLOBAL } from './app/shell-close';
 import { modalPresenceCount } from './chrome/modal-presence';
 import { completeHandshake, createFakeSocketFactory } from './connection';
+import type { ChromeSnapshot } from './plugins/chrome';
+import { requestHostUI, type PluginHostUI } from './plugins/host-ui';
 import type { PluginViewProps } from './plugins/PluginView';
 import type { UIServiceScope } from './plugins/ui-services';
 import { createKelpiRuntime, createKelpiStore } from './state';
@@ -13,12 +15,13 @@ import { createFakeRendererFactory } from './terminal/testing';
 
 // Keep the App-owned model, workbench context, prompt host, and dispatchers real. The
 // view substitutes only for jsdom's non-executing srcdoc/MessagePort boundary.
-const bridge = vi.hoisted(() => ({ scope: null as UIServiceScope | null }));
+const bridge = vi.hoisted(() => ({ scope: null as UIServiceScope | null, host: null as PluginHostUI | null }));
 vi.mock('./plugins/PluginView', async () => {
     const { useContext, useEffect, createElement } = await import('react');
     const { PluginHostUIContext } = await import('./plugins/host-ui');
     return { PluginView(props: PluginViewProps) {
         const host = useContext(PluginHostUIContext);
+        bridge.host = host;
         useEffect(() => {
             if (host?.runtime !== props.runtime || !host.services) return;
             const scope = host.services.createScope({ id: 'test-view-lease', pluginID: props.pluginID, pluginName: 'Prompt example' });
@@ -64,7 +67,7 @@ function setup() {
     return { runtime, request, commands, pluginRuns, menu };
 }
 
-afterEach(() => { cleanup(); bridge.scope = null; localStorage.clear(); vi.restoreAllMocks(); });
+afterEach(() => { cleanup(); bridge.scope = null; bridge.host = null; localStorage.clear(); vi.restoreAllMocks(); });
 
 describe('App ownership of plugin prompts', () => {
     it('queues a view prompt behind Settings, then shows and focuses it after Settings closes', async () => {
@@ -139,6 +142,39 @@ describe('App ownership of plugin prompts', () => {
             h.menu('new-workspace');
             expect(screen.getByTestId('new-workspace-sheet')).toBeTruthy();
             fireEvent.click(screen.getByTestId('new-workspace-cancel'));
+        } finally { cleanup(); h.runtime.dispose(); }
+    });
+});
+
+describe('App Help and the chrome keymap', () => {
+    const helpShortcut = (id: string) => document.querySelector(`[data-help-command="${id}"] [data-help-shortcut]`)?.getAttribute('data-help-shortcut');
+    const chromeRow = (h: ReturnType<typeof setup>) =>
+        (requestHostUI(bridge.host, h.runtime, 'ui.getChrome', {}) as unknown as ChromeSnapshot).keymap.plugins
+            .find(plugin => plugin.name === 'Prompt example')?.commands.find(command => command.id === 'sample.prompt.run');
+
+    it('lists a plugin command and its live shortcut in Help and in the snapshot, following a user rebind', async () => {
+        const h = setup();
+        try {
+            await waitFor(() => expect(bridge.host?.chrome).toBeTruthy());
+            await waitFor(() => expect(chromeRow(h)?.shortcut).toBe('⌃⌥B'));
+            h.menu('help');
+            expect(screen.getByTestId('help-overlay')).toBeTruthy();
+            expect(document.querySelector('[data-help-plugin="Prompt example"]')).toBeTruthy();
+            expect(helpShortcut('sample.prompt.run')).toBe('⌃⌥B');
+
+            // Settings ▸ Plugins writes this key and announces it; Help and the snapshot follow.
+            const key = 'kelpi.plugin-shortcuts.v1:prompt-test-daemon';
+            act(() => {
+                localStorage.setItem(key, JSON.stringify({ 'sample.prompt.run': 'ctrl+shift+left' }));
+                window.dispatchEvent(new CustomEvent('kelpi:plugin-shortcuts-changed', { detail: key }));
+            });
+            await waitFor(() => expect(helpShortcut('sample.prompt.run')).toBe(''));
+            expect(document.querySelector('[data-help-command="sample.prompt.run"] [data-help-shadowed-by]')?.textContent).toBe('⌃⇧← runs Move Pane Left');
+            await waitFor(() => expect(chromeRow(h)).toMatchObject({ shortcut: null, shadowed: { shortcut: '⌃⇧←', by: 'Move Pane Left', plugin: null } }));
+
+            fireEvent.click(screen.getByTestId('help-open-plugins'));
+            expect(screen.queryByTestId('help-overlay')).toBeNull();
+            expect(screen.getByTestId('settings-tab-button-plugins').getAttribute('aria-selected')).toBe('true');
         } finally { cleanup(); h.runtime.dispose(); }
     });
 });

@@ -8,7 +8,8 @@ export function chromeSnapshot(name = 'Workspace'): ChromeSnapshot {
     return { connection: 'connected', ready: true, remoteWorkspaceSelected: false,
         workspace: { id: 'workspace', name, color: 'blue', paneCount: 2, layout: 'tiled', syncInputActive: false, syncedPaneCount: 2 },
         focusedPane: null, sidebars: { left: { viewID: 'kelpi.workspaces', title: 'Workspaces', visible: true }, right: { viewID: 'kelpi.inspector', title: 'Inspector', visible: false } },
-        sizeControl: 'this-window', layouts: [], commands: [], agents: { running: 0, waiting: 0, inactive: 0 }, agentPanes: [], git: null, systemStats: null, items: [] };
+        sizeControl: 'this-window', layouts: [], commands: [], agents: { running: 0, waiting: 0, inactive: 0 }, agentPanes: [], git: null, systemStats: null, items: [],
+        keymap: { sections: [], plugins: [], withheld: 0 } };
 }
 describe('window chrome snapshots and commands', () => {
     it('coalesces committed updates, freezes snapshots, and reads the latest source for requests', async () => {

@@ -1,11 +1,10 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { useStore } from 'zustand';
-import { parseKeyTrigger, canonicalTriggerForPlatform } from '@kelpi/core/config';
 import type { PluginContributionInfo, PluginInfo, PluginMenuDefinition } from '@kelpi/protocol';
-import { chordKey, chordKeysForTrigger } from '../content/bridge';
+import { chordKey } from '../content/bridge';
 import type { KelpiRuntime } from '../state';
 import { getCurrentPlugins, pluginRequest, usePlugins } from './client';
-import { usePluginShortcuts } from './shortcuts';
+import { resolvePluginChords, usePluginShortcuts } from './shortcuts';
 import { contributionContext, getPluginContributionState, matchesWhen, resolveContributionItems, resolveContributionMenus, usePluginContributions } from './contributions';
 
 export function usePluginCommands(runtime: KelpiRuntime, reservedChords: readonly string[], isBlocked?: () => boolean) {
@@ -49,21 +48,13 @@ export function usePluginCommands(runtime: KelpiRuntime, reservedChords: readonl
     const commands = useMemo(() => plugins.filter(available).flatMap(plugin => plugin.manifest.contributes.commands.map(command => {
         const context = contributionContext(mirror, states.get(plugin.manifest.id)?.state.context);
         return { ...command, shortcut: Object.hasOwn(overrides, command.id) ? overrides[command.id] ?? undefined : command.shortcut,
-            pluginName: plugin.manifest.name, visible: matchesWhen(command.when, context), enabled: matchesWhen(command.enablement, context),
+            pluginID: plugin.manifest.id, pluginName: plugin.manifest.name, visible: matchesWhen(command.when, context), enabled: matchesWhen(command.enablement, context),
             run: (paneID?: string) => run(command.id, paneID) };
     })), [runtime, plugins, overrides, states, mirror]);
-    const bindings = useMemo(() => {
-        const claimed = new Set(reservedChords);
-        return commands.flatMap(command => {
-            if (!command.visible || !command.enabled) return [];
-            const trigger = command.shortcut ? parseKeyTrigger(command.shortcut) : null;
-            if (!trigger || !trigger.modifiers.some(modifier => modifier !== 'shift')) return [];
-            const keys = chordKeysForTrigger(canonicalTriggerForPlatform(trigger, /Mac|iPhone|iPad/.test(navigator.platform)))
-                .filter(key => !claimed.has(key) && !key.startsWith('0/'));
-            for (const key of keys) claimed.add(key);
-            return keys.map(key => ({ key, run: command.run }));
-        });
-    }, [commands, reservedChords]);
+    // Help reads this same resolution, so it cannot name a chord the dispatcher would not honour.
+    const shortcuts = useMemo(() => resolvePluginChords(commands, reservedChords, /Mac|iPhone|iPad/.test(navigator.platform)), [commands, reservedChords]);
+    const bindings = useMemo(() => shortcuts.flatMap(({ command, keys }) =>
+        command.visible && command.enabled ? keys.map(key => ({ key, run: command.run })) : []), [shortcuts]);
     useEffect(() => {
         const onKey = (event: KeyboardEvent): void => {
             if (event.defaultPrevented || event.isComposing || event.keyCode === 229 || latest.current.isBlocked?.()) return;
@@ -76,7 +67,7 @@ export function usePluginCommands(runtime: KelpiRuntime, reservedChords: readonl
         return () => window.removeEventListener('keydown', onKey, true);
     }, [bindings]);
     return {
-        commands, chords: bindings.map(binding => binding.key), states, plugins, run, runItem,
+        commands, shortcuts, chords: bindings.map(binding => binding.key), states, plugins, run, runItem,
         menu: (placement: PluginMenuDefinition['placement'], paneID?: string) => resolveContributionMenus(plugins, states, mirror, placement, paneID).map(item => ({
             ...item, shortcut: commands.find(command => command.id === item.command)?.shortcut,
             pluginName: plugins.find(plugin => plugin.manifest.id === item.pluginID)?.manifest.name ?? item.pluginID,

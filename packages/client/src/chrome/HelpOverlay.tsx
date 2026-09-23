@@ -9,19 +9,19 @@
  * only *pointed at*: **the keybindings themselves**, read from the live map.
  *
  * "Live" is the point. The rows are built from the same `KeyBindingMap` the dispatcher resolves,
- * which is the daemon's parsed `keybind` lines — so a rebound ⌘D shows its new trigger here, an
- * unbound action shows an em dash rather than a shortcut that does nothing, and the list can
- * never drift from what the keyboard actually does.
+ * which is the daemon's parsed `keybind` lines, so a rebound ⌘D shows its new trigger here, an
+ * unbound action shows a dash rather than a shortcut that does nothing, and the list can never
+ * drift from what the keyboard actually does. They arrive as the keymap model (`keymap.ts`), the
+ * value the chrome snapshot publishes, which adds the primary daemon's plugin commands grouped by
+ * plugin, with the shortcut each one really runs on after the user's overrides and collisions.
  *
  * The CLI column exists because half of what this app can do has no key at all: the section is
  * a short, honest pointer at `kelpi --help` and the verbs a GUI user is most likely to want.
  */
 
-import type { KeyBindingMap, KelpiAction } from '@kelpi/core/config';
 import { useEffect, useRef, type ReactElement } from 'react';
 
-import { ACTION_CATALOG, VISIBLE_CATEGORIES, type SettingsCategory } from '../settings/catalog';
-import { shortcutForAction } from './keys';
+import type { ChromeKeymap, ChromeKeymapCommand } from '../plugins/chrome';
 import { tokens } from './tokens';
 
 /** APP-063's repository link, unchanged from `HelpView.swift:5`. */
@@ -73,28 +73,22 @@ export const HELP_CLI_ENTRIES: readonly HelpCliEntry[] = [
 ];
 
 export interface HelpOverlayProps {
-    readonly bindings: KeyBindingMap;
+    /** The live keyboard map, `buildKeymap`'s whole value rather than the snapshot's bounded one. */
+    readonly keymap: ChromeKeymap;
     /** `CFBundleShortVersionString`'s equivalent — the daemon's reported version. */
     readonly version: string;
     readonly onClose: () => void;
     /** Opens Settings ▸ Keybindings (APP-063's "customize" link). */
     readonly onOpenKeybindings?: (() => void) | undefined;
+    /** Opens Settings ▸ Plugins, where plugin shortcuts are changed. */
+    readonly onOpenPlugins?: (() => void) | undefined;
     /** Electron only: hand the repository URL to the system browser. */
     readonly onOpenLink?: ((url: string) => void) | undefined;
 }
 
-interface Row {
-    readonly action: KelpiAction;
-    readonly label: string;
-    readonly shortcut: string | undefined;
-}
-
-function rowsFor(category: SettingsCategory, bindings: KeyBindingMap): Row[] {
-    return ACTION_CATALOG.filter((entry) => entry.category === category).map((entry) => ({
-        action: entry.action,
-        label: entry.label,
-        shortcut: shortcutForAction(bindings, entry.action)
-    }));
+/** What runs on a plugin command's shortcut instead of it, in words. */
+function shadowNote(shadowed: NonNullable<ChromeKeymapCommand['shadowed']>): string {
+    return `${shadowed.shortcut} runs ${shadowed.by}${shadowed.plugin === null ? '' : ` (${shadowed.plugin})`}`;
 }
 
 export function HelpOverlay(props: HelpOverlayProps): ReactElement {
@@ -184,44 +178,101 @@ export function HelpOverlay(props: HelpOverlayProps): ReactElement {
                                 </button>
                             )}
                         </div>
-                        {VISIBLE_CATEGORIES.map((category) => {
-                            const rows = rowsFor(category, props.bindings);
-                            if (rows.length === 0) return null;
-                            return (
-                                <div key={category} className="mb-3" data-help-category={category}>
+                        {props.keymap.sections.map((section) => (
+                            <div key={section.category} className="mb-3" data-help-category={section.category}>
+                                <div
+                                    className="mb-1 text-[11px] font-semibold tracking-wide uppercase"
+                                    style={{ color: tokens.textTertiary }}
+                                >
+                                    {section.category}
+                                </div>
+                                <div className="flex flex-col">
+                                    {section.actions.map((row) => (
+                                        <div
+                                            key={row.action}
+                                            data-help-action={row.action}
+                                            className="flex items-baseline justify-between gap-4 py-[3px] text-[12px]"
+                                        >
+                                            <span style={{ color: tokens.textSecondary }}>{row.title}</span>
+                                            <span
+                                                data-help-shortcut={row.shortcut ?? ''}
+                                                className="shrink-0 font-mono text-[11px]"
+                                                style={{
+                                                    color: row.shortcut === null ? tokens.textTertiary : tokens.textPrimary
+                                                }}
+                                            >
+                                                {row.shortcut ?? '-'}
+                                            </span>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        ))}
+                    </section>
+
+                    {props.keymap.plugins.length === 0 ? null : (
+                        <section data-testid="help-plugins" className="mt-4">
+                            <div className="mb-2 flex items-baseline gap-3">
+                                <h2 className="text-[13px] font-semibold">Plugin Commands</h2>
+                                {props.onOpenPlugins === undefined ? null : (
+                                    <button
+                                        type="button"
+                                        data-testid="help-open-plugins"
+                                        className="text-[12px] underline"
+                                        style={{ color: tokens.accent }}
+                                        onClick={props.onOpenPlugins}
+                                    >
+                                        Settings ▸ Plugins
+                                    </button>
+                                )}
+                            </div>
+                            {props.keymap.plugins.map((plugin, index) => (
+                                // Two plugins may share a display name, so the key is positional.
+                                <div key={index} className="mb-3" data-help-plugin={plugin.name}>
                                     <div
-                                        className="mb-1 text-[11px] font-semibold tracking-wide uppercase"
+                                        className="mb-1 text-[11px] font-semibold tracking-wide break-words uppercase"
                                         style={{ color: tokens.textTertiary }}
                                     >
-                                        {category}
+                                        {plugin.name}
                                     </div>
                                     <div className="flex flex-col">
-                                        {rows.map((row) => (
+                                        {plugin.commands.map((row) => (
                                             <div
-                                                key={row.action}
-                                                data-help-action={row.action}
+                                                key={row.id}
+                                                data-help-command={row.id}
                                                 className="flex items-baseline justify-between gap-4 py-[3px] text-[12px]"
                                             >
-                                                <span style={{ color: tokens.textSecondary }}>{row.label}</span>
+                                                <span className="flex min-w-0 flex-col">
+                                                    <span className="break-words" style={{ color: tokens.textSecondary }}>
+                                                        {row.title}
+                                                    </span>
+                                                    {row.shadowed === null ? null : (
+                                                        <span
+                                                            data-help-shadowed-by={row.shadowed.by}
+                                                            className="text-[11px] break-words"
+                                                            style={{ color: tokens.textTertiary }}
+                                                        >
+                                                            {shadowNote(row.shadowed)}
+                                                        </span>
+                                                    )}
+                                                </span>
                                                 <span
                                                     data-help-shortcut={row.shortcut ?? ''}
                                                     className="shrink-0 font-mono text-[11px]"
                                                     style={{
-                                                        color:
-                                                            row.shortcut === undefined
-                                                                ? tokens.textTertiary
-                                                                : tokens.textPrimary
+                                                        color: row.shortcut === null ? tokens.textTertiary : tokens.textPrimary,
+                                                        textDecoration: row.shadowed === null ? undefined : 'line-through'
                                                     }}
                                                 >
-                                                    {row.shortcut ?? '-'}
+                                                    {row.shortcut ?? row.shadowed?.shortcut ?? '-'}
                                                 </span>
                                             </div>
                                         ))}
                                     </div>
                                 </div>
-                            );
-                        })}
-                    </section>
+                            ))}
+                        </section>
+                    )}
 
                     <section data-testid="help-mouse" className="mt-4">
                         <h2 className="mb-2 text-[13px] font-semibold">Mouse</h2>

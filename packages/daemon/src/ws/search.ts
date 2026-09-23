@@ -162,6 +162,25 @@ export function createTerminalSearchChannel(
         return term.searchAsync(paneID, workspace.searchNeedle, { caseSensitive });
     };
 
+    /**
+     * Which recount a workspace's counts may still come from.
+     *
+     * A recount awaits the pane's buffer, and nothing orders two of them: a needle sent case
+     * sensitive and the same needle re-sent insensitive a moment later (a presenter's toggle, then
+     * its stand-down) race, and whichever finishes LAST used to publish - "no matches" under a bar
+     * that is counting insensitively. So every request that changes what is being counted - a new
+     * needle or case flag (`set`), opening or closing the bar - moves the workspace's generation,
+     * and a recount publishes only if its generation is still current when it finishes. Steps do
+     * not move it: two quick ⌘G presses count the same needle, and each has to land.
+     */
+    const generations = new Map<string, number>();
+    const generation = (workspaceID: string): number => generations.get(workspaceID) ?? 0;
+    const supersede = (workspaceID: string): number => {
+        const next = generation(workspaceID) + 1;
+        generations.set(workspaceID, next);
+        return next;
+    };
+
     const publishCounts = (
         workspaceID: string,
         paneID: string,
@@ -193,6 +212,7 @@ export function createTerminalSearchChannel(
             const workspaceID = found.id;
 
             if (action === 'toggle') {
+                supersede(workspaceID);
                 store.dispatch({ type: 'toggle-search', workspaceID });
                 const after = current(workspaceID);
                 if (after === null) return failure(`no workspace matches '${workspaceID}'`);
@@ -200,6 +220,7 @@ export function createTerminalSearchChannel(
             }
 
             if (action === 'close') {
+                supersede(workspaceID);
                 store.dispatch({ type: 'close-search', workspaceID });
                 const after = current(workspaceID);
                 if (after === null) return failure(`no workspace matches '${workspaceID}'`);
@@ -221,12 +242,18 @@ export function createTerminalSearchChannel(
                 const needle = typeof payload['needle'] === 'string' ? payload['needle'] : undefined;
                 if (needle === undefined) return failure('terminal-search set requires needle');
                 // §7.14: a new needle drops any selection; the counter falls back to `-/N`.
+                const counting = supersede(workspaceID);
                 store.dispatch({ type: 'set-search-needle', workspaceID, needle });
                 const staged = current(workspaceID);
                 if (staged === null) return failure(`no workspace matches '${workspaceID}'`);
                 const paneID = staged.searchingPaneID;
                 if (paneID === null) return snapshot(staged, [], caseSensitive);
                 const matches = await recount(staged, caseSensitive);
+                // A newer needle, case flag, open or close has superseded this count.
+                if (generation(workspaceID) !== counting) {
+                    const now = current(workspaceID);
+                    return now === null ? failure(`no workspace matches '${workspaceID}'`) : snapshot(now, matches, caseSensitive);
+                }
                 const pane = visiblePane(staged, paneID);
                 // A non-terminal pane counts in the client (its find runs in its own frame), so
                 // the daemon publishes no total for it rather than a confident zero.
@@ -238,9 +265,12 @@ export function createTerminalSearchChannel(
             }
 
             // next / prev
+            const counting = generation(workspaceID);
             const matches = await recount(found, caseSensitive);
             const live = current(workspaceID);
             if (live === null) return failure(`no workspace matches '${workspaceID}'`);
+            // Counted for a needle or flag that has since been replaced: step nothing.
+            if (generation(workspaceID) !== counting) return snapshot(live, matches, caseSensitive);
             const paneID = live.searchingPaneID;
             if (paneID === null) return snapshot(live, [], caseSensitive);
             const pane = visiblePane(live, paneID);

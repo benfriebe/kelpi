@@ -31,6 +31,7 @@ every UI-audit assertion passed. Phone emulation is distinct from physical-devic
 
 ## Phase index
 
+- [Help lists plugin commands and shortcuts](#help-lists-plugin-commands-and-shortcuts-2026-09-24).
 - [Selectable search presenter](#selectable-search-presenter-2026-09-20).
 - [Selectable pane chrome presenter](#selectable-pane-chrome-presenter-2026-09-19).
 - [Pane chrome shared model](#pane-chrome-shared-model-2026-09-18).
@@ -53,6 +54,54 @@ every UI-audit assertion passed. Phone emulation is distinct from physical-devic
 - [Foundation](#initial-implementation-2026-09-08) and [extended contracts](#extensibility-follow-up-2026-09-09).
 - [Bundled sidebars](#bundled-sidebar-features-and-window-navigation-2026-09-09), [shared UI](#reactive-contributions-and-shared-window-ui-2026-09-09) and [their integrated PR checks](#pr-publication-validation-2026-09-10).
 - [Reproduction commands](#reproduce).
+
+## Help lists plugin commands and shortcuts (2026-09-24)
+
+The Help row of the remaining UI composition work, implemented on `feature/help-plugin-shortcuts`
+(based on main `225ef73`). Tested revision: **`41b13a3`** (the code `69febad`, the scenario
+`41b13a3`). Full verification battery: **pending the coordinator's run.** Plugin API version stays
+**1** and wire generation stays **2**: the change is one additive field on the chrome snapshot and
+its SDK types. Help is not a placement and gains no presenter; it stays host-drawn, opened by its
+own window listener, the shell menu and `kelpi.window.openHelp`, which stays in the recovery floor.
+
+| Check | Result |
+| --- | --- |
+| `pnpm typecheck` | Passes (protocol, core, daemon, cli, plugin-sdk, client, shell). The SDK's new `chrome.typecheck.ts` asserts at the type level that the snapshot's `keymap` and a command row are read-only. |
+| Root vitest | **8,672 passed, 1 skipped** in 544 files (the existing optional database skip). The branch adds **21** (**8,651** on main): `chrome/keymap` (14: native rows from the live map with rebinds and unbinds, plugin grouping by identity under the display name, the non-mac spelling, conditional and disabled commands listed with their chord, unbound and never-firing shortcuts, shadowing by a native action, ⌘,, ⌘?, the global hotkey and a user rebind, a freed chord after a native unbind, plugin-vs-plugin priority including an earlier command that does not apply, the reserved set, the 64 KiB prefix bound and its `withheld` count, the worst case kept deliverable inside the 256 KiB frame and frozen, and `usePluginCommands` over a disabled and a failed plugin with a user override agreeing with the dispatcher's chords), `HelpOverlay` (5), `chrome-source` (1) and `App.plugin-ui` (1: Help and a view's `ui.getChrome()` list the same row, follow a user rebind into a shadowed chord, and the Settings ▸ Plugins link lands on the Plugins tab). One earlier full run on this branch, taken while the other two workers were testing on the machine, failed `cli/src/commands/plugin-dev.test.ts`'s file-watcher timing case once; it passed 3/3 alone and in the full run above, and nothing here touches it. |
+| Shell | **882 passed** in 47 files. |
+| Live acceptance | `node scripts/scenario.mjs plugin-chrome-features --window offscreen --no-build`: **38/38** in 11.9 s, three of them new: the snapshot lists UI Lab's three commands and Increment's live chord, Help lists the same row with the same chord under "UI Lab" after `kelpi.window.openHelp`, and Escape closes Help with the replacements still operational. Run at `offscreen` rather than `hidden` so the screenshot is real; it was read, and shows the Plugin Commands section with its Settings ▸ Plugins link, UI Lab's group, `UI Lab: Increment ⌃⌥U` (listed although its `when` is false) and a dash for the two unbound commands. |
+
+### Decisions
+
+- **One source of truth.** `chrome/keymap.ts` builds the whole map; Help draws it unbounded and the
+  snapshot carries it bounded. The plugin half is the dispatcher's own resolution, extracted from
+  `usePluginCommands` as `resolvePluginChords`, so neither surface can name a chord the window would
+  not honour. The reserved set comes from `nativeChordOwners`, the same set as before with a name
+  for each chord.
+- **What is listed.** Every declared command of every enabled, running primary-daemon plugin. Kelpi
+  has no hidden-command flag (every command is palette-listed when its `when` holds), so nothing is
+  held back; `when` and `enablement` are ignored because Help is reference. Disabled and failed
+  plugins contribute nothing, and a secondary daemon's plugins are not listed, as in the palette.
+- **Collisions.** A shadowed plugin shortcut is shown struck through with what runs instead: the
+  native action's title, `Settings`, `Kelpi Help`, `Global hotkey`, or an earlier plugin command
+  and its plugin. Between plugins the dispatcher's rule applies with the current context: a command
+  claims only while it applies, and a command that does not apply is shown what its chord would run
+  the moment it did.
+- **Bound.** 64 KiB of the 256 KiB frame for the keymap, carried as a prefix of the plugin commands
+  with `withheld` counting the rest. Without it a hundred plugins of a hundred long commands would
+  make every chrome frame undeliverable and fail every replacement toolbar.
+- **No identity leak beyond the palette's.** Rows carry command IDs and plugin display names, the
+  palette rule; no `pluginID` field.
+
+### Known gaps
+
+- Help has no search or filter, so there was nothing to extend; many plugins scroll.
+- The palette still shows a plugin shortcut in its raw config spelling (`ctrl+alt+b`) where Help
+  now shows `⌃⌥B`. Pre-existing and left alone.
+- The plugin dispatcher decides "mac" with `/Mac|iPhone|iPad/` while native bindings use
+  `macLikePlatform`; they agree on every real platform string and disagree on an empty one, which
+  is why the App-level test uses a chord without `super`. Pre-existing; the model reports whatever
+  the dispatcher does.
 
 ## Selectable search presenter (2026-09-20)
 

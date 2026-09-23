@@ -65,6 +65,7 @@ The standalone [SDK declarations](../packages/plugin-sdk/chrome.d.ts) define the
 | `git` | Focused pane's repository change counts using the native footer's path matching. |
 | `systemStats` | Enabled metrics with native display formatting, or `null` until the daemon supplies a sample. An empty array means all metrics are hidden. |
 | `items` | Current `workspace.header` and `statusbar` contributions, including text, badges, tooltips, tone, enablement and an optional command ID. |
+| `keymap` | The live keyboard map Help draws: native actions by Settings category, then plugin commands grouped by plugin display name, each with the chord that runs it. Read-only; see [the keyboard map](#the-keyboard-map). |
 
 The model stays alive when either native bar is replaced or a container tab is hidden. It
 uses the existing daemon mirror, repository model and system sampler; replacements do not
@@ -77,6 +78,42 @@ releases an awaited callback and cancels its queued delivery. Closing, failing o
 view releases the host feed. This is window state, not the daemon event stream or a durable
 replay log. A new window/view starts a new subscription. Navigation and chrome feeds have
 independent sequence numbers and acknowledgements.
+
+## The keyboard map
+
+`snapshot.keymap` is the model the native Help overlay draws, published as data. Help stays
+host-drawn and is not a placement: a view reads the map, it cannot replace Help or change a
+binding through it. Rebinding stays in Settings ▸ Keybindings for native actions and Settings ▸
+Plugins for plugin shortcuts, and the snapshot updates when either changes.
+
+```js
+const { keymap } = await kelpi.ui.getChrome();
+for (const plugin of keymap.plugins) for (const command of plugin.commands) {
+    if (command.shortcut) console.log(plugin.name, command.title, command.shortcut);
+    else if (command.shadowed) console.log(command.title, `${command.shadowed.shortcut} runs ${command.shadowed.by}`);
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `sections` | Native actions by Settings category, in Help's order: `{ category, actions: [{ action, title, shortcut }] }`. `action` is the config name (`split_right`); `shortcut` is `null` when unbound. |
+| `plugins` | `{ name, commands }` per enabled, running plugin of the primary daemon, in palette order. Disabled and failed plugins contribute nothing, and a secondary daemon's plugins are not listed, as in the palette. Two plugins with one display name are two groups. |
+| `plugins[].commands` | `{ id, title, shortcut, shadowed }` for every declared command, whatever its `when` or `enablement` says: Help is reference, not a menu, so `shortcut` is the chord that runs the command while it applies. |
+| `shadowed` | Set when the command's own shortcut runs something else first: `{ shortcut, by, plugin }`, where `by` is a native action title, `Settings`, `Kelpi Help` or `Global hotkey`, or an earlier plugin command's title with `plugin` naming its plugin. `shortcut` is then `null`. |
+| `withheld` | Plugin commands after the carried ones that this snapshot had no room for. Usually zero. |
+
+Chords use the window's own spelling, the same as Help, the palette and menu hints (`⌘D` on
+macOS, `Ctrl+D` elsewhere), after the user's rebinds, unbinds and plugin shortcut overrides.
+The plugin half is the keyboard dispatcher's own resolution, so the map cannot name a chord the
+window would not honour: native chords are claimed first, then each command that currently
+applies claims its shortcut in plugin and declaration order. A command that does not apply right
+now claims nothing and is shown what its chord would run the moment it did. An unparseable or
+Shift-only manifest shortcut never fires and is listed with `shortcut: null`.
+
+The native half is a few KiB. The plugin half is bounded to 64 KiB of the 256 KiB frame, which
+is several hundred commands: the snapshot carries a prefix of the plugin commands in order and
+`withheld` counts the rest, so many large plugins cannot make every chrome frame undeliverable.
+The native overlay draws the whole unbounded map from the same build.
 
 ## Shared commands
 
@@ -150,7 +187,8 @@ the drafts a failed presenter was holding are still in the fields the bundled pa
 
 Run `node scripts/scenario.mjs plugin-chrome-features --window hidden`. It uses private daemons to
 exercise replacement controls, sidebar swaps, status navigation, Git/system data, other plugin
-contributions, shared menus, multiple clients, remote ownership, reload and native fallback.
+contributions, the keyboard map and Help's plugin rows, shared menus, multiple clients, remote
+ownership, reload and native fallback.
 Feature, bridge, SDK, and native assembly tests cover the corresponding contracts. Use
 `--window onscreen` for visual inspection; the [validation record](plugin-validation.md)
 records dated runs against specific source revisions.

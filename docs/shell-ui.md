@@ -1269,7 +1269,15 @@ shell relays as a `menu-request` through the daemon (`packages/shell/src/main.ts
 and by the title bar's ••• ▸ "Kelpi Help". Header: the Kelpi mark + "Kelpi" + "Version X.Y.Z"
 (the daemon's reported version). A "Keyboard Shortcuts" section with a "Settings ▸ Keybindings"
 link, then every action grouped by settings category with its CURRENT shortcut read from the
-live keybinding map ("-" when unbound; `HelpOverlay.tsx:145-219`). A "Command Line" section
+live keybinding map ("-" when unbound). Then, when the primary daemon has any enabled, running
+plugin with commands, a "Plugin Commands" section with a "Settings ▸ Plugins" link: every
+command of each plugin under the plugin's display name, whatever its `when` says, with the chord
+that runs it after the user's overrides ("-" when none). A plugin shortcut that a native binding,
+⌘, (Settings), ⌘? (Help), the global hotkey or an earlier plugin command claims first is drawn
+struck through, with a line under the title naming what runs instead ("⌘D runs Split Right").
+Both sections render the keymap model (`chrome/keymap.ts`) that the chrome snapshot publishes
+(`docs/plugin-chrome.md`), so Help and a plugin view cannot disagree; the body scrolls and long
+names wrap. The overlay is host-drawn and not a plugin placement. A "Command Line" section
 listing a handful of `kelpi` verbs (`--help`, `doctor`, `md`, `diff`, `pane split|send|capture`,
 `workspace create --worktree`). Footer: a "GitHub Repository" link (handed to the system
 browser in the shell) and "Press Escape to close".

@@ -118,12 +118,13 @@ export default async function ({ page, cli, sandbox, rec, d }) {
         // both. Increment carries a `when`, and Help is reference, so it is listed regardless.
         const labRow = `(async () => { const group = (await kelpi.ui.getChrome()).keymap.plugins.find(plugin => plugin.name === 'UI Lab');
             return group?.commands.length === 3 ? group.commands.find(command => command.id === 'example.ui-lab.increment') ?? null : null; })()`;
-        const listed = await check(toolbar, `${labRow}.then(row => typeof row?.shortcut === 'string' && row.shadowed === null)`);
-        const labShortcut = listed ? (await inFrame(toolbar, labRow)).shortcut : null;
-        rec.check('the chrome snapshot lists another plugin\'s commands with the live shortcut', listed, String(labShortcut));
+        // UI Lab's manifest declares `ctrl+alt+u`, which nothing native claims and no scenario rebinds.
+        const labShortcut = '⌃⌥U';
+        const listed = await check(toolbar, `${labRow}.then(row => row?.shortcut === ${JSON.stringify(labShortcut)} && row.shadowed === null && row.currently === null)`);
+        rec.check('the chrome snapshot lists another plugin\'s commands with the manifest shortcut', listed, JSON.stringify(await inFrame(toolbar, labRow).catch(() => null)));
         await inFrame(toolbar, `kelpi.ui.executeChromeCommand('kelpi.window.openHelp')`);
         const helpRow = '[data-help-plugin="UI Lab"] [data-help-command="example.ui-lab.increment"] [data-help-shortcut]';
-        rec.check('Help lists the plugin command under its plugin with the snapshot\'s shortcut', listed && await d.settleDom(page, `document.querySelector(${JSON.stringify(helpRow)})?.getAttribute('data-help-shortcut') === ${JSON.stringify(labShortcut)}`));
+        rec.check('Help lists the plugin command under its plugin with the same shortcut', await d.settleDom(page, `document.querySelector(${JSON.stringify(helpRow)})?.getAttribute('data-help-shortcut') === ${JSON.stringify(labShortcut)}`));
         await page.eval(`document.querySelector('[data-testid="help-plugins"]')?.scrollIntoView({ block: 'center' })`);
         await rec.shot(page, 'help-plugin-commands');
         await page.key('Escape');

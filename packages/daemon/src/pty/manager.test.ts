@@ -188,6 +188,31 @@ describe('PtyManager registry (§1.2)', () => {
         delete process.env['KELPI_TEST_INHERITED'];
     });
 
+    it('uses UTF-8 for a macOS pane with no locale and respects explicit locale choices', () => {
+        const keys = ['LANG', 'LC_CTYPE', 'LC_ALL'] as const;
+        const saved = new Map(keys.map((key) => [key, process.env[key]] as const));
+        for (const key of keys) delete process.env[key];
+        try {
+            const { spawner, spawned } = stubSpawner();
+            const manager = createPtyManager({ spawner });
+            manager.spawn(spawnOpts('no-locale'));
+            expect(spawned[0]?.request.env['LC_CTYPE']).toBe(process.platform === 'darwin' ? 'UTF-8' : undefined);
+
+            manager.spawn({ ...spawnOpts('profile-locale'), env: [['LANG', 'C']] });
+            expect(spawned[1]?.request.env['LANG']).toBe('C');
+            expect(spawned[1]?.request.env['LC_CTYPE']).toBeUndefined();
+
+            process.env['LC_CTYPE'] = 'C';
+            manager.spawn(spawnOpts('inherited-locale'));
+            expect(spawned[2]?.request.env['LC_CTYPE']).toBe('C');
+        } finally {
+            for (const [key, value] of saved) {
+                if (value === undefined) delete process.env[key];
+                else process.env[key] = value;
+            }
+        }
+    });
+
     it('never inherits Claude-session markers — a pane is a fresh terminal, not a child session', () => {
         const { spawner, spawned } = stubSpawner();
         const manager = createPtyManager({ spawner });

@@ -410,6 +410,14 @@ class PtyManagerImpl implements KelpiPtyManager {
             env[key] = value;
             if (key === 'TERM') term = value;
         }
+        // A daemon launched from Finder can have no locale at all. macOS then starts zsh in
+        // the C locale, where a UTF-8 prompt's glyph widths are miscounted. On SIGWINCH zle
+        // can redraw over the preceding command's output. Supply a UTF-8 character locale
+        // only when neither the daemon nor the pane/profile chose one.
+        if (process.platform === 'darwin' && env['LC_ALL'] === undefined &&
+            env['LC_CTYPE'] === undefined && env['LANG'] === undefined) {
+            env['LC_CTYPE'] = 'UTF-8';
+        }
         env['TERM'] = term;
         env['COLORTERM'] = env['COLORTERM'] ?? 'truecolor';
         return { env, term };

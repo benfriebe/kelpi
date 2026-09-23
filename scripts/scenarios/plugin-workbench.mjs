@@ -113,7 +113,8 @@ export default async function ({ page, harness, cli, rec, d }) {
         await page.click('[data-testid="settings-close"]');
         await page.send('Page.reload');
         await sidebarReady('primary');
-        // The existing inspector starts closed on reload; its chosen view is remembered.
+        // The inspector's visibility is part of the persisted window arrangement and its chosen
+        // view is remembered; `openRightSidebar` opens it only if the reload did not.
         await openRightSidebar();
         rec.check('both sidebar selections survive a window reload', await sidebarReady('primary') && await sidebarReady('secondary'));
         await chooseSidebar('secondary', 'kelpi.inspector');

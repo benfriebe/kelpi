@@ -1,0 +1,14 @@
+{
+  "id": "example.layout-lab",
+  "name": "Layout Lab",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "trust": "full",
+  "contributes": {
+    "views": [
+      { "id": "example.layout-lab.toolbar", "title": "Layout Lab toolbar", "entry": "ui/toolbar.html", "placements": ["topbar"], "bandHeights": { "topbar": 36 } },
+      { "id": "example.layout-lab.status", "title": "Layout Lab status", "entry": "ui/status.html", "placements": ["statusbar"], "bandHeights": { "statusbar": 22 } },
+      { "id": "example.layout-lab.panel", "title": "Layout Lab panel", "entry": "ui/panel.html", "placements": ["panel.bottom"], "bandHeights": { "panel.bottom": 180 } }
+    ]
+  }
+}

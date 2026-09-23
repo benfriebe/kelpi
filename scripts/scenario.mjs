@@ -189,6 +189,21 @@ const PAGE_STATE = `(() => {
             }
         } catch { /* an unreadable store is not this run's business */ }
     }
+    // The root arrangement (client plugins/arrangement.ts) persists per daemon and is read when a
+    // window mounts, so Zen Mode or a hidden band left behind greets every later scenario without
+    // a toolbar or a status bar. The Inspector is left out: whether it is open is ordinary state
+    // a scenario may leave either way, and the sidebar is reported only when hidden.
+    const arrangement = {};
+    for (const key of Object.keys(localStorage)) {
+        if (!key.startsWith('kelpi.workbench.layout.v1:')) continue;
+        try {
+            const saved = JSON.parse(localStorage.getItem(key) ?? 'null');
+            const visible = saved?.visible ?? {};
+            const hidden = ['topbar', 'statusbar', 'panel.bottom', 'sidebar'].filter((band) => visible[band] === false);
+            const state = [saved?.zenSnapshot ? 'Zen Mode' : null, hidden.length ? 'hidden: ' + hidden.join(', ') : null].filter(Boolean).join('; ');
+            if (state) arrangement[key.slice('kelpi.workbench.layout.v1:'.length)] = state;
+        } catch { /* an unreadable store is not this run's business */ }
+    }
     const phoneShell = document.querySelector('[data-testid="phone-shell"]');
     return JSON.stringify({
         // phone/place.ts: a remembered {host, workspaceID} means the next phone window opens
@@ -196,6 +211,7 @@ const PAGE_STATE = `(() => {
         phonePlace: localStorage.getItem('kelpi.phone.last-place'),
         phoneLanding: phoneShell === null ? null : document.querySelector('[data-testid="phone-landing"]') !== null,
         workbench,
+        arrangement,
         settingsOpen: document.querySelector('[data-testid="settings-close"]') !== null,
         overlays: selectors.filter((selector) => document.querySelector(selector) !== null),
         // The lane window is never the key window, so the page believes it is focused only
@@ -256,6 +272,10 @@ function leaksAgainst(now, start) {
             if (start.page.workbench[id] === view) continue;
             const [slot, daemon] = id.split(' @ ');
             found.push(`the workbench slot "${slot}" still names the plugin view ${view} (in this window's store for daemon ${String(daemon)})`);
+        }
+        for (const [store, state] of Object.entries(now.page.arrangement ?? {})) {
+            if ((start.page.arrangement ?? {})[store] === state) continue;
+            found.push(`the window arrangement for daemon ${store} is still ${state}; the next window opens without those bands (Reset Window Arrangement)`);
         }
         if (now.page.settingsOpen && !start.page.settingsOpen) found.push('the Settings overlay is still open');
         for (const overlay of extras(now.page.overlays, start.page.overlays)) found.push(`${overlay} is still on screen`);

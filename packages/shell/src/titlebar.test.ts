@@ -99,5 +99,6 @@ describe('the traffic lights under a hidden toolbar (root arrangement)', () => {
     it('says which way they moved and why', () => {
         expect(windowButtonsLogLine(false, 'report')).toBe('titlebar: traffic lights hidden (report)');
         expect(windowButtonsLogLine(true, 'navigation')).toBe('titlebar: traffic lights shown (navigation)');
+        expect(windowButtonsLogLine(true, 'disconnected')).toBe('titlebar: traffic lights shown (disconnected)');
     });
 });

@@ -74,7 +74,7 @@ describe('hidden root bands', () => {
     it('marks hidden bands in Settings, says what is hidden, and resets from there', () => {
         render(<Harness />);
         const status = (): string => screen.getByTestId('window-arrangement-status').textContent ?? '';
-        expect(status()).toBe('Window arrangement: every band shown');
+        expect(status()).toBe('Window arrangement: toolbar, status bar and bottom panel shown');
         arrange(current => setBandVisible(setBandVisible(current, 'topbar', false), 'panel.bottom', false));
         expect(status()).toBe('Window arrangement: toolbar hidden, bottom panel hidden');
         expect(screen.getByLabelText('topbar').closest('label')!.textContent).toContain('topbar (hidden)');
@@ -83,7 +83,7 @@ describe('hidden root bands', () => {
         expect(status()).toBe('Window arrangement: Zen Mode');
         fireEvent.click(screen.getByTestId('reset-window-arrangement'));
         expect(layout!.arrangement).toEqual(DEFAULT_ARRANGEMENT);
-        expect(status()).toBe('Window arrangement: every band shown');
+        expect(status()).toBe('Window arrangement: toolbar, status bar and bottom panel shown');
     });
 });
 
@@ -144,6 +144,8 @@ describe('the persisted arrangement', () => {
         daemonID = 'arrangement-daemon';
         view.rerender(<Harness />);
         expect(layout!.arrangement).toEqual(toggleZenMode(DEFAULT_ARRANGEMENT));
+        // The address copy now agrees, so the next launch starts from the right arrangement.
+        expect(JSON.parse(localStorage.getItem('kelpi.workbench.layout.v1:local.test')!)).toEqual(toggleZenMode(DEFAULT_ARRANGEMENT));
     });
 
     it('is not live-synced: another window writing the store leaves this one as it is', () => {

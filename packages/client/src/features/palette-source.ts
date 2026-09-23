@@ -165,7 +165,7 @@ function arrangementEntries(arrangement: PaletteArrangementHost | null | undefin
         band('cmd:toggle-status-bar', 'Status Bar', 'statusbar', 'toggle_status_bar'),
         // Nothing to show while no view is selected for the bottom panel.
         band('cmd:toggle-bottom-panel', 'Bottom Panel', 'panel.bottom', 'toggle_bottom_panel', arrangement.bottomPanelAvailable()),
-        commandEntry('cmd:reset-window-arrangement', 'rectangle.stack', 'Reset Window Arrangement', 'show every bar and leave Zen Mode', undefined,
+        commandEntry('cmd:reset-window-arrangement', 'rectangle.stack', 'Reset Window Arrangement', 'show the bars and Workspaces, close the Inspector, leave Zen Mode', undefined,
             () => arrangement.reset())
     ];
 }

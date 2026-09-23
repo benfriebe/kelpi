@@ -276,6 +276,17 @@ describe('the set follows the config file', () => {
     });
 });
 
+describe('a chord the client cannot dispatch on this platform', () => {
+    // Off mac the client leaves ⌃⌘Return unbound (super IS ctrl there), so the relay must not take
+    // it from a page either: it would cancel the page's own chord and replay it into nothing.
+    it('is not claimed from the page off macOS, and is on macOS', () => {
+        expect(claimedChords(DEFAULT_KEYBINDINGS, 'darwin').has('ctrl+meta+Enter')).toBe(true);
+        expect(claimedChords(DEFAULT_KEYBINDINGS, 'linux').has('ctrl+meta+Enter')).toBe(false);
+        expect(claimedChords(DEFAULT_KEYBINDINGS, 'win32').has('ctrl+meta+Enter')).toBe(false);
+        expect(claimedChords(DEFAULT_KEYBINDINGS, 'linux').has('shift+meta+Enter')).toBe(true);
+    });
+});
+
 describe('the live set', () => {
     it('starts at the shipped defaults, so a view created before the handshake still works', () => {
         expect(forwardedChordKeys()).toEqual(DEFAULTS);

@@ -152,7 +152,14 @@ export function useWorkbenchLayout(runtime: KelpiRuntime): ArrangedWorkbenchLayo
         // (⌃⌘↩ works before any workspace exists): carry that change over rather than replacing it
         // with the daemon's saved value, which would undo it and leave the two keys disagreeing.
         if (lastWritten.current !== null && lastWritten.current !== arrangementKey) { persist(current.current); return; }
-        setArrangement(now => { const saved = readSavedArrangement(); return sameArrangement(now, saved) ? now : saved; });
+        const saved = readSavedArrangement();
+        if (sameArrangement(current.current, saved)) return;
+        // The daemon's value wins, and the address copy is brought into line with it: otherwise a
+        // second daemon that once answered on this address leaves a mirror that disagrees, and every
+        // launch would lay the grid out twice.
+        const { key: target, address: hint } = arrangementKeys.current;
+        if (hint !== target) { try { localStorage.setItem(hint, JSON.stringify(saved)); } catch { /* the next write repairs it */ } }
+        setArrangement(saved);
     }, [arrangementKey]);
     const arrange = useCallback((update: (current: RootArrangement) => RootArrangement): void => {
         setArrangement(now => {
@@ -426,12 +433,12 @@ function optionTitle(slot: string, view: ViewContribution): string {
         : view.title;
 }
 
-/** The Settings status line: "every band shown", "Zen Mode", or the bands the user has hidden by hand. */
+/** The Settings status line: "Zen Mode", the bands the user has hidden by hand, or that none is. */
 function describeArrangement(arrangement: RootArrangement): string {
     if (zenModeActive(arrangement)) return 'Zen Mode';
     const names: Readonly<Record<string, string>> = { topbar: 'toolbar', statusbar: 'status bar', 'panel.bottom': 'bottom panel' };
     const hidden = Object.keys(names).filter(band => isArrangementSlotBand(band) && !arrangement.visible[band]).map(band => `${names[band]!} hidden`);
-    return hidden.length ? hidden.join(', ') : 'every band shown';
+    return hidden.length ? hidden.join(', ') : 'toolbar, status bar and bottom panel shown';
 }
 
 export function PlacementSettings(): ReactElement {

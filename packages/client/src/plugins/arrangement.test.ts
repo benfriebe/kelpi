@@ -58,9 +58,10 @@ describe('the root arrangement', () => {
         for (const bad of [null, 'zen', [], {}, { visible: { topbar: 'yes' } }, { visible: { topbar: true } }]) {
             expect(readArrangement(bad)).toBe(DEFAULT_ARRANGEMENT);
         }
-        // A corrupt snapshot drops Zen Mode but keeps the bands the user can see.
-        const partial = readArrangement({ visible: zen.visible, zenSnapshot: { topbar: 1 } });
-        expect(partial).toEqual({ visible: zen.visible, zenSnapshot: null });
+        // A corrupt snapshot is a corrupt store: Zen Mode's all-hidden bands with nothing to restore
+        // to would strand the window, so the defaults come back instead.
+        expect(readArrangement({ visible: zen.visible, zenSnapshot: { topbar: 1 } })).toBe(DEFAULT_ARRANGEMENT);
+        expect(readArrangement({ visible: zen.visible })).toBe(DEFAULT_ARRANGEMENT);
         // Unknown extra keys are not carried.
         expect(readArrangement({ visible: { ...DEFAULT_ARRANGEMENT.visible, extra: true }, zenSnapshot: null })).toEqual(DEFAULT_ARRANGEMENT);
     });

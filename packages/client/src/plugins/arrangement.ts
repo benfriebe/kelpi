@@ -64,9 +64,12 @@ export function readArrangement(value: unknown): RootArrangement {
     const record = value as Record<string, unknown>;
     const visible = readVisibility(record['visible']);
     if (visible === null) return DEFAULT_ARRANGEMENT;
-    // A corrupt snapshot drops Zen Mode rather than the whole arrangement: the bands the user can
-    // see are right, and there is simply nothing to restore to.
-    return { visible, zenSnapshot: record['zenSnapshot'] === null ? null : readVisibility(record['zenSnapshot']) };
+    if (record['zenSnapshot'] === null) return { visible, zenSnapshot: null };
+    // An unreadable snapshot is the whole store unreadable: Zen Mode's own `visible` is all hidden,
+    // and reading it as "not in Zen Mode" would leave every band gone with nothing to restore, and
+    // the next ⌃⌘Return would record that as the arrangement to come back to.
+    const zenSnapshot = readVisibility(record['zenSnapshot']);
+    return zenSnapshot === null ? DEFAULT_ARRANGEMENT : { visible, zenSnapshot };
 }
 
 /** One band shown or hidden, in React's `SetStateAction` shape so `setSidebarVisible` callers are unchanged. */

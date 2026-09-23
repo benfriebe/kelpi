@@ -182,6 +182,12 @@ export interface StatusHost {
      * that are centred in it should follow (`titlebar.ts` ▸ `windowButtonsVisible`).
      */
     windowChromeChanged?(titleBarHidden: boolean): void;
+    /**
+     * The status connection to the daemon dropped. Nothing the page reports can arrive until it
+     * is back, so a window showing no traffic lights for a toolbar the page has since restored
+     * would stay that way; the host shows them, and the page re-reports on reconnect.
+     */
+    statusDisconnected?(): void;
 }
 
 /**
@@ -751,6 +757,7 @@ export function createStatusController(options: StatusOptions): StatusController
             waiting = new Set();
             publish();
             if (wasReady) log(`status ws disconnected (${String(code)})`);
+            if (wasReady) host.statusDisconnected?.();
             scheduleReconnect();
         });
     }

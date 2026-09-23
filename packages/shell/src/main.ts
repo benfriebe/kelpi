@@ -341,7 +341,7 @@ function openExternally(target: string): void {
  * APPLIED, so a page re-reporting on every reconnect costs nothing and logs nothing.
  */
 let windowButtonsShown = true;
-function applyWindowButtons(window: BrowserWindow, titleBarHidden: boolean, reason: 'report' | 'navigation'): void {
+function applyWindowButtons(window: BrowserWindow, titleBarHidden: boolean, reason: 'report' | 'navigation' | 'disconnected'): void {
     if (window.isDestroyed()) return;
     const visible = windowButtonsVisible(TITLE_BAR, titleBarHidden);
     if (visible === windowButtonsShown) return;
@@ -1509,6 +1509,16 @@ function startStatusController(): void {
                 /** The root arrangement's toolbar, reported by this window's page (`window-chrome`). */
                 windowChromeChanged: (titleBarHidden) => {
                     if (mainWindow !== null) applyWindowButtons(mainWindow, titleBarHidden, 'report');
+                },
+                /*
+                 * The same rule as a navigation: a page this shell cannot hear from has not said its
+                 * toolbar is hidden. Without it, a toolbar restored from the strip's handle while the
+                 * daemon is down (the handle works locally) would sit beside an empty 80 px gutter until
+                 * the reconnect. Showing the buttons resizes nothing; in Zen Mode they sit over the first
+                 * pane's header for the length of the outage, and the page hides them again on reconnect.
+                 */
+                statusDisconnected: () => {
+                    if (mainWindow !== null) applyWindowButtons(mainWindow, false, 'disconnected');
                 }
             }
         });

@@ -44,7 +44,7 @@ export function parseKeybindValue(value: string): KeybindOverride | null {
     return { trigger, action: actionString };
 }
 
-/** §5.2 - the 46 shipped default triggers, in `<trigger>=<action>` form. */
+/** §5.2 - the 47 shipped default triggers, in `<trigger>=<action>` form. */
 export const DEFAULT_KEYBIND_LINES: readonly string[] = [
     'super+n=new_workspace',
     'super+o=open_file',

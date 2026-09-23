@@ -1098,6 +1098,9 @@ describe('window-chrome relay', () => {
         window.session.handleMessage(JSON.stringify({ type: 'window-chrome', windowID: 'WIN-1' }));
         window.session.handleMessage(JSON.stringify({ type: 'window-chrome', titleBarHidden: 'true' }));
         window.session.handleMessage(JSON.stringify({ type: 'window-chrome', titleBarHidden: 1 }));
+        // A window scope that is there but unusable is not "every shell".
+        window.session.handleMessage(JSON.stringify({ type: 'window-chrome', titleBarHidden: true, windowID: 7 }));
+        window.session.handleMessage(JSON.stringify({ type: 'window-chrome', titleBarHidden: true, windowID: '' }));
         expect(shell.transport.ofType('window-chrome')).toHaveLength(0);
     });
 });

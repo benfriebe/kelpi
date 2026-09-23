@@ -116,6 +116,6 @@ export function windowButtonsVisible(decision: TitleBarStyleDecision, titleBarHi
 }
 
 /** The line `main.ts` logs when the buttons move, the only trace of it outside the process. */
-export function windowButtonsLogLine(visible: boolean, reason: 'report' | 'navigation'): string {
+export function windowButtonsLogLine(visible: boolean, reason: 'report' | 'navigation' | 'disconnected'): string {
     return `titlebar: traffic lights ${visible ? 'shown' : 'hidden'} (${reason})`;
 }

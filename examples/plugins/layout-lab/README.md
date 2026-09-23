@@ -22,7 +22,8 @@ for `panel.bottom`. The three bands come up at the 36, 22 and 180 px the manifes
 - **Hide Toolbar**, **Hide Status Bar** and **Hide Bottom Panel** toggle one band each. A hidden
   band keeps this view loaded and tells it `visible=false`; the panel counts how often it was
   hidden without a reload.
-- **Reset Window Arrangement** shows every band and leaves Zen Mode. It is also in Settings →
+- **Reset Window Arrangement** shows the toolbar, status bar, bottom panel and Workspaces sidebar,
+  closes the Inspector (the launch state) and leaves Zen Mode. It is also in Settings →
   Plugins → Workbench views, beside **Restore bundled views**.
 
 The arrangement belongs to the window, not to this plugin: disabling Layout Lab puts the bundled

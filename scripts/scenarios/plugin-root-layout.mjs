@@ -19,14 +19,29 @@
  *   9. disabling Layout Lab with the status bar hidden leaves it hidden and puts the bundled
  *      toolbar back at 32 px; enabling brings the view back, still hidden;
  *  10. Reset Window Arrangement from Settings shows everything again;
- *  11. the phone never draws the strip, and a Zen Mode window turned phone and back is still in it.
+ *  11. ⌃⌘Return pressed INSIDE a focused web page toggles Zen Mode exactly once each way, through
+ *      the shell's chord relay (`webhost/keys.ts`), which is the only way a page's keystroke
+ *      reaches the window;
+ *  12. with a remote daemon's workspace displayed the local keymap stands down (⌘D splits nothing)
+ *      and ⌃⌘Return still toggles Zen Mode both ways: the dispatcher's exemption, live;
+ *  13. the phone never draws the strip, and a Zen Mode window turned phone and back is still in it.
  *
- * Every check reads the DOM, the window's own store, the CLI or the shell's log; none reads a pixel,
- * so `--window hidden` is enough to pass. Use `--window offscreen` or `onscreen` for the screenshots.
+ * Every check reads the DOM, the window's own store, the CLI or the shell's log; none reads a pixel.
+ * Check 11 is keyboard input into a native `WebContentsView`, which is why this declares the
+ * offscreen floor below. Use `--window offscreen` or `onscreen` for the screenshots.
+ *
+ * What check 11 cannot press is the NATIVE half of a real keystroke: a CDP key event has no
+ * `NSEvent`, so the application menu never sees it (`terminal-leaves-platform-chords.mjs` has the
+ * measurement). With a real ⌃⌘Return and a page focused, the View menu's accelerator takes the key
+ * before `before-input-event` does, so the relay never sees it (`webhost/keys.ts`, #47): one route
+ * fires, never both. Check 7 presses that menu route; check 11 presses the relay route.
  */
 
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { connect, listTargets } from '../ui-audit/lib/cdp.mjs';
+import { PROTOCOL_VERSION, makeCli, makeSandbox, startDaemon, waitForHealthz } from '../ui-audit/lib/stack.mjs';
 import { daemonIDFromSandbox, openPlacementSettings, phoneToLanding, restoreBundledSlots } from '../ui-audit/lib/workbench.mjs';
 
 /*
@@ -40,6 +55,13 @@ export const covers = ['examples/plugins/layout-lab/', 'packages/client/src/plug
     'packages/client/src/features/', 'packages/client/src/App.tsx', 'packages/client/src/app/', 'packages/protocol/src/plugins.ts',
     'packages/protocol/src/ws/', 'packages/daemon/src/ws/', 'packages/shell/src/titlebar.ts', 'packages/shell/src/menu.ts',
     'packages/shell/src/status.ts', 'packages/core/src/config/'];
+
+/**
+ * The lowest lane this can be trusted at: check 11 types into a native `WebContentsView`, and a
+ * zero-opacity frame with anything in front of it has that input dropped (#206,
+ * `ui-audit/lib/placement.mjs`). A hidden run gives it an instance of its own at this placement.
+ */
+export const windowPlacement = 'offscreen';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const labID = 'example.layout-lab', labPath = path.join(repoRoot, 'examples/plugins/layout-lab');
@@ -129,7 +151,9 @@ export default async function ({ page, cli, sandbox, harness, shell, rec, d }) {
     };
     const menuRow = async label => d.findMenuItem((await harness.menu()).items, new RegExp(`^${label}$`));
 
-    let workspaceID = null;
+    let workspaceID = null, webPaneID = null, webView = null, remote = null, remoteDaemon = null;
+    const config = fs.readFileSync(sandbox.configPath, 'utf8');
+    const forwardedLines = () => (shell?.lines ?? []).filter(line => line.includes('forwarding') && line.includes(String(webPaneID))).length;
     try {
         // A battery hands this window whatever the scenario before it left; start from the default
         // arrangement through the menu row whose relay this also proves.
@@ -255,12 +279,65 @@ export default async function ({ page, cli, sandbox, harness, shell, rec, d }) {
         // The row sits below a long Workbench views list, and a click lands where the box IS.
         await page.eval(`document.querySelector('[data-testid="reset-window-arrangement"]')?.scrollIntoView({ block: 'center' })`);
         await page.click('[data-testid="reset-window-arrangement"]');
-        const reset = await d.settleDom(page, `document.querySelector('[data-testid="window-arrangement-status"]')?.textContent === 'Window arrangement: every band shown'`);
+        const reset = await d.settleDom(page, `document.querySelector('[data-testid="window-arrangement-status"]')?.textContent === 'Window arrangement: toolbar, status bar and bottom panel shown'`);
         await closeSettings();
         const restored = await settleLayout(state => everyBand(state) && state.panel, 'after the reset');
         rec.check('Settings names what is hidden and Reset Window Arrangement shows it all', described && reset && restored, JSON.stringify({ described, reset, restored }));
 
-        // 11. The phone.
+        // 11. The chord pressed inside a focused web page, through the shell's relay.
+        const probe = `${sandbox.base}/healthz?zen-probe=${String(Date.now())}`;
+        const opened = await cli.ok(['web', 'open', probe]);
+        webPaneID = (/open ok:\s*([0-9a-f-]{36})/i.exec(opened) ?? [])[1] ?? null;
+        if (webPaneID === null) throw new Error(`no web pane opened: ${opened.trim()}`);
+        await d.settleDom(page, `document.querySelector('[data-testid="web-page-${webPaneID}"]')?.dataset.visible === 'true'`, { ceilingMs: 25_000 });
+        await d.settle(async () => {
+            const target = (await listTargets(sandbox.debugPort)).find(entry => entry.type === 'page' && String(entry.url).includes('zen-probe='));
+            if (target === undefined) return false;
+            webView = await connect(target.webSocketDebuggerUrl, { repoRoot });
+            return true;
+        }, { ceilingMs: 15_000 });
+        if (webView === null) throw new Error('the web page never appeared as a debug target');
+        await webView.clickAt(40, 40);
+        await d.sleep(250);
+        const relayedBefore = forwardedLines();
+        await webView.key('Enter', { modifiers: MOD.ctrl | MOD.meta });
+        const inPage = await settleLayout(zenState, 'Zen Mode from inside the web page');
+        await d.sleep(700);
+        const stayed = zenState(await layout());
+        const relayedOnce = forwardedLines() === relayedBefore + 1;
+        await webView.key('Enter', { modifiers: MOD.ctrl | MOD.meta });
+        const outOfPage = await settleLayout(everyBand, 'leaving from inside the web page');
+        await d.sleep(700);
+        rec.check('⌃⌘Return inside a focused web page enters and leaves Zen Mode exactly once each, through the relay',
+            inPage && stayed && relayedOnce && outOfPage && everyBand(await layout()) && forwardedLines() === relayedBefore + 2,
+            JSON.stringify({ inPage, stayed, relayedOnce, outOfPage, relayed: forwardedLines() - relayedBefore }));
+        webView.close(); webView = null;
+        await cli.run(['pane', 'close', '--target', webPaneID]); webPaneID = null;
+
+        // 12. No local workspace on screen: a remote daemon's workspace is displayed instead.
+        remote = await makeSandbox(repoRoot, { label: 'root-layout-remote', clientDir: path.join(repoRoot, 'packages/client/dist') });
+        remoteDaemon = startDaemon(remote, { repoRoot }); await waitForHealthz(remote.base);
+        const remoteCLI = makeCli(remote, { repoRoot });
+        const remoteWorkspace = JSON.parse(await remoteCLI.ok(['workspace', 'create', '--name', 'Remote layout', '--json']));
+        const remoteToken = fs.readFileSync(path.join(remote.runDir, `daemon-v${PROTOCOL_VERSION}.token`), 'utf8').trim();
+        fs.writeFileSync(sandbox.configPath, `${config}\nremote-daemon = LayoutRemote:${remote.base}/?token=${remoteToken}\n`);
+        await frameCheck('topbar', `(async () => (await kelpi.ui.getNavigation()).hosts.some(host => host.name === 'LayoutRemote' && host.connection === 'connected'))()`, 20_000);
+        await inFrame('topbar', `(async () => { const navigation = await kelpi.ui.getNavigation(); const host = navigation.hosts.find(item => item.name === 'LayoutRemote'); await kelpi.ui.selectWorkspace(host.id, ${JSON.stringify(remoteWorkspace.workspace_id)}); return true; })()`);
+        const remoteShown = await frameCheck('topbar', `(async () => (await kelpi.ui.getChrome()).remoteWorkspaceSelected === true)()`, 15_000);
+        const localPanes = (await json(['pane', 'list', '--workspace', workspaceID, '--json'])).length;
+        await page.key('KeyD', { modifiers: MOD.meta });
+        await d.sleep(700);
+        const stoodDown = (await json(['pane', 'list', '--workspace', workspaceID, '--json'])).length === localPanes;
+        await zenChord();
+        const remoteZen = await settleLayout(zenState, 'Zen Mode over a remote workspace');
+        await zenChord();
+        const remoteBack = await settleLayout(everyBand, 'leaving Zen Mode over a remote workspace');
+        rec.check('with a remote workspace displayed the local keymap stands down and ⌃⌘Return still toggles Zen Mode',
+            remoteShown && stoodDown && remoteZen && remoteBack, JSON.stringify({ remoteShown, stoodDown, remoteZen, remoteBack }));
+        await inFrame('topbar', `(async () => { const navigation = await kelpi.ui.getNavigation(); await kelpi.ui.selectWorkspace(navigation.hosts.find(host => host.kind === 'local').id, ${JSON.stringify(workspaceID)}); return true; })()`);
+        await frameCheck('topbar', `(async () => (await kelpi.ui.getChrome()).remoteWorkspaceSelected === false)()`, 15_000);
+
+        // 13. The phone.
         await zenChord();
         await settleLayout(zenState, 'Zen Mode before the phone');
         await page.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
@@ -278,6 +355,10 @@ export default async function ({ page, cli, sandbox, harness, shell, rec, d }) {
         const safely = async (what, step) => {
             try { await step(); } catch (error) { rec.note(`cleanup: ${what}: ${error instanceof Error ? error.message : String(error)}`); }
         };
+        await safely('the web page session is closed', () => webView?.close());
+        await safely('the web pane is closed', async () => { if (webPaneID !== null) await cli.run(['pane', 'close', '--target', webPaneID]); });
+        await safely('the config file goes back', () => fs.writeFileSync(sandbox.configPath, config));
+        await safely('the remote daemon stops', async () => { if (remoteDaemon) await remoteDaemon.stop(); remote?.cleanup(); });
         await safely('device metrics are cleared', () => page.send('Emulation.clearDeviceMetricsOverride'));
         await safely('touch emulation is cleared', () => page.send('Emulation.setTouchEmulationEnabled', { enabled: false }));
         await safely('the window arrangement goes back to the default', () => harness.menuClick({ path: ['View', 'Reset Window Arrangement'] }));

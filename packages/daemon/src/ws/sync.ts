@@ -2938,7 +2938,11 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
     function windowChromeReport(message: Record<string, unknown>): void {
         const hidden = message['titleBarHidden'];
         if (typeof hidden !== 'boolean') return;
-        const windowID = text(message['windowID']);
+        // A windowID that is present but unusable is dropped rather than read as "every shell":
+        // it would hide the traffic lights in windows whose toolbars are showing.
+        const rawWindowID = message['windowID'];
+        if (rawWindowID !== undefined && (typeof rawWindowID !== 'string' || rawWindowID.length === 0)) return;
+        const windowID = text(rawWindowID);
         revealPane({
             type: WS_WINDOW_CHROME_MESSAGE,
             titleBarHidden: hidden,

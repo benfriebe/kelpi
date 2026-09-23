@@ -140,14 +140,19 @@ const SESSION: PaneSearchSession = {
  *
  * The lab MEASURES the bar it drew and declares that, so a document where every box is 0x0 declares
  * nothing at all and the whole box-authority path goes untested. The width grows with the counter,
- * which is exactly the reflow the declaration exists for.
+ * which is exactly the reflow the declaration exists for, and shrinks with the tier the lab fits
+ * itself to: 80 px of padding and controls, the 160 px field, 7 px a counter character, less the two
+ * 26 px step buttons in `compact` and the counter as well in `tight`.
  */
+const STEPS_WIDTH = 52;
 function stubLayout(): () => void {
     const real = Element.prototype.getBoundingClientRect;
     Element.prototype.getBoundingClientRect = function boxed(this: Element): DOMRect {
         if (this.classList.contains('root')) {
             const text = this.querySelector('[data-testid="lab-search-count"]')?.textContent ?? '';
-            const width = 240 + text.length * 7;
+            const fit = (this as HTMLElement).dataset['fit'] ?? 'full';
+            const counter = fit === 'tight' ? 0 : text.length * 7;
+            const width = 240 + counter - (fit === 'full' ? 0 : STEPS_WIDTH);
             return {
                 x: 0, y: 0, left: 0, top: 0, width, height: 34,
                 right: width, bottom: 34, toJSON: () => ({})
@@ -541,6 +546,92 @@ describe('Search Lab over the real presenter host', () => {
         await until(() => bar().style.maxWidth === `${String(window.projection().frame.box!.width)}px`, 'the bar to take the box as its ceiling');
         // And what it asks for has not shrunk with it, or it could never ask for more again.
         expect(window.state.declared!.width).toBe(wanted);
+    });
+
+    /**
+     * The two defects the 2026-09-20 onscreen shots showed: a counter cut to "1 of" on a 246 px
+     * pane, and on a 112 px pane a field collapsed to an empty square with the × cut off. The needle
+     * yields first and alone; then whole controls go, the steps before the counter; the case toggle
+     * and the close button never do.
+     */
+    it('gives up the needle first, then the step buttons, then the counter, and never the × or Aa', async () => {
+        const window = make(SESSION);
+        const h = await mount(window);
+        await ready(h);
+        await type(h, 'anchor');
+        window.publish({ total: 12, selected: 0 });
+        h.refresh();
+        await until(() => countText() === '1 of 12', 'the counter');
+        const fitAt = async (paneWidth: number): Promise<string | undefined> => {
+            window.state.pane = { x: 0, y: 0, width: paneWidth, height: 600 };
+            h.refresh();
+            await until(() => {
+                const granted = window.projection().frame.box?.width ?? -1;
+                return granted <= paneWidth - PANE_SEARCH_LIMITS.margin * 2 && bar().style.maxWidth === `${String(granted)}px`;
+            }, `the box for a ${String(paneWidth)} px pane`);
+            return bar().dataset['fit'];
+        };
+        // Wide: every control. The bar wants 80 + 160 + 7 x 7 = 289 px and is granted all of it.
+        expect(await fitAt(800)).toBe('full');
+        // A 246 px box: the needle alone yields (to 117 px), and the counter is whole.
+        expect(await fitAt(262)).toBe('full');
+        // 184 px is too narrow for the needle's floor with the steps: they go first.
+        expect(await fitAt(200)).toBe('compact');
+        // 112 px: the counter goes WHOLE, never in part, and its text moves to the field.
+        expect(await fitAt(128)).toBe('tight');
+        expect(input().title).toBe('1 of 12');
+        // The case toggle and the close button are never among what gives way.
+        const css = fs.readFileSync(path.join(assets, 'style.css'), 'utf8');
+        expect(node('lab-search-case')?.classList.contains('step')).toBe(false);
+        expect(node('lab-search-close')?.classList.contains('step')).toBe(false);
+        expect(css).toMatch(/\.root\[data-fit='tight'\] \.count \{ display: none; \}/);
+        expect(css).toMatch(/\.count \{[^}]*flex: none;/);
+        // And a pane that widens again gets the whole bar back, because the declaration never shrank.
+        expect(await fitAt(800)).toBe('full');
+        expect(input().title).toBe('');
+    });
+
+    /**
+     * The hand-over the review found stranding a half-typed needle: ⌘F before this view painted opens
+     * the NATIVE bar, the user types there, and the host feeds this view the needle as it goes. Until
+     * the user types into THIS field it follows, so when the native bar stands down mid-word the
+     * field already holds the needle and the caret is after it.
+     */
+    it('follows the needle it is handed until the user types into its own field', async () => {
+        const window = make(SESSION);
+        const h = await mount(window);
+        await ready(h);
+        await until(() => document.activeElement === input(), 'the field to take the caret on open');
+        // Typed into the native bar, and handed over while the field here has the caret.
+        window.publish({ needle: 'ne' });
+        h.refresh();
+        await until(() => input().value === 'ne', 'the field to follow the handed needle');
+        expect(input().selectionStart).toBe(2);
+        window.publish({ needle: 'needle' });
+        h.refresh();
+        await until(() => input().value === 'needle', 'the field to keep following');
+        // Once the user types here, the field is theirs: a stale echo does not overwrite it.
+        await type(h, 'needles');
+        window.publish({ needle: 'needle' });
+        h.refresh();
+        await flush();
+        expect(input().value).toBe('needles');
+    });
+
+    /**
+     * The focus hop: the host focuses the FRAME, and waiting for the next delivered frame to focus
+     * the field left a window in which a fast keystroke landed on the body and was lost.
+     */
+    it('puts the caret in the field the moment its frame gains focus', async () => {
+        const window = make({ ...SESSION, needle: 'anchor' });
+        const h = await mount(window);
+        await ready(h);
+        await until(() => input().value === 'anchor', 'the field to be seeded');
+        input().blur();
+        expect(document.activeElement).not.toBe(input());
+        globalThis.dispatchEvent(new FocusEvent('focus'));
+        expect(document.activeElement).toBe(input());
+        expect(input().selectionStart).toBe('anchor'.length);
     });
 
     it('never re-sends a declaration that has not changed', async () => {

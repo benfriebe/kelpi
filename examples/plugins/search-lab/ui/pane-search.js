@@ -51,6 +51,16 @@ globalThis.searchLab = lab;
 let disposed = false, painted = false, stalled = false, armed = null;
 /** The session the field was last seeded for, so a needle echoed back does not fight the caret. */
 let seededFor = null;
+/**
+ * Whether the user has typed into THIS field since it was seeded.
+ *
+ * Until they have, the field follows the frame's needle on every frame. That is the hand-over: a
+ * ⌘F pressed before this view has painted opens the NATIVE bar, the user starts typing there, and
+ * this view is fed the needle as it goes (the host hands over the needle it is still sending, not
+ * the daemon's older one) - so when the native bar stands down mid-word, this field already holds
+ * what was typed and the next keystroke lands after it.
+ */
+let typed = false;
 /** The box last declared, so an unchanged declaration is not re-sent into the call budget. */
 let sentBox = null;
 /** A box pinned by `declare()`; the measuring rule leaves it alone until it is handed back. */
@@ -118,6 +128,7 @@ field.dataset.testid = 'lab-search-input';
 field.addEventListener('input', () => {
     const paneID = lab.snapshot?.paneID ?? null;
     if (paneID === null) return;
+    typed = true;
     // The field is echoed LOCALLY and the needle is sent: the host debounces a short one, so a bar
     // that waited for the frame to come back would lag a round trip behind the typing.
     void act(() => api.ui.setSearchNeedle(paneID, field.value));
@@ -157,6 +168,9 @@ const caseToggle = button('lab-search-case', 'Match case', 'Aa', () => {
 });
 const previous = button('lab-search-previous', 'Previous match (Shift Return)', '↑', () => step('previous'));
 const next = button('lab-search-next', 'Next match (Return)', '↓', () => step('next'));
+// The two a narrow box drops first: Return, ⇧Return, ⌘G and ⇧⌘G step without them.
+previous.classList.add('step');
+next.classList.add('step');
 const close = button('lab-search-close', 'Close search (Escape)', '×', () => {
     const paneID = lab.snapshot?.paneID ?? null;
     if (paneID === null) return;
@@ -189,6 +203,29 @@ function countText(snapshot) {
     return `${snapshot.selected + 1} of ${snapshot.total}`;
 }
 
+/**
+ * The caret at the END of what is already there, and nothing selected: a bar re-opened on an old
+ * needle is something you keep typing into rather than something whose first keystroke silently
+ * replaces it.
+ */
+function caretToEnd() {
+    field.focus();
+    const end = field.value.length;
+    field.setSelectionRange(end, end);
+}
+
+/*
+ * The frame gaining focus puts the caret in the field, in the same task.
+ *
+ * The host focuses this FRAME when the bar is shown; which element inside it has the caret is this
+ * document's business. Waiting for the next frame to call `field.focus()` left a gap in which a
+ * fast typist's keystroke landed on the body and was lost - the hop the native bar, which is one
+ * document with the window, never had.
+ */
+addEventListener('focus', () => {
+    if (!root.hidden && document.activeElement !== field) caretToEnd();
+});
+
 function render(snapshot) {
     const open = snapshot.visible && snapshot.paneID !== null && snapshot.box !== null;
     root.hidden = !open;
@@ -217,6 +254,7 @@ function render(snapshot) {
      */
     root.style.maxWidth = `${snapshot.box.width}px`;
     root.style.maxHeight = `${snapshot.box.height}px`;
+    grantedWidth = snapshot.box.width;
 
     /*
      * Re-seed when the SESSION moves rather than on every needle delta.
@@ -228,17 +266,15 @@ function render(snapshot) {
      */
     if (seededFor !== snapshot.paneID) {
         seededFor = snapshot.paneID;
+        typed = false;
         field.value = snapshot.needle;
-        field.focus();
-        // The caret goes to the END of what is already there, and nothing is selected: a bar
-        // re-opened on an old needle is something you keep typing into rather than something whose
-        // first keystroke silently replaces it.
-        const end = field.value.length;
-        field.setSelectionRange(end, end);
-    } else if (document.activeElement !== field && field.value !== snapshot.needle) {
-        // Somebody else moved the needle (a second window, or another plugin through
-        // `terminal.search`). The field is not being typed into, so it follows.
+        caretToEnd();
+    } else if ((!typed || document.activeElement !== field) && field.value !== snapshot.needle) {
+        // Not typed into yet (the native bar still has the user's keystrokes), or somebody else
+        // moved the needle (a second window, or another plugin through `terminal.search`) while
+        // this field was not being typed into. Either way it follows.
         field.value = snapshot.needle;
+        if (document.activeElement === field) caretToEnd();
     }
 
     const text = countText(snapshot);
@@ -249,6 +285,64 @@ function render(snapshot) {
     const idle = snapshot.needle.length === 0 || snapshot.total === 0;
     previous.disabled = idle;
     next.disabled = idle;
+    // Last, because the counter's text is part of what the bar needs room for.
+    fit();
+}
+
+/* -- fitting the bar to the box ------------------------------------------------------ */
+
+/** `.field`'s own width in style.css: what the needle gets when there is room. */
+const FIELD_WIDTH = 160;
+/** The narrowest the needle may get before a whole control gives way instead. */
+const FIELD_FLOOR = 72;
+/**
+ * What the bar gives up, in order, when the box is narrower than the bar wants.
+ *
+ * Read off two onscreen screenshots. At ~246 px the field and the counter shrank TOGETHER (a flex
+ * row shares a shortfall out by size, whatever the comments said about order), so the needle kept
+ * most of its room and the counter lost its total: "1 of". At ~112 px the field went down to its own
+ * padding, an empty square, and the × was cut off the trailing edge - a find bar you cannot close
+ * with the mouse. So the needle yields first and alone, down to `FIELD_FLOOR`; then the ↑ ↓ buttons
+ * go (Return, ⇧Return, ⌘G and ⇧⌘G still step); then the counter (its text moves to the field's
+ * tooltip). The case toggle and the close button never go: one is the only sign the search is case
+ * sensitive, and the other is the way out. Below the last tier the field alone shrinks further,
+ * and the controls stay whole.
+ */
+const FITS = ['full', 'compact', 'tight'];
+/** The width the host last granted, which is what the bar is fitted to. */
+let grantedWidth = 0;
+/** The width the bar wants with every control showing, which is what it declares. */
+let wantedSize = null;
+
+/** The bar's own laid-out width at `tier`, with no ceiling. */
+function naturalWidth(tier) {
+    root.dataset.fit = tier;
+    return root.getBoundingClientRect().width;
+}
+
+/**
+ * Pick the tier for the granted width and measure the size to declare, in one pass.
+ *
+ * Every measurement is taken and undone inside this call, so the only change the browser ever lays
+ * out is the tier that was chosen - which is also what keeps the ResizeObserver below from being
+ * fed a size change of its own making.
+ */
+function fit() {
+    if (root.hidden) return;
+    const ceiling = root.style.maxWidth;
+    root.style.maxWidth = 'none';
+    root.dataset.fit = 'full';
+    const full = root.getBoundingClientRect();
+    wantedSize = { width: Math.ceil(full.width), height: Math.ceil(full.height) };
+    let chosen = FITS[FITS.length - 1];
+    for (const tier of FITS) {
+        const width = tier === 'full' ? full.width : naturalWidth(tier);
+        if (width - FIELD_WIDTH + FIELD_FLOOR <= grantedWidth) { chosen = tier; break; }
+    }
+    root.dataset.fit = chosen;
+    root.style.maxWidth = ceiling;
+    // A hidden counter is still readable: it moves to the field's tooltip.
+    field.title = chosen === 'tight' ? count.textContent : '';
 }
 
 /**
@@ -260,18 +354,15 @@ function render(snapshot) {
  */
 function publishBox() {
     const snapshot = lab.snapshot;
-    if (snapshot?.paneID == null || root.hidden || pinnedBox !== null) return;
+    if (snapshot?.paneID == null || root.hidden || pinnedBox !== null || wantedSize === null) return;
     /*
-     * Measured with the ceiling LIFTED, because what is declared is what the bar wants and what is
-     * applied is what it was granted. Declaring the clamped width instead would be a ratchet: the
-     * host clamps a declaration to the pane's room, so a bar that declared the clamped number could
-     * never ask for more again and would stay narrow after the pane widened.
+     * The size `fit()` measured with the ceiling LIFTED and every control showing, because what is
+     * declared is what the bar wants and what is applied is what it was granted. Declaring the
+     * clamped width, or the width of a tier that dropped controls, would be a ratchet: the host
+     * clamps a declaration to the pane's room, so a bar that declared the clamped number could never
+     * ask for more again and would stay narrow after the pane widened.
      */
-    const ceiling = root.style.maxWidth;
-    root.style.maxWidth = '';
-    const box = root.getBoundingClientRect();
-    root.style.maxWidth = ceiling;
-    const size = { width: Math.ceil(box.width), height: Math.ceil(box.height) };
+    const size = wantedSize;
     if (size.width === 0 || size.height === 0) return;
     const key = `${size.width}x${size.height}`;
     if (sentBox === key) return;
@@ -285,8 +376,20 @@ function publishBox() {
  * The bar grows with its counter - `3 of 9` and `312 of 4096` are not the same width - and it is
  * this document reflowing that is the only thing the host cannot see. The pane moving or resizing
  * is not: the box travels in the frame and the host re-clamps it without being told.
+ *
+ * The refit is deferred to the next animation frame rather than run inside the observer's callback.
+ * A refit can change the tier, which changes the bar's size, and a size change made inside a
+ * ResizeObserver callback is reported as "ResizeObserver loop completed with undelivered
+ * notifications" - an error event the SDK counts as this view failing.
  */
-const barObserver = typeof ResizeObserver === 'function' ? new ResizeObserver(() => publishBox()) : null;
+let refitQueued = false;
+const barObserver = typeof ResizeObserver === 'function'
+    ? new ResizeObserver(() => {
+        if (refitQueued) return;
+        refitQueued = true;
+        requestAnimationFrame(() => { refitQueued = false; fit(); publishBox(); });
+    })
+    : null;
 barObserver?.observe(root);
 
 async function frame(snapshot) {

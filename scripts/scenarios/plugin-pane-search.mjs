@@ -1,7 +1,7 @@
 /**
  * A plugin drawing the find bar, against a real window, a real daemon and a real shell.
  *
- * The fifth replaceable surface: a view selected for `pane.search`, in Settings ▸ Plugins ▸
+ * The sixth replaceable surface: a view selected for `pane.search`, in Settings ▸ Plugins ▸
  * Workbench views, draws the bar that ⌘F opens over a shell pane. The unit suites pin the
  * projection, the clamp, the call validation, the latches and the relay grant. What only a live
  * window can answer is whether a needle typed into a plugin's own `<input>` reaches the DAEMON's
@@ -14,8 +14,9 @@
  *      for the whole grid, reports it has painted, and `data-pane-search-presenter` names it;
  *   2. `ui.selectView('pane.search', …)` is refused while `getWorkbench().slots` lists it;
  *   3. ⌘F over a shell pane opens the LAB's bar at the native bar's own rectangle, with the native
- *      bar absent - and no sample, during the attach or during a reload, ever finds an open search
- *      with no bar at all;
+ *      bar absent - and no sample, while the lab boots under an open search or reloads under one,
+ *      ever finds that search with no bar at all (each sampler has to catch the boot, or it fails);
+ *      a needle typed into the native bar during the boot is in the lab's field after the swap;
  *   4. typing in the lab's input sets the daemon's needle and the count matches a scrollback this
  *      scenario printed: N marker lines, so the number is known before the bar is opened;
  *   5. the lab's next button and ⌘G step the daemon's selection; ⇧⌘G steps back; and with Terminal
@@ -30,14 +31,17 @@
  *  10. an absurd declared box is clamped in both axes; a call for another pane and a call while the
  *      search is closed are refused by message with nothing run;
  *  11. ⌘F over a markdown preview and over a web pane still opens their NATIVE bars;
- *  12. failure and recovery: a crash, then the native bar back with the daemon's needle intact and
- *      its input focused, the failure toast, the Settings row reading Failed and Retry - and then
- *      the acknowledgement watchdog doing the same to a presenter that has stopped acknowledging;
+ *  12. failure and recovery: a crash riding in on the case toggle, then the native bar back with
+ *      the daemon's needle intact, counting insensitively again, and its input focused, the failure
+ *      toast, the Settings row reading Failed and Retry bringing the lab back with its toggle dark -
+ *      and then the acknowledgement watchdog doing the same to a presenter that has stopped
+ *      acknowledging;
  *  13. standing the placement down withdraws the declared box;
  *  14. disable, enable and reload, with the selection retained;
  *  15. the PRIMARY daemon stopped and replaced;
  *  16. Pane Lab and Search Lab selected TOGETHER with a 96 px band: the lab's bar sits above the
- *      band and still works;
+ *      band and still works, and on that narrow pane it drops whole controls rather than cutting any
+ *      (check 5's shot measures the same on a wider pane, with the counter whole);
  *  17. a phone window keeping the native bar with the lab still selected;
  *  18. screenshots for the eyes, each with a note saying what to look for.
  *
@@ -211,6 +215,66 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
     const labDrawnBox = async () => {
         const raw = await inFrame(`(() => { const node = document.querySelector('[data-testid="lab-search"]'); if (node === null || node.hidden) return null; const box = node.getBoundingClientRect(); return JSON.stringify({x: Math.round(box.x), y: Math.round(box.y), width: Math.round(box.width), height: Math.round(box.height)}); })()`);
         return typeof raw === 'string' ? JSON.parse(raw) : null;
+    };
+
+    /**
+     * Sample the host every 25 ms until the lab is SHOWN for `paneID`: whether the slot is mounted
+     * and shown (`shown`: 'true', 'false', or 'none' with no slot at all) and whether the native bar
+     * is up. `leaveFirst` waits for a shown lab to stop being shown before it waits for it to come
+     * back, which is how a reload under an open search is caught landing.
+     */
+    const sampleUntilShown = async (paneID, { leaveFirst = false } = {}) => {
+        const samples = [];
+        let left = !leaveFirst;
+        for (let attempt = 0; attempt < 240; attempt += 1) {
+            const raw = await page.eval(`(() => {
+                const slot = document.querySelector('[data-testid="pane-search-presenter"]');
+                return JSON.stringify({
+                    shown: slot?.dataset.shown ?? 'none',
+                    searching: slot?.dataset.paneId ?? '',
+                    native: !!document.querySelector('[data-testid="pane-search-input-${paneID}"]')
+                });
+            })()`);
+            const sample = typeof raw === 'string' ? JSON.parse(raw) : null;
+            if (sample !== null) {
+                if (!left && sample.shown !== 'true') left = true;
+                if (left) samples.push(sample);
+                if (left && sample.shown === 'true' && sample.searching === paneID) break;
+            }
+            await sleep(25);
+        }
+        return samples;
+    };
+
+    /**
+     * Does the lab's bar fit the box it was GRANTED?
+     *
+     * The two defects the first onscreen shots showed, measured rather than eyeballed: a counter
+     * cut to "1 of" on a 246 px pane, and on a 112 px pane a field collapsed to its own padding with
+     * the × past the clip. Frame-local, because the box in the frame and the elements in it share
+     * the frame's coordinate space. The steps and the counter may be dropped WHOLE on a narrow box
+     * (`data-fit`); the case toggle and the close button may not, and nothing drawn may be cut.
+     */
+    const labFit = async () => {
+        const raw = await inFrame(`(() => {
+            const snapshot = globalThis.searchLab?.snapshot;
+            const root = document.querySelector('[data-testid="lab-search"]');
+            if (!snapshot?.box || root === null || root.hidden) return null;
+            const right = snapshot.box.x + snapshot.box.width;
+            const part = testid => {
+                const node = document.querySelector('[data-testid="' + testid + '"]');
+                if (node === null) return null;
+                const box = node.getBoundingClientRect();
+                return box.width > 0 ? { right: Math.round(box.right), width: Math.round(box.width), cut: node.scrollWidth > node.clientWidth + 1 } : null;
+            };
+            return JSON.stringify({ fit: root.dataset.fit ?? null, box: Math.round(snapshot.box.width), right: Math.round(right), field: part('lab-search-input'), count: part('lab-search-count'), count_text: document.querySelector('[data-testid="lab-search-count"]')?.textContent ?? null, case: part('lab-search-case'), close: part('lab-search-close') });
+        })()`);
+        const fit = typeof raw === 'string' ? JSON.parse(raw) : null;
+        const whole = fit !== null && fit.case !== null && fit.close !== null && fit.field !== null
+            && fit.field.width >= 24
+            && fit.case.right <= fit.right + 1 && fit.close.right <= fit.right + 1
+            && (fit.count === null || (!fit.count.cut && fit.count.right <= fit.right + 1));
+        return { whole, fit };
     };
 
     // ── Settings, which is the only route to this placement ─────────────────────────
@@ -412,32 +476,36 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
         await ready();
 
         /*
-         * Sampled from the chord onwards: a search may never be open with no bar at all.
+         * Sampled across the presenter's own boot: a search may never be open with no bar at all.
          *
-         * Every sample taken while the presenter is not drawing has to find the NATIVE bar, and at
-         * least one such sample has to exist or the check proves nothing - the same shape
-         * `plugin-pane-chrome` uses for its reload.
+         * The search is opened FIRST, with the lab disabled, and the lab is enabled under it, so the
+         * presenter comes up while a search is open - the state this check is about. The first
+         * version pressed ⌘F after `ready()`, when the painted latch was already set: the commit that
+         * opened the session also showed the lab, no sample could land before the swap, and "no
+         * barless sample" held vacuously. So now EVERY sample has to find a bar, the native one or
+         * the lab's, and at least one has to catch the lab mounted and not yet painted, or the check
+         * has proved nothing and fails.
+         *
+         * A short needle is typed into the native bar during that boot, too: the host hands a
+         * presenter the needle it is still sending rather than the daemon's older one, and the lab
+         * follows it until the user types into its own field, so after the swap the lab's field
+         * holds what was typed - where the first version stranded it.
          */
-        await focusPaneBody(shellPane);
-        await sleep(150);
-        await page.key('KeyF', { modifiers: 4 });
-        const samples = [];
-        for (let attempt = 0; attempt < 140; attempt += 1) {
-            const raw = await page.eval(`(() => {
-                const slot = document.querySelector('[data-testid="pane-search-presenter"]');
-                return JSON.stringify({
-                    shown: slot?.dataset.shown ?? 'none',
-                    searching: slot?.dataset.paneId ?? '',
-                    native: !!document.querySelector('[data-testid="pane-search-input-${shellPane}"]')
-                });
-            })()`);
-            const sample = typeof raw === 'string' ? JSON.parse(raw) : null;
-            if (sample !== null) samples.push(sample);
-            if (sample?.shown === 'true' && sample.searching === shellPane) break;
-            await sleep(25);
-        }
-        const opening = samples.filter(sample => sample.searching === shellPane && sample.shown !== 'true');
-        const barless = opening.filter(sample => !sample.native);
+        await cli.ok(['plugin', 'disable', labID]);
+        await d.settleDom(page, `!document.querySelector('[data-testid="pane-search-presenter"]')`, { ceilingMs: 10_000 });
+        await openSearch(shellPane);
+        const openedNative = await nativeBarUp(shellPane);
+        await cli.ok(['plugin', 'enable', labID]);
+        await page.insertText('NE');
+        const samples = await sampleUntilShown(shellPane);
+        const booting = samples.filter(sample => sample.shown === 'false');
+        const barless = samples.filter(sample => sample.shown !== 'true' && !sample.native);
+        const handedOver = await d.settle(async () => await labNeedle() === 'NE' && (await labSnapshot())?.needle === 'NE', { ceilingMs: 10_000 });
+        rec.check('a needle typed into the native bar while the presenter boots is in the lab\'s field after the swap',
+            handedOver, `lab field ${String(await labNeedle())} · frame ${String((await labSnapshot())?.needle)}`);
+        // Check 4 types its own needle from an empty field.
+        await inFrame(`(() => { const f = document.querySelector('[data-testid="lab-search-input"]'); f.value = ''; f.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
+        await d.settle(async () => (await labSnapshot())?.needle === '', { ceilingMs: 10_000 });
         const labUp = await drawing();
         const labBox = await labBoxOnScreen();
         const gone = await nativeBarGone(shellPane);
@@ -457,8 +525,8 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
             && drawn.width >= labBox.width,
             `native ${JSON.stringify(nativeBox)} · clipped ${JSON.stringify(labBox)} · drawn ${JSON.stringify(drawn)}`);
         rec.check('no search is ever open with no bar at all while the presenter is coming up',
-            samples.length > 0 && barless.length === 0 && samples.at(-1)?.shown === 'true',
-            `${String(samples.length)} samples, ${String(opening.length)} before the swap, ${String(barless.length)} barless: ${JSON.stringify(barless.slice(0, 3))}`);
+            openedNative && booting.length >= 1 && barless.length === 0 && samples.at(-1)?.shown === 'true',
+            `native opened ${String(openedNative)} · ${String(samples.length)} samples, ${String(booting.length)} with the lab mounted and unpainted, ${String(barless.length)} barless: ${JSON.stringify(barless.slice(0, 3))}`);
 
         // ── 4 · typing reaches the DAEMON's needle, and the count is the buffer's ────
         await typeIntoLab('NEEDLEFIND');
@@ -529,6 +597,9 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
         }
         await drawing();
 
+        const wideFit = await labFit();
+        rec.check('on this pane the lab\'s bar fits its box: the counter whole, the case toggle and the × inside it',
+            wideFit.whole && wideFit.fit?.count !== null && /\d/.test(String(wideFit.fit?.count_text)), JSON.stringify(wideFit.fit));
         await shot('lab-bar-over-shell', 'The focused shell pane with SEARCH LAB\'s bar in its top-right corner - a needle field holding NEEDLEFIND, a counter reading "1 of 12" or similar, an Aa toggle and up/down/× buttons - and NO second find bar anywhere. The bar must sit over the pane\'s header corner, fully visible, not sliced by the pane edge.');
 
         // ── 6 · the case toggle changes the TOTAL ───────────────────────────────────
@@ -696,17 +767,25 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
         // ── 12 · failure and recovery ───────────────────────────────────────────────
         await openSearch(shellPane);
         await drawing();
-        await typeIntoLab('NEEDLEFIND');
+        // Lower case on purpose: it matches every marker insensitively and none of them sensitively,
+        // so the total says which way the native bar is counting once it has taken over.
+        await typeIntoLab('needlefind');
         await d.settle(async () => ((await labSnapshot())?.total ?? 0) >= MARKERS, { ceilingMs: 15_000 });
         const needleBeforeCrash = (await labSnapshot())?.needle ?? null;
         await arm(`crash('uncaught')`);
         /*
          * A frame the crash can run inside, and it has to MOVE: the host de-duplicates by frame
          * content, so a step on a needle with no matches publishes nothing and the armed hook never
-         * fires. Changing the needle always moves it.
+         * fires. The CASE TOGGLE moves it, and is the case under test as well: a presenter that
+         * fails with its toggle lit must not leave the native bar - which has no toggle and no
+         * indicator - counting case-sensitively, "no matches" for a needle that plainly matches.
          */
-        await typeIntoLab('X');
+        await pressLab('lab-search-case');
         const fellBack = await nativeBarUp(shellPane, 20_000);
+        const nativeTotal = async () => Number(await page.eval(`document.querySelector('[data-testid="pane-search-${shellPane}"]')?.dataset.searchTotal ?? ''`) || -1);
+        const insensitiveAgain = await d.settle(async () => await nativeTotal() >= MARKERS, { ceilingMs: 10_000 });
+        rec.check('a presenter failing with its case toggle lit hands the native bar an INSENSITIVE search',
+            fellBack && insensitiveAgain, `needle ${String(needleBeforeCrash)} · native total ${String(await nativeTotal())}`);
         const nativeNeedleAfterCrash = await page.eval(`document.querySelector('[data-testid="pane-search-input-${shellPane}"]')?.value ?? null`);
         const nativeCountAfterCrash = await page.eval(`document.querySelector('[data-testid="pane-search-count-${shellPane}"]')?.textContent ?? null`);
         // The toast is read BEFORE any settle: it expires, and a poll in front of it spends its life.
@@ -736,7 +815,7 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
             `needle ${String(needleBeforeCrash)} -> ${String(nativeNeedleAfterCrash)} · focus ${String(nativeFocusAfterCrash)} (active ${String(activeAfterCrash)}) · count ${String(nativeCountAfterCrash)}`);
         rec.check('the failure is reported on screen, naming the surface and the reason',
             toast && toastText.includes('Pane search presenter') && /crashed on purpose/i.test(toastText), toastText);
-        await shot('fallback-after-crash', 'Kelpi\'s own find bar back over the shell pane, holding NEEDLEFIND with its counter, and a failure toast in the corner reading "Pane search presenter". No Search Lab bar anywhere.');
+        await shot('fallback-after-crash', 'Kelpi\'s own find bar back over the shell pane, holding needlefind with a counter of twelve or more (counted insensitively), and a failure toast in the corner reading "Pane search presenter". No Search Lab bar anywhere.');
 
         await openPlugins();
         const failedRow = await statusRow();
@@ -752,9 +831,11 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
         // Printed whatever happens, because "the presenter did not come back" has three different
         // causes and the row, the plugin's own status and the slot's presence tell them apart.
         const pluginStatus = (await json(['plugin', 'list', '--json'])).find(entry => entry.manifest.id === labID);
+        // And the lab it brings back is told the flag is off, so its toggle is dark again.
+        const toggleDark = cameBack && await drawing() && await frameCheck(`(globalThis.searchLab?.snapshot?.caseSensitive === false) && document.querySelector('[data-testid="lab-search-case"]')?.getAttribute('aria-pressed') === 'false'`, 8_000);
         rec.check('Settings reports the failure, keeps the selection, and Retry brings the presenter back',
-            failedRow.includes('Failed') && retained !== bundledView && retried && cameBack,
-            `${failedRow} -> after retry "${rowAfterRetry}" · selection ${String(retained)} · retried ${String(retried)} · any slot ${String(anySlot)} · slot back ${String(slotBack)} · plugin ${JSON.stringify(pluginStatus && { enabled: pluginStatus.enabled, status: pluginStatus.status })} · ${await labState()}`);
+            failedRow.includes('Failed') && retained !== bundledView && retried && cameBack && toggleDark,
+            `${failedRow} -> after retry "${rowAfterRetry}" · selection ${String(retained)} · retried ${String(retried)} · any slot ${String(anySlot)} · slot back ${String(slotBack)} · toggle dark ${String(toggleDark)} · plugin ${JSON.stringify(pluginStatus && { enabled: pluginStatus.enabled, status: pluginStatus.status })} · ${await labState()}`);
 
         // ── 12b · the acknowledgement watchdog ──────────────────────────────────────
         await page.key('Escape');
@@ -807,21 +888,12 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
         const disabledBack = await nativeBarUp(shellPane);
         await cli.ok(['plugin', 'enable', labID]);
         const enabledBack = await attached() && await ready();
+        // The search from check 13 is still open, so the reload happens under it. The sampler waits
+        // for the reload to LAND (the old instance stops being shown) before it waits for the new
+        // one to paint: sampling from the CLI's return alone let the old instance's last `shown`
+        // end the loop on its first sample, with nothing booting ever seen.
         await cli.ok(['plugin', 'reload', labID]);
-        const reloadSamples = [];
-        for (let attempt = 0; attempt < 140; attempt += 1) {
-            const raw = await page.eval(`(() => {
-                const slot = document.querySelector('[data-testid="pane-search-presenter"]');
-                return JSON.stringify({
-                    shown: slot?.dataset.shown ?? 'none',
-                    native: !!document.querySelector('[data-testid="pane-search-input-${shellPane}"]')
-                });
-            })()`);
-            const sample = typeof raw === 'string' ? JSON.parse(raw) : null;
-            if (sample !== null) reloadSamples.push(sample);
-            if (sample?.shown === 'true') break;
-            await sleep(25);
-        }
+        const reloadSamples = await sampleUntilShown(shellPane, { leaveFirst: true });
         const bootingReload = reloadSamples.filter(sample => sample.shown !== 'true');
         const barlessReload = bootingReload.filter(sample => !sample.native);
         const reloaded = await attached() && await ready() && await drawing();
@@ -833,7 +905,7 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
             disabledBack && enabledBack && reloaded && retainedValue === labView && !latchedAfterReload,
             `disabled ${String(disabledBack)} · enabled ${String(enabledBack)} · reloaded ${String(reloaded)} · selection ${String(retainedValue)} · latched ${String(latchedAfterReload)}`);
         rec.check('the search is never left with no bar while a reloading presenter boots',
-            reloadSamples.length > 0 && barlessReload.length === 0,
+            bootingReload.length >= 1 && barlessReload.length === 0 && reloadSamples.at(-1)?.shown === 'true',
             `${String(reloadSamples.length)} samples, ${String(bootingReload.length)} before the swap, ${String(barlessReload.length)} barless: ${JSON.stringify(barlessReload.slice(0, 3))}`);
 
         // ── 15 · the daemon replaced under the presenter ────────────────────────────
@@ -890,7 +962,11 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
             && barBoxOverBand !== null && bandBox !== null
             && barBoxOverBand.y >= bandBox.y - 2,
             `band ${JSON.stringify(bandBox)} · bar ${JSON.stringify(barBoxOverBand)} · total ${String((await labSnapshot())?.total)}`);
-        await shot('search-over-pane-chrome', 'The shell pane wearing a TALL Pane Lab header band with SEARCH LAB\'s bar drawn OVER it at the top right - the needle field, the counter and the buttons all fully visible above the plugin band rather than sliced by it.');
+        // By now the shell is the narrowest pane in the row, which is where the bar has to give way.
+        const narrowFit = await labFit();
+        rec.check('on a narrow pane the lab drops whole controls rather than cutting any: the field usable, Aa and × inside the box',
+            narrowFit.whole, JSON.stringify(narrowFit.fit));
+        await shot('search-over-pane-chrome', 'The shell pane wearing a TALL Pane Lab header band with SEARCH LAB\'s bar drawn OVER it at the top right. On this narrow pane the bar gives way WHOLE: a usable needle field (not an empty square), the Aa toggle and the × fully inside the bar, the up/down buttons and possibly the counter dropped rather than cut. Nothing sliced by the plugin band or by the bar\'s own edge.');
         await page.key('Escape');
         await selectPresenter(chromeBundled, chromeSlot);
         await closeSettings();

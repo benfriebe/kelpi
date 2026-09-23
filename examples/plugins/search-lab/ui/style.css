@@ -47,10 +47,15 @@ body { margin: 0; height: 100vh; overflow: hidden; background: transparent; }
      * Nothing may be pushed out of the row by the needle. The field is the only thing that yields
      * (`flex: 0 1 auto; min-width: 0` below); the counter and the four controls are `flex: none`,
      * so when the host's box is narrower than the bar wants, what shrinks is the needle and not the
-     * user's way of stepping or closing the search.
+     * user's way of stepping or closing the search. When the needle has given all it can, whole
+     * controls give way instead, in the order `pane-search.js` ▸ `FITS` states.
      */
     overflow: hidden;
 }
+/* The tiers `fit()` picks for a narrow box: the step buttons go first, then the counter. */
+.root[data-fit='compact'] .step,
+.root[data-fit='tight'] .step,
+.root[data-fit='tight'] .count { display: none; }
 
 .field {
     flex: 0 1 auto;
@@ -68,18 +73,15 @@ body { margin: 0; height: 100vh; overflow: hidden; background: transparent; }
 
 .count {
     /*
-     * The counter yields too, after the field and before any control.
+     * The counter never shrinks: a cut counter reads "1 of" and says nothing true.
      *
-     * A 115 px box cannot seat a needle, a count and four buttons, and the order in which they give
-     * ground is a decision: the NEEDLE first (you are typing it and can see it in the terminal), the
-     * COUNT second (it is a number you can read after the bar has room), and the controls never -
-     * stepping and closing are what a find bar is FOR, and a bar with no × is one a user cannot
-     * dismiss with the mouse at all.
+     * It used to yield alongside the field, and a flex row shares a shortfall out by size rather
+     * than by any order a comment describes - so on a 246 px pane the field kept most of its room
+     * and the counter lost its total. Now the needle alone yields, and when it has reached its floor
+     * the counter goes WHOLE (`data-fit='tight'` above), never in part.
      */
-    flex: 0 1 auto;
-    min-width: 0;
+    flex: none;
     text-align: right;
-    overflow: hidden;
     white-space: nowrap;
     font-size: 10px;
     font-variant-numeric: tabular-nums;

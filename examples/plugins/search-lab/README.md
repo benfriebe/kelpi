@@ -67,6 +67,15 @@ granted width is the bar's `max-width` and only the field gives ground, which is
 own answer; the size it DECLARES is still its natural one, measured with that ceiling lifted, so a
 pane that widens gets the whole bar back.
 
+The field gives ground ALONE, down to a 72 px floor, and then whole controls go in a fixed order:
+the ↑ and ↓ buttons first (Return, ⇧Return, ⌘G and ⇧⌘G still step), then the counter, whose text
+moves to the field's tooltip. The `Aa` toggle and the `×` never go: one is the only sign the search
+is case sensitive, the other is the way out. The second cut let the counter shrink beside the field,
+and the onscreen shots showed why a flex row is not an order: it shares a shortfall out by size, so
+a 246 px box cut the counter to "1 of", and a 112 px box left the field an empty square with the `×`
+past the clip. `fit()` in `ui/pane-search.js` picks the tier (`data-fit` on the bar: `full`,
+`compact`, `tight`) from the granted width.
+
 The declaration is re-measured from a `ResizeObserver` over the bar, because a counter going from
 `3 of 9` to `312 of 4096` is a wider bar and this document reflowing is the one thing the host
 cannot see. Nothing is re-sent while it has not changed: the budget is 240 calls per rolling second
@@ -79,7 +88,14 @@ presenter that killed itself while somebody typed.
 
 The field takes the caret on the frame that opens a session, exactly as Kelpi's own bar autofocuses.
 It is **not** contained: clicking the terminal underneath moves the caret to the terminal, because a
-find bar is not modal.
+find bar is not modal. When Kelpi focuses this frame the field takes the caret in the same task,
+rather than on the next frame, so a fast keystroke never lands on the frame's body in between.
+
+**The hand-over from Kelpi's own bar.** A ⌘F pressed before this view has painted opens Kelpi's bar,
+and the user may start typing there. This view is fed the needle as it goes - Kelpi hands a
+presenter the needle it is still sending, not the daemon's older one - and the field follows it on
+every frame until the user types into this field. So when Kelpi's bar stands down mid-word, the
+field already holds what was typed and the caret is after it.
 
 The caret goes to the **end** of whatever needle was already there and nothing is selected. That is
 the bundled bar's own rule, and it is deliberate: selecting the text made the first keystroke
@@ -91,8 +107,10 @@ Four chords are relayed into the window and no others:
 | --- | --- |
 | Escape | Kelpi closes the search and hands the caret back to the pane |
 | The toggle-search chord (⌘F by default, rebindable) | the same |
-| ⌘G | `searchNext` |
-| ⇧⌘G | `searchPrevious` |
+| ⌘G | `searchNext`, while this frame or the searched pane holds the caret |
+| ⇧⌘G | `searchPrevious`, likewise |
+
+Where Ctrl is the primary modifier the stepping chords are Ctrl-G and Shift-Ctrl-G.
 
 Everything else stays inside the frame and reaches nothing in the window - typing, arrows, Tab,
 Return. That is why Return and ⇧Return are bound in this view rather than relayed: they are its own
@@ -149,8 +167,8 @@ shell rewrites its buffer whenever it likes and a working presenter must not be 
 busy.
 
 Either failure latches the placement back to Kelpi's own bar, keyed `viewID:revision:instanceID`,
-drops the declared box with it, and hands the caret back to the pane. **The needle survives**, and
-its field is focused: the needle, the total and the selection were never this view's, they are
+drops the declared box with it, and turns case sensitivity back off, because Kelpi's bar has no
+toggle to show it with. **The needle survives**, and Kelpi's field takes the caret: the needle, the total and the selection were never this view's, they are
 workspace state on the daemon's delta stream, so the bar that comes back is the bar the user was
 already using. Settings → Plugins → Workbench views reports the failure on the `pane.search` row and
 offers **Retry presenter**; a reload, a rollback or a different selection clears the latch on its own
@@ -162,4 +180,6 @@ The needle, the total and the selected match are workspace state, so a second wi
 same pane reads the same counter and closing the bar in one closes it in both. Case sensitivity is
 not: Kelpi's search verb takes it per request and stores nothing, so the host holds it for the window
 for the length of one search session. The `Aa` toggle is therefore local to the window whose bar you
-are drawing, and the totals it produces are published to both.
+are drawing, and the totals it produces are published to both. It also leaves with this view: if the
+placement fails or is handed back while a search is open, the flag goes off and the needle is
+recounted, because Kelpi's own bar could not show that it was on.

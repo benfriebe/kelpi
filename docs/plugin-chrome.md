@@ -91,29 +91,33 @@ const { keymap } = await kelpi.ui.getChrome();
 for (const plugin of keymap.plugins) for (const command of plugin.commands) {
     if (command.shortcut) console.log(plugin.name, command.title, command.shortcut);
     else if (command.shadowed) console.log(command.title, `${command.shadowed.shortcut} runs ${command.shadowed.by}`);
+    if (command.currently) console.log(command.title, `${command.shortcut} currently runs ${command.currently.by}`);
 }
 ```
 
 | Field | Meaning |
 | --- | --- |
 | `sections` | Native actions by Settings category, in Help's order: `{ category, actions: [{ action, title, shortcut }] }`. `action` is the config name (`split_right`); `shortcut` is `null` when unbound. |
-| `plugins` | `{ name, commands }` per enabled, running plugin of the primary daemon, in palette order. Disabled and failed plugins contribute nothing, and a secondary daemon's plugins are not listed, as in the palette. Two plugins with one display name are two groups. |
-| `plugins[].commands` | `{ id, title, shortcut, shadowed }` for every declared command, whatever its `when` or `enablement` says: Help is reference, not a menu, so `shortcut` is the chord that runs the command while it applies. |
+| `plugins` | `{ name, commands }` per enabled, running plugin of the primary daemon, in plugin and declaration order (the order that wins a collision). Disabled and failed plugins contribute nothing, and a secondary daemon's plugins are not listed, as in the palette. Two plugins with one display name are two groups. |
+| `plugins[].commands` | `{ id, title, shortcut, shadowed, currently }` for every declared command, whatever its `when` or `enablement` says: Help is reference, not a menu, so `shortcut` is the chord that runs the command while it applies. |
 | `shadowed` | Set when the command's own shortcut runs something else first: `{ shortcut, by, plugin }`, where `by` is a native action title, `Settings`, `Kelpi Help` or `Global hotkey`, or an earlier plugin command's title with `plugin` naming its plugin. `shortcut` is then `null`. |
+| `currently` | Set when the command does not apply right now and a later plugin command holds its `shortcut` meanwhile: `{ by, plugin }` names what pressing it runs until this command applies again and takes the chord back. |
 | `withheld` | Plugin commands after the carried ones that this snapshot had no room for. Usually zero. |
 
-Chords use the window's own spelling, the same as Help, the palette and menu hints (`⌘D` on
+Chords use the window's own spelling, the same as Help and the native palette and menu hints (`⌘D` on
 macOS, `Ctrl+D` elsewhere), after the user's rebinds, unbinds and plugin shortcut overrides.
 The plugin half is the keyboard dispatcher's own resolution, so the map cannot name a chord the
 window would not honour: native chords are claimed first, then each command that currently
 applies claims its shortcut in plugin and declaration order. A command that does not apply right
-now claims nothing and is shown what its chord would run the moment it did. An unparseable or
+now claims nothing: its `shortcut` is what its chord runs the moment it applies, and `currently`
+says what a later command runs on it until then. An unparseable or
 Shift-only manifest shortcut never fires and is listed with `shortcut: null`.
 
-The native half is a few KiB. The plugin half is bounded to 64 KiB of the 256 KiB frame, which
-is several hundred commands: the snapshot carries a prefix of the plugin commands in order and
-`withheld` counts the rest, so many large plugins cannot make every chrome frame undeliverable.
-The native overlay draws the whole unbounded map from the same build.
+The whole keymap is bounded to 64 KiB of the 256 KiB frame. The native half is a few KiB and is
+always carried, which leaves room for several hundred plugin commands: the snapshot carries a
+prefix of them in order and `withheld` counts the rest, so many large plugins cannot make every
+chrome frame undeliverable. The native overlay draws the whole unbounded map from the same build.
+The window copies and measures the keymap once per change rather than on every chrome update.
 
 ## Shared commands
 

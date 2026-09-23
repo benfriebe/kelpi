@@ -1274,7 +1274,9 @@ plugin with commands, a "Plugin Commands" section with a "Settings ▸ Plugins" 
 command of each plugin under the plugin's display name, whatever its `when` says, with the chord
 that runs it after the user's overrides ("-" when none). A plugin shortcut that a native binding,
 ⌘, (Settings), ⌘? (Help), the global hotkey or an earlier plugin command claims first is drawn
-struck through, with a line under the title naming what runs instead ("⌘D runs Split Right").
+struck through, with a line under the title naming what runs instead ("⌘D runs Split Right"). A
+command that does not apply right now keeps its chord, and when a later plugin command holds that
+chord meanwhile a line says so ("⌃⌥B currently runs Run (Other Plugin)").
 Both sections render the keymap model (`chrome/keymap.ts`) that the chrome snapshot publishes
 (`docs/plugin-chrome.md`), so Help and a plugin view cannot disagree; the body scrolls and long
 names wrap. The overlay is host-drawn and not a plugin placement. A "Command Line" section

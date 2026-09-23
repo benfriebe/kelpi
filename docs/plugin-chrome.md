@@ -131,6 +131,9 @@ workspace-scoped actions. The host validates current state again when invoked.
 | `kelpi.input.toggleSync` | Requires the currently selected `workspaceID`. |
 | `kelpi.sidebar.left`, `kelpi.sidebar.right` | Toggle the view host on that physical side. |
 | `kelpi.inspector.toggle` | Toggle Inspector's native host, wherever placed. |
+| `kelpi.zenMode.toggle` | Enter or leave Zen Mode: hide the toolbar, status bar, bottom panel and both sidebars, or restore the ones Zen Mode hid. Titled "Enter Zen Mode" or "Exit Zen Mode", `checked` while it is on. Always enabled. |
+| `kelpi.toolbar.toggle`, `kelpi.statusbar.toggle`, `kelpi.panel.bottom.toggle` | Show or hide one band, titled "Hide …" or "Show …" and `checked` while it is showing. The bottom panel's is disabled while no view is selected for it. |
+| `kelpi.window.resetArrangement` | Show the toolbar, status bar, bottom panel and Workspaces sidebar, close the Inspector (the launch state), and leave Zen Mode. Always enabled. |
 | `kelpi.window.takeSizeControl` | Request PTY geometry ownership for the invoking window; observe the subsequent model update. |
 | `kelpi.pane.focus` | Requires explicit `workspaceID` and `paneID`; selects that primary workspace, reveals the pane and hands back the caret. |
 | `kelpi.window.openPlugins`, `kelpi.window.openSettings`, `kelpi.window.openHelp`, `kelpi.window.openPalette` | Open the owning window's existing surfaces. |
@@ -168,7 +171,11 @@ files, terminals, storage or domain APIs to another daemon.
 
 Replacement toolbar/status placements and chrome APIs apply to the desktop workbench. Phone
 plugin panes keep their existing APIs; desktop chrome is unavailable there. Window controls,
-the drag strip, authentication, pane ownership and recovery stay in the host. Settings and
+the drag strip, authentication, pane ownership and recovery stay in the host. When the toolbar
+band is hidden (see [hiding bands and Zen Mode](plugins.md#hiding-bands-and-zen-mode)) the host
+draws its own 8 px strip in its place, which is the drag region and carries the restore handle,
+and the macOS traffic lights are hidden with the toolbar. A replacement toolbar that is hidden
+stays loaded and is told `visible=false`. Settings and
 Plugins remain accessible through keyboard commands even if a replacement fails. Disabling
 or removing the plugin restores native bars while retaining preferred selections; reenabling
 it restores the replacements. Ordinary plugin-view errors retain their local retry control.
@@ -176,7 +183,10 @@ it restores the replacements. Ordinary plugin-view errors retain their local ret
 That recovery floor is shared with the interaction presenters: `kelpi.window.openPalette`,
 `openSettings`, `openPlugins`, `openHelp` and `restartUI` stay enabled whatever is selected for
 the toolbar, the status bar, the palette or the prompts, and the native menu and their shortcuts
-never route through a plugin. A palette or prompts presenter is selected in the same Workbench
+never route through a plugin. `kelpi.zenMode.toggle` and `kelpi.window.resetArrangement` join it:
+whatever is hidden, the chord (⌃⌘Return), the View menu, the palette, the strip's handle and
+Settings → Plugins → **Reset window arrangement** bring the bands back, and the dispatcher lets
+the arrangement chords through even with no local workspace on screen. A palette or prompts presenter is selected in the same Workbench
 views list and falls back to bundled the same way; see
 [selectable interaction presenters](plugin-ui.md#selectable-interaction-presenters).
 

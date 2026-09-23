@@ -1419,7 +1419,10 @@ The full application menu (`packages/shell/src/menu.ts`, assembled in
 the build is packaged and updater-capable; `menu.ts:454-469`); File ▸ the rows above plus
 Close (⌘W), which asks the focused window's page to run `close_pane` and closes the window
 only when the page reports nothing to close or does not answer within 500ms
-(`menu.ts:133-169`); Edit (standard roles); View ▸ Toggle Sidebar, Toggle Inspector, Reload,
+(`menu.ts:133-169`); Edit (standard roles); View ▸ Toggle Sidebar, Toggle Inspector, Toggle
+Toolbar, Toggle Status Bar, Toggle Bottom Panel, Toggle Zen Mode (⌃⌘↩) and Reset Window
+Arrangement (the root arrangement's relay rows; the three band toggles ship unbound, and
+[plugins.md](plugins.md#hiding-bands-and-zen-mode) has the behaviour), Reload,
 Force Reload (⌥⌘R, moved off ⇧⌘R because that chord is `rename_workspace`), Toggle Developer
 Tools, Increase / Decrease / Reset Terminal Text Size (#175: relay rows that SHOW the live chord
 and do not register it, `registerAccelerator: false`, so the glyph follows a rebind while the

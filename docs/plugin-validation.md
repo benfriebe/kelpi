@@ -31,6 +31,7 @@ every UI-audit assertion passed. Phone emulation is distinct from physical-devic
 
 ## Phase index
 
+- [Root layout: hidden bands, Zen Mode and band heights](#root-layout-hidden-bands-zen-mode-and-band-heights-2026-09-24).
 - [Help lists plugin commands and shortcuts](#help-lists-plugin-commands-and-shortcuts-2026-09-24).
 - [Selectable search presenter](#selectable-search-presenter-2026-09-20).
 - [Selectable pane chrome presenter](#selectable-pane-chrome-presenter-2026-09-19).
@@ -54,6 +55,91 @@ every UI-audit assertion passed. Phone emulation is distinct from physical-devic
 - [Foundation](#initial-implementation-2026-09-08) and [extended contracts](#extensibility-follow-up-2026-09-09).
 - [Bundled sidebars](#bundled-sidebar-features-and-window-navigation-2026-09-09), [shared UI](#reactive-contributions-and-shared-window-ui-2026-09-09) and [their integrated PR checks](#pr-publication-validation-2026-09-10).
 - [Reproduction commands](#reproduce).
+
+## Root layout: hidden bands, Zen Mode and band heights (2026-09-24)
+
+The last root composition item, implemented on `feature/plugin-root-layout` from main `225ef73`
+against sixteen decisions the owner ratified before any code (one amendment: the feature is **Zen
+Mode**, not Focus Mode). Tested revision: **`a12e558`** (code `3f1fff2`, Layout Lab and the scenario
+`59b3faa`, the independent review's fixes and the two added live checks `826609a`, and the
+`plugin-workbench` synchronization fix `a12e558`, which changes no product code).
+
+**Full verification battery (`node scripts/verify.mjs --full`): passed unretried at `e7d9de1` in 25.9
+min**, whose code and scripts are `a12e558`'s (the commits after it amend documentation only):
+typecheck, root tests 8,697 passed with 1 skipped (the existing optional database skip), shell 890,
+all scenarios hidden in 6.4 min with `plugin-workbench` 24/24, `plugin-root-layout` 25/25 in its own
+offscreen instance and `sidebar-swap` 12/12, the full audit (132 steps, 1,716 assertions, 0 failed,
+0 step errors, 113 steps flagged for eyes) and packaged smoke 69/69. The coordinator ran it.
+
+**Rebased onto `c32cabe` (#261's head, over merged main `39e6f5b` with
+[#262](https://github.com/benfriebe/kelpi/pull/262)) on 2026-09-24.** The hashes in this record are
+the branch before the rebase (tip `a7bceaa`). The code conflicts, in `App.tsx`, `plugins/Workbench.tsx`
+and `features/chrome-source.test.tsx`, were resolved exactly as in the owner-tested integration build
+(the chrome host and its test fixture take Help's `keymap` beside the arrangement fields; the Settings
+section keeps the pane search presenter row, then the arrangement status and one row holding both
+**Restore bundled views** and **Reset window arrangement**), and Layout Lab's chrome fixture gains the
+`keymap` field Help made required; the code tree is identical to the integration build's. After the
+rebase `pnpm typecheck` passes, root vitest runs **557 files: 8,838 passed, 1 skipped** and shell **890
+passed**, and `plugin-root-layout` 25/25 (its own offscreen instance), `plugin-workbench` 24/24 and
+`plugin-chrome-features` 38/38 passed once each. No battery was rerun: the coordinator runs one on
+main after the merges.
+
+**The first battery FAILED at `819da74`**, kept here as history (the same product code as
+`826609a`): root tests 8,697 passed with 1 skipped, shell 890, the full audit (132 steps, 1,716
+assertions, 0 failed, 0 step errors), packaged smoke 69/69 and every other scenario passed, but
+`plugin-workbench` went 23/24 in the lane and again alone on the isolated retry: "the right plugin
+header restores the working Inspector". The failure, traced live, was the scenario's
+synchronization and not the product, and the passing battery above is the re-run:
+
+- After its reload, the scenario opens the right sidebar's view picker and presses the Inspector
+  row. The menu draws over the right sidebar's plugin iframe. Chromium routes pointer input by its
+  own hit-test data, which lags the host DOM, and the press, sent 15 ms after the menu drew, was
+  delivered to that iframe: a trace inside the frame recorded the `pointerdown`, the host recorded a
+  window `blur` with the iframe focused, and the picker (which closes on window blur) closed with
+  nothing chosen. In runs that passed, the press reached the menu row.
+- Nothing in the host moved focus: a wrapper on `focus()` in the host recorded no call, and none
+  in the frame either.
+- Why now: before this branch the Inspector always started closed after a reload, so the scenario
+  first clicked the toolbar to open it and waited for the slide, which happened to give Chromium the
+  time it needed. The Inspector's visibility is persisted now, it comes back open, and that click
+  and wait are gone. The scenario's two-animation-frame wait was never a guarantee.
+- The fix, in the scenario: the pointer hovers the row until the host itself receives it there
+  (the routing the press will get), and only then presses. On the pre-fix scenario the step failed
+  in two of every three runs; after it, **`plugin-workbench` passed 5/5**, `sidebar-swap` 12/12 and
+  `plugin-root-layout` 25/25 (hidden, hidden, offscreen; the first run rebuilt the client).
+- A first hypothesis (a pane's caret hand-off stealing focus from the open menu) led to a change
+  in `app/pane-focus.ts`; the trace disproved it and the change was reverted before this commit. Everything below ran on the implementation worktree with
+private sandboxes only, on a machine shared with two other worktrees under a UI lock. Plugin API
+version stays **1** and wire generation stays **2**: the manifest's `bandHeights` is optional and
+ignored by an older daemon, the four actions and five chrome commands are additive, and
+`window-chrome` is a new client-to-shell report relayed like `workspace-selection`.
+
+| Check | Result |
+| --- | --- |
+| `pnpm typecheck` | Passes (protocol, core, daemon, cli, plugin-sdk, client, shell). |
+| `pnpm test` | At `826609a`: root vitest **8,697 passed, 1 skipped** (the existing optional database skip) in 549 files; shell **890 passed**. Every client test now starts from an empty `localStorage` (`packages/client/src/test-setup.ts`), because the sidebar and Inspector visibility persist there. New suites: `plugins/arrangement` (the model: Zen Mode's snapshot and restore, toggles inside it, a corrupt store), `plugins/Workbench.arrangement` (hidden bands, a hidden plugin view kept mounted and told `visible=false`, declared heights and the bottom panel's 50vh, the Settings status and reset, the address-keyed mirror, a change made before the daemon's identity carried over to its key, no live sync between windows), `chrome/RestoreStrip`, `App.arrangement` (the chord with and without a workspace, the menu relay, the handle, the toast, persistence, the Inspector reopening, the `window-chrome` report) and `plugins/layout-lab`, plus cases in the protocol (`bandHeights` ranges and refusals), core (the actions, ⌃⌘Return, and a ctrl+super chord left unbound off macOS), daemon (the relay), shell (the View rows and their accelerators, the traffic-light rule, the report parser), keys (the dispatcher exemption), chrome-source, palette-source and the connection banner. |
+| Live acceptance | At `826609a`: `node scripts/scenario.mjs plugin-root-layout --window offscreen`: **25/25** twice, 0 failed. The two checks the review found missing are in: ⌃⌘Return pressed inside a focused web page (through its own debug target) toggles Zen Mode exactly once each way, and the shell's log shows exactly one relayed chord per press; and with a remote daemon's workspace displayed, ⌘D splits nothing locally while ⌃⌘Return still toggles Zen Mode both ways. A real ⌃⌘Return with a page focused goes to the View menu's accelerator instead, which a CDP key event cannot reach (`terminal-leaves-platform-chords.mjs` measured that); the native accelerator is its own check. The scenario declares `windowPlacement = 'offscreen'` for the web page. The first cut (`59b3faa`) ran 23/23 after one fix: it had clicked Settings' Reset window arrangement below the fold, and a CDP click lands where the box is. The four screenshots were read: Layout Lab's 36, 22 and 180 px bands; Zen Mode with the grid under the 8 px strip and no traffic lights; the handle expanded to "Exit Zen Mode ⌃⌘Return"; and the restored window. |
+| Neighbours | At `59b3faa`: `sidebar-swap --window hidden`: **12/12** (updated: the Inspector's visibility is persisted now, so it comes back open after the reload instead of being toggled open). `plugin-chrome-features --window hidden`: **35/35** (Chrome Lab's bars at the undeclared 44 and 32 px, untouched). |
+| Second review | An independent review of `3f1fff2..74b4562` found no high issue, one medium (the two live checks above) and eight lows, all applied in `826609a`: the shell shows the traffic lights while its status connection is down (a toolbar restored from the handle during an outage no longer sits beside an empty gutter); an unreadable Zen Mode snapshot reads as the default arrangement; adopting the daemon's saved arrangement also refreshes the address copy; the daemon drops a `window-chrome` report whose `windowID` is present but malformed; the web-pane relay no longer claims a ctrl+super chord the client leaves unbound off macOS, and a user's own such `keybind` line is documented as dropped there; the Reset wording says it closes the Inspector; client tests start from an empty store; and one comment's count. |
+| First review | A review of the code commit found seven issues and all were fixed before the first live run: a change made before the daemon's identity arrived was undone when it arrived; off macOS ⌃⌘Return canonicalized to plain Ctrl+Return (now left unbound there, by the map and by the shell's menu); a cancelled external link click showed the traffic lights in Zen Mode (the reset moved from `did-start-navigation` to the committed `did-navigate`); the entry toast could outlive Zen Mode; the connection banner registered its rect over a showing toolbar; and `sidebar-swap` assumed a closed Inspector after a reload. |
+
+### What this phase contains
+
+- `packages/client/src/plugins/arrangement.ts`: the five visibilities and Zen Mode's snapshot, their
+  store (`kelpi.workbench.layout.v1:<id>`, mirrored to the address key read before the daemon's
+  identity arrives, never live-synced), `Workbench.tsx` (hidden bands, declared heights, the
+  Settings row and reset) and `registry.ts` (`bandHeights` on a contribution).
+- `App.tsx`: sidebar and Inspector visibility moved into the arrangement; the verbs behind the
+  chord, menu, palette, chrome commands, strip and Settings; the `window-chrome` report; the toast.
+- `chrome/RestoreStrip.tsx` and the dispatcher's exemption for `WINDOW_ARRANGEMENT_ACTIONS`;
+  `features/chrome-source.ts` and `features/palette-source.ts`; the banner's overlay rect.
+- `core/src/config`: `toggle_zen_mode` (⌃⌘Return) and three unbound band toggles as menu-bar
+  actions, and `triggerExpressibleOnPlatform`.
+- `protocol`: `bandHeights` with `PLUGIN_BAND_HEIGHTS`, and `window-chrome`; `daemon` relays it;
+  `shell` hides the traffic lights (`titlebar.ts`), carries the View rows (`menu.ts`) and routes
+  the report (`status.ts`, `main.ts`).
+- `examples/plugins/layout-lab/`, `scripts/scenarios/plugin-root-layout.mjs`, and the runner's
+  post-condition reporting a leaked arrangement.
 
 ## Help lists plugin commands and shortcuts (2026-09-24)
 

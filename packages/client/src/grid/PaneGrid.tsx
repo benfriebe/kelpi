@@ -92,6 +92,7 @@ import {
 import {
     PaneSearchPresenterSlot,
     paneSearchBoxFor,
+    paneSearchCaseStranded,
     paneSearchRect,
     projectPaneSearch,
     retainPaneSearchBox,
@@ -1141,19 +1142,25 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
      * The native bar has no case toggle and no indicator, so a flag left on after a presenter
      * failed or was deselected mid-search had it counting case-sensitively with nothing on screen
      * to say so: "no matches" for a needle that plainly matched, until the bar was closed and
-     * reopened. So when a presenter stands down with a search open, the flag goes back off and the
-     * needle is recounted - the native bar's own terms. Not when it stands down because the
-     * connection dropped: nothing can be searched until it returns, and it returns with the same
-     * presenter drawing the toggle that is still lit.
+     * reopened. So whenever the native bar is the one drawing an open, case-sensitive search on a
+     * connected window, the flag goes back off and the needle is recounted - the native bar's own
+     * terms. A STATE, not a transition (`paneSearchCaseStranded`): a presenter that stood down while
+     * the connection was down and never came back is answered when the connection does.
+     * `setCaseSensitive` is idempotent, so a render that finds the same state again sends nothing.
      */
-    const searchWasActive = useRef(searchActive);
+    const openSearch = props.search ?? null;
+    const caseStranded =
+        openSearch !== null &&
+        paneSearchCaseStranded({
+            connected: searchSelection.connected,
+            presenterActive: searchActive,
+            caseSensitive: openSearch.caseSensitive
+        });
+    const strandedPaneID = caseStranded ? openSearch.paneID : null;
+    const searchActions = props.searchActions;
     useEffect(() => {
-        const was = searchWasActive.current;
-        searchWasActive.current = searchActive;
-        if (!was || searchActive || !searchSelection.connected) return;
-        const open = props.search ?? null;
-        if (open !== null && open.caseSensitive) props.searchActions?.setCaseSensitive(open.paneID, false);
-    }, [searchActive, searchSelection.connected, props.search, props.searchActions]);
+        if (strandedPaneID !== null) searchActions?.setCaseSensitive(strandedPaneID, false);
+    }, [strandedPaneID, searchActions]);
 
     const dropRect =
         dropTarget === null

@@ -17,6 +17,7 @@ import type { ReactElement } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { PaneSearchOverlay } from '../grid/PaneSearchOverlay';
+import { noteFramePointerDown } from '../plugins/frame-gesture';
 
 import {
     clearPaneSearchBoxes,
@@ -34,6 +35,7 @@ import {
     PANE_SEARCH_NEXT_CHORD,
     PANE_SEARCH_PREVIOUS_CHORD,
     PaneSearchPresenterSlot,
+    paneSearchCaseStranded,
     paneSearchPresenterChords,
     paneSearchStepFor,
     reclaimNativeCaret,
@@ -293,19 +295,32 @@ describe('the fallback caret re-assertion', () => {
         document.body.innerHTML = '';
     });
 
-    function layout(): { field: HTMLInputElement; surface: HTMLTextAreaElement; outside: HTMLButtonElement } {
+    function layout(): {
+        field: HTMLInputElement;
+        surface: HTMLTextAreaElement;
+        renderer: HTMLIFrameElement;
+        outside: HTMLButtonElement;
+    } {
         document.body.innerHTML = `
             <div data-pane-id="pane-1">
                 <textarea id="surface"></textarea>
+                <iframe id="renderer" title="plugin terminal"></iframe>
                 <div role="search"><input id="field" value="needle"></div>
             </div>
             <button id="outside">elsewhere</button>`;
         return {
             field: document.getElementById('field') as HTMLInputElement,
             surface: document.getElementById('surface') as HTMLTextAreaElement,
+            renderer: document.getElementById('renderer') as HTMLIFrameElement,
             outside: document.getElementById('outside') as HTMLButtonElement
         };
     }
+    /** A key pressed with the caret wherever it is now, as the browser would target it. */
+    const press = (init: KeyboardEventInit): void => {
+        (document.activeElement ?? document.body).dispatchEvent(
+            new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init })
+        );
+    };
     /** The pane's own caret claim: a programmatic focus into the searched pane's surface. */
     const claim = (surface: HTMLTextAreaElement): void => surface.focus();
     const tick = (): void => {
@@ -379,6 +394,54 @@ describe('the fallback caret re-assertion', () => {
         expect(document.activeElement).toBe(surface);
     });
 
+    /**
+     * A plugin-rendered terminal is an IFRAME inside the searched pane, and a press inside it never
+     * reaches this document. Its own programmatic claim is the race (exempt, re-asserted against);
+     * the user's press is reported by the SDK and relayed by `PluginView`, and ends the defence.
+     */
+    it('fights a plugin renderer\'s claim but yields to a press inside the renderer\'s frame', () => {
+        vi.useFakeTimers();
+        const { field, renderer } = layout();
+        reclaimNativeCaret(document, 'pane-1');
+        renderer.focus();
+        tick();
+        expect(document.activeElement).toBe(field);
+        noteFramePointerDown();
+        renderer.focus();
+        vi.advanceTimersByTime(NATIVE_CARET_RECLAIM.intervalMs * 10);
+        expect(document.activeElement).toBe(renderer);
+    });
+
+    /**
+     * The user carrying on with their needle is the whole reason the field is defended, so plain
+     * typing into it does not end the defence: the pane's late claim would otherwise take the rest
+     * of the needle, Return included, into the shell.
+     */
+    it('keeps defending the field while the user types into it', () => {
+        vi.useFakeTimers();
+        const { field, surface } = layout();
+        reclaimNativeCaret(document, 'pane-1');
+        expect(document.activeElement).toBe(field);
+        press({ key: 'x' });
+        press({ key: 'Enter' });
+        press({ key: 'X', shiftKey: true });
+        claim(surface);
+        tick();
+        expect(document.activeElement).toBe(field);
+    });
+
+    it('stops on Tab, Escape or a modifier chord pressed in the field', () => {
+        vi.useFakeTimers();
+        for (const init of [{ key: 'Tab' }, { key: 'Escape' }, { key: 'k', metaKey: true }, { key: 'k', ctrlKey: true }]) {
+            const { surface } = layout();
+            reclaimNativeCaret(document, 'pane-1');
+            press(init);
+            claim(surface);
+            vi.advanceTimersByTime(NATIVE_CARET_RECLAIM.intervalMs * 10);
+            expect(document.activeElement, JSON.stringify(init)).toBe(surface);
+        }
+    });
+
     /** An orphaned first run would go on re-asserting after the grid stopped the second. */
     it('lets a second fallback replace the first rather than run beside it', () => {
         vi.useFakeTimers();
@@ -389,5 +452,21 @@ describe('the fallback caret re-assertion', () => {
         claim(surface);
         vi.advanceTimersByTime(NATIVE_CARET_RECLAIM.intervalMs * 10);
         expect(document.activeElement).toBe(surface);
+    });
+});
+
+/**
+ * The case flag leaves with the presenter that drew its toggle, as a STATE rather than on the
+ * stand-down: a presenter that stood down while disconnected and never came back is answered when
+ * the connection returns.
+ */
+describe('a case flag stranded under the native bar', () => {
+    it('is stranded only while connected, with no presenter active and the search case sensitive', () => {
+        expect(paneSearchCaseStranded({ connected: true, presenterActive: false, caseSensitive: true })).toBe(true);
+        // A presenter is drawing (or booting): its toggle shows the flag.
+        expect(paneSearchCaseStranded({ connected: true, presenterActive: true, caseSensitive: true })).toBe(false);
+        // Disconnected: nothing can be searched, and a returning presenter still draws the toggle lit.
+        expect(paneSearchCaseStranded({ connected: false, presenterActive: false, caseSensitive: true })).toBe(false);
+        expect(paneSearchCaseStranded({ connected: true, presenterActive: false, caseSensitive: false })).toBe(false);
     });
 });

@@ -84,6 +84,11 @@ describe('injected browser SDK', () => {
         events.get('keydown')?.(key);
         expect(key.preventDefault).toHaveBeenCalledOnce();
         expect(port.postMessage).toHaveBeenLastCalledWith(expect.objectContaining({ type: 'key', code: 'KeyK' }));
+        // A press is reported as one, which a programmatic focusin is not.
+        events.get('pointerdown')?.({});
+        expect(port.postMessage).toHaveBeenLastCalledWith({ type: 'focus', pointer: true });
+        events.get('focusin')?.({});
+        expect(port.postMessage).toHaveBeenLastCalledWith({ type: 'focus' });
         const environmentCalls = observed.mock.calls.length;
         const queuedUpdate = port.onmessage({ data: { type: 'context', value: { visible: false } } });
         stopObserving(); await queuedUpdate;

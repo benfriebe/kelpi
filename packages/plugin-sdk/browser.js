@@ -549,7 +549,8 @@
         terminalDisposed = true; terminalSession?.dispose();
         browserDisposed = true; browserSession?.dispose();
     });
-    addEventListener('pointerdown', () => { if (port && live.visible !== false) send({ type: 'focus' }); }, true);
+    // `pointer` tells the host this focus is a PRESS, which a programmatic focusin is not.
+    addEventListener('pointerdown', () => { if (port && live.visible !== false) send({ type: 'focus', pointer: true }); }, true);
     addEventListener('focusin', () => { if (port && live.visible !== false) send({ type: 'focus' }); browserSession?.updateTextFocus(); });
     addEventListener('focusout', () => { void Promise.resolve().then(() => browserSession?.updateTextFocus()); });
     addEventListener('keydown', event => {

@@ -583,10 +583,20 @@ function Shell(props: AppProps): ReactElement {
      * bars are handed this while it is set and the daemon's needle once it has caught up
      * (`SearchNeedleScheduler.inTransit`, which is what sets and clears it). Keyed by the pane it was
      * typed for, so a needle in transit never leaks into a search somewhere else.
+     *
+     * The REF is the truth and the state is only what re-renders the window, and it is skipped
+     * whenever the needle a bar would be handed does not change. So a keystroke costs one render
+     * for the needle leaving and none for the answer coming back: by then the daemon's echo has
+     * already put the same needle on the workspace. Everything that reads the draft reads the ref,
+     * so a render trigger that is left stale can never mask a needle another window set later.
      */
     const [searchDraft, setSearchDraft] = useState<{ paneID: string; needle: string } | null>(null);
-    const searchDraftRef = useRef(searchDraft);
-    searchDraftRef.current = searchDraft;
+    const searchDraftRef = useRef<{ paneID: string; needle: string } | null>(null);
+    /** The needle a bar over `paneID` is handed: this window's in transit, else the daemon's. */
+    const liveSearchNeedle = (paneID: string, daemonNeedle: string): string => {
+        const draft = searchDraftRef.current;
+        return draft !== null && draft.paneID === paneID ? draft.needle : daemonNeedle;
+    };
     /** Right-click on a pane header: where the menu opened and which pane it acts on. */
     const [paneMenu, setPaneMenu] = useState<{ paneID: string; x: number; y: number } | null>(null);
     /**
@@ -1294,10 +1304,14 @@ function Shell(props: AppProps): ReactElement {
                 );
             },
             onTransit: (needle: string | null) => {
-                const paneID = selectActiveWorkspace(store.getState())?.searchingPaneID ?? null;
+                const workspace = selectActiveWorkspace(store.getState());
+                const paneID = workspace?.searchingPaneID ?? null;
                 const next = needle === null || paneID === null ? null : { paneID, needle };
                 searchDraftRef.current = next;
-                setSearchDraft(next);
+                const handed = (draft: { paneID: string; needle: string } | null): string =>
+                    draft !== null && draft.paneID === paneID ? draft.needle : (workspace?.searchNeedle ?? '');
+                // Returning the previous state is React's bail-out: no render for a no-op.
+                setSearchDraft((previous) => (handed(previous) === handed(next) ? previous : next));
             }
         })
     );
@@ -1714,12 +1728,11 @@ function Shell(props: AppProps): ReactElement {
                 setSearchReveal(null);
                 // The scheduler reads `searchCaseRef`, which already carries the new flag.
                 if (searchNeedleRef.current.flush()) return true;
-                const draft = searchDraftRef.current;
                 return run(
                     'Search',
                     commands.setTerminalSearchNeedle({
                         workspaceID: workspace.id,
-                        needle: draft?.paneID === workspace.searchingPaneID ? draft.needle : workspace.searchNeedle,
+                        needle: liveSearchNeedle(workspace.searchingPaneID, workspace.searchNeedle),
                         caseSensitive: on
                     })
                 );
@@ -3295,9 +3308,9 @@ function Shell(props: AppProps): ReactElement {
             return (
                 <PaneSearchOverlay
                     paneID={paneID}
-                    // Seeds the field on mount only, so the live needle costs nothing afterwards and
-                    // is what a fallback from a presenter mid-word needs (`searchDraft`).
-                    needle={searchDraft?.paneID === paneID ? searchDraft.needle : workspace.searchNeedle}
+                    // Seeds the field on mount only, so the live needle is read at render and costs
+                    // nothing afterwards; it is what a fallback from a presenter mid-word needs.
+                    needle={liveSearchNeedle(paneID, workspace.searchNeedle)}
                     total={workspace.searchTotal}
                     selected={workspace.searchSelected}
                     onNeedleChange={act.setSearchNeedle}
@@ -3310,7 +3323,8 @@ function Shell(props: AppProps): ReactElement {
                 />
             );
         },
-        [act, paneByID, searchDraft, workspace]
+        // `liveSearchNeedle` reads a ref, so the draft is not a dependency of this callback.
+        [act, paneByID, workspace]
     );
 
     /**
@@ -3337,7 +3351,7 @@ function Shell(props: AppProps): ReactElement {
             kind: pane.type,
             // The needle as this window last set it, which leads the daemon's by at most a debounce
             // and a round trip (`searchDraft`): the native bar's field shows the same thing.
-            needle: searchDraft?.paneID === paneID ? searchDraft.needle : workspace.searchNeedle,
+            needle: liveSearchNeedle(paneID, workspace.searchNeedle),
             caseSensitive: searchCaseSensitive,
             total: workspace.searchTotal,
             selected: workspace.searchSelected,
@@ -3351,6 +3365,7 @@ function Shell(props: AppProps): ReactElement {
                           linesFromBottom: reveal.linesFromBottom
                       }
         };
+        // `searchDraft` is the render trigger for the ref `liveSearchNeedle` reads.
     }, [workspace, paneByID, searchCaseSensitive, searchDraft, searchReveal]);
 
     /**

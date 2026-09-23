@@ -6,6 +6,7 @@ import { createStore as createDaemonStore, emptyDaemonState } from '@kelpi/daemo
 import { createKelpiRuntime } from '../state/bridge';
 import { createKelpiStore } from '../state/store';
 import { createFakeSocketFactory, completeHandshake } from '../connection/testing';
+import { onFramePointerDown } from './frame-gesture';
 import { PluginView } from './PluginView';
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
@@ -94,6 +95,48 @@ describe('isolated plugin view host', () => {
             await waitFor(() => expect(received.find(message => message.id === 'no-workbench')?.error).toContain('unavailable for this daemon'));
             view.unmount();
         } finally { child?.close(); window.removeEventListener('keydown', key); runtime.dispose(); }
+    });
+    /**
+     * A press inside a plugin frame never reaches the host document, so the SDK marks the focus it
+     * reports for a press and the view relays exactly that, and not a focusin, which a frame can be
+     * given programmatically. The find bar's fallback caret re-assertion is what listens.
+     */
+    it('relays a press inside the frame, and only a press, to the host', async () => {
+        vi.stubGlobal('MessageChannel', MessageChannel);
+        const sockets = createFakeSocketFactory();
+        const runtime = createKelpiRuntime({ store: createKelpiStore(), url: 'ws://press.test/ws', socketFactory: sockets.factory, notifications: null });
+        runtime.connect(); completeHandshake(sockets.last());
+        vi.spyOn(runtime.commands, 'raw').mockImplementation(async payload => payload['action'] === 'list'
+            ? { ok: true, result: [plugin] as never }
+            : payload['action'] === 'attach'
+                ? { ok: true, result: { lease: 'lease', html: '<h1>Board</h1>', entry: 'ui/index.html', context: { daemonID: 'D' }, state: {}, stateVersion: 1 } }
+                : { ok: true, result: null });
+        vi.spyOn(runtime, 'focusPane').mockImplementation(() => {});
+        const pressed = vi.fn();
+        const stopListening = onFramePointerDown(pressed);
+        let child: MessagePort | undefined;
+        try {
+            const view = render(<PluginView runtime={runtime} pluginID={manifest.id} viewID={manifest.contributes.views[0]!.id} paneID="pane" workspaceID="workspace" />);
+            await waitFor(() => expect(screen.getByTitle('Board').getAttribute('srcdoc')).toContain('kelpi-plugin-ready'));
+            const frame = screen.getByTitle('Board') as HTMLIFrameElement;
+            const nonce = /"nonce":"([^"]+)"/.exec(frame.srcdoc)![1];
+            const send = vi.spyOn(frame.contentWindow!, 'postMessage');
+            act(() => window.dispatchEvent(new MessageEvent('message', { source: frame.contentWindow, data: { type: 'kelpi-plugin-ready', nonce } })));
+            child = (send.mock.calls as unknown as Array<[unknown, unknown, MessagePort[]]>)[0]![2][0]!;
+            const received: Array<{ type?: string; id?: string }> = [];
+            child.on('message', message => received.push(message));
+            const barrier = async (id: string): Promise<void> => {
+                child!.postMessage({ type: 'call', id, method: 'ui.notify', args: { message: 'barrier' } });
+                await waitFor(() => expect(received.some(message => message.type === 'reply' && message.id === id)).toBe(true));
+            };
+            child.postMessage({ type: 'focus' });
+            await barrier('focusin');
+            expect(pressed).not.toHaveBeenCalled();
+            child.postMessage({ type: 'focus', pointer: true });
+            await barrier('press');
+            expect(pressed).toHaveBeenCalledOnce();
+            view.unmount();
+        } finally { stopListening(); child?.close(); runtime.dispose(); }
     });
     it('binds its bridge to the expected frame, keeps the owner token out, and releases access on unmount', async () => {
         vi.stubGlobal('MessageChannel', MessageChannel);

@@ -22,6 +22,7 @@ import { PANE_CHROME_UI_METHODS, type PaneChromePresenterHost } from '../pane-ch
 import { PANE_SEARCH_UI_METHODS, type PaneSearchPresenterHost } from '../pane-search/presenter';
 import { browserFrameBounds, browserPresentation, PluginBrowserSurface, type BrowserViewHost } from './browser-pane';
 import { chromeTextIsFocused, WEB_CHROME_TEXT_ATTRIBUTE } from '../webpane/priority';
+import { noteFramePointerDown } from './frame-gesture';
 import { isOkReply, replyError } from '../connection';
 
 export interface PluginViewProps {
@@ -205,6 +206,8 @@ export function PluginView(props: PluginViewProps): ReactElement {
                 if (data['type'] === 'pane-search-ack') { if (paneSearchFeed?.ack(data['sequence']) === true) paneSearchHost?.noteAcknowledged(); return; }
                 if (data['type'] === 'navigation-ack') { navigationFeed?.ack(data['sequence']); return; }
                 if (data['type'] === 'focus') {
+                    // A press inside this frame, which the host document never sees for itself.
+                    if (data['pointer'] === true) noteFramePointerDown();
                     if (latest.current.visible !== false && paneID && workspaceID) {
                         // The pointer/focus event is already placing the caret inside this UI.
                         // Its text-focus report can arrive one message later; do not replace

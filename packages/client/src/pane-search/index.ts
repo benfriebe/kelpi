@@ -80,6 +80,7 @@ export {
     PANE_SEARCH_NEXT_CHORD,
     PANE_SEARCH_PREVIOUS_CHORD,
     PaneSearchPresenterSlot,
+    paneSearchCaseStranded,
     paneSearchPresenterChords,
     paneSearchStepFor,
     paneSearchSteppingChords,

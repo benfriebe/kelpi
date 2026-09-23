@@ -98,6 +98,7 @@ import {
 import { CLIENT_MAC_LIKE } from '../chrome/keys';
 import { chordKeysForTrigger } from '../content/bridge';
 import { getCurrentPlugins } from '../plugins/client';
+import { onFramePointerDown } from '../plugins/frame-gesture';
 import { PluginView } from '../plugins/PluginView';
 import { resolveSlot } from '../plugins/registry';
 import { useOptionalWorkbench } from '../plugins/Workbench';
@@ -234,13 +235,24 @@ export function stopNativeCaretReclaim(): void {
  * that held the caret alone lost it under load.
  *
  * And it STOPS the moment the user says where they want the caret, because inside those 350 ms a
- * person can: a pointer press anywhere, a key pressed anywhere (⌘K, ⌘, and typing into the field
- * alike), or the caret arriving anywhere that is neither the field nor the searched pane's own
- * surface. That last exemption is the race this exists to win - the pane's claim IS a focus move
- * into the pane - and a user who moves the caret into that pane does it with a press, which the
- * first rule has already answered. It also stops when the search closes or moves and when the grid
- * unmounts (`stopNativeCaretReclaim`), and a second fallback replaces the first rather than joining
- * it. Exported for its tests.
+ * person can:
+ *
+ *   - a pointer press anywhere, INCLUDING inside a plugin frame. A press in a child document never
+ *     reaches this one, so a plugin-rendered terminal would otherwise be a surface the user could
+ *     click and still have the caret yanked back out of; the SDK reports its presses and
+ *     `PluginView` relays them (`plugins/frame-gesture.ts`);
+ *   - a key pressed anywhere but the field, or Tab, Escape or a modifier chord pressed IN it. Plain
+ *     typing into the field is the user carrying on with their needle - the whole reason the field
+ *     is being defended - so it does not end the defence: the pane's claim can still land after the
+ *     first keystroke, and the rest of the needle, Return included, would then go to the shell;
+ *   - the caret arriving anywhere that is neither the field nor the searched pane. That exemption
+ *     is the race this exists to win - the pane's claim IS a focus move into the pane, a plugin
+ *     renderer's iframe included - and a user who moves the caret into that pane does it with a
+ *     press, which the first rule has already answered.
+ *
+ * It also stops when the search closes or moves and when the grid unmounts
+ * (`stopNativeCaretReclaim`), and a second fallback replaces the first rather than joining it.
+ * Exported for its tests.
  */
 export function reclaimNativeCaret(document: Document | null, paneID: string | null): void {
     stopNativeCaretReclaim();
@@ -256,15 +268,28 @@ export function reclaimNativeCaret(document: Document | null, paneID: string | n
     };
     let left = NATIVE_CARET_RECLAIM.attempts;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    let offFrame: (() => void) | null = null;
 
     const stop = (): void => {
         if (timer !== null) clearTimeout(timer);
         timer = null;
+        offFrame?.();
+        offFrame = null;
         document.removeEventListener('pointerdown', stop, true);
-        document.removeEventListener('keydown', stop, true);
+        document.removeEventListener('keydown', onKey, true);
         document.removeEventListener('focusin', onFocusIn, true);
         if (reclaiming === stop) reclaiming = null;
     };
+    function onKey(event: KeyboardEvent): void {
+        const typing =
+            event.target === field() &&
+            !event.metaKey &&
+            !event.ctrlKey &&
+            !event.altKey &&
+            event.key !== 'Tab' &&
+            event.key !== 'Escape';
+        if (!typing) stop();
+    }
     function onFocusIn(event: FocusEvent): void {
         const target = event.target;
         if (!(target instanceof Element)) return stop();
@@ -287,8 +312,9 @@ export function reclaimNativeCaret(document: Document | null, paneID: string | n
     reclaiming = stop;
     // Capture phase, so a surface that stops its own events cannot hide the user's answer.
     document.addEventListener('pointerdown', stop, true);
-    document.addEventListener('keydown', stop, true);
+    document.addEventListener('keydown', onKey, true);
     document.addEventListener('focusin', onFocusIn, true);
+    offFrame = onFramePointerDown(stop);
     attempt();
 }
 
@@ -300,6 +326,25 @@ interface Watchdogs {
     /** Whether this generation reported that it had painted. */
     painted: boolean;
     generation: string;
+}
+
+/**
+ * Is an open search left case sensitive under the NATIVE bar, which has no toggle to show it?
+ *
+ * The case flag is a presenter's control, so it leaves with the presenter: whenever the connection
+ * is up, no presenter is active and the open search is case sensitive, the grid turns the flag off
+ * and the needle is recounted. Level-triggered rather than on the stand-down itself, so a presenter
+ * that stood down while the connection was DOWN and then never came back (disabled by another
+ * client, failed daemon-side) is answered the moment the connection returns. While disconnected
+ * nothing is answered: nothing can be searched, and a presenter that returns with the connection
+ * draws its toggle still lit.
+ */
+export function paneSearchCaseStranded(input: {
+    readonly connected: boolean;
+    readonly presenterActive: boolean;
+    readonly caseSensitive: boolean;
+}): boolean {
+    return input.connected && !input.presenterActive && input.caseSensitive;
 }
 
 /** Who, if anyone, is selected to draw this window's find bar. */

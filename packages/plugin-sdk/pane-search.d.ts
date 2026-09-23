@@ -36,7 +36,8 @@
  *
  * The host relays four chords into the window and no others: **Escape** and the rebindable
  * **toggle-search chord** (⌘F by default), which close the search; and **⌘G** / **⇧⌘G**, which step
- * the selection forwards and backwards. Everything else you press inside the frame - typing, arrows,
+ * the selection forwards and backwards (**Ctrl-G** / **Shift-Ctrl-G** where Ctrl is the primary
+ * modifier). ⌘G steps while your frame or the searched pane holds the caret, and nowhere else. Everything else you press inside the frame - typing, arrows,
  * Return, Tab, your own shortcuts - stays in your document and reaches nothing in the window. That
  * is deliberate: a keystroke meant for a search field must never arrive in somebody's shell.
  *
@@ -49,6 +50,12 @@
  * identity, where it is an auditable call rather than a standing grant), every other pane's state,
  * paths, the workspace id, every other plugin's `pluginID`, every run closure, and the
  * `data-testid` of the bar you replaced.
+ *
+ * The counts are not withheld, and they say something about the buffer: a needle you set and the
+ * `total` that comes back tell you whether that text is in the searched pane's scrollback. That is
+ * what a find bar is, and it is why this placement is Settings-only and why an installed plugin is
+ * trusted with the window in the first place; it is not a way around `capture`, which returns the
+ * text itself.
  *
  * ── What stays native ───────────────────────────────────────────────────────────────
  *
@@ -123,7 +130,15 @@ export interface PaneSearchSnapshot {
     /** The searched pane, or null while nothing is being searched. Every call takes this id. */
     readonly paneID: string | null;
     readonly kind: PaneSearchKind | null;
-    /** Kelpi's needle, at most 1,024 characters. */
+    /**
+     * The needle, at most 1,024 characters: Kelpi's, or while one this window typed is still on its
+     * way there, that one (it leads by at most the 300 ms short-needle debounce and a round trip).
+     *
+     * That is the needle the native bar's own field shows, and it is the one to seed from. When the
+     * native bar hands the search to you mid-word - ⌘F pressed before your view had painted - what
+     * was typed in its last 300 ms is here and not yet in Kelpi's state; seed from it and keep
+     * following it until the user types into your field, and nothing typed is lost.
+     */
     readonly needle: string;
     /**
      * Kelpi's needle was longer than 1,024 characters and this frame carries a prefix of it.

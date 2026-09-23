@@ -95,6 +95,7 @@ import {
     paneSearchRect,
     projectPaneSearch,
     retainPaneSearchBox,
+    stopNativeCaretReclaim,
     usePaneSearchBoxScope,
     usePaneSearchBoxes,
     usePaneSearchPainted,
@@ -1125,6 +1126,34 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
         if (!searchActive) return;
         retainPaneSearchBox(search?.paneID ?? null);
     }, [searchActive, search]);
+    /*
+     * A fallback's caret re-assertion ends with the search it was for.
+     *
+     * Keyed on the DAEMON's session rather than on `search`, which goes null the moment the
+     * presenter stands down - that is exactly when the re-assertion starts - so the cleanup runs
+     * when the search closes or moves to another pane, and when this grid unmounts.
+     */
+    const searchedPaneID = props.search?.paneID ?? null;
+    useEffect(() => () => stopNativeCaretReclaim(), [searchedPaneID]);
+    /*
+     * The case flag is a presenter's control, so it leaves with the presenter.
+     *
+     * The native bar has no case toggle and no indicator, so a flag left on after a presenter
+     * failed or was deselected mid-search had it counting case-sensitively with nothing on screen
+     * to say so: "no matches" for a needle that plainly matched, until the bar was closed and
+     * reopened. So when a presenter stands down with a search open, the flag goes back off and the
+     * needle is recounted - the native bar's own terms. Not when it stands down because the
+     * connection dropped: nothing can be searched until it returns, and it returns with the same
+     * presenter drawing the toggle that is still lit.
+     */
+    const searchWasActive = useRef(searchActive);
+    useEffect(() => {
+        const was = searchWasActive.current;
+        searchWasActive.current = searchActive;
+        if (!was || searchActive || !searchSelection.connected) return;
+        const open = props.search ?? null;
+        if (open !== null && open.caseSensitive) props.searchActions?.setCaseSensitive(open.paneID, false);
+    }, [searchActive, searchSelection.connected, props.search, props.searchActions]);
 
     const dropRect =
         dropTarget === null

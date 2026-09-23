@@ -41,7 +41,10 @@
  * Cmd-G and Shift-Cmd-G have no bound action anywhere in the client, and this placement deliberately
  * does not add two: they are fixed chords of this surface, the way the native bar hard-codes its own
  * Cmd-F close, and the listener below is what answers them. It runs in the capture phase and stops
- * the event, so nothing downstream sees a chord this surface has consumed.
+ * the event, so nothing downstream sees a chord this surface has consumed - and it answers only
+ * while the search frame or the searched pane holds the caret, so a chord pressed anywhere else in
+ * the window is somebody else's. On a Ctrl-primary platform they are Ctrl-G and Shift-Ctrl-G, the
+ * rule the key map applies to every `super` binding there.
  *
  * Everything the host does not relay stays inside the frame and reaches nobody: typing, arrows, Tab,
  * the presenter's own shortcuts. That is the point of a small explicit grant rather than
@@ -92,6 +95,7 @@ import {
     type ReactElement
 } from 'react';
 
+import { CLIENT_MAC_LIKE } from '../chrome/keys';
 import { chordKeysForTrigger } from '../content/bridge';
 import { getCurrentPlugins } from '../plugins/client';
 import { PluginView } from '../plugins/PluginView';
@@ -122,6 +126,50 @@ export const PANE_SEARCH_NEXT_CHORD = '8/KeyG';
 export const PANE_SEARCH_PREVIOUS_CHORD = '12/KeyG';
 
 /**
+ * The two stepping chords for the platform: ⌘G and ⇧⌘G on a Mac, Ctrl-G and Shift-Ctrl-G where
+ * Ctrl is the primary modifier - `canonicalTriggerForPlatform`'s rule, which re-keys every `super`
+ * binding in the map the same way, so the find bar steps with the modifier its own ⌘F opened with.
+ */
+export function paneSearchSteppingChords(macLike: boolean = CLIENT_MAC_LIKE): readonly [string, string] {
+    return macLike ? [PANE_SEARCH_NEXT_CHORD, PANE_SEARCH_PREVIOUS_CHORD] : ['1/KeyG', '5/KeyG'];
+}
+
+/**
+ * Is `node` inside the wrapper of pane `paneID`?
+ *
+ * Compared as an attribute VALUE up the ancestor chain rather than spliced into a selector, so a
+ * pane id is never parsed as CSS - which also keeps this off `CSS.escape`, which a test DOM lacks.
+ */
+function insidePane(node: Element, paneID: string): boolean {
+    for (let at: Element | null = node; at !== null; at = at.parentElement) {
+        if (at.getAttribute('data-pane-id') === paneID) return true;
+    }
+    return false;
+}
+
+/**
+ * Which way a keydown steps an open, presented search, or null when it is not this surface's.
+ *
+ * The platform's stepping chord (`paneSearchSteppingChords`), not composing, and pressed while the
+ * caret is the search's: `holder` (the document's active element) inside the presenter's `frame`,
+ * where a relayed chord arrives, or inside the searched pane. Pure, so the scoping is testable
+ * without a presenter attached; the slot's listener is the only caller.
+ */
+export function paneSearchStepFor(
+    event: Pick<KeyboardEvent, 'code' | 'isComposing' | 'altKey' | 'metaKey' | 'ctrlKey' | 'shiftKey'>,
+    holder: Element | null,
+    frame: Element | null,
+    paneID: string,
+    macLike: boolean = CLIENT_MAC_LIKE
+): 'next' | 'prev' | null {
+    if (event.isComposing || event.code !== 'KeyG' || event.altKey) return null;
+    const primary = macLike ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey;
+    if (!primary || holder === null) return null;
+    if (frame?.contains(holder) !== true && !insidePane(holder, paneID)) return null;
+    return event.shiftKey ? 'prev' : 'next';
+}
+
+/**
  * The chords the host relays into the window while a search presenter draws the bar.
  *
  * Escape and the rebindable `toggle_search` chord, because both are already bound in the window's
@@ -135,15 +183,36 @@ export const PANE_SEARCH_PREVIOUS_CHORD = '12/KeyG';
  * native bar does - `chrome/keys.ts` refuses every non-menu-bar action while a text field has the
  * caret.
  */
-export function paneSearchPresenterChords(bindings: KeyBindingMap): readonly string[] {
+export function paneSearchPresenterChords(
+    bindings: KeyBindingMap,
+    macLike: boolean = CLIENT_MAC_LIKE
+): readonly string[] {
     return [
         ...new Set([
             '0/Escape',
-            PANE_SEARCH_NEXT_CHORD,
-            PANE_SEARCH_PREVIOUS_CHORD,
+            ...paneSearchSteppingChords(macLike),
             ...triggersForAction(bindings, 'toggle_search').flatMap(chordKeysForTrigger)
         ])
     ].sort();
+}
+
+/** How many times, and how far apart, the fallback re-asserts the native bar's caret. */
+export const NATIVE_CARET_RECLAIM = { attempts: 8, intervalMs: 50 } as const;
+
+/**
+ * The one re-assertion in progress, if any.
+ *
+ * Module scope rather than a ref, because it has to outlive the component that starts it: a failure
+ * latches the placement, the grid renders no slot in the very next commit, and the re-assertion is
+ * what runs AFTER that. Whoever still stands - the grid - stops it (`stopNativeCaretReclaim`).
+ */
+let reclaiming: (() => void) | null = null;
+
+/** Stop a re-assertion in progress: the search closed or moved, or the grid is going away. */
+export function stopNativeCaretReclaim(): void {
+    const stop = reclaiming;
+    reclaiming = null;
+    stop?.();
 }
 
 /**
@@ -157,34 +226,69 @@ export function paneSearchPresenterChords(bindings: KeyBindingMap): readonly str
  *
  * So the host re-asserts, from the one place that knows a fallback just happened. Selected by ROLE
  * rather than by test id - the bar is a `role="search"` landmark inside the pane wrapper - so this
- * is the same element the accessibility tree names and not a handle on a test selector. Bounded at
- * a handful of frames, because a user who clicks the terminal in the meantime has said where they
- * want the caret and nothing here may argue with them.
+ * is the same element the accessibility tree names and not a handle on a test selector.
+ *
+ * Bounded at eight attempts over ~350 ms, and re-asserted each time rather than once: the pane's
+ * caret claim does not run on a deadline this can be ahead of, and a single `focus()` that lands
+ * first is taken straight back off - measured in the three-scenario chain, where the same fallback
+ * that held the caret alone lost it under load.
+ *
+ * And it STOPS the moment the user says where they want the caret, because inside those 350 ms a
+ * person can: a pointer press anywhere, a key pressed anywhere (⌘K, ⌘, and typing into the field
+ * alike), or the caret arriving anywhere that is neither the field nor the searched pane's own
+ * surface. That last exemption is the race this exists to win - the pane's claim IS a focus move
+ * into the pane - and a user who moves the caret into that pane does it with a press, which the
+ * first rule has already answered. It also stops when the search closes or moves and when the grid
+ * unmounts (`stopNativeCaretReclaim`), and a second fallback replaces the first rather than joining
+ * it. Exported for its tests.
  */
-function reclaimNativeCaret(document: Document | null, paneID: string | null): void {
+export function reclaimNativeCaret(document: Document | null, paneID: string | null): void {
+    stopNativeCaretReclaim();
     if (document === null || paneID === null) return;
-    /*
-     * Bounded at eight attempts over ~400 ms, and re-asserted each time rather than once.
-     *
-     * Once is not enough: the pane's caret claim does not run on a deadline this can be ahead of,
-     * and a single `focus()` that lands first is taken straight back off - measured in the
-     * three-scenario chain, where the same fallback that held the caret alone lost it under load.
-     * Nothing a person could do arrives inside that window, so re-asserting inside it argues with
-     * nobody; after it, the field is theirs to leave.
-     */
-    let left = 8;
-    const attempt = (): void => {
-        left -= 1;
-        const field = document.querySelector<HTMLInputElement>(
-            `[data-pane-id="${CSS.escape(paneID)}"] [role="search"] input`
-        );
-        if (field !== null && document.activeElement !== field) {
-            field.focus();
-            const end = field.value.length;
-            field.setSelectionRange(end, end);
+    const searched = paneID;
+    const field = (): HTMLInputElement | null => {
+        for (const wrapper of document.querySelectorAll('[data-pane-id]')) {
+            if (wrapper.getAttribute('data-pane-id') !== searched) continue;
+            const input = wrapper.querySelector<HTMLInputElement>('[role="search"] input');
+            if (input !== null) return input;
         }
-        if (left > 0) setTimeout(attempt, 50);
+        return null;
     };
+    let left = NATIVE_CARET_RECLAIM.attempts;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const stop = (): void => {
+        if (timer !== null) clearTimeout(timer);
+        timer = null;
+        document.removeEventListener('pointerdown', stop, true);
+        document.removeEventListener('keydown', stop, true);
+        document.removeEventListener('focusin', onFocusIn, true);
+        if (reclaiming === stop) reclaiming = null;
+    };
+    function onFocusIn(event: FocusEvent): void {
+        const target = event.target;
+        if (!(target instanceof Element)) return stop();
+        if (target === field() || insidePane(target, searched)) return;
+        stop();
+    }
+    const attempt = (): void => {
+        timer = null;
+        left -= 1;
+        const target = field();
+        if (target !== null && document.activeElement !== target) {
+            target.focus();
+            const end = target.value.length;
+            target.setSelectionRange(end, end);
+        }
+        if (left > 0 && reclaiming === stop) timer = setTimeout(attempt, NATIVE_CARET_RECLAIM.intervalMs);
+        else stop();
+    };
+
+    reclaiming = stop;
+    // Capture phase, so a surface that stops its own events cannot hide the user's answer.
+    document.addEventListener('pointerdown', stop, true);
+    document.addEventListener('keydown', stop, true);
+    document.addEventListener('focusin', onFocusIn, true);
     attempt();
 }
 
@@ -207,6 +311,11 @@ export interface PaneSearchSelection {
     readonly runtime: KelpiRuntime | null;
     /** `viewID:revision:instanceID` - what a failure latch is keyed by. */
     readonly generation: string;
+    /**
+     * The daemon connection is up. Read by the grid to tell a presenter that stood down because
+     * the connection dropped - and will be back with it - from one that failed or was deselected.
+     */
+    readonly connected: boolean;
 }
 
 /**
@@ -243,7 +352,8 @@ export function usePaneSearchSelection(enabled: boolean): PaneSearchSelection {
         paneSearchPresenterFailure
     );
     const latched = failure?.generation === generation;
-    const bundled = !enabled || !selected?.pluginID || !runtime || connection !== 'connected' || latched;
+    const connected = connection === 'connected';
+    const bundled = !enabled || !selected?.pluginID || !runtime || !connected || latched;
     /*
      * A latch belongs to ONE generation, and it is cleared here rather than in the slot.
      *
@@ -255,7 +365,7 @@ export function usePaneSearchSelection(enabled: boolean): PaneSearchSelection {
         const current = paneSearchPresenterFailure();
         if (current !== null && current.generation !== generation) clearPaneSearchPresenterFailure();
     }, [generation]);
-    return { bundled, viewID, pluginID: selected?.pluginID ?? null, runtime, generation };
+    return { bundled, viewID, pluginID: selected?.pluginID ?? null, runtime, generation, connected };
 }
 
 /**
@@ -359,7 +469,8 @@ export function PaneSearchPresenterSlot(props: PaneSearchPresenterSlotProps): Re
          * typing. Measured: `document.activeElement` was the pane surface rather than
          * `pane-search-input-<id>` on every fallback until this line went.
          */
-        // The native bar takes the caret back, and it needs help to win that race. See below.
+        // The native bar takes the caret back, and it needs help to win that race
+        // (`reclaimNativeCaret`, which the grid stops when the search closes or moves).
         reclaimNativeCaret(wrapper.current?.ownerDocument ?? null, latest.current.paneID);
         // Once per failing generation: a watchdog that fired twice must not raise two toasts for
         // one broken presenter.
@@ -538,17 +649,25 @@ export function PaneSearchPresenterSlot(props: PaneSearchPresenterSlotProps): Re
      *
      * Installed only while the presenter is SHOWN. While the native bar draws, Return and
      * Shift-Return are its own stepping keys and there is nothing here to add.
+     *
+     * And answered only while the caret is the search's: in this frame (a relayed chord is
+     * re-dispatched on the window while the frame's iframe holds focus) or in the searched pane.
+     * Anywhere else - another pane, the sidebar, Settings, a web page - the chord was not pressed at
+     * the find bar, and a rebound ⌘G there is that binding's. Only the platform's primary modifier
+     * counts, so Ctrl-G on a Mac stays the terminal's BEL and ⌘G on a Ctrl-primary platform is not
+     * a find chord.
      */
     useLayoutEffect(() => {
         if (!shown) return undefined;
         const onKey = (event: KeyboardEvent): void => {
-            if (event.isComposing || event.code !== 'KeyG') return;
-            if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
             const paneID = latest.current.paneID;
             if (paneID === null) return;
+            const holder = (wrapper.current?.ownerDocument ?? document).activeElement;
+            const direction = paneSearchStepFor(event, holder, wrapper.current, paneID);
+            if (direction === null) return;
             event.preventDefault();
             event.stopImmediatePropagation();
-            latest.current.actions.step(paneID, event.shiftKey ? 'prev' : 'next');
+            latest.current.actions.step(paneID, direction);
         };
         window.addEventListener('keydown', onKey, true);
         return () => window.removeEventListener('keydown', onKey, true);

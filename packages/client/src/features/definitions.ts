@@ -32,9 +32,9 @@ export const INTERACTION_PROMPTS_FEATURE = { id: 'kelpi.prompts', title: 'Prompt
 export const INTERACTION_NOTIFICATIONS_FEATURE = { id: 'kelpi.interaction.notifications', title: 'Notifications', placements: ['interaction.notifications'] } as const satisfies BundledFeatureDefinition;
 
 /**
- * The third presented surface: the Settings dialog's rail and panel.
+ * The fourth presented surface: the Settings dialog's rail and panel.
  *
- * A definition with no binding, for the same reason as the two above: `SettingsOverlay` mounts it
+ * A definition with no binding, for the same reason as the three above: `SettingsOverlay` mounts it
  * through `settings/presenter-slot.tsx`, never `WorkbenchSlot`, so `host.features.get('kelpi.settings.window')`
  * is never consulted. Being a definition is what puts it in `DEFAULT_SLOTS`, which is what makes the
  * bundled panel impossible to select away - and Settings is where a presenter is switched off, so
@@ -46,7 +46,7 @@ export const INTERACTION_NOTIFICATIONS_FEATURE = { id: 'kelpi.interaction.notifi
 export const SETTINGS_WINDOW_FEATURE = { id: 'kelpi.settings.window', title: 'Settings', placements: ['settings.window'] } as const satisfies BundledFeatureDefinition;
 
 /**
- * The fourth presented surface: every pane's header band.
+ * The fifth presented surface: every pane's header band.
  *
  * A definition with no binding, for the same reason as the four above: `grid/PaneGrid.tsx` mounts
  * it through `pane-chrome/presenter-slot.tsx`, never `WorkbenchSlot`, so
@@ -61,7 +61,7 @@ export const SETTINGS_WINDOW_FEATURE = { id: 'kelpi.settings.window', title: 'Se
 export const PANE_CHROME_FEATURE = { id: 'kelpi.pane.chrome', title: 'Pane header', placements: ['pane.chrome'] } as const satisfies BundledFeatureDefinition;
 
 /**
- * The fifth presented surface: the find bar over the pane the daemon is searching.
+ * The sixth presented surface: the find bar over the pane the daemon is searching.
  *
  * A definition with no binding, for the same reason as the five above: `grid/PaneGrid.tsx` mounts it
  * through `pane-search/presenter-slot.tsx`, never `WorkbenchSlot`, so

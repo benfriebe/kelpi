@@ -113,7 +113,7 @@ export const PANE_SEARCH_LIMITS = {
     payloadBytes: 256 * 1024,
     /**
      * The presenter's call budget, per rolling second. The interaction, Settings and pane chrome
-     * numbers verbatim, so the five replaceable surfaces cannot come to disagree about what a
+     * numbers verbatim, so the six replaceable surfaces cannot come to disagree about what a
      * runaway presenter is. A breach FAILS the placement as well as rejecting the call.
      */
     presenterCalls: 240,

@@ -573,6 +573,20 @@ function Shell(props: AppProps): ReactElement {
     /** Read by the needle scheduler, which is created once and must not close over a render. */
     const searchCaseRef = useRef(false);
     searchCaseRef.current = searchCaseSensitive;
+    /**
+     * The needle this window last typed into the searched pane, while the daemon may not have it.
+     *
+     * The daemon's `searchNeedle` trails the field by up to a debounce and a round trip, and the
+     * two bars change hands mid-search: a presenter that paints while the user is typing into the
+     * native bar, the native bar coming back when a presenter fails. The one taking over was seeded
+     * with the daemon's needle, which stranded whatever had been typed in the last 300 ms. So both
+     * bars are handed this while it is set and the daemon's needle once it has caught up
+     * (`SearchNeedleScheduler.inTransit`, which is what sets and clears it). Keyed by the pane it was
+     * typed for, so a needle in transit never leaks into a search somewhere else.
+     */
+    const [searchDraft, setSearchDraft] = useState<{ paneID: string; needle: string } | null>(null);
+    const searchDraftRef = useRef(searchDraft);
+    searchDraftRef.current = searchDraft;
     /** Right-click on a pane header: where the menu opened and which pane it acts on. */
     const [paneMenu, setPaneMenu] = useState<{ paneID: string; x: number; y: number } | null>(null);
     /**
@@ -1267,7 +1281,7 @@ function Shell(props: AppProps): ReactElement {
             send: (needle: string) => {
                 const id = selectActiveWorkspaceID(store.getState());
                 if (id === null) return;
-                void commands.setTerminalSearchNeedle({ workspaceID: id, needle, caseSensitive: searchCaseRef.current }).then(
+                return commands.setTerminalSearchNeedle({ workspaceID: id, needle, caseSensitive: searchCaseRef.current }).then(
                     (reply) => {
                         if (!isOkReply(reply)) notifyFailureRef.current('Search', replyError(reply));
                     },
@@ -1278,6 +1292,12 @@ function Shell(props: AppProps): ReactElement {
                         );
                     }
                 );
+            },
+            onTransit: (needle: string | null) => {
+                const paneID = selectActiveWorkspace(store.getState())?.searchingPaneID ?? null;
+                const next = needle === null || paneID === null ? null : { paneID, needle };
+                searchDraftRef.current = next;
+                setSearchDraft(next);
             }
         })
     );
@@ -1610,6 +1630,9 @@ function Shell(props: AppProps): ReactElement {
                 // A session's case flag dies with the session: a bar reopened later is the bar the
                 // native one always was, insensitive, whoever draws it.
                 setSearchCaseSensitive(false);
+                // And so does a needle typed into it: a toggle either closes the session or opens
+                // a fresh one, and neither may inherit the last one's half-sent needle.
+                searchNeedleRef.current.cancel();
                 return run('Search', commands.toggleTerminalSearch({ workspaceID: id }));
             },
 
@@ -1673,8 +1696,14 @@ function Shell(props: AppProps): ReactElement {
              *
              * Setting the flag is not enough on its own: `case_sensitive` is a REQUEST parameter,
              * so the counts the daemon already published were computed with the old one. Re-sending
-             * the current needle is what recounts, and it is sent immediately rather than through
-             * the debounce, because a toggle is one gesture rather than a keystroke in a run.
+             * the needle is what recounts, and it is sent immediately rather than through the
+             * debounce, because a toggle is one gesture rather than a keystroke in a run.
+             *
+             * THE needle is the one the user typed last, not the one the daemon has. A short needle
+             * still waiting out its 300 ms is FLUSHED with the new flag rather than cancelled -
+             * cancelling it left the daemon counting the previous needle while the field showed the
+             * new one, for good - and a needle already on the wire is re-sent from the draft, because
+             * re-sending the daemon's older needle would put it back after the newer one lands.
              */
             setSearchCaseSensitive(on: boolean): boolean {
                 const workspace = activeWorkspace();
@@ -1683,12 +1712,14 @@ function Shell(props: AppProps): ReactElement {
                 searchCaseRef.current = on;
                 setSearchCaseSensitive(on);
                 setSearchReveal(null);
-                searchNeedleRef.current.cancel();
+                // The scheduler reads `searchCaseRef`, which already carries the new flag.
+                if (searchNeedleRef.current.flush()) return true;
+                const draft = searchDraftRef.current;
                 return run(
                     'Search',
                     commands.setTerminalSearchNeedle({
                         workspaceID: workspace.id,
-                        needle: workspace.searchNeedle,
+                        needle: draft?.paneID === workspace.searchingPaneID ? draft.needle : workspace.searchNeedle,
                         caseSensitive: on
                     })
                 );
@@ -3264,7 +3295,9 @@ function Shell(props: AppProps): ReactElement {
             return (
                 <PaneSearchOverlay
                     paneID={paneID}
-                    needle={workspace.searchNeedle}
+                    // Seeds the field on mount only, so the live needle costs nothing afterwards and
+                    // is what a fallback from a presenter mid-word needs (`searchDraft`).
+                    needle={searchDraft?.paneID === paneID ? searchDraft.needle : workspace.searchNeedle}
                     total={workspace.searchTotal}
                     selected={workspace.searchSelected}
                     onNeedleChange={act.setSearchNeedle}
@@ -3277,7 +3310,7 @@ function Shell(props: AppProps): ReactElement {
                 />
             );
         },
-        [act, paneByID, workspace]
+        [act, paneByID, searchDraft, workspace]
     );
 
     /**
@@ -3302,7 +3335,9 @@ function Shell(props: AppProps): ReactElement {
         return {
             paneID,
             kind: pane.type,
-            needle: workspace.searchNeedle,
+            // The needle as this window last set it, which leads the daemon's by at most a debounce
+            // and a round trip (`searchDraft`): the native bar's field shows the same thing.
+            needle: searchDraft?.paneID === paneID ? searchDraft.needle : workspace.searchNeedle,
             caseSensitive: searchCaseSensitive,
             total: workspace.searchTotal,
             selected: workspace.searchSelected,
@@ -3316,7 +3351,7 @@ function Shell(props: AppProps): ReactElement {
                           linesFromBottom: reveal.linesFromBottom
                       }
         };
-    }, [workspace, paneByID, searchCaseSensitive, searchReveal]);
+    }, [workspace, paneByID, searchCaseSensitive, searchDraft, searchReveal]);
 
     /**
      * The write path a search presenter's calls reach: the window's own verbs, unchanged.

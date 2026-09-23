@@ -19,7 +19,11 @@
  *   - **Scrollback contents.** The one thing a find bar is obviously near and the one thing it must
  *     not be handed for free. A presenter that wants the text reads it through `capture(pane, {
  *     scrollback })` under its OWN plugin identity, where it is an auditable call by a named plugin
- *     rather than a standing grant riding in on a UI placement.
+ *     rather than a standing grant riding in on a UI placement. The COUNTS are not withheld, and
+ *     they are not nothing: a needle set and the `total` read back say whether that text is in the
+ *     searched pane's buffer. That is what a find bar is for, so it is stated rather than bounded;
+ *     an installed plugin is trusted with the window (`docs/plugin-roadmap.md`, untrusted
+ *     execution), and this is a count per needle, not the text `capture` returns.
  *   - **Every other pane's state.** One search is open at a time and this frame is about that one.
  *     A presenter learns nothing about the panes beside it, which is also why it cannot be used as
  *     a workspace probe.
@@ -83,7 +87,12 @@ export interface PaneSearchFrame {
     /** The searched pane, or null while nothing is being searched. */
     readonly paneID: string | null;
     readonly kind: PaneSearchKind | null;
-    /** The daemon's needle, at most `PANE_SEARCH_LIMITS.needleChars` characters. */
+    /**
+     * The needle, at most `PANE_SEARCH_LIMITS.needleChars` characters: the daemon's, or while one
+     * this window typed is still on its way there, that one (`SearchNeedleScheduler.inTransit`). It
+     * leads the daemon's by at most a debounce and a round trip, which is what the native bar's own
+     * field shows - and what a presenter taking over mid-word has to be seeded from.
+     */
     readonly needle: string;
     /** The daemon's needle was longer than the cap and this frame carries a prefix of it. */
     readonly needleTruncated: boolean;

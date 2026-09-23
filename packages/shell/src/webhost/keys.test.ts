@@ -225,6 +225,7 @@ describe('the set follows the config file', () => {
             'alt+meta+ArrowLeft', // focus_previous_pane
             'alt+meta+ArrowRight', // focus_next_pane
             'alt+meta+ArrowUp', // previous_workspace
+            'ctrl+meta+Enter', // toggle_zen_mode (a page that binds ⌃⌘↩ gives it up to Zen Mode)
             'ctrl+shift+ArrowDown', // move_pane_down
             'ctrl+shift+ArrowLeft', // move_pane_left
             'ctrl+shift+ArrowRight', // move_pane_right

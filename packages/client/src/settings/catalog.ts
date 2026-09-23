@@ -1,7 +1,7 @@
 /**
  * The Settings action catalog (config-keybindings.md §4, §13.1).
  *
- * The 59 bindable actions, their display names, and the categories the Keybindings table
+ * The 63 bindable actions, their display names, and the categories the Keybindings table
  * renders as sections — in the fixed order §13.1 names: `Pane Management, Navigation,
  * Workspaces, View, Files, Search, Clipboard, Terminal`. The eleven `web_*` actions are catalogued too but marked
  * hidden: §4 says they are NOT rendered in the Settings table (their delivery mechanism is the
@@ -87,6 +87,10 @@ export const ACTION_CATALOG: readonly ActionEntry[] = [
 
     { action: 'toggle_sidebar', category: 'View', label: 'Toggle Sidebar' },
     { action: 'toggle_inspector', category: 'View', label: 'Toggle Inspector' },
+    { action: 'toggle_zen_mode', category: 'View', label: 'Toggle Zen Mode' },
+    { action: 'toggle_toolbar', category: 'View', label: 'Toggle Toolbar' },
+    { action: 'toggle_status_bar', category: 'View', label: 'Toggle Status Bar' },
+    { action: 'toggle_bottom_panel', category: 'View', label: 'Toggle Bottom Panel' },
 
     { action: 'open_file', category: 'Files', label: 'Preview Markdown' },
     { action: 'toggle_markdown_edit', category: 'Files', label: 'Toggle Markdown Edit' },

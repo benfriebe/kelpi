@@ -138,7 +138,12 @@ const REGISTRY_REPLY: JsonObject = {
     ]
 };
 
-afterEach(cleanup);
+// The sidebar and Inspector are part of the persisted root arrangement (`plugins/arrangement.ts`),
+// so a test that opens or closes one must not hand the next test its window.
+afterEach(() => {
+    cleanup();
+    localStorage.clear();
+});
 
 async function openInspector(h: Harness): Promise<void> {
     fireEvent.click(screen.getByTestId('toggle-inspector'));

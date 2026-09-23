@@ -13,8 +13,9 @@
  * ids, same copy, same props.
  */
 
-import type { ReactElement } from 'react';
+import { useRef, type ReactElement } from 'react';
 
+import { useOverlayPresence } from '../chrome/modal-presence';
 import { tokens as chromeTokens } from '../chrome/tokens';
 import type { KelpiRuntime } from '../state';
 import { describeTarget, type DaemonTarget } from './config';
@@ -106,14 +107,26 @@ export interface ConnectionBannerProps {
     readonly status: string;
     readonly error: string | null;
     readonly runtime: KelpiRuntime;
+    /** The toolbar is hidden, so the banner hangs over the panes rather than over a bar. */
+    readonly overContent?: boolean;
 }
 
 /** The mirror is still on screen (and still true as of the drop); this says it may be stale. */
-export function ConnectionBanner({ status, error, runtime }: ConnectionBannerProps): ReactElement {
+export function ConnectionBanner({ status, error, runtime, overContent }: ConnectionBannerProps): ReactElement {
     const rejected = status === 'rejected';
     const dead = status === 'closed' || rejected;
+    /*
+     * The banner hangs 8 px down the window, which is the toolbar while there is one. With the
+     * toolbar hidden (the root arrangement) it hangs over the first row of panes instead, where a
+     * native web page would cover it, so there it registers its rect and a page it actually
+     * overlaps parks for as long as the banner is up. Not otherwise: its bottom edge reaches a
+     * couple of pixels past a 32 px toolbar, and a reconnect blip must not park a page for that.
+     */
+    const banner = useRef<HTMLDivElement>(null);
+    useOverlayPresence(banner, overContent === true);
     return (
         <div
+            ref={banner}
             data-testid="connection-banner"
             data-status={status}
             role="status"

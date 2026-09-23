@@ -10,6 +10,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { overlayPresenceCount } from '../chrome/modal-presence';
 import type { KelpiRuntime } from '../state';
 import type { DaemonTarget } from './config';
 import { ConnectionBanner, ConnectionSplash } from './ConnectionScreen';
@@ -171,5 +172,22 @@ describe('ConnectionBanner', () => {
             expect(runtime.connects).toBe(1);
             cleanup();
         }
+    });
+
+    /*
+     * The root arrangement can hide the toolbar the banner used to hang over, and then it hangs
+     * over the first row of panes, where a native web page would cover it. It registers its rect,
+     * so the page it actually overlaps parks for as long as it is up, and is released with it.
+     */
+    it('registers its rect only over a hidden toolbar, so a web page it covers parks for it', () => {
+        expect(overlayPresenceCount()).toBe(0);
+        banner('reconnecting');
+        // Over a toolbar it covers no page; a reconnect blip must not park one for two pixels.
+        expect(overlayPresenceCount()).toBe(0);
+        cleanup();
+        render(<ConnectionBanner status="reconnecting" error={null} runtime={fakeRuntime()} overContent />);
+        expect(overlayPresenceCount()).toBe(1);
+        cleanup();
+        expect(overlayPresenceCount()).toBe(0);
     });
 });

@@ -36,6 +36,7 @@ import {
     parseKeybindValue,
     platformChordsForRoles,
     resolveKeyBindings,
+    triggerExpressibleOnPlatform,
     type KelpiAction,
     type PlatformChordRole
 } from '@kelpi/core/config';
@@ -72,6 +73,18 @@ export const DESELECT_ALL_WORKSPACES_COMMAND = 'deselect-all-workspaces';
 export const INCREASE_TEXT_SIZE_COMMAND = 'increase-terminal-text-size';
 export const DECREASE_TEXT_SIZE_COMMAND = 'decrease-terminal-text-size';
 export const RESET_TEXT_SIZE_COMMAND = 'reset-terminal-text-size';
+
+/**
+ * The root arrangement's View rows: Zen Mode, the three single-band toggles and the reset. The
+ * client answers each with the same handler its key action (or, for the reset, its palette row
+ * and Settings button) runs; the arrangement is client-local, so like the sidebar rows these can
+ * only ever relay.
+ */
+export const TOGGLE_ZEN_MODE_COMMAND = 'toggle-zen-mode';
+export const TOGGLE_TOOLBAR_COMMAND = 'toggle-toolbar';
+export const TOGGLE_STATUS_BAR_COMMAND = 'toggle-status-bar';
+export const TOGGLE_BOTTOM_PANEL_COMMAND = 'toggle-bottom-panel';
+export const RESET_WINDOW_ARRANGEMENT_COMMAND = 'reset-window-arrangement';
 
 /**
  * §WS-151's "Switch to Workspace N" rows: `switch-workspace-1` … `switch-workspace-9`.
@@ -128,6 +141,9 @@ export const NEW_WEB_PANE_ACCELERATOR = 'Shift+CommandOrControl+O';
 /** ⌘P — `command_palette`'s default trigger (`KeyBinding.swift:551`). */
 export const COMMAND_PALETTE_ACCELERATOR = 'CommandOrControl+P';
 
+/** ⌃⌘↩: `toggle_zen_mode`'s default trigger (`core/src/config/bindings.ts`). */
+export const TOGGLE_ZEN_MODE_ACCELERATOR = 'Control+CommandOrControl+Return';
+
 /** ⌘1…⌘9 — `switch_to_workspace_1..9`'s default triggers. */
 export function switchWorkspaceAccelerator(position: number): string {
     return `CommandOrControl+${String(position)}`;
@@ -137,12 +153,12 @@ export function switchWorkspaceAccelerator(position: number): string {
 
 /**
  * The Electron accelerator per menu-bar action, or absent when the action has no displayable
- * shortcut. Only the 16 `MENU_BAR_ACTIONS` are ever present (§4 "Menu-bar action set").
+ * shortcut. Only the 20 `MENU_BAR_ACTIONS` are ever present (§4 "Menu-bar action set").
  */
 export type MenuAccelerators = Readonly<Partial<Record<KelpiAction, string>>>;
 
 /**
- * The actions a menu row shows a chord for: the 16 `MENU_BAR_ACTIONS`, plus #175's three
+ * The actions a menu row shows a chord for: the 20 `MENU_BAR_ACTIONS`, plus #175's three
  * text-size actions.
  *
  * Those three are NOT menu-bar actions and must not become them - that set is the one that still
@@ -173,8 +189,10 @@ export const MENU_ACCELERATOR_ACTIONS: readonly KelpiAction[] = [
  * NO accelerator, so its chord is free for whatever the user gave it; one whose first trigger
  * has no Electron spelling (`acceleratorForTrigger` returns null) simply shows no shortcut and
  * still fires through the client dispatcher, exactly as §7.1 says.
+ *
+ * `platform` defaults to the running one and is a parameter so the off-mac rule can be tested.
  */
-export function menuAccelerators(keybindLines: readonly string[]): MenuAccelerators {
+export function menuAccelerators(keybindLines: readonly string[], platform: string = process.platform): MenuAccelerators {
     const overrides = keybindLines
         .map((line) => parseKeybindValue(line))
         .filter((override): override is NonNullable<typeof override> => override !== null);
@@ -187,6 +205,10 @@ export function menuAccelerators(keybindLines: readonly string[]): MenuAccelerat
         // and the hint beside the same action cannot say different things.
         const trigger = displayTriggerForAction(map, action);
         if (trigger === null) continue;
+        // Off mac `CommandOrControl` IS Control, so a ctrl+super chord (Zen Mode's ⌃⌘Return) would
+        // register as plain Ctrl+Return and take it from every page; the client leaves it unbound
+        // there for the same reason (`triggerExpressibleOnPlatform`).
+        if (!triggerExpressibleOnPlatform(trigger, platform === 'darwin')) continue;
         const accelerator = acceleratorForTrigger(trigger);
         if (accelerator !== null) result[action] = accelerator;
     }
@@ -238,6 +260,11 @@ function acceleratorProp(accelerator: string | undefined): { accelerator?: strin
 
 export const TOGGLE_SIDEBAR_LABEL = 'Toggle Sidebar';
 export const TOGGLE_INSPECTOR_LABEL = 'Toggle Inspector';
+export const TOGGLE_ZEN_MODE_LABEL = 'Toggle Zen Mode';
+export const TOGGLE_TOOLBAR_LABEL = 'Toggle Toolbar';
+export const TOGGLE_STATUS_BAR_LABEL = 'Toggle Status Bar';
+export const TOGGLE_BOTTOM_PANEL_LABEL = 'Toggle Bottom Panel';
+export const RESET_WINDOW_ARRANGEMENT_LABEL = 'Reset Window Arrangement';
 export const NEW_WORKSPACE_LABEL = 'New Workspace';
 export const OPEN_FILE_LABEL = 'Preview Markdown…';
 export const NEW_GROUP_LABEL = 'New Group';
@@ -488,7 +515,11 @@ function shownOnlyRow(
 
 /**
  * The View submenu: the two *product* toggles first, in the shipped app's own order, then the
- * web-contents roles the shell has always carried.
+ * root arrangement's group, then the web-contents roles the shell has always carried.
+ *
+ * The arrangement rows are static labels for the reason the sidebar's are: which bands a window
+ * shows is its page's own state, and a second window or a browser tab can differ. The three band
+ * toggles ship unbound, so they carry a chord only once the user gives them one.
  */
 export function viewMenuTemplate(deps: ViewMenuDeps): MenuItemConstructorOptions[] {
     // #47: the binding map's chords, never the constants above (see `menuAccelerators`).
@@ -496,6 +527,12 @@ export function viewMenuTemplate(deps: ViewMenuDeps): MenuItemConstructorOptions
     return [
         relayRow(deps, TOGGLE_SIDEBAR_LABEL, accel.toggle_sidebar, TOGGLE_SIDEBAR_COMMAND),
         relayRow(deps, TOGGLE_INSPECTOR_LABEL, accel.toggle_inspector, TOGGLE_INSPECTOR_COMMAND),
+        relayRow(deps, TOGGLE_TOOLBAR_LABEL, accel.toggle_toolbar, TOGGLE_TOOLBAR_COMMAND),
+        relayRow(deps, TOGGLE_STATUS_BAR_LABEL, accel.toggle_status_bar, TOGGLE_STATUS_BAR_COMMAND),
+        relayRow(deps, TOGGLE_BOTTOM_PANEL_LABEL, accel.toggle_bottom_panel, TOGGLE_BOTTOM_PANEL_COMMAND),
+        { type: 'separator' },
+        relayRow(deps, TOGGLE_ZEN_MODE_LABEL, accel.toggle_zen_mode, TOGGLE_ZEN_MODE_COMMAND),
+        relayRow(deps, RESET_WINDOW_ARRANGEMENT_LABEL, undefined, RESET_WINDOW_ARRANGEMENT_COMMAND),
         { type: 'separator' },
         // ⌘R: not in the binding map, so nothing is shadowed. (A web pane's priority layer does
         // claim ⌘R while a web pane is focused — that is the page consuming it first, which is
@@ -817,7 +854,10 @@ export const VIEW_MENU_LOG_FRAGMENT =
     ` + ${RECOVER_INTERFACE_LABEL} (⌃⌥⌘R)` +
     // #175. No chord beside them, because these three carry no accelerator on purpose; see
     // TEXT_SIZE_ROWS. Appended, like every row before them, so the prefix stays assertable.
-    ` + ${INCREASE_TEXT_SIZE_LABEL} / ${DECREASE_TEXT_SIZE_LABEL} / ${RESET_TEXT_SIZE_LABEL}`;
+    ` + ${INCREASE_TEXT_SIZE_LABEL} / ${DECREASE_TEXT_SIZE_LABEL} / ${RESET_TEXT_SIZE_LABEL}` +
+    // The root arrangement, appended on the same terms. Only Zen Mode ships bound.
+    ` + ${TOGGLE_TOOLBAR_LABEL} / ${TOGGLE_STATUS_BAR_LABEL} / ${TOGGLE_BOTTOM_PANEL_LABEL}` +
+    ` + ${TOGGLE_ZEN_MODE_LABEL} (⌃⌘↩) + ${RESET_WINDOW_ARRANGEMENT_LABEL}`;
 
 /**
  * `File ▸ …`, as `main.ts` logs it.

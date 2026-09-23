@@ -61,7 +61,12 @@ function setup(): void {
     });
 }
 
-afterEach(cleanup);
+// The sidebar and Inspector are part of the persisted root arrangement (`plugins/arrangement.ts`),
+// so a test that opens or closes one must not hand the next test its window.
+afterEach(() => {
+    cleanup();
+    localStorage.clear();
+});
 
 /** The inline `background` as React wrote it — the var reference, not a resolved colour. */
 function inlineBackground(element: HTMLElement): string {

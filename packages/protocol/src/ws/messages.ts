@@ -335,6 +335,31 @@ export interface WsWorkspaceSelectionMessage {
     readonly windowID?: string;
 }
 
+/**
+ * The root arrangement's half of the macOS title bar: whether this window's toolbar is hidden.
+ *
+ * The window is `hiddenInset`, so its traffic lights are drawn over the page at the toolbar's
+ * leading edge (`shell/src/titlebar.ts`). With the toolbar hidden (Zen Mode, or View ▸ Toggle
+ * Toolbar) they would land on the first pane's header, where a click meant for the pane closes
+ * the window, so the shell hides them for as long as the page says the toolbar is hidden. The
+ * arrangement is client-local state in the page and the buttons belong to the main process, so
+ * the fact travels client → daemon → the shell that owns that window, exactly as
+ * `workspace-selection` does.
+ *
+ * Not remembered by the daemon, for the same reason: the shell shows the buttons again whenever
+ * its page navigates or reloads, and the page re-reports on every (re)connect, so a page that
+ * has said nothing and a window with its buttons showing are the same state.
+ */
+export const WS_WINDOW_CHROME_MESSAGE = 'window-chrome';
+
+export interface WsWindowChromeMessage {
+    readonly type: typeof WS_WINDOW_CHROME_MESSAGE;
+    /** True while the page's toolbar band is hidden. */
+    readonly titleBarHidden: boolean;
+    /** The shell window this is about; absent = every shell. */
+    readonly windowID?: string;
+}
+
 export type WsClientMessage =
     | WsHelloMessage
     | WsAttachPaneMessage
@@ -353,7 +378,8 @@ export type WsClientMessage =
     | WsHostEventMessage
     | WsHotkeyStatusMessage
     | WsShellActivationMessage
-    | WsWorkspaceSelectionMessage;
+    | WsWorkspaceSelectionMessage
+    | WsWindowChromeMessage;
 
 // ── server → client ─────────────────────────────────────────────────────────────────
 
@@ -820,6 +846,7 @@ export type WsServerMessage =
     | WsRevealPaneMessage
     | WsHotkeyStatusMessage
     | WsShellActivationMessage
-    | WsWorkspaceSelectionMessage;
+    | WsWorkspaceSelectionMessage
+    | WsWindowChromeMessage;
 
 export type WsMessage = WsClientMessage | WsServerMessage;

@@ -45,6 +45,17 @@ export const INCREASE_TEXT_SIZE_COMMAND = 'increase-terminal-text-size';
 export const DECREASE_TEXT_SIZE_COMMAND = 'decrease-terminal-text-size';
 export const RESET_TEXT_SIZE_COMMAND = 'reset-terminal-text-size';
 
+/**
+ * View ▸ the root arrangement's rows: the three band toggles, Zen Mode and the reset. Each lands
+ * on the handler its key action (or, for the reset, its palette row and Settings button) runs.
+ * Stated here rather than imported, and pinned in both suites, like every relay name above.
+ */
+export const TOGGLE_ZEN_MODE_COMMAND = 'toggle-zen-mode';
+export const TOGGLE_TOOLBAR_COMMAND = 'toggle-toolbar';
+export const TOGGLE_STATUS_BAR_COMMAND = 'toggle-status-bar';
+export const TOGGLE_BOTTOM_PANEL_COMMAND = 'toggle-bottom-panel';
+export const RESET_WINDOW_ARRANGEMENT_COMMAND = 'reset-window-arrangement';
+
 /** File ▸ Switch to Workspace 1…9 (⌘1…⌘9), as `switch-workspace-1` … `switch-workspace-9`. */
 export const SWITCH_WORKSPACE_COMMAND_PREFIX = 'switch-workspace-';
 
@@ -76,6 +87,22 @@ export function workspaceSelectionReport(
     return {
         type: 'workspace-selection',
         selected,
+        ...(shellWindowID === null ? {} : { windowID: shellWindowID })
+    };
+}
+
+/**
+ * The root arrangement's report to the shell: whether this window's toolbar band is hidden, so
+ * the macOS traffic lights centred in it can be hidden too (protocol `WS_WINDOW_CHROME_MESSAGE`).
+ * Scoped to this page's shell window exactly as the selection report above is.
+ */
+export function windowChromeReport(
+    titleBarHidden: boolean,
+    shellWindowID: string | null
+): { type: 'window-chrome'; titleBarHidden: boolean; windowID?: string } {
+    return {
+        type: 'window-chrome',
+        titleBarHidden,
         ...(shellWindowID === null ? {} : { windowID: shellWindowID })
     };
 }

@@ -13,7 +13,7 @@ import {
 } from './bindings.js';
 import { parseKeybindOverrides } from './keybinds.js';
 import { keyTriggerConfigString, parseKeyTrigger } from './keys.js';
-import { MENU_BAR_ACTIONS, KELPI_ACTIONS } from './actions.js';
+import { MENU_BAR_ACTIONS, KELPI_ACTIONS, WINDOW_ARRANGEMENT_ACTIONS } from './actions.js';
 
 const trigger = (config: string) => {
     const parsed = parseKeyTrigger(config);
@@ -22,12 +22,12 @@ const trigger = (config: string) => {
 };
 
 describe('the action table', () => {
-    it('has the 59 bindable actions and the 16 menu-bar ones', () => {
-        expect(KELPI_ACTIONS).toHaveLength(59);
-        expect(new Set(KELPI_ACTIONS).size).toBe(59);
+    it('has the 63 bindable actions and the 20 menu-bar ones', () => {
+        expect(KELPI_ACTIONS).toHaveLength(63);
+        expect(new Set(KELPI_ACTIONS).size).toBe(63);
         // #175's three text-size actions are NOT among them, deliberately: the menu-bar set is
         // the one that still fires while a chrome text field has the caret.
-        expect(MENU_BAR_ACTIONS.size).toBe(16);
+        expect(MENU_BAR_ACTIONS.size).toBe(20);
         for (const action of ['increase_terminal_font_size', 'decrease_terminal_font_size', 'reset_terminal_font_size'] as const) {
             expect(MENU_BAR_ACTIONS.has(action)).toBe(false);
         }
@@ -35,8 +35,20 @@ describe('the action table', () => {
 });
 
 describe('the default map', () => {
-    it('ships 46 triggers', () => {
-        expect(DEFAULT_KEYBINDINGS.size).toBe(46);
+    it('ships 47 triggers', () => {
+        expect(DEFAULT_KEYBINDINGS.size).toBe(47);
+    });
+
+    // The window arrangement: Zen Mode on ⌃⌘↩ (pane zoom's ⇧⌘↩ one modifier over), the three
+    // single-band toggles unbound, and all four menu-bar actions so the View menu carries them.
+    it('binds Zen Mode to ctrl+super+return and ships the band toggles unbound', () => {
+        expect(actionForTrigger(DEFAULT_KEYBINDINGS, trigger('ctrl+super+return'))).toBe('toggle_zen_mode');
+        expect(actionForTrigger(DEFAULT_KEYBINDINGS, trigger('shift+super+return'))).toBe('toggle_zoom');
+        for (const action of ['toggle_toolbar', 'toggle_status_bar', 'toggle_bottom_panel'] as const) {
+            expect(triggersForAction(DEFAULT_KEYBINDINGS, action)).toEqual([]);
+        }
+        for (const action of WINDOW_ARRANGEMENT_ACTIONS) expect(MENU_BAR_ACTIONS.has(action)).toBe(true);
+        expect([...WINDOW_ARRANGEMENT_ACTIONS].sort()).toEqual(['toggle_bottom_panel', 'toggle_status_bar', 'toggle_toolbar', 'toggle_zen_mode']);
     });
 
     /*
@@ -222,6 +234,17 @@ describe('parseKeybindValue', () => {
 });
 
 describe('canonicalKeyBindingsForPlatform (§3.5)', () => {
+    // Off mac `super` IS ctrl, so ⌃⌘Return would collapse onto Ctrl+Return and take it from every
+    // terminal and page. A chord naming both has no spelling of its own there and is left unbound.
+    it('leaves a ctrl+super chord unbound off-mac rather than collapsing it onto the ctrl chord', () => {
+        const map = canonicalKeyBindingsForPlatform(DEFAULT_KEYBINDINGS, false);
+        expect(actionForTrigger(map, parseKeyTrigger('ctrl+return')!)).toBeNull();
+        expect(triggersForAction(map, 'toggle_zen_mode')).toEqual([]);
+        expect(actionForTrigger(canonicalKeyBindingsForPlatform(DEFAULT_KEYBINDINGS, true), parseKeyTrigger('ctrl+super+return')!)).toBe('toggle_zen_mode');
+        // Only the chords that name both: pane zoom's ⇧⌘Return still re-keys to Ctrl+Shift+Return.
+        expect(actionForTrigger(map, parseKeyTrigger('ctrl+shift+return')!)).toBe('toggle_zoom');
+    });
+
     it('macLike returns the very same map', () => {
         expect(canonicalKeyBindingsForPlatform(DEFAULT_KEYBINDINGS, true)).toBe(DEFAULT_KEYBINDINGS);
     });
@@ -235,7 +258,8 @@ describe('canonicalKeyBindingsForPlatform (§3.5)', () => {
         expect(actionForTrigger(map, parseKeyTrigger('super+d')!)).toBeNull();
         // …and the shipped ctrl bindings are untouched.
         expect(actionForTrigger(map, parseKeyTrigger('ctrl+shift+left')!)).toBe('move_pane_left');
-        expect(map.size).toBe(DEFAULT_KEYBINDINGS.size);
+        // One smaller: ⌃⌘Return (Zen Mode) has no Ctrl-primary spelling and is left unbound.
+        expect(map.size).toBe(DEFAULT_KEYBINDINGS.size - 1);
     });
 
     it('a collision created by canonicalization resolves last-in-map-order (override beats default)', () => {
@@ -246,7 +270,8 @@ describe('canonicalKeyBindingsForPlatform (§3.5)', () => {
         // The user's explicit ctrl+d line was applied AFTER the defaults, so it wins over
         // the canonicalized super+d=split_right.
         expect(actionForTrigger(map, parseKeyTrigger('ctrl+d')!)).toBe('toggle_zoom');
-        // 41 entries (40 defaults + the added ctrl+d) collapse by exactly the one collision.
-        expect(map.size).toBe(DEFAULT_KEYBINDINGS.size);
+        // The defaults plus the added ctrl+d collapse by exactly the one collision, less the
+        // ctrl+super Zen Mode chord, which has no Ctrl-primary spelling.
+        expect(map.size).toBe(DEFAULT_KEYBINDINGS.size - 1);
     });
 });

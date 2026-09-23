@@ -154,7 +154,12 @@ const selectedIDs = (): string[] =>
         .filter((row) => row.getAttribute('data-selected') === 'true')
         .map((row) => row.getAttribute('data-workspace-id') ?? '');
 
-afterEach(cleanup);
+// The sidebar and Inspector are part of the persisted root arrangement (`plugins/arrangement.ts`),
+// so a test that opens or closes one must not hand the next test its window.
+afterEach(() => {
+    cleanup();
+    localStorage.clear();
+});
 
 describe('File ▸ New Group (§WS-151 / §SET-144)', () => {
     /**

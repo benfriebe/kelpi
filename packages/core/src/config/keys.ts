@@ -152,6 +152,18 @@ export function canonicalTriggerForPlatform(trigger: KeyTrigger, macLike: boolea
     );
 }
 
+/**
+ * Whether a trigger has a spelling of its own on this platform.
+ *
+ * Off mac `super` IS ctrl (above), so a chord naming both would collapse onto the plain Ctrl
+ * chord: the Zen Mode default `ctrl+super+return` would become Ctrl+Return and take it from every
+ * terminal, text field and page. Such a trigger is left unbound on a Ctrl-primary platform
+ * instead, by the map (`canonicalKeyBindingsForPlatform`) and by the shell's menu alike.
+ */
+export function triggerExpressibleOnPlatform(trigger: KeyTrigger, macLike: boolean): boolean {
+    return macLike || !(trigger.modifiers.includes('super') && trigger.modifiers.includes('ctrl'));
+}
+
 /** §3.5 display half: the text names Ctrl-primary platforms spell chords with. */
 export const MODIFIER_TEXT_NAMES: Readonly<Record<KeyModifier, string>> = {
     ctrl: 'Ctrl',

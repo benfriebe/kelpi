@@ -1,6 +1,6 @@
 /**
  * The bindable action list.
- * Spec: docs/config-keybindings.md §4 (59 actions + the `unbind` pseudo-action).
+ * Spec: docs/config-keybindings.md §4 (63 actions + the `unbind` pseudo-action).
  * Raw values are the config-file vocabulary and must not change.
  */
 
@@ -41,6 +41,13 @@ export const KELPI_ACTIONS = [
     // View
     'toggle_sidebar',
     'toggle_inspector',
+    // The root arrangement (docs/plugins.md "Hiding bands and Zen Mode"). Zen Mode hides the
+    // toolbar, status bar, bottom panel and both sidebars and restores exactly what was shown;
+    // the other three toggle one band each and ship unbound.
+    'toggle_zen_mode',
+    'toggle_toolbar',
+    'toggle_status_bar',
+    'toggle_bottom_panel',
     // Files
     'open_file',
     'toggle_markdown_edit',
@@ -96,7 +103,7 @@ export function isKelpiAction(value: string): value is KelpiAction {
 }
 
 /**
- * The 16 actions owned by the menu-bar dispatch layer (§4 "Menu-bar action set"); the
+ * The 20 actions owned by the menu-bar dispatch layer (§4 "Menu-bar action set"); the
  * pane-shortcut monitor never consumes events for these.
  */
 export const MENU_BAR_ACTIONS: ReadonlySet<KelpiAction> = new Set<KelpiAction>([
@@ -115,5 +122,24 @@ export const MENU_BAR_ACTIONS: ReadonlySet<KelpiAction> = new Set<KelpiAction>([
     'switch_to_workspace_9',
     'toggle_sidebar',
     'toggle_inspector',
-    'command_palette'
+    'command_palette',
+    'toggle_zen_mode',
+    'toggle_toolbar',
+    'toggle_status_bar',
+    'toggle_bottom_panel'
+]);
+
+/**
+ * The window-arrangement actions, which act on the window rather than on a pane.
+ *
+ * The dispatcher refuses every other binding while no local workspace is displayed
+ * (`client/src/chrome/keys.ts` step 3), because a split or a close needs one. These four do not,
+ * and must not: a browser tab has no native menu to fall back on, so a Zen Mode entered over an
+ * empty daemon or a remote workspace would otherwise have no chord out of it.
+ */
+export const WINDOW_ARRANGEMENT_ACTIONS: ReadonlySet<KelpiAction> = new Set<KelpiAction>([
+    'toggle_zen_mode',
+    'toggle_toolbar',
+    'toggle_status_bar',
+    'toggle_bottom_panel'
 ]);

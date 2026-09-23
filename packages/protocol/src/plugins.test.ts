@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { PluginEventBuffer, decodePluginManifest, decodePluginPane, pluginJSON } from './plugins.js';
+import { PLUGIN_BAND_HEIGHTS, PluginEventBuffer, decodePluginManifest, decodePluginPane, pluginJSON } from './plugins.js';
 import { decodeWireObject } from './wire/decode.js';
 
 const manifest = { id: 'sample.board', version: '1.0.0', apiVersion: 1, trust: 'full', contributes: { views: [{ id: 'sample.board.view', title: 'Board', entry: 'ui/index.html', placements: ['pane', 'sidebar.primary'] }] } };
@@ -18,6 +18,30 @@ describe('public plugin protocol', () => {
     it('accepts a framework-independent view in several placements and supplies stable defaults', () => {
         expect(decodePluginManifest(manifest)).toMatchObject({ name: 'sample.board', activation: 'on-demand', contributes: { commands: [], settings: {}, views: [{ stateVersion: 1 }] } });
         expect(decodeWireObject({ command: 'plugin', action: 'open', text: '{"viewID":"sample.board.view"}' }).ok).toBe(true);
+    });
+    it('carries declared band heights for the bands a view or container occupies', () => {
+        const views = [{ ...manifest.contributes.views[0], placements: ['topbar', 'statusbar', 'panel.bottom'], bandHeights: { topbar: 28, statusbar: 48, 'panel.bottom': 180 } }];
+        const containers = [{ id: 'sample.board.bar', title: 'Bar', placements: ['topbar'], layout: 'row', slots: [{ id: 'sample.board.bar.main', title: 'Main' }], bandHeights: { topbar: 64 } }];
+        const decoded = decodePluginManifest({ ...manifest, contributes: { views, containers } }).contributes;
+        expect(decoded.views[0]?.bandHeights).toEqual({ topbar: 28, statusbar: 48, 'panel.bottom': 180 });
+        expect(decoded.containers?.[0]?.bandHeights).toEqual({ topbar: 64 });
+        // Undeclared is absent, not a default: the host owns the default (`PLUGIN_BAND_HEIGHTS`).
+        expect(decodePluginManifest(manifest).contributes.views[0]).not.toHaveProperty('bandHeights');
+        expect(decodePluginManifest({ ...manifest, contributes: { views: [{ ...views[0], bandHeights: {} }] } }).contributes.views[0]).not.toHaveProperty('bandHeights');
+        expect(PLUGIN_BAND_HEIGHTS).toEqual({ topbar: { min: 28, max: 64, default: 44 }, statusbar: { min: 16, max: 48, default: 32 }, 'panel.bottom': { min: 80, max: 480, default: 220 } });
+    });
+    it('refuses a band height outside its range, off a band, or for a placement the view lacks', () => {
+        const view = (bandHeights: unknown, placements = ['topbar', 'statusbar', 'panel.bottom']) =>
+            ({ ...manifest, contributes: { views: [{ ...manifest.contributes.views[0], placements, bandHeights }] } });
+        for (const [band, low, high] of [['topbar', 27, 65], ['statusbar', 15, 49], ['panel.bottom', 79, 481]] as const) {
+            expect(() => decodePluginManifest(view({ [band]: low }))).toThrow(`invalid plugin ${band} band height`);
+            expect(() => decodePluginManifest(view({ [band]: high }))).toThrow(`invalid plugin ${band} band height`);
+        }
+        expect(() => decodePluginManifest(view({ topbar: 36.5 }))).toThrow('band height');
+        expect(() => decodePluginManifest(view({ topbar: '36' }))).toThrow('band height');
+        expect(() => decodePluginManifest(view({ workspace: 200 }, ['workspace']))).toThrow('band heights may only name');
+        expect(() => decodePluginManifest(view({ statusbar: 24 }, ['topbar']))).toThrow('band heights may only name');
+        expect(() => decodePluginManifest(view([28]))).toThrow();
     });
     it('accepts terminal replacements alongside namespaced custom placements', () => {
         const placements = ['terminal', 'sample.board.terminal'];

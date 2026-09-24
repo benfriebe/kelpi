@@ -38,6 +38,7 @@
 import {
     DEFAULT_KEYBINDINGS,
     MENU_BAR_ACTIONS,
+    WINDOW_ARRANGEMENT_ACTIONS,
     actionForTrigger,
     applyKeybindOverrides,
     canonicalKeyBindingsForPlatform,
@@ -364,8 +365,12 @@ export function createKeyDispatcher(options: KeyDispatcherOptions): KeyDispatche
 
         if (trigger === null) return false;
 
-        // 3. Pane-related work needs an active workspace.
-        if (options.hasActiveWorkspace?.() === false) return false;
+        // 3. Pane-related work needs an active workspace. The window-arrangement actions are not
+        //    pane work: Zen Mode over an empty daemon or a remote workspace still needs its chord
+        //    out, and a browser tab has no native menu to fall back on.
+        const bindings = resolve(options.bindings ?? clientKeyBindings());
+        const action = actionForTrigger(bindings, trigger);
+        if (options.hasActiveWorkspace?.() === false && (action === null || !WINDOW_ARRANGEMENT_ACTIONS.has(action))) return false;
 
         // 4. Never dispatch the in-app binding that shadows the global hotkey.
         const hotkey = options.globalHotkey?.();
@@ -376,10 +381,9 @@ export function createKeyDispatcher(options: KeyDispatcherOptions): KeyDispatche
         if (web === true) return consume(event);
         if (web === false) return false;
 
-        // 6. Normal lookup. The fallback goes through `clientKeyBindings` so it carries the
-        //    platform canonicalization (§3.5) exactly like a map App.tsx passes in.
-        const bindings = resolve(options.bindings ?? clientKeyBindings());
-        const action = actionForTrigger(bindings, trigger);
+        // 6. Normal lookup (resolved above, for step 3). The fallback goes through
+        //    `clientKeyBindings` so it carries the platform canonicalization (§3.5) exactly like a
+        //    map App.tsx passes in.
         // An unbound chord falls through UNTOUCHED, which is what hands ⌘H, ⌥⌘H, ⌃⌘F, ⌘M and
         // ⌘Q to the platform (#95). This step is the whole of the precedence rule: a chord the
         // user's map claims is consumed HERE, with `preventDefault()`, so it never reaches the

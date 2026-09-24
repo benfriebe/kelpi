@@ -1,0 +1,13 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Layout Lab panel</title><link rel="stylesheet" href="style.css"></head>
+<body data-view="panel" data-declared="180">
+<section class="panel" aria-label="Layout Lab panel">
+  <p><span class="brand">LAYOUT LAB</span> <span id="band" class="band">bottom panel · declared 180 px</span></p>
+  <p class="note">Each band here declares its height in the manifest (<code>bandHeights</code>). The buttons are the
+  window's own arrangement commands, read from the chrome snapshot: the same verbs as the View menu,
+  the palette and ⌃⌘Return. Hide a band and its view stays mounted, told it is not visible.</p>
+  <p id="commands" class="commands" aria-label="Window arrangement"></p>
+  <p id="visibility" class="note"></p>
+  <span id="error" role="alert" hidden></span>
+</section><script type="module" src="app.js"></script>
+</body></html>

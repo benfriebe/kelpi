@@ -9,6 +9,8 @@ export default defineConfig({
           name: 'client',
           environment: 'jsdom',
           include: ['packages/client/src/**/*.test.{ts,tsx}'],
+          // Every test starts from an empty localStorage (the root arrangement persists there).
+          setupFiles: ['packages/client/src/test-setup.ts'],
           exclude: ['**/node_modules/**', '**/dist/**'],
         },
       },

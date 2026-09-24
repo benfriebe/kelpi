@@ -1,5 +1,5 @@
 import { BUNDLED_FEATURE_DEFINITIONS } from '../features/definitions';
-import { isPluginPlacement, type PluginContainerDefinition, type PluginContainerSlot, type PluginInfo, type PluginPlacement } from '@kelpi/protocol';
+import { isPluginPlacement, type PluginBandHeights, type PluginContainerDefinition, type PluginContainerSlot, type PluginInfo, type PluginPlacement } from '@kelpi/protocol';
 
 export type SidebarPlacement = 'sidebar.primary' | 'sidebar.secondary';
 export type WorkbenchSelections = Partial<Record<Exclude<PluginPlacement, 'pane'>, string>>;
@@ -10,6 +10,8 @@ export interface ViewContribution {
     readonly placements: readonly PluginPlacement[];
     readonly pluginID?: string;
     readonly container?: PluginContainerDefinition;
+    /** The manifest's declared band heights; the host applies them in `WorkbenchSlot`. */
+    readonly bandHeights?: PluginBandHeights;
 }
 /** Bundled and installed views share identities and placement resolution. React adapters
  * remain bundled; external views use PluginView's isolated host.
@@ -20,7 +22,8 @@ export const DEFAULT_SLOTS: Readonly<Partial<Record<PluginPlacement, string>>> =
 export function viewRegistry(plugins: readonly PluginInfo[]): readonly ViewContribution[] {
     return [...BUNDLED_VIEWS, ...plugins.filter(plugin => plugin.enabled && plugin.status !== 'failed').flatMap(plugin => [
         ...plugin.manifest.contributes.views.map(view => ({ ...view, pluginID: plugin.manifest.id })),
-        ...(plugin.manifest.contributes.containers ?? []).map(container => ({ id: container.id, title: container.title, placements: container.placements, pluginID: plugin.manifest.id, container }))
+        ...(plugin.manifest.contributes.containers ?? []).map(container => ({ id: container.id, title: container.title, placements: container.placements, pluginID: plugin.manifest.id, container,
+            ...(container.bandHeights ? { bandHeights: container.bandHeights } : {}) }))
     ])];
 }
 export function contributedSlots(views: readonly ViewContribution[]): readonly PluginContainerSlot[] {

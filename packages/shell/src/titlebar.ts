@@ -99,3 +99,23 @@ export function titleBarLogLine(options: {
         `chromeHeight=${String(frameHeight - contentHeight)}`
     );
 }
+
+/**
+ * Whether the traffic lights should be showing, given what the page last reported.
+ *
+ * The root arrangement can hide the page's toolbar (Zen Mode, View ▸ Toggle Toolbar), and with it
+ * the strip the buttons are centred in: left up, they would sit over the first pane's header,
+ * where a click meant for the pane closes the window. So the page reports `window-chrome`
+ * (`protocol/src/ws/messages.ts`) and the buttons follow it, but only where this module put them
+ * there in the first place. An ordinary frame (Windows, Linux) draws its own title bar above the
+ * page and has nothing to hide.
+ */
+export function windowButtonsVisible(decision: TitleBarStyleDecision, titleBarHidden: boolean): boolean {
+    if (decision.titleBarStyle === undefined) return true;
+    return !titleBarHidden;
+}
+
+/** The line `main.ts` logs when the buttons move, the only trace of it outside the process. */
+export function windowButtonsLogLine(visible: boolean, reason: 'report' | 'navigation' | 'disconnected'): string {
+    return `titlebar: traffic lights ${visible ? 'shown' : 'hidden'} (${reason})`;
+}

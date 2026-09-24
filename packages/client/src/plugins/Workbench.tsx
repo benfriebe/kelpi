@@ -1,8 +1,8 @@
 import type { PluginChrome } from './chrome';
 import { featureBindings, type BundledFeatureBinding } from '../features/feature';
-import { createContext, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactElement, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactElement, type ReactNode } from 'react';
 import { flushSync } from 'react-dom';
-import { isPluginID, isPluginPlacement, type JsonObject, type JsonValue, type PluginPlacement } from '@kelpi/protocol';
+import { PLUGIN_BAND_HEIGHTS, isPluginID, isPluginPlacement, type JsonObject, type JsonValue, type PluginPlacement } from '@kelpi/protocol';
 import type { KelpiRuntime } from '../state';
 import { ChromeIcon } from '../chrome/icons';
 import { ContextMenu, menuAnchorFromEvent } from '../chrome/ContextMenu';
@@ -21,6 +21,7 @@ import { PANE_CHROME_PLACEMENT } from '../pane-chrome/contract';
 import { clearPaneChromePresenterFailure, paneChromePresenterFailure, subscribePaneChromePresenters } from '../pane-chrome/presenter';
 import { PANE_SEARCH_PLACEMENT } from '../pane-search/contract';
 import { clearPaneSearchPresenterFailure, paneSearchPresenterFailure, subscribePaneSearchPresenters } from '../pane-search/presenter';
+import { DEFAULT_ARRANGEMENT, arrangementStorageKey, isArrangementSlotBand, readArrangement, sameArrangement, zenModeActive, type RootArrangement } from './arrangement';
 
 export type WorkbenchSlotID = Exclude<PluginPlacement, 'pane'>;
 interface WorkbenchLayout {
@@ -30,6 +31,14 @@ interface WorkbenchLayout {
     activeTabs: Readonly<Record<string, string>>;
     select(slot: WorkbenchSlotID, id: string): void;
     activateTab(containerID: string, slotID: string): void;
+    /**
+     * Which root bands are showing, and Zen Mode (`./arrangement.ts`). Optional so a host that
+     * never hides anything (a standalone test, a window that has not built its layout) reads as
+     * the default arrangement rather than as a crash.
+     */
+    arrangement?: RootArrangement;
+    /** Stable across renders: `App.tsx` closes over it once, in the sidebar setters. */
+    arrange?(update: (current: RootArrangement) => RootArrangement): void;
 }
 interface Workbench extends WorkbenchLayout {
     features: ReadonlyMap<string, BundledFeatureBinding>;
@@ -77,7 +86,9 @@ export function useWorkbench(): Workbench {
 export function useOptionalWorkbench(): Workbench | null {
     return useContext(WorkbenchContext);
 }
-export function useWorkbenchLayout(runtime: KelpiRuntime): WorkbenchLayout {
+/** What `useWorkbenchLayout` returns: always an arrangement, and the stable setter for it. */
+export type ArrangedWorkbenchLayout = WorkbenchLayout & Required<Pick<WorkbenchLayout, 'arrangement' | 'arrange'>>;
+export function useWorkbenchLayout(runtime: KelpiRuntime): ArrangedWorkbenchLayout {
     const { plugins, daemonID } = usePlugins(runtime);
     const key = `kelpi.workbench.v1:${daemonID ?? new URL(runtime.connection.target).host}`;
     const tabKey = key.replace('workbench.v1:', 'workbench.tabs.v1:');
@@ -104,8 +115,62 @@ export function useWorkbenchLayout(runtime: KelpiRuntime): WorkbenchLayout {
     };
     const [activeTabs, setActiveTabs] = useState(readTabs);
     useEffect(() => { setActiveTabs(readTabs()); }, [tabKey]);
+    /*
+     * The root arrangement, in its own key beside the selections and deliberately NOT subscribed to
+     * the `storage` event they listen to: a window reads it when it mounts (and when the daemon's
+     * identity arrives) and writes it when it changes, so Zen Mode in one window leaves the others
+     * alone.
+     *
+     * Every write is mirrored to the ADDRESS-keyed copy as well, which is the one read before the
+     * daemon's identity is known. Without it a window opened in Zen Mode would draw its toolbar and
+     * sidebars for the length of the identity round trip and then take them away again, resizing
+     * every PTY twice on every launch.
+     */
+    const address = new URL(runtime.connection.target).host;
+    const arrangementKey = arrangementStorageKey(daemonID ?? address);
+    const arrangementKeys = useRef({ key: arrangementKey, address: arrangementStorageKey(address) });
+    arrangementKeys.current = { key: arrangementKey, address: arrangementStorageKey(address) };
+    const readSavedArrangement = (): RootArrangement => {
+        try { return readArrangement(JSON.parse(localStorage.getItem(arrangementKey) ?? 'null')); } catch { return DEFAULT_ARRANGEMENT; }
+    };
+    const [arrangement, setArrangement] = useState(readSavedArrangement);
+    const current = useRef(arrangement);
+    current.current = arrangement;
+    /** The key this window last wrote under, so a change made before the identity arrived survives it. */
+    const lastWritten = useRef<string | null>(null);
+    const persist = (next: RootArrangement): void => {
+        const { key: target, address: hint } = arrangementKeys.current;
+        lastWritten.current = target;
+        try {
+            const saved = JSON.stringify(next);
+            localStorage.setItem(target, saved);
+            if (hint !== target) localStorage.setItem(hint, saved);
+        } catch { /* still applies for this session */ }
+    };
+    useEffect(() => {
+        // The identity arrived after the user had already changed something under the address key
+        // (⌃⌘↩ works before any workspace exists): carry that change over rather than replacing it
+        // with the daemon's saved value, which would undo it and leave the two keys disagreeing.
+        if (lastWritten.current !== null && lastWritten.current !== arrangementKey) { persist(current.current); return; }
+        const saved = readSavedArrangement();
+        if (sameArrangement(current.current, saved)) return;
+        // The daemon's value wins, and the address copy is brought into line with it: otherwise a
+        // second daemon that once answered on this address leaves a mirror that disagrees, and every
+        // launch would lay the grid out twice.
+        const { key: target, address: hint } = arrangementKeys.current;
+        if (hint !== target) { try { localStorage.setItem(hint, JSON.stringify(saved)); } catch { /* the next write repairs it */ } }
+        setArrangement(saved);
+    }, [arrangementKey]);
+    const arrange = useCallback((update: (current: RootArrangement) => RootArrangement): void => {
+        setArrangement(now => {
+            const next = update(now);
+            if (next === now) return now;
+            persist(next);
+            return next;
+        });
+    }, []);
     const views = useMemo(() => viewRegistry(plugins), [plugins]);
-    return { views, selections, activeTabs, sidebars: resolveSidebarViews(views, selections),
+    return { views, selections, activeTabs, sidebars: resolveSidebarViews(views, selections), arrangement, arrange,
         select(slot, id) { setSelections(current => { const next = selectWorkbenchView(views, current, slot, id); try { localStorage.setItem(key, JSON.stringify(next)); queueMicrotask(() => window.dispatchEvent(new CustomEvent(SELECTIONS_CHANGED, { detail: key }))); } catch { /* still usable for this session */ } return next; }); },
         activateTab(containerID, slotID) {
             if (!views.find(view => view.id === containerID)?.container?.slots.some(slot => slot.id === slotID)) return;
@@ -223,17 +288,30 @@ function WorkbenchContainer(props: { view: ViewContribution; path: string; ances
     </section>;
 }
 
-/** Native and external renderers use one resolution path, including named container slots. */
+/**
+ * Native and external renderers use one resolution path, including named container slots.
+ *
+ * The three root bands (toolbar, status bar, bottom panel) can also be HIDDEN by the root
+ * arrangement. A hidden band keeps its selection; a plugin view in it stays mounted with
+ * `display: none` and is told `visible=false`, exactly as a hidden container tab is, so showing the
+ * band again costs no reload. The bundled bars are simply not drawn: their models live in the host
+ * and keep running either way. A plugin view's band is the height its manifest declares
+ * (`bandHeights`, validated at install against `PLUGIN_BAND_HEIGHTS`) or the band's long-standing
+ * default, and the bottom panel is further held to half the window, which no manifest can know.
+ */
 export function WorkbenchSlot(props: { placement: WorkbenchSlotID; children?: ReactNode | ((context: ViewRenderContext) => ReactNode); className?: string; trafficLightInset?: number }): ReactElement {
     const host = useWorkbench();
     const selected = resolveSlot(host.views, props.placement, host.selections[props.placement]);
     const native = (context: ViewRenderContext): ReactNode => typeof props.children === 'function' ? props.children(context)
         : props.children ?? host.features.get(DEFAULT_SLOTS[props.placement] ?? '')?.render(context);
-    if (!selected?.pluginID) return <>{native({ visible: true, trafficLightInset: props.trafficLightInset ?? 0 })}</>;
-    const height = props.placement === 'topbar' ? 44 : props.placement === 'statusbar' ? 32 : props.placement === 'panel.bottom' ? 220 : undefined;
-    return <div data-workbench-slot={props.placement} data-view-id={selected.id} className={props.className ?? 'flex h-full min-h-0 w-full'} style={height ? { height, flexShrink: 0 } : undefined}>
+    const band = isArrangementSlotBand(props.placement) ? props.placement : null;
+    const hidden = band !== null && !(host.arrangement ?? DEFAULT_ARRANGEMENT).visible[band];
+    if (!selected?.pluginID) return <>{hidden ? null : native({ visible: true, trafficLightInset: props.trafficLightInset ?? 0 })}</>;
+    const height = band === null ? undefined : selected.bandHeights?.[band] ?? PLUGIN_BAND_HEIGHTS[band].default;
+    return <div data-workbench-slot={props.placement} data-view-id={selected.id} data-band-hidden={hidden ? 'true' : undefined} className={props.className ?? 'flex h-full min-h-0 w-full'}
+        style={height === undefined ? undefined : { height, flexShrink: 0, ...(band === 'panel.bottom' ? { maxHeight: '50vh' } : {}), ...(hidden ? { display: 'none' } : {}) }}>
         {props.placement === 'topbar' && props.trafficLightInset ? <div data-titlebar-drag="true" style={{ width: props.trafficLightInset, flexShrink: 0, height: '100%' }} /> : null}
-        <NativeRendererScope selected={selected} compact={props.placement === 'topbar' || props.placement === 'statusbar'} adapters={DEFAULT_SLOTS[props.placement] ? { [DEFAULT_SLOTS[props.placement]!]: native } : {}}><RegisteredView view={selected} path="root" /></NativeRendererScope>
+        <NativeRendererScope selected={selected} compact={props.placement === 'topbar' || props.placement === 'statusbar'} adapters={DEFAULT_SLOTS[props.placement] ? { [DEFAULT_SLOTS[props.placement]!]: native } : {}}><RegisteredView view={selected} path="root" visible={!hidden} /></NativeRendererScope>
     </div>;
 }
 
@@ -355,6 +433,14 @@ function optionTitle(slot: string, view: ViewContribution): string {
         : view.title;
 }
 
+/** The Settings status line: "Zen Mode", the bands the user has hidden by hand, or that none is. */
+function describeArrangement(arrangement: RootArrangement): string {
+    if (zenModeActive(arrangement)) return 'Zen Mode';
+    const names: Readonly<Record<string, string>> = { topbar: 'toolbar', statusbar: 'status bar', 'panel.bottom': 'bottom panel' };
+    const hidden = Object.keys(names).filter(band => isArrangementSlotBand(band) && !arrangement.visible[band]).map(band => `${names[band]!} hidden`);
+    return hidden.length ? hidden.join(', ') : 'toolbar, status bar and bottom panel shown';
+}
+
 export function PlacementSettings(): ReactElement {
     const host = useWorkbench();
     const failures = useSyncExternalStore(subscribeInteractionPresenters, interactionPresenterFailures, interactionPresenterFailures);
@@ -365,9 +451,10 @@ export function PlacementSettings(): ReactElement {
     const chromeSelected = resolveSlot(host.views, PANE_CHROME_PLACEMENT, host.selections[PANE_CHROME_PLACEMENT]);
     const searchFailure = useSyncExternalStore(subscribePaneSearchPresenters, paneSearchPresenterFailure, paneSearchPresenterFailure);
     const searchSelected = resolveSlot(host.views, PANE_SEARCH_PLACEMENT, host.selections[PANE_SEARCH_PLACEMENT]);
+    const arrangement = host.arrangement ?? DEFAULT_ARRANGEMENT;
     return <div className="flex flex-col gap-3" data-testid="plugin-placements">
         <strong>Workbench views</strong>
-        {ROOT_SLOTS.map(slot => <label key={slot} className="flex items-center justify-between gap-3 text-xs">{slot}<select aria-label={slot} value={slot === 'sidebar.primary' || slot === 'sidebar.secondary' ? host.sidebars[slot].id : resolveSlot(host.views, slot, host.selections[slot])?.id ?? ''} onChange={event => host.select(slot, event.target.value)}>
+        {ROOT_SLOTS.map(slot => <label key={slot} className="flex items-center justify-between gap-3 text-xs">{slot}{isArrangementSlotBand(slot) && !arrangement.visible[slot] ? ' (hidden)' : ''}<select aria-label={slot} value={slot === 'sidebar.primary' || slot === 'sidebar.secondary' ? host.sidebars[slot].id : resolveSlot(host.views, slot, host.selections[slot])?.id ?? ''} onChange={event => host.select(slot, event.target.value)}>
             {slot === 'panel.bottom' ? <option value="">Hidden</option> : null}
             {host.views.filter(view => view.placements.includes(slot)).map(view => <option key={view.id} value={view.id}>{optionTitle(slot, view)}</option>)}
         </select></label>)}
@@ -425,6 +512,15 @@ export function PlacementSettings(): ReactElement {
             {searchFailure ? <button type="button" className="shrink-0" data-testid={`pane-search-presenter-retry-${PANE_SEARCH_PLACEMENT}`}
                 onClick={() => clearPaneSearchPresenterFailure()}>Retry presenter</button> : null}
         </div>
-        <button className="self-start text-xs" onClick={() => { for (const slot of ROOT_SLOTS) host.select(slot, DEFAULT_SLOTS[slot] ?? ''); }}>Restore bundled views</button>
+        {/*
+          * The root arrangement's route back, beside the selections' one and on the same terms:
+          * the Plugins section is always drawn by the bundled panel, so whatever is hidden and
+          * whoever draws Settings, this row says so and the Reset is reachable.
+          */}
+        <span role="status" className="text-xs" data-testid="window-arrangement-status">Window arrangement: {describeArrangement(arrangement)}</span>
+        <div className="flex gap-3">
+            <button className="self-start text-xs" onClick={() => { for (const slot of ROOT_SLOTS) host.select(slot, DEFAULT_SLOTS[slot] ?? ''); }}>Restore bundled views</button>
+            {host.arrange ? <button className="self-start text-xs" data-testid="reset-window-arrangement" onClick={() => host.arrange?.(() => DEFAULT_ARRANGEMENT)}>Reset window arrangement</button> : null}
+        </div>
     </div>;
 }

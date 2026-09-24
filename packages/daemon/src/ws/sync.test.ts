@@ -1062,6 +1062,49 @@ describe('shell-activation relay', () => {
  * outcome — it must NOT remember: a replayed "3 selected" would un-grey the row for a window
  * whose page has since reloaded with nothing selected.
  */
+/**
+ * The root arrangement's `window-chrome` report: the page's toolbar is hidden, so the shell that
+ * owns the window hides the traffic lights that would otherwise sit over the first pane's header.
+ * Relayed exactly as `workspace-selection` is, and for the same reason never remembered: the
+ * shell shows the buttons again when its page navigates, so a replay could only ever be stale.
+ */
+describe('window-chrome relay', () => {
+    it('fans a report out to every attached party, windowID intact, and replays nothing', () => {
+        const f = fixture();
+        const shell = f.connect();
+        const window = f.connect();
+        shell.session.handleMessage(hello({ client: { kind: 'electron', name: 'kelpi-shell' } }));
+        window.session.handleMessage(hello());
+
+        window.session.handleMessage(JSON.stringify({ type: 'window-chrome', titleBarHidden: true, windowID: 'WIN-1' }));
+        window.session.handleMessage(JSON.stringify({ type: 'window-chrome', titleBarHidden: false }));
+        expect(shell.transport.ofType('window-chrome')).toEqual([
+            { type: 'window-chrome', titleBarHidden: true, windowID: 'WIN-1' },
+            { type: 'window-chrome', titleBarHidden: false }
+        ]);
+
+        const late = f.connect();
+        late.session.handleMessage(hello({ client: { kind: 'electron', name: 'kelpi-shell' } }));
+        expect(late.transport.ofType('window-chrome')).toHaveLength(0);
+    });
+
+    it('drops a report whose flag is not a boolean', () => {
+        const f = fixture();
+        const shell = f.connect();
+        const window = f.connect();
+        shell.session.handleMessage(hello({ client: { kind: 'electron', name: 'kelpi-shell' } }));
+        window.session.handleMessage(hello());
+
+        window.session.handleMessage(JSON.stringify({ type: 'window-chrome', windowID: 'WIN-1' }));
+        window.session.handleMessage(JSON.stringify({ type: 'window-chrome', titleBarHidden: 'true' }));
+        window.session.handleMessage(JSON.stringify({ type: 'window-chrome', titleBarHidden: 1 }));
+        // A window scope that is there but unusable is not "every shell".
+        window.session.handleMessage(JSON.stringify({ type: 'window-chrome', titleBarHidden: true, windowID: 7 }));
+        window.session.handleMessage(JSON.stringify({ type: 'window-chrome', titleBarHidden: true, windowID: '' }));
+        expect(shell.transport.ofType('window-chrome')).toHaveLength(0);
+    });
+});
+
 describe('workspace-selection relay', () => {
     it('fans a client report out to every attached party, windowID intact', () => {
         const f = fixture();

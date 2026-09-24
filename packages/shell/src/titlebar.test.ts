@@ -9,7 +9,9 @@ import {
     TRAFFIC_LIGHT_Y,
     titleBarLogLine,
     titleBarStyleFor,
-    trafficLightQuery
+    trafficLightQuery,
+    windowButtonsLogLine,
+    windowButtonsVisible
 } from './titlebar.js';
 
 describe('the hidden title bar (§APP-046)', () => {
@@ -78,5 +80,25 @@ describe('the title-bar report (§APP-046’s assertion surface)', () => {
         expect(line).toContain('style=default');
         expect(line).toContain('trafficLights=none');
         expect(line).toContain('chromeHeight=28');
+    });
+});
+
+describe('the traffic lights under a hidden toolbar (root arrangement)', () => {
+    it('hides them on macOS for as long as the page reports its toolbar hidden', () => {
+        const mac = titleBarStyleFor('darwin');
+        expect(windowButtonsVisible(mac, true)).toBe(false);
+        expect(windowButtonsVisible(mac, false)).toBe(true);
+    });
+
+    it('leaves an ordinary frame alone: it draws its own title bar above the page', () => {
+        for (const platform of ['linux', 'win32']) {
+            expect(windowButtonsVisible(titleBarStyleFor(platform), true)).toBe(true);
+        }
+    });
+
+    it('says which way they moved and why', () => {
+        expect(windowButtonsLogLine(false, 'report')).toBe('titlebar: traffic lights hidden (report)');
+        expect(windowButtonsLogLine(true, 'navigation')).toBe('titlebar: traffic lights shown (navigation)');
+        expect(windowButtonsLogLine(true, 'disconnected')).toBe('titlebar: traffic lights shown (disconnected)');
     });
 });

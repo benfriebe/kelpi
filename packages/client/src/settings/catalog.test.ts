@@ -20,8 +20,21 @@ describe('the action catalog', () => {
         expect(new Set(catalogued).size).toBe(catalogued.length);
     });
 
-    it('is the 59 actions the spec counts', () => {
-        expect(ACTION_CATALOG).toHaveLength(59);
+    it('is the 63 actions the spec counts', () => {
+        expect(ACTION_CATALOG).toHaveLength(63);
+    });
+
+    // The root arrangement's four, beside the two panel toggles they sit with in the View menu.
+    it('lists the window arrangement actions under View', () => {
+        expect(actionsInCategory('View')).toEqual([
+            'toggle_sidebar',
+            'toggle_inspector',
+            'toggle_zen_mode',
+            'toggle_toolbar',
+            'toggle_status_bar',
+            'toggle_bottom_panel'
+        ]);
+        expect(actionLabel('toggle_zen_mode')).toBe('Toggle Zen Mode');
     });
 
     // #175. They are Terminal rows, so Settings ▸ Keybindings and the Help overlay both list
@@ -58,7 +71,7 @@ describe('the action catalog', () => {
         const visible = VISIBLE_CATEGORIES.flatMap((category) => actionsInCategory(category));
         expect(visible.filter((action) => action.startsWith('web_'))).toEqual([]);
         expect(actionsInCategory('Web Pane')).toHaveLength(11);
-        expect(visible).toHaveLength(59 - 11);
+        expect(visible).toHaveLength(63 - 11);
     });
 
     it('uses §4’s display names, including the ones that are not the raw value', () => {

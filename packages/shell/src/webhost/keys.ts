@@ -80,6 +80,7 @@ import {
     DEFAULT_KEYBINDINGS,
     parseKeybindValue,
     resolveKeyBindings,
+    triggerExpressibleOnPlatform,
     type KelpiAction,
     type KeyBindingMap,
     type KeyTrigger
@@ -268,10 +269,13 @@ function relayableChordKey(trigger: KeyTrigger): string | null {
  * host's own `back`/`forward` verbs for ⌘←/⌘→. So the carve-out did not hand those keys to the
  * page, it dropped them on the floor.
  */
-export function claimedChords(bindings: KeyBindingMap): ReadonlySet<string> {
+export function claimedChords(bindings: KeyBindingMap, platform: string = process.platform): ReadonlySet<string> {
     const claimed = new Set<string>([...PRIORITY_LAYER_CHORDS, ...WINDOW_LISTENER_CHORDS]);
     for (const binding of bindings.values()) {
         if (PAGE_OWNED_ACTIONS.has(binding.action)) continue;
+        // A ctrl+super chord the client leaves unbound on a Ctrl-primary platform (Zen Mode's
+        // ⌃⌘Return, `triggerExpressibleOnPlatform`) would be taken from the page for nothing.
+        if (!triggerExpressibleOnPlatform(binding.trigger, platform === 'darwin')) continue;
         const key = relayableChordKey(binding.trigger);
         if (key !== null) claimed.add(key);
     }

@@ -79,6 +79,31 @@ export function parseWorkspaceSelection(
 }
 
 // ---------------------------------------------------------------------------
+// The root arrangement's title bar report
+// ---------------------------------------------------------------------------
+
+/** `window-chrome`, decoded (protocol `WS_WINDOW_CHROME_MESSAGE`). */
+export interface WindowChromeReport {
+    /** True while the reporting page's toolbar band is hidden. */
+    readonly titleBarHidden: boolean;
+    /** Which shell window it is about; null = whichever shell hears it. */
+    readonly windowID: string | null;
+}
+
+/**
+ * Read a `window-chrome` frame, or null when it is not one.
+ *
+ * A missing or non-boolean flag is refused rather than defaulted, as `workspace-selection`'s count
+ * is: guessing "hidden" would take the window's buttons away over a frame nobody understood.
+ */
+export function parseWindowChrome(message: Record<string, unknown>): WindowChromeReport | null {
+    if (message['type'] !== 'window-chrome') return null;
+    const hidden = message['titleBarHidden'];
+    if (typeof hidden !== 'boolean') return null;
+    return { titleBarHidden: hidden, windowID: readString(message, 'windowID') };
+}
+
+// ---------------------------------------------------------------------------
 // Finder "Open With" (CONT-123 / CONT-124)
 // ---------------------------------------------------------------------------
 

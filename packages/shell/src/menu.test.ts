@@ -37,7 +37,18 @@ import {
     SEED_TEST_GROUP_LABEL,
     SELECT_ALL_WORKSPACES_COMMAND,
     SELECT_ALL_WORKSPACES_LABEL,
+    RESET_WINDOW_ARRANGEMENT_COMMAND,
+    RESET_WINDOW_ARRANGEMENT_LABEL,
     SWITCH_WORKSPACE_ROWS,
+    TOGGLE_BOTTOM_PANEL_COMMAND,
+    TOGGLE_BOTTOM_PANEL_LABEL,
+    TOGGLE_STATUS_BAR_COMMAND,
+    TOGGLE_STATUS_BAR_LABEL,
+    TOGGLE_TOOLBAR_COMMAND,
+    TOGGLE_TOOLBAR_LABEL,
+    TOGGLE_ZEN_MODE_ACCELERATOR,
+    TOGGLE_ZEN_MODE_COMMAND,
+    TOGGLE_ZEN_MODE_LABEL,
     TOGGLE_INSPECTOR_ACCELERATOR,
     TOGGLE_INSPECTOR_COMMAND,
     TOGGLE_INSPECTOR_LABEL,
@@ -82,6 +93,14 @@ describe('View menu (§WS-001, §APP-025 / §WS-152)', () => {
         expect(rows(template)).toEqual([
             TOGGLE_SIDEBAR_LABEL,
             TOGGLE_INSPECTOR_LABEL,
+            // The root arrangement: three band toggles beside the two panel ones, then Zen Mode
+            // and the reset that is its recovery.
+            TOGGLE_TOOLBAR_LABEL,
+            TOGGLE_STATUS_BAR_LABEL,
+            TOGGLE_BOTTOM_PANEL_LABEL,
+            'separator',
+            TOGGLE_ZEN_MODE_LABEL,
+            RESET_WINDOW_ARRANGEMENT_LABEL,
             'separator',
             'reload',
             'forceReload',
@@ -103,6 +122,40 @@ describe('View menu (§WS-001, §APP-025 / §WS-152)', () => {
         // menu row and the chord in the page are the same shortcut rather than two that drift.
         expect(TOGGLE_SIDEBAR_ACCELERATOR).toBe('Shift+CommandOrControl+S');
         expect(TOGGLE_INSPECTOR_ACCELERATOR).toBe('CommandOrControl+I');
+    });
+
+    it('relays the arrangement rows, with only Zen Mode carrying a chord by default', () => {
+        const sendMenuRequest = vi.fn(() => true);
+        const template = viewMenuTemplate({ sendMenuRequest, accelerators: DEFAULT_MENU_ACCELERATORS });
+        const row = (label: string) => template.find((item) => item.label === label);
+        for (const [label, command] of [
+            [TOGGLE_TOOLBAR_LABEL, TOGGLE_TOOLBAR_COMMAND],
+            [TOGGLE_STATUS_BAR_LABEL, TOGGLE_STATUS_BAR_COMMAND],
+            [TOGGLE_BOTTOM_PANEL_LABEL, TOGGLE_BOTTOM_PANEL_COMMAND],
+            [TOGGLE_ZEN_MODE_LABEL, TOGGLE_ZEN_MODE_COMMAND],
+            [RESET_WINDOW_ARRANGEMENT_LABEL, RESET_WINDOW_ARRANGEMENT_COMMAND]
+        ] as const) {
+            (row(label)?.click as (() => void) | undefined)?.();
+            expect(sendMenuRequest).toHaveBeenLastCalledWith(command);
+            // Registered like the sidebar rows (they are menu-bar actions), not display-only.
+            expect(row(label)?.registerAccelerator).toBeUndefined();
+        }
+        expect(row(TOGGLE_ZEN_MODE_LABEL)?.accelerator).toBe(TOGGLE_ZEN_MODE_ACCELERATOR);
+        for (const label of [TOGGLE_TOOLBAR_LABEL, TOGGLE_STATUS_BAR_LABEL, TOGGLE_BOTTOM_PANEL_LABEL, RESET_WINDOW_ARRANGEMENT_LABEL]) {
+            expect('accelerator' in (row(label) ?? {})).toBe(false);
+        }
+        // Pinned against the client's copy (`client/src/app/file-menu.ts`), as every relay name is.
+        expect([TOGGLE_ZEN_MODE_COMMAND, TOGGLE_TOOLBAR_COMMAND, TOGGLE_STATUS_BAR_COMMAND, TOGGLE_BOTTOM_PANEL_COMMAND, RESET_WINDOW_ARRANGEMENT_COMMAND])
+            .toEqual(['toggle-zen-mode', 'toggle-toolbar', 'toggle-status-bar', 'toggle-bottom-panel', 'reset-window-arrangement']);
+        // Off mac CommandOrControl is Control, so ⌃⌘Return would register as plain Ctrl+Return:
+        // the row carries no accelerator there, and pane zoom's ⇧⌘Return is unaffected.
+        expect(menuAccelerators([], 'linux').toggle_zen_mode).toBeUndefined();
+        expect(menuAccelerators([], 'win32').toggle_zen_mode).toBeUndefined();
+        expect(menuAccelerators([], 'darwin').toggle_zen_mode).toBe(TOGGLE_ZEN_MODE_ACCELERATOR);
+        expect(menuAccelerators([], 'linux').toggle_sidebar).toBe(TOGGLE_SIDEBAR_ACCELERATOR);
+        // A band toggle the user binds shows its chord like any other row (#47).
+        const bound = viewMenuTemplate({ sendMenuRequest, accelerators: menuAccelerators(['alt+super+t=toggle_toolbar']) });
+        expect(bound.find((item) => item.label === TOGGLE_TOOLBAR_LABEL)?.accelerator).toBe('Alt+CommandOrControl+T');
     });
 
     it('relays the inspector row to the client, exactly as the sidebar row does (§APP-025)', () => {
@@ -162,7 +215,8 @@ describe('View menu (§WS-001, §APP-025 / §WS-152)', () => {
         expect(VIEW_MENU_LOG_FRAGMENT.startsWith('View ▸ Toggle Sidebar (⌘⇧S)')).toBe(true);
         expect(VIEW_MENU_LOG_FRAGMENT).toBe(
             'View ▸ Toggle Sidebar (⌘⇧S) + Toggle Inspector (⌘I) + Recover Interface (⌃⌥⌘R)' +
-                ' + Increase Terminal Text Size / Decrease Terminal Text Size / Reset Terminal Text Size'
+                ' + Increase Terminal Text Size / Decrease Terminal Text Size / Reset Terminal Text Size' +
+                ' + Toggle Toolbar / Toggle Status Bar / Toggle Bottom Panel + Toggle Zen Mode (⌃⌘↩) + Reset Window Arrangement'
         );
     });
 
@@ -999,6 +1053,7 @@ describe('menu accelerators follow the binding map (#47, §7.1)', () => {
             toggle_sidebar: TOGGLE_SIDEBAR_ACCELERATOR,
             toggle_inspector: TOGGLE_INSPECTOR_ACCELERATOR,
             command_palette: COMMAND_PALETTE_ACCELERATOR,
+            toggle_zen_mode: TOGGLE_ZEN_MODE_ACCELERATOR,
             // #175's three rows are the only entries here that are NOT menu-bar actions: they
             // display a chord they do not register, so the derivation reaches them while the
             // dispatch layer does not (`MENU_ACCELERATOR_ACTIONS`).
@@ -1007,8 +1062,13 @@ describe('menu accelerators follow the binding map (#47, §7.1)', () => {
             reset_terminal_font_size: 'CommandOrControl+0'
         });
         expect(DEFAULT_MENU_ACCELERATORS).toEqual(defaults);
-        // Every one of the 16 menu-bar actions ships with a displayable chord (§4)…
-        for (const action of MENU_BAR_ACTIONS) expect(defaults[action]).toBeDefined();
+        // Every one of the 20 menu-bar actions ships with a displayable chord (§4) except the three
+        // single-band toggles, which ship unbound and gain a chord only when the user binds one…
+        const unbound = ['toggle_toolbar', 'toggle_status_bar', 'toggle_bottom_panel'];
+        for (const action of MENU_BAR_ACTIONS) {
+            if (unbound.includes(action)) expect(defaults[action]).toBeUndefined();
+            else expect(defaults[action]).toBeDefined();
+        }
         // …and the three text-size actions are emphatically not among them, because that set is
         // the one that still fires while a chrome text field has the caret.
         for (const action of ['increase_terminal_font_size', 'decrease_terminal_font_size', 'reset_terminal_font_size'] as const) {

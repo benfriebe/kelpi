@@ -12,6 +12,7 @@ import { resolvePluginChords } from '../plugins/shortcuts';
 import { boundKeymap, buildKeymap, nativeChordOwners } from '../chrome/keymap';
 import { clientKeyBindings } from '../chrome/keys';
 import { usePluginChrome } from '../plugins/use-chrome';
+import { DEFAULT_ARRANGEMENT, toggleZenMode } from '../plugins/arrangement';
 
 function fixture() {
     const daemon = createDaemonStore(emptyDaemonState('/home/test'));
@@ -28,7 +29,9 @@ function fixture() {
         sidebarVisible: true, inspectorVisible: false, remoteWorkspaceSelected: () => remote, shellAvailable: false,
         associations: { workspaceID: 'one', values: [] },
         plugins: { menu: vi.fn(() => []), items: vi.fn(() => []), runItem: vi.fn(() => true) } as unknown as ChromeFeatureHost['plugins'],
-        keymap: { sections: [], plugins: [], withheld: 0 }, toggleSidebar: vi.fn(), toggleInspector: vi.fn(), openSettings: vi.fn(), openHelp: vi.fn(), openPalette: vi.fn(), shellAction: vi.fn(), restartControlServer: vi.fn(), restartUI: vi.fn(), selectPane: vi.fn()
+        keymap: { sections: [], plugins: [], withheld: 0 }, toggleSidebar: vi.fn(), toggleInspector: vi.fn(),
+        arrangement: DEFAULT_ARRANGEMENT, bottomPanelAvailable: false, toggleBand: vi.fn(), toggleZenMode: vi.fn(), resetArrangement: vi.fn(),
+        openSettings: vi.fn(), openHelp: vi.fn(), openPalette: vi.fn(), shellAction: vi.fn(), restartControlServer: vi.fn(), restartUI: vi.fn(), selectPane: vi.fn()
     };
     return { daemon, store, sync, runtime, commands, host, source: createChromeFeatureSource(host), remote(value: boolean) { remote = value; } };
 }
@@ -42,6 +45,38 @@ describe('shared toolbar and status feature contracts', () => {
         expect(source.snapshot().sidebars).toEqual({ left: { viewID: 'kelpi.inspector', title: 'Inspector', visible: false }, right: { viewID: 'kelpi.workspaces', title: 'Workspaces', visible: true } });
         source.execute('kelpi.sidebar.left', {}); expect(h.host.toggleInspector).toHaveBeenCalledOnce();
         source.execute('kelpi.sidebar.right', {}); expect(h.host.toggleSidebar).toHaveBeenCalledOnce();
+    });
+    /*
+     * The root arrangement's commands: the user's own View rows, offered to a replacement toolbar
+     * the way the sidebar toggles are. Zen Mode and the reset are floor commands, enabled whatever
+     * else is true, including while disconnected; the bottom panel's needs a view to show.
+     */
+    it('offers the arrangement commands with state-true titles, and Zen Mode and the reset on the floor', () => {
+        const h = fixture();
+        const arrangement = (id: string) => h.source.snapshot().commands.find(command => command.id === id);
+        expect(arrangement('kelpi.zenMode.toggle')).toEqual({ id: 'kelpi.zenMode.toggle', title: 'Enter Zen Mode', enabled: true, checked: false, group: 'window' });
+        expect(arrangement('kelpi.toolbar.toggle')).toMatchObject({ title: 'Hide Toolbar', enabled: true, checked: true });
+        expect(arrangement('kelpi.statusbar.toggle')).toMatchObject({ title: 'Hide Status Bar', enabled: true, checked: true });
+        expect(arrangement('kelpi.panel.bottom.toggle')).toMatchObject({ title: 'Hide Bottom Panel', enabled: false });
+        expect(arrangement('kelpi.window.resetArrangement')).toMatchObject({ title: 'Reset Window Arrangement', enabled: true });
+        // Not in the native toolbar's overflow menu, which draws `group: 'menu'` only.
+        expect(h.source.snapshot().commands.filter(command => command.group === 'menu').map(command => command.id)).not.toContain('kelpi.zenMode.toggle');
+
+        const zen = createChromeFeatureSource({ ...h.host, arrangement: toggleZenMode(DEFAULT_ARRANGEMENT), bottomPanelAvailable: true });
+        const find = (id: string) => zen.snapshot().commands.find(command => command.id === id);
+        expect(find('kelpi.zenMode.toggle')).toMatchObject({ title: 'Exit Zen Mode', checked: true });
+        expect(find('kelpi.toolbar.toggle')).toMatchObject({ title: 'Show Toolbar', checked: false });
+        expect(find('kelpi.panel.bottom.toggle')).toMatchObject({ title: 'Show Bottom Panel', enabled: true });
+
+        h.store.getState().setConnectionStatus('reconnecting');
+        for (const id of ['kelpi.zenMode.toggle', 'kelpi.window.resetArrangement']) expect(zen.snapshot().commands.find(command => command.id === id)?.enabled).toBe(true);
+        zen.execute('kelpi.zenMode.toggle', {}); expect(h.host.toggleZenMode).toHaveBeenCalledOnce();
+        zen.execute('kelpi.toolbar.toggle', {}); expect(h.host.toggleBand).toHaveBeenLastCalledWith('topbar');
+        zen.execute('kelpi.statusbar.toggle', {}); expect(h.host.toggleBand).toHaveBeenLastCalledWith('statusbar');
+        zen.execute('kelpi.panel.bottom.toggle', {}); expect(h.host.toggleBand).toHaveBeenLastCalledWith('panel.bottom');
+        zen.execute('kelpi.window.resetArrangement', {}); expect(h.host.resetArrangement).toHaveBeenCalledOnce();
+        // Disabled means refused, like every other command.
+        expect(() => h.source.execute('kelpi.panel.bottom.toggle', {})).toThrow('disabled');
     });
     it('rejects stale workspace actions, disconnected mutations, unknown commands and remote selection', async () => {
         const h = fixture(), model = createPluginChrome(h.source);

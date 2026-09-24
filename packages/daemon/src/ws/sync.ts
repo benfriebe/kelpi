@@ -38,6 +38,7 @@ import {
     WS_PROTOCOL_VERSION,
     WS_SHELL_ACTIVATION_MESSAGE,
     WS_WORKSPACE_SELECTION_MESSAGE,
+    WS_WINDOW_CHROME_MESSAGE,
     WS_SETTINGS_CHANGED_MESSAGE,
     WS_SETTINGS_COMMANDS,
     decodeWireObject,
@@ -1592,6 +1593,9 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                 case WS_WORKSPACE_SELECTION_MESSAGE:
                     workspaceSelectionReport(parsed);
                     return;
+                case WS_WINDOW_CHROME_MESSAGE:
+                    windowChromeReport(parsed);
+                    return;
                 case 'ping': {
                     const id = text(parsed['id']);
                     this.send({ type: 'pong', id: id ?? '' });
@@ -2918,6 +2922,30 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
         revealPane({
             type: WS_WORKSPACE_SELECTION_MESSAGE,
             selected: Math.floor(selected),
+            ...(windowID === undefined ? {} : { windowID })
+        });
+    }
+
+    /**
+     * The root arrangement's `window-chrome` report → every attached party, and NOT remembered.
+     *
+     * `workspace-selection` again, one field different: the page's toolbar is hidden (or shown),
+     * so the shell that owns the window can hide the macOS traffic lights that would otherwise sit
+     * over the first pane's header. The daemon has no opinion about the arrangement, which is
+     * client-local, and replays nothing: the shell shows the buttons whenever its page navigates,
+     * and the page re-reports on every connect. A non-boolean is dropped rather than guessed.
+     */
+    function windowChromeReport(message: Record<string, unknown>): void {
+        const hidden = message['titleBarHidden'];
+        if (typeof hidden !== 'boolean') return;
+        // A windowID that is present but unusable is dropped rather than read as "every shell":
+        // it would hide the traffic lights in windows whose toolbars are showing.
+        const rawWindowID = message['windowID'];
+        if (rawWindowID !== undefined && (typeof rawWindowID !== 'string' || rawWindowID.length === 0)) return;
+        const windowID = text(rawWindowID);
+        revealPane({
+            type: WS_WINDOW_CHROME_MESSAGE,
+            titleBarHidden: hidden,
             ...(windowID === undefined ? {} : { windowID })
         });
     }

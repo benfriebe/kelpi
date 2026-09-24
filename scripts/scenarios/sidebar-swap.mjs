@@ -24,6 +24,9 @@ export default async function ({ page, cli, harness, rec, d }) {
     })()`, { ceilingMs: 5_000 });
     await d.settleDom(page, `document.querySelector('[data-testid="sidebar-filter"]') && !document.querySelector('[data-testid="sidebar-view-picker-sidebar.primary"]')`);
     const initialWidth = await page.eval(`document.querySelector('[data-testid="sidebar"]')?.getBoundingClientRect().width`);
+    // The Inspector's visibility is part of the persisted window arrangement, so it outlives a
+    // reload and a relaunch; the cleanup hands the next scenario the state this one found.
+    const inspectorAtStart = await page.eval(`document.querySelector('[data-testid="inspector"]') !== null`);
     try {
         if (typeof initialWidth === 'number' && initialWidth !== 220) {
             const handle = await page.box('[data-testid="sidebar-resizer"]');
@@ -61,8 +64,9 @@ export default async function ({ page, cli, harness, rec, d }) {
         await page.click('[data-testid="new-workspace-cancel"]');
         await page.send('Page.reload');
         await d.settleDom(page, `document.querySelector('[data-sidebar-side="right"] [data-testid="sidebar"]')`);
-        await harness.menuClick({ path: ['View', 'Toggle Inspector'] });
-        rec.check('both native placements and the resized width survive a window reload', await placed(true) && await page.eval(`document.querySelector('[data-testid="sidebar"]').getBoundingClientRect().width >= ${before.width + 30}`));
+        // Both hosts were open before the reload, and their visibility is persisted with the
+        // rest of the window arrangement, so the Inspector comes back open without a toggle.
+        rec.check('both native placements, the open Inspector and the resized width survive a window reload', await placed(true) && await page.eval(`document.querySelector('[data-testid="sidebar"]').getBoundingClientRect().width >= ${before.width + 30}`));
         await rec.shot(page, 'inspector-left-workspaces-right');
         await choose('primary', 'kelpi.workspaces');
         rec.check('choosing Workspaces from the left Inspector header restores the original arrangement', await placed(false));
@@ -82,6 +86,7 @@ export default async function ({ page, cli, harness, rec, d }) {
             const handle = await page.box('[data-testid="sidebar-resizer"]');
             const width = await page.eval(`document.querySelector('[data-testid="sidebar"]')?.getBoundingClientRect().width`);
             if (handle && typeof initialWidth === 'number' && typeof width === 'number') await page.drag(handle.cx, handle.cy, handle.cx + initialWidth - width, handle.cy);
+            if (await page.eval(`document.querySelector('[data-testid="inspector"]') !== null`) !== inspectorAtStart) await harness.menuClick({ path: ['View', 'Toggle Inspector'] });
         } finally { await cli.run(['workspace', 'delete', workspaceID, '--force']); }
     }
 }

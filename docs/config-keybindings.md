@@ -342,7 +342,7 @@ interface KeyTrigger {
   modifiers: ModSet;    // set of "super" | "shift" | "alt" | "ctrl"
 }
 
-type KelpiActionId = string;  // one of the 59 raw values in section 4, or "unbind"
+type KelpiActionId = string;  // one of the 63 raw values in section 4, or "unbind"
 
 // trigger -> action dictionary. One action per trigger; an action may own
 // multiple triggers.
@@ -533,21 +533,23 @@ is platform-independent and always spells what the user wrote.
 
 ## 4. KelpiAction: the complete action list
 
-59 bindable actions + the pseudo-action `unbind` (config-file only; removes a default
+63 bindable actions + the pseudo-action `unbind` (config-file only; removes a default
 trigger, never appears in UI lists). `KELPI_ACTIONS` and `MENU_BAR_ACTIONS` in
 `packages/core/src/config/actions.ts`; the handlers are the `keyActions` table in
 `packages/client/src/App.tsx`.
 
 Legend:
-- **Layer**: `menu` = one of the 16 `MENU_BAR_ACTIONS` (section 7.1: carried by the shell's
+- **Layer**: `menu` = one of the 20 `MENU_BAR_ACTIONS` (section 7.1: carried by the shell's
   native menu, and the only actions the client dispatcher fires while a chrome text field has
   focus), `monitor` = dispatched only by the client's keydown interceptor (section 7.2).
 - **Condition** — extra runtime condition in the monitor before the action fires; when the
   condition fails the keystroke is NOT consumed and falls through (usually to the
   terminal).
-- Actions listed with default `unbound` ship UNBOUND (16 of them): `open_diff`,
+- Actions listed with default `unbound` ship UNBOUND (19 of them): `open_diff`,
   `toggle_sync_input`, the three `*_markdown_font_size` actions (#175 spent ⌘= / ⌘- / ⌘0 on
-  the terminal set; see section 7.6), and all 11 `web_*` per-pane actions.
+  the terminal set; see section 7.6), the three single-band toggles `toggle_toolbar`,
+  `toggle_status_bar` and `toggle_bottom_panel` (section 7.7), and all 11 `web_*` per-pane
+  actions.
 
 ### Category "Pane Management" (visible in Settings)
 
@@ -592,6 +594,10 @@ Legend:
 |---|---|---|---|
 | `toggle_sidebar` | Toggle Sidebar | ⌘⇧S | menu |
 | `toggle_inspector` | Toggle Inspector | ⌘I | menu |
+| `toggle_zen_mode` | Toggle Zen Mode | ⌃⌘Return | menu (section 7.7; also fires with no local workspace displayed) |
+| `toggle_toolbar` | Toggle Toolbar | unbound | menu (section 7.7) |
+| `toggle_status_bar` | Toggle Status Bar | unbound | menu (section 7.7) |
+| `toggle_bottom_panel` | Toggle Bottom Panel | unbound | menu (section 7.7; falls through while no view is selected for the bottom panel) |
 
 ### Category "Files" (visible)
 
@@ -708,9 +714,10 @@ Raw value `unbind`. Not bindable, not listed. Only meaningful as the ACTION side
 
 ### Menu-bar action set
 
-`MENU_BAR_ACTIONS` (`packages/core/src/config/actions.ts:84`) is exactly: `new_workspace`,
+`MENU_BAR_ACTIONS` (`packages/core/src/config/actions.ts`) is exactly: `new_workspace`,
 `open_file`, `open_web_pane`, `new_group`, `switch_to_workspace_1..9`, `toggle_sidebar`,
-`toggle_inspector`, `command_palette` (16 actions). The shell's native menu carries their
+`toggle_inspector`, `command_palette`, `toggle_zen_mode`, `toggle_toolbar`,
+`toggle_status_bar`, `toggle_bottom_panel` (20 actions). The shell's native menu carries their
 chords; the client dispatcher fires them too (there is no separate OS layer in the client),
 and they are the only actions that fire while a chrome text field has focus (section 7).
 
@@ -738,7 +745,7 @@ One trigger maps to at most one action. One action may own any number of trigger
 (defaults give `focus_next_pane`/`focus_previous_pane` two each, and
 `increase_terminal_font_size` two that are one chord in two spellings, section 7.6).
 
-### 5.2 The default map (46 triggers)
+### 5.2 The default map (47 triggers)
 
 Exactly the defaults listed in section 4's tables. (`super` here is the primary chord
 modifier — ⌘ on macOS, Ctrl on Windows/Linux; §3.5.)
@@ -755,7 +762,7 @@ alt+super+down=next_workspace        alt+super+up=previous_workspace
 shift+super+r=rename_workspace       super+e=toggle_markdown_edit
 super+==increase_terminal_font_size  shift+super+==increase_terminal_font_size
 super+-=decrease_terminal_font_size  super+0=reset_terminal_font_size
-shift+super+return=toggle_zoom
+shift+super+return=toggle_zoom       ctrl+super+return=toggle_zen_mode
 shift+super+t=reopen_closed_pane     super+f=toggle_search
 escape=close_search                  shift+super+space=cycle_layout
 super+p=command_palette              shift+super+n=create_scratchpad
@@ -900,7 +907,9 @@ actions too, section 7.2):
   New Web Pane, Command Palette, divider, Switch to Workspace 1–9, divider,
   Select All Workspaces (no binding), Deselect All Workspaces (disabled when no
   multi-selection).
-- **View group**: Toggle Sidebar, Toggle Inspector.
+- **View group**: Toggle Sidebar, Toggle Inspector, Toggle Toolbar, Toggle Status Bar,
+  Toggle Bottom Panel, divider, Toggle Zen Mode (⌃⌘Return), Reset Window Arrangement (no
+  binding; section 7.7).
 - **Help**: "Kelpi Help" hard-bound ⌘? (not part of the binding map); opens the client's
   Help overlay through the daemon.
 - App menu: "Check for Updates…" (unbound).
@@ -944,7 +953,10 @@ handleKeyDown(event):
 
   // 3. Need an active workspace for anything pane-related. A REMOTE workspace showing in
   //    the area counts as none (section 1.7), so a ⌘D cannot split the hidden local one.
-  if activeWorkspaceID == null -> return false
+  //    The four window-arrangement actions (WINDOW_ARRANGEMENT_ACTIONS, section 7.7) are not
+  //    pane work and pass: Zen Mode over an empty daemon still needs its chord out.
+  if activeWorkspaceID == null and keybindings.action(trigger) not in WINDOW_ARRANGEMENT_ACTIONS
+     -> return false
 
   trigger = KeyTrigger(event)   // normalized per section 3.1
 
@@ -1246,6 +1258,37 @@ not redesigned here. The workaround in the meantime is the one the grammar alrea
   the chord changes its daemon-wide size and every session on it follows.
 
 ---
+
+### 7.7 The window arrangement: Zen Mode and the band toggles
+
+Four actions act on the WINDOW rather than on a pane (`WINDOW_ARRANGEMENT_ACTIONS`,
+`packages/core/src/config/actions.ts`); the model is `packages/client/src/plugins/arrangement.ts`
+and the plugin-facing contract is [plugins.md](plugins.md#hiding-bands-and-zen-mode).
+
+- `toggle_zen_mode` (⌃⌘Return) hides the toolbar, the status bar, the bottom panel and both
+  sidebars and gives the pane grid the window. It records which of those five were showing
+  and restores exactly them when pressed again, whatever was toggled in between. ⌃⌘Return is
+  pane zoom's (⇧⌘Return) window-level sibling. ⌃⌘F was not used because it is the platform's
+  Toggle Full Screen (section 7.4).
+  Off macOS it ships unbound: `super` is Ctrl there (section 3.5), so a chord naming both
+  would collapse onto plain Ctrl+Return and take it from every terminal and page. Any trigger
+  naming both `ctrl` and `super` is left unbound on a Ctrl-primary platform, by the client's
+  map, the shell's menu and the web-pane chord relay (`triggerExpressibleOnPlatform`). That
+  includes a user's own `keybind` line: before this change `ctrl+super+k=...` fired on plain
+  Ctrl+K on Windows and Linux, and now it fires on nothing there. There is no config diagnostic
+  for it; rebind such an action to a chord without `super` on those platforms.
+- `toggle_toolbar`, `toggle_status_bar` and `toggle_bottom_panel` toggle one band each and ship
+  unbound. `toggle_bottom_panel` declines, and the chord falls through, while no view is
+  selected for the bottom panel.
+- All four are menu-bar actions: each has a View menu row whose accelerator follows the map
+  (section 7.1), so the native accelerator reaches them even while a web page has focus. The
+  View menu also has **Reset Window Arrangement**, which has no binding.
+- They skip the monitor's step 3 (section 7.2): with no local workspace displayed, or a remote
+  one, every other binding stands down but these still fire. A browser tab has no native menu
+  to fall back on, so without this a Zen Mode entered there could strand its own chord.
+- Bindable and unbindable like everything else. If `toggle_zen_mode` is unbound, the strip the
+  host draws while the toolbar is hidden, the View menu, the palette and Settings ▸ Plugins ▸
+  Reset window arrangement still leave it.
 
 ## 8. Global hotkey (system-wide)
 
@@ -1802,7 +1845,7 @@ lives now:
    state never enter a trigger, and the exact remaining modifier set is compared
    (section 3.1).
 4. **Two dispatch layers collapse into one** in the client (a browser tab has no OS menu
-   bar). All 59 actions go through a single keydown interceptor, and three behaviors of the
+   bar). All 63 actions go through a single keydown interceptor, and three behaviors of the
    original split survive: (a) shortcuts do not fire while a modal/palette/secondary
    surface has focus (the one exception is the `close_pane` chord, which closes the
    overlay, section 7.2); (b) conditional actions FALL THROUGH to the terminal when their
@@ -1863,8 +1906,9 @@ lives now:
     differing from default), reset-all, and the profiles master-detail editor with the
     locked `KELPI_PROFILE` row, `:`/`=` input stripping, reserved `default` name, and
     write-through (on blur, Enter and structural change) against the config file.
-14. **Count sanity for tests**: 60 enum cases total; 59 bindable (excludes `unbind`);
-    16 ship unbound (`open_diff`, `toggle_sync_input`, the three `*_markdown_font_size`,
-    11 `web_*`); the default map has exactly 46 trigger entries (43 distinct actions
-    bound; focus next/prev and `increase_terminal_font_size` own two triggers each). The
-    Settings table shows 48 actions (59 minus the 11 hidden web actions).
+14. **Count sanity for tests**: 64 enum cases total; 63 bindable (excludes `unbind`);
+    19 ship unbound (`open_diff`, `toggle_sync_input`, the three `*_markdown_font_size`,
+    the three single-band toggles, 11 `web_*`); the default map has exactly 47 trigger
+    entries (44 distinct actions bound; focus next/prev and `increase_terminal_font_size`
+    own two triggers each). The Settings table shows 52 actions (63 minus the 11 hidden web
+    actions).

@@ -8,6 +8,7 @@ import { selectActiveWorkspace, selectFocusedPaneID, type KelpiRuntime } from '.
 import type { ChromeCommand, ChromeItem, ChromeKeymap, ChromeSnapshot, ChromeSource } from '../plugins/chrome';
 import type { usePluginCommands } from '../plugins/commands';
 import type { ViewContribution } from '../plugins/registry';
+import { zenModeActive, type ArrangementSlotBand, type RootArrangement } from '../plugins/arrangement';
 import { statusbarModel } from './statusbar';
 
 export interface ChromeFeatureHost {
@@ -23,6 +24,16 @@ export interface ChromeFeatureHost {
     readonly keymap: ChromeKeymap;
     readonly toggleSidebar: () => void;
     readonly toggleInspector: () => void;
+    /**
+     * The root arrangement (`plugins/arrangement.ts`). Its commands are the user's own View menu
+     * rows, offered to a replacement toolbar the way the sidebar toggles are; there is no call that
+     * sets an arrangement outright, and Zen Mode and the reset join the recovery floor.
+     */
+    readonly arrangement: RootArrangement;
+    readonly bottomPanelAvailable: boolean;
+    readonly toggleBand: (band: ArrangementSlotBand) => void;
+    readonly toggleZenMode: () => void;
+    readonly resetArrangement: () => void;
     readonly openSettings: (section?: 'plugins') => void;
     readonly openHelp: () => void;
     /**
@@ -45,6 +56,20 @@ export function createChromeFeatureSource(host: ChromeFeatureHost): ChromeSource
         const view = host.sidebars[side === 'left' ? 'sidebar.primary' : 'sidebar.secondary'];
         return { viewID: view.id, title: view.title, visible: (side === 'left') !== swapped() ? host.sidebarVisible : host.inspectorVisible };
     };
+    const arrangementCommands = (): ChromeCommand[] => {
+        const { visible } = host.arrangement, zen = zenModeActive(host.arrangement);
+        const band = (id: string, name: string, shown: boolean, enabled = true): ChromeCommand =>
+            ({ id, title: `${shown ? 'Hide' : 'Show'} ${name}`, enabled, checked: shown, group: 'window' });
+        return [
+            // Recovery floor, with the reset below: unconditionally enabled, like `openPalette`.
+            { id: 'kelpi.zenMode.toggle', title: zen ? 'Exit Zen Mode' : 'Enter Zen Mode', enabled: true, checked: zen, group: 'window' },
+            band('kelpi.toolbar.toggle', 'Toolbar', visible.topbar),
+            band('kelpi.statusbar.toggle', 'Status Bar', visible.statusbar),
+            // Nothing to show while no view is selected for the bottom panel.
+            band('kelpi.panel.bottom.toggle', 'Bottom Panel', visible['panel.bottom'], host.bottomPanelAvailable),
+            { id: 'kelpi.window.resetArrangement', title: 'Reset Window Arrangement', enabled: true, group: 'window' }
+        ];
+    };
     const commands = (): ChromeCommand[] => {
         const state = host.runtime.store.getState(), workspace = selectActiveWorkspace(state), focused = selectFocusedPaneID(state);
         const windowEnabled = ready() && !host.remoteWorkspaceSelected();
@@ -56,6 +81,7 @@ export function createChromeFeatureSource(host: ChromeFeatureHost): ChromeSource
             { id: 'kelpi.input.toggleSync', title: 'Synchronise Input', enabled: domainEnabled, checked: workspace?.isSyncInputActive ?? false, group: 'window' },
             { id: 'kelpi.sidebar.left', title: `${sidebar('left').visible ? 'Hide' : 'Show'} ${sidebar('left').title}`, enabled: true, group: 'window' },
             { id: 'kelpi.sidebar.right', title: `${sidebar('right').visible ? 'Hide' : 'Show'} ${sidebar('right').title}`, enabled: true, group: 'window' },
+            ...arrangementCommands(),
             { id: 'kelpi.window.takeSizeControl', title: 'Take Size Control', enabled: ready(), group: 'window' },
             { id: 'kelpi.pane.focus', title: 'Focus Pane', enabled: ready(), group: 'window' },
             // Recovery floor: id, title and the unconditional `enabled` are the route back to the
@@ -129,6 +155,11 @@ export function createChromeFeatureSource(host: ChromeFeatureHost): ChromeSource
                 case 'kelpi.sidebar.left': (swapped() ? host.toggleInspector : host.toggleSidebar)(); return;
                 case 'kelpi.sidebar.right': (swapped() ? host.toggleSidebar : host.toggleInspector)(); return;
                 case 'kelpi.inspector.toggle': host.toggleInspector(); return;
+                case 'kelpi.zenMode.toggle': host.toggleZenMode(); return;
+                case 'kelpi.toolbar.toggle': host.toggleBand('topbar'); return;
+                case 'kelpi.statusbar.toggle': host.toggleBand('statusbar'); return;
+                case 'kelpi.panel.bottom.toggle': host.toggleBand('panel.bottom'); return;
+                case 'kelpi.window.resetArrangement': host.resetArrangement(); return;
                 case 'kelpi.window.takeSizeControl': host.runtime.commands.takeSizeControl(); return;
                 case 'kelpi.window.openPlugins': host.openSettings('plugins'); return;
                 case 'kelpi.window.openSettings': host.openSettings(); return;

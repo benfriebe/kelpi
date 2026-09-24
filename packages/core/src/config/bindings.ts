@@ -7,6 +7,7 @@ import { isKelpiAction, UNBIND_ACTION } from './actions.js';
 import type { KelpiAction, UnbindAction } from './actions.js';
 import {
     canonicalTriggerForPlatform,
+    triggerExpressibleOnPlatform,
     keyTriggerConfigString,
     keyTriggerKey,
     parseKeyTrigger
@@ -43,7 +44,7 @@ export function parseKeybindValue(value: string): KeybindOverride | null {
     return { trigger, action: actionString };
 }
 
-/** §5.2 - the 46 shipped default triggers, in `<trigger>=<action>` form. */
+/** §5.2 - the 47 shipped default triggers, in `<trigger>=<action>` form. */
 export const DEFAULT_KEYBIND_LINES: readonly string[] = [
     'super+n=new_workspace',
     'super+o=open_file',
@@ -86,6 +87,9 @@ export const DEFAULT_KEYBIND_LINES: readonly string[] = [
     'super+-=decrease_terminal_font_size',
     'super+0=reset_terminal_font_size',
     'shift+super+return=toggle_zoom',
+    // Zen Mode is pane zoom's window-level sibling: ⇧⌘↩ gives one pane the grid, ⌃⌘↩ gives the
+    // grid the window. Not ⌃⌘F, which is the platform's Toggle Full Screen (`platform-chords.ts`).
+    'ctrl+super+return=toggle_zen_mode',
     'shift+super+t=reopen_closed_pane',
     'super+f=toggle_search',
     'escape=close_search',
@@ -283,11 +287,15 @@ export function resolveKeyBindings(overrides: readonly KeybindOverride[]): KeyBi
  * Ctrl chords. macLike returns the map untouched. When canonicalization makes two triggers
  * identical (both `super+x` and `ctrl+x` bound), the LAST one in map order wins — overrides
  * are applied after defaults, so a user's line beats a shipped default deterministically.
+ * A trigger naming both `ctrl` and `super` is dropped off-mac rather than collapsed onto the
+ * plain Ctrl chord (`triggerExpressibleOnPlatform`).
  */
 export function canonicalKeyBindingsForPlatform(map: KeyBindingMap, macLike: boolean): KeyBindingMap {
     if (macLike) return map;
     const next = new Map<string, KeyBinding>();
     for (const binding of map.values()) {
+        // A ctrl+super chord has no Ctrl-primary spelling of its own; see the function's comment.
+        if (!triggerExpressibleOnPlatform(binding.trigger, macLike)) continue;
         const trigger = canonicalTriggerForPlatform(binding.trigger, macLike);
         next.set(keyTriggerKey(trigger), { trigger, action: binding.action });
     }

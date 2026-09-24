@@ -25,6 +25,30 @@ export type PluginBuiltinPlacement = (typeof PLUGIN_PLACEMENTS)[number];
  */
 export const PLUGIN_INTERACTION_PLACEMENTS = ['interaction.palette', 'interaction.prompts', 'interaction.notifications'] as const;
 export type PluginPlacement = PluginBuiltinPlacement | `${string}.${string}`;
+/**
+ * The three root bands whose height a view can declare, and the host's range for each.
+ *
+ * Declared statically in the manifest (`bandHeights` on a view or a container), never at run
+ * time: a band height moves the whole pane grid, so a height that arrived after the view loaded
+ * would lay the grid out twice at every launch and resize every PTY twice, and one that animated
+ * would resize them continuously. Undeclared, a band keeps the height it has always had
+ * (`default`). The bundled toolbar and status bar are not views and keep their own 32 and 24 px.
+ *
+ * The toolbar's floor is 28 because the macOS traffic lights sit 10 to 22 px down its leading
+ * edge (`shell/src/titlebar.ts`). The bottom panel is also clamped to half the window at render
+ * time, which no manifest can know.
+ */
+export const PLUGIN_BAND_PLACEMENTS = ['topbar', 'statusbar', 'panel.bottom'] as const;
+export type PluginBandPlacement = (typeof PLUGIN_BAND_PLACEMENTS)[number];
+export type PluginBandHeights = Readonly<Partial<Record<PluginBandPlacement, number>>>;
+export const PLUGIN_BAND_HEIGHTS: Readonly<Record<PluginBandPlacement, { readonly min: number; readonly max: number; readonly default: number }>> = {
+    topbar: { min: 28, max: 64, default: 44 },
+    statusbar: { min: 16, max: 48, default: 32 },
+    'panel.bottom': { min: 80, max: 480, default: 220 }
+};
+export function isPluginBandPlacement(value: unknown): value is PluginBandPlacement {
+    return (PLUGIN_BAND_PLACEMENTS as readonly unknown[]).includes(value);
+}
 export interface PluginContainerSlot {
     readonly id: `${string}.${string}`;
     readonly title: string;
@@ -37,6 +61,8 @@ export interface PluginContainerDefinition {
     readonly placements: readonly Exclude<PluginPlacement, 'pane'>[];
     readonly layout: 'row' | 'column' | 'tabs';
     readonly slots: readonly PluginContainerSlot[];
+    /** Heights for the root bands this container declares; see `PLUGIN_BAND_HEIGHTS`. */
+    readonly bandHeights?: PluginBandHeights;
 }
 export interface PluginDependency {
     readonly pluginID: string;
@@ -74,6 +100,8 @@ export interface PluginViewDefinition {
     readonly entry: string;
     readonly placements: readonly PluginPlacement[];
     readonly stateVersion: number;
+    /** Heights for the root bands this view declares; see `PLUGIN_BAND_HEIGHTS`. */
+    readonly bandHeights?: PluginBandHeights;
 }
 export interface PluginCommandDefinition {
     readonly id: string;
@@ -277,6 +305,18 @@ export function decodePluginManifest(raw: unknown): PluginManifest {
         if (typeof raw !== 'number' || !Number.isFinite(raw) || raw < min || raw > max || (integer && !Number.isSafeInteger(raw))) throw new Error(`invalid plugin ${field}`);
         return raw;
     };
+    // Out of range is refused at install rather than clamped, so the author finds out there and
+    // not by reading a band that is quietly a different height from the one they wrote.
+    const bandHeights = (raw: unknown, places: readonly PluginPlacement[]): { bandHeights?: PluginBandHeights } => {
+        if (raw === undefined) return {};
+        const declared: Partial<Record<PluginBandPlacement, number>> = {};
+        for (const [band, height] of Object.entries(pluginObject(raw))) {
+            if (!isPluginBandPlacement(band) || !places.includes(band)) throw new Error('band heights may only name topbar, statusbar or panel.bottom, and only a placement the view declares');
+            const range = PLUGIN_BAND_HEIGHTS[band];
+            declared[band] = boundedNumber(height, `${band} band height (an integer from ${String(range.min)} to ${String(range.max)})`, range.min, range.max);
+        }
+        return Object.keys(declared).length ? { bandHeights: declared } : {};
+    };
     const methods = (raw: unknown): string[] => {
         const values = array(raw);
         if (!values.length || values.some(method => typeof method !== 'string' || !/^[a-z][a-zA-Z0-9.-]{0,99}$/.test(method))) throw new Error('service methods must be named explicitly');
@@ -289,7 +329,8 @@ export function decodePluginManifest(raw: unknown): PluginManifest {
         if (typeof stateVersion !== 'number' || !Number.isSafeInteger(stateVersion) || stateVersion < 1) throw new Error('invalid view state version');
         const entry = pluginAssetPath(view['entry']);
         if (!entry.startsWith('ui/') || !entry.endsWith('.html')) throw new Error('view entry must be an HTML file under ui/');
-        return { id: contributionID(view['id']), title: label(view['title'], 'view title'), entry, placements: placements(view['placements']), stateVersion };
+        const places = placements(view['placements']);
+        return { id: contributionID(view['id']), title: label(view['title'], 'view title'), entry, placements: places, stateVersion, ...bandHeights(view['bandHeights'], places) };
     });
     const containers = array(contributes['containers']).map((raw): PluginContainerDefinition => {
         const container = pluginObject(raw);
@@ -323,7 +364,7 @@ export function decodePluginManifest(raw: unknown): PluginManifest {
                 ...(slot['weight'] === undefined ? {} : { weight: boundedNumber(slot['weight'], 'slot weight', 0.1, 100, false) }) };
         });
         if (!slots.length || slots.length > 32) throw new Error('containers require 1 to 32 slots');
-        return { id: containerID, title: label(container['title'], 'container title'), placements: places as Exclude<PluginPlacement, 'pane'>[], layout, slots };
+        return { id: containerID, title: label(container['title'], 'container title'), placements: places as Exclude<PluginPlacement, 'pane'>[], layout, slots, ...bandHeights(container['bandHeights'], places) };
     });
     const ownedViews = new Map([...views, ...containers].map(view => [view.id, view]));
     for (const container of containers) for (const slot of container.slots) {

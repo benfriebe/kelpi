@@ -26,6 +26,7 @@ import type { JsonObject } from '@kelpi/protocol';
 
 import { buildPaletteItems, type PaletteItem } from '../chrome/palette';
 import type { InteractionPaletteSource, InteractionPaletteSourceSnapshot } from '../interaction/contract';
+import { zenModeActive, type ArrangementSlotBand, type RootArrangement } from '../plugins/arrangement';
 import type { usePluginCommands } from '../plugins/commands';
 import type { KelpiRuntime } from '../state';
 
@@ -70,6 +71,19 @@ export interface PaletteFeatureHost {
     readonly focusPane: (workspaceID: string, paneID: string | null) => void;
     /** For `homeAbbreviated`; the wire strips the daemon's home dir, so '' is the honest default. */
     readonly homeDirectory?: string | undefined;
+    /**
+     * The root arrangement's rows (Zen Mode, the three band toggles, the reset), or null where
+     * there is nothing to arrange: the phone shell draws no root band.
+     */
+    readonly arrangement?: PaletteArrangementHost | null | undefined;
+}
+
+export interface PaletteArrangementHost {
+    readonly current: () => RootArrangement;
+    readonly bottomPanelAvailable: () => boolean;
+    readonly toggleBand: (band: ArrangementSlotBand) => boolean;
+    readonly toggleZenMode: () => boolean;
+    readonly reset: () => boolean;
 }
 
 /**
@@ -135,6 +149,27 @@ function commandEntry(
     };
 }
 
+/** The root arrangement's rows, titled by the state they would change. */
+function arrangementEntries(arrangement: PaletteArrangementHost | null | undefined, hint: (action: KelpiAction) => string | undefined): PaletteEntry[] {
+    if (!arrangement) return [];
+    const current = arrangement.current(), zen = zenModeActive(current);
+    const band = (id: string, name: string, key: ArrangementSlotBand, action: KelpiAction, enabled = true): PaletteEntry => {
+        const entry = commandEntry(id, 'rectangle.stack', `${current.visible[key] ? 'Hide' : 'Show'} ${name}`, 'window arrangement', hint(action), () => arrangement.toggleBand(key));
+        return enabled ? entry : { ...entry, item: { ...entry.item, disabled: true } };
+    };
+    return [
+        commandEntry('cmd:zen-mode', 'rectangle.stack', zen ? 'Exit Zen Mode' : 'Enter Zen Mode',
+            zen ? 'restore the bars and sidebars Zen Mode hid' : 'hide the toolbar, status bar, bottom panel and sidebars', hint('toggle_zen_mode'),
+            () => arrangement.toggleZenMode()),
+        band('cmd:toggle-toolbar', 'Toolbar', 'topbar', 'toggle_toolbar'),
+        band('cmd:toggle-status-bar', 'Status Bar', 'statusbar', 'toggle_status_bar'),
+        // Nothing to show while no view is selected for the bottom panel.
+        band('cmd:toggle-bottom-panel', 'Bottom Panel', 'panel.bottom', 'toggle_bottom_panel', arrangement.bottomPanelAvailable()),
+        commandEntry('cmd:reset-window-arrangement', 'rectangle.stack', 'Reset Window Arrangement', 'show the bars and Workspaces, close the Inspector, leave Zen Mode', undefined,
+            () => arrangement.reset())
+    ];
+}
+
 export function createPaletteFeatureSource(ref: PaletteFeatureHostRef): PaletteFeatureSource {
     const read = (): PaletteFeatureHost | null => (typeof ref === 'function' ? ref() : ref);
     /** Every dispatch path re-reads the host, so a stale render's registry cannot be called. */
@@ -195,6 +230,7 @@ export function createPaletteFeatureSource(ref: PaletteFeatureHostRef): PaletteF
                 hint('toggle_sync_input'), () => act.toggleSyncInput()),
             commandEntry('cmd:new-workspace', 'rectangle.stack', 'New Workspace', 'create an empty workspace',
                 hint('new_workspace'), () => act.newWorkspace()),
+            ...arrangementEntries(host.arrangement, hint),
             // ⌘, is not a bindable action (assembly dispatches it from its own listener), so the hint
             // is literal rather than a lookup that would answer `undefined` forever.
             commandEntry('cmd:settings', 'gearshape', 'Settings…', 'keybindings, appearance, labels, profiles', '⌘,',

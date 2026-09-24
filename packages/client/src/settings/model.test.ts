@@ -34,7 +34,7 @@ describe('the keybinding table', () => {
             'Terminal'
         ]);
         const rows = sections.flatMap((section) => section.rows);
-        expect(rows).toHaveLength(48);
+        expect(rows).toHaveLength(52);
         expect(rows.every((row) => row.label.length > 0)).toBe(true);
     });
 

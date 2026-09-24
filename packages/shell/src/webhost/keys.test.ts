@@ -225,6 +225,7 @@ describe('the set follows the config file', () => {
             'alt+meta+ArrowLeft', // focus_previous_pane
             'alt+meta+ArrowRight', // focus_next_pane
             'alt+meta+ArrowUp', // previous_workspace
+            'ctrl+meta+Enter', // toggle_zen_mode (a page that binds ⌃⌘↩ gives it up to Zen Mode)
             'ctrl+shift+ArrowDown', // move_pane_down
             'ctrl+shift+ArrowLeft', // move_pane_left
             'ctrl+shift+ArrowRight', // move_pane_right
@@ -272,6 +273,17 @@ describe('the set follows the config file', () => {
             'shift+meta+Slash', // Help, on the key the user sees (⌘?)
             'shift+meta+Space' // cycle_layout
         ]);
+    });
+});
+
+describe('a chord the client cannot dispatch on this platform', () => {
+    // Off mac the client leaves ⌃⌘Return unbound (super IS ctrl there), so the relay must not take
+    // it from a page either: it would cancel the page's own chord and replay it into nothing.
+    it('is not claimed from the page off macOS, and is on macOS', () => {
+        expect(claimedChords(DEFAULT_KEYBINDINGS, 'darwin').has('ctrl+meta+Enter')).toBe(true);
+        expect(claimedChords(DEFAULT_KEYBINDINGS, 'linux').has('ctrl+meta+Enter')).toBe(false);
+        expect(claimedChords(DEFAULT_KEYBINDINGS, 'win32').has('ctrl+meta+Enter')).toBe(false);
+        expect(claimedChords(DEFAULT_KEYBINDINGS, 'linux').has('shift+meta+Enter')).toBe(true);
     });
 });
 

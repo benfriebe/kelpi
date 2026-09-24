@@ -538,6 +538,34 @@ describe('conditional rules', () => {
         expect(fired).toEqual([]);
     });
 
+    /*
+     * The root arrangement's four are window verbs, not pane work: Zen Mode entered over an empty
+     * daemon or a remote workspace must still have its chord out, and a browser tab has no native
+     * menu to fall back on. Everything else still waits for a workspace.
+     */
+    it('lets the window arrangement actions through with no active workspace, and nothing else', () => {
+        const fired: KelpiAction[] = [];
+        const registry: KeyActionRegistry = {
+            toggle_zen_mode: () => { fired.push('toggle_zen_mode'); return true; },
+            toggle_toolbar: () => { fired.push('toggle_toolbar'); return true; },
+            split_right: () => { fired.push('split_right'); return true; }
+        };
+        const dispatch = createKeyDispatcher({ actions: registry, hasActiveWorkspace: () => false });
+        const zen = keyEvent('Enter', { meta: true, ctrl: true });
+        expect(dispatch(zen)).toBe(true);
+        expect(zen.prevented()).toBe(1);
+        expect(dispatch(keyEvent('KeyD', { meta: true }))).toBe(false);
+        expect(fired).toEqual(['toggle_zen_mode']);
+        // An unbound toggle the user has bound behaves the same way.
+        const bound = createKeyDispatcher({
+            actions: registry,
+            hasActiveWorkspace: () => false,
+            bindings: keyBindingsFromOverrideLines(['alt+super+t=toggle_toolbar'])
+        });
+        expect(bound(keyEvent('KeyT', { meta: true, alt: true }))).toBe(true);
+        expect(fired).toEqual(['toggle_zen_mode', 'toggle_toolbar']);
+    });
+
     it('never shadows the configured global hotkey', () => {
         const { registry, fired } = recorder();
         const dispatch = createKeyDispatcher({

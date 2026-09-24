@@ -7,8 +7,10 @@ the [API guide](plugins.md) describes shipped contracts; the
 
 ## Current state
 
-Everything the roadmap's [completed table](plugin-roadmap.md#completed-and-merged) lists except
-pane search is merged into `main` at **`225ef73`**. Pane chrome landed in two PRs on 2026-09-18 and
+Everything the roadmap's [completed table](plugin-roadmap.md#completed-and-merged) lists is merged
+into `main` once this PR lands: pane search as [#262](https://github.com/benfriebe/kelpi/pull/262)
+(`39e6f5b`), plugin commands in Help as [#261](https://github.com/benfriebe/kelpi/pull/261), and root
+layout composition as this PR, all on 2026-09-24 over **`225ef73`**. Pane chrome landed in two PRs on 2026-09-18 and
 2026-09-19 - [#243](https://github.com/benfriebe/kelpi/pull/243) (the shared model, the height
 authority, parking and the projection) and [#244](https://github.com/benfriebe/kelpi/pull/244) (the
 selectable presenter, Pane Lab and its live acceptance) - and fourteen PRs merged on top of them
@@ -17,9 +19,9 @@ through [#260](https://github.com/benfriebe/kelpi/pull/260). One of those is a p
 when its saved host is trusted for it, which closes [#193](https://github.com/benfriebe/kelpi/issues/193).
 The rest are product and audit work, listed in the roadmap so the baseline is accounted for.
 
-Three plugin branches are open, each in its own worktree: `feature/plugin-pane-search` (the
-selectable search presenter, rebased onto `225ef73` and through its review), and
-`feature/plugin-root-layout` and `feature/help-plugin-shortcuts`, both in progress.
+No plugin branch is open once this PR merges. The three that ran in parallel, each in its own
+worktree, merged one after another: `feature/plugin-pane-search` (#262), `feature/help-plugin-shortcuts`
+(#261) and `feature/plugin-root-layout` (this PR).
 
 Plugin API version remains **1**; wire protocol generation remains **2**. The six placements added
 by the presenter phases - `interaction.palette`, `interaction.prompts`, `interaction.notifications`,
@@ -31,19 +33,19 @@ public registry and distribution, and untrusted execution are open scopes in the
 
 | Item | State at this handoff |
 | --- | --- |
-| Product baseline | `origin/main` at `225ef73`, through PR #260. |
+| Product baseline | `origin/main` after #261 (the tree of `c32cabe`, over #262's `39e6f5b`), with this PR on top. |
 | Promoted build | The last promote on record is `c719f9c`, on 2026-09-19; nothing after it has been promoted by this project. `~/Library/Application Support/kelpid/last-promote.json` holds the phase and the timestamp; read it rather than trusting this row after a later promote. |
-| Open feature branches | `feature/plugin-pane-search`, rebased onto `225ef73`, carrying the selectable search presenter, its live acceptance, its review fixes and this documentation refresh; `feature/plugin-root-layout` (root layout composition) and `feature/help-plugin-shortcuts` (plugin commands and shortcuts in Help), both in progress. #243, #244 and #246 through #260 have all merged. |
-| Documentation branch | None of its own: this refresh rides on `feature/plugin-pane-search` as its last commit, so a later branch can rebase over it cheaply. The earlier documentation PRs [#164](https://github.com/benfriebe/kelpi/pull/164), [#210](https://github.com/benfriebe/kelpi/pull/210) and [#242](https://github.com/benfriebe/kelpi/pull/242) are merged. |
+| Open feature branches | None once this PR merges. #262 (search) and #261 (Help) are merged; `feature/plugin-root-layout` is this PR. #243, #244 and #246 through #260 merged before them. |
+| Documentation branch | None of its own: this refresh rides on `feature/plugin-root-layout` as its last commit, so a later branch can rebase over it cheaply. The earlier documentation PRs [#164](https://github.com/benfriebe/kelpi/pull/164), [#210](https://github.com/benfriebe/kelpi/pull/210) and [#242](https://github.com/benfriebe/kelpi/pull/242) are merged. |
 | Running application | The promoted instance is the user's own. Do not package into it, restart it or take its socket without being asked. |
 
 Worktrees under `/Users/ben/kelpi/worktrees/kelpi/`:
 
 | Worktree | Branch | Disposition |
 | --- | --- | --- |
-| `plugin-settings-contracts` | `feature/plugin-pane-search`, rebased onto `225ef73` | It packaged the promoted build from `main`, carried pane chrome, and now carries the search presenter and this documentation refresh. |
-| `plugin-root-layout` | `feature/plugin-root-layout`, from `225ef73` | Root layout composition, in progress. |
-| `help-plugin-shortcuts` | `feature/help-plugin-shortcuts` | Plugin commands and shortcuts in the Help overlay, in progress. |
+| `plugin-settings-contracts` | `feature/plugin-pane-search` | It packaged the promoted build from `main`, carried pane chrome, and carried the search presenter, merged as #262. |
+| `plugin-root-layout` | `feature/plugin-root-layout`, rebased onto `c32cabe` | Root layout composition, this PR, carrying this documentation refresh. |
+| `help-plugin-shortcuts` | `feature/help-plugin-shortcuts` | Plugin commands and shortcuts in the Help overlay, merged as #261. |
 
 `plugin-terminal-geometry`, `plugin-interaction-contracts` and `fix-cli-module-type` were removed
 once their PRs merged and their local branches were deleted, and the three
@@ -124,17 +126,22 @@ heartbeat verdict).
 
 ## Open branches
 
-Three, worked in parallel in their own worktrees and meant to merge one after another:
+None once this PR merges. Three were worked in parallel in their own worktrees and merged one after
+another:
 
-- `feature/plugin-pane-search`, rebased onto `225ef73`: the pane chrome latch fix, the selectable
-  search presenter, Search Lab and its live acceptance, the review fixes, the surface docs and, last,
-  this refresh, as separate commits in one PR, through two independent reviews. Its tested revision
-  is `68c2b0d`, and its full battery passed unretried at `a209603` (the same code) in 26.4 minutes;
-  an earlier battery at the rebase (`12c12b9`) also passed and is superseded.
-- `feature/plugin-root-layout`: root layout composition (hidden root slots with a host-drawn
-  restore, declared band heights, the persisted arrangement). In progress.
-- `feature/help-plugin-shortcuts`: plugin commands and shortcuts in the Help overlay, with the
-  keybinding map read-only in the chrome snapshot. In progress.
+- `feature/plugin-pane-search`, merged as [#262](https://github.com/benfriebe/kelpi/pull/262): the
+  pane chrome latch fix, the selectable search presenter, Search Lab and its live acceptance, the
+  review fixes and the surface docs, through two independent reviews. Its tested revision is
+  `68c2b0d`, and its full battery passed unretried at `a209603` (the same code) in 26.4 minutes.
+- `feature/help-plugin-shortcuts`, merged as [#261](https://github.com/benfriebe/kelpi/pull/261):
+  plugin commands and shortcuts in the Help overlay, with the keybinding map read-only in the chrome
+  snapshot.
+- `feature/plugin-root-layout`, this PR, rebased onto `c32cabe`: hideable root bands, Zen Mode,
+  declared band heights and the persisted arrangement, Layout Lab and its live acceptance, one
+  independent review, and this refresh. Its full battery passed unretried at `e7d9de1` in 25.9
+  minutes, before the rebase; the first, at `819da74`, failed on a scenario's synchronization, which
+  the [validation record](plugin-validation.md#root-layout-hidden-bands-zen-mode-and-band-heights-2026-09-24)
+  traces.
 
 The roadmap and this handoff are edited by every branch, so each keeps its refresh as its own last
 commit and a later branch rebases over an earlier merge by replacing that one commit. Everything
@@ -146,18 +153,15 @@ commit on `main`. Publication of a draft PR stays authorized; merging remains th
 
 ## Next tasks
 
-Two of these are running on a branch, as the rows say; the rest are not. Each names the code that
-owns it.
+None of these is running on a branch. Each names the code that owns it.
 
 | Task | Owned by |
 | --- | --- |
 | [#245](https://github.com/benfriebe/kelpi/issues/245) layout-aware chords. Named here because pane chrome and pane search both sharpened it: a presenter's frame consumes what it is not granted, so which chords a surface relays is now a per-placement decision rather than one rule. | [pane search slot](../packages/client/src/pane-search/presenter-slot.tsx), [interaction slot](../packages/client/src/interaction/presenter-slot.tsx), [key dispatcher](../packages/client/src/chrome/keys.ts) |
-| Root layout composition: an optional hidden state per root slot with a host-drawn restore affordance, declared band heights under a host ceiling, and the arrangement persisted in the existing workbench store. **In progress** on `feature/plugin-root-layout`. | [Workbench](../packages/client/src/plugins/Workbench.tsx), [registry](../packages/client/src/plugins/registry.ts), [protocol placements](../packages/protocol/src/plugins.ts) |
-| Help's real defect: plugin commands and plugin shortcuts never appear in the Help overlay. The fix is the keybinding map, plugin shortcuts included, exposed read-only in the chrome snapshot and drawn in the native overlay - deliberately NOT a placement. **In progress** on `feature/help-plugin-shortcuts`. | [Help overlay](../packages/client/src/chrome/HelpOverlay.tsx), [plugin shortcuts](../packages/client/src/plugins/shortcuts.ts), [chrome source](../packages/client/src/features/chrome-source.ts) |
 | The three leak warnings a full lane still prints, all of them inert: `plugin-terminal-features` and `plugin-terminal-geometry` on the `terminal` slot, `plugin-document-features` on `document.markdown`, each naming a lab view left in the store of a second daemon the scenario has already stopped and deleted. Silencing one means re-selecting the remote host and driving Settings a second time inside a cleanup path, which is why [#240 left them reported](plugin-validation.md#the-remaining-workbench-slot-warnings-are-left-as-they-are). | [the slot helper](../scripts/ui-audit/lib/workbench.mjs), [the post-condition](../scripts/scenario.mjs) |
 | An Appearance presenter for the native remainder parts (theme gallery, importer and share codes, colour maps, terminal theme picker, band fill, stat toggles, sparkline colour, highlight preview, Resets). Only if a real plugin needs them. | [sections](../packages/client/src/settings/sections.ts), [presenter host](../packages/client/src/settings/presenter.ts), [public settings types](../packages/plugin-sdk/settings.d.ts) |
 | Physical-device checks. Every phone result on record is Electron emulation; real hardware coverage must be reported separately. | the audit's phone steps and `phone-settings-sheet` in [`scripts/ui-audit/audit.mjs`](../scripts/ui-audit/audit.mjs), the phone sections of the plugin scenarios |
-| The roadmap's later items: remaining UI composition surfaces, a public registry and distribution, untrusted execution. | [later work](plugin-roadmap.md#later-work-and-open-decisions) |
+| The roadmap's later items: a public registry and distribution, and untrusted execution. The remaining UI composition surfaces are done with this PR, the phone shell and the Help overlay's frame decided against. | [later work](plugin-roadmap.md#later-work-and-open-decisions) |
 
 The open issues this project touches at this baseline are
 [#245](https://github.com/benfriebe/kelpi/issues/245) (layout-aware chords),
@@ -176,9 +180,10 @@ Source entrypoints for the surfaces those tasks touch:
 | Settings model and authority | [contract](../packages/client/src/settings/contract.ts), [sections](../packages/client/src/settings/sections.ts), [surface](../packages/client/src/settings/surface.ts), [field renderer](../packages/client/src/settings/FieldRenderer.tsx) |
 | Settings presenter, slot and dialog | [presenter host](../packages/client/src/settings/presenter.ts), [presenter slot](../packages/client/src/settings/presenter-slot.tsx), [Settings overlay](../packages/client/src/settings/SettingsOverlay.tsx) |
 | Placements, selection and recovery rows | [protocol placements](../packages/protocol/src/plugins.ts), [registry](../packages/client/src/plugins/registry.ts), [Workbench](../packages/client/src/plugins/Workbench.tsx), [feature definitions](../packages/client/src/features/definitions.ts) |
+| Root arrangement (hidden bands, Zen Mode, band heights) | [model and store](../packages/client/src/plugins/arrangement.ts), [Workbench](../packages/client/src/plugins/Workbench.tsx), [restore strip](../packages/client/src/chrome/RestoreStrip.tsx), [window actions](../packages/core/src/config/actions.ts), [traffic lights](../packages/shell/src/titlebar.ts), [plugin guide](plugins.md#hiding-bands-and-zen-mode) |
 | Terminal replay geometry and ownership | [PTY connection](../packages/client/src/connection/pty.ts), [terminal host](../packages/client/src/plugins/terminal.ts), [pane adapter](../packages/client/src/plugins/terminal-pane.ts), [terminal types](../packages/plugin-sdk/terminal.d.ts) |
 | Public bridge and SDK runtime | [PluginView](../packages/client/src/plugins/PluginView.tsx), [host UI](../packages/client/src/plugins/host-ui.ts), [UI service adapter](../packages/client/src/plugins/ui-services.ts), [SDK runtime](../packages/plugin-sdk/browser.js), [SDK tests](../packages/plugin-sdk/tests) |
-| Shipped replacement examples | [Interaction Lab](../examples/plugins/interaction-lab), [Settings Lab](../examples/plugins/settings-lab), [Terminal Lab](../examples/plugins/terminal-lab), [Pane Lab](../examples/plugins/pane-lab), [Search Lab](../examples/plugins/search-lab) |
+| Shipped replacement examples | [Interaction Lab](../examples/plugins/interaction-lab), [Settings Lab](../examples/plugins/settings-lab), [Terminal Lab](../examples/plugins/terminal-lab), [Pane Lab](../examples/plugins/pane-lab), [Search Lab](../examples/plugins/search-lab), [Layout Lab](../examples/plugins/layout-lab) |
 
 ## Setup and validation for the next agent
 

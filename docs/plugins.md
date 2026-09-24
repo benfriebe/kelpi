@@ -65,7 +65,8 @@ replacements, including connected-daemon navigation, repository tools and persis
 preferences. Install `./examples/plugins/sidebar-lab` to try it. The
 [feature guide](plugin-features.md) explains the native module contract and navigation scope.
 
-Settings → Plugins → Workbench views also lets you change the other placements.
+Settings → Plugins → Workbench views also lets you change the other placements, and the root
+bands can be hidden; see [hiding bands and Zen Mode](#hiding-bands-and-zen-mode).
 The default views are registered native adapters; external contributions use the same slot
 selection and fallback rules. Preferences belong to the client and stable daemon identity.
 If a plugin is missing, disabled, or its backend fails, the workbench restores the bundled
@@ -289,6 +290,26 @@ isolated views, not containers. Neither do the palette, prompts, notifications, 
 pane chrome and pane search placements: a presenter owns its whole surface.
 Workbench chrome placement controls apply to the desktop layout.
 Plugin panes and document, terminal and browser renderers also work in phone and secondary-daemon workspaces.
+
+A view or container in `topbar`, `statusbar` or `panel.bottom` may declare its band height with
+`bandHeights`, one integer per band it lists in `placements`:
+
+```json
+{ "id": "acme.dashboard.bar", "title": "Dashboard bar", "entry": "ui/bar.html",
+  "placements": ["topbar", "statusbar"], "bandHeights": { "topbar": 36, "statusbar": 22 } }
+```
+
+| Band | Range (px) | Undeclared |
+| --- | --- | --- |
+| `topbar` | 28 to 64 | 44 |
+| `statusbar` | 16 to 48 | 32 |
+| `panel.bottom` | 80 to 480, and at most half the window | 220 |
+
+A value outside its range, a fractional value, or a band the view does not list is refused at
+install. The height is static on purpose: a band moves the whole pane grid, so a height that
+arrived after the view loaded would resize every terminal twice at each launch. The bundled
+toolbar and status bar keep their own 32 and 24 px. See
+[hiding bands and Zen Mode](#hiding-bands-and-zen-mode).
 Browser controls target the owning daemon; native page display requires its Electron host window.
 Native window controls, layout/focus ownership,
 authentication, and recovery controls remain part of the application kernel.
@@ -512,6 +533,54 @@ Plugin shortcuts use the same early keyboard capture boundary as native commands
 terminal cannot swallow them. Modal overlays and remote-workspace focus suspend the primary
 daemon's plugin keybindings. `onContext(listener)` reports the view's initial environment
 after `ready`, then context/state/theme/visibility changes; its return function unsubscribes.
+
+## Hiding bands and Zen Mode
+
+The root of the desktop window is the pane grid with five bands around it: the toolbar
+(`topbar`), the Workspaces and Inspector sidebars, the bottom panel (`panel.bottom`) and the
+status bar (`statusbar`). Any of the five can be hidden. The grid (`workspace`) never can, and
+neither can a presented surface or a container slot.
+
+- **View ▸ Toggle Toolbar, Toggle Status Bar, Toggle Bottom Panel** hide or show one band. The
+  keybinding actions `toggle_toolbar`, `toggle_status_bar` and `toggle_bottom_panel` ship
+  unbound. The sidebars keep their own toggles (⌘⇧S, ⌘I).
+- **Zen Mode** (⌃⌘Return on macOS, View ▸ Toggle Zen Mode, the palette) hides all five and gives
+  the grid the window. It records which bands were showing and restores exactly those when it ends, so a
+  sidebar shown for a moment inside Zen Mode does not change what comes back.
+- **Reset Window Arrangement** (View menu, palette, and Settings → Plugins → Workbench views
+  beside **Restore bundled views**) shows the toolbar, status bar, bottom panel and Workspaces
+  sidebar, closes the Inspector (the launch state), and ends Zen Mode.
+
+Hiding is a layout flag, not a selection: a hidden band keeps the view selected for it, and
+showing the band brings the same view back. A plugin view in a hidden band stays loaded and is
+told `visible=false`, as a hidden container tab is, so showing it again costs no reload. Selecting
+a view never shows a hidden band; the Workbench views row says "(hidden)" instead, and a status
+line there names what is hidden.
+
+While the toolbar is hidden the host draws an 8 px strip across the top of the window. It is
+outside every slot, so no plugin can replace or hide it, and in the desktop app it is what the
+window is dragged by. Its centred handle grows into a labelled button on hover or keyboard focus
+("Exit Zen Mode" with its chord, or "Show Toolbar") and restores on a click. On macOS the window's
+traffic lights are hidden for as long as the toolbar is, because they would otherwise sit over the
+first pane's header. They come back while the connection to the daemon is down, because the page
+cannot report its toolbar then (the handle still works), and hide again when it reconnects.
+Entering Zen Mode raises one native toast naming the way out.
+
+The arrangement is the user's. Plugins cannot set it and cannot declare a band hidden by default,
+but a view can run the same chrome commands the View menu does (`kelpi.zenMode.toggle`,
+`kelpi.toolbar.toggle`, `kelpi.statusbar.toggle`, `kelpi.panel.bottom.toggle`,
+`kelpi.window.resetArrangement`), so a replacement toolbar can offer a Zen Mode button; see the
+[chrome guide](plugin-chrome.md#shared-commands). Disabling, removing or failing a plugin changes
+nothing in the arrangement: a hidden band stays hidden and falls back to the bundled bar, and a
+declared height leaves with the view.
+
+The arrangement is saved per client and daemon beside the view selections, and it is per window:
+a change in one window does not reach the others, and the last one saved is what the next window
+and the next launch open with. Sidebar and Inspector visibility are part of it, so an Inspector
+left open reopens. Phone windows keep their own shell and ignore it.
+
+[Layout Lab](../examples/plugins/layout-lab) declares all three band heights and renders the
+arrangement commands from the chrome snapshot.
 
 ## Custom containers and named slots
 
@@ -747,6 +816,12 @@ an isolated daemon. It covers nested containers, programmatic slot selection, re
 typed SDK calls, before/after hooks through CLI and UI, provider selection/delegation/fallback,
 editable shortcuts, and dependency failure/recovery. `sidebar-swap` checks Inspector on the
 left, Workspaces on the right, filtering, resizing, and persisted placement.
+
+`node scripts/scenario.mjs plugin-root-layout` installs Layout Lab and checks the declared band
+heights, Zen Mode through the chord, the palette, the strip's handle, the View menu's native
+accelerator and a plugin's chrome command, the recovery floor inside Zen Mode, the shell's PTY
+growing into the freed space, hidden views staying loaded, persistence across a reload, a disabled
+plugin leaving the arrangement alone, Reset Window Arrangement from Settings and the phone.
 
 `node scripts/scenario.mjs plugin-workbench` installs Agent Board into an isolated daemon,
 drives the real iframe, opens a terminal through its SDK, checks saved pane state, replaces

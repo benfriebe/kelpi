@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createStore as createDaemonStore, emptyDaemonState } from '@kelpi/daemon/store';
 import { createKelpiStore, type KelpiRuntime } from '../state';
-import { createPaletteFeatureSource, type PaletteFeatureHost } from './palette-source';
+import { createPaletteFeatureSource, type PaletteArrangementHost, type PaletteFeatureHost } from './palette-source';
+import { DEFAULT_ARRANGEMENT, toggleZenMode, type RootArrangement } from '../plugins/arrangement';
 
 type MenuEntry = { id: string; title: string; pluginName: string; enabled: boolean; shortcut?: string; run: () => boolean };
 
@@ -232,5 +233,44 @@ describe('palette feature source', () => {
         h.daemon.dispatch({ type: 'create-workspace', id: 'four', paneID: 'pane-four', name: 'four', color: 'red', now: 4 });
         h.sync();
         expect(listener.mock.calls.length).toBe(seen);
+    });
+
+    /*
+     * The root arrangement's rows: titled by what they would do, carrying the live chord, disabled
+     * where there is nothing to show, and absent altogether where there is nothing to arrange.
+     */
+    it('lists the arrangement rows with state-true titles, and none on the phone', async () => {
+        const h = fixture();
+        let current: RootArrangement = DEFAULT_ARRANGEMENT;
+        let bottom = false;
+        const arrangement: PaletteArrangementHost = {
+            current: () => current, bottomPanelAvailable: () => bottom,
+            toggleBand: vi.fn(() => true), toggleZenMode: vi.fn(() => true), reset: vi.fn(() => true)
+        };
+        const shortcut = vi.fn((action: string) => (action === 'toggle_zen_mode' ? '⌃⌘↩' : undefined)) as PaletteFeatureHost['shortcut'];
+        const source = createPaletteFeatureSource({ ...h.host, shortcut, arrangement });
+        const item = (id: string) => source.snapshot().items.find((entry) => entry.id === id);
+        expect(item('cmd:zen-mode')).toMatchObject({ title: 'Enter Zen Mode', shortcut: '⌃⌘↩', kind: 'command' });
+        expect(item('cmd:toggle-toolbar')).toMatchObject({ title: 'Hide Toolbar' });
+        expect(item('cmd:toggle-status-bar')).toMatchObject({ title: 'Hide Status Bar' });
+        expect(item('cmd:toggle-bottom-panel')).toMatchObject({ title: 'Hide Bottom Panel', disabled: true });
+        expect(item('cmd:reset-window-arrangement')).toMatchObject({ title: 'Reset Window Arrangement' });
+        await expect(source.execute('cmd:toggle-bottom-panel', {})).rejects.toThrow('disabled');
+
+        current = toggleZenMode(DEFAULT_ARRANGEMENT);
+        bottom = true;
+        expect(item('cmd:zen-mode')).toMatchObject({ title: 'Exit Zen Mode' });
+        expect(item('cmd:toggle-toolbar')).toMatchObject({ title: 'Show Toolbar' });
+        await source.execute('cmd:zen-mode', {});
+        expect(arrangement.toggleZenMode).toHaveBeenCalledOnce();
+        await source.execute('cmd:toggle-status-bar', {});
+        expect(arrangement.toggleBand).toHaveBeenLastCalledWith('statusbar');
+        await source.execute('cmd:toggle-bottom-panel', {});
+        expect(arrangement.toggleBand).toHaveBeenLastCalledWith('panel.bottom');
+        await source.execute('cmd:reset-window-arrangement', {});
+        expect(arrangement.reset).toHaveBeenCalledOnce();
+
+        const phone = createPaletteFeatureSource({ ...h.host, arrangement: null });
+        expect(phone.snapshot().items.filter((entry) => entry.id.startsWith('cmd:zen') || entry.id.includes('arrangement'))).toEqual([]);
     });
 });

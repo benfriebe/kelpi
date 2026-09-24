@@ -70,6 +70,7 @@ import {
 } from './notify.js';
 import {
     parseShellAction,
+    parseWindowChrome,
     parseWorkspaceSelection,
     shellActionAppliesHere
 } from './shell-actions.js';
@@ -176,6 +177,17 @@ export interface StatusHost {
      * page. The count travels client → daemon → here so the row's enabled state can follow it.
      */
     workspaceSelectionChanged?(selectedCount: number): void;
+    /**
+     * The root arrangement: this window's page hid (or showed) its toolbar, so the traffic lights
+     * that are centred in it should follow (`titlebar.ts` ▸ `windowButtonsVisible`).
+     */
+    windowChromeChanged?(titleBarHidden: boolean): void;
+    /**
+     * The status connection to the daemon dropped. Nothing the page reports can arrive until it
+     * is back, so a window showing no traffic lights for a toolbar the page has since restored
+     * would stay that way; the host shows them, and the page re-reports on reconnect.
+     */
+    statusDisconnected?(): void;
 }
 
 /**
@@ -745,6 +757,7 @@ export function createStatusController(options: StatusOptions): StatusController
             waiting = new Set();
             publish();
             if (wasReady) log(`status ws disconnected (${String(code)})`);
+            if (wasReady) host.statusDisconnected?.();
             scheduleReconnect();
         });
     }
@@ -894,6 +907,14 @@ export function createStatusController(options: StatusOptions): StatusController
                 const report = parseWorkspaceSelection(parsed);
                 if (report === null || !shellActionAppliesHere(report.windowID, options.windowID)) break;
                 host.workspaceSelectionChanged?.(report.selected);
+                break;
+            }
+            case 'window-chrome': {
+                // The root arrangement's toolbar report, scoped exactly as `workspace-selection`
+                // is: two shell windows have two title bars and two arrangements.
+                const report = parseWindowChrome(parsed);
+                if (report === null || !shellActionAppliesHere(report.windowID, options.windowID)) break;
+                host.windowChromeChanged?.(report.titleBarHidden);
                 break;
             }
             case 'rejected': {

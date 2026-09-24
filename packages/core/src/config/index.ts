@@ -20,6 +20,7 @@ export {
     UNKNOWN_KEY_DISPLAY,
     UNKNOWN_KEY_NAME,
     canonicalTriggerForPlatform,
+    triggerExpressibleOnPlatform,
     keyTriggerConfigString,
     keyTriggerDisplayString,
     keyTriggerDisplayStringForPlatform,
@@ -30,7 +31,7 @@ export {
     parseKeyTrigger
 } from './keys.js';
 export type { KeyModifier, KeyTrigger } from './keys.js';
-export { MENU_BAR_ACTIONS, KELPI_ACTIONS, UNBIND_ACTION, isKelpiAction } from './actions.js';
+export { MENU_BAR_ACTIONS, KELPI_ACTIONS, UNBIND_ACTION, WINDOW_ARRANGEMENT_ACTIONS, isKelpiAction } from './actions.js';
 export type { KelpiAction, UnbindAction } from './actions.js';
 // #95: the chords macOS owns, read by the shell's menu and by the client's terminal layers.
 export {

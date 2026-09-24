@@ -108,7 +108,7 @@ import { contentContextMenuLogLine, contentContextMenuTemplate } from './context
 import { createUnresponsiveWatchdog } from './unresponsive.js';
 import { focusWindowContents, presentWindow, presentWindowLogLine } from './window-present.js';
 import { isForwardableOpenPath } from './shell-actions.js';
-import { titleBarLogLine, titleBarStyleFor, trafficLightQuery } from './titlebar.js';
+import { titleBarLogLine, titleBarStyleFor, trafficLightQuery, windowButtonsLogLine, windowButtonsVisible } from './titlebar.js';
 import { describeSkillRefresh, refreshBundledSkill } from './skill.js';
 import { createStatusController, type StatusController } from './status.js';
 import { canCheckForUpdates, checkForUpdatesNow, maybeStartAutoUpdate } from './updater.js';
@@ -332,6 +332,24 @@ function openExternally(target: string): void {
     }
 }
 
+/**
+ * The root arrangement's half of the title bar: hide the traffic lights while the page's toolbar
+ * is hidden, and show them again when it is not.
+ *
+ * The page reports `window-chrome` through the daemon (there is no preload); `titlebar.ts` owns
+ * the rule, including that an ordinary frame has nothing to hide. Deduped against the last state
+ * APPLIED, so a page re-reporting on every reconnect costs nothing and logs nothing.
+ */
+let windowButtonsShown = true;
+function applyWindowButtons(window: BrowserWindow, titleBarHidden: boolean, reason: 'report' | 'navigation' | 'disconnected'): void {
+    if (window.isDestroyed()) return;
+    const visible = windowButtonsVisible(TITLE_BAR, titleBarHidden);
+    if (visible === windowButtonsShown) return;
+    windowButtonsShown = visible;
+    window.setWindowButtonVisibility(visible);
+    log(windowButtonsLogLine(visible, reason));
+}
+
 function applySecurityPolicy(window: BrowserWindow): void {
     const contents = window.webContents;
 
@@ -351,6 +369,21 @@ function applySecurityPolicy(window: BrowserWindow): void {
     // means the page is not the page we think it is.
     contents.on('will-attach-webview', (event) => {
         event.preventDefault();
+    });
+
+    /*
+     * The root arrangement: a page that navigates or reloads has not said its toolbar is hidden,
+     * so the traffic lights come back until it says so again. It re-reports as soon as it has
+     * read its arrangement, which is what keeps a crashed, wedged or older page from ever
+     * leaving the window without its buttons.
+     *
+     * `did-navigate`, the COMMITTED main-frame navigation, not `did-start-navigation`: the start
+     * fires before `will-navigate` above cancels a link click and opens it externally, and a page
+     * that never left would not re-report. In-page navigations (the token strip's `replaceState`)
+     * and sub-frames (every plugin view is an iframe) do not emit it at all.
+     */
+    contents.on('did-navigate', () => {
+        applyWindowButtons(window, false, 'navigation');
     });
 
     contents.on('render-process-gone', (_event, details) => {
@@ -1472,6 +1505,20 @@ function startStatusController(): void {
                  */
                 workspaceSelectionChanged: (selectedCount) => {
                     applyWorkspaceSelectionCount(selectedCount);
+                },
+                /** The root arrangement's toolbar, reported by this window's page (`window-chrome`). */
+                windowChromeChanged: (titleBarHidden) => {
+                    if (mainWindow !== null) applyWindowButtons(mainWindow, titleBarHidden, 'report');
+                },
+                /*
+                 * The same rule as a navigation: a page this shell cannot hear from has not said its
+                 * toolbar is hidden. Without it, a toolbar restored from the strip's handle while the
+                 * daemon is down (the handle works locally) would sit beside an empty 80 px gutter until
+                 * the reconnect. Showing the buttons resizes nothing; in Zen Mode they sit over the first
+                 * pane's header for the length of the outage, and the page hides them again on reconnect.
+                 */
+                statusDisconnected: () => {
+                    if (mainWindow !== null) applyWindowButtons(mainWindow, false, 'disconnected');
                 }
             }
         });

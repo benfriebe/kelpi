@@ -26,7 +26,9 @@ import { usePluginNavigation } from './plugins/use-navigation';
 import { useRemoteWorkspaceSelection } from './app/remote-selection';
 import { PluginView } from './plugins/PluginView';
 import { WorkbenchProvider, WorkbenchSidebar, WorkbenchSlot, useWorkbenchLayout, type WorkbenchSlotID } from './plugins/Workbench';
-import { resolveSidebarViews, selectWorkbenchView } from './plugins/registry';
+import { resolveSidebarViews, resolveSlot, selectWorkbenchView } from './plugins/registry';
+import { DEFAULT_ARRANGEMENT, setBandVisible, toggleZenMode, zenModeActive, type ArrangementSlotBand } from './plugins/arrangement';
+import { RestoreStrip } from './chrome/RestoreStrip';
 import { PluginsTab } from './plugins/PluginsTab';
 import { usePluginCommands } from './plugins/commands';
 import { renderRegisteredView } from './plugins/renderers';
@@ -78,7 +80,8 @@ import {
     type DragEvent,
     type MouseEvent as ReactMouseEvent,
     type ReactElement,
-    type ReactNode
+    type ReactNode,
+    type SetStateAction
 } from 'react';
 import { useStore } from 'zustand';
 
@@ -148,8 +151,14 @@ import {
     NEW_WEB_PANE_COMMAND,
     RECOVER_INTERFACE_COMMAND,
     RESET_TEXT_SIZE_COMMAND,
+    RESET_WINDOW_ARRANGEMENT_COMMAND,
     SELECT_ALL_WORKSPACES_COMMAND,
+    TOGGLE_BOTTOM_PANEL_COMMAND,
+    TOGGLE_STATUS_BAR_COMMAND,
+    TOGGLE_TOOLBAR_COMMAND,
+    TOGGLE_ZEN_MODE_COMMAND,
     switchWorkspacePosition,
+    windowChromeReport,
     workspaceSelectionReport
 } from './app/file-menu';
 import { createFrameTick, type FrameTick } from './app/frame-tick';
@@ -407,7 +416,18 @@ function Shell(props: AppProps): ReactElement {
     const remoteSelectionRef = useRef(remoteSelection);
     remoteSelectionRef.current = remoteSelection;
 
-    const [sidebarVisible, setSidebarVisible] = useState(true);
+    /**
+     * The Workspaces host's visibility, which now lives in the root arrangement
+     * (`plugins/arrangement.ts`) with the toolbar, status bar, bottom panel and Inspector: persisted
+     * per daemon, and recorded and restored by Zen Mode. `setSidebarVisible` keeps React's
+     * `SetStateAction` shape, so every caller that writes it is unchanged.
+     */
+    const { arrangement, arrange } = workbench;
+    const sidebarVisible = arrangement.visible.sidebar;
+    const setSidebarVisible = useCallback(
+        (next: SetStateAction<boolean>): void => arrange((current) => setBandVisible(current, 'sidebar', next)),
+        [arrange]
+    );
     /**
      * §WS-001: the show/hide SLIDE. `sidebarVisible` is still the one boolean everything writes
      * (the keybinding, the top-bar button, the View menu, every gesture that reveals the sidebar
@@ -430,8 +450,12 @@ function Shell(props: AppProps): ReactElement {
      * which is the split SwiftUI makes too: only the visibility toggle is inside `withAnimation`.
      */
     const [sidebarResizing, setSidebarResizing] = useState(false);
-    /** §WS-137: the trailing inspector, opened from the top bar or `toggle_inspector`. */
-    const [inspectorVisible, setInspectorVisible] = useState(false);
+    /** §WS-137: the trailing inspector, opened from the top bar or `toggle_inspector`; arranged like the sidebar. */
+    const inspectorVisible = arrangement.visible.inspector;
+    const setInspectorVisible = useCallback(
+        (next: SetStateAction<boolean>): void => arrange((current) => setBandVisible(current, 'inspector', next)),
+        [arrange]
+    );
     /**
      * §APP-066: the inspector's slide, driven by the SAME phase machine as the sidebar's
      * (`sidebar-reveal.ts`). `inspectorVisible` stays the one boolean everything writes; this is
@@ -949,6 +973,20 @@ function Shell(props: AppProps): ReactElement {
             landing: phoneAtLanding
         });
     }, [paneOrder, workspace, phoneActive, phoneMode, phoneShownPaneID, phoneRemoteSelected, phoneAtLanding]);
+
+    /**
+     * The root arrangement's report to this window's shell: the toolbar is hidden, so the macOS
+     * traffic lights centred in it should be too (`shell/src/titlebar.ts`). Sent on every change
+     * and on every (re)connect, because nothing remembers it: the shell shows the buttons again
+     * whenever this page navigates, and a restarted daemon has never heard it. A browser tab has
+     * no shell to tell.
+     */
+    const titleBarHidden = !phoneActive && !arrangement.visible.topbar;
+    useEffect(() => {
+        if (shellWindowID === null || ui.connection !== 'connected') return;
+        runtime.connection.send(windowChromeReport(titleBarHidden, shellWindowID));
+    }, [runtime, shellWindowID, titleBarHidden, ui.connection]);
+
     // ── command plumbing ────────────────────────────────────────────────────────────
 
     const notifyFailure = useCallback(
@@ -2587,6 +2625,61 @@ function Shell(props: AppProps): ReactElement {
     );
     useEffect(() => installShellCloseBridge(shellClose), [shellClose]);
 
+    /**
+     * The root arrangement's verbs (`plugins/arrangement.ts`): one set of handlers behind the
+     * chords, the View menu rows, the palette, the chrome commands, the top-edge strip and the
+     * Settings button, so every route is the same gesture.
+     *
+     * Each answers false where it has nothing to do, which lets a chord fall through: on the phone
+     * (its own shell draws no root band), and for the bottom panel while no view is selected for it
+     * (there is nothing to show). Entering Zen Mode raises one native toast naming the way out;
+     * leaving it, and the reset, raise nothing.
+     */
+    const bottomPanelAvailable = resolveSlot(workbench.views, 'panel.bottom', workbench.selections['panel.bottom']) !== undefined;
+    const arrangementGuards = useRef({ phoneActive, bottomPanelAvailable, zenActive: zenModeActive(arrangement) });
+    arrangementGuards.current = { phoneActive, bottomPanelAvailable, zenActive: zenModeActive(arrangement) };
+    const zenChordRef = useRef<string | undefined>(undefined);
+    const zenToastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const windowArrangement = useMemo(() => ({
+        toggleBand(band: ArrangementSlotBand): boolean {
+            const guards = arrangementGuards.current;
+            if (guards.phoneActive || (band === 'panel.bottom' && !guards.bottomPanelAvailable)) return false;
+            arrange((current) => setBandVisible(current, band, (visible) => !visible));
+            return true;
+        },
+        toggleZenMode(): boolean {
+            const guards = arrangementGuards.current;
+            if (guards.phoneActive) return false;
+            arrange(toggleZenMode);
+            if (!guards.zenActive) {
+                const chord = zenChordRef.current;
+                if (zenToastTimer.current !== null) clearTimeout(zenToastTimer.current);
+                store.getState().pushToast({
+                    id: 'window:zen-mode', kind: 'info', title: 'Zen Mode',
+                    body: chord === undefined ? 'Click the handle at the top of the window to leave Zen Mode.' : `Press ${chord}, or click the handle at the top of the window, to leave Zen Mode.`,
+                    paneID: null, workspaceID: null, createdAt: Date.now()
+                });
+                zenToastTimer.current = setTimeout(() => store.getState().dismissToast('window:zen-mode'), ERROR_TOAST_MS);
+            }
+            return true;
+        },
+        reset(): boolean {
+            arrange(() => DEFAULT_ARRANGEMENT);
+            return true;
+        }
+    }), [arrange, store]);
+    const windowArrangementRef = useRef(windowArrangement);
+    windowArrangementRef.current = windowArrangement;
+    // The toast says how to leave Zen Mode, so it goes with it: leaving by any route (and a held
+    // chord that toggled twice before a render) takes it down rather than letting it linger.
+    const zenActive = zenModeActive(arrangement);
+    useEffect(() => {
+        if (zenActive) return;
+        if (zenToastTimer.current !== null) clearTimeout(zenToastTimer.current);
+        zenToastTimer.current = null;
+        if (store.getState().ui.toasts.some((toast) => toast.id === 'window:zen-mode')) store.getState().dismissToast('window:zen-mode');
+    }, [zenActive, store]);
+
     const keyActions = useMemo<KeyActionRegistry>(
         () => ({
             split_right: () => act.splitFocused('horizontal'),
@@ -2647,6 +2740,12 @@ function Shell(props: AppProps): ReactElement {
             command_palette: () => act.togglePalette(),
             toggle_sidebar: () => act.toggleSidebar(),
             toggle_inspector: () => act.toggleInspector(),
+            // The root arrangement. The dispatcher lets these four through with no local workspace
+            // displayed (`WINDOW_ARRANGEMENT_ACTIONS`), so no chord out of Zen Mode can be stranded.
+            toggle_zen_mode: () => windowArrangement.toggleZenMode(),
+            toggle_toolbar: () => windowArrangement.toggleBand('topbar'),
+            toggle_status_bar: () => windowArrangement.toggleBand('statusbar'),
+            toggle_bottom_panel: () => windowArrangement.toggleBand('panel.bottom'),
             new_workspace: () => act.newWorkspace(),
             next_workspace: () => act.switchRelative(1),
             previous_workspace: () => act.switchRelative(-1),
@@ -2684,7 +2783,7 @@ function Shell(props: AppProps): ReactElement {
             web_zoom_reset: () => webAct.run((pane) => webAct.zoom(pane.paneID, 'reset')),
             ...workspaceSwitchHandlers((index) => act.switchToIndex(index))
         }),
-        [act, webAct, shellClose, textSizeStep]
+        [act, webAct, shellClose, textSizeStep, windowArrangement]
     );
 
     const keyActionsRef = useRef(keyActions);
@@ -2891,6 +2990,12 @@ function Shell(props: AppProps): ReactElement {
             // the top-bar button, the ••• menu's Show/Hide Inspector and this row are four
             // gestures onto one piece of client-local state.
             else if (command === 'toggle-inspector') actRef.current.toggleInspector();
+            // The root arrangement's View rows, onto the handlers their chords run.
+            else if (command === TOGGLE_ZEN_MODE_COMMAND) windowArrangementRef.current.toggleZenMode();
+            else if (command === TOGGLE_TOOLBAR_COMMAND) windowArrangementRef.current.toggleBand('topbar');
+            else if (command === TOGGLE_STATUS_BAR_COMMAND) windowArrangementRef.current.toggleBand('statusbar');
+            else if (command === TOGGLE_BOTTOM_PANEL_COMMAND) windowArrangementRef.current.toggleBand('panel.bottom');
+            else if (command === RESET_WINDOW_ARRANGEMENT_COMMAND) windowArrangementRef.current.reset();
             // §APP-018: File ▸ New Workspace. It opens the SHEET, exactly as ⌘N does inside the
             // page — the main process never creates a workspace of its own.
             else if (command === 'new-workspace') actRef.current.newWorkspace();
@@ -2994,6 +3099,7 @@ function Shell(props: AppProps): ReactElement {
         (action: KelpiAction): string | undefined => shortcutForAction(bindings, action),
         [bindings]
     );
+    zenChordRef.current = hint('toggle_zen_mode');
 
     /**
      * H9 — the chord set a content pane's sandboxed frame hands back.
@@ -3092,6 +3198,14 @@ function Shell(props: AppProps): ReactElement {
         actions: act,
         shortcut: hint,
         openSettings,
+        // Desktop only: the phone shell draws no root band, so there is nothing to arrange.
+        arrangement: phoneActive ? null : {
+            current: () => workbench.arrangement,
+            bottomPanelAvailable: () => arrangementGuards.current.bottomPanelAvailable,
+            toggleBand: (band) => windowArrangementRef.current.toggleBand(band),
+            toggleZenMode: () => windowArrangementRef.current.toggleZenMode(),
+            reset: () => windowArrangementRef.current.reset()
+        },
         // §8.5 / §APP-037: activation comes first, and it is the call that also leaves remote mode
         // and queues the sidebar's scroll target.
         activateWorkspace: activateWorkspaceAndReveal,
@@ -3795,6 +3909,10 @@ function Shell(props: AppProps): ReactElement {
         remoteWorkspaceSelected: () => remoteSelectionRef.current !== null, shellAvailable: shellWindowID !== null,
         associations: { workspaceID: workspace?.id ?? null, values: inspectorData.associations }, plugins: pluginCommands,
         keymap: snapshotKeymap, toggleSidebar: act.toggleSidebar, toggleInspector: act.toggleInspector,
+        arrangement, bottomPanelAvailable,
+        toggleBand: (band) => { windowArrangement.toggleBand(band); },
+        toggleZenMode: () => { windowArrangement.toggleZenMode(); },
+        resetArrangement: () => { windowArrangement.reset(); },
         openSettings, openHelp: () => setHelpOpen(true),
         openPalette: () => { surface.palette.open({ id: 'native:chrome-command', kind: 'native', displayName: 'Command Palette' }); },
         shellAction: act.shellAction, restartControlServer: act.restartControlServer, restartUI, selectPane: statusActions.selectPane
@@ -3924,6 +4042,23 @@ function Shell(props: AppProps): ReactElement {
                 />
             ) : (
             <>
+            {/*
+              * The root arrangement's route back: while the toolbar is hidden (Zen Mode, or View ▸
+              * Toggle Toolbar) the host draws an 8 px strip in its place. It is outside every slot,
+              * so no plugin can replace or hide it; in a shell window it is the drag region the
+              * toolbar was, and its handle restores. `plugins/arrangement.ts` has the model.
+              */}
+            {arrangement.visible.topbar ? null : (
+                <RestoreStrip
+                    zen={zenModeActive(arrangement)}
+                    chord={hint('toggle_zen_mode')}
+                    dragRegion={shellWindowID !== null}
+                    onRestore={() => {
+                        if (zenModeActive(arrangement)) windowArrangement.toggleZenMode();
+                        else windowArrangement.toggleBand('topbar');
+                    }}
+                />
+            )}
             <WorkbenchSlot placement="topbar" trafficLightInset={trafficLightInset} />
 
             {/*
@@ -4271,7 +4406,7 @@ function Shell(props: AppProps): ReactElement {
             )}
 
             {ready && ui.connection !== 'connected' ? (
-                <ConnectionBanner status={ui.connection} error={ui.connectionError} runtime={runtime} />
+                <ConnectionBanner status={ui.connection} error={ui.connectionError} runtime={runtime} overContent={!phoneActive && !arrangement.visible.topbar} />
             ) : null}
 
             <SettingsOverlay

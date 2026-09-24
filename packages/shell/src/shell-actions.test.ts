@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
     isForwardableOpenPath,
     parseShellAction,
+    parseWindowChrome,
     parseWorkspaceSelection,
     shellActionAppliesHere
 } from './shell-actions.js';
@@ -45,6 +46,27 @@ describe('parseWorkspaceSelection', () => {
             selected: 2,
             windowID: 'w2'
         });
+        expect(shellActionAppliesHere(report?.windowID ?? null, 'w2')).toBe(true);
+        expect(shellActionAppliesHere(report?.windowID ?? null, 'w1')).toBe(false);
+    });
+});
+
+/** The root arrangement's `window-chrome`: the page's toolbar is hidden, so hide the traffic lights. */
+describe('parseWindowChrome', () => {
+    it('decodes the flag, with and without a window scope', () => {
+        expect(parseWindowChrome({ type: 'window-chrome', titleBarHidden: true, windowID: 'w1' })).toEqual({ titleBarHidden: true, windowID: 'w1' });
+        expect(parseWindowChrome({ type: 'window-chrome', titleBarHidden: false })).toEqual({ titleBarHidden: false, windowID: null });
+    });
+
+    it('refuses a flag it would have to guess, and another message type', () => {
+        expect(parseWindowChrome({ type: 'window-chrome' })).toBeNull();
+        expect(parseWindowChrome({ type: 'window-chrome', titleBarHidden: 'true' })).toBeNull();
+        expect(parseWindowChrome({ type: 'window-chrome', titleBarHidden: 1 })).toBeNull();
+        expect(parseWindowChrome({ type: 'workspace-selection', titleBarHidden: true })).toBeNull();
+    });
+
+    it('shares the window filter, so one window hiding its toolbar leaves the other alone', () => {
+        const report = parseWindowChrome({ type: 'window-chrome', titleBarHidden: true, windowID: 'w2' });
         expect(shellActionAppliesHere(report?.windowID ?? null, 'w2')).toBe(true);
         expect(shellActionAppliesHere(report?.windowID ?? null, 'w1')).toBe(false);
     });

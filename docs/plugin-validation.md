@@ -31,6 +31,7 @@ every UI-audit assertion passed. Phone emulation is distinct from physical-devic
 
 ## Phase index
 
+- [Selectable search presenter](#selectable-search-presenter-2026-09-20).
 - [Selectable pane chrome presenter](#selectable-pane-chrome-presenter-2026-09-19).
 - [Pane chrome shared model](#pane-chrome-shared-model-2026-09-18).
 - [Lane hygiene: phone remote-workspace flake and the remembered-place leak](#lane-hygiene-phone-remote-workspace-flake-and-the-remembered-place-leak-2026-09-18).
@@ -52,6 +53,261 @@ every UI-audit assertion passed. Phone emulation is distinct from physical-devic
 - [Foundation](#initial-implementation-2026-09-08) and [extended contracts](#extensibility-follow-up-2026-09-09).
 - [Bundled sidebars](#bundled-sidebar-features-and-window-navigation-2026-09-09), [shared UI](#reactive-contributions-and-shared-window-ui-2026-09-09) and [their integrated PR checks](#pr-publication-validation-2026-09-10).
 - [Reproduction commands](#reproduce).
+
+## Selectable search presenter (2026-09-20)
+
+The search surface of the UI composition audit, implemented on `feature/plugin-pane-search`, first
+on merged main `c719f9c` (2026-09-20), then rebased onto merged main **`225ef73`** (#260) and
+brought through two independent reviews (2026-09-24). Tested revision: **`68c2b0d`**, the tip of the
+second review's fixes. The runs below were taken on a working tree whose code is identical to it
+(the commits were reordered afterwards so the documentation commits stay last; no test reads
+`docs/`). `origin/main` was at `225ef73` when this was written. The rebase conflicted in two places,
+both additive (`PaneGrid`'s props beside the new rename hand-back docstring, and `PluginView`'s feed
+attachment beside #253's navigation trust recheck), and main still called `usePaneChromePainted`
+behind a short circuit, so the latch fix stays the branch's first commit. Private sandboxes only.
+Plugin API version stays **1** and wire generation stays **2**: everything added is additive - a
+`PLUGIN_PLACEMENTS` entry, a `ROOT_SLOTS` entry, a bundled feature definition, eight `ui.*` methods
+behind one placement grant, one nullable field on a reply the client already parsed, and one optional
+`pointer` flag on the SDK's existing `focus` message.
+
+**The full battery passed unretried at `a209603`** - the branch tip, whose code is `68c2b0d`'s and
+whose two further commits are this documentation - in a quiet window, in **26.4 min**. Two earlier
+batteries are history:
+
+| Battery | Revision | Result |
+| --- | --- | --- |
+| The tested revision | `a209603` (code of `68c2b0d`) | **Passed in 26.4 min, no component retried**: typecheck, root tests **8,766 passed, 1 skipped**, shell tests **882**, bundle build, all scenarios hidden in 7.0 min (`plugin-pane-search` **34/34**, `plugin-pane-chrome` **41/41**, `plugin-terminal-features` **59/59**), the full audit at **132 steps, 1,716 assertions, 0 failed, 0 step errors, 113 need eyes** in 18.3 min, and a packaged smoke of **69/69**. The only warnings are the three inert workbench-slot leaks already on record (`plugin-document-features`, `plugin-terminal-features`, `plugin-terminal-geometry`). |
+| The rebase and first review | `12c12b9` | **Passed unretried in 26.3 min**: typecheck, root tests, shell tests, all scenarios in 6.9 min, the full audit at 132 steps and 1,716 assertions with **0 failed**, and a packaged smoke of **69/69**. Superseded by the second review's fixes. |
+| Before the rebase | `bf835a1` | Finished with exit 0 on 2026-09-20. Superseded by the rebase and both reviews. |
+
+| Check | Result at `68c2b0d` |
+| --- | --- |
+| `pnpm typecheck` | Passes (protocol, core, daemon, cli, plugin-sdk, client, shell). |
+| `pnpm test` | Root vitest **550 files: 8,766 passed, 1 skipped** (the existing optional database skip); shell **47 files: 882 passed**. |
+| The pane search suites | **101** tests (93 after the first review, 80 before it): `pane-search/contract` 14, `pane-search/projection` 9, `pane-search/presenter` 19, `pane-search/presenter-slot` **22** (the relay grant with its Ctrl-primary form, where ⌘G is answered, the painted gate, the withdrawal, the native bar's mount focus, the stranded-case rule, and ten on the fallback's caret re-assertion: its bound, its cancellation, a user who moved the caret, a pointer or key press, a press inside a plugin renderer's frame, typing into the field, Tab, Escape and modifier chords, and a second fallback replacing the first), `features/search-lab` **32** (the fit order, the height ratchet, the hand-over, the held boot, the focus gating, the focus hop), `plugin-sdk/tests/pane-search` 5. Beside them: `app/search-needle` 15 (`flush()` and the needle in transit), `App.pane-search-draft` **3** (the in-transit needle in the frame and the native seed, the case-toggle flush, the re-send from the draft, a skipped render), `daemon/ws/search` **22** (four on recounts finishing out of order), and one more each in `plugins/PluginView` and the SDK's browser test for the press relay. |
+| SDK artifact | `node scripts/verify-plugin-sdk.mjs` passes. |
+| Live acceptance | `node scripts/scenario.mjs --window hidden plugin-pane-search`: **34/34**, 0 failed, in 26.7 s. The scenario declares `windowPlacement = 'offscreen'`, so the hidden run gives it its own instance at that placement (check 11 presses ⌘F over a real native `WebContentsView`), and its five screenshots are real: all five read. |
+| Pane chrome, because the latch fix touches it | `node scripts/scenario.mjs --window hidden --no-build plugin-pane-chrome`: **41/41**, 0 failed, in 25.2 s. |
+| Plugin terminal renderers, because the press relay rides their frames | `node scripts/scenario.mjs --window hidden --no-build plugin-terminal-features`: **59/59**, 0 failed, in 18.6 s. |
+| After the first review, at `930b44b` (history) | Root **8,750 passed, 1 skipped**, shell 882, the search scenario **34/34** and pane chrome **41/41**. |
+| At `bf835a1`, before the rebase (history) | `pnpm check` (root **8,348 passed, 1 skipped**, shell 874), the SDK artifact, `plugin validate` on the example, the scenario at **30/30** hidden and onscreen, the pair with `plugin-remote` twice (**30/30 + 13/13**), and the chain with `plugin-pane-chrome` and `terminal-copy-paste-chords` (**30/30 + 41/41 + 16/16**). |
+
+### The live acceptance, check by check
+
+`scripts/scenarios/plugin-pane-search.mjs`, 34 checks. Search Lab is the presenter; UI Lab is
+installed beside it so there is an ordinary plugin frame to call `ui.getWorkbench` and
+`ui.selectView` from, Pane Lab so the two per-pane placements can be selected together, and Terminal
+Lab so the reveal has a renderer that publishes what it did.
+
+- **Selection.** The `pane.search` select offers the lab and names its bundled entry
+  **"Pane search (bundled)"**; the lab attaches as **one** isolated view for the whole grid and
+  reports it has painted. `ui.getWorkbench().slots` lists the placement and `ui.selectView` refuses
+  it with "Workbench slot is not registered."
+- **The bar, where the bar goes.** ⌘F over a shell pane opens the LAB's bar and the native bar is
+  gone. The rectangle is measured against the NATIVE bar's own box on the same pane, taken moments
+  earlier from the bundled bar rather than from a constant: same trailing edge, same top, same
+  width. The lab's element measures WIDER than that, which is the host's clip doing its job.
+- **No bar-less frame, and the sampler must see the boot.** The search is opened with the lab
+  disabled and the lab is enabled under it; every 25 ms sample until the swap has to find the native
+  bar or the lab's, and at least one has to catch the lab mounted and not yet painted, or the check
+  fails: **20 of 21** did at the tested revision (26 of 27 at `930b44b`). The reload sampler waits
+  for the reload to land before it waits for the repaint, under the same floor: **35 of 36**. The first version pressed ⌘F after the lab had
+  painted, so the swap and the open were one commit and "no bar-less sample" held vacuously.
+- **The hand-over, in transit.** The boot is HELD (`searchLab.holdNextBoot()`, kept in plugin
+  storage for the new document the enable creates), so the lab paints behind the native bar without
+  reporting readiness. `NE` is typed into the native bar, and one evaluation inside the frame waits
+  for the handed needle and releases the boot inside the 300 ms debounce. The lab has to report ready
+  holding `NE` in both its field and its frame, with its own field NOT typed into, less than 300 ms
+  after the typing - before the daemon can have been sent the needle - so only the host's in-transit
+  hand-over can have put it there. (A first cut that read the host and polled the frame from the
+  harness spent 421 ms on round trips and missed the window; the check itself is unchanged.) The
+  first version typed and then waited ~650 ms for an unheld boot, by which time the daemon had the
+  needle; it passed with the hand-over wiring deleted (second review, M3). Live: ready **12 ms**
+  after the typing. The boot is released only once the lab's paint wait is over (`paintedAt`): in
+  this lane that wait is throttled and took most of a second, and two runs that released during it
+  measured 624 and 665 ms and failed the bound, correctly.
+- **The needle is the daemon's.** The scenario prints twelve `NEEDLEFIND` marker lines BEFORE the
+  bar exists, so the count has a number to be right about; typing `NEEDLEFIND` into the plugin's own
+  `<input>` sets the daemon's needle and the frame comes back with a total of at least twelve.
+- **Stepping.** The lab's next button moves the daemon's selection to 0, **⌘G** to 1 and **⇧⌘G**
+  back to 0. ⌘G has no bound action anywhere in the client, so a wrong grant or a wrong listener
+  would do nothing at all rather than something else.
+- **The reveal, with a plugin renderer underneath.** With Terminal Lab selected as the shell's
+  renderer, stepping raises its own `revealCount` and leaves a real xterm selection. The bundled
+  renderer scrolls inside a canvas and publishes nothing to the document, which is a stated limit.
+- **Case sensitivity reaches the recount.** A lower-case `needlefind` matches the buffer at least
+  twelve times; pressing `Aa` takes the total to **0**, which is the only honest proof the flag
+  reached the daemon's scan rather than a checkbox.
+- **Daemon authority.** Handing the same LIVE session to the native bar mid-search finds the native
+  field holding the same needle and a counter with the same shape.
+- **The caret.** Escape closes the search and a marker typed immediately afterwards appears in
+  `pane capture`; ⌘F does the same. It is measured in the shell's own buffer rather than in a focus
+  read, because what matters is where the next keystroke LANDS.
+- **An unrelayed chord leaks nowhere.** With `document.activeElement` asserted to be the lab's field,
+  ⌘D (`split_right`, bound and wired) splits nothing, closes nothing and changes no needle.
+- **The clamp, and two refusals.** A declared 99999 x 99999 box is clamped in both axes and stays
+  inside the pane, compared in one coordinate space. A call naming another pane and a forged pane id
+  are refused with "That pane is not the one being searched" and the needle is re-read to prove
+  nothing ran; a call while the search is CLOSED is refused with "No search is open for this
+  presenter" and no bar opens, which is what stops a presenter opening a search of its own.
+- **The two bars that stay native.** ⌘F over a markdown preview opens `content-find-input-…` and
+  ⌘F over a web pane opens `web-find-input-…`, with the presenter drawing nothing in either case.
+- **Failure.** `crash('uncaught')`, riding in on the frame the `Aa` toggle produces over a lower-case
+  `needlefind`, puts the NATIVE bar back holding the daemon's needle, with its own field focused and a
+  counter of **-/12**: the case flag went back off with the presenter, so the native bar, which has no
+  toggle, is not left counting case-sensitively. A failure toast reads "Pane search presenter".
+  Settings reports `Failed: …` on the `pane.search` row, keeps the selection, and **Retry presenter**
+  brings the presenter back with its toggle dark. `stall()` then does the same through the
+  acknowledgement watchdog, armed on the next frame that OPENS a session.
+- **Stand-down and lifecycle.** Choosing the bundled bar withdraws the declared box and the native
+  bar is its own size again; the row reads `Bundled`. Disable, enable and reload each keep the
+  selection and end with the lab drawing. A real primary-daemon restart stands the placement down
+  while the window is disconnected and the lab re-attaches afterwards with nothing latched.
+- **The two per-pane placements together.** With Pane Lab drawing a 96 px band on the same pane, the
+  Search Lab bar is above it and the needle still reaches the daemon. The frames are at z 2 and z 4,
+  which is the native bar's own order restated.
+- **The bar fits its box.** Measured in the frame rather than eyeballed: on a 247 px box the bar is
+  `full` with `1 of 13` whole and `Aa` and `×` inside the box; on the 114 px box the band leaves it,
+  `tight`, with a 49 px field and `Aa` and `×` inside.
+- **The phone** keeps the native bar with the lab still selected.
+
+### What this scenario cannot prove
+
+Four limits, all in the scenario's own notes as well as here.
+
+- **The 240-calls-per-second budget breach is not pressed live.** Driving 240 calls through the
+  frame from CDP measures the harness. `pane-search/presenter.test.ts` owns it.
+- **The bundled terminal renderer's reveal is not observable.** ghostty-web scrolls inside a canvas
+  and publishes no scroll offset or selection to the document, so with the bundled renderer the
+  scenario asserts the daemon's selection moving and says no more. Terminal Lab is where the reveal
+  itself is measured.
+- **Cross-document focus transfer cannot be reproduced through CDP**, which hit-tests every
+  synthesized event and keeps no per-frame focus model. "The caret is in the lab's field" is asserted
+  through the lab's own `document.activeElement` and through the consequence - a marker typed after a
+  close landing in the shell - rather than through the host's idea of who has focus.
+- **No second attached client is opened.** Daemon authority is proved the cheaper way, by handing the
+  same live session to the native bar and reading the needle back out of it.
+
+**What the owner should try by hand**, on a private instance with `examples/plugins/search-lab`
+installed and selected for `pane.search` (reinstall the path after every edit: an installed example
+is a copy). The 2026-09-24 result file for this branch carries the fuller keyboard list, with Pane
+Lab and Terminal Lab installed alongside:
+
+1. ⌘F over a shell pane and type immediately, with no click first. The caret should already be in
+   the plugin's field.
+2. Click the terminal under the bar while the bar is open, then type. The caret should move to the
+   shell, and the bar should stay up holding its needle.
+3. Press Return and ⇧Return in the field, then ⌘G and ⇧⌘G, and watch the terminal scroll to each
+   match.
+4. Press Tab in the field, and any chord you have bound, and confirm nothing in the window answers.
+5. Close with Escape and type a command straight away. It should land in the shell.
+6. Crash it (`searchLab.crash('uncaught')` from the view's console, or just disable the plugin
+   mid-search) and keep typing. Kelpi's own bar should be there with your needle and your caret.
+   Crash it again with `Aa` lit: Kelpi's bar should count insensitively.
+7. Drag the pane divider until the pane is very narrow, and watch the bar give way whole: the ↑ ↓
+   buttons first, then the counter, never `Aa` or `×`, and never a field narrower than a few
+   characters until nothing else is left.
+8. Reload the plugin (`kelpi plugin reload example.search-lab`) and press ⌘F straight away, then type
+   two letters before the lab appears. They should be in the lab's field when it does.
+
+### What the onscreen screenshots caught
+
+Two presentation defects, both in Search Lab and neither in the host, and both the same shape: **a
+clip is not a layout**.
+
+- **The controls were cut off.** The bar laid itself out to its content and the host clipped it, so
+  on a 131 px pane the screenshot showed the needle and nothing else - no next, no previous, no case
+  toggle, no close, which is a find bar a user cannot step or dismiss. What a flex row loses to a cut
+  on its trailing edge is the trailing end. The bar now takes the granted width as a `max-width` and
+  lets the FIELD yield, which is the native bar's own answer, while still declaring the width it
+  wants so a pane that widens gets the whole bar back. `features/search-lab.test.ts` holds it.
+- **The counter won over the buttons.** With the field shrinking but the counter fixed, a very
+  narrow box still pushed the controls out. The second cut let the counter yield too, meant to go
+  after the field and before any control; that was not an order a flex row keeps, and it was
+  reversed on 2026-09-24 (below): the counter is `flex: none` and gives way whole.
+
+A third finding was in the scenario rather than the code: the "native bars" shot was taken after the
+Escape that closed them, so it was a picture of nothing. It is taken while the bar is up now, which
+is the rule `plugin-pane-chrome` already states.
+
+**The second fix was not an order either**, which the lead's read of the 2026-09-20 onscreen shots
+showed: a flex row shares a shortfall out by size, so with the counter shrinking beside the field a
+246 px box cut the counter to "1 of" (the total gone), and a 112 px box left the field an empty square
+with the `×` past the clip. Search Lab now lets the needle alone yield, down to a 72 px floor, and then
+drops whole controls in a fixed order (the step buttons, then the counter, whose text moves to the
+field's tooltip), never the case toggle or the `×`. The 2026-09-24 shots show `1 of 13` whole on the
+wide pane and a usable field with `Aa` and `×` on the narrow one, and the scenario measures both.
+
+### Review follow-up (2026-09-24)
+
+An independent review of `bf835a1` reported one high, three medium, one medium-low and four low
+findings. All nine are resolved at the tested revision.
+
+| Finding | Resolution |
+| --- | --- |
+| 1 (high): the fallback's caret re-assertion kept no timer, was never cancelled and could steal the caret from a user who had moved it | It keeps its timer; the grid stops it when the search closes or moves and when it unmounts; a second fallback replaces the first; and it stops for good on a pointer press, a key press, or the caret arriving anywhere but the native field or the searched pane's own surface. Stopping on ANY foreign `focusin` would stop on the pane's own caret claim, which is the race it exists to win, so that one exemption is kept and a user moving the caret into that pane is caught by the press that does it. |
+| 2 (medium): the case toggle dropped a short needle still in its debounce | The scheduler's new `flush()` sends it at once with the new flag; a needle already on the wire is re-sent from the one in transit rather than the daemon's older one. |
+| 3 (medium): a failure or stand-down left the native bar counting case-sensitively with no indicator | Whenever the native bar is drawing an open, case-sensitive search on a connected window, the flag goes back off and the needle is recounted. First edge-triggered on the stand-down; the second review made it a state (L1), so a presenter that stood down while disconnected and never came back is answered when the connection returns. Live: check 12. |
+| 4 (medium): the no-bar-gap checks could not fail | Both samplers must catch the presenter mounted and unpainted; the attach sampler runs with the lab enabled under an open search. Live: 26 and 36 boot samples at `930b44b`, 20 and 35 at `68c2b0d`. |
+| 5 (medium-low): keystrokes lost in the hand-over | Both bars are handed the needle still in transit (`SearchNeedleScheduler.inTransit`), the lab follows it until the user types into its own field, and it takes the caret into its field the moment its frame gains focus. Live: the `NE` check. |
+| 6 (low): needles plus `total` are an undocumented scrollback oracle | Documented where the withheld list is (`docs/plugin-ui.md`, the projection, the SDK types) rather than bounded: installed plugins are fully trusted, and it is a count per needle rather than text. |
+| 7 (low): ⌘G was consumed window-wide and the Ctrl forms were never relayed | Answered only while the frame or the searched pane holds the caret, on the platform's primary modifier; Ctrl-G and Shift-Ctrl-G are relayed where Ctrl is primary. |
+| 8 (low): surface-count drift | Search is the sixth presented surface in the feature definitions, the contract, the scenario header and the roadmap. |
+| 9 (low): no test pinned the re-assertion | Six tests in `pane-search/presenter-slot.test.tsx`. |
+
+### Second review follow-up (2026-09-24)
+
+A follow-up review of the fix commits found no high, three medium and five low findings, and
+verdicts of partial on 1 and 5 and mostly on 3. All eight are applied, each with a test.
+
+| Finding | Resolution |
+| --- | --- |
+| M1: the re-assertion still stole from a plugin-rendered searched pane | A press inside a child document never reaches the host, and the renderer's iframe counted as the pane. The SDK now marks the focus it reports for a `pointerdown` with `pointer: true`, and `PluginView` relays exactly that through `plugins/frame-gesture.ts`, which the re-assertion listens to. A `focusin` is not relayed: a frame can be focused programmatically, which is the race. |
+| M2: a keystroke into the native field ended the protection | Plain typing into the field no longer stops it; Tab, Escape, a modifier chord, or a key pressed anywhere else does. |
+| M3: the live hand-over check never exercised the in-transit needle | The held boot above, released inside the debounce, with the timing asserted; plus `App.pane-search-draft.test.tsx`, which pins the in-transit needle in the frame and the native bar's seed, the flush on the case toggle, the re-send from the draft, and a needle from elsewhere never masked by an old draft. |
+| L1: the case reset was edge-triggered | `paneSearchCaseStranded`, a state the grid answers whenever it holds. |
+| L2: Search Lab's height ratcheted down on a short pane | `fit()` lifts the height ceiling as well as the width one while it measures. |
+| L3: the daemon's recounts raced | A per-workspace count generation that `set`, `toggle` and `close` move; a recount publishes only if its generation is still current, and steps do not move it, so two quick ⌘G presses both land. Its own commit, tested with a backend whose searches finish in an order the test picks. |
+| L4: two renders per keystroke | The in-transit needle is a ref and the state only a render trigger, skipped when the needle a bar would be handed does not change: the daemon's answer costs no render (asserted by counting grid renders). |
+| L5: "the counter now yields too" | Reworded above. |
+
+Found while applying M3: Search Lab's seed called `field.focus()` on the session's first frame, which
+arrives while the native bar is still drawing, so a presenter painting behind the host's clip could
+pull the caret out of the bar the user was typing into. The seed now places the caret and takes focus
+only when the lab's own document has it; the frame gaining focus takes the caret when the bar is
+shown. And readiness is reported from a detached routine: the SDK acknowledges a frame only once its
+listener settles, so a held report inside the listener would have held every frame after it.
+
+### Two host defects this surface found
+
+Both were found by the live scenario rather than by a suite, and both are fixed here with a test.
+
+- **A hook behind a short circuit.** `const shown = painted && usePaneSearchPainted(generation)`
+  reads well and is a conditionally called hook: the call is skipped on every render where `painted`
+  is false, so the first render that flips it adds a hook to the list and React tears the tree down
+  mid-commit. The evidence is a blank window and
+  `TypeError: Cannot read properties of undefined (reading 'length')` on the first ⌘F of the first
+  live run. **`pane-chrome/presenter-slot.tsx` had the same line**, merged in #244: its `painted`
+  flips on a selection change, a dropped connection and the grid being hidden, so the order was
+  stable there only by luck. Both now read the latch unconditionally and combine afterwards.
+- **The terminal takes the caret off the native bar on a fallback.** Removing the failed presenter's
+  iframe moves focus to `<body>`, and the focused pane's own caret claim answers that by taking it
+  into the terminal's hidden textarea - measured as `document.activeElement` reading `TEXTAREA` while
+  the bar sat there holding the user's needle and no caret. The bar's own mount effect has already
+  run by then, so it has nothing left to do about it. The host now re-asserts that field for a
+  bounded window after a fallback, selecting it by its `role="search"` landmark rather than by a test
+  id. A single re-assert was not enough under load, which the three-scenario chain caught.
+
+### One harness lesson worth keeping
+
+`page.type` doubles every character in a real `<input>`: CDP's key-at-a-time path dispatches a
+`keyDown` carrying text AND a `char` event, and a text field inserts on both - measured here as
+`NNEEEEDDLLEEFFIINNDD` for a ten-character needle. `page.type` is for a TERMINAL, which is a canvas
+and consumes the key event itself; a text field takes `insertText`. And a click aimed at a point the
+browser hit-tests to something else reports success and does nothing, which is how the first run of
+this scenario "retried" a presenter that never came back: every host click here now scrolls its
+target into view, asks `elementFromPoint` who is actually there, and notes a fallback rather than
+silently pressing the wrong thing.
 
 ## Selectable pane chrome presenter (2026-09-19)
 

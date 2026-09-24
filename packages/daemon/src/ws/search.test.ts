@@ -41,6 +41,38 @@ function fixture(): Fixture {
     };
 }
 
+/**
+ * A backend whose searches finish when the test says so, in whatever order it says.
+ *
+ * Each call waits for its own `finish(index, matches)`, which is how two recounts that race in a
+ * real daemon (the buffer read is asynchronous and nothing orders two of them) are made to finish
+ * out of order on purpose.
+ */
+function deferredFixture() {
+    const h = harness(seededState());
+    const pending: { needle: string; caseSensitive: boolean | undefined; resolve: (matches: readonly TerminalMatch[]) => void }[] = [];
+    const channel = createTerminalSearchChannel({
+        store: h.store,
+        term: {
+            searchAsync: (_paneID, needle, options) =>
+                new Promise((resolve) => pending.push({ needle, caseSensitive: options.caseSensitive, resolve }))
+        }
+    });
+    return {
+        h,
+        channel,
+        pending,
+        async finish(index: number, matches: readonly TerminalMatch[]): Promise<void> {
+            pending[index]!.resolve(matches);
+            for (let step = 0; step < 5; step += 1) await Promise.resolve();
+        },
+        /** Let queued requests reach their recount. */
+        async settle(): Promise<void> {
+            for (let step = 0; step < 5; step += 1) await Promise.resolve();
+        }
+    };
+}
+
 describe('isTerminalSearchCommand', () => {
     it('matches only the one verb', () => {
         expect(isTerminalSearchCommand('terminal-search')).toBe(true);
@@ -201,5 +233,82 @@ describe('terminal-search', () => {
             ok: true,
             total: 0
         });
+    });
+});
+
+/**
+ * Two recounts race, and the one that was asked for LAST is the one that counts.
+ *
+ * A presenter's case toggle sends the needle case sensitive, and its stand-down re-sends it
+ * insensitive a moment later: if the first recount finished second, it published its total over
+ * the second's, and the native bar - which has no toggle - read "no matches" for a needle that
+ * plainly matched.
+ */
+describe('terminal-search recounts that finish out of order', () => {
+    it('drops a set whose recount finishes after a newer set, whatever its case flag', async () => {
+        const f = deferredFixture();
+        await f.channel.run({ action: 'toggle', workspace_id: W1 });
+        const sensitive = f.channel.run({ action: 'set', workspace_id: W1, needle: 'needle', case_sensitive: true });
+        const insensitive = f.channel.run({ action: 'set', workspace_id: W1, needle: 'needle', case_sensitive: false });
+        await f.settle();
+        expect(f.pending.map((call) => call.caseSensitive)).toEqual([true, false]);
+        // The NEWER request finishes first and publishes twelve.
+        await f.finish(1, Array.from({ length: 12 }, (_, index) => match(index + 1, 0)));
+        await insensitive;
+        expect(workspaceByID(f.h.state(), W1)?.searchTotal).toBe(12);
+        // The older one finishes second and publishes nothing.
+        await f.finish(0, []);
+        expect(await sensitive).toMatchObject({ ok: true });
+        expect(workspaceByID(f.h.state(), W1)?.searchTotal).toBe(12);
+    });
+
+    it('lets two steps on the same needle both land, whatever order they finish in', async () => {
+        const f = deferredFixture();
+        await f.channel.run({ action: 'toggle', workspace_id: W1 });
+        const three = [match(10, 0), match(20, 0), match(30, 0)];
+        const set = f.channel.run({ action: 'set', workspace_id: W1, needle: 'marker' });
+        await f.settle();
+        await f.finish(0, three);
+        await set;
+        const first = f.channel.run({ action: 'next', workspace_id: W1 });
+        const second = f.channel.run({ action: 'next', workspace_id: W1 });
+        await f.settle();
+        await f.finish(2, three);
+        await f.finish(1, three);
+        await Promise.all([first, second]);
+        expect(workspaceByID(f.h.state(), W1)?.searchSelected).toBe(1);
+    });
+
+    it('drops a step counted for a needle that has since been replaced', async () => {
+        const f = deferredFixture();
+        await f.channel.run({ action: 'toggle', workspace_id: W1 });
+        const set = f.channel.run({ action: 'set', workspace_id: W1, needle: 'old' });
+        await f.settle();
+        await f.finish(0, [match(10, 0), match(20, 0)]);
+        await set;
+        const step = f.channel.run({ action: 'next', workspace_id: W1 });
+        const replaced = f.channel.run({ action: 'set', workspace_id: W1, needle: 'new' });
+        await f.settle();
+        await f.finish(2, [match(40, 0)]);
+        await replaced;
+        await f.finish(1, [match(10, 0), match(20, 0)]);
+        await step;
+        const workspace = workspaceByID(f.h.state(), W1);
+        expect(workspace?.searchNeedle).toBe('new');
+        expect(workspace?.searchTotal).toBe(1);
+        expect(workspace?.searchSelected).toBeNull();
+    });
+
+    it('publishes nothing from a recount that finishes after the bar closed', async () => {
+        const f = deferredFixture();
+        await f.channel.run({ action: 'toggle', workspace_id: W1 });
+        const set = f.channel.run({ action: 'set', workspace_id: W1, needle: 'marker' });
+        await f.settle();
+        await f.channel.run({ action: 'close', workspace_id: W1 });
+        await f.finish(0, [match(10, 0)]);
+        await set;
+        const workspace = workspaceByID(f.h.state(), W1);
+        expect(workspace?.searchingPaneID).toBeNull();
+        expect(workspace?.searchTotal).toBeNull();
     });
 });

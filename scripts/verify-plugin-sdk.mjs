@@ -31,7 +31,7 @@ export function activate(api: BackendAPI) {
     api.browser.attach({});
     return () => { void state; };
 }`,
-        view: `import { getKelpi, type ViewAPI, type BrowserSurface, type InteractionSnapshot, type PaneChromeSnapshot, type SettingsPresenterSnapshot, type TerminalGrid, type TerminalSession } from '@kelpi/plugin-sdk';
+        view: `import { getKelpi, type ViewAPI, type BrowserSurface, type InteractionSnapshot, type PaneChromeSnapshot, type PaneSearchSnapshot, type SettingsPresenterSnapshot, type TerminalGrid, type TerminalSession } from '@kelpi/plugin-sdk';
 const api: ViewAPI = getKelpi();
 let mirror: TerminalGrid | null = null;
 async function mount(element: HTMLElement) {
@@ -88,6 +88,24 @@ async function mount(element: HTMLElement) {
     void chrome.panes[0]?.controls[0]?.key;
     // @ts-expect-error The rename field is the host's: a presenter asks for it, it does not send a name.
     void api.ui.renamePane('pane-1', 'api');
+    // A pane search presenter reads one frame about ONE pane, drives the daemon's own needle and
+    // declares the box it drew. It never receives the buffer it is searching and cannot open a search.
+    const search: PaneSearchSnapshot = await api.ui.getPaneSearch();
+    if (search.visible && search.paneID !== null && search.box !== null) {
+        await api.ui.setSearchNeedle(search.paneID, search.needle);
+        await api.ui.setSearchCaseSensitive(search.paneID, !search.caseSensitive);
+        await api.ui.searchNext(search.paneID);
+        await api.ui.searchPrevious(search.paneID);
+        await api.ui.setSearchBoxSize(search.paneID, { width: search.box.width, height: search.box.height });
+        await api.ui.setSearchBoxSize(search.paneID, null);
+        await api.ui.closeSearch(search.paneID);
+    }
+    const stopSearch = api.ui.onPaneSearch(frame => { void frame.needleTruncated; });
+    stopSearch();
+    // @ts-expect-error A find bar never receives the buffer it is searching; capture does that.
+    void search.scrollback;
+    // @ts-expect-error Opening a search is a host gesture, not a presenter call.
+    void api.ui.openSearch('pane-1');
     browser.dispose(); terminal.dispose();
 }
 void mount;

@@ -89,6 +89,23 @@ import {
     type PaneChromeProjection,
     type PaneChromeRefMinter
 } from '../pane-chrome';
+import {
+    PaneSearchPresenterSlot,
+    paneSearchBoxFor,
+    paneSearchCaseStranded,
+    paneSearchRect,
+    projectPaneSearch,
+    retainPaneSearchBox,
+    stopNativeCaretReclaim,
+    usePaneSearchBoxScope,
+    usePaneSearchBoxes,
+    usePaneSearchPainted,
+    usePaneSearchSelection,
+    type PaneSearchActions,
+    type PaneSearchProjection,
+    type PaneSearchRect,
+    type PaneSearchSession
+} from '../pane-search';
 import { FocusRing, useFocusDwell } from './FocusRing';
 import { Icon } from './icons';
 import { PANE_HEADER_HEIGHT, PaneHeader } from './PaneHeader';
@@ -187,6 +204,31 @@ export interface PaneGridProps extends PaneActions, GridLayoutCallbacks {
     readonly onRequestRename?: ((paneID: string) => void) | undefined;
     /** A pane chrome presenter failed and every pane is back on its native header. */
     readonly onPaneChromeFailure?: ((detail: string) => void) | undefined;
+    /**
+     * A selected `pane.search` presenter may draw the find bar over the pane being searched.
+     *
+     * Off by default, exactly as `paneChromePresenter` is, so every standalone render and every
+     * existing suite is untouched: with this false nothing is projected, no store is subscribed to
+     * and `renderPaneOverlay` is the only bar there is. `App` passes true for a DESKTOP window.
+     */
+    readonly paneSearchPresenter?: boolean | undefined;
+    /**
+     * The open search, as the daemon states it, or null while nothing is being searched.
+     *
+     * Built by `App` from the workspace's own `searchingPaneID` / `searchNeedle` / `searchTotal` /
+     * `searchSelected` plus the window's case flag and the last reported match, because that state
+     * is the assembly's and this grid has no connection of its own. Ignored entirely while
+     * `paneSearchPresenter` is false.
+     */
+    readonly search?: PaneSearchSession | null | undefined;
+    /** The write path a search presenter's calls reach. Required while one may be selected. */
+    readonly searchActions?: PaneSearchActions | undefined;
+    /** The chords the host relays into a painted search presenter (`paneSearchPresenterChords`). */
+    readonly searchChords?: readonly string[] | undefined;
+    /** A pane search presenter failed and the native bar is back with the daemon's needle. */
+    readonly onPaneSearchFailure?: ((detail: string) => void) | undefined;
+    /** Put the caret back on the searched pane when the session ends. `App`: `handBackPaneCaret`. */
+    readonly onReleaseSearchCaret?: ((paneID: string) => void) | undefined;
     /**
      * Put the caret back on a pane after presenter focus or keyboard completion of a rename.
      *
@@ -849,6 +891,9 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
     const dragRegions = usePaneChromeDragRegions();
     // Every declaration goes back when the displayed workspace changes, and when this grid goes.
     usePaneChromeScope(props.workspaceID);
+    // The same pair for the find bar's box, and for the same reasons one surface over.
+    const searchBoxes = usePaneSearchBoxes();
+    usePaneSearchBoxScope(props.workspaceID);
     const zoomAvailable = panes.length > 1;
 
     /*
@@ -1016,6 +1061,107 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
         chromeRefs.current.minter.retain(chrome.carried);
     }, [chrome]);
 
+    /*
+     * ── the pane search presenter ───────────────────────────────────────────────────
+     *
+     * Resolved here for the reason the pane chrome selection is: two readers need the same answer
+     * in the same commit. The slot decides whether to mount, and the loop below decides whether to
+     * draw the NATIVE bar for the searched pane. A grid that dropped the native bar while the slot
+     * mounted nothing would be an open search with no bar at all, which is the one state this
+     * surface may never reach.
+     */
+    const searchEnabled = props.paneSearchPresenter === true;
+    const searchSelection = usePaneSearchSelection(searchEnabled);
+    const searchActive = searchEnabled && !searchSelection.bundled;
+    const searchPainted = usePaneSearchPainted(searchSelection.generation);
+    const searchSession = searchActive ? (props.search ?? null) : null;
+    /**
+     * This render's frame and the box it may be drawn in.
+     *
+     * A session whose pane has no laid-out frame is a session on a pane this grid is not showing -
+     * zoomed out, or in another workspace - and the presenter is told nothing is open rather than
+     * being handed a box with no pane under it.
+     */
+    const search = useMemo<{
+        readonly projection: PaneSearchProjection;
+        readonly rect: PaneSearchRect | null;
+        readonly paneID: string | null;
+    } | null>(() => {
+        if (!searchActive) return null;
+        const session = searchSession;
+        const frame = session === null || !gridVisible ? undefined : frames.get(session.paneID);
+        const live = session !== null && frame !== undefined ? session : null;
+        const rect =
+            live === null || frame === undefined
+                ? null
+                : paneSearchRect(frame, paneSearchBoxFor(searchBoxes, live.paneID, frame));
+        return {
+            projection: projectPaneSearch({
+                // `PaneGrid` is the desktop grid; the phone has its own shell and never mounts it.
+                formFactor: 'desktop',
+                visible: gridVisible && live !== null,
+                session: live,
+                rect
+            }),
+            rect,
+            paneID: live?.paneID ?? null
+        };
+    }, [searchActive, searchSession, frames, gridVisible, searchBoxes]);
+    /**
+     * Which pane the presenter is actually drawing the bar for, or null.
+     *
+     * Null until the presenter has reported that it has PAINTED for this generation, which is what
+     * keeps the native bar up through a plugin's boot, its attach, its first frame and every reload
+     * (#244's rule: the native surface stays until the presenter has painted).
+     */
+    const searchPresented = searchPainted ? (search?.paneID ?? null) : null;
+    /*
+     * The box belongs to the pane being searched, and the host is what enforces it.
+     *
+     * A declaration outlives the search that prompted it unless somebody drops it, and the
+     * presenter cannot: the moment the search closes or moves, every call naming the old pane is
+     * refused, the hand-back included. So the host withdraws, every commit, from the one place that
+     * knows which pane is being searched.
+     */
+    useEffect(() => {
+        if (!searchActive) return;
+        retainPaneSearchBox(search?.paneID ?? null);
+    }, [searchActive, search]);
+    /*
+     * A fallback's caret re-assertion ends with the search it was for.
+     *
+     * Keyed on the DAEMON's session rather than on `search`, which goes null the moment the
+     * presenter stands down - that is exactly when the re-assertion starts - so the cleanup runs
+     * when the search closes or moves to another pane, and when this grid unmounts.
+     */
+    const searchedPaneID = props.search?.paneID ?? null;
+    useEffect(() => () => stopNativeCaretReclaim(), [searchedPaneID]);
+    /*
+     * The case flag is a presenter's control, so it leaves with the presenter.
+     *
+     * The native bar has no case toggle and no indicator, so a flag left on after a presenter
+     * failed or was deselected mid-search had it counting case-sensitively with nothing on screen
+     * to say so: "no matches" for a needle that plainly matched, until the bar was closed and
+     * reopened. So whenever the native bar is the one drawing an open, case-sensitive search on a
+     * connected window, the flag goes back off and the needle is recounted - the native bar's own
+     * terms. A STATE, not a transition (`paneSearchCaseStranded`): a presenter that stood down while
+     * the connection was down and never came back is answered when the connection does.
+     * `setCaseSensitive` is idempotent, so a render that finds the same state again sends nothing.
+     */
+    const openSearch = props.search ?? null;
+    const caseStranded =
+        openSearch !== null &&
+        paneSearchCaseStranded({
+            connected: searchSelection.connected,
+            presenterActive: searchActive,
+            caseSensitive: openSearch.caseSensitive
+        });
+    const strandedPaneID = caseStranded ? openSearch.paneID : null;
+    const searchActions = props.searchActions;
+    useEffect(() => {
+        if (strandedPaneID !== null) searchActions?.setCaseSensitive(strandedPaneID, false);
+    }, [strandedPaneID, searchActions]);
+
     const dropRect =
         dropTarget === null
             ? null
@@ -1072,7 +1218,13 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
                  * counter unreadable, the next and previous buttons dead. A pane with an overlay is
                  * lifted for the same reason a renaming pane is, and for exactly as long.
                  */
-                const overlay = props.renderPaneOverlay?.(pane.id) ?? null;
+                /*
+                  * ...unless a SEARCH PRESENTER is the one drawing that bar. It paints in a frame
+                  * of its own over the grid, so the native overlay must not also be mounted (two
+                  * find bars on one pane) and this wrapper must not be lifted for a bar it is not
+                  * carrying - the presenter's frame is above it at 4 either way.
+                  */
+                const overlay = searchPresented === pane.id ? null : props.renderPaneOverlay?.(pane.id) ?? null;
                 return (
                     <div
                         key={pane.id}
@@ -1266,6 +1418,36 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
                     {...(props.onPaneChromeFailure === undefined
                         ? {}
                         : { onFailure: props.onPaneChromeFailure })}
+                />
+            )}
+
+            {/*
+              * The pane search presenter: ONE frame over the whole grid, clipped to the one box the
+              * open search occupies.
+              *
+              * Inside this container rather than beside it, so the frame's coordinate space is the
+              * grid's and the rectangle in the projection needs no translation. At z 4: above every
+              * pane wrapper (1, or 3 while renaming or carrying a host overlay) and above the pane
+              * chrome presenter's frame (2), which is the native bar's own order restated - it is
+              * `z-30` inside its wrapper and therefore over everything the grid has below it.
+              * Rendered only while a presenter is selected, connected and unlatched; otherwise this
+              * is `null`, `renderPaneOverlay` draws the native bar and the grid is exactly what it
+              * was.
+              */}
+            {search === null || props.searchActions === undefined ? null : (
+                <PaneSearchPresenterSlot
+                    selection={searchSelection}
+                    visible={gridVisible}
+                    formFactor="desktop"
+                    projection={search.projection}
+                    rect={search.rect}
+                    paneID={search.paneID}
+                    actions={props.searchActions}
+                    chords={props.searchChords ?? []}
+                    onReleaseCaret={(paneID) => props.onReleaseSearchCaret?.(paneID)}
+                    {...(props.onPaneSearchFailure === undefined
+                        ? {}
+                        : { onFailure: props.onPaneSearchFailure })}
                 />
             )}
 

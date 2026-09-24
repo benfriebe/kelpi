@@ -108,6 +108,111 @@ describe('the search-needle scheduler', () => {
         expect(scheduler.pending()).toBe(false);
     });
 
+    /**
+     * The case toggle's rule: a short needle still waiting out its 300 ms goes NOW rather than being
+     * dropped, so the recount the toggle asks for is a count of what the user actually typed.
+     */
+    it('flush() sends a pending needle immediately, once, and says whether there was one', () => {
+        const sent: string[] = [];
+        const scheduler = createSearchNeedleScheduler({ send: (needle) => sent.push(needle) });
+        expect(scheduler.flush()).toBe(false);
+        scheduler.push('ab');
+        vi.advanceTimersByTime(100);
+        expect(scheduler.flush()).toBe(true);
+        expect(sent).toEqual(['ab']);
+        expect(scheduler.pending()).toBe(false);
+        vi.advanceTimersByTime(SEARCH_DEBOUNCE_MS * 2);
+        expect(sent).toEqual(['ab']);
+        expect(scheduler.flush()).toBe(false);
+    });
+
+    it('flush() has nothing to send after cancel() or after the timer fired', () => {
+        const sent: string[] = [];
+        const scheduler = createSearchNeedleScheduler({ send: (needle) => sent.push(needle) });
+        scheduler.push('a');
+        scheduler.cancel();
+        expect(scheduler.flush()).toBe(false);
+        scheduler.push('b');
+        vi.advanceTimersByTime(SEARCH_DEBOUNCE_MS);
+        expect(scheduler.flush()).toBe(false);
+        expect(sent).toEqual(['b']);
+    });
+
+    /**
+     * The needle a bar taking over is handed. It is the last one TYPED for as long as the daemon
+     * may not have it - through the 300 ms and through the round trip - and the daemon's own from
+     * the moment the last request carrying one is answered.
+     */
+    it('reports the needle in transit through the debounce and the round trip, then lets go', async () => {
+        const answers: (() => void)[] = [];
+        const seen: (string | null)[] = [];
+        const scheduler = createSearchNeedleScheduler({
+            send: () => new Promise<void>((resolve) => answers.push(resolve)),
+            onTransit: (needle) => seen.push(needle)
+        });
+        expect(scheduler.inTransit()).toBeNull();
+        scheduler.push('ab');
+        expect(scheduler.inTransit()).toBe('ab');
+        vi.advanceTimersByTime(SEARCH_DEBOUNCE_MS);
+        expect(answers).toHaveLength(1);
+        // Sent, and not answered yet: the daemon may still be counting the previous needle.
+        expect(scheduler.inTransit()).toBe('ab');
+        scheduler.push('abc');
+        expect(scheduler.inTransit()).toBe('abc');
+        answers[0]?.();
+        await Promise.resolve();
+        // One answer is not enough while a later request is still out.
+        expect(scheduler.inTransit()).toBe('abc');
+        answers[1]?.();
+        await Promise.resolve();
+        expect(scheduler.inTransit()).toBeNull();
+        expect(seen).toEqual(['ab', 'abc', null]);
+    });
+
+    it('holds the needle in transit while a newer one waits out the debounce', async () => {
+        const answers: (() => void)[] = [];
+        const scheduler = createSearchNeedleScheduler({
+            send: () => new Promise<void>((resolve) => answers.push(resolve))
+        });
+        scheduler.push('abc');
+        scheduler.push('ab');
+        answers[0]?.();
+        await Promise.resolve();
+        expect(scheduler.inTransit()).toBe('ab');
+        vi.advanceTimersByTime(SEARCH_DEBOUNCE_MS);
+        answers[1]?.();
+        await Promise.resolve();
+        expect(scheduler.inTransit()).toBeNull();
+    });
+
+    it('cancel() forgets the needle in transit, and a late answer from before it changes nothing', async () => {
+        const answers: (() => void)[] = [];
+        const scheduler = createSearchNeedleScheduler({
+            send: () => new Promise<void>((resolve) => answers.push(resolve))
+        });
+        scheduler.push('abc');
+        scheduler.cancel();
+        expect(scheduler.inTransit()).toBeNull();
+        // The next session's needle, still unanswered when the old answer finally lands.
+        scheduler.push('xyz');
+        answers[0]?.();
+        await Promise.resolve();
+        expect(scheduler.inTransit()).toBe('xyz');
+        answers[1]?.();
+        await Promise.resolve();
+        expect(scheduler.inTransit()).toBeNull();
+    });
+
+    it('treats a send with no promise as answered on the spot', () => {
+        const scheduler = createSearchNeedleScheduler({ send: () => undefined });
+        scheduler.push('abc');
+        expect(scheduler.inTransit()).toBeNull();
+        scheduler.push('a');
+        expect(scheduler.inTransit()).toBe('a');
+        expect(scheduler.flush()).toBe(true);
+        expect(scheduler.inTransit()).toBeNull();
+    });
+
     it('takes its timer seam, so a host can supply its own clock', () => {
         const sent: string[] = [];
         const scheduled: number[] = [];

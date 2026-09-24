@@ -124,6 +124,27 @@ behave like a title bar and the host lays its own surfaces over them, with a res
 the leading edge as the floor.
 See [pane chrome](plugin-ui.md#pane-chrome).
 
+The find bar is a sixth, `pane.search`. One selected view draws the bar that ⌘F opens over a SHELL
+pane, from one frame about the one pane Kelpi is searching: the needle, the case flag, the total,
+the selected match and the rectangle the bar may occupy. It is Settings-only in the same way, and a
+container cannot declare it. Markdown and diff previews count matches inside their own sandboxed
+frames and a web pane counts inside its page, so both keep their native bars, and opening a search
+stays a host gesture - there is no presenter call for it. The needle, the total and the selection
+are workspace state on the delta stream, so two windows agree on them and a presenter asks for
+changes through calls rather than holding any of it; the reveal and the highlight stay with the
+terminal renderer. A presenter declares how big its bar is and the host clamps it to the smaller of
+480 px and the pane's inner width, and to the smaller of 96 px and a quarter of the pane. The host
+relays exactly four chords into the window - Escape, the toggle-search chord, ⌘G and ⇧⌘G (Ctrl-G and
+Shift-Ctrl-G where Ctrl is the primary modifier) - and everything else stays in the frame; ⌘G steps
+only while the frame or the searched pane holds the caret. The frame's needle is the one the user
+typed last while it is still on its way to the daemon, so a bar that takes over mid-word is handed
+what was typed. Scrollback is withheld, but the counts are not: a needle and the `total` it comes
+back with say whether that text is in the searched pane's buffer, which is what a find bar is and
+is stated rather than bounded. On failure the native bar comes back with the needle intact and its
+field focused, the case flag goes back off with the presenter that drew its toggle, a failure toast
+is raised, **Retry presenter** appears beside the selection, and phone windows keep the native bar.
+See [pane search](plugin-ui.md#pane-search).
+
 Plugin panes participate in normal splits, moves, zoom, parking, and close/reopen. They retain
 their descriptor and JSON state when the plugin is missing, disabled, updated, or removed.
 Parked plugin panes also survive daemon restarts. A missing plugin never spawns a terminal.
@@ -154,6 +175,14 @@ opaque ref, and the withheld count printed. It is selected for `pane.chrome` in 
 Workbench views; see the [UI guide](plugin-ui.md#pane-chrome) for the geometry, what is withheld and
 how a failed presenter puts every bundled header back at once, and its README for the diagnostics
 and the deliberate crash and stall hooks the live scenario uses.
+
+[Search Lab](../examples/plugins/search-lab) draws the terminal find bar from the public pane search
+feed, with no backend and no build: a needle field, a case toggle, a count read out of the daemon's
+own numbers, step and close controls, and a box declared from what it measured. It is selected for
+`pane.search` in Settings → Plugins → Workbench views; see the
+[UI guide](plugin-ui.md#pane-search) for the four relayed chords, the caret rules and what is
+withheld, and its README for the diagnostics and the deliberate crash and stall hooks the live
+scenario uses.
 
 [Document Lab](../examples/plugins/document-lab) replaces Markdown, Scratchpad and Diff bodies
 while preserving their native pane IDs and buffers. The [document guide](plugin-documents.md)
@@ -254,10 +283,10 @@ the commands registered during activation.
 Supported built-in placements are `pane`, `sidebar.primary`, `sidebar.secondary`, `panel.bottom`,
 `topbar`, `statusbar`, `workspace`, `settings`, `document.markdown`, `document.scratchpad`,
 `document.diff`, `terminal`, `browser`, `interaction.palette`, `interaction.prompts`,
-`interaction.notifications`, `settings.window`, and `pane.chrome`. A view can support several placements or a
-declared custom slot. Document, terminal and browser placements accept isolated views, not
-containers. Neither do the palette, prompts, notifications, Settings presenter and pane chrome
-placements: a presenter owns its whole surface.
+`interaction.notifications`, `settings.window`, `pane.chrome`, and `pane.search`. A view can support
+several placements or a declared custom slot. Document, terminal and browser placements accept
+isolated views, not containers. Neither do the palette, prompts, notifications, Settings presenter,
+pane chrome and pane search placements: a presenter owns its whole surface.
 Workbench chrome placement controls apply to the desktop layout.
 Plugin panes and document, terminal and browser renderers also work in phone and secondary-daemon workspaces.
 Browser controls target the owning daemon; native page display requires its Electron host window.

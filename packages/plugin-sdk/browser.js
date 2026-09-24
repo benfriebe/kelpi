@@ -95,6 +95,7 @@
     const interactionFeed = createWindowSubscription('interaction', 'ui.getInteraction');
     const settingsFeed = createWindowSubscription('settings', 'ui.getSettingsPresentation');
     const paneChromeFeed = createWindowSubscription('pane-chrome', 'ui.getPaneChrome');
+    const paneSearchFeed = createWindowSubscription('pane-search', 'ui.getPaneSearch');
     const request = (method, args = {}, cancelled, cancellationMessage = 'Terminal session is disposed.') => {
         if (pending.size >= 64) throw new Error('too many pending Kelpi calls');
         if (new TextEncoder().encode(JSON.stringify(args)).length > 256 * 1024) throw new Error('Kelpi call exceeds 256 KiB');
@@ -438,6 +439,7 @@
             else if (data.type === 'interaction' || data.type === 'interaction-error') await interactionFeed.receive(data);
             else if (data.type === 'settings' || data.type === 'settings-error') await settingsFeed.receive(data);
             else if (data.type === 'pane-chrome' || data.type === 'pane-chrome-error') await paneChromeFeed.receive(data);
+            else if (data.type === 'pane-search' || data.type === 'pane-search-error') await paneSearchFeed.receive(data);
             else if (data.type === 'terminal-frame') await receiveTerminalFrame(data);
             else if (data.type === 'terminal-action') await receiveTerminalAction(data);
             else if (data.type === 'browser-presentation') await receiveBrowserPresentation(data);
@@ -520,6 +522,19 @@
             openPaneMenu: async paneID => { await base.call('ui.openPaneMenu', { paneID }); },
             setPaneChromeHeight: async (paneID, pixels) => { await base.call('ui.setPaneChromeHeight', { paneID, pixels: pixels === null ? null : pixels }); },
             setPaneDragRegions: async (paneID, regions) => { await base.call('ui.setPaneDragRegions', { paneID, regions: regions === null ? null : [...regions].map(region => ({ x: region.x, y: region.y, width: region.width, height: region.height })) }); },
+            // The pane search presenter. Every one of these is refused unless THIS view is the one
+            // selected into `pane.search`, AND unless the pane named is the one the published frame
+            // says is being searched: an id that was right one frame ago and is not now - the search
+            // closed, or moved - does nothing. There is deliberately no call to OPEN a search; that
+            // stays ⌘F, the menu and `terminal.search`. See `pane-search.d.ts`.
+            getPaneSearch: () => base.call('ui.getPaneSearch'),
+            onPaneSearch: paneSearchFeed.subscribe,
+            setSearchNeedle: async (paneID, text) => { await base.call('ui.setSearchNeedle', { paneID, text }); },
+            setSearchCaseSensitive: async (paneID, on) => { await base.call('ui.setSearchCaseSensitive', { paneID, on }); },
+            searchNext: async paneID => { await base.call('ui.searchNext', { paneID }); },
+            searchPrevious: async paneID => { await base.call('ui.searchPrevious', { paneID }); },
+            closeSearch: async paneID => { await base.call('ui.closeSearch', { paneID }); },
+            setSearchBoxSize: async (paneID, size) => { await base.call('ui.setSearchBoxSize', { paneID, size: size === null ? null : { width: size.width, height: size.height } }); },
             showQuickPick: options => base.call('ui.showQuickPick', options),
             showInput: options => base.call('ui.showInput', options),
             showDialog: options => base.call('ui.showDialog', options),
@@ -530,11 +545,12 @@
     addEventListener('error', event => reportError(event.message ?? 'Plugin resource failed to load'), true);
     addEventListener('unhandledrejection', event => reportError(event.reason?.message ?? event.reason));
     addEventListener('pagehide', () => {
-        navigationFeed.dispose(); chromeFeed.dispose(); interactionFeed.dispose(); settingsFeed.dispose(); paneChromeFeed.dispose();
+        navigationFeed.dispose(); chromeFeed.dispose(); interactionFeed.dispose(); settingsFeed.dispose(); paneChromeFeed.dispose(); paneSearchFeed.dispose();
         terminalDisposed = true; terminalSession?.dispose();
         browserDisposed = true; browserSession?.dispose();
     });
-    addEventListener('pointerdown', () => { if (port && live.visible !== false) send({ type: 'focus' }); }, true);
+    // `pointer` tells the host this focus is a PRESS, which a programmatic focusin is not.
+    addEventListener('pointerdown', () => { if (port && live.visible !== false) send({ type: 'focus', pointer: true }); }, true);
     addEventListener('focusin', () => { if (port && live.visible !== false) send({ type: 'focus' }); browserSession?.updateTextFocus(); });
     addEventListener('focusout', () => { void Promise.resolve().then(() => browserSession?.updateTextFocus()); });
     addEventListener('keydown', event => {

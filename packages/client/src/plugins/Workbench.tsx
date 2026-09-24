@@ -19,6 +19,8 @@ import { clearInteractionPresenterFailure, interactionPresenterFailures, subscri
 import { SETTINGS_PLACEMENT, clearSettingsPresenterFailure, settingsPresenterFailures, subscribeSettingsPresenters } from '../settings/presenter';
 import { PANE_CHROME_PLACEMENT } from '../pane-chrome/contract';
 import { clearPaneChromePresenterFailure, paneChromePresenterFailure, subscribePaneChromePresenters } from '../pane-chrome/presenter';
+import { PANE_SEARCH_PLACEMENT } from '../pane-search/contract';
+import { clearPaneSearchPresenterFailure, paneSearchPresenterFailure, subscribePaneSearchPresenters } from '../pane-search/presenter';
 
 export type WorkbenchSlotID = Exclude<PluginPlacement, 'pane'>;
 interface WorkbenchLayout {
@@ -46,17 +48,19 @@ const WorkbenchContext = createContext<Workbench | null>(null);
  * an `ui.showInput({ password: true })` that no other slot has ever been able to see - so the
  * choice stays the user's, made in Settings, and `ui.selectView` refuses it.
  */
-const ROOT_SLOTS = ['sidebar.primary', 'sidebar.secondary', 'topbar', 'statusbar', 'panel.bottom', 'workspace', 'settings', 'document.markdown', 'document.scratchpad', 'document.diff', 'terminal', 'browser', 'interaction.palette', 'interaction.prompts', 'interaction.notifications', 'settings.window', 'pane.chrome'] as const;
+const ROOT_SLOTS = ['sidebar.primary', 'sidebar.secondary', 'topbar', 'statusbar', 'panel.bottom', 'workspace', 'settings', 'document.markdown', 'document.scratchpad', 'document.diff', 'terminal', 'browser', 'interaction.palette', 'interaction.prompts', 'interaction.notifications', 'settings.window', 'pane.chrome', 'pane.search'] as const;
 /**
- * The presented surfaces: the three interaction placements, the Settings window and every pane's
- * header band. Discoverable, never selectable by a plugin, and the only slots whose bundled entry
- * names itself.
+ * The presented surfaces: the three interaction placements, the Settings window, every pane's
+ * header band and the find bar over the pane being searched. Discoverable, never selectable by a
+ * plugin, and the only slots whose bundled entry names itself.
  *
  * Pane chrome is here for the reason the other four are, one surface wider: a header presenter
  * draws EVERY pane's chrome, including the close ✕ and other plugins' `pane.header` items, so the
- * choice of who draws it is the user's and is made in Settings.
+ * choice of who draws it is the user's and is made in Settings. Pane search is here for a sharper
+ * one: it owns a TEXT INPUT and the caret for as long as a search is open, so a plugin that could
+ * select itself into it could take the keyboard from a ⌘F the user pressed over their own shell.
  */
-const PRESENTED_SLOTS: readonly string[] = [...INTERACTION_PLACEMENTS, SETTINGS_PLACEMENT, PANE_CHROME_PLACEMENT];
+const PRESENTED_SLOTS: readonly string[] = [...INTERACTION_PLACEMENTS, SETTINGS_PLACEMENT, PANE_CHROME_PLACEMENT, PANE_SEARCH_PLACEMENT];
 const SELECTABLE_SLOTS: readonly string[] = ROOT_SLOTS.filter(slot => !PRESENTED_SLOTS.includes(slot));
 const INTERACTION_SLOTS: readonly InteractionPlacement[] = INTERACTION_PLACEMENTS;
 const SELECTIONS_CHANGED = 'kelpi-workbench-selections';
@@ -359,6 +363,8 @@ export function PlacementSettings(): ReactElement {
     const settingsSelected = resolveSlot(host.views, SETTINGS_PLACEMENT, host.selections[SETTINGS_PLACEMENT]);
     const chromeFailure = useSyncExternalStore(subscribePaneChromePresenters, paneChromePresenterFailure, paneChromePresenterFailure);
     const chromeSelected = resolveSlot(host.views, PANE_CHROME_PLACEMENT, host.selections[PANE_CHROME_PLACEMENT]);
+    const searchFailure = useSyncExternalStore(subscribePaneSearchPresenters, paneSearchPresenterFailure, paneSearchPresenterFailure);
+    const searchSelected = resolveSlot(host.views, PANE_SEARCH_PLACEMENT, host.selections[PANE_SEARCH_PLACEMENT]);
     return <div className="flex flex-col gap-3" data-testid="plugin-placements">
         <strong>Workbench views</strong>
         {ROOT_SLOTS.map(slot => <label key={slot} className="flex items-center justify-between gap-3 text-xs">{slot}<select aria-label={slot} value={slot === 'sidebar.primary' || slot === 'sidebar.secondary' ? host.sidebars[slot].id : resolveSlot(host.views, slot, host.selections[slot])?.id ?? ''} onChange={event => host.select(slot, event.target.value)}>
@@ -406,6 +412,18 @@ export function PlacementSettings(): ReactElement {
             <span role="status" data-testid={`pane-chrome-presenter-status-${PANE_CHROME_PLACEMENT}`}>{PANE_CHROME_PLACEMENT} presenter: {chromeFailure ? `Failed: ${chromeFailure.detail}` : !chromeSelected?.pluginID ? 'Bundled' : chromeSelected.title}</span>
             {chromeFailure ? <button type="button" className="shrink-0" data-testid={`pane-chrome-presenter-retry-${PANE_CHROME_PLACEMENT}`}
                 onClick={() => clearPaneChromePresenterFailure()}>Retry presenter</button> : null}
+        </div>
+        {/*
+          * The pane search row, on the same terms again. A failed search presenter is the one
+          * failure a user can be holding the keyboard through - the caret was in its frame a moment
+          * ago - so the row that says what happened has to be somewhere that never depended on it.
+          * This section is permanently native, and Retry is what clears a latch the window has not
+          * already moved past.
+          */}
+        <div className="flex items-center justify-between gap-3 text-xs">
+            <span role="status" data-testid={`pane-search-presenter-status-${PANE_SEARCH_PLACEMENT}`}>{PANE_SEARCH_PLACEMENT} presenter: {searchFailure ? `Failed: ${searchFailure.detail}` : !searchSelected?.pluginID ? 'Bundled' : searchSelected.title}</span>
+            {searchFailure ? <button type="button" className="shrink-0" data-testid={`pane-search-presenter-retry-${PANE_SEARCH_PLACEMENT}`}
+                onClick={() => clearPaneSearchPresenterFailure()}>Retry presenter</button> : null}
         </div>
         <button className="self-start text-xs" onClick={() => { for (const slot of ROOT_SLOTS) host.select(slot, DEFAULT_SLOTS[slot] ?? ''); }}>Restore bundled views</button>
     </div>;

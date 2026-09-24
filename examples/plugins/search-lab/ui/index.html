@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Search Lab</title><link rel="stylesheet" href="style.css"></head>
+<body>
+<!--
+  No shell, no frame, no backdrop. This view is mounted as ONE frame over the whole pane grid and
+  the host clips it to the ONE box the open search occupies, so the bar below is absolutely
+  positioned at the rectangle the frame carries. Anything drawn outside that rectangle is clipped
+  away by the host and never reaches the screen or the pointer.
+
+  `lab-search` is present only while this presenter is actually drawing a bar, so its presence is
+  the signal that the native bar has stood down.
+-->
+<div id="root" class="root" hidden></div>
+<p id="error" class="error" role="alert" hidden></p>
+<script type="module" src="pane-search.js"></script>
+</body></html>

@@ -1,0 +1,12 @@
+{
+  "id": "example.search-lab",
+  "name": "Search Lab",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "trust": "full",
+  "contributes": {
+    "views": [
+      { "id": "example.search-lab.search", "title": "Search Lab", "entry": "ui/index.html", "placements": ["pane.search"], "stateVersion": 1 }
+    ]
+  }
+}

@@ -187,6 +187,13 @@ import {
 import { PaneGrid, PaneSearchOverlay, paneDisplayTitle, type PaneModel, type RenderPane } from './grid';
 import type { PaneChromeItemDescriptor } from './pane-chrome';
 import {
+    isPaneSearchKind,
+    paneSearchPresenterChords,
+    setPaneSearchBox,
+    type PaneSearchActions,
+    type PaneSearchSession
+} from './pane-search';
+import {
     DEFAULT_SETTINGS_TAB,
     SETTINGS_TERMINAL_FONT_SIZE_FIELD_ID,
     SettingsOverlay,
@@ -547,8 +554,49 @@ function Shell(props: AppProps): ReactElement {
      * pressing Return on the same match twice scrolls back to it (`TerminalPane`'s reveal effect).
      */
     const [searchReveal, setSearchReveal] = useState<
-        { paneID: string; linesFromBottom: number; col: number; length: number; seq: number } | null
+        { paneID: string; linesFromBottom: number; col: number; length: number; line: number | null; seq: number } | null
     >(null);
+    /**
+     * Whether this window's search is case sensitive, for the length of one session.
+     *
+     * The daemon does NOT store this: `terminal-search` takes `case_sensitive` per request and
+     * keeps nothing (`daemon/src/ws/search.ts`), so there is no workspace field to read it back
+     * from and no delta to carry it. The window holds it, sends it with every request, and drops it
+     * when the search closes. Two windows therefore agree on the needle, the total and the
+     * selection - all three are workspace state - and disagree only about this toggle, which
+     * `docs/plugin-ui.md` records as the one thing they can.
+     *
+     * The native bar has no case control, so nothing sets this except a `pane.search` presenter.
+     * `false` is what shipped and what every existing check still measures.
+     */
+    const [searchCaseSensitive, setSearchCaseSensitive] = useState(false);
+    /** Read by the needle scheduler, which is created once and must not close over a render. */
+    const searchCaseRef = useRef(false);
+    searchCaseRef.current = searchCaseSensitive;
+    /**
+     * The needle this window last typed into the searched pane, while the daemon may not have it.
+     *
+     * The daemon's `searchNeedle` trails the field by up to a debounce and a round trip, and the
+     * two bars change hands mid-search: a presenter that paints while the user is typing into the
+     * native bar, the native bar coming back when a presenter fails. The one taking over was seeded
+     * with the daemon's needle, which stranded whatever had been typed in the last 300 ms. So both
+     * bars are handed this while it is set and the daemon's needle once it has caught up
+     * (`SearchNeedleScheduler.inTransit`, which is what sets and clears it). Keyed by the pane it was
+     * typed for, so a needle in transit never leaks into a search somewhere else.
+     *
+     * The REF is the truth and the state is only what re-renders the window, and it is skipped
+     * whenever the needle a bar would be handed does not change. So a keystroke costs one render
+     * for the needle leaving and none for the answer coming back: by then the daemon's echo has
+     * already put the same needle on the workspace. Everything that reads the draft reads the ref,
+     * so a render trigger that is left stale can never mask a needle another window set later.
+     */
+    const [searchDraft, setSearchDraft] = useState<{ paneID: string; needle: string } | null>(null);
+    const searchDraftRef = useRef<{ paneID: string; needle: string } | null>(null);
+    /** The needle a bar over `paneID` is handed: this window's in transit, else the daemon's. */
+    const liveSearchNeedle = (paneID: string, daemonNeedle: string): string => {
+        const draft = searchDraftRef.current;
+        return draft !== null && draft.paneID === paneID ? draft.needle : daemonNeedle;
+    };
     /** Right-click on a pane header: where the menu opened and which pane it acts on. */
     const [paneMenu, setPaneMenu] = useState<{ paneID: string; x: number; y: number } | null>(null);
     /**
@@ -1243,7 +1291,7 @@ function Shell(props: AppProps): ReactElement {
             send: (needle: string) => {
                 const id = selectActiveWorkspaceID(store.getState());
                 if (id === null) return;
-                void commands.setTerminalSearchNeedle({ workspaceID: id, needle }).then(
+                return commands.setTerminalSearchNeedle({ workspaceID: id, needle, caseSensitive: searchCaseRef.current }).then(
                     (reply) => {
                         if (!isOkReply(reply)) notifyFailureRef.current('Search', replyError(reply));
                     },
@@ -1254,6 +1302,16 @@ function Shell(props: AppProps): ReactElement {
                         );
                     }
                 );
+            },
+            onTransit: (needle: string | null) => {
+                const workspace = selectActiveWorkspace(store.getState());
+                const paneID = workspace?.searchingPaneID ?? null;
+                const next = needle === null || paneID === null ? null : { paneID, needle };
+                searchDraftRef.current = next;
+                const handed = (draft: { paneID: string; needle: string } | null): string =>
+                    draft !== null && draft.paneID === paneID ? draft.needle : (workspace?.searchNeedle ?? '');
+                // Returning the previous state is React's bail-out: no render for a no-op.
+                setSearchDraft((previous) => (handed(previous) === handed(next) ? previous : next));
             }
         })
     );
@@ -1583,6 +1641,12 @@ function Shell(props: AppProps): ReactElement {
                 const id = activeWorkspaceID();
                 if (id === null) return false;
                 setSearchReveal(null);
+                // A session's case flag dies with the session: a bar reopened later is the bar the
+                // native one always was, insensitive, whoever draws it.
+                setSearchCaseSensitive(false);
+                // And so does a needle typed into it: a toggle either closes the session or opens
+                // a fresh one, and neither may inherit the last one's half-sent needle.
+                searchNeedleRef.current.cancel();
                 return run('Search', commands.toggleTerminalSearch({ workspaceID: id }));
             },
 
@@ -1593,6 +1657,7 @@ function Shell(props: AppProps): ReactElement {
                 // §TERM-116: a deferred short needle must not land after the bar has gone.
                 searchNeedleRef.current.cancel();
                 setSearchReveal(null);
+                setSearchCaseSensitive(false);
                 return run('Search', commands.closeTerminalSearch({ workspaceID: workspace.id }));
             },
 
@@ -1614,7 +1679,7 @@ function Shell(props: AppProps): ReactElement {
                 const workspace = activeWorkspace();
                 const paneID = workspace?.searchingPaneID ?? null;
                 if (workspace === null || paneID === null) return false;
-                void commands.stepTerminalSearch({ workspaceID: workspace.id, direction }).then(
+                void commands.stepTerminalSearch({ workspaceID: workspace.id, direction, caseSensitive: searchCaseRef.current }).then(
                     (reply) => {
                         if (!isOkReply(reply)) {
                             notifyFailure('Search', replyError(reply));
@@ -1629,6 +1694,7 @@ function Shell(props: AppProps): ReactElement {
                             linesFromBottom: match.linesFromBottom,
                             col: match.col,
                             length: match.length,
+                            line: match.line,
                             seq: (current?.seq ?? 0) + 1
                         }));
                     },
@@ -1637,6 +1703,39 @@ function Shell(props: AppProps): ReactElement {
                     }
                 );
                 return true;
+            },
+
+            /**
+             * The case toggle a `pane.search` presenter offers, and nothing else reaches.
+             *
+             * Setting the flag is not enough on its own: `case_sensitive` is a REQUEST parameter,
+             * so the counts the daemon already published were computed with the old one. Re-sending
+             * the needle is what recounts, and it is sent immediately rather than through the
+             * debounce, because a toggle is one gesture rather than a keystroke in a run.
+             *
+             * THE needle is the one the user typed last, not the one the daemon has. A short needle
+             * still waiting out its 300 ms is FLUSHED with the new flag rather than cancelled -
+             * cancelling it left the daemon counting the previous needle while the field showed the
+             * new one, for good - and a needle already on the wire is re-sent from the draft, because
+             * re-sending the daemon's older needle would put it back after the newer one lands.
+             */
+            setSearchCaseSensitive(on: boolean): boolean {
+                const workspace = activeWorkspace();
+                if (workspace === null || workspace.searchingPaneID === null) return false;
+                if (searchCaseRef.current === on) return true;
+                searchCaseRef.current = on;
+                setSearchCaseSensitive(on);
+                setSearchReveal(null);
+                // The scheduler reads `searchCaseRef`, which already carries the new flag.
+                if (searchNeedleRef.current.flush()) return true;
+                return run(
+                    'Search',
+                    commands.setTerminalSearchNeedle({
+                        workspaceID: workspace.id,
+                        needle: liveSearchNeedle(workspace.searchingPaneID, workspace.searchNeedle),
+                        caseSensitive: on
+                    })
+                );
             },
 
             // ── reopen / scratchpad / pane menu (TERM-075, CONT-113, TERM-107…111) ───
@@ -2931,6 +3030,12 @@ function Shell(props: AppProps): ReactElement {
      * one relays must not silently change the other.
      */
     const settingsChords = useMemo(() => settingsPresenterChords(bindings), [bindings]);
+    /*
+     * The find bar's relay: Escape, the rebindable toggle-search chord, and the two fixed stepping
+     * chords. A third separate list, for the reason the second one is separate - the placements are
+     * granted independently, and a search presenter has no business consuming `close_pane`.
+     */
+    const searchChords = useMemo(() => paneSearchPresenterChords(bindings), [bindings]);
 
     // A plugin shortcut must reserve every native binding, including the copy/paste and
     // text-editing chords intentionally omitted from the sandboxed content-frame relay.
@@ -3203,7 +3308,9 @@ function Shell(props: AppProps): ReactElement {
             return (
                 <PaneSearchOverlay
                     paneID={paneID}
-                    needle={workspace.searchNeedle}
+                    // Seeds the field on mount only, so the live needle is read at render and costs
+                    // nothing afterwards; it is what a fallback from a presenter mid-word needs.
+                    needle={liveSearchNeedle(paneID, workspace.searchNeedle)}
                     total={workspace.searchTotal}
                     selected={workspace.searchSelected}
                     onNeedleChange={act.setSearchNeedle}
@@ -3216,7 +3323,84 @@ function Shell(props: AppProps): ReactElement {
                 />
             );
         },
+        // `liveSearchNeedle` reads a ref, so the draft is not a dependency of this callback.
         [act, paneByID, workspace]
+    );
+
+    /**
+     * The same open search, as a `pane.search` presenter is told about it.
+     *
+     * Built here rather than in the grid because every fact in it is the assembly's: the workspace
+     * mirror carries the needle, the total and the selection, this window carries the case flag, and
+     * `searchReveal` carries the last reply's match. The grid adds the one thing it owns, which is
+     * where the box goes.
+     *
+     * Null for every pane kind but a shell, which is the placement's own rule
+     * (`pane-search/contract.ts`): a markdown or diff preview counts inside its own frame and a web
+     * pane counts inside its page, so neither has a total the daemon could state and both keep the
+     * native bar that `renderPaneOverlay` above already declines to draw for them.
+     */
+    const paneSearchSession = useMemo<PaneSearchSession | null>(() => {
+        const paneID = workspace?.searchingPaneID ?? null;
+        if (workspace === null || paneID === null) return null;
+        const pane = paneByID.get(paneID);
+        if (pane === undefined || !isPaneSearchKind(pane.type)) return null;
+        const reveal = searchReveal?.paneID === paneID ? searchReveal : null;
+        return {
+            paneID,
+            kind: pane.type,
+            // The needle as this window last set it, which leads the daemon's by at most a debounce
+            // and a round trip (`searchDraft`): the native bar's field shows the same thing.
+            needle: liveSearchNeedle(paneID, workspace.searchNeedle),
+            caseSensitive: searchCaseSensitive,
+            total: workspace.searchTotal,
+            selected: workspace.searchSelected,
+            match:
+                reveal === null
+                    ? null
+                    : {
+                          line: reveal.line,
+                          col: reveal.col,
+                          length: reveal.length,
+                          linesFromBottom: reveal.linesFromBottom
+                      }
+        };
+        // `searchDraft` is the render trigger for the ref `liveSearchNeedle` reads.
+    }, [workspace, paneByID, searchCaseSensitive, searchDraft, searchReveal]);
+
+    /**
+     * The write path a search presenter's calls reach: the window's own verbs, unchanged.
+     *
+     * Each one takes the pane id the presenter named even though the verbs work on the workspace's
+     * own searching pane, and that is not redundancy for its own sake: the presenter host has
+     * already refused any id but the one the published frame carries, so passing it through is what
+     * makes the two agree in the one place a reader would look. `close` hands the caret back with
+     * the same call the native bar's ✕ makes, because a closed search that left the caret in a
+     * sandbox is the defect this surface is most likely to have.
+     */
+    const paneSearchActions = useMemo<PaneSearchActions>(
+        () => ({
+            setNeedle: (_paneID, needle) => {
+                act.setSearchNeedle(needle);
+            },
+            setCaseSensitive: (_paneID, on) => {
+                act.setSearchCaseSensitive(on);
+            },
+            step: (_paneID, direction) => {
+                act.stepSearch(direction);
+            },
+            close: (paneID) => {
+                act.closeSearch();
+                handBackPaneCaret(paneID);
+            },
+            declareBox: (paneID, size) => {
+                setPaneSearchBox(paneID, size);
+            },
+            // A withdrawal needs a pane that still exists, not the pane the frame names: see
+            // `pane-search/presenter.ts` on why refusing one is a trap.
+            knows: (paneID) => paneByID.has(paneID)
+        }),
+        [act, handBackPaneCaret, paneByID]
     );
 
     // ── pane bodies ─────────────────────────────────────────────────────────────────
@@ -3927,6 +4111,17 @@ function Shell(props: AppProps): ReactElement {
                          */
                         onReleaseChromeCaret={handBackPaneCaret}
                         onPaneChromeFailure={detail => notifyFailureRef.current('Pane header presenter', detail)}
+                        /*
+                         * And the find bar over the pane the daemon is searching. Desktop only, for
+                         * the same reason: the phone renders its own grid through `PhoneShell` and
+                         * never passes this, so a phone window keeps the native bar.
+                         */
+                        paneSearchPresenter
+                        search={paneSearchSession}
+                        searchActions={paneSearchActions}
+                        searchChords={searchChords}
+                        onReleaseSearchCaret={handBackPaneCaret}
+                        onPaneSearchFailure={detail => notifyFailureRef.current('Pane search presenter', detail)}
                         renderPane={renderPane}
                         renderPaneOverlay={renderPaneOverlay}
                         renameRequest={renameRequest}

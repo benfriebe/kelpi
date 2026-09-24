@@ -621,11 +621,12 @@ command button - and `runPaneHeaderItem(paneID, ref)` activates one of the chips
 Whatever a ref resolves to is then re-resolved against a fresh model before it runs, so a control
 that went disabled or disappeared between the frame and the press refuses rather than firing.
 
-Native by decision, whatever is selected: the focus ring, the pane context menu, the rename field,
-every destructive confirmation, the dividers, the resize badge, the terminal's mirror clip wash and
-the find bar. Pane chrome presenters are desktop-only: a phone window keeps its own header, which
-owns the software-keyboard inset a presenter cannot read, so a frame reports
-`formFactor: 'desktop'`.
+Native by decision, whatever is selected for THIS placement: the focus ring, the pane context menu,
+the rename field, every destructive confirmation, the dividers, the resize badge and the terminal's
+mirror clip wash. The find bar is not a pane chrome presenter's either, and it is now its own
+placement: see [pane search](#pane-search). Pane chrome presenters are desktop-only: a phone window
+keeps its own header, which owns the software-keyboard inset a presenter cannot read, so a frame
+reports `formFactor: 'desktop'`.
 
 The [public types](../packages/plugin-sdk/pane-chrome.d.ts) describe the frame and the presenter
 calls (`focusChromePane`, `splitPane`, `toggleZoom`, `renamePane`, `closePane`,
@@ -840,6 +841,281 @@ plugins' items through the calls, and printing the withheld count. Its README ha
 the diagnostics, including the deliberate `crash(mode)` and `stall()` hooks the live scenario uses
 to drive the two watchdogs.
 
+## Pane search
+
+⌘F over a shell pane opens a small bar at its top-trailing corner: a monospace field, a
+`selected+1/total` counter tucked inside its trailing edge, up and down chevrons and a ✕. The
+placement that replaces it is `pane.search`, and **this release ships it**: the contract, the size
+authority, the presenter, its fallback, its watchdogs and the Search Lab example. A view selected
+for it in Settings → Plugins → Workbench views draws that bar. Selection is Settings-only: the
+placement appears in `ui.getWorkbench().slots` and `ui.selectView` refuses it, because this
+presenter owns a text input and the caret with it, and a plugin that could select itself into it
+could take the keyboard from a chord the user pressed over their own shell.
+
+### Shell panes only, and why
+
+One bar recipe, three counter owners. Over a SHELL pane the counts are the **daemon's**:
+`searchingPaneID`, `searchNeedle`, `searchTotal` and `searchSelected` are workspace state on the
+delta stream, so two windows looking at the same pane read the same "3/17" and closing the bar in
+one closes it in both. A markdown or diff preview's find runs inside its own sandboxed frame and a
+web pane's runs in the page's own `findInPage`, with nothing in the document able to float above
+it. Those two have no total the daemon could state, so they keep their native bars and this
+placement never opens on them. A frame a presenter receives is always about a shell pane.
+
+### The state is the daemon's, not the presenter's
+
+A presenter holds none of it. It asks for a change with a call and reads the answer in the next
+frame, which is also what makes the fallback cheap: when a presenter fails, the native bar comes
+back with the needle intact and its field focused, because none of it was ever the presenter's to
+lose.
+
+**The needle a bar is handed is the one still on its way.** A needle shorter than three characters
+waits 300 ms before it is sent and every needle is a round trip after that, so the daemon's
+`searchNeedle` trails the field by up to both. The two bars change hands mid-search - a presenter
+that paints while the user is typing into the native bar because ⌘F came before its first paint,
+the native bar coming back from a failed presenter - and the one taking over used to be seeded with
+the daemon's older needle, which stranded whatever had been typed in the last 300 ms. So the frame's
+`needle`, and the native bar's seed, is the needle this window typed for as long as a request
+carrying it is waiting or unanswered, and the daemon's once it has caught up. It leads by at most a
+debounce and a round trip, which is what the native bar's own field has always shown. Search Lab
+seeds from it and keeps following it until the user types into its own field.
+
+**One thing two windows can disagree about, stated rather than hidden.** `terminal-search` takes
+`case_sensitive` per request and stores nothing, so there is no workspace field to read it back
+from. The host holds the flag for the window for the length of one search session and sends it with
+every request. Two windows therefore agree on the needle, the total and the selection - all three
+are workspace state - and the case toggle is local to the window whose bar is being drawn. Making
+it workspace state is a daemon reducer, an envelope field and a wire change, none of which this
+placement needs.
+
+The toggle is a presenter's control, so it leaves with the presenter. The native bar has no case
+toggle and no indicator, and a flag left on after a presenter failed or was deselected mid-search
+had it counting case-sensitively with nothing on screen to say so: "no matches" for a needle that
+plainly matched. So whenever the native bar is the one drawing an open, case-sensitive search on a
+connected window, the flag goes back off and the needle is recounted on the native bar's terms. It
+is a state rather than an event: while the connection is down nothing is answered, because nothing
+can be searched, and when it returns either the presenter is back drawing its toggle still lit or
+it is not (disabled meanwhile, failed daemon-side) and the flag goes off then. Toggling also sends
+the needle the user typed LAST: a short needle still waiting out its 300 ms is sent at once with the
+new flag rather than dropped.
+
+The daemon orders what it publishes, too. A recount awaits the pane's buffer and two of them can
+finish in either order - the toggle's case-sensitive recount and the stand-down's insensitive one
+are sent a moment apart - so each workspace has a count generation that a new needle or flag, an
+open and a close move, and a recount publishes only if its generation is still current. Steps do
+not move it, so two quick ⌘G presses both land.
+
+### The box
+
+The bar sizes itself; the host places it and clamps it. **The presenter declares, the host clamps,
+and the native value applies until something is declared** - the notification box's rule and pane
+chrome's, a third time.
+
+| Ceiling | Value | Why |
+| --- | --- | --- |
+| Width, fixed | 480 px | Not quite twice the native bar, and still under half of a 1,000 px pane. Wider than that and the bar is the pane rather than a control in its corner. |
+| Width, pane | the pane's width less the bar's margin on both sides | The native bar's own `calc(100% - 16px)`: its trailing inset mirrored as a leading gutter, so a bar anchored to the trailing edge cannot grow off the leading one. |
+| Height, fixed | 96 px | Enough for a two-line bar with a case toggle and a count, nowhere near enough to take a terminal's visible lines. |
+| Height, pane | 25% of that pane's height | 96 px over a 140 px pane is a pane that is mostly find bar, so the same declaration is honoured in full on a tall pane and cut down on a short one rather than refused. |
+
+The smaller of each pair wins and the floor is 0. Until something is declared the box is the native
+bar's own measured box (266 × 35 px on a roomy pane), with its WIDTH held to the same pane ceiling
+the native bar holds itself to and its height untouched - the one deliberate asymmetry, because
+clamping the undeclared height would shrink the bundled bar on a short pane nobody has declared
+anything for.
+
+`setSearchBoxSize(paneID, size)` has three inputs and three answers, and the store and the clamp
+give the same ones:
+
+| Declared | Answer |
+| --- | --- |
+| `null` | Withdrawn. The box is the native default next frame, and a presenter can hand it back without being torn down. |
+| A negative number | 0, which is a legal box. The clamp already said `[0, ceiling]`, so this agrees with it rather than inventing a second rule. |
+| NaN or an infinity | Refused; the current box stands. They are not sizes, and treating them as a withdrawal would make one arithmetic slip inside a presenter look exactly like a deliberate hand-back. |
+
+A declaration also goes back on its own, from an unmount cleanup rather than a render branch: the
+placement standing down (the bundled bar, a disabled plugin, an uninstalled one), a generation
+change, a failure, the connection dropping, the search closing or moving to another pane, the pane
+closing, and the grid changing the workspace it is showing. The slot is rendered only while a
+presenter is selected, so a stand-down handled by a render would never run at all.
+
+### The frame
+
+One frame about one pane, because `searchingPaneID` is a single field on the workspace: the pane's
+id and kind, the needle, the case flag, the total, the selected index, where that match sits
+(`line`, `col`, `length`, `linesFromBottom`, as `TerminalSearch` states it), and the rectangle the
+bar may occupy in the presenter frame's own coordinate space. That is the whole frame; there is no
+budget cut, no withheld count and no ref table, because there is nothing in it to drop.
+
+Withheld: **scrollback contents** - the one thing a find bar is obviously next to and the one thing
+it is not handed, because a presenter that wants the text reads it through
+`capture(pane, { scrollback })` under its own plugin identity, where it is an auditable call by a
+named plugin rather than a standing grant riding in on a UI placement - every other pane's state,
+paths, the workspace id, every other plugin's `pluginID`, every run closure, and the `data-testid`
+of the bar it replaced.
+
+**The counts are not withheld, and they are not nothing.** A presenter can set any needle and read
+the `total` back, which tells it whether that text is in the searched pane's scrollback - with no
+`terminal` domain grant and no workspace id, so it is broader than `terminal.search` under the
+plugin's own identity would be. That is what a find bar is for, and it is stated here rather than
+bounded: the placement is Settings-only, installed plugins are fully trusted (see the untrusted
+third-party execution row of the [roadmap](plugin-roadmap.md)), and what comes back is a count per
+needle, not the text `capture` returns. A permission model for untrusted plugins would have to
+treat this grant as a read of the searched pane.
+
+The needle is capped at 1,024 characters, the palette's query cap, for the same reason: every
+keystroke is a daemon round trip that flushes a pane's write queue and sweeps up to 10,000 lines. A
+needle a presenter sends past the cap is refused; a needle already in the daemon's state that is
+longer (any plugin can set one through `terminal.search`) arrives TRUNCATED with `needleTruncated`
+set, because an oversized frame is undeliverable and an undeliverable frame would fail the user's
+chosen presenter over somebody else's string.
+
+The [public types](../packages/plugin-sdk/pane-search.d.ts) describe the frame and the six
+presenter calls (`setSearchNeedle`, `setSearchCaseSensitive`, `searchNext`, `searchPrevious`,
+`closeSearch`, `setSearchBoxSize` and the shared `reportPresenterReady`), and `WindowPaneSearchAPI`
+is part of `ViewAPI.ui`. Every call is re-validated against the pane the published frame names: an
+id that was right one frame ago and is not now - the search closed, or moved - is refused and does
+nothing.
+
+### The geometry: one frame, clipped to one box
+
+`PaneGrid` mounts one `PluginView` over its own container, so the frame's coordinate space is the
+grid's and the rectangle in the frame needs no translation. The host applies a `clip-path` built
+from that same rectangle, which removes the frame from paint AND from hit testing everywhere else:
+a click below the bar reaches the terminal under it, and a press on a divider reaches the divider.
+It is pane chrome's shape with one rectangle instead of N, and it is the same component contract
+reused rather than a second one written.
+
+It sits at `zIndex: 4`: above every pane wrapper (1, or 3 while a pane is renaming or carrying a
+host overlay) and above the pane chrome presenter's own frame (2). That is the native bar's order
+restated - `grid/PaneSearchOverlay.tsx` is `z-30` inside its pane wrapper, so it paints over
+everything the grid has below it, the pane chrome band included. A search presenter's frame is not
+inside a wrapper, so it says the same thing at grid level, and the two placements compose: a
+presenter-drawn bar sits on top of a presenter-drawn 96 px band and still drives the daemon.
+
+A presenter draws its bar to its own content and declares what it measured; the host clips to the
+clamped rectangle. **A clip is not a layout**, and a presenter has to lay out inside the box it was
+granted or the clip cuts its trailing edge off: what a flex row loses that way is the counter and
+every button, which is a find bar with no way to step or close. The native bar's answer is a
+`max-width` with the field allowed to yield inside it, and a presenter's should be the same - taking
+the granted width as a ceiling while still declaring the width it WANTS, so a pane that widens gets
+the whole bar back. Search Lab's first cut got this wrong and an onscreen screenshot is what caught
+it; its second cut let the counter shrink beside the field, and the next screenshots showed why
+that is not an order: a flex row shares a shortfall out by size, so a 246 px box cut the counter to
+"1 of", and a 112 px box left the field an empty square with the ✕ past the clip. Search Lab now
+lets the needle alone yield, down to a floor, and then drops whole controls in a fixed order - the
+step buttons first (Return, ⇧Return, ⌘G and ⇧⌘G still step), then the counter (its text moves to the
+field's tooltip) - and never the case toggle or the ✕. The scenario measures both panes rather than
+leaving it to the screenshots.
+
+### Keys, and the caret
+
+This is the palette's case rather than pane chrome's. A pane chrome presenter draws buttons and
+must never hold the caret; a search presenter draws a TEXT INPUT and holds the caret for as long as
+the search is open, exactly as the native bar's autofocus does. It is **not** contained: clicking
+the terminal underneath moves the caret to the terminal, because a find bar is not modal.
+
+An Escape or a ⌘F pressed inside an iframe never reaches the host document, so the relay is
+`claimedChords`: the frame forwards exactly the chords it was granted and the host re-dispatches
+them on the owner window, where the key dispatcher sees them with the WINDOW as the target - which
+is why `chrome/keys.ts`'s refusal to act while a text field has focus does not swallow them.
+
+| Chord | Answered by | What happens |
+| --- | --- | --- |
+| Escape | the window's own `close_search` binding | the search closes and the caret goes back to the pane |
+| The toggle-search chord (⌘F by default, rebindable) | the window's own `toggle_search` binding | the same |
+| ⌘G | the slot, in the capture phase, while the frame or the searched pane holds the caret | `searchNext` |
+| ⇧⌘G | the same | `searchPrevious` |
+
+⌘G and ⇧⌘G have no bound action anywhere in the client and this placement deliberately does not add
+two: they are fixed chords of this surface, the way the native bar hard-codes its own ⌘F close. They
+are answered only while the caret is the search's - in the frame, where a relayed chord arrives, or
+in the searched pane - so a ⌘G pressed anywhere else in the window is left to whatever that is. Only
+the platform's primary modifier counts: where Ctrl is primary they are Ctrl-G and Shift-Ctrl-G (the
+rule the key map applies to every `super` binding there), and those are what is relayed; on a Mac,
+Ctrl-G stays the terminal's.
+Everything the host does not relay - typing, arrows, Return, Tab, a presenter's own shortcuts -
+stays in the frame and reaches nothing in the window, which is the point of a short explicit grant
+rather than the full binding map: a keystroke meant for a search field must never arrive in
+somebody's shell. Return and ⇧Return are the presenter's own keys; Search Lab binds them to
+`searchNext` and `searchPrevious` itself.
+
+**The caret goes back when the SESSION ends, and only then.** Escape, the toggle chord, the
+presenter's own `closeSearch`, the pane closing, the workspace changing: each of them ends the
+search, and the host hands the caret to the pane so the next keystroke lands in the shell. A
+FAILURE is not one of them, and neither is standing the placement down while a search is open: the
+native bar takes over with the search still up and focuses its own field, and handing the caret to
+the terminal in the same tick would take it straight back off. The host re-asserts that field after
+a fallback, because removing the failed presenter's iframe moves focus to `<body>` and the focused
+pane's own caret claim answers that by taking it. The re-assertion is bounded (eight attempts, 50 ms
+apart), keeps its timer so the grid stops it when the search closes or moves and when it unmounts,
+and stops for good the moment the user says where they want the caret: a pointer press anywhere,
+including inside a plugin frame (the SDK marks the focus it reports for a press, and `PluginView`
+relays it, because a press in a child document never reaches this one); a key pressed anywhere but
+the field, or Tab, Escape or a modifier chord pressed in it; or the caret arriving anywhere but the
+field or the searched pane, a plugin renderer's frame included. Plain typing into the field does not
+stop it: that is the user carrying on with the needle being defended, and the pane's late claim
+would otherwise take the rest of it, Return included, into the shell. The pane's own claim is
+exactly the move it exists to beat, and a user who moves the caret into that pane does it with a
+press.
+
+### Selection, watchdogs and fallback
+
+The native bar draws whenever any of these holds, checked in this order:
+
+1. presenters are disabled for this grid (the phone, and every standalone render);
+2. no plugin is selected for the placement - which covers a plugin that is missing, disabled or
+   failed, because `viewRegistry` filters those out and `resolveSlot` lands on the bundled default.
+   The user's selection is retained across all of it;
+3. the daemon connection is not up - and the daemon is where the counts come from, so there would
+   be nothing true to draw anyway;
+4. this generation has failed. `generation` is `viewID:revision:instanceID`, so a reload, a rollback
+   or a different selection clears the latch by moving the generation; nothing else does except the
+   explicit **Retry presenter** on the `pane.search` row in Settings → Plugins → Workbench views.
+
+And, whoever is selected, **the native bar keeps drawing until the presenter has reported that it
+has painted for this generation.** A bar that stood down on the selection alone would leave a ⌘F
+during a plugin's boot with no bar at all. The live scenario proves no such frame exists twice -
+with the lab enabled under an open search and reloaded under one - sampling every 25 ms, and each
+sampler has to catch the presenter mounted and not yet painted or the check fails rather than pass
+on no evidence.
+
+Two watchdogs, on the interaction presenters' numbers: **5 s** to report having painted after the
+first frame, and **5 s** to acknowledge a frame that OPENS a session. Only that one. A needle delta
+moves on every keystroke and a total moves whenever the shell writes another line; holding a
+presenter to a deadline for one of those would fail a working presenter for being busy. The call
+budget is 240 calls per rolling second, and a breach fails the placement as well as rejecting the
+call.
+
+On failure the placement latches to the native bar for the rest of the window session, the declared
+box is dropped in the same commit, a native failure toast naming "Pane search presenter" is raised,
+and the Settings row reads `Failed: …` with **Retry presenter** beside it. The needle survives,
+because it was never the presenter's, and the case flag goes back off with the presenter that drew
+its toggle.
+
+### Search Lab
+
+[Search Lab](../examples/plugins/search-lab) is the build-free example: one view for `pane.search`
+drawing a needle field, a case toggle, a count read out of the daemon's own numbers ("3 of 17",
+"9 matches", "no matches"), step buttons and a close button, declaring its box from what it
+measured and handing it back on request. Its README has the test ids and the diagnostics, including
+the deliberate `crash(mode)` and `stall()` hooks the live scenario uses to drive the two watchdogs.
+
+One thing it does deliberately, and says so: the field takes the caret with the cursor at the END of
+whatever needle was already there and nothing selected. That is the bundled bar's own rule
+(`grid/PaneSearchOverlay.tsx`), and it is there because selecting the text made the first keystroke
+silently replace a needle the user had just come back to.
+
+Three things it does for the hand-over from the native bar. Its field follows the frame's needle on
+every frame until the user types into it, so a needle typed into the native bar before the lab
+painted is already in the lab's field when the native bar stands down. Its first frame seeds the
+field without taking focus unless its own document already has it, because that frame arrives while
+the native bar is still drawing and a self-focusing field would pull the caret out of the bar the
+user is typing into. And it moves the caret into the field the moment its frame gains focus, in the
+same task, rather than on the next frame, so a fast keystroke never lands on the frame's body in
+between. `holdNextBoot()` and `releaseReady()` hold a boot's readiness report so the live scenario
+can type into the native bar while the lab paints behind it.
+
 ## Automated validation
 
 `pnpm check` covers schema validation, ownership, lifecycle resets, settings races, SDK
@@ -849,12 +1125,19 @@ plugin-ui-services --window hidden` exercises UI Lab through a private daemon an
 window; `node scripts/scenario.mjs plugin-interaction-presenters --window hidden` drives Interaction
 Lab as the selected palette and prompts presenter, including a second plugin's prompts, presenter
 crash and watchdog fallback with the live request intact, disable and reload, and the phone form
-factor keeping the bundled presenters; and `node scripts/scenario.mjs plugin-pane-chrome --window
+factor keeping the bundled presenters; `node scripts/scenario.mjs plugin-pane-chrome --window
 hidden` drives Pane Lab as the selected header presenter, including a withheld pane keeping its
 bundled header, another plugin's item activated by ref, a declared 96 px band measured against the
 shell's own `stty size` and a web pane's native bounds, forged and cross-pane refs refused, the
 all-or-nothing fallback with its toast and Retry, a daemon restart and the phone keeping its own
-header. The
+header; and `node scripts/scenario.mjs plugin-pane-search --window hidden` drives Search Lab as the
+selected find bar, including a needle typed into the plugin's own input counting a scrollback the
+scenario printed, ⌘G and ⇧⌘G stepping while an unrelayed chord leaks nowhere, a marker typed after
+a close landing in the shell, an absurd declared box clamped in both axes, the markdown and web
+bars staying native, a needle typed into the native bar during a held boot handed over in transit, the
+fallback with the needle intact, its field focused and the case flag back off, a daemon restart,
+Pane Lab and Search Lab drawing together, the bar fitting a wide and a narrow box, and the phone
+keeping the native bar. The
 [validation record](plugin-validation.md) records past runs and their source revisions. Use
 `--window onscreen` to inspect screenshots; a historical pass does not validate a later checkout.
 

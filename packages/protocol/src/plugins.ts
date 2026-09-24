@@ -6,16 +6,15 @@ import { decodePluginWhen, decodePluginItemPatch, pluginContributionOrder, plugi
 export const PLUGIN_API_VERSION = 1;
 export const PLUGIN_MAX_JSON_BYTES = 256 * 1024;
 /**
- * `pane.chrome` is DECLARED here and mounted by nothing.
+ * The two per-pane presented surfaces, `pane.chrome` and `pane.search`, are both mounted.
  *
- * Phase A of pane chrome composition builds the shared model, the height authority and the
- * projection; the presenter host arrives in phase B. Naming the placement now is additive and
- * inert: a manifest that declares a view for it validates, and the slot is deliberately absent
- * from the client's `ROOT_SLOTS`, so it has no bundled default, no Settings row and no way in -
- * `ui.selectView` answers "Workbench slot is not registered." exactly as it does for a custom slot
- * nobody contributed. Plugin API version stays 1.
+ * `pane.chrome` is every pane's header band; `pane.search` is the find bar over the pane the daemon
+ * is searching. Both are Settings-only: they appear in `ui.getWorkbench().slots` and `ui.selectView`
+ * refuses them, because one draws every pane's close control and every other plugin's header items
+ * and the other owns a text input and the caret with it. Adding a placement here is additive -
+ * plugin API version stays 1.
  */
-export const PLUGIN_PLACEMENTS = ['pane', 'pane.chrome', 'sidebar.primary', 'sidebar.secondary', 'panel.bottom', 'topbar', 'statusbar', 'workspace', 'settings', 'document.markdown', 'document.scratchpad', 'document.diff', 'terminal', 'browser', 'interaction.palette', 'interaction.prompts', 'interaction.notifications', 'settings.window'] as const;
+export const PLUGIN_PLACEMENTS = ['pane', 'pane.chrome', 'pane.search', 'sidebar.primary', 'sidebar.secondary', 'panel.bottom', 'topbar', 'statusbar', 'workspace', 'settings', 'document.markdown', 'document.scratchpad', 'document.diff', 'terminal', 'browser', 'interaction.palette', 'interaction.prompts', 'interaction.notifications', 'settings.window'] as const;
 export type PluginBuiltinPlacement = (typeof PLUGIN_PLACEMENTS)[number];
 /**
  * The three presented interaction surfaces, in one place.
@@ -308,6 +307,10 @@ export function decodePluginManifest(raw: unknown): PluginManifest {
         // grid's, not the container's: the same refusal the interaction placements make, one
         // surface smaller.
         if (places.includes('pane.chrome')) throw new Error('containers cannot present pane chrome; a pane chrome presenter owns each pane band');
+        // A search presenter owns a bar in one pane's corner, a text input inside it and the caret
+        // for as long as the search is open. A container's slot-picker header would sit between the
+        // user and that field, and there is no room for it in a box the size of a find bar.
+        if (places.includes('pane.search')) throw new Error('containers cannot present pane search; a pane search presenter owns the find bar and its caret');
         const layout = container['layout'];
         if (layout !== 'row' && layout !== 'column' && layout !== 'tabs') throw new Error('container layout must be row, column, or tabs');
         const containerID = contributionID(container['id']);

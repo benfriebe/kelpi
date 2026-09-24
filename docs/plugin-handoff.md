@@ -1,6 +1,6 @@
 # Plugin extensibility: agent handoff
 
-Current as of **2026-09-24**, reviewed against merged main **`225ef73`**. Start here when
+Current as of **2026-09-24**, reviewed against merged main **`058c8f4`**. Start here when
 resuming this project in another session. The [roadmap](plugin-roadmap.md) is the overall plan;
 the [API guide](plugins.md) describes shipped contracts; the
 [validation record](plugin-validation.md) separates tested revisions and evidence.
@@ -8,9 +8,10 @@ the [API guide](plugins.md) describes shipped contracts; the
 ## Current state
 
 Everything the roadmap's [completed table](plugin-roadmap.md#completed-and-merged) lists is merged
-into `main` once this PR lands: pane search as [#262](https://github.com/benfriebe/kelpi/pull/262)
-(`39e6f5b`), plugin commands in Help as [#261](https://github.com/benfriebe/kelpi/pull/261), and root
-layout composition as this PR, all on 2026-09-24 over **`225ef73`**. Pane chrome landed in two PRs on 2026-09-18 and
+into `main`: pane search as [#262](https://github.com/benfriebe/kelpi/pull/262) (`39e6f5b`), plugin
+commands in Help as [#261](https://github.com/benfriebe/kelpi/pull/261) (`37703e6`), and root layout
+composition as [#263](https://github.com/benfriebe/kelpi/pull/263) (`058c8f4`), squash-merged in that
+order on 2026-09-24 over **`225ef73`**. Pane chrome landed in two PRs on 2026-09-18 and
 2026-09-19 - [#243](https://github.com/benfriebe/kelpi/pull/243) (the shared model, the height
 authority, parking and the projection) and [#244](https://github.com/benfriebe/kelpi/pull/244) (the
 selectable presenter, Pane Lab and its live acceptance) - and fourteen PRs merged on top of them
@@ -19,9 +20,12 @@ through [#260](https://github.com/benfriebe/kelpi/pull/260). One of those is a p
 when its saved host is trusted for it, which closes [#193](https://github.com/benfriebe/kelpi/issues/193).
 The rest are product and audit work, listed in the roadmap so the baseline is accounted for.
 
-No plugin branch is open once this PR merges. The three that ran in parallel, each in its own
-worktree, merged one after another: `feature/plugin-pane-search` (#262), `feature/help-plugin-shortcuts`
-(#261) and `feature/plugin-root-layout` (this PR).
+No plugin branch is open. The three that ran in parallel, each in its own worktree, merged one
+after another: `feature/plugin-pane-search` (#262), `feature/help-plugin-shortcuts` (#261) and
+`feature/plugin-root-layout` (#263). Each merge commit's tree is identical to the head its evidence
+was taken on, and `058c8f4`'s code is the combined build the owner tested by hand before the merges
+(see the
+[merge and promote record](plugin-validation.md#merge-and-promote-of-262-261-and-263-2026-09-24)).
 
 Plugin API version remains **1**; wire protocol generation remains **2**. The six placements added
 by the presenter phases - `interaction.palette`, `interaction.prompts`, `interaction.notifications`,
@@ -33,30 +37,35 @@ public registry and distribution, and untrusted execution are open scopes in the
 
 | Item | State at this handoff |
 | --- | --- |
-| Product baseline | `origin/main` after #261 (the tree of `c32cabe`, over #262's `39e6f5b`), with this PR on top. |
-| Promoted build | The last promote on record is `c719f9c`, on 2026-09-19; nothing after it has been promoted by this project. `~/Library/Application Support/kelpid/last-promote.json` holds the phase and the timestamp; read it rather than trusting this row after a later promote. |
-| Open feature branches | None once this PR merges. #262 (search) and #261 (Help) are merged; `feature/plugin-root-layout` is this PR. #243, #244 and #246 through #260 merged before them. |
-| Documentation branch | None of its own: this refresh rides on `feature/plugin-root-layout` as its last commit, so a later branch can rebase over it cheaply. The earlier documentation PRs [#164](https://github.com/benfriebe/kelpi/pull/164), [#210](https://github.com/benfriebe/kelpi/pull/210) and [#242](https://github.com/benfriebe/kelpi/pull/242) are merged. |
+| Product baseline | `origin/main` at `058c8f4` (#263, over #261's `37703e6` and #262's `39e6f5b`). |
+| Promoted build | `058c8f4`, promoted 2026-09-24 at 11:31 UTC at the owner's request **without the integration battery**: it was started on `058c8f4` and stopped mid-run when the owner asked to skip it, so it has no result. The evidence behind the promote is in the [merge and promote record](plugin-validation.md#merge-and-promote-of-262-261-and-263-2026-09-24). The promote before it was `225ef73` on 2026-09-23, after an integration battery. `~/Library/Application Support/kelpid/last-promote.json` holds the phase and the timestamp; read it rather than trusting this row after a later promote. |
+| Open feature branches | None. #262 (search), #261 (Help) and #263 (root layout) are merged; #243, #244 and #246 through #260 merged before them. |
+| Documentation branch | `docs/ui-composition-after-merge`, this refresh after the three merges. The earlier documentation PRs [#164](https://github.com/benfriebe/kelpi/pull/164), [#210](https://github.com/benfriebe/kelpi/pull/210) and [#242](https://github.com/benfriebe/kelpi/pull/242) are merged. |
+| Merge gate | The repository ruleset "Kelpi PR readiness", which required a hand-posted `kelpi/pr-readiness` status on `main`, was **disabled by the owner on 2026-09-24**; a PR now needs only GitHub's own mergeability. The auto-mode classifier refuses to let an agent post commit statuses or change rulesets, and it refused `gh pr merge` until the owner approved each one, so merging stays the owner's step. |
 | Running application | The promoted instance is the user's own. Do not package into it, restart it or take its socket without being asked. |
 
 Worktrees under `/Users/ben/kelpi/worktrees/kelpi/`:
 
 | Worktree | Branch | Disposition |
 | --- | --- | --- |
-| `plugin-settings-contracts` | `feature/plugin-pane-search` | It packaged the promoted build from `main`, carried pane chrome, and carried the search presenter, merged as #262. |
-| `plugin-root-layout` | `feature/plugin-root-layout`, rebased onto `c32cabe` | Root layout composition, this PR, carrying this documentation refresh. |
+| `plugin-settings-contracts` | `feature/plugin-pane-search` | Carried pane chrome and the search presenter, merged as #262. |
+| `plugin-root-layout` | `feature/plugin-root-layout` | Root layout composition, merged as #263. |
 | `help-plugin-shortcuts` | `feature/help-plugin-shortcuts` | Plugin commands and shortcuts in the Help overlay, merged as #261. |
+| `ui-composition-integration` | `integration/ui-composition-20260924` (local only, never pushed) | The three branches merged together for the owner's single manual test, with the one cross-branch fix (Layout Lab's chrome fixture needed Help's `keymap` field) that #263's rebase then carried. Nothing in it is needed any more. |
+| `main-058c8f4` | `docs/ui-composition-after-merge` | Packaged the promoted build at `058c8f4` and carries this refresh. |
 
-`plugin-terminal-geometry`, `plugin-interaction-contracts` and `fix-cli-module-type` were removed
-once their PRs merged and their local branches were deleted, and the three
-`Kelpi-darwin-arm64.pre-promote-*` bundle backups under
-`/Users/ben/code/kelpi/packages/shell/out` are deleted. One cleanup is still the user's to run,
-because the auto-mode classifier refuses that command: the merged remote branches for the finished
-phases. The remaining worktree holds a built vendor bundle and `node_modules`, so a new task is
-faster bootstrapped fresh than reused from it.
+All five are finished and can be removed once this refresh merges; their remote branches were
+deleted on merge. Four `Kelpi-darwin-arm64.pre-promote-*` bundle backups sit under
+`/Users/ben/code/kelpi/packages/shell/out` (three from 2026-09-19 and
+`pre-promote-20260924T213102`, the bundle this promote replaced, which is `225ef73`); removing them
+is the owner's call. A new task is faster bootstrapped in a fresh worktree than reused from one of
+these.
 
 In the current local environment the repository root is `/Users/ben/code/kelpi`. Its main
-checkout carries another session's uncommitted edit to `docs/plugin-roadmap.md`. Preserve it. Do not reset the root, carry its changes into a feature branch, or clean up the
+checkout carries another session's uncommitted edit to `docs/plugin-roadmap.md`. It was written
+against `225ef73` before #262, #261 and #263 merged, so it is superseded (committing it would put
+"no `pane.search` placement yet" back into the roadmap); it is still not this project's to discard,
+so leave it for the owner. Do not reset the root, carry its changes into a feature branch, or clean up the
 many older worktrees under `/Users/ben/code/kelpi/.claude/worktrees/` and
 `/Users/ben/code/kelpi/out/worktrees/`, which belong to other tasks.
 
@@ -66,7 +75,7 @@ Draft PR publication is authorized; merging remains the user's step. Delegate bo
 implementation tasks where useful. Update the roadmap, API/example guides and dated validation
 together as each phase lands.
 
-Five workflow lessons, each of which has already cost a round:
+Six workflow lessons, each of which has already cost a round:
 
 1. **Reinstall an example plugin in a private instance after every change to it.** An installed
    example is a COPY, and a running instance keeps using the copy it installed. Editing the files in
@@ -86,10 +95,14 @@ Five workflow lessons, each of which has already cost a round:
    this same repository: the #235 fix landed twice, once as
    [#238](https://github.com/benfriebe/kelpi/pull/238) and once as the same diagnosis reached
    independently in the lane work.
+6. **Keep a private instance's `--state` path short.** The daemon's Unix socket lives at
+   `<state>/run/daemon-v2.sock` and macOS caps a socket path at 104 bytes, so a state directory deep
+   under a worktree (`.../out/ui-composition-playground`) fails with `listen EINVAL` and the launcher
+   only reports a health-check timeout. Use something like `~/tmp/kelpi-<task>`.
 
 ## Merged plugin work on main
 
-The previous handoff's baseline was `ab9be92`. These twenty PRs merged on top of it and are the
+The previous handoff's baseline was `ab9be92`. These twenty-three PRs merged on top of it and are the
 behaviour a later change must preserve.
 
 | PR | Behavior to preserve |
@@ -114,6 +127,9 @@ behaviour a later change must preserve.
 | [#244](https://github.com/benfriebe/kelpi/pull/244) | `pane.chrome` is Settings-only with a "(bundled)" recovery entry. ONE frame is mounted over the pane grid and clipped by the host to the bands it granted, so a click below a band still reaches the terminal under it. The band, its fill, the focus ring, the pane menu, the rename field, the dividers, the resize badge, the clip wash and the find bar stay the host's. Failure is all-or-nothing and drops every declared band in the same commit. A declaration is withdrawn from an UNMOUNT cleanup, never a render branch; the native header stays until the presenter has painted; a ref is per key rather than per row position; and the pane-move drag is host surfaces over presenter-declared regions, because a press inside an iframe never leaves it. |
 | [#246](https://github.com/benfriebe/kelpi/pull/246) | ⌘+, ⌘- and ⌘0 step the daemon-wide terminal text size. Product work on the terminal rather than a plugin contract: it has no roadmap row and no dated validation section. It and the thirteen PRs after it through #260, all but #253 product or audit work, are named in the roadmap so the baseline is accounted for. |
 | [#253](https://github.com/benfriebe/kelpi/pull/253) | A remote-hosted plugin view reaches this window's navigation (`ui.getNavigation`, `ui.onNavigation`, `ui.selectWorkspace`) only while its saved host is trusted for it in Settings ▸ Remote ▸ Daemons. The grant is per saved host, bound to its exact name and pairing URL, saved with the primary daemon's remote-host registry, revoked when that record is replaced or removed, and rechecked at delivery as well as at attachment; every other API stays denied to those views ([#193](https://github.com/benfriebe/kelpi/issues/193)). |
+| [#262](https://github.com/benfriebe/kelpi/pull/262) | `pane.search` is Settings-only with a "(bundled)" recovery entry and covers SHELL panes only. The daemon's search state stays the authority: the frame's `needle` is the daemon's or the one this window typed that is still in transit, and a presenter holds none of it. The host owns the box (min(480 px, pane width) by min(96 px, 25 %)), relays Escape, the toggle chord, ⌘G and ⇧⌘G (⌘G only while the frame or the searched pane holds the caret), and returns the caret when the SESSION ends. A failure brings back the native bar with the needle intact, focused and case-insensitive; the caret reclaim that follows is bounded and stops on a press, a key elsewhere or a plugin frame taking the pointer. The daemon drops a terminal-search recount that a newer needle, case flag, open or close has superseded. Both presenter slots read their painted latch unconditionally (no conditional hook). |
+| [#261](https://github.com/benfriebe/kelpi/pull/261) | Help stays host-drawn and lists plugin commands with the chord the window actually honours, from ONE keymap model that the chrome snapshot also publishes read-only as `keymap`, bounded to 64 KiB. The plugin half is the dispatcher's own resolution (`resolvePluginChords`) and the reserved set comes from `nativeChordOwners`, so Help cannot name a chord that would not fire. The keymap is copied, frozen and serialized once per identity, not on every chrome publish. |
+| [#263](https://github.com/benfriebe/kelpi/pull/263) | topbar, statusbar and panel.bottom have a hidden flag separate from the selection, the two sidebars join the persisted arrangement (`kelpi.workbench.layout.v1:<id>`, per window, not live-synced), and Zen Mode snapshots and restores all five. The 8 px restore strip is host-drawn and can never be hidden. Band heights are manifest-declared (`bandHeights`) and range-checked at install, not declared at runtime. Traffic lights follow the toolbar through the window-scoped `window-chrome` report and come back on navigation or disconnect. A trigger naming both `ctrl` and `super` is unbound off macOS, in the client map, the shell menu and the web host's claim. |
 
 Main fixes before that baseline that still matter are recorded in the roadmap: the vendored
 engine wrap-linkage fix [#167](https://github.com/benfriebe/kelpi/pull/167), bundled replay
@@ -126,22 +142,25 @@ heartbeat verdict).
 
 ## Open branches
 
-None once this PR merges. Three were worked in parallel in their own worktrees and merged one after
-another:
+None. Three were worked in parallel in their own worktrees and merged one after another:
 
 - `feature/plugin-pane-search`, merged as [#262](https://github.com/benfriebe/kelpi/pull/262): the
   pane chrome latch fix, the selectable search presenter, Search Lab and its live acceptance, the
-  review fixes and the surface docs, through two independent reviews. Its tested revision is
-  `68c2b0d`, and its full battery passed unretried at `a209603` (the same code) in 26.4 minutes.
+  daemon recount fix, the review fixes and the surface docs, through two independent reviews. Its
+  tested revision is `68c2b0d`, and its full battery passed unretried at `a209603` (the same code)
+  in 26.4 minutes.
 - `feature/help-plugin-shortcuts`, merged as [#261](https://github.com/benfriebe/kelpi/pull/261):
   plugin commands and shortcuts in the Help overlay, with the keybinding map read-only in the chrome
-  snapshot.
-- `feature/plugin-root-layout`, this PR, rebased onto `c32cabe`: hideable root bands, Zen Mode,
-  declared band heights and the persisted arrangement, Layout Lab and its live acceptance, one
-  independent review, and this refresh. Its full battery passed unretried at `e7d9de1` in 25.9
-  minutes, before the rebase; the first, at `819da74`, failed on a scenario's synchronization, which
-  the [validation record](plugin-validation.md#root-layout-hidden-bands-zen-mode-and-band-heights-2026-09-24)
-  traces.
+  snapshot. Its full battery passed unretried at `6fde921` in 25.6 minutes (one audit assertion
+  attributed to load, green 3/3 alone); its rebase onto `39e6f5b` changed docs only.
+- `feature/plugin-root-layout`, merged as [#263](https://github.com/benfriebe/kelpi/pull/263):
+  hideable root bands, Zen Mode, declared band heights and the persisted arrangement, Layout Lab and
+  its live acceptance, one independent review. Its full battery passed unretried at `e7d9de1` in
+  25.9 minutes, before the rebase; the first, at `819da74`, failed on a scenario's synchronization,
+  which the [validation record](plugin-validation.md#root-layout-hidden-bands-zen-mode-and-band-heights-2026-09-24)
+  traces. Its rebase over #262 and #261 resolved the additive `App.tsx`, `Workbench.tsx` and
+  test-fixture conflicts exactly as the owner-tested combined build had, including the Layout Lab
+  fixture's new `keymap` field.
 
 The roadmap and this handoff are edited by every branch, so each keeps its refresh as its own last
 commit and a later branch rebases over an earlier merge by replacing that one commit. Everything
@@ -157,11 +176,12 @@ None of these is running on a branch. Each names the code that owns it.
 
 | Task | Owned by |
 | --- | --- |
+| A full battery on `main` at or after `058c8f4`. No battery has run on the three branches merged together: each passed its own, and the combined tree passed typecheck, the root and shell suites and the seven scenarios the three branches touch, but the integration battery was stopped at the owner's request. Run it in a quiet window before the next promote and record it. | [`scripts/verify.mjs`](../scripts/verify.mjs) |
 | [#245](https://github.com/benfriebe/kelpi/issues/245) layout-aware chords. Named here because pane chrome and pane search both sharpened it: a presenter's frame consumes what it is not granted, so which chords a surface relays is now a per-placement decision rather than one rule. | [pane search slot](../packages/client/src/pane-search/presenter-slot.tsx), [interaction slot](../packages/client/src/interaction/presenter-slot.tsx), [key dispatcher](../packages/client/src/chrome/keys.ts) |
 | The three leak warnings a full lane still prints, all of them inert: `plugin-terminal-features` and `plugin-terminal-geometry` on the `terminal` slot, `plugin-document-features` on `document.markdown`, each naming a lab view left in the store of a second daemon the scenario has already stopped and deleted. Silencing one means re-selecting the remote host and driving Settings a second time inside a cleanup path, which is why [#240 left them reported](plugin-validation.md#the-remaining-workbench-slot-warnings-are-left-as-they-are). | [the slot helper](../scripts/ui-audit/lib/workbench.mjs), [the post-condition](../scripts/scenario.mjs) |
 | An Appearance presenter for the native remainder parts (theme gallery, importer and share codes, colour maps, terminal theme picker, band fill, stat toggles, sparkline colour, highlight preview, Resets). Only if a real plugin needs them. | [sections](../packages/client/src/settings/sections.ts), [presenter host](../packages/client/src/settings/presenter.ts), [public settings types](../packages/plugin-sdk/settings.d.ts) |
 | Physical-device checks. Every phone result on record is Electron emulation; real hardware coverage must be reported separately. | the audit's phone steps and `phone-settings-sheet` in [`scripts/ui-audit/audit.mjs`](../scripts/ui-audit/audit.mjs), the phone sections of the plugin scenarios |
-| The roadmap's later items: a public registry and distribution, and untrusted execution. The remaining UI composition surfaces are done with this PR, the phone shell and the Help overlay's frame decided against. | [later work](plugin-roadmap.md#later-work-and-open-decisions) |
+| The roadmap's later items: a public registry and distribution, and untrusted execution. The remaining UI composition surfaces are done (#262, #261, #263), the phone shell and the Help overlay's frame decided against. | [later work](plugin-roadmap.md#later-work-and-open-decisions) |
 
 The open issues this project touches at this baseline are
 [#245](https://github.com/benfriebe/kelpi/issues/245) (layout-aware chords),
@@ -217,7 +237,11 @@ node scripts/scenario.mjs plugin-pane-chrome plugin-pane-search --window hidden
 node scripts/scenario.mjs plugin-pane-search plugin-remote --window hidden --no-build
 node scripts/scenario.mjs plugin-terminal-geometry plugin-terminal-features terminal-mirrors-owner-grid --window hidden
 node scripts/scenario.mjs plugin-ui-services plugin-workbench plugin-remote --window hidden --no-build
+node scripts/scenario.mjs plugin-root-layout plugin-chrome-features plugin-workbench sidebar-swap --window hidden
 ~~~
+
+`plugin-root-layout` declares an offscreen placement and boots an instance of its own when the lane
+is hidden; `plugin-chrome-features` carries Help's keymap checks.
 
 The run with `plugin-remote` between the two presenter scenarios is the leak probe: it is what
 proves they leave no residual sandbox state, and since PR #211 the runner names any scenario that
@@ -251,16 +275,30 @@ branches that merged into this baseline: `59cbba2` (#213) in 24.0 minutes, `4377
 minutes, `ec8a928` (#218) in 24.0 minutes with `2a82f8c` before its amendments in 24.9 minutes, and
 `165230b` then `2b46ba0` (#240) in 25.1 and 24.8 minutes. None of them retried a component, the
 whole scenario lane was green without the battery's retry, the full audit completed with no failed
-step, and the packaged smoke was **69 checks**.
+step, and the packaged smoke was **69 checks**. The three composition branches followed the same
+way: `a209603` (#262) in 26.4 minutes, `6fde921` (#261) in 25.6 minutes with one audit assertion
+attributed to load, and `e7d9de1` (#263) in 25.9 minutes after `819da74` failed on a scenario's
+synchronization. The last battery on `main` itself is the `225ef73` integration run of
+2026-09-23; see the Next tasks for `058c8f4`.
 
 ### Promoting a build
 
 Only when the user asks. The promote flow that produced the running build was:
 
-1. Package from a clean worktree at `main`, with the battery already green on that tree.
-2. Place the bundle at the installed path under the root checkout,
-   `/Users/ben/code/kelpi/packages/shell/out/Kelpi-darwin-arm64/Kelpi.app`. The promote script
-   keeps the previous bundle beside it as `Kelpi-darwin-arm64.pre-promote-<stamp>`.
+1. Package from a clean worktree at `main`, with the battery already green on that tree (the
+   2026-09-24 promote of `058c8f4` skipped this at the owner's request). Packaging is the daemon,
+   client, CLI and shell builds, then `pnpm run package` in `packages/shell`.
+2. Move the installed bundle aside by hand, then copy the new one into its place. The promote script
+   does not keep a backup itself:
+
+~~~sh
+OUT=/Users/ben/code/kelpi/packages/shell/out
+mv "$OUT/Kelpi-darwin-arm64" "$OUT/Kelpi-darwin-arm64.pre-promote-$(date +%Y%m%dT%H%M%S)"
+ditto <worktree>/packages/shell/out/Kelpi-darwin-arm64 "$OUT/Kelpi-darwin-arm64"
+codesign --verify --strict "$OUT/Kelpi-darwin-arm64/Kelpi.app"
+~~~
+
+   Copy the `Kelpi-darwin-arm64` directory itself, not its parent; `ditto` keeps the signature.
 3. Run it detached, skipping the repackage and the battery it has already passed:
 
 ~~~sh
@@ -279,13 +317,14 @@ node scripts/self-upgrade.mjs --detach --no-package --skip-verify \
 ## Starter message for a new session
 
 > Read `docs/plugin-handoff.md` and `docs/plugin-roadmap.md` on `main`. Everything through pane
-> chrome phase B and the remote navigation trust (#253) is merged at `225ef73`; the last promote
-> on record is `c719f9c`, so preserve the dirty root checkout and the installed Kelpi and do not
-> promote anything. Recheck `main` and the open issues before you start, and check `origin/main`
-> for a parallel fix before you dispatch one, because other sessions work this same repository.
-> Three plugin branches are open: `feature/plugin-pane-search`, `feature/plugin-root-layout` and
-> `feature/help-plugin-shortcuts`. Pick up from the handoff's Next tasks in a fresh isolated
-> worktree with one `pnpm install`; the vendored engine bundle is committed. Reinstall any example
+> search (#262), plugin commands in Help (#261) and root layout with Zen Mode (#263) is merged at
+> `058c8f4`, which is also the promoted build, promoted without an integration battery; preserve
+> the dirty root checkout and the installed Kelpi and do not promote anything. Recheck `main` and
+> the open issues before you start, and check `origin/main` for a parallel fix before you dispatch
+> one, because other sessions work this same repository. No plugin branch is open. Pick up from the
+> handoff's Next tasks, the battery on `main` first, in a fresh isolated worktree with one
+> `pnpm install` and a short `--state` path for any private instance; the vendored engine bundle is
+> committed. Reinstall any example
 > plugin you edit before you test it, never run the battery while I am using a second Kelpi window,
 > and plan a manual test for anything that drags or moves focus inside an iframe. Use logical
 > commits and reviewable PR phases, squash merges only, update the roadmap, guides and dated

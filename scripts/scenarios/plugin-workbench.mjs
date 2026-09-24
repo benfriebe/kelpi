@@ -26,10 +26,25 @@ export default async function ({ page, harness, cli, rec, d }) {
     const chooseSidebar = async (side, id) => {
         await painted();
         await page.click(`[data-testid="sidebar-view-picker-sidebar.${side}"]`);
-        await d.settleDom(page, `document.querySelector('[data-menu-item="${id}"]')`);
-        // Chromium's OOPIF hit-test regions update after the host menu reaches the DOM.
-        await painted();
-        await page.click(`[data-menu-item="${id}"]`);
+        const row = `[data-menu-item="${id}"]`;
+        await d.settleDom(page, `document.querySelector(${JSON.stringify(row)})`);
+        /*
+         * Chromium routes pointer input by its own hit-test data, which lags the host DOM: for a
+         * moment after the menu appears, a press over a plugin iframe underneath it still goes to
+         * the iframe. Measured on this step after a reload: the press landed in the right sidebar's
+         * plugin frame 15 ms after the menu drew, focused it, blurred the window and closed the
+         * menu (the picker closes on blur), so the Inspector was never chosen. Two frames of wait
+         * is not a guarantee of anything, so the pointer hovers the row until the HOST sees it
+         * there, which is the routing the press will get, and only then presses.
+         */
+        const box = await page.box(row);
+        await page.eval(`(() => { window.__menuRowHovered = false; document.querySelector(${JSON.stringify(row)})?.addEventListener('pointerover', () => { window.__menuRowHovered = true; }, { once: true }); return true; })()`);
+        const routed = await d.settle(async () => {
+            await page.mouse('mouseMoved', box.cx, box.cy);
+            return await page.eval(`window.__menuRowHovered === true`);
+        }, { ceilingMs: 3_000, intervalMs: 50 });
+        if (!routed) rec.note(`the ${side} picker's ${id} row never received the pointer; pressing anyway`);
+        await page.click(row);
     };
     const chooseSidebarSetting = (side, id) => page.eval(`(() => {
         const select = document.querySelector('select[aria-label="sidebar.${side}"]');
@@ -118,7 +133,13 @@ export default async function ({ page, harness, cli, rec, d }) {
         await openRightSidebar();
         rec.check('both sidebar selections survive a window reload', await sidebarReady('primary') && await sidebarReady('secondary'));
         await chooseSidebar('secondary', 'kelpi.inspector');
-        rec.check('the right plugin header restores the working Inspector', await d.settleDom(page, `document.querySelector('[data-testid="inspector-workspace"]') && document.querySelector(${JSON.stringify(sidebar)})`));
+        const inspectorBack = await d.settleDom(page, `document.querySelector('[data-testid="inspector-workspace"]') && document.querySelector(${JSON.stringify(sidebar)})`);
+        rec.check('the right plugin header restores the working Inspector', inspectorBack, inspectorBack ? undefined : String(await page.eval(`JSON.stringify({
+            slots: [...document.querySelectorAll('[data-workbench-slot]')].map(node => node.getAttribute('data-workbench-slot') + '=' + node.getAttribute('data-view-id')),
+            inspector: !!document.querySelector('[data-testid="inspector"]'),
+            menu: !!document.querySelector('[role="menu"]'),
+            active: document.activeElement?.tagName + ' ' + (document.activeElement?.closest('[data-workbench-slot]')?.getAttribute('data-workbench-slot') ?? '')
+        })`)));
         await rec.shot(page, 'plugin-pane-and-sidebar');
         await page.evalInFrame(frame, `setTimeout(() => { throw new Error('intentional plugin view failure'); }, 0); true`);
         rec.check('an uncaught view error is isolated to a recoverable placeholder', await d.settleDom(page, `document.querySelector('[data-testid="plugin-view-${pane.paneID}"]')?.innerText.includes('intentional plugin view failure')`, { ceilingMs: 5_000 }));

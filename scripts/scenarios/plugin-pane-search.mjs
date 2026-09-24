@@ -16,7 +16,8 @@
  *   3. ⌘F over a shell pane opens the LAB's bar at the native bar's own rectangle, with the native
  *      bar absent - and no sample, while the lab boots under an open search or reloads under one,
  *      ever finds that search with no bar at all (each sampler has to catch the boot, or it fails);
- *      a needle typed into the native bar during the boot is in the lab's field after the swap;
+ *      a needle typed into the native bar during a HELD boot is handed to the lab in transit, inside
+ *      the 300 ms debounce, before the daemon can have it;
  *   4. typing in the lab's input sets the daemon's needle and the count matches a scrollback this
  *      scenario printed: N marker lines, so the number is known before the bar is opened;
  *   5. the lab's next button and ⌘G step the daemon's selection; ⇧⌘G steps back; and with Terminal
@@ -49,8 +50,8 @@
  *
  * `examples/plugins/search-lab` (plain JS, no build): one view `example.search-lab.search` for
  * `pane.search`, setting `document.body.dataset.ready = 'true'` once it has reported readiness and
- * exposing `globalThis.searchLab = { snapshot, ready, frames, lastError, crash(mode), stall(),
- * declare(size) }`. Its bar is read by test id - `lab-search` (`data-pane-id`), `lab-search-input`,
+ * exposing `globalThis.searchLab = { snapshot, ready, frames, lastError, held, readyAt, readyNeedle,
+ * readyFrameNeedle, readyTyped, paintedAt, crash(mode), stall(), declare(size), holdNextBoot(), releaseReady() }`. Its bar is read by test id - `lab-search` (`data-pane-id`), `lab-search-input`,
  * `lab-search-count`, `lab-search-next`, `lab-search-previous`, `lab-search-case`,
  * `lab-search-close`. Everything a check ASSERTS is read from the contract instead
  * (`searchLab.snapshot`, the host's own test ids, the daemon's own state through the CLI), so a
@@ -223,19 +224,22 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
      * is up. `leaveFirst` waits for a shown lab to stop being shown before it waits for it to come
      * back, which is how a reload under an open search is caught landing.
      */
+    const hostSample = async paneID => {
+        const raw = await page.eval(`(() => {
+            const slot = document.querySelector('[data-testid="pane-search-presenter"]');
+            return JSON.stringify({
+                shown: slot?.dataset.shown ?? 'none',
+                searching: slot?.dataset.paneId ?? '',
+                native: !!document.querySelector('[data-testid="pane-search-input-${paneID}"]')
+            });
+        })()`);
+        return typeof raw === 'string' ? JSON.parse(raw) : null;
+    };
     const sampleUntilShown = async (paneID, { leaveFirst = false } = {}) => {
         const samples = [];
         let left = !leaveFirst;
         for (let attempt = 0; attempt < 240; attempt += 1) {
-            const raw = await page.eval(`(() => {
-                const slot = document.querySelector('[data-testid="pane-search-presenter"]');
-                return JSON.stringify({
-                    shown: slot?.dataset.shown ?? 'none',
-                    searching: slot?.dataset.paneId ?? '',
-                    native: !!document.querySelector('[data-testid="pane-search-input-${paneID}"]')
-                });
-            })()`);
-            const sample = typeof raw === 'string' ? JSON.parse(raw) : null;
+            const sample = await hostSample(paneID);
             if (sample !== null) {
                 if (!left && sample.shown !== 'true') left = true;
                 if (left) samples.push(sample);
@@ -486,23 +490,62 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
          * the lab's, and at least one has to catch the lab mounted and not yet painted, or the check
          * has proved nothing and fails.
          *
-         * A short needle is typed into the native bar during that boot, too: the host hands a
-         * presenter the needle it is still sending rather than the daemon's older one, and the lab
-         * follows it until the user types into its own field, so after the swap the lab's field
-         * holds what was typed - where the first version stranded it.
+         * The boot is HELD (`searchLab.holdNextBoot()`, left in plugin storage for the new document
+         * the enable creates): the lab is mounted, fed and painting behind the native bar and does
+         * not report readiness until it is released. That is the window the hand-over needs. A short
+         * needle typed into the native bar waits out the 300 ms debounce before the daemon sees it,
+         * so a lab released inside that window and found holding the needle can only have been
+         * handed it by the host - the needle in transit, not the daemon's. The first version typed
+         * and then waited ~650 ms for an unheld boot, by which time the daemon had the needle and the
+         * check passed with the hand-over wiring deleted.
          */
+        await inFrame(`globalThis.searchLab.holdNextBoot().then(() => true)`);
         await cli.ok(['plugin', 'disable', labID]);
         await d.settleDom(page, `!document.querySelector('[data-testid="pane-search-presenter"]')`, { ceilingMs: 10_000 });
         await openSearch(shellPane);
         const openedNative = await nativeBarUp(shellPane);
         await cli.ok(['plugin', 'enable', labID]);
+        const samples = [];
+        let held = false;
+        for (let attempt = 0; attempt < 240 && !held; attempt += 1) {
+            const sample = await hostSample(shellPane);
+            if (sample !== null) samples.push(sample);
+            // Held AND past its paint wait: in this lane the paint wait is throttled and can take
+            // most of a second, and a release before it ends is a release the report cannot act on.
+            try { held = await inFrame(`globalThis.searchLab?.held === true && globalThis.searchLab?.paintedAt !== null && globalThis.searchLab?.snapshot?.visible === true`) === true; } catch { held = false; }
+            if (!held) await sleep(25);
+        }
+        const typedAt = Number(await page.eval('Date.now()'));
         await page.insertText('NE');
-        const samples = await sampleUntilShown(shellPane);
+        /*
+         * ONE evaluation in the frame waits there for the handed needle and releases the boot.
+         *
+         * The release has to land inside the debounce for the check to prove anything, and the
+         * first cut spent it on the harness: two host reads and a frame read per poll between the
+         * typing and the release came to 421 ms. Whether the keystrokes landed in the NATIVE field
+         * is read from the lab afterwards (`readyTyped`) rather than from the host beforehand.
+         */
+        const insertedAt = Number(await page.eval('Date.now()'));
+        const handover = JSON.parse(String(await inFrame(`new Promise(resolve => {
+            const started = Date.now();
+            const poll = () => {
+                const lab = globalThis.searchLab;
+                if (lab?.snapshot?.needle === 'NE') { lab.releaseReady(); resolve(JSON.stringify({ handed: true, started, saw: Date.now() })); }
+                else if (Date.now() - started > 250) { lab?.releaseReady(); resolve(JSON.stringify({ handed: false, started, saw: null })); }
+                else setTimeout(poll, 2);
+            };
+            poll();
+        })`)));
+        const handed = handover.handed === true;
+        rec.note(`hand-over timing: typed at 0, insertText returned +${String(insertedAt - typedAt)} ms, frame eval started +${String(handover.started - typedAt)} ms, NE seen +${handover.saw === null ? 'never' : String(handover.saw - typedAt)} ms`);
+        samples.push(...await sampleUntilShown(shellPane));
         const booting = samples.filter(sample => sample.shown === 'false');
         const barless = samples.filter(sample => sample.shown !== 'true' && !sample.native);
-        const handedOver = await d.settle(async () => await labNeedle() === 'NE' && (await labSnapshot())?.needle === 'NE', { ceilingMs: 10_000 });
-        rec.check('a needle typed into the native bar while the presenter boots is in the lab\'s field after the swap',
-            handedOver, `lab field ${String(await labNeedle())} · frame ${String((await labSnapshot())?.needle)}`);
+        const readiness = JSON.parse(String(await inFrame(`JSON.stringify({ at: globalThis.searchLab?.readyAt ?? null, field: globalThis.searchLab?.readyNeedle ?? null, frame: globalThis.searchLab?.readyFrameNeedle ?? null, typed: globalThis.searchLab?.readyTyped ?? null })`)));
+        const withinDebounce = typeof readiness.at === 'number' && readiness.at - typedAt < 300;
+        rec.check('a needle typed into the native bar while the presenter boots is handed to it IN TRANSIT: the lab reports ready holding it inside the 300 ms debounce, before the daemon can have it',
+            held && handed && readiness.frame === 'NE' && readiness.field === 'NE' && readiness.typed === false && withinDebounce,
+            `held ${String(held)} · handed ${String(handed)} · at ready: frame ${String(readiness.frame)}, field ${String(readiness.field)}, typed into the lab ${String(readiness.typed)}, ${typeof readiness.at === 'number' ? String(readiness.at - typedAt) : '?'} ms after typing`);
         // Check 4 types its own needle from an empty field.
         await inFrame(`(() => { const f = document.querySelector('[data-testid="lab-search-input"]'); f.value = ''; f.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
         await d.settle(async () => (await labSnapshot())?.needle === '', { ceilingMs: 10_000 });

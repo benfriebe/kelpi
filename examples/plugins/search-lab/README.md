@@ -86,10 +86,13 @@ presenter that killed itself while somebody typed.
 
 ## The caret and the four chords
 
-The field takes the caret on the frame that opens a session, exactly as Kelpi's own bar autofocuses.
-It is **not** contained: clicking the terminal underneath moves the caret to the terminal, because a
-find bar is not modal. When Kelpi focuses this frame the field takes the caret in the same task,
-rather than on the next frame, so a fast keystroke never lands on the frame's body in between.
+The field takes the caret when Kelpi shows this bar, exactly as Kelpi's own bar autofocuses. It is
+**not** contained: clicking the terminal underneath moves the caret to the terminal, because a find
+bar is not modal. When Kelpi focuses this frame the field takes the caret in the same task, rather
+than on the next frame, so a fast keystroke never lands on the frame's body in between. The frame
+that OPENS a session seeds the field and places the caret at its end, but takes focus only if this
+document already has it: that frame arrives while Kelpi's own bar is still drawing, and a field that
+focused itself then would pull the caret out of the bar the user is typing into.
 
 **The hand-over from Kelpi's own bar.** A ⌘F pressed before this view has painted opens Kelpi's bar,
 and the user may start typing there. This view is fed the needle as it goes - Kelpi hands a
@@ -153,11 +156,22 @@ globalThis.searchLab = {
     snapshot,       // the last frame delivered
     ready, frames,  // readiness reported, frames received
     lastError,      // the last refusal or failure, as text
+    held,           // this boot is holding its readiness report (see holdNextBoot)
+    paintedAt,      // when the paint wait ended; after it, only a hold delays the report
+    readyAt, readyNeedle, readyFrameNeedle, readyTyped, // when readiness was reported, the field, the frame's needle and whether the field was typed into
     crash(mode),    // 'listener' throws inside the listener; 'uncaught' fails the placement
     stall(),        // stop acknowledging, so the 5 s watchdog fires
-    declare(size)   // declare a box by hand, or null to hand it back
+    declare(size),  // declare a box by hand, or null to hand it back
+    holdNextBoot(), // ask the NEXT boot to hold its readiness report (kept in plugin storage)
+    releaseReady()  // let a held boot report readiness
 };
 ```
+
+`holdNextBoot()` is the hand-over hook. Enabling or reloading the plugin boots it in a new document,
+so the request is left in plugin storage, and the next boot reads it, clears it, and keeps painting
+and acknowledging frames behind Kelpi's own bar without reporting readiness until `releaseReady()`.
+That is the window in which a needle typed into Kelpi's bar is still in transit, and the live
+scenario releases inside it and reads `readyNeedle` and `readyFrameNeedle` back.
 
 `crash('uncaught')` and `stall()` are the two deliberate failure hooks, and they differ:
 `crash('uncaught')` rethrows where nothing catches it, which the SDK reports as a view error and the

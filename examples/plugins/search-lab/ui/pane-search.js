@@ -43,9 +43,15 @@ const element = id => document.getElementById(id);
 
 /**
  * The scenario's whole view into this presenter, and `postMessage`-free: state to assert on plus
- * the three deliberate hooks the recovery paths and the box authority are exercised with.
+ * the deliberate hooks the recovery paths, the box authority and the hand-over are exercised with.
+ * `readyAt`, `readyNeedle`, `readyFrameNeedle` and `readyTyped` are what this view held at the moment
+ * it reported readiness - the moment Kelpi's own bar stands down and this one is shown.
  */
-const lab = { snapshot: null, ready: false, frames: 0, lastError: null, crash, stall, declare };
+const lab = {
+    snapshot: null, ready: false, frames: 0, lastError: null,
+    held: false, paintedAt: null, readyAt: null, readyNeedle: null, readyFrameNeedle: null, readyTyped: null,
+    crash, stall, declare, holdNextBoot, releaseReady
+};
 globalThis.searchLab = lab;
 
 let disposed = false, painted = false, stalled = false, armed = null;
@@ -87,6 +93,31 @@ function declare(size) {
     pinnedBox = size;
     sentBox = size === null ? null : `${size.width}x${size.height}`;
     void act(() => api.ui.setSearchBoxSize(paneID, size));
+}
+
+/**
+ * Hold the readiness report on the NEXT boot until `releaseReady()`.
+ *
+ * The live scenario's hand-over check needs a presenter that is mounted, fed and painting behind
+ * Kelpi's own bar for as long as it takes to type into that bar - a window it cannot otherwise
+ * open, because a booting presenter reports readiness within a frame or two. The boot it is for
+ * runs in a NEW document (enabling or reloading the plugin replaces this one), so the request is
+ * left in plugin storage, where the next boot reads it and clears it. Frames keep arriving and are
+ * acknowledged while the report is held; only the report waits.
+ */
+const HOLD_KEY = 'holdReadyOnNextBoot';
+async function holdNextBoot() { await api.storage.set(HOLD_KEY, true); }
+let release = () => {};
+function releaseReady() { release(); }
+let holdGate = Promise.resolve();
+async function readHold() {
+    let asked = false;
+    try { asked = (await api.storage?.get(HOLD_KEY)) === true; } catch { asked = false; }
+    if (!asked) return;
+    try { await api.storage.set(HOLD_KEY, false); } catch { /* the hold still applies to this boot */ }
+    lab.held = true;
+    await new Promise(resolve => { release = resolve; });
+    lab.held = false;
 }
 
 function failed(error) {
@@ -214,6 +245,21 @@ function caretToEnd() {
     field.setSelectionRange(end, end);
 }
 
+/**
+ * Seeding places the caret, and takes FOCUS only when this document already has it.
+ *
+ * A session's first frame arrives while Kelpi's own bar is still drawing - this view is fed and
+ * painting behind the host's clip until it reports readiness - and a field that focused itself
+ * then would pull the caret out of the bar the user is typing into, into a field nobody can see.
+ * So the caret is put at the end without asking for focus, and the frame gaining focus (below)
+ * takes it into the field when Kelpi shows this bar.
+ */
+function seedCaret() {
+    if (document.hasFocus()) { caretToEnd(); return; }
+    const end = field.value.length;
+    field.setSelectionRange(end, end);
+}
+
 /*
  * The frame gaining focus puts the caret in the field, in the same task.
  *
@@ -268,7 +314,7 @@ function render(snapshot) {
         seededFor = snapshot.paneID;
         typed = false;
         field.value = snapshot.needle;
-        caretToEnd();
+        seedCaret();
     } else if ((!typed || document.activeElement !== field) && field.value !== snapshot.needle) {
         // Not typed into yet (the native bar still has the user's keystrokes), or somebody else
         // moved the needle (a second window, or another plugin through `terminal.search`) while
@@ -329,8 +375,11 @@ function naturalWidth(tier) {
  */
 function fit() {
     if (root.hidden) return;
-    const ceiling = root.style.maxWidth;
+    // Both ceilings lifted: a bar measured under the height it was granted would declare that
+    // height, and on a short pane the declaration would ratchet down and never grow back.
+    const ceiling = root.style.maxWidth, heightCeiling = root.style.maxHeight;
     root.style.maxWidth = 'none';
+    root.style.maxHeight = 'none';
     root.dataset.fit = 'full';
     const full = root.getBoundingClientRect();
     wantedSize = { width: Math.ceil(full.width), height: Math.ceil(full.height) };
@@ -341,6 +390,7 @@ function fit() {
     }
     root.dataset.fit = chosen;
     root.style.maxWidth = ceiling;
+    root.style.maxHeight = heightCeiling;
     // A hidden counter is still readable: it moves to the field's tooltip.
     field.title = chosen === 'tight' ? count.textContent : '';
 }
@@ -408,7 +458,25 @@ async function frame(snapshot) {
         publishBox();
         if (painted) return;
         painted = true;
+        // Not awaited: the SDK acknowledges a frame only once this listener settles, and a held
+        // report must not hold every frame after it too.
+        void announceReady();
+    } catch (error) { failed(error); }
+}
+
+/** Claim readiness after a paint, and - when asked on the previous boot - not before `releaseReady()`. */
+async function announceReady() {
+    try {
         await afterPaint();
+        // From here only a hold stands between this view and its report. In a throttled window the
+        // paint wait itself can take most of a second, so a scenario releasing a hold waits for this.
+        lab.paintedAt = Date.now();
+        await holdGate;
+        lab.readyAt = Date.now();
+        lab.readyNeedle = field.value;
+        lab.readyFrameNeedle = lab.snapshot?.needle ?? null;
+        // Whether that needle was typed HERE, or handed in by Kelpi from its own bar.
+        lab.readyTyped = typed;
         await api.ui.reportPresenterReady();
         lab.ready = true;
         document.body.dataset.ready = 'true';
@@ -416,6 +484,7 @@ async function frame(snapshot) {
 }
 
 await api.ready;
+holdGate = readHold();
 document.body.dataset.visible = 'false';
 const stop = api.ui.onPaneSearch(frame, failed);
 // Once: the page is going away, and a second teardown has nothing left to tear down. The box goes

@@ -50,9 +50,17 @@ interface LabDiagnostics {
     readonly ready: boolean;
     readonly frames: number;
     readonly lastError: string | null;
+    readonly held: boolean;
+    readonly paintedAt: number | null;
+    readonly readyAt: number | null;
+    readonly readyNeedle: string | null;
+    readonly readyFrameNeedle: string | null;
+    readonly readyTyped: boolean | null;
     crash(mode?: string): void;
     stall(): void;
     declare(size: { width: number; height: number } | null): void;
+    holdNextBoot(): Promise<void>;
+    releaseReady(): void;
 }
 
 interface Action {
@@ -153,9 +161,12 @@ function stubLayout(): () => void {
             const fit = (this as HTMLElement).dataset['fit'] ?? 'full';
             const counter = fit === 'tight' ? 0 : text.length * 7;
             const width = 240 + counter - (fit === 'full' ? 0 : STEPS_WIDTH);
+            // A pixel `max-height` caps the bar the way the browser would.
+            const ceiling = Number.parseFloat((this as HTMLElement).style.maxHeight);
+            const height = Number.isFinite(ceiling) ? Math.min(34, ceiling) : 34;
             return {
-                x: 0, y: 0, left: 0, top: 0, width, height: 34,
-                right: width, bottom: 34, toJSON: () => ({})
+                x: 0, y: 0, left: 0, top: 0, width, height,
+                right: width, bottom: height, toJSON: () => ({})
             } as DOMRect;
         }
         return { x: 0, y: 0, left: 0, top: 0, width: 0, height: 0, right: 0, bottom: 0, toJSON: () => ({}) } as DOMRect;
@@ -165,7 +176,8 @@ function stubLayout(): () => void {
     };
 }
 
-async function mount(window: Window) {
+async function mount(window: Window, options: { readonly storage?: Map<string, unknown> } = {}) {
+    const storage = options.storage ?? new Map<string, unknown>();
     document.documentElement.innerHTML = new DOMParser().parseFromString(shell, 'text/html').documentElement
         .innerHTML;
     cleanups.push(stubLayout());
@@ -252,6 +264,12 @@ async function mount(window: Window) {
         );
     vi.stubGlobal('kelpi', {
         ready: Promise.resolve(),
+        storage: {
+            get: async (key: string) => storage.get(key) ?? null,
+            set: async (key: string, value: unknown) => {
+                storage.set(key, value);
+            }
+        },
         ui: {
             getPaneSearch: async () => host.getPaneSearch(),
             onPaneSearch,
@@ -601,7 +619,9 @@ describe('Search Lab over the real presenter host', () => {
         const window = make(SESSION);
         const h = await mount(window);
         await ready(h);
-        await until(() => document.activeElement === input(), 'the field to take the caret on open');
+        // Kelpi shows the bar and focuses the frame, which puts the caret in the field.
+        globalThis.dispatchEvent(new FocusEvent('focus'));
+        await until(() => document.activeElement === input(), 'the field to take the caret when shown');
         // Typed into the native bar, and handed over while the field here has the caret.
         window.publish({ needle: 'ne' });
         h.refresh();
@@ -619,6 +639,32 @@ describe('Search Lab over the real presenter host', () => {
     });
 
     /**
+     * A session's first frame arrives while Kelpi's own bar is still drawing, and a field that
+     * focused itself then would pull the caret out of the bar the user is typing into. So seeding
+     * places the caret and takes focus only when this document already has it.
+     */
+    it('does not take the caret on its first frame unless its own document has focus', async () => {
+        const unfocused = make({ ...SESSION, needle: 'anchor' });
+        const h = await mount(unfocused);
+        await ready(h);
+        await until(() => input().value === 'anchor', 'the field to be seeded');
+        expect(document.hasFocus()).toBe(false);
+        expect(document.activeElement).not.toBe(input());
+        expect(input().selectionStart).toBe('anchor'.length);
+        while (cleanups.length > 0) cleanups.pop()?.();
+        vi.unstubAllGlobals();
+
+        const focused = vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+        try {
+            const h2 = await mount(make({ ...SESSION, needle: 'anchor' }));
+            await ready(h2);
+            await until(() => document.activeElement === input(), 'the field to take the caret');
+        } finally {
+            focused.mockRestore();
+        }
+    });
+
+    /**
      * The focus hop: the host focuses the FRAME, and waiting for the next delivered frame to focus
      * the field left a window in which a fast keystroke landed on the body and was lost.
      */
@@ -632,6 +678,67 @@ describe('Search Lab over the real presenter host', () => {
         globalThis.dispatchEvent(new FocusEvent('focus'));
         expect(document.activeElement).toBe(input());
         expect(input().selectionStart).toBe('anchor'.length);
+    });
+
+    /**
+     * A short pane grants a short box, and a bar measured under that height would declare it and
+     * never ask for more again. The measurement lifts the height ceiling as well as the width one.
+     */
+    it('declares the height it wants on a short pane, so a pane that grows gets it back', async () => {
+        const window = make(SESSION);
+        const h = await mount(window);
+        await ready(h);
+        await until(() => window.state.declared !== null, 'the first declaration');
+        expect(window.state.declared!.height).toBe(34);
+        // A quarter of a 100 px pane is 25: the box is clamped, the declaration must not follow it.
+        window.state.pane = { x: 0, y: 0, width: 800, height: 100 };
+        h.refresh();
+        await until(() => bar().style.maxHeight === '25px', 'the short box');
+        for (let index = 0; index < 3; index += 1) {
+            h.refresh();
+            await flush();
+        }
+        expect(window.state.declared!.height).toBe(34);
+        window.state.pane = PANE;
+        h.refresh();
+        await until(() => window.projection().frame.box?.height === 34, 'the full height back');
+    });
+
+    /**
+     * The hand-over hook. A boot asked to hold keeps painting and acknowledging frames behind
+     * Kelpi's own bar, and reports readiness only when released - recording what it held at that
+     * moment, which is what the live scenario reads back.
+     */
+    it('holds its readiness report on a boot asked to, while frames keep arriving', async () => {
+        const storage = new Map<string, unknown>([['holdReadyOnNextBoot', true]]);
+        const window = make(SESSION);
+        const h = await mount(window, { storage });
+        await until(() => h.lab()?.held === true && h.lab()?.paintedAt !== null, 'the boot to paint and hold');
+        // The request is consumed: the boot after this one does not hold.
+        expect(storage.get('holdReadyOnNextBoot')).toBe(false);
+        expect(h.readied()).toBe(0);
+        // The native bar hands over a needle while this one is held, and the frame still arrives.
+        window.publish({ needle: 'NE' });
+        h.refresh();
+        await until(() => input().value === 'NE', 'the handed needle to arrive while held');
+        expect(h.readied()).toBe(0);
+        h.lab().releaseReady();
+        await ready(h);
+        expect(h.readied()).toBe(1);
+        expect(h.lab().held).toBe(false);
+        expect(h.lab().readyNeedle).toBe('NE');
+        expect(h.lab().readyFrameNeedle).toBe('NE');
+        // Handed in by the host, not typed here.
+        expect(h.lab().readyTyped).toBe(false);
+        expect(typeof h.lab().readyAt).toBe('number');
+    });
+
+    it('asks the next boot to hold through plugin storage', async () => {
+        const storage = new Map<string, unknown>();
+        const h = await mount(make(null), { storage });
+        await ready(h);
+        await h.lab().holdNextBoot();
+        expect(storage.get('holdReadyOnNextBoot')).toBe(true);
     });
 
     it('never re-sends a declaration that has not changed', async () => {

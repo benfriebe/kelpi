@@ -251,5 +251,14 @@ and their effective shortcuts included. `ui.executeChromeCommand(id, target?)` i
 same current command registry as native chrome. Pass the displayed `workspaceID` for layout,
 input and contributed actions so stale targets reject explicitly.
 
+A replacement bar declares its height in the manifest, not at runtime: `bandHeights` on the view,
+one integer per band it lists in `placements` (`topbar` 28 to 64 px, `statusbar` 16 to 48,
+`panel.bottom` 80 to 480), refused at install when out of range; undeclared keeps 44, 32 and 220.
+The chrome commands `kelpi.zenMode.toggle`, `kelpi.toolbar.toggle`, `kelpi.statusbar.toggle`,
+`kelpi.panel.bottom.toggle` and `kelpi.window.resetArrangement` let a replacement toolbar offer
+Zen Mode and the band toggles; the [plugin guide](https://github.com/benfriebe/kelpi/blob/main/docs/plugins.md#hiding-bands-and-zen-mode)
+describes hiding and the persisted arrangement, and
+[Layout Lab](https://github.com/benfriebe/kelpi/tree/main/examples/plugins/layout-lab) declares all three heights.
+
 The [chrome guide](https://github.com/benfriebe/kelpi/blob/main/docs/plugin-chrome.md) documents the full contract and ownership
 rules. [Chrome Lab](https://github.com/benfriebe/kelpi/tree/main/examples/plugins/chrome-lab) replaces both bars without a backend.

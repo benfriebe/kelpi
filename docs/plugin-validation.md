@@ -31,6 +31,7 @@ every UI-audit assertion passed. Phone emulation is distinct from physical-devic
 
 ## Phase index
 
+- [Merge and promote of #262, #261 and #263](#merge-and-promote-of-262-261-and-263-2026-09-24).
 - [Root layout: hidden bands, Zen Mode and band heights](#root-layout-hidden-bands-zen-mode-and-band-heights-2026-09-24).
 - [Help lists plugin commands and shortcuts](#help-lists-plugin-commands-and-shortcuts-2026-09-24).
 - [Selectable search presenter](#selectable-search-presenter-2026-09-20).
@@ -55,6 +56,51 @@ every UI-audit assertion passed. Phone emulation is distinct from physical-devic
 - [Foundation](#initial-implementation-2026-09-08) and [extended contracts](#extensibility-follow-up-2026-09-09).
 - [Bundled sidebars](#bundled-sidebar-features-and-window-navigation-2026-09-09), [shared UI](#reactive-contributions-and-shared-window-ui-2026-09-09) and [their integrated PR checks](#pr-publication-validation-2026-09-10).
 - [Reproduction commands](#reproduce).
+
+## Merge and promote of #262, #261 and #263 (2026-09-24)
+
+The three UI composition branches merged into `main` on 2026-09-24, in this order, each as a squash
+merge whose tree is identical to the head its evidence was taken on (compared with
+`git rev-parse <commit>^{tree}` after each merge):
+
+| PR | Merge commit | Head merged | Full battery on the branch |
+| --- | --- | --- | --- |
+| [#262](https://github.com/benfriebe/kelpi/pull/262) pane search | `39e6f5b` | `9bbe84d` | Passed unretried at `a209603` (code `68c2b0d`), 26.4 min, audit 0 failed |
+| [#261](https://github.com/benfriebe/kelpi/pull/261) plugin commands in Help | `37703e6` | `c32cabe` (rebased onto `39e6f5b`, docs only) | Passed unretried at `6fde921`, 25.6 min, audit 1 failed (AGNT-055, attributed to load) |
+| [#263](https://github.com/benfriebe/kelpi/pull/263) root layout and Zen Mode | `058c8f4` | `a3c7cff` (rebased onto `37703e6`) | Passed unretried at `e7d9de1`, 25.9 min, audit 0 failed; `819da74` failed first |
+
+Before any merge the three branches were merged together on a local, never-pushed branch,
+`integration/ui-composition-20260924`, for one combined test. Its conflicts were additive: docs, and
+in code `App.tsx` (the chrome host takes Help's `keymap` and root layout's arrangement fields),
+`plugins/Workbench.tsx` (Settings keeps the pane search presenter row and gains the window
+arrangement row with both **Restore bundled views** and **Reset window arrangement**) and one test
+fixture. Typecheck then found the one semantic conflict: root layout's Layout Lab test built a
+`ChromeSnapshot` without the `keymap` field Help made required, fixed by adding it (`6d318ca`). On
+that combined tree `pnpm typecheck` passed, root vitest ran **557 files: 8,838 passed, 1 skipped**,
+shell **890 passed**, and `plugin-pane-search` 34/34, `plugin-pane-chrome` 41/41,
+`plugin-root-layout` 25/25, `plugin-chrome-features` 38/38, `plugin-workbench` 24/24,
+`sidebar-swap` 12/12 and `plugin-terminal-features` 59/59 passed in one hidden run. The owner then
+ran the combined manual checklist (search, Help, root layout and their interplay) on a private
+instance of that tree with Search Lab, Pane Lab, Terminal Lab, Layout Lab, Chrome Lab, UI Lab and
+Agent Board installed, and reported it fine.
+
+#261's rebase onto `39e6f5b` conflicted in docs only; its code diff is line for line the tested one.
+#263's rebase reproduced the combined build's code resolutions and fixture fix, and its code tree is
+identical to the combined tree's (`6d318ca`); after it, `plugin-root-layout` 25/25,
+`plugin-workbench` 24/24 and `plugin-chrome-features` 38/38 passed again.
+
+**No battery has run on `main` at `058c8f4`.** One was started on a clean worktree at `058c8f4` and
+stopped mid-run, in its scenario lane, when the owner asked to promote without it; it produced no
+result. `058c8f4` was packaged from that clean worktree, the installed bundle was moved aside as
+`Kelpi-darwin-arm64.pre-promote-20260924T213102` (the `225ef73` build), and the promote ran with
+`--no-package --skip-verify`. `last-promote.json` reads `"phase": "promoted"` at
+`2026-09-24T11:31:52Z`. The last battery on `main` itself remains the `225ef73` run of 2026-09-23
+(passed in 25.9 minutes, root **8,651 passed, 1 skipped**, shell **882**, audit **0 failed** of
+1,716, smoke **69/69**). A battery on `main` at or after `058c8f4` is owed before the next promote.
+
+The merge gate at the time was the "Kelpi PR readiness" ruleset, a required `kelpi/pr-readiness`
+status posted by the owner on each head (`9bbe84d`, `c32cabe`, `a3c7cff`); the owner disabled that
+ruleset after the merges.
 
 ## Root layout: hidden bands, Zen Mode and band heights (2026-09-24)
 
@@ -81,8 +127,8 @@ section keeps the pane search presenter row, then the arrangement status and one
 `keymap` field Help made required; the code tree is identical to the integration build's. After the
 rebase `pnpm typecheck` passes, root vitest runs **557 files: 8,838 passed, 1 skipped** and shell **890
 passed**, and `plugin-root-layout` 25/25 (its own offscreen instance), `plugin-workbench` 24/24 and
-`plugin-chrome-features` 38/38 passed once each. No battery was rerun: the coordinator runs one on
-main after the merges.
+`plugin-chrome-features` 38/38 passed once each. No battery was rerun; the integration battery on main
+after the merges was stopped at the owner's request (see [the merge and promote record](#merge-and-promote-of-262-261-and-263-2026-09-24)).
 
 **The first battery FAILED at `819da74`**, kept here as history (the same product code as
 `826609a`): root tests 8,697 passed with 1 skipped, shell 890, the full audit (132 steps, 1,716
@@ -165,7 +211,8 @@ rebase conflicted in the docs only, this record and the roadmap, both beside #26
 `App.tsx` and `plugin-sdk/typecheck.ts` merged without conflict and every code change is line for
 line the one that was tested. After the rebase `pnpm typecheck` passes, root vitest runs **551 files:
 8,792 passed, 1 skipped** (#262's 8,766 plus this branch's 26) and shell **882 passed**. No scenario
-or battery was rerun: the coordinator runs one integration battery on main after the three merges. Plugin API version stays
+or battery was rerun; the integration battery on main after the three merges was stopped at the owner's
+request (see [the merge and promote record](#merge-and-promote-of-262-261-and-263-2026-09-24)). Plugin API version stays
 **1** and wire generation stays **2**: the change is one additive field on the chrome snapshot and
 its SDK types. Help is not a placement and gains no presenter; it stays host-drawn, opened by its
 own window listener, the shell menu and `kelpi.window.openHelp`, which stays in the recovery floor.

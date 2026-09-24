@@ -499,7 +499,11 @@ to a view. Theme variables are `--kelpi-bg`, `--kelpi-fg`, `--kelpi-fg-secondary
 Pane focus follows pointer/focus events inside the frame. Only shortcuts claimed by Kelpi
 are forwarded out of it; ordinary typing remains in the custom UI. Built-in shortcuts win
 collisions; the first available plugin command wins a collision between plugins. Commands
-also appear in the palette, plus the optional pane/workspace menu. Set a command's `menu` to
+also appear in the palette, plus the optional pane/workspace menu, and in Help under the
+plugin's name, whatever their `when` says, with the chord that runs each one, what runs
+instead when a built-in or an earlier plugin takes it, and what a later plugin runs on it while
+the command does not apply. Views read the same list as the chrome
+snapshot's [`keymap`](plugin-chrome.md#the-keyboard-map). Set a command's `menu` to
 `pane.header` to contribute a pane-header action, including the header's overflow behavior.
 Settings → Plugins lets users change, disable, and restore each plugin shortcut. Overrides
 belong to the client and stable daemon identity, survive reload, and update mounted views.

@@ -246,7 +246,8 @@ kelpi plugin service-select kelpi.files default
 
 Browser views can use `ui.getChrome()` / `ui.onChrome(listener, onError)` to read the owning
 primary desktop window's layout, physical sidebar visibility, connection, agent counts, Git
-status, metrics and live contributions. `ui.executeChromeCommand(id, target?)` invokes the
+status, metrics, live contributions and the read-only keyboard map Help draws, plugin commands
+and their effective shortcuts included. `ui.executeChromeCommand(id, target?)` invokes the
 same current command registry as native chrome. Pass the displayed `workspaceID` for layout,
 input and contributed actions so stale targets reject explicitly.
 

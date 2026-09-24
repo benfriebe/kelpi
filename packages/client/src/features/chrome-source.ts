@@ -5,7 +5,7 @@ import { footerGitStats, type FooterAssociation } from '../chrome/StatusFooter';
 import { compactStatLabel, detailStatLabel, SYSTEM_STAT_META, visibleStatKinds } from '../chrome/stats';
 import { isOkReply, replyError, type CommandReply } from '../connection';
 import { selectActiveWorkspace, selectFocusedPaneID, type KelpiRuntime } from '../state';
-import type { ChromeCommand, ChromeItem, ChromeSnapshot, ChromeSource } from '../plugins/chrome';
+import type { ChromeCommand, ChromeItem, ChromeKeymap, ChromeSnapshot, ChromeSource } from '../plugins/chrome';
 import type { usePluginCommands } from '../plugins/commands';
 import type { ViewContribution } from '../plugins/registry';
 import { statusbarModel } from './statusbar';
@@ -19,6 +19,8 @@ export interface ChromeFeatureHost {
     readonly shellAvailable: boolean;
     readonly associations: { readonly workspaceID: string | null; readonly values: readonly FooterAssociation[] };
     readonly plugins: ReturnType<typeof usePluginCommands>;
+    /** The bounded keyboard map (`chrome/keymap.ts`), published as it is: no command reads it. */
+    readonly keymap: ChromeKeymap;
     readonly toggleSidebar: () => void;
     readonly toggleInspector: () => void;
     readonly openSettings: (section?: 'plugins') => void;
@@ -101,7 +103,7 @@ export function createChromeFeatureSource(host: ChromeFeatureHost): ChromeSource
                 git: pane ? footerGitStats(status.associations, pane.workingDirectory, pane.workingDirectoryReal) : null,
                 systemStats: !status.systemStats ? null : visibleStatKinds(status.systemStats.showSystemStats, status.systemStats.enabled).map(id => ({
                     id, title: SYSTEM_STAT_META[id].displayName, text: compactStatLabel(id, status.systemStats!.stats), detail: detailStatLabel(id, status.systemStats!.stats)
-                })), items: items()
+                })), items: items(), keymap: host.keymap
             };
         },
         execute(id: string, target: JsonObject): void | Promise<void> {

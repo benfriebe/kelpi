@@ -8,6 +8,9 @@ import { createChromeFeatureSource, type ChromeFeatureHost } from './chrome-sour
 import { bindToolbarFeature, createToolbarActions } from './toolbar';
 import { createStatusbarActions, statusbarModel, useStatusbarActions } from './statusbar';
 import { createPluginChrome } from '../plugins/chrome';
+import { resolvePluginChords } from '../plugins/shortcuts';
+import { boundKeymap, buildKeymap, nativeChordOwners } from '../chrome/keymap';
+import { clientKeyBindings } from '../chrome/keys';
 import { usePluginChrome } from '../plugins/use-chrome';
 
 function fixture() {
@@ -25,7 +28,7 @@ function fixture() {
         sidebarVisible: true, inspectorVisible: false, remoteWorkspaceSelected: () => remote, shellAvailable: false,
         associations: { workspaceID: 'one', values: [] },
         plugins: { menu: vi.fn(() => []), items: vi.fn(() => []), runItem: vi.fn(() => true) } as unknown as ChromeFeatureHost['plugins'],
-        toggleSidebar: vi.fn(), toggleInspector: vi.fn(), openSettings: vi.fn(), openHelp: vi.fn(), openPalette: vi.fn(), shellAction: vi.fn(), restartControlServer: vi.fn(), restartUI: vi.fn(), selectPane: vi.fn()
+        keymap: { sections: [], plugins: [], withheld: 0 }, toggleSidebar: vi.fn(), toggleInspector: vi.fn(), openSettings: vi.fn(), openHelp: vi.fn(), openPalette: vi.fn(), shellAction: vi.fn(), restartControlServer: vi.fn(), restartUI: vi.fn(), selectPane: vi.fn()
     };
     return { daemon, store, sync, runtime, commands, host, source: createChromeFeatureSource(host), remote(value: boolean) { remote = value; } };
 }
@@ -91,6 +94,18 @@ describe('shared toolbar and status feature contracts', () => {
         h.source.execute('item:statusbar:sample.item', { workspaceID: 'one' }); expect(h.host.plugins.runItem).toHaveBeenCalledExactlyOnceWith('statusbar', 'sample.item');
         h.host.plugins.items = vi.fn(() => []);
         expect(() => h.source.execute('item:statusbar:sample.item', { workspaceID: 'one' })).toThrow('unavailable');
+    });
+    it('publishes the keyboard map read-only, rebinds and plugin shortcuts included', () => {
+        const h = fixture(), bindings = clientKeyBindings(['super+shift+k=split_right'], true), native = nativeChordOwners(bindings, null, true);
+        const command = { id: 'sample.keys.run', title: 'Run example', pluginID: 'sample.keys', pluginName: 'Sample Keys', shortcut: 'ctrl+alt+b', visible: true, enabled: true };
+        const keymap = boundKeymap(buildKeymap({ bindings, native, plugins: resolvePluginChords([command], native.keys(), true), macLike: true }));
+        const model = createPluginChrome(createChromeFeatureSource({ ...h.host, keymap })), published = model.getChrome().keymap;
+        expect(published.sections.flatMap(section => section.actions).find(row => row.action === 'split_right')?.shortcut).toBe('⇧⌘K');
+        expect(published.plugins).toEqual([{ name: 'Sample Keys', commands: [{ id: 'sample.keys.run', title: 'Run example', shortcut: '⌃⌥B', shadowed: null, currently: null }] }]);
+        expect(Object.isFrozen(published.plugins[0])).toBe(true);
+        // Discovery only: nothing in the command registry reads or writes a binding.
+        expect(model.getChrome().commands.some(entry => /key/i.test(entry.id))).toBe(false);
+        model.dispose();
     });
     it('keeps retained keyboard actions bound to current workspace and pane getters', () => {
         const h = fixture(); let workspace = 'one';

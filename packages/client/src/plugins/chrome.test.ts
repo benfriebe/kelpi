@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { KelpiRuntime } from '../state';
-import { createPluginChrome, type ChromeSnapshot, type ChromeSource } from './chrome';
+import { createPluginChrome, type ChromeKeymap, type ChromeSnapshot, type ChromeSource } from './chrome';
 import { requestHostUI } from './host-ui';
 import { createWindowFeed } from './window-feed';
 
@@ -8,7 +8,8 @@ export function chromeSnapshot(name = 'Workspace'): ChromeSnapshot {
     return { connection: 'connected', ready: true, remoteWorkspaceSelected: false,
         workspace: { id: 'workspace', name, color: 'blue', paneCount: 2, layout: 'tiled', syncInputActive: false, syncedPaneCount: 2 },
         focusedPane: null, sidebars: { left: { viewID: 'kelpi.workspaces', title: 'Workspaces', visible: true }, right: { viewID: 'kelpi.inspector', title: 'Inspector', visible: false } },
-        sizeControl: 'this-window', layouts: [], commands: [], agents: { running: 0, waiting: 0, inactive: 0 }, agentPanes: [], git: null, systemStats: null, items: [] };
+        sizeControl: 'this-window', layouts: [], commands: [], agents: { running: 0, waiting: 0, inactive: 0 }, agentPanes: [], git: null, systemStats: null, items: [],
+        keymap: { sections: [], plugins: [], withheld: 0 } };
 }
 describe('window chrome snapshots and commands', () => {
     it('coalesces committed updates, freezes snapshots, and reads the latest source for requests', async () => {
@@ -31,6 +32,33 @@ describe('window chrome snapshots and commands', () => {
         expect(observed).not.toHaveBeenCalled(); expect(failed.mock.calls[0]![0].message).toContain('256 KiB');
         model.update({ snapshot: () => chromeSnapshot(), execute: () => {} });
         await Promise.resolve(); expect(observed).toHaveBeenCalledOnce(); model.dispose();
+    });
+    it('counts the keymap in the 256 KiB message exactly as one pluginJSON measure would', () => {
+        const keymap: ChromeKeymap = { sections: [{ category: 'Panes', actions: [{ action: 'split_right', title: 'k'.repeat(40_000), shortcut: '⌘D' }] }], plugins: [], withheld: 0 };
+        const bytes = (snapshot: ChromeSnapshot): number =>
+            new TextEncoder().encode(JSON.stringify({ type: 'chrome', sequence: Number.MAX_SAFE_INTEGER, value: snapshot })).byteLength;
+        const sized = (name: string): ChromeSnapshot => ({ ...chromeSnapshot(name), keymap });
+        const pad = 256 * 1024 - bytes(sized(''));
+        const at = createPluginChrome({ snapshot: () => sized('x'.repeat(pad)), execute: () => {} });
+        expect(bytes(sized('x'.repeat(pad)))).toBe(256 * 1024);
+        expect(at.getChrome().keymap).toEqual(keymap);
+        const over = createPluginChrome({ snapshot: () => sized('x'.repeat(pad + 1)), execute: () => {} });
+        expect(() => over.getChrome()).toThrow('256 KiB');
+        at.dispose(); over.dispose();
+    });
+    it('copies a keymap once per identity and redelivers only when its content changes', async () => {
+        const keymap = (shortcut: string): ChromeKeymap => ({ sections: [], plugins: [{ name: 'Sample', commands: [{ id: 'sample.run', title: 'Run', shortcut, shadowed: null, currently: null }] }], withheld: 0 });
+        const first = keymap('⌃⌥B');
+        const source = (value: ChromeKeymap): ChromeSource => ({ snapshot: () => ({ ...chromeSnapshot(), keymap: value }), execute: () => {} });
+        const model = createPluginChrome(source(first)), observed = vi.fn(); model.subscribe(observed);
+        const published = model.getChrome().keymap;
+        expect(published).not.toBe(first); expect(Object.isFrozen(published.plugins[0]!.commands[0])).toBe(true);
+        expect(model.getChrome().keymap).toBe(published);
+        // An equal keymap under a new identity is copied again but delivers nothing new.
+        model.update(source(keymap('⌃⌥B'))); await Promise.resolve(); expect(observed).toHaveBeenCalledOnce();
+        model.update(source(keymap('⌃⌥J'))); await Promise.resolve(); expect(observed).toHaveBeenCalledTimes(2);
+        expect(observed.mock.lastCall![0].keymap.plugins[0].commands[0].shortcut).toBe('⌃⌥J');
+        model.dispose();
     });
     it('retains only the latest snapshot behind a slow frame and requires its exact acknowledgement', async () => {
         const source = (name: string): ChromeSource => ({ snapshot: () => chromeSnapshot(name), execute: () => {} });

@@ -31,6 +31,7 @@ every UI-audit assertion passed. Phone emulation is distinct from physical-devic
 
 ## Phase index
 
+- [Help lists plugin commands and shortcuts](#help-lists-plugin-commands-and-shortcuts-2026-09-24).
 - [Selectable search presenter](#selectable-search-presenter-2026-09-20).
 - [Selectable pane chrome presenter](#selectable-pane-chrome-presenter-2026-09-19).
 - [Pane chrome shared model](#pane-chrome-shared-model-2026-09-18).
@@ -53,6 +54,97 @@ every UI-audit assertion passed. Phone emulation is distinct from physical-devic
 - [Foundation](#initial-implementation-2026-09-08) and [extended contracts](#extensibility-follow-up-2026-09-09).
 - [Bundled sidebars](#bundled-sidebar-features-and-window-navigation-2026-09-09), [shared UI](#reactive-contributions-and-shared-window-ui-2026-09-09) and [their integrated PR checks](#pr-publication-validation-2026-09-10).
 - [Reproduction commands](#reproduce).
+
+## Help lists plugin commands and shortcuts (2026-09-24)
+
+The Help row of the remaining UI composition work, implemented on `feature/help-plugin-shortcuts`
+(based on main `225ef73`). Tested revision: **`f5135c0`** (the code `69febad` with its review
+follow-up `585d547`, the scenario `41b13a3` with `f5135c0`). The table below is the first cut at
+`41b13a3`; the [review follow-up](#help-keymap-review-follow-up) re-ran it at `f5135c0`. Full
+verification battery: `node scripts/verify.mjs --full` **passed at `6fde921` in 25.6 min with no
+component retried** (typecheck, root tests 8,677 passed with 1 skipped in 545 files, shell tests 882,
+bundle build, all 41 scenarios hidden in 6.4 min with only the three inert workbench-slot leak
+warnings, the full audit in 18.3 min with **132 steps, 1,716 assertions, 1 failed, 0 step errors,
+113 need eyes**, and a packaged smoke of **69/69**). The one failed assertion is `agent-lifecycle`
+AGNT-055 (the focus dwell, `status=waitingForInput`). Run alone on `6fde921` with
+`node scripts/ui-audit/audit.mjs --only agent-lifecycle --window hidden` it passed 3/3, and the
+search branch's battery at `12c12b9` had no failed assertion, so it is attributed to load rather
+than to this branch, which touches no agent status code; that attribution is an inference, not a
+measurement. `6fde921` is the roadmap commit over the tested tree, and this paragraph was amended
+into the docs commit afterwards, docs only.
+
+**Rebased onto merged main `39e6f5b` ([#262](https://github.com/benfriebe/kelpi/pull/262)) on
+2026-09-24.** The hashes in this record are the branch before the rebase (pushed tip `4dac107`). The
+rebase conflicted in the docs only, this record and the roadmap, both beside #262's own additions;
+`App.tsx` and `plugin-sdk/typecheck.ts` merged without conflict and every code change is line for
+line the one that was tested. After the rebase `pnpm typecheck` passes, root vitest runs **551 files:
+8,792 passed, 1 skipped** (#262's 8,766 plus this branch's 26) and shell **882 passed**. No scenario
+or battery was rerun: the coordinator runs one integration battery on main after the three merges. Plugin API version stays
+**1** and wire generation stays **2**: the change is one additive field on the chrome snapshot and
+its SDK types. Help is not a placement and gains no presenter; it stays host-drawn, opened by its
+own window listener, the shell menu and `kelpi.window.openHelp`, which stays in the recovery floor.
+
+| Check | Result |
+| --- | --- |
+| `pnpm typecheck` | Passes (protocol, core, daemon, cli, plugin-sdk, client, shell). The SDK's new `chrome.typecheck.ts` asserts at the type level that the snapshot's `keymap` and a command row are read-only. |
+| Root vitest | **8,672 passed, 1 skipped** in 544 files (the existing optional database skip). The branch adds **21** (**8,651** on main): `chrome/keymap` (14: native rows from the live map with rebinds and unbinds, plugin grouping by identity under the display name, the non-mac spelling, conditional and disabled commands listed with their chord, unbound and never-firing shortcuts, shadowing by a native action, ⌘,, ⌘?, the global hotkey and a user rebind, a freed chord after a native unbind, plugin-vs-plugin priority including an earlier command that does not apply, the reserved set, the 64 KiB prefix bound and its `withheld` count, the worst case kept deliverable inside the 256 KiB frame and frozen, and `usePluginCommands` over a disabled and a failed plugin with a user override agreeing with the dispatcher's chords), `HelpOverlay` (5), `chrome-source` (1) and `App.plugin-ui` (1: Help and a view's `ui.getChrome()` list the same row, follow a user rebind into a shadowed chord, and the Settings ▸ Plugins link lands on the Plugins tab). One earlier full run on this branch, taken while the other two workers were testing on the machine, failed `cli/src/commands/plugin-dev.test.ts`'s file-watcher timing case once; it passed 3/3 alone and in the full run above, and nothing here touches it. |
+| Shell | **882 passed** in 47 files. |
+| Live acceptance | `node scripts/scenario.mjs plugin-chrome-features --window offscreen --no-build`: **38/38** in 11.9 s, three of them new: the snapshot lists UI Lab's three commands and Increment's live chord, Help lists the same row with the same chord under "UI Lab" after `kelpi.window.openHelp`, and Escape closes Help with the replacements still operational. Run at `offscreen` rather than `hidden` so the screenshot is real; it was read, and shows the Plugin Commands section with its Settings ▸ Plugins link, UI Lab's group, `UI Lab: Increment ⌃⌥U` (listed although its `when` is false) and a dash for the two unbound commands. |
+
+### Decisions
+
+- **One source of truth.** `chrome/keymap.ts` builds the whole map; Help draws it unbounded and the
+  snapshot carries it bounded. The plugin half is the dispatcher's own resolution, extracted from
+  `usePluginCommands` as `resolvePluginChords`, so neither surface can name a chord the window would
+  not honour. The reserved set comes from `nativeChordOwners`, the same set as before with a name
+  for each chord.
+- **What is listed.** Every declared command of every enabled, running primary-daemon plugin. Kelpi
+  has no hidden-command flag (every command is palette-listed when its `when` holds), so nothing is
+  held back; `when` and `enablement` are ignored because Help is reference. Disabled and failed
+  plugins contribute nothing, and a secondary daemon's plugins are not listed, as in the palette.
+- **Collisions.** A shadowed plugin shortcut is shown struck through with what runs instead: the
+  native action's title, `Settings`, `Kelpi Help`, `Global hotkey`, or an earlier plugin command
+  and its plugin. Between plugins the dispatcher's rule applies with the current context: a command
+  claims only while it applies. A command that does not apply keeps its chord in Help, because it
+  takes it back the moment it applies, and when a later plugin command holds that chord meanwhile
+  the row says what pressing it runs now ("⌃⌥B currently runs Run (Other Plugin)").
+- **Bound.** 64 KiB of the 256 KiB frame for the whole keymap, the native half always carried and
+  the plugin commands carried as a prefix with `withheld` counting the rest. Without it a hundred plugins of a hundred long commands would
+  make every chrome frame undeliverable and fail every replacement toolbar.
+- **No identity leak beyond the palette's.** Rows carry command IDs and plugin display names, the
+  palette rule; no `pluginID` field.
+
+### Known gaps
+
+- Help has no search or filter, so there was nothing to extend; many plugins scroll.
+- The palette still shows a plugin shortcut in its raw config spelling (`ctrl+alt+b`) where Help
+  now shows `⌃⌥B`. Pre-existing and left alone.
+- The plugin dispatcher decides "mac" with `/Mac|iPhone|iPad/` while native bindings use
+  `macLikePlatform`; they agree on every real platform string and disagree on an empty one, which
+  is why the App-level test uses a chord without `super`. Pre-existing; the model reports whatever
+  the dispatcher does.
+
+### Help keymap review follow-up
+
+The independent review found no high or medium issues; the six lows it asked for are in `585d547`
+(code and tests) and `f5135c0` (scenario).
+
+| Finding | Change |
+| --- | --- |
+| A plugin-vs-plugin collision where the first command's `when` is false showed both rows bound with nothing to say that pressing the chord runs the second one now. | The resolution gains `heldBy`, the model a `currently` field (`{ by, plugin }`), and Help a line under the title: "⌃⌥B currently runs Run (Other Plugin)". The row keeps its chord, since the command takes it back the moment it applies. |
+| `App.tsx` stringified every plugin command row on every render to key the keymap. | `usePluginCommands` keys its resolution on plugins, overrides, the reserved chords and a per-command applicability string, so an ordinary mirror tick keeps its identity; App builds the keymap from that identity and the key is gone. |
+| The keymap was re-walked, copied and stringified on every chrome publish. | `createPluginChrome` copies, freezes, serializes and measures the keymap once per identity and still bounds the whole message exactly as one `pluginJSON` measure would; an equal keymap under a new identity delivers nothing new. |
+| The docs said "palette order". | Plugin and declaration order, the order that wins a collision, in the SDK types, `keymap.ts` and `plugin-chrome.md`. |
+| The docs said the plugin half was bounded; the code bounds the whole keymap, and its base was measured with `withheld: 0`, so a four-digit count could overshoot the budget by a byte. | Wording fixed, and the base is measured with the largest count the cut could report. A byte-by-byte budget sweep over one group of 1,200 commands fails on the old base (4,564 bytes against a 4,563 budget) and passes now. |
+| The reserved-set test only checked containment, and the scenario only checked that Help and the snapshot agreed. | The test pins the set to the previous formula exactly over four binding and platform cases; the scenario requires UI Lab's manifest default `⌃⌥U` with no `shadowed` or `currently` note. |
+
+| Check | Result at `f5135c0` |
+| --- | --- |
+| `pnpm typecheck` | Passes. |
+| Root vitest | **8,677 passed, 1 skipped** in 544 files. Five more than the first cut, **26** over main: `chrome/keymap` +2 (the byte-by-byte budget sweep and the resolution's identity across a mirror tick), `HelpOverlay` +1 (the `currently` line) and `plugins/chrome` +2 (the exact 256 KiB boundary with the keymap counted, and one copy per keymap identity with no redelivery for equal content). |
+| Shell | **882 passed** in 47 files. |
+| Live acceptance | `node scripts/scenario.mjs plugin-chrome-features --window offscreen --no-build`: **38/38** in 12.4 s, the snapshot and Help checks now requiring `⌃⌥U` with no `shadowed` or `currently` note. The Help screenshot was read again and is unchanged. |
+| Full battery | Passed at `6fde921` in 25.6 min, nothing retried; see the paragraph at the top of this record for the audit's one load-attributed failed assertion. |
 
 ## Selectable search presenter (2026-09-20)
 

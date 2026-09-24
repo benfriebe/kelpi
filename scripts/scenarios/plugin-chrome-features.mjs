@@ -114,6 +114,21 @@ export default async function ({ page, cli, sandbox, rec, d }) {
         const step = Number((await json(['plugin', 'settings', 'example.ui-lab'])).step ?? 1);
         rec.note(`UI Lab's counter step in this sandbox is ${String(step)}`);
         rec.check('other plugins retain their status contributions inside the replacement', await check(status, `document.querySelector('[data-id="example.ui-lab.counter"]')?.textContent.endsWith('0')`));
+        // Help stays host-drawn and the snapshot's keymap is its model: one plugin row, one chord in
+        // both. Increment carries a `when`, and Help is reference, so it is listed regardless.
+        const labRow = `(async () => { const group = (await kelpi.ui.getChrome()).keymap.plugins.find(plugin => plugin.name === 'UI Lab');
+            return group?.commands.length === 3 ? group.commands.find(command => command.id === 'example.ui-lab.increment') ?? null : null; })()`;
+        // UI Lab's manifest declares `ctrl+alt+u`, which nothing native claims and no scenario rebinds.
+        const labShortcut = '⌃⌥U';
+        const listed = await check(toolbar, `${labRow}.then(row => row?.shortcut === ${JSON.stringify(labShortcut)} && row.shadowed === null && row.currently === null)`);
+        rec.check('the chrome snapshot lists another plugin\'s commands with the manifest shortcut', listed, JSON.stringify(await inFrame(toolbar, labRow).catch(() => null)));
+        await inFrame(toolbar, `kelpi.ui.executeChromeCommand('kelpi.window.openHelp')`);
+        const helpRow = '[data-help-plugin="UI Lab"] [data-help-command="example.ui-lab.increment"] [data-help-shortcut]';
+        rec.check('Help lists the plugin command under its plugin with the same shortcut', await d.settleDom(page, `document.querySelector(${JSON.stringify(helpRow)})?.getAttribute('data-help-shortcut') === ${JSON.stringify(labShortcut)}`));
+        await page.eval(`document.querySelector('[data-testid="help-plugins"]')?.scrollIntoView({ block: 'center' })`);
+        await rec.shot(page, 'help-plugin-commands');
+        await page.key('Escape');
+        rec.check('Escape closes Help and leaves the replacement operational', await d.settleDom(page, `!document.querySelector('[data-testid="help-overlay"]')`) && await ready());
         await click(status, '[data-id="example.ui-lab.counter"]');
         rec.check('clicking a contributed status item executes its declared command', await check(status, `document.querySelector('[data-id="example.ui-lab.counter"]')?.textContent.endsWith('${String(step)}')`), `one click should add the configured step of ${String(step)}`);
         await toggle('enabled', false); rec.check('live enablement disables replacement contribution controls', await check(status, `document.querySelector('[data-id="example.ui-lab.counter"]')?.disabled === true`));

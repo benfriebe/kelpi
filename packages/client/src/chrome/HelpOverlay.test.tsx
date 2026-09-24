@@ -1,18 +1,38 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { resolvePluginChords } from '../plugins/shortcuts';
 import { HELP_CLI_ENTRIES, HELP_GITHUB_URL, HELP_MOUSE_ENTRIES, HelpOverlay } from './HelpOverlay';
+import { buildKeymap, nativeChordOwners, type KeymapPluginCommand } from './keymap';
 import { clientKeyBindings } from './keys';
 
 afterEach(cleanup);
 
-function renderHelp(overrides: readonly string[] = []): { onClose: () => void } {
+type PluginCommand = KeymapPluginCommand & { readonly shortcut?: string; readonly visible: boolean; readonly enabled: boolean };
+
+/** The same build `App.tsx` hands Help: the live map, and the dispatcher's plugin resolution. */
+function keymapFor(overrides: readonly string[] = [], commands: readonly PluginCommand[] = []) {
+    const bindings = clientKeyBindings(overrides, true);
+    const native = nativeChordOwners(bindings, null, true);
+    return buildKeymap({ bindings, native, plugins: resolvePluginChords(commands, native.keys(), true), macLike: true });
+}
+
+function renderHelp(overrides: readonly string[] = [], commands: readonly PluginCommand[] = []): { onClose: () => void } {
     const onClose = vi.fn();
-    render(
-        <HelpOverlay bindings={clientKeyBindings(overrides)} version="9.9.9" onClose={onClose} />
-    );
+    render(<HelpOverlay keymap={keymapFor(overrides, commands)} version="9.9.9" onClose={onClose} />);
     return { onClose };
 }
+
+const labCommand = (name: string, shortcut: string | undefined, extra: Partial<PluginCommand> = {}): PluginCommand => ({
+    id: `example.lab.${name}`,
+    title: `Lab: ${name}`,
+    pluginID: 'example.lab',
+    pluginName: 'Example Lab',
+    ...(shortcut === undefined ? {} : { shortcut }),
+    visible: true,
+    enabled: true,
+    ...extra
+});
 
 describe('HelpOverlay (APP-027 / APP-063)', () => {
     it('shows the version, the repository link and the CLI pointers', () => {
@@ -148,7 +168,7 @@ describe('HelpOverlay (APP-027 / APP-063)', () => {
         const onOpenLink = vi.fn();
         render(
             <HelpOverlay
-                bindings={clientKeyBindings([])}
+                keymap={keymapFor()}
                 version="1.0.0"
                 onClose={() => undefined}
                 onOpenLink={onOpenLink}
@@ -166,7 +186,7 @@ describe('HelpOverlay (APP-027 / APP-063)', () => {
         const onOpenKeybindings = vi.fn();
         render(
             <HelpOverlay
-                bindings={clientKeyBindings([])}
+                keymap={keymapFor()}
                 version="1.0.0"
                 onClose={() => undefined}
                 onOpenKeybindings={onOpenKeybindings}
@@ -174,5 +194,88 @@ describe('HelpOverlay (APP-027 / APP-063)', () => {
         );
         fireEvent.click(screen.getByTestId('help-open-keybindings'));
         expect(onOpenKeybindings).toHaveBeenCalledTimes(1);
+    });
+    it('lists plugin commands under their plugin with the live shortcut, and no section without plugins', () => {
+        renderHelp();
+        expect(screen.queryByTestId('help-plugins')).toBeNull();
+        cleanup();
+
+        renderHelp([], [labCommand('increment', 'ctrl+alt+u', { visible: false }), labCommand('toggle', undefined)]);
+        const group = document.querySelector('[data-help-plugin="Example Lab"]');
+        expect(group?.textContent).toContain('Example Lab');
+        const shortcut = (id: string) =>
+            group?.querySelector(`[data-help-command="${id}"] [data-help-shortcut]`);
+        // Reference, not a menu: listed and bound even while its `when` is false.
+        expect(shortcut('example.lab.increment')?.getAttribute('data-help-shortcut')).toBe('⌃⌥U');
+        expect(shortcut('example.lab.toggle')?.getAttribute('data-help-shortcut')).toBe('');
+        expect(shortcut('example.lab.toggle')?.textContent).toBe('-');
+        // Plugin groups are not native categories.
+        expect(document.querySelectorAll('[data-help-category]')).toHaveLength(8);
+    });
+
+    it('follows a rebound or cleared plugin shortcut', () => {
+        renderHelp([], [labCommand('increment', 'ctrl+alt+j')]);
+        expect(document.querySelector('[data-help-command="example.lab.increment"] [data-help-shortcut]')?.getAttribute('data-help-shortcut')).toBe('⌃⌥J');
+        cleanup();
+        renderHelp([], [labCommand('increment', undefined)]);
+        expect(document.querySelector('[data-help-command="example.lab.increment"] [data-help-shortcut]')?.getAttribute('data-help-shortcut')).toBe('');
+    });
+
+    it('says what runs on a plugin shortcut a native binding or an earlier plugin takes', () => {
+        const other = { id: 'example.other.run', pluginID: 'example.other', pluginName: 'Other Lab', title: 'Other: run' };
+        renderHelp([], [labCommand('split', 'super+d'), labCommand('run', 'ctrl+alt+r'), labCommand('run', 'ctrl+alt+r', other)]);
+        const row = (id: string) => document.querySelector(`[data-help-command="${id}"]`);
+        expect(row('example.lab.split')?.querySelector('[data-help-shortcut]')?.getAttribute('data-help-shortcut')).toBe('');
+        expect(row('example.lab.split')?.querySelector('[data-help-shadowed-by]')?.textContent).toBe('⌘D runs Split Right');
+        expect(row('example.other.run')?.querySelector('[data-help-shadowed-by]')?.textContent).toBe('⌃⌥R runs Lab: run (Example Lab)');
+        expect(row('example.lab.run')?.querySelector('[data-help-shadowed-by]')).toBeNull();
+        cleanup();
+
+        // Unbinding the native chord hands it to the plugin.
+        renderHelp(['super+d=unbind'], [labCommand('split', 'super+d')]);
+        expect(row('example.lab.split')?.querySelector('[data-help-shortcut]')?.getAttribute('data-help-shortcut')).toBe('⌘D');
+        expect(document.querySelector('[data-help-action="split_right"] [data-help-shortcut]')?.getAttribute('data-help-shortcut')).toBe('');
+    });
+
+    it('says what a command\'s shortcut runs right now while the command does not apply', () => {
+        const other = { id: 'example.other.run', pluginID: 'example.other', pluginName: 'Other Lab', title: 'Other: run' };
+        renderHelp([], [labCommand('run', 'ctrl+alt+r', { visible: false }), labCommand('run', 'ctrl+alt+r', other)]);
+        const row = (id: string) => document.querySelector(`[data-help-command="${id}"]`);
+        // Still its chord, not struck through: it takes the chord back the moment it applies.
+        expect(row('example.lab.run')?.querySelector('[data-help-shortcut]')?.getAttribute('data-help-shortcut')).toBe('⌃⌥R');
+        expect(row('example.lab.run')?.querySelector('[data-help-currently-by]')?.textContent).toBe('⌃⌥R currently runs Other: run (Other Lab)');
+        expect(row('example.other.run')?.querySelector('[data-help-currently-by]')).toBeNull();
+        expect(row('example.other.run')?.querySelector('[data-help-shadowed-by]')).toBeNull();
+    });
+
+    it('keeps long plugin names and titles inside the dialog and scrolls many plugins', () => {
+        const commands = Array.from({ length: 40 }, (_, plugin) =>
+            Array.from({ length: 5 }, (_, index) =>
+                labCommand(`c${index}`, undefined, {
+                    id: `example.p${plugin}.c${index}`,
+                    pluginID: `example.p${plugin}`,
+                    pluginName: `Plugin ${plugin} ${'N'.repeat(180)}`,
+                    title: `${'T'.repeat(200)}`
+                })
+            )
+        ).flat();
+        renderHelp([], commands);
+        expect(document.querySelectorAll('[data-help-plugin]')).toHaveLength(40);
+        expect(document.querySelectorAll('[data-help-command]')).toHaveLength(200);
+        // The label column may shrink and wrap, the chord column may not, and the body scrolls.
+        const label = document.querySelector('[data-help-command="example.p0.c0"] > span:first-child');
+        expect(label?.className).toContain('min-w-0');
+        expect(label?.firstElementChild?.className).toContain('break-words');
+        expect(screen.getByTestId('help-plugins').parentElement?.className).toContain('overflow-y-auto');
+    });
+
+    it('offers the Settings ▸ Plugins deep link only when the app supplies one', () => {
+        const onOpenPlugins = vi.fn();
+        render(<HelpOverlay keymap={keymapFor([], [labCommand('run', 'ctrl+alt+r')])} version="1.0.0" onClose={() => undefined} onOpenPlugins={onOpenPlugins} />);
+        fireEvent.click(screen.getByTestId('help-open-plugins'));
+        expect(onOpenPlugins).toHaveBeenCalledTimes(1);
+        cleanup();
+        renderHelp([], [labCommand('run', 'ctrl+alt+r')]);
+        expect(screen.queryByTestId('help-open-plugins')).toBeNull();
     });
 });

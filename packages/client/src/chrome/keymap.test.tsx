@@ -243,7 +243,7 @@ describe('the bounded snapshot keymap', () => {
         const snapshot = {
             connection: 'connected', ready: true, remoteWorkspaceSelected: false, workspace: null, focusedPane: null,
             sidebars: { left: { viewID: 'kelpi.workspaces', title: 'Workspaces', visible: true }, right: { viewID: 'kelpi.inspector', title: 'Inspector', visible: false } },
-            sizeControl: 'this-window', layouts: [], commands: [], agents: { running: 0, waiting: 0, inactive: 0 }, agentPanes: [], git: null, systemStats: null, items: [],
+            sizeControl: 'this-window', layouts: [], commands: [], agents: { running: 0, waiting: 0, muted: 0, inactive: 0 }, agentPanes: [], git: null, systemStats: null, items: [],
             keymap: boundKeymap(many(100, 100))
         } satisfies ChromeSnapshot;
         const model = createPluginChrome({ snapshot: () => snapshot, execute: () => {} });

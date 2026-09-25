@@ -508,6 +508,15 @@ as client replication. `daemon.<type>` exposes daemon broadcasts; `settings.chan
 `terminal.output` are plugin service events. Custom emissions are named `<plugin-id>.<name>`.
 The epoch changes on every daemon restart, while daemon identity stays stable.
 
+`daemon.notification` and `daemon.attention-request` from a muted workspace still reach
+plugins, carrying `muted: true`; no window receives them, so there is no banner, sound, dock
+bounce or title flash (agent-lifecycle.md §7.6). The key is absent otherwise. A conductor
+plugin can therefore still react to its muted children. `api.workspaces.setMuted(id, muted?)`
+sets the flag (omit `muted` to toggle), `api.workspaces.create({ muted: true })` creates a
+workspace muted, and `api.workspaces.list()` reports `muted` on every entry. The chrome
+snapshot's `agents.muted` and the `muted` bucket of `agentPanes` count the waiting panes of
+muted workspaces, which `agents.waiting` leaves out.
+
 Backend and frame delivery each use a bounded queue (32 events / 512 KiB), with one event
 awaiting acknowledgement. Awaited listeners apply backpressure. Overflow emits `gap`:
 take a fresh snapshot instead of assuming every intermediate event arrived. Delivery is

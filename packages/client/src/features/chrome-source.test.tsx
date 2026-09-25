@@ -110,6 +110,16 @@ describe('shared toolbar and status feature contracts', () => {
         expect(snapshot.systemStats).toEqual([{ id: 'cpu', title: 'CPU', text: '37%', detail: '37% busy' }]);
         expect(statusbarModel(h.store.getState(), []).summary).toEqual(snapshot.agents);
     });
+    it('projects a muted workspace\'s waiting panes into the muted bucket (agent-lifecycle §7.6)', () => {
+        const h = fixture();
+        const waiting = { type: 'setPaneStatus', status: 'waitingForInput' } as const;
+        h.daemon.dispatch({ type: 'pane-agent-event', paneID: 'pane-one', workspaceID: 'one', now: 5, event: waiting });
+        h.daemon.dispatch({ type: 'pane-agent-event', paneID: 'pane-two', workspaceID: 'two', now: 5, event: waiting });
+        h.daemon.dispatch({ type: 'set-workspace-muted', id: 'two', muted: true }); h.sync();
+        const snapshot = h.source.snapshot();
+        expect(snapshot.agents).toMatchObject({ waiting: 1, muted: 1 });
+        expect(snapshot.agentPanes.map(pane => [pane.paneID, pane.bucket])).toEqual([['pane-one', 'waiting'], ['pane-two', 'muted']]);
+    });
     it('uses the public command registry to render and invoke native toolbar controls', () => {
         const h = fixture(), execute = vi.fn(), model = h.source.snapshot();
         const binding = bindToolbarFeature({ model, presentation: { panes: h.daemon.getState().workspaces[0]!.panes }, contributions: null, execute });

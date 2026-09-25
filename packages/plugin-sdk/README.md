@@ -86,6 +86,13 @@ return arrays and mutation helpers unwrap the successful reply. Snapshots retain
 state shape, including epoch/sequence. `agents.reportStart` reports lifecycle state; launching
 arbitrary programs remains an explicit terminal or process operation.
 
+A workspace can be muted so its agents raise no desktop notification, sound or dock bounce:
+`api.workspaces.create({ muted: true })`, `api.workspaces.setMuted(workspaceID, muted?)` (omit
+`muted` to toggle; it resolves with the resulting state) and `muted` on every
+`api.workspaces.list()` entry. A plugin still receives a muted workspace's `daemon.notification`
+and `daemon.attention-request` events, marked `muted: true`, so a conductor plugin can watch its
+muted children while the owner is left alone.
+
 `api.settings` belongs to the current plugin. `api.appSettings` reads/writes the daemon's
 application settings, including appearance, profiles and native keybindings. The general
 settings writer accepts only documented writable keys. Filesystem reveal acknowledges a

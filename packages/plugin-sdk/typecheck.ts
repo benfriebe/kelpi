@@ -24,6 +24,9 @@ async function authoring(api: BackendAPI): Promise<void> {
     const workspaces: WorkspaceInfo[] = await api.workspaces.list();
     const first = workspaces[0];
     if (!first) return;
+    const muted: boolean = (await api.workspaces.setMuted(first.id, !first.muted)).muted;
+    await api.workspaces.setMuted(first.id);
+    await api.workspaces.create({ name: 'child', muted });
     const associations: RepositoryAssociation[] = await api.git.status(first.id);
     await api.panes.create({ workspaceID: first.id, name: associations[0]?.repoName });
     await api.panes.resize('pane', { ratio: 0.3 });

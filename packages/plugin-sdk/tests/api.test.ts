@@ -61,6 +61,24 @@ describe('public SDK over Kelpi command handlers', () => {
         expect(await api.workspaces.remove(created.workspaceID)).toMatchObject({ workspaceID: created.workspaceID, workspaceName: 'Board' });
         expect(await api.workspaces.list()).toHaveLength(1);
     });
+    it('creates muted workspaces, lists the flag and sets, clears or toggles it', async () => {
+        const { api, app, sent } = host();
+        const created = await api.workspaces.create({ name: 'Child', muted: true });
+        expect(sent.at(-1)).toMatchObject({ command: 'workspace-create', muted: true });
+        expect(app.state().workspaces.find(workspace => workspace.id === created.workspaceID)?.muted).toBe(true);
+        const muted = async (id: string) => (await api.workspaces.list()).find(workspace => workspace.id === id)?.muted;
+        expect(await muted(created.workspaceID)).toBe(true);
+        expect(await muted(W1)).toBe(false);
+
+        expect(await api.workspaces.setMuted(created.workspaceID, false)).toEqual({ workspaceID: created.workspaceID, workspaceName: 'Child', muted: false });
+        expect(await api.workspaces.setMuted(created.workspaceID)).toMatchObject({ muted: true });
+        expect(sent.at(-1)).toEqual({ command: 'workspace-mute', name: created.workspaceID });
+        expect(await muted(created.workspaceID)).toBe(true);
+        await expect(api.workspaces.setMuted('ghost', true)).rejects.toThrow("no workspace matches 'ghost'");
+
+        await api.workspaces.create({ name: 'Plain' });
+        expect(sent.at(-1)).not.toHaveProperty('muted');
+    });
     it('creates and splits panes, resizes a real split, and applies zoom/layout changes', async () => {
         const { api, app } = host();
         const second = await api.panes.create({ workspaceID: W1, name: 'second' });

@@ -127,12 +127,22 @@ async function handleWorkspaceCreate(args: string[]): Promise<void> {
         'kelpi workspace create',
         worktree !== null ? { timeoutSeconds: 120 } : {}
     );
+    const workspaceName = asString(reply['workspace_name']) ?? name ?? 'Workspace';
+    const workspaceID = asString(reply['workspace_id']) ?? '?';
+    // A daemon that predates `muted` drops the field and creates the workspace unmuted, which is
+    // the one outcome a conductor spawning quiet children must not miss: say so and fail.
+    if (muted && asBool(reply['muted']) !== true) {
+        if (asJSON) printLine(stableStringify(reply));
+        errLine(
+            `kelpi workspace create: the daemon did not apply --muted; restart it on this build ` +
+                `(workspace ${workspaceName} (${workspaceID}) was created unmuted)`
+        );
+        exit(1);
+    }
     if (asJSON) {
         printLine(stableStringify(reply));
         return;
     }
-    const workspaceName = asString(reply['workspace_name']) ?? name ?? 'Workspace';
-    const workspaceID = asString(reply['workspace_id']) ?? '?';
     const worktreePath = asString(reply['worktree_path']);
     const groupName = asString(reply['group']);
     if (worktreePath !== undefined) {

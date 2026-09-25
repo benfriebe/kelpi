@@ -1136,8 +1136,12 @@ describe('workspace create / label / mute', () => {
 
     it('sends muted on create only when --muted is given, composing with --worktree', async () => {
         const home = scratchHome();
-        server.respond(() => ({ lines: [{ ok: true, workspace_id: PANE, workspace_name: 'child' }] }));
-        await runCLI(['workspace', 'create', '--name', 'child', '--muted'], { port: server.port });
+        server.respond((request) => ({
+            lines: [{ ok: true, workspace_id: PANE, workspace_name: 'child', muted: request['muted'] === true }]
+        }));
+        const quiet = await runCLI(['workspace', 'create', '--name', 'child', '--muted'], { port: server.port });
+        expect(quiet.code).toBe(0);
+        expect(quiet.stdout).toBe(`created workspace child (${PANE})\n`);
         expect(await lastRequest()).toEqual({ command: 'workspace-create', name: 'child', muted: true });
 
         await runCLI(['workspace', 'create', '--name', 'child'], { port: server.port });
@@ -1154,6 +1158,26 @@ describe('workspace create / label / mute', () => {
             worktree: 'feature',
             repo: home
         });
+    });
+
+    it('fails --muted loudly when the daemon did not apply it (an older daemon drops the field)', async () => {
+        server.respond(() => ({ lines: [{ ok: true, workspace_id: PANE, workspace_name: 'child' }] }));
+        const plain = await runCLI(['workspace', 'create', '--name', 'child', '--muted'], { port: server.port });
+        expect(plain.code).toBe(1);
+        expect(plain.stdout).toBe('');
+        expect(plain.stderr).toBe(
+            `kelpi workspace create: the daemon did not apply --muted; restart it on this build (workspace child (${PANE}) was created unmuted)\n`
+        );
+
+        // --json still prints the reply for a script to read, and still fails.
+        const json = await runCLI(['workspace', 'create', '--name', 'child', '--muted', '--json'], { port: server.port });
+        expect(json.code).toBe(1);
+        expect(JSON.parse(json.stdout)).toEqual({ ok: true, workspace_id: PANE, workspace_name: 'child' });
+        expect(json.stderr).toContain('did not apply --muted');
+
+        // Without --muted the same reply is simply a success.
+        const unmuted = await runCLI(['workspace', 'create', '--name', 'child'], { port: server.port });
+        expect(unmuted.code).toBe(0);
     });
 
     it('mutes by default, unmutes with --off and toggles with --toggle', async () => {

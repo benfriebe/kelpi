@@ -89,9 +89,12 @@ arbitrary programs remains an explicit terminal or process operation.
 A workspace can be muted so its agents raise no desktop notification, sound or dock bounce:
 `api.workspaces.create({ muted: true })`, `api.workspaces.setMuted(workspaceID, muted?)` (omit
 `muted` to toggle; it resolves with the resulting state) and `muted` on every
-`api.workspaces.list()` entry. A plugin still receives a muted workspace's `daemon.notification`
-and `daemon.attention-request` events, marked `muted: true`, so a conductor plugin can watch its
-muted children while the owner is left alone.
+`api.workspaces.list()` entry; `api.workspaces.create()` reports the `muted` state it created.
+A plugin still receives a muted workspace's `daemon.notification` and `daemon.attention-request`
+events, marked `muted: true`, so a conductor plugin can watch its muted children. Kelpi sends no
+`notification` message to any window for them, but plugin views do see the event, so a view must
+honour `muted` and never echo it through `ui.showNotification` or `ui.notify`: that would undo the
+owner's mute.
 
 `api.settings` belongs to the current plugin. `api.appSettings` reads/writes the daemon's
 application settings, including appearance, profiles and native keybindings. The general

@@ -361,6 +361,8 @@ function handleWorktreeCreate(
                 workspace_name: created?.name ?? workspaceName,
                 worktree_path: seed.path,
                 branch: seed.branchName,
+                // Echoed so `--muted` is confirmed: a daemon that predates it drops the field.
+                muted: created?.muted ?? false,
                 ...(groupName !== undefined ? { group: groupName } : {})
             });
         })
@@ -388,7 +390,7 @@ function handleWorkspaceCreate(
 
     // (b) Top-level branch: reply first, then create.
     if (trimmedGroup === '') {
-        ok(reply, { workspace_id: uuidOut(workspaceID), workspace_name: workspaceName });
+        ok(reply, { workspace_id: uuidOut(workspaceID), workspace_name: workspaceName, muted: msg.muted === true });
         dispatchCreate(ctx, deps, {
             name: workspaceName,
             workingDirectory: msg.path,
@@ -424,6 +426,7 @@ function handleWorkspaceCreate(
     ok(reply, {
         workspace_id: uuidOut(workspaceID),
         workspace_name: workspaceName,
+        muted: msg.muted === true,
         group: trimmedGroup
     });
     dispatchCreate(ctx, deps, {

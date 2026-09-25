@@ -372,16 +372,6 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
 
         setWorkspaceMuted,
 
-        /**
-         * The palette's toggle. It reads the live mirror and sends the explicit opposite rather
-         * than the wire's toggle, so the row its title named is the state it produces.
-         */
-        toggleActiveWorkspaceMuted(): boolean {
-            const workspace = selectActiveWorkspace(store.getState());
-            if (workspace === null) return false;
-            return setWorkspaceMuted(workspace.id, workspace.muted !== true);
-        },
-
         async createWorkspaceWithWorktree(
             name: string,
             groupID: string | null,

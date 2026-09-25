@@ -106,6 +106,20 @@ describe('agent buckets (§9.3)', () => {
         expect(screen.queryByTestId('count-muted')).toBeNull();
     });
 
+    it('closes an open muted popover when its chip goes away with the last muted waiting pane', () => {
+        const summary = { running: 0, waiting: 1, inactive: 0 };
+        const view = render(<StatusFooter summary={{ ...summary, muted: 2 }} now={NOW} bucketItems={() => []} />);
+        fireEvent.click(screen.getByTestId('count-muted'));
+        expect(within(screen.getByTestId('bucket-popover')).getByText('Awaiting input, muted')).toBeDefined();
+
+        view.rerender(<StatusFooter summary={{ ...summary, muted: 0 }} now={NOW} bucketItems={() => []} />);
+        expect(screen.queryByTestId('count-muted')).toBeNull();
+        expect(screen.queryByTestId('bucket-popover')).toBeNull();
+        // …and a muted count coming back does not reopen it by itself.
+        view.rerender(<StatusFooter summary={{ ...summary, muted: 1 }} now={NOW} bucketItems={() => []} />);
+        expect(screen.queryByTestId('bucket-popover')).toBeNull();
+    });
+
     it('counts muted waiting panes apart, right after waiting, with their own popover', () => {
         const onSelectPane = vi.fn();
         const muted: StatusBarItem = {
@@ -1011,6 +1025,48 @@ describe('the budget re-measures when the left cluster content changes (§N7 res
             expect(after[0]).toBe('stat-gauge-cpu');
         } finally {
             restore();
+        }
+    });
+});
+
+/**
+ * #269 review: the muted chip mounts and unmounts inside the kept group while the row keeps its
+ * size, so a change in the muted count alone has to re-measure the gauges' budget.
+ */
+describe('the budget re-measures when only the muted chip comes or goes', () => {
+    it('yields gauges to a muted chip that appeared with nothing else changing, and takes them back', () => {
+        vi.stubGlobal(
+            'ResizeObserver',
+            class {
+                observe(): void {}
+                unobserve(): void {}
+                disconnect(): void {}
+            }
+        );
+        const rectSpy = vi
+            .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+            .mockImplementation(function (this: HTMLElement) {
+                const id = this.getAttribute('data-testid');
+                // The kept group is 300 px wider while it holds the muted chip.
+                const keep = this.querySelector('[data-testid="count-muted"]') === null ? 175 : 475;
+                const width = id === 'status-footer' ? 780 : id === 'footer-keep' ? keep : 0;
+                return { x: 0, y: 0, top: 0, left: 0, right: width, bottom: 0, width, height: 24, toJSON: () => ({}) } as DOMRect;
+            });
+        try {
+            const stats = statsView({ enabled: ['cpu', 'memory', 'load', 'network', 'diskIO', 'diskSpace'] });
+            const gauges = (): number => document.querySelectorAll('[data-testid^="stat-gauge-"]').length;
+            const view = render(<StatusFooter summary={{ ...SUMMARY, muted: 0 }} now={NOW} systemStats={stats} />);
+            expect(gauges()).toBe(6);
+
+            view.rerender(<StatusFooter summary={{ ...SUMMARY, muted: 3 }} now={NOW} systemStats={stats} />);
+            expect(screen.getByTestId('count-muted')).toBeDefined();
+            expect(gauges()).toBeLessThan(6);
+
+            view.rerender(<StatusFooter summary={{ ...SUMMARY, muted: 0 }} now={NOW} systemStats={stats} />);
+            expect(gauges()).toBe(6);
+        } finally {
+            vi.unstubAllGlobals();
+            rectSpy.mockRestore();
         }
     });
 });

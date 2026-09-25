@@ -39,7 +39,11 @@ export interface WorkspaceCreateOptions {
     /** Create the workspace already muted, so its first agent never notifies. */
     muted?: boolean;
 }
-export interface WorkspaceCreated extends WorkspaceIdentity { group?: string; worktreePath?: string; branch?: string }
+export interface WorkspaceCreated extends WorkspaceIdentity {
+    group?: string; worktreePath?: string; branch?: string;
+    /** The state the workspace was created in, so a `muted: true` request can be confirmed. */
+    muted: boolean;
+}
 export interface WorkspaceMoveOptions { groupID?: string; index?: number }
 export interface WorkspacesAPI {
     list(options?: { groupID?: string }): Promise<WorkspaceInfo[]>;

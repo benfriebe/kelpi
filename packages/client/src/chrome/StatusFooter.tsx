@@ -624,6 +624,13 @@ export function StatusFooter(props: StatusFooterProps): ReactElement {
      * it actually covers — and only those — for as long as it is open.
      */
     useOverlayPresence(popoverRef, openBucket !== null);
+    /*
+     * The muted chip unmounts at 0 rather than going inert like the other three, so an open muted
+     * popover would be left with no anchor and nothing to list. It closes with its chip.
+     */
+    useLayoutEffect(() => {
+        if (mutedCount === 0 && openBucket === 'muted') setOpenBucket(null);
+    }, [mutedCount, openBucket]);
 
     /*
      * §M20 — and it is anchored to the chip that opened it, measured off the real boxes. Null
@@ -691,7 +698,8 @@ export function StatusFooter(props: StatusFooterProps): ReactElement {
         enabledGauges.join(','),
         String(stats?.showGraphs === true),
         String(stats?.graphWidth ?? 28),
-        `${String(props.summary.running)}/${String(props.summary.waiting)}/${String(props.summary.inactive)}`,
+        // The muted chip mounts and unmounts inside the kept group, so its count is an input too.
+        `${String(props.summary.running)}/${String(props.summary.waiting)}/${String(mutedCount)}/${String(props.summary.inactive)}`,
         /*
          * §N7 residue — the LEFT cluster's content is an input to the measurement, not only the
          * row's size. Focusing a repo pane swaps `~` for a long path plus the branch and stats

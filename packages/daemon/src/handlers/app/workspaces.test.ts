@@ -165,7 +165,7 @@ describe('workspace-create (top level)', () => {
     it('acks the pre-minted id BEFORE the workspace exists, then creates and spawns it', () => {
         const h = harness({ ids: [W1, P1] });
         const reply = h.reply({ command: 'workspace-create', name: 'dev', path: '/code/dev' });
-        expect(reply).toEqual({ ok: true, workspace_id: W1, workspace_name: 'dev' });
+        expect(reply).toEqual({ ok: true, workspace_id: W1, workspace_name: 'dev', muted: false });
         // Reply-before-effect: nothing existed when the ack went out.
         expect(h.replies[0]?.states[0]?.workspaces).toHaveLength(0);
 
@@ -198,7 +198,8 @@ describe('workspace-create (top level)', () => {
                 if (event.kind === 'workspace-upserted') upserted.push(event.workspace.muted);
             }
         });
-        h.reply({ command: 'workspace-create', name: 'child', muted: true });
+        // The reply confirms the flag, so a caller can tell an older daemon dropped it.
+        expect(h.reply({ command: 'workspace-create', name: 'child', muted: true })['muted']).toBe(true);
         expect(h.state().workspaces[0]?.muted).toBe(true);
         expect(upserted.length).toBeGreaterThan(0);
         expect(upserted.every((muted) => muted)).toBe(true);
@@ -235,6 +236,7 @@ describe('workspace-create (group)', () => {
             ok: true,
             workspace_id: W1,
             workspace_name: 'dev',
+            muted: false,
             group: 'team'
         });
         const group = h.state().groups[0];
@@ -246,7 +248,7 @@ describe('workspace-create (group)', () => {
 
     it('carries the muted flag into the group branch', () => {
         const h = harness({ ids: [W1, G1, P1] });
-        h.reply({ command: 'workspace-create', name: 'dev', group: 'team', muted: true });
+        expect(h.reply({ command: 'workspace-create', name: 'dev', group: 'team', muted: true })['muted']).toBe(true);
         expect(h.state().workspaces[0]?.muted).toBe(true);
     });
 
@@ -308,7 +310,8 @@ describe('workspace-create (worktree)', () => {
             workspace_id: W1,
             workspace_name: 'feature-x',
             worktree_path: `${HOME}/wt/kelpi/feature-x`,
-            branch: 'feature-x'
+            branch: 'feature-x',
+            muted: false
         });
 
         const workspace = h.state().workspaces[0];
@@ -333,7 +336,7 @@ describe('workspace-create (worktree)', () => {
         });
         h.send({ ...worktreeRequest, muted: true });
         await flush();
-        expect(h.replies[0]?.payloads[0]).toMatchObject({ ok: true, workspace_id: W1 });
+        expect(h.replies[0]?.payloads[0]).toMatchObject({ ok: true, workspace_id: W1, muted: true });
         expect(h.state().workspaces[0]?.muted).toBe(true);
     });
 

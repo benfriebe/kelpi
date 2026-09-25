@@ -879,7 +879,10 @@ cwd; `color` per §5.5 (invalid/absent → random); `group` creates the group if
 (unless `worktree` is set — then the group must already exist); `profile` assigns a
 workspace profile (empty string = none); `muted` (bool, default false) creates the
 workspace already muted, so its first pane never raises an attention signal (see
-`workspace-mute`). Worktree flow (all empty strings normalized to
+`workspace-mute`). Every success reply carries `muted`, the state the workspace was created
+in, so a caller that asked for `muted` can tell a daemon that predates it (which drops the
+unknown field and creates the workspace unmuted); `kelpi workspace create --muted` then exits
+non-zero. Worktree flow (all empty strings normalized to
 absent): `worktree` = worktree/folder name to create, `branch` (defaults to the
 worktree name), `update_main` (bool, default false — fetch and branch off
 `origin/<default>`), `repo` = source repo path (the CLI always sends it when `worktree`
@@ -889,12 +892,12 @@ is set; the handler falls back to `path`, and only when both are absent or blank
 
 ```json
 {"command":"workspace-create","name":"Test","color":"blue","group":"projects"}
-→ {"ok":true,"workspace_id":"<uuid>","workspace_name":"Test","group":"projects"}
+→ {"ok":true,"workspace_id":"<uuid>","workspace_name":"Test","muted":false,"group":"projects"}
 
 {"command":"workspace-create","name":"feat-x","worktree":"feat-x","branch":"feat-x",
  "update_main":true,"repo":"/Users/ben/code/kelpi"}
 → {"ok":true,"workspace_id":"<uuid>","workspace_name":"feat-x",
-   "worktree_path":"/…/worktrees/feat-x","branch":"feat-x"}
+   "worktree_path":"/…/worktrees/feat-x","branch":"feat-x","muted":false}
 ```
 
 Ambiguous `group` name → `{"ok":false,"error":"group name is ambiguous: <name> (use
@@ -977,8 +980,9 @@ label preset.
 
 `name` (required non-empty) = workspace name-or-id; `muted` (bool) = the new state, and
 absent toggles the current one. A muted workspace's agents keep their pane status but raise
-no attention signal: the daemon broadcasts their `notification` / `attention-request`
-events to plugins only, marked `muted: true`, and never to a window session
+no attention signal: the daemon marks their `notification` / `attention-request` broadcasts
+`muted: true` and hands them to plugin observers only, so no such message reaches a window
+session; plugin views see them inside `plugin-event` and must honour the flag
 (agent-lifecycle.md §7.6). The reply carries the post-mutation state. Unknown or ambiguous
 workspace → `{"ok":false,"error":"no workspace matches '<name>'"}`.
 

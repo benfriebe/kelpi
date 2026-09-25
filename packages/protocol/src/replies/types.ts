@@ -140,6 +140,8 @@ export interface WorkspaceListReply extends ReplySuccess {
 export interface WorkspaceCreateReply extends ReplySuccess {
     readonly workspace_id: string;
     readonly workspace_name: string;
+    /** The state the workspace was created in; lets `--muted` confirm it was applied. */
+    readonly muted: boolean;
     /** Echoed group name when the workspace was placed in a group. */
     readonly group?: string;
     /** Worktree flow only. */

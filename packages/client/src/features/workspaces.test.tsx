@@ -272,22 +272,14 @@ describe('retained Workspaces actions', () => {
         expect(h.rpc.createWorkspace).toHaveBeenLastCalledWith(expect.objectContaining({ worktree: 'task', muted: true }));
     });
 
-    it('sends an explicit mute state, and the palette toggle reads the active workspace', () => {
+    it('sends an explicit mute state, labelled by the direction', () => {
         const h = setup();
         expect(h.actions.setWorkspaceMuted(W2, true)).toBe(true);
         expect(h.rpc.setWorkspaceMuted).toHaveBeenLastCalledWith({ workspace: W2, muted: true });
         expect(h.run).toHaveBeenLastCalledWith('Mute notifications', expect.any(Promise));
-
-        expect(h.actions.toggleActiveWorkspaceMuted()).toBe(true);
-        expect(h.rpc.setWorkspaceMuted).toHaveBeenLastCalledWith({ workspace: W1, muted: true });
-        h.daemon.dispatch({ type: 'set-workspace-muted', id: W1, muted: true });
-        h.sync();
-        h.actions.toggleActiveWorkspaceMuted();
-        expect(h.rpc.setWorkspaceMuted).toHaveBeenLastCalledWith({ workspace: W1, muted: false });
+        h.actions.setWorkspaceMuted(W2, false);
+        expect(h.rpc.setWorkspaceMuted).toHaveBeenLastCalledWith({ workspace: W2, muted: false });
         expect(h.run).toHaveBeenLastCalledWith('Unmute notifications', expect.any(Promise));
-
-        h.store.getState().setActiveWorkspace('removed-workspace');
-        expect(h.actions.toggleActiveWorkspaceMuted()).toBe(false);
     });
 });
 

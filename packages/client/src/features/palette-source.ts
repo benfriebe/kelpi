@@ -46,7 +46,7 @@ export interface PaletteFeatureActions {
     cycleLayout(): boolean;
     toggleSyncInput(): boolean;
     newWorkspace(): boolean;
-    toggleActiveWorkspaceMuted(): boolean;
+    setWorkspaceMuted(workspaceID: string, muted: boolean): boolean;
 }
 
 export interface PaletteFeatureHost {
@@ -189,8 +189,26 @@ export function createPaletteFeatureSource(ref: PaletteFeatureHostRef): PaletteF
     const entries = (host: PaletteFeatureHost): PaletteEntry[] => {
         const act = host.actions;
         const hint = (action: KelpiAction): string | undefined => host.shortcut(action);
-        // Titled by the state it would change, read from the live mirror (agent-lifecycle §7.6).
-        const muted = selectActiveWorkspace(host.runtime.store.getState())?.muted === true;
+        /*
+         * Agent-lifecycle §7.6: the mute row is titled by the state it would produce, read from the
+         * live mirror, and its ID names that state too. `execute` rebuilds this list when a row is
+         * picked, so a row shown before the state moved (a conductor muting the workspace while the
+         * palette is open) no longer matches and is refused, instead of doing the opposite of
+         * what its title said. The action sends that explicit state, never a toggle.
+         */
+        const active = selectActiveWorkspace(host.runtime.store.getState());
+        const muteEntries: PaletteEntry[] =
+            active === null
+                ? []
+                : active.muted === true
+                  ? [
+                        commandEntry('cmd:unmute-workspace', 'rectangle.stack', 'Unmute Workspace Notifications',
+                            'let this workspace’s agents notify again', undefined, () => act.setWorkspaceMuted(active.id, false))
+                    ]
+                  : [
+                        commandEntry('cmd:mute-workspace', 'rectangle.stack', 'Mute Workspace Notifications',
+                            'no banners, sound or bounce from this workspace’s agents', undefined, () => act.setWorkspaceMuted(active.id, true))
+                    ];
         return [
             ...host.plugins.menu('palette').map((menu): PaletteEntry => ({
                 item: {
@@ -233,10 +251,7 @@ export function createPaletteFeatureSource(ref: PaletteFeatureHostRef): PaletteF
                 hint('toggle_sync_input'), () => act.toggleSyncInput()),
             commandEntry('cmd:new-workspace', 'rectangle.stack', 'New Workspace', 'create an empty workspace',
                 hint('new_workspace'), () => act.newWorkspace()),
-            commandEntry('cmd:toggle-workspace-mute', 'rectangle.stack',
-                muted ? 'Unmute Workspace Notifications' : 'Mute Workspace Notifications',
-                muted ? 'let this workspace’s agents notify again' : 'no banners, sound or bounce from this workspace’s agents',
-                undefined, () => act.toggleActiveWorkspaceMuted()),
+            ...muteEntries,
             ...arrangementEntries(host.arrangement, hint),
             // ⌘, is not a bindable action (assembly dispatches it from its own listener), so the hint
             // is literal rather than a lookup that would answer `undefined` forever.

@@ -894,6 +894,14 @@ describe('broadcast', () => {
         }
     });
 
+    it('drops only notification and attention-request for muted, never another broadcast', () => {
+        const f = fixture();
+        const { session, transport } = f.connect();
+        session.handleMessage(hello());
+        f.hub.broadcast({ type: 'pane-exit', paneID: f.paneID, exitCode: 0, muted: true });
+        expect(transport.ofType('pane-exit')).toEqual([expect.objectContaining({ muted: true })]);
+    });
+
     it('does not suppress non-notification events', () => {
         const f = fixture();
         const { session, transport } = f.connect();

@@ -131,8 +131,9 @@ authorization dialog nothing can answer. The window then never loads, with no `d
 nothing in the log (`../kelpi-docs/PARITY.md` ▸ Known gaps #9). So it turns on in the same step as the
 Developer ID, and `packaged-smoke.mjs` asserts that rule from the fuse wire in phase 1.
 
-Nothing is signed or notarized (ad-hoc only, as arm64 requires); the repo README's *Install and
-run* section carries the gap and the release checklist. `KELPI_MACOS_IDENTITY` opts into `osxSign`.
+A local build is ad-hoc signed, as arm64 requires. `KELPI_MACOS_IDENTITY` opts into a Developer ID
+signature under the hardened runtime, and notarization credentials add notarization; the release
+workflow does both. The repo README's *Signing, notarization and releases* section has the details.
 
 ## Tests
 
@@ -205,9 +206,8 @@ resort, not the first.
 
 ## Not done here (later milestones)
 
-- **Signing and notarization**: packaging is done (above), but the output is ad-hoc-signed only.
-  The checklist — Developer ID, signing the bundled `node`, `osxNotarize` + stapling, then
-  auto-update — is in the repo README's *Install and run* section.
+- **Auto-update**: releases are signed and notarized, but `KELPI_AUTO_UPDATE` stays opt-in until
+  an update also replaces the daemon the old bundle started (#272).
 - **Visual web panes**: the host (above) is a headless automation surface; putting the views on
   screen at the pane's rect needs a client→shell channel (there is deliberately no preload
   bridge yet) and the chrome from `docs/web-pane.md` §16 in the client.

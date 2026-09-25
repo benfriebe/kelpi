@@ -6,7 +6,7 @@
  * feed. `update-electron-app` points Squirrel at `update.electronjs.org`, which reads GitHub
  * Releases and serves the Squirrel-compatible JSON for free.
  *
- * Three things have to be true before it may be switched on, and none of them are true yet:
+ * Three things have to be true before it may be switched on, and for a release build they are:
  *
  *   1. **The repository must be public.** `update.electronjs.org` only serves public GitHub
  *      repos — it has no credentials for a private one, and there is no self-hosted mode. A
@@ -14,11 +14,14 @@
  *      instead (stack.md's stated alternative), not this module with a different URL.
  *   2. **The app must be signed and notarized.** Squirrel.Mac replaces the bundle in place and
  *      Gatekeeper re-evaluates it; an unsigned or ad-hoc-signed app either fails to stage the
- *      update or installs one that will not launch. Today `pnpm dist` produces neither (see the
- *      release checklist in the repo README) — so shipping an updater now would be a way to
- *      brick an install, not a feature.
+ *      update or installs one that will not launch. A local `pnpm dist` is ad-hoc signed, so it
+ *      must never enable this; `.github/workflows/release.yml` builds the signed, notarized one.
  *   3. **`repository` must name the GitHub repo** in the app's `package.json`, or the caller has
  *      to pass an explicit `repo`. `update-electron-app` derives the feed from it.
+ *
+ * It still stays off by default (#272): an update replaces the app and relaunches it, but the
+ * detached daemon keeps running from the old bundle, and the new app would talk to it across a
+ * wire protocol that may have changed.
  *
  * Until then this module does exactly one thing in the default configuration: nothing. No
  * import of `update-electron-app` is evaluated, and therefore **no network request is made** —

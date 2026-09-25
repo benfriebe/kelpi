@@ -48,7 +48,7 @@
  * from `src/packaging.ts` (`signOptionsForFile`), and a signing failure fails the build. Setting
  * notarization credentials as well (`notarizeOptions`: a notarytool keychain profile, an App
  * Store Connect API key, or an Apple ID) notarizes and staples the app. The release workflow,
- * `.github/workflows/release.yml`, does both; the repo README ("Signing and notarization") has
+ * `.github/workflows/release.yml`, does both; the repo README ("Signing, notarization and releases") has
  * the local recipe.
  *
  * The ad-hoc signature is applied in `postPackage`, *after* the renames and `Info.plist` rewrites
@@ -152,7 +152,7 @@ module.exports = {
     packagerConfig: {
         // `productName` in package.json names the bundle (`Kelpi.app`); this is the id that keeps
         // it distinct from the shipped Swift app (`com.benfriebe.nex`) so both can be installed
-        // at once during the port. Taking over the original id is a release-checklist item.
+        // at once during the port. Whether to take over the original id is open in #272.
         appBundleId: 'com.benfriebe.kelpi',
         appCategoryType: 'public.app-category.developer-tools',
         icon: iconFile,

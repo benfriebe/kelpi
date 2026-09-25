@@ -33,12 +33,13 @@ export const globalUsage = `Usage:
   kelpi pane sync include --target <name-or-uuid> [--workspace <name-or-uuid>]
   kelpi pane id
   kelpi workspace list [--json] [--no-header]
-  kelpi workspace create [--name "..."] [--path /dir] [--color blue] [--group <name>] [--profile <name>] [--json]
-  kelpi workspace create --worktree <name> [--branch <name>] [--repo <path>] [--update-main] [--group <existing>]
+  kelpi workspace create [--name "..."] [--path /dir] [--color blue] [--group <name>] [--profile <name>] [--muted] [--json]
+  kelpi workspace create --worktree <name> [--branch <name>] [--repo <path>] [--update-main] [--group <existing>] [--muted]
   kelpi workspace move <name-or-id> (--group <name> | --top-level) [--index N]
   kelpi workspace delete <name-or-id> [<name-or-id> ...] [--force|-y] [--prune-worktree] [--json]
   kelpi workspace profile <name-or-id> (<profile> | --clear)
   kelpi workspace label <name-or-id> (--set v | --add v | --remove v | --clear) [--json]
+  kelpi workspace mute <name-or-id> [--off | --toggle] [--json]
   kelpi group list [--json] [--no-header]
   kelpi group create <name> [--color blue]
   kelpi group rename <name-or-id> <new-name>
@@ -315,7 +316,7 @@ when --workspace is not supplied.
 `;
 
 export const workspaceUsage = `Usage:
-  kelpi workspace list|create|move|delete|profile|label [...]
+  kelpi workspace list|create|move|delete|profile|label|mute [...]
 
 Subcommands:
   list      List every workspace (grouped + top-level).
@@ -324,6 +325,7 @@ Subcommands:
   delete    Delete one or more workspaces.
   profile   Assign or clear a workspace's profile.
   label     Set/add/remove/clear a workspace's labels.
+  mute      Mute or unmute a workspace's notifications.
 
 Run \`kelpi workspace <subcommand> --help\` for subcommand-specific usage.
 
@@ -334,7 +336,7 @@ export const workspaceListUsage = `Usage:
 
 Lists workspaces as a table, or a JSON array with --json. Each entry
 carries id, name, group, color, pane count, created_at, last_accessed_at,
-last_activity_at, labels, and the agent session id (when present).
+last_activity_at, labels, muted, and the agent session id (when present).
 
 Options:
   --group <name-or-id>  Only list workspaces in this group.
@@ -348,9 +350,9 @@ Exit codes: 0 on success, non-zero on failure.
 
 export const workspaceCreateUsage = `Usage:
   kelpi workspace create [--name "..."] [--path /dir] [--color blue] \\
-                       [--group <name>] [--profile <name>] [--json]
+                       [--group <name>] [--profile <name>] [--muted] [--json]
   kelpi workspace create --worktree <name> [--branch <name>] [--repo <path>] \\
-                       [--update-main] [--group <existing>] [--json]
+                       [--update-main] [--group <existing>] [--muted] [--json]
 
 Creates a new workspace and returns its id.
 
@@ -365,6 +367,7 @@ Options:
   --branch <name>    Branch for the worktree (defaults to the worktree name).
   --repo <path>      Source repo for the worktree (defaults to the cwd).
   --update-main      Fetch and branch off origin/<default> for the worktree.
+  --muted            Create the workspace with its notifications muted.
   --json             Print the structured reply (incl. the new workspace id).
   -h, --help         Show this help.
 
@@ -438,6 +441,25 @@ Options:
 
 Exit codes: 0 on success, non-zero on failure (unknown/ambiguous
 workspace, etc).
+
+`;
+
+export const workspaceMuteUsage = `Usage:
+  kelpi workspace mute <name-or-id> [--off | --toggle] [--json]
+
+Mutes a workspace's notifications. A muted workspace's agents keep their
+pane status (\`kelpi pane list --json\` still reports waitingForInput) but
+post no desktop notification, play no sound and bounce no dock. The
+setting persists and syncs to every attached client.
+
+Options:
+  --off          Unmute instead.
+  --toggle       Flip the current state; prints the state it produced.
+  --json         Print the structured reply (incl. the resulting muted state).
+  -h, --help     Show this help.
+
+Exit codes: 0 on success, non-zero on failure (unknown/ambiguous
+workspace, --off together with --toggle).
 
 `;
 

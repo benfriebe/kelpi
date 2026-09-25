@@ -1058,7 +1058,7 @@ describe('pane sync', () => {
     });
 });
 
-describe('workspace create / label', () => {
+describe('workspace create / label / mute', () => {
     it('prints the full reply including ok under --json', async () => {
         server.respond(() => ({ lines: [{ ok: true, workspace_id: PANE, workspace_name: 'alpha', group: 'squad' }] }));
         const result = await runCLI(['workspace', 'create', '--name', 'alpha', '--group', 'squad', '--json'], {
@@ -1132,5 +1132,79 @@ describe('workspace create / label', () => {
         expect(style.code).toBe(1);
         expect(style.stderr).toContain('--style is not yet supported');
         expect(server.requests).toHaveLength(0);
+    });
+
+    it('sends muted on create only when --muted is given, composing with --worktree', async () => {
+        const home = scratchHome();
+        server.respond(() => ({ lines: [{ ok: true, workspace_id: PANE, workspace_name: 'child' }] }));
+        await runCLI(['workspace', 'create', '--name', 'child', '--muted'], { port: server.port });
+        expect(await lastRequest()).toEqual({ command: 'workspace-create', name: 'child', muted: true });
+
+        await runCLI(['workspace', 'create', '--name', 'child'], { port: server.port });
+        expect(await lastRequest()).toEqual({ command: 'workspace-create', name: 'child' });
+
+        await runCLI(['workspace', 'create', '--worktree', 'feature', '--muted', '--group', 'squad'], {
+            port: server.port,
+            cwd: home
+        });
+        expect(await lastRequest()).toEqual({
+            command: 'workspace-create',
+            group: 'squad',
+            muted: true,
+            worktree: 'feature',
+            repo: home
+        });
+    });
+
+    it('mutes by default, unmutes with --off and toggles with --toggle', async () => {
+        server.respond((request) => ({
+            lines: [
+                {
+                    ok: true,
+                    workspace_id: PANE,
+                    workspace_name: 'child',
+                    muted: request['muted'] ?? false
+                }
+            ]
+        }));
+        const on = await runCLI(['workspace', 'mute', 'child'], { port: server.port });
+        expect(on.code).toBe(0);
+        expect(on.stdout).toBe('child: notifications muted\n');
+        expect(await lastRequest()).toEqual({ command: 'workspace-mute', name: 'child', muted: true });
+
+        const off = await runCLI(['workspace', 'mute', '--off', 'child'], { port: server.port });
+        expect(off.stdout).toBe('child: notifications unmuted\n');
+        expect(await lastRequest()).toEqual({ command: 'workspace-mute', name: 'child', muted: false });
+
+        const toggle = await runCLI(['workspace', 'mute', 'child', '--toggle', '--json'], { port: server.port });
+        expect(JSON.parse(toggle.stdout)).toEqual({
+            ok: true,
+            workspace_id: PANE,
+            workspace_name: 'child',
+            muted: false
+        });
+        expect(await lastRequest()).toEqual({ command: 'workspace-mute', name: 'child' });
+    });
+
+    it('rejects --off with --toggle, a missing name and a stray argument before sending', async () => {
+        const both = await runCLI(['workspace', 'mute', 'child', '--off', '--toggle'], { port: server.port });
+        expect(both.code).toBe(1);
+        expect(both.stderr).toBe("workspace mute can't take both --off and --toggle\n");
+
+        const missing = await runCLI(['workspace', 'mute'], { port: server.port });
+        expect(missing.code).toBe(1);
+        expect(missing.stderr).toContain('kelpi workspace mute <name-or-id>');
+
+        const stray = await runCLI(['workspace', 'mute', 'child', 'extra'], { port: server.port });
+        expect(stray.code).toBe(1);
+        expect(stray.stderr).toContain("unexpected argument 'extra'");
+        expect(server.requests).toHaveLength(0);
+    });
+
+    it('exits non-zero with the daemon error for an unknown workspace', async () => {
+        server.respond(() => ({ lines: [{ ok: false, error: "no workspace matches 'ghost'" }] }));
+        const result = await runCLI(['workspace', 'mute', 'ghost'], { port: server.port });
+        expect(result.code).not.toBe(0);
+        expect(result.stderr).toContain("no workspace matches 'ghost'");
     });
 });

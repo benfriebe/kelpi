@@ -3854,19 +3854,6 @@ export function Sidebar(props: SidebarProps): ReactElement {
                               )
                           } satisfies MenuItemSpec
                       ]),
-                // Agent-lifecycle §7.6: a checked toggle, right after Profile.
-                ...(props.onSetWorkspaceMuted === undefined
-                    ? []
-                    : [
-                          {
-                              id: 'mute',
-                              label: 'Mute Notifications',
-                              checked: workspace.muted === true,
-                              onSelect: () => {
-                                  props.onSetWorkspaceMuted?.(workspaceID, workspace.muted !== true);
-                              }
-                          } satisfies MenuItemSpec
-                      ]),
                 {
                     id: 'icon',
                     label: 'Change Icon',
@@ -3959,6 +3946,23 @@ export function Sidebar(props: SidebarProps): ReactElement {
                     ]
                 },
                 { id: 'sep', label: '', kind: 'separator' },
+                // Agent-lifecycle §7.6: an on/off setting, so a checkbox in a section of its own
+                // between the workspace's attributes and the selection verbs. The separator below
+                // it comes with it, so a menu without the handler keeps a single separator here.
+                ...(props.onSetWorkspaceMuted === undefined
+                    ? []
+                    : [
+                          {
+                              id: 'mute',
+                              label: 'Mute Notifications',
+                              control: 'checkbox',
+                              checked: workspace.muted === true,
+                              onSelect: () => {
+                                  props.onSetWorkspaceMuted?.(workspaceID, workspace.muted !== true);
+                              }
+                          } satisfies MenuItemSpec,
+                          { id: 'sep-mute', label: '', kind: 'separator' } satisfies MenuItemSpec
+                      ]),
                 // §WS-053: the single-row menu carries the selection verbs too — "Select All"
                 // dimmed once everything is selected, "Deselect All" only while a selection
                 // exists. Select All covers members hidden inside collapsed groups (§WS-045).

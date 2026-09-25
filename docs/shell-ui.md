@@ -871,9 +871,6 @@ Color ▸                          → 10 colors (red orange yellow green blue p
 Profile ▸                        → "default" + config-defined profiles; active one checked;
                                    an assigned-but-deleted profile stays listed so the
                                    check never disappears
-Mute Notifications               → checked while muted; toggles the workspace's mute
-                                   (Kelpi addition, agent-lifecycle.md §7.6). Primary
-                                   daemon rows only: remote rows have no menu here
 Change Icon ▸                    → one flat submenu (submenus are one level deep,
                                    packages/client/src/chrome/ContextMenu.tsx:10-12;
                                    built at Sidebar.tsx:3446-3491):
@@ -896,12 +893,28 @@ Move to Group ▸                  → "Remove from Group" (when grouped) / each
                                    seeded with this workspace, placeholder name,
                                    auto-starts inline rename)
 ──────────
+Mute Notifications         [ ]   → a checkbox at the row's trailing edge, ticked while the
+                                   workspace is muted; toggles its mute (Kelpi addition,
+                                   agent-lifecycle.md §7.6). A section of its own: without a
+                                   mute handler the section and its lower separator are both
+                                   absent, never one separator doubled. Primary daemon rows
+                                   only: remote rows have no menu here, and the bulk menu has
+                                   no mute
+──────────
 Select All Workspaces            (disabled when everything is selected)
 Deselect All                     (only when a selection exists)
 ──────────
 Delete                           (disabled when it's the last workspace; gated by the
                                   workspace-delete confirmation, §12.2)
 ```
+
+The mute row's checkbox is `MenuItemSpec.control: 'checkbox'`
+(`packages/client/src/chrome/ContextMenu.tsx`), an opt-in so every other `checked` row keeps the
+leading tick (Profile's list, the label menus' `–` for mixed). It renders as
+`role="menuitemcheckbox"` with `aria-checked`. The empty state is an outlined box in the
+secondary text colour, legible in both themes and over the row highlight. The checked state is
+an accent-filled box with a white check. It is a stop in the keyboard walk like any row, and
+selecting it (click or Return) closes the menu.
 
 Bulk version (row is part of a ≥2 selection):
 

@@ -603,34 +603,97 @@ describe('context menus (portal-based)', () => {
         expect(screen.queryByTestId(`workspace-muted-${W4}`)).toBeNull();
     });
 
-    it('offers a checked Mute Notifications right after Profile, sending the opposite state', () => {
-        const onSetWorkspaceMuted = vi.fn();
-        const withMuted = entries();
-        withMuted[1] = { kind: 'workspace', workspace: workspace(W4, 'delta', { muted: true }) };
+    /** The open menu's top level in order: row ids, separators as `-`. */
+    function topLevel(menu: HTMLElement): string[] {
+        return [...menu.children].map((wrapper) => {
+            const row = wrapper.firstElementChild;
+            if (row?.getAttribute('role') === 'separator') return '-';
+            return row?.getAttribute('data-menu-item') ?? '?';
+        });
+    }
+
+    /** No separator first, last, or beside another. */
+    function strayDividers(order: readonly string[]): string[] {
+        return order.flatMap((id, index) =>
+            id !== '-'
+                ? []
+                : index === 0 || index === order.length - 1 || order[index - 1] === '-'
+                  ? [`separator at ${String(index)}`]
+                  : []
+        );
+    }
+
+    it('gives Mute Notifications its own section directly above the selection verbs', () => {
         render(
             <Sidebar
                 {...noopProps()}
-                entries={withMuted}
+                entries={entries()}
                 profiles={['work']}
                 onSetWorkspaceProfile={vi.fn()}
-                onSetWorkspaceMuted={onSetWorkspaceMuted}
+                onSetWorkspaceMuted={vi.fn()}
             />
         );
         fireEvent.contextMenu(screen.getAllByTestId('workspace-row')[0] as HTMLElement);
-        const menu = screen.getByTestId('context-menu');
-        const top = [...menu.querySelectorAll(':scope [data-menu-item]')]
-            .map((item) => item.getAttribute('data-menu-item'))
-            .filter((id) => id !== null && !id.includes(':'));
-        expect(top.indexOf('mute')).toBe(top.indexOf('profile') + 1);
-        expect(menu.querySelector('[data-menu-item="mute"]')?.getAttribute('data-checked')).toBe('false');
-        fireEvent.click(within(menu).getByText('Mute Notifications'));
-        expect(onSetWorkspaceMuted).toHaveBeenLastCalledWith(W1, true);
+        const order = topLevel(screen.getByTestId('context-menu'));
+        expect(order).toEqual(['rename', 'color', 'profile', 'icon', 'labels', 'move', '-', 'mute', '-', 'select-all', '-', 'delete']);
+        expect(strayDividers(order)).toEqual([]);
+    });
 
-        const muted = screen.getAllByTestId('workspace-row').find((row) => row.getAttribute('data-workspace-id') === W4);
+    it('leaves no doubled or dangling separator when the mute row, Profile or Deselect All come and go', () => {
+        const variants: { name: string; props: Record<string, unknown>; select: boolean }[] = [
+            { name: 'no handlers', props: {}, select: false },
+            { name: 'mute only', props: { onSetWorkspaceMuted: vi.fn() }, select: false },
+            { name: 'profile only', props: { profiles: ['work'], onSetWorkspaceProfile: vi.fn() }, select: false },
+            { name: 'mute with a selection', props: { onSetWorkspaceMuted: vi.fn() }, select: true },
+            { name: 'no mute with a selection', props: {}, select: true }
+        ];
+        for (const variant of variants) {
+            render(<Sidebar {...noopProps()} entries={entries()} {...variant.props} />);
+            // One other row selected puts Deselect All in the single-row menu.
+            if (variant.select) fireEvent.click(screen.getAllByTestId('workspace-row')[1] as HTMLElement, { metaKey: true });
+            fireEvent.contextMenu(screen.getAllByTestId('workspace-row')[0] as HTMLElement);
+            const order = topLevel(screen.getByTestId('context-menu'));
+            expect({ variant: variant.name, stray: strayDividers(order) }).toEqual({ variant: variant.name, stray: [] });
+            expect(order.includes('mute')).toBe('onSetWorkspaceMuted' in variant.props);
+            expect(order.includes('deselect-all')).toBe(variant.select);
+            cleanup();
+        }
+    });
+
+    it('keeps mute out of the multi-selection menu, which stays well-formed', () => {
+        render(<Sidebar {...noopProps()} entries={entries()} onSetWorkspaceMuted={vi.fn()} />);
+        fireEvent.click(screen.getAllByTestId('workspace-row')[0] as HTMLElement, { metaKey: true });
+        fireEvent.click(screen.getAllByTestId('workspace-row')[1] as HTMLElement, { metaKey: true });
+        fireEvent.contextMenu(screen.getAllByTestId('workspace-row')[0] as HTMLElement);
+        const order = topLevel(screen.getByTestId('context-menu'));
+        expect(order).not.toContain('mute');
+        expect(strayDividers(order)).toEqual([]);
+    });
+
+    it('draws Mute Notifications as a trailing checkbox and sends the opposite state', () => {
+        const onSetWorkspaceMuted = vi.fn();
+        const withMuted = entries();
+        withMuted[1] = { kind: 'workspace', workspace: workspace(W4, 'delta', { muted: true }) };
+        render(<Sidebar {...noopProps()} entries={withMuted} onSetWorkspaceMuted={onSetWorkspaceMuted} />);
+        fireEvent.contextMenu(screen.getAllByTestId('workspace-row')[0] as HTMLElement);
+        const menu = screen.getByTestId('context-menu');
+        const row = menu.querySelector('[data-menu-item="mute"]') as HTMLElement;
+        expect(row.getAttribute('role')).toBe('menuitemcheckbox');
+        expect(row.getAttribute('aria-checked')).toBe('false');
+        expect(row.querySelector('[data-testid="menu-checkbox"]')?.getAttribute('data-state')).toBe('unchecked');
+        // The box sits after the label, at the trailing edge, and there is no leading tick.
+        expect(row.lastElementChild?.getAttribute('data-testid')).toBe('menu-checkbox');
+        expect((row.textContent ?? '').trim()).toBe('Mute Notifications');
+        fireEvent.click(row);
+        expect(onSetWorkspaceMuted).toHaveBeenLastCalledWith(W1, true);
+        expect(screen.queryByTestId('context-menu')).toBeNull();
+
+        const muted = screen.getAllByTestId('workspace-row').find((candidate) => candidate.getAttribute('data-workspace-id') === W4);
         fireEvent.contextMenu(muted as HTMLElement);
-        const again = screen.getByTestId('context-menu');
-        expect(again.querySelector('[data-menu-item="mute"]')?.getAttribute('data-checked')).toBe('true');
-        fireEvent.click(within(again).getByText('Mute Notifications'));
+        const again = screen.getByTestId('context-menu').querySelector('[data-menu-item="mute"]') as HTMLElement;
+        expect(again.getAttribute('aria-checked')).toBe('true');
+        expect(again.querySelector('[data-testid="menu-checkbox"]')?.getAttribute('data-state')).toBe('checked');
+        fireEvent.click(again);
         expect(onSetWorkspaceMuted).toHaveBeenLastCalledWith(W4, false);
     });
 

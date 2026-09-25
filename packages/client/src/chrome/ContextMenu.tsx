@@ -124,6 +124,13 @@ export interface MenuItemSpec {
     readonly disabled?: boolean | undefined;
     /** `'mixed'` draws the dash used by bulk label menus (§5.6). */
     readonly checked?: boolean | 'mixed' | undefined;
+    /**
+     * Opt-in: draw `checked` as a real checkbox at the row's trailing edge (where a submenu's
+     * chevron sits) instead of the leading tick, and expose the row as `menuitemcheckbox` with
+     * `aria-checked`. For an on/off setting rather than a pick from a list (the row menu's Mute
+     * Notifications). `'mixed'` reads as unchecked here; every other row keeps the tick.
+     */
+    readonly control?: 'checkbox' | undefined;
     /** A real-color dot (label presets, workspace colors) drawn before the label. */
     readonly swatch?: string | undefined;
     readonly danger?: boolean | undefined;
@@ -167,6 +174,40 @@ const PANEL_STYLE = {
     color: tokens.textPrimary,
     boxShadow: '0 12px 32px rgba(0, 0, 0, 0.38)'
 } as const;
+
+/**
+ * The trailing checkbox of a `control: 'checkbox'` row. The empty state is an outline in the
+ * secondary text colour, which stays legible in both themes and over the row highlight's
+ * translucent wash; the checked state is filled with the accent and carries a white check, the
+ * pairing the sidebar's accent badges already use.
+ */
+function MenuCheckbox({ checked }: { readonly checked: boolean }): ReactElement {
+    return (
+        <span
+            aria-hidden
+            data-testid="menu-checkbox"
+            data-state={checked ? 'checked' : 'unchecked'}
+            className="flex h-3 w-3 shrink-0 items-center justify-center rounded-[3px]"
+            style={{
+                border: `1.5px solid ${checked ? tokens.accent : tokens.textSecondary}`,
+                background: checked ? tokens.accent : 'transparent'
+            }}
+        >
+            {checked ? (
+                <svg width={8} height={8} viewBox="0 0 8 8">
+                    <path
+                        d="M1.4 4.1 3.2 5.9 6.6 2.3"
+                        fill="none"
+                        stroke="#fff"
+                        strokeWidth={1.5}
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                    />
+                </svg>
+            ) : null}
+        </span>
+    );
+}
 
 function Checkmark({ state }: { readonly state: boolean | 'mixed' }): ReactElement {
     return (
@@ -279,10 +320,12 @@ function MenuRow(props: RowProps): ReactElement {
     }
     const interactive = item.disabled !== true;
     const highlighted = rowHighlight(interactive, hovered, focused, props.openSubmenu);
+    const checkbox = item.control === 'checkbox';
     return (
         <button
             type="button"
-            role="menuitem"
+            role={checkbox ? 'menuitemcheckbox' : 'menuitem'}
+            aria-checked={checkbox ? item.checked === true : undefined}
             aria-haspopup={item.submenu === undefined ? undefined : 'menu'}
             aria-expanded={item.submenu === undefined ? undefined : props.openSubmenu}
             aria-disabled={interactive ? undefined : true}
@@ -294,7 +337,8 @@ function MenuRow(props: RowProps): ReactElement {
              * has to strip before it can match a label. The state as an attribute costs
              * nothing. It stays a `data-` attribute rather than `aria-checked` because ARIA
              * allows that only on `menuitemcheckbox`, and three suites plus the harness query
-             * these rows by `role="menuitem"`.
+             * these rows by `role="menuitem"`. A `control: 'checkbox'` row IS that role, so it
+             * carries both.
              */
             data-checked={item.checked === undefined ? undefined : String(item.checked)}
             /* The highlight as an attribute, for the same reason `data-checked` is one: the
@@ -324,8 +368,11 @@ function MenuRow(props: RowProps): ReactElement {
                 props.onActivate();
             }}
         >
-            {/* L11: the check column exists only for a row with NO swatch to carry it. */}
-            {item.checked === undefined || item.swatch !== undefined ? null : <Checkmark state={item.checked} />}
+            {/* L11: the check column exists only for a row with NO swatch to carry it, and a
+                checkbox row carries its state at the other end instead. */}
+            {item.checked === undefined || item.swatch !== undefined || checkbox ? null : (
+                <Checkmark state={item.checked} />
+            )}
             {item.swatch === undefined ? null : (
                 <Swatch color={item.swatch} {...(item.checked === undefined ? {} : { state: item.checked })} />
             )}
@@ -345,16 +392,25 @@ function MenuRow(props: RowProps): ReactElement {
                     ▸
                 </span>
             )}
+            {checkbox ? <MenuCheckbox checked={item.checked === true} /> : null}
         </button>
     );
+}
+
+/** Both row roles a menu draws: a plain item, and a `control: 'checkbox'` item. */
+const ROW_ROLES = ['menuitem', 'menuitemcheckbox'] as const;
+
+function isMenuRow(element: Element | null): boolean {
+    const role = element?.getAttribute('role') ?? null;
+    return role !== null && (ROW_ROLES as readonly string[]).includes(role);
 }
 
 /** The rows a keyboard walk can land on: interactive, in DOM order. */
 function enabledRows(panel: HTMLElement | null, topLevelOnly: boolean): HTMLElement[] {
     if (panel === null) return [];
-    const selector = topLevelOnly
-        ? ':scope > div > [role="menuitem"]:not([disabled])'
-        : '[role="menuitem"]:not([disabled])';
+    const selector = ROW_ROLES.map((role) =>
+        topLevelOnly ? `:scope > div > [role="${role}"]:not([disabled])` : `[role="${role}"]:not([disabled])`
+    ).join(', ');
     return [...panel.querySelectorAll<HTMLElement>(selector)];
 }
 
@@ -385,8 +441,7 @@ export function ContextMenu(props: ContextMenuProps): ReactElement | null {
     const autoFocus = props.autoFocus ?? false;
     useEffect(() => {
         if (!autoFocus) return;
-        const first = rootRef.current?.querySelector<HTMLElement>('[role="menuitem"]:not([disabled])');
-        first?.focus();
+        enabledRows(rootRef.current, false)[0]?.focus();
     }, [autoFocus]);
 
     /* Before the submenu flip, always: the flip measures a box that hangs off this panel, so
@@ -449,7 +504,7 @@ export function ContextMenu(props: ContextMenuProps): ReactElement | null {
             const panel = submenuRef.current;
             const active = globalThis.document.activeElement as HTMLElement | null;
             const inSubmenu = active !== null && panel !== null && panel.contains(active);
-            const onRow = active !== null && active.getAttribute('role') === 'menuitem';
+            const onRow = isMenuRow(active);
             const consume = (): void => {
                 event.preventDefault();
                 event.stopPropagation();

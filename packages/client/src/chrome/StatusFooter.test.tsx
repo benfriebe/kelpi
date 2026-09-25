@@ -97,6 +97,50 @@ describe('agent buckets (§9.3)', () => {
         fireEvent.click(screen.getByTestId('count-waiting'));
         expect(within(screen.getByTestId('bucket-popover')).getByText('None.')).toBeDefined();
     });
+
+    it('renders no muted chip while nothing muted is waiting', () => {
+        render(<StatusFooter summary={{ ...SUMMARY, muted: 0 }} now={NOW} />);
+        expect(screen.queryByTestId('count-muted')).toBeNull();
+        cleanup();
+        render(<StatusFooter summary={SUMMARY} now={NOW} />);
+        expect(screen.queryByTestId('count-muted')).toBeNull();
+    });
+
+    it('counts muted waiting panes apart, right after waiting, with their own popover', () => {
+        const onSelectPane = vi.fn();
+        const muted: StatusBarItem = {
+            paneID: P1,
+            workspaceID: W1,
+            workspaceName: 'child',
+            workspaceColor: 'blue',
+            paneTitle: 'claude',
+            status: 'waitingForInput'
+        };
+        render(
+            <StatusFooter
+                summary={{ running: 0, waiting: 2, muted: 5, inactive: 0 }}
+                now={NOW}
+                bucketItems={(bucket) => (bucket === 'muted' ? [muted] : [])}
+                onSelectPane={onSelectPane}
+            />
+        );
+        const chips = [...screen.getByTestId('footer-keep').querySelectorAll('[data-testid^="count-"]')];
+        expect(chips.map((chip) => chip.getAttribute('data-testid'))).toEqual([
+            'count-running',
+            'count-waiting',
+            'count-muted',
+            'count-inactive'
+        ]);
+        expect(screen.getByTestId('count-waiting').textContent).toBe('2waiting');
+        expect(screen.getByTestId('count-muted').textContent).toBe('5muted');
+        expect(screen.getByTestId('count-muted').getAttribute('aria-label')).toBe('5 Awaiting input, muted');
+
+        fireEvent.click(screen.getByTestId('count-muted'));
+        const popover = screen.getByTestId('bucket-popover');
+        expect(within(popover).getByText('Awaiting input, muted')).toBeDefined();
+        fireEvent.click(within(popover).getByTestId('bucket-row'));
+        expect(onSelectPane).toHaveBeenCalledWith(W1, P1);
+    });
 });
 
 describe('focused-pane context (§9.1)', () => {

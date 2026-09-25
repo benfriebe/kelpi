@@ -581,6 +581,65 @@ describe('context menus (portal-based)', () => {
         expect(screen.queryByText('Profile')).toBeNull();
     });
 
+    // ── agent-lifecycle §7.6: muted workspaces ─────────────────────────────────────
+
+    it('marks a muted row with the bell-slash, and only that row', () => {
+        const withMuted = entries();
+        withMuted[1] = { kind: 'workspace', workspace: workspace(W4, 'delta', { muted: true }) };
+        const view = render(<Sidebar {...noopProps()} entries={withMuted} />);
+        const icon = screen.getByTestId(`workspace-muted-${W4}`);
+        expect(icon.getAttribute('title')).toBe('Notifications muted');
+        expect(icon.querySelector('[data-icon="bell-slash"]')).not.toBeNull();
+        expect(screen.queryByTestId(`workspace-muted-${W1}`)).toBeNull();
+        // It sits before the ⌘N badge, inside the muted row.
+        const row = screen.getAllByTestId('workspace-row').find((candidate) => candidate.getAttribute('data-workspace-id') === W4);
+        expect(row?.contains(icon)).toBe(true);
+        const badge = within(row as HTMLElement).queryByTestId('cmd-badge');
+        if (badge !== null) {
+            expect(icon.compareDocumentPosition(badge) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        }
+
+        view.rerender(<Sidebar {...noopProps()} entries={entries()} />);
+        expect(screen.queryByTestId(`workspace-muted-${W4}`)).toBeNull();
+    });
+
+    it('offers a checked Mute Notifications right after Profile, sending the opposite state', () => {
+        const onSetWorkspaceMuted = vi.fn();
+        const withMuted = entries();
+        withMuted[1] = { kind: 'workspace', workspace: workspace(W4, 'delta', { muted: true }) };
+        render(
+            <Sidebar
+                {...noopProps()}
+                entries={withMuted}
+                profiles={['work']}
+                onSetWorkspaceProfile={vi.fn()}
+                onSetWorkspaceMuted={onSetWorkspaceMuted}
+            />
+        );
+        fireEvent.contextMenu(screen.getAllByTestId('workspace-row')[0] as HTMLElement);
+        const menu = screen.getByTestId('context-menu');
+        const top = [...menu.querySelectorAll(':scope [data-menu-item]')]
+            .map((item) => item.getAttribute('data-menu-item'))
+            .filter((id) => id !== null && !id.includes(':'));
+        expect(top.indexOf('mute')).toBe(top.indexOf('profile') + 1);
+        expect(menu.querySelector('[data-menu-item="mute"]')?.getAttribute('data-checked')).toBe('false');
+        fireEvent.click(within(menu).getByText('Mute Notifications'));
+        expect(onSetWorkspaceMuted).toHaveBeenLastCalledWith(W1, true);
+
+        const muted = screen.getAllByTestId('workspace-row').find((row) => row.getAttribute('data-workspace-id') === W4);
+        fireEvent.contextMenu(muted as HTMLElement);
+        const again = screen.getByTestId('context-menu');
+        expect(again.querySelector('[data-menu-item="mute"]')?.getAttribute('data-checked')).toBe('true');
+        fireEvent.click(within(again).getByText('Mute Notifications'));
+        expect(onSetWorkspaceMuted).toHaveBeenLastCalledWith(W4, false);
+    });
+
+    it('hides Mute Notifications when assembly wired no handler', () => {
+        render(<Sidebar {...noopProps()} entries={entries()} />);
+        fireEvent.contextMenu(screen.getAllByTestId('workspace-row')[0] as HTMLElement);
+        expect(screen.queryByText('Mute Notifications')).toBeNull();
+    });
+
     // ── §WS-065: the group menu's "Color ▸" ─────────────────────────────────────────
 
     it('offers None plus the ten colours on a group, unlike a workspace (§WS-065)', () => {

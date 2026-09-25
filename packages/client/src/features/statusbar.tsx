@@ -6,9 +6,12 @@ import { selectActiveWorkspace, selectAgentSummary, selectFocusedPaneID, type Ke
 import { STATUSBAR_FEATURE } from './definitions';
 import type { BundledFeatureBinding } from './feature';
 
+/** `waiting` is the unmuted workspaces' waiting panes and `muted` the rest (agent-lifecycle §7.6). */
 export function statusItems(workspaces: readonly WorkspaceState[], bucket: AgentBucket): readonly StatusBarItem[] {
     return workspaces.flatMap(workspace => workspace.panes.filter(pane => bucket === 'running' ? pane.status === 'running'
-        : bucket === 'waiting' ? pane.status === 'waitingForInput' : pane.status === 'idle' && pane.agentSessionID !== null).map(pane => ({
+        : bucket === 'waiting' ? pane.status === 'waitingForInput' && workspace.muted !== true
+        : bucket === 'muted' ? pane.status === 'waitingForInput' && workspace.muted === true
+        : pane.status === 'idle' && pane.agentSessionID !== null).map(pane => ({
         paneID: pane.id, workspaceID: workspace.id, workspaceName: workspace.name, workspaceColor: workspace.color,
         paneTitle: pane.label ?? pane.title ?? pane.workingDirectory, status: pane.status, agentStartedAt: pane.agentStartedAt
     })));

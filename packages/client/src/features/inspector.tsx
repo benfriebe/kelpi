@@ -177,6 +177,7 @@ export interface InspectorViewActions extends InspectorActions {
     renameWorkspace(workspaceID: string, name: string): void;
     setWorkspaceColor(workspaceID: string, color: ChromeWorkspace['color']): void;
     setWorkspaceProfile(workspaceID: string, profile: string | null): void;
+    setWorkspaceMuted(workspaceID: string, muted: boolean): void;
     focusPane(paneID: string): void;
     closePane(paneID: string): void;
 }
@@ -212,6 +213,7 @@ export function InspectorFeatureView(props: InspectorFeatureViewProps): ReactEle
         onRenameWorkspace={name => actions.renameWorkspace(workspace.id, name)}
         onSetWorkspaceColor={color => actions.setWorkspaceColor(workspace.id, color)}
         onSetProfile={profile => actions.setWorkspaceProfile(workspace.id, profile)}
+        onSetMuted={muted => actions.setWorkspaceMuted(workspace.id, muted)}
         onOpenDiff={actions.openRepoDiff}
         onOpenTerminal={actions.openTerminalAt}
         onRemoveAssociation={actions.removeRepoAssociation}

@@ -213,7 +213,10 @@ export function selectSyncedPaneIDs(state: KelpiState, workspaceID: string): rea
 export interface AgentSummary {
     /** Visible panes, by status (the footer's right-hand counts, §9.4). */
     readonly running: number;
+    /** Waiting panes in unmuted workspaces: the count that asks for attention. */
     readonly waiting: number;
+    /** Waiting panes in muted workspaces (agent-lifecycle §7.6), counted apart. */
+    readonly muted: number;
     /** Idle panes that still carry a session id — resumable but not attached. */
     readonly inactive: number;
     /** Non-idle panes INCLUDING parked ones (the quit/delete guards' count). */
@@ -227,6 +230,7 @@ const agentSummary = memoOnState((state): AgentSummary => {
     return {
         running: chrome.running,
         waiting: chrome.waiting,
+        muted: chrome.muted,
         inactive: chrome.inactive,
         agentCount: active.agentCount,
         workspaceCount: active.workspaceCount

@@ -28,7 +28,7 @@ import { buildPaletteItems, type PaletteItem } from '../chrome/palette';
 import type { InteractionPaletteSource, InteractionPaletteSourceSnapshot } from '../interaction/contract';
 import { zenModeActive, type ArrangementSlotBand, type RootArrangement } from '../plugins/arrangement';
 import type { usePluginCommands } from '../plugins/commands';
-import type { KelpiRuntime } from '../state';
+import { selectActiveWorkspace, type KelpiRuntime } from '../state';
 
 /**
  * The native verbs the palette dispatches. Structurally a subset of assembly's `act`, so App
@@ -46,6 +46,7 @@ export interface PaletteFeatureActions {
     cycleLayout(): boolean;
     toggleSyncInput(): boolean;
     newWorkspace(): boolean;
+    toggleActiveWorkspaceMuted(): boolean;
 }
 
 export interface PaletteFeatureHost {
@@ -188,6 +189,8 @@ export function createPaletteFeatureSource(ref: PaletteFeatureHostRef): PaletteF
     const entries = (host: PaletteFeatureHost): PaletteEntry[] => {
         const act = host.actions;
         const hint = (action: KelpiAction): string | undefined => host.shortcut(action);
+        // Titled by the state it would change, read from the live mirror (agent-lifecycle §7.6).
+        const muted = selectActiveWorkspace(host.runtime.store.getState())?.muted === true;
         return [
             ...host.plugins.menu('palette').map((menu): PaletteEntry => ({
                 item: {
@@ -230,6 +233,10 @@ export function createPaletteFeatureSource(ref: PaletteFeatureHostRef): PaletteF
                 hint('toggle_sync_input'), () => act.toggleSyncInput()),
             commandEntry('cmd:new-workspace', 'rectangle.stack', 'New Workspace', 'create an empty workspace',
                 hint('new_workspace'), () => act.newWorkspace()),
+            commandEntry('cmd:toggle-workspace-mute', 'rectangle.stack',
+                muted ? 'Unmute Workspace Notifications' : 'Mute Workspace Notifications',
+                muted ? 'let this workspace’s agents notify again' : 'no banners, sound or bounce from this workspace’s agents',
+                undefined, () => act.toggleActiveWorkspaceMuted()),
             ...arrangementEntries(host.arrangement, hint),
             // ⌘, is not a bindable action (assembly dispatches it from its own listener), so the hint
             // is literal rather than a lookup that would answer `undefined` forever.

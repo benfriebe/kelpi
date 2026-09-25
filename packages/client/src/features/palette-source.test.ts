@@ -23,7 +23,8 @@ function fixture() {
     const actions = {
         splitFocused: vi.fn(() => true), closeFocused: vi.fn(() => true), reopenClosedPane: vi.fn(() => true),
         createScratchpad: vi.fn(() => true), toggleSearch: vi.fn(() => true), toggleZoomFocused: vi.fn(() => true),
-        cycleLayout: vi.fn(() => true), toggleSyncInput: vi.fn(() => true), newWorkspace: vi.fn(() => true)
+        cycleLayout: vi.fn(() => true), toggleSyncInput: vi.fn(() => true), newWorkspace: vi.fn(() => true),
+        toggleActiveWorkspaceMuted: vi.fn(() => true)
     };
     const host: PaletteFeatureHost = {
         runtime,
@@ -215,6 +216,21 @@ describe('palette feature source', () => {
         off();
         h.notifyContributions();
         expect(listener).toHaveBeenCalledTimes(2);
+    });
+
+    it('titles the mute row from the active workspace and runs the toggle', async () => {
+        const h = fixture();
+        const row = () => h.source.snapshot().items.find((item) => item.id === 'cmd:toggle-workspace-mute');
+        expect(row()).toMatchObject({ kind: 'command', title: 'Mute Workspace Notifications' });
+        await h.source.execute('cmd:toggle-workspace-mute', {});
+        expect(h.actions.toggleActiveWorkspaceMuted).toHaveBeenCalledOnce();
+
+        h.daemon.dispatch({ type: 'set-workspace-muted', id: 'one', muted: true });
+        h.sync();
+        expect(row()).toMatchObject({ title: 'Unmute Workspace Notifications' });
+        // Only the ACTIVE workspace's flag names the row.
+        h.store.getState().setActiveWorkspace('two');
+        expect(row()).toMatchObject({ title: 'Mute Workspace Notifications' });
     });
 
     it('notifies subscribers when the mirror changes and stops after unsubscribe', () => {

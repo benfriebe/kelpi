@@ -16,6 +16,10 @@
  * running = status `running`, waiting = `waitingForInput`, inactive = an attached session id
  * with `idle` status, summed over every workspace's VISIBLE panes. A zero count is inert; a
  * non-zero count is a button that opens the bucket popover.
+ *
+ * A muted workspace's waiting panes (§7.6) are not `waiting`: they get their own `muted` chip,
+ * after the waiting one and only while there are any, so "2 waiting · 5 muted" never asks for
+ * attention the owner turned off.
  */
 
 import { useCallback, useLayoutEffect, useRef, useState, type ReactElement, type ReactNode, type RefObject } from 'react';
@@ -40,7 +44,7 @@ import type { ChromePane } from './types';
 import type { WorkspaceColor } from '@kelpi/daemon/store';
 import { SYSTEM_STATS_INTERVAL_MS, ZERO_SYSTEM_STATS, type WsSystemStats } from '@kelpi/protocol';
 
-export type AgentBucket = 'running' | 'waiting' | 'inactive';
+export type AgentBucket = 'running' | 'waiting' | 'muted' | 'inactive';
 
 /** The slice of an inspector association the footer's longest-prefix match needs. */
 export interface FooterAssociation {
@@ -194,6 +198,8 @@ function GitStats({
 export interface AgentCountSummary {
     readonly running: number;
     readonly waiting: number;
+    /** Waiting panes in muted workspaces; absent or 0 renders no chip. */
+    readonly muted?: number | undefined;
     readonly inactive: number;
 }
 
@@ -262,12 +268,15 @@ export interface SystemStatsView {
 const BUCKET_LABEL: Readonly<Record<AgentBucket, string>> = {
     running: 'Running agents',
     waiting: 'Awaiting input',
+    muted: 'Awaiting input, muted',
     inactive: 'Inactive agents'
 };
 
 function bucketColor(bucket: AgentBucket): string {
     if (bucket === 'running') return tokens.statusRunning;
     if (bucket === 'waiting') return tokens.statusWaiting;
+    // Muted asks for nothing, so its dot carries no status hue.
+    if (bucket === 'muted') return tokens.textTertiary;
     return tokens.statusInactive;
 }
 
@@ -587,12 +596,15 @@ export function StatusFooter(props: StatusFooterProps): ReactElement {
     /** One anchor per chip: what §M20 measures, and what an outside-click must not dismiss through. */
     const runningRef = useRef<HTMLButtonElement | null>(null);
     const waitingRef = useRef<HTMLButtonElement | null>(null);
+    const mutedRef = useRef<HTMLButtonElement | null>(null);
     const inactiveRef = useRef<HTMLButtonElement | null>(null);
     const chipRefs: Readonly<Record<AgentBucket, RefObject<HTMLButtonElement | null>>> = {
         running: runningRef,
         waiting: waitingRef,
+        muted: mutedRef,
         inactive: inactiveRef
     };
+    const mutedCount = props.summary.muted ?? 0;
     /** §H11: one hover slot for the whole footer (see `hover.ts`). */
     const [hovered, hover] = useHoverKey();
 
@@ -605,7 +617,7 @@ export function StatusFooter(props: StatusFooterProps): ReactElement {
      * while the user typed. The chips are in the keep-list because a `mousedown` on the open
      * chip would otherwise dismiss the panel a moment before that chip's own click re-opened it.
      */
-    useDismissable(openBucket !== null, closeBucket, [popoverRef, runningRef, waitingRef, inactiveRef]);
+    useDismissable(openBucket !== null, closeBucket, [popoverRef, runningRef, waitingRef, mutedRef, inactiveRef]);
     /*
      * §N26 — the panel rises off the footer INTO the grid, so over a bottom web pane it was
      * painted under the page. It registers its box with `modal-presence`, which parks the panes
@@ -922,6 +934,19 @@ export function StatusFooter(props: StatusFooterProps): ReactElement {
                             setOpenBucket(openBucket === 'waiting' ? null : 'waiting');
                         }}
                     />
+                    {mutedCount === 0 ? null : (
+                        <CountItem
+                            bucket="muted"
+                            count={mutedCount}
+                            open={openBucket === 'muted'}
+                            anchorRef={mutedRef}
+                            hovered={hovered === 'count:muted'}
+                            hoverBinding={hover('count:muted')}
+                            onToggle={() => {
+                                setOpenBucket(openBucket === 'muted' ? null : 'muted');
+                            }}
+                        />
+                    )}
                     <CountItem
                         bucket="inactive"
                         count={props.summary.inactive}

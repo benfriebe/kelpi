@@ -19,7 +19,8 @@
  *
  *   - **Field order is the Swift's `Field` enum** (`NewWorkspaceSheet.swift:10-23`): name, colour,
  *     group, profile, each repo's remove button, Add Repository, the worktree toggle and its three
- *     controls, Cancel, Create. Tab is driven by hand for the reason the Swift drives its own
+ *     controls, Cancel, Create. Kelpi adds one stop the Swift never had, Mute Notifications, right
+ *     after profile (agent-lifecycle §7.6). Tab is driven by hand for the reason the Swift drives its own
  *     (#64): the colour row is ONE stop with ←/→ moving inside it, and a disabled Create is
  *     skipped rather than landed on — AppKit refuses first responder to a disabled button, so
  *     including it would strand the loop.
@@ -88,6 +89,8 @@ export interface NewEntryDraft {
     readonly groupID: string | null;
     /** `null` = the built-in `default` baseline, which the daemon normalizes to "unassigned". */
     readonly profile: string | null;
+    /** Create the workspace already muted (agent-lifecycle §7.6). Workspace-kind only. */
+    readonly muted: boolean;
     /**
      * §1.7 multi-daemon groups: which daemon a NEW GROUP is created on. Null = this one.
      * Group-kind only; the workspace sheet neither shows nor sets it.
@@ -163,6 +166,7 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
     );
     const [groupID, setGroupID] = useState<string | null>(props.defaultGroupID ?? null);
     const [profile, setProfile] = useState<string>(DEFAULT_PROFILE_NAME);
+    const [muted, setMuted] = useState(false);
     const [remoteDaemon, setRemoteDaemon] = useState<string>('');
     const [chosenRepoIDs, setChosenRepoIDs] = useState<readonly string[]>(EMPTY_REPO_IDS);
     const [pickerOpen, setPickerOpen] = useState(false);
@@ -258,6 +262,7 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
             color,
             groupID,
             profile: profile === DEFAULT_PROFILE_NAME ? null : profile,
+            muted: isWorkspace && muted,
             remoteDaemon: remoteDaemon === '' ? null : remoteDaemon,
             repoPaths: chosenRepos.map((entry) => entry.path),
             ...(worktreeOn && repo !== null
@@ -277,7 +282,7 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
         const order = ['name', 'colors'];
         if (isWorkspace) {
             if (groups.length > 0) order.push('group');
-            order.push('profile');
+            order.push('profile', 'muted');
             if (repos.length > 0) {
                 for (const entry of chosenRepos) order.push(`repo:${entry.id}`);
                 order.push('add-repo');
@@ -614,6 +619,27 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
                                     </option>
                                 ))}
                             </select>
+                        </label>
+                    ) : null}
+
+                    {/* Agent-lifecycle §7.6: a conductor's children can start silent. */}
+                    {isWorkspace ? (
+                        <label
+                            className="flex cursor-pointer items-center gap-1.5 text-[11px]"
+                            style={{ color: tokens.textSecondary }}
+                        >
+                            <input
+                                ref={(element) => {
+                                    registerStop('muted', element);
+                                }}
+                                type="checkbox"
+                                data-testid="new-workspace-muted"
+                                checked={muted}
+                                onChange={(event) => {
+                                    setMuted(event.target.checked);
+                                }}
+                            />
+                            Mute Notifications
                         </label>
                     ) : null}
 

@@ -1277,6 +1277,23 @@ export const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps)
                     +{props.dragExtra}
                 </span>
             ) : null}
+            {/*
+             * Agent-lifecycle §7.6: a muted workspace says so on its row, beside the ⌘N badge, so
+             * the silence is never a surprise. The status dot on the avatar still reports the
+             * agents' state; only the attention signals are gone.
+             */}
+            {workspace.muted === true ? (
+                <span
+                    data-testid={`workspace-muted-${workspace.id}`}
+                    title="Notifications muted"
+                    aria-label="Notifications muted"
+                    role="img"
+                    className="flex shrink-0 items-center"
+                    style={{ color: tokens.textTertiary }}
+                >
+                    <ChromeIcon name="bell-slash" size={11} />
+                </span>
+            ) : null}
             {props.badgeIndex >= 0 && props.badgeIndex < 9 ? (
                 <span
                     data-testid="cmd-badge"
@@ -3837,6 +3854,19 @@ export function Sidebar(props: SidebarProps): ReactElement {
                               )
                           } satisfies MenuItemSpec
                       ]),
+                // Agent-lifecycle §7.6: a checked toggle, right after Profile.
+                ...(props.onSetWorkspaceMuted === undefined
+                    ? []
+                    : [
+                          {
+                              id: 'mute',
+                              label: 'Mute Notifications',
+                              checked: workspace.muted === true,
+                              onSelect: () => {
+                                  props.onSetWorkspaceMuted?.(workspaceID, workspace.muted !== true);
+                              }
+                          } satisfies MenuItemSpec
+                      ]),
                 {
                     id: 'icon',
                     label: 'Change Icon',
@@ -4904,7 +4934,8 @@ export function Sidebar(props: SidebarProps): ReactElement {
                             {
                                 ...(draft.color === null ? {} : { color: draft.color }),
                                 profile: draft.profile,
-                                repoPaths: draft.repoPaths
+                                repoPaths: draft.repoPaths,
+                                ...(draft.muted ? { muted: true } : {})
                             }
                         );
                         // §WS-079: a failed worktree create keeps the SHEET open, with the

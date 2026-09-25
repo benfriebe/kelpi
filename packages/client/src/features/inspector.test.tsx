@@ -258,7 +258,7 @@ describe('Inspector feature view binding', () => {
         const actions: InspectorViewActions = {
             ...createInspectorActions({ commands: rpc, activeWorkspace: () => workspace(), focusedPaneID: () => 'w1-p2', run: () => true, refresh }),
             toggleInspector: vi.fn(), renameWorkspace: vi.fn(), setWorkspaceColor: vi.fn(), setWorkspaceProfile: vi.fn(),
-            focusPane: vi.fn(), closePane: vi.fn()
+            setWorkspaceMuted: vi.fn(), focusPane: vi.fn(), closePane: vi.fn()
         };
         const controller = { toggle: vi.fn().mockResolvedValue(undefined), confirmSwap: vi.fn().mockResolvedValue(undefined),
             cancelSwap: vi.fn(), recoverOrphan: vi.fn().mockResolvedValue(undefined), dismissOrphan: vi.fn().mockResolvedValue(undefined),
@@ -283,6 +283,9 @@ describe('Inspector feature view binding', () => {
         expect(actions.setWorkspaceColor).toHaveBeenCalledWith('w1', 'purple');
         fireEvent.change(screen.getByTestId('inspector-profile'), { target: { value: 'work' } });
         expect(actions.setWorkspaceProfile).toHaveBeenCalledWith('w1', 'work');
+        expect((screen.getByTestId('inspector-muted') as HTMLInputElement).checked).toBe(false);
+        fireEvent.click(screen.getByTestId('inspector-muted'));
+        expect(actions.setWorkspaceMuted).toHaveBeenCalledWith('w1', true);
         fireEvent.click(within(screen.getByTestId('inspector-pane-w1-p1')).getByRole('button', { name: 'w1-p1' }));
         expect(actions.focusPane).toHaveBeenCalledWith('w1-p1');
         fireEvent.click(screen.getByTestId('inspector-close-pane-w1-p1'));

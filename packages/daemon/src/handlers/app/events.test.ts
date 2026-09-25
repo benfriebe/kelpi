@@ -198,6 +198,58 @@ describe('error', () => {
     });
 });
 
+describe('muted workspace (agent-lifecycle §7.6)', () => {
+    it('marks the stop notification and attention request muted, keeping the pane status', () => {
+        const h = harness({ initial: seeded(1) });
+        h.dispatch({ type: 'set-workspace-muted', id: W1, muted: true });
+        h.send({ command: 'start', pane_id: P1 });
+        h.send({ command: 'stop', pane_id: P1 });
+        expect(paneOf(h, P1)?.status).toBe('waitingForInput');
+        expect(h.broadcasts).toEqual([
+            {
+                type: 'notification',
+                kind: 'agent-waiting',
+                paneID: P1,
+                workspaceID: W1,
+                title: 'w1',
+                body: 'Agent is waiting for input',
+                dedupeKey: `kelpi-${P1}`,
+                muted: true
+            },
+            { type: 'attention-request', paneID: P1, workspaceID: W1, muted: true }
+        ]);
+    });
+
+    it('marks agent notifications and errors muted, errors included while focused', () => {
+        const h = harness({ initial: seeded(1), isAppActive: () => true });
+        h.dispatch({ type: 'set-workspace-muted', id: W1, muted: true });
+        h.send({ command: 'error', pane_id: P1, message: 'boom' });
+        expect(h.broadcasts).toEqual([expect.objectContaining({ kind: 'agent-error', muted: true })]);
+
+        const unfocused = harness({ initial: seeded(1) });
+        unfocused.dispatch({ type: 'set-workspace-muted', id: W1, muted: true });
+        unfocused.send({ command: 'notification', pane_id: P1, title: 't', body: 'b' });
+        expect(unfocused.broadcasts).toEqual([expect.objectContaining({ kind: 'agent-notification', muted: true })]);
+    });
+
+    it('mutes only the muted workspace, and follows the flag when it changes', () => {
+        const h = harness({ initial: seeded(2) });
+        h.dispatch({ type: 'set-workspace-muted', id: W2, muted: true });
+        h.send({ command: 'stop', pane_id: P1 });
+        h.send({ command: 'stop', pane_id: P2 });
+        expect(h.broadcasts.filter((message) => message['type'] === 'notification')).toEqual([
+            expect.not.objectContaining({ muted: true }),
+            expect.objectContaining({ workspaceID: W2, muted: true })
+        ]);
+        expect(h.broadcasts.filter((message) => message['muted'] === undefined)).toHaveLength(2);
+
+        h.dispatch({ type: 'set-workspace-muted', id: W2, muted: false });
+        h.send({ command: 'start', pane_id: P2 });
+        h.send({ command: 'stop', pane_id: P2 });
+        expect(h.broadcasts.slice(-2).every((message) => !('muted' in message))).toBe(true);
+    });
+});
+
 describe('session-start / session-end', () => {
     it('binds the session id and kind without touching status', () => {
         const h = harness({ initial: seeded(1) });

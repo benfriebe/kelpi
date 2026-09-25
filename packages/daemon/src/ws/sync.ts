@@ -2998,6 +2998,9 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             const type = typeof event['type'] === 'string' ? (event['type'] as string) : 'notification';
             const message = { ...event, type } as JsonObject;
             options.plugins?.observe?.(message);
+            // A muted workspace's notification / attention-request is for plugins only: no
+            // window session hears it, so no banner, sound, bounce or title flash (§7.6).
+            if (message['muted'] === true) return;
             const workspaceID = typeof event['workspaceID'] === 'string' ? (event['workspaceID'] as string) : undefined;
             const paneID = typeof event['paneID'] === 'string' ? (event['paneID'] as string) : undefined;
             const suppressible = type === 'notification' && workspaceID !== undefined && paneID !== undefined;

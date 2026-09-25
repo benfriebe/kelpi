@@ -854,6 +854,46 @@ describe('broadcast', () => {
         expect(other.transport.ofType('notification')).toHaveLength(1);
     });
 
+    it('hands a muted workspace\'s notification and attention request to plugins only', () => {
+        const observed: Record<string, unknown>[] = [];
+        const hub = createSyncHub({
+            store: storeHarness(seededState(W1, PANE_A)).store,
+            dispatcher: () => {},
+            daemon: DAEMON,
+            plugins: { run() {}, observe: (event) => observed.push(event) }
+        });
+        try {
+            const transport = recordingTransport();
+            hub.createSession(transport).handleMessage(hello());
+            const notification = {
+                type: 'notification',
+                kind: 'agent-waiting',
+                paneID: PANE_A,
+                workspaceID: W1,
+                title: 'dev',
+                body: 'Agent is waiting for input',
+                dedupeKey: `kelpi-${PANE_A}`
+            };
+
+            hub.broadcast({ ...notification, muted: true });
+            hub.broadcast({ type: 'attention-request', paneID: PANE_A, workspaceID: W1, muted: true });
+            expect(observed.map((event) => [event['type'], event['muted']])).toEqual([
+                ['notification', true],
+                ['attention-request', true]
+            ]);
+            expect(transport.ofType('notification')).toHaveLength(0);
+            expect(transport.ofType('attention-request')).toHaveLength(0);
+
+            hub.broadcast(notification);
+            hub.broadcast({ type: 'attention-request', paneID: PANE_A, workspaceID: W1 });
+            expect(observed).toHaveLength(4);
+            expect(transport.ofType('notification')).toHaveLength(1);
+            expect(transport.ofType('attention-request')).toHaveLength(1);
+        } finally {
+            hub.close();
+        }
+    });
+
     it('does not suppress non-notification events', () => {
         const f = fixture();
         const { session, transport } = f.connect();

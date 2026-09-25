@@ -207,8 +207,32 @@ describe('agent lifecycle', () => {
         expect(workspaceAgentSummary(workspace)).toEqual({ running: 2, waiting: 2, inactive: 1, total: 5 });
         expect(activeAgentCount(workspace)).toBe(4);
         expect(chromeStatusSummary({ ...seededState(), workspaces: [workspace] })).toEqual(
-            lane === 'visible' ? { running: 2, waiting: 2, inactive: 1 } : { running: 0, waiting: 0, inactive: 0 }
+            lane === 'visible'
+                ? { running: 2, waiting: 2, muted: 0, inactive: 1 }
+                : { running: 0, waiting: 0, muted: 0, inactive: 0 }
         );
+    });
+
+    it('counts a muted workspace\'s waiting panes apart, and still counts them for quit', () => {
+        const base = ws(seededState());
+        const template = base.panes[0]!;
+        const loud = {
+            ...base,
+            panes: [{ ...template, id: 'loud-waiting', status: 'waitingForInput' as const, agentSessionID: 'a' }]
+        };
+        const quiet = {
+            ...base,
+            id: 'quiet',
+            muted: true,
+            panes: [
+                { ...template, id: 'quiet-waiting', status: 'waitingForInput' as const, agentSessionID: 'b' },
+                { ...template, id: 'quiet-waiting-2', status: 'waitingForInput' as const, agentSessionID: 'c' },
+                { ...template, id: 'quiet-running', status: 'running' as const, agentSessionID: 'd' }
+            ]
+        };
+        const state = { ...seededState(), workspaces: [loud, quiet] };
+        expect(chromeStatusSummary(state)).toEqual({ running: 1, waiting: 1, muted: 2, inactive: 0 });
+        expect(activeAgentSummary(state)).toEqual({ agentCount: 4, workspaceCount: 2 });
     });
 
     it('summarises active agents across workspaces', () => {
@@ -227,7 +251,7 @@ describe('agent lifecycle', () => {
         });
         expect(workspaceAgentSummary(ws(h.state()))).toEqual({ running: 1, waiting: 0, inactive: 1, total: 2 });
         expect(activeAgentSummary(h.state())).toEqual({ agentCount: 1, workspaceCount: 1 });
-        expect(chromeStatusSummary(h.state())).toEqual({ running: 1, waiting: 0, inactive: 1 });
+        expect(chromeStatusSummary(h.state())).toEqual({ running: 1, waiting: 0, muted: 0, inactive: 1 });
     });
 });
 

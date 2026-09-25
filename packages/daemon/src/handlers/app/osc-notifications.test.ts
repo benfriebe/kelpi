@@ -77,6 +77,19 @@ describe('the OSC notification sink', () => {
         ]);
     });
 
+    it('marks a muted workspace\'s notification for plugin observers only', () => {
+        const store = twoWorkspaces();
+        store.dispatch({ type: 'set-workspace-muted', id: W2, muted: true });
+        const { sink, captured } = sinkFor(store);
+        sink(PANE_A, { title: 'Agent', body: 'unmuted' });
+        sink(PANE_B, { title: 'Agent', body: 'muted' });
+        expect(captured.messages).toEqual([
+            expect.not.objectContaining({ muted: true }),
+            expect.objectContaining({ paneID: PANE_B, workspaceID: W2, body: 'muted', muted: true })
+        ]);
+        expect(captured.messages[0]).not.toHaveProperty('muted');
+    });
+
     it('falls back to the pane title, then the workspace name, when OSC 9 carried none', () => {
         const store = twoWorkspaces();
         const { sink, captured } = sinkFor(store);

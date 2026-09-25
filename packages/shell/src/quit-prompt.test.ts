@@ -17,7 +17,7 @@ import { quitDialogSpec } from './settings.js';
 const SPEC = quitDialogSpec({
     ...EMPTY_COUNTS,
     running: 1,
-    workspaces: [{ workspaceID: 'w1', name: 'alpha', running: 1, waiting: 0 }]
+    workspaces: [{ workspaceID: 'w1', name: 'alpha', running: 1, waiting: 0, muted: false }]
 });
 
 /** A page-side gate, evaluated for real: the scripts are source, so they have to BE source. */

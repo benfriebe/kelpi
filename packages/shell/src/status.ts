@@ -609,8 +609,15 @@ export function createStatusController(options: StatusOptions): StatusController
         counts = model.counts();
         const badge = ready ? dockBadgeLabel(counts) : '';
         setBadge(badge);
-        if (counts.running !== previous.running || counts.waiting !== previous.waiting) {
-            log(`agents running=${String(counts.running)} waiting=${String(counts.waiting)} badge=${badge === '' ? '-' : badge}`);
+        if (
+            counts.running !== previous.running ||
+            counts.waiting !== previous.waiting ||
+            counts.mutedWaiting !== previous.mutedWaiting
+        ) {
+            log(
+                `agents running=${String(counts.running)} waiting=${String(counts.waiting)} ` +
+                    `muted=${String(counts.mutedWaiting)} badge=${badge === '' ? '-' : badge}`
+            );
         }
 
         const nextWaiting = new Set(counts.waitingPaneIDs);

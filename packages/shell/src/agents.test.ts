@@ -74,7 +74,9 @@ describe('AgentModel.applySnapshot', () => {
             agentStartedAt: null,
             backgroundTaskCount: 0
         });
-        expect(model.counts().workspaces).toEqual([{ workspaceID: 'w1', name: 'alpha', running: 1, waiting: 0 }]);
+        expect(model.counts().workspaces).toEqual([
+            { workspaceID: 'w1', name: 'alpha', running: 1, waiting: 0, muted: false }
+        ]);
     });
 
     it('replaces the whole mirror so a resync cannot leave a stale count', () => {
@@ -176,6 +178,85 @@ describe('AgentModel.applyDelta', () => {
         ];
         model.applyDeltas(events);
         expect(model.counts().running).toBe(1);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// agent-lifecycle §7.6: a muted workspace's waiting panes raise no attention signal
+// ---------------------------------------------------------------------------
+
+describe('muted workspaces (§7.6)', () => {
+    const muted = (): AgentModel => {
+        const model = new AgentModel();
+        model.applySnapshot(
+            snapshot(
+                { id: 'w1', name: 'conductor', panes: [pane('c1', 'running')] } as JsonObject,
+                {
+                    id: 'w2',
+                    name: 'child',
+                    muted: true,
+                    panes: [pane('m1', 'waitingForInput'), pane('m2', 'waitingForInput'), pane('m3', 'running')]
+                } as JsonObject
+            )
+        );
+        return model;
+    };
+
+    it('keeps muted waiting panes off the badge, the tray icon and the tooltip\'s waiting count', () => {
+        const counts = muted().counts();
+        expect(counts).toMatchObject({ running: 2, waiting: 0, mutedWaiting: 2 });
+        expect(dockBadgeLabel(counts)).toBe('');
+        expect(trayIndicator(counts, true)).toBe('running');
+        expect(trayTooltip(counts, true)).toBe('Kelpi - 2 running, 2 muted');
+        // …but every waiting pane still withdraws its toast when it stops waiting (§AGNT-077).
+        expect([...counts.waitingPaneIDs].sort()).toEqual(['m1', 'm2']);
+    });
+
+    it('keeps the per-workspace counts in the tray, marked muted', () => {
+        const counts = muted().counts();
+        expect(traySummaryLines(counts)).toEqual(['child - 2 waiting, 1 running (muted)', 'conductor - 1 running']);
+        const headers = trayMenuRows(counts).filter((row) => row.kind === 'workspace').map((row) => row.label);
+        expect(headers).toEqual([
+            `${WAITING_GLYPH} child - 2 waiting, 1 running (muted)`,
+            `${RUNNING_GLYPH} conductor - 1 running`
+        ]);
+    });
+
+    it('still counts them for the quit dialog', () => {
+        const counts = muted().counts();
+        expect(activitySummary(counts)).toEqual({ agents: 4, workspaces: 2 });
+        expect(quitConfirmDetail(counts)).toContain('4 agents across 2 workspaces');
+    });
+
+    it('follows the flag through workspace-upserted deltas, both ways', () => {
+        const model = muted();
+        const upsert = (id: string, name: string, flag: boolean): WsDeltaEvent => ({
+            kind: 'workspace-upserted',
+            id,
+            workspace: { id, name, muted: flag } as JsonObject
+        });
+        model.applyDelta(upsert('w2', 'child', false));
+        expect(model.counts()).toMatchObject({ waiting: 2, mutedWaiting: 0 });
+        expect(dockBadgeLabel(model.counts())).toBe('2');
+        model.applyDelta(upsert('w2', 'child', true));
+        expect(model.counts()).toMatchObject({ waiting: 0, mutedWaiting: 2 });
+        expect(dockBadgeLabel(model.counts())).toBe('');
+        // An envelope from a daemon that predates the flag reads as unmuted.
+        model.applyDelta({ kind: 'workspace-upserted', id: 'w2', workspace: { id: 'w2', name: 'child' } as JsonObject });
+        expect(model.counts().mutedWaiting).toBe(0);
+        // A workspace first seen muted through a delta starts muted.
+        model.applyDelta(upsert('w3', 'fresh', true));
+        model.applyDelta({
+            kind: 'agent-status-changed',
+            workspaceID: 'w3',
+            paneID: 'f1',
+            status: 'waitingForInput',
+            agentSessionID: null,
+            agentKind: null,
+            agentStartedAt: null,
+            backgroundTaskCount: 0
+        });
+        expect(model.counts()).toMatchObject({ waiting: 2, mutedWaiting: 1 });
     });
 });
 

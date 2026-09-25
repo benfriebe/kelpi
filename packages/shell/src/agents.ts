@@ -12,6 +12,8 @@
  *   - **§8.2 waiting-wins precedence**: the indicator shows waiting whenever waiting > 0,
  *     regardless of how many panes are running.
  *   - **§8.4 dock badge** is the WAITING count only; `running` never badges.
+ *   - **§7.6 muted workspaces**: their waiting panes are not `waiting` (no badge, no waiting
+ *     tray icon) but `mutedWaiting`, which only the tray rows and the quit dialog read.
  *
  * The mirror is deliberately minimal: pane id → status per workspace, plus the workspace's
  * display name. It is rebuilt wholesale from each snapshot, so a reconnect can never leave a
@@ -38,11 +40,16 @@ export interface WorkspaceAgents {
     readonly name: string;
     readonly running: number;
     readonly waiting: number;
+    /** Agent-lifecycle §7.6: the tray rows say so, and none of `waiting` reaches the badge. */
+    readonly muted: boolean;
 }
 
 export interface AgentCounts {
     readonly running: number;
+    /** Waiting panes in UNMUTED workspaces: the badge, the tray icon and the tooltip read this. */
     readonly waiting: number;
+    /** Waiting panes in muted workspaces (§7.6): no attention signal, but the quit dialog counts them. */
+    readonly mutedWaiting: number;
     /** Only workspaces with at least one non-idle pane, sorted by name (§8.3). */
     readonly workspaces: readonly WorkspaceAgents[];
     /** Every non-idle pane, sorted by workspace name then title. */
@@ -65,6 +72,7 @@ export interface AgentCounts {
 export const EMPTY_COUNTS: AgentCounts = {
     running: 0,
     waiting: 0,
+    mutedWaiting: 0,
     workspaces: [],
     panes: [],
     waitingPaneIDs: [],
@@ -107,6 +115,8 @@ interface MirrorPane {
 
 interface MirrorWorkspace {
     name: string;
+    /** §7.6: carried by the snapshot entry and every `workspace-upserted` envelope. */
+    muted: boolean;
     /** Visible, non-idle panes only. */
     readonly panes: Map<string, MirrorPane>;
     /**
@@ -139,6 +149,7 @@ export class AgentModel {
             if (id === undefined) continue;
             const workspace: MirrorWorkspace = {
                 name: readString(entry, 'name') ?? id,
+                muted: entry['muted'] === true,
                 panes: new Map(),
                 parked: new Map()
             };
@@ -170,12 +181,16 @@ export class AgentModel {
         switch (event.kind) {
             case 'workspace-upserted': {
                 // The envelope carries no panes: keep whatever panes we already track and
-                // only refresh the display name.
+                // only refresh the display name and the muted flag.
                 const existing = this.workspaces.get(event.id);
                 const name = readString(event.workspace, 'name') ?? event.id;
+                const muted = event.workspace['muted'] === true;
                 if (existing === undefined)
-                    this.workspaces.set(event.id, { name, panes: new Map(), parked: new Map() });
-                else existing.name = name;
+                    this.workspaces.set(event.id, { name, muted, panes: new Map(), parked: new Map() });
+                else {
+                    existing.name = name;
+                    existing.muted = muted;
+                }
                 break;
             }
             case 'workspace-removed':
@@ -235,6 +250,7 @@ export class AgentModel {
         const panes: AgentPane[] = [];
         let running = 0;
         let waiting = 0;
+        let mutedWaiting = 0;
         let parked = 0;
         let parkedOnlyWorkspaces = 0;
 
@@ -257,13 +273,15 @@ export class AgentModel {
                 });
             }
             running += workspaceRunning;
-            waiting += workspaceWaiting;
+            if (workspace.muted) mutedWaiting += workspaceWaiting;
+            else waiting += workspaceWaiting;
             if (workspaceRunning + workspaceWaiting > 0) {
                 workspaces.push({
                     workspaceID,
                     name: workspace.name,
                     running: workspaceRunning,
-                    waiting: workspaceWaiting
+                    waiting: workspaceWaiting,
+                    muted: workspace.muted
                 });
             }
         }
@@ -275,8 +293,10 @@ export class AgentModel {
         return {
             running,
             waiting,
+            mutedWaiting,
             workspaces,
             panes,
+            // ALL waiting panes, muted included: a toast posted before a mute is still withdrawn.
             waitingPaneIDs: panes.filter((pane) => pane.status === 'waitingForInput').map((pane) => pane.paneID),
             parked,
             parkedOnlyWorkspaces
@@ -286,7 +306,7 @@ export class AgentModel {
     private ensureWorkspace(id: string): MirrorWorkspace {
         const existing = this.workspaces.get(id);
         if (existing !== undefined) return existing;
-        const created: MirrorWorkspace = { name: id, panes: new Map(), parked: new Map() };
+        const created: MirrorWorkspace = { name: id, muted: false, panes: new Map(), parked: new Map() };
         this.workspaces.set(id, created);
         return created;
     }
@@ -321,8 +341,13 @@ export function traySummaryLines(counts: AgentCounts, connected = true): readonl
         const parts: string[] = [];
         if (workspace.waiting > 0) parts.push(`${String(workspace.waiting)} waiting`);
         if (workspace.running > 0) parts.push(`${String(workspace.running)} running`);
-        return `${workspace.name} - ${parts.join(', ')}`;
+        return `${workspace.name} - ${parts.join(', ')}${mutedSuffix(workspace)}`;
     });
+}
+
+/** §7.6: a muted workspace keeps its counts in the tray, marked so they read as silenced. */
+function mutedSuffix(workspace: WorkspaceAgents): string {
+    return workspace.muted ? ' (muted)' : '';
 }
 
 /**
@@ -399,7 +424,7 @@ export function trayMenuRows(counts: AgentCounts, connected = true): readonly Tr
         rows.push({
             kind: 'workspace',
             workspaceID: workspace.workspaceID,
-            label: `${marker} ${workspace.name} - ${parts.join(', ')}`
+            label: `${marker} ${workspace.name} - ${parts.join(', ')}${mutedSuffix(workspace)}`
         });
         for (const pane of counts.panes) {
             if (pane.workspaceID !== workspace.workspaceID) continue;
@@ -420,10 +445,11 @@ export function trayMenuRows(counts: AgentCounts, connected = true): readonly Tr
 
 export function trayTooltip(counts: AgentCounts, connected: boolean): string {
     if (!connected) return 'Kelpi - daemon not reachable';
-    if (counts.waiting === 0 && counts.running === 0) return 'Kelpi - all clear';
+    if (counts.waiting === 0 && counts.running === 0 && counts.mutedWaiting === 0) return 'Kelpi - all clear';
     const parts: string[] = [];
     if (counts.waiting > 0) parts.push(`${String(counts.waiting)} waiting`);
     if (counts.running > 0) parts.push(`${String(counts.running)} running`);
+    if (counts.mutedWaiting > 0) parts.push(`${String(counts.mutedWaiting)} muted`);
     return `Kelpi - ${parts.join(', ')}`;
 }
 
@@ -466,7 +492,8 @@ export interface ActivitySummary {
  */
 export function activitySummary(counts: AgentCounts): ActivitySummary {
     return {
-        agents: counts.running + counts.waiting + counts.parked,
+        // §7.6: muted waiting panes are still live agents, so they count here.
+        agents: counts.running + counts.waiting + counts.mutedWaiting + counts.parked,
         workspaces: counts.workspaces.length + counts.parkedOnlyWorkspaces
     };
 }

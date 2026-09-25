@@ -297,6 +297,11 @@ Effects, in order:
 The suppression while background work is in flight kills the notification churn from the
 repeat Stops Claude fires as each background shell/subagent completes.
 
+In a **muted** workspace (§6.7) steps 3 and 4 still broadcast, but each event carries
+`muted: true`, and the sync hub hands it to plugin observers only: no `notification` or
+`attention-request` message reaches a client (agent-lifecycle.md §7.6). The same holds for §3.3 and §3.4. The pane status in step 1 is
+unaffected.
+
 ### 3.3 `error` → agentError(paneID, message)
 
 Forward to the workspace (status handling), refresh indicators, and **always** post a
@@ -805,6 +810,7 @@ Entry shape (timestamps plain ISO 8601):
     "created_at": "2026-08-18T01:00:00Z",
     "last_accessed_at": "2026-08-18T02:00:00Z",
     "labels": ["wip", "client-x"],                        // always present, possibly []
+    "muted": false,                                       // always present (§6.7)
     // optional:
     "last_activity_at": "2026-08-18T02:05:00Z",           // max of the panes' lastActivityAt; absent with no panes
     "agent_session_id": "…",                              // the FIRST pane carrying one
@@ -816,7 +822,11 @@ Entry shape (timestamps plain ISO 8601):
 ### 6.2 `workspace-create` → handleSocketWorkspaceCreate
 
 Inputs: `name?`, `path?`, `color?`, `group?`, `profile?`, `worktree?`, `branch?`,
-`updateMain` (bool), `repo?`. `workspaceName = name ?? "Workspace"`.
+`updateMain` (bool), `repo?`, `muted` (bool, default false). `workspaceName = name ??
+"Workspace"`. All three branches carry `muted` on the `create-workspace` action itself, so a
+muted workspace is muted from its first frame and its first pane never notifies (§6.7), and
+all three success replies echo `muted`, the state the workspace was created in, so a caller
+can tell a daemon that predates the field (it drops it and creates the workspace unmuted).
 
 Three branches, checked in this order:
 
@@ -1022,6 +1032,28 @@ Inputs: `nameOrID`, `op` (`"set"|"add"|"remove"|"clear"`), `values: string[]`.
    when a preset with that name already exists, so a user's chosen color is never
    overwritten. This keeps the invariant that every applied label is a managed preset
    (visible/recolorable in Settings ▸ Labels). `remove`/`clear` never delete presets.
+
+### 6.7 `workspace-mute` → handleWorkspaceMute
+
+Inputs: `nameOrID`, `muted?` (bool). Request/response, unlike the fire-and-forget
+`workspace-profile`: a toggle must report the state it produced, and a conductor scripting a
+fan-out needs an error when the name does not resolve.
+
+1. Strict `resolveWorkspace` or `error("no workspace matches '{nameOrID}'")` (unknown and
+   ambiguous alike, the same message as `workspace-label`).
+2. `next = muted ?? !workspace.muted`: an absent `muted` toggles, resolved against the live
+   state here rather than in the reducer.
+3. Dispatch `set-workspace-muted(next)`; persist. Re-asserting the current state succeeds and
+   changes nothing.
+4. Reply:
+
+```json
+{"ok": true, "workspace_id": "…", "workspace_name": "dev", "muted": true}
+```
+
+What the flag does is agent-lifecycle.md §7.6: the event handlers (§3.2 to §3.4) and the OSC
+sink mark a muted workspace's `notification` / `attention-request` broadcasts `muted: true`,
+and the sync hub delivers those to plugin observers only.
 
 ---
 
@@ -1331,9 +1363,10 @@ web-pane subsystem (see its spec): `web-open`, `web-navigate`, `web-url`, `web-b
 | pane-list | `panes: [...]` |
 | pane-sync / pane-sync-exclude | `workspace_id`, `workspace_name`, `active`, `synced_pane_ids`, `excluded` |
 | workspace-list | `workspaces: [...]` |
-| workspace-create | `workspace_id`, `workspace_name`, `group?` (+ `worktree_path`, `branch` on the worktree path) |
+| workspace-create | `workspace_id`, `workspace_name`, `muted`, `group?` (+ `worktree_path`, `branch` on the worktree path) |
 | workspace-delete | `workspace_id`, `workspace_name`, `path?` (failure may add `active_agents`, `running`, `waiting`, `inactive`) |
 | workspace-label | `workspace_id`, `workspace_name`, `labels` |
+| workspace-mute | `workspace_id`, `workspace_name`, `muted` |
 | group-list | `groups: [...]` |
 | group-reorder / group-sort | `group_id`, `group_name`, `order` |
 | graft-start | `started: [...]`, `partial_error?`, `partial_error_kind?` (failures add `error_kind`) |

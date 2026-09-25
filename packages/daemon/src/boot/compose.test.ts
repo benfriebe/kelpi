@@ -93,6 +93,7 @@ function seedDatabase(dbPath: string, home: string, sessionID: string): void {
                 color: 'blue',
                 icon: null,
                 profileName: null,
+                muted: false,
                 layout: leaf(PANE),
                 focusedPaneID: PANE,
                 createdAt: 1_700_000_000,

@@ -71,8 +71,11 @@ export function applyAgentEvent(
     const decision = notificationDecision(pending.source, {
         isFocused,
         isAppActive: deps.isAppActive(),
-        backgroundTaskCount: preview.state.backgroundTaskCount
+        backgroundTaskCount: preview.state.backgroundTaskCount,
+        muted: workspace.muted
     });
+    // §7.6: a muted workspace's events reach plugin observers only (`ws/sync.ts` gates them).
+    const audience = decision.observersOnly ? { muted: true } : {};
 
     if (decision.shouldNotify) {
         ctx.broadcast({
@@ -83,11 +86,12 @@ export function applyAgentEvent(
             // A null title means "pane title, falling back to the workspace name".
             title: pending.title ?? location.pane.title ?? workspace.name,
             body: pending.body,
-            dedupeKey: notificationDedupeKey(paneID)
+            dedupeKey: notificationDedupeKey(paneID),
+            ...audience
         });
     }
     if (decision.shouldBounce) {
-        ctx.broadcast({ type: ATTENTION_EVENT, paneID, workspaceID: workspace.id });
+        ctx.broadcast({ type: ATTENTION_EVENT, paneID, workspaceID: workspace.id, ...audience });
     }
 }
 

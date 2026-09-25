@@ -8,7 +8,7 @@ import type { WorkspacesFeatureLifecycle } from './workspaces';
 
 export interface WorkspacesActionHost {
     readonly store: KelpiStoreApi;
-    readonly commands: Pick<CommandClient, 'addRepoAssociation' | 'createGroup' | 'createGroupForWorkspaces' | 'createWorkspace' | 'deleteGroup' | 'deleteWorkspace' | 'labelWorkspace' | 'moveGroup' | 'moveWorkspace' | 'moveWorkspaces' | 'renameGroup' | 'renameWorkspace' | 'setBulkColor' | 'setBulkLabel' | 'setGroupCollapsed' | 'setGroupColor' | 'setGroupIcon' | 'setWorkspaceIcon' | 'setWorkspaceProfile'>;
+    readonly commands: Pick<CommandClient, 'addRepoAssociation' | 'createGroup' | 'createGroupForWorkspaces' | 'createWorkspace' | 'deleteGroup' | 'deleteWorkspace' | 'labelWorkspace' | 'moveGroup' | 'moveWorkspace' | 'moveWorkspaces' | 'renameGroup' | 'renameWorkspace' | 'setBulkColor' | 'setBulkLabel' | 'setGroupCollapsed' | 'setGroupColor' | 'setGroupIcon' | 'setWorkspaceIcon' | 'setWorkspaceMuted' | 'setWorkspaceProfile'>;
     readonly run: (label: string, command: Promise<CommandReply>) => boolean;
     readonly notifyFailure: (label: string, message: string) => void;
     readonly activateWorkspaceAndReveal: (workspaceID: string) => void;
@@ -20,6 +20,9 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
     const { store, commands, run, notifyFailure, activateWorkspaceAndReveal, setSidebarVisible } = host;
     const { setScrollToGroupID, setSidebarRenameRequest, setSidebarCreateRequest, sidebarSelectionRef, pendingSelectAllRef } = host.lifecycle;
     const activeWorkspaceID = (): string | null => selectActiveWorkspace(store.getState())?.id ?? null;
+    /** The row menu, the Inspector and the palette all send an explicit state (§7.6). */
+    const setWorkspaceMuted = (workspaceID: string, muted: boolean): boolean =>
+        run(muted ? 'Mute notifications' : 'Unmute notifications', commands.setWorkspaceMuted({ workspace: workspaceID, muted }));
 
     const runCreateGroup = (
         promise: Promise<CommandReply>,
@@ -140,6 +143,7 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
                 color?: WorkspaceColor | undefined;
                 profile?: string | null | undefined;
                 repoPaths?: readonly string[] | undefined;
+                muted?: boolean | undefined;
             } = {}
         ): boolean {
             const trimmed = name.trim();
@@ -160,7 +164,8 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
                     options.profile === null ||
                     options.profile === DEFAULT_PROFILE_NAME
                         ? {}
-                        : { profile: options.profile })
+                        : { profile: options.profile }),
+                    ...(options.muted === true ? { muted: true } : {})
                 }),
                 repoPaths
             );
@@ -365,12 +370,18 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
             );
         },
 
+        setWorkspaceMuted,
+
         async createWorkspaceWithWorktree(
             name: string,
             groupID: string | null,
             worktree: WorkspaceWorktreeRequest,
             repoPath: string,
-            extras: { color?: WorkspaceColor | undefined; profile?: string | null | undefined } = {}
+            extras: {
+                color?: WorkspaceColor | undefined;
+                profile?: string | null | undefined;
+                muted?: boolean | undefined;
+            } = {}
         ): Promise<string | null> {
             try {
                 const reply = await commands.createWorkspace({
@@ -382,6 +393,7 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
                     extras.profile === DEFAULT_PROFILE_NAME
                         ? {}
                         : { profile: extras.profile }),
+                    ...(extras.muted === true ? { muted: true } : {}),
                     repo: repoPath,
                     worktree: worktree.name,
                     branch: worktree.branch,

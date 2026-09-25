@@ -52,6 +52,20 @@ describe('workspace creation', () => {
         expect(workspaceByID(h.state(), W1)?.profileName).toBe('work');
     });
 
+    it('creates unmuted by default, muted on request, and sets the flag either way', () => {
+        const h = harness();
+        h.dispatch(create(W1, 'alpha'), create(W2, 'beta', { muted: true }));
+        expect(workspaceByID(h.state(), W1)?.muted).toBe(false);
+        expect(workspaceByID(h.state(), W2)?.muted).toBe(true);
+        h.dispatch({ type: 'set-workspace-muted', id: W1, muted: true });
+        h.dispatch({ type: 'set-workspace-muted', id: W2, muted: false });
+        expect(workspaceByID(h.state(), W1)?.muted).toBe(true);
+        expect(workspaceByID(h.state(), W2)?.muted).toBe(false);
+        const before = h.state();
+        h.dispatch({ type: 'set-workspace-muted', id: 'ghost', muted: true });
+        expect(h.state()).toBe(before);
+    });
+
     it('places near the previously active workspace when asked', () => {
         const h = harness(seeded());
         h.dispatch({ type: 'set-active-workspace', id: W1, now: NOW });

@@ -92,6 +92,19 @@ describe('snapshot hydration', () => {
         expect(comparable(hydrated)).toEqual(comparable(store.getState()));
     });
 
+    it('normalizes muted to a boolean, so an older daemon\'s mirror reads as unmuted', () => {
+        const { store } = seededDaemon();
+        const wire = serializeState(store.getState()) as Record<string, unknown>;
+        const workspaces = wire['workspaces'] as Record<string, unknown>[];
+        const legacy = { ...wire, workspaces: workspaces.map(({ muted: _muted, ...rest }) => rest) };
+        expect(hydrateSnapshotState(legacy).workspaces[0]?.muted).toBe(false);
+
+        store.dispatch({ type: 'set-workspace-muted', id: W1, muted: true });
+        expect(hydrateSnapshotState(serializeState(store.getState())).workspaces[0]?.muted).toBe(true);
+        const events = hydrateDomainEvents([{ kind: 'workspace-upserted', id: W1, workspace: { id: W1, name: 'x' } }]);
+        expect(events[0]).toMatchObject({ workspace: { muted: false } });
+    });
+
     it('survives a junk payload rather than blanking the app', () => {
         expect(hydrateSnapshotState(null).workspaces).toEqual([]);
         expect(hydrateSnapshotState({ workspaces: 'nope' }).workspaces).toEqual([]);

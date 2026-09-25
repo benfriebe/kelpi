@@ -102,6 +102,7 @@ function seedTarget(target: string, name: string): void {
                 color: 'blue',
                 icon: null,
                 profileName: null,
+                muted: false,
                 layout: { kind: 'empty' },
                 focusedPaneID: null,
                 createdAt: 1_776_000_000,

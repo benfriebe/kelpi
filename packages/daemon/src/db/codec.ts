@@ -87,6 +87,7 @@ export interface WorkspaceRow {
     readonly labelsJSON: string;
     readonly icon: string | null;
     readonly profileName: string | null;
+    readonly muted: number;
 }
 
 export interface PaneRow {
@@ -339,7 +340,8 @@ export function encodeWorkspaceRow(workspace: PersistedWorkspace, sortOrder: num
         labelsJSON: encodeLabelsJSON(workspace.labels),
         icon: iconColumn(workspace.icon),
         // §2.1: "default" / empty never reach the DB — null IS the default-profile baseline.
-        profileName: normalizedAssignment(workspace.profileName)
+        profileName: normalizedAssignment(workspace.profileName),
+        muted: workspace.muted ? 1 : 0
     };
 }
 
@@ -539,6 +541,7 @@ export function decodeWorkspaceRow(row: SqlRow): DecodedWorkspaceScalars | null 
             icon: parseIconString(textColumn(row, 'icon')),
             // A hand-written "default" row means the same thing as NULL (§2.1).
             profileName: normalizedAssignment(optionalText(row, 'profileName')),
+            muted: boolColumn(row, 'muted') ?? false,
             layout: decodePaneLayoutJSON(textColumn(row, 'layoutJSON')),
             focusedPaneID: parseUUID(textColumn(row, 'focusedPaneID')),
             createdAt: timestampColumn(row, 'createdAt'),

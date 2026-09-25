@@ -508,6 +508,19 @@ as client replication. `daemon.<type>` exposes daemon broadcasts; `settings.chan
 `terminal.output` are plugin service events. Custom emissions are named `<plugin-id>.<name>`.
 The epoch changes on every daemon restart, while daemon identity stays stable.
 
+`daemon.notification` and `daemon.attention-request` from a muted workspace still reach
+plugins, carrying `muted: true`; the key is absent otherwise. No `notification` or
+`attention-request` message reaches a window session, so Kelpi itself shows no banner and
+plays no sound, bounce or title flash (agent-lifecycle.md §7.6). Plugin views are the
+exception by design: they receive the same event, wrapped in a `plugin-event`, so a conductor
+plugin can still react to its muted children. A view must therefore honour `muted` and not
+echo such an event as a notification of its own (`ui.showNotification`, `ui.notify`), or it
+undoes the owner's mute. `api.workspaces.setMuted(id, muted?)`
+sets the flag (omit `muted` to toggle), `api.workspaces.create({ muted: true })` creates a
+workspace muted, and `api.workspaces.list()` reports `muted` on every entry. The chrome
+snapshot's `agents.muted` and the `muted` bucket of `agentPanes` count the waiting panes of
+muted workspaces, which `agents.waiting` leaves out.
+
 Backend and frame delivery each use a bounded queue (32 events / 512 KiB), with one event
 awaiting acknowledgement. Awaited listeners apply backpressure. Overflow emits `gap`:
 take a fresh snapshot instead of assuming every intermediate event arrived. Delivery is

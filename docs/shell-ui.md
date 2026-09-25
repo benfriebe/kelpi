@@ -721,6 +721,11 @@ from the left (applied outside the background so the selection ring indents too)
   neutral gray fill with secondary text.
 - **⌘N badge**: `"⌘<index+1>"` (10pt monospace, tertiary) shown only when the row's
   index in `visibleWorkspaceOrder` is 0–8. A negative index (filtered list) suppresses it.
+- **Muted icon** (Kelpi addition, agent-lifecycle.md §7.6): a bell-slash glyph (11pt,
+  tertiary) just before the ⌘N badge, shown exactly while the workspace is muted, with the
+  tooltip and accessible name "Notifications muted" (`data-testid="workspace-muted-<id>"`).
+  The avatar's status dot is unaffected, so a muted workspace still shows that its agents
+  are waiting. Remote rows show it too, from the remote daemon's mirror.
 - **Backgrounds** (rounded 7):
   - selected (multi-select): `selectionFill` fill + `selectionStroke` @ 0.7 1px outline.
   - active: `selectionFill` @ 0.7 fill + `selectionStroke` 1.5px outline (drawn on top
@@ -888,12 +893,36 @@ Move to Group ▸                  → "Remove from Group" (when grouped) / each
                                    seeded with this workspace, placeholder name,
                                    auto-starts inline rename)
 ──────────
+Mute Notifications         [ ]   → a checkbox at the row's trailing edge, ticked while the
+                                   workspace is muted; toggles its mute IN PLACE, the menu
+                                   staying open with the box showing the new state (Kelpi
+                                   addition, agent-lifecycle.md §7.6). A section of its own:
+                                   without a mute handler the section and its lower
+                                   separator are both absent, never one separator doubled.
+                                   Primary daemon rows only: remote rows have no menu here,
+                                   and the bulk menu has no mute
+──────────
 Select All Workspaces            (disabled when everything is selected)
 Deselect All                     (only when a selection exists)
 ──────────
 Delete                           (disabled when it's the last workspace; gated by the
                                   workspace-delete confirmation, §12.2)
 ```
+
+The mute row's checkbox is `MenuItemSpec.control: 'checkbox'`
+(`packages/client/src/chrome/ContextMenu.tsx`), an opt-in so every other `checked` row keeps the
+leading tick (Profile's list, the label menus' `–` for mixed). It renders as
+`role="menuitemcheckbox"` with `aria-checked`. The empty state is an outlined box in the
+secondary text colour, legible in both themes and over the row highlight. The checked state is
+an accent-filled box with a white check. It is a stop in the keyboard walk like any row.
+
+Selecting a checkbox row (click, Return or Space) toggles it without closing the menu, so the
+new state is seen and can be flipped straight back; the keyboard stays on the row. The box is
+not a local toggle: the menu's items are re-derived from the live mirror on every render, so it
+flips when the daemon's delta lands and always settles to the daemon's state (a command that
+fails leaves it where it was). Escape and an outside click close the menu as they close every
+menu. Every other row is a command and closes the menu when chosen; Space activates a focused
+row like Return, on every row.
 
 Bulk version (row is part of a ≥2 selection):
 
@@ -970,7 +999,8 @@ the name (click to rename inline; Enter commits, Esc cancels;
 swatch row (the current color outlined); the workspace's applied label chips; a **Profile**
 dropdown (built-in `default` first, then config profiles, plus the currently-assigned name
 even if it vanished from the config; selecting dispatches `setProfile`, applies to future
-pane spawns only). The header row shows a "reading git…" indicator while a repo-status read
+pane spawns only); and a **Mute Notifications** checkbox under it
+(`data-testid="inspector-muted"`, agent-lifecycle.md §7.6). The header row shows a "reading git…" indicator while a repo-status read
 is in flight (`Inspector.tsx:358-362`).
 
 **Repositories section** — "Repositories" caption. Content:
@@ -1037,7 +1067,12 @@ Structure:
 - Then one **command** item per client verb (`PaletteItem.kind = "command"`,
   `packages/client/src/chrome/palette.ts:26-47`, `:101`; built by `paletteCommand(...)` in
   `packages/client/src/App.tsx:4926-4945`), appended after the state-derived items, each with
-  an optional shortcut hint (`⌘…`) when the binding map covers its action.
+  an optional shortcut hint (`⌘…`) when the binding map covers its action. One of them,
+  right after New Workspace, is titled by the active workspace's state: "Mute Workspace
+  Notifications" or "Unmute Workspace Notifications" (agent-lifecycle.md §7.6). Its id names
+  that state too (`cmd:mute-workspace` / `cmd:unmute-workspace`) and it sends the explicit
+  state, so a row picked after the state changed is refused as unavailable rather than doing
+  the opposite of its title.
 
 **Filtering** (substring, not fuzzy):
 
@@ -1093,8 +1128,11 @@ digits; `clockLabel`, `packages/client/src/chrome/theme.ts:560-592`).
 Counts: `● N running` / `● N waiting` / `● N inactive` — dot in the corresponding theme
 status color, count right-aligned in a fixed 14pt slot (no jitter at 9→10).
 Definitions over ALL workspaces: running = panes with status running; waiting = status
-waitingForInput; inactive = attached agent session (`agentSessionID != null`) with idle
-status. A zero count is inert; a non-zero count is a button that opens a popover
+waitingForInput in an unmuted workspace; inactive = attached agent session
+(`agentSessionID != null`) with idle status. A fourth chip, `● N muted` with a tertiary
+dot, sits after waiting only while a muted workspace has waiting panes, so the row reads
+`2 waiting · 5 muted` (agent-lifecycle.md §9.3); its popover is titled "Awaiting input,
+muted". A zero count is inert; a non-zero count is a button that opens a popover
 (252 wide, `surfaceBackground`): title row (dot + "Running agents" / "Awaiting input" /
 "Inactive agents"), then one row per pane — workspace-color dot, workspace name
 (secondary), `·`, pane title (primary, middle-truncated), and for running rows a live
@@ -1183,6 +1221,8 @@ Fields, top to bottom:
    else, when the `inheritGroupOnNewWorkspace` setting is on, the active workspace's
    group; else none.
 5. **Profile** dropdown: `default` first, then config-defined profiles.
+   **Mute Notifications** checkbox under it (Kelpi addition, default off): the workspace
+   is created muted, so its first agent never notifies (agent-lifecycle.md §7.6).
 6. **Repositories**: with a non-empty registry, the chosen repos as rows (drive icon +
    name + ×-circle remove) plus "+ Add Repository" → multi-select repo picker sub-sheet;
    with an empty registry the heading is still shown over a single caption saying where
@@ -1206,7 +1246,7 @@ Fields, top to bottom:
    `createWorkspace(name, color, repos, groupID, profileName)`.
 
 Keyboard: Tab / Shift-Tab cycle through every *visible* control in reading order
-(name → color → group → profile → repo removes → add-repo → worktree toggle →
+(name → color → group → profile → mute → repo removes → add-repo → worktree toggle →
 worktree fields → cancel → create), wrapping; the Create stop is omitted while disabled.
 Return submits from anywhere in the sheet, not only from a text field
 (`NewWorkspaceSheet.tsx:297-314`).

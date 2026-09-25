@@ -260,11 +260,12 @@ Every request carries `"command": "<verb>"`. Parsing happens in three stages:
 1. **Explicit command chain** — each of the following commands is matched by name and has
    its own field guards (documented per command in §6): `workspace-create`,
    `workspace-list`, `workspace-move`, `workspace-delete`, `workspace-profile`,
-   `workspace-label`, `group-list`, `group-create`, `group-rename`, `group-delete`,
-   `group-move`, `group-reorder`, `group-sort`, `open`, `diff`, `pane-close`, `pane-list`,
-   `pane-capture`, `graft-start`, `graft-stop`, `graft-status`, `ping`, all `web-*`
-   commands, `pane-sync`, `pane-sync-exclude`, `pane-send-key`, `pane-send`,
-   `pane-split`, `pane-create`, `pane-name`, `pane-resize`, `pane-move-adjacent`.
+   `workspace-label`, `workspace-mute`, `group-list`, `group-create`, `group-rename`,
+   `group-delete`, `group-move`, `group-reorder`, `group-sort`, `open`, `diff`,
+   `pane-close`, `pane-list`, `pane-capture`, `graft-start`, `graft-stop`,
+   `graft-status`, `ping`, all `web-*` commands, `pane-sync`, `pane-sync-exclude`,
+   `pane-send-key`, `pane-send`, `pane-split`, `pane-create`, `pane-name`, `pane-resize`,
+   `pane-move-adjacent`.
    These are all parsed **before** the mandatory-`pane_id` guard, which is why
    `pane-send` / `pane-split` / `pane-create` / `pane-name` (and the close/capture/
    send-key/sync family) work from a plain shell with no `KELPI_PANE_ID`.
@@ -312,7 +313,7 @@ plugin, workspace-list, group-list,
 pane-list, pane-close, pane-capture, pane-send, pane-send-key,
 pane-split, pane-create, pane-name, pane-resize, pane-move-adjacent,
 pane-sync, pane-sync-exclude,
-workspace-create, workspace-delete, workspace-label,
+workspace-create, workspace-delete, workspace-label, workspace-mute,
 group-reorder, group-sort,
 graft-start, graft-stop, graft-status,
 ping,
@@ -484,11 +485,12 @@ carry `"command"`.
 | `pane-sync` | R/R | `action` | `pane_id`, `workspace` |
 | `pane-sync-exclude` | R/R | `target`, `excluded` | `pane_id`, `workspace` |
 | `workspace-list` | R/R | — | `group` |
-| `workspace-create` | R/R | — | `name`, `path`, `color`, `group`, `profile`, `worktree`, `branch`, `update_main`, `repo` |
+| `workspace-create` | R/R | — | `name`, `path`, `color`, `group`, `profile`, `worktree`, `branch`, `update_main`, `repo`, `muted` |
 | `workspace-move` | F&F | `name` | `group`, `index` |
 | `workspace-delete` | R/R | `name` | `force` |
 | `workspace-profile` | F&F | `name` | `profile` |
 | `workspace-label` | R/R | `name`, `label_op` | `label_values` |
+| `workspace-mute` | R/R | `name` | `muted` |
 | `group-list` | R/R | — | — |
 | `group-create` | F&F | `name` | `color` |
 | `group-rename` | F&F | `name`, `new_name` | — |
@@ -858,14 +860,15 @@ workspaces appended.
 → {"ok":true,"workspaces":[
     {"id":"<uuid>","name":"main","color":"blue","pane_count":3,"is_active":true,
      "created_at":"2026-08-01T10:00:00Z","last_accessed_at":"2026-08-18T08:00:00Z",
-     "labels":["wip"],
+     "labels":["wip"],"muted":false,
      "last_activity_at":"2026-08-18T08:59:00Z",
      "agent_session_id":"3f2a…",
      "group_id":"<uuid>","group_name":"projects"}]}
 ```
 
 Always-present per entry: `id`, `name`, `color`, `pane_count`, `is_active`,
-`created_at`, `last_accessed_at`, `labels` (array, possibly empty). Conditionals:
+`created_at`, `last_accessed_at`, `labels` (array, possibly empty), `muted` (bool; see
+`workspace-mute`). Conditionals:
 `last_activity_at` (max across panes; absent when no panes), `agent_session_id`
 (first pane carrying one), `group_id`/`group_name` (absent for top-level).
 
@@ -874,7 +877,12 @@ Always-present per entry: `id`, `name`, `color`, `pane_count`, `is_active`,
 All fields optional. `name` defaults to `"Workspace"`; `path` seeds the first pane's
 cwd; `color` per §5.5 (invalid/absent → random); `group` creates the group if missing
 (unless `worktree` is set — then the group must already exist); `profile` assigns a
-workspace profile (empty string = none). Worktree flow (all empty strings normalized to
+workspace profile (empty string = none); `muted` (bool, default false) creates the
+workspace already muted, so its first pane never raises an attention signal (see
+`workspace-mute`). Every success reply carries `muted`, the state the workspace was created
+in, so a caller that asked for `muted` can tell a daemon that predates it (which drops the
+unknown field and creates the workspace unmuted); `kelpi workspace create --muted` then exits
+non-zero. Worktree flow (all empty strings normalized to
 absent): `worktree` = worktree/folder name to create, `branch` (defaults to the
 worktree name), `update_main` (bool, default false — fetch and branch off
 `origin/<default>`), `repo` = source repo path (the CLI always sends it when `worktree`
@@ -884,12 +892,12 @@ is set; the handler falls back to `path`, and only when both are absent or blank
 
 ```json
 {"command":"workspace-create","name":"Test","color":"blue","group":"projects"}
-→ {"ok":true,"workspace_id":"<uuid>","workspace_name":"Test","group":"projects"}
+→ {"ok":true,"workspace_id":"<uuid>","workspace_name":"Test","muted":false,"group":"projects"}
 
 {"command":"workspace-create","name":"feat-x","worktree":"feat-x","branch":"feat-x",
  "update_main":true,"repo":"/Users/ben/code/kelpi"}
 → {"ok":true,"workspace_id":"<uuid>","workspace_name":"feat-x",
-   "worktree_path":"/…/worktrees/feat-x","branch":"feat-x"}
+   "worktree_path":"/…/worktrees/feat-x","branch":"feat-x","muted":false}
 ```
 
 Ambiguous `group` name → `{"ok":false,"error":"group name is ambiguous: <name> (use
@@ -967,6 +975,28 @@ label preset.
 {"command":"workspace-label","name":"main","label_op":"add","label_values":["wip","urgent"]}
 → {"ok":true,"workspace_id":"<uuid>","workspace_name":"main","labels":["wip","urgent"]}
 ```
+
+#### `workspace-mute` (R/R)
+
+`name` (required non-empty) = workspace name-or-id; `muted` (bool) = the new state, and
+absent toggles the current one. A muted workspace's agents keep their pane status but raise
+no attention signal: the daemon marks their `notification` / `attention-request` broadcasts
+`muted: true` and hands them to plugin observers only, so no such message reaches a window
+session; plugin views see them inside `plugin-event` and must honour the flag
+(agent-lifecycle.md §7.6). The reply carries the post-mutation state. Unknown or ambiguous
+workspace → `{"ok":false,"error":"no workspace matches '<name>'"}`.
+
+```json
+{"command":"workspace-mute","name":"feat-x","muted":true}
+→ {"ok":true,"workspace_id":"<uuid>","workspace_name":"feat-x","muted":true}
+
+{"command":"workspace-mute","name":"feat-x"}
+→ {"ok":true,"workspace_id":"<uuid>","workspace_name":"feat-x","muted":false}
+```
+
+This is request/response, unlike the fire-and-forget `workspace-profile`: a toggle has to
+report the state it produced, and a caller scripting a fan-out needs an error when the name
+does not resolve.
 
 ---
 
@@ -1330,6 +1360,7 @@ other key is ignored. (A known key with the wrong type poisons the whole message
 | `script` | string | `web-exec` |
 | `action` | string | `pane-sync` |
 | `excluded` | bool | `pane-sync-exclude` |
+| `muted` | bool | `workspace-create`, `workspace-mute` |
 | `worktree`, `branch` | string | `workspace-create` |
 | `update_main` | bool | `workspace-create` |
 | `ratio`, `delta` | double | `pane-resize` |

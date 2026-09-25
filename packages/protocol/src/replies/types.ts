@@ -123,6 +123,7 @@ export interface WorkspaceListEntry {
     readonly last_accessed_at: string;
     /** Always present, possibly empty. */
     readonly labels: readonly string[];
+    readonly muted: boolean;
     /** Max across the workspace's panes; absent when it has no panes. */
     readonly last_activity_at?: string;
     /** The first pane carrying one. */
@@ -139,6 +140,8 @@ export interface WorkspaceListReply extends ReplySuccess {
 export interface WorkspaceCreateReply extends ReplySuccess {
     readonly workspace_id: string;
     readonly workspace_name: string;
+    /** The state the workspace was created in; lets `--muted` confirm it was applied. */
+    readonly muted: boolean;
     /** Echoed group name when the workspace was placed in a group. */
     readonly group?: string;
     /** Worktree flow only. */
@@ -167,6 +170,13 @@ export interface WorkspaceLabelReply extends ReplySuccess {
     readonly workspace_name: string;
     /** The post-mutation label set. */
     readonly labels: readonly string[];
+}
+
+export interface WorkspaceMuteReply extends ReplySuccess {
+    readonly workspace_id: string;
+    readonly workspace_name: string;
+    /** The post-mutation state. */
+    readonly muted: boolean;
 }
 
 // ── group replies ───────────────────────────────────────────────────────────────────
@@ -449,6 +459,7 @@ export type WireReply =
     | WorkspaceCreateReply
     | WorkspaceDeleteReply
     | WorkspaceLabelReply
+    | WorkspaceMuteReply
     | GroupListReply
     | GroupOrderReply
     | GraftStartReply

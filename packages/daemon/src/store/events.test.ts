@@ -85,6 +85,7 @@ const SCRIPT: readonly DomainAction[] = [
     { type: 'set-bulk-color', ids: [W1, W2], color: 'green' },
     { type: 'rename-workspace', id: W1, name: 'alpha renamed' },
     { type: 'set-workspace-icon', id: W1, icon: { kind: 'emoji', grapheme: '🚀' } },
+    { type: 'set-workspace-muted', id: W1, muted: true },
     { type: 'set-active-workspace', id: W2, now: NOW + 60_000 },
     {
         type: 'add-repo',
@@ -296,6 +297,17 @@ describe('event precision', () => {
         const before = h.events.length;
         h.dispatch({ type: 'rename-workspace', id: W1, name: 'renamed' });
         expect(kinds(h.events.slice(before))).toEqual(['workspace-upserted']);
+    });
+
+    it('muting a workspace upserts the envelope, and re-asserting the state emits nothing', () => {
+        const h = harness(seededState());
+        const before = h.events.length;
+        h.dispatch({ type: 'set-workspace-muted', id: W1, muted: true });
+        const batch = h.events.slice(before);
+        expect(kinds(batch)).toEqual(['workspace-upserted']);
+        expect(batch[0]).toMatchObject({ workspace: { muted: true } });
+        h.dispatch({ type: 'set-workspace-muted', id: W1, muted: true });
+        expect(h.events).toHaveLength(before + 1);
     });
 
     it('a focus change emits only focus-changed', () => {

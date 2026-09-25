@@ -99,6 +99,7 @@ interface Workspace {
   color: WorkspaceColor;
   icon: GroupIcon | null;         // avatar override; null = first letter of name
   profileName: string | null;     // workspace profile assignment; null = built-in "default"
+  muted: boolean;                 // no attention signals (agent-lifecycle.md §7.6); default false
   panes: Pane[];                  // visible panes
   parkedPanes: Pane[];            // off-layout panes, including live PTY sources and persisted plugin panes
   layout: PaneLayout;

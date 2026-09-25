@@ -135,7 +135,8 @@ describe('workspace-list entry construction', () => {
         is_active: true,
         created_at: '2026-08-01T10:00:00Z',
         last_accessed_at: '2026-08-18T08:00:00Z',
-        labels: []
+        labels: [],
+        muted: false
     } as const;
 
     it('always emits labels, even when empty', () => {

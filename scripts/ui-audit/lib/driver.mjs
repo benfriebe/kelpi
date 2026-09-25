@@ -464,14 +464,21 @@ export async function openSettingsTab(page, tab) {
     await settleDom(page, `document.querySelector('[data-testid="settings-tab-${tab}"]')`, { ceilingMs: 3_000 });
 }
 
+/**
+ * Every row a context menu draws: a plain `menuitem`, and a `menuitemcheckbox` (an on/off setting
+ * such as the workspace row's Mute Notifications, drawn with a trailing checkbox).
+ */
+const MENU_ROW_SELECTOR = '[role="menuitem"], [role="menuitemcheckbox"]';
+
 /** Click a context-menu row by its visible label (a checked row's leading tick is ignored). */
 export async function clickMenuItem(page, label) {
     const clicked = await page.eval(
         `(() => {
+            const MENU_ROWS = ${JSON.stringify(MENU_ROW_SELECTOR)};
             const menu = document.querySelector('${PAGE.contextMenu}');
             if (menu === null) return 'no-menu';
             const text = (el) => (el.textContent ?? '').trim().replace(/^[✓✔]\\s*/, '');
-            const rows = Array.from(menu.querySelectorAll('[role="menuitem"]'));
+            const rows = Array.from(menu.querySelectorAll(MENU_ROWS));
             const row = rows.find(el => text(el).startsWith(${JSON.stringify(label)}));
             if (row === undefined) return 'no-row:' + rows.map(r => (r.textContent ?? '').trim()).join('/');
             const r = row.getBoundingClientRect();
@@ -490,10 +497,11 @@ export async function clickMenuItem(page, label) {
 export async function openSubmenu(page, label) {
     const opened = await page.eval(
         `(() => {
+            const MENU_ROWS = ${JSON.stringify(MENU_ROW_SELECTOR)};
             const menu = document.querySelector('${PAGE.contextMenu}');
             if (menu === null) return 'no-menu';
             const text = (el) => (el.textContent ?? '').trim().replace(/^[✓✔–]\\s*/, '');
-            const rows = Array.from(menu.querySelectorAll('[role="menuitem"]'));
+            const rows = Array.from(menu.querySelectorAll(MENU_ROWS));
             const row = rows.find(el => text(el).startsWith(${JSON.stringify(label)}));
             if (row === undefined) return 'no-row:' + rows.map(el => text(el)).join('/');
             const r = row.getBoundingClientRect();
@@ -550,7 +558,7 @@ export { openSidebarMenu } from './aim.mjs';
 /** The rows of the open context menu, as trimmed labels. */
 export async function contextMenuRows(page) {
     const rows = await page.eval(
-        `JSON.stringify(Array.from(document.querySelectorAll('${PAGE.contextMenu} [role="menuitem"]')).map(el => (el.textContent ?? '').trim()))`
+        `JSON.stringify(Array.from(document.querySelector('${PAGE.contextMenu}')?.querySelectorAll(${JSON.stringify(MENU_ROW_SELECTOR)}) ?? []).map(el => (el.textContent ?? '').trim()))`
     );
     return JSON.parse(String(rows ?? '[]'));
 }

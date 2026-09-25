@@ -57,6 +57,11 @@ export type ChromeWorkspace = Pick<WorkspaceState, 'id' | 'name' | 'color' | 'ic
      * taken straight off the store mirror always carries it.
      */
     readonly profileName?: string | null | undefined;
+    /**
+     * Muted: the workspace's agents raise no attention signals (agent-lifecycle §7.6). Optional
+     * for the same reason as `profileName`; absent reads as unmuted.
+     */
+    readonly muted?: boolean | undefined;
 };
 
 export type ChromeGroup = Pick<WorkspaceGroup, 'id' | 'name' | 'color' | 'icon' | 'isCollapsed'>;
@@ -151,6 +156,8 @@ export interface NewWorkspaceExtras {
     /** `null` = the built-in `default` baseline (the daemon's own normalization). */
     readonly profile?: string | null | undefined;
     readonly repoPaths?: readonly string[] | undefined;
+    /** Create the workspace already muted (agent-lifecycle §7.6). */
+    readonly muted?: boolean | undefined;
 }
 
 export interface WorkspaceWorktreeRequest {
@@ -205,6 +212,8 @@ export interface SidebarCallbacks {
      * "default" and "" to "no assignment", so the menu never stores the word itself.
      */
     readonly onSetWorkspaceProfile?: ((workspaceID: string, profile: string | null) => void) | undefined;
+    /** The row menu's "Mute Notifications" (agent-lifecycle §7.6); `muted` is the new state. */
+    readonly onSetWorkspaceMuted?: ((workspaceID: string, muted: boolean) => void) | undefined;
     /** §WS-065's "Color ▸". `null` is the submenu's "None": a group's colour is optional. */
     readonly onSetGroupColor?: ((groupID: string, color: WorkspaceColor | null) => void) | undefined;
     readonly onRenameGroup?: ((groupID: string, name: string) => void) | undefined;

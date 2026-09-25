@@ -145,6 +145,7 @@ export function WorkspacesFeatureView(props: WorkspacesFeatureViewProps): ReactE
         onSetWorkspaceIcon={actions.setWorkspaceIcon}
         onSetGroupIcon={actions.setGroupIcon}
         onSetWorkspaceProfile={actions.setWorkspaceProfile}
+        onSetWorkspaceMuted={actions.setWorkspaceMuted}
         onSetGroupColor={actions.setGroupColor}
         escapeRef={lifecycle.sidebarEscapeRef}
         selectionCommandsRef={lifecycle.sidebarSelectionRef}
@@ -260,7 +261,8 @@ function WorkspacesCreateSheet(props: WorkspacesCreateSheetProps): ReactElement 
             const result = await createWorkspaceFromSheet(props, draft.name, draft.groupID, draft.worktree, {
                 ...(draft.color === null ? {} : { color: draft.color }),
                 profile: draft.profile,
-                repoPaths: draft.repoPaths
+                repoPaths: draft.repoPaths,
+                ...(draft.muted ? { muted: true } : {})
             });
             // §WS-079: a failed worktree create keeps the SHEET open, with the message inline.
             if (typeof result === 'string') return result;

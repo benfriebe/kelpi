@@ -1,11 +1,14 @@
 /**
  * The notification / attention suppression matrix.
- * Spec: docs/agent-lifecycle.md §7.1–7.3, invariant 6.
+ * Spec: docs/agent-lifecycle.md §7.1–7.3, §7.6, invariant 6.
  *
  * The daemon supplies focus + visibility (multi-client: `isAppActive` = any connected
  * client is visible/focused, `isFocused` = that pane is the focused pane of the active
  * workspace in a focused client; both default false when no client is attached, so
  * headless operation still notifies).
+ *
+ * `muted` does not change whether an event exists, only who hears it: a muted workspace's
+ * events go to plugin observers and never to a window session (§7.6).
  */
 
 import type { NotificationSource } from './types.js';
@@ -14,18 +17,29 @@ export interface NotificationContext {
     readonly isFocused: boolean;
     readonly isAppActive: boolean;
     readonly backgroundTaskCount: number;
+    /** The pane's workspace is muted (§7.6). */
+    readonly muted: boolean;
 }
 
 export interface NotificationDecision {
     readonly shouldNotify: boolean;
     /** Dock bounce / attention signal - only ever true on the stop path. */
     readonly shouldBounce: boolean;
+    /** Deliver whatever the two flags above allow to plugin observers only (§7.6). */
+    readonly observersOnly: boolean;
 }
 
 export function notificationDecision(
     source: NotificationSource,
     context: NotificationContext
 ): NotificationDecision {
+    return { ...signalDecision(source, context), observersOnly: context.muted };
+}
+
+function signalDecision(
+    source: NotificationSource,
+    context: NotificationContext
+): Omit<NotificationDecision, 'observersOnly'> {
     const unattended = !context.isFocused || !context.isAppActive;
     const hasBackgroundWork = context.backgroundTaskCount > 0;
     switch (source) {

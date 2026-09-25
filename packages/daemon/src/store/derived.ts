@@ -218,7 +218,10 @@ export function activeAgentSummary(state: DaemonState): ActiveAgentSummary {
 
 export interface ChromeStatusSummary {
     readonly running: number;
+    /** Waiting panes in UNMUTED workspaces: the count that asks for attention. */
     readonly waiting: number;
+    /** Waiting panes in muted workspaces, counted apart (agent-lifecycle §7.6). */
+    readonly muted: number;
     /** Idle panes that still carry a session id — a resumable-but-idle agent. */
     readonly inactive: number;
 }
@@ -227,15 +230,18 @@ export interface ChromeStatusSummary {
 export function chromeStatusSummary(state: DaemonState): ChromeStatusSummary {
     let running = 0;
     let waiting = 0;
+    let muted = 0;
     let inactive = 0;
     for (const workspace of state.workspaces) {
         for (const pane of workspace.panes) {
             if (pane.status === 'running') running += 1;
-            else if (pane.status === 'waitingForInput') waiting += 1;
-            else if (pane.agentSessionID !== null) inactive += 1;
+            else if (pane.status === 'waitingForInput') {
+                if (workspace.muted) muted += 1;
+                else waiting += 1;
+            } else if (pane.agentSessionID !== null) inactive += 1;
         }
     }
-    return { running, waiting, inactive };
+    return { running, waiting, muted, inactive };
 }
 
 /** Pane ids in layout order (focus cycling, command palette, predefined rebuilds). */

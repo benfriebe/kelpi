@@ -58,6 +58,7 @@ function workspaceRecord(id: string, paneID: string, name: string, labels: reado
         color: 'blue',
         icon: null,
         profileName: null,
+        muted: false,
         layout: leaf(paneID),
         focusedPaneID: paneID,
         createdAt: 1_700_000_000,

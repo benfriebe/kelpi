@@ -16,7 +16,7 @@ function chrome(overrides: Partial<ChromeSnapshot> = {}): ChromeSnapshot {
         connection: 'connected', ready: true, remoteWorkspaceSelected: false,
         workspace: { id: 'original-workspace', name: 'Workspace', color: 'blue', paneCount: 1, layout: 'tiled', syncInputActive: false, syncedPaneCount: 1 },
         focusedPane: null, sidebars: { left: { viewID: 'kelpi.workspaces', title: 'Workspaces', visible: true }, right: { viewID: 'kelpi.inspector', title: 'Inspector', visible: false } },
-        sizeControl: 'this-window', layouts: [], commands: [], agents: { running: 0, waiting: 0, inactive: 0 }, agentPanes: [], git: null, systemStats: null, items: [], keymap: { sections: [], plugins: [], withheld: 0 }, ...overrides
+        sizeControl: 'this-window', layouts: [], commands: [], agents: { running: 0, waiting: 0, muted: 0, inactive: 0 }, agentPanes: [], git: null, systemStats: null, items: [], keymap: { sections: [], plugins: [], withheld: 0 }, ...overrides
     };
 }
 const focus: ChromeCommand = { id: 'kelpi.pane.focus', title: 'Focus Pane', enabled: true, group: 'window' };
@@ -28,6 +28,7 @@ function withPanes(panes: AgentPane[]): ChromeSnapshot {
     return chrome({ commands: [focus], agentPanes: panes, agents: {
         running: panes.filter(item => item.bucket === 'running').length,
         waiting: panes.filter(item => item.bucket === 'waiting').length,
+        muted: panes.filter(item => item.bucket === 'muted').length,
         inactive: panes.filter(item => item.bucket === 'inactive').length
     } });
 }

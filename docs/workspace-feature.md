@@ -374,6 +374,8 @@ interface WorkspaceState {
   icon: GroupIcon | null;            // null -> first letter of name as avatar
   profileName: string | null;        // workspace profile (env-var set) assignment;
                                      // null == the built-in "default" baseline
+  muted: boolean;                    // default false; its agents raise no attention
+                                     // signals (agent-lifecycle.md §7.6)
   panes: Pane[];                     // ordered identified collection (append order);
                                      // lookup by id must be O(1)-ish
   layout: PaneLayout;
@@ -402,7 +404,7 @@ interface WorkspaceState {
 **Persisted fields** (the restore constructor's exact parameter list): `id`, `name`,
 `slug`, `color`, `icon`, `panes`, `layout`, `focusedPaneID`, `repoAssociations`,
 `createdAt`, `lastAccessedAt`, `labels`, `webPanes` (tab list/active/private),
-`profileName`. Everything else initializes to its default on restore.
+`profileName`, `muted`. Everything else initializes to its default on restore.
 
 `layout` is written as `savedLayout ?? layout` (`persistWorkspace` in
 `packages/daemon/src/store/snapshot.ts`): a workspace saved while zoomed persists its
@@ -474,10 +476,11 @@ A brand-new workspace always has exactly one shell pane.
 
 The `create-workspace` action (`packages/daemon/src/store/types.ts`, reduced in
 `packages/daemon/src/store/reducers/workspaces.ts`) carries the pre-minted workspace and
-pane ids plus optional `workingDirectory`, `color`, `profileName`, `groupID`, `labels`,
-`placement` and `repoAssociations`. The first pane's cwd is `workingDirectory` when it is
-non-empty, else the home directory; `profileName` goes through `normalizedAssignment`
-(3.4); `labels` and `repoAssociations` default to empty. Group membership and sidebar
+pane ids plus optional `workingDirectory`, `color`, `profileName`, `muted`, `groupID`,
+`labels`, `placement` and `repoAssociations`. The first pane's cwd is `workingDirectory`
+when it is non-empty, else the home directory; `profileName` goes through
+`normalizedAssignment` (3.4); `muted` defaults to `false`, and a create that carries it is
+muted from its first frame; `labels` and `repoAssociations` default to empty. Group membership and sidebar
 placement are app-state-core.md's domain.
 
 Color choice for an appended workspace (`nextRandomColor` in
@@ -743,6 +746,12 @@ state change and no effect.
 **setProfile(raw: string | null)**
 - `profileName = normalizedAssignment(raw)` (3.4). Single choke point for socket, CLI
   and UI entry paths. Affects only panes spawned afterwards.
+
+**setMuted(muted: boolean)** (`set-workspace-muted`)
+- `muted = muted`. The `workspace-mute` handler resolves an absent value to the opposite of
+  the current state (a toggle) before dispatching, so the action always carries the state.
+  Re-asserting the current value changes nothing and emits no event. Takes effect on the
+  workspace's next agent or OSC event (agent-lifecycle.md §7.6); persisted.
 
 **addLabel(raw)**
 - `n = normalizeLabel(raw)`; empty -> no-op.

@@ -101,6 +101,7 @@ Read/write tolerances (`packages/daemon/src/db/codec.ts`):
 | `labelsJSON`    | TEXT    | no   | `'[]'`  | JSON array of strings, e.g. `["frontend","wip"]`. Ordered, deduped case-sensitively by the app; the DB stores whatever the app has. Undecodable → `[]`. |
 | `icon`          | TEXT    | yes  |         | prefix-qualified icon string (§3.4): `"system:star.fill"` or `"emoji:📁"`. NULL / unparseable → default avatar (first letter of name). |
 | `profileName`   | TEXT    | yes  |         | assigned workspace-profile name (env-var set). NULL = unassigned (resolves the built-in `default` profile at spawn time). The app normalizes `"default"` / empty string to NULL before it ever reaches the DB. |
+| `muted`         | BOOLEAN | no   | 0       | Kelpi-only (v21). 1 = the workspace's agents raise no attention signals (agent-lifecycle.md §7.6). NULL or absent (a pre-v21 row) reads as unmuted. |
 
 Note: there is **no group membership column**. A workspace belongs to a group iff its UUID
 appears in some `workspace_group.childOrderJSON`; it is top-level iff it appears in the
@@ -202,7 +203,7 @@ Kelpi keeps under the same name (`packages/daemon/src/db/schema.ts:22`):
 CREATE TABLE grdb_migrations (identifier TEXT NOT NULL PRIMARY KEY);
 ```
 
-One row per applied migration identifier (`"v1_initial"` … `"v20_plugin_panes"`). On
+One row per applied migration identifier (`"v1_initial"` … `"v21_workspace_muted"`). On
 startup, any registered migration whose identifier is not present is run, in registration
 order, each in its own transaction together with its ledger row (`INSERT OR IGNORE`, so a
 failure can never record an unapplied step); identifiers already present are skipped
@@ -319,8 +320,9 @@ labels are trimmed, non-empty, order-preserving, deduped case-sensitively.
 ## 4. Migration history
 
 Migration identifiers are strings; each runs once, recorded in `grdb_migrations`
-(`MIGRATIONS`, `packages/daemon/src/db/schema.ts`). There are 20 in total: the 18 shared
-with the legacy app plus `v19_pane_agent_profile` and `v20_plugin_panes`. From v3 onward, every
+(`MIGRATIONS`, `packages/daemon/src/db/schema.ts`). There are 21 in total: the 18 shared
+with the legacy app plus `v19_pane_agent_profile`, `v20_plugin_panes` and
+`v21_workspace_muted`. From v3 onward, every
 `ALTER TABLE ADD COLUMN` (and the v15 rename) is **guarded**: it first checks the live column
 list and skips if the column already exists (or, for v15, if the target name already exists /
 the source is missing). This guard exists because pre-release builds of the legacy app
@@ -352,6 +354,7 @@ migration idempotent regardless of ledger drift.
 | `v18_pane_agent_kind` | `pane` + `agentKind TEXT` (`"claude"`/`"codex"`, issue #101 — picks the resume command on restart). Guarded. |
 | `v19_pane_agent_profile` | `pane` + `agentProfileName TEXT` (§2.2). Kelpi-only, no legacy counterpart: listed in `DAEMON_ONLY_MIGRATIONS` (`schema.ts:205`) so the importer does not treat a legacy ledger that lacks it as stale. Guarded. |
 | `v20_plugin_panes` | `pane` + `pluginJSON TEXT` and `pluginParked BOOLEAN NOT NULL DEFAULT 0`. Kelpi-only and guarded. Uses a new default database generation; see [plugin upgrades](plugins.md#database-and-protocol-upgrade). |
+| `v21_workspace_muted` | `workspace` + `muted BOOLEAN NOT NULL DEFAULT 0` (§2.1). Kelpi-only (in `DAEMON_ONLY_MIGRATIONS`) and guarded. A plain additive column, so no new database generation: an older daemon ignores it (its explicit-column INSERT leaves the default), and a downgrade simply loses the flag. |
 
 ---
 
@@ -366,7 +369,7 @@ whatever is pending (§5.2). Every save is gated until the launch restore sequen
 (§6.2 step 8). The trigger set is broad, effectively "anything that changes durable state",
 including:
 
-- workspace create / rename / recolor / re-icon / delete / reorder / move between groups
+- workspace create / rename / recolor / re-icon / mute / delete / reorder / move between groups
 - group create / rename / delete / collapse / reorder / sort / icon
 - pane create / split / close / move / label / resize (ratio changes) / layout cycle & select
 - agent lifecycle (`agentStarted` / `agentStopped` — persists status + session id)
@@ -621,8 +624,8 @@ create and rename.
 App level: workspace list + order, group list + order + collapse state, top-level sidebar
 order, active workspace id, repo registry, repo associations.
 
-Per workspace: id, name, slug, color, icon, profileName, labels, layout tree (un-zoomed),
-focused pane id, createdAt, lastAccessedAt.
+Per workspace: id, name, slug, color, icon, profileName, muted, labels, layout tree
+(un-zoomed), focused pane id, createdAt, lastAccessedAt.
 
 Per pane: id, owning workspace, label, type, workingDirectory, filePath, scratchpad content,
 agentSessionID (written, but consumed-and-cleared by the next launch), agentKind,
@@ -702,7 +705,7 @@ ordering, failure behavior and limits.
 
 ## 8. Equivalent SQLite DDL for the TS daemon
 
-This is the schema as it exists after v20, expressed as plain DDL. (SQLite's ALTER-produced
+This is the schema as it exists after v21, expressed as plain DDL. (SQLite's ALTER-produced
 schema differs cosmetically — column order and the absence of NOT NULL on late-added columns
 are preserved here.) An adopted legacy database may additionally hold `scheduledTask`,
 `workspaceFolder` and `workspace.folderID` (§2.6); they are not part of this DDL and Kelpi
@@ -725,7 +728,8 @@ CREATE TABLE workspace (
   slug           TEXT DEFAULT '',
   labelsJSON     TEXT NOT NULL DEFAULT '[]',
   icon           TEXT,                      -- "system:<name>" | "emoji:<grapheme>"
-  profileName    TEXT
+  profileName    TEXT,
+  muted          BOOLEAN NOT NULL DEFAULT 0 -- Kelpi-only (v21)
 );
 
 CREATE TABLE pane (
@@ -797,6 +801,7 @@ interface WorkspaceRow {
   layoutJSON: string; focusedPaneID: string | null;
   createdAt: number; lastAccessedAt: number; sortOrder: number;
   labelsJSON: string; icon: string | null; profileName: string | null;
+  muted: number;                              // SQLite BOOLEAN, 0/1
 }
 interface PaneRow {
   id: string; workspaceID: string; label: string | null; type: string;

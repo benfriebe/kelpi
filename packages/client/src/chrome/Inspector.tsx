@@ -118,6 +118,8 @@ export interface InspectorProps {
     readonly onSetWorkspaceColor?: ((color: (typeof WORKSPACE_COLORS)[number]) => void) | undefined;
     /** `null` = back to the built-in `default` baseline. */
     readonly onSetProfile?: ((profile: string | null) => void) | undefined;
+    /** Agent-lifecycle §7.6: `muted` is the new state. Absent hides the toggle. */
+    readonly onSetMuted?: ((muted: boolean) => void) | undefined;
     readonly onOpenDiff?: ((repoPath: string) => void) | undefined;
     /** Shift-click asks for a vertical split, matching the shipped tooltip. */
     readonly onOpenTerminal?: ((repoPath: string, options: { vertical: boolean }) => void) | undefined;
@@ -474,6 +476,23 @@ export function Inspector(props: InspectorProps): ReactElement {
                             ))}
                         </select>
                     </label>
+
+                    {props.onSetMuted === undefined ? null : (
+                        <label
+                            className="flex cursor-pointer items-center gap-1.5 text-[11px]"
+                            style={{ color: tokens.textSecondary }}
+                        >
+                            <input
+                                type="checkbox"
+                                data-testid="inspector-muted"
+                                checked={workspace.muted === true}
+                                onChange={(event) => {
+                                    props.onSetMuted?.(event.target.checked);
+                                }}
+                            />
+                            Mute Notifications
+                        </label>
+                    )}
                 </section>
 
                 <Divider />

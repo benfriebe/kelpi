@@ -63,7 +63,8 @@ function commands() {
         setGroupColor: vi.fn<Commands['setGroupColor']>().mockResolvedValue({ ok: true }),
         setGroupIcon: vi.fn<Commands['setGroupIcon']>().mockResolvedValue({ ok: true }),
         setWorkspaceIcon: vi.fn<Commands['setWorkspaceIcon']>().mockResolvedValue({ ok: true }),
-        setWorkspaceProfile: vi.fn<Commands['setWorkspaceProfile']>().mockResolvedValue({ ok: true })
+        setWorkspaceProfile: vi.fn<Commands['setWorkspaceProfile']>().mockResolvedValue({ ok: true }),
+        setWorkspaceMuted: vi.fn<Commands['setWorkspaceMuted']>().mockResolvedValue({ ok: true })
     };
 }
 
@@ -257,6 +258,28 @@ describe('retained Workspaces actions', () => {
         expect(await h.actions.createWorkspaceWithWorktree('  task  ', G1, worktree, '/repo', { profile: 'work', color: 'purple' })).toBeNull();
         expect(h.rpc.createWorkspace).toHaveBeenLastCalledWith({ name: 'task', group: G1, repo: '/repo', worktree: 'task', branch: 'topic/task', updateMain: true, profile: 'work', color: 'purple' });
         expect(h.activate).toHaveBeenCalledExactlyOnceWith(W3);
+    });
+
+    it('sends muted on create only when asked, for both create routes', async () => {
+        const h = setup();
+        h.actions.createWorkspace('child', null, { muted: true });
+        expect(h.rpc.createWorkspace).toHaveBeenLastCalledWith({ name: 'child', muted: true });
+        h.actions.createWorkspace('conductor', null, { muted: false });
+        expect(h.rpc.createWorkspace).toHaveBeenLastCalledWith({ name: 'conductor' });
+        const worktree = { repoID: 'r1', name: 'task', branch: 'task', updateMain: false };
+        h.rpc.createWorkspace.mockResolvedValueOnce({ ok: true, workspace_id: W3 });
+        await h.actions.createWorkspaceWithWorktree('task', null, worktree, '/repo', { muted: true });
+        expect(h.rpc.createWorkspace).toHaveBeenLastCalledWith(expect.objectContaining({ worktree: 'task', muted: true }));
+    });
+
+    it('sends an explicit mute state, labelled by the direction', () => {
+        const h = setup();
+        expect(h.actions.setWorkspaceMuted(W2, true)).toBe(true);
+        expect(h.rpc.setWorkspaceMuted).toHaveBeenLastCalledWith({ workspace: W2, muted: true });
+        expect(h.run).toHaveBeenLastCalledWith('Mute notifications', expect.any(Promise));
+        h.actions.setWorkspaceMuted(W2, false);
+        expect(h.rpc.setWorkspaceMuted).toHaveBeenLastCalledWith({ workspace: W2, muted: false });
+        expect(h.run).toHaveBeenLastCalledWith('Unmute notifications', expect.any(Promise));
     });
 });
 

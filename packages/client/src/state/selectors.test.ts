@@ -129,11 +129,23 @@ describe('agent summary', () => {
         expect(selectAgentSummary(client.getState())).toEqual({
             running: 1,
             waiting: 0,
+            muted: 0,
             inactive: 0,
             agentCount: 1,
             workspaceCount: 1
         });
         expect(selectWorkspaceAgentCount(client.getState(), W1)).toBe(1);
         expect(selectWorkspaceAgentCount(client.getState(), W2)).toBe(0);
+    });
+
+    it('counts a muted workspace\'s waiting panes as muted, not waiting', () => {
+        const store = createDaemonStore(daemonState());
+        const stop = { type: 'agentStopped', backgroundTaskCount: 0 } as const;
+        store.dispatch({ type: 'pane-agent-event', paneID: P2, event: stop, now: NOW + 6, workspaceID: W1 });
+        store.dispatch({ type: 'pane-agent-event', paneID: P3, event: stop, now: NOW + 7, workspaceID: W2 });
+        store.dispatch({ type: 'set-workspace-muted', id: W2, muted: true });
+        const client = createKelpiStore();
+        client.getState().applySnapshot(0, JSON.parse(JSON.stringify(store.getState())));
+        expect(selectAgentSummary(client.getState())).toMatchObject({ waiting: 1, muted: 1, agentCount: 2 });
     });
 });

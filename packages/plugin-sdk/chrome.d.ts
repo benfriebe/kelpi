@@ -19,10 +19,14 @@ export interface ChromeSnapshot {
     readonly layouts: readonly { readonly id: string; readonly title: string }[];
     /** The same current command declarations used by bundled chrome. */
     readonly commands: readonly ChromeCommand[];
-    readonly agents: { readonly running: number; readonly waiting: number; readonly inactive: number };
+    /**
+     * `waiting` counts unmuted workspaces only; `muted` counts the waiting panes of muted workspaces,
+     * which raise no attention signal.
+     */
+    readonly agents: { readonly running: number; readonly waiting: number; readonly muted: number; readonly inactive: number };
     readonly agentPanes: readonly {
         readonly workspaceID: string; readonly workspaceName: string; readonly paneID: string;
-        readonly title: string; readonly bucket: 'running' | 'waiting' | 'inactive'; readonly agentStartedAt: number | null;
+        readonly title: string; readonly bucket: 'running' | 'waiting' | 'muted' | 'inactive'; readonly agentStartedAt: number | null;
     }[];
     readonly git: { readonly changedFiles: number; readonly additions: number; readonly deletions: number } | null;
     /** Null until the primary daemon supplies a sample. Values are display-ready, daemon-owned metrics. */

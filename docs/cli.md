@@ -882,7 +882,7 @@ the caller's workspace via `KELPI_PANE_ID`; `--workspace` overrides.
 
 Dispatcher: missing action => group usage to stderr, exit 1; `--help|-h|help` => group
 usage to stdout, exit 0; unknown action => `Unknown workspace action: <x>` +
-`Valid actions: list, create, move, delete, profile, label`, exit 1.
+`Valid actions: list, create, move, delete, profile, label, mute`, exit 1.
 
 ### 10.1 `kelpi workspace list`
 
@@ -895,7 +895,8 @@ kelpi workspace list [--group <name-or-id>] [--json] [--no-header]
 - Reply: `{ok:true, "workspaces":[...]}` in sidebar order (members of collapsed groups
   included). Each entry (server contract): `id`, `name`, `color`, `pane_count`,
   `is_active`, `created_at`, `last_accessed_at`, `labels` (always present, possibly `[]`),
-  optional `last_activity_at`, optional `agent_session_id`, optional
+  `muted` (always present; §10.7), optional `last_activity_at`, optional
+  `agent_session_id`, optional
   `group_id`/`group_name` (both absent for top-level). Timestamps ISO 8601.
 - `--group` scoping an unknown/ambiguous group is an `ok:false` error (distinct from an
   empty group => empty list, exit 0).
@@ -907,24 +908,32 @@ kelpi workspace list [--group <name-or-id>] [--json] [--no-header]
   - LABELS: comma-joined (no spaces) or `-`.
   - Width computation like pane list; LABELS (last column) unpadded. Note: LABELS does not
     participate in width computation (it is always last).
+  - There is deliberately no MUTED column: scripts parse this table, so the flag is in the
+    `--json` form only.
 
 ### 10.2 `kelpi workspace create`
 
 ```
 kelpi workspace create [--name "..."] [--path /dir] [--color blue] [--group <name>]
-                     [--profile <name>] [--json]
+                     [--profile <name>] [--muted] [--json]
 kelpi workspace create --worktree <name> [--branch <name>] [--repo <path>]
-                     [--update-main] [--group <existing>] [--json]
+                     [--update-main] [--group <existing>] [--muted] [--json]
 ```
 
 - Help to stdout, exit 0. Leftovers rejected.
-- Payload: `{"command":"workspace-create", name?, path?, color?, group?, profile?}`.
+- Payload: `{"command":"workspace-create", name?, path?, color?, group?, profile?}`, plus
+  `muted: true` only when `--muted` was passed (§10.7).
   When `--worktree` is given, additionally: `worktree`, `branch?`,
   `update_main: true` (only when the switch was passed), and **always** `repo`
   (= `--repo` value, defaulting to the CLI process's cwd).
 - Request/response. Read timeout 120 seconds when `--worktree` present (worktree add plus
   optional `git fetch`), default otherwise.
 - `--json`: prints the **full reply including `ok`**, compact, sorted keys.
+- `--muted` confirmation: when `--muted` was passed and the reply does not carry
+  `muted: true` (a daemon that predates the field drops it and creates the workspace unmuted),
+  stderr gets `kelpi workspace create: the daemon did not apply --muted; restart it on this
+  build (workspace <name> (<id>) was created unmuted)` and the exit code is 1; `--json` still
+  prints the reply first.
 - Default output variants (from reply fields; name falls back to the `--name` argument or
   `"Workspace"`, id to `?`):
   - worktree: `created workspace <name> (<id>)[ in group <g>] with worktree <path> on branch <branch>`
@@ -935,10 +944,13 @@ kelpi workspace create --worktree <name> [--branch <name>] [--repo <path>]
 Server contract highlights: `--group` creates the group if missing UNLESS `--worktree` is
 present (then the group must already exist; unknown/ambiguous => `ok:false`, avoiding an
 orphaned group on worktree-add failure). Ambiguous `--group` name => `ok:false`
-"...ambiguous...". `--profile` assigns a workspace profile at creation. Worktree path is
+"...ambiguous...". `--profile` assigns a workspace profile at creation. `--muted` creates the
+workspace muted from its first frame, so a conductor can spawn children that never notify
+(it composes with `--worktree`, `--group` and `--profile`). Worktree path is
 `resolvedWorktreeBasePath/<sanitized-name>`; `--branch` defaults to the worktree name;
 `--update-main` fetches and branches off `origin/<default>` (resolved via
-`git ls-remote --symref`). Worktree reply adds `worktree_path` and `branch`.
+`git ls-remote --symref`). Every success reply carries `muted`; the worktree reply adds
+`worktree_path` and `branch`.
 
 ### 10.3 `kelpi workspace move`
 
@@ -1050,6 +1062,29 @@ dedup-appends, `remove` drops matches, `clear` empties; each label a `set`/`add`
 introduces also gets a gray label preset (existing presets never overwritten);
 `remove`/`clear` leave presets intact. Reply
 `{ok, workspace_id, workspace_name, labels}` reflects the post-mutation set.
+
+### 10.7 `kelpi workspace mute`
+
+```
+kelpi workspace mute <name-or-id> [--off | --toggle] [--json]
+```
+
+- Help to stdout, exit 0. Missing name-or-id => usage to stderr, exit 1.
+- `--off` together with `--toggle` => `workspace mute can't take both --off and --toggle`,
+  exit 1, before anything is sent. Leftovers rejected.
+- Payload: `{"command":"workspace-mute","name":<name-or-id>,"muted":true}` by default,
+  `"muted":false` with `--off`, and no `muted` at all with `--toggle` (the daemon flips
+  the live state).
+- Request/response. `--json`: full reply **including `ok`**, compact sorted.
+- Default: `"<workspace_name>: notifications muted"` or `"<workspace_name>: notifications
+  unmuted"`, from the reply's `muted`, so `--toggle` prints the state it produced.
+
+Server contract: a muted workspace's agents keep their pane status (`kelpi pane list
+--json` still reports `waitingForInput`) but raise no desktop notification, sound, dock
+bounce or title flash, `error` events included; plugins still observe the events, marked
+`muted: true` (agent-lifecycle.md §7.6). The flag persists across a daemon restart and syncs
+to every attached client. Unknown or ambiguous workspace => `ok:false` `no workspace matches
+'<name>'`, exit non-zero. Reply `{ok, workspace_id, workspace_name, muted}`.
 
 ---
 

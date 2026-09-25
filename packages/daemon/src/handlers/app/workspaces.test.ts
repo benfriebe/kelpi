@@ -36,8 +36,19 @@ describe('workspace-list', () => {
             created_at: '2025-08-18T06:53:20Z',
             last_accessed_at: '2025-08-18T06:53:20Z',
             labels: [],
+            muted: false,
             last_activity_at: '2025-08-18T06:53:20Z'
         });
+    });
+
+    it('reports the muted flag on every entry', () => {
+        const h = harness({ initial: seeded(2) });
+        h.dispatch({ type: 'set-workspace-muted', id: W2, muted: true });
+        const entries = h.reply({ command: 'workspace-list' })['workspaces'] as Record<string, unknown>[];
+        expect(entries.map((entry) => [entry['name'], entry['muted']])).toEqual([
+            ['w1', false],
+            ['w2', true]
+        ]);
     });
 
     it('walks the sidebar order and includes members of a COLLAPSED group', () => {
@@ -154,7 +165,7 @@ describe('workspace-create (top level)', () => {
     it('acks the pre-minted id BEFORE the workspace exists, then creates and spawns it', () => {
         const h = harness({ ids: [W1, P1] });
         const reply = h.reply({ command: 'workspace-create', name: 'dev', path: '/code/dev' });
-        expect(reply).toEqual({ ok: true, workspace_id: W1, workspace_name: 'dev' });
+        expect(reply).toEqual({ ok: true, workspace_id: W1, workspace_name: 'dev', muted: false });
         // Reply-before-effect: nothing existed when the ack went out.
         expect(h.replies[0]?.states[0]?.workspaces).toHaveLength(0);
 
@@ -177,6 +188,25 @@ describe('workspace-create (top level)', () => {
         const h2 = harness({ ids: [W2, P2] });
         h2.reply({ command: 'workspace-create', profile: ' work ' });
         expect(h2.state().workspaces[0]?.profileName).toBe('work');
+    });
+
+    it('creates the workspace muted from its first frame when asked', () => {
+        const h = harness({ ids: [W1, P1] });
+        const upserted: boolean[] = [];
+        h.store.subscribe((batch) => {
+            for (const event of batch) {
+                if (event.kind === 'workspace-upserted') upserted.push(event.workspace.muted);
+            }
+        });
+        // The reply confirms the flag, so a caller can tell an older daemon dropped it.
+        expect(h.reply({ command: 'workspace-create', name: 'child', muted: true })['muted']).toBe(true);
+        expect(h.state().workspaces[0]?.muted).toBe(true);
+        expect(upserted.length).toBeGreaterThan(0);
+        expect(upserted.every((muted) => muted)).toBe(true);
+
+        const h2 = harness({ ids: [W2, P2] });
+        h2.reply({ command: 'workspace-create', name: 'conductor' });
+        expect(h2.state().workspaces[0]?.muted).toBe(false);
     });
 
     it('reveals the new workspace to every attached client', () => {
@@ -206,6 +236,7 @@ describe('workspace-create (group)', () => {
             ok: true,
             workspace_id: W1,
             workspace_name: 'dev',
+            muted: false,
             group: 'team'
         });
         const group = h.state().groups[0];
@@ -213,6 +244,12 @@ describe('workspace-create (group)', () => {
         expect(group?.name).toBe('team');
         expect(group?.childOrder).toEqual([W1]);
         expect(h.scrolled).toEqual([{ kind: 'workspace', id: W1 }]);
+    });
+
+    it('carries the muted flag into the group branch', () => {
+        const h = harness({ ids: [W1, G1, P1] });
+        expect(h.reply({ command: 'workspace-create', name: 'dev', group: 'team', muted: true })['muted']).toBe(true);
+        expect(h.state().workspaces[0]?.muted).toBe(true);
     });
 
     it('reuses an existing group', () => {
@@ -273,7 +310,8 @@ describe('workspace-create (worktree)', () => {
             workspace_id: W1,
             workspace_name: 'feature-x',
             worktree_path: `${HOME}/wt/kelpi/feature-x`,
-            branch: 'feature-x'
+            branch: 'feature-x',
+            muted: false
         });
 
         const workspace = h.state().workspaces[0];
@@ -288,6 +326,18 @@ describe('workspace-create (worktree)', () => {
                 isAutoDetected: false
             })
         ]);
+        expect(workspace?.muted).toBe(false);
+    });
+
+    it('creates a muted worktree workspace when asked', async () => {
+        const h = harness({
+            ids: [id('bbbbbbbb', 9), W1, P1, id('eeeeeeee', 1)],
+            git: stubGit({ worktreeAdd: async () => {} })
+        });
+        h.send({ ...worktreeRequest, muted: true });
+        await flush();
+        expect(h.replies[0]?.payloads[0]).toMatchObject({ ok: true, workspace_id: W1, muted: true });
+        expect(h.state().workspaces[0]?.muted).toBe(true);
     });
 
     /**
@@ -894,5 +944,52 @@ describe('workspace-label', () => {
         expect(
             h.reply({ command: 'workspace-label', name: 'w1', label_op: 'toggle', label_values: ['a'] })
         ).toEqual({ ok: false, error: "unknown label operation 'toggle'" });
+    });
+});
+
+// ---------------------------------------------------------------------------
+// workspace-mute
+// ---------------------------------------------------------------------------
+
+describe('workspace-mute', () => {
+    it('sets and clears the flag, replying with the post-mutation state and persisting', () => {
+        const h = harness({ initial: seeded(2) });
+        expect(h.reply({ command: 'workspace-mute', name: 'w1', muted: true })).toEqual({
+            ok: true,
+            workspace_id: W1,
+            workspace_name: 'w1',
+            muted: true
+        });
+        expect(h.state().workspaces[0]?.muted).toBe(true);
+        expect(h.state().workspaces[1]?.muted).toBe(false);
+        expect(h.persists.length).toBeGreaterThan(0);
+
+        // Re-asserting the current state is a successful no-op, not an error.
+        expect(h.reply({ command: 'workspace-mute', name: 'w1', muted: true })['muted']).toBe(true);
+        expect(h.reply({ command: 'workspace-mute', name: W1, muted: false })['muted']).toBe(false);
+        expect(h.state().workspaces[0]?.muted).toBe(false);
+    });
+
+    it('toggles when the state is absent', () => {
+        const h = harness({ initial: seeded(1) });
+        expect(h.reply({ command: 'workspace-mute', name: 'w1' })['muted']).toBe(true);
+        expect(h.state().workspaces[0]?.muted).toBe(true);
+        expect(h.reply({ command: 'workspace-mute', name: 'w1' })['muted']).toBe(false);
+        expect(h.state().workspaces[0]?.muted).toBe(false);
+    });
+
+    it('rejects an unknown or ambiguous name without mutating anything', () => {
+        const h = harness({ initial: seeded(2) });
+        h.dispatch({ type: 'rename-workspace', id: W2, name: 'w1' });
+        const before = h.state();
+        expect(h.reply({ command: 'workspace-mute', name: 'ghost', muted: true })).toEqual({
+            ok: false,
+            error: "no workspace matches 'ghost'"
+        });
+        expect(h.reply({ command: 'workspace-mute', name: 'w1', muted: true })).toEqual({
+            ok: false,
+            error: "no workspace matches 'w1'"
+        });
+        expect(h.state()).toBe(before);
     });
 });

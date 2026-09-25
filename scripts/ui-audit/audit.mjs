@@ -20290,6 +20290,8 @@ function buildFlows(ctx) {
                                 const order = ['New workspace name', 'new-workspace-colors'];
                                 if (has('new-workspace-group')) order.push('new-workspace-group');
                                 order.push('new-workspace-profile');
+                                // Kelpi's one stop the Swift never had (agent-lifecycle §7.6).
+                                order.push('new-workspace-muted');
                                 if (has('new-workspace-repos')) {
                                     for (const el of document.querySelectorAll('[data-testid^="new-workspace-repo-remove-"]')) {
                                         order.push(el.getAttribute('data-testid'));

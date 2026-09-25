@@ -48,7 +48,8 @@ export function createOscNotificationSink(deps: OscNotificationSinkDeps): OscNot
             isFocused: deps.isPaneFocused(paneID, workspace.id),
             isAppActive: deps.isAppActive(),
             // No agent behind an OSC, and `notificationDecision`'s `osc` branch ignores it.
-            backgroundTaskCount: 0
+            backgroundTaskCount: 0,
+            muted: workspace.muted
         });
         if (!decision.shouldNotify) return;
         deps.broadcast({
@@ -59,7 +60,9 @@ export function createOscNotificationSink(deps: OscNotificationSinkDeps): OscNot
             // OSC 9 carries no title of its own; fall back the way `NotificationService` does.
             title: notification.title ?? location.pane.title ?? workspace.name,
             body: notification.body,
-            dedupeKey: notificationDedupeKey(paneID)
+            dedupeKey: notificationDedupeKey(paneID),
+            // A muted workspace's banner reaches plugin observers only (agent-lifecycle §7.6).
+            ...(decision.observersOnly ? { muted: true } : {})
         });
     };
 }

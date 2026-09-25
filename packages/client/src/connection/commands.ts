@@ -609,6 +609,7 @@ export class CommandClient {
             branch?: string;
             updateMain?: boolean;
             repo?: string;
+            muted?: boolean;
         } = {},
         options?: SendOptions
     ): Promise<CommandReply> {
@@ -624,7 +625,8 @@ export class CommandClient {
                 worktree: input.worktree,
                 branch: input.branch,
                 update_main: input.updateMain,
-                repo: input.repo
+                repo: input.repo,
+                muted: input.muted
             }),
             timeout !== undefined ? { timeoutMs: timeout } : {}
         );
@@ -682,6 +684,11 @@ export class CommandClient {
             wirePayload('workspace-profile', { name: input.workspace, profile: input.profile }),
             options ?? {}
         );
+    }
+
+    /** Omit `muted` to toggle; the reply carries the state the daemon produced. */
+    setWorkspaceMuted(input: { workspace: string; muted?: boolean }, options?: SendOptions): Promise<CommandReply> {
+        return this.raw(wirePayload('workspace-mute', { name: input.workspace, muted: input.muted }), options ?? {});
     }
 
     labelWorkspace(

@@ -43,6 +43,8 @@ export type ChromeIconName =
     | 'bolt'
     | 'ellipsis'
     | 'gear'
+    // A muted workspace (agent-lifecycle §7.6): the SF `bell.slash` at this grid.
+    | 'bell-slash'
     // The six status-bar metric glyphs — `SystemStatKind.systemImage`'s SF Symbols (`cpu`,
     // `memorychip`, `gauge.with.dots.needle.33percent`, `network`,
     // `externaldrive.badge.timemachine`, `internaldrive`) redrawn at this file's 12×12 grid.
@@ -155,6 +157,14 @@ const PATHS: Record<ChromeIconName, ReactElement> = {
         <>
             <circle cx="6" cy="6" r="2" />
             <path d="M6 1.4v1.6M6 9v1.6M1.4 6h1.6M9 6h1.6M2.8 2.8l1.1 1.1M8.1 8.1l1.1 1.1M9.2 2.8 8.1 3.9M3.9 8.1 2.8 9.2" />
+        </>
+    ),
+    /** `bell.slash`: a bell with its clapper, struck through corner to corner. */
+    'bell-slash': (
+        <>
+            <path d="M3.2 8.2h5.6l-.8-1.1V5.3a2 2 0 0 0-4 0v1.8z" />
+            <path d="M6 2.4v.9M5 9.4a1 1 0 0 0 2 0" />
+            <path d="M2 2l8 8" />
         </>
     ),
     /** A die with pins — the SF `cpu` silhouette at 12px. */

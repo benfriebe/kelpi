@@ -123,7 +123,7 @@ export function createChromeFeatureSource(host: ChromeFeatureHost): ChromeSource
                 sizeControl: owner === null || client === null ? 'unclaimed' : owner === client ? 'this-window' : 'other-window',
                 layouts: PREDEFINED_LAYOUT_ORDER.map(id => ({ id, title: PREDEFINED_LAYOUT_DISPLAY_NAMES[id] })), commands: commands(),
                 agents: status.summary,
-                agentPanes: (['running', 'waiting', 'inactive'] as const).flatMap(bucket => status.bucketItems(bucket).map(item => ({
+                agentPanes: (['running', 'waiting', 'muted', 'inactive'] as const).flatMap(bucket => status.bucketItems(bucket).map(item => ({
                     workspaceID: item.workspaceID, workspaceName: item.workspaceName, paneID: item.paneID, title: item.paneTitle, bucket, agentStartedAt: item.agentStartedAt ?? null
                 }))),
                 git: pane ? footerGitStats(status.associations, pane.workingDirectory, pane.workingDirectoryReal) : null,

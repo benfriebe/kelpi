@@ -22,8 +22,10 @@ export interface PaneInfo {
 }
 export interface WorkspaceInfo {
     id: string; name: string; color: WorkspaceColor; paneCount: number; isActive: boolean;
-    createdAt: string; lastAccessedAt: string; labels: string[]; lastActivityAt?: string;
-    agentSessionID?: string; groupID?: string; groupName?: string;
+    createdAt: string; lastAccessedAt: string; labels: string[];
+    /** Muted: the workspace's agents raise no desktop notification, sound or dock bounce. */
+    muted: boolean;
+    lastActivityAt?: string; agentSessionID?: string; groupID?: string; groupName?: string;
 }
 export interface GroupInfo { id: string; name: string; color?: WorkspaceColor; workspaces: { id: string; name: string }[] }
 export interface PaneMutation { paneID: string; workspaceID: string; workspaceName: string; label?: string }
@@ -34,8 +36,14 @@ export interface WorkspaceIdentity { workspaceID: string; workspaceName: string 
 export interface WorkspaceCreateOptions {
     name?: string; path?: string; color?: WorkspaceColor; groupID?: string; profile?: string;
     worktree?: string; branch?: string; updateMain?: boolean; repo?: string;
+    /** Create the workspace already muted, so its first agent never notifies. */
+    muted?: boolean;
 }
-export interface WorkspaceCreated extends WorkspaceIdentity { group?: string; worktreePath?: string; branch?: string }
+export interface WorkspaceCreated extends WorkspaceIdentity {
+    group?: string; worktreePath?: string; branch?: string;
+    /** The state the workspace was created in, so a `muted: true` request can be confirmed. */
+    muted: boolean;
+}
 export interface WorkspaceMoveOptions { groupID?: string; index?: number }
 export interface WorkspacesAPI {
     list(options?: { groupID?: string }): Promise<WorkspaceInfo[]>;
@@ -46,6 +54,12 @@ export interface WorkspacesAPI {
     move(workspaceID: string, options?: WorkspaceMoveOptions): Promise<void>;
     moveMany(workspaceIDs: string[], options?: WorkspaceMoveOptions): Promise<{ workspaceIDs: string[]; groupID: string | null; index: number | null }>;
     setProfile(workspaceID: string, profile: string | null): Promise<void>;
+    /**
+     * Mute or unmute a workspace's notifications; omit `muted` to toggle. Resolves with the state
+     * it produced. A plugin still observes a muted workspace's `daemon.notification` and
+     * `daemon.attention-request` events, marked `muted: true`.
+     */
+    setMuted(workspaceID: string, muted?: boolean): Promise<WorkspaceIdentity & { muted: boolean }>;
     labels(workspaceID: string, operation: 'set' | 'add' | 'remove' | 'clear', values?: string[]): Promise<WorkspaceIdentity & { labels: string[] }>;
     setColor(workspaceIDs: string[], color: WorkspaceColor): Promise<{ workspaceIDs: string[]; color: WorkspaceColor }>;
     setIcon(workspaceID: string, icon: string | null): Promise<{ workspaceID: string; icon: string | null }>;

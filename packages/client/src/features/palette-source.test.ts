@@ -23,7 +23,8 @@ function fixture() {
     const actions = {
         splitFocused: vi.fn(() => true), closeFocused: vi.fn(() => true), reopenClosedPane: vi.fn(() => true),
         createScratchpad: vi.fn(() => true), toggleSearch: vi.fn(() => true), toggleZoomFocused: vi.fn(() => true),
-        cycleLayout: vi.fn(() => true), toggleSyncInput: vi.fn(() => true), newWorkspace: vi.fn(() => true)
+        cycleLayout: vi.fn(() => true), toggleSyncInput: vi.fn(() => true), newWorkspace: vi.fn(() => true),
+        setWorkspaceMuted: vi.fn((_workspaceID: string, _muted: boolean) => true)
     };
     const host: PaletteFeatureHost = {
         runtime,
@@ -215,6 +216,33 @@ describe('palette feature source', () => {
         off();
         h.notifyContributions();
         expect(listener).toHaveBeenCalledTimes(2);
+    });
+
+    it('titles the mute row by the active workspace\'s state and sends exactly that state', async () => {
+        const h = fixture();
+        const row = () => h.source.snapshot().items.find((item) => item.id === 'cmd:mute-workspace' || item.id === 'cmd:unmute-workspace');
+        expect(row()).toMatchObject({ id: 'cmd:mute-workspace', kind: 'command', title: 'Mute Workspace Notifications' });
+        await h.source.execute('cmd:mute-workspace', {});
+        expect(h.actions.setWorkspaceMuted).toHaveBeenLastCalledWith('one', true);
+
+        h.daemon.dispatch({ type: 'set-workspace-muted', id: 'one', muted: true });
+        h.sync();
+        expect(row()).toMatchObject({ id: 'cmd:unmute-workspace', title: 'Unmute Workspace Notifications' });
+        await h.source.execute('cmd:unmute-workspace', {});
+        expect(h.actions.setWorkspaceMuted).toHaveBeenLastCalledWith('one', false);
+        // Only the ACTIVE workspace's flag names the row.
+        h.store.getState().setActiveWorkspace('two');
+        expect(row()).toMatchObject({ id: 'cmd:mute-workspace', title: 'Mute Workspace Notifications' });
+    });
+
+    it('refuses a mute row picked after the state moved, rather than doing the opposite of its title', async () => {
+        const h = fixture();
+        // The palette showed "Mute…", then a conductor muted the workspace before the pick landed.
+        expect(h.source.snapshot().items.some((item) => item.id === 'cmd:mute-workspace')).toBe(true);
+        h.daemon.dispatch({ type: 'set-workspace-muted', id: 'one', muted: true });
+        h.sync();
+        await expect(h.source.execute('cmd:mute-workspace', {})).rejects.toThrow('unavailable');
+        expect(h.actions.setWorkspaceMuted).not.toHaveBeenCalled();
     });
 
     it('notifies subscribers when the mirror changes and stops after unsubscribe', () => {

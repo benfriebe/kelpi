@@ -340,6 +340,25 @@ describe('keyboard navigation — an NSMenu walk (M58)', () => {
         expect(closed).toBe(true);
     });
 
+    it('Space activates the focused row like Return, and a command row still closes the menu', () => {
+        let closed = false;
+        const selected: string[] = [];
+        render(
+            <ContextMenu
+                x={0}
+                y={0}
+                items={[{ id: 'rename', label: 'Rename…', onSelect: () => selected.push('rename') }]}
+                onClose={() => {
+                    closed = true;
+                }}
+            />
+        );
+        fireEvent.keyDown(document, { key: 'ArrowDown' });
+        fireEvent.keyDown(document, { key: ' ' });
+        expect(selected).toEqual(['rename']);
+        expect(closed).toBe(true);
+    });
+
     it('Return on a submenu PARENT opens it — it does not fire the parent as a command', () => {
         open();
         fireEvent.keyDown(document, { key: 'ArrowDown' });
@@ -565,5 +584,139 @@ describe('L11 — a swatch carries its own check state', () => {
         // the yellow-lit dash row takes black.
         expect(path('on').getAttribute('stroke')).toBe('#FFFFFF');
         expect(path('some').getAttribute('stroke')).toBe('#FFFFFF');
+    });
+});
+
+describe('the opt-in checkbox control', () => {
+    function open(onSelect: (id: string) => void = () => undefined, onClose: () => void = () => undefined): HTMLElement {
+        render(
+            <ContextMenu
+                x={0}
+                y={0}
+                onClose={onClose}
+                items={[
+                    { id: 'plain', label: 'Rename…', onSelect: () => onSelect('plain') },
+                    { id: 'off', label: 'Mute Notifications', control: 'checkbox', checked: false, onSelect: () => onSelect('off') },
+                    { id: 'on', label: 'Muted', control: 'checkbox', checked: true, onSelect: () => onSelect('on') },
+                    { id: 'ticked', label: 'work', checked: true },
+                    { id: 'unticked', label: 'personal', checked: false },
+                    { id: 'some', label: 'wip', checked: 'mixed' }
+                ]}
+            />
+        );
+        return screen.getByTestId('context-menu');
+    }
+    const row = (menu: HTMLElement, id: string): HTMLElement => menu.querySelector(`[data-menu-item="${id}"]`) as HTMLElement;
+
+    it('draws an outlined empty box and a filled checked one at the trailing edge', () => {
+        const menu = open();
+        const box = (id: string): HTMLElement | null => row(menu, id).querySelector('[data-testid="menu-checkbox"]');
+        expect(box('off')?.getAttribute('data-state')).toBe('unchecked');
+        expect(box('on')?.getAttribute('data-state')).toBe('checked');
+        // The checked box carries the check glyph; the empty one is only an outline.
+        expect(box('on')?.querySelector('path')).not.toBeNull();
+        expect(box('off')?.querySelector('path')).toBeNull();
+        expect(box('off')?.style.background).toBe('transparent');
+        expect(box('on')?.style.background).not.toBe('transparent');
+        // Last in the row, after the label, and with no leading tick column.
+        expect(row(menu, 'off').lastElementChild).toBe(box('off'));
+        expect((row(menu, 'on').textContent ?? '').trim()).toBe('Muted');
+    });
+
+    it('is a menuitemcheckbox carrying aria-checked', () => {
+        const menu = open();
+        expect(row(menu, 'off').getAttribute('role')).toBe('menuitemcheckbox');
+        expect(row(menu, 'off').getAttribute('aria-checked')).toBe('false');
+        expect(row(menu, 'on').getAttribute('role')).toBe('menuitemcheckbox');
+        expect(row(menu, 'on').getAttribute('aria-checked')).toBe('true');
+        expect(within(menu).getAllByRole('menuitemcheckbox')).toHaveLength(2);
+    });
+
+    it('leaves the existing checked rendering exactly as it was', () => {
+        const menu = open();
+        for (const id of ['plain', 'ticked', 'unticked', 'some']) {
+            expect(row(menu, id).getAttribute('role')).toBe('menuitem');
+            expect(row(menu, id).hasAttribute('aria-checked')).toBe(false);
+            expect(row(menu, id).querySelector('[data-testid="menu-checkbox"]')).toBeNull();
+        }
+        expect((row(menu, 'ticked').textContent ?? '').trim()).toBe('✓work');
+        expect((row(menu, 'unticked').textContent ?? '').trim()).toBe('personal');
+        expect((row(menu, 'some').textContent ?? '').trim()).toBe('–wip');
+        expect(row(menu, 'ticked').getAttribute('data-checked')).toBe('true');
+        expect(row(menu, 'some').getAttribute('data-checked')).toBe('mixed');
+    });
+
+    it('toggles in place on click: the menu stays open and the row keeps the keyboard', () => {
+        const selected: string[] = [];
+        let closed = 0;
+        const menu = open(
+            (id) => selected.push(id),
+            () => {
+                closed += 1;
+            }
+        );
+        fireEvent.click(row(menu, 'off'));
+        expect(selected).toEqual(['off']);
+        expect(closed).toBe(0);
+        expect(screen.getByTestId('context-menu')).toBe(menu);
+        expect(document.activeElement).toBe(row(menu, 'off'));
+        // …while a plain row is still a command that closes the menu.
+        fireEvent.click(row(menu, 'plain'));
+        expect(selected).toEqual(['off', 'plain']);
+        expect(closed).toBe(1);
+    });
+
+    it('is a stop in the keyboard walk, and Return or Space toggles it without closing', () => {
+        const selected: string[] = [];
+        let closed = 0;
+        const menu = open(
+            (id) => selected.push(id),
+            () => {
+                closed += 1;
+            }
+        );
+        fireEvent.keyDown(document, { key: 'ArrowDown' });
+        fireEvent.keyDown(document, { key: 'ArrowDown' });
+        expect((document.activeElement as HTMLElement).getAttribute('data-menu-item')).toBe('off');
+        expect((document.activeElement as HTMLElement).getAttribute('data-highlighted')).toBe('true');
+        fireEvent.keyDown(document, { key: 'Enter' });
+        fireEvent.keyDown(document, { key: ' ' });
+        expect(selected).toEqual(['off', 'off']);
+        expect(closed).toBe(0);
+        expect(document.activeElement).toBe(row(menu, 'off'));
+        // Escape still closes it.
+        fireEvent.keyDown(document, { key: 'Escape' });
+        expect(closed).toBe(1);
+    });
+
+    it('closes on an outside click like any menu', () => {
+        let closed = 0;
+        open(undefined, () => {
+            closed += 1;
+        });
+        fireEvent.mouseDown(document.body);
+        expect(closed).toBe(1);
+    });
+
+    it('leaves Space alone while no row holds focus', () => {
+        const selected: string[] = [];
+        open((id) => selected.push(id));
+        const space = new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true });
+        document.body.dispatchEvent(space);
+        expect(space.defaultPrevented).toBe(false);
+        expect(selected).toEqual([]);
+    });
+
+    it('can be where autoFocus lands', () => {
+        render(
+            <ContextMenu
+                x={0}
+                y={0}
+                autoFocus
+                onClose={() => undefined}
+                items={[{ id: 'mute', label: 'Mute Notifications', control: 'checkbox', checked: false }]}
+            />
+        );
+        expect((document.activeElement as HTMLElement).getAttribute('data-menu-item')).toBe('mute');
     });
 });

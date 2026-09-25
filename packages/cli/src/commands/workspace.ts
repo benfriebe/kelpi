@@ -3,7 +3,7 @@
  *
  * Three shapes of output live here and scripts depend on all three staying distinct:
  *   - `list` unwraps the array;
- *   - `create` and `label` print the FULL reply including `ok`;
+ *   - `create`, `label` and `mute` print the FULL reply including `ok` under `--json`;
  *   - `delete` prints a bespoke per-id record array, and exits 1 when any DELETE failed
  *     (a failed *prune* is a warning, never an exit code — the workspace is gone either way).
  *
@@ -28,6 +28,7 @@ import {
     workspaceLabelUsage,
     workspaceListUsage,
     workspaceMoveUsage,
+    workspaceMuteUsage,
     workspaceProfileUsage,
     workspaceUsage
 } from '../usage.js';
@@ -56,9 +57,11 @@ export async function handleWorkspace(args: string[]): Promise<void> {
             return handleWorkspaceProfile(args);
         case 'label':
             return handleWorkspaceLabel(args);
+        case 'mute':
+            return handleWorkspaceMute(args);
         default:
             errLine(`Unknown workspace action: ${action}`);
-            errLine('Valid actions: list, create, move, delete, profile, label');
+            errLine('Valid actions: list, create, move, delete, profile, label, mute');
             exit(1);
     }
 }
@@ -98,6 +101,7 @@ async function handleWorkspaceCreate(args: string[]): Promise<void> {
     const branch = parseFlag('--branch', args);
     const repo = parseFlag('--repo', args);
     const updateMain = popSwitch('--update-main', args);
+    const muted = popSwitch('--muted', args);
     const asJSON = popSwitch('--json', args);
     rejectLeftoverArgs(args, 'kelpi workspace create', { usage: (write) => write(workspaceCreateUsage) });
 
@@ -107,6 +111,7 @@ async function handleWorkspaceCreate(args: string[]): Promise<void> {
     if (color !== null) payload['color'] = color;
     if (group !== null) payload['group'] = group;
     if (profile !== null) payload['profile'] = profile;
+    if (muted) payload['muted'] = true;
     if (worktree !== null) {
         payload['worktree'] = worktree;
         if (branch !== null) payload['branch'] = branch;
@@ -122,12 +127,22 @@ async function handleWorkspaceCreate(args: string[]): Promise<void> {
         'kelpi workspace create',
         worktree !== null ? { timeoutSeconds: 120 } : {}
     );
+    const workspaceName = asString(reply['workspace_name']) ?? name ?? 'Workspace';
+    const workspaceID = asString(reply['workspace_id']) ?? '?';
+    // A daemon that predates `muted` drops the field and creates the workspace unmuted, which is
+    // the one outcome a conductor spawning quiet children must not miss: say so and fail.
+    if (muted && asBool(reply['muted']) !== true) {
+        if (asJSON) printLine(stableStringify(reply));
+        errLine(
+            `kelpi workspace create: the daemon did not apply --muted; restart it on this build ` +
+                `(workspace ${workspaceName} (${workspaceID}) was created unmuted)`
+        );
+        exit(1);
+    }
     if (asJSON) {
         printLine(stableStringify(reply));
         return;
     }
-    const workspaceName = asString(reply['workspace_name']) ?? name ?? 'Workspace';
-    const workspaceID = asString(reply['workspace_id']) ?? '?';
     const worktreePath = asString(reply['worktree_path']);
     const groupName = asString(reply['group']);
     if (worktreePath !== undefined) {
@@ -389,4 +404,37 @@ async function handleWorkspaceLabel(args: string[]): Promise<void> {
     const workspaceName = asString(reply['workspace_name']) ?? nameOrID;
     const labels = asStringArray(reply['labels']) ?? [];
     printLine(`${workspaceName} labels: ${labels.length === 0 ? '(none)' : labels.join(', ')}`);
+}
+
+async function handleWorkspaceMute(args: string[]): Promise<void> {
+    if (hasHelpFlag(args)) {
+        writeOut(workspaceMuteUsage);
+        exit(0);
+    }
+    const off = popSwitch('--off', args);
+    const toggle = popSwitch('--toggle', args);
+    const asJSON = popSwitch('--json', args);
+    if (off && toggle) {
+        errLine("workspace mute can't take both --off and --toggle");
+        exit(1);
+    }
+    const nameOrID = args.shift();
+    if (nameOrID === undefined || nameOrID.startsWith('-')) {
+        if (nameOrID !== undefined) errLine(`kelpi workspace mute: unknown option ${nameOrID}`);
+        writeErr(workspaceMuteUsage);
+        exit(1);
+    }
+    rejectLeftoverArgs(args, 'kelpi workspace mute', { usage: (write) => write(workspaceMuteUsage) });
+
+    const payload: JsonObject = { command: 'workspace-mute', name: nameOrID };
+    // `--toggle` omits `muted`: the daemon flips the live state and reports the result.
+    if (!toggle) payload['muted'] = !off;
+    const reply = await decodeReply(payload, 'kelpi workspace mute');
+    if (asJSON) {
+        printLine(stableStringify(reply));
+        return;
+    }
+    const workspaceName = asString(reply['workspace_name']) ?? nameOrID;
+    const muted = asBool(reply['muted']) ?? false;
+    printLine(`${workspaceName}: notifications ${muted ? 'muted' : 'unmuted'}`);
 }

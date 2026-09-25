@@ -60,10 +60,13 @@ function array(value: unknown): unknown[] {
     return Array.isArray(value) ? value : [];
 }
 
-/** The undo stack never crosses the wire; only its size does (`recentlyClosedCount`). */
+/**
+ * The undo stack never crosses the wire; only its size does (`recentlyClosedCount`). `muted` is
+ * normalized so a mirror of an older daemon, which never sends it, still holds a boolean.
+ */
 function hydrateWorkspace(raw: unknown): unknown {
     if (!isRecord(raw)) return raw;
-    return { ...raw, recentlyClosedPanes: [] };
+    return { ...raw, muted: raw['muted'] === true, recentlyClosedPanes: [] };
 }
 
 export function emptyDaemonState(): DaemonState {

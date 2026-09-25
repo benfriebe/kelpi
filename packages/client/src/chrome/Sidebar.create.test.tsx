@@ -208,6 +208,28 @@ describe('the profile picker (§SET-214)', () => {
     });
 });
 
+describe('the Mute Notifications toggle (agent-lifecycle §7.6)', () => {
+    it('starts unchecked, and sends muted only when ticked', async () => {
+        const onCreateWorkspace = openWorkspaceForm();
+        const toggle = screen.getByTestId('new-workspace-muted') as HTMLInputElement;
+        expect(toggle.checked).toBe(false);
+        fireEvent.change(screen.getByLabelText('New workspace name'), { target: { value: 'quiet' } });
+        fireEvent.click(toggle);
+        fireEvent.submit(screen.getByTestId('new-workspace-form'));
+        await waitFor(() => {
+            expect(onCreateWorkspace).toHaveBeenCalledWith('quiet', null, undefined, expect.objectContaining({ muted: true }));
+        });
+
+        cleanup();
+        const second = openWorkspaceForm();
+        fireEvent.change(screen.getByLabelText('New workspace name'), { target: { value: 'loud' } });
+        fireEvent.submit(screen.getByTestId('new-workspace-form'));
+        await waitFor(() => {
+            expect(second).toHaveBeenCalledWith('loud', null, undefined, expect.not.objectContaining({ muted: true }));
+        });
+    });
+});
+
 describe('the Repositories section (§WS-075/§WS-080)', () => {
     it('associates the repos chosen through the multi-select picker', async () => {
         const onCreateWorkspace = openWorkspaceForm({ repos: REPOS });
@@ -295,6 +317,8 @@ describe('the Tab loop (§WS-077)', () => {
         expect(step()).toBe(screen.getByTestId('new-workspace-colors'));
         expect(step()).toBe(screen.getByTestId('new-workspace-group'));
         expect(step()).toBe(screen.getByTestId('new-workspace-profile'));
+        // Kelpi's one addition to the Swift's order: Mute Notifications, right after profile.
+        expect(step()).toBe(screen.getByTestId('new-workspace-muted'));
         expect(step()).toBe(screen.getByTestId('new-workspace-repo-remove-r1'));
         expect(step()).toBe(screen.getByTestId('new-workspace-add-repo'));
         expect(step()).toBe(screen.getByTestId('new-workspace-worktree-toggle'));
@@ -317,6 +341,9 @@ describe('the Tab loop (§WS-077)', () => {
         }
         // name → colours → group → profile…
         expect(document.activeElement).toBe(screen.getByTestId('new-workspace-profile'));
+        // …mute…
+        fireEvent.keyDown(document.activeElement as Element, { key: 'Tab' });
+        expect(document.activeElement).toBe(screen.getByTestId('new-workspace-muted'));
         // …then Cancel, which is always reachable — a sheet whose only way out is the mouse is
         // the defect the Swift's own `.cancel` stop exists to prevent…
         fireEvent.keyDown(document.activeElement as Element, { key: 'Tab' });

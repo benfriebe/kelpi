@@ -21,7 +21,7 @@ function chrome(zen: boolean, bottomPanel = true): ChromeSnapshot {
     return {
         connection: 'connected', ready: true, remoteWorkspaceSelected: false, workspace: null, focusedPane: null,
         sidebars: { left: { viewID: 'kelpi.workspaces', title: 'Workspaces', visible: !zen }, right: { viewID: 'kelpi.inspector', title: 'Inspector', visible: false } },
-        sizeControl: 'this-window', layouts: [], agents: { running: 0, waiting: 0, inactive: 0 }, agentPanes: [], git: null, systemStats: null, items: [],
+        sizeControl: 'this-window', layouts: [], agents: { running: 0, waiting: 0, muted: 0, inactive: 0 }, agentPanes: [], git: null, systemStats: null, items: [],
         keymap: { sections: [], plugins: [], withheld: 0 },
         commands: [
             command('kelpi.sidebar.left', 'Hide Workspaces'),

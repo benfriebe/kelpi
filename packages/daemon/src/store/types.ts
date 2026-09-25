@@ -113,6 +113,8 @@ export interface WorkspaceState {
     readonly icon: IconRef | null;
     /** null == the built-in "default" profile baseline. */
     readonly profileName: string | null;
+    /** Muted: the workspace's agents raise no attention signals (agent-lifecycle §7.6). */
+    readonly muted: boolean;
     /** Visible panes, append order. */
     readonly panes: readonly Pane[];
     /** TRANSIENT: off-layout panes whose PTYs stay alive (`kelpi open --here` sources). */
@@ -206,6 +208,7 @@ export type DomainAction =
           readonly workingDirectory?: string | undefined;
           readonly groupID?: string | undefined;
           readonly profileName?: string | null | undefined;
+          readonly muted?: boolean | undefined;
           readonly labels?: readonly string[] | undefined;
           readonly placement?: NewWorkspacePlacement | undefined;
           readonly repoAssociations?: readonly RepoAssociation[] | undefined;
@@ -220,6 +223,7 @@ export type DomainAction =
           readonly id: string;
           readonly profileName: string | null;
       }
+    | { readonly type: 'set-workspace-muted'; readonly id: string; readonly muted: boolean }
     | {
           readonly type: 'workspace-labels';
           readonly id: string;
@@ -740,6 +744,7 @@ export interface NewWorkspaceFields {
     readonly createdAt: number;
     readonly icon?: IconRef | null | undefined;
     readonly profileName?: string | null | undefined;
+    readonly muted?: boolean | undefined;
     readonly labels?: readonly string[] | undefined;
     readonly panes?: readonly Pane[] | undefined;
     readonly layout?: PaneLayout | undefined;
@@ -758,6 +763,7 @@ export function makeWorkspaceState(fields: NewWorkspaceFields): WorkspaceState {
         color: fields.color,
         icon: fields.icon ?? null,
         profileName: fields.profileName ?? null,
+        muted: fields.muted ?? false,
         panes: fields.panes ?? [],
         parkedPanes: [],
         layout: fields.layout ?? { kind: 'empty' },

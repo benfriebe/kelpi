@@ -734,6 +734,51 @@ like an agent notification. Unknown pane → ignored.
   notification a client should not show; everything that arrives at a client is
   rendered.
 
+### 7.6 Muted workspaces
+
+A workspace can be **muted** (`WorkspaceState.muted`, persisted, default `false`;
+workspace-feature.md §1.9). It exists for the conductor pattern: an agent that fans out
+workspaces full of interactive sub-agents (`kelpi workspace create --muted --worktree …`)
+would otherwise bury the one notification that matters, the conductor's own, under its
+children's.
+
+- **The rule.** `notificationDecision` takes the pane's workspace `muted` flag and returns
+  `observersOnly = muted` beside the unchanged `shouldNotify` / `shouldBounce` matrix of
+  §7.1 to §7.4. The matrix still answers *whether an event exists*; `observersOnly` answers
+  *who hears it*. Both callers (`handlers/app/events.ts` for §7.1 to §7.3,
+  `handlers/app/osc-notifications.ts` for §7.4) add `muted: true` to the `notification` and
+  `attention-request` broadcasts of a muted workspace, and to nothing else. There is no
+  second check anywhere.
+- **Who hears it.** The sync hub hands every broadcast to plugin observers first
+  (`daemon.notification`, `daemon.attention-request`) and then drops a `notification` or
+  `attention-request` carrying `muted: true` before its per-session loop
+  (`packages/daemon/src/ws/sync.ts`). So no such message reaches a window session: the
+  Electron main process's status socket, the renderer, a browser and the phone alike. That is
+  no banner, no sound, no dock bounce and no title flash, from one place. Plugins still
+  receive both events with `muted: true`, so a conductor plugin can react to its muted
+  children. That includes plugin **views**: the plugin service republishes
+  `daemon.notification` to every session as a `plugin-event`, so a view sees the payload and
+  must honour `muted`, never echoing it through `ui.showNotification` / `ui.notify`
+  (plugins.md, State and events).
+- **Errors too.** Muting silences `error` events in the workspace, which §7.3 otherwise
+  always posts, including for the pane the user is looking at: the conductor reads a
+  child's state through its pane status, not through a banner.
+- **What mute keeps.** Pane status is untouched (`kelpi pane list --json` still reports
+  `waitingForInput`), and so are the pane header badge and the sidebar row's status dot.
+  The row adds a bell-slash icon (shell-ui.md §5.3). A muted workspace's waiting panes
+  leave the attention counts, §8.1 and §9.3, but the quit gate still counts them (§10).
+- **Toggling.** `kelpi workspace mute <name-or-id> [--off | --toggle]`, the row menu's
+  "Mute Notifications", the Inspector checkbox, the palette's "Mute / Unmute Workspace
+  Notifications", `workspace create --muted` and the New Workspace sheet's checkbox. The
+  daemon decides each event synchronously, so a change applies to the next event; a banner
+  already posted stays until its pane leaves the waiting set (§7.5's removal).
+- **Moves.** The decision reads the pane's *current* workspace, so a pane moved into or out
+  of a muted workspace follows its new home from the next event.
+- **Remote and older peers.** The flag lives on the daemon that owns the workspace, and
+  that daemon decides. An older client ignores `muted` and never receives a muted event,
+  but its footer and favicon still count the workspace's waiting panes. A new client
+  reading an older daemon treats every workspace as unmuted.
+
 ---
 
 ## 8. External indicators (menu bar + dock)
@@ -748,7 +793,9 @@ Walk **all workspaces × visible panes** (parked panes are NOT included here,
 unlike the quit/delete gates; `packages/shell/src/agents.ts`, and the web client's
 `packages/client/src/chrome/favicon.ts` for the same two numbers):
 
-- `totalWaiting` = panes with `waitingForInput`
+- `totalWaiting` = panes with `waitingForInput` in **unmuted** workspaces (§7.6)
+- `mutedWaiting` = panes with `waitingForInput` in muted workspaces: never an attention
+  signal, but the tray rows list them and the quit gate counts them
 - `totalRunning` = panes with `running`
 - `items` = one row per non-idle pane: `{ workspaceName, workspaceColor,
   paneTitle: pane.title ?? "Shell", paneID, workspaceID, status }`
@@ -775,7 +822,8 @@ wired in `packages/shell/src/status.ts`:
 - Empty state: one disabled row `✓  All clear`.
 - Otherwise, per workspace with non-idle visible panes, sorted by name: a disabled
   header `<marker> <workspace name> - <W> waiting, <R> running` (marker `◉` when the
-  workspace has any waiting pane, else `●`: waiting wins, as §8.2), then one clickable
+  workspace has any waiting pane, else `●`: waiting wins, as §8.2), with ` (muted)`
+  appended for a muted workspace (§7.6), whose counts stay listed; then one clickable
   row per non-idle pane, indented, `<glyph>  <title>` (`◉` waiting / `●` running;
   title = `pane.title ?? label ?? "Shell"`, middle-truncated at 40 characters so the
   command head and the argument tail both survive), sorted by title. No animation and
@@ -794,6 +842,9 @@ wired in `packages/shell/src/status.ts`:
   (`dockBadgeLabel`, `packages/shell/src/agents.ts:298`; the web client folds the same
   count into `document.title`, `packages/client/src/chrome/favicon.ts`).
 - else → no badge.
+- The count is §8.1's `totalWaiting`, so a muted workspace's waiting panes never badge,
+  never turn the tray dot to waiting and never reach the title count (§7.6). The tray
+  tooltip names them apart (`Kelpi - 1 running, 5 muted`).
 - On app activation (user switches to the app), the badge is cleared immediately
   and indicators refresh (`status.acknowledgeActivation()` on window `focus`,
   `packages/shell/src/main.ts:556-558`; the focused pane's 600 ms acknowledgment timer
@@ -852,7 +903,12 @@ Three count items, in order, each `dot · count · label` (count is monospaced,
 fixed-width so single→double digit doesn't shift layout):
 
 - **running** (`statusRunning` dot): panes with status `running`.
-- **waiting** (`statusWaiting` dot): panes with status `waitingForInput`.
+- **waiting** (`statusWaiting` dot): panes with status `waitingForInput` in unmuted
+  workspaces.
+- **muted** (tertiary dot), only while its count is above 0: panes with status
+  `waitingForInput` in muted workspaces (§7.6), so the row reads `2 waiting · 5 muted`
+  rather than asking for attention the owner turned off. Its popover is titled
+  "Awaiting input, muted".
 - **inactive** (`statusInactive` dot): panes with `agentSessionID != null` AND
   status `idle` — an attached-but-idle (resumable) agent.
 
@@ -918,7 +974,8 @@ procedure:
 3. Compute the **activity summary** over all workspaces (`activitySummary`,
    `packages/shell/src/agents.ts:471-481`):
    - `agentCount` = Σ per-workspace `activeAgentCount`, where a workspace's count
-     is its panes **plus parked panes** with status ≠ `idle` (running or waiting).
+     is its panes **plus parked panes** with status ≠ `idle` (running or waiting),
+     muted workspaces included (§7.6: mute silences signals, not processes).
    - `workspaceCount` = number of workspaces with count > 0 (a workspace whose only
      live agents are parked still counts).
 4. If the summary is empty → quit with **no dialog** (`shouldConfirmQuit` = setting AND
@@ -1137,6 +1194,10 @@ interface SystemStats {
    - error: never suppressed.
    - OSC: suppressed when focused AND app active.
    - Dock bounce: only on stop, only when app inactive AND no background work.
+   - Muted workspace (§7.6): whatever the rows above allow reaches plugin observers
+     only, marked `muted: true`; no `notification` / `attention-request` message reaches a
+     window session (plugin views see it as a `plugin-event` and must honour `muted`).
+     Errors included.
 7. `sessionEnded` only clears a *matching* id — plus the `agentProfileName`
    recorded beside it (out-of-order `/clear` safety) — and always persists
    immediately.
@@ -1161,7 +1222,8 @@ interface SystemStats {
     survive relaunch.
 15. Focus acknowledgment: 600 ms, latest-wins timer; clears only `waitingForInput`;
     removes the pane's desktop notification.
-16. Dock badge shows the *waiting* count only; cleared on app activation.
+16. Dock badge shows the *waiting* count only (unmuted workspaces, §7.6); cleared on app
+    activation.
 17. Menu-bar dot precedence: waiting > running > none.
 18. Suppression checkboxes persist even when the dialog is cancelled.
 

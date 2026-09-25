@@ -73,6 +73,7 @@ export const WIRE_FIELD_TYPES = {
     script: 'string',
     action: 'string',
     excluded: 'bool',
+    muted: 'bool',
     worktree: 'string',
     branch: 'string',
     update_main: 'bool',

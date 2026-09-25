@@ -130,6 +130,7 @@ describe('workspace row decoding', () => {
             color: 'blue',
             icon: { kind: 'system', name: 'star.fill' },
             profileName: 'work',
+            muted: false,
             layout: { kind: 'leaf', paneID: P1 },
             focusedPaneID: P1,
             createdAt: 1_755_500_000.5,
@@ -184,6 +185,13 @@ describe('workspace row decoding', () => {
         expect(decodeWorkspaceRow(workspaceRow({ profileName: '' }))?.workspace.profileName).toBeNull();
         expect(decodeWorkspaceRow(workspaceRow({ profileName: null }))?.workspace.profileName).toBeNull();
         expect(decodeWorkspaceRow(workspaceRow({ profileName: 'work' }))?.workspace.profileName).toBe('work');
+    });
+
+    it('reads the muted flag, and a pre-v21 row without the column as unmuted', () => {
+        expect(decodeWorkspaceRow(workspaceRow({ muted: 1 }))?.workspace.muted).toBe(true);
+        expect(decodeWorkspaceRow(workspaceRow({ muted: 0 }))?.workspace.muted).toBe(false);
+        expect(decodeWorkspaceRow(workspaceRow({ muted: null }))?.workspace.muted).toBe(false);
+        expect(decodeWorkspaceRow(workspaceRow())?.workspace.muted).toBe(false);
     });
 });
 
@@ -354,6 +362,7 @@ describe('encoding (§5.4)', () => {
                 color: 'blue',
                 icon: { kind: 'emoji', grapheme: '🚀' },
                 profileName: null,
+                muted: false,
                 layout: {
                     kind: 'split',
                     direction: 'horizontal',
@@ -389,6 +398,7 @@ describe('encoding (§5.4)', () => {
                 color: 'blue',
                 icon: null,
                 profileName: null,
+                muted: false,
                 layout: { kind: 'empty' },
                 focusedPaneID: null,
                 createdAt: 1,
@@ -400,6 +410,27 @@ describe('encoding (§5.4)', () => {
             0
         );
         expect(row.slug).toBe('my-app-a4e8a251');
+    });
+
+    it('writes the muted flag as a SQLite boolean', () => {
+        const workspace = {
+            id: W1,
+            name: 'kelpi',
+            slug: 'kelpi-a4e8a251',
+            color: 'blue',
+            icon: null,
+            profileName: null,
+            muted: true,
+            layout: { kind: 'empty' },
+            focusedPaneID: null,
+            createdAt: 1,
+            lastAccessedAt: 1,
+            labels: [],
+            panes: [],
+            repoAssociations: []
+        } satisfies PersistedWorkspace;
+        expect(encodeWorkspaceRow(workspace, 0).muted).toBe(1);
+        expect(encodeWorkspaceRow({ ...workspace, muted: false }, 0).muted).toBe(0);
     });
 
     it('writes NULL tab columns for private web panes and for non-web panes (§5.4)', () => {
@@ -604,6 +635,7 @@ describe('snapshotToRows', () => {
         color: 'blue',
         icon: null,
         profileName: null,
+        muted: false,
         layout: { kind: 'leaf', paneID: P1 },
         focusedPaneID: P1,
         createdAt: 1,

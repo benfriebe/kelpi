@@ -25,6 +25,7 @@ const ROUTES = {
     'set-workspace-color': 'workspace',
     'set-workspace-icon': 'workspace',
     'set-workspace-profile': 'workspace',
+    'set-workspace-muted': 'workspace',
     'workspace-labels': 'workspace',
     'set-active-workspace': 'workspace',
     'move-workspace': 'workspace',

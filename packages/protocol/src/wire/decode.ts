@@ -314,7 +314,8 @@ function decodeCommand(
                 worktree: fields.text('worktree'),
                 branch: fields.text('branch'),
                 update_main: fields.flag('update_main', false),
-                repo: fields.text('repo')
+                repo: fields.text('repo'),
+                muted: fields.flag('muted', false)
             };
         case 'workspace-move': {
             const name = fields.nonEmpty('name');
@@ -341,6 +342,11 @@ function decodeCommand(
             const labelOp = fields.nonEmpty('label_op');
             if (labelOp === undefined) return guard(command, 'workspace-label requires label_op', 'label_op');
             return { command, name, label_op: labelOp, label_values: fields.list('label_values') ?? [] };
+        }
+        case 'workspace-mute': {
+            const name = fields.nonEmpty('name');
+            if (name === undefined) return guard(command, 'workspace-mute requires name', 'name');
+            return { command, name, muted: fields.bool('muted') };
         }
 
         // ── 6.4 group commands ───────────────────────────────────────────────────────

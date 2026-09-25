@@ -49,6 +49,7 @@ function workspace(overrides: Partial<PersistedWorkspace> & { id: string }): Per
         color: 'blue',
         icon: null,
         profileName: null,
+        muted: false,
         layout: { kind: 'empty' },
         focusedPaneID: null,
         createdAt: 1_776_423_707,

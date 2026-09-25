@@ -20,6 +20,7 @@ describe('toSnapshot', () => {
             { type: 'split-pane', workspaceID: W1, paneID: PA, direction: 'horizontal', now: NOW },
             { type: 'workspace-labels', id: W1, op: 'add', values: ['wip'] },
             { type: 'set-workspace-profile', id: W1, profileName: 'work' },
+            { type: 'set-workspace-muted', id: W1, muted: true },
             { type: 'cycle-layout', workspaceID: W1 },
             { type: 'set-sync-input-active', workspaceID: W1, active: true },
             {
@@ -40,6 +41,7 @@ describe('toSnapshot', () => {
             id: W1,
             labels: ['wip'],
             profileName: 'work',
+            muted: true,
             focusedPaneID: PB
         });
         // Parked panes never persist.
@@ -47,6 +49,7 @@ describe('toSnapshot', () => {
         const restored = reload(h.state());
         const reloaded = workspaceByID(restored, W1);
         expect(reloaded).toMatchObject({
+            muted: true,
             parkedPanes: [],
             focusHistory: [],
             recentlyClosedPanes: [],

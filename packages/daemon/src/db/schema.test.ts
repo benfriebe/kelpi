@@ -42,8 +42,8 @@ describe('migration ledger', () => {
             expect(MIGRATION_IDENTIFIERS).toContain(identifier);
         }
         expect(MIGRATION_IDENTIFIERS[0]).toBe('v1_initial');
-        expect(MIGRATION_IDENTIFIERS.at(-1)).toBe('v20_plugin_panes');
-        expect(MIGRATION_IDENTIFIERS).toHaveLength(20);
+        expect(MIGRATION_IDENTIFIERS.at(-1)).toBe('v21_workspace_muted');
+        expect(MIGRATION_IDENTIFIERS).toHaveLength(21);
     });
 
     it('is a no-op on the second run', () => {
@@ -54,7 +54,7 @@ describe('migration ledger', () => {
         db.close();
     });
 
-    it('produces the post-v20 schema (§8 + the daemon-only tail)', () => {
+    it('produces the post-v21 schema (§8 + the daemon-only tail)', () => {
         const db = freshDatabase();
         migrate(db);
 
@@ -70,7 +70,8 @@ describe('migration ledger', () => {
             'slug',
             'labelsJSON',
             'icon',
-            'profileName'
+            'profileName',
+            'muted'
         ]);
         expect(columnNames(db, 'pane')).toEqual([
             'id',
@@ -184,6 +185,26 @@ describe('migration ledger', () => {
         // Foreign identifiers survive untouched.
         expect(result.ledger).toContain('v7_scheduled_tasks');
         expect(result.ledger).toContain('v9_workspace_folders');
+        db.close();
+    });
+
+    it('adds the muted column (v21) defaulting existing workspaces to unmuted', () => {
+        const db = freshDatabase();
+        migrate(db);
+        db.run(`DELETE FROM ${MIGRATIONS_TABLE} WHERE identifier = 'v21_workspace_muted'`);
+        db.exec('ALTER TABLE "workspace" DROP COLUMN "muted"');
+        db.run(
+            `INSERT INTO "workspace" ("id","name","color","layoutJSON","createdAt","lastAccessedAt") VALUES (?,?,?,?,?,?)`,
+            'W1',
+            'kept',
+            'blue',
+            '{"empty":{}}',
+            1,
+            1
+        );
+
+        expect(migrate(db).applied).toEqual(['v21_workspace_muted']);
+        expect(db.all('SELECT "name", "muted" FROM "workspace"')).toEqual([{ name: 'kept', muted: 0 }]);
         db.close();
     });
 

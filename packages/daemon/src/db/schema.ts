@@ -195,7 +195,12 @@ export const MIGRATIONS: readonly Migration[] = [
     { identifier: 'v20_plugin_panes', apply: db => {
         addColumn(db, 'pane', 'pluginJSON', 'TEXT');
         addColumn(db, 'pane', 'pluginParked', 'BOOLEAN NOT NULL DEFAULT 0');
-    } }
+    } },
+    {
+        // Kelpi-only: a muted workspace raises no attention signals (agent-lifecycle §7.6).
+        identifier: 'v21_workspace_muted',
+        apply: (db) => addColumn(db, 'workspace', 'muted', 'BOOLEAN NOT NULL DEFAULT 0')
+    }
 ];
 
 /** The ledger identifiers this daemon owns, in registration order (`v1_initial` … `v19_…`). */
@@ -206,7 +211,11 @@ export const MIGRATION_IDENTIFIERS: readonly string[] = MIGRATIONS.map((m) => m.
  * parity, so a legacy `nex.db` ledger can never contain them. The legacy importer excludes
  * them when judging whether a source database "predates" this importer.
  */
-export const DAEMON_ONLY_MIGRATIONS: readonly string[] = ['v19_pane_agent_profile', 'v20_plugin_panes'];
+export const DAEMON_ONLY_MIGRATIONS: readonly string[] = [
+    'v19_pane_agent_profile',
+    'v20_plugin_panes',
+    'v21_workspace_muted'
+];
 
 export function ensureMigrationsTable(db: SqlDatabase): void {
     db.exec(`CREATE TABLE IF NOT EXISTS ${MIGRATIONS_TABLE} (identifier TEXT NOT NULL PRIMARY KEY)`);

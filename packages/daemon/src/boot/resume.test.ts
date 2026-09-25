@@ -58,6 +58,7 @@ function workspace(panes: readonly PersistedPane[], layout: PaneLayout, profileN
         color: 'blue',
         icon: null,
         profileName,
+        muted: false,
         layout,
         focusedPaneID: panes[0]?.id ?? null,
         createdAt: 1_700_000_000,

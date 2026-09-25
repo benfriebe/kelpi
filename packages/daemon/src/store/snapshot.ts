@@ -71,6 +71,7 @@ export interface PersistedWorkspace {
     readonly color: WorkspaceColor;
     readonly icon: IconRef | null;
     readonly profileName: string | null;
+    readonly muted: boolean;
     /** The un-zoomed tree (a zoomed workspace persists `savedLayout`). */
     readonly layout: PaneLayout;
     readonly focusedPaneID: string | null;
@@ -149,6 +150,7 @@ function persistWorkspace(workspace: WorkspaceState): PersistedWorkspace {
         color: workspace.color,
         icon: workspace.icon,
         profileName: workspace.profileName,
+        muted: workspace.muted,
         layout: workspace.savedLayout ?? workspace.layout,
         focusedPaneID: workspace.focusedPaneID,
         createdAt: workspace.createdAt,
@@ -249,6 +251,7 @@ export function fromSnapshot(
             color: record.color,
             icon: record.icon,
             profileName: record.profileName,
+            muted: record.muted === true,
             panes,
             parkedPanes: (record.panes ?? []).filter(pane => pane.parked).map(restorePane),
             layout: record.layout,

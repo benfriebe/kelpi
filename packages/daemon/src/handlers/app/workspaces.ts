@@ -4,6 +4,7 @@
  * `workspace-list` / `workspace-create` / `workspace-delete` / `workspace-label` are
  * request/response; `workspace-move` / `workspace-profile` are fire-and-forget (guards still
  * run, failures are silently dropped — §1 legacy path).
+ * `workspace-mute` is request/response too, so a toggle can report the state it produced.
  *
  * Ordering rules that are contract:
  *   - list order = sidebar order INCLUDING collapsed group members, deduped, with any
@@ -85,6 +86,7 @@ function workspaceEntry(state: DaemonState, workspace: WorkspaceState): Workspac
         created_at: wireTimestamp(workspace.createdAt),
         last_accessed_at: wireTimestamp(workspace.lastAccessedAt),
         labels: [...workspace.labels],
+        muted: workspace.muted,
         ...(lastActivity !== undefined ? { last_activity_at: wireTimestamp(lastActivity) } : {}),
         ...(session !== undefined && session !== null ? { agent_session_id: session } : {}),
         ...(group !== undefined ? { group } : {})
@@ -163,6 +165,8 @@ interface CreateInput {
     readonly workingDirectory: string | undefined;
     readonly color: WorkspaceColor | undefined;
     readonly profile: string | undefined;
+    /** Set on the create itself, so the first pane never raises an attention signal. */
+    readonly muted: boolean;
     readonly groupID: string | undefined;
     readonly workspaceID: string;
     readonly repoAssociations: readonly RepoAssociation[] | undefined;
@@ -182,6 +186,7 @@ function dispatchCreate(ctx: AppContext, deps: AppDeps, input: CreateInput): voi
         ...(input.workingDirectory !== undefined ? { workingDirectory: input.workingDirectory } : {}),
         ...(input.groupID !== undefined ? { groupID: input.groupID } : {}),
         ...(input.profile !== undefined ? { profileName: input.profile } : {}),
+        ...(input.muted ? { muted: true } : {}),
         ...(input.repoAssociations !== undefined ? { repoAssociations: input.repoAssociations } : {})
     });
     deps.scrollTarget(workspaceSidebarID(input.workspaceID));
@@ -337,6 +342,7 @@ function handleWorktreeCreate(
                 workingDirectory: seed.path,
                 color: msg.color,
                 profile: msg.profile,
+                muted: msg.muted === true,
                 groupID,
                 workspaceID,
                 repoAssociations: [
@@ -388,6 +394,7 @@ function handleWorkspaceCreate(
             workingDirectory: msg.path,
             color: msg.color,
             profile: msg.profile,
+            muted: msg.muted === true,
             groupID: undefined,
             workspaceID,
             repoAssociations: undefined
@@ -424,6 +431,7 @@ function handleWorkspaceCreate(
         workingDirectory: msg.path,
         color: msg.color,
         profile: msg.profile,
+        muted: msg.muted === true,
         groupID,
         workspaceID,
         repoAssociations: undefined
@@ -621,6 +629,31 @@ function handleWorkspaceLabel(
 }
 
 // ---------------------------------------------------------------------------
+// workspace-mute (§6.7)
+// ---------------------------------------------------------------------------
+
+function handleWorkspaceMute(
+    nameOrID: string,
+    muted: boolean | undefined,
+    ctx: AppContext,
+    reply: ReplyHandle | null,
+    deps: AppDeps
+): void {
+    const state = ctx.store.getState();
+    const resolved = resolveWorkspaceStrict(resolveStateOf(state), nameOrID);
+    const workspace = resolved === null ? null : workspaceByID(state, resolved.id);
+    if (workspace === null) {
+        fail(reply, `no workspace matches '${nameOrID}'`);
+        return;
+    }
+    // Absent = toggle, resolved here so the reply reports the state it produced.
+    const next = muted ?? !workspace.muted;
+    ctx.store.dispatch({ type: 'set-workspace-muted', id: workspace.id, muted: next });
+    deps.persist();
+    ok(reply, { workspace_id: uuidOut(workspace.id), workspace_name: workspace.name, muted: next });
+}
+
+// ---------------------------------------------------------------------------
 // Table
 // ---------------------------------------------------------------------------
 
@@ -643,6 +676,9 @@ export function workspaceHandlerEntries(deps: AppDeps): readonly (readonly [stri
         }),
         forCommand('workspace-label', (msg, ctx, reply) => {
             handleWorkspaceLabel(msg.name, msg.label_op, msg.label_values, ctx, reply, deps);
+        }),
+        forCommand('workspace-mute', (msg, ctx, reply) => {
+            handleWorkspaceMute(msg.name, msg.muted, ctx, reply, deps);
         })
     ];
 }

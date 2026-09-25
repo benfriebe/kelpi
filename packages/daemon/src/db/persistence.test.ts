@@ -38,6 +38,7 @@ function richSnapshot(): PersistedSnapshot {
                 color: 'purple',
                 icon: { kind: 'system', name: 'star.fill' },
                 profileName: 'work',
+                muted: false,
                 layout: {
                     kind: 'split',
                     direction: 'horizontal',
@@ -125,6 +126,7 @@ function richSnapshot(): PersistedSnapshot {
                 color: 'blue',
                 icon: { kind: 'emoji', grapheme: '📁' },
                 profileName: null,
+                muted: true,
                 layout: { kind: 'leaf', paneID: P_WEB },
                 focusedPaneID: null,
                 createdAt: 1_755_400_000,

@@ -108,6 +108,7 @@ function createWorkspace(
         color: action.color ?? 'blue',
         createdAt,
         profileName: normalizedAssignment(action.profileName ?? null),
+        muted: action.muted ?? false,
         labels: action.labels ?? [],
         panes: [pane],
         layout: leaf(pane.id),
@@ -347,6 +348,11 @@ export function reduceWorkspaceAction(state: DaemonState, action: DomainAction):
             return updateWorkspace(state, action.id, (workspace) => ({
                 ...workspace,
                 profileName: normalizedAssignment(action.profileName)
+            }));
+        case 'set-workspace-muted':
+            return updateWorkspace(state, action.id, (workspace) => ({
+                ...workspace,
+                muted: action.muted
             }));
         case 'workspace-labels':
             return applyLabels(state, action);

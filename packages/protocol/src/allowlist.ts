@@ -27,6 +27,7 @@ export const REPLY_COMMANDS: ReadonlySet<WireCommandName> = new Set([
     'workspace-create',
     'workspace-delete',
     'workspace-label',
+    'workspace-mute',
     'group-reorder',
     'group-sort',
     'graft-start',

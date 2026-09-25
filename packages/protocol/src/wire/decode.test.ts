@@ -389,7 +389,13 @@ describe('workspace and group commands', () => {
             worktree: undefined,
             branch: undefined,
             update_main: false,
-            repo: undefined
+            repo: undefined,
+            muted: false
+        });
+        expect(ok({ command: 'workspace-create', muted: true })).toMatchObject({ muted: true });
+        expect(rejected({ command: 'workspace-create', muted: 'true' })).toMatchObject({
+            reason: 'field-type',
+            field: 'muted'
         });
         expect(ok({ command: 'workspace-create', color: 'chartreuse' })).toMatchObject({ color: undefined });
         expect(ok({ command: 'workspace-create', color: 'blue' })).toMatchObject({ color: 'blue' });
@@ -411,6 +417,7 @@ describe('workspace and group commands', () => {
             'workspace-delete',
             'workspace-profile',
             'workspace-label',
+            'workspace-mute',
             'group-create',
             'group-rename',
             'group-delete',
@@ -421,6 +428,21 @@ describe('workspace and group commands', () => {
             expect(rejected({ command, name: '', label_op: 'add', new_name: 'n', by: 'name' }).field).toBe('name');
             expect(rejected({ command, label_op: 'add', new_name: 'n', by: 'name' }).field).toBe('name');
         }
+    });
+
+    it('decodes workspace-mute with an explicit state or a toggle', () => {
+        expect(ok({ command: 'workspace-mute', name: 'feat-x', muted: true })).toEqual({
+            command: 'workspace-mute',
+            name: 'feat-x',
+            muted: true
+        });
+        expect(ok({ command: 'workspace-mute', name: 'feat-x', muted: false })).toMatchObject({ muted: false });
+        // absent = toggle, left for the handler to resolve against the live state
+        expect(ok({ command: 'workspace-mute', name: 'feat-x' })).toEqual({
+            command: 'workspace-mute',
+            name: 'feat-x',
+            muted: undefined
+        });
     });
 
     it('decodes workspace-label operations with defaulted values', () => {

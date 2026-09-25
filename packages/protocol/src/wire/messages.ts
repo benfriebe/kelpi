@@ -183,6 +183,8 @@ export interface WorkspaceCreateMessage {
     branch?: string | undefined;
     update_main: boolean;
     repo?: string | undefined;
+    /** Create the workspace already muted (agent-lifecycle §7.6). */
+    muted?: boolean | undefined;
 }
 
 export interface WorkspaceMoveMessage {
@@ -230,6 +232,13 @@ export interface WorkspaceLabelMessage {
     /** Raw wire value (`set|add|remove|clear`); an unknown op is a handler error. */
     label_op: string;
     label_values: readonly string[];
+}
+
+export interface WorkspaceMuteMessage {
+    command: 'workspace-mute';
+    name: string;
+    /** Absent = toggle the current state. */
+    muted?: boolean | undefined;
 }
 
 // ── 6.4 Group commands ──────────────────────────────────────────────────────────────
@@ -568,6 +577,7 @@ export type WireMessage =
     | WorkspaceDeleteMessage
     | WorkspaceProfileMessage
     | WorkspaceLabelMessage
+    | WorkspaceMuteMessage
     | GroupListMessage
     | GroupCreateMessage
     | GroupRenameMessage
@@ -629,6 +639,7 @@ export const EXPLICIT_CHAIN_COMMANDS: ReadonlySet<WireCommandName> = new Set([
     'workspace-delete',
     'workspace-profile',
     'workspace-label',
+    'workspace-mute',
     'group-list',
     'group-create',
     'group-rename',

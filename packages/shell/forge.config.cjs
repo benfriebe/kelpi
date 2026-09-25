@@ -39,15 +39,22 @@
  *
  * ## Signing
  *
- * Nothing here is notarized by default; there is no `osxSign`/`osxNotarize` block, so `pnpm dist`
- * produces an ad-hoc-signed (arm64 requirement) app that Gatekeeper will quarantine on any machine
- * that did not build it. That gap, and the checklist for closing it, are written down in the repo
- * README ("Signing and notarization"). Setting `KELPI_MACOS_IDENTITY` opts into `osxSign` with that
- * identity — the first half of the checklist, untested until someone with a Developer ID runs it.
+ * By default `pnpm dist` produces an ad-hoc-signed (arm64 requirement) app that Gatekeeper will
+ * quarantine on any machine that did not build it. That is what `scripts/self-upgrade.mjs`
+ * promotes locally, and it needs no certificate.
+ *
+ * `KELPI_MACOS_IDENTITY="Developer ID Application: …"` opts into a real signature: `osxSign`
+ * signs every Mach-O file inside-out under the hardened runtime, with the per-file entitlements
+ * from `src/packaging.ts` (`signOptionsForFile`), and a signing failure fails the build. Setting
+ * notarization credentials as well (`notarizeOptions`: a notarytool keychain profile, an App
+ * Store Connect API key, or an Apple ID) notarizes and staples the app. The release workflow,
+ * `.github/workflows/release.yml`, does both; the repo README ("Signing and notarization") has
+ * the local recipe.
  *
  * The ad-hoc signature is applied in `postPackage`, *after* the renames and `Info.plist` rewrites
  * that packaging does — the `FusesPlugin` signature is stale by then, and shipping the stale one
- * left the app running under the wrong code identity entirely (N22; `adhocSignCommands`).
+ * left the app running under the wrong code identity entirely (N22; `adhocSignCommands`). A real
+ * signature needs no such step: packager signs after its last rename and copy.
  */
 
 const { spawnSync } = require('node:child_process');
@@ -105,6 +112,42 @@ const signingIdentity = (process.env['KELPI_MACOS_IDENTITY'] ?? '').trim();
  */
 const cookieEncryption = packagingHelpers().cookieEncryptionFuseEnabled(signingIdentity);
 
+/** `null` for a signed-only or ad-hoc build; throws on credentials that are half set. */
+const notarize = packagingHelpers().notarizeOptions(process.env, signingIdentity);
+
+/**
+ * `osxSign`, only when an identity is set. `continueOnError: false` because packager's default
+ * is to warn and keep going, which would ship an unsigned app from a release build.
+ */
+function osxSignConfig() {
+    const { signOptionsForFile, signIgnore } = packagingHelpers();
+    return {
+        identity: signingIdentity,
+        continueOnError: false,
+        optionsForFile: (filePath) => signOptionsForFile(filePath, 'Kelpi.app'),
+        ignore: (filePath) => signIgnore(filePath)
+    };
+}
+
+/**
+ * The prompt text macOS shows when a program in a pane (or a web page) asks for one of the
+ * `APP_ENTITLEMENTS`. Without a usage string the request is denied outright; Electron's
+ * defaults cover only some of them, and read "This app needs access to …".
+ */
+const USAGE_DESCRIPTIONS = {
+    NSMicrophoneUsageDescription: 'A program running in Kelpi would like to use your microphone.',
+    NSAudioCaptureUsageDescription: "A program running in Kelpi would like to access your system's audio.",
+    NSCameraUsageDescription: 'A program running in Kelpi would like to use the camera.',
+    NSAppleEventsUsageDescription: 'A program running in Kelpi would like to use AppleScript.',
+    NSContactsUsageDescription: 'A program running in Kelpi would like to access your Contacts.',
+    NSCalendarsUsageDescription: 'A program running in Kelpi would like to access your Calendar.',
+    NSRemindersUsageDescription: 'A program running in Kelpi would like to access your reminders.',
+    NSLocationUsageDescription: 'A program running in Kelpi would like to access your location.',
+    NSPhotoLibraryUsageDescription: 'A program running in Kelpi would like to access your Photo Library.',
+    NSBluetoothAlwaysUsageDescription: 'A program running in Kelpi would like to use Bluetooth.',
+    NSBluetoothPeripheralUsageDescription: 'A program running in Kelpi would like to use Bluetooth.'
+};
+
 module.exports = {
     packagerConfig: {
         // `productName` in package.json names the bundle (`Kelpi.app`); this is the id that keeps
@@ -142,6 +185,7 @@ module.exports = {
          * a file (../kelpi-docs/capabilities 06 ▸ CONT-124's "gated behind CONT-123").
          */
         extendInfo: {
+            ...USAGE_DESCRIPTIONS,
             CFBundleDocumentTypes: [
                 {
                     CFBundleTypeName: 'Markdown Document',
@@ -162,7 +206,8 @@ module.exports = {
                 }
             ]
         },
-        ...(signingIdentity.length > 0 ? { osxSign: { identity: signingIdentity } } : {})
+        ...(signingIdentity.length > 0 ? { osxSign: osxSignConfig() } : {}),
+        ...(notarize !== null ? { osxNotarize: notarize } : {})
     },
 
     // stack.md §2: "keep *all* native modules out of the shell" — node-pty lives in the daemon,

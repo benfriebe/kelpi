@@ -6,12 +6,15 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import {
+    APP_ENTITLEMENTS,
     APP_ICON_TILE_SPAN,
     ESM_SCOPE_PACKAGE_JSON,
     ICNS_VARIANTS,
     MINIMUM_NODE_MAJOR,
+    NODE_ENTITLEMENTS,
     PACKAGED_APP_FILES,
     RESOURCE_NAMES,
+    SPAWN_HELPER_ENTITLEMENTS,
     STAGED_RESOURCE_NAMES,
     adhocSignCommands,
     adhocSignRequired,
@@ -20,9 +23,14 @@ import {
     buildAppIcns,
     cookieEncryptionFuseEnabled,
     encodeIcns,
+    isMachOHeader,
     isSignedBuild,
     nodeRuntimeIssues,
-    packagedAppIgnore
+    notarizeOptions,
+    packagedAppIgnore,
+    readFileHeader,
+    signIgnore,
+    signOptionsForFile
 } from './packaging.js';
 import { CLI_BUNDLE_NAME } from './resources.js';
 
@@ -284,6 +292,133 @@ describe('the post-package ad-hoc signature (N22)', () => {
             // that still fails --strict would ship the same defect.
             ['codesign', '--verify', '--strict', '/out/Kelpi.app']
         ]);
+    });
+});
+
+describe('the Developer ID signature', () => {
+    const app = '/out/Kelpi-darwin-arm64/Kelpi.app';
+
+    it('gives the app its terminal entitlements, under the hardened runtime', () => {
+        expect(signOptionsForFile(app, 'Kelpi.app')).toEqual({
+            hardenedRuntime: true,
+            entitlements: [...APP_ENTITLEMENTS]
+        });
+        // A pane's voice mode and osascript are attributed to the app; without these they are
+        // denied with no prompt once the hardened runtime is on.
+        expect(APP_ENTITLEMENTS).toContain('com.apple.security.device.audio-input');
+        expect(APP_ENTITLEMENTS).toContain('com.apple.security.automation.apple-events');
+    });
+
+    it("gives the bundled node Node's own release entitlements", () => {
+        expect(signOptionsForFile(`${app}/Contents/Resources/node`, 'Kelpi.app')?.entitlements).toEqual([
+            ...NODE_ENTITLEMENTS
+        ]);
+        expect(NODE_ENTITLEMENTS).toContain('com.apple.security.cs.allow-jit');
+    });
+
+    it('passes DYLD_* through node and spawn-helper to the shells they start', () => {
+        const helper = `${app}/Contents/Resources/daemon/node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper`;
+        expect(signOptionsForFile(helper, 'Kelpi.app')?.entitlements).toEqual([...SPAWN_HELPER_ENTITLEMENTS]);
+        const dyld = 'com.apple.security.cs.allow-dyld-environment-variables';
+        expect(SPAWN_HELPER_ENTITLEMENTS).toContain(dyld);
+        expect(NODE_ENTITLEMENTS).toContain(dyld);
+    });
+
+    it("leaves Electron's helpers, frameworks and libraries on osx-sign's defaults", () => {
+        for (const file of [
+            `${app}/Contents/Frameworks/Kelpi Helper (Renderer).app`,
+            `${app}/Contents/Frameworks/Kelpi Helper.app`,
+            `${app}/Contents/Frameworks/Electron Framework.framework`,
+            `${app}/Contents/Resources/daemon/node_modules/node-pty/prebuilds/darwin-arm64/pty.node`,
+            `${app}/Contents/Resources/nodes`,
+            '/out/Other.app'
+        ]) {
+            expect(signOptionsForFile(file, 'Kelpi.app')).toBeNull();
+        }
+    });
+
+    it('never grants get-task-allow, which notarization rejects', () => {
+        for (const set of [APP_ENTITLEMENTS, NODE_ENTITLEMENTS, SPAWN_HELPER_ENTITLEMENTS]) {
+            expect(set).not.toContain('com.apple.security.get-task-allow');
+        }
+    });
+});
+
+describe('signIgnore', () => {
+    const header = (...bytes: number[]) => () => Uint8Array.from(bytes);
+
+    it('signs Mach-O files: thin arm64, thin x86_64 and universal', () => {
+        expect(isMachOHeader(Uint8Array.from([0xcf, 0xfa, 0xed, 0xfe]))).toBe(true);
+        expect(isMachOHeader(Uint8Array.from([0xce, 0xfa, 0xed, 0xfe]))).toBe(true);
+        expect(isMachOHeader(Uint8Array.from([0xca, 0xfe, 0xba, 0xbe]))).toBe(true);
+        expect(signIgnore('/x/node', header(0xcf, 0xfa, 0xed, 0xfe))).toBe(false);
+    });
+
+    it('skips resources that only look binary', () => {
+        expect(signIgnore('/x/icon.png', () => PNG_SIGNATURE)).toBe(true);
+        expect(signIgnore('/x/engine.wasm', header(0x00, 0x61, 0x73, 0x6d))).toBe(true);
+        expect(signIgnore('/x/tiny', header(0xcf, 0xfa))).toBe(true);
+    });
+
+    it('never skips a directory, so every .app and .framework is still signed', () => {
+        expect(signIgnore('/x/Kelpi.app', () => null)).toBe(false);
+    });
+
+    it('reads real files', () => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-sign-ignore-'));
+        try {
+            const text = path.join(dir, 'kelpi');
+            fs.writeFileSync(text, '#!/bin/sh\n');
+            expect(signIgnore(text)).toBe(true);
+            expect(signIgnore(dir)).toBe(false);
+            expect(readFileHeader(path.join(dir, 'missing'))).toBeNull();
+            if (process.platform === 'darwin') expect(signIgnore(process.execPath)).toBe(false);
+        } finally {
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
+    });
+});
+
+describe('notarizeOptions', () => {
+    const identity = 'Developer ID Application: Someone (TEAMID)';
+
+    it('is off when no credentials are set, and treats blank values as unset', () => {
+        expect(notarizeOptions({}, identity)).toBeNull();
+        expect(notarizeOptions({ APPLE_ID: '  ', KELPI_NOTARY_PROFILE: '' }, '')).toBeNull();
+    });
+
+    it('takes a notarytool keychain profile for a local build', () => {
+        expect(notarizeOptions({ KELPI_NOTARY_PROFILE: 'kelpi-notary' }, identity)).toEqual({
+            keychainProfile: 'kelpi-notary'
+        });
+    });
+
+    it('takes an App Store Connect API key', () => {
+        const env = { APPLE_API_KEY: '/k/AuthKey.p8', APPLE_API_KEY_ID: 'KEYID', APPLE_API_ISSUER: 'issuer' };
+        expect(notarizeOptions(env, identity)).toEqual({
+            appleApiKey: '/k/AuthKey.p8',
+            appleApiKeyId: 'KEYID',
+            appleApiIssuer: 'issuer'
+        });
+    });
+
+    it("takes the Apple ID and app-specific password Nex's release used", () => {
+        const env = { APPLE_ID: 'me@example.com', APPLE_ID_PASSWORD: 'abcd-efgh', APPLE_TEAM_ID: '4ASXCG2599' };
+        expect(notarizeOptions(env, identity)).toEqual({
+            appleId: 'me@example.com',
+            appleIdPassword: 'abcd-efgh',
+            teamId: '4ASXCG2599'
+        });
+    });
+
+    it('refuses half-set credentials rather than shipping an unnotarized app', () => {
+        expect(() => notarizeOptions({ APPLE_ID: 'me@example.com', APPLE_TEAM_ID: 'T' }, identity)).toThrow(
+            /APPLE_ID_PASSWORD missing/
+        );
+    });
+
+    it('refuses to notarize an ad-hoc build', () => {
+        expect(() => notarizeOptions({ KELPI_NOTARY_PROFILE: 'kelpi-notary' }, '')).toThrow(/KELPI_MACOS_IDENTITY/);
     });
 });
 

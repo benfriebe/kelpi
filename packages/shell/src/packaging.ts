@@ -158,7 +158,7 @@ export function isSignedBuild(identity: string | null | undefined): boolean {
  * runs in exactly such a sandbox) has no keychain to satisfy it with.
  *
  * So cookie encryption travels with signing, and turns on in the same step as the Developer ID
- * (README ▸ "Signing and notarization"). Note that even a signed build cannot answer that dialog
+ * (README ▸ "Signing, notarization and releases"). Note that even a signed build cannot answer that dialog
  * inside the smoke's private `HOME`: run `packaged-smoke.mjs --mock-keychain` there.
  */
 export function cookieEncryptionFuseEnabled(identity: string | null | undefined): boolean {

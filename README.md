@@ -357,45 +357,78 @@ adopted as-is, so a packaged app and a development daemon coexist.
 Two things about the build worth knowing:
 
 - **The bundled `node` is whichever Node built the app** (or `KELPI_NODE_BINARY`), copied in and
-  checked for version and architecture. That is fine locally and not fine for a release — see
-  below.
+  checked for version and architecture. A release builds under `actions/setup-node`, so it
+  bundles the official Node build, re-signed with Kelpi's identity (see below).
 - **The icon is generated, not designed**: `src/packaging.ts` draws it and writes a real `.icns`,
   so a build never silently ships the stock Electron icon. Replacing it means dropping a designed
   `.icns` in and pointing `packagerConfig.icon` at it.
 
 Auto-update is wired but **off**, and off by default in every build: `update-electron-app` is
-loaded lazily behind `KELPI_AUTO_UPDATE=1`, so a packaged app makes no update request at all. It
-must stay off until the two conditions in `packages/shell/src/updater.ts` hold — a **public**
-GitHub repo (`update.electronjs.org` serves no private ones) and a signed, notarized build.
+loaded lazily behind `KELPI_AUTO_UPDATE=1`, so a packaged app makes no update request at all. The
+repo is public and releases are signed and notarized, which were the two conditions in
+`packages/shell/src/updater.ts`; what still stands in the way is the daemon (#272): an update
+replaces the app, but the running daemon is the old bundle's.
 
-### Signing and notarization — not done yet
+### Signing, notarization and releases
 
-Nothing in the current output is signed or notarized:
+A plain `pnpm dist` is **ad-hoc signed** (an arm64 requirement, applied automatically). It runs
+on the machine that built it, and that is what `scripts/self-upgrade.mjs` promotes. Any other
+Mac quarantines it ("Kelpi is damaged and can't be opened").
 
-| | today |
-|---|---|
-| Code signature | ad-hoc only (an arm64 requirement, applied automatically) |
-| Developer ID | none — `forge.config.cjs` has no `osxSign` block by default |
-| Notarization / stapling | none |
-| Bundled `node` | copied unsigned from the build machine |
-| Auto-update | off (and must stay off: Squirrel cannot install an unsigned update) |
-| Cookie encryption | off — the fuse needs a stable code identity for its keychain key, so it turns on with step 1 below |
+A **release** is signed with a Developer ID, notarized and stapled. Pushing a `v<semver>` tag
+runs `.github/workflows/release.yml`, which:
 
-In practice: the app runs on the machine that built it, and on any other Mac it is quarantined
-("Kelpi is damaged and can't be opened") until someone runs
-`xattr -dr com.apple.quarantine /Applications/Kelpi.app`. Do not ship it to anyone yet.
+1. sets the app's version from the tag (`packages/shell/package.json`; Squirrel compares it
+   with the release tags),
+2. runs `pnpm dist` with the Developer ID and notarization credentials, which signs, notarizes
+   and staples the app before the ZIP and DMG are made from it,
+3. signs, notarizes and staples the DMG,
+4. checks the app, the DMG and the app inside the ZIP with `codesign`, `stapler` and `spctl`,
+5. drafts a GitHub Release with the DMG and the ZIP (Squirrel installs from the ZIP). Publishing
+   the draft is manual.
 
-The checklist for closing that gap, in order:
+Running the workflow by hand does everything except the release and leaves the DMG and ZIP as
+workflow artifacts. Its secrets live in the repo's `Kelpi` environment:
+`DEVELOPER_ID_CERTIFICATE` (base64 of the Developer ID Application `.p12`),
+`DEVELOPER_ID_PASSWORD`, `APPLE_ID` and `APPLE_ID_PASSWORD` (an app-specific password).
 
-1. A **Developer ID Application** certificate in the login keychain. `KELPI_MACOS_IDENTITY="Developer ID Application: …"` already opts `pnpm dist` into `osxSign` with it — **and, in the same step, flips `EnableCookieEncryption` back on**, because that fuse needs a code identity stable enough for the keychain's ACL (`cookieEncryptionFuseEnabled`, `packages/shell/src/packaging.ts`). Expect a one-time "Kelpi wants to use your confidential information stored in Kelpi Safe Storage" prompt on first launch, and run the packaged smoke with `--mock-keychain` from then on.
-2. **Sign the bundled `node`** and replace it with an official Node build for the target arch. It is a redistributed executable inside the bundle, so it needs its own signature; with the hardened runtime it also needs the JIT entitlements (`com.apple.security.cs.allow-jit`, `…allow-unsigned-executable-memory`).
-3. **Notarize + staple**: add `osxNotarize` (notarytool with an App Store Connect API key) to `forge.config.cjs`, then `xcrun stapler staple` the `.app` and the `.dmg`.
-4. **Verify** on a machine that never saw the build: `spctl -a -vvv -t install Kelpi.app` and `codesign --verify --deep --strict --verbose=2 Kelpi.app`.
-5. Only then consider `KELPI_AUTO_UPDATE`, and only if the repo is public.
+What signing does (`forge.config.cjs`, `signOptionsForFile` in `packages/shell/src/packaging.ts`):
 
-Fuse flipping already happens before signing (Forge's fuses plugin runs in `packageAfterCopy`),
-so the order above needs no rearranging — but re-run `pnpm --filter @kelpi/shell smoke:packaged`
-after any signing change, since a mis-signed bundle fails at launch, not at build time.
+- Every Mach-O file is signed inside-out under the **hardened runtime**, which notarization
+  requires, and a signing failure fails the build. Resources are sealed by their bundle, not
+  signed one by one.
+- `Kelpi.app` carries a terminal's entitlements: microphone, camera, AppleScript, contacts,
+  calendars, location and photos. Programs running in a pane are attributed to Kelpi, so
+  without them a hardened Kelpi would deny Claude Code's voice mode or an `osascript` with no
+  prompt at all.
+- The bundled `node` gets the official Node build's entitlements minus `get-task-allow`, and
+  node-pty's `spawn-helper` keeps `DYLD_*` variables flowing through to your shells.
+- **`EnableCookieEncryption` turns on** with the identity, because that fuse needs a code
+  identity stable enough for the keychain's ACL (`cookieEncryptionFuseEnabled`). Expect a
+  one-time "Kelpi wants to use your confidential information stored in Kelpi Safe Storage"
+  prompt on first launch, and run the packaged smoke with `--mock-keychain`.
+
+To sign and notarize locally:
+
+```bash
+# once: save notarization credentials in the keychain (prompts for an app-specific password)
+xcrun notarytool store-credentials kelpi-notary --apple-id <apple-id> --team-id 4ASXCG2599
+
+KELPI_MACOS_IDENTITY="Developer ID Application: BENJAMIN RYAN FRIEBE (4ASXCG2599)" \
+KELPI_NOTARY_PROFILE=kelpi-notary pnpm dist
+
+KELPI_MACOS_IDENTITY="Developer ID Application: BENJAMIN RYAN FRIEBE (4ASXCG2599)" \
+  node packages/shell/scripts/packaged-smoke.mjs --no-build --no-package --mock-keychain
+spctl -a -vvv -t exec packages/shell/out/Kelpi-darwin-arm64/Kelpi.app
+```
+
+Leave out `KELPI_NOTARY_PROFILE` to sign without notarizing. Notarization also accepts an App
+Store Connect API key (`APPLE_API_KEY`, `APPLE_API_KEY_ID`, `APPLE_API_ISSUER`) or an Apple ID
+(`APPLE_ID`, `APPLE_ID_PASSWORD`, `APPLE_TEAM_ID`); a group set only in part fails the build
+rather than shipping an unnotarized app.
+
+Re-run the packaged smoke after any signing change, since a mis-signed bundle fails at launch,
+not at build time. The final check is a Mac that never saw the build: open the DMG there.
 
 ### Remote access over Tailscale
 

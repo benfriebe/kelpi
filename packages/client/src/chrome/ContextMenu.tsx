@@ -129,6 +129,10 @@ export interface MenuItemSpec {
      * chevron sits) instead of the leading tick, and expose the row as `menuitemcheckbox` with
      * `aria-checked`. For an on/off setting rather than a pick from a list (the row menu's Mute
      * Notifications). `'mixed'` reads as unchecked here; every other row keeps the tick.
+     *
+     * Selecting such a row toggles it IN PLACE: `onSelect` runs and the menu stays open, so the
+     * new state is seen (and can be flipped back). The caller re-derives `checked` from its live
+     * state, which is what the box shows. Every other row is a command and closes the menu.
      */
     readonly control?: 'checkbox' | undefined;
     /** A real-color dot (label presets, workspace colors) drawn before the label. */
@@ -366,6 +370,9 @@ function MenuRow(props: RowProps): ReactElement {
                 event.stopPropagation();
                 if (!interactive) return;
                 props.onActivate();
+                // A checkbox row stays open after it toggles; keep the keyboard on it, so a
+                // pointer toggle can be followed by the arrow walk or a second Space.
+                if (checkbox) event.currentTarget.focus();
             }}
         >
             {/* L11: the check column exists only for a row with NO swatch to carry it, and a
@@ -496,7 +503,14 @@ export function ContextMenu(props: ContextMenuProps): ReactElement | null {
         };
         const onKeyDown = (event: KeyboardEvent): void => {
             const key = event.key;
-            if (key !== 'ArrowDown' && key !== 'ArrowUp' && key !== 'ArrowRight' && key !== 'ArrowLeft' && key !== 'Enter') {
+            if (
+                key !== 'ArrowDown' &&
+                key !== 'ArrowUp' &&
+                key !== 'ArrowRight' &&
+                key !== 'ArrowLeft' &&
+                key !== 'Enter' &&
+                key !== ' '
+            ) {
                 return;
             }
             const root = rootRef.current;
@@ -544,8 +558,10 @@ export function ContextMenu(props: ContextMenuProps): ReactElement | null {
                 return;
             }
 
-            // Enter: a submenu parent opens (and hands the keyboard to its first row), anything
-            // else activates through the row's own click path so there is one activation route.
+            // Enter or Space: a submenu parent opens (and hands the keyboard to its first row),
+            // anything else activates through the row's own click path so there is one activation
+            // route. Space is handled here rather than left to the button's own keyup click, so
+            // both keys act on the same keydown and the page behind never sees them.
             if (!onRow || active === null) return;
             consume();
             if (!inSubmenu && openSubmenuOf(active)) return;
@@ -590,7 +606,8 @@ export function ContextMenu(props: ContextMenuProps): ReactElement | null {
                                 return;
                             }
                             item.onSelect?.();
-                            onClose();
+                            // A checkbox toggles in place; every other row is a command.
+                            if (item.control !== 'checkbox') onClose();
                         }}
                     />
                     {openSubmenuID === item.id && submenuItems !== undefined ? (
@@ -613,7 +630,7 @@ export function ContextMenu(props: ContextMenuProps): ReactElement | null {
                                     onHover={() => undefined}
                                     onActivate={() => {
                                         child.onSelect?.();
-                                        onClose();
+                                        if (child.control !== 'checkbox') onClose();
                                     }}
                                 />
                             ))}

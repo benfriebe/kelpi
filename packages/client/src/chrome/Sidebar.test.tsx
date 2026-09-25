@@ -1,5 +1,5 @@
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
-import type { ReactElement } from 'react';
+import { useState, type ReactElement } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { useChromeCaret } from '../app/caret-visuals';
@@ -670,7 +670,7 @@ describe('context menus (portal-based)', () => {
         expect(strayDividers(order)).toEqual([]);
     });
 
-    it('draws Mute Notifications as a trailing checkbox and sends the opposite state', () => {
+    it('draws Mute Notifications as a trailing checkbox and sends the opposite state, staying open', () => {
         const onSetWorkspaceMuted = vi.fn();
         const withMuted = entries();
         withMuted[1] = { kind: 'workspace', workspace: workspace(W4, 'delta', { muted: true }) };
@@ -686,6 +686,9 @@ describe('context menus (portal-based)', () => {
         expect((row.textContent ?? '').trim()).toBe('Mute Notifications');
         fireEvent.click(row);
         expect(onSetWorkspaceMuted).toHaveBeenLastCalledWith(W1, true);
+        // A setting, not a command: the menu stays up so the new state can be seen.
+        expect(screen.queryByTestId('context-menu')).not.toBeNull();
+        fireEvent.keyDown(document, { key: 'Escape' });
         expect(screen.queryByTestId('context-menu')).toBeNull();
 
         const muted = screen.getAllByTestId('workspace-row').find((candidate) => candidate.getAttribute('data-workspace-id') === W4);
@@ -695,6 +698,47 @@ describe('context menus (portal-based)', () => {
         expect(again.querySelector('[data-testid="menu-checkbox"]')?.getAttribute('data-state')).toBe('checked');
         fireEvent.click(again);
         expect(onSetWorkspaceMuted).toHaveBeenLastCalledWith(W4, false);
+    });
+
+    it('keeps the menu open across toggles, the box following the workspace\'s live state', () => {
+        const calls: boolean[] = [];
+        function Live(): ReactElement {
+            const [muted, setMuted] = useState(false);
+            const live = entries();
+            live[0] = { kind: 'workspace', workspace: workspace(W1, 'alpha', { muted }) };
+            return (
+                <Sidebar
+                    {...noopProps()}
+                    entries={live}
+                    onSetWorkspaceMuted={(_workspaceID, next) => {
+                        calls.push(next);
+                        // The daemon's delta, landing in the mirror the row menu reads.
+                        setMuted(next);
+                    }}
+                />
+            );
+        }
+        render(<Live />);
+        fireEvent.contextMenu(screen.getAllByTestId('workspace-row')[0] as HTMLElement);
+        const box = (): string | null =>
+            screen.getByTestId('context-menu').querySelector('[data-menu-item="mute"] [data-testid="menu-checkbox"]')?.getAttribute('data-state') ?? null;
+        const mute = (): HTMLElement => screen.getByTestId('context-menu').querySelector('[data-menu-item="mute"]') as HTMLElement;
+        expect(box()).toBe('unchecked');
+
+        fireEvent.click(mute());
+        expect(screen.queryByTestId('context-menu')).not.toBeNull();
+        expect(box()).toBe('checked');
+        expect(mute().getAttribute('aria-checked')).toBe('true');
+        expect(document.activeElement).toBe(mute());
+
+        // A second toggle, from the keyboard this time, flips it straight back.
+        fireEvent.keyDown(document, { key: ' ' });
+        expect(box()).toBe('unchecked');
+        expect(calls).toEqual([true, false]);
+        expect(screen.queryByTestId('context-menu')).not.toBeNull();
+
+        fireEvent.keyDown(document, { key: 'Escape' });
+        expect(screen.queryByTestId('context-menu')).toBeNull();
     });
 
     it('hides Mute Notifications when assembly wired no handler', () => {

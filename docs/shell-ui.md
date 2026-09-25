@@ -894,12 +894,13 @@ Move to Group ▸                  → "Remove from Group" (when grouped) / each
                                    auto-starts inline rename)
 ──────────
 Mute Notifications         [ ]   → a checkbox at the row's trailing edge, ticked while the
-                                   workspace is muted; toggles its mute (Kelpi addition,
-                                   agent-lifecycle.md §7.6). A section of its own: without a
-                                   mute handler the section and its lower separator are both
-                                   absent, never one separator doubled. Primary daemon rows
-                                   only: remote rows have no menu here, and the bulk menu has
-                                   no mute
+                                   workspace is muted; toggles its mute IN PLACE, the menu
+                                   staying open with the box showing the new state (Kelpi
+                                   addition, agent-lifecycle.md §7.6). A section of its own:
+                                   without a mute handler the section and its lower
+                                   separator are both absent, never one separator doubled.
+                                   Primary daemon rows only: remote rows have no menu here,
+                                   and the bulk menu has no mute
 ──────────
 Select All Workspaces            (disabled when everything is selected)
 Deselect All                     (only when a selection exists)
@@ -913,8 +914,15 @@ The mute row's checkbox is `MenuItemSpec.control: 'checkbox'`
 leading tick (Profile's list, the label menus' `–` for mixed). It renders as
 `role="menuitemcheckbox"` with `aria-checked`. The empty state is an outlined box in the
 secondary text colour, legible in both themes and over the row highlight. The checked state is
-an accent-filled box with a white check. It is a stop in the keyboard walk like any row, and
-selecting it (click or Return) closes the menu.
+an accent-filled box with a white check. It is a stop in the keyboard walk like any row.
+
+Selecting a checkbox row (click, Return or Space) toggles it without closing the menu, so the
+new state is seen and can be flipped straight back; the keyboard stays on the row. The box is
+not a local toggle: the menu's items are re-derived from the live mirror on every render, so it
+flips when the daemon's delta lands and always settles to the daemon's state (a command that
+fails leaves it where it was). Escape and an outside click close the menu as they close every
+menu. Every other row is a command and closes the menu when chosen; Space activates a focused
+row like Return, on every row.
 
 Bulk version (row is part of a ≥2 selection):
 

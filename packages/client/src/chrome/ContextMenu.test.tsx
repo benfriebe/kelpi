@@ -340,6 +340,25 @@ describe('keyboard navigation — an NSMenu walk (M58)', () => {
         expect(closed).toBe(true);
     });
 
+    it('Space activates the focused row like Return, and a command row still closes the menu', () => {
+        let closed = false;
+        const selected: string[] = [];
+        render(
+            <ContextMenu
+                x={0}
+                y={0}
+                items={[{ id: 'rename', label: 'Rename…', onSelect: () => selected.push('rename') }]}
+                onClose={() => {
+                    closed = true;
+                }}
+            />
+        );
+        fireEvent.keyDown(document, { key: 'ArrowDown' });
+        fireEvent.keyDown(document, { key: ' ' });
+        expect(selected).toEqual(['rename']);
+        expect(closed).toBe(true);
+    });
+
     it('Return on a submenu PARENT opens it — it does not fire the parent as a command', () => {
         open();
         fireEvent.keyDown(document, { key: 'ArrowDown' });
@@ -627,7 +646,7 @@ describe('the opt-in checkbox control', () => {
         expect(row(menu, 'some').getAttribute('data-checked')).toBe('mixed');
     });
 
-    it('selects and closes on click, like any other row', () => {
+    it('toggles in place on click: the menu stays open and the row keeps the keyboard', () => {
         const selected: string[] = [];
         let closed = 0;
         const menu = open(
@@ -638,13 +657,19 @@ describe('the opt-in checkbox control', () => {
         );
         fireEvent.click(row(menu, 'off'));
         expect(selected).toEqual(['off']);
+        expect(closed).toBe(0);
+        expect(screen.getByTestId('context-menu')).toBe(menu);
+        expect(document.activeElement).toBe(row(menu, 'off'));
+        // …while a plain row is still a command that closes the menu.
+        fireEvent.click(row(menu, 'plain'));
+        expect(selected).toEqual(['off', 'plain']);
         expect(closed).toBe(1);
     });
 
-    it('is a stop in the keyboard walk, and Return activates it', () => {
+    it('is a stop in the keyboard walk, and Return or Space toggles it without closing', () => {
         const selected: string[] = [];
         let closed = 0;
-        open(
+        const menu = open(
             (id) => selected.push(id),
             () => {
                 closed += 1;
@@ -655,8 +680,31 @@ describe('the opt-in checkbox control', () => {
         expect((document.activeElement as HTMLElement).getAttribute('data-menu-item')).toBe('off');
         expect((document.activeElement as HTMLElement).getAttribute('data-highlighted')).toBe('true');
         fireEvent.keyDown(document, { key: 'Enter' });
-        expect(selected).toEqual(['off']);
+        fireEvent.keyDown(document, { key: ' ' });
+        expect(selected).toEqual(['off', 'off']);
+        expect(closed).toBe(0);
+        expect(document.activeElement).toBe(row(menu, 'off'));
+        // Escape still closes it.
+        fireEvent.keyDown(document, { key: 'Escape' });
         expect(closed).toBe(1);
+    });
+
+    it('closes on an outside click like any menu', () => {
+        let closed = 0;
+        open(undefined, () => {
+            closed += 1;
+        });
+        fireEvent.mouseDown(document.body);
+        expect(closed).toBe(1);
+    });
+
+    it('leaves Space alone while no row holds focus', () => {
+        const selected: string[] = [];
+        open((id) => selected.push(id));
+        const space = new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true });
+        document.body.dispatchEvent(space);
+        expect(space.defaultPrevented).toBe(false);
+        expect(selected).toEqual([]);
     });
 
     it('can be where autoFocus lands', () => {

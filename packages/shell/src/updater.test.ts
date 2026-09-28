@@ -72,6 +72,8 @@ describe('the feed', () => {
 
     it('reads "no update", an update, and every kind of bad reply', () => {
         expect(parseFeedReply(204, '', '0.2.0', FEED)).toEqual({ kind: 'none' });
+        // The feed's "No updates found" (no non-prerelease release to serve) is not a failure.
+        expect(parseFeedReply(404, 'No updates found', '0.2.0', FEED)).toEqual({ kind: 'none' });
         const body = JSON.stringify({ name: 'v0.3.0', notes: 'Faster.', url: 'https://x/Kelpi.zip' });
         expect(parseFeedReply(200, body, '0.2.0', FEED)).toEqual({
             kind: 'available',

@@ -4,7 +4,8 @@
  * Releases are published to GitHub (`.github/workflows/release.yml`) signed and notarized, and
  * `update.electronjs.org` serves them to Squirrel.Mac straight from GitHub Releases. Its feed
  * answers `GET /<owner>/<repo>/<platform>-<arch>/<current version>` with 204 when this version is
- * the latest, or 200 and Squirrel's JSON (`name`, `notes`, `url`) when a newer release exists.
+ * the latest, 200 and Squirrel's JSON (`name`, `notes`, `url`) when a newer release exists, and
+ * 404 when it has no release to offer at all (it skips drafts and prereleases).
  *
  * Electron's own `autoUpdater` downloads the moment it finds an update, so the check here reads
  * the feed itself: nothing is downloaded until the user says **Update Now**. Only then is the
@@ -110,7 +111,9 @@ export type FeedReply =
 
 /** What the feed said, as a decision. Only a strictly newer version is an update. */
 export function parseFeedReply(status: number, body: string, currentVersion: string, feed: string): FeedReply {
-    if (status === 204) return { kind: 'none' };
+    // 404 is the feed's "No updates found": nothing it serves, e.g. while every release is a
+    // prerelease. Nothing to install, so not a failure.
+    if (status === 204 || status === 404) return { kind: 'none' };
     if (status !== 200) return { kind: 'error', message: `the update feed answered HTTP ${String(status)}` };
     let parsed: unknown;
     try {

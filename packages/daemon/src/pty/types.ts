@@ -33,6 +33,11 @@ export interface PtySpawnRequest {
     readonly rows: number;
     /** `$TERM` for the child. */
     readonly name: string;
+    /**
+     * The pane the terminal is for. A spawner that keeps terminals beyond the daemon's life (the
+     * terminal host) keys them by it so the next daemon can reattach; `nodePtySpawner` ignores it.
+     */
+    readonly key?: string;
 }
 
 /** Throws on spawn failure; the manager catches and reports it. */

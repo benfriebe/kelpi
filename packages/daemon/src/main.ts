@@ -37,6 +37,7 @@ import {
 import { resolveControlEndpoints } from './control/index.js';
 import type { TerminalHostLaunch } from './boot/compose.js';
 import { HOST_BUNDLE_NAME } from './host/runtime.js';
+import { endHost, resolveHostPaths, verifiedHostPid } from './host/launch.js';
 import { connectTestOwner, type TestOwner } from './lifecycle/test-owner.js';
 import { expandTilde, legacyDataDir, LEGACY_DATABASE_FILENAME, legacyMacAppDatabasePath, resolveDatabasePath } from './db/index.js';
 import { isLegacyImportError, runImport, type ImportReport } from './import/index.js';
@@ -701,6 +702,12 @@ async function commandStop(io: CliIO, args: ParsedArgs): Promise<number> {
         // It exited between the check and the signal — that is the outcome we wanted.
     }
     io.err(`kelpid (pid ${String(pid)}) did not exit within ${String(timeoutMs)}ms; sent SIGKILL`);
+    // A SIGKILL'd daemon cannot shut its terminal host down, and a stop means every shell ends.
+    const hostPid = await verifiedHostPid(resolveHostPaths(paths.dir));
+    if (hostPid !== undefined) {
+        await endHost(hostPid);
+        io.err(`ended its terminal host (pid ${String(hostPid)}) and the shells it held`);
+    }
     return 1;
 }
 

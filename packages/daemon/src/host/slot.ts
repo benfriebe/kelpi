@@ -34,6 +34,11 @@ export class PendingHostHandle implements PtyProcessHandle {
         return this.real;
     }
 
+    /** Killed (or given up on) before it ever started: it must never start now. */
+    get isFailed(): boolean {
+        return this.failed;
+    }
+
     write(data: string | Uint8Array): void {
         this.forward((handle) => handle.write(data));
     }
@@ -124,6 +129,7 @@ export class HostSpawnerSlot {
         this.client = undefined;
         this.local = spawner;
         for (const pending of this.queued.splice(0)) {
+            if (pending.isFailed) continue;
             try {
                 pending.bind(spawner(pending.request));
             } catch {
@@ -141,7 +147,10 @@ export class HostSpawnerSlot {
         this.client = client;
         this.local = undefined;
         const spawn = client.createSpawner(this.fallbackFile);
-        for (const pending of this.queued.splice(0)) pending.bind(spawn(pending.request));
+        for (const pending of this.queued.splice(0)) {
+            // A pane closed while its spawn waited must not get a shell nobody owns.
+            if (!pending.isFailed) pending.bind(spawn(pending.request));
+        }
     }
 
     /** No host for now (it was lost): spawns queue until the next `bind`. */

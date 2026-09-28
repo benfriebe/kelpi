@@ -198,6 +198,25 @@ describe('a daemon with a terminal host', () => {
         expect(await second.term.modesAsync(paneID)).toEqual(modesBefore);
     }, 30_000);
 
+    it('closes a pane whose shell exited while no daemon ran, instead of resurrecting it', async () => {
+        const paths = scratch();
+        const hostDir = await buildHostBundle();
+        const first = daemonFor(paths, { terminalHost: { daemonDir: hostDir }, onLog: () => undefined });
+        await first.start();
+        await first.restored;
+        const doomed = firstShellPane(first);
+        const doomedPid = await until(() => first.pty.pid(doomed));
+        await first.handoff();
+        process.kill(doomedPid, 'SIGKILL'); // exits in the gap, with no daemon to see it
+        await sleep(300);
+
+        const second = daemonFor(paths, { terminalHost: { daemonDir: hostDir }, onLog: () => undefined });
+        await second.start();
+        await second.restored;
+        const panes = second.store.getState().workspaces.flatMap((workspace) => workspace.panes.map((pane) => pane.id));
+        expect(panes).not.toContain(doomed);
+    }, 30_000);
+
     it('is a full stop without a terminal host', async () => {
         const paths = scratch();
         const daemon = daemonFor(paths);

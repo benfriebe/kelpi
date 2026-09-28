@@ -232,11 +232,14 @@ export interface ClearRunFilesOptions {
     readonly socket?: boolean | undefined;
     /** Also unlink the token (normally kept so it stays stable across restarts). */
     readonly token?: boolean | undefined;
+    /** Remove the pid record only if it still names this pid (a successor may have replaced it). */
+    readonly ownerPid?: number | undefined;
 }
 
 /** Clean-shutdown tidy-up: drop the pid record (and optionally the socket/token). */
 export function clearRunFiles(paths: RunPaths, options: ClearRunFilesOptions = {}): void {
-    const targets = [paths.pid];
+    const ours = options.ownerPid === undefined || readPidRecord(paths)?.pid === options.ownerPid;
+    const targets = ours ? [paths.pid] : [];
     if (options.socket === true) targets.push(paths.socket);
     if (options.token === true) targets.push(paths.token);
     for (const target of targets) {

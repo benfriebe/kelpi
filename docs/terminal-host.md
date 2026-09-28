@@ -73,6 +73,8 @@ stale exit.
 **One attached daemon.** A new `attach` hello supersedes the current daemon (`superseded`, then
 the socket closes), except while the current one is between `hold` and `detach`: the newcomer
 waits until the handoff finishes (at most 15 s), so a successor launched early cannot cut it short.
+A daemon that finds a live host (its socket answers) waits that long for a welcome; if the host
+still will not take it, the daemon ends it rather than run a second copy of every shell beside it.
 
 | daemon → host | |
 |---|---|
@@ -104,6 +106,9 @@ waits until the handoff finishes (at most 15 s), so a successor launched early c
   instead. A noisy child blocks for the second or two of a handoff; no byte is lost.
 - `attach` replays from the checkpoint when the ring still holds it (`gap: false`), otherwise from
   the oldest byte it has (`gap: true`).
+- When the daemon goes away, a `hold` pin with no checkpoint behind it is dropped at once (the next
+  attach replays the tail with a gap anyway). A checkpoint pin keeps its PTY paused for at most
+  60 s without a successor; then output flows again and a late daemon gets a gap instead.
 
 ## 5. The daemon side
 
@@ -136,14 +141,22 @@ SIGUSR2 or `Daemon.handoff()`. The order is what keeps a pane from coming back w
 1. Flush editor buffers.
 2. A daemon still restoring finishes first (at most 10 s): otherwise panes it has not saved would be
    ended as orphans by the successor, and resumes it has not typed would be lost.
-3. Close the control, compat and WS listeners: no command, hook event or client arrives mid-way.
+3. Close the pane route (TCP), the compat socket and the WS server. The run-dir socket stays
+   bound, refusing commands, until the very end: it is what keeps a successor (a second
+   `kelpid restart`, the tray's Start Daemon) from starting, and loading a database this daemon
+   has not finished writing, mid-handoff. A hook fired from a surviving shell is refused on the
+   closed route and retried by the CLI until the successor answers on the same port.
 4. `hold`. Until the host confirms, output is still fed and exits still close their panes (and are
-   saved), so a shell that exits now is not resurrected.
+   saved), so a shell that exits now is not resurrected. Editor buffers are flushed again.
 5. Only then drop the store and PTY listeners and dispose the services.
 6. Checkpoint every hosted terminal at `received - tailBack`, then `detach`.
 7. Unwind graft sessions exactly as a stop does (leaving the breadcrumb would greet every update
    with the orphan-recovery banner; surviving shells then see the parent checkout), dispose
-   plugins, flush and close persistence, exit.
+   plugins, flush persistence, release the run-dir socket, close, exit. The pid record is removed
+   only if it is still this daemon's.
+
+A second SIGUSR2 during a handoff is ignored; a SIGTERM during one exits at once (the terminals stay
+with the host, as after a crash).
 
 A daemon with no host (in-process mode, or the host is gone) treats SIGUSR2 as a clean full stop.
 The pid record advertises `handoff: true`: a daemon from before the host dies on an unhandled
@@ -151,10 +164,13 @@ SIGUSR2 without saving, so restarters send those SIGTERM.
 
 ## 7. Adoption (the next daemon)
 
-In `start()`, after connecting and before the boot restore:
+In `start()`, after connecting and before the boot restore. Commands and hook events arriving on
+the run-dir socket meanwhile are queued and run in order afterwards, so a hook from a surviving
+agent lands after its pane's state is back, never under it.
 
-1. For each restored **shell** pane, the newest live terminal with its key is adopted. Exited
-   terminals, older duplicates and terminals with no pane are forgotten (ended).
+1. For each restored **shell** pane, the newest live terminal with its key is adopted. Older
+   duplicates and terminals with no pane are forgotten (ended). A pane whose only terminal
+   EXITED while no daemon was attached is closed, exactly as if the daemon had seen the exit.
 2. Adopting a pane: `term.attach` at the host's size, `attach`, restore the blob if there was a
    clean checkpoint, mark the replayed bytes (`until - from`, quiet when there was no clean
    checkpoint), then `pty.adopt`, which delivers the queued replay through the normal path.
@@ -173,7 +189,9 @@ not named by the daemon protocol, so a protocol bump still inherits the shells) 
 same port on boot, falling back to a fresh one with a warning if it is taken. The re-pinned port
 is still reported as the internal route, not as a configured `tcp-port`. Inside a pane, the
 `kelpi` CLI retries a refused pane-route connection for up to 5 s (`KELPI_ROUTE_RETRY_MS`), so an
-agent hook fired during a handoff is not lost.
+agent hook fired during a handoff is not lost. The cost is that where the route is gone for good
+(a crashed daemon nobody restarts, or a route that had to move to a new port), each hook in a
+surviving pane takes those 5 s before it gives up.
 
 ## 8. Failure paths
 
@@ -182,17 +200,22 @@ agent hook fired during a handoff is not lost.
   kernel window size by one column (the host resizes the PTY; the daemon's emulator is left alone,
   since shrinking it would trim scrollback). Periodic crash checkpoints are future work.
 - **Host crash.** Every shell dies with it. The client reports the connection as lost instead of
-  emitting exits, so no pane closes. The daemon ends a host that is alive but dropped it,
-  relaunches one, and respawns and resumes the affected panes exactly as a restart used to.
-  Attached clients keep their old screen and receive the new shell's output; there is no pane-wide
-  re-seed yet.
+  emitting exits, so no pane closes. The panes affected are exactly those whose terminals lived on
+  that connection (a spawn still queued binds to the next host by itself). The daemon ends a host
+  that is alive but dropped it, relaunches one, and respawns and resumes the affected shell panes
+  exactly as a restart used to; a pane hosting a command (a markdown pane in `$EDITOR`) takes the
+  ordinary exit path back to its preview. Attached clients keep their old screen and receive the
+  new shell's output; there is no pane-wide re-seed yet.
 - **Superseded.** Another daemon attached to this run dir's host. This daemon stops using it and
   runs any new terminal in-process; it never reconnects (two daemons would otherwise ping-pong).
 - **Spawn failure.** The host tries the fallback shell; if that fails the handle exits with -1, as
   the manager always reported a failed spawn. The first failure is reported through `onError`.
 - **Other host versions.** A daemon ends any live host of another protocol (SIGTERM, which makes it
   hang up its terminals) before restoring panes, and an in-process daemon ends any host at all, so
-  no pane ever runs two shells.
+  no pane ever runs two shells. A host is only ever signalled after its socket answers: a pid
+  record left by a host that died hard may name an unrelated process by now.
+- **`kelpid stop` that has to SIGKILL** the daemon also ends its host, since a stop means every
+  shell ends and a SIGKILL'd daemon cannot say so itself.
 
 **Not carried across a restart** (as before the host): parked shell panes and markdown panes in
 external-editor mode are not persisted, so the successor finds no pane for their terminals and

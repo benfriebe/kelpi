@@ -55,6 +55,12 @@ export const UNREPORTED_EXIT_GRACE_MS = 10 * 60_000;
 export const HANDOFF_WAIT_MS = 15_000;
 /** How often the host checks that its socket file still exists. */
 const SOCKET_CHECK_MS = 2000;
+/**
+ * How long a checkpoint may keep a PTY paused when no successor attaches. After that the pin is
+ * dropped: the output keeps flowing (a dev server must not block forever on stdout), and a daemon
+ * that attaches later gets the tail with a gap instead of an exact resume.
+ */
+export const PIN_TIMEOUT_MS = 60_000;
 
 export interface TerminalHostServerOptions {
     readonly socketPath: string;
@@ -65,6 +71,7 @@ export interface TerminalHostServerOptions {
     readonly authTimeoutMs?: number;
     readonly idleExitMs?: number;
     readonly firstAttachTimeoutMs?: number;
+    readonly pinTimeoutMs?: number;
     /** Called once when the host should exit: idle, `shutdown`, or `close`. */
     readonly onExit?: (reason: string) => void;
     readonly log?: (line: string) => void;
@@ -105,6 +112,7 @@ export class TerminalHostServer {
     private waiting: { connection: Connection; timer: NodeJS.Timeout } | null = null;
     private socketBackpressure = false;
     private socketCheck: NodeJS.Timeout | undefined;
+    private pinTimer: NodeJS.Timeout | undefined;
     private idleTimer: NodeJS.Timeout | undefined;
     private firstAttachTimer: NodeJS.Timeout | undefined;
     private everAttached = false;
@@ -169,6 +177,7 @@ export class TerminalHostServer {
         clearTimeout(this.idleTimer);
         clearTimeout(this.firstAttachTimer);
         clearInterval(this.socketCheck);
+        clearTimeout(this.pinTimer);
         if (this.waiting !== null) {
             clearTimeout(this.waiting.timer);
             this.waiting.connection.socket.destroy();
@@ -211,11 +220,17 @@ export class TerminalHostServer {
             }
             for (const frame of frames) {
                 if (socket.destroyed) return;
-                if (!connection.authed) {
-                    clearTimeout(authTimer);
-                    this.handshake(connection, frame);
-                } else if (connection === this.attached) {
-                    this.handle(frame);
+                // One frame that throws (a resize racing a PTY's close, say) must not drop the
+                // frames decoded with it: keystrokes for other panes, a checkpoint, a detach.
+                try {
+                    if (!connection.authed) {
+                        clearTimeout(authTimer);
+                        this.handshake(connection, frame);
+                    } else if (connection === this.attached) {
+                        this.handle(frame);
+                    }
+                } catch (error) {
+                    this.options.log?.(`a frame failed: ${error instanceof Error ? error.message : String(error)}`);
                 }
             }
         });
@@ -270,6 +285,17 @@ export class TerminalHostServer {
         this.supersede(connection);
     }
 
+    /** No successor came in time: let pinned output flow again (`PIN_TIMEOUT_MS`). */
+    private dropPins(): void {
+        if (this.attached !== null) return;
+        for (const terminal of this.terminals.values()) {
+            if (terminal.ring.pin === null) continue;
+            terminal.ring.setPin(null);
+            terminal.retentionPaused = false;
+            this.syncPause(terminal);
+        }
+    }
+
     /** Make `connection` the attached daemon, retiring any current one. */
     private supersede(connection: Connection): void {
         if (this.waiting?.connection === connection) {
@@ -286,6 +312,7 @@ export class TerminalHostServer {
         this.attached = connection;
         this.everAttached = true;
         clearTimeout(this.idleTimer);
+        clearTimeout(this.pinTimer);
         connection.socket.write(encodeJson(FrameType.welcome, this.welcome()));
     }
 
@@ -297,8 +324,15 @@ export class TerminalHostServer {
         for (const terminal of this.terminals.values()) {
             terminal.streaming = false;
             terminal.daemonPaused = false;
+            // A `hold` pin with no checkpoint behind it (the daemon died mid-handoff, or could
+            // not checkpoint this terminal) buys nothing: the next attach replays the tail with
+            // a gap anyway. Drop it, so the PTY is never paused for it.
+            if (terminal.checkpoint === null) terminal.ring.setPin(null);
             this.syncPause(terminal);
         }
+        clearTimeout(this.pinTimer);
+        this.pinTimer = setTimeout(() => this.dropPins(), this.options.pinTimeoutMs ?? PIN_TIMEOUT_MS);
+        this.pinTimer.unref();
         if (!connection.retired) this.options.log?.('the daemon disconnected without a handoff');
         const waiting = this.waiting;
         if (waiting !== null) {

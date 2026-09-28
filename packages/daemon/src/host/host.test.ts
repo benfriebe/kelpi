@@ -249,6 +249,40 @@ describe('terminal host: protocol behaviour', () => {
         expect(terminal.paused).toBe(false);
     });
 
+    it('drops a hold pin with no checkpoint when the daemon vanishes, so the PTY keeps flowing', async () => {
+        const fake = fakeSpawner();
+        const host = await startHost({ spawner: fake.spawner, retentionBytes: 8 });
+        const first = await connect(host);
+        spawnOn(first, request('/bin/sh', []));
+        await sleep(50);
+        await first.hold();
+        first.close(); // died mid-handoff: no checkpoint, no detach
+        await sleep(30);
+        const terminal = fake.terminals[0]!;
+        terminal.emit('0123456789abcdef'); // twice the ring
+        expect(terminal.paused).toBe(false);
+    });
+
+    it('lets pinned output flow again after the pin timeout, and a late daemon gets a gap', async () => {
+        const fake = fakeSpawner();
+        const host = await startHost({ spawner: fake.spawner, retentionBytes: 8, pinTimeoutMs: 100 });
+        const first = await connect(host);
+        const handle = spawnOn(first, request('/bin/sh', []));
+        await sleep(50);
+        await first.hold();
+        first.checkpoint(handle.tid, 0, new Uint8Array(0));
+        await first.detach();
+        await sleep(20);
+        const terminal = fake.terminals[0]!;
+        terminal.emit('0123456789abcdef');
+        expect(terminal.paused).toBe(true);
+        await sleep(200);
+        expect(terminal.paused).toBe(false);
+        const second = await connect(host);
+        const { attached } = await second.attach(handle.tid, 'PANE-1');
+        expect(attached.gap).toBe(true);
+    });
+
     it('falls back to the fallback shell and says so, or reports a failed spawn as exit -1', async () => {
         const fake = fakeSpawner();
         const host = await startHost({ spawner: fake.spawner });

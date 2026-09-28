@@ -19,6 +19,7 @@ import { readToken } from '../lifecycle/rundir.js';
 import { nodePtySpawner } from '../pty/spawner.js';
 import { clearHostPidRecord, resolveHostPaths, writeHostPidRecord } from './launch.js';
 import { HOST_PROTOCOL_VERSION } from './protocol.js';
+import { leaseRuntime, releaseRuntime } from './runtime.js';
 import { TerminalHostServer } from './server.js';
 
 function argValue(argv: readonly string[], name: string): string | undefined {
@@ -73,6 +74,8 @@ export async function runTerminalHost(argv: readonly string[] = process.argv.sli
         // no stale socket
     }
 
+    const runtimeDir = path.dirname(fileURLToPath(import.meta.url));
+    const lease = leaseRuntime(runtimeDir);
     let exiting = false;
     const server = new TerminalHostServer({
         socketPath: paths.socket,
@@ -84,6 +87,7 @@ export async function runTerminalHost(argv: readonly string[] = process.argv.sli
             if (exiting) return;
             exiting = true;
             clearHostPidRecord(paths);
+            releaseRuntime(lease);
             log(`exit (${reason})`);
             process.exit(0);
         }
@@ -101,7 +105,7 @@ export async function runTerminalHost(argv: readonly string[] = process.argv.sli
         protocol: HOST_PROTOCOL_VERSION,
         startedAt: new Date().toISOString(),
         version: DAEMON_VERSION,
-        runtimeDir: path.dirname(fileURLToPath(import.meta.url))
+        runtimeDir
     });
     log(`listening on ${paths.socket}`);
 

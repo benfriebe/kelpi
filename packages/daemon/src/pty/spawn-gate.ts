@@ -277,6 +277,18 @@ export function withSpawnGate(pty: KelpiPtyManager, gate: PaneSpawnGate): KelpiP
         },
         syncTargetIDs(sourcePaneID: string): Set<string> {
             return pty.syncTargetIDs(sourcePaneID);
+        },
+        processHandle(paneID: string) {
+            return pty.processHandle(paneID);
+        },
+        adopt(paneID, proc): void {
+            // An adopted terminal already exists; nothing the gate holds for the pane may start.
+            gate.cancel(paneID);
+            pty.adopt(paneID, proc);
+        },
+        forget(paneID: string): void {
+            gate.cancel(paneID);
+            pty.forget(paneID);
         }
     };
 }

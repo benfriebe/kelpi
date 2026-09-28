@@ -25,12 +25,13 @@ import { pluginObject } from '@kelpi/protocol';
  *   - shutdown: flush the debounced save, then kill PTYs (bounded), then close listeners.
  */
 
+import { readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import { newUUID } from '@kelpi/core/codec';
 import { SYSTEM_STATS_INTERVAL_MS, WS_TRANSPORT_CHANGED_MESSAGE } from '@kelpi/protocol';
-import type { ResumeTuple } from '@kelpi/core/agent';
+import { captureResumeTuple, type ResumeTuple } from '@kelpi/core/agent';
 
 import { createContentService, createContentRenderService, type ContentService } from '../content/index.js';
 import {
@@ -92,9 +93,11 @@ import {
     createPaneSpawnGate,
     createPtyManager,
     createTerminalInput,
+    FALLBACK_SHELL,
     withSpawnGate,
     type KelpiPtyManager
 } from '../pty/index.js';
+import { nodePtySpawner } from '../pty/spawner.js';
 import { createEditorResolver, type EditorResolver } from '../content/external-editor.js';
 import type { ControlDispatcher, PersistenceHealth, TerminalInput } from '../seams.js';
 import {
@@ -147,8 +150,13 @@ import {
 import { configuredTcpPort, loadDaemonConfig, createProfileReader, type DaemonConfig } from './config.js';
 import { createDispatcher } from './dispatch.js';
 import { runLabelPresetMigration } from './labels.js';
-import { readPortFile, writePortFile } from './port.js';
-import { spawnRestoredPanes, typeResumeCommands, type ResumeOutcome } from './resume.js';
+import { readPortFile, readRoutePortFile, writePortFile, writeRoutePortFile } from './port.js';
+import { spawnRestoredPanes, typeResumeCommands, type RestoreDeps, type ResumeDeps, type ResumeOutcome } from './resume.js';
+import type { LostReason, TerminalHostClient } from '../host/client.js';
+import { ensureTerminalHost, liveHostPid, readHostPidRecord, resolveHostPaths } from '../host/launch.js';
+import { HOST_PROTOCOL_VERSION } from '../host/protocol.js';
+import { prepareHostRuntime } from '../host/runtime.js';
+import { HostSpawnerSlot } from '../host/slot.js';
 import { resolveDaemonVersion, type DaemonVersion } from './version.js';
 
 export const HTTP_PORT_ENV = 'KELPID_HTTP_PORT';
@@ -272,6 +280,22 @@ export interface DaemonOptions {
     readonly installSignalHandlers?: boolean | undefined;
     readonly onError?: ((error: Error, context: string) => void) | undefined;
     readonly onLog?: ((message: string) => void) | undefined;
+    /**
+     * Run every PTY in a separate terminal host process, so shells outlive this daemon
+     * (`docs/terminal-host.md`). `kelpid start` sets it; omitted, PTYs run in-process as before
+     * and die with the daemon.
+     */
+    readonly terminalHost?: TerminalHostLaunch | undefined;
+}
+
+/** Where the terminal host comes from (`CreateDaemonOptions.terminalHost`). */
+export interface TerminalHostLaunch {
+    /** The directory holding `terminal-host.js` (beside `kelpid.js`). */
+    readonly daemonDir: string;
+    /** The Node that runs it; defaults to this process's. */
+    readonly execPath?: string | undefined;
+    /** Defaults to `<run dir>/terminal-host.log`. */
+    readonly logFile?: string | undefined;
 }
 
 export interface DaemonInfo {
@@ -440,7 +464,13 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         }
     }
     const store = createStore(loaded.state);
+    /**
+     * With a terminal host, spawns go through this slot: to the host once it is connected in
+     * `start()`, queued until then, and in-process if no host can be started (§5, §8).
+     */
+    const hostSlot = options.terminalHost !== undefined ? new HostSpawnerSlot(FALLBACK_SHELL) : undefined;
     const rawPty = createPtyManager({
+        ...(hostSlot !== undefined ? { spawner: hostSlot.spawner } : {}),
         onError: (paneID, error) => report(error, `pty ${paneID}`)
     });
     // What each pane was last rendered at, so a shell is BORN at that size instead of at
@@ -701,6 +731,8 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
 
     let runControl: ControlServer | undefined;
     let compatControl: ControlServer | undefined;
+    /** The port `pinPaneRoute` asked for on the internal listener, if it re-pinned one. */
+    let pinnedRoutePort: number | undefined;
     /**
      * Why the CLI-compat socket is not serving (typically: another Kelpi — the Swift app — owns
      * `/tmp/nex.sock`), or null while it is. A degraded compat socket never takes the daemon
@@ -720,7 +752,10 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
     const controlTcpStatus = (): ControlTcpStatus | null => {
         if (compatControl !== undefined) return compatControl.tcpStatus;
         const status = runControl?.tcpStatus ?? null;
-        if (status !== null && status.requested === 0 && !(runOwnsCompatPath && endpoints.tcpPort !== undefined)) {
+        // The pane route re-pinned to the previous daemon's port (`pinPaneRoute`) is still the
+        // internal listener, not a configured `tcp-port`, even though it asked for a number.
+        const internal = status !== null && (status.requested === 0 || status.requested === pinnedRoutePort);
+        if (status !== null && internal && !(runOwnsCompatPath && endpoints.tcpPort !== undefined)) {
             return null;
         }
         return status;
@@ -847,6 +882,30 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         }
     };
 
+    /**
+     * Ask for the pane-route port the previous daemon used, then record whichever port this one
+     * holds. Shells can outlive a daemon (the terminal host, `docs/terminal-host.md` §10) and
+     * their `KELPI_SOCKET` names that port. Only the ephemeral route is re-pinned: a configured
+     * `tcp-port` is already stable.
+     */
+    const pinPaneRoute = async (control: ControlServer): Promise<void> => {
+        const ephemeral = !(runOwnsCompatPath && endpoints.tcpPort !== undefined);
+        const saved = readRoutePortFile(paths);
+        if (ephemeral && saved !== undefined && control.tcpPort !== saved) {
+            pinnedRoutePort = saved;
+            const pinned = await control.startTCP(saved);
+            if (pinned !== null && pinned.bound === null) {
+                pinnedRoutePort = undefined;
+                await control.startTCP(0);
+                log(
+                    `pane-route tcp port ${String(saved)} is taken; now on ${String(control.tcpPort)} ` +
+                        '(panes that outlived the last daemon keep the old KELPI_SOCKET until respawned)'
+                );
+            }
+        }
+        if (control.tcpPort !== undefined) writeRoutePortFile(paths, control.tcpPort);
+    };
+
     const restartControlServers = async (): Promise<{ socketPath: string; tcpPort?: number | undefined }> => {
         if (runControl === undefined) throw new Error('the control server is not running');
         const previousCompat = compatControl;
@@ -867,6 +926,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
                 );
             }
         }
+        if (runControl.tcpPort !== undefined) writeRoutePortFile(paths, runControl.tcpPort);
         if (previousCompat !== undefined) await startCompat(previousCompat);
         log(`control server rebound on ${runControl.socketPath}`);
         const port = previousCompat?.tcpPort ?? runControl.tcpPort;
@@ -1272,21 +1332,162 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         settleRestore = resolve;
     });
 
+    /** What the boot restore (and a respawn after a lost terminal host) spawns panes with. */
+    const restoreDeps = (): RestoreDeps => ({
+        pty,
+        term,
+        profiles: config.profiles,
+        spawn: spawnDefaults,
+        // Same builder the pane-* handlers use; a pane about to resume a session that
+        // recorded its launch profile spawns with that profile's env.
+        envFor: (paneID, workspace, sessionProfileName) => spawnEnvVars(ctx, paneID, workspace, sessionProfileName),
+        ...(onError !== undefined ? { onError } : {})
+    });
+    const resumeDeps = (): ResumeDeps => ({
+        pty,
+        term,
+        input,
+        profiles: config.profiles,
+        ...(options.sleep !== undefined ? { sleep: options.sleep } : {}),
+        ...(options.settleMs !== undefined ? { settleMs: options.settleMs } : {}),
+        ...(onError !== undefined ? { onError } : {})
+    });
+
+    // ── the terminal host (docs/terminal-host.md) ────────────────────────────────
+
+    const hostPaths = resolveHostPaths(paths.dir);
+    let hostClient: TerminalHostClient | undefined;
+
+    /**
+     * End hosts this daemon must not share its panes with: one of another host protocol (it
+     * cannot be attached, and its shells would run beside the respawned ones, §11), or, for an
+     * in-process daemon, any host at all. SIGTERM makes a host hang up its terminals first.
+     */
+    const endStrayHosts = (): void => {
+        let names: string[];
+        try {
+            names = readdirSync(paths.dir);
+        } catch {
+            return;
+        }
+        for (const name of names) {
+            const match = /^host-v(\d+)\.pid$/.exec(name);
+            if (match === null) continue;
+            const protocol = Number(match[1]);
+            if (hostSlot !== undefined && protocol === HOST_PROTOCOL_VERSION) continue;
+            const pid = liveHostPid(resolveHostPaths(paths.dir, protocol));
+            if (pid === undefined) continue;
+            log(`ending terminal host v${String(protocol)} (pid ${String(pid)}): this daemon cannot adopt its terminals`);
+            try {
+                process.kill(pid, 'SIGTERM');
+            } catch {
+                // already gone
+            }
+        }
+    };
+
+    /** Attach to the host, launching it if needed. Falls back to in-process PTYs on failure. */
+    const connectHost = async (): Promise<TerminalHostClient | undefined> => {
+        const launch = options.terminalHost;
+        if (hostSlot === undefined || launch === undefined) return undefined;
+        try {
+            const runtime = prepareHostRuntime({
+                daemonDir: launch.daemonDir,
+                dataRoot: join(dbPath === ':memory:' ? paths.dir : dirname(dbPath), 'terminal-host'),
+                inUse: readHostPidRecord(hostPaths)?.runtimeDir
+            });
+            const { client, launched } = await ensureTerminalHost({
+                runDir: paths.dir,
+                entry: runtime.entry,
+                ...(launch.execPath !== undefined ? { execPath: launch.execPath } : {}),
+                logFile: launch.logFile ?? join(paths.dir, 'terminal-host.log'),
+                onSpawnProblem: (key, message) => report(new Error(message), `pty ${key}`)
+            });
+            hostClient = client;
+            client.onLost((_tids, reason) => {
+                void onHostLost(client, reason);
+            });
+            log(
+                `terminal host ${launched ? 'launched' : 'adopted'}: pid ${String(client.welcome.pid)}, ` +
+                    `${String(client.welcome.terminals.length)} terminal(s) waiting`
+            );
+            return client;
+        } catch (error) {
+            report(error, 'terminal host');
+            log('WARNING: no terminal host; terminals run in-process and will not survive a daemon restart');
+            hostSlot.useLocal(nodePtySpawner);
+            return undefined;
+        }
+    };
+
+    /**
+     * Bind a freshly connected host. The terminals a previous daemon left on it are ended for
+     * now, so no pane ever runs two shells; adopting them is the handoff's job.
+     */
+    const bindHost = (client: TerminalHostClient): void => {
+        for (const terminal of client.welcome.terminals) client.forget(terminal.tid);
+        hostSlot?.bind(client);
+    };
+
+    /**
+     * The host went away while this daemon runs (§8.2). Its shells went with it, so each
+     * affected pane is respawned and resumed, exactly as a daemon restart does today, instead
+     * of being closed by a flood of exits.
+     */
+    const onHostLost = async (lost: TerminalHostClient, reason: LostReason): Promise<void> => {
+        if (lost !== hostClient) return;
+        hostClient = undefined;
+        if (stopping) return;
+        hostSlot?.unbind();
+        if (reason === 'superseded') {
+            log('WARNING: another daemon took over this run dir\'s terminal host; new terminals run in-process');
+            hostSlot?.useLocal(nodePtySpawner);
+            return;
+        }
+        // A host that is alive but dropped us cannot be trusted with the respawned panes.
+        const stale = liveHostPid(hostPaths);
+        if (stale !== undefined) {
+            try {
+                process.kill(stale, 'SIGTERM');
+            } catch {
+                // already gone
+            }
+            for (let waited = 0; waited < 2000 && liveHostPid(hostPaths) === stale; waited += 50) {
+                await new Promise((resolve) => setTimeout(resolve, 50));
+            }
+        }
+        const affected = rawPty.paneIDs();
+        for (const paneID of affected) {
+            pty.forget(paneID);
+            term.dispose(paneID);
+        }
+        log(
+            `WARNING: the terminal host went away and took ${String(affected.length)} shell(s) with it; ` +
+                'relaunching it and respawning those panes'
+        );
+        const next = await connectHost();
+        if (next !== undefined) bindHost(next);
+        if (stopping) return;
+        const state = store.getState();
+        const tuples: ResumeTuple[] = [];
+        for (const workspace of state.workspaces) {
+            for (const pane of workspace.panes) {
+                if (!affected.includes(pane.id)) continue;
+                const tuple = captureResumeTuple(pane.id, pane);
+                if (tuple !== null) tuples.push(tuple);
+            }
+        }
+        spawnRestoredPanes(state, restoreDeps(), tuples);
+        void typeResumeCommands(tuples, resumeDeps()).catch((error: unknown) => report(error, 'resume after host loss'));
+    };
+
     const runRestore = (spawned: readonly string[]): void => {
         void (async () => {
             let resumed: readonly string[] = [];
             let skipped: readonly string[] = [];
             let settled = false;
             try {
-                const outcome = await typeResumeCommands(loaded.tuples, {
-                    pty,
-                    term,
-                    input,
-                    profiles: config.profiles,
-                    ...(options.sleep !== undefined ? { sleep: options.sleep } : {}),
-                    ...(options.settleMs !== undefined ? { settleMs: options.settleMs } : {}),
-                    ...(onError !== undefined ? { onError } : {})
-                });
+                const outcome = await typeResumeCommands(loaded.tuples, resumeDeps());
                 resumed = outcome.resumed;
                 skipped = outcome.skipped;
                 settled = outcome.settled;
@@ -1382,6 +1583,17 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
             // would be born a moment later) and the pane would outlive the process.
             spawnGate.close();
             await pty.killAll();
+            // A full stop ends the host too; its terminals were just killed.
+            const host = hostClient;
+            hostClient = undefined;
+            if (host !== undefined && !host.isClosed) {
+                try {
+                    await host.shutdown();
+                } catch (error) {
+                    report(error, 'terminal host shutdown');
+                }
+            }
+            hostSlot?.failPending();
             // The last-known pane grids are what the KELPIT boot spawns at, so they have to
             // survive this one (`pty/geometry.ts`); the write is debounced and may be pending.
             geometry.close();
@@ -1549,22 +1761,16 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
             ...(onError !== undefined ? { onError } : {})
         });
         await runControl.start();
+        await pinPaneRoute(runControl);
 
-        const spawned = spawnRestoredPanes(
-            store.getState(),
-            {
-                pty,
-                term,
-                profiles: config.profiles,
-                spawn: spawnDefaults,
-                // Same builder the pane-* handlers use; a pane about to resume a session that
-                // recorded its launch profile spawns with that profile's env.
-                envFor: (paneID, workspace, sessionProfileName) =>
-                    spawnEnvVars(ctx, paneID, workspace, sessionProfileName),
-                ...(onError !== undefined ? { onError } : {})
-            },
-            loaded.tuples
-        );
+        // Only now, owning the run dir, may this daemon attach to its terminal host: attaching
+        // first would take the host from a live daemon. A spawn that races in before the bind
+        // is queued by the slot, not lost (`host/slot.ts`).
+        endStrayHosts();
+        const host = await connectHost();
+        if (host !== undefined) bindHost(host);
+
+        const spawned = spawnRestoredPanes(store.getState(), restoreDeps(), loaded.tuples);
 
         if (!runOwnsCompatPath) {
             compatControl = createControlServer({

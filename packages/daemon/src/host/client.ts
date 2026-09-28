@@ -257,7 +257,10 @@ export class TerminalHostClient {
         this.send(encodeBlob(FrameType.checkpoint, { tid, offset }, blob));
     }
 
-    /** Drop the record of a terminal that exited while no daemon was attached. */
+    /**
+     * The daemon has no pane for this terminal: the host hangs it up if it still runs and drops
+     * it. Also how an exit recorded while no daemon was attached is acknowledged.
+     */
     forget(tid: string): void {
         this.sendJson(FrameType.forget, { tid });
     }

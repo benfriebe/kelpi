@@ -1,7 +1,7 @@
 /**
  * Finding, launching and adopting the terminal host (`docs/terminal-host.md` §2, §9).
  *
- * The host's run-dir files sit next to the daemon's: `terminal-host-v<H>.{sock,token,pid}`. They
+ * The host's run-dir files sit next to the daemon's: `host-v<H>.{sock,token,pid}`. They
  * have the same shape as the daemon's `RunPaths`, so the token helpers are shared. Only a daemon
  * launches a host, and only when none answers on the socket.
  */
@@ -17,8 +17,12 @@ import { HOST_PROTOCOL_VERSION } from './protocol.js';
 /** How long a launch waits for the new host to answer. */
 export const HOST_LAUNCH_TIMEOUT_MS = 5000;
 
+/**
+ * `host-v<H>.{sock,token,pid}` in the run dir. Short on purpose: a sandbox run dir already sits
+ * near macOS's 104-byte socket-path limit.
+ */
 export function resolveHostPaths(runDir: string, protocol: number = HOST_PROTOCOL_VERSION): RunPaths {
-    const stem = path.join(runDir, `terminal-host-v${protocol}`);
+    const stem = path.join(runDir, `host-v${protocol}`);
     return { dir: runDir, protocol, socket: `${stem}.sock`, token: `${stem}.token`, pid: `${stem}.pid` };
 }
 
@@ -108,7 +112,8 @@ export async function ensureTerminalHost(options: EnsureTerminalHostOptions): Pr
         ...(options.logFile !== undefined ? { logFile: options.logFile } : {}),
         // The host needs no environment of its own: every spawn carries a fully resolved env.
         env: options.env ?? minimalHostEnv(process.env),
-        cwd: path.dirname(options.entry)
+        // It outlives worktrees: never pin a directory that may be deleted or unmounted.
+        cwd: '/'
     });
 
     const deadline = Date.now() + (options.timeoutMs ?? HOST_LAUNCH_TIMEOUT_MS);

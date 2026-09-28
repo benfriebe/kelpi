@@ -268,6 +268,15 @@ class FakePtyManager implements KelpiPtyManager {
     syncTargetIDs(): Set<string> {
         return new Set();
     }
+    processHandle(): undefined {
+        return undefined;
+    }
+    adopt(paneID: string): void {
+        this.live.add(paneID);
+    }
+    forget(paneID: string): void {
+        this.live.delete(paneID);
+    }
 }
 
 describe('the gated PtyManager', () => {

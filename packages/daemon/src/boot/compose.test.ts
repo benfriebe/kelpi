@@ -316,6 +316,40 @@ describe('createDaemon', () => {
         expect(fs.existsSync(first.socketPath)).toBe(true);
     }, 20_000);
 
+    it('keeps the pane route across a restart, so shells that outlive a daemon can still reach the next', async () => {
+        const paths = scratch();
+        const first = daemonFor(paths);
+        await first.start();
+        const route = first.ctx.controlTransport?.().paneRoute;
+        expect(route).toMatch(/^tcp:127\.0\.0\.1:\d+$/);
+        await first.stop();
+
+        const second = daemonFor(paths);
+        cleanups.push(() => second.stop());
+        await second.start();
+        expect(second.ctx.controlTransport?.().paneRoute).toBe(route);
+        // Still the internal route, not a configured `tcp-port` (§SET-021 reports only those).
+        expect(second.ctx.controlTransport?.().tcp ?? null).toBeNull();
+    }, 20_000);
+
+    it('takes a fresh pane route when the saved one is taken', async () => {
+        const paths = scratch();
+        const first = daemonFor(paths);
+        await first.start();
+        const route = first.ctx.controlTransport?.().paneRoute as string;
+        await first.stop();
+        const squatter = net.createServer();
+        await new Promise<void>((resolve) => squatter.listen(Number(route.split(':').pop()), '127.0.0.1', resolve));
+        cleanups.push(() => new Promise<void>((resolve) => squatter.close(() => resolve())));
+
+        const second = daemonFor(paths);
+        cleanups.push(() => second.stop());
+        await second.start();
+        const fresh = second.ctx.controlTransport?.().paneRoute;
+        expect(fresh).toMatch(/^tcp:127\.0\.0\.1:\d+$/);
+        expect(fresh).not.toBe(route);
+    }, 20_000);
+
     it('injects the pane route + bundled-CLI PATH into every spawn env, and the route answers', async () => {
         const paths = scratch();
         const helpers = path.join(paths.root, 'helpers');

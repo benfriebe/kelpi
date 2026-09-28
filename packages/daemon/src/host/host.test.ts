@@ -311,6 +311,38 @@ describe('terminal host: protocol behaviour', () => {
         expect(exited).toBe(false);
     });
 
+    it('makes a successor wait while the attached daemon hands off, then welcomes it', async () => {
+        const fake = fakeSpawner();
+        const host = await startHost({ spawner: fake.spawner });
+        const first = await connect(host);
+        const handle = spawnOn(first, request('/bin/sh', []));
+        await sleep(50);
+        await first.hold();
+        let welcomed = false;
+        const successor = connect(host).then((client) => {
+            welcomed = true;
+            return client;
+        });
+        await sleep(100);
+        expect(welcomed).toBe(false); // the handoff is still in progress
+        first.checkpoint(handle.tid, 0, new Uint8Array(0));
+        await first.detach();
+        const second = await successor;
+        expect(second.welcome.terminals.map((terminal) => terminal.tid)).toEqual([handle.tid]);
+        expect(second.welcome.terminals[0]?.checkpointOffset).toBe(0);
+    });
+
+    it('shuts down when its socket file is removed', async () => {
+        const fake = fakeSpawner();
+        const host = await startHost({ spawner: fake.spawner });
+        const client = await connect(host);
+        spawnOn(client, request('/bin/sh', []));
+        await sleep(50);
+        fs.unlinkSync(host.socketPath);
+        await sleep(2600);
+        expect(host.exits).toEqual(['its socket file was removed']);
+    });
+
     it('exits when idle with no terminals and no daemon', async () => {
         const host = await startHost({ idleExitMs: 30 });
         const client = await connect(host);

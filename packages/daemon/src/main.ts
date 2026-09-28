@@ -35,6 +35,8 @@ import {
     type DaemonInfo
 } from './boot/index.js';
 import { resolveControlEndpoints } from './control/index.js';
+import type { TerminalHostLaunch } from './boot/compose.js';
+import { HOST_BUNDLE_NAME } from './host/runtime.js';
 import { connectTestOwner, type TestOwner } from './lifecycle/test-owner.js';
 import { expandTilde, legacyDataDir, LEGACY_DATABASE_FILENAME, legacyMacAppDatabasePath, resolveDatabasePath } from './db/index.js';
 import { isLegacyImportError, runImport, type ImportReport } from './import/index.js';
@@ -59,6 +61,8 @@ import {
 
 export const ENTRY_ENV = 'KELPID_ENTRY';
 export const LOG_FILE_ENV = 'KELPID_LOG_FILE';
+/** `KELPID_TERMINAL_HOST=0` keeps PTYs in-process (they then die with the daemon). */
+export const TERMINAL_HOST_ENV = 'KELPID_TERMINAL_HOST';
 
 /** How long `kelpid start` waits for the detached child to answer `ping`. */
 export const START_TIMEOUT_MS = 15_000;
@@ -429,6 +433,18 @@ export function resolveEntry(env: NodeJS.ProcessEnv): string {
     }
 }
 
+/**
+ * Where `kelpid start` launches its terminal host from (`docs/terminal-host.md`): the
+ * `terminal-host.js` bundled beside this daemon, run by this same Node. Off with
+ * `KELPID_TERMINAL_HOST=0`, or when there is no bundle (a source checkout that was not built).
+ */
+export function terminalHostLaunch(env: NodeJS.ProcessEnv): TerminalHostLaunch | undefined {
+    if (env[TERMINAL_HOST_ENV]?.trim() === '0') return undefined;
+    const daemonDir = nodePath.dirname(resolveEntry(env));
+    if (!fs.existsSync(nodePath.join(daemonDir, HOST_BUNDLE_NAME))) return undefined;
+    return { daemonDir, execPath: process.execPath };
+}
+
 /** The URL a client would use — honouring the daemon's own bind-host override. */
 function httpURL(env: NodeJS.ProcessEnv, port: number): string {
     const host = env[HTTP_HOST_ENV]?.trim();
@@ -520,8 +536,10 @@ async function commandStart(io: CliIO, args: ParsedArgs, owner?: TestOwner): Pro
             await owner.confirmStopped();
             return 0;
         }
+        const terminalHost = terminalHostLaunch(env);
         const daemon = createDaemon({
             env,
+            ...(terminalHost !== undefined ? { terminalHost } : {}),
             installSignalHandlers: owner === undefined,
             onError: (error, context) => io.err(`kelpid error [${context}]: ${error.message}`),
             onLog: (message) => io.out(message)

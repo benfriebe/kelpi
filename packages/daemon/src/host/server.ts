@@ -18,7 +18,7 @@
  */
 
 import { timingSafeEqual } from 'node:crypto';
-import { unlinkSync } from 'node:fs';
+import { statSync, unlinkSync } from 'node:fs';
 import net from 'node:net';
 
 import type { PtyProcessHandle, PtySpawner } from '../pty/types.js';
@@ -49,6 +49,12 @@ export const DEFAULT_FIRST_ATTACH_TIMEOUT_MS = 30_000;
 export const SHUTDOWN_KILL_GRACE_MS = 500;
 /** Replayed output is sent in pieces no larger than this. */
 const REPLAY_CHUNK_BYTES = 1024 * 1024;
+/** With only exits no daemon has heard about yet, the host waits this long before exiting. */
+export const UNREPORTED_EXIT_GRACE_MS = 10 * 60_000;
+/** A daemon mid-handoff gets this long before a waiting successor supersedes it anyway. */
+export const HANDOFF_WAIT_MS = 15_000;
+/** How often the host checks that its socket file still exists. */
+const SOCKET_CHECK_MS = 2000;
 
 export interface TerminalHostServerOptions {
     readonly socketPath: string;
@@ -86,6 +92,8 @@ interface Connection {
     authed: boolean;
     /** Ended on purpose (`detach`, supersede, shutdown): not a crash. */
     retired: boolean;
+    /** Between `hold` and `detach`: a successor waits rather than superseding it. */
+    holding: boolean;
 }
 
 export class TerminalHostServer {
@@ -93,7 +101,10 @@ export class TerminalHostServer {
     private readonly terminals = new Map<string, HostTerminal>();
     private readonly retentionBytes: number;
     private attached: Connection | null = null;
+    /** A daemon that said hello while the attached one was handing off (§6). */
+    private waiting: { connection: Connection; timer: NodeJS.Timeout } | null = null;
     private socketBackpressure = false;
+    private socketCheck: NodeJS.Timeout | undefined;
     private idleTimer: NodeJS.Timeout | undefined;
     private firstAttachTimer: NodeJS.Timeout | undefined;
     private everAttached = false;
@@ -116,6 +127,12 @@ export class TerminalHostServer {
             if (!this.everAttached && this.liveCount() === 0) this.exit('nobody attached');
         }, this.options.firstAttachTimeoutMs ?? DEFAULT_FIRST_ATTACH_TIMEOUT_MS);
         this.firstAttachTimer.unref();
+        // A run dir that is deleted (a test sandbox, a wiped state directory) takes its daemon's
+        // socket with it; nothing could ever attach again, so the host must not linger.
+        this.socketCheck = setInterval(() => {
+            if (!socketFileExists(this.options.socketPath)) void this.shutdown('its socket file was removed');
+        }, SOCKET_CHECK_MS);
+        this.socketCheck.unref();
     }
 
     /** Live (not yet exited) terminals. */
@@ -151,6 +168,12 @@ export class TerminalHostServer {
         this.exiting = true;
         clearTimeout(this.idleTimer);
         clearTimeout(this.firstAttachTimer);
+        clearInterval(this.socketCheck);
+        if (this.waiting !== null) {
+            clearTimeout(this.waiting.timer);
+            this.waiting.connection.socket.destroy();
+            this.waiting = null;
+        }
         this.attached?.socket.destroy();
         this.server.close();
         try {
@@ -165,7 +188,13 @@ export class TerminalHostServer {
     // ── connections ─────────────────────────────────────────────────────────────────
 
     private accept(socket: net.Socket): void {
-        const connection: Connection = { socket, decoder: new FrameDecoder(), authed: false, retired: false };
+        const connection: Connection = {
+            socket,
+            decoder: new FrameDecoder(),
+            authed: false,
+            retired: false,
+            holding: false
+        };
         const authTimer = setTimeout(() => {
             if (!connection.authed) socket.destroy();
         }, this.options.authTimeoutMs ?? DEFAULT_AUTH_TIMEOUT_MS);
@@ -202,6 +231,10 @@ export class TerminalHostServer {
         socket.on('close', () => {
             clearTimeout(authTimer);
             if (connection === this.attached) this.release(connection);
+            if (this.waiting?.connection === connection) {
+                clearTimeout(this.waiting.timer);
+                this.waiting = null;
+            }
         });
     }
 
@@ -220,6 +253,30 @@ export class TerminalHostServer {
             connection.socket.end(encodeJson(FrameType.welcome, this.welcome()));
             return;
         }
+        const previous = this.attached;
+        if (previous !== null && previous.holding) {
+            // The attached daemon is mid-handoff: let it finish checkpointing, then welcome this
+            // one (`release` promotes it). A successor that arrives early must not cut the
+            // handoff short, whoever launched it.
+            if (this.waiting !== null) {
+                clearTimeout(this.waiting.timer);
+                this.waiting.connection.socket.destroy();
+            }
+            const timer = setTimeout(() => this.supersede(connection), HANDOFF_WAIT_MS);
+            timer.unref();
+            this.waiting = { connection, timer };
+            return;
+        }
+        this.supersede(connection);
+    }
+
+    /** Make `connection` the attached daemon, retiring any current one. */
+    private supersede(connection: Connection): void {
+        if (this.waiting?.connection === connection) {
+            clearTimeout(this.waiting.timer);
+            this.waiting = null;
+        }
+        if (connection.socket.destroyed) return;
         const previous = this.attached;
         if (previous !== null) {
             previous.retired = true;
@@ -243,6 +300,11 @@ export class TerminalHostServer {
             this.syncPause(terminal);
         }
         if (!connection.retired) this.options.log?.('the daemon disconnected without a handoff');
+        const waiting = this.waiting;
+        if (waiting !== null) {
+            this.supersede(waiting.connection);
+            return;
+        }
         this.scheduleIdleCheck();
     }
 
@@ -314,8 +376,11 @@ export class TerminalHostServer {
             case FrameType.hold:
                 return this.hold();
             case FrameType.forget: {
+                // The daemon has no pane for this terminal: end it if it still runs, drop it now.
                 const terminal = this.lookup(frame.body);
-                if (terminal !== undefined && terminal.exited !== null) this.terminals.delete(terminal.tid);
+                if (terminal === undefined) return;
+                this.terminals.delete(terminal.tid);
+                if (terminal.exited === null) hangUp(terminal);
                 this.scheduleIdleCheck();
                 return;
             }
@@ -440,6 +505,7 @@ export class TerminalHostServer {
 
     /** Stop streaming; keep every byte from here on until a checkpoint says otherwise (§6). */
     private hold(): void {
+        if (this.attached !== null) this.attached.holding = true;
         for (const terminal of this.terminals.values()) {
             terminal.streaming = false;
             terminal.ring.setPin(terminal.ring.produced, false);
@@ -491,11 +557,33 @@ export class TerminalHostServer {
 
     private scheduleIdleCheck(): void {
         clearTimeout(this.idleTimer);
-        if (this.attached !== null || this.liveCount() > 0 || this.exiting) return;
+        if (this.attached !== null || this.waiting !== null || this.liveCount() > 0 || this.exiting) return;
+        // Exits no daemon has heard about keep the host around a while longer: the next daemon
+        // needs them to close those panes instead of respawning them.
+        const delay =
+            this.terminals.size > 0
+                ? UNREPORTED_EXIT_GRACE_MS
+                : (this.options.idleExitMs ?? DEFAULT_IDLE_EXIT_MS);
         this.idleTimer = setTimeout(() => {
             if (this.attached === null && this.liveCount() === 0) this.exit('idle');
-        }, this.options.idleExitMs ?? DEFAULT_IDLE_EXIT_MS);
+        }, delay);
         this.idleTimer.unref();
+    }
+}
+
+/** SIGHUP, then SIGKILL if the child ignored it (the terminal's exit handler records `exited`). */
+function hangUp(terminal: HostTerminal): void {
+    terminal.proc.kill('SIGHUP');
+    setTimeout(() => {
+        if (terminal.exited === null) terminal.proc.kill('SIGKILL');
+    }, SHUTDOWN_KILL_GRACE_MS).unref();
+}
+
+function socketFileExists(socketPath: string): boolean {
+    try {
+        return statSync(socketPath).isSocket();
+    } catch {
+        return false;
     }
 }
 

@@ -196,7 +196,7 @@ export async function buildAll(repoRoot, { log = () => {}, force = false } = {})
 
 // ── sandbox ─────────────────────────────────────────────────────────────────────────
 
-export async function makeSandbox(repoRoot, { label = 'audit', clientDir, auditWindow, harnessWindow } = {}) {
+export async function makeSandbox(repoRoot, { label = 'audit', clientDir, auditWindow, harnessWindow, terminalHost = false } = {}) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), `nexaudit-${label}-`));
     const home = path.join(root, 'home');
     const userData = path.join(root, 'electron');
@@ -261,6 +261,13 @@ export async function makeSandbox(repoRoot, { label = 'audit', clientDir, auditW
         KELPID_HTTP_HOST: '127.0.0.1',
         KELPID_ENTRY: path.join(repoRoot, 'packages', 'daemon', 'dist', 'kelpid.js'),
         KELPID_HELPERS_DIR: helpersDir,
+        /*
+         * The terminal host (docs/terminal-host.md) keeps shells alive across a daemon restart.
+         * Off unless a scenario asks for it: `restartableDaemon` promises that a restart is a
+         * real crash with every PTY gone, and a host is a detached process the harness's
+         * pipe-death watchdog cannot reach. `cleanup()` ends any host a sandbox did start.
+         */
+        KELPID_TERMINAL_HOST: terminalHost ? '1' : '0',
         // Harness marker: a shell/daemon that sees this exits when its stdout pipe dies,
         // instead of orphaning a window when the harness (or a probe script) is hard-killed.
         KELPI_HARNESS: '1',
@@ -328,9 +335,33 @@ export async function makeSandbox(repoRoot, { label = 'audit', clientDir, auditW
         runDir: env.KELPID_RUN_DIR,
         base: `http://127.0.0.1:${String(httpPort)}`,
         cleanup() {
+            killSandboxHosts(env.KELPID_RUN_DIR);
             fs.rmSync(root, { recursive: true, force: true });
         }
     };
+}
+
+/**
+ * End every terminal host a sandbox's daemons started (its pid records sit in the run dir), and
+ * with it every shell it kept. A host is detached by design, so nothing else would; it would
+ * notice its socket vanish with the sandbox within seconds, but a leak test runs faster.
+ */
+export function killSandboxHosts(runDir) {
+    let names;
+    try {
+        names = fs.readdirSync(runDir);
+    } catch {
+        return;
+    }
+    for (const name of names) {
+        if (!/^host-v\d+\.pid$/.test(name)) continue;
+        try {
+            const { pid } = JSON.parse(fs.readFileSync(path.join(runDir, name), 'utf8'));
+            if (Number.isInteger(pid) && pid > 0) process.kill(pid, 'SIGKILL');
+        } catch {
+            // no record, or already gone
+        }
+    }
 }
 
 // ── daemon ──────────────────────────────────────────────────────────────────────────

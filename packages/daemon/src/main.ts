@@ -69,7 +69,17 @@ export const START_TIMEOUT_MS = 15_000;
 /** How long `kelpid stop` waits for the daemon to disappear after SIGTERM. */
 export const STOP_TIMEOUT_MS = 10_000;
 
-export type KelpidCommand = 'start' | 'stop' | 'status' | 'url' | 'pair' | 'devices' | 'import' | 'help' | 'version';
+export type KelpidCommand =
+    | 'start'
+    | 'stop'
+    | 'restart'
+    | 'status'
+    | 'url'
+    | 'pair'
+    | 'devices'
+    | 'import'
+    | 'help'
+    | 'version';
 
 export interface ParsedArgs {
     readonly command: KelpidCommand;
@@ -105,6 +115,7 @@ const USAGE = `kelpid — the Kelpi daemon
 Usage:
   kelpid start [--foreground]   Start the daemon (detached unless --foreground)
   kelpid stop [--timeout <ms>]  Stop the running daemon (SIGTERM, then SIGKILL)
+  kelpid restart                Restart the daemon, keeping running terminals (terminal host)
   kelpid status [--json]        Ping the daemon and report version, pid and ports
   kelpid url [--tailnet]        Print the client URL (with the token) and nothing else
   kelpid pair --name <who> [--tailnet] [--qr [--qr-invert]]
@@ -326,6 +337,7 @@ export function parseKelpidArgs(argv: readonly string[]): ParsedArgs {
                 if (
                     arg === 'start' ||
                     arg === 'stop' ||
+                    arg === 'restart' ||
                     arg === 'status' ||
                     arg === 'url' ||
                     arg === 'pair' ||
@@ -540,6 +552,16 @@ async function commandStart(io: CliIO, args: ParsedArgs, owner?: TestOwner): Pro
         const daemon = createDaemon({
             env,
             ...(terminalHost !== undefined ? { terminalHost } : {}),
+            // `kelpid restart` asked for a successor: start it with THIS daemon's environment
+            // and entry, not the environment of whatever shell ran the restart.
+            onHandedOff: () => {
+                if (!takeRespawnRequest(paths)) return;
+                const logFile = env[LOG_FILE_ENV]?.trim();
+                spawnDetached(resolveEntry(env), ['start', '--foreground'], {
+                    env,
+                    ...(logFile !== undefined && logFile.length > 0 ? { logFile } : {})
+                });
+            },
             installSignalHandlers: owner === undefined,
             onError: (error, context) => io.err(`kelpid error [${context}]: ${error.message}`),
             onLog: (message) => io.out(message)
@@ -666,6 +688,85 @@ async function commandStop(io: CliIO, args: ParsedArgs): Promise<number> {
     }
     io.err(`kelpid (pid ${String(pid)}) did not exit within ${String(timeoutMs)}ms; sent SIGKILL`);
     return 1;
+}
+
+/** How long `kelpid restart` waits for the old daemon to hand off (a restore in progress, then checkpoints). */
+const RESTART_HANDOFF_TIMEOUT_MS = 30_000;
+/** A respawn request older than this is stale (its restart gave up) and is ignored. */
+const RESPAWN_REQUEST_TTL_MS = 60_000;
+
+function respawnRequestPath(paths: RunPaths): string {
+    return nodePath.join(paths.dir, `daemon-v${String(paths.protocol)}.respawn`);
+}
+
+/** Ask the daemon that receives the next SIGUSR2 to start its own successor (`onHandedOff`). */
+function writeRespawnRequest(paths: RunPaths): void {
+    fs.mkdirSync(paths.dir, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(respawnRequestPath(paths), `${new Date().toISOString()}\n`, { mode: 0o600 });
+}
+
+/** True, once, for a fresh respawn request; the file is removed either way. */
+function takeRespawnRequest(paths: RunPaths): boolean {
+    const file = respawnRequestPath(paths);
+    try {
+        const age = Date.now() - fs.statSync(file).mtimeMs;
+        fs.unlinkSync(file);
+        return age < RESPAWN_REQUEST_TTL_MS;
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * `kelpid restart`: the daemon hands its terminals to the terminal host, exits, and starts its
+ * own successor, which adopts them (`docs/terminal-host.md` §10). A daemon from before the host
+ * gets a full stop and start instead: SIGUSR2 would kill it without saving anything.
+ */
+async function commandRestart(io: CliIO, args: ParsedArgs): Promise<number> {
+    const env = io.env ?? process.env;
+    const paths = runPathsFor(env);
+    const probe = await probeDaemon(paths, { timeoutMs: 500 });
+    const pid = probe.pid ?? probe.record?.pid;
+    if (!probe.alive || pid === undefined) {
+        io.out('kelpid is not running; starting it');
+        return commandStart(io, args);
+    }
+    if (readPidRecord(paths)?.handoff !== true) {
+        io.err(`kelpid (pid ${String(pid)}) cannot hand its terminals over; restarting it with a full stop (its shells end)`);
+        const stopped = await commandStop(io, args);
+        return stopped === 0 ? commandStart(io, args) : stopped;
+    }
+    writeRespawnRequest(paths);
+    try {
+        process.kill(pid, 'SIGUSR2');
+    } catch (error) {
+        takeRespawnRequest(paths);
+        io.err(`failed to signal kelpid (pid ${String(pid)}): ${(error as Error).message}`);
+        return 1;
+    }
+    const exitDeadline = Date.now() + RESTART_HANDOFF_TIMEOUT_MS;
+    while (isProcessAlive(pid)) {
+        if (Date.now() >= exitDeadline) {
+            io.err(`kelpid (pid ${String(pid)}) did not finish its handoff within ${String(RESTART_HANDOFF_TIMEOUT_MS)}ms`);
+            return 1;
+        }
+        await sleep(100);
+    }
+    const startDeadline = Date.now() + START_TIMEOUT_MS;
+    for (;;) {
+        const next = await probeDaemon(paths, { timeoutMs: 500 });
+        if (next.alive && next.pid !== pid) {
+            io.out(
+                `kelpid restarted (pid ${String(pid)} → ${next.pid === undefined ? 'unknown' : String(next.pid)}); running terminals were kept`
+            );
+            return 0;
+        }
+        if (Date.now() >= startDeadline) {
+            io.err('kelpid handed its terminals over but no successor answered; run `kelpid start` to adopt them');
+            return 1;
+        }
+        await sleep(100);
+    }
 }
 
 async function commandStatus(io: CliIO, args: ParsedArgs): Promise<number> {
@@ -1177,6 +1278,8 @@ export async function runKelpid(argv: readonly string[], io: CliIO = defaultIO()
             return commandStart(io, args, args.foreground ? await connectTestOwner(io.env ?? process.env) : undefined);
         case 'stop':
             return commandStop(io, args);
+        case 'restart':
+            return commandRestart(io, args);
         case 'status':
             return commandStatus(io, args);
         case 'url':

@@ -155,8 +155,12 @@ describe('parseKelpidArgs', () => {
         expect(parseKelpidArgs(['stop', '--timeout', '250']).timeoutMs).toBe(250);
     });
 
+    it('parses restart (hand the terminals over and come back)', () => {
+        expect(parseKelpidArgs(['restart'])).toMatchObject({ command: 'restart' });
+    });
+
     it('rejects an unknown argument and a malformed timeout', () => {
-        expect(parseKelpidArgs(['restart']).error).toBe('unknown argument: restart');
+        expect(parseKelpidArgs(['reboot']).error).toBe('unknown argument: reboot');
         expect(parseKelpidArgs(['stop', '--timeout', 'soon']).error).toBe('--timeout needs a millisecond value');
     });
 

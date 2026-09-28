@@ -102,6 +102,8 @@ export interface AttachedMessage {
     readonly from: number;
     /** True when the host no longer holds every byte after the checkpoint (or there is none). */
     readonly gap: boolean;
+    /** Offset just past the replayed bytes: `until - from` of the `data` that follows is replay. */
+    readonly until: number;
     readonly cols: number;
     readonly rows: number;
 }
@@ -315,7 +317,13 @@ export function parseWelcome(body: unknown): WelcomeMessage | null {
 }
 
 export function parseAttached(body: unknown): AttachedMessage | null {
-    if (!isRecord(body) || !isText(body['tid']) || !isCount(body['from']) || typeof body['gap'] !== 'boolean') {
+    if (
+        !isRecord(body) ||
+        !isText(body['tid']) ||
+        !isCount(body['from']) ||
+        !isCount(body['until']) ||
+        typeof body['gap'] !== 'boolean'
+    ) {
         return null;
     }
     const offset = body['checkpointOffset'];

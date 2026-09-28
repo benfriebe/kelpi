@@ -104,6 +104,7 @@ const ROUTES = {
     'set-search-counts': 'layout',
 
     'pane-agent-event': 'agent',
+    'pane-agent-state-restored': 'agent',
     'pane-title-changed': 'agent',
     'pane-directory-changed': 'agent',
     'pane-branch-changed': 'agent',

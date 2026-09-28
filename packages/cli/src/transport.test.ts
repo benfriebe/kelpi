@@ -7,6 +7,8 @@
  * erroring, which is what keeps a typo in a dev container from breaking every hook fire.
  */
 
+import net from 'node:net';
+
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { setEnv } from './env.js';
@@ -89,12 +91,37 @@ describe('KELPI_REQUIRE_SOCKET (the sandbox-harness guard)', () => {
     it('leaves a well-formed tcp route alone — the guard gates the fallback, not the dial', async () => {
         // Port 1 on loopback: nothing listens, so a REAL dial happens and fails as a tcp
         // connect error — proof the guard did not intercept a valid route.
-        const routed = { KELPI_REQUIRE_SOCKET: '1', KELPI_SOCKET: 'tcp:127.0.0.1:1' };
+        const routed = { KELPI_REQUIRE_SOCKET: '1', KELPI_SOCKET: 'tcp:127.0.0.1:1', KELPI_ROUTE_RETRY_MS: '0' };
         setEnv(routed);
         setTransport(resolveTransport(routed));
         const reply = await sendJSONAndReadReply({ command: 'ping' });
         expect(reply).toBeNull();
         expect(takeLastTransportFailure()?.kind).toBe('tcpConnectFailed');
+    });
+
+    it('waits out a pane route that is briefly closed, as while one daemon hands off to the next', async () => {
+        // Find a free port, leave it closed, and only start listening part-way through the retry.
+        const probe = net.createServer();
+        await new Promise<void>((resolve) => probe.listen(0, '127.0.0.1', resolve));
+        const port = (probe.address() as net.AddressInfo).port;
+        await new Promise<void>((resolve) => probe.close(() => resolve()));
+        const routed = {
+            KELPI_SOCKET: `tcp:127.0.0.1:${String(port)}`,
+            KELPI_PANE_ID: 'AAAAAAAA-0000-4000-8000-000000000001',
+            KELPI_ROUTE_RETRY_MS: '3000'
+        };
+        setEnv(routed);
+        setTransport(resolveTransport(routed));
+        const successor = net.createServer((socket) => {
+            socket.on('data', () => socket.end('{"ok":true}\n'));
+        });
+        const listening = new Promise<void>((resolve) =>
+            setTimeout(() => successor.listen(port, '127.0.0.1', resolve), 600)
+        );
+        const reply = await sendJSONAndReadReply({ command: 'ping' });
+        await listening;
+        await new Promise<void>((resolve) => successor.close(() => resolve()));
+        expect(reply).toContain('"ok":true');
     });
 });
 

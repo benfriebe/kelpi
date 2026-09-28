@@ -482,6 +482,7 @@ export class TerminalHostServer {
                     checkpointOffset: checkpoint?.offset ?? null,
                     from: read.from,
                     gap: checkpoint === null || read.gap,
+                    until: read.from + read.bytes.length,
                     cols: terminal.cols,
                     rows: terminal.rows
                 },

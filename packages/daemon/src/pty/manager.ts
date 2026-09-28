@@ -183,7 +183,7 @@ class PtyManagerImpl implements KelpiPtyManager {
 
         let proc: PtyProcessHandle;
         try {
-            proc = this.spawner({ file, args, cwd, env, cols, rows, name: term });
+            proc = this.spawner({ file, args, cwd, env, cols, rows, name: term, key: opts.paneID });
         } catch (error) {
             // A broken $SHELL must not cost the user their pane: retry once on /bin/sh.
             if (file === FALLBACK_SHELL) {
@@ -199,7 +199,8 @@ class PtyManagerImpl implements KelpiPtyManager {
                     env,
                     cols,
                     rows,
-                    name: term
+                    name: term,
+                    key: opts.paneID
                 });
             } catch (fallbackError) {
                 this.reportSpawnFailure(opts.paneID, fallbackError);

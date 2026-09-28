@@ -202,7 +202,35 @@ function classifyConnectError(error: NodeJS.ErrnoException): TransportFailure {
     };
 }
 
+/**
+ * How long a refused pane-route connection keeps being retried. A shell can outlive its daemon
+ * (the terminal host, docs/terminal-host.md §10): while one daemon hands off to the next, the
+ * pane route's port is briefly closed, and an agent hook fired in that gap would otherwise be
+ * lost. Only inside a pane (`KELPI_PANE_ID`), and only a refused TCP connection; everything else
+ * fails at once, so a `kelpi` run by hand against a stopped daemon still answers immediately.
+ */
+export const ROUTE_RETRY_WINDOW_MS = 5000;
+const ROUTE_RETRY_STEP_MS = 200;
+
+/** `KELPI_ROUTE_RETRY_MS` overrides the window (0 turns the retry off). */
+function routeRetryWindowMs(): number {
+    if ((env()['KELPI_PANE_ID']?.trim() ?? '') === '') return 0;
+    const raw = env()['KELPI_ROUTE_RETRY_MS']?.trim();
+    const parsed = raw === undefined || raw === '' ? Number.NaN : Number(raw);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : ROUTE_RETRY_WINDOW_MS;
+}
+
 async function connect(): Promise<ConnectOutcome> {
+    const deadline = Date.now() + routeRetryWindowMs();
+    for (;;) {
+        const outcome = await connectOnce();
+        const refused = outcome.failure?.kind === 'tcpConnectFailed' && outcome.failure.errno === errnoNumber('ECONNREFUSED');
+        if (!refused || Date.now() >= deadline) return outcome;
+        await new Promise((resolve) => setTimeout(resolve, ROUTE_RETRY_STEP_MS));
+    }
+}
+
+async function connectOnce(): Promise<ConnectOutcome> {
     // The harness guard, enforced at the single choke point every command dials through:
     // under `KELPI_REQUIRE_SOCKET` a unix transport is always the silent fallback having
     // fired (KELPI_SOCKET cannot name a unix path), and dialing it would address whatever

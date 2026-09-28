@@ -1,6 +1,6 @@
 {
     "name": "@kelpi/cli",
-    "version": "0.1.0",
+    "version": "0.3.0-dev",
     "private": true,
     "type": "module",
     "description": "The `kelpi` CLI: a TypeScript port of the shipped Swift binary, daemon-aware.",

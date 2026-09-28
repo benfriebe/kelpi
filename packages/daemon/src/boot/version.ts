@@ -13,8 +13,12 @@
 
 import { PROTOCOL_VERSION } from '@kelpi/protocol';
 
-/** Keep in step with `packages/daemon/package.json`. */
-export const DAEMON_VERSION = '0.1.0';
+/**
+ * Keep in step with `packages/daemon/package.json`. Main carries the NEXT release with `-dev`
+ * (a release tag stamps the real one), so a build from main never reads as older than a
+ * published release: an older daemon is handed off by a newer app (`packages/shell/src/daemon.ts`).
+ */
+export const DAEMON_VERSION = '0.3.0-dev';
 export const DAEMON_BUILD = '1';
 
 export const VERSION_ENV = 'KELPID_VERSION';

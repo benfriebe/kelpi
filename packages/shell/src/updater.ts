@@ -1,193 +1,237 @@
 /**
- * Auto-update wiring — **off by default, and off in every packaged build we currently make.**
+ * Updates: ask first, then install (#272).
  *
- * ../kelpi-docs/research/stack.md §1 picks `update-electron-app` 3.3.0 over a hand-rolled feed: on macOS
- * Electron's `autoUpdater` *is* Squirrel.Mac, and the only real decision is who manages the
- * feed. `update-electron-app` points Squirrel at `update.electronjs.org`, which reads GitHub
- * Releases and serves the Squirrel-compatible JSON for free.
+ * Releases are published to GitHub (`.github/workflows/release.yml`) signed and notarized, and
+ * `update.electronjs.org` serves them to Squirrel.Mac straight from GitHub Releases. Its feed
+ * answers `GET /<owner>/<repo>/<platform>-<arch>/<current version>` with 204 when this version is
+ * the latest, or 200 and Squirrel's JSON (`name`, `notes`, `url`) when a newer release exists.
  *
- * Three things have to be true before it may be switched on, and none of them are true yet:
+ * Electron's own `autoUpdater` downloads the moment it finds an update, so the check here reads
+ * the feed itself: nothing is downloaded until the user says **Update Now**. Only then is the
+ * feed handed to `autoUpdater`, which downloads, and the app quits and relaunches into the new
+ * version. **Later** does nothing; the next launch asks again.
  *
- *   1. **The repository must be public.** `update.electronjs.org` only serves public GitHub
- *      repos — it has no credentials for a private one, and there is no self-hosted mode. A
- *      private repo means `electron-builder` + `electron-updater` with our own `latest-mac.yml`
- *      instead (stack.md's stated alternative), not this module with a different URL.
- *   2. **The app must be signed and notarized.** Squirrel.Mac replaces the bundle in place and
- *      Gatekeeper re-evaluates it; an unsigned or ad-hoc-signed app either fails to stage the
- *      update or installs one that will not launch. Today `pnpm dist` produces neither (see the
- *      release checklist in the repo README) — so shipping an updater now would be a way to
- *      brick an install, not a feature.
- *   3. **`repository` must name the GitHub repo** in the app's `package.json`, or the caller has
- *      to pass an explicit `repo`. `update-electron-app` derives the feed from it.
+ * When it runs:
+ * - at launch, only with Settings ▸ General ▸ Updates "Check for updates automatically"
+ *   (`auto-update`, default off). Off, the app makes no update request at all;
+ * - on demand from Kelpi ▸ Check for Updates…, whatever the setting.
  *
- * Until then this module does exactly one thing in the default configuration: nothing. No
- * import of `update-electron-app` is evaluated, and therefore **no network request is made** —
- * the dependency is loaded lazily inside the enabled branch, so the packaged default never even
- * initialises it.
+ * Only the packaged macOS app can install an update (a development run has no bundle for Squirrel
+ * to replace). `KELPI_UPDATE_FEED` points the check at another feed (a test server).
+ *
+ * The daemon is not this module's concern: the relaunched app finds a daemon from the old version
+ * and hands it off to a new one, keeping every terminal (`./daemon.ts`, docs/terminal-host.md).
  */
 
-import { log, logError, warn } from './log.js';
+import { log, logError } from './log.js';
 
-/** Opt in explicitly, per launch: `KELPI_AUTO_UPDATE=1`. Anything else is off. */
-export const AUTO_UPDATE_ENV = 'KELPI_AUTO_UPDATE';
-/** Override the `owner/name` the feed is derived from (otherwise: `package.json` repository). */
-export const AUTO_UPDATE_REPO_ENV = 'KELPI_AUTO_UPDATE_REPO';
-/** Poll interval, in the `ms`-parseable form update-electron-app wants (min 5 minutes). */
-export const AUTO_UPDATE_INTERVAL_ENV = 'KELPI_AUTO_UPDATE_INTERVAL';
+export const UPDATE_FEED_HOST = 'https://update.electronjs.org';
+/** Overrides the feed's base URL (tests, a self-hosted feed). */
+export const UPDATE_FEED_ENV = 'KELPI_UPDATE_FEED';
+/** The launch check waits this long, so it never competes with the window coming up. */
+export const LAUNCH_CHECK_DELAY_MS = 5000;
+/** How long a feed request may take. */
+export const FEED_TIMEOUT_MS = 10_000;
+/** Release notes longer than this are cut in the prompt (the rest is on the release page). */
+export const PROMPT_NOTES_LIMIT = 1200;
 
-export const DEFAULT_UPDATE_INTERVAL = '1 hour';
-
-export interface AutoUpdateSettings {
-    readonly enabled: boolean;
-    readonly repo?: string | undefined;
-    readonly updateInterval: string;
+export interface UpdateHost {
+    readonly isPackaged: boolean;
+    readonly platform: string;
+    readonly arch: string;
+    /** `app.getVersion()`. */
+    readonly version: string;
+    /** `owner/name`, from the app's `package.json` `repository`. */
+    readonly repo: string | undefined;
 }
 
-const TRUTHY = new Set(['1', 'true', 'yes', 'on']);
+export type UpdateSupport = { readonly ok: true } | { readonly ok: false; readonly reason: string };
 
-/**
- * Read the flag. Deliberately strict: only an explicit truthy value enables it, so a stray
- * `KELPI_AUTO_UPDATE=0` (or `=false`, or an empty string inherited from a shell) cannot turn on
- * a network-touching background task.
- */
-export function readAutoUpdateSettings(env: NodeJS.ProcessEnv = process.env): AutoUpdateSettings {
-    const raw = env[AUTO_UPDATE_ENV]?.trim().toLowerCase() ?? '';
-    const repo = env[AUTO_UPDATE_REPO_ENV]?.trim();
-    const interval = env[AUTO_UPDATE_INTERVAL_ENV]?.trim();
+/** Whether this build can install an update at all. */
+export function updateSupport(host: UpdateHost): UpdateSupport {
+    if (!host.isPackaged) return { ok: false, reason: 'This is a development build. Updates install into the packaged app only.' };
+    if (host.platform !== 'darwin') return { ok: false, reason: `Updates are not supported on ${host.platform} yet.` };
+    if (host.repo === undefined) return { ok: false, reason: 'This build does not name the repository its releases come from.' };
+    return { ok: true };
+}
+
+/** The launch check runs only with the setting on, in a build that can update. */
+export function shouldCheckAtLaunch(autoUpdate: boolean | null, host: UpdateHost): boolean {
+    return autoUpdate === true && updateSupport(host).ok;
+}
+
+/** `owner/name` from a package.json `repository` (a string or `{ url }`), or undefined. */
+export function repoFromPackage(repository: unknown): string | undefined {
+    const raw =
+        typeof repository === 'string'
+            ? repository
+            : typeof repository === 'object' && repository !== null && typeof (repository as { url?: unknown }).url === 'string'
+              ? (repository as { url: string }).url
+              : undefined;
+    if (raw === undefined) return undefined;
+    const match = /(?:github:|github\.com[/:])?([\w.-]+)\/([\w.-]+?)(?:\.git)?$/.exec(raw.trim());
+    return match === null ? undefined : `${match[1]}/${match[2]}`;
+}
+
+export function feedURL(host: UpdateHost, env: NodeJS.ProcessEnv = process.env): string {
+    const base = (env[UPDATE_FEED_ENV]?.trim() || UPDATE_FEED_HOST).replace(/\/+$/, '');
+    return `${base}/${host.repo ?? ''}/${host.platform}-${host.arch}/${host.version}`;
+}
+
+/** -1, 0 or 1. `major.minor.patch`, with a prerelease below its release (`0.2.0-rc.1` < `0.2.0`). */
+export function compareVersions(a: string, b: string): number {
+    const parse = (value: string): { core: number[]; pre: string } => {
+        const [core = '', ...pre] = value.replace(/^v/, '').split('-');
+        return { core: core.split('.').map((part) => Number.parseInt(part, 10) || 0), pre: pre.join('-') };
+    };
+    const left = parse(a);
+    const right = parse(b);
+    for (let index = 0; index < 3; index += 1) {
+        const difference = (left.core[index] ?? 0) - (right.core[index] ?? 0);
+        if (difference !== 0) return difference > 0 ? 1 : -1;
+    }
+    if (left.pre === right.pre) return 0;
+    if (left.pre === '') return 1;
+    if (right.pre === '') return -1;
+    return left.pre > right.pre ? 1 : -1;
+}
+
+export interface AvailableUpdate {
+    readonly version: string;
+    readonly notes: string;
+    /** The feed URL Squirrel is given to download it. */
+    readonly feed: string;
+}
+
+export type FeedReply =
+    | { readonly kind: 'none' }
+    | { readonly kind: 'available'; readonly update: AvailableUpdate }
+    | { readonly kind: 'error'; readonly message: string };
+
+/** What the feed said, as a decision. Only a strictly newer version is an update. */
+export function parseFeedReply(status: number, body: string, currentVersion: string, feed: string): FeedReply {
+    if (status === 204) return { kind: 'none' };
+    if (status !== 200) return { kind: 'error', message: `the update feed answered HTTP ${String(status)}` };
+    let parsed: unknown;
+    try {
+        parsed = JSON.parse(body);
+    } catch {
+        return { kind: 'error', message: 'the update feed sent something that is not JSON' };
+    }
+    const record = typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>) : {};
+    const name = typeof record['name'] === 'string' ? record['name'] : '';
+    const version = name.replace(/^v/, '').trim();
+    if (version === '' || typeof record['url'] !== 'string') {
+        return { kind: 'error', message: 'the update feed named no version or download' };
+    }
+    if (compareVersions(version, currentVersion) <= 0) return { kind: 'none' };
+    const notes = typeof record['notes'] === 'string' ? record['notes'].trim() : '';
+    return { kind: 'available', update: { version, notes, feed } };
+}
+
+export async function fetchUpdate(
+    feed: string,
+    currentVersion: string,
+    fetchImpl: typeof fetch = fetch,
+    timeoutMs = FEED_TIMEOUT_MS
+): Promise<FeedReply> {
+    try {
+        const response = await fetchImpl(feed, { signal: AbortSignal.timeout(timeoutMs) });
+        return parseFeedReply(response.status, response.status === 200 ? await response.text() : '', currentVersion, feed);
+    } catch (error) {
+        return { kind: 'error', message: error instanceof Error ? error.message : String(error) };
+    }
+}
+
+export const UPDATE_NOW = 0;
+export const UPDATE_LATER = 1;
+
+export interface PromptSpec {
+    readonly type: 'info';
+    readonly message: string;
+    readonly detail: string;
+    readonly buttons: string[];
+    readonly defaultId: number;
+    readonly cancelId: number;
+}
+
+/** The "Update Now / Later" prompt. */
+export function updatePrompt(update: AvailableUpdate, currentVersion: string): PromptSpec {
+    const notes =
+        update.notes.length > PROMPT_NOTES_LIMIT ? `${update.notes.slice(0, PROMPT_NOTES_LIMIT).trimEnd()}…` : update.notes;
+    const lines = [
+        `You have ${currentVersion}. Updating downloads the new version, then restarts Kelpi.`,
+        'Your terminals and agents keep running through the restart.'
+    ];
+    if (notes !== '') lines.push('', notes);
     return {
-        enabled: TRUTHY.has(raw),
-        ...(repo !== undefined && repo.length > 0 ? { repo } : {}),
-        updateInterval: interval !== undefined && interval.length > 0 ? interval : DEFAULT_UPDATE_INTERVAL
+        type: 'info',
+        message: `Kelpi ${update.version} is available`,
+        detail: lines.join('\n'),
+        buttons: ['Update Now', 'Later'],
+        defaultId: UPDATE_NOW,
+        cancelId: UPDATE_LATER
     };
 }
 
-export interface AutoUpdateHost {
-    /** `app.isPackaged` — Squirrel cannot update a `electron .` development run. */
-    readonly isPackaged: boolean;
-    readonly platform: string;
-}
-
-export type AutoUpdateOutcome =
-    | { readonly started: false; readonly reason: string }
-    | { readonly started: true; readonly repo?: string | undefined };
-
-/**
- * Decide whether to start the updater. Pure, so the (many) refusal paths are testable without
- * an Electron process — `maybeStartAutoUpdate` below is the thin side effect.
- */
-export function autoUpdateDecision(settings: AutoUpdateSettings, host: AutoUpdateHost): AutoUpdateOutcome {
-    if (!settings.enabled) return { started: false, reason: `disabled (set ${AUTO_UPDATE_ENV}=1 to opt in)` };
-    if (!host.isPackaged) return { started: false, reason: 'not a packaged app' };
-    if (host.platform !== 'darwin' && host.platform !== 'win32') {
-        return { started: false, reason: `unsupported platform ${host.platform}` };
-    }
-    return { started: true, ...(settings.repo !== undefined ? { repo: settings.repo } : {}) };
-}
-
-/**
- * Start the updater when — and only when — the decision above says so.
- *
- * The `import()` sits inside the enabled branch on purpose: esbuild keeps a dynamic import of a
- * bundled module lazy, so in the default (disabled) configuration `update-electron-app` is
- * never evaluated, never reads `package.json`, and never contacts `update.electronjs.org`.
- */
-export async function maybeStartAutoUpdate(
-    host: AutoUpdateHost,
-    env: NodeJS.ProcessEnv = process.env
-): Promise<AutoUpdateOutcome> {
-    const settings = readAutoUpdateSettings(env);
-    const decision = autoUpdateDecision(settings, host);
-    if (!decision.started) {
-        log(`auto-update: ${decision.reason}`);
-        return decision;
-    }
-
-    warn(
-        'auto-update is ON. It requires a PUBLIC GitHub repo (update.electronjs.org serves no ' +
-            'private repos) and a signed + notarized build; an unsigned app cannot install a ' +
-            'Squirrel update.'
-    );
-    try {
-        const { updateElectronApp } = await import('update-electron-app');
-        updateElectronApp({
-            ...(settings.repo !== undefined ? { repo: settings.repo } : {}),
-            updateInterval: settings.updateInterval,
-            logger: { log, info: log, error: (message: unknown) => logError(String(message)), warn }
-        });
-        log(`auto-update: started (${settings.repo ?? 'package.json repository'}, every ${settings.updateInterval})`);
-        return decision;
-    } catch (error) {
-        logError('auto-update failed to start', error);
-        return { started: false, reason: error instanceof Error ? error.message : String(error) };
-    }
-}
-
-// ── the manual check (APP-026) ──────────────────────────────────────────────────────
-
-/**
- * `Kelpi ▸ Check for Updates…`.
- *
- * The Swift app used Sparkle and disabled the item whenever `canCheckForUpdates == false`
- * (`CheckForUpdatesView.swift:4-13`). Squirrel exposes no such flag, and — more importantly —
- * the honest reason a check is unavailable here is not "one is already running" but the three
- * preconditions this module's header lists. So the item is always ENABLED and always answers:
- * when updates are off it says so, in the words of the refusal, rather than being a grey row a
- * user cannot learn anything from.
- */
-export type UpdateCheckResult =
-    | { readonly kind: 'unavailable'; readonly message: string }
-    | { readonly kind: 'checking' }
-    | { readonly kind: 'failed'; readonly message: string };
-
-/** `electron.autoUpdater`'s two members this needs; injected so the decision stays testable. */
-export interface ManualUpdateBackend {
+/** Electron's `autoUpdater`, as much of it as the install needs. */
+export interface Installer {
+    setFeedURL(options: { url: string }): void;
     checkForUpdates(): void;
-}
-
-export interface ManualUpdateOptions {
-    readonly host: AutoUpdateHost;
-    readonly env?: NodeJS.ProcessEnv | undefined;
-    /** Absent in tests and in a dev run; production passes Electron's `autoUpdater`. */
-    readonly backend?: ManualUpdateBackend | undefined;
-    /** True once `maybeStartAutoUpdate` has actually initialised the feed. */
-    readonly started?: boolean | undefined;
+    quitAndInstall(): void;
+    on(event: 'update-downloaded' | 'update-not-available' | 'error', listener: (...args: unknown[]) => void): unknown;
+    removeListener(event: string, listener: (...args: unknown[]) => void): unknown;
 }
 
 /**
- * §APP-026 — Sparkle's `canCheckForUpdates`, as a build capability.
- *
- * `checkForUpdatesNow` answers three ways; an application-menu row can only be enabled or greyed,
- * so this is the half of that decision which is FIXED for the life of the process: is this a build
- * that could ever check (packaged, on a Squirrel platform, opted in)? The transient half — "the
- * feed has not finished starting yet" — is deliberately excluded, because the menu is built before
- * `maybeStartAutoUpdate` runs and a row greyed on that basis would never come back.
+ * Download the update through Squirrel and, once it is ready, quit into it. `beforeInstall` runs
+ * just before the quit (it lets the quit through the agents-active confirmation, which would
+ * otherwise stop an install the user already asked for). Rejects if the download fails.
  */
-export function canCheckForUpdates(host: AutoUpdateHost, env: NodeJS.ProcessEnv = process.env): boolean {
-    return autoUpdateDecision(readAutoUpdateSettings(env), host).started;
+export function downloadAndInstall(installer: Installer, update: AvailableUpdate, beforeInstall: () => void): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+        const cleanup = (): void => {
+            installer.removeListener('update-downloaded', onDownloaded);
+            installer.removeListener('update-not-available', onNotAvailable);
+            installer.removeListener('error', onError);
+        };
+        const onDownloaded = (): void => {
+            cleanup();
+            log(`auto-update: ${update.version} downloaded; restarting into it`);
+            beforeInstall();
+            installer.quitAndInstall();
+            resolve();
+        };
+        const onNotAvailable = (): void => {
+            cleanup();
+            reject(new Error(`Kelpi ${update.version} is no longer offered for this version`));
+        };
+        const onError = (error: unknown): void => {
+            cleanup();
+            reject(error instanceof Error ? error : new Error(String(error)));
+        };
+        installer.on('update-downloaded', onDownloaded);
+        installer.on('update-not-available', onNotAvailable);
+        installer.on('error', onError);
+        try {
+            installer.setFeedURL({ url: update.feed });
+            installer.checkForUpdates();
+            log(`auto-update: downloading ${update.version}`);
+        } catch (error) {
+            onError(error);
+        }
+    });
 }
 
-export function checkForUpdatesNow(options: ManualUpdateOptions): UpdateCheckResult {
-    const settings = readAutoUpdateSettings(options.env ?? process.env);
-    const decision = autoUpdateDecision(settings, options.host);
-    if (!decision.started) {
-        return {
-            kind: 'unavailable',
-            message: `Updates are ${decision.reason}. This build checks for updates only when it is packaged, signed and ${AUTO_UPDATE_ENV}=1 is set.`
-        };
-    }
-    if (options.started !== true || options.backend === undefined) {
-        return {
-            kind: 'unavailable',
-            message: 'The updater has not finished starting yet - try again in a moment.'
-        };
-    }
-    try {
-        options.backend.checkForUpdates();
-        log('auto-update: manual check requested');
-        return { kind: 'checking' };
-    } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        logError('auto-update: manual check failed', error);
-        return { kind: 'failed', message };
-    }
+/** Logged once at launch, so a run's log says what the updater will do. */
+export function launchLogLine(autoUpdate: boolean | null, host: UpdateHost): string {
+    const support = updateSupport(host);
+    if (!support.ok) return `auto-update: unavailable (${support.reason})`;
+    return autoUpdate === true
+        ? `auto-update: on; checking in ${String(LAUNCH_CHECK_DELAY_MS / 1000)} s`
+        : 'auto-update: off (Settings ▸ General ▸ Updates); no update request is made';
+}
+
+export function reportUpdateError(context: string, error: unknown): void {
+    logError(`auto-update: ${context}`, error);
 }

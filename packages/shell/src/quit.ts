@@ -115,6 +115,13 @@ export interface QuitGate {
     requestQuit(): void;
     /** True while the confirmation is on screen (a second ⌘Q must not stack a dialog). */
     readonly confirming: boolean;
+    /**
+     * Let the next quit through without asking: an update the user chose ("Update Now") quits the
+     * app itself, with its windows already closed, and must not be stopped by the agents-active
+     * confirmation. Agents keep running anyway: the daemon and the terminal host outlive the app.
+     * Runs the usual quit teardown.
+     */
+    allowQuit(): void;
     dispose(): void;
 }
 
@@ -284,6 +291,12 @@ export function installQuitGate(options: QuitGateOptions): QuitGate {
         },
         get confirming(): boolean {
             return confirming;
+        },
+        allowQuit(): void {
+            if (confirmed) return;
+            confirmed = true;
+            options.onQuit?.();
+            log('quit: allowed for an update; leaving the daemon running');
         },
         dispose(): void {
             app.removeListener('before-quit', onBeforeQuit);

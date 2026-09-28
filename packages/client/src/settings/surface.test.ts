@@ -500,7 +500,8 @@ describe('the snapshot', () => {
             'general-worktrees',
             'general-repositories',
             'general-workspaces',
-            'general-network'
+            'general-network',
+            'general-updates'
         ]);
         for (const field of fields) expect(groups.some((group) => group.id === field.groupID)).toBe(true);
         const basePath = fields.find((one) => one.id === 'general.worktreeBasePath') as SettingsTextFieldDescriptor;

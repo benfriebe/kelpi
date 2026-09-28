@@ -5,6 +5,7 @@
   "description": "Thin Electron shell for New Kelpi: loads the daemon-served UI, adds native chrome.",
   "main": "dist/main.js",
   "productName": "Kelpi",
+  "repository": "github:benfriebe/kelpi",
   "scripts": {
     "build": "node scripts/bundle.mjs",
     "start": "electron .",
@@ -23,7 +24,6 @@
     "@kelpi/core": "workspace:*",
     "@kelpi/daemon": "workspace:*",
     "@kelpi/protocol": "workspace:*",
-    "update-electron-app": "^3.3.0",
     "ws": "^8.21.3"
   },
   "devDependencies": {

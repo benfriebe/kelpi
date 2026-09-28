@@ -23,11 +23,11 @@
  *
  * ## About the Node binary
  *
- * This copies **the Node that is running this script** (or `KELPI_NODE_BINARY`). That is right
- * for a local `pnpm dist` and wrong for a release: a redistributed Node has to be the official
- * build for the target platform, and in a signed app it must be signed and given the
- * entitlements the app's own signature implies. The release checklist in the repo README says
- * so; this script's job is to make the local build honest, not to pretend it is a release.
+ * This copies **the Node that is running this script** (or `KELPI_NODE_BINARY`). A redistributed
+ * Node has to be the official build for the target platform: the release workflow gets that from
+ * `actions/setup-node`, and a signed build re-signs it with its own entitlements
+ * (`NODE_ENTITLEMENTS` in `src/packaging.ts`). Locally it is whatever Node you run, which is
+ * fine for a build that never leaves the machine.
  *
  *     node scripts/stage-resources.mjs [--out <dir>] [--platform darwin] [--arch arm64] [--skip-icon]
  */

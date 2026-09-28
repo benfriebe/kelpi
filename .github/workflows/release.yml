@@ -1,0 +1,183 @@
+# Signed, notarized Mac release (#272), shaped like Nex's release.yml.
+#
+# Pushing a `v<semver>` tag builds Kelpi.app with the Developer ID, notarizes and staples the
+# app and the DMG, verifies both with Gatekeeper, and drafts a GitHub Release carrying the DMG
+# (for people) and the ZIP (what Squirrel.Mac installs from, via update.electronjs.org). The
+# release stays a draft until someone publishes it; update.electronjs.org never serves drafts
+# or prereleases.
+#
+# Running it by hand (workflow_dispatch) does everything except the release, and uploads the
+# DMG and ZIP as workflow artifacts: a dry run of the whole pipeline without a tag.
+#
+# Secrets live in the `Kelpi` environment:
+#   DEVELOPER_ID_CERTIFICATE  base64 of the Developer ID Application .p12
+#   DEVELOPER_ID_PASSWORD     that .p12's export password
+#   APPLE_ID                  the Apple ID that notarizes
+#   APPLE_ID_PASSWORD         an app-specific password for it (appleid.apple.com)
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  SIGNING_IDENTITY: "Developer ID Application: BENJAMIN RYAN FRIEBE (4ASXCG2599)"
+  TEAM_ID: "4ASXCG2599"
+  APP: packages/shell/out/Kelpi-darwin-arm64/Kelpi.app
+
+jobs:
+  release:
+    runs-on: macos-15
+    environment: Kelpi
+    timeout-minutes: 60
+    steps:
+      - name: Check the secrets are set
+        env:
+          DEVELOPER_ID_CERTIFICATE: ${{ secrets.DEVELOPER_ID_CERTIFICATE }}
+          DEVELOPER_ID_PASSWORD: ${{ secrets.DEVELOPER_ID_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+        run: |
+          missing=()
+          for name in DEVELOPER_ID_CERTIFICATE DEVELOPER_ID_PASSWORD APPLE_ID APPLE_ID_PASSWORD; do
+            [ -n "${!name}" ] || missing+=("$name")
+          done
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::missing secrets in the Kelpi environment: ${missing[*]}"
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      # The official Node build: stage-resources.mjs bundles the Node running the build as
+      # Contents/Resources/node, and the signing step re-signs it with Kelpi's identity.
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Version from the tag
+        id: version
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            version="${GITHUB_REF_NAME#v}"
+            if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+              echo "::error::tag $GITHUB_REF_NAME is not v<major>.<minor>.<patch>[-prerelease]"
+              exit 1
+            fi
+            # app.getVersion(), CFBundleShortVersionString, `kelpi --version` and the ZIP's
+            # name all come from here; Squirrel compares it with the release tags.
+            (cd packages/shell && npm pkg set version="$version")
+          else
+            version="$(node -p "require('./packages/shell/package.json').version")"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [[ "$version" == *-* ]]; then echo "prerelease=true" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Import the signing certificate
+        env:
+          DEVELOPER_ID_CERTIFICATE: ${{ secrets.DEVELOPER_ID_CERTIFICATE }}
+          DEVELOPER_ID_PASSWORD: ${{ secrets.DEVELOPER_ID_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          password="$(openssl rand -base64 32)"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          echo "$DEVELOPER_ID_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security import "$RUNNER_TEMP/certificate.p12" -P "$DEVELOPER_ID_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$keychain"
+          rm "$RUNNER_TEMP/certificate.p12"
+          security set-key-partition-list -S apple-tool:,apple: -k "$password" "$keychain"
+          security list-keychains -d user -s "$keychain" login.keychain
+
+      # forge.config.cjs signs every Mach-O file under the hardened runtime, then notarizes and
+      # staples the app, before the ZIP and DMG are made from it.
+      - name: Build, sign and notarize the app
+        timeout-minutes: 40
+        env:
+          KELPI_MACOS_IDENTITY: ${{ env.SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+          APPLE_TEAM_ID: ${{ env.TEAM_ID }}
+        run: pnpm dist
+
+      - name: Name the artifacts
+        id: artifacts
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mkdir -p release
+          mv packages/shell/out/make/Kelpi.dmg "release/Kelpi-$VERSION-arm64.dmg"
+          mv packages/shell/out/make/zip/darwin/arm64/*.zip release/
+          ls -la release
+          echo "dmg=release/Kelpi-$VERSION-arm64.dmg" >> "$GITHUB_OUTPUT"
+
+      - name: Sign, notarize and staple the DMG
+        timeout-minutes: 30
+        env:
+          DMG: ${{ steps.artifacts.outputs.dmg }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+        run: |
+          codesign --sign "$SIGNING_IDENTITY" --timestamp "$DMG"
+          xcrun notarytool submit "$DMG" --apple-id "$APPLE_ID" --password "$APPLE_ID_PASSWORD" \
+            --team-id "$TEAM_ID" --wait
+          xcrun stapler staple "$DMG"
+
+      - name: Verify with Gatekeeper
+        env:
+          DMG: ${{ steps.artifacts.outputs.dmg }}
+        run: |
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          xcrun stapler validate "$APP"
+          spctl --assess --type execute --verbose=4 "$APP"
+          xcrun stapler validate "$DMG"
+          spctl --assess --type open --context context:primary-signature --verbose=4 "$DMG"
+          # Squirrel installs from the ZIP, so the app inside it must carry the ticket too.
+          ditto -x -k release/*.zip "$RUNNER_TEMP/unzipped"
+          xcrun stapler validate "$RUNNER_TEMP/unzipped/Kelpi.app"
+          spctl --assess --type execute --verbose=4 "$RUNNER_TEMP/unzipped/Kelpi.app"
+
+      - name: Upload the artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kelpi-${{ steps.version.outputs.version }}
+          path: release/
+          if-no-files-found: error
+
+      - name: Draft the GitHub release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
+        run: |
+          flags=(--draft --verify-tag --generate-notes --title "Kelpi $VERSION")
+          if [ "$PRERELEASE" = true ]; then flags+=(--prerelease); fi
+          gh release create "$GITHUB_REF_NAME" "${flags[@]}" release/*
+
+      - name: Delete the signing keychain
+        if: always()
+        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true

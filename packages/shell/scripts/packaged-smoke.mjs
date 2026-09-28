@@ -837,10 +837,13 @@ async function launchPhase() {
         }
         await app.waitForLine(/status ws connected/, 'the status WebSocket');
         pass('the main process opened its status WebSocket');
+        // #272: logged once the daemon has reported the `auto-update` setting (off by default), so
+        // it names both halves: the build can update, and this one made no update request.
+        const autoUpdate = await app.waitForLine(/auto-update: /, 'the auto-update decision', 15_000);
         check(
             'auto-update stayed off (no network call in the packaged default)',
-            app.text().includes('auto-update: disabled'),
-            app.lines.find((line) => line.includes('auto-update')) ?? ''
+            autoUpdate.includes('auto-update: off') && !app.text().includes('check failed'),
+            autoUpdate.trim()
         );
 
         /*

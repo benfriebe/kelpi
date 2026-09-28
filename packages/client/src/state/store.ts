@@ -463,6 +463,7 @@ export function hydrateSettings(raw: unknown): WsSettingsSnapshot | null {
                 general['confirmQuitWhenActive'],
                 fallbackGeneral.confirmQuitWhenActive
             ),
+            autoUpdate: bool(general['autoUpdate'], fallbackGeneral.autoUpdate),
             tcpPort: Math.max(0, num(general['tcpPort'], fallbackGeneral.tcpPort)),
             globalHotkey: nullableText(general['globalHotkey']),
             globalHotkeyHideOnRepress: bool(

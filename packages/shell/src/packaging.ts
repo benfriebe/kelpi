@@ -14,6 +14,8 @@
  * Nothing here imports Electron.
  */
 
+import { closeSync, openSync, readSync, statSync } from 'node:fs';
+
 import { stampKelpie } from '@kelpi/core/icon';
 import { encodePng } from '@kelpi/core/icon/png';
 import { RESOURCE_NAMES } from './resources.js';
@@ -156,7 +158,7 @@ export function isSignedBuild(identity: string | null | undefined): boolean {
  * runs in exactly such a sandbox) has no keychain to satisfy it with.
  *
  * So cookie encryption travels with signing, and turns on in the same step as the Developer ID
- * (README ▸ "Signing and notarization"). Note that even a signed build cannot answer that dialog
+ * (README ▸ "Signing, notarization and releases"). Note that even a signed build cannot answer that dialog
  * inside the smoke's private `HOME`: run `packaged-smoke.mjs --mock-keychain` there.
  */
 export function cookieEncryptionFuseEnabled(identity: string | null | undefined): boolean {
@@ -213,6 +215,171 @@ export function adhocSignCommands(appPath: string): readonly (readonly string[])
         ['codesign', '--force', '--deep', '--sign', '-', appPath],
         ['codesign', '--verify', '--strict', appPath]
     ];
+}
+
+// ── the Developer ID signature ──────────────────────────────────────────────────────
+
+/**
+ * Entitlements for `Kelpi.app` itself, under the hardened runtime notarization requires.
+ *
+ * `allow-jit` is Electron's own (V8 in the main process). Everything else is there because
+ * Kelpi is a terminal: a program running in a pane is a descendant of the app, so macOS
+ * attributes its privacy requests (TCC) to Kelpi, and a hardened app that lacks the matching
+ * entitlement has the request denied without a prompt. Claude Code's voice mode in a pane
+ * needs `audio-input`; an `osascript` needs `apple-events`. The set is Ghostty's
+ * (`macos/Ghostty.entitlements`), and each one has a usage string in `forge.config.cjs`.
+ */
+export const APP_ENTITLEMENTS: readonly string[] = [
+    'com.apple.security.cs.allow-jit',
+    'com.apple.security.device.audio-input',
+    'com.apple.security.device.camera',
+    'com.apple.security.automation.apple-events',
+    'com.apple.security.personal-information.addressbook',
+    'com.apple.security.personal-information.calendars',
+    'com.apple.security.personal-information.location',
+    'com.apple.security.personal-information.photos-library'
+];
+
+/**
+ * Entitlements for the bundled `node` that runs the daemon: the set the official Node build
+ * ships with, minus `get-task-allow`, which notarization rejects.
+ *
+ * `allow-dyld-environment-variables` matters beyond Node itself. Without it dyld strips every
+ * `DYLD_*` variable from a hardened process's environment before `main`, so the daemon, and
+ * every shell it spawns, would silently lose them (measured: a hardened binary's own `getenv`
+ * sees nothing, so nothing it execs can inherit them).
+ */
+export const NODE_ENTITLEMENTS: readonly string[] = [
+    'com.apple.security.cs.allow-jit',
+    'com.apple.security.cs.allow-unsigned-executable-memory',
+    'com.apple.security.cs.disable-executable-page-protection',
+    'com.apple.security.cs.allow-dyld-environment-variables',
+    'com.apple.security.cs.disable-library-validation'
+];
+
+/**
+ * node-pty's `spawn-helper` sits between the daemon and the user's shell (it `exec`s it), so it
+ * needs the same `DYLD_*` pass-through as `node`, and nothing else.
+ */
+export const SPAWN_HELPER_ENTITLEMENTS: readonly string[] = ['com.apple.security.cs.allow-dyld-environment-variables'];
+
+/** What `@electron/osx-sign`'s `optionsForFile` may return for one path. */
+export interface SignFileOptions {
+    readonly hardenedRuntime: true;
+    readonly entitlements: string[];
+}
+
+/**
+ * Per-file signing options for `osxSign.optionsForFile`. `null` keeps osx-sign's defaults, which
+ * already give each Electron helper (GPU, Renderer, Plugin, plain) its Chromium entitlements.
+ * `appName` is the bundle's file name (`Kelpi.app`); the helpers' names only start with it.
+ */
+export function signOptionsForFile(filePath: string, appName: string): SignFileOptions | null {
+    const normal = filePath.split('\\').join('/');
+    const entitlements = normal.endsWith(`/${appName}`)
+        ? APP_ENTITLEMENTS
+        : normal.endsWith(`/${appName}/Contents/Resources/${RESOURCE_NAMES.node}`)
+          ? NODE_ENTITLEMENTS
+          : normal.includes('/node-pty/') && normal.endsWith('/spawn-helper')
+            ? SPAWN_HELPER_ENTITLEMENTS
+            : null;
+    return entitlements === null ? null : { hardenedRuntime: true, entitlements: [...entitlements] };
+}
+
+/** A Mach-O file's magic number in both byte orders, thin 32/64-bit and universal. */
+const MACHO_MAGICS: ReadonlySet<number> = new Set([
+    0xfeedface, 0xcefaedfe, 0xfeedfacf, 0xcffaedfe, 0xcafebabe, 0xbebafeca, 0xcafebabf, 0xbfbafeca
+]);
+
+/** Does this file start like a Mach-O binary (thin or universal)? */
+export function isMachOHeader(header: Uint8Array): boolean {
+    if (header.length < 4) return false;
+    const magic = ((header[0]! << 24) | (header[1]! << 16) | (header[2]! << 8) | header[3]!) >>> 0;
+    return MACHO_MAGICS.has(magic);
+}
+
+/**
+ * `osxSign.ignore`: skip every file that is not code. osx-sign signs any file that merely
+ * *looks* binary, which in this bundle means the whole web client (fonts, PNGs, Wasm) and
+ * `app.asar`, each given a detached signature in extended attributes. Apple's rule is to sign
+ * code only and let the enclosing bundle's seal cover resources, which is what this does.
+ * `readHeader` returns a file's first bytes, or `null` for a directory (`.app`, `.framework`),
+ * which is never skipped.
+ */
+export function signIgnore(
+    filePath: string,
+    readHeader: (file: string) => Uint8Array | null = readFileHeader
+): boolean {
+    const header = readHeader(filePath);
+    return header !== null && !isMachOHeader(header);
+}
+
+/** A regular file's first four bytes (fewer if it is shorter), or `null` for anything else. */
+export function readFileHeader(file: string): Uint8Array | null {
+    let fd: number | undefined;
+    try {
+        if (!statSync(file).isFile()) return null;
+        fd = openSync(file, 'r');
+        const header = Buffer.alloc(4);
+        return header.subarray(0, readSync(fd, header, 0, 4, 0));
+    } catch {
+        return null;
+    } finally {
+        if (fd !== undefined) closeSync(fd);
+    }
+}
+
+// ── notarization ────────────────────────────────────────────────────────────────────
+
+/** `osxNotarize` for `@electron/notarize`, in each of the three credential forms notarytool takes. */
+export type NotarizeOptions =
+    | { readonly keychainProfile: string }
+    | { readonly appleApiKey: string; readonly appleApiKeyId: string; readonly appleApiIssuer: string }
+    | { readonly appleId: string; readonly appleIdPassword: string; readonly teamId: string };
+
+/**
+ * The environment groups that turn notarization on, first match wins:
+ *
+ * - `KELPI_NOTARY_PROFILE`: a profile saved with `xcrun notarytool store-credentials`, for a
+ *   local build.
+ * - `APPLE_API_KEY` (path to the `.p8`), `APPLE_API_KEY_ID`, `APPLE_API_ISSUER`: an App Store
+ *   Connect API key.
+ * - `APPLE_ID`, `APPLE_ID_PASSWORD` (app-specific), `APPLE_TEAM_ID`: what Nex's release used.
+ */
+const NOTARIZE_GROUPS = [
+    ['KELPI_NOTARY_PROFILE'],
+    ['APPLE_API_KEY', 'APPLE_API_KEY_ID', 'APPLE_API_ISSUER'],
+    ['APPLE_ID', 'APPLE_ID_PASSWORD', 'APPLE_TEAM_ID']
+] as const;
+
+/**
+ * `osxNotarize` from the environment, or `null` when none of it is set (a local, signed-only
+ * build). Anything half-configured throws instead of quietly shipping an unnotarized app:
+ * a group with some of its variables missing, or credentials without a signing identity, since
+ * Apple will not notarize an ad-hoc signature. `@electron/notarize` staples the app itself once
+ * the submission is accepted.
+ */
+export function notarizeOptions(
+    env: Readonly<Record<string, string | undefined>>,
+    identity: string | null | undefined
+): NotarizeOptions | null {
+    const value = (name: string): string => (env[name] ?? '').trim();
+    for (const group of NOTARIZE_GROUPS) {
+        const present = group.filter((name) => value(name).length > 0);
+        if (present.length === 0) continue;
+        const missing = group.filter((name) => value(name).length === 0);
+        if (missing.length > 0) {
+            throw new Error(`notarization is half-configured: ${present.join(', ')} set but ${missing.join(', ')} missing`);
+        }
+        if (!isSignedBuild(identity)) {
+            throw new Error(`${present.join(', ')} asks for notarization, which needs KELPI_MACOS_IDENTITY set to a Developer ID`);
+        }
+        const [first = '', second = '', third = ''] = group.map(value);
+        if (group.length === 1) return { keychainProfile: first };
+        if (group[0] === 'APPLE_API_KEY') return { appleApiKey: first, appleApiKeyId: second, appleApiIssuer: third };
+        return { appleId: first, appleIdPassword: second, teamId: third };
+    }
+    return null;
 }
 
 // ── the bundled Node runtime ────────────────────────────────────────────────────────

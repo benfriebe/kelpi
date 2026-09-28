@@ -7,7 +7,6 @@ import {
     parseWorkspaceSelection,
     shellActionAppliesHere
 } from './shell-actions.js';
-import { AUTO_UPDATE_ENV, checkForUpdatesNow } from './updater.js';
 
 /**
  * §WS-151 — `workspace-selection`, the client's report that greys File ▸ Deselect All Workspaces.
@@ -108,66 +107,6 @@ describe('shellActionAppliesHere', () => {
 
     it('a shell with no identity still acts (a dev run without a window id)', () => {
         expect(shellActionAppliesHere('w1', undefined)).toBe(true);
-    });
-});
-
-describe('checkForUpdatesNow (APP-026)', () => {
-    const packaged = { isPackaged: true, platform: 'darwin' };
-
-    it('explains the refusal instead of sitting grey when updates are off', () => {
-        const result = checkForUpdatesNow({ host: packaged, env: {} });
-        expect(result.kind).toBe('unavailable');
-        expect(result.kind === 'unavailable' ? result.message : '').toContain(AUTO_UPDATE_ENV);
-    });
-
-    it('names the real reason for a development run', () => {
-        const result = checkForUpdatesNow({
-            host: { isPackaged: false, platform: 'darwin' },
-            env: { [AUTO_UPDATE_ENV]: '1' }
-        });
-        expect(result.kind).toBe('unavailable');
-        expect(result.kind === 'unavailable' ? result.message : '').toContain('not a packaged app');
-    });
-
-    it('says "not started yet" rather than pretending, when the feed is not up', () => {
-        const result = checkForUpdatesNow({
-            host: packaged,
-            env: { [AUTO_UPDATE_ENV]: '1' },
-            started: false
-        });
-        expect(result.kind).toBe('unavailable');
-        expect(result.kind === 'unavailable' ? result.message : '').toContain('has not finished starting');
-    });
-
-    it('asks the backend once the updater really is running', () => {
-        let checks = 0;
-        const result = checkForUpdatesNow({
-            host: packaged,
-            env: { [AUTO_UPDATE_ENV]: '1' },
-            started: true,
-            backend: {
-                checkForUpdates: () => {
-                    checks += 1;
-                }
-            }
-        });
-        expect(result.kind).toBe('checking');
-        expect(checks).toBe(1);
-    });
-
-    it('reports a throwing backend rather than crashing the menu click', () => {
-        const result = checkForUpdatesNow({
-            host: packaged,
-            env: { [AUTO_UPDATE_ENV]: '1' },
-            started: true,
-            backend: {
-                checkForUpdates: () => {
-                    throw new Error('no feed configured');
-                }
-            }
-        });
-        expect(result.kind).toBe('failed');
-        expect(result.kind === 'failed' ? result.message : '').toBe('no feed configured');
     });
 });
 

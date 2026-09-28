@@ -312,6 +312,7 @@ export function buildSettingsSnapshot(
             // Electron shell reads it off its own status WS's `welcome.settings`, so the ⌘Q
             // checkbox and Settings ▸ Workspaces can no longer disagree.
             confirmQuitWhenActive: general.confirmQuitWhenActive,
+            autoUpdate: general.autoUpdate,
             tcpPort: general.tcpPort,
             // The CONFIG STRING, not the parsed trigger — the wire is JSON and the client's
             // recorder speaks this spelling in both directions.

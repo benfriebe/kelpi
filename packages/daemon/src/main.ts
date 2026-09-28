@@ -196,6 +196,7 @@ Environment:
   KELPID_DEVICES_PATH  Paired-devices registry (default: <data dir>/devices.json)
   KELPID_CLIENT_DIR    Directory holding the built web client
   KELPID_LOG_FILE      Append the detached daemon's stdout/stderr here
+  KELPID_TERMINAL_HOST 0 = run PTYs in-process; shells then die with the daemon (default: terminal host)
   KELPID_VERSION       Override the reported version (packaging)
   KELPID_BUILD         Override the reported build (packaging)
   KELPID_ENTRY         Executable/script re-spawned by \`kelpid start\` when detaching
@@ -549,6 +550,17 @@ async function commandStart(io: CliIO, args: ParsedArgs, owner?: TestOwner): Pro
             return 0;
         }
         const terminalHost = terminalHostLaunch(env);
+        // An owned (test) daemon installs no signal handlers of its own, so a SIGUSR2 would kill
+        // it outright: catch it from the start and turn it into a handoff once startup settles.
+        const ownedHandoff = { wanted: false, requested: new Promise<void>(() => {}) };
+        if (owner !== undefined) {
+            ownedHandoff.requested = new Promise<void>((resolve) => {
+                process.once('SIGUSR2', () => {
+                    ownedHandoff.wanted = true;
+                    resolve();
+                });
+            });
+        }
         const daemon = createDaemon({
             env,
             ...(terminalHost !== undefined ? { terminalHost } : {}),
@@ -595,8 +607,10 @@ async function commandStart(io: CliIO, args: ParsedArgs, owner?: TestOwner): Pro
         if (owner !== undefined) {
             // A stop requested during start waits for that start to settle. If it stalls,
             // the owner keeps its slot; never race teardown against later resource creation.
-            await owner.whenStopRequested;
-            await daemon.stop();
+            // A SIGUSR2 is a handoff instead (docs/terminal-host.md §6), with the same receipt.
+            await Promise.race([owner.whenStopRequested, ownedHandoff.requested]);
+            if (ownedHandoff.wanted && !owner.stopRequested) await daemon.handoff();
+            else await daemon.stop();
             await owner.confirmStopped();
             return daemon.persistenceHealth().degraded ? 1 : 0;
         }

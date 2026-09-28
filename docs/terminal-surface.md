@@ -20,6 +20,8 @@ Implementation index:
 - `packages/client/src/terminal/TerminalPane.tsx`: the pane host: keyboard/mouse/IME, resize measurement, focus, accessibility
 - `packages/client/src/app/open-file.ts`: drag-drop onto a terminal, shell escaping
 - `packages/daemon/src/seams.ts`: the internal interfaces (section 14)
+- `packages/daemon/src/host/`: the terminal host, which owns the PTYs so shells outlive a daemon
+  restart; specified separately in [terminal-host.md](terminal-host.md)
 
 ---
 

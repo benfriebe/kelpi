@@ -591,6 +591,15 @@ async function makeSandbox() {
         controlPort,
         base: `http://127.0.0.1:${String(httpPort)}`,
         cleanup() {
+            // The terminal host is detached by design; end it (and any shell it kept) first.
+            for (const name of fs.existsSync(env.KELPID_RUN_DIR) ? fs.readdirSync(env.KELPID_RUN_DIR) : []) {
+                if (!/^host-v\d+\.pid$/.test(name)) continue;
+                try {
+                    process.kill(JSON.parse(fs.readFileSync(path.join(env.KELPID_RUN_DIR, name), 'utf8')).pid, 'SIGKILL');
+                } catch {
+                    // already gone
+                }
+            }
             fs.rmSync(root, { recursive: true, force: true });
         }
     };
@@ -716,6 +725,7 @@ async function launchPhase() {
     const sandbox = await makeSandbox();
     let app;
     let daemonPid;
+    let successor;
     const spawnedDaemon = ownShellSpawnedDaemon(() => app, null, { env: sandbox.env });
     try {
         await spawnedDaemon.ready;
@@ -898,6 +908,7 @@ async function launchPhase() {
         );
 
         // ── the shipped CLI drives it, and a real PTY runs ───────────────────────
+        let hostedPane;
         if (fs.existsSync(KELPI_CLI)) {
             const doctor = await cli(sandbox, ['doctor', '--json']);
             const ping = JSON.parse(doctor.stdout).checks.find((entry) => entry.name === 'ping');
@@ -925,6 +936,7 @@ async function launchPhase() {
                 500
             );
             check('a real PTY runs — node-pty loaded from inside the bundle', captured.includes(marker), marker);
+            hostedPane = { id: paneID, marker };
 
             const list = await cli(sandbox, ['pane', 'list', '--json']);
             check(
@@ -949,11 +961,88 @@ async function launchPhase() {
         const stillServing = await fetch(`${sandbox.base}/healthz`).then((response) => response.ok);
         check('and still serves the client', stillServing);
 
+        // ── a handoff: the shells outlive the daemon too (docs/terminal-host.md) ──────
+        if (hostedPane !== undefined) {
+            successor = await handoffPhase(sandbox, daemonPid, hostedPane);
+        } else {
+            skip('a SIGUSR2 handoff keeps the pane\'s shell for the next daemon', 'needs the shipped kelpi CLI');
+        }
+
         return { appLog: app.text() };
     } finally {
-        await spawnedDaemon.stop();
-        sandbox.cleanup();
+        try {
+            await spawnedDaemon.stop();
+        } finally {
+            // Whatever the owned daemon's teardown says, the successor and the terminal host
+            // (detached by design) must not outlive the sandbox.
+            if (successor !== undefined && successor.exitCode === null) {
+                successor.kill('SIGTERM');
+                await new Promise((resolve) => {
+                    successor.once('exit', resolve);
+                    setTimeout(resolve, 5000).unref();
+                });
+            }
+            sandbox.cleanup();
+        }
     }
+}
+
+/**
+ * The packaged daemon hands its terminals to the terminal host on SIGUSR2, and a fresh daemon
+ * from the same bundle adopts them: the pane's shell is the same process, its scrollback came
+ * across, and it still takes input. This is the path a promote and an app update take.
+ * Returns the successor, which the caller stops (a full stop, which also ends the host).
+ */
+async function handoffPhase(sandbox, daemonPid, pane) {
+    const shellPid = async (tag) => {
+        await cli(sandbox, ['pane', 'send', '--target', pane.id, `printf '${tag}=%s\\n' $$`]);
+        return await waitFor(
+            `the ${tag} pid line`,
+            async () => {
+                const capture = await cli(sandbox, ['pane', 'capture', '--target', pane.id, '--scrollback']);
+                const found = [...capture.stdout.matchAll(new RegExp(`${tag}=(\\d+)`, 'g'))].map((match) => match[1]);
+                return found.at(-1);
+            },
+            15_000,
+            300
+        );
+    };
+    const record = JSON.parse(fs.readFileSync(sandbox.pidFile, 'utf8'));
+    check('the daemon advertises that SIGUSR2 hands off', record.handoff === true, JSON.stringify(record));
+    const before = await shellPid('handoff-before');
+
+    process.kill(daemonPid, 'SIGUSR2');
+    await waitFor('the handoff to finish', async () => (processAlive(daemonPid) ? undefined : true), 20_000, 100);
+    pass('the daemon handed off and exited', `pid ${String(daemonPid)}`);
+
+    // What the relaunched app does: the bundled Node runs the bundled daemon.
+    // Not the owned daemon: the private test-owner channel (which ownShellSpawnedDaemon writes
+    // into the sandbox env) accepts exactly one daemon and would refuse this one at startup.
+    const { KELPI_TEST_OWNER_PORT: _ownerPort, KELPI_TEST_OWNER_TOKEN: _ownerToken, ...successorEnv } = sandbox.env;
+    const successor = spawn(path.join(resourcesPath, 'node'), [path.join(resourcesPath, 'daemon', 'kelpid.js'), 'start', '--foreground'], {
+        env: { ...successorEnv, KELPID_CLIENT_DIR: path.join(resourcesPath, 'client') },
+        stdio: ['ignore', 'pipe', 'pipe']
+    });
+    let successorOutput = '';
+    successor.stdout.on('data', (chunk) => (successorOutput += chunk));
+    successor.stderr.on('data', (chunk) => (successorOutput += chunk));
+    try {
+        await waitFor(
+            'the successor daemon',
+            async () => (await fetch(`${sandbox.base}/healthz`).then((response) => response.ok, () => false)) || undefined,
+            20_000,
+            200
+        );
+    } catch (error) {
+        throw new Error(
+            `${error instanceof Error ? error.message : String(error)} (exit ${String(successor.exitCode)}): ${successorOutput.trim().slice(-1500)}`
+        );
+    }
+    const after = await shellPid('handoff-after');
+    check('a SIGUSR2 handoff keeps the pane\'s shell (same pid) for the next daemon', after === before, `${String(before)} → ${String(after)}`);
+    const capture = await cli(sandbox, ['pane', 'capture', '--target', pane.id, '--scrollback']);
+    check('…with its scrollback from before the handoff', capture.stdout.includes(pane.marker), pane.marker);
+    return successor;
 }
 
 // ── main ────────────────────────────────────────────────────────────────────────────

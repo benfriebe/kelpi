@@ -746,7 +746,7 @@ export const SHIPPED_WINDOW_PLACEMENT = 'default';
  * lane mean "make the page believe it is focused / unfocused" rather than "make the OS window
  * key". `setPageFocusEmulation` above has the measurement.
  */
-export async function boot({ repoRoot, label = 'scenario', build = true, log = () => {}, timeoutMs = 60_000, window, beforeLoad } = {}) {
+export async function boot({ repoRoot, label = 'scenario', build = true, log = () => {}, timeoutMs = 60_000, window, beforeLoad, terminalHost = false } = {}) {
     assertDesktopActive();
     if (window !== undefined && !WINDOW_PLACEMENTS.includes(window)) {
         throw new Error(`unknown window placement: ${String(window)} (want ${WINDOW_PLACEMENTS.join(' | ')})`);
@@ -755,6 +755,7 @@ export async function boot({ repoRoot, label = 'scenario', build = true, log = (
     // clientDir is what makes the daemon serve the app rather than its placeholder (#37).
     const sandbox = await makeSandbox(repoRoot, {
         label,
+        terminalHost,
         clientDir: path.join(repoRoot, 'packages', 'client', 'dist'),
         harnessWindow: window
     });

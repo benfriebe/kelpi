@@ -405,13 +405,19 @@ export function startDaemon(sandbox, { repoRoot, verbose = false, packaged = fal
         get exited() {
             return exited;
         },
-        async stop() {
+        /**
+         * SIGTERM (a full stop) by default; SIGUSR2 asks a terminal-host daemon to hand its
+         * terminals over instead (docs/terminal-host.md §6), which may first wait up to 10 s for a
+         * restore in progress, so it gets a longer window before the SIGKILL.
+         */
+        async stop(signal = 'SIGTERM') {
             if (exited) {
                 releaseChild(child);
                 return;
             }
-            child.kill('SIGTERM');
-            await Promise.race([new Promise((resolve) => child.on('exit', resolve)), raceTimeout(8000)]);
+            child.kill(signal);
+            const windowMs = signal === 'SIGUSR2' ? 20_000 : 8000;
+            await Promise.race([new Promise((resolve) => child.on('exit', resolve)), raceTimeout(windowMs)]);
             if (!exited) child.kill('SIGKILL');
             await waitForDesktopChildExit(child);
             releaseChild(child);
@@ -561,12 +567,12 @@ export function restartableDaemon(sandbox, { healthzMs = 30_000, ...daemonOption
          * the thing was still running, drop that generation's output from `text()`, and let the
          * next `start()` spawn a second daemon onto these ports if the stop had thrown.
          */
-        async stop() {
+        async stop({ handoff = false } = {}) {
             if (current === null) return handle;
             const began = Date.now();
             const stopping = current;
             try {
-                await stopping.stop();
+                await stopping.stop(handoff ? 'SIGUSR2' : 'SIGTERM');
                 current = null;
                 previous.push(stopping.text());
             } finally {
@@ -574,8 +580,14 @@ export function restartableDaemon(sandbox, { healthzMs = 30_000, ...daemonOption
             }
             return handle;
         },
-        async restart() {
-            await handle.stop();
+        /**
+         * `{ handoff: true }` on a `terminalHost` sandbox: the old daemon hands its terminals to
+         * the host and the new one adopts them, so shells SURVIVE this restart (the opposite of
+         * the contract above). The successor is still this harness's child, as it must be: a
+         * detached one would trip the KELPI_HARNESS watchdog.
+         */
+        async restart({ handoff = false } = {}) {
+            await handle.stop({ handoff });
             return await handle.start();
         }
     };

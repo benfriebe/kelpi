@@ -38,6 +38,12 @@ export interface GeneralSettings {
      */
     readonly confirmQuitWhenActive: boolean;
     /**
+     * `auto-update`, default **false**: whether the app checks for a new release at launch and
+     * offers to install it (Update Now / Later). Off, the app makes no update request at all;
+     * the menu's Check for Updates… still works on demand. Only the literal `true` turns it on.
+     */
+    readonly autoUpdate: boolean;
+    /**
      * §13's Settings ▸ General ▸ Repositories "Auto-detect from pane directories", default
      * **true** (`SettingsFeature.State.autoDetectRepos`). It gates BOTH halves of the
      * auto-detect subsystem: the 500 ms auto-link after a pane's pwd changes and the 5 s
@@ -153,6 +159,7 @@ export const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
     globalHotkeyHideOnRepress: true,
     confirmWorkspaceDeleteWhenActive: true,
     confirmQuitWhenActive: true,
+    autoUpdate: false,
     autoDetectRepos: true,
     worktreeBasePath: DEFAULT_WORKTREE_BASE_PATH_TEMPLATE,
     newWorkspacePlacement: 'end-of-list',
@@ -218,6 +225,9 @@ export function parseGeneralSettings(contents: string): GeneralSettings {
                 break;
             case 'confirm-quit-when-active':
                 settings = { ...settings, confirmQuitWhenActive: lowered !== 'false' };
+                break;
+            case 'auto-update':
+                settings = { ...settings, autoUpdate: lowered === 'true' };
                 break;
             case 'auto-detect-repos':
                 settings = { ...settings, autoDetectRepos: lowered !== 'false' };

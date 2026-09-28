@@ -262,7 +262,6 @@ export interface LaunchSteps {
      * to must cost a log line rather than the launch.
      */
     readonly refreshBundledSkill: LaunchStep;
-    readonly startUpdater: LaunchStep;
     readonly installQuitGate: LaunchStep;
     readonly logError: (message: string, error: unknown) => void;
 }
@@ -276,7 +275,7 @@ export type LaunchOutcome = 'ready' | 'daemon-unavailable';
  * keybindings, the general config, favourites and label presets all go out at once, and the
  * reducer takes each answer as it lands (`AppReducer.swift:1079-1117`). This shell's own six
  * launch-time loads — the daemon handshake, the find palette, the global-hotkey config, the CLI
- * symlink probe, the bundled-skill refresh and the updater — ran strictly one after another, so
+ * symlink probe and the bundled-skill refresh (the updater's launch check now waits for the daemon's settings, `./updater.ts`) — ran strictly one after another, so
  * every one of them paid for the one in front of it. They do not any more.
  *
  * What is still an ORDER, and why each one is real:
@@ -325,14 +324,13 @@ export async function runLaunchSequence(steps: LaunchSteps): Promise<LaunchOutco
 
     await steps.createWindow();
 
-    // Wave two: four independent best-effort steps. `fanOut` gives each its own failure, so one
-    // of them throwing costs the other three nothing — the property the two separate `try`s used
+    // Wave two: three independent best-effort steps. `fanOut` gives each its own failure, so one
+    // of them throwing costs the others nothing — the property the two separate `try`s used
     // to provide, kept while they stopped waiting on each other.
     const tail = fanOut([
         ['hotkey', steps.registerGlobalHotkey],
         ['cli-install', steps.runCliInstallPolicy],
-        ['skill-refresh', steps.refreshBundledSkill],
-        ['updater', steps.startUpdater]
+        ['skill-refresh', steps.refreshBundledSkill]
     ]);
     await steps.installQuitGate();
     for (const [name, error] of await tail) steps.logError(`${name} failed`, error);

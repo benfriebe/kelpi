@@ -369,11 +369,15 @@ Two things about the build worth knowing:
   so a build never silently ships the stock Electron icon. Replacing it means dropping a designed
   `.icns` in and pointing `packagerConfig.icon` at it.
 
-Auto-update is wired but **off**, and off by default in every build: `update-electron-app` is
-loaded lazily behind `KELPI_AUTO_UPDATE=1`, so a packaged app makes no update request at all. The
-repo is public and releases are signed and notarized, which were the two conditions in
-`packages/shell/src/updater.ts`; what still stands in the way is the daemon (#272): an update
-replaces the app, but the running daemon is the old bundle's.
+**Updates** come from GitHub Releases through `update.electronjs.org`, and they are **off by
+default**: with Settings ▸ General ▸ Updates "Check for updates automatically" (`auto-update` in
+`~/.config/kelpi/config`) off, the app makes no update request at all. On, it checks at launch
+and asks **Update Now** or **Later**; nothing downloads until the answer is Update Now. Kelpi ▸
+Check for Updates… asks the same question any time, whatever the setting. After the update the
+app finds the old version's daemon still running and hands it off: the daemon passes its
+terminals to the terminal host and exits, and the new version's daemon adopts them, so shells
+and agents keep running (`packages/shell/src/updater.ts`, `packages/shell/src/daemon.ts`,
+`docs/terminal-host.md`).
 
 ### Signing, notarization and releases
 

@@ -135,6 +135,13 @@ export const SETTINGS_GROUPS: readonly SettingsGroupDescriptor[] = Object.freeze
                 testID: 'general-network'
             },
             {
+                id: 'general-updates',
+                sectionID: 'general',
+                title: 'Updates',
+                hint: null,
+                testID: 'general-updates'
+            },
+            {
                 id: 'workspaces-section',
                 sectionID: 'workspaces',
                 title: 'Workspaces',
@@ -561,6 +568,20 @@ export const SETTINGS_FIELD_DEFINITIONS: readonly SettingsFieldDefinition[] = Ob
         target: { file: 'kelpi', key: 'expand-group-on-workspace-drop' },
         default: true,
         read: (settings) => settings.general.expandGroupOnWorkspaceDrop,
+        encode: BOOLEAN
+    },
+    {
+        id: 'general.autoUpdate',
+        sectionID: 'general',
+        groupID: 'general-updates',
+        kind: 'toggle',
+        label: 'Check for updates automatically',
+        detail: 'Desktop app only: at launch, Kelpi asks before installing a new release (Update Now or Later). Off, it makes no update request at all; Kelpi ▸ Check for Updates… still works any time.',
+        testID: 'auto-update-toggle',
+        rowTestID: 'auto-update-row',
+        target: { file: 'kelpi', key: 'auto-update' },
+        default: false,
+        read: (settings) => settings.general.autoUpdate,
         encode: BOOLEAN
     },
     {

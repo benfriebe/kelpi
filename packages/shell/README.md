@@ -19,7 +19,7 @@ src/
 ├─ control.ts       a minimal control-protocol client (Finder "Open With" → daemon `open`)
 ├─ resources.ts     the packaged `Contents/Resources` layout — written by the build, read here
 ├─ packaging.ts     build-time only: the app icon + ICNS, the asar allowlist, Node-runtime checks
-├─ updater.ts       auto-update, off unless `KELPI_AUTO_UPDATE=1` (and then only when packaged)
+├─ updater.ts       updates: the launch check (the `auto-update` setting, off by default), the Update Now / Later prompt
 ├─ log.ts           `[shell] …` lines on stdout; the smoke asserts on them
 └─ webhost/         the web-pane host (M6): WebContentsViews + CDP behind the daemon's host RPC
    ├─ client.ts     its OWN daemon WebSocket, claiming the `web-pane-host` role
@@ -94,9 +94,11 @@ pnpm --filter @kelpi/shell start
 Environment it reads: `KELPID_RUN_DIR` (which daemon to talk to), `KELPID_ENTRY` (the `kelpid`
 script to spawn), `KELPID_NODE` (the Node binary to spawn it with), `KELPID_LOG_FILE` (where a
 spawned daemon's output goes), `KELPID_CONFIG_PATH` (the shared `kelpi` config, for
-`global-hotkey`), `KELPI_AUTO_UPDATE` (off unless `1`; see `src/updater.ts`). Everything else it
+`global-hotkey`), `KELPI_UPDATE_FEED` (another update feed, for tests; see `src/updater.ts`). Everything else it
 inherits and passes to the daemon it spawns — plus, in a packaged app only, `KELPID_CLIENT_DIR`
-pointing at the client build in its own Resources (an explicit one always wins).
+pointing at the client build in its own Resources and `KELPID_VERSION` set to the app's version
+(an explicit one always wins). A running daemon older than a packaged app is handed off to a new
+one, keeping its terminals, which is how an update reaches the daemon (`src/daemon.ts`).
 
 ## Packaging
 
@@ -206,8 +208,6 @@ resort, not the first.
 
 ## Not done here (later milestones)
 
-- **Auto-update**: releases are signed and notarized, but `KELPI_AUTO_UPDATE` stays opt-in until
-  an update also replaces the daemon the old bundle started (#272).
 - **Visual web panes**: the host (above) is a headless automation surface; putting the views on
   screen at the pane's rect needs a client→shell channel (there is deliberately no preload
   bridge yet) and the chrome from `docs/web-pane.md` §16 in the client.

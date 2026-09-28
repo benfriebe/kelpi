@@ -24,7 +24,6 @@
     "@kelpi/core": "workspace:*",
     "@kelpi/daemon": "workspace:*",
     "@kelpi/protocol": "workspace:*",
-    "update-electron-app": "^3.3.0",
     "ws": "^8.21.3"
   },
   "devDependencies": {

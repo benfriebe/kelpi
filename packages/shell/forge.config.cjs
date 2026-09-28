@@ -215,8 +215,8 @@ module.exports = {
     rebuildConfig: { onlyModules: [] },
 
     makers: [
-        // ZIP is what Squirrel.Mac consumes, so it stays the primary artifact even while
-        // auto-update is off (src/updater.ts).
+        // ZIP is what Squirrel.Mac consumes: it is the release asset an update downloads
+        // (src/updater.ts).
         new MakerZIP({}, ['darwin']),
         new MakerDMG(
             {

@@ -323,7 +323,6 @@ function launchHarness(overrides: Partial<LaunchSteps> = {}): { calls: string[];
         registerGlobalHotkey: record('hotkey'),
         runCliInstallPolicy: record('cli-install'),
         refreshBundledSkill: record('skill-refresh'),
-        startUpdater: record('updater'),
         installQuitGate: record('quit-gate'),
         logError: (message) => {
             calls.push(`error:${message}`);
@@ -351,7 +350,6 @@ describe('the launch order (APP-001, APP-101)', () => {
             'hotkey',
             'cli-install',
             'skill-refresh',
-            'updater',
             'quit-gate'
         ]);
     });
@@ -384,7 +382,6 @@ describe('the launch order (APP-001, APP-101)', () => {
         // Every other step in the wave still ran; the failure is reported after the join, so it
         // lands at the end rather than in the middle of the wave it belonged to.
         expect(calls).toContain('skill-refresh');
-        expect(calls).toContain('updater');
         expect(calls).toContain('hotkey');
         expect(calls).toContain('quit-gate');
         expect(calls).toContain('error:cli-install failed');
@@ -401,7 +398,6 @@ describe('the launch order (APP-001, APP-101)', () => {
         await expect(runLaunchSequence(steps)).resolves.toBe('ready');
 
         expect(calls).toContain('cli-install');
-        expect(calls).toContain('updater');
         expect(calls).toContain('quit-gate');
         expect(calls).toContain('error:skill-refresh failed');
         expect(calls).not.toContain('error:cli-install failed');
@@ -427,7 +423,6 @@ describe('the launch order (APP-001, APP-101)', () => {
         expect(calls).toContain('error:hotkey failed');
         expect(calls).toContain('error:cli-install failed');
         expect(calls).toContain('error:skill-refresh failed');
-        expect(calls).toContain('updater');
         expect(calls).toContain('quit-gate');
     });
 });
@@ -528,13 +523,12 @@ describe('the launch fan-out (APP-013, APP-014, APP-116)', () => {
         expect(trace).toEqual(['-daemon', '-palette', 'window']);
     });
 
-    it('runs the four post-window steps concurrently, in ANY completion order', async () => {
+    it('runs the three post-window steps concurrently, in ANY completion order', async () => {
         const trace: string[] = [];
         const gates = {
             hotkey: deferred(),
             cli: deferred(),
-            skill: deferred(),
-            updater: deferred()
+            skill: deferred()
         };
         const started: string[] = [];
         const stepFor = (name: string, gate: { promise: Promise<void> }) => async (): Promise<void> => {
@@ -547,27 +541,25 @@ describe('the launch fan-out (APP-013, APP-014, APP-116)', () => {
         const { steps } = launchHarness({
             registerGlobalHotkey: stepFor('hotkey', gates.hotkey),
             runCliInstallPolicy: stepFor('cli', gates.cli),
-            refreshBundledSkill: stepFor('skill', gates.skill),
-            startUpdater: stepFor('updater', gates.updater)
+            refreshBundledSkill: stepFor('skill', gates.skill)
         });
 
         const run = runLaunchSequence(steps);
         // Let the wave start. All four must be IN FLIGHT with none finished — a sequential
         // implementation could only ever have the first one started here.
         await settleTurn();
-        expect(started).toEqual(['hotkey', 'cli', 'skill', 'updater']);
+        expect(started).toEqual(['hotkey', 'cli', 'skill']);
         expect(trace.filter((entry) => entry.startsWith('-'))).toEqual([]);
 
         // Resolve them in the REVERSE of their start order: nothing in the sequence may depend
         // on the order the four land in.
-        gates.updater.resolve();
         gates.skill.resolve();
         gates.cli.resolve();
         gates.hotkey.resolve();
 
         await expect(run).resolves.toBe('ready');
-        expect(trace.slice(0, 4)).toEqual(['+hotkey', '+cli', '+skill', '+updater']);
-        expect(trace.slice(4)).toEqual(['-updater', '-skill', '-cli', '-hotkey']);
+        expect(trace.slice(0, 3)).toEqual(['+hotkey', '+cli', '+skill']);
+        expect(trace.slice(3)).toEqual(['-skill', '-cli', '-hotkey']);
     });
 
     it('installs the quit gate without waiting for that wave to finish', async () => {

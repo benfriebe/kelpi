@@ -200,6 +200,8 @@ export interface StatusHost {
 export interface ShellDaemonSettings {
     /** §10 step 2: `confirm-quit-when-active`. Null until the daemon has said. */
     readonly confirmQuitWhenActive: boolean | null;
+    /** `auto-update`: check for a release at launch (`./updater.ts`). Null until the daemon has said. */
+    readonly autoUpdate: boolean | null;
     /**
      * config-keybindings.md §7.1 / #47: the config file's `keybind` override lines, exactly as
      * the client resolves its map from them (`SettingsSnapshot.keybindLines`). The application
@@ -319,7 +321,7 @@ export function createStatusController(options: StatusOptions): StatusController
     /** Last painted dot palette, so a recolour on an unchanged indicator still repaints (§M25). */
     let lastPaletteSignature = '';
     /** §AGNT-117: the daemon's answer, or null until it has given one. */
-    let daemonSettings: ShellDaemonSettings = { confirmQuitWhenActive: null, keybindLines: null };
+    let daemonSettings: ShellDaemonSettings = { confirmQuitWhenActive: null, autoUpdate: null, keybindLines: null };
     /**
      * §M25: `chrome-appearance` + `chrome-colors`, as delivered by the daemon's settings
      * snapshot. Undefined / empty until a `welcome` has spoken, which resolves to the shipped
@@ -345,6 +347,8 @@ export function createStatusController(options: StatusOptions): StatusController
         if (!isRecord(payload)) return;
         const general = payload['general'];
         if (!isRecord(general)) return;
+        const autoUpdate = general['autoUpdate'];
+        if (typeof autoUpdate === 'boolean') daemonSettings = { ...daemonSettings, autoUpdate };
         const value = general['confirmQuitWhenActive'];
         if (typeof value !== 'boolean') return;
         daemonSettings = { ...daemonSettings, confirmQuitWhenActive: value };

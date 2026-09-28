@@ -107,7 +107,8 @@ describe('the section catalog', () => {
             'general-worktrees',
             'general-repositories',
             'general-workspaces',
-            'general-network'
+            'general-network',
+            'general-updates'
         ]);
         expect(settingsGroupsInSection('workspaces').map((group) => group.testID)).toEqual([
             'workspaces-section',
@@ -221,7 +222,8 @@ describe('the field table', () => {
             'new-workspace-placement',
             'new-group-placement',
             'tcp-listener-toggle',
-            'tcp-port'
+            'tcp-port',
+            'auto-update-toggle'
         ]);
         expect(
             settingsFieldsInSection('workspaces', snapshot({ focusFollowsMouse: true })).map(

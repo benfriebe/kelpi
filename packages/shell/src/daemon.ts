@@ -10,7 +10,9 @@
  *
  * The inverse rule is the one that matters most and is enforced by omission: nothing in this
  * module (or anywhere else in the shell) ever stops the daemon. Quitting the app leaves every
- * session running; that is the entire point of the architecture.
+ * session running; that is the entire point of the architecture. The one thing it does to a
+ * running daemon is a handoff after an update (`daemonReplacement`): the old daemon passes its
+ * terminals to the terminal host and exits, and the new one adopts them, so no session ends.
  *
  * Everything about the run dir — versioned paths, the 0600 token, the pid record, the liveness
  * probe, the detached spawn — is the daemon package's own lifecycle code (`@kelpi/daemon/
@@ -22,6 +24,7 @@ import path from 'node:path';
 
 import { readPortFile } from '@kelpi/daemon/boot/port';
 import {
+    isProcessAlive,
     probeDaemon,
     readPidRecord,
     resolveRunPaths,
@@ -31,6 +34,7 @@ import {
 } from '@kelpi/daemon/lifecycle';
 
 import { log, warn } from './log.js';
+import { compareVersions } from './updater.js';
 import {
     hasClientBuild,
     hasCliPayload,
@@ -50,10 +54,14 @@ export const LOG_FILE_ENV = 'KELPID_LOG_FILE';
 export const CLIENT_DIR_ENV = 'KELPID_CLIENT_DIR';
 /** The daemon's name for "the directory holding the bundled `kelpi` CLI" (`boot/compose.ts`). */
 export const HELPERS_DIR_ENV = 'KELPID_HELPERS_DIR';
+/** The version the daemon reports in `ping` (`boot/version.ts`); a packaged app stamps its own. */
+export const DAEMON_VERSION_ENV = 'KELPID_VERSION';
 
 export const DEFAULT_READY_TIMEOUT_MS = 20_000;
 const PROBE_TIMEOUT_MS = 750;
 const POLL_INTERVAL_MS = 150;
+/** How long an outdated daemon may take to hand its terminals over and exit (as `kelpid restart`). */
+export const HANDOFF_TIMEOUT_MS = 30_000;
 
 export interface DaemonLocation {
     /** The run-dir paths this shell is talking to (socket/token/pid, protocol-versioned). */
@@ -63,6 +71,8 @@ export interface DaemonLocation {
     readonly port: number;
     readonly token: string;
     readonly pid: number | undefined;
+    /** What the daemon's `ping` reported, when it said. */
+    readonly version?: string | undefined;
     /** True when this shell had to start the daemon. */
     readonly spawned: boolean;
 }
@@ -74,6 +84,12 @@ export interface EnsureDaemonOptions {
     /** `process.resourcesPath` in a packaged app; anchors the bundled entry lookup. */
     readonly resourcesPath?: string | undefined;
     readonly timeoutMs?: number | undefined;
+    /**
+     * `app.getVersion()` in a packaged app, undefined in a development run. A daemon this shell
+     * starts reports it, and a running daemon older than it is handed off to a new one
+     * (`daemonReplacement`), which is how an installed update reaches the daemon.
+     */
+    readonly appVersion?: string | undefined;
     /** Injected by tests. */
     readonly now?: (() => number) | undefined;
 }
@@ -190,11 +206,18 @@ export function resolveNodeBinary(lookup: EntryLookup = {}): string | undefined 
  * configured-but-empty directory.
  *
  * Note the scope: this applies to a daemon **this shell starts**. A daemon that was already
- * running (started by the CLI, or by an older app) is adopted as-is, so it keeps whatever
- * client directory it was started with.
+ * running (started by the CLI, or by a dev build) is adopted as-is, so it keeps whatever client
+ * directory it was started with; one started by an older release is handed off instead
+ * (`daemonReplacement`), which is how an update's new client reaches the window.
  */
-export function daemonSpawnEnv(env: NodeJS.ProcessEnv, lookup: EntryLookup = {}): NodeJS.ProcessEnv {
+export function daemonSpawnEnv(env: NodeJS.ProcessEnv, lookup: EntryLookup = {}, appVersion?: string): NodeJS.ProcessEnv {
     let result = env;
+    // The daemon's compiled-in version names its source tree, not the release: a packaged app
+    // stamps its own, so `ping` says which app started it and the next update can tell it is old.
+    const existingVersion = env[DAEMON_VERSION_ENV]?.trim();
+    if ((existingVersion === undefined || existingVersion.length === 0) && appVersion !== undefined && appVersion.length > 0) {
+        result = { ...result, [DAEMON_VERSION_ENV]: appVersion };
+    }
     const resourcesPath = lookup.resourcesPath;
     const existingClient = env[CLIENT_DIR_ENV]?.trim();
     if (
@@ -266,8 +289,54 @@ async function readyLocation(paths: RunPaths, spawned: boolean): Promise<DaemonL
         port,
         token,
         pid: probe.pid,
+        ...(probe.version !== undefined ? { version: probe.version } : {}),
         spawned
     };
+}
+
+// ── after an update ─────────────────────────────────────────────────────────────────
+
+export type DaemonReplacement =
+    | { readonly action: 'adopt' }
+    | { readonly action: 'handoff'; readonly reason: string }
+    | { readonly action: 'keep'; readonly reason: string };
+
+/**
+ * What to do with a running daemon, given the app's version (#272). An update relaunches the app
+ * into a new version while the old daemon keeps running, so a daemon **older** than the app is
+ * replaced: it hands its terminals to the terminal host and exits, and the daemon this app then
+ * starts adopts them (docs/terminal-host.md). A daemon from before the terminal host cannot hand
+ * over, and stopping it would end every shell, so it is kept and the log says how to restart it.
+ * A daemon as new as the app, or newer (started by a later build), is adopted as it is.
+ */
+export function daemonReplacement(
+    daemonVersion: string | undefined,
+    appVersion: string | undefined,
+    canHandOff: boolean
+): DaemonReplacement {
+    if (daemonVersion === undefined || appVersion === undefined) return { action: 'adopt' };
+    if (compareVersions(daemonVersion, appVersion) >= 0) return { action: 'adopt' };
+    const reason = `the daemon is ${daemonVersion} and the app is ${appVersion}`;
+    if (!canHandOff) {
+        return { action: 'keep', reason: `${reason}, but it cannot hand its terminals over; run \`kelpid restart\` to update it (its shells end)` };
+    }
+    return { action: 'handoff', reason };
+}
+
+/** SIGUSR2 the daemon (a handoff, not a stop) and wait for it to exit. False if it never did. */
+async function handOffDaemon(pid: number, now: () => number, timeoutMs: number): Promise<boolean> {
+    try {
+        process.kill(pid, 'SIGUSR2');
+    } catch (error) {
+        warn(`daemon handoff: could not signal pid=${String(pid)}: ${error instanceof Error ? error.message : String(error)}`);
+        return !isProcessAlive(pid);
+    }
+    const deadline = now() + timeoutMs;
+    while (isProcessAlive(pid)) {
+        if (now() >= deadline) return false;
+        await sleep(POLL_INTERVAL_MS);
+    }
+    return true;
 }
 
 // ── the entry point ─────────────────────────────────────────────────────────────────
@@ -287,8 +356,21 @@ export async function ensureDaemon(options: EnsureDaemonOptions = {}): Promise<D
 
     const existing = await readyLocation(paths, false);
     if (existing !== undefined) {
-        log(`daemon discovered pid=${String(existing.pid ?? 0)} ${existing.url} (run dir ${paths.dir})`);
-        return existing;
+        log(
+            `daemon discovered pid=${String(existing.pid ?? 0)} version=${existing.version ?? 'unknown'} ${existing.url} (run dir ${paths.dir})`
+        );
+        const replacement = daemonReplacement(existing.version, options.appVersion, readPidRecord(paths)?.handoff === true);
+        if (replacement.action === 'adopt' || existing.pid === undefined) return existing;
+        if (replacement.action === 'keep') {
+            warn(`daemon outdated: ${replacement.reason}`);
+            return existing;
+        }
+        log(`daemon handoff: ${replacement.reason}; handing pid=${String(existing.pid)} over to a new daemon`);
+        if (!(await handOffDaemon(existing.pid, now, HANDOFF_TIMEOUT_MS))) {
+            warn(`daemon handoff: pid=${String(existing.pid)} did not exit within ${String(HANDOFF_TIMEOUT_MS)}ms; adopting it as it is`);
+            return (await readyLocation(paths, false)) ?? existing;
+        }
+        log(`daemon handoff: pid=${String(existing.pid)} handed over; starting ${options.appVersion ?? ''}`);
     }
 
     const lookup: EntryLookup = {
@@ -312,7 +394,7 @@ export async function ensureDaemon(options: EnsureDaemonOptions = {}): Promise<D
     }
 
     const logFile = env[LOG_FILE_ENV]?.trim();
-    const spawnEnv = daemonSpawnEnv(env, lookup);
+    const spawnEnv = daemonSpawnEnv(env, lookup, options.appVersion);
     if (spawnEnv[CLIENT_DIR_ENV] !== env[CLIENT_DIR_ENV]) {
         log(`daemon client dir ${String(spawnEnv[CLIENT_DIR_ENV])} (from the app bundle)`);
     }

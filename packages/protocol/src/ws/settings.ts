@@ -48,6 +48,11 @@ export interface WsGeneralSettings {
      */
     readonly confirmQuitWhenActive: boolean;
     /**
+     * `auto-update` (default false): check for a new release at launch and offer to install it.
+     * The Electron shell reads it off its status WS, as it does `confirmQuitWhenActive`.
+     */
+    readonly autoUpdate: boolean;
+    /**
      * §1.3 `tcp-port` — the control socket's optional `127.0.0.1` listener. 0 = disabled.
      *
      * Read-only in practice for a RUNNING daemon (the listener binds at boot), which is why
@@ -401,6 +406,7 @@ export const DEFAULT_WS_SETTINGS: WsSettingsSnapshot = {
         theme: null,
         confirmWorkspaceDeleteWhenActive: true,
         confirmQuitWhenActive: true,
+        autoUpdate: false,
         tcpPort: 0,
         globalHotkey: null,
         globalHotkeyHideOnRepress: true,
@@ -485,6 +491,8 @@ export const WS_WRITABLE_GENERAL_KEYS = [
     // The quit dialog's twin (§AGNT-117). Writable because BOTH sides now write it: the ⌘Q
     // dialog's "Don't ask again" checkbox and Settings ▸ Workspaces' toggle.
     'confirm-quit-when-active',
+    // Settings ▸ General's "Check for updates automatically" (the shell acts on it).
+    'auto-update',
     // Additive, same reasoning, for the chrome styling + status-bar settings the Swift app also
     // keeps in UserDefaults (`WsChromeSettings` above documents each one).
     'chrome-appearance',

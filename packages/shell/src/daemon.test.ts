@@ -7,6 +7,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
     CLIENT_DIR_ENV,
     clientUrl,
+    DAEMON_VERSION_ENV,
+    daemonReplacement,
     daemonEntryCandidates,
     daemonSpawnEnv,
     daemonUrl,
@@ -152,6 +154,40 @@ describe('daemonSpawnEnv', () => {
         const spawnEnv = daemonSpawnEnv({ PATH: '/usr/bin' }, { resourcesPath: resources });
         expect(spawnEnv[HELPERS_DIR_ENV]).toBeUndefined();
         expect(spawnEnv[CLIENT_DIR_ENV]).toBe(path.join(resources, 'client'));
+    });
+});
+
+describe('the daemon version a packaged app stamps', () => {
+    it('tells a daemon it starts which release started it', () => {
+        expect(daemonSpawnEnv({ PATH: '/usr/bin' }, {}, '0.3.0')).toEqual({ PATH: '/usr/bin', [DAEMON_VERSION_ENV]: '0.3.0' });
+    });
+
+    it('stamps nothing in a development run, and leaves an explicit KELPID_VERSION alone', () => {
+        const env = { PATH: '/usr/bin' };
+        expect(daemonSpawnEnv(env, {})).toBe(env);
+        const pinned = { [DAEMON_VERSION_ENV]: '9.9.9' };
+        expect(daemonSpawnEnv(pinned, {}, '0.3.0')).toBe(pinned);
+    });
+});
+
+describe('daemonReplacement (after an update)', () => {
+    it('hands an older daemon off to a new one when it can keep the terminals', () => {
+        expect(daemonReplacement('0.2.0', '0.3.0', true)).toMatchObject({ action: 'handoff', reason: expect.stringContaining('0.2.0') });
+        expect(daemonReplacement('0.3.0-rc.1', '0.3.0', true)).toMatchObject({ action: 'handoff' });
+    });
+
+    it('keeps an older daemon that cannot hand over rather than end its shells', () => {
+        expect(daemonReplacement('0.2.0', '0.3.0', false)).toMatchObject({ action: 'keep', reason: expect.stringContaining('kelpid restart') });
+    });
+
+    it('adopts a daemon as new as the app, a newer one, or one whose version is unknown', () => {
+        expect(daemonReplacement('0.3.0', '0.3.0', true)).toEqual({ action: 'adopt' });
+        expect(daemonReplacement('0.4.0', '0.3.0', true)).toEqual({ action: 'adopt' });
+        expect(daemonReplacement(undefined, '0.3.0', true)).toEqual({ action: 'adopt' });
+    });
+
+    it('adopts whatever is running in a development run', () => {
+        expect(daemonReplacement('0.0.1', undefined, true)).toEqual({ action: 'adopt' });
     });
 });
 

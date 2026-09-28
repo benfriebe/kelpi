@@ -26,7 +26,9 @@
 import {
     BrowserWindow,
     Menu,
+    Notification,
     app,
+    autoUpdater,
     clipboard,
     dialog,
     globalShortcut,
@@ -111,7 +113,20 @@ import { isForwardableOpenPath } from './shell-actions.js';
 import { titleBarLogLine, titleBarStyleFor, trafficLightQuery, windowButtonsLogLine, windowButtonsVisible } from './titlebar.js';
 import { describeSkillRefresh, refreshBundledSkill } from './skill.js';
 import { createStatusController, type StatusController } from './status.js';
-import { canCheckForUpdates, checkForUpdatesNow, maybeStartAutoUpdate } from './updater.js';
+import {
+    LAUNCH_CHECK_DELAY_MS,
+    UPDATE_NOW,
+    downloadAndInstall,
+    feedURL,
+    fetchUpdate,
+    launchLogLine,
+    repoFromPackage,
+    reportUpdateError,
+    shouldCheckAtLaunch,
+    updatePrompt,
+    updateSupport,
+    type UpdateHost
+} from './updater.js';
 import { installQuitGate, settingsFile, type QuitGate } from './quit.js';
 import { EMPTY_COUNTS } from './agents.js';
 import {
@@ -168,8 +183,10 @@ let lastWindowGround: string | null = null;
 let hotkeyHideOnRepress = true;
 let saveTimer: NodeJS.Timeout | null = null;
 let loadRetries = 0;
-/** True once `maybeStartAutoUpdate` actually initialised a feed (APP-026's manual check). */
-let updaterStarted = false;
+/** An update check (or its download) is under way; a second one waits its turn. */
+let updateCheckBusy = false;
+/** The launch check has been decided for this process (it runs at most once). */
+let launchUpdateDecided = false;
 /**
  * Files handed to us by Finder before the daemon was ready live in `openFiles` (declared with
  * the rest of the Finder route below, because it needs `showWindow`).
@@ -1011,25 +1028,84 @@ function promptOpenFile(paneID: string | null): void {
         });
 }
 
-/** APP-026 — the menu's "Check for Updates…", which always answers rather than sitting grey. */
-function checkForUpdates(): void {
-    const result = checkForUpdatesNow({
-        host: { isPackaged: app.isPackaged, platform: process.platform },
-        started: updaterStarted
-    });
-    if (result.kind === 'checking') {
-        void dialog.showMessageBox({
-            type: 'info',
-            message: 'Checking for updates',
-            detail: 'Kelpi is asking the update feed. If one is available it installs on the next launch.'
-        });
+/** What the updater needs to know about this build (`./updater.ts`). */
+function updateHost(): UpdateHost {
+    let repo: string | undefined;
+    try {
+        const pkg = JSON.parse(readFileSync(join(app.getAppPath(), 'package.json'), 'utf8')) as { repository?: unknown };
+        repo = repoFromPackage(pkg.repository);
+    } catch {
+        repo = undefined;
+    }
+    return { isPackaged: app.isPackaged, platform: process.platform, arch: process.arch, version: app.getVersion(), repo };
+}
+
+/**
+ * #272 / APP-026: look for a newer release and offer it (Update Now / Later). `manual` is the
+ * menu's Check for Updates…, which always answers; the launch check stays silent unless there is
+ * something to offer.
+ */
+async function checkForUpdates(trigger: 'launch' | 'manual'): Promise<void> {
+    const manual = trigger === 'manual';
+    const host = updateHost();
+    const support = updateSupport(host);
+    if (!support.ok) {
+        log(`auto-update: ${trigger} check skipped (${support.reason})`);
+        if (manual) void dialog.showMessageBox({ type: 'info', message: 'Updates are unavailable in this build', detail: support.reason });
         return;
     }
-    void dialog.showMessageBox({
-        type: result.kind === 'failed' ? 'warning' : 'info',
-        message: result.kind === 'failed' ? 'Update check failed' : 'Updates are disabled in this build',
-        detail: result.message
-    });
+    if (updateCheckBusy) {
+        if (manual) void dialog.showMessageBox({ type: 'info', message: 'Already checking for updates' });
+        return;
+    }
+    updateCheckBusy = true;
+    try {
+        const reply = await fetchUpdate(feedURL(host), host.version);
+        if (reply.kind === 'error') {
+            log(`auto-update: ${trigger} check failed: ${reply.message}`);
+            if (manual) void dialog.showMessageBox({ type: 'warning', message: 'Update check failed', detail: reply.message });
+            return;
+        }
+        if (reply.kind === 'none') {
+            log(`auto-update: ${host.version} is the latest (${trigger} check)`);
+            if (manual) {
+                void dialog.showMessageBox({ type: 'info', message: 'Kelpi is up to date', detail: `${host.version} is the latest version.` });
+            }
+            return;
+        }
+        const { update } = reply;
+        log(`auto-update: ${update.version} is available (${trigger} check)`);
+        const { response } = await dialog.showMessageBox(updatePrompt(update, host.version));
+        if (response !== UPDATE_NOW) {
+            log(`auto-update: ${update.version} deferred ("Later")`);
+            return;
+        }
+        if (Notification.isSupported()) {
+            new Notification({ title: `Downloading Kelpi ${update.version}`, body: 'Kelpi restarts into it when the download finishes. Your terminals keep running.' }).show();
+        }
+        await downloadAndInstall(autoUpdater, update, () => quitGate?.allowQuit());
+    } catch (error) {
+        reportUpdateError('the update failed', error);
+        void dialog.showMessageBox({
+            type: 'warning',
+            message: 'The update could not be installed',
+            detail: error instanceof Error ? error.message : String(error)
+        });
+    } finally {
+        updateCheckBusy = false;
+    }
+}
+
+/** The launch half: once per process, after the daemon has said what the setting is. */
+function decideLaunchUpdateCheck(): void {
+    if (launchUpdateDecided) return;
+    const autoUpdate = status?.daemonSettings.autoUpdate ?? null;
+    if (autoUpdate === null) return; // not told yet; the next settings message decides
+    launchUpdateDecided = true;
+    const host = updateHost();
+    log(launchLogLine(autoUpdate, host));
+    if (!shouldCheckAtLaunch(autoUpdate, host)) return;
+    setTimeout(() => void checkForUpdates('launch'), LAUNCH_CHECK_DELAY_MS).unref();
 }
 
 function drainPendingOpens(): void {
@@ -1263,16 +1339,17 @@ function buildMenu(): void {
         onUndelivered: (command: string) => warn(`menu: no window took "${command}"`),
         accelerators
     };
-    // §APP-026: read once, here, and reported in the log line below — the row is greyed in a dev
-    // or unsigned build exactly as Sparkle's was when `canCheckForUpdates` was false.
-    const updatesAvailable = canCheckForUpdates({ isPackaged: app.isPackaged, platform: process.platform });
+    // §APP-026: read once, here, and reported in the log line below: the row is greyed in a build
+    // that cannot install an update (a development run), and live in the packaged app whatever
+    // the auto-update setting says.
+    const updatesAvailable = updateSupport(updateHost()).ok;
     const template: Electron.MenuItemConstructorOptions[] = [
         ...(process.platform === 'darwin'
             ? ([
                   {
                       label: 'Kelpi',
                       submenu: appMenuTemplate({
-                          checkForUpdates: () => checkForUpdates(),
+                          checkForUpdates: () => void checkForUpdates('manual'),
                           canCheckForUpdates: updatesAvailable
                       })
                   }
@@ -1364,7 +1441,9 @@ async function connectDaemon(): Promise<void> {
     daemon = await ensureDaemon({
         env: process.env,
         appDir: app.getAppPath(),
-        resourcesPath: process.resourcesPath
+        resourcesPath: process.resourcesPath,
+        // Only a release has a version worth comparing: a dev run adopts whatever is running.
+        appVersion: app.isPackaged ? app.getVersion() : undefined
     });
     log(`daemon ready ${daemon.url} (spawned=${String(daemon.spawned)})`);
 }
@@ -1415,6 +1494,8 @@ function startStatusController(): void {
                  * runs once per install and never again.
                  */
                 daemonSettingsReady: () => {
+                    // #272: the handshake is the first moment the `auto-update` setting is known.
+                    decideLaunchUpdateCheck();
                     // #47 / §7.1: the launch menu was built on the shipped defaults; the
                     // handshake is the first moment the user's `keybind` lines are known.
                     refreshMenuAccelerators();
@@ -1435,7 +1516,7 @@ function startStatusController(): void {
                     }
                     markQuitConfirmationMigrated(file, local);
                 },
-                checkForUpdates: () => checkForUpdates(),
+                checkForUpdates: () => void checkForUpdates('manual'),
                 installCLINow: () => installCliNow(true),
                 revealPane: (workspaceID, paneID) => {
                     // §8.5's ordering, split across the two processes that can each do half:
@@ -1606,20 +1687,6 @@ async function boot(): Promise<void> {
         // it is a real repair we could not do, one notification per build), not a failed launch.
         runCliInstallPolicy: applyCliInstallPolicy,
         refreshBundledSkill: applySkillRefreshIfEnabled,
-        // Disabled unless KELPI_AUTO_UPDATE=1 — see ./updater.ts for why (public-repo feed, and a
-        // signed build) and what it logs when it declines. No network call happens by default.
-        // §APP-013: RETURNED rather than fired-and-forgotten, so the launch wave owns it — it
-        // runs beside the hotkey / CLI / skill steps instead of after them, and the sequence does
-        // not call itself ready while an `import('update-electron-app')` is still resolving.
-        startUpdater: () =>
-            maybeStartAutoUpdate({ isPackaged: app.isPackaged, platform: process.platform }).then(
-                (outcome) => {
-                    updaterStarted = outcome.started;
-                },
-                () => {
-                    updaterStarted = false;
-                }
-            ),
         installQuitGate: () => {
             quitGate = installQuitGate({
                 counts: () => status?.counts ?? EMPTY_COUNTS,

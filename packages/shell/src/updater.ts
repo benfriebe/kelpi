@@ -109,6 +109,20 @@ export type FeedReply =
     | { readonly kind: 'available'; readonly update: AvailableUpdate }
     | { readonly kind: 'error'; readonly message: string };
 
+/** The first `major.minor.patch[-prerelease]` in some text (`v0.2.0`, `Kelpi 0.2.0-rc.2`), or undefined. */
+export function versionIn(text: string): string | undefined {
+    return /(?:^|[^\w.])v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.]*)?)/.exec(text)?.[1];
+}
+
+/**
+ * The version a feed reply offers. The feed's `name` is the release's TITLE ("Kelpi 0.2.0"), which
+ * anyone can edit, so the release's tag, the `/download/<tag>/` segment of `url`, comes first.
+ */
+export function offeredVersion(name: string, url: string): string | undefined {
+    const tag = /\/download\/([^/]+)\//.exec(url)?.[1];
+    return (tag === undefined ? undefined : versionIn(decodeURIComponent(tag))) ?? versionIn(name);
+}
+
 /** What the feed said, as a decision. Only a strictly newer version is an update. */
 export function parseFeedReply(status: number, body: string, currentVersion: string, feed: string): FeedReply {
     // 404 is the feed's "No updates found": nothing it serves, e.g. while every release is a
@@ -123,8 +137,9 @@ export function parseFeedReply(status: number, body: string, currentVersion: str
     }
     const record = typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>) : {};
     const name = typeof record['name'] === 'string' ? record['name'] : '';
-    const version = name.replace(/^v/, '').trim();
-    if (version === '' || typeof record['url'] !== 'string') {
+    const url = typeof record['url'] === 'string' ? record['url'] : undefined;
+    const version = url === undefined ? undefined : offeredVersion(name, url);
+    if (version === undefined) {
         return { kind: 'error', message: 'the update feed named no version or download' };
     }
     if (compareVersions(version, currentVersion) <= 0) return { kind: 'none' };

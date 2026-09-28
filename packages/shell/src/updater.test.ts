@@ -7,10 +7,12 @@ import {
     UPDATE_LATER,
     UPDATE_NOW,
     compareVersions,
+    versionIn,
     downloadAndInstall,
     feedURL,
     fetchUpdate,
     launchLogLine,
+    offeredVersion,
     parseFeedReply,
     repoFromPackage,
     shouldCheckAtLaunch,
@@ -84,6 +86,32 @@ describe('the feed', () => {
         expect(parseFeedReply(500, '', '0.2.0', FEED)).toMatchObject({ kind: 'error', message: expect.stringContaining('500') });
         expect(parseFeedReply(200, 'not json', '0.2.0', FEED)).toMatchObject({ kind: 'error' });
         expect(parseFeedReply(200, JSON.stringify({ notes: 'no name' }), '0.2.0', FEED)).toMatchObject({ kind: 'error' });
+    });
+
+    it("reads the version from the release's tag, then its title", () => {
+        expect(versionIn('Kelpi 0.2.0')).toBe('0.2.0');
+        expect(versionIn('v0.2.0-rc.2')).toBe('0.2.0-rc.2');
+        expect(versionIn('Kelpi 1.10.3-beta.1 (hotfix)')).toBe('1.10.3-beta.1');
+        expect(versionIn('Kelpi')).toBeUndefined();
+        const url = 'https://github.com/benfriebe/kelpi/releases/download/v1.0.0-rc.1/Kelpi-darwin-arm64-1.0.0-rc.1.zip';
+        expect(offeredVersion('A renamed release', url)).toBe('1.0.0-rc.1');
+        expect(offeredVersion('Kelpi 0.4.0', 'https://example.test/Kelpi.zip')).toBe('0.4.0');
+        expect(offeredVersion('no version here', 'https://example.test/Kelpi.zip')).toBeUndefined();
+    });
+
+    it('offers the real feed reply for v0.2.0 with its plain version', () => {
+        // Captured from update.electronjs.org for 0.2.0-rc.2 on 2026-09-29.
+        const body = JSON.stringify({
+            name: 'Kelpi 0.2.0',
+            notes: "## What's Changed",
+            url: 'https://github.com/benfriebe/kelpi/releases/download/v0.2.0/Kelpi-darwin-arm64-0.2.0.zip'
+        });
+        const reply = parseFeedReply(200, body, '0.2.0-rc.2', FEED);
+        expect(reply).toMatchObject({ kind: 'available', update: { version: '0.2.0' } });
+        if (reply.kind === 'available') expect(updatePrompt(reply.update, '0.2.0-rc.2').message).toBe('Kelpi 0.2.0 is available');
+        // A title prefix no longer hides the major version.
+        const major = JSON.stringify({ name: 'Kelpi 1.0.0', url: 'https://github.com/o/r/releases/download/v1.0.0/K.zip' });
+        expect(parseFeedReply(200, major, '0.9.0', FEED)).toMatchObject({ kind: 'available', update: { version: '1.0.0' } });
     });
 
     it('turns a network failure into an error, never a throw', async () => {

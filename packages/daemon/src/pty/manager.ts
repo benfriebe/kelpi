@@ -60,12 +60,23 @@ export interface KelpiPtyManager extends PtyManager {
     isSyncing(paneID: string): boolean;
     /** Union of every group containing the source, minus the source itself (§8.1). */
     syncTargetIDs(sourcePaneID: string): Set<string>;
+    /** The process handle behind a pane (a handoff reads the host terminal's offset from it). */
+    processHandle(paneID: string): PtyProcessHandle | undefined;
+    /**
+     * Register a PTY that already exists, wired exactly as `spawn` wires a new one: a terminal
+     * the terminal host kept across a daemon restart (`docs/terminal-host.md` §7).
+     */
+    adopt(paneID: string, proc: PtyProcessHandle): void;
+    /**
+     * Drop a pane's PTY without killing it or reporting an exit: its terminal host went away
+     * and the shell went with it (§8.2), so the pane is respawned rather than closed.
+     */
+    forget(paneID: string): void;
 }
 
 interface PtyEntry {
     readonly paneID: string;
     readonly proc: PtyProcessHandle;
-    readonly pid: number;
     readonly exited: Promise<void>;
     settleExit: () => void;
     hasExited: boolean;
@@ -172,7 +183,7 @@ class PtyManagerImpl implements KelpiPtyManager {
 
         let proc: PtyProcessHandle;
         try {
-            proc = this.spawner({ file, args, cwd, env, cols, rows, name: term });
+            proc = this.spawner({ file, args, cwd, env, cols, rows, name: term, key: opts.paneID });
         } catch (error) {
             // A broken $SHELL must not cost the user their pane: retry once on /bin/sh.
             if (file === FALLBACK_SHELL) {
@@ -188,7 +199,8 @@ class PtyManagerImpl implements KelpiPtyManager {
                     env,
                     cols,
                     rows,
-                    name: term
+                    name: term,
+                    key: opts.paneID
                 });
             } catch (fallbackError) {
                 this.reportSpawnFailure(opts.paneID, fallbackError);
@@ -196,23 +208,47 @@ class PtyManagerImpl implements KelpiPtyManager {
             }
         }
 
+        this.register(opts.paneID, proc);
+    }
+
+    adopt(paneID: string, proc: PtyProcessHandle): void {
+        if (this.entries.has(paneID)) return;
+        this.register(paneID, proc);
+    }
+
+    forget(paneID: string): void {
+        const entry = this.entries.get(paneID);
+        if (entry === undefined) return;
+        this.entries.delete(paneID);
+        if (entry.escalation !== undefined) clearTimeout(entry.escalation);
+        entry.escalation = undefined;
+        entry.hasExited = true;
+        entry.settleExit();
+    }
+
+    processHandle(paneID: string): PtyProcessHandle | undefined {
+        return this.entries.get(paneID)?.proc;
+    }
+
+    private register(paneID: string, proc: PtyProcessHandle): void {
         let settleExit: () => void = () => {};
         const exited = new Promise<void>((resolve) => {
             settleExit = resolve;
         });
         const entry: PtyEntry = {
-            paneID: opts.paneID,
+            paneID,
             proc,
-            pid: proc.pid,
             exited,
             settleExit,
             hasExited: false,
             escalation: undefined
         };
-        this.entries.set(opts.paneID, entry);
+        this.entries.set(paneID, entry);
 
         proc.onData((data) => {
-            this.emitData(opts.paneID, data);
+            // A forgotten entry (its host went away) must not feed a pane that has moved on.
+            if (entry.hasExited) return;
+            this.emitData(paneID, data);
         });
         proc.onExit((exitCode) => {
             this.handleExit(entry, exitCode);
@@ -224,7 +260,10 @@ class PtyManagerImpl implements KelpiPtyManager {
     }
 
     pid(paneID: string): number | undefined {
-        return this.entries.get(paneID)?.pid;
+        // Read live: a terminal-host handle learns its pid a moment after the spawn, and 0 until
+        // then must never reach anything signal-shaped (`kill(0)` is the whole process group).
+        const pid = this.entries.get(paneID)?.proc.pid;
+        return pid === undefined || pid <= 0 ? undefined : pid;
     }
 
     count(): number {

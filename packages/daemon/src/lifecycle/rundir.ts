@@ -143,6 +143,12 @@ export interface PidRecord {
     /** HTTP/WS listener port, once bound. */
     readonly http_port?: number | undefined;
     readonly version?: string | undefined;
+    /**
+     * SIGUSR2 hands this daemon's terminals to the terminal host (`docs/terminal-host.md` §10).
+     * Absent on a daemon from before the host, where an unhandled SIGUSR2 would kill it without
+     * saving anything: a restarter must send SIGTERM to those instead.
+     */
+    readonly handoff?: boolean | undefined;
 }
 
 export interface PidRecordInput {
@@ -152,6 +158,7 @@ export interface PidRecordInput {
     readonly socket?: string | undefined;
     readonly http_port?: number | undefined;
     readonly version?: string | undefined;
+    readonly handoff?: boolean | undefined;
 }
 
 export function writePidRecord(paths: RunPaths, input: PidRecordInput = {}): PidRecord {
@@ -161,7 +168,8 @@ export function writePidRecord(paths: RunPaths, input: PidRecordInput = {}): Pid
         started_at: input.started_at ?? new Date().toISOString(),
         ...(input.socket !== undefined ? { socket: input.socket } : { socket: paths.socket }),
         ...(input.http_port !== undefined ? { http_port: input.http_port } : {}),
-        ...(input.version !== undefined ? { version: input.version } : {})
+        ...(input.version !== undefined ? { version: input.version } : {}),
+        ...(input.handoff !== undefined ? { handoff: input.handoff } : {})
     };
     writeRunFile(paths, paths.pid, `${JSON.stringify(record)}\n`);
     return record;
@@ -190,13 +198,15 @@ export function readPidRecord(paths: RunPaths): PidRecord | undefined {
     const socket = source['socket'];
     const httpPort = source['http_port'];
     const version = source['version'];
+    const handoff = source['handoff'];
     return {
         pid,
         protocol: typeof protocol === 'number' ? protocol : paths.protocol,
         started_at: typeof startedAt === 'string' ? startedAt : '',
         ...(typeof socket === 'string' ? { socket } : {}),
         ...(typeof httpPort === 'number' ? { http_port: httpPort } : {}),
-        ...(typeof version === 'string' ? { version } : {})
+        ...(typeof version === 'string' ? { version } : {}),
+        ...(handoff === true ? { handoff: true } : {})
     };
 }
 
@@ -222,11 +232,14 @@ export interface ClearRunFilesOptions {
     readonly socket?: boolean | undefined;
     /** Also unlink the token (normally kept so it stays stable across restarts). */
     readonly token?: boolean | undefined;
+    /** Remove the pid record only if it still names this pid (a successor may have replaced it). */
+    readonly ownerPid?: number | undefined;
 }
 
 /** Clean-shutdown tidy-up: drop the pid record (and optionally the socket/token). */
 export function clearRunFiles(paths: RunPaths, options: ClearRunFilesOptions = {}): void {
-    const targets = [paths.pid];
+    const ours = options.ownerPid === undefined || readPidRecord(paths)?.pid === options.ownerPid;
+    const targets = ours ? [paths.pid] : [];
     if (options.socket === true) targets.push(paths.socket);
     if (options.token === true) targets.push(paths.token);
     for (const target of targets) {

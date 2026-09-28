@@ -48,6 +48,10 @@ export const MOUSE_FORMAT_MODES: ReadonlyMap<number, MouseFormat> = new Map<numb
 
 export const DEFAULT_MOUSE_FORMAT: MouseFormat = 'x10';
 
+export function isMouseFormat(value: unknown): value is MouseFormat {
+    return value === 'x10' || value === 'utf8' || value === 'sgr' || value === 'urxvt' || value === 'sgr-pixels';
+}
+
 /**
  * Fold one DECSET/DECRST into a format.
  *
@@ -76,6 +80,8 @@ export function applyFormatModes(
 
 export interface MouseFormatTracker {
     readonly format: MouseFormat;
+    /** Put back a format from a handoff checkpoint (`docs/terminal-host.md` §5). */
+    restore(format: MouseFormat): void;
     dispose(): void;
 }
 
@@ -121,6 +127,9 @@ export function trackMouseFormat(
     return {
         get format(): MouseFormat {
             return format;
+        },
+        restore(next: MouseFormat): void {
+            set(isMouseFormat(next) ? next : DEFAULT_MOUSE_FORMAT);
         },
         dispose(): void {
             for (const entry of disposables.splice(0)) entry.dispose();

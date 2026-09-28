@@ -24,10 +24,11 @@ import headless from '@xterm/headless';
 import type { Terminal as HeadlessTerminal } from '@xterm/headless';
 
 import type { TerminalStateService, VtModes } from '../seams.js';
-import { trackKittyKeyboard, type KittyKeyboardTracker } from './kitty-keyboard.js';
+import { trackKittyKeyboard, type KittyKeyboardTracker, type KittyState } from './kitty-keyboard.js';
 import {
     DEFAULT_MOUSE_FORMAT,
     trackMouseFormat,
+    type MouseFormat,
     type MouseFormatTracker,
     type MouseTrackingMode
 } from './mouse-modes.js';
@@ -380,10 +381,33 @@ export function parseOsc7(data: string): string | null {
 const MIN_COLS = 2;
 const MIN_ROWS = 1;
 
+/**
+ * How much of a write's side effects to suppress (`docs/terminal-host.md` §7, §8.1).
+ *
+ * - `0` live output: everything runs.
+ * - `1` replayed output the daemon has not seen before (the handoff gap): no kitty query reply,
+ *   because the application that asked timed out long ago and a late answer would land at its
+ *   prompt as typed text.
+ * - `2` replayed output that may repeat what a previous daemon already acted on (a saved screen,
+ *   or a crash's retained tail): also no OSC 9/777 notification and no OSC 52 clipboard write.
+ */
+export type ReplayMode = 0 | 1 | 2;
+
+/** A pane's emulator state as of one byte of its output: what a handoff carries (§5). */
+export interface TerminalCheckpoint {
+    readonly cols: number;
+    readonly rows: number;
+    /** A VT stream that rebuilds the screen, scrollback and modes in a fresh terminal. */
+    readonly snapshot: Uint8Array;
+    readonly kitty: KittyState;
+    readonly mouseFormat: MouseFormat;
+}
+
 interface PendingWrite {
     readonly bytes: number;
     readonly data: Uint8Array | string;
     readonly settle: () => void;
+    readonly mode: ReplayMode;
 }
 
 interface PaneTerminal {
@@ -410,6 +434,11 @@ interface PaneTerminal {
     writing: boolean;
     pendingBytes: number;
     outputPaused: boolean;
+    /** The replay mode of the write xterm is parsing right now; the parser hooks read it. */
+    readonly effects: { mode: ReplayMode };
+    /** Bytes still to be fed as replay (`markReplay`), and in which mode. */
+    replayBudget: number;
+    replayBudgetMode: ReplayMode;
 }
 
 const encoder = new TextEncoder();
@@ -535,7 +564,70 @@ export class TerminalStateServiceImpl implements TerminalStateService {
             this.panes.set(paneID, entry);
         }
         entry.ring.append(typeof data === 'string' ? encoder.encode(data) : data);
+        // The first `replayBudget` bytes after `markReplay` are replayed output (§7).
+        if (entry.replayBudget > 0) {
+            const bytes = typeof data === 'string' ? encoder.encode(data) : data;
+            const replayed = Math.min(entry.replayBudget, bytes.length);
+            entry.replayBudget -= replayed;
+            this.enqueue(paneID, entry, bytes.subarray(0, replayed), entry.replayBudgetMode);
+            if (replayed < bytes.length) this.enqueue(paneID, entry, bytes.subarray(replayed), 0);
+            return;
+        }
+        this.enqueue(paneID, entry, data, 0);
+    }
 
+    /**
+     * Treat the next `bytes` fed to this pane as replayed output (the handoff drain, §7):
+     * `quiet` also silences notifications and clipboard writes, for bytes a previous daemon may
+     * already have acted on.
+     */
+    markReplay(paneID: string, bytes: number, quiet: boolean): void {
+        const entry = this.panes.get(paneID);
+        if (!entry || bytes <= 0) return;
+        entry.replayBudget = bytes;
+        entry.replayBudgetMode = quiet ? 2 : 1;
+    }
+
+    /**
+     * Rebuild a pane from a checkpoint (`docs/terminal-host.md` §7). The saved VT stream goes
+     * through the same write queue as output, ahead of anything fed afterwards, with every side
+     * effect suppressed; the state xterm does not hold (kitty flags, mouse format) is put back
+     * directly. Call on a freshly attached pane, before any output is fed.
+     */
+    restore(paneID: string, checkpoint: TerminalCheckpoint): void {
+        const entry = this.panes.get(paneID);
+        if (!entry) return;
+        if (checkpoint.snapshot.length > 0) this.enqueue(paneID, entry, checkpoint.snapshot, 2);
+        entry.kitty.importState(checkpoint.kitty);
+        entry.mouseFormat.restore(checkpoint.mouseFormat);
+    }
+
+    /**
+     * The pane's state for a handoff, once every byte fed so far has been parsed, plus how many
+     * of the last bytes fed must be sent again (`tailBack`): a checkpoint that lands inside an
+     * escape sequence or a UTF-8 character would leave the next daemon's parser to print its
+     * remainder as text, so the checkpoint names the offset where that sequence began instead.
+     * Replaying the start of a sequence has no side effects; its effect only happens once it ends.
+     */
+    async checkpointAsync(paneID: string): Promise<(TerminalCheckpoint & { readonly tailBack: number }) | null> {
+        await this.flush(paneID);
+        const entry = this.panes.get(paneID);
+        if (!entry) return null;
+        const serialized =
+            this.snapshotScrollbackLines === undefined
+                ? entry.serializer.serialize()
+                : entry.serializer.serialize({ scrollback: this.snapshotScrollbackLines });
+        return {
+            cols: entry.term.cols,
+            rows: entry.term.rows,
+            snapshot: encoder.encode(serialized + restoreExtras(entry.term)),
+            kitty: entry.kitty.exportState(),
+            mouseFormat: entry.mouseFormat.format,
+            tailBack: incompleteTail(entry)
+        };
+    }
+
+    private enqueue(paneID: string, entry: PaneTerminal, data: Uint8Array | string, mode: ReplayMode): void {
         entry.issued += 1;
         const bytes = typeof data === 'string' ? Buffer.byteLength(data) : data.byteLength;
         entry.pendingBytes += bytes;
@@ -561,7 +653,7 @@ export class TerminalStateServiceImpl implements TerminalStateService {
                 }
             };
             target.settlers.add(settle);
-            target.writes.push({ data, bytes, settle });
+            target.writes.push({ data, bytes, settle, mode });
         });
         if (entry.pendingBytes >= WRITE_HIGH_WATER_BYTES) this.setOutputPaused(paneID, entry, true);
         this.drainWrites(paneID, entry);
@@ -589,7 +681,10 @@ export class TerminalStateServiceImpl implements TerminalStateService {
         // Keep strings and bytes separate so xterm retains its incremental decoding semantics.
         while (entry.writeIndex < entry.writes.length) {
             const next = entry.writes[entry.writeIndex]!;
-            if (typeof next.data !== typeof first.data || bytes + next.bytes > 64 * 1024) break;
+            // Never mix replayed and live output in one write: the parser hooks read its mode.
+            if (typeof next.data !== typeof first.data || next.mode !== first.mode || bytes + next.bytes > 64 * 1024) {
+                break;
+            }
             batch.push(next);
             bytes += next.bytes;
             entry.writeIndex += 1;
@@ -607,10 +702,12 @@ export class TerminalStateServiceImpl implements TerminalStateService {
             entry.writeIndex = 0;
         }
         entry.writing = true;
+        entry.effects.mode = first.mode;
         let finished = false;
         const finish = (): void => {
             if (finished) return;
             finished = true;
+            entry.effects.mode = 0;
             for (const item of batch) item.settle();
             entry.writing = false;
             // Leave xterm's write callback before handing it the next chunk. This also
@@ -924,6 +1021,7 @@ export class TerminalStateServiceImpl implements TerminalStateService {
         });
         const serializer = new SerializeAddon();
         term.loadAddon(serializer);
+        const effects: { mode: ReplayMode } = { mode: 0 };
         if (this.onDirectoryChange !== undefined) {
             const report = this.onDirectoryChange;
             // `false` = "not fully handled", so xterm's own OSC 7 bookkeeping still runs and a
@@ -947,6 +1045,7 @@ export class TerminalStateServiceImpl implements TerminalStateService {
             // §TERM-050. `false` again — a notification is an observation, not a claim on the
             // sequence, so xterm's own bookkeeping and any later handler still see it.
             const notify = (code: number) => (data: string): boolean => {
+                if (effects.mode === 2) return false; // may repeat what a previous daemon posted
                 const parsed = parseOscNotification(code, data);
                 if (parsed !== null) report(paneID, parsed);
                 return false;
@@ -970,7 +1069,7 @@ export class TerminalStateServiceImpl implements TerminalStateService {
          */
         const clipboard = this.onClipboardRequest;
         term.parser.registerOscHandler(OSC_52_CODE, (data) => {
-            clipboard?.(paneID, parseOsc52(data));
+            if (effects.mode !== 2) clipboard?.(paneID, parseOsc52(data));
             return true;
         });
         // Mouse FORMAT has no `IModes` member, so it is tracked off the parser (`mouse-modes.ts`).
@@ -984,7 +1083,13 @@ export class TerminalStateServiceImpl implements TerminalStateService {
         const kitty = trackKittyKeyboard(term, {
             ...(this.onKittyReply === undefined
                 ? {}
-                : { onReply: (reply: Uint8Array) => this.onKittyReply?.(paneID, reply) })
+                : {
+                      // A replayed query was asked of a daemon that is gone; answering it now
+                      // would type the reply into whatever the application shows by then.
+                      onReply: (reply: Uint8Array) => {
+                          if (effects.mode === 0) this.onKittyReply?.(paneID, reply);
+                      }
+                  })
         });
         const entry: PaneTerminal = {
             term,
@@ -1002,7 +1107,10 @@ export class TerminalStateServiceImpl implements TerminalStateService {
             done: 0,
             tail: Promise.resolve(),
             settlers: new Set(),
-            disposed: false
+            disposed: false,
+            effects,
+            replayBudget: 0,
+            replayBudgetMode: 1
         };
         entry.lastModes = readModes(entry);
         return entry;
@@ -1073,4 +1181,63 @@ function readRegion(term: HeadlessTerminal, includeScrollback: boolean): string 
 
     while (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
     return lines.join('\n');
+}
+
+// ── handoff helpers (docs/terminal-host.md §5) ────────────────────────────────────────
+
+/** xterm internals the checkpoint reads; the serialize addon does not carry them. */
+interface XtermCheckpointCore {
+    readonly _core?: {
+        readonly _inputHandler?: {
+            readonly _parser?: { readonly currentState?: number };
+            readonly _utf8Decoder?: { readonly interim?: Uint8Array };
+        };
+        readonly buffer?: { readonly x: number; readonly y: number; readonly scrollTop: number; readonly scrollBottom: number };
+        readonly coreService?: { readonly isCursorHidden?: boolean; readonly decPrivateModes?: { readonly origin?: boolean } };
+    };
+}
+
+/**
+ * VT the serialize addon leaves out, appended to a checkpoint: the scroll region (a TUI that
+ * inserts lines inside one, as Codex does, would otherwise scroll the whole screen), then the
+ * cursor put back where DECSTBM's homing moved it from, then a hidden cursor (Claude Code and
+ * other Ink apps hide it).
+ */
+function restoreExtras(term: HeadlessTerminal): string {
+    const core = (term as unknown as XtermCheckpointCore)._core;
+    const buffer = core?.buffer;
+    if (buffer === undefined) return '';
+    let extra = '';
+    if (buffer.scrollTop !== 0 || buffer.scrollBottom !== term.rows - 1) {
+        extra += `\x1b[${String(buffer.scrollTop + 1)};${String(buffer.scrollBottom + 1)}r`;
+        const origin = core?.coreService?.decPrivateModes?.origin === true;
+        const row = origin ? buffer.y - buffer.scrollTop + 1 : buffer.y + 1;
+        extra += `\x1b[${String(row)};${String(Math.min(buffer.x, term.cols - 1) + 1)}H`;
+    }
+    if (core?.coreService?.isCursorHidden === true) extra += '\x1b[?25l';
+    return extra;
+}
+
+/**
+ * Only ESC opens a sequence here: output is decoded as UTF-8 before it is parsed, so raw C1
+ * bytes (0x9b and friends) are ordinary continuation bytes, never introducers. ESC itself never
+ * occurs inside a UTF-8 character.
+ */
+const ESC = 0x1b;
+
+/** How many of the last bytes fed belong to a sequence or character the parser has not finished. */
+function incompleteTail(entry: PaneTerminal): number {
+    const handler = (entry.term as unknown as XtermCheckpointCore)._core?._inputHandler;
+    const parserBusy = (handler?._parser?.currentState ?? 0) !== 0;
+    const interim = handler?._utf8Decoder?.interim;
+    const partialChar = interim === undefined ? 0 : interim.filter((byte) => byte !== 0).length;
+    if (!parserBusy) return partialChar;
+    // Mid-sequence: step back to the escape that opened it. An `ESC \` pair is a string
+    // terminator, not an opener, so it is skipped. A payload longer than the scanned window
+    // (a huge OSC or DCS) cannot be stepped back over; the checkpoint then keeps its offset.
+    const tail = entry.ring.snapshotTail(64 * 1024);
+    for (let index = tail.length - 1; index >= 0; index -= 1) {
+        if (tail[index] === ESC && tail[index + 1] !== 0x5c) return tail.length - index;
+    }
+    return 0;
 }

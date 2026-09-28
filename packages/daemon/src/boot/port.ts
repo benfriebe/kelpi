@@ -64,3 +64,40 @@ export function clearPortFile(paths: RunPaths): void {
         // Missing file is the desired end state.
     }
 }
+
+// ── the pane route ──────────────────────────────────────────────────────────────────
+
+/**
+ * `<run dir>/pane-route.port`: the pane-route TCP port every shell carries as
+ * `KELPI_SOCKET=tcp:127.0.0.1:<port>`. A shell outlives its daemon once the terminal host holds
+ * it (`docs/terminal-host.md` §10), so the next daemon asks for the same port again; otherwise
+ * agent hooks and `kelpi` commands in every surviving pane would point at a dead port.
+ *
+ * Deliberately NOT named by the daemon protocol, unlike the other run files: an update that bumps
+ * the protocol still inherits the shells, and they still carry the old port.
+ */
+export function routePortFilePath(paths: RunPaths): string {
+    return path.join(paths.dir, 'pane-route.port');
+}
+
+export function readRoutePortFile(paths: RunPaths): number | undefined {
+    try {
+        return parsePort(fs.readFileSync(routePortFilePath(paths), 'utf8'));
+    } catch {
+        return undefined;
+    }
+}
+
+/** Best effort, like `writePortFile`. Kept across a clean stop: the next daemon wants it. */
+export function writeRoutePortFile(paths: RunPaths, port: number): void {
+    const target = routePortFilePath(paths);
+    try {
+        ensureRunDir(paths);
+        const temporary = `${target}.tmp-${String(process.pid)}`;
+        fs.writeFileSync(temporary, `${String(port)}\n`, { mode: RUN_FILE_MODE });
+        fs.chmodSync(temporary, RUN_FILE_MODE);
+        fs.renameSync(temporary, target);
+    } catch {
+        // A read-only run dir costs the route's stability, not the daemon.
+    }
+}

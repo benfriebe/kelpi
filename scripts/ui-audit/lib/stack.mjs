@@ -196,7 +196,7 @@ export async function buildAll(repoRoot, { log = () => {}, force = false } = {})
 
 // ── sandbox ─────────────────────────────────────────────────────────────────────────
 
-export async function makeSandbox(repoRoot, { label = 'audit', clientDir, auditWindow, harnessWindow } = {}) {
+export async function makeSandbox(repoRoot, { label = 'audit', clientDir, auditWindow, harnessWindow, terminalHost = false } = {}) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), `nexaudit-${label}-`));
     const home = path.join(root, 'home');
     const userData = path.join(root, 'electron');
@@ -261,6 +261,13 @@ export async function makeSandbox(repoRoot, { label = 'audit', clientDir, auditW
         KELPID_HTTP_HOST: '127.0.0.1',
         KELPID_ENTRY: path.join(repoRoot, 'packages', 'daemon', 'dist', 'kelpid.js'),
         KELPID_HELPERS_DIR: helpersDir,
+        /*
+         * The terminal host (docs/terminal-host.md) keeps shells alive across a daemon restart.
+         * Off unless a scenario asks for it: `restartableDaemon` promises that a restart is a
+         * real crash with every PTY gone, and a host is a detached process the harness's
+         * pipe-death watchdog cannot reach. `cleanup()` ends any host a sandbox did start.
+         */
+        KELPID_TERMINAL_HOST: terminalHost ? '1' : '0',
         // Harness marker: a shell/daemon that sees this exits when its stdout pipe dies,
         // instead of orphaning a window when the harness (or a probe script) is hard-killed.
         KELPI_HARNESS: '1',
@@ -328,9 +335,33 @@ export async function makeSandbox(repoRoot, { label = 'audit', clientDir, auditW
         runDir: env.KELPID_RUN_DIR,
         base: `http://127.0.0.1:${String(httpPort)}`,
         cleanup() {
+            killSandboxHosts(env.KELPID_RUN_DIR);
             fs.rmSync(root, { recursive: true, force: true });
         }
     };
+}
+
+/**
+ * End every terminal host a sandbox's daemons started (its pid records sit in the run dir), and
+ * with it every shell it kept. A host is detached by design, so nothing else would; it would
+ * notice its socket vanish with the sandbox within seconds, but a leak test runs faster.
+ */
+export function killSandboxHosts(runDir) {
+    let names;
+    try {
+        names = fs.readdirSync(runDir);
+    } catch {
+        return;
+    }
+    for (const name of names) {
+        if (!/^host-v\d+\.pid$/.test(name)) continue;
+        try {
+            const { pid } = JSON.parse(fs.readFileSync(path.join(runDir, name), 'utf8'));
+            if (Number.isInteger(pid) && pid > 0) process.kill(pid, 'SIGKILL');
+        } catch {
+            // no record, or already gone
+        }
+    }
 }
 
 // ── daemon ──────────────────────────────────────────────────────────────────────────
@@ -374,13 +405,19 @@ export function startDaemon(sandbox, { repoRoot, verbose = false, packaged = fal
         get exited() {
             return exited;
         },
-        async stop() {
+        /**
+         * SIGTERM (a full stop) by default; SIGUSR2 asks a terminal-host daemon to hand its
+         * terminals over instead (docs/terminal-host.md §6), which may first wait up to 10 s for a
+         * restore in progress, so it gets a longer window before the SIGKILL.
+         */
+        async stop(signal = 'SIGTERM') {
             if (exited) {
                 releaseChild(child);
                 return;
             }
-            child.kill('SIGTERM');
-            await Promise.race([new Promise((resolve) => child.on('exit', resolve)), raceTimeout(8000)]);
+            child.kill(signal);
+            const windowMs = signal === 'SIGUSR2' ? 20_000 : 8000;
+            await Promise.race([new Promise((resolve) => child.on('exit', resolve)), raceTimeout(windowMs)]);
             if (!exited) child.kill('SIGKILL');
             await waitForDesktopChildExit(child);
             releaseChild(child);
@@ -530,12 +567,12 @@ export function restartableDaemon(sandbox, { healthzMs = 30_000, ...daemonOption
          * the thing was still running, drop that generation's output from `text()`, and let the
          * next `start()` spawn a second daemon onto these ports if the stop had thrown.
          */
-        async stop() {
+        async stop({ handoff = false } = {}) {
             if (current === null) return handle;
             const began = Date.now();
             const stopping = current;
             try {
-                await stopping.stop();
+                await stopping.stop(handoff ? 'SIGUSR2' : 'SIGTERM');
                 current = null;
                 previous.push(stopping.text());
             } finally {
@@ -543,8 +580,14 @@ export function restartableDaemon(sandbox, { healthzMs = 30_000, ...daemonOption
             }
             return handle;
         },
-        async restart() {
-            await handle.stop();
+        /**
+         * `{ handoff: true }` on a `terminalHost` sandbox: the old daemon hands its terminals to
+         * the host and the new one adopts them, so shells SURVIVE this restart (the opposite of
+         * the contract above). The successor is still this harness's child, as it must be: a
+         * detached one would trip the KELPI_HARNESS watchdog.
+         */
+        async restart({ handoff = false } = {}) {
+            await handle.stop({ handoff });
             return await handle.start();
         }
     };

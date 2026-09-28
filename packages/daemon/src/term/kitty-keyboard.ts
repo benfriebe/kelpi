@@ -126,7 +126,17 @@ export interface KittyKeyboardTracker {
     /** Push depth of one screen's stack (the invariant this module is easiest to break on). */
     stackDepth(screen: KittyScreen): number;
     flagsFor(screen: KittyScreen): number;
+    /** Both screens' flags and stacks, for a handoff checkpoint (`docs/terminal-host.md` §5). */
+    exportState(): KittyState;
+    /** Put back what `exportState` produced (sanitized: a checkpoint is data, not trusted). */
+    importState(state: KittyState): void;
     dispose(): void;
+}
+
+/** Everything a pane's kitty protocol state amounts to: per screen, the flags and the push stack. */
+export interface KittyState {
+    readonly normal: { readonly flags: number; readonly stack: readonly number[] };
+    readonly alternate: { readonly flags: number; readonly stack: readonly number[] };
 }
 
 export interface KittyKeyboardOptions {
@@ -247,6 +257,22 @@ export function trackKittyKeyboard(
         },
         flagsFor(screen: KittyScreen): number {
             return screens[screen].flags;
+        },
+        exportState(): KittyState {
+            return {
+                normal: { flags: screens.normal.flags, stack: [...screens.normal.stack] },
+                alternate: { flags: screens.alternate.flags, stack: [...screens.alternate.stack] }
+            };
+        },
+        importState(state: KittyState): void {
+            for (const screen of ['normal', 'alternate'] as const) {
+                const incoming = state[screen];
+                screens[screen].flags = sanitizeFlags(incoming.flags);
+                screens[screen].stack.length = 0;
+                screens[screen].stack.push(
+                    ...incoming.stack.slice(-KITTY_STACK_MAX_DEPTH).map((flags) => sanitizeFlags(flags))
+                );
+            }
         },
         dispose(): void {
             for (const entry of disposables.splice(0)) entry.dispose();

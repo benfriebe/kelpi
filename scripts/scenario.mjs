@@ -43,6 +43,9 @@
  * And it may declare the WEAKEST window placement it can be trusted at, which a run below that
  * floor honours by giving it an instance of its own at the declared placement:
  *   export const windowPlacement = 'offscreen';
+ * And one whose shells must survive a daemon restart runs in an instance with the terminal host on
+ * (docs/terminal-host.md), where `t.daemon.restart({ handoff: true })` keeps every pane's process:
+ *   export const terminalHost = true;
  * A floor, never a ceiling: a stronger run is never dragged down, and a run that opened no lane is
  * left exactly alone. `ui-audit/lib/placement.mjs` has the rule, the reason (#206: a zero-opacity
  * frame with another window in front of it is occluded, and Chromium then drops the input CDP
@@ -338,9 +341,16 @@ for (const file of files) {
         importError = error;
     }
     const resolved = resolveScenarioPlacement(t.windowPlacement, mod?.windowPlacement);
+    // A scenario that needs shells to survive a daemon restart runs in a sandbox with the
+    // terminal host on (`export const terminalHost = true`); every other sandbox keeps it off.
+    const wantsHost = mod?.terminalHost === true;
     let dedicated = null;
-    if (resolved.raised && importError === null && attachPort === undefined) {
-        log(`▶ ${name}: it declares ${String(resolved.placement)} and this run is ${String(t.windowPlacement)}; booting an instance of its own`);
+    if ((resolved.raised || wantsHost) && importError === null && attachPort === undefined) {
+        log(
+            wantsHost
+                ? `▶ ${name}: it needs the terminal host; booting an instance of its own`
+                : `▶ ${name}: it declares ${String(resolved.placement)} and this run is ${String(t.windowPlacement)}; booting an instance of its own`
+        );
         try {
             dedicated = ownDesktopResource(await driver.boot({
                 repoRoot,
@@ -351,7 +361,8 @@ for (const file of files) {
                 label: name.slice(0, 12),
                 build: false,
                 log: (line) => log(`  ${name}: ${line}`),
-                window: resolved.placement
+                window: resolved.placement,
+                terminalHost: wantsHost
             }));
         } catch (error) {
             log(`⚠ ${name}: the ${String(resolved.placement)} instance would not boot (${error instanceof Error ? error.message : String(error)}); running it in this lane instead`);

@@ -136,6 +136,12 @@ open a fresh `kelpid url` again.
 and `kelpid stop` shuts it down cleanly — pending state is flushed to SQLite before the PTYs are
 killed.
 
+Shells do not have to die with the daemon. `kelpid start` runs every PTY in a separate **terminal
+host** process, so `kelpid restart` (and a promote, or an app update) hands each running terminal
+to the next daemon instead: same process, same screen, nothing typed into a live agent. `kelpid stop`
+still ends everything. `KELPID_TERMINAL_HOST=0` keeps the old in-process behaviour. See
+[docs/terminal-host.md](docs/terminal-host.md).
+
 ### Talking to it
 
 Anything that speaks the control protocol works, including `nc`:

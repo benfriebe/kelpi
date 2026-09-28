@@ -183,4 +183,13 @@ describe('run dir files', () => {
         clearRunFiles(paths, { token: true }); // and again with nothing left to remove
         expect(readToken(paths)).toBeUndefined();
     });
+
+    it("leaves a successor's pid record alone when asked to clear only its own", () => {
+        const paths = resolveRunPaths({ dir: directory });
+        writePidRecord(paths, { pid: process.pid + 1 }); // a successor already wrote its own
+        clearRunFiles(paths, { ownerPid: process.pid });
+        expect(readPidRecord(paths)?.pid).toBe(process.pid + 1);
+        clearRunFiles(paths, { ownerPid: process.pid + 1 });
+        expect(fs.existsSync(paths.pid)).toBe(false);
+    });
 });

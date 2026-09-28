@@ -7,7 +7,8 @@
  * this script dies partway through the upgrade it started. The dance is therefore DETACHED:
  * this script verifies everything, writes a small restarter to disk, launches it with nohup
  * parented away from the doomed process tree, prints its goodbye, and exits. The restarter
- * then: SIGTERMs the app (waits), SIGTERMs the daemon (waits — a clean daemon shutdown
+ * then: SIGTERMs the app (waits), signals the daemon (waits — SIGUSR2 to a daemon that hands its
+ * terminals to the terminal host, so they survive; SIGTERM otherwise, where a clean shutdown
  * persists every pane and session id), relaunches the .app, and polls the daemon's health.
  * The restored panes come back through the boot-restore pipeline, and any pane with a tracked
  * agent session gets its `claude --resume <id>` typed — the machinery §N13's wave proved with
@@ -237,10 +238,40 @@ const daemonPids = [
     )
 ];
 
+/**
+ * Daemons that advertise `handoff` in their pid record hand their terminals to the terminal host
+ * on SIGUSR2 (docs/terminal-host.md §10): the shells survive the promote and the relaunched app's
+ * daemon adopts them. Anything older gets SIGTERM, since an unhandled SIGUSR2 would kill it
+ * without saving.
+ */
+function handoffPids() {
+    const pids = new Set();
+    let names = [];
+    try {
+        names = fs.readdirSync(runDir);
+    } catch {
+        return pids;
+    }
+    for (const name of names) {
+        if (!/^daemon-v\d+\.pid$/.test(name)) continue;
+        try {
+            const record = JSON.parse(fs.readFileSync(path.join(runDir, name), 'utf8'));
+            if (record.handoff === true && Number.isInteger(record.pid)) pids.add(record.pid);
+        } catch {
+            // no record
+        }
+    }
+    return pids;
+}
+const handoff = handoffPids();
+
 log(`running app pids: ${appPids.join(', ') || '(none)'}`);
-log(`running daemon pids: ${daemonPids.join(', ') || '(none)'}`);
+log(`running daemon pids: ${daemonPids.map((pid) => (handoff.has(pid) ? `${pid} (hands off)` : String(pid))).join(', ') || '(none)'}`);
 const insideKelpi = process.env.KELPI_PANE_ID !== undefined || process.env.NEX_PANE_ID !== undefined;
-if (insideKelpi) {
+if (insideKelpi && daemonPids.length > 0 && daemonPids.every((pid) => handoff.has(pid))) {
+    log(`invoked from INSIDE a Kelpi pane (${process.env.KELPI_PANE_ID ?? process.env.NEX_PANE_ID}): the daemon hands its`);
+    log('terminals to the terminal host, so this session keeps running through the promote.');
+} else if (insideKelpi) {
     log(`invoked from INSIDE a Kelpi pane (${process.env.KELPI_PANE_ID ?? process.env.NEX_PANE_ID}) — this session will be`);
     log('cut and then RESUMED by the restored pane (claude --resume). That is the expected dance.');
 }
@@ -259,9 +290,14 @@ const logFile = path.join(stateDir, `restarter-${stamp}.log`);
 const script = path.join(stateDir, `restarter-${stamp}.sh`);
 fs.mkdirSync(stateDir, { recursive: true });
 
-const waitGone = (pid) => `
-i=0; while kill -0 ${pid} 2>/dev/null && [ $i -lt 30 ]; do sleep 0.5; i=$((i+1)); done
+// A handoff can wait up to 10 s for a restore in progress before it checkpoints, so it gets 30 s.
+const waitGone = (pid, ticks = 30) => `
+i=0; while kill -0 ${pid} 2>/dev/null && [ $i -lt ${ticks} ]; do sleep 0.5; i=$((i+1)); done
 kill -0 ${pid} 2>/dev/null && kill -9 ${pid} 2>/dev/null`;
+const stopDaemon = (pid) =>
+    handoff.has(pid)
+        ? `echo "restarter: handing off daemon ${pid}"; kill -USR2 ${pid} 2>/dev/null${waitGone(pid, 60)}`
+        : `echo "restarter: stopping daemon ${pid}"; kill -TERM ${pid} 2>/dev/null${waitGone(pid)}`;
 
 fs.writeFileSync(
     script,
@@ -271,7 +307,7 @@ exec > "${logFile}" 2>&1
 echo "restarter: starting ($(date))"
 sleep 1
 ${appPids.map((pid) => `echo "restarter: stopping app ${pid}"; kill -TERM ${pid} 2>/dev/null${waitGone(pid)}`).join('\n')}
-${daemonPids.map((pid) => `echo "restarter: stopping daemon ${pid}"; kill -TERM ${pid} 2>/dev/null${waitGone(pid)}`).join('\n')}
+${daemonPids.map(stopDaemon).join('\n')}
 echo "restarter: relaunching"
 ${relaunchCmd}
 echo "restarter: waiting for the daemon"

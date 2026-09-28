@@ -239,6 +239,9 @@ module.exports = {
                 const required = [
                     path.join(resources, 'app.asar'),
                     path.join(resources, RESOURCE_NAMES.daemon, 'kelpid.js'),
+                    // The terminal host (docs/terminal-host.md): without it every shell dies
+                    // with the daemon again, silently.
+                    path.join(resources, RESOURCE_NAMES.daemon, 'terminal-host.js'),
                     // Both bundles are ESM `.js` files (here and cli/ below). Without these, Node
                     // takes their module type from whatever package.json sits above the app, and warns.
                     path.join(resources, RESOURCE_NAMES.daemon, 'package.json'),

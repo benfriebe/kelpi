@@ -427,11 +427,13 @@ describe('kelpi event', () => {
 
     it('stays silent on a dead socket unless KELPI_VERBOSE_HOOKS is set', async () => {
         const port = await deadPort();
-        const quiet = await runCLI(['event', 'stop'], { port, paneID: PANE });
+        // A pane shell would wait out a handoff gap (ROUTE_RETRY_WINDOW_MS); this port never opens.
+        const noRetry = { KELPI_ROUTE_RETRY_MS: '0' };
+        const quiet = await runCLI(['event', 'stop'], { port, paneID: PANE, env: noRetry });
         expect(quiet.code).toBe(0);
         expect(quiet.stderr).toBe('');
 
-        const loud = await runCLI(['event', 'stop'], { port, paneID: PANE, env: { KELPI_VERBOSE_HOOKS: '1' } });
+        const loud = await runCLI(['event', 'stop'], { port, paneID: PANE, env: { ...noRetry, KELPI_VERBOSE_HOOKS: '1' } });
         expect(loud.code).toBe(0);
         expect(loud.stderr).toContain('Warning: kelpi event stop:');
     });

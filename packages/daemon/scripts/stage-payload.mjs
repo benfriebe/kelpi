@@ -75,6 +75,8 @@ const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 /** The bundle + sourcemap `scripts/bundle.mjs` writes. */
 export const BUNDLE_NAME = 'kelpid.js';
 export const SOURCEMAP_NAME = 'kelpid.js.map';
+/** The terminal host bundle (docs/terminal-host.md), staged beside the daemon. */
+export const HOST_BUNDLE_NAME = 'terminal-host.js';
 /** Written next to the payload so a packaged app can be inspected without guessing. */
 export const MANIFEST_NAME = 'payload.json';
 /** Declares the bundle an ES module wherever the payload lands (see "Why a package.json"). */
@@ -205,6 +207,16 @@ export function stageDaemonPayload({
     cpSync(bundle, path.join(target, BUNDLE_NAME), { dereference: true });
     cpSync(path.join(distDir, 'runner.mjs'), path.join(target, 'runner.mjs'));
     chmodSync(path.join(target, BUNDLE_NAME), 0o755);
+    // The terminal host (docs/terminal-host.md) runs beside the daemon and loads the same
+    // node-pty, so it rides in the same directory.
+    const hostBundle = path.join(distDir, HOST_BUNDLE_NAME);
+    if (!existsSync(hostBundle)) {
+        throw new Error(
+            `terminal host bundle not found at ${hostBundle} — run \`pnpm --filter @kelpi/daemon build\` before staging the payload`
+        );
+    }
+    cpSync(hostBundle, path.join(target, HOST_BUNDLE_NAME), { dereference: true });
+    chmodSync(path.join(target, HOST_BUNDLE_NAME), 0o755);
     writeFileSync(path.join(target, PACKAGE_SCOPE_NAME), PACKAGE_SCOPE);
     const sourcemap = copyFileIfPresent(path.join(distDir, SOURCEMAP_NAME), path.join(target, SOURCEMAP_NAME));
 
@@ -216,6 +228,7 @@ export function stageDaemonPayload({
         arch,
         entry: BUNDLE_NAME,
         entry_bytes: statSync(path.join(target, BUNDLE_NAME)).size,
+        terminal_host: HOST_BUNDLE_NAME,
         sourcemap,
         node_pty: {
             ...(nodePty.version === undefined ? {} : { version: nodePty.version }),

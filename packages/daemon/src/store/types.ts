@@ -191,6 +191,9 @@ export type NewWorkspacePlacement = 'end-of-list' | 'near-selection';
  * real pane/workspace id before the effect runs — wire-protocol.md §pre-minted UUIDs), which
  * also keeps the reducers pure and trivially testable.
  */
+/** What `applyLoadReset` clears on a pane, and `pane-agent-state-restored` puts back. */
+export type RestoredAgentState = Pick<Pane, 'status' | 'agentSessionID' | 'agentStartedAt' | 'backgroundTaskCount'>;
+
 export type DomainAction =
     | { readonly type: 'create-plugin-pane'; readonly workspaceID: string; readonly paneID: string; readonly title: string; readonly plugin: import('@kelpi/protocol').PluginPaneDescriptor; readonly now: number }
     | { readonly type: 'set-plugin-pane-state'; readonly paneID: string; readonly plugin: import('@kelpi/protocol').PluginPaneDescriptor }
@@ -596,6 +599,16 @@ export type DomainAction =
           readonly event: AgentEvent;
           readonly now: number;
           readonly workspaceID?: string | undefined;
+      }
+    | {
+          /**
+           * A pane whose shell the terminal host kept across a daemon restart: the agent in it
+           * is still running, so the live state the load reset cleared goes back
+           * (`docs/terminal-host.md` §7).
+           */
+          readonly type: 'pane-agent-state-restored';
+          readonly paneID: string;
+          readonly agent: RestoredAgentState;
       }
     | {
           readonly type: 'pane-title-changed';

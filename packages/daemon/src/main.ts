@@ -35,6 +35,9 @@ import {
     type DaemonInfo
 } from './boot/index.js';
 import { resolveControlEndpoints } from './control/index.js';
+import type { TerminalHostLaunch } from './boot/compose.js';
+import { HOST_BUNDLE_NAME } from './host/runtime.js';
+import { endHost, resolveHostPaths, verifiedHostPid } from './host/launch.js';
 import { connectTestOwner, type TestOwner } from './lifecycle/test-owner.js';
 import { expandTilde, legacyDataDir, LEGACY_DATABASE_FILENAME, legacyMacAppDatabasePath, resolveDatabasePath } from './db/index.js';
 import { isLegacyImportError, runImport, type ImportReport } from './import/index.js';
@@ -59,13 +62,25 @@ import {
 
 export const ENTRY_ENV = 'KELPID_ENTRY';
 export const LOG_FILE_ENV = 'KELPID_LOG_FILE';
+/** `KELPID_TERMINAL_HOST=0` keeps PTYs in-process (they then die with the daemon). */
+export const TERMINAL_HOST_ENV = 'KELPID_TERMINAL_HOST';
 
 /** How long `kelpid start` waits for the detached child to answer `ping`. */
 export const START_TIMEOUT_MS = 15_000;
 /** How long `kelpid stop` waits for the daemon to disappear after SIGTERM. */
 export const STOP_TIMEOUT_MS = 10_000;
 
-export type KelpidCommand = 'start' | 'stop' | 'status' | 'url' | 'pair' | 'devices' | 'import' | 'help' | 'version';
+export type KelpidCommand =
+    | 'start'
+    | 'stop'
+    | 'restart'
+    | 'status'
+    | 'url'
+    | 'pair'
+    | 'devices'
+    | 'import'
+    | 'help'
+    | 'version';
 
 export interface ParsedArgs {
     readonly command: KelpidCommand;
@@ -101,6 +116,7 @@ const USAGE = `kelpid — the Kelpi daemon
 Usage:
   kelpid start [--foreground]   Start the daemon (detached unless --foreground)
   kelpid stop [--timeout <ms>]  Stop the running daemon (SIGTERM, then SIGKILL)
+  kelpid restart                Restart the daemon, keeping running terminals (terminal host)
   kelpid status [--json]        Ping the daemon and report version, pid and ports
   kelpid url [--tailnet]        Print the client URL (with the token) and nothing else
   kelpid pair --name <who> [--tailnet] [--qr [--qr-invert]]
@@ -181,6 +197,7 @@ Environment:
   KELPID_DEVICES_PATH  Paired-devices registry (default: <data dir>/devices.json)
   KELPID_CLIENT_DIR    Directory holding the built web client
   KELPID_LOG_FILE      Append the detached daemon's stdout/stderr here
+  KELPID_TERMINAL_HOST 0 = run PTYs in-process; shells then die with the daemon (default: terminal host)
   KELPID_VERSION       Override the reported version (packaging)
   KELPID_BUILD         Override the reported build (packaging)
   KELPID_ENTRY         Executable/script re-spawned by \`kelpid start\` when detaching
@@ -322,6 +339,7 @@ export function parseKelpidArgs(argv: readonly string[]): ParsedArgs {
                 if (
                     arg === 'start' ||
                     arg === 'stop' ||
+                    arg === 'restart' ||
                     arg === 'status' ||
                     arg === 'url' ||
                     arg === 'pair' ||
@@ -429,6 +447,18 @@ export function resolveEntry(env: NodeJS.ProcessEnv): string {
     }
 }
 
+/**
+ * Where `kelpid start` launches its terminal host from (`docs/terminal-host.md`): the
+ * `terminal-host.js` bundled beside this daemon, run by this same Node. Off with
+ * `KELPID_TERMINAL_HOST=0`, or when there is no bundle (a source checkout that was not built).
+ */
+export function terminalHostLaunch(env: NodeJS.ProcessEnv): TerminalHostLaunch | undefined {
+    if (env[TERMINAL_HOST_ENV]?.trim() === '0') return undefined;
+    const daemonDir = nodePath.dirname(resolveEntry(env));
+    if (!fs.existsSync(nodePath.join(daemonDir, HOST_BUNDLE_NAME))) return undefined;
+    return { daemonDir, execPath: process.execPath };
+}
+
 /** The URL a client would use — honouring the daemon's own bind-host override. */
 function httpURL(env: NodeJS.ProcessEnv, port: number): string {
     const host = env[HTTP_HOST_ENV]?.trim();
@@ -520,8 +550,31 @@ async function commandStart(io: CliIO, args: ParsedArgs, owner?: TestOwner): Pro
             await owner.confirmStopped();
             return 0;
         }
+        const terminalHost = terminalHostLaunch(env);
+        // An owned (test) daemon installs no signal handlers of its own, so a SIGUSR2 would kill
+        // it outright: catch it from the start and turn it into a handoff once startup settles.
+        const ownedHandoff = { wanted: false, requested: new Promise<void>(() => {}) };
+        if (owner !== undefined) {
+            ownedHandoff.requested = new Promise<void>((resolve) => {
+                process.once('SIGUSR2', () => {
+                    ownedHandoff.wanted = true;
+                    resolve();
+                });
+            });
+        }
         const daemon = createDaemon({
             env,
+            ...(terminalHost !== undefined ? { terminalHost } : {}),
+            // `kelpid restart` asked for a successor: start it with THIS daemon's environment
+            // and entry, not the environment of whatever shell ran the restart.
+            onHandedOff: () => {
+                if (!takeRespawnRequest(paths)) return;
+                const logFile = env[LOG_FILE_ENV]?.trim();
+                spawnDetached(resolveEntry(env), ['start', '--foreground'], {
+                    env,
+                    ...(logFile !== undefined && logFile.length > 0 ? { logFile } : {})
+                });
+            },
             installSignalHandlers: owner === undefined,
             onError: (error, context) => io.err(`kelpid error [${context}]: ${error.message}`),
             onLog: (message) => io.out(message)
@@ -555,8 +608,10 @@ async function commandStart(io: CliIO, args: ParsedArgs, owner?: TestOwner): Pro
         if (owner !== undefined) {
             // A stop requested during start waits for that start to settle. If it stalls,
             // the owner keeps its slot; never race teardown against later resource creation.
-            await owner.whenStopRequested;
-            await daemon.stop();
+            // A SIGUSR2 is a handoff instead (docs/terminal-host.md §6), with the same receipt.
+            await Promise.race([owner.whenStopRequested, ownedHandoff.requested]);
+            if (ownedHandoff.wanted && !owner.stopRequested) await daemon.handoff();
+            else await daemon.stop();
             await owner.confirmStopped();
             return daemon.persistenceHealth().degraded ? 1 : 0;
         }
@@ -647,7 +702,92 @@ async function commandStop(io: CliIO, args: ParsedArgs): Promise<number> {
         // It exited between the check and the signal — that is the outcome we wanted.
     }
     io.err(`kelpid (pid ${String(pid)}) did not exit within ${String(timeoutMs)}ms; sent SIGKILL`);
+    // A SIGKILL'd daemon cannot shut its terminal host down, and a stop means every shell ends.
+    const hostPid = await verifiedHostPid(resolveHostPaths(paths.dir));
+    if (hostPid !== undefined) {
+        await endHost(hostPid);
+        io.err(`ended its terminal host (pid ${String(hostPid)}) and the shells it held`);
+    }
     return 1;
+}
+
+/** How long `kelpid restart` waits for the old daemon to hand off (a restore in progress, then checkpoints). */
+const RESTART_HANDOFF_TIMEOUT_MS = 30_000;
+/** A respawn request older than this is stale (its restart gave up) and is ignored. */
+const RESPAWN_REQUEST_TTL_MS = 60_000;
+
+function respawnRequestPath(paths: RunPaths): string {
+    return nodePath.join(paths.dir, `daemon-v${String(paths.protocol)}.respawn`);
+}
+
+/** Ask the daemon that receives the next SIGUSR2 to start its own successor (`onHandedOff`). */
+function writeRespawnRequest(paths: RunPaths): void {
+    fs.mkdirSync(paths.dir, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(respawnRequestPath(paths), `${new Date().toISOString()}\n`, { mode: 0o600 });
+}
+
+/** True, once, for a fresh respawn request; the file is removed either way. */
+function takeRespawnRequest(paths: RunPaths): boolean {
+    const file = respawnRequestPath(paths);
+    try {
+        const age = Date.now() - fs.statSync(file).mtimeMs;
+        fs.unlinkSync(file);
+        return age < RESPAWN_REQUEST_TTL_MS;
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * `kelpid restart`: the daemon hands its terminals to the terminal host, exits, and starts its
+ * own successor, which adopts them (`docs/terminal-host.md` §10). A daemon from before the host
+ * gets a full stop and start instead: SIGUSR2 would kill it without saving anything.
+ */
+async function commandRestart(io: CliIO, args: ParsedArgs): Promise<number> {
+    const env = io.env ?? process.env;
+    const paths = runPathsFor(env);
+    const probe = await probeDaemon(paths, { timeoutMs: 500 });
+    const pid = probe.pid ?? probe.record?.pid;
+    if (!probe.alive || pid === undefined) {
+        io.out('kelpid is not running; starting it');
+        return commandStart(io, args);
+    }
+    if (readPidRecord(paths)?.handoff !== true) {
+        io.err(`kelpid (pid ${String(pid)}) cannot hand its terminals over; restarting it with a full stop (its shells end)`);
+        const stopped = await commandStop(io, args);
+        return stopped === 0 ? commandStart(io, args) : stopped;
+    }
+    writeRespawnRequest(paths);
+    try {
+        process.kill(pid, 'SIGUSR2');
+    } catch (error) {
+        takeRespawnRequest(paths);
+        io.err(`failed to signal kelpid (pid ${String(pid)}): ${(error as Error).message}`);
+        return 1;
+    }
+    const exitDeadline = Date.now() + RESTART_HANDOFF_TIMEOUT_MS;
+    while (isProcessAlive(pid)) {
+        if (Date.now() >= exitDeadline) {
+            io.err(`kelpid (pid ${String(pid)}) did not finish its handoff within ${String(RESTART_HANDOFF_TIMEOUT_MS)}ms`);
+            return 1;
+        }
+        await sleep(100);
+    }
+    const startDeadline = Date.now() + START_TIMEOUT_MS;
+    for (;;) {
+        const next = await probeDaemon(paths, { timeoutMs: 500 });
+        if (next.alive && next.pid !== pid) {
+            io.out(
+                `kelpid restarted (pid ${String(pid)} → ${next.pid === undefined ? 'unknown' : String(next.pid)}); running terminals were kept`
+            );
+            return 0;
+        }
+        if (Date.now() >= startDeadline) {
+            io.err('kelpid handed its terminals over but no successor answered; run `kelpid start` to adopt them');
+            return 1;
+        }
+        await sleep(100);
+    }
 }
 
 async function commandStatus(io: CliIO, args: ParsedArgs): Promise<number> {
@@ -1159,6 +1299,8 @@ export async function runKelpid(argv: readonly string[], io: CliIO = defaultIO()
             return commandStart(io, args, args.foreground ? await connectTestOwner(io.env ?? process.env) : undefined);
         case 'stop':
             return commandStop(io, args);
+        case 'restart':
+            return commandRestart(io, args);
         case 'status':
             return commandStatus(io, args);
         case 'url':

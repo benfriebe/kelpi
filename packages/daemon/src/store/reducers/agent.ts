@@ -70,6 +70,13 @@ export function reduceAgentAction(state: DaemonState, action: DomainAction): Dae
                 applyAgentEvent(workspace, action.paneID, action.event, action.now)
             );
         }
+        case 'pane-agent-state-restored': {
+            const workspaceID = workspaceIDForPane(state, action.paneID, undefined);
+            if (workspaceID === undefined) return state;
+            return updateWorkspace(state, workspaceID, (workspace) =>
+                mutatePane(workspace, action.paneID, (pane) => ({ ...pane, ...action.agent }))
+            );
+        }
         case 'pane-title-changed': {
             const workspaceID = workspaceIDForPane(state, action.paneID, undefined);
             if (workspaceID === undefined) return state;

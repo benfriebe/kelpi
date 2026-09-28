@@ -64,12 +64,27 @@ const runnerOptions = {
     logLevel: 'info', keepNames: true,
 };
 
+// The terminal host (docs/terminal-host.md): a second process that owns the PTYs so they
+// outlive the daemon. Same banner and node-pty externalisation as the daemon, beside it in
+// dist/ so node-pty resolves from the same node_modules once staged.
+const hostOutfile = path.join(packageRoot, 'dist', 'terminal-host.js');
+const hostOptions = {
+    ...options,
+    entryPoints: [path.join(packageRoot, 'src', 'host', 'main.ts')],
+    outfile: hostOutfile
+};
+
 if (process.argv.includes('--watch')) {
-    const contexts = await Promise.all([esbuild.context(options), esbuild.context(runnerOptions)]);
+    const contexts = await Promise.all([
+        esbuild.context(options),
+        esbuild.context(runnerOptions),
+        esbuild.context(hostOptions)
+    ]);
     await Promise.all(contexts.map(context => context.watch()));
     process.stdout.write(`watching → ${outfile}\n`);
 } else {
-    await Promise.all([esbuild.build(options), esbuild.build(runnerOptions)]);
+    await Promise.all([esbuild.build(options), esbuild.build(runnerOptions), esbuild.build(hostOptions)]);
     chmodSync(outfile, 0o755);
+    chmodSync(hostOutfile, 0o755);
     process.stdout.write(`built ${outfile}\n`);
 }

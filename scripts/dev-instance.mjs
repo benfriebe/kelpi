@@ -28,6 +28,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { nonExecutableSpawnHelpers, spawnHelperRemedy } from './node-pty-exec-bit.mjs';
+import { killSandboxHosts } from './ui-audit/lib/stack.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '..');
@@ -221,7 +222,10 @@ const sandbox = {
         // env above.
     },
     cleanup() {
-        if (!persistent) fs.rmSync(root, { recursive: true, force: true });
+        if (persistent) return;
+        // A throwaway instance takes its terminal host (and the shells it kept) with it.
+        killSandboxHosts(path.join(root, 'run'));
+        fs.rmSync(root, { recursive: true, force: true });
     }
 };
 

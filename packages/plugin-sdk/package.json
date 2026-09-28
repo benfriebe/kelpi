@@ -1,6 +1,6 @@
 {
   "name": "@kelpi/plugin-sdk",
-  "version": "0.1.0",
+  "version": "0.3.0-dev",
   "type": "module",
   "scripts": { "test:package": "node ../../scripts/verify-plugin-sdk.mjs" },
   "exports": { ".": { "types": "./index.d.ts", "default": "./index.js" } },

@@ -1,6 +1,6 @@
 {
   "name": "@kelpi/shell",
-  "version": "0.1.0",
+  "version": "0.3.0-dev",
   "private": true,
   "description": "Thin Electron shell for New Kelpi: loads the daemon-served UI, adds native chrome.",
   "main": "dist/main.js",

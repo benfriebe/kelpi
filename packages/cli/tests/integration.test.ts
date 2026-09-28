@@ -17,6 +17,7 @@ import { PROTOCOL_VERSION } from '@kelpi/protocol';
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
+import { CLI_VERSION } from '../src/version.js';
 import { buildCLI, deadPort, runCLI as invokeCLI, scratchHome, startFakeServer, type FakeServer } from './harness.js';
 
 const PANE = '9C2B9A2E-1111-2222-3333-444455556666';
@@ -69,7 +70,7 @@ describe('dispatcher', () => {
     it('runs from its own shebang and prints its version to stdout', async () => {
         const result = await runCLI(['--version'], { direct: true });
         expect(result.code).toBe(0);
-        expect(result.stdout).toBe('kelpi 0.1.0\n');
+        expect(result.stdout).toBe(`kelpi ${CLI_VERSION}\n`);
         expect(result.stderr).toBe('');
     });
 

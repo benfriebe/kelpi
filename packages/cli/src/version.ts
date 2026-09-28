@@ -14,7 +14,7 @@
 import { PROTOCOL_VERSION } from '@kelpi/protocol';
 
 /** Keep in step with `packages/cli/package.json`. */
-export const CLI_VERSION = '0.1.0';
+export const CLI_VERSION = '0.3.0-dev';
 /** Stamped by the packaging step through `KELPI_CLI_BUILD`; a local build is just "dev". */
 export const CLI_BUILD = 'dev';
 

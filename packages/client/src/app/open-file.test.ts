@@ -1,10 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+    BROWSER_FILE_DROP_NOTICE,
     DROP_MARKDOWN_EXTENSION,
     SHELL_ESCAPE_CHARACTERS,
+    isTypeablePath,
     pathsFromDrop,
+    resolvedDropOutcome,
     shellEscapePath,
+    terminalDropPathsText,
+    terminalDropPlan,
     terminalDropText,
     OPEN_PANEL_MESSAGE,
     cellFromPoint,
@@ -187,5 +192,114 @@ describe('dropping onto a TERMINAL (TERM-040 / TERM-041)', () => {
     it('refuses a drag carrying no path at all (TERM-041)', () => {
         expect(terminalDropText(transfer({ 'text/plain': 'just some words' }))).toBeNull();
         expect(terminalDropText(transfer({}, 1, ['Files']))).toBeNull();
+    });
+});
+
+describe('terminal drop escaping (#288)', () => {
+    it('escapes spaces and parentheses the way the shipped app (and Ghostty) did', () => {
+        expect(terminalDropPathsText(['/Users/me/Screen Shot 2026-09-30 at 9.41.12 am.png'])).toBe(
+            '/Users/me/Screen\\ Shot\\ 2026-09-30\\ at\\ 9.41.12\\ am.png'
+        );
+        expect(terminalDropPathsText(['/tmp/drop me (1).txt'])).toBe('/tmp/drop\\ me\\ \\(1\\).txt');
+    });
+
+    it('escapes quotes, dollar signs, backticks and the other shell metacharacters', () => {
+        expect(shellEscapePath(`/a/it's "quoted".md`)).toBe(`/a/it\\'s\\ \\"quoted\\".md`);
+        expect(shellEscapePath('/a/$HOME and `whoami`')).toBe('/a/\\$HOME\\ and\\ \\`whoami\\`');
+        expect(shellEscapePath('/a/x;rm -rf ~|y&z*?!#<>[]{}')).toBe(
+            '/a/x\\;rm\\ -rf\\ ~\\|y\\&z\\*\\?\\!\\#\\<\\>\\[\\]\\{\\}'
+        );
+        expect(shellEscapePath('/a/back\\slash')).toBe('/a/back\\\\slash');
+    });
+
+    it('leaves unicode alone: it is not a shell metacharacter, and escaping it would corrupt it', () => {
+        expect(shellEscapePath('/Users/me/Café/日本語 ファイル 🎉.png')).toBe('/Users/me/Café/日本語\\ ファイル\\ 🎉.png');
+    });
+
+    it('joins several files with single spaces and adds no trailing newline', () => {
+        const text = terminalDropPathsText(['/a/one.png', '/b/two three', '/c/dir']);
+        expect(text).toBe('/a/one.png /b/two\\ three /c/dir');
+        expect(text.endsWith('\n')).toBe(false);
+        expect(text.endsWith('\r')).toBe(false);
+    });
+
+    it('refuses a path with a control character (a newline would submit the rest as a command)', () => {
+        expect(isTypeablePath('/a/fine name.png')).toBe(true);
+        expect(isTypeablePath('/a/evil\nrm -rf ~')).toBe(false);
+        expect(isTypeablePath('/a/tab\there')).toBe(false);
+        expect(isTypeablePath('/a/del\u007f')).toBe(false);
+        // One `%0A` in a file URL is all it takes, so the text route checks too.
+        expect(terminalDropText(transfer({ 'text/uri-list': 'file:///a/evil%0Arm%20-rf%20~' }))).toBeNull();
+    });
+});
+
+/** A `DataTransfer` shaped like a Finder drop: `Files` and nothing readable as a path. */
+function finderDrop(files: readonly unknown[], entries: Record<string, string> = {}): DropData {
+    const list: Record<number, unknown> & { length: number } = { length: files.length };
+    files.forEach((file, index) => {
+        list[index] = file;
+    });
+    return {
+        getData: (format: string) => entries[format] ?? '',
+        types: [...Object.keys(entries), 'Files'],
+        files: list
+    };
+}
+
+describe('terminalDropPlan (TERM-040 / TERM-041 / #288)', () => {
+    it('types a path the drag names as text, at once', () => {
+        expect(terminalDropPlan(transfer({ 'text/uri-list': 'file:///a/b%20c.md' }))).toEqual({
+            kind: 'type',
+            text: '/a/b\\ c.md'
+        });
+    });
+
+    it('hands a Finder drop (Files, no path as text) to the shell to resolve, every file in order', () => {
+        const one = { name: 'one.png' };
+        const two = { name: 'two' };
+        expect(terminalDropPlan(finderDrop([one, two]))).toEqual({ kind: 'resolve', files: [one, two] });
+        // Finder may put the bare NAME on text/plain; a name is not a path, so it still resolves.
+        expect(terminalDropPlan(finderDrop([one], { 'text/plain': 'one.png' }))).toEqual({ kind: 'resolve', files: [one] });
+    });
+
+    it('prefers the text path when a drag carries both', () => {
+        expect(terminalDropPlan(finderDrop([{}], { 'text/uri-list': 'file:///x/y' }))).toEqual({ kind: 'type', text: '/x/y' });
+    });
+
+    it('ignores a drag with neither a path nor a file (plain text, TERM-041)', () => {
+        expect(terminalDropPlan(transfer({ 'text/plain': 'just some words' }))).toEqual({ kind: 'ignore' });
+        expect(terminalDropPlan(transfer({}))).toEqual({ kind: 'ignore' });
+        // A FileList-alike that claims a length but holds nothing is not a drop of files.
+        expect(terminalDropPlan(transfer({}, 2, ['Files']))).toEqual({ kind: 'ignore' });
+    });
+});
+
+describe('resolvedDropOutcome (#288)', () => {
+    it('types every resolved path, escaped, and says nothing more', () => {
+        expect(resolvedDropOutcome({ paths: ['/a b.png', '/c'], unresolved: 0, error: null })).toEqual({
+            text: '/a\\ b.png /c',
+            notice: null
+        });
+    });
+
+    it('types what it can and says how many were left out', () => {
+        const outcome = resolvedDropOutcome({ paths: ['/a', '/evil\nx'], unresolved: 1, error: null });
+        expect(outcome.text).toBe('/a');
+        expect(outcome.notice).toBe('2 dropped items had no path that can be typed and were left out');
+    });
+
+    it('never types nothing silently', () => {
+        expect(resolvedDropOutcome({ paths: [], unresolved: 1, error: null })).toEqual({
+            text: null,
+            notice: 'the dropped item is not a file on disk, so there is no path to type'
+        });
+        expect(resolvedDropOutcome({ paths: [], unresolved: 0, error: 'the window is gone' }).notice).toBe(
+            "could not read the dropped file's path: the window is gone"
+        );
+        expect(resolvedDropOutcome({ paths: ['/evil\n'], unresolved: 0, error: null }).notice).toContain('nothing was typed');
+    });
+
+    it('explains the browser case rather than pointing at a feature it does not have', () => {
+        expect(BROWSER_FILE_DROP_NOTICE).toContain('desktop app');
     });
 });

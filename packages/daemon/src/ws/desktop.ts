@@ -22,7 +22,9 @@
  *                             (the Help menu item, ⌘O from the native File menu)
  *   client → shell → client   `shell-action` `choose-folder-dialog` (a `request_id`), answered
  *                             by `choose-folder-answer` → a `choose-folder-result` sent to the
- *                             ONE connection that asked (`ws/sync.ts`)
+ *                             ONE connection that asked (`ws/sync.ts`); and the same loop for
+ *                             `resolve-dropped-files`, answered by `dropped-files-answer` → a
+ *                             `dropped-files-result` (#288)
  *
  * The shell answers `open-file-dialog` with a **native** `dialog.showOpenDialog` and then sends
  * the chosen path back over its own control connection as the ordinary `open` verb — the same
@@ -40,6 +42,17 @@
  * away, the pending set overflows, or `CHOOSE_FOLDER_TIMEOUT_MS` passes. It is deliberately
  * generic: the answer is a path or null, and what to do with it is the requester's business, so
  * the next surface that needs a folder adds no protocol.
+ *
+ * `resolve-dropped-files` (#288) is the same loop with a different question. A file dragged from
+ * Finder onto a terminal pane reaches the page as a `File` with no path (Chromium keeps file
+ * paths out of a drag's `text/uri-list`, and `webUtils.getPathForFile` needs a preload), so the
+ * page parks the `File`s on a page global under the request id and asks; the window's shell reads
+ * them back over its own `webContents.debugger`, resolves each with `DOM.getFileInfo`, and answers
+ * with the paths. Validation, admission, routing, the shell-gone and overflow answers are shared
+ * with the folder request (`isAnsweredShellAction` here, one pending map in `ws/sync.ts`); only
+ * the answer's shape and its timeout (`DROPPED_FILES_TIMEOUT_MS`, seconds) differ. The page, not
+ * this channel, then types the escaped paths with `drop-text`, so a dropped path is a paste in
+ * every respect a typed-by-text drop already was.
  *
  * ## `open-terminal-target` (CONT-122 / TERM-052)
  *
@@ -76,7 +89,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { CHOOSE_FOLDER_DIALOG_ACTION, type JsonObject } from '@kelpi/protocol';
+import { CHOOSE_FOLDER_DIALOG_ACTION, RESOLVE_DROPPED_FILES_ACTION, type JsonObject } from '@kelpi/protocol';
 
 import type { EditorResolver } from '../content/external-editor.js';
 import { formatEditorCommand } from '../content/external-editor.js';
@@ -103,12 +116,31 @@ export function isDesktopCommand(command: string): command is DesktopCommand {
 }
 
 /** What a client may ask the attached Electron shell to do. Anything else is refused. */
-export const SHELL_ACTIONS = ['open-file-dialog', 'install-cli', 'check-for-updates', CHOOSE_FOLDER_DIALOG_ACTION] as const;
+export const SHELL_ACTIONS = [
+    'open-file-dialog',
+    'install-cli',
+    'check-for-updates',
+    CHOOSE_FOLDER_DIALOG_ACTION,
+    RESOLVE_DROPPED_FILES_ACTION
+] as const;
 export type ShellAction = (typeof SHELL_ACTIONS)[number];
 
 /**
- * The longest `request_id` a `choose-folder-dialog` may carry. A client mints a UUID; anything
- * much longer is not one of ours, and the id is held in the daemon's pending map until answered.
+ * The actions that come back with an answer for the page that asked (#283's folder panel, #288's
+ * dropped-file paths). Each carries a `request_id` and names its window, and `ws/sync.ts` routes
+ * the shell's answer to the asking connection by that id.
+ */
+export const ANSWERED_SHELL_ACTIONS = [CHOOSE_FOLDER_DIALOG_ACTION, RESOLVE_DROPPED_FILES_ACTION] as const;
+export type AnsweredShellAction = (typeof ANSWERED_SHELL_ACTIONS)[number];
+
+export function isAnsweredShellAction(action: unknown): action is AnsweredShellAction {
+    return (ANSWERED_SHELL_ACTIONS as readonly unknown[]).includes(action);
+}
+
+/**
+ * The longest `request_id` an answered action (`choose-folder-dialog`, `resolve-dropped-files`)
+ * may carry. A client mints a UUID; anything much longer is not one of ours, and the id is held
+ * in the daemon's pending map until answered.
  */
 export const MAX_FOLDER_REQUEST_ID_LENGTH = 128;
 
@@ -333,21 +365,23 @@ export function createDesktopChannel(options: DesktopChannelOptions): DesktopCha
         const windowID = text(payload['window_id']);
         const paneID = text(payload['pane_id']);
         const requestID = text(payload['request_id']);
-        if (action === CHOOSE_FOLDER_DIALOG_ACTION) {
-            // #283: the one action with an answer. The id is how the answer finds its way back
+        const answered = isAnsweredShellAction(action);
+        if (answered) {
+            // #283 / #288: the actions with an answer. The id is how the answer finds its way back
             // (`ws/sync.ts` remembers which connection asked), and the window is REQUIRED rather
-            // than optional: an unaddressed request would raise a panel in every attached shell
-            // window for one click, and only one of them can answer it.
+            // than optional: an unaddressed request would reach every attached shell window for
+            // one gesture (a panel in each, or every window reading its own page for a stash
+            // entry only one of them holds), and only one of them can answer it.
             if (requestID === undefined) {
-                return failure(`shell-action ${CHOOSE_FOLDER_DIALOG_ACTION} requires request_id`);
+                return failure(`shell-action ${action} requires request_id`);
             }
             if (requestID.length > MAX_FOLDER_REQUEST_ID_LENGTH) {
                 return failure(
-                    `shell-action ${CHOOSE_FOLDER_DIALOG_ACTION} request_id is too long (at most ${String(MAX_FOLDER_REQUEST_ID_LENGTH)} characters)`
+                    `shell-action ${action} request_id is too long (at most ${String(MAX_FOLDER_REQUEST_ID_LENGTH)} characters)`
                 );
             }
             if (windowID === undefined) {
-                return failure(`shell-action ${CHOOSE_FOLDER_DIALOG_ACTION} requires window_id`);
+                return failure(`shell-action ${action} requires window_id`);
             }
         }
         ctx.broadcast({
@@ -355,9 +389,9 @@ export function createDesktopChannel(options: DesktopChannelOptions): DesktopCha
             action,
             ...(windowID === undefined ? {} : { windowID }),
             ...(paneID === undefined ? {} : { paneID }),
-            ...(action === CHOOSE_FOLDER_DIALOG_ACTION && requestID !== undefined ? { requestID } : {})
+            ...(answered && requestID !== undefined ? { requestID } : {})
         });
-        return { ok: true, action, ...(action === CHOOSE_FOLDER_DIALOG_ACTION && requestID !== undefined ? { request_id: requestID } : {}) };
+        return { ok: true, action, ...(answered && requestID !== undefined ? { request_id: requestID } : {}) };
     };
 
     /**

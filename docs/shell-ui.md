@@ -70,8 +70,13 @@ on the right; either sidebar can host either feature or a compatible plugin:
 - Dropping a `.md` file on the window (outside a terminal) opens it as a markdown pane, the
   same route as Finder Open With; a non-markdown drop shows an "Open file" failure toast.
   Dropping onto a **terminal** instead types the dropped path(s), shell-escaped and
-  space-separated, into that pane; it is the only drop route that accepts several files or a
-  non-markdown path (`packages/client/src/App.tsx:3610-3640`; see the terminal spec).
+  space-separated, into that pane, for every file type (a `.md` included) and for folders. It is
+  the only drop route that accepts several files or a non-markdown path (`onDrop` in
+  `packages/client/src/App.tsx`; terminal-surface.md §12.4). A drop from Finder carries no path
+  the page can read, so in the desktop app the window's shell reads the paths off the dropped
+  `File`s through the daemon (`resolve-dropped-files`, #288). In a browser, a Finder drop onto a
+  terminal types nothing and shows a "Drop file" toast that says why. No drop highlight is
+  painted (UI-FIDELITY H20): the OS drag cursor is the feedback.
 
 ### Single-window discipline (macOS)
 

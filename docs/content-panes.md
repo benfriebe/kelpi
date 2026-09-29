@@ -139,13 +139,16 @@ the close snapshot, preserving view identity and saved state when the plugin is 
 Entry points (all converge on this one action):
 
 1. **⌘O** file picker (filtered to `.md`) and **drag-and-drop** of a `.md` file onto the
-   window → app-level `openFileAtPath(path, fromPaneID?)`:
+   window, outside a terminal pane → app-level `openFileAtPath(path, fromPaneID?)`:
    - If no workspace is active yet, the `open` (or `diff`) command is dropped; the
      daemon keeps no pending-open queue (`route()` in
      `packages/daemon/src/handlers/app/files.ts` returns null and the handler returns
      without dispatching).
    - Relative paths are resolved against the originating pane's cwd (or the focused
      pane's cwd) before dispatch.
+   - A `.md` dropped onto a **terminal** pane opens nothing: its path is typed into the pane
+     like any other dropped file (terminal-surface.md §12.4, #288). That is what a terminal
+     does, and what an agent user dropping a spec onto Claude Code expects.
 2. **Finder "Open With → Kelpi"** → same `openFileAtPath` path.
 3. **CLI**: `kelpi md [--here] <file>` and the markdown route of `kelpi open [--here] <path>`
    send the `open` wire command

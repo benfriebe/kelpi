@@ -4,9 +4,16 @@ import {
     CHOOSE_FOLDER_CAPABILITY,
     CHOOSE_FOLDER_DIALOG_ACTION,
     CHOOSE_FOLDER_TIMEOUT_MS,
+    DROPPED_FILES_STASH,
+    DROPPED_FILES_TIMEOUT_MS,
+    MAX_DROPPED_FILES,
+    RESOLVE_DROPPED_FILES_ACTION,
+    RESOLVE_DROPPED_FILES_CAPABILITY,
     WS_CHOOSE_FOLDER_ANSWER_MESSAGE,
     WS_CHOOSE_FOLDER_RESULT_MESSAGE,
     WS_DELTA_KINDS,
+    WS_DROPPED_FILES_ANSWER_MESSAGE,
+    WS_DROPPED_FILES_RESULT_MESSAGE,
     WS_HOST_EVENTS,
     WS_HOST_REVOKE_REASONS,
     WS_HOST_ROLES,
@@ -177,6 +184,26 @@ describe('web-pane host channel (M6)', () => {
             { type: WS_CHOOSE_FOLDER_ANSWER_MESSAGE, requestID: 'R2', path: null, windowID: 'WIN' },
             { type: WS_CHOOSE_FOLDER_RESULT_MESSAGE, requestID: 'R1', path: '/src/app', windowID: 'WIN' },
             { type: WS_CHOOSE_FOLDER_RESULT_MESSAGE, requestID: 'R2', path: null }
+        ];
+        for (const message of messages) expect(JSON.parse(JSON.stringify(message))).toEqual(message);
+    });
+
+    it('round-trips the dropped-files answer and result, a failure included (#288)', () => {
+        expect(RESOLVE_DROPPED_FILES_ACTION).toBe('resolve-dropped-files');
+        expect(RESOLVE_DROPPED_FILES_CAPABILITY).toBe('resolve-dropped-files');
+        expect(WS_DROPPED_FILES_ANSWER_MESSAGE).toBe('dropped-files-answer');
+        expect(WS_DROPPED_FILES_RESULT_MESSAGE).toBe('dropped-files-result');
+        // The page and the shell both name this global; renaming it on one side only would make
+        // every drop resolve to nothing.
+        expect(DROPPED_FILES_STASH).toBe('__kelpiDroppedFiles');
+        // No person in the loop, so seconds rather than the folder panel's minutes.
+        expect(DROPPED_FILES_TIMEOUT_MS).toBeLessThan(CHOOSE_FOLDER_TIMEOUT_MS);
+        expect(MAX_DROPPED_FILES).toBeGreaterThan(0);
+        const messages: (WsClientMessage | WsServerMessage)[] = [
+            { type: WS_DROPPED_FILES_ANSWER_MESSAGE, requestID: 'R1', paths: ['/a b.png', '/c'], unresolved: 0, windowID: 'WIN' },
+            { type: WS_DROPPED_FILES_ANSWER_MESSAGE, requestID: 'R2', paths: [], unresolved: 0, error: 'no debugger', windowID: 'WIN' },
+            { type: WS_DROPPED_FILES_RESULT_MESSAGE, requestID: 'R1', paths: ['/a b.png', '/c'], unresolved: 1, windowID: 'WIN' },
+            { type: WS_DROPPED_FILES_RESULT_MESSAGE, requestID: 'R2', paths: [], unresolved: 0, error: 'no debugger' }
         ];
         for (const message of messages) expect(JSON.parse(JSON.stringify(message))).toEqual(message);
     });

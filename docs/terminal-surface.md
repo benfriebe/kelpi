@@ -15,10 +15,13 @@ Implementation index:
 - `packages/daemon/src/term/service.ts`: server-side terminal state (`@xterm/headless`): capture, snapshot, modes, OSC parsing
 - `packages/daemon/src/pty/input.ts`: `pane send` / `pane send-key` encoding (paste pipeline, named keys)
 - `packages/daemon/src/ws/streams.ts`: PTY streams to attached clients: attach replay, resize, flow control
-- `packages/daemon/src/ws/desktop.ts`: ⌘-click targets, image paste, external-editor hosting
+- `packages/daemon/src/ws/desktop.ts`: ⌘-click targets, image paste, drop text, external-editor hosting, and the
+  shell round trips (the dropped-file lookup of section 12.4)
 - `packages/daemon/src/handlers/app/osc-notifications.ts`, `clipboard.ts`: OSC 9/777 and OSC 52 delivery
 - `packages/client/src/terminal/TerminalPane.tsx`: the pane host: keyboard/mouse/IME, resize measurement, focus, accessibility
 - `packages/client/src/app/open-file.ts`: drag-drop onto a terminal, shell escaping
+- `packages/client/src/app/dropped-files.ts`, `packages/shell/src/dropped-files.ts`: reading a
+  Finder drop's paths through the shell (#288)
 - `packages/daemon/src/seams.ts`: the internal interfaces (section 14)
 - `packages/daemon/src/host/`: the terminal host, which owns the PTYs so shells outlive a daemon
   restart; specified separately in [terminal-host.md](terminal-host.md)
@@ -1545,8 +1548,8 @@ No selection clipboard is exposed to programs (OSC 52 `p`/`s` are ignored, secti
 
 ### 12.3 Shell escaping
 
-Used for image-paste paths and drag-dropped files (`shellEscapePath`,
-`packages/client/src/app/open-file.ts:225-234`; the daemon's image paste applies the same
+Used for image-paste paths and drag-dropped files (`shellEscapePath` / `terminalDropPathsText`,
+`packages/client/src/app/open-file.ts`; the daemon's image paste applies the same
 set, `packages/daemon/src/ws/desktop.ts:94-100`). Escape by prefixing `\` before every
 character in the set:
 
@@ -1556,22 +1559,59 @@ space \ ( ) [ ] { } < > " ' ` ! # $ & ; | * ? tab
 
 ### 12.4 Drag-and-drop onto a terminal pane
 
-Accepted content: file paths only (`terminalDropText` / `pathsFromDrop`,
-`packages/client/src/app/open-file.ts:81-108`, `:249-253`; the drop handler is
-`packages/client/src/App.tsx:3618-3632`). On drop:
-- `text/uri-list` entries that are `file://` URLs (empty or `localhost` host) → each decoded
-  path becomes `shellEscape(path)`, joined with single spaces → typed into the pane. Every
-  entry is typed, in order (the window-level markdown route takes only the first).
-- Otherwise, `text/plain` lines that are path-shaped (`/`, `~/`, `./`, `../`, `file://`
-  prefixes) → the same escape-and-join.
-- A drag offering neither (an `http(s)://` URL, arbitrary text) is refused: nothing is typed
-  and the window-level open route is not consulted either.
-- Insertion uses the outside-keystroke text path (so it is paste-piped AND mirrored to sync
-  siblings, section 8.2): the client sends the joined text as the `drop-text` desktop
-  command (`commands.dropText`, `packages/daemon/src/ws/desktop.ts`), never as
-  `pane-send --bare`, because `pane send` is a programmatic send and is exempt from
-  mirroring (section 9). The daemon applies the section 9.1 paste pipeline and writes bare
-  (no Enter) with `mirror: true`.
+Dropping files onto a terminal types their paths, the way Terminal.app, iTerm2 and Ghostty do,
+so an agent (Claude Code, Codex) receives a dropped screenshot's path as a paste. The target is
+the whole terminal pane body (`[data-pane-id][data-terminal-status]`, edge padding included),
+not only the engine's host element. The decision is `terminalDropPlan`
+(`packages/client/src/app/open-file.ts`), and the handler is `onDrop` in
+`packages/client/src/App.tsx`. The drop goes one of three ways:
+
+- **The drag names its paths as text** → typed at once:
+  - `text/uri-list` entries that are `file://` URLs (empty or `localhost` host): each decoded
+    path is escaped with `shellEscape(path)` and the results are joined with single spaces.
+    Every entry is typed, in order (the window-level markdown route takes only the first).
+  - Otherwise, path-shaped `text/plain` lines (`/`, `~/`, `./`, `../` or `file://` prefixes)
+    get the same escape-and-join.
+- **The drag carries `File`s and no path as text** (a drop from Finder, #288) → the paths are
+  read by the main process, then typed the same way. Chromium keeps file paths out of a Finder
+  drag's `text/uri-list` and `text/plain` (`web_drag_dest_mac.mm`, "To avoid exposing file
+  system paths to web content"). Electron removed `File.path`, and `webUtils.getPathForFile`
+  needs a preload, which the shell deliberately does not have. The loop goes through the daemon
+  (`packages/daemon/src/ws/desktop.ts`):
+  1. The page parks the `File`s on `globalThis.__kelpiDroppedFiles` under a fresh id and sends
+     `shell-action` `resolve-dropped-files` (`app/dropped-files.ts`).
+  2. That window's shell attaches `webContents.debugger`, takes the entry out of the stash, and
+     resolves each `File` with `DOM.getFileInfo` (`packages/shell/src/dropped-files.ts`).
+  3. The shell answers `dropped-files-answer`, and the daemon relays `dropped-files-result` to
+     the asking connection only.
+
+  A `File` with no path on disk (an image dragged out of a web page) is left out, and a toast
+  says so. A browser client has no main process to ask, so it types nothing and shows a toast
+  explaining why. So does a desktop shell from before #288 (the daemon refuses the request at
+  once) and a lookup that fails.
+- **A drag offering neither** (an `http(s)://` URL, arbitrary text) is refused. Nothing is
+  typed, and the window-level open route is not consulted either.
+
+More rules for every route:
+
+- **Every file type is typed**, `.md` included. A terminal types what is dropped on it. Only a
+  drop outside a terminal opens a markdown pane (content-panes.md §2.1, CONT-121).
+- **Folders are typed like files.** Several items are typed in drop order, space-separated, with
+  no trailing newline: the user presses Enter.
+- **A path containing a control character is never typed** (`isTypeablePath`). A newline in a
+  filename, or a `%0A` in a `file://` URL, would reach the PTY as a carriage return and run the
+  rest of the name in a program without bracketed paste.
+- **Insertion uses the outside-keystroke text path**, so it is paste-piped AND mirrored to sync
+  siblings (section 8.2). The client sends the joined text as the `drop-text` desktop command
+  (`commands.dropText`, `packages/daemon/src/ws/desktop.ts`), never as `pane-send --bare`,
+  because `pane send` is a programmatic send and is exempt from mirroring (section 9). The
+  daemon applies the section 9.1 paste pipeline, which puts the text in a bracketed-paste
+  envelope when the program asked for one. It writes bare (no Enter) with `mirror: true`.
+- **There is no drop highlight**, on purpose (shell-ui.md, UI-FIDELITY H20). The shipped app
+  painted nothing, and the OS drag cursor's copy badge (`dropEffect = 'copy'`) is the feedback.
+- **The paths are the desktop machine's.** When the pane's shell runs on another machine (a
+  remote daemon, or `ssh` inside the pane), the typed path names a file on this Mac, exactly as
+  it would in Terminal.app.
 
 **Location**: split. Copy/paste UX is client-side (browser clipboard API); image paste
 round-trips through the daemon because the temp PNG must exist on the machine where the PTY

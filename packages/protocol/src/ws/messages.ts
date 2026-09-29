@@ -427,6 +427,73 @@ export interface WsChooseFolderResultMessage {
     readonly windowID?: string;
 }
 
+/**
+ * #288: the second request/answer round trip, the path of a file dropped from Finder.
+ *
+ * A drop onto a terminal types the dropped paths (TERM-040), but a page cannot read them:
+ * Chromium keeps file paths out of `text/uri-list` for a Finder drag (`web_drag_dest_mac.mm`,
+ * "To avoid exposing file system paths to web content"), Electron removed `File.path`, and its
+ * replacement `webUtils.getPathForFile` needs the preload this shell deliberately does not have.
+ * The main process CAN resolve one: it attaches `webContents.debugger` to its own window and
+ * asks `DOM.getFileInfo` for the path behind a `File` the page is holding. So the loop is
+ * #283's, with the `File`s parked on the page in between:
+ *
+ *   1. the client puts the dropped `File`s on `globalThis[DROPPED_FILES_STASH]` (a `Map`) under
+ *      a fresh `request_id`, and sends `shell-action` with action `resolve-dropped-files`, that
+ *      id and its `window_id`. The daemon admits it exactly as it admits a folder request (owner
+ *      only, a shell able to answer attached for that window) and broadcasts it;
+ *   2. that window's shell reads the stash entry over CDP, resolves each `File`, deletes the
+ *      entry, and sends `dropped-files-answer` with the paths it found;
+ *   3. the daemon relays `dropped-files-result` to the ONE connection that asked.
+ *
+ * What the page then does with the paths (escape them and type them into the pane it was
+ * dropped on) is its own business, so the daemon never sees which pane that was.
+ *
+ * The stash is not a capability: anything that can write to it can already read the `File`s it
+ * puts there, and the main process only ever reads `File` objects out of it, so a page can learn
+ * the path of nothing but a file the user handed it (a drop, or an `<input type=file>`).
+ */
+export const RESOLVE_DROPPED_FILES_ACTION = 'resolve-dropped-files';
+/** The `hello` capability a shell's status connection declares when it can answer the loop. */
+export const RESOLVE_DROPPED_FILES_CAPABILITY = 'resolve-dropped-files';
+export const WS_DROPPED_FILES_ANSWER_MESSAGE = 'dropped-files-answer';
+export const WS_DROPPED_FILES_RESULT_MESSAGE = 'dropped-files-result';
+/** The page global both halves agree on: a `Map<request_id, File[]>`. */
+export const DROPPED_FILES_STASH = '__kelpiDroppedFiles';
+
+/**
+ * How long a dropped-file request may stay unanswered. Short, unlike the folder panel's: no
+ * person is in the loop, just one CDP round trip, so a request still open after this is one
+ * whose answer is never coming, and the user is waiting to see their path appear.
+ */
+export const DROPPED_FILES_TIMEOUT_MS = 15_000;
+/** At most this many paths ride one answer; a drop bigger than this is truncated, not refused. */
+export const MAX_DROPPED_FILES = 256;
+
+/** Shell → daemon: what the stash entry resolved to. */
+export interface WsDroppedFilesAnswerMessage {
+    readonly type: typeof WS_DROPPED_FILES_ANSWER_MESSAGE;
+    readonly requestID: string;
+    /** Every absolute path found, in drop order. Empty when none could be resolved. */
+    readonly paths: readonly string[];
+    /** How many stashed items had no path on disk (an image dragged out of a web page). */
+    readonly unresolved: number;
+    /** Why nothing could be read at all (the debugger would not attach, the stash was gone). */
+    readonly error?: string;
+    /** The window the request named (the daemon drops an answer without it). */
+    readonly windowID: string;
+}
+
+/** Daemon → the requesting client: the answer to its `resolve-dropped-files`. */
+export interface WsDroppedFilesResultMessage {
+    readonly type: typeof WS_DROPPED_FILES_RESULT_MESSAGE;
+    readonly requestID: string;
+    readonly paths: readonly string[];
+    readonly unresolved: number;
+    readonly error?: string;
+    readonly windowID?: string;
+}
+
 export type WsClientMessage =
     | WsHelloMessage
     | WsAttachPaneMessage
@@ -447,7 +514,8 @@ export type WsClientMessage =
     | WsShellActivationMessage
     | WsWorkspaceSelectionMessage
     | WsWindowChromeMessage
-    | WsChooseFolderAnswerMessage;
+    | WsChooseFolderAnswerMessage
+    | WsDroppedFilesAnswerMessage;
 
 // ── server → client ─────────────────────────────────────────────────────────────────
 
@@ -916,6 +984,7 @@ export type WsServerMessage =
     | WsShellActivationMessage
     | WsWorkspaceSelectionMessage
     | WsWindowChromeMessage
-    | WsChooseFolderResultMessage;
+    | WsChooseFolderResultMessage
+    | WsDroppedFilesResultMessage;
 
 export type WsMessage = WsClientMessage | WsServerMessage;

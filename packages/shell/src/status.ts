@@ -32,7 +32,12 @@
 import { Menu, Tray, app, nativeImage, nativeTheme } from 'electron';
 import { WebSocket } from 'ws';
 
-import { CHOOSE_FOLDER_CAPABILITY, type JsonObject, type WsDeltaEvent } from '@kelpi/protocol';
+import {
+    CHOOSE_FOLDER_CAPABILITY,
+    RESOLVE_DROPPED_FILES_CAPABILITY,
+    type JsonObject,
+    type WsDeltaEvent
+} from '@kelpi/protocol';
 
 import {
     AgentModel,
@@ -70,6 +75,7 @@ import {
 } from './notify.js';
 import {
     chooseFolderAnswer,
+    droppedFilesAnswer,
     parseShellAction,
     parseWindowChrome,
     parseWorkspaceSelection,
@@ -177,6 +183,17 @@ export interface StatusHost {
      * Absent (or throwing) reads as a cancel, so the page's promise settles either way.
      */
     promptChooseFolder?(): Promise<string | null>;
+    /**
+     * #288: resolve the `File`s this window's page stashed under `requestID` (a drop onto a
+     * terminal pane) to their paths on disk, through the window's own `webContents.debugger`
+     * (`./dropped-files.ts` has why and how).
+     *
+     * The answer goes back as `dropped-files-answer` over this status connection, as a folder's
+     * does. Absent, the status connection does not claim the capability at all, so the daemon
+     * refuses a drop at once and the page says so instead of waiting; throwing or rejecting is an
+     * empty answer with the reason.
+     */
+    resolveDroppedFiles?(requestID: string): Promise<{ paths: string[]; unresolved: number; error?: string }>;
     /** The ••• menu's "Check for Updates…" (APP-026). */
     checkForUpdates?(): void;
     /** The ••• menu's "Install CLI" — the same action the tray item runs. */
@@ -463,6 +480,44 @@ export function createStatusController(options: StatusOptions): StatusController
             logError('choose-folder dialog failed', error);
             send(null);
         });
+    }
+
+    /**
+     * #288: read a drop's paths off the page and send them back, whatever happens.
+     *
+     * Every path ends in exactly one `dropped-files-answer`, like a folder request's: the paths, or
+     * an empty answer with the reason. The page is waiting to see the path appear in its terminal,
+     * and silence would cost it the whole timeout.
+     */
+    function answerDroppedFiles(requestID: string | null, windowID: string | null): void {
+        if (requestID === null || windowID === null) return;
+        const send = (result: { paths: readonly string[]; unresolved: number; error?: string | undefined }): void => {
+            if (!sendJson({ ...droppedFilesAnswer(requestID, windowID, result) }, 'dropped-files answer')) {
+                warn(`dropped-files answer ${requestID} not sent: the status connection is down`);
+                return;
+            }
+            log(
+                `dropped-files: ${String(result.paths.length)} path(s), ${String(result.unresolved)} unresolved` +
+                    (result.error === undefined ? '' : ` (${result.error})`)
+            );
+        };
+        const failed = (error: unknown): void => {
+            logError('dropped-files lookup failed', error);
+            send({ paths: [], unresolved: 0, error: error instanceof Error ? error.message : String(error) });
+        };
+        const resolve = host.resolveDroppedFiles;
+        if (resolve === undefined) {
+            send({ paths: [], unresolved: 0, error: 'this desktop window cannot read dropped files' });
+            return;
+        }
+        let pending: Promise<{ paths: string[]; unresolved: number; error?: string }>;
+        try {
+            pending = resolve(requestID);
+        } catch (error) {
+            failed(error);
+            return;
+        }
+        pending.then(send, failed);
     }
 
     function sendJson(message: Record<string, unknown>, what: string): boolean {
@@ -792,9 +847,17 @@ export function createStatusController(options: StatusOptions): StatusController
                         // #283: this connection answers the folder panel for this window, and the
                         // daemon takes an answer from nothing else. Without a window id (a dev
                         // run) there is nothing to match, so the capability is not claimed.
+                        // #288: likewise a drop's paths, but only when the host can read them,
+                        // so a host without the lookup is refused a drop at once.
                         ...(options.windowID === undefined
                             ? {}
-                            : { capabilities: [CHOOSE_FOLDER_CAPABILITY], windowID: options.windowID })
+                            : {
+                                  capabilities: [
+                                      CHOOSE_FOLDER_CAPABILITY,
+                                      ...(host.resolveDroppedFiles === undefined ? [] : [RESOLVE_DROPPED_FILES_CAPABILITY])
+                                  ],
+                                  windowID: options.windowID
+                              })
                     })
                 )
             );
@@ -955,6 +1018,7 @@ export function createStatusController(options: StatusOptions): StatusController
                 if (request.action === 'open-file-dialog') host.promptOpenFile?.(request.paneID);
                 else if (request.action === 'install-cli') host.installCLINow?.();
                 else if (request.action === 'choose-folder-dialog') answerChooseFolder(request.requestID, request.windowID);
+                else if (request.action === 'resolve-dropped-files') answerDroppedFiles(request.requestID, request.windowID);
                 else host.checkForUpdates?.();
                 break;
             }

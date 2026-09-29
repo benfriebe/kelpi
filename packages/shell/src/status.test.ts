@@ -629,3 +629,97 @@ describe('choose-folder-dialog (#283)', () => {
         expect(answers()).toEqual([]);
     });
 });
+
+/**
+ * #288: the shell half of the dropped-file round trip. A `shell-action` `resolve-dropped-files`
+ * runs the host's lookup, and whatever it does, exactly one `dropped-files-answer` goes back over
+ * the status socket with the request's id and window.
+ */
+describe('resolve-dropped-files (#288)', () => {
+    let socket: FakeSocket;
+    let controller: ReturnType<typeof createStatusController>;
+    type Lookup = (requestID: string) => Promise<{ paths: string[]; unresolved: number; error?: string }>;
+
+    function start(resolveDroppedFiles?: Lookup, windowID = 'w1'): void {
+        setLogStreams({ out: { write: () => true }, err: { write: () => true } });
+        electronMock.trays.length = 0;
+        socket = createFakeSocket();
+        controller = createStatusController({
+            location: LOCATION,
+            host: { ...createHost(), ...(resolveDroppedFiles === undefined ? {} : { resolveDroppedFiles }) },
+            windowID,
+            socketFactory: () => socket as unknown as WebSocket
+        });
+        controller.start();
+        socket.emit('open');
+        socket.emit('message', WELCOME, false);
+    }
+
+    afterEach(() => {
+        controller.stop();
+        setLogStreams({ out: process.stdout, err: process.stderr });
+    });
+
+    const request = (fields: Record<string, unknown> = {}): void => {
+        socket.emit(
+            'message',
+            JSON.stringify({ type: 'shell-action', action: 'resolve-dropped-files', requestID: 'd1', windowID: 'w1', ...fields }),
+            false
+        );
+    };
+    const answers = (): Record<string, unknown>[] =>
+        socket.sent
+            .map((raw) => JSON.parse(raw) as Record<string, unknown>)
+            .filter((message) => message['type'] === 'dropped-files-answer');
+    const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
+    it('runs the lookup for the request id and sends the paths back with the id and the window', async () => {
+        const lookup = vi.fn<Lookup>(async () => ({ paths: ['/Users/me/a b.png'], unresolved: 1 }));
+        start(lookup);
+        request();
+        await flush();
+        expect(lookup).toHaveBeenCalledWith('d1');
+        expect(answers()).toEqual([
+            { type: 'dropped-files-answer', requestID: 'd1', paths: ['/Users/me/a b.png'], unresolved: 1, windowID: 'w1' }
+        ]);
+    });
+
+    it('answers empty with the reason when the lookup fails, so the page never waits it out', async () => {
+        start(async () => {
+            throw new Error('window closed');
+        });
+        request();
+        await flush();
+        expect(answers()).toEqual([
+            { type: 'dropped-files-answer', requestID: 'd1', paths: [], unresolved: 0, error: 'window closed', windowID: 'w1' }
+        ]);
+    });
+
+    it('claims the drop capability only when the host can look paths up', () => {
+        start(async () => ({ paths: [], unresolved: 0 }));
+        const withLookup = JSON.parse(socket.sent[0] ?? '{}') as { client?: Record<string, unknown> };
+        expect(withLookup.client?.['capabilities']).toEqual(['choose-folder', 'resolve-dropped-files']);
+        controller.stop();
+
+        start(undefined);
+        const without = JSON.parse(socket.sent[0] ?? '{}') as { client?: Record<string, unknown> };
+        expect(without.client?.['capabilities']).toEqual(['choose-folder']);
+    });
+
+    it('answers a request it cannot serve rather than ignoring it', async () => {
+        start(undefined);
+        request();
+        await flush();
+        expect(answers()).toMatchObject([{ requestID: 'd1', paths: [], error: 'this desktop window cannot read dropped files' }]);
+    });
+
+    it('leaves a request for another window, or one with no id, alone', async () => {
+        const lookup = vi.fn<Lookup>(async () => ({ paths: ['/a'], unresolved: 0 }));
+        start(lookup);
+        request({ windowID: 'w2' });
+        request({ requestID: undefined });
+        await flush();
+        expect(lookup).not.toHaveBeenCalled();
+        expect(answers()).toEqual([]);
+    });
+});

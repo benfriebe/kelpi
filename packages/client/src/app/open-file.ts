@@ -23,9 +23,20 @@
  * What DOES survive the crossing is a path *as text*: `text/uri-list` (a `file://` URL, which
  * Chromium sets for drags out of many apps) and `text/plain` (what a terminal, an editor, or a
  * "Copy as Pathname" drag puts on the pasteboard). Those are read here and are a real path.
- * A drop that carries only an opaque `File` is refused with a message that points at ⌘O rather
- * than silently doing nothing — the one thing worse than a missing feature is one that looks
- * like it worked.
+ *
+ * A drag out of **Finder** carries neither. Chromium deliberately leaves the files' paths out of
+ * both (`content/browser/web_contents/web_drag_dest_mac.mm`, `PopulateDropDataFromPasteboard`:
+ * "To avoid exposing file system paths to web content, filenames in the drag are not converted
+ * to file URLs"), so the page sees `types: ["Files"]` and `File` objects and nothing else.
+ *
+ *  - Onto the **window**, such a drop is refused with a message that points at ⌘O rather than
+ *    silently doing nothing (the one thing worse than a missing feature is one that looks like
+ *    it worked).
+ *  - Onto a **terminal** it is not refused (#288): the main process can read a `File`'s path over
+ *    its own window's debugger, so the `File`s are handed to it through the daemon and the paths
+ *    come back to be typed (`terminalDropPlan` below, `app/dropped-files.ts`,
+ *    `shell/src/dropped-files.ts`). Only the desktop app can do that; a browser has no main
+ *    process to ask, and says so.
  */
 
 /** CONT-121 / APP-103: the drop path accepts a lowercased `.md` only — NOT `.markdown`. */
@@ -40,7 +51,8 @@ export const OPEN_PANEL_MESSAGE = 'Choose a Markdown file to open';
 export interface DropData {
     getData(format: string): string;
     readonly types?: readonly string[] | undefined;
-    readonly files?: { readonly length: number } | undefined;
+    /** A `FileList` in the browser; indexable so a terminal drop can hand the `File`s on (#288). */
+    readonly files?: ArrayLike<unknown> | undefined;
 }
 
 export type DropDecision =
@@ -240,14 +252,104 @@ export function shellEscapePath(path: string): string {
 }
 
 /**
- * What a drop onto a terminal pane types: every path it names, escaped, space-separated.
+ * Whether a path can be typed into a terminal at all.
  *
- * Returns null when the drag carries no path at all — TERM-041's "a drag whose pasteboard offers
- * none of the accepted types is refused", which here means the drop falls through to the
- * window-level markdown route (and its own honest refusal).
+ * The escape set above has no answer for a control character, and a newline in a filename (legal
+ * on macOS, and one `%0A` away in a `file://` URL) is the dangerous one: the paste pipeline turns
+ * it into a carriage return, so in a program without bracketed paste the rest of the name would
+ * run as a command. Such a path is left out and the user is told, never typed.
  */
-export function terminalDropText(data: DropData): string | null {
-    const paths = pathsFromDrop(data);
-    if (paths.length === 0) return null;
+export function isTypeablePath(path: string): boolean {
+    return !/[\u0000-\u001f\u007f]/.test(path);
+}
+
+/**
+ * Paths as a terminal drop types them: each escaped, space-separated, no trailing newline (the
+ * user is composing a command around them and presses Enter themselves, as in Terminal.app).
+ */
+export function terminalDropPathsText(paths: readonly string[]): string {
     return paths.map(shellEscapePath).join(' ');
 }
+
+/**
+ * What a drop onto a terminal pane types: every path it names AS TEXT, escaped, space-separated.
+ *
+ * Returns null when the drag names no path as text. A Finder drag never does (see the header), so
+ * null is not a refusal on its own: `terminalDropPlan` decides what happens next.
+ */
+export function terminalDropText(data: DropData): string | null {
+    const paths = pathsFromDrop(data).filter(isTypeablePath);
+    if (paths.length === 0) return null;
+    return terminalDropPathsText(paths);
+}
+
+/**
+ * TERM-040 / TERM-041 / #288: what a drop onto a terminal pane does.
+ *
+ *  - `type`: the drag named its paths as text (`text/uri-list`, a path-shaped `text/plain`), so
+ *    they are typed at once. Preferred when present because it is synchronous and exact, and it
+ *    is the only route a browser has.
+ *  - `resolve`: no path as text, but the drag carries `File`s: a drop from Finder. The paths have
+ *    to be read by the main process (`app/dropped-files.ts`), and then they are typed the same way.
+ *  - `ignore`: neither, e.g. a plain text drag. TERM-041's "a drag offering none of the accepted
+ *    types is refused": nothing is typed and the window-level markdown route is not consulted.
+ *
+ * Every file type goes the same way, `.md` included: a terminal types what is dropped on it,
+ * which is what an agent user dropping a spec onto Claude Code wants. Only a drop OUTSIDE a
+ * terminal opens a markdown pane (CONT-121).
+ */
+export type TerminalDropPlan =
+    | { readonly kind: 'type'; readonly text: string }
+    | { readonly kind: 'resolve'; readonly files: readonly unknown[] }
+    | { readonly kind: 'ignore' };
+
+export function terminalDropPlan(data: DropData): TerminalDropPlan {
+    const text = terminalDropText(data);
+    if (text !== null) return { kind: 'type', text };
+    const files = Array.from(data.files ?? { length: 0 }).filter((file) => file !== undefined && file !== null);
+    if (files.length > 0) return { kind: 'resolve', files };
+    return { kind: 'ignore' };
+}
+
+/** #288: the shell's answer, as the page holds it (`app/dropped-files.ts`). */
+export interface DroppedFilesAnswer {
+    readonly paths: readonly string[];
+    readonly unresolved: number;
+    readonly error: string | null;
+}
+
+/**
+ * #288: what a resolved drop types, and what to tell the user about it.
+ *
+ * `text` is null when there is nothing to type. `notice` is null when the typing says it all; a
+ * drop that typed nothing is never silent, because silence is the bug this route exists to fix.
+ * Items with no path on disk (a `File` made of bytes) and paths that cannot be typed
+ * (`isTypeablePath`) are left out and counted in the notice.
+ */
+export function resolvedDropOutcome(answer: DroppedFilesAnswer): { readonly text: string | null; readonly notice: string | null } {
+    const typeable = answer.paths.filter(isTypeablePath);
+    const untypeable = answer.paths.length - typeable.length;
+    const leftOut = answer.unresolved + untypeable;
+    const text = typeable.length === 0 ? null : terminalDropPathsText(typeable);
+    const items = (count: number): string => (count === 1 ? '1 dropped item' : `${String(count)} dropped items`);
+    if (text === null) {
+        if (answer.error !== null && answer.paths.length === 0) {
+            return { text, notice: `could not read the dropped file's path: ${answer.error}` };
+        }
+        if (untypeable > 0) return { text, notice: `${items(leftOut)} had no path that can be typed safely, so nothing was typed` };
+        return {
+            text,
+            notice:
+                leftOut === 1
+                    ? 'the dropped item is not a file on disk, so there is no path to type'
+                    : 'the dropped items are not files on disk, so there is no path to type'
+        };
+    }
+    if (leftOut === 0) return { text, notice: null };
+    return { text, notice: `${items(leftOut)} had no path that can be typed and ${leftOut === 1 ? 'was' : 'were'} left out` };
+}
+
+/** #288: the browser's answer. It has no main process to read a path, and says so. */
+export const BROWSER_FILE_DROP_NOTICE =
+    'a browser does not reveal where a dropped file lives, so there is no path to type; ' +
+    'drop it in the Kelpi desktop app, or type the path';

@@ -263,6 +263,30 @@ describe('shell-action', () => {
         expect(String(reply['error'])).toContain('too long');
     });
 
+    it('broadcasts a dropped-files request with its id and window, and refuses one without (#288)', async () => {
+        const f = fixture();
+        const reply = await f.channel.run('shell-action', {
+            action: 'resolve-dropped-files',
+            request_id: 'drop-1',
+            window_id: 'w-1'
+        });
+        expect(reply).toEqual({ ok: true, action: 'resolve-dropped-files', request_id: 'drop-1' });
+        expect(f.h.broadcasts).toEqual([
+            { type: SHELL_ACTION_EVENT, action: 'resolve-dropped-files', windowID: 'w-1', requestID: 'drop-1' }
+        ]);
+        for (const payload of [
+            { action: 'resolve-dropped-files', window_id: 'w-1' },
+            { action: 'resolve-dropped-files', request_id: 'x'.repeat(MAX_FOLDER_REQUEST_ID_LENGTH + 1), window_id: 'w-1' },
+            // Unaddressed, every attached window would go looking for a stash only one page holds.
+            { action: 'resolve-dropped-files', request_id: 'drop-2' }
+        ]) {
+            const refused = await f.channel.run('shell-action', payload);
+            expect(refused, JSON.stringify(payload)).toMatchObject({ ok: false });
+            expect(String(refused['error'])).toContain('resolve-dropped-files');
+        }
+        expect(f.h.broadcasts).toHaveLength(1);
+    });
+
     it('carries no request id on the one-way actions', async () => {
         const f = fixture();
         await f.channel.run('shell-action', { action: 'install-cli', request_id: 'req-1', window_id: 'w-1' });

@@ -25,6 +25,9 @@
  *                             ONE connection that asked (`ws/sync.ts`); and the same loop for
  *                             `resolve-dropped-files`, answered by `dropped-files-answer` → a
  *                             `dropped-files-result` (#288)
+ *   shell ⇄ daemon ⇄ client   #286's update surface: the shell pushes `update-state` (its update
+ *                             flow's current view) to its own window's page, and the page sends
+ *                             its buttons back as `shell-action` `update-action`
  *
  * The shell answers `open-file-dialog` with a **native** `dialog.showOpenDialog` and then sends
  * the chosen path back over its own control connection as the ordinary `open` verb — the same
@@ -53,6 +56,15 @@
  * the answer's shape and its timeout (`DROPPED_FILES_TIMEOUT_MS`, seconds) differ. The page, not
  * this channel, then types the escaped paths with `drop-text`, so a dropped path is a paste in
  * every respect a typed-by-text drop already was.
+ *
+ * `update-action` / `update-state` (#286) are the update flow drawn in the page
+ * (`protocol/src/ws/update.ts` has the whole contract). Not an answered action: the shell's flow
+ * is a state machine the page merely draws, so there is no request to pair an answer with. The
+ * guards are the answered actions' all the same, applied in `ws/sync.ts`: a paired device may
+ * not press a button, a window with no shell declaring `update-surface` is refused at once, and
+ * an `update-state` is accepted only from the named window's own owner Electron session that
+ * declared the capability. This channel validates the verb (`UPDATE_USER_ACTIONS`) and the
+ * optional `seq`, and requires the window.
  *
  * ## `open-terminal-target` (CONT-122 / TERM-052)
  *
@@ -89,7 +101,15 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { CHOOSE_FOLDER_DIALOG_ACTION, RESOLVE_DROPPED_FILES_ACTION, type JsonObject } from '@kelpi/protocol';
+import {
+    CHOOSE_FOLDER_DIALOG_ACTION,
+    RESOLVE_DROPPED_FILES_ACTION,
+    UPDATE_ACTION_SHELL_ACTION,
+    UPDATE_USER_ACTIONS,
+    isUpdateUserAction,
+    updateSeq,
+    type JsonObject
+} from '@kelpi/protocol';
 
 import type { EditorResolver } from '../content/external-editor.js';
 import { formatEditorCommand } from '../content/external-editor.js';
@@ -121,7 +141,8 @@ export const SHELL_ACTIONS = [
     'install-cli',
     'check-for-updates',
     CHOOSE_FOLDER_DIALOG_ACTION,
-    RESOLVE_DROPPED_FILES_ACTION
+    RESOLVE_DROPPED_FILES_ACTION,
+    UPDATE_ACTION_SHELL_ACTION
 ] as const;
 export type ShellAction = (typeof SHELL_ACTIONS)[number];
 
@@ -384,12 +405,31 @@ export function createDesktopChannel(options: DesktopChannelOptions): DesktopCha
                 return failure(`shell-action ${action} requires window_id`);
             }
         }
+        // #286: a button in the update sheet. The window is required for the reason an answered
+        // action's is (only that window's shell runs the flow the page is drawing), and the verb
+        // must be one the flow knows: anything else would reach the main process unvalidated.
+        // `ws/sync.ts` has already refused a paired device, or a window with no update-capable
+        // shell attached, before this runs.
+        let updateFields: { updateAction: string; seq?: number } | undefined;
+        if (action === UPDATE_ACTION_SHELL_ACTION) {
+            if (windowID === undefined) return failure(`shell-action ${action} requires window_id`);
+            const verb = payload['update_action'];
+            if (!isUpdateUserAction(verb)) {
+                return failure(`shell-action ${action} requires update_action ${UPDATE_USER_ACTIONS.join(' | ')}`);
+            }
+            const seq = updateSeq(payload['seq']);
+            if (payload['seq'] !== undefined && seq === undefined) {
+                return failure(`shell-action ${action} seq must be a non-negative integer`);
+            }
+            updateFields = { updateAction: verb, ...(seq === undefined ? {} : { seq }) };
+        }
         ctx.broadcast({
             type: SHELL_ACTION_EVENT,
             action,
             ...(windowID === undefined ? {} : { windowID }),
             ...(paneID === undefined ? {} : { paneID }),
-            ...(answered && requestID !== undefined ? { requestID } : {})
+            ...(answered && requestID !== undefined ? { requestID } : {}),
+            ...(updateFields ?? {})
         });
         return { ok: true, action, ...(answered && requestID !== undefined ? { request_id: requestID } : {}) };
     };

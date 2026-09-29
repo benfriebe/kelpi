@@ -35,8 +35,11 @@ import { WebSocket } from 'ws';
 import {
     CHOOSE_FOLDER_CAPABILITY,
     RESOLVE_DROPPED_FILES_CAPABILITY,
+    UPDATE_SURFACE_CAPABILITY,
     type JsonObject,
-    type WsDeltaEvent
+    type UpdateUserAction,
+    type WsDeltaEvent,
+    type WsUpdateStateMessage
 } from '@kelpi/protocol';
 
 import {
@@ -196,6 +199,13 @@ export interface StatusHost {
     resolveDroppedFiles?(requestID: string): Promise<{ paths: string[]; unresolved: number; error?: string }>;
     /** The ••• menu's "Check for Updates…" (APP-026). */
     checkForUpdates?(): void;
+    /**
+     * #286: a button in this window's update sheet (`update-action`): `update-now`, `later`,
+     * `restart`, `retry`, `dismiss`, or `shown` (the page drew the revealed view `seq`). Present,
+     * the status connection declares `update-surface`, which is what lets the daemon relay this
+     * shell's `update-state` to its page and route the page's buttons back here.
+     */
+    updateAction?(action: UpdateUserAction, seq: number | null): void;
     /** The ••• menu's "Install CLI" — the same action the tray item runs. */
     installCLINow?(): void;
     /**
@@ -265,6 +275,12 @@ export interface StatusController {
      * the daemon's remembered copy.
      */
     reportHotkeyStatus(status: HotkeyStatusReport): boolean;
+    /**
+     * #286: push the update flow's view to the page in this window (`update-state`). False when
+     * the socket is not ready, which the caller reads as "no page can show it" and falls back to
+     * a native dialog.
+     */
+    sendUpdateState(frame: WsUpdateStateMessage): boolean;
     /** Re-point at a (re)discovered daemon and redial. */
     setLocation(location: DaemonLocation): void;
     /** Force a redial now (tray "Reconnect"). */
@@ -854,7 +870,10 @@ export function createStatusController(options: StatusOptions): StatusController
                             : {
                                   capabilities: [
                                       CHOOSE_FOLDER_CAPABILITY,
-                                      ...(host.resolveDroppedFiles === undefined ? [] : [RESOLVE_DROPPED_FILES_CAPABILITY])
+                                      ...(host.resolveDroppedFiles === undefined ? [] : [RESOLVE_DROPPED_FILES_CAPABILITY]),
+                                      // #286: this connection pushes this window's update
+                                      // state and takes its page's update buttons.
+                                      ...(host.updateAction === undefined ? [] : [UPDATE_SURFACE_CAPABILITY])
                                   ],
                                   windowID: options.windowID
                               })
@@ -1019,7 +1038,11 @@ export function createStatusController(options: StatusOptions): StatusController
                 else if (request.action === 'install-cli') host.installCLINow?.();
                 else if (request.action === 'choose-folder-dialog') answerChooseFolder(request.requestID, request.windowID);
                 else if (request.action === 'resolve-dropped-files') answerDroppedFiles(request.requestID, request.windowID);
-                else host.checkForUpdates?.();
+                else if (request.action === 'update-action') {
+                    // Addressed presses only (`parseShellAction` refuses an unaddressed one), and
+                    // `shellActionAppliesHere` above has already matched the window.
+                    if (request.updateAction !== null) host.updateAction?.(request.updateAction, request.seq);
+                } else host.checkForUpdates?.();
                 break;
             }
             case 'attention-request':
@@ -1176,6 +1199,9 @@ export function createStatusController(options: StatusOptions): StatusController
             // browser one, which has no registrar of its own and would otherwise report the
             // hotkey as working.
             return sendJson({ type: 'hotkey-status', ...status }, 'hotkey status');
+        },
+        sendUpdateState(frame: WsUpdateStateMessage): boolean {
+            return sendJson({ ...frame }, 'update state');
         },
         sendMenuRequest(command: string): boolean {
             const current = socket;

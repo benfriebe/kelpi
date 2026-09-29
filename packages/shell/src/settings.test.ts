@@ -66,6 +66,15 @@ describe('shell settings', () => {
         expect(read.confirmQuitWhenActive).toBe(true);
     });
 
+    it('round-trips the last launch\'s version, defaulting to none and ignoring garbage (#286)', () => {
+        const file = settingsFile(tempDir());
+        expect(readShellSettings(file).lastLaunchVersion).toBe('');
+        writeShellSettings(file, { ...DEFAULT_SHELL_SETTINGS, cliInstallPrompted: true, lastLaunchVersion: '0.2.3' });
+        expect(readShellSettings(file)).toMatchObject({ lastLaunchVersion: '0.2.3', cliInstallPrompted: true });
+        fs.writeFileSync(file, JSON.stringify({ lastLaunchVersion: 3 }));
+        expect(readShellSettings(file).lastLaunchVersion).toBe('');
+    });
+
     it('reads a garbage CLI-install value as "never", not as truthy', () => {
         const file = path.join(tempDir(), 'settings.json');
         fs.writeFileSync(file, JSON.stringify({ cliInstallPrompted: 'yes', cliInstallNotifiedVersion: 7 }));

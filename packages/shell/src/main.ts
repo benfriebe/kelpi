@@ -26,7 +26,6 @@
 import {
     BrowserWindow,
     Menu,
-    Notification,
     app,
     autoUpdater,
     clipboard,
@@ -38,7 +37,7 @@ import {
     shell
 } from 'electron';
 import { randomUUID } from 'node:crypto';
-import { copyFileSync, existsSync, mkdirSync, readFileSync, unlinkSync } from 'node:fs';
+import { accessSync, constants as fsConstants, copyFileSync, existsSync, mkdirSync, readFileSync, unlinkSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 import {
@@ -91,6 +90,7 @@ import {
 } from './hotkey.js';
 import { log, logError, startLogFile, stopLogFile, warn } from './log.js';
 import {
+    CHECK_FOR_UPDATES_LABEL,
     CLOSE_PANE_EXPRESSION,
     appMenuTemplate,
     applyWorkspaceSelection,
@@ -116,18 +116,32 @@ import { describeSkillRefresh, refreshBundledSkill } from './skill.js';
 import { createStatusController, type StatusController } from './status.js';
 import {
     LAUNCH_CHECK_DELAY_MS,
-    UPDATE_NOW,
-    downloadAndInstall,
+    UPDATE_FEED_ENV,
+    bundlePathFromExe,
     feedURL,
     fetchUpdate,
+    installLocation,
     launchLogLine,
+    launchVersionLogLine,
     repoFromPackage,
     reportUpdateError,
     shouldCheckAtLaunch,
-    updatePrompt,
     updateSupport,
+    type DirectoryAccess,
+    type InstallLocation,
+    type Installer,
     type UpdateHost
 } from './updater.js';
+import { createUpdateFlow, type UpdateFlow } from './update-flow.js';
+import { createUpdateSurface, dialogParent, nativeUpdateDialog, updateMenuRow } from './update-surface.js';
+import {
+    AUDIT_REPO,
+    auditUpdaterControlPath,
+    createAuditInstaller,
+    readAuditUpdaterControl,
+    type AuditUpdaterControl
+} from './update-audit.js';
+import type { UpdateView } from '@kelpi/protocol';
 import { installQuitGate, settingsFile, type QuitGate } from './quit.js';
 import { EMPTY_COUNTS } from './agents.js';
 import {
@@ -184,8 +198,6 @@ let lastWindowGround: string | null = null;
 let hotkeyHideOnRepress = true;
 let saveTimer: NodeJS.Timeout | null = null;
 let loadRetries = 0;
-/** An update check (or its download) is under way; a second one waits its turn. */
-let updateCheckBusy = false;
 /** The launch check has been decided for this process (it runs at most once). */
 let launchUpdateDecided = false;
 /**
@@ -1095,6 +1107,16 @@ const resolveDroppedFilesInWindow = serialized(async (requestID: string): Promis
     return resolveDroppedFiles(window.webContents.debugger, requestID);
 });
 
+/**
+ * #286's test seam (`./update-audit.ts`): the control file, when the harness named one AND this is
+ * a development run. A packaged app never gets past `auditUpdaterControlPath`, so a shipped launch
+ * cannot reach the stand-in installer whatever its environment says.
+ */
+function auditUpdater(): AuditUpdaterControl | null {
+    const file = auditUpdaterControlPath(process.env, app.isPackaged);
+    return file === null ? null : readAuditUpdaterControl(file);
+}
+
 /** What the updater needs to know about this build (`./updater.ts`). */
 function updateHost(): UpdateHost {
     let repo: string | undefined;
@@ -1104,62 +1126,206 @@ function updateHost(): UpdateHost {
     } catch {
         repo = undefined;
     }
-    return { isPackaged: app.isPackaged, platform: process.platform, arch: process.arch, version: app.getVersion(), repo };
+    const host: UpdateHost = { isPackaged: app.isPackaged, platform: process.platform, arch: process.arch, version: app.getVersion(), repo };
+    // The harness's development run stands in for the packaged app (`./update-audit.ts`).
+    return auditUpdater() === null ? host : { ...host, isPackaged: true, repo: repo ?? AUDIT_REPO };
+}
+
+/** The feed to read: `KELPI_UPDATE_FEED`, or under the harness seam the control file's `feed`. */
+function updateFeed(host: UpdateHost): string {
+    const auditFeed = auditUpdater()?.feed;
+    return feedURL(host, auditFeed === undefined ? process.env : { ...process.env, [UPDATE_FEED_ENV]: auditFeed });
+}
+
+let auditInstaller: Installer | null = null;
+let autoUpdaterWatched = false;
+
+/** Electron's `autoUpdater`, or under the harness seam a stand-in that installs nothing. */
+function updateInstaller(): Installer {
+    const control = auditUpdaterControlPath(process.env, app.isPackaged);
+    if (control === null || auditUpdater() === null) {
+        if (!autoUpdaterWatched) {
+            autoUpdaterWatched = true;
+            // #286: a standing listener, so an error Squirrel reports when no download is waiting
+            // (a `quitAndInstall` that fails after returning) reaches the flow and the log instead
+            // of being an unhandled 'error' event in the main process.
+            autoUpdater.on('error', (error: Error) => updateFlow().installerError(error));
+            autoUpdater.on('before-quit-for-update', () => log('auto-update: Squirrel is quitting Kelpi to install the update'));
+        }
+        return autoUpdater;
+    }
+    auditInstaller ??= createAuditInstaller({
+        read: () => readAuditUpdaterControl(control),
+        log,
+        // `allowQuit` has already opened the quit gate, exactly as for a real restart.
+        quit: () => app.quit()
+    });
+    return auditInstaller;
+}
+
+function directoryAccess(directory: string): DirectoryAccess {
+    try {
+        accessSync(directory, fsConstants.W_OK);
+        return 'writable';
+    } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === 'EROFS') return 'read-only';
+        if (code === 'EACCES' || code === 'EPERM') return 'denied';
+        return 'missing';
+    }
+}
+
+/** #286: whether Squirrel can replace this copy of Kelpi where it runs (`./updater.ts`). */
+function currentInstallLocation(): InstallLocation {
+    const exe = app.getPath('exe');
+    const bundle = auditUpdater()?.bundlePath ?? bundlePathFromExe(exe);
+    // No bundle at all (not a macOS app): nothing Squirrel could act on, and `updateSupport` has
+    // already refused such a build before anything asks.
+    if (bundle === null) return { kind: 'ok', bundlePath: exe };
+    return installLocation(bundle, directoryAccess, app.getPath('home'));
 }
 
 /**
- * #272 / APP-026: look for a newer release and offer it (Update Now / Later). `manual` is the
- * menu's Check for Updates…, which always answers; the launch check stays silent unless there is
- * something to offer.
+ * #286: a native update dialog still on screen, so a newer state can close it rather than stack
+ * a second sheet on the window.
+ */
+let nativeUpdateBox: AbortController | null = null;
+
+/**
+ * #286: the fallback surface, a native dialog PARENTED to the Kelpi window, so it is a sheet
+ * centred on the window instead of a free alert macOS places off to the side (which is where the
+ * old parentless `showMessageBox` put every update message). `./update-surface.ts` has the
+ * wording and the parent rule.
+ */
+function showNativeUpdate(view: UpdateView): void {
+    const spec = nativeUpdateDialog(view);
+    if (spec === null) return;
+    const window = mainWindow;
+    const parent = dialogParent(
+        window === null || window.isDestroyed()
+            ? null
+            : { destroyed: false, visible: window.isVisible(), minimized: window.isMinimized() }
+    );
+    if (parent === 'show-window-first') showWindow();
+    nativeUpdateBox?.abort();
+    const controller = new AbortController();
+    nativeUpdateBox = controller;
+    const options: Electron.MessageBoxOptions = { ...spec.options, buttons: [...spec.options.buttons], signal: controller.signal };
+    const target = mainWindow;
+    const shown =
+        parent === 'none' || target === null || target.isDestroyed()
+            ? dialog.showMessageBox(options)
+            : dialog.showMessageBox(target, options);
+    log(`auto-update: native dialog "${spec.options.message}" (${parent === 'none' ? 'no window to attach it to' : 'a sheet on the window'})`);
+    shown.then(
+        ({ response }) => {
+            if (nativeUpdateBox === controller) nativeUpdateBox = null;
+            // Closed because a newer state replaced it: its answer is nobody's.
+            if (controller.signal.aborted) return;
+            const action = spec.actions[response];
+            if (action !== undefined) updateFlow().act(action);
+        },
+        (error: unknown) => {
+            if (nativeUpdateBox === controller) nativeUpdateBox = null;
+            reportUpdateError('the update dialog failed', error);
+        }
+    );
+}
+
+/**
+ * #286: a revealed state needs the window in front. A state the USER is waiting on (a check they
+ * asked for, an offer) raises it; one that arrives on its own while Kelpi is out of sight or in
+ * the background (a finished or failed download) posts a notification instead, so a background
+ * download never steals focus. The sheet is in the page either way, waiting.
+ */
+function raiseForUpdate(view: UpdateView): void {
+    const window = mainWindow;
+    const onScreen = window !== null && !window.isDestroyed() && window.isVisible() && !window.isMinimized();
+    const unprompted = view.phase === 'ready' || view.phase === 'failed';
+    if (unprompted) {
+        const focused = onScreen && window.isFocused();
+        if (!focused && notificationsSupported()) {
+            presentNotification(
+                view.phase === 'ready'
+                    ? { title: `Kelpi ${view.version ?? ''} is ready`, body: 'Restart Kelpi to finish updating. Your terminals keep running.' }
+                    : { title: 'The Kelpi update did not finish', body: view.message ?? 'Open Kelpi to see what happened.' },
+                { onClick: () => showWindow() }
+            ).show();
+        }
+        return;
+    }
+    if (!onScreen) showWindow();
+}
+
+const updateSurface = createUpdateSurface({
+    windowID: shellWindowID,
+    send: (frame) => status?.sendUpdateState(frame) === true,
+    pageReady: () => {
+        const window = mainWindow;
+        if (window === null || window.isDestroyed()) return false;
+        const contents = window.webContents;
+        return !contents.isDestroyed() && !contents.isLoading() && !contents.isCrashed();
+    },
+    showNative: showNativeUpdate,
+    closeNative: () => {
+        nativeUpdateBox?.abort();
+        nativeUpdateBox = null;
+    },
+    raise: raiseForUpdate,
+    log
+});
+
+let theUpdateFlow: UpdateFlow | null = null;
+
+/** #286: the one update flow (`./update-flow.ts`), built on first use. */
+function updateFlow(): UpdateFlow {
+    theUpdateFlow ??= createUpdateFlow({
+        currentVersion: () => app.getVersion(),
+        support: () => updateSupport(updateHost()),
+        fetchUpdate: () => {
+            const host = updateHost();
+            return fetchUpdate(updateFeed(host), host.version);
+        },
+        installer: updateInstaller,
+        location: currentInstallLocation,
+        present: (view, reveal) => updateSurface.present(view, reveal),
+        // The restart path: `allowQuit` lets the quit through the agents-active confirmation, then
+        // the flow calls `quitAndInstall`. The daemon is never stopped (`./quit.ts`).
+        allowQuit: () => quitGate?.allowQuit(),
+        // The menu's row names the state ("Downloading Kelpi X…", "Restart to Update…").
+        changed: () => buildMenu(),
+        log
+    });
+    return theUpdateFlow;
+}
+
+/**
+ * #272 / APP-026 / #286: the menu's Check for Updates… (`manual`) and the launch check. The flow
+ * owns what happens; a manual check while a check, a download or a restart is pending shows that
+ * state instead of checking again.
  */
 async function checkForUpdates(trigger: 'launch' | 'manual'): Promise<void> {
-    const manual = trigger === 'manual';
-    const host = updateHost();
-    const support = updateSupport(host);
-    if (!support.ok) {
-        log(`auto-update: ${trigger} check skipped (${support.reason})`);
-        if (manual) void dialog.showMessageBox({ type: 'info', message: 'Updates are unavailable in this build', detail: support.reason });
-        return;
-    }
-    if (updateCheckBusy) {
-        if (manual) void dialog.showMessageBox({ type: 'info', message: 'Already checking for updates' });
-        return;
-    }
-    updateCheckBusy = true;
     try {
-        const reply = await fetchUpdate(feedURL(host), host.version);
-        if (reply.kind === 'error') {
-            log(`auto-update: ${trigger} check failed: ${reply.message}`);
-            if (manual) void dialog.showMessageBox({ type: 'warning', message: 'Update check failed', detail: reply.message });
-            return;
-        }
-        if (reply.kind === 'none') {
-            log(`auto-update: ${host.version} is the latest (${trigger} check)`);
-            if (manual) {
-                void dialog.showMessageBox({ type: 'info', message: 'Kelpi is up to date', detail: `${host.version} is the latest version.` });
-            }
-            return;
-        }
-        const { update } = reply;
-        log(`auto-update: ${update.version} is available (${trigger} check)`);
-        const { response } = await dialog.showMessageBox(updatePrompt(update, host.version));
-        if (response !== UPDATE_NOW) {
-            log(`auto-update: ${update.version} deferred ("Later")`);
-            return;
-        }
-        if (Notification.isSupported()) {
-            new Notification({ title: `Downloading Kelpi ${update.version}`, body: 'Kelpi restarts into it when the download finishes. Your terminals keep running.' }).show();
-        }
-        await downloadAndInstall(autoUpdater, update, () => quitGate?.allowQuit());
+        await updateFlow().check(trigger);
     } catch (error) {
-        reportUpdateError('the update failed', error);
-        void dialog.showMessageBox({
-            type: 'warning',
-            message: 'The update could not be installed',
-            detail: error instanceof Error ? error.message : String(error)
-        });
-    } finally {
-        updateCheckBusy = false;
+        reportUpdateError(`the ${trigger} check failed`, error);
+    }
+}
+
+/**
+ * #286: say which version this launch runs against the last one, and remember it. The first
+ * launch after an install logs "updated from X", which is the line that tells an update that took
+ * from one that did not (Jordon's reopened app offered the same update again).
+ */
+function recordLaunchVersion(): void {
+    try {
+        const file = settingsFile(app.getPath('userData'));
+        const settings = readShellSettings(file);
+        const version = app.getVersion();
+        log(launchVersionLogLine(settings.lastLaunchVersion, version));
+        if (settings.lastLaunchVersion !== version) writeShellSettings(file, { ...settings, lastLaunchVersion: version });
+    } catch (error) {
+        warn(`launch version: ${error instanceof Error ? error.message : String(error)}`);
     }
 }
 
@@ -1409,7 +1575,13 @@ function buildMenu(): void {
     // §APP-026: read once, here, and reported in the log line below: the row is greyed in a build
     // that cannot install an update (a development run), and live in the packaged app whatever
     // the auto-update setting says.
+    // #286: the row also names the update flow's state, and is rebuilt when it changes.
     const updatesAvailable = updateSupport(updateHost()).ok;
+    const updateRow = updateMenuRow(
+        theUpdateFlow?.view ?? { phase: 'idle', currentVersion: app.getVersion() },
+        updatesAvailable,
+        CHECK_FOR_UPDATES_LABEL
+    );
     const template: Electron.MenuItemConstructorOptions[] = [
         ...(process.platform === 'darwin'
             ? ([
@@ -1417,7 +1589,8 @@ function buildMenu(): void {
                       label: 'Kelpi',
                       submenu: appMenuTemplate({
                           checkForUpdates: () => void checkForUpdates('manual'),
-                          canCheckForUpdates: updatesAvailable
+                          canCheckForUpdates: updateRow.enabled,
+                          updateLabel: updateRow.label
                       })
                   }
               ] as Electron.MenuItemConstructorOptions[])
@@ -1496,7 +1669,7 @@ function buildMenu(): void {
     // Logged rather than inferred, for the same reason the tray item is: an application menu is
     // not observable from outside the process, so `scripts/smoke.mjs` asserts this line and
     // "the items are there" becomes a check instead of a hope.
-    log(menuLogLine({ canCheckForUpdates: updatesAvailable, isPackaged: app.isPackaged }));
+    log(menuLogLine({ canCheckForUpdates: updateRow.enabled, isPackaged: app.isPackaged, updateLabel: updateRow.label }));
     // #47: the line above names the shipped chords; this one says which rows the binding map
     // moved, so a rebind that reached the menu is observable from outside the process.
     log(menuAcceleratorsLogLine(accelerators));
@@ -1588,6 +1761,11 @@ function startStatusController(): void {
                     markQuitConfirmationMigrated(file, local);
                 },
                 checkForUpdates: () => void checkForUpdates('manual'),
+                // #286: the update sheet's buttons, and its acknowledgement that it drew a view.
+                updateAction: (action, seq) => {
+                    if (action === 'shown') updateSurface.acknowledge(seq ?? undefined);
+                    else updateFlow().act(action);
+                },
                 installCLINow: () => installCliNow(true),
                 revealPane: (workspaceID, paneID) => {
                     // §8.5's ordering, split across the two processes that can each do half:
@@ -1835,6 +2013,7 @@ if (!app.requestSingleInstanceLock()) {
      */
     const logFile = startLogFile(app.getPath('userData'));
     log(logFile === null ? 'shell log: file sink unavailable, stdout only' : `shell log file: ${logFile}`);
+    recordLaunchVersion();
 
     app.on('second-instance', (_event, argv) => {
         showWindow();
@@ -1957,6 +2136,11 @@ if (!app.requestSingleInstanceLock()) {
     });
 
     app.on('will-quit', () => {
+        // #286: a Later leaves the download with Squirrel, which installs it as Kelpi exits (and
+        // does not relaunch it). Said here so a log shows why the next launch is a new version.
+        if (theUpdateFlow?.phase === 'ready') {
+            log(`auto-update: quitting with ${theUpdateFlow.view.version ?? 'an update'} downloaded; Squirrel installs it as Kelpi exits`);
+        }
         globalShortcut.unregisterAll();
         status?.stop();
         // Releases the host role explicitly, then destroys every browser view and the off-screen

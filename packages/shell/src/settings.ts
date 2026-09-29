@@ -46,13 +46,20 @@ export interface ShellSettings {
      * the Swift `cliInstallHealNotifiedVersion` default (APP-005). Empty = never shown.
      */
     readonly cliInstallNotifiedVersion: string;
+    /**
+     * #286: the app version the previous launch ran, so the log can say "updated from X" on the
+     * first launch after an install (`updater.ts` ▸ `launchVersionLogLine`). A report of an
+     * update that "did not take" is then one line to check. Empty = never recorded.
+     */
+    readonly lastLaunchVersion: string;
 }
 
 export const DEFAULT_SHELL_SETTINGS: ShellSettings = {
     confirmQuitWhenActive: true,
     quitConfirmationMigrated: false,
     cliInstallPrompted: false,
-    cliInstallNotifiedVersion: ''
+    cliInstallNotifiedVersion: '',
+    lastLaunchVersion: ''
 };
 
 export function settingsFile(userDataDir: string): string {
@@ -66,6 +73,7 @@ export function readShellSettings(file: string): ShellSettings {
         if (typeof parsed !== 'object' || parsed === null) return DEFAULT_SHELL_SETTINGS;
         const source = parsed as Record<string, unknown>;
         const notified = source['cliInstallNotifiedVersion'];
+        const launched = source['lastLaunchVersion'];
         return {
             // Absent (or any non-`false` value) = true, matching the UserDefaults semantics.
             confirmQuitWhenActive: source['confirmQuitWhenActive'] !== false,
@@ -74,7 +82,8 @@ export function readShellSettings(file: string): ShellSettings {
             quitConfirmationMigrated: source['quitConfirmationMigrated'] === true,
             // The CLI keys are opt-IN, so absent = false / never shown.
             cliInstallPrompted: source['cliInstallPrompted'] === true,
-            cliInstallNotifiedVersion: typeof notified === 'string' ? notified : ''
+            cliInstallNotifiedVersion: typeof notified === 'string' ? notified : '',
+            lastLaunchVersion: typeof launched === 'string' ? launched : ''
         };
     } catch {
         return DEFAULT_SHELL_SETTINGS;

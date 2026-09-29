@@ -19,7 +19,13 @@ src/
 ├─ control.ts       a minimal control-protocol client (Finder "Open With" → daemon `open`)
 ├─ resources.ts     the packaged `Contents/Resources` layout — written by the build, read here
 ├─ packaging.ts     build-time only: the app icon + ICNS, the asar allowlist, Node-runtime checks
-├─ updater.ts       updates: the launch check (the `auto-update` setting, off by default), the Update Now / Later prompt
+├─ updater.ts       updates: the feed check (the `auto-update` setting, off by default), the Squirrel download,
+│                  where Kelpi runs from (translocated / read-only copies cannot be updated)
+├─ update-flow.ts   #286: the update state machine (checking → available → downloading → ready → restart),
+│                  Electron-free; a finished download ASKS (Restart Now / Later) and never quits on its own
+├─ update-surface.ts #286: where a state is shown: the in-app sheet via the daemon, else a native dialog
+│                  parented to the window; the menu row's label ("Restart to Update to Kelpi X…")
+├─ update-audit.ts  #286: the harness's test-only stand-in for `autoUpdater` (development runs only)
 ├─ log.ts           `[shell] …` lines on stdout; the smoke asserts on them
 └─ webhost/         the web-pane host (M6): WebContentsViews + CDP behind the daemon's host RPC
    ├─ client.ts     its OWN daemon WebSocket, claiming the `web-pane-host` role
@@ -94,11 +100,36 @@ pnpm --filter @kelpi/shell start
 Environment it reads: `KELPID_RUN_DIR` (which daemon to talk to), `KELPID_ENTRY` (the `kelpid`
 script to spawn), `KELPID_NODE` (the Node binary to spawn it with), `KELPID_LOG_FILE` (where a
 spawned daemon's output goes), `KELPID_CONFIG_PATH` (the shared `kelpi` config, for
-`global-hotkey`), `KELPI_UPDATE_FEED` (another update feed, for tests; see `src/updater.ts`). Everything else it
+`global-hotkey`), `KELPI_UPDATE_FEED` (another update feed, for tests; see `src/updater.ts`), and in a
+development run only `KELPI_AUDIT_UPDATER` (the UI harness's update seam, `src/update-audit.ts`; a packaged
+app ignores it). Everything else it
 inherits and passes to the daemon it spawns — plus, in a packaged app only, `KELPID_CLIENT_DIR`
 pointing at the client build in its own Resources and `KELPID_VERSION` set to the app's version
 (an explicit one always wins). A running daemon older than a packaged app is handed off to a new
 one, keeping its terminals, which is how an update reaches the daemon (`src/daemon.ts`).
+
+## Updates (#272, #286)
+
+The update flow is `src/update-flow.ts`, one state machine: **checking** (a manual check only; the
+launch check stays silent until it has something to offer), **up to date**, **available** (the new
+version, its release notes, Update Now / Later), **downloading** (Squirrel.Mac reports no progress,
+so the surface says so and promises to ask before restarting), **ready** ("Kelpi X is ready.
+Restart Now / Later"), **restarting**, **failed** (a readable reason and Retry) and **unsupported**.
+A finished download never quits the app: before #286 it called `quitAndInstall()` the moment
+Squirrel said "downloaded", which read as a crash. Restart Now calls the quit gate's `allowQuit()`
+and then `quitAndInstall()`; Later leaves the download with Squirrel, which installs it when Kelpi
+next quits (and does not relaunch), and the Kelpi menu row reads "Restart to Update to Kelpi X…"
+until then. A second Check for Updates while a check, a download or a ready update is pending shows
+that state instead of checking again. Update Now is refused up front, with the fix, when Kelpi runs
+from a translocated or read-only copy (`installLocation`).
+
+Every state is drawn by the page in this window as a sheet centred on it (`client/src/chrome/UpdateSheet.tsx`,
+with the release notes rendered as markdown), reached through the daemon because there is no preload:
+the status connection pushes `update-state` and the page answers with `shell-action` `update-action`
+(`protocol/src/ws/update.ts` has the contract and its guards). When no page answers within 2.5 s the
+same state is a native dialog **parented to the window**, so it is a sheet centred on Kelpi rather
+than an alert macOS places on its own (`src/update-surface.ts`). Every transition is an
+`auto-update:` log line, and each launch logs the version it runs against the previous one.
 
 ## Packaging
 

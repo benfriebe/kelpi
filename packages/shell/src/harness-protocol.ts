@@ -508,6 +508,11 @@ export interface DialogSpec {
     readonly detail: string;
     readonly buttons: readonly string[];
     readonly defaultId: number;
+    /**
+     * #286: whether the box was given a parent window (the `(window, options)` overload), which
+     * is what makes it a sheet centred on the Kelpi window rather than a free alert macOS places.
+     */
+    readonly parented: boolean;
 }
 
 export interface DialogRecord extends DialogSpec {
@@ -835,7 +840,8 @@ export function messageBoxSpecFrom(args: readonly unknown[]): DialogSpec {
         message: typeof options['message'] === 'string' ? options['message'] : '',
         detail: typeof options['detail'] === 'string' ? options['detail'] : '',
         buttons: buttons.length === 0 ? ['OK'] : buttons,
-        defaultId: typeof options['defaultId'] === 'number' ? options['defaultId'] : 0
+        defaultId: typeof options['defaultId'] === 'number' ? options['defaultId'] : 0,
+        parented: args.length >= 2 && args[0] !== null && args[0] !== undefined
     };
 }
 

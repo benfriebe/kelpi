@@ -40,6 +40,11 @@ import {
     MAX_DROPPED_FILES,
     RESOLVE_DROPPED_FILES_ACTION,
     RESOLVE_DROPPED_FILES_CAPABILITY,
+    UPDATE_ACTION_SHELL_ACTION,
+    UPDATE_SURFACE_CAPABILITY,
+    WS_UPDATE_STATE_MESSAGE,
+    normalizeUpdateView,
+    updateSeq,
     WS_CHOOSE_FOLDER_ANSWER_MESSAGE,
     WS_CHOOSE_FOLDER_RESULT_MESSAGE,
     WS_DROPPED_FILES_ANSWER_MESSAGE,
@@ -73,6 +78,7 @@ import { formatIconString, newUUID, normalizeIconEmoji, parseIconString } from '
 import { ratioAtPath } from '@kelpi/core/layout';
 
 import type { ContentMode, ContentPaneState, ContentSubscription } from '../content/index.js';
+import { renderReleaseNotes } from '../content/markdown.js';
 import { dualFireMessage } from '../control/server.js';
 import { promoteRepo } from '../git/registry.js';
 import type { ControlDispatchItem, ControlDispatcher, DomainStore, ReplyHandle } from '../seams.js';
@@ -1512,11 +1518,27 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
      * declares only the folder capability) is refused a drop at once instead of never answering.
      */
     const isAnsweringShellFor = (session: SessionImpl, windowID: string, action: AnsweredShellAction): boolean =>
+        isShellDeclaring(session, windowID, SHELL_ANSWER_CAPABILITY[action]);
+
+    /**
+     * The rule behind `isAnsweringShellFor`, for any capability: a ready OWNER session of an
+     * Electron shell whose hello named `windowID` and declared `capability`. #286's update surface
+     * uses it with `UPDATE_SURFACE_CAPABILITY`, for who may push an `update-state` and whether a
+     * page's `update-action` has a shell to reach.
+     */
+    const isShellDeclaring = (session: SessionImpl, windowID: string, capability: string): boolean =>
         session.ready &&
         !session.pairedDevice &&
         session.client?.kind === 'electron' &&
         session.client.windowID === windowID &&
-        session.client.capabilities?.includes(SHELL_ANSWER_CAPABILITY[action]) === true;
+        session.client.capabilities?.includes(capability) === true;
+
+    const updateShellAttached = (windowID: string): boolean => {
+        for (const session of sessions) {
+            if (isShellDeclaring(session, windowID, UPDATE_SURFACE_CAPABILITY)) return true;
+        }
+        return false;
+    };
 
     const answeringShellAttached = (windowID: string, action: AnsweredShellAction, except?: SessionImpl): boolean => {
         for (const session of sessions) {
@@ -1747,6 +1769,9 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                     return;
                 case WS_DROPPED_FILES_ANSWER_MESSAGE:
                     droppedFilesAnswer(this, parsed);
+                    return;
+                case WS_UPDATE_STATE_MESSAGE:
+                    updateStateReport(this, parsed);
                     return;
                 case FLUSH_SAVES_REQUEST_MESSAGE:
                     this.flushSavesRequest(parsed);
@@ -2639,6 +2664,7 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                 return;
             }
             const answeredAction = command === 'shell-action' ? payload['action'] : undefined;
+            if (answeredAction === UPDATE_ACTION_SHELL_ACTION && !this.admitUpdateAction(id, payload)) return;
             const answerRequestID = isAnsweredShellAction(answeredAction)
                 ? this.admitAnsweredRequest(id, answeredAction, payload)
                 : undefined;
@@ -2708,6 +2734,27 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             pendingShellAnswers.set(requestID, { session: this, windowID, action, at: now() });
             sweepShellAnswers();
             return requestID;
+        }
+
+        /**
+         * #286: whether a page's update-sheet button may go out, sending the refusal itself when
+         * not. The answered actions' guards, minus the bookkeeping (nothing comes back to pair):
+         * a paired device may not press it, since the flow downloads and installs on the owner's
+         * desktop and restarts it; and a window with no shell declaring `update-surface` is
+         * refused now, so the page can say so. A request without a window passes through to the
+         * channel, which refuses it with the message a malformed request gets.
+         */
+        private admitUpdateAction(id: string, payload: Record<string, unknown>): boolean {
+            const refuse = (error: string): false => {
+                this.send({ type: 'command-reply', id, reply: failure(error) });
+                return false;
+            };
+            if (this.pairedDevice) return refuse(`${UPDATE_ACTION_SHELL_ACTION} is owner-only`);
+            const windowID = text(payload['window_id']);
+            if (windowID !== undefined && !updateShellAttached(windowID)) {
+                return refuse(`no desktop window ${windowID} is connected that can update Kelpi`);
+            }
+            return true;
         }
 
         // ── agent restart ───────────────────────────────────────────────────────────
@@ -3179,6 +3226,51 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             unresolved,
             ...(error === undefined ? {} : { error: error.slice(0, MAX_DROPPED_ERROR_LENGTH) })
         });
+    }
+
+    /**
+     * #286: `update-state` from a shell → the page in its window.
+     *
+     * Accepted only from the named window's own shell (`isShellDeclaring` with
+     * `UPDATE_SURFACE_CAPABILITY`): any attached session could send the frame, and a page shown a
+     * forged "Kelpi 9.9.9 is ready, Restart Now" would send a real `restart` back to the real
+     * shell. The view is re-validated (`normalizeUpdateView`) rather than trusted field by field,
+     * and a frame that fails is dropped rather than relayed as something else.
+     *
+     * The release notes are rendered HERE, with the markdown panes' renderer in its release-notes
+     * mode (`renderReleaseNotes`: raw HTML escaped, no images, http(s)/mailto links only), and
+     * whatever `notesHTML` the sender put on the frame is discarded. Fanned out like a reveal, to
+     * owner sessions only (a paired phone has no Kelpi window to draw it in), and the page filters
+     * on `windowID` for itself. Nothing is remembered: the flow's state is the shell's, and a page
+     * that attaches later is shown it the next time the user asks.
+     */
+    function updateStateReport(sender: SessionImpl, message: Record<string, unknown>): void {
+        if (closed) return;
+        const windowID = text(message['windowID']);
+        if (windowID === undefined || !isShellDeclaring(sender, windowID, UPDATE_SURFACE_CAPABILITY)) return;
+        const seq = updateSeq(message['seq']);
+        const view = normalizeUpdateView(message['view']);
+        if (seq === undefined || view === null || typeof message['reveal'] !== 'boolean') return;
+        let notesHTML: string | undefined;
+        if (view.notes !== undefined) {
+            try {
+                notesHTML = renderReleaseNotes(view.notes);
+            } catch (error) {
+                // The page falls back to the notes as plain text.
+                report(error, 'update-state notes');
+            }
+        }
+        const relayed: JsonObject = {
+            type: WS_UPDATE_STATE_MESSAGE,
+            windowID,
+            seq,
+            reveal: message['reveal'],
+            view: view as unknown as JsonObject,
+            ...(notesHTML === undefined ? {} : { notesHTML })
+        };
+        for (const session of sessions) {
+            if (session !== sender && session.ready && !session.pairedDevice) session.send(relayed);
+        }
     }
 
     /**

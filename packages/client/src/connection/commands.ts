@@ -45,7 +45,12 @@ import type {
     SyncAction,
     WorkspaceColor
 } from '@kelpi/protocol';
-import { CHOOSE_FOLDER_DIALOG_ACTION, type RESOLVE_DROPPED_FILES_ACTION } from '@kelpi/protocol';
+import {
+    CHOOSE_FOLDER_DIALOG_ACTION,
+    type RESOLVE_DROPPED_FILES_ACTION,
+    type UPDATE_ACTION_SHELL_ACTION,
+    type UpdateUserAction
+} from '@kelpi/protocol';
 
 import type { ConnectionStatus, KelpiConnection } from './socket';
 
@@ -1004,6 +1009,9 @@ export class CommandClient {
      * come back to this connection as a `choose-folder-result` / `dropped-files-result` event
      * (`app/folder-chooser.ts` / `app/dropped-files.ts` hold the pending promises). The reply to
      * THIS command only says whether the daemon accepted the request.
+     *
+     * `update-action` (#286) is a button in the update sheet (`app/update-sheet.ts`), sent to this
+     * window's shell with `updateAction` and, for a `shown`, the `seq` it acknowledges.
      */
     shellAction(
         input: {
@@ -1012,10 +1020,15 @@ export class CommandClient {
                 | 'install-cli'
                 | 'check-for-updates'
                 | typeof CHOOSE_FOLDER_DIALOG_ACTION
-                | typeof RESOLVE_DROPPED_FILES_ACTION;
+                | typeof RESOLVE_DROPPED_FILES_ACTION
+                | typeof UPDATE_ACTION_SHELL_ACTION;
             windowID?: string | null;
             paneID?: string | null;
             requestID?: string | null;
+            /** #286: the update sheet's button (`update-action` only). */
+            updateAction?: UpdateUserAction;
+            /** #286: the revealed view a `shown` acknowledges. */
+            seq?: number;
         },
         options?: SendOptions
     ): Promise<CommandReply> {
@@ -1024,7 +1037,9 @@ export class CommandClient {
                 action: input.action,
                 window_id: input.windowID ?? undefined,
                 pane_id: input.paneID ?? undefined,
-                request_id: input.requestID ?? undefined
+                request_id: input.requestID ?? undefined,
+                update_action: input.updateAction,
+                seq: input.seq
             }),
             options ?? {}
         );

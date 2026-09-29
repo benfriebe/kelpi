@@ -453,6 +453,22 @@ input {
 }
 
 /*
+ * #286: the update sheet's download bar. Squirrel.Mac reports no progress, so like WEB-033's strip
+ * it is indeterminate: the same sweep, inside a rounded track.
+ */
+.kelpi-update-progress {
+  animation: kelpi-web-progress-sweep 1.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .kelpi-update-progress {
+    animation: none;
+    width: 100%;
+    opacity: 0.6;
+  }
+}
+
+/*
  * §AGNT-103 / §AGNT-104's pulsing agent dot — §H24: it BREATHES, it does not ping.
  *
  * `PulsingStatusDot` (`WorkspaceRowView.swift:5-23`) is four lines and there is no halo in any

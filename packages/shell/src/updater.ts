@@ -9,8 +9,25 @@
  *
  * Electron's own `autoUpdater` downloads the moment it finds an update, so the check here reads
  * the feed itself: nothing is downloaded until the user says **Update Now**. Only then is the
- * feed handed to `autoUpdater`, which downloads, and the app quits and relaunches into the new
- * version. **Later** does nothing; the next launch asks again.
+ * feed handed to `autoUpdater`, which downloads. **Later** does nothing; the next launch asks
+ * again.
+ *
+ * #286: a finished download no longer quits the app on its own. It used to call
+ * `quitAndInstall()` the moment Squirrel said "downloaded", with no warning, a minute or more
+ * after the only sign of progress (a notification the user may never have seen): the window
+ * vanished, which reads as a crash, and a user who reopened Kelpi before Squirrel relaunched it
+ * raced the install. Now the download ends in "Kelpi X is ready. Restart Now / Later", and the
+ * user decides (`./update-flow.ts` owns the states, `./update-surface.ts` how they are shown).
+ * **Later** leaves the downloaded update with Squirrel, which installs it when Kelpi next quits
+ * (Electron: "a successfully downloaded update will always be applied the next time the
+ * application starts"; on macOS, Squirrel.Mac's ShipIt waits for the app to exit and swaps the
+ * bundle then, without relaunching it).
+ *
+ * Squirrel can only replace a bundle it can write, so before offering Update Now the flow asks
+ * `installLocation` whether this copy of Kelpi is somewhere an install can work: not
+ * App-Translocated (a quarantined app opened from Downloads runs from a randomised read-only
+ * mount), not on a read-only volume (the mounted DMG). Those are refused up front with the fix
+ * ("move Kelpi to Applications"), rather than after a 165 MB download.
  *
  * When it runs:
  * - at launch, only with Settings ▸ General ▸ Updates "Check for updates automatically"
@@ -18,7 +35,9 @@
  * - on demand from Kelpi ▸ Check for Updates…, whatever the setting.
  *
  * Only the packaged macOS app can install an update (a development run has no bundle for Squirrel
- * to replace). `KELPI_UPDATE_FEED` points the check at another feed (a test server).
+ * to replace). `KELPI_UPDATE_FEED` points the check at another feed (a test server). The UI
+ * harness drives the whole flow in a development run through a test-only seam that a packaged
+ * app ignores (`./update-audit.ts`).
  *
  * The daemon is not this module's concern: the relaunched app finds a daemon from the old version
  * and hands it off to a new one, keeping every terminal (`./daemon.ts`, docs/terminal-host.md).
@@ -33,8 +52,14 @@ export const UPDATE_FEED_ENV = 'KELPI_UPDATE_FEED';
 export const LAUNCH_CHECK_DELAY_MS = 5000;
 /** How long a feed request may take. */
 export const FEED_TIMEOUT_MS = 10_000;
-/** Release notes longer than this are cut in the prompt (the rest is on the release page). */
+/** Release notes longer than this are cut in the NATIVE prompt (the in-app sheet scrolls). */
 export const PROMPT_NOTES_LIMIT = 1200;
+/**
+ * The longest a download may run before the flow calls it failed. Squirrel.Mac reports no
+ * progress at all, so this is the only way a stalled download ever ends; generous, because the
+ * ZIP is about 165 MB and a slow connection is not a failure.
+ */
+export const DOWNLOAD_TIMEOUT_MS = 30 * 60_000;
 
 export interface UpdateHost {
     readonly isPackaged: boolean;
@@ -173,12 +198,12 @@ export interface PromptSpec {
     readonly cancelId: number;
 }
 
-/** The "Update Now / Later" prompt. */
+/** The native "Update Now / Later" prompt (the fallback when no page can show the sheet). */
 export function updatePrompt(update: AvailableUpdate, currentVersion: string): PromptSpec {
     const notes =
         update.notes.length > PROMPT_NOTES_LIMIT ? `${update.notes.slice(0, PROMPT_NOTES_LIMIT).trimEnd()}…` : update.notes;
     const lines = [
-        `You have ${currentVersion}. Updating downloads the new version, then restarts Kelpi.`,
+        `You have ${currentVersion}. Updating downloads the new version in the background; Kelpi asks before it restarts.`,
         'Your terminals and agents keep running through the restart.'
     ];
     if (notes !== '') lines.push('', notes);
@@ -197,32 +222,42 @@ export interface Installer {
     setFeedURL(options: { url: string }): void;
     checkForUpdates(): void;
     quitAndInstall(): void;
-    on(event: 'update-downloaded' | 'update-not-available' | 'error', listener: (...args: unknown[]) => void): unknown;
+    on(
+        event: 'update-downloaded' | 'update-not-available' | 'update-available' | 'checking-for-update' | 'error',
+        listener: (...args: unknown[]) => void
+    ): unknown;
     removeListener(event: string, listener: (...args: unknown[]) => void): unknown;
 }
 
 /**
- * Download the update through Squirrel and, once it is ready, quit into it. `beforeInstall` runs
- * just before the quit (it lets the quit through the agents-active confirmation, which would
- * otherwise stop an install the user already asked for). Rejects if the download fails.
+ * Download the update through Squirrel, and resolve once it is downloaded. Nothing quits here:
+ * #286 moved the restart behind the user's "Restart Now" (`./update-flow.ts`). Rejects if the
+ * download fails, if the feed no longer offers the version, or after `timeoutMs` with no answer.
+ *
+ * Squirrel's own milestones are logged as they happen (it found the update, it finished), so a
+ * report like #286's can be read off the log.
  */
-export function downloadAndInstall(installer: Installer, update: AvailableUpdate, beforeInstall: () => void): Promise<void> {
+export function downloadUpdate(installer: Installer, update: AvailableUpdate, timeoutMs = DOWNLOAD_TIMEOUT_MS): Promise<void> {
     return new Promise<void>((resolve, reject) => {
+        let timer: ReturnType<typeof setTimeout> | undefined;
         const cleanup = (): void => {
+            if (timer !== undefined) clearTimeout(timer);
             installer.removeListener('update-downloaded', onDownloaded);
             installer.removeListener('update-not-available', onNotAvailable);
+            installer.removeListener('update-available', onAvailable);
             installer.removeListener('error', onError);
         };
         const onDownloaded = (): void => {
             cleanup();
-            log(`auto-update: ${update.version} downloaded; restarting into it`);
-            beforeInstall();
-            installer.quitAndInstall();
+            log(`auto-update: ${update.version} downloaded; waiting for the user to restart`);
             resolve();
+        };
+        const onAvailable = (): void => {
+            log(`auto-update: Squirrel found ${update.version} and is downloading it`);
         };
         const onNotAvailable = (): void => {
             cleanup();
-            reject(new Error(`Kelpi ${update.version} is no longer offered for this version`));
+            reject(new Error(`Kelpi ${update.version} is no longer offered for this version.`));
         };
         const onError = (error: unknown): void => {
             cleanup();
@@ -230,15 +265,118 @@ export function downloadAndInstall(installer: Installer, update: AvailableUpdate
         };
         installer.on('update-downloaded', onDownloaded);
         installer.on('update-not-available', onNotAvailable);
+        installer.on('update-available', onAvailable);
         installer.on('error', onError);
+        timer = setTimeout(() => {
+            onError(new Error(`The download did not finish within ${String(Math.round(timeoutMs / 60_000))} minutes.`));
+        }, timeoutMs);
+        timer.unref?.();
         try {
             installer.setFeedURL({ url: update.feed });
             installer.checkForUpdates();
-            log(`auto-update: downloading ${update.version}`);
+            log(`auto-update: downloading ${update.version} from ${update.feed}`);
         } catch (error) {
             onError(error);
         }
     });
+}
+
+// ── where Kelpi is running from (#286) ──────────────────────────────────────────────
+
+/** What an install can do from where this copy of Kelpi is running. */
+export type InstallLocation =
+    | { readonly kind: 'ok'; readonly bundlePath: string }
+    | { readonly kind: 'warn'; readonly bundlePath: string; readonly message: string }
+    | {
+          readonly kind: 'blocked';
+          readonly bundlePath: string;
+          readonly reason: 'translocated' | 'read-only';
+          readonly message: string;
+      };
+
+/** Whether a directory can be written, as `fs.accessSync(dir, W_OK)` says it. */
+export type DirectoryAccess = 'writable' | 'read-only' | 'denied' | 'missing';
+
+/** The `.app` bundle an executable belongs to (`/Applications/Kelpi.app/Contents/MacOS/Kelpi`). */
+export function bundlePathFromExe(exePath: string): string | null {
+    const marker = /\.app\/Contents\/MacOS\//.exec(exePath);
+    return marker === null ? null : exePath.slice(0, marker.index + '.app'.length);
+}
+
+function parentDirectory(target: string): string {
+    const trimmed = target.replace(/\/+$/, '');
+    const cut = trimmed.lastIndexOf('/');
+    return cut <= 0 ? '/' : trimmed.slice(0, cut);
+}
+
+/**
+ * Whether Squirrel can replace the bundle at `bundlePath`, and what to tell the user when not.
+ *
+ * Squirrel.Mac installs by swapping the bundle on disk, so it needs a bundle it can replace:
+ *
+ *   - **App Translocation** (`/AppTranslocation/` in the path): macOS runs a quarantined app that
+ *     was opened where it was downloaded from a randomised, read-only mount. The install cannot
+ *     land, and the fix is to move the app with Finder. Blocked.
+ *   - **A read-only volume**, which is what a mounted DMG is: nothing can be swapped. Blocked.
+ *   - **Anywhere else outside `/Applications` or `~/Applications`**: Squirrel updates a bundle
+ *     wherever it can write, so this is allowed, with a note, because it is the case to suspect
+ *     if an install then does not take.
+ *   - A folder this account cannot write (a managed Mac's `/Applications`): allowed with a note,
+ *     since the install may need an administrator.
+ *
+ * `access` is `fs.accessSync(parent, W_OK)`'s answer, injected so the rules are testable.
+ */
+export function installLocation(bundlePath: string, access: (directory: string) => DirectoryAccess, home: string): InstallLocation {
+    const parent = parentDirectory(bundlePath);
+    const move = 'Quit Kelpi, move Kelpi.app into your Applications folder with Finder, and open it from there.';
+    if (bundlePath.includes('/AppTranslocation/')) {
+        return {
+            kind: 'blocked',
+            bundlePath,
+            reason: 'translocated',
+            message: `macOS is running this copy of Kelpi from a temporary read-only location (App Translocation), so an update cannot replace it. ${move}`
+        };
+    }
+    const writable = access(parent);
+    if (writable === 'read-only') {
+        const volume = /^\/Volumes\/[^/]+/.exec(bundlePath)?.[0];
+        return {
+            kind: 'blocked',
+            bundlePath,
+            reason: 'read-only',
+            message:
+                volume === undefined
+                    ? `Kelpi is running from a read-only location (${parent}), so an update cannot replace it. ${move}`
+                    : `Kelpi is running from a disk image or read-only volume (${volume}), so an update cannot replace it. Drag Kelpi into your Applications folder, eject ${volume}, and open Kelpi from Applications.`
+        };
+    }
+    const inApplications =
+        parent === '/Applications' ||
+        parent.startsWith('/Applications/') ||
+        parent === `${home}/Applications` ||
+        parent.startsWith(`${home}/Applications/`);
+    if (writable === 'denied') {
+        return {
+            kind: 'warn',
+            bundlePath,
+            message: `This account cannot write to ${parent}, so installing the update may need an administrator.`
+        };
+    }
+    if (!inApplications) {
+        return {
+            kind: 'warn',
+            bundlePath,
+            message: `Kelpi is running from ${parent} rather than Applications. The update replaces it there; if it does not take, move Kelpi to Applications and update again.`
+        };
+    }
+    return { kind: 'ok', bundlePath };
+}
+
+/** One log line per location check, so a failed install can be matched to where Kelpi ran. */
+export function installLocationLogLine(location: InstallLocation): string {
+    if (location.kind === 'ok') return `auto-update: install location ${location.bundlePath} (ok)`;
+    if (location.kind === 'warn') return `auto-update: install location ${location.bundlePath} (warning: ${location.message})`;
+    return `auto-update: install location ${location.bundlePath} (blocked: ${location.reason})`;
 }
 
 /** Logged once at launch, so a run's log says what the updater will do. */
@@ -248,6 +386,19 @@ export function launchLogLine(autoUpdate: boolean | null, host: UpdateHost): str
     return autoUpdate === true
         ? `auto-update: on; checking in ${String(LAUNCH_CHECK_DELAY_MS / 1000)} s`
         : 'auto-update: off (Settings ▸ General ▸ Updates); no update request is made';
+}
+
+/**
+ * #286: what this launch runs, against what the previous one ran. The first launch after an
+ * install says so, which is how a log tells "the update took" from "the same old version came
+ * back" (the second half of Jordon's report).
+ */
+export function launchVersionLogLine(previous: string, current: string): string {
+    if (previous === '') return `auto-update: running ${current} (no earlier launch recorded)`;
+    if (previous === current) return `auto-update: running ${current} (as last launch)`;
+    return compareVersions(current, previous) > 0
+        ? `auto-update: running ${current}, updated from ${previous}`
+        : `auto-update: running ${current}, previously ${previous}`;
 }
 
 export function reportUpdateError(context: string, error: unknown): void {

@@ -10,6 +10,7 @@
 import type { JsonObject, JsonValue } from '../json.js';
 import type { AgentKind, PaneStatus } from '../wire/vocab.js';
 import type { WsSettingsChangedMessage, WsSettingsSnapshot } from './settings.js';
+import type { WsUpdateStateMessage } from './update.js';
 
 /** Generation 2 adds plugin pane records that generation 1 clients cannot safely render. */
 export const WS_PROTOCOL_VERSION = 2;
@@ -517,7 +518,8 @@ export type WsClientMessage =
     | WsWorkspaceSelectionMessage
     | WsWindowChromeMessage
     | WsChooseFolderAnswerMessage
-    | WsDroppedFilesAnswerMessage;
+    | WsDroppedFilesAnswerMessage
+    | WsUpdateStateMessage;
 
 // ── server → client ─────────────────────────────────────────────────────────────────
 
@@ -987,6 +989,7 @@ export type WsServerMessage =
     | WsWorkspaceSelectionMessage
     | WsWindowChromeMessage
     | WsChooseFolderResultMessage
-    | WsDroppedFilesResultMessage;
+    | WsDroppedFilesResultMessage
+    | WsUpdateStateMessage;
 
 export type WsMessage = WsClientMessage | WsServerMessage;

@@ -11,19 +11,24 @@ import {
     CHOOSE_FOLDER_DIALOG_ACTION,
     MAX_DROPPED_FILES,
     RESOLVE_DROPPED_FILES_ACTION,
+    UPDATE_ACTION_SHELL_ACTION,
+    isUpdateUserAction,
+    updateSeq,
+    type UpdateUserAction,
     WS_CHOOSE_FOLDER_ANSWER_MESSAGE,
     WS_DROPPED_FILES_ANSWER_MESSAGE,
     type WsChooseFolderAnswerMessage,
     type WsDroppedFilesAnswerMessage
 } from '@kelpi/protocol';
 
-/** The five things a client can ask the shell to do. Anything else is ignored. */
+/** The six things a client can ask the shell to do. Anything else is ignored. */
 export const SHELL_ACTIONS = [
     'open-file-dialog',
     'install-cli',
     'check-for-updates',
     CHOOSE_FOLDER_DIALOG_ACTION,
-    RESOLVE_DROPPED_FILES_ACTION
+    RESOLVE_DROPPED_FILES_ACTION,
+    UPDATE_ACTION_SHELL_ACTION
 ] as const;
 export type ShellActionName = (typeof SHELL_ACTIONS)[number];
 
@@ -43,6 +48,13 @@ export interface ShellActionRequest {
      * other. For a drop it is also the key of the page's stash entry.
      */
     readonly requestID: string | null;
+    /**
+     * #286: the update sheet's button (`update-action`), always present on that action (a frame
+     * without a known verb is refused) and null on every other.
+     */
+    readonly updateAction: UpdateUserAction | null;
+    /** #286: which revealed view a `shown` acknowledges; null when absent. */
+    readonly seq: number | null;
 }
 
 function readString(source: Record<string, unknown>, key: string): string | null {
@@ -61,11 +73,21 @@ export function parseShellAction(message: Record<string, unknown>): ShellActionR
     if (answered && (requestID === null || readString(message, 'windowID') === null)) {
         return null;
     }
+    // #286: an update-sheet button must name a verb the flow knows and the window it was pressed
+    // in; the flow runs only in that window's shell, so an unaddressed press is nobody's.
+    let updateAction: UpdateUserAction | null = null;
+    if (action === UPDATE_ACTION_SHELL_ACTION) {
+        const verb = message['updateAction'];
+        if (!isUpdateUserAction(verb) || readString(message, 'windowID') === null) return null;
+        updateAction = verb;
+    }
     return {
         action: action as ShellActionName,
         windowID: readString(message, 'windowID'),
         paneID: readString(message, 'paneID'),
-        requestID
+        requestID,
+        updateAction,
+        seq: updateSeq(message['seq']) ?? null
     };
 }
 

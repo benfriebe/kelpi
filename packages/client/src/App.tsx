@@ -62,7 +62,7 @@ import { renderRegisteredView } from './plugins/renderers';
 
 import { canonicalTriggerForPlatform, parseKeyTrigger, type KelpiAction } from '@kelpi/core/config';
 import { wireEdgeForDropZone, type DropZone, type SplitDirection } from '@kelpi/core/layout';
-import { CHOOSE_FOLDER_DIALOG_ACTION, RESOLVE_DROPPED_FILES_ACTION, type JsonObject } from '@kelpi/protocol';
+import { CHOOSE_FOLDER_DIALOG_ACTION, RESOLVE_DROPPED_FILES_ACTION, UPDATE_ACTION_SHELL_ACTION, type JsonObject } from '@kelpi/protocol';
 import {
     workspaceAgentSummary,
     layoutPaneOrder,
@@ -166,6 +166,8 @@ import {
 } from './app/file-menu';
 import { createFrameTick, type FrameTick } from './app/frame-tick';
 import { createFolderChooser } from './app/folder-chooser';
+import { createUpdateSheetController, type UpdateSheetState } from './app/update-sheet';
+import { UpdateSheet } from './chrome/UpdateSheet';
 import { createTextSizeStep } from './app/text-size';
 import { focusPaneSurface, handCaretToPaneWhenReady, mayClaimPaneCaret, releaseFocusedPaneCaret } from './app/pane-focus';
 import { navigationTrustedRuntimes, useRemoteDaemons, type RemoteRuntimeFactory } from './app/remote-daemons';
@@ -1076,6 +1078,52 @@ function Shell(props: AppProps): ReactElement {
         () => (folderChooser === null ? undefined : (): Promise<string | null> => folderChooser.choose()),
         [folderChooser]
     );
+
+    /**
+     * #286: the update sheet. The update flow runs in this window's shell; it pushes its state as
+     * `update-state` (the daemon accepts it only from this window's own shell and renders the
+     * release notes), and the sheet's buttons go back as `shell-action` `update-action`
+     * (`app/update-sheet.ts`; `protocol/src/ws/update.ts` has the contract). Desktop app only,
+     * like the folder panel: a browser has no shell window and never gets the frames.
+     *
+     * A refused button is toasted like any failed command. The `shown` acknowledgement is not: if
+     * it cannot reach the shell, the shell falls back to its native dialog on its own.
+     */
+    const [updateSheet, setUpdateSheet] = useState<UpdateSheetState | null>(null);
+    const updateSheetController = useMemo(
+        () =>
+            shellWindowID === null
+                ? null
+                : createUpdateSheetController({
+                      windowID: shellWindowID,
+                      send: (action, seq) => {
+                          const quiet = action === 'shown';
+                          void commands
+                              .shellAction({
+                                  action: UPDATE_ACTION_SHELL_ACTION,
+                                  windowID: shellWindowID,
+                                  updateAction: action,
+                                  ...(seq === undefined ? {} : { seq })
+                              })
+                              .then(
+                                  (reply) => {
+                                      if (!quiet && !isOkReply(reply)) notifyFailure('Update', replyError(reply));
+                                  },
+                                  (error: unknown) => {
+                                      if (!quiet) notifyFailure('Update', error instanceof Error ? error.message : String(error));
+                                  }
+                              );
+                      },
+                      onChange: setUpdateSheet
+                  }),
+        [commands, notifyFailure, shellWindowID]
+    );
+    useEffect(() => {
+        if (updateSheetController === null) return;
+        return runtime.connection.on('message', (message) => {
+            updateSheetController.handleMessage(message);
+        });
+    }, [runtime, updateSheetController]);
 
     /**
      * #288: the paths behind a drop from Finder onto a terminal pane.
@@ -4601,6 +4649,14 @@ function Shell(props: AppProps): ReactElement {
              * one, so a browser tab (which no shell will ever call into) draws nothing.
              */}
             <QuitGate />
+            {/* #286: the update flow, drawn as a sheet centred in this window. */}
+            {updateSheet === null ? null : (
+                <UpdateSheet
+                    view={updateSheet.view}
+                    notesHTML={updateSheet.notesHTML}
+                    onAction={(action) => updateSheetController?.act(action)}
+                />
+            )}
             <InteractionHost surface={surface} presenters={!phoneActive} chords={presenterChords} />
 
             {helpOpen ? (

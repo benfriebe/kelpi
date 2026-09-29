@@ -520,7 +520,8 @@ describe('HarnessCounters', () => {
             message: 'An agent is running',
             detail: 'It keeps running',
             buttons: ['Quit', 'Cancel'],
-            defaultId: 1
+            defaultId: 1,
+            parented: true
         });
         expect(counters.snapshot()).toMatchObject({
             dialogs: 1,
@@ -735,14 +736,15 @@ describe('recording notifications', () => {
 describe('messageBoxSpecFrom', () => {
     it('reads either showMessageBox overload and fills Electron defaults', () => {
         const options = { title: 'T', message: 'M', detail: 'D', buttons: ['A', 'B'], defaultId: 1 };
-        expect(messageBoxSpecFrom([options])).toEqual({ title: 'T', message: 'M', detail: 'D', buttons: ['A', 'B'], defaultId: 1 });
-        expect(messageBoxSpecFrom([{ fake: 'window' }, options])).toEqual(messageBoxSpecFrom([options]));
+        expect(messageBoxSpecFrom([options])).toEqual({ title: 'T', message: 'M', detail: 'D', buttons: ['A', 'B'], defaultId: 1, parented: false });
+        expect(messageBoxSpecFrom([{ fake: 'window' }, options])).toEqual({ ...messageBoxSpecFrom([options]), parented: true });
         expect(messageBoxSpecFrom([{ message: 'Kelpi Help' }])).toEqual({
             title: '',
             message: 'Kelpi Help',
             detail: '',
             buttons: ['OK'],
-            defaultId: 0
+            defaultId: 0,
+            parented: false
         });
         expect(messageBoxSpecFrom([])).toMatchObject({ buttons: ['OK'] });
     });

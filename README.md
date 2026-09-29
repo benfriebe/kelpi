@@ -373,11 +373,16 @@ Two things about the build worth knowing:
 default**: with Settings ▸ General ▸ Updates "Check for updates automatically" (`auto-update` in
 `~/.config/kelpi/config`) off, the app makes no update request at all. On, it checks at launch
 and asks **Update Now** or **Later**; nothing downloads until the answer is Update Now. Kelpi ▸
-Check for Updates… asks the same question any time, whatever the setting. After the update the
+Check for Updates… asks the same question any time, whatever the setting. The whole flow is a
+sheet centred in the Kelpi window, with the release notes rendered as markdown: the download shows
+as in progress, and when it finishes Kelpi asks **Restart Now** or **Later** rather than quitting
+by itself (Later installs it the next time you quit, and the Kelpi menu offers "Restart to
+Update…" until then). Kelpi refuses to update a copy it cannot replace, such as one running from
+the mounted DMG or a translocated copy in Downloads, and says to move it to Applications. After the update the
 app finds the old version's daemon still running and hands it off: the daemon passes its
 terminals to the terminal host and exits, and the new version's daemon adopts them, so shells
-and agents keep running (`packages/shell/src/updater.ts`, `packages/shell/src/daemon.ts`,
-`docs/terminal-host.md`).
+and agents keep running (`packages/shell/src/update-flow.ts`, `packages/shell/src/updater.ts`,
+`packages/shell/src/daemon.ts`, `docs/terminal-host.md`).
 
 ### Signing, notarization and releases
 

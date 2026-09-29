@@ -751,7 +751,16 @@ A full-width pill "band" (rounded 8): fill = group color (or neutral tertiary wh
 colorless) at `groupBandOpacity × intensity` (or the user's `groupFill` override), plus an
 optional border (`groupStroke`). Same height as a workspace row.
 
-Contents: `[icon 22×22] [name 13pt bold] …spacer… [chevron]`.
+Contents: `[icon 22×22] [name 13pt bold] [repo indicator] …spacer… [chevron]`.
+
+- **Repo indicator** (Kelpi addition, app-state-core.md §5.5): only for a group with a
+  default repository the registry lists, a small branch glyph and the repo's name at 10pt in
+  the tertiary colour, centred on the name's line. The group's "create a worktree from latest
+  main" switch draws nothing of its own; the tooltip is the repo's full path, plus "New
+  workspaces create a worktree from latest main" when the switch is on. The name keeps
+  priority: the indicator gives up its width first (down to its glyph) before the name
+  ellipsizes. A group without a repo renders exactly the header it always did, so height and
+  layout never change. Remote daemons' groups show it from that daemon's own registry.
 
 - Icon: default = folder glyph tinted group color (`folder.fill` when colored, outlined
   `folder` when not); custom SF symbol (tinted; "folder" auto-upgrades to filled when
@@ -964,10 +973,18 @@ Rename…                    → inline rename in the header row
 Color ▸                    → "None" + the 10 colors
 Change Icon ▸              → the same flat submenu as §5.6 (Symbol and Emoji captions,
                              Custom Emoji…), ending in Reset to Folder
+Add Repository… | Edit Repository…
+                           → the group repository sheet (§10.7; Kelpi addition, below)
 Expand | Collapse
 ──────────
 Delete Group…              → group delete confirmation (§12.4)
 ```
+
+**Add Repository… / Edit Repository…** (app-state-core.md §5.5): a plain item that says what it
+will do, **Add Repository…** for a group with no default repository and **Edit Repository…**
+for one with a repository. It opens the group repository sheet (§10.7) rather than listing the
+registry in a submenu, which did not scale past a handful of repos. The item is absent when
+assembly wires no handler.
 
 ### 5.8 Selection header & footer
 
@@ -1239,11 +1256,30 @@ Fields, top to bottom:
    - "Create git worktree" checkbox; when on:
    - "Worktree name" field; "Branch name" field — the branch mirrors the worktree name
      until the user hand-edits the branch (then mirroring stops; it resumes if they make
-     them equal again). Enter in the branch field submits when valid.
+     them equal again). Enter in the branch field submits when valid. The worktree name in
+     turn follows the workspace NAME (Kelpi addition, app-state-core.md §5.5): lowercased and
+     passed through the daemon's own `sanitizedGitName` (`@kelpi/core/git`), so "Fix Login
+     Bug" fills `fix-login-bug` and the preview is exactly what git gets; a name that
+     sanitizes to nothing leaves the field empty. It follows even while the section is hidden,
+     so ticking the toggle (or a group's switch pre-ticking it) shows the fields filled from the
+     name already typed. Typing in the worktree field stops the following; clearing it (or
+     typing it back to the followed value) resumes it, the same rule as the branch.
    - "Update main first (fetch + branch off origin)" checkbox.
    - Live preview (tertiary caption): `"<resolvedWorktreeBasePath>/<sanitizedName>"` and
      `"branch: <sanitizedBranch>"` — names are git-sanitized (spaces/unsafe chars →
      hyphens); an unsanitizable value renders `<name>`/`<branch>` and disables Create.
+   **Group defaults** (Kelpi addition, app-state-core.md §5.5): opened for a group with a
+   default repository (from the group's "New Workspace", the inherited group, or a change of
+   the Group dropdown), the sheet preselects that repo in the Repositories section; when the
+   group's "create a worktree from latest main" switch is on it also turns "Create git
+   worktree" on with "Update main first" ticked, leaving the worktree name for the user to
+   type. All of it stays editable for a one-off. Until the user edits the repo selection, a
+   change of Group swaps the prefill for the new group's (to nothing for a repo-less group);
+   after an edit, their selection stands. Likewise the worktree toggle and "Update main first":
+   once the user sets either, a Group change (or the group's switch changing while the sheet is
+   open) no longer overwrites it. The sheet submits exactly what it shows
+   (`group_defaults: false` on `workspace-create`), so a prefilled repo the user removed is
+   not added back by the daemon.
 8. Error line (red caption) when an async worktree creation failed — the sheet stays
    open for retry; the Create button un-disables when the error arrives.
 9. Cancel / **Create**. Create is disabled while a worktree submission is in flight
@@ -1279,8 +1315,14 @@ a color row of 16pt circles — a "None" stroke-only swatch first, then the 10 c
 chosen one showing a small checkmark; Cancel / **Create** (disabled while empty). The sheet
 is the shared `NewEntrySheet` in group mode (`packages/client/src/chrome/NewWorkspaceSheet.tsx:91-95`,
 `:116-117`); when remote daemons are registered it also carries a "Runs on" dropdown choosing
-which daemon creates the group (this one by default; multi-daemon groups). Return submits
-from anywhere in the sheet.
+which daemon creates the group (this one by default; multi-daemon groups). For a group created
+on this daemon it also offers an optional **Repository** dropdown ("None" + the registered repos)
+with, in the desktop app, a **Choose Folder…** button beside it (the row shows even over an
+empty registry then; the folder chosen joins the dropdown), and, once a repo is chosen, the
+checkbox "New workspaces create a worktree from latest main" (app-state-core.md §5.5). A
+registered repo rides the create itself (`create-group-for-workspaces` with `repo_id` /
+`create_worktree`), so the group lands with it in one change; a chosen folder is set with
+`group-set-repo` as soon as the create answers, which resolves and registers it. Return submits from anywhere in the sheet.
 
 ### 10.5 Custom Emoji (340 wide)
 
@@ -1306,6 +1348,36 @@ preview; Cancel / **Create** (disabled unless both sanitize to something usable;
 the branch field submits).
 
 ---
+
+### 10.7 Group repository (380 wide; Kelpi addition)
+
+Raised by the group context menu's Add Repository… / Edit Repository… (§5.7); app-state-core.md
+§5.5 has the model. Title **"Add Repository to <group>"** for a group with no repository,
+**"Edit Repository for <group>"** for one with a repository, and a caption saying new workspaces
+in the group start with it.
+
+- **The list** is the shared repo picker (the New Workspace sheet's and the inspector's, single
+  mode, embedded): a filter field ("Filter by name or path", matching name or path
+  case-insensitively, Settings ▸ Repositories' rule) over a fixed-height list of registry rows,
+  each a name over a middle-truncated path (the full path on hover). ↑/↓ move through it,
+  Return saves the highlighted row, a double-click saves that row. It opens with focus in the
+  filter and the group's current repository selected. Auto-discovered repos are hidden, as in
+  Settings ▸ Repositories, unless one is the current repository; a **Show auto-detected**
+  checkbox appears when any are hidden. An empty registry says **No repositories registered**,
+  pointing at Choose Folder… in the desktop app and at Settings ▸ Repositories in a browser.
+- **Choose Folder…** (desktop app only, #283's native folder panel): the chosen folder becomes
+  the selection (shown as a "Folder: …" line, the list's selection cleared); the daemon resolves
+  and registers it on save. A cancelled panel changes nothing.
+- **Remove Repository**, only when the group has a repository: the selection becomes none.
+- **The switch** "New workspaces create a worktree from latest main", disabled (and unticked)
+  while nothing is selected, so it can never be saved on without a repository.
+- **Cancel / Save.** Nothing is sent until Save, which sends ONE `group-set-repo`: `repo_id` for
+  a registry row (taken as is, never re-resolved), `repo` for a chosen folder, `clear` for
+  Remove Repository; `create_worktree` rides only with a repository. Save is disabled when there
+  is nothing to save (no repository chosen for a group that has none). Cancel, Escape (from
+  anywhere, capture phase) and a click on the backdrop discard. Return saves from anywhere but a
+  button. On close, focus goes back to where it was when the sheet opened, if that element is
+  still there.
 
 ## 11. Help window
 

@@ -26,8 +26,8 @@ const SPEC_FIRE_AND_FORGET: readonly WireCommandName[] = [
 ];
 
 describe('reply allowlist table', () => {
-    it('has the 56 documented request/response commands', () => {
-        expect(REPLY_COMMANDS.size).toBe(56);
+    it('has the 57 documented request/response commands', () => {
+        expect(REPLY_COMMANDS.size).toBe(57);
     });
 
     it('partitions every known command into reply / fire-and-forget', () => {

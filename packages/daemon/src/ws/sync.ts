@@ -74,6 +74,7 @@ import { ratioAtPath } from '@kelpi/core/layout';
 
 import type { ContentMode, ContentPaneState, ContentSubscription } from '../content/index.js';
 import { dualFireMessage } from '../control/server.js';
+import { promoteRepo } from '../git/registry.js';
 import type { ControlDispatchItem, ControlDispatcher, DomainStore, ReplyHandle } from '../seams.js';
 import {
     findPaneAnywhere,
@@ -681,6 +682,23 @@ export function handleWsOnlyCommand(
         if (unknown !== undefined) return failure(`no workspace matches '${unknown}'`);
         const color =
             typeof payload['color'] === 'string' ? parseWorkspaceColor(payload['color'].trim()) : undefined;
+        /*
+         * app-state-core.md §5.5: the New Group sheet's optional repository and worktree
+         * switch, carried here so the group lands with them in one change (never create, then
+         * set, which the sidebar would render as a group without its repo for a frame). The
+         * sheet picks from the registry, so a repo id the registry does not hold is refused
+         * rather than silently dropped by the reducer.
+         */
+        const repoID = text(payload['repo_id']);
+        const adopted = repoID === undefined ? undefined : state.repos.find((repo) => repo.id === repoID);
+        if (repoID !== undefined && adopted === undefined) {
+            return failure(`no repo matches '${repoID}'`);
+        }
+        // A group depends on its repo now, so an auto-discovered row is promoted to manual
+        // (§GIT-068): §GIT-081's GC would otherwise collect it once its last auto association
+        // lapsed, and the `remove-repo` cascade would clear the group's repo without a word.
+        if (adopted !== undefined) promoteRepo(store, adopted);
+        const createWorktree = repoID !== undefined && payload['create_worktree'] === true;
         const id = (options.uuid ?? newUUID)();
         store.dispatch({
             type: 'create-group',
@@ -688,14 +706,17 @@ export function handleWsOnlyCommand(
             name,
             now: (options.now ?? Date.now)(),
             initialWorkspaceIDs: requested,
-            ...(color === undefined ? {} : { color })
+            ...(color === undefined ? {} : { color }),
+            ...(repoID === undefined ? {} : { repoID, createWorktree })
         });
         const created = groupByID(store.getState(), id);
         return {
             ok: true,
             group_id: id,
             name,
-            workspace_ids: created?.childOrder ?? requested
+            workspace_ids: created?.childOrder ?? requested,
+            repo_id: created?.repoID ?? null,
+            create_worktree: created?.createWorktree ?? false
         };
     }
 

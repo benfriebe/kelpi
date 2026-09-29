@@ -42,8 +42,8 @@ describe('migration ledger', () => {
             expect(MIGRATION_IDENTIFIERS).toContain(identifier);
         }
         expect(MIGRATION_IDENTIFIERS[0]).toBe('v1_initial');
-        expect(MIGRATION_IDENTIFIERS.at(-1)).toBe('v21_workspace_muted');
-        expect(MIGRATION_IDENTIFIERS).toHaveLength(21);
+        expect(MIGRATION_IDENTIFIERS.at(-1)).toBe('v22_workspace_group_repo');
+        expect(MIGRATION_IDENTIFIERS).toHaveLength(22);
     });
 
     it('is a no-op on the second run', () => {
@@ -54,7 +54,7 @@ describe('migration ledger', () => {
         db.close();
     });
 
-    it('produces the post-v21 schema (§8 + the daemon-only tail)', () => {
+    it('produces the post-v22 schema (§8 + the daemon-only tail)', () => {
         const db = freshDatabase();
         migrate(db);
 
@@ -102,7 +102,9 @@ describe('migration ledger', () => {
             'childOrderJSON',
             'createdAt',
             'sortOrder',
-            'icon'
+            'icon',
+            'repoID',
+            'createWorktree'
         ]);
         expect(columnNames(db, 'repo')).toEqual([
             'id',
@@ -205,6 +207,21 @@ describe('migration ledger', () => {
 
         expect(migrate(db).applied).toEqual(['v21_workspace_muted']);
         expect(db.all('SELECT "name", "muted" FROM "workspace"')).toEqual([{ name: 'kept', muted: 0 }]);
+        db.close();
+    });
+
+    it('adds the group repo columns (v22) defaulting existing groups to no repo, switch off', () => {
+        const db = freshDatabase();
+        migrate(db);
+        db.run(`DELETE FROM ${MIGRATIONS_TABLE} WHERE identifier = 'v22_workspace_group_repo'`);
+        db.exec('ALTER TABLE "workspace_group" DROP COLUMN "repoID"');
+        db.exec('ALTER TABLE "workspace_group" DROP COLUMN "createWorktree"');
+        db.run(`INSERT INTO "workspace_group" ("id","name","createdAt") VALUES (?,?,?)`, 'G1', 'kept', 1);
+
+        expect(migrate(db).applied).toEqual(['v22_workspace_group_repo']);
+        expect(db.all('SELECT "name", "repoID", "createWorktree" FROM "workspace_group"')).toEqual([
+            { name: 'kept', repoID: null, createWorktree: 0 }
+        ]);
         db.close();
     });
 

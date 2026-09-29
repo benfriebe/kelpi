@@ -17,6 +17,8 @@
  * All helpers mutate the argv array in place, exactly like the Swift `inout ArraySlice`.
  */
 
+import path from 'node:path';
+
 import { errLine, exit, writeErr } from './io.js';
 
 export type UsagePrinter = (write: (text: string) => void) => void;
@@ -140,4 +142,14 @@ export function parseUIntStrict(text: string): number | null {
 /** Swift's `UUID(uuidString:)` — the canonical 8-4-4-4-12 form, case-insensitive. */
 export function isUUID(text: string): boolean {
     return /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(text);
+}
+
+/**
+ * A path argument made absolute against THIS process's cwd, because the daemon that reads it
+ * runs somewhere else. `~` is left alone: the daemon expands it against its own home, which is
+ * the home the path means (the CLI and daemon share a user).
+ */
+export function absoluteUserPath(value: string): string {
+    if (value === '~' || value.startsWith('~/') || path.isAbsolute(value)) return value;
+    return path.resolve(process.cwd(), value);
 }

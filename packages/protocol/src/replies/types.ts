@@ -131,6 +131,20 @@ export interface WorkspaceListEntry {
     /** Both present or both absent (absent for top-level workspaces). */
     readonly group_id?: string;
     readonly group_name?: string;
+    /** The workspace's repo associations, in stored order; absent when it has none. */
+    readonly repos?: readonly WorkspaceListRepo[];
+}
+
+/** One repo association on a `workspace-list` entry (app-state-core.md §5.5). */
+export interface WorkspaceListRepo {
+    readonly repo_id: string;
+    /** The registry's display name; absent when the repo is no longer registered. */
+    readonly repo_name?: string;
+    readonly repo_path?: string;
+    /** The checkout this workspace works in: the repo itself, or one of its worktrees. */
+    readonly worktree_path: string;
+    /** Absent when unknown (a detached HEAD, or before the first read). */
+    readonly branch?: string;
 }
 
 export interface WorkspaceListReply extends ReplySuccess {
@@ -147,6 +161,10 @@ export interface WorkspaceCreateReply extends ReplySuccess {
     /** Worktree flow only. */
     readonly worktree_path?: string;
     readonly branch?: string;
+    /** Worktree flow only: whether it branched off the freshly fetched `origin/<default>`. */
+    readonly update_main?: boolean;
+    /** The repository the workspace was associated with (the worktree's parent, if any). */
+    readonly repo_path?: string;
 }
 
 export interface WorkspaceDeleteReply extends ReplySuccess {
@@ -192,10 +210,28 @@ export interface GroupListEntry {
     /** Present only when the group has a color. */
     readonly color?: string;
     readonly workspaces: readonly GroupListMember[];
+    /** Present only when the group has a default repository (app-state-core.md §5.5). */
+    readonly repo?: GroupRepoRef;
+    /** Present exactly when `repo` is. */
+    readonly create_worktree?: boolean;
+}
+
+export interface GroupRepoRef {
+    readonly id: string;
+    readonly name: string;
+    readonly path: string;
 }
 
 export interface GroupListReply extends ReplySuccess {
     readonly groups: readonly GroupListEntry[];
+}
+
+/** `group-set-repo`: the group's state after the change. `repo` is null when it has none. */
+export interface GroupSetRepoReply extends ReplySuccess {
+    readonly group_id: string;
+    readonly group_name: string;
+    readonly repo: GroupRepoRef | null;
+    readonly create_worktree: boolean;
 }
 
 /** Shared by `group-reorder` and `group-sort`. */

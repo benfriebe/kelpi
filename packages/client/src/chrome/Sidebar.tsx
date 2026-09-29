@@ -44,6 +44,7 @@ import { createPortal } from 'react-dom';
 import { ContextMenu, menuAnchorFromEvent, type MenuAvoidRect, type MenuItemSpec } from './ContextMenu';
 import { hoverFill, useHoverKey } from './hover';
 import { useModalPresence } from './modal-presence';
+import { GroupRepoSheet } from './GroupRepoSheet';
 import { NewEntrySheet } from './NewWorkspaceSheet';
 import {
     ChromeIcon,
@@ -1351,7 +1352,33 @@ interface GroupHeaderRowProps {
     readonly entering?: boolean | undefined;
     /** L15: this insertion is a SPRING-LOAD reveal, so the entry runs on the 100ms ease. */
     readonly enterFast?: boolean | undefined;
+    /**
+     * app-state-core.md §5.5: the group's default repository, resolved from the registry by the
+     * caller (`groupRepoOf`). Null/absent draws the header exactly as it has always been drawn.
+     */
+    readonly repo?: GroupHeaderRepo | null | undefined;
 }
+
+/** What the header's repo indicator names: the repo's display name, and its path for the tooltip. */
+export interface GroupHeaderRepo {
+    readonly name: string;
+    readonly path: string;
+}
+
+/** §5.5: a group's default repository, looked up in a registry list (local or a remote daemon's). */
+export function groupRepoOf(
+    group: ChromeGroup,
+    repos: readonly { readonly id: string; readonly name: string; readonly path: string }[]
+): GroupHeaderRepo | null {
+    const repoID = group.repoID ?? null;
+    if (repoID === null) return null;
+    // The registry's own object, not a copy: a stable reference keeps the memoized header from
+    // re-rendering on every sidebar render.
+    return repos.find((candidate) => candidate.id === repoID) ?? null;
+}
+
+/** The indicator's tooltip: the full path, and the worktree switch spelled out when it is on. */
+export const GROUP_WORKTREE_SWITCH_LABEL = 'New workspaces create a worktree from latest main';
 
 export const GroupHeaderRow = memo(function GroupHeaderRow(props: GroupHeaderRowProps): ReactElement {
     const { group } = props;
@@ -1496,13 +1523,53 @@ export const GroupHeaderRow = memo(function GroupHeaderRow(props: GroupHeaderRow
                         }}
                         onCancel={props.onCancelRename}
                     />
-                ) : (
+                ) : props.repo === null || props.repo === undefined ? (
                     <span
                         data-testid="group-name"
                         className="truncate text-[13px] font-bold"
                         style={{ color: tokens.textPrimary }}
                     >
                         {group.name}
+                    </span>
+                ) : (
+                    /*
+                     * app-state-core.md §5.5: the group's default repository, after its name, in
+                     * the same tertiary ink and small glyph the row's own adornments use (the
+                     * muted bell, the ⌘N badge). The name keeps priority: both shrink, but the
+                     * indicator's flex-shrink is far larger, so it gives up its width first and
+                     * only then does the name ellipsize. The indicator is `leading-none` and
+                     * centred on the name's line rather than sharing its baseline: a baseline row
+                     * of mixed sizes grows its line box by a fraction of a pixel, and the band
+                     * must be exactly as tall as a repo-less one.
+                     */
+                    <span className="flex min-w-0 items-center gap-1.5">
+                        <span
+                            data-testid="group-name"
+                            className="min-w-0 truncate text-[13px] font-bold"
+                            style={{ color: tokens.textPrimary, flexShrink: 1 }}
+                        >
+                            {group.name}
+                        </span>
+                        {/* The worktree switch draws nothing of its own (the owner found a mark
+                            noise); it is said in the tooltip, which costs nothing visually. */}
+                        <span
+                            data-testid="group-repo"
+                            title={
+                                group.createWorktree === true
+                                    ? `${props.repo.path}\n${GROUP_WORKTREE_SWITCH_LABEL}`
+                                    : props.repo.path
+                            }
+                            data-create-worktree={group.createWorktree === true ? 'true' : 'false'}
+                            className="flex min-w-[12px] items-center gap-[3px] overflow-hidden text-[10px] leading-none"
+                            style={{ color: tokens.textTertiary, flexShrink: 1000 }}
+                        >
+                            <span className="flex shrink-0 items-center" aria-hidden>
+                                <ChromeIcon name="branch" size={10} />
+                            </span>
+                            <span data-testid="group-repo-name" className="min-w-0 truncate">
+                                {props.repo.name}
+                            </span>
+                        </span>
                     </span>
                 )}
             </span>
@@ -1951,6 +2018,8 @@ export function Sidebar(props: SidebarProps): ReactElement {
     const [springLoadedGroupID, setSpringLoadedGroupID] = useState<string | null>(null);
     /** The workspace whose icon is being picked in the custom-emoji sheet. */
     const [emojiSheet, setEmojiSheet] = useState<{ kind: 'workspace' | 'group'; id: string } | null>(null);
+    /** The group whose repository sheet is open (app-state-core.md §5.5). */
+    const [repoSheet, setRepoSheet] = useState<string | null>(null);
     /**
      * §WS-075's default swatch, drawn ONCE per opening of the form (the dep is the form state's
      * identity, and every `setNewForm` mints a new object). Re-rolling it on each keystroke
@@ -2221,7 +2290,12 @@ export function Sidebar(props: SidebarProps): ReactElement {
      */
     const escapeRefProp = props.escapeRef;
     const overlayOpen =
-        menu !== null || rename !== null || confirm !== null || newForm !== null || emojiSheet !== null;
+        menu !== null ||
+        rename !== null ||
+        confirm !== null ||
+        newForm !== null ||
+        emojiSheet !== null ||
+        repoSheet !== null;
     const selectionSize = selection.size;
     useEffect(() => {
         if (escapeRefProp === undefined) return;
@@ -4084,6 +4158,22 @@ export function Sidebar(props: SidebarProps): ReactElement {
                     label: 'Change Icon',
                     submenu: iconSubmenu('group', groupID, group.icon)
                 },
+                /*
+                 * app-state-core.md §5.5: the group's default repository, in its own sheet
+                 * (`GroupRepoSheet`) rather than a submenu listing the whole registry. The
+                 * label says what it will do: add one, or edit the one the group has.
+                 */
+                ...(props.onSetGroupRepo === undefined
+                    ? []
+                    : [
+                          {
+                              id: 'repo',
+                              label: (group.repoID ?? null) === null ? 'Add Repository…' : 'Edit Repository…',
+                              onSelect: () => {
+                                  setRepoSheet(groupID);
+                              }
+                          } satisfies MenuItemSpec
+                      ]),
                 {
                     id: 'collapse',
                     label: collapsed ? 'Expand' : 'Collapse',
@@ -4421,6 +4511,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
                                 registerRow={registerRow}
                                 entering={entering.has(row.key)}
                                 enterFast={enteringFast}
+                                repo={groupRepoOf(entry.group, props.repos ?? EMPTY_REPOS)}
                             />
                         );
                     }
@@ -4899,6 +4990,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
                     groups={groups}
                     profiles={props.profiles ?? EMPTY_PROFILES}
                     remoteDaemons={props.remoteDaemons ?? []}
+                    {...(props.onBrowseForFolder === undefined ? {} : { onBrowseForFolder: props.onBrowseForFolder })}
                     defaultColor={newFormColor}
                     // §WS-076: an explicitly scoped group (the group menu's "New Workspace")
                     // wins; otherwise SET-011's inherited group, which assembly resolves.
@@ -4924,10 +5016,13 @@ export function Sidebar(props: SidebarProps): ReactElement {
                             }
                             // §WS-058: a group raised from the bulk menu is created AROUND
                             // the selection, in one command, and the selection is released.
+                            // §5.5: the sheet's optional repository rides the same create; it is
+                            // passed only when chosen, so a repo-less create calls exactly as before.
+                            const repoArgs = draft.groupRepo === null ? [] : ([draft.groupRepo] as const);
                             if (members !== undefined && props.onCreateGroupForWorkspaces !== undefined) {
-                                props.onCreateGroupForWorkspaces(draft.name, members, draft.color);
+                                props.onCreateGroupForWorkspaces(draft.name, members, draft.color, ...repoArgs);
                                 setSelection(EMPTY_SELECTION);
-                            } else props.onCreateGroup?.(draft.name, draft.color);
+                            } else props.onCreateGroup?.(draft.name, draft.color, ...repoArgs);
                             setNewForm(null);
                             return null;
                         }
@@ -4996,6 +5091,27 @@ export function Sidebar(props: SidebarProps): ReactElement {
                     }}
                 />
             )}
+
+            {(() => {
+                // Resolved here, not carried on the state, so the sheet follows a rename or a
+                // repo change that lands while it is open; a group deleted meanwhile closes it.
+                const repoGroup = repoSheet === null ? undefined : groups.find((candidate) => candidate.id === repoSheet);
+                if (repoGroup === undefined) return null;
+                return (
+                    <GroupRepoSheet
+                        group={repoGroup}
+                        repos={props.repos ?? EMPTY_REPOS}
+                        {...(props.onBrowseForFolder === undefined ? {} : { onBrowseForFolder: props.onBrowseForFolder })}
+                        onCancel={() => {
+                            setRepoSheet(null);
+                        }}
+                        onSave={(change) => {
+                            props.onSetGroupRepo?.(repoGroup.id, change);
+                            setRepoSheet(null);
+                        }}
+                    />
+                );
+            })()}
 
             {confirm === null ? null : (
                 <ConfirmDialog

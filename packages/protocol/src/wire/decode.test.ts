@@ -388,9 +388,10 @@ describe('workspace and group commands', () => {
             profile: undefined,
             worktree: undefined,
             branch: undefined,
-            update_main: false,
+            update_main: undefined,
             repo: undefined,
-            muted: false
+            muted: false,
+            group_defaults: true
         });
         expect(ok({ command: 'workspace-create', muted: true })).toMatchObject({ muted: true });
         expect(rejected({ command: 'workspace-create', muted: 'true' })).toMatchObject({
@@ -411,6 +412,53 @@ describe('workspace and group commands', () => {
         ).toMatchObject({ worktree: 'feat-x', branch: 'feat-x', update_main: true, repo: '/repo' });
     });
 
+    it('keeps update_main tri-state and defaults group_defaults on (app-state-core §5.5)', () => {
+        // Absent lets a group's worktree switch decide; an explicit false is `--no-update-main`.
+        expect(ok({ command: 'workspace-create', worktree: 'x' })).toMatchObject({ update_main: undefined });
+        expect(ok({ command: 'workspace-create', worktree: 'x', update_main: false })).toMatchObject({
+            update_main: false
+        });
+        expect(ok({ command: 'workspace-create', group_defaults: false })).toMatchObject({ group_defaults: false });
+        expect(rejected({ command: 'workspace-create', group_defaults: 'no' })).toMatchObject({
+            reason: 'field-type',
+            field: 'group_defaults'
+        });
+    });
+
+    it('decodes group-set-repo and refuses the contradictory or empty requests', () => {
+        expect(ok({ command: 'group-set-repo', name: 'kelpi', repo: '~/code/kelpi', create_worktree: true })).toEqual({
+            command: 'group-set-repo',
+            name: 'kelpi',
+            repo: '~/code/kelpi',
+            repo_id: undefined,
+            clear: false,
+            create_worktree: true
+        });
+        // A registry row by id: what the group menu's rows send, so a row is taken as is.
+        expect(ok({ command: 'group-set-repo', name: 'kelpi', repo_id: 'R1' })).toMatchObject({ repo_id: 'R1', repo: undefined });
+        expect(rejected({ command: 'group-set-repo', name: 'kelpi', repo: '/r', repo_id: 'R1' }).field).toBe('clear');
+        expect(rejected({ command: 'group-set-repo', name: 'kelpi', repo_id: 'R1', clear: true }).field).toBe('clear');
+        expect(ok({ command: 'group-set-repo', name: 'kelpi', clear: true })).toMatchObject({
+            clear: true,
+            repo: undefined,
+            create_worktree: undefined
+        });
+        expect(ok({ command: 'group-set-repo', name: 'kelpi', create_worktree: false })).toMatchObject({
+            create_worktree: false
+        });
+        expect(rejected({ command: 'group-set-repo', name: 'kelpi', repo: '/r', clear: true }).field).toBe('clear');
+        expect(rejected({ command: 'group-set-repo', name: 'kelpi', clear: true, create_worktree: true }).field).toBe(
+            'create_worktree'
+        );
+        expect(rejected({ command: 'group-set-repo', name: 'kelpi' }).field).toBe('repo');
+        // An empty `repo` normalizes to absent, so it is the same empty request.
+        expect(rejected({ command: 'group-set-repo', name: 'kelpi', repo: '' }).field).toBe('repo');
+        expect(rejected({ command: 'group-set-repo', name: 'kelpi', create_worktree: 'yes' })).toMatchObject({
+            reason: 'field-type',
+            field: 'create_worktree'
+        });
+    });
+
     it('requires non-empty names on the name-addressed commands', () => {
         for (const command of [
             'workspace-move',
@@ -422,6 +470,7 @@ describe('workspace and group commands', () => {
             'group-rename',
             'group-delete',
             'group-move',
+            'group-set-repo',
             'group-reorder',
             'group-sort'
         ]) {

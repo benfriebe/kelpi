@@ -292,6 +292,76 @@ describe('moving one workspace into a group (WS-120)', () => {
     });
 });
 
+describe('a group’s default repository (app-state-core §5.5)', () => {
+    const R1 = id('dddddddd', 1);
+    const R2 = id('dddddddd', 2);
+    const repo = (repoID: string, name: string): DomainAction => ({
+        type: 'add-repo',
+        repo: { id: repoID, path: `/code/${name}`, name, remoteURL: null, lastAccessedAt: 1, isAutoDiscovered: false }
+    });
+
+    it('starts with no repo and the switch off', () => {
+        const h = harness(seeded());
+        h.dispatch({ type: 'create-group', id: G1, name: 'Client', now: NOW });
+        expect(groupByID(h.state(), G1)).toMatchObject({ repoID: null, createWorktree: false });
+    });
+
+    it('takes a repo and switch at creation, dropping a repo the registry lacks', () => {
+        const h = harness(seeded());
+        h.dispatch(repo(R1, 'kelpi'));
+        h.dispatch(
+            { type: 'create-group', id: G1, name: 'Client', now: NOW, repoID: R1, createWorktree: true },
+            { type: 'create-group', id: G2, name: 'Ghost', now: NOW, repoID: R2, createWorktree: true }
+        );
+        expect(groupByID(h.state(), G1)).toMatchObject({ repoID: R1, createWorktree: true });
+        // A dangling repo is not stored, and the switch cannot survive without one.
+        expect(groupByID(h.state(), G2)).toMatchObject({ repoID: null, createWorktree: false });
+    });
+
+    it('sets, keeps the switch across a repo change, and clears the switch with the repo', () => {
+        const h = harness(seeded());
+        h.dispatch(repo(R1, 'kelpi'), repo(R2, 'otel'), { type: 'create-group', id: G1, name: 'Client', now: NOW });
+        h.dispatch({ type: 'set-group-repo', id: G1, repoID: R1, createWorktree: true });
+        expect(groupByID(h.state(), G1)).toMatchObject({ repoID: R1, createWorktree: true });
+        // `createWorktree` absent keeps the current switch.
+        h.dispatch({ type: 'set-group-repo', id: G1, repoID: R2 });
+        expect(groupByID(h.state(), G1)).toMatchObject({ repoID: R2, createWorktree: true });
+        h.dispatch({ type: 'set-group-repo', id: G1, repoID: R2, createWorktree: false });
+        expect(groupByID(h.state(), G1)).toMatchObject({ repoID: R2, createWorktree: false });
+        h.dispatch({ type: 'set-group-repo', id: G1, repoID: R2, createWorktree: true });
+        h.dispatch({ type: 'set-group-repo', id: G1, repoID: null });
+        expect(groupByID(h.state(), G1)).toMatchObject({ repoID: null, createWorktree: false });
+        // …and cannot be switched on with no repo to act on.
+        h.dispatch({ type: 'set-group-repo', id: G1, repoID: null, createWorktree: true });
+        expect(groupByID(h.state(), G1)).toMatchObject({ repoID: null, createWorktree: false });
+    });
+
+    it('refuses a repo the registry does not hold, and no-ops an unchanged set', () => {
+        const h = harness(seeded());
+        h.dispatch(repo(R1, 'kelpi'), { type: 'create-group', id: G1, name: 'Client', now: NOW });
+        h.dispatch({ type: 'set-group-repo', id: G1, repoID: R1 });
+        const before = h.state();
+        h.dispatch({ type: 'set-group-repo', id: G1, repoID: R2, createWorktree: true });
+        expect(h.state()).toBe(before);
+        h.dispatch({ type: 'set-group-repo', id: G1, repoID: R1 });
+        expect(h.state()).toBe(before);
+    });
+
+    it('clears every group pointing at a repo when the repo leaves the registry', () => {
+        const h = harness(seeded());
+        h.dispatch(
+            repo(R1, 'kelpi'),
+            repo(R2, 'otel'),
+            { type: 'create-group', id: G1, name: 'Client', now: NOW, repoID: R1, createWorktree: true },
+            { type: 'create-group', id: G2, name: 'Other', now: NOW, repoID: R2, createWorktree: true }
+        );
+        h.dispatch({ type: 'remove-repo', id: R1 });
+        expect(groupByID(h.state(), G1)).toMatchObject({ repoID: null, createWorktree: false });
+        // A group on another repo is untouched.
+        expect(groupByID(h.state(), G2)).toMatchObject({ repoID: R2, createWorktree: true });
+    });
+});
+
 describe('groups', () => {
     it('inserts a new group into the slot vacated by its first member', () => {
         const h = harness(seeded());

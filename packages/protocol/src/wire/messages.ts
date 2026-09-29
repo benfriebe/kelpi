@@ -181,10 +181,21 @@ export interface WorkspaceCreateMessage {
     profile?: string | undefined;
     worktree?: string | undefined;
     branch?: string | undefined;
-    update_main: boolean;
+    /**
+     * Absent is NOT false (app-state-core.md §5.5): a worktree created in a group whose
+     * `createWorktree` switch is on defaults to updating main, so the handler needs to tell
+     * "not said" from "said no" (`--no-update-main`). Absent everywhere else still means false.
+     */
+    update_main?: boolean | undefined;
     repo?: string | undefined;
     /** Create the workspace already muted (agent-lifecycle §7.6). */
     muted?: boolean | undefined;
+    /**
+     * §5.5: apply the group's default repository (and its worktree switch) to what the request
+     * leaves unsaid. Defaults to true. The New Workspace sheet sends false: it has already shown
+     * the group's defaults and the user's final choice is in the request, including "no repo".
+     */
+    group_defaults: boolean;
 }
 
 export interface WorkspaceMoveMessage {
@@ -274,6 +285,21 @@ export interface GroupMoveMessage {
     command: 'group-move';
     name: string;
     index: number;
+}
+
+/**
+ * app-state-core.md §5.5: a group's default repository and its "new workspaces create a
+ * worktree from latest main" switch. `repo` (a path; registered if the registry lacks it),
+ * `repo_id` (a registry row, taken as is) and `clear` are mutually exclusive, and
+ * `create_worktree` may ride with any of them or alone.
+ */
+export interface GroupSetRepoMessage {
+    command: 'group-set-repo';
+    name: string;
+    repo?: string | undefined;
+    repo_id?: string | undefined;
+    clear: boolean;
+    create_worktree?: boolean | undefined;
 }
 
 export interface GroupReorderMessage {
@@ -583,6 +609,7 @@ export type WireMessage =
     | GroupRenameMessage
     | GroupDeleteMessage
     | GroupMoveMessage
+    | GroupSetRepoMessage
     | GroupReorderMessage
     | GroupSortMessage
     | LayoutCycleMessage
@@ -645,6 +672,7 @@ export const EXPLICIT_CHAIN_COMMANDS: ReadonlySet<WireCommandName> = new Set([
     'group-rename',
     'group-delete',
     'group-move',
+    'group-set-repo',
     'group-reorder',
     'group-sort',
     'open',

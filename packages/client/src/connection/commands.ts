@@ -611,6 +611,12 @@ export class CommandClient {
             updateMain?: boolean;
             repo?: string;
             muted?: boolean;
+            /**
+             * app-state-core.md §5.5: false = take the request literally and apply none of the
+             * group's default repository. The New Workspace sheet sends false because it has
+             * already shown those defaults and carries the user's final choice.
+             */
+            groupDefaults?: boolean;
         } = {},
         options?: SendOptions
     ): Promise<CommandReply> {
@@ -627,7 +633,8 @@ export class CommandClient {
                 branch: input.branch,
                 update_main: input.updateMain,
                 repo: input.repo,
-                muted: input.muted
+                muted: input.muted,
+                group_defaults: input.groupDefaults
             }),
             timeout !== undefined ? { timeoutMs: timeout } : {}
         );
@@ -735,6 +742,30 @@ export class CommandClient {
      */
     moveGroup(input: { group: string; index: number }, options?: SendOptions): Promise<CommandReply> {
         return this.raw(wirePayload('group-move', { name: input.group, index: input.index }), options ?? {});
+    }
+
+    /**
+     * app-state-core.md §5.5: a group's default repository and its worktree switch, over the
+     * same `group-set-repo` verb `kelpi group set-repo` sends. `repo` is a PATH (the daemon
+     * registers it if the registry lacks it, which is how the repository sheet's Choose
+     * Folder… adds a new repository); `repoID` is a registry row taken as is (the sheet's
+     * rows); `repo: null` clears it; `createWorktree` absent keeps the switch. Resolving a
+     * path is git work, hence the longer deadline.
+     */
+    setGroupRepo(
+        input: { group: string; repo?: string | null; repoID?: string; createWorktree?: boolean },
+        options?: SendOptions
+    ): Promise<CommandReply> {
+        return this.raw(
+            wirePayload('group-set-repo', {
+                name: input.group,
+                repo: input.repo === null ? undefined : input.repo,
+                repo_id: input.repoID,
+                clear: input.repo === null ? true : undefined,
+                create_worktree: input.createWorktree
+            }),
+            { timeoutMs: options?.timeoutMs ?? 30_000 }
+        );
     }
 
     reorderGroup(
@@ -1158,14 +1189,23 @@ export class CommandClient {
      * `initialWorkspaceIDs` — one atomic change, not a create followed by a move.
      */
     createGroupForWorkspaces(
-        input: { name: string; workspaceIDs: readonly string[]; color?: WorkspaceColor },
+        input: {
+            name: string;
+            workspaceIDs: readonly string[];
+            color?: WorkspaceColor;
+            /** app-state-core.md §5.5: the New Group sheet's repository (a registry id) and switch. */
+            repoID?: string;
+            createWorktree?: boolean;
+        },
         options?: SendOptions
     ): Promise<CommandReply> {
         return this.raw(
             wirePayload('create-group-for-workspaces', {
                 name: input.name,
                 workspace_ids: [...input.workspaceIDs],
-                color: input.color
+                color: input.color,
+                repo_id: input.repoID,
+                create_worktree: input.repoID === undefined ? undefined : (input.createWorktree ?? false)
             }),
             options ?? {}
         );

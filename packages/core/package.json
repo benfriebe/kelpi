@@ -7,6 +7,7 @@
     "./layout": "./src/layout/index.ts",
     "./codec": "./src/codec/index.ts",
     "./resolve": "./src/resolve/index.ts",
+    "./git": "./src/git/index.ts",
     "./agent": "./src/agent/index.ts",
     "./env": "./src/env/index.ts",
     "./icon": "./src/icon/index.ts",

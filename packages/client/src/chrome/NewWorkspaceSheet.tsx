@@ -77,9 +77,10 @@ import {
     WORKSPACE_COLORS,
     type ChromeGroup,
     type ChromeRepo,
+    type NewGroupRepo,
     type WorkspaceWorktreeRequest
 } from './types';
-import { worktreePreview } from './worktree';
+import { worktreeNameFromWorkspace, worktreePreview } from './worktree';
 
 /** Everything the New Workspace / New Group sheet collects, in one submit (§WS-075/§WS-082). */
 export interface NewEntryDraft {
@@ -99,6 +100,12 @@ export interface NewEntryDraft {
     /** Repo PATHS to associate once the workspace exists (§WS-075's Repositories section). */
     readonly repoPaths: readonly string[];
     readonly worktree?: WorkspaceWorktreeRequest | undefined;
+    /**
+     * app-state-core.md §5.5: the New Group sheet's optional repository and worktree switch.
+     * Group-kind only (always null from the workspace sheet), and null for a remote group, whose
+     * registry is another daemon's.
+     */
+    readonly groupRepo: NewGroupRepo | null;
 }
 
 export interface NewEntrySheetProps {
@@ -126,6 +133,12 @@ export interface NewEntrySheetProps {
     readonly defaultName?: string | undefined;
     /** Set when the bulk menu raised this sheet: "Group N selected workspace(s)." */
     readonly workspaceCount?: number | undefined;
+    /**
+     * #283's native folder panel, desktop app only: the New Group sheet's Repository row offers
+     * Choose Folder… with it (app-state-core.md §5.5), and shows the row even over an empty
+     * registry. Resolves to the chosen path, or null on cancel.
+     */
+    readonly onBrowseForFolder?: (() => Promise<string | null>) | undefined;
     readonly onSubmit: (draft: NewEntryDraft) => Promise<string | null>;
     readonly onCancel: () => void;
 }
@@ -134,6 +147,37 @@ const EMPTY_REPOS: readonly ChromeRepo[] = [];
 const EMPTY_GROUPS: readonly ChromeGroup[] = [];
 const EMPTY_PROFILES: readonly string[] = [];
 const EMPTY_REPO_IDS: readonly string[] = [];
+/** The New Group sheet's Repository value for "the folder Choose Folder… returned". */
+const FOLDER_CHOICE = '__folder__';
+
+/** A folder's own name, for the Repository row's option label. */
+function folderName(folder: string): string {
+    const trimmed = folder.replace(/\/+$/, '');
+    return trimmed.slice(trimmed.lastIndexOf('/') + 1) || folder;
+}
+
+/** What a group's default repository prefills in the workspace sheet (app-state-core §5.5). */
+export interface GroupSheetDefaults {
+    readonly repoIDs: readonly string[];
+    /** The worktree toggle AND its update-main box: "a worktree from latest main". */
+    readonly worktree: boolean;
+}
+
+/**
+ * §5.5: the prefill for a workspace created in `groupID`. The group's repository, when the
+ * registry still lists it (a repo not loaded yet, or gone, prefills nothing rather than a row
+ * the sheet cannot name); with its switch on, the worktree toggle and update main as well.
+ */
+export function groupSheetDefaults(
+    groupID: string | null,
+    groups: readonly ChromeGroup[],
+    repos: readonly ChromeRepo[]
+): GroupSheetDefaults {
+    const group = groupID === null ? undefined : groups.find((candidate) => candidate.id === groupID);
+    const repoID = group?.repoID ?? null;
+    if (repoID === null || !repos.some((repo) => repo.id === repoID)) return { repoIDs: EMPTY_REPO_IDS, worktree: false };
+    return { repoIDs: [repoID], worktree: group?.createWorktree === true };
+}
 
 /**
  * The sheet's fields are editables and must keep caret dragging, double-click-to-word and
@@ -168,15 +212,69 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
     const [profile, setProfile] = useState<string>(DEFAULT_PROFILE_NAME);
     const [muted, setMuted] = useState(false);
     const [remoteDaemon, setRemoteDaemon] = useState<string>('');
-    const [chosenRepoIDs, setChosenRepoIDs] = useState<readonly string[]>(EMPTY_REPO_IDS);
+    /*
+     * app-state-core.md §5.5: the group's default repository prefills the Repositories section,
+     * and its worktree switch prefills the worktree toggle with update main ticked. Everything
+     * stays editable for a one-off. A change of Group swaps the prefill for the new group's,
+     * until the user edits the repo selection themselves (`repoTouched`), after which their
+     * choice is theirs. The prefill is also re-applied when the registry arrives after the
+     * sheet opened (it is fetched), which is the same "defaults changed, nobody chose" case.
+     */
+    const initialDefaults = useRef<GroupSheetDefaults | null>(null);
+    if (initialDefaults.current === null) {
+        initialDefaults.current = isWorkspace
+            ? groupSheetDefaults(props.defaultGroupID ?? null, groups, repos)
+            : { repoIDs: EMPTY_REPO_IDS, worktree: false };
+    }
+    const [chosenRepoIDs, setChosenRepoIDs] = useState<readonly string[]>(initialDefaults.current.repoIDs);
+    const [repoTouched, setRepoTouched] = useState(false);
+    /**
+     * The same rule for the worktree toggle and its update-main box: once the user has set
+     * either, neither a Group change nor the group's switch changing under the open sheet may
+     * overwrite it. The repo prefill still swaps (it has its own flag, above).
+     */
+    const [worktreeTouched, setWorktreeTouched] = useState(false);
     const [pickerOpen, setPickerOpen] = useState(false);
-    const [worktree, setWorktree] = useState(false);
-    const [worktreeName, setWorktreeName] = useState('');
-    const [branch, setBranch] = useState('');
+    const [worktree, setWorktree] = useState(initialDefaults.current.worktree);
+    /*
+     * app-state-core.md §5.5: the worktree name FOLLOWS the workspace name (through the daemon's
+     * own sanitizer, `worktreeNameFromWorkspace`) until the user types in the worktree field
+     * themselves; the branch follows the worktree name the way it always has, until the user
+     * types in the branch field. It follows even while the worktree section is hidden, so
+     * ticking "Create git worktree" (or a group's switch pre-ticking it) shows the fields filled
+     * from whatever name is already typed. Clearing the worktree field, or typing it back to
+     * exactly what it would follow, resumes following: the same rule as `branchEdited`.
+     */
+    const [worktreeName, setWorktreeName] = useState(() => worktreeNameFromWorkspace(props.defaultName ?? ''));
+    const [worktreeNameEdited, setWorktreeNameEdited] = useState(false);
+    const [branch, setBranch] = useState(() => worktreeNameFromWorkspace(props.defaultName ?? ''));
     const [branchEdited, setBranchEdited] = useState(false);
-    const [updateMain, setUpdateMain] = useState(false);
+    const [updateMain, setUpdateMain] = useState(initialDefaults.current.worktree);
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    /** The New Group sheet's optional repository (§5.5): a registry id, '' = none. */
+    const [groupRepoID, setGroupRepoID] = useState('');
+    /** A folder the New Group sheet's Choose Folder… returned; picked while `groupRepoID` is FOLDER_CHOICE. */
+    const [groupRepoFolder, setGroupRepoFolder] = useState<string | null>(null);
+    const browsingFolder = useRef(false);
+    const [groupCreateWorktree, setGroupCreateWorktree] = useState(false);
+
+    const defaults = isWorkspace ? groupSheetDefaults(groupID, groups, repos) : initialDefaults.current;
+    const defaultsKey = `${defaults.repoIDs.join(',')}|${String(defaults.worktree)}`;
+    const appliedDefaultsKey = useRef(
+        `${initialDefaults.current.repoIDs.join(',')}|${String(initialDefaults.current.worktree)}`
+    );
+    useEffect(() => {
+        if (appliedDefaultsKey.current === defaultsKey) return;
+        appliedDefaultsKey.current = defaultsKey;
+        if (repoTouched) return;
+        setChosenRepoIDs(defaults.repoIDs);
+        if (worktreeTouched) return;
+        setWorktree(defaults.worktree);
+        setUpdateMain(defaults.worktree);
+        // `defaults` is derived from the key's inputs; the key is the change that matters.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [defaultsKey, repoTouched, worktreeTouched]);
 
     const ref = useRef<HTMLInputElement | null>(null);
     /** Every focusable stop, by field id — the Tab loop's address book (§WS-077). */
@@ -251,6 +349,36 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
     });
     const worktreeOn = isWorkspace && worktree && repo !== null;
     const canSubmit = value.trim() !== '' && !busy && (!worktreeOn || preview.valid);
+    /*
+     * §5.5: the New Group sheet's repository row exists only for a group created HERE (a remote
+     * group's registry is its own daemon's) and only when there is a registry to pick from.
+     */
+    const groupRepoRow = !isWorkspace && remoteDaemon === '' && (repos.length > 0 || props.onBrowseForFolder !== undefined);
+    const groupRepoChoice: NewGroupRepo | null = !groupRepoRow
+        ? null
+        : groupRepoID === FOLDER_CHOICE && groupRepoFolder !== null
+          ? { repoPath: groupRepoFolder, createWorktree: groupCreateWorktree }
+          : groupRepoID !== '' && repos.some((entry) => entry.id === groupRepoID)
+            ? { repoID: groupRepoID, createWorktree: groupCreateWorktree }
+            : null;
+    const chooseGroupFolder = (): void => {
+        const browse = props.onBrowseForFolder;
+        // One panel at a time: a fast double-click must not queue a second native panel.
+        if (browse === undefined || browsingFolder.current) return;
+        browsingFolder.current = true;
+        void browse()
+            .then((chosen) => {
+                if (chosen === null) return;
+                setGroupRepoFolder(chosen);
+                setGroupRepoID(FOLDER_CHOICE);
+            })
+            .catch(() => {
+                // A panel that failed to open is the same answer as a cancel.
+            })
+            .finally(() => {
+                browsingFolder.current = false;
+            });
+    };
 
     const submit = async (): Promise<void> => {
         if (!canSubmit || inFlight.current) return;
@@ -267,7 +395,8 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
             repoPaths: chosenRepos.map((entry) => entry.path),
             ...(worktreeOn && repo !== null
                 ? { worktree: { repoID: repo.id, name: worktreeName, branch, updateMain } }
-                : {})
+                : {}),
+            groupRepo: groupRepoChoice
         });
         inFlight.current = false;
         setBusy(false);
@@ -293,6 +422,10 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
                 order.push('worktree-toggle');
                 if (worktreeOn) order.push('worktree-name', 'worktree-branch', 'update-main');
             }
+        } else if (groupRepoRow) {
+            order.push('group-repo');
+            if (props.onBrowseForFolder !== undefined) order.push('group-repo-browse');
+            if (groupRepoChoice !== null) order.push('group-worktree');
         }
         order.push('cancel');
         if (canSubmit) order.push('submit');
@@ -332,6 +465,8 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
      * Tab loop never points at a control that has just been unmounted.
      */
     const removeRepo = (id: string): void => {
+        // §5.5: the user's own edit; a later Group change no longer swaps the selection.
+        setRepoTouched(true);
         const index = chosenRepoIDs.indexOf(id);
         const next = chosenRepoIDs.filter((candidate) => candidate !== id);
         if (stops.current.get(`repo:${id}`) === globalThis.document?.activeElement) {
@@ -536,7 +671,13 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
                         }}
                         value={value}
                         onChange={(event) => {
-                            setValue(event.target.value);
+                            const next = event.target.value;
+                            setValue(next);
+                            if (!worktreeNameEdited) {
+                                const followed = worktreeNameFromWorkspace(next);
+                                setWorktreeName(followed);
+                                if (!branchEdited) setBranch(followed);
+                            }
                         }}
                     />
 
@@ -674,6 +815,88 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
                     ) : null}
 
                     {/*
+                     * app-state-core.md §5.5: the New Group sheet's optional repository. New
+                     * workspaces in the group start with it (the workspace sheet prefills it),
+                     * and the switch below makes them create a worktree off the latest main.
+                     * The switch only appears once a repository is chosen: it acts on that
+                     * repository, and the daemon refuses it without one.
+                     */}
+                    {groupRepoRow ? (
+                        // A div, not a label: a label would forward a click on Choose Folder… to
+                        // the select as well.
+                        <div className="flex items-center gap-2">
+                            <span className="shrink-0 text-[11px]" style={{ color: tokens.textSecondary }}>
+                                Repository
+                            </span>
+                            <select
+                                ref={(element) => {
+                                    registerStop('group-repo', element);
+                                }}
+                                aria-label="Repository"
+                                data-testid="new-group-repo"
+                                className="ml-auto min-w-0 rounded border bg-transparent px-1 py-[3px] text-[11px]"
+                                style={{ borderColor: tokens.divider, color: tokens.textPrimary }}
+                                value={groupRepoID}
+                                onChange={(event) => {
+                                    setGroupRepoID(event.target.value);
+                                }}
+                            >
+                                <option value="" style={{ color: '#000' }}>
+                                    None
+                                </option>
+                                {repos.map((entry) => (
+                                    <option key={entry.id} value={entry.id} style={{ color: '#000' }}>
+                                        {entry.name}
+                                    </option>
+                                ))}
+                                {groupRepoFolder === null ? null : (
+                                    <option value={FOLDER_CHOICE} style={{ color: '#000' }}>
+                                        {folderName(groupRepoFolder)}
+                                    </option>
+                                )}
+                            </select>
+                            {/*
+                              * Desktop app only (#283's native panel), like the group menu's
+                              * Choose Folder…: the folder is registered and resolved by the daemon
+                              * when the group is created (`group-set-repo`).
+                              */}
+                            {props.onBrowseForFolder === undefined ? null : (
+                                <button
+                                    ref={(element) => {
+                                        registerStop('group-repo-browse', element);
+                                    }}
+                                    type="button"
+                                    data-testid="new-group-repo-browse"
+                                    className="shrink-0 text-[11px]"
+                                    style={{ color: tokens.accent }}
+                                    onClick={chooseGroupFolder}
+                                >
+                                    Choose Folder…
+                                </button>
+                            )}
+                        </div>
+                    ) : null}
+                    {groupRepoChoice !== null ? (
+                        <label
+                            className="flex cursor-pointer items-center gap-1.5 text-[11px]"
+                            style={{ color: tokens.textSecondary }}
+                        >
+                            <input
+                                ref={(element) => {
+                                    registerStop('group-worktree', element);
+                                }}
+                                type="checkbox"
+                                data-testid="new-group-create-worktree"
+                                checked={groupCreateWorktree}
+                                onChange={(event) => {
+                                    setGroupCreateWorktree(event.target.checked);
+                                }}
+                            />
+                            New workspaces create a worktree from latest main
+                        </label>
+                    ) : null}
+
+                    {/*
                      * §WS-075's Repositories section. The Swift gates the WHOLE section on
                      * `!store.repoRegistry.isEmpty` (`NewWorkspaceSheet.swift:142`), and the
                      * port copied the gate — so on the state every user is in before they have
@@ -763,6 +986,7 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
                                 data-testid="new-workspace-worktree-toggle"
                                 checked={worktree}
                                 onChange={(event) => {
+                                    setWorktreeTouched(true);
                                     setWorktree(event.target.checked);
                                 }}
                             />
@@ -801,6 +1025,7 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
                                     onChange={(event) => {
                                         const next = event.target.value;
                                         setWorktreeName(next);
+                                        setWorktreeNameEdited(next !== '' && next !== worktreeNameFromWorkspace(value));
                                         if (!branchEdited) setBranch(next);
                                     }}
                                 />
@@ -840,6 +1065,7 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
                                     data-testid="new-workspace-worktree-update-main"
                                     checked={updateMain}
                                     onChange={(event) => {
+                                        setWorktreeTouched(true);
                                         setUpdateMain(event.target.checked);
                                     }}
                                 />
@@ -966,6 +1192,7 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
                             disabledRepoIDs={new Set(chosenRepoIDs)}
                             onConfirm={(picked) => {
                                 setChosenRepoIDs([...chosenRepoIDs, ...picked.map((entry) => entry.id)]);
+                                if (picked.length > 0) setRepoTouched(true);
                                 setPickerOpen(false);
                             }}
                             onCancel={() => {

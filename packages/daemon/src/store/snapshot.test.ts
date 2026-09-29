@@ -169,6 +169,31 @@ describe('fromSnapshot', () => {
         });
     });
 
+    it('restores a group repo, and drops one the registry no longer holds (app-state-core §5.5)', () => {
+        const repoID = id('bbbbbbbb', 1);
+        const groupID = id('cccccccc', 1);
+        const h = harness(seededState());
+        h.dispatch(
+            {
+                type: 'add-repo',
+                repo: { id: repoID, path: '/code/kelpi', name: 'kelpi', remoteURL: null, lastAccessedAt: 1, isAutoDiscovered: false }
+            },
+            { type: 'create-group', id: groupID, name: 'Client', now: NOW },
+            { type: 'set-group-repo', id: groupID, repoID, createWorktree: true }
+        );
+        const snapshot = toSnapshot(h.state());
+        expect(snapshot.groups[0]).toMatchObject({ repoID, createWorktree: true });
+        expect(fromSnapshot(snapshot, { homeDirectory: HOME }).groups[0]).toMatchObject({ repoID, createWorktree: true });
+
+        const orphaned = fromSnapshot({ ...snapshot, repos: [] }, { homeDirectory: HOME });
+        expect(orphaned.groups[0]).toMatchObject({ repoID: null, createWorktree: false });
+
+        // A legacy-importer group carries neither field at all.
+        const { repoID: _repo, createWorktree: _switch, ...legacyGroup } = snapshot.groups[0]!;
+        const legacy = fromSnapshot({ ...snapshot, groups: [legacyGroup] }, { homeDirectory: HOME });
+        expect(legacy.groups[0]).toMatchObject({ repoID: null, createWorktree: false });
+    });
+
     it('synthesizes a legacy top-level order and defaults the active workspace', () => {
         const state = seededState();
         const snapshot = { ...toSnapshot(state), topLevelOrder: [], activeWorkspaceID: null };

@@ -27,6 +27,7 @@ export {
 } from './Sidebar';
 /** §WS-075's create sheet — a modal over the window, no longer a form inside the sidebar. */
 export { NewEntrySheet, type NewEntryDraft, type NewEntrySheetProps } from './NewWorkspaceSheet';
+export { GroupRepoSheet, type GroupRepoChoice, type GroupRepoSheetProps } from './GroupRepoSheet';
 export { TopBar, identityDotColor, type TopBarProps } from './TopBar';
 export {
     CreateWorktreeSheet,
@@ -62,7 +63,7 @@ export {
     type GestureResetReason
 } from './gesture-reset';
 export { RepoPicker, type RepoPickerEntry, type RepoPickerProps } from './RepoPicker';
-export { sanitizeGitName, worktreePreview, worktreePreviewPath, type WorktreePreview } from './worktree';
+export { sanitizeGitName, worktreeNameFromWorkspace, worktreePreview, worktreePreviewPath, type WorktreePreview } from './worktree';
 export {
     BUCKET_POPOVER_WIDTH_PX,
     StatusFooter,
@@ -290,6 +291,8 @@ export {
     type ChromeSidebarEntry,
     type ChromeWorkspace,
     type GroupMoveRequest,
+    type GroupRepoChange,
+    type NewGroupRepo,
     type SidebarCallbacks,
     type WorkspaceMoveRequest,
     type WorkspacesMoveRequest

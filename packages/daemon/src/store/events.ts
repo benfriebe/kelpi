@@ -253,7 +253,10 @@ function groupChanged(before: WorkspaceGroup, after: WorkspaceGroup): boolean {
         before.isCollapsed !== after.isCollapsed ||
         before.childOrder !== after.childOrder ||
         before.createdAt !== after.createdAt ||
-        before.icon !== after.icon
+        before.icon !== after.icon ||
+        // app-state-core.md §5.5: a group's default repository and switch reach clients too.
+        before.repoID !== after.repoID ||
+        before.createWorktree !== after.createWorktree
     );
 }
 

@@ -4,8 +4,10 @@ import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createContentService } from '../../content/service.js';
+import type { GitService } from '../../git/index.js';
+import { stubGitService } from '../../git/testing.js';
 import type { DaemonState, WorkspaceGroup } from '../../store/index.js';
-import { harness, id, NOW, seeded } from './testing.js';
+import { flush, harness, id, NOW, seeded } from './testing.js';
 
 const W1 = id('aaaaaaaa', 1);
 const W2 = id('aaaaaaaa', 2);
@@ -164,6 +166,152 @@ describe('group-create / rename / delete', () => {
         } finally {
             content.dispose(); fs.rmSync(root, { recursive: true, force: true });
         }
+    });
+});
+
+describe('group-set-repo (app-state-core §5.5)', () => {
+    const REPO = '/code/kelpi';
+    const R1 = id('bbbbbbbb', 1);
+
+    /** `team` with no repo; git resolves anything under `/code/kelpi` to that checkout. */
+    function setup(overrides: Partial<GitService> = {}) {
+        const h = harness({
+            initial: seeded(1),
+            ids: [R1],
+            git: stubGitService({
+                resolveRepoRoot: async (directory) =>
+                    directory.startsWith(REPO) ? { worktreeRoot: directory, parentRepoRoot: REPO } : null,
+                getRemoteURL: async () => 'git@example.com:kelpi.git',
+                ...overrides
+            })
+        });
+        h.dispatch({ type: 'create-group', id: G1, name: 'team', now: NOW });
+        return h;
+    }
+
+    it('sets a repo by path, registering it (and its parent for a path inside a worktree)', async () => {
+        const h = setup();
+        expect(h.send({ command: 'group-set-repo', name: 'team', repo: `${REPO}/packages`, create_worktree: true })).toEqual([]);
+        await flush();
+        expect(h.replies[0]?.payloads[0]).toEqual({
+            ok: true,
+            group_id: G1,
+            group_name: 'team',
+            repo: { id: R1, name: 'kelpi', path: REPO },
+            create_worktree: true
+        });
+        expect(h.state().repos).toEqual([
+            expect.objectContaining({ id: R1, path: REPO, remoteURL: 'git@example.com:kelpi.git', isAutoDiscovered: false })
+        ]);
+        expect(h.state().groups[0]).toMatchObject({ repoID: R1, createWorktree: true });
+        expect(h.persists.length).toBeGreaterThan(0);
+
+        // `group-list` shows it, and only while it is set.
+        expect((h.reply({ command: 'group-list' })['groups'] as Record<string, unknown>[])[0]).toMatchObject({
+            repo: { id: R1, name: 'kelpi', path: REPO },
+            create_worktree: true
+        });
+    });
+
+    it('reuses an already-registered repo and promotes an auto-discovered one', async () => {
+        const h = setup();
+        h.dispatch({
+            type: 'add-repo',
+            repo: { id: R1, path: REPO, name: 'kelpi', remoteURL: null, lastAccessedAt: 1, isAutoDiscovered: true }
+        });
+        h.send({ command: 'group-set-repo', name: G1, repo: REPO });
+        await flush();
+        expect(h.state().repos).toHaveLength(1);
+        expect(h.state().repos[0]?.isAutoDiscovered).toBe(false);
+        expect(h.state().groups[0]).toMatchObject({ repoID: R1, createWorktree: false });
+    });
+
+    it('flips the switch alone, and clears the repo with the switch', async () => {
+        const h = setup();
+        h.send({ command: 'group-set-repo', name: 'team', repo: REPO });
+        await flush();
+        expect(h.reply({ command: 'group-set-repo', name: 'team', create_worktree: true })).toMatchObject({
+            ok: true,
+            create_worktree: true
+        });
+        expect(h.reply({ command: 'group-set-repo', name: 'team', clear: true })).toEqual({
+            ok: true,
+            group_id: G1,
+            group_name: 'team',
+            repo: null,
+            create_worktree: false
+        });
+        expect(h.state().groups[0]).toMatchObject({ repoID: null, createWorktree: false });
+        // The registry keeps the repo: clearing a group's default never unregisters anything.
+        expect(h.state().repos).toHaveLength(1);
+        const entry = (h.reply({ command: 'group-list' })['groups'] as Record<string, unknown>[])[0];
+        expect(entry).not.toHaveProperty('repo');
+        expect(entry).not.toHaveProperty('create_worktree');
+    });
+
+    it('refuses the switch on a group with no repository', () => {
+        const h = setup();
+        const before = h.state();
+        expect(h.reply({ command: 'group-set-repo', name: 'team', create_worktree: true })).toEqual({
+            ok: false,
+            error: "group 'team' has no repository to create worktrees from: set one first (kelpi group set-repo <group> <path>)"
+        });
+        expect(h.state()).toBe(before);
+    });
+
+    it('refuses a path outside any repository, and an unknown group', async () => {
+        const h = setup();
+        h.send({ command: 'group-set-repo', name: 'team', repo: '/tmp/plain' });
+        await flush();
+        expect(h.replies[0]?.payloads[0]).toEqual({ ok: false, error: '/tmp/plain is not inside a git repository' });
+        expect(h.state().repos).toEqual([]);
+        expect(h.state().groups[0]?.repoID).toBeNull();
+        expect(h.reply({ command: 'group-set-repo', name: 'ghost', clear: true })).toEqual({
+            ok: false,
+            error: "no group matches 'ghost'"
+        });
+    });
+
+    /** A registry row that is a monorepo SUBFOLDER: git would resolve it to `/code/kelpi`. */
+    const SUB = id('bbbbbbbb', 7);
+    function withSubfolderRow(isAutoDiscovered = false) {
+        const resolveRepoRoot = vi.fn(async (directory: string) =>
+            directory.startsWith(REPO) ? { worktreeRoot: REPO, parentRepoRoot: REPO } : null
+        );
+        const h = setup({ resolveRepoRoot });
+        h.dispatch({
+            type: 'add-repo',
+            repo: { id: SUB, path: `${REPO}/packages/app`, name: 'app', remoteURL: null, lastAccessedAt: 1, isAutoDiscovered }
+        });
+        return { h, resolveRepoRoot };
+    }
+
+    it('takes a registry row by id as is, promoting it, with no git and no duplicate', () => {
+        const { h, resolveRepoRoot } = withSubfolderRow(true);
+        expect(h.reply({ command: 'group-set-repo', name: 'team', repo_id: SUB, create_worktree: true })).toEqual({
+            ok: true,
+            group_id: G1,
+            group_name: 'team',
+            repo: { id: SUB, name: 'app', path: `${REPO}/packages/app` },
+            create_worktree: true
+        });
+        expect(resolveRepoRoot).not.toHaveBeenCalled();
+        expect(h.state().repos).toHaveLength(1);
+        // Adopted by a group, so §GIT-081's GC may never collect it.
+        expect(h.state().repos[0]?.isAutoDiscovered).toBe(false);
+        expect(h.reply({ command: 'group-set-repo', name: 'team', repo_id: id('bbbbbbbb', 99) })).toEqual({
+            ok: false,
+            error: `no repo matches '${id('bbbbbbbb', 99)}'`
+        });
+    });
+
+    it('takes a path the registry holds exactly as that row, not its top level', async () => {
+        const { h, resolveRepoRoot } = withSubfolderRow();
+        h.send({ command: 'group-set-repo', name: 'team', repo: `${REPO}/packages/app/` });
+        await flush();
+        expect(h.replies[0]?.payloads[0]).toMatchObject({ ok: true, repo: { id: SUB } });
+        expect(resolveRepoRoot).not.toHaveBeenCalled();
+        expect(h.state().repos.map((repo) => repo.id)).toEqual([SUB]);
     });
 });
 

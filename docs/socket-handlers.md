@@ -814,7 +814,11 @@ Entry shape (timestamps plain ISO 8601):
     // optional:
     "last_activity_at": "2026-08-18T02:05:00Z",           // max of the panes' lastActivityAt; absent with no panes
     "agent_session_id": "…",                              // the FIRST pane carrying one
-    "group_id": "…", "group_name": "Client X"             // absent for top-level workspaces
+    "group_id": "…", "group_name": "Client X",            // absent for top-level workspaces
+    "repos": [                                            // absent when it has no repo associations
+      {"repo_id": "…", "repo_name": "kelpi", "repo_path": "/code/kelpi",   // name/path absent if unregistered
+       "worktree_path": "/code/kelpi", "branch": "main"}                   // branch absent when unknown
+    ]
   }
 ]}
 ```
@@ -822,13 +826,14 @@ Entry shape (timestamps plain ISO 8601):
 ### 6.2 `workspace-create` → handleSocketWorkspaceCreate
 
 Inputs: `name?`, `path?`, `color?`, `group?`, `profile?`, `worktree?`, `branch?`,
-`updateMain` (bool), `repo?`, `muted` (bool, default false). `workspaceName = name ??
+`updateMain?` (bool; absent is not false, see (a) step 2), `repo?`, `muted` (bool, default
+false), `groupDefaults` (bool, default true; app-state-core.md §5.5). `workspaceName = name ??
 "Workspace"`. All three branches carry `muted` on the `create-workspace` action itself, so a
 muted workspace is muted from its first frame and its first pane never notifies (§6.7), and
 all three success replies echo `muted`, the state the workspace was created in, so a caller
 can tell a daemon that predates the field (it drops it and creates the workspace unmuted).
 
-Three branches, checked in this order:
+Four branches, checked in this order ((d) is checked before (b) and (c)):
 
 #### (a) Worktree branch (`worktree` non-null, non-empty) — issue #222
 
@@ -838,8 +843,11 @@ Three branches, checked in this order:
    otherwise →
    `error("unknown group: {g} — --worktree only supports existing groups; create it first (`kelpi group create`) or omit --group")`.
    The worktree path never creates a group (a failed async worktree add would orphan it).
-2. `repoPathRaw = repo ?? path`; missing/empty →
-   `error("--worktree requires a source repo (pass --repo <path>)")`. Standardize the path.
+2. `repoPathRaw = repo ?? groupRepo?.path ?? path`, where `groupRepo` is the resolved
+   group's default repository when `groupDefaults` is true (app-state-core.md §5.5); missing/
+   empty → `error("--worktree requires a source repo (pass --repo <path>)")`. Standardize
+   the path. `updateMain = updateMain ?? (groupDefaults && group.createWorktree)`: a group
+   whose switch is on makes update main the default, and an explicit `false` opts out.
 3. Sanitize names with the shared git-name sanitizer (preserves `A-Za-z0-9/._-`, collapses
    everything else — and runs of `-`/`/`/`.` — to single separators, trims leading/trailing
    `-/._ `; returns null when nothing survives):
@@ -863,7 +871,10 @@ Three branches, checked in this order:
      `worktreeErrorMessage`. Net effect: a pre-existing branch named like the worktree is
      reused rather than failing with "a branch named ... already exists".
    - `updateMain == true`: resolve the repo's default branch (via
-     `git ls-remote --symref`), `git fetch origin`, then
+     `git ls-remote --symref`); refuse a `safeBranch` that already exists locally
+     (`rev-parse --verify --quiet refs/heads/<b>`) with
+     `branch '<b>' already exists, and update main always creates a new branch off origin/<default>: choose another worktree or branch name, or turn off update main to check out the existing branch`
+     (no fetch is made); else `git fetch origin`, then
      `git worktree add -b <safeBranch> <worktreePath> origin/<default>`.
    - On success: dispatch workspace creation seeded with the worktree (name, color,
      `repos:[sourceRepo]`, resolved groupID, profile, the pre-minted id, and a worktree
@@ -872,15 +883,42 @@ Three branches, checked in this order:
 
      ```json
      {"ok": true, "workspace_id": "…", "workspace_name": "feature-x",
-      "worktree_path": "/Users/me/worktrees/feature-x", "branch": "feature-x", "group": "Client X"}
+      "worktree_path": "/Users/me/worktrees/feature-x", "branch": "feature-x",
+      "update_main": true, "repo_path": "/Users/me/code/app", "group": "Client X"}
      ```
-     (`group` present only when a group was resolved.)
+     (`group` present only when a group was resolved; `update_main` is the value used and
+     `repo_path` the standardized source repo.)
    - On failure: `{ok:false, error: worktreeErrorMessage(err)}` where the message is
      derived from git's stderr: prefer the **last** line starting with `fatal:`/`error:`
      (case-insensitive), else the last non-empty line, else the whole stderr, else the
      generic error description. (git prints "Preparing worktree (…)" *before* the real
      fatal line, so first-line reporting is wrong.)
    - The CLI runs this command with an extended read timeout (slow `git fetch`).
+
+#### (d) Repository branch (no worktree; a `repo`, or an existing group's default repository)
+
+`repoToAssociate = repo ?? (groupDefaults ? existingGroup's default repository path : nil)`
+(app-state-core.md §5.5). When it is set, the create is asynchronous (it resolves the path
+with git) and replies AFTER the effect, like (a):
+
+1. Ambiguous `group` name → the same ambiguity error as (c), before anything else.
+2. Pre-mint the workspace id. The group's repository is used as registered, by id, with no git
+   work (a registered subfolder or linked worktree row stays that row). A `repo` path is
+   resolved (`handlers/app/repos.ts` ▸ `resolveRepo`): a path the registry holds exactly is
+   that row, as is; any other path inside a checkout names that checkout's main repository,
+   which is registered (manual) when the registry lacks it; anything else →
+   `error("{path} is not inside a git repository")` with **nothing** created (no workspace,
+   no group). A repo reached this way that was auto-discovered is promoted to manual.
+3. The association is `{repoID, worktreePath: the checkout, branchName: its current branch
+   (best effort), isAutoDetected: false}`.
+4. Re-resolve the group (it may have changed while git ran): ambiguous → the error; unknown
+   → create it, as (c) does.
+5. Dispatch the create with that association, `workingDirectory = path ?? the checkout`.
+6. Reply `{"ok": true, "workspace_id", "workspace_name", "muted", "repo_path", "group"?}`.
+
+A group with no default repository (or `groupDefaults: false`) and no `repo` falls through to
+(b) / (c) unchanged, including their reply-before-effect ordering. The New Workspace sheet
+always sends `groupDefaults: false`: it associates the user's chosen repos itself.
 
 #### (b) Top-level branch (no worktree, `group` missing or whitespace-only)
 
@@ -1071,7 +1109,9 @@ follow each group's child order, skipping dangling ids.
   {
     "id": "…", "name": "Client X",
     "workspaces": [ {"id": "…", "name": "dev"}, {"id": "…", "name": "staging"} ],
-    "color": "blue"        // optional — omitted when the group has no color
+    "color": "blue",       // optional: omitted when the group has no color
+    "repo": {"id": "…", "name": "app", "path": "/code/app"},   // optional: only with a default repository (§7.6)
+    "create_worktree": true                                   // present exactly when `repo` is
   }
 ]}
 ```
@@ -1137,6 +1177,43 @@ which is exactly what the sidebar's `groupCommit` derives; a `toIndex` equal to 
 one, or outside `0 ..< topLevelOrder.count`, leaves state untouched (and therefore broadcasts
 nothing, so a stale drag springs back rather than landing somewhere arbitrary). Members ride
 along with the header: only the group's entry lives in the top-level order.
+
+### 7.6 `group-set-repo` → handleGroupSetRepo (request/response)
+
+Inputs: `nameOrID` (required), `repo?` (a path), `repoID?` (a registry row), `clear` (bool),
+`createWorktree?` (bool). The decoder has already refused more than one of `repo` / `repoID` /
+`clear`, `clear` with `createWorktree: true`, and a request with none of them. app-state-core.md §5.5 has the model.
+
+1. Strict `resolveGroup` or `error("no group matches '{nameOrID}'")`.
+2. `clear` → dispatch set-group-repo(id, repoID: null) (the switch goes off with it), persist,
+   reply.
+3. `repoID` → the registry row, or `error("no repo matches '{repoID}'")`; taken as is (no git
+   work), promoted out of auto-discovered status, dispatch set-group-repo(id, repoID,
+   createWorktree?), persist, reply. This is what the GUI's repository sheet sends for a registry row.
+4. No `repo` (the switch alone) → a group with no repository and `createWorktree: true` →
+   `error("group '{name}' has no repository to create worktrees from: set one first (kelpi group set-repo <group> <path>)")`;
+   else dispatch set-group-repo(id, its current repoID, createWorktree), persist, reply.
+5. `repo` → **asynchronously** resolve it exactly as §6.2 (d) step 2 does (registering or
+   promoting the repo; `error("{path} is not inside a git repository")` otherwise). If the
+   group was deleted meanwhile → `error("no group matches '{nameOrID}'")` (a registration
+   that already landed is kept and persisted). Else dispatch set-group-repo(id, repoID,
+   createWorktree?) (absent keeps the switch), persist, reply.
+
+Reply (the group's state after the change):
+
+```json
+{"ok": true, "group_id": "…", "group_name": "Client X",
+ "repo": {"id": "…", "name": "app", "path": "/code/app"}, "create_worktree": true}
+```
+
+`repo` is null when the group has none. The reducer keeps the invariants on its own as well:
+a `repoID` the registry does not hold is refused, and `createWorktree` is never true without
+a repo. `remove-repo` (Settings ▸ Repositories) clears every group's repo that pointed at it.
+The GUI reaches the same handler: the group repository sheet's Save sends this verb over the
+WS (a Choose Folder… path is registered here), and the New Group sheet instead passes
+`repo_id` / `create_worktree` on the WS-only `create-group-for-workspaces`, so a group is
+created with its repository in one change (that verb promotes an auto-discovered row too). A
+repository any group references is skipped by the auto-unlink GC (§GIT-081).
 
 ---
 

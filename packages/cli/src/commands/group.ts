@@ -4,21 +4,22 @@
  * `create` / `rename` / `delete` are fire-and-forget: exit 0 with no output whether or not the
  * argument resolved, so every assertion about them goes through a following `group list`.
  * `reorder` / `sort` are request/response and share one renderer, whose `--json` prints the
- * FULL reply including `ok` (unlike the pane family, which strips it).
+ * FULL reply including `ok` (unlike the pane family, which strips it). `set-repo` is
+ * request/response too, with the same full-reply `--json`.
  */
 
-import { hasHelpFlag, isHelpToken, parseFlag, popSwitch, rejectLeftoverArgs } from '../args.js';
+import { absoluteUserPath, hasHelpFlag, isHelpToken, parseFlag, popSwitch, rejectLeftoverArgs } from '../args.js';
 import { errLine, exit, printLine, writeErr, writeOut } from '../io.js';
 import { asString, asStringArray, stableStringify, type JsonObject } from '../json.js';
 import { decodeReply } from '../reply.js';
 import { printGroupTable, replyArray } from '../table.js';
 import { sendJSON } from '../transport.js';
-import { groupReorderUsage, groupSortUsage, groupUsage } from '../usage.js';
+import { groupReorderUsage, groupSetRepoUsage, groupSortUsage, groupUsage } from '../usage.js';
 
 export async function handleGroup(args: string[]): Promise<void> {
     const action = args.shift();
     if (action === undefined) {
-        errLine('Usage: kelpi group list|create|rename|delete|reorder|sort [...]');
+        errLine('Usage: kelpi group list|create|rename|delete|reorder|sort|set-repo [...]');
         exit(1);
     }
     if (isHelpToken(action)) {
@@ -39,11 +40,77 @@ export async function handleGroup(args: string[]): Promise<void> {
             return handleGroupReorder(args);
         case 'sort':
             return handleGroupSort(args);
+        case 'set-repo':
+            return handleGroupSetRepo(args);
         default:
             errLine(`Unknown group action: ${action}`);
-            errLine('Valid actions: list, create, rename, delete, reorder, sort');
+            errLine('Valid actions: list, create, rename, delete, reorder, sort, set-repo');
             exit(1);
     }
+}
+
+/**
+ * `kelpi group set-repo` (cli.md §11.7, app-state-core.md §5.5): a group's default repository
+ * and its "new workspaces create a worktree from latest main" switch. Request/response, so a
+ * path that is not a repository, or the switch on a group with none, is an error with exit 1.
+ */
+async function handleGroupSetRepo(args: string[]): Promise<void> {
+    if (hasHelpFlag(args)) {
+        writeOut(groupSetRepoUsage);
+        exit(0);
+    }
+    const none = popSwitch('--none', args);
+    const worktree = popSwitch('--worktree', args);
+    const noWorktree = popSwitch('--no-worktree', args);
+    const asJSON = popSwitch('--json', args);
+    const nameOrID = args.shift();
+    const repoPath = args.shift();
+    rejectLeftoverArgs(args, 'kelpi group set-repo', { usage: (write) => write(groupSetRepoUsage) });
+    if (nameOrID === undefined) {
+        writeErr(groupSetRepoUsage);
+        exit(1);
+    }
+    if (worktree && noWorktree) {
+        errLine("group set-repo can't take both --worktree and --no-worktree");
+        exit(1);
+    }
+    if (none && repoPath !== undefined) {
+        errLine("group set-repo takes a path or --none, not both");
+        exit(1);
+    }
+    if (none && worktree) {
+        errLine('group set-repo --none turns the worktree switch off; --worktree needs a repository');
+        exit(1);
+    }
+    if (!none && repoPath === undefined && !worktree && !noWorktree) {
+        writeErr(groupSetRepoUsage);
+        exit(1);
+    }
+
+    const payload: JsonObject = { command: 'group-set-repo', name: nameOrID };
+    // The daemon's cwd is not ours: a relative path is made absolute HERE, against the shell
+    // the user typed it in. `~` is left for the daemon to expand against its own home.
+    if (repoPath !== undefined) payload['repo'] = absoluteUserPath(repoPath);
+    if (none) payload['clear'] = true;
+    if (worktree) payload['create_worktree'] = true;
+    if (noWorktree) payload['create_worktree'] = false;
+    const reply = await decodeReply(payload, 'kelpi group set-repo', { timeoutSeconds: 30 });
+    if (asJSON) {
+        printLine(stableStringify(reply));
+        return;
+    }
+    const groupName = asString(reply['group_name']) ?? nameOrID;
+    const repo = reply['repo'];
+    const repoText =
+        typeof repo === 'object' && repo !== null && !Array.isArray(repo) ? asString(repo['path']) : undefined;
+    if (repoText === undefined) {
+        printLine(`group ${groupName} repo: none`);
+        return;
+    }
+    const createWorktree = reply['create_worktree'] === true;
+    printLine(
+        `group ${groupName} repo: ${repoText}${createWorktree ? ' (new workspaces create a worktree from latest main)' : ''}`
+    );
 }
 
 async function handleGroupList(args: string[]): Promise<void> {

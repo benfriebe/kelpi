@@ -64,7 +64,37 @@ export type ChromeWorkspace = Pick<WorkspaceState, 'id' | 'name' | 'color' | 'ic
     readonly muted?: boolean | undefined;
 };
 
-export type ChromeGroup = Pick<WorkspaceGroup, 'id' | 'name' | 'color' | 'icon' | 'isCollapsed'>;
+export type ChromeGroup = Pick<WorkspaceGroup, 'id' | 'name' | 'color' | 'icon' | 'isCollapsed'> & {
+    /**
+     * app-state-core.md §5.5: the group's default repository (a registry id) and its "new
+     * workspaces create a worktree from latest main" switch. Optional for the same reason as
+     * `ChromeWorkspace.profileName`: only the group repository sheet and the create sheets
+     * read them, and every hand-built fixture predates them. Absent reads as no repo, off.
+     */
+    readonly repoID?: string | null | undefined;
+    readonly createWorktree?: boolean | undefined;
+};
+
+/**
+ * What the group repository sheet saves (§5.5). `repoID` is a registry row, taken as is (a
+ * row may be a monorepo subfolder or a linked worktree, which a path would re-resolve into a
+ * different repo); `repoPath` is a folder the native panel returned (the daemon registers it),
+ * and `repoPath: null` is "None"; neither leaves the repository alone. `createWorktree` absent
+ * leaves the switch alone.
+ */
+export interface GroupRepoChange {
+    readonly repoID?: string | undefined;
+    readonly repoPath?: string | null | undefined;
+    readonly createWorktree?: boolean | undefined;
+}
+
+/**
+ * The New Group sheet's optional repository (§5.5) and the switch: a registry row by id, or a
+ * folder its Choose Folder… returned (desktop app only), which the daemon resolves and registers.
+ */
+export type NewGroupRepo =
+    | { readonly repoID: string; readonly createWorktree: boolean }
+    | { readonly repoPath: string; readonly createWorktree: boolean };
 
 /**
  * One top-level sidebar slot. Structurally identical to `state/selectors.ts`'s `SidebarEntry`,
@@ -139,6 +169,11 @@ export interface ChromeRepo {
     readonly name: string;
     readonly path: string;
     readonly worktreeBase: string;
+    /**
+     * Registered by auto-detect rather than by hand (§GIT-074). The group repository sheet hides
+     * these by default, as Settings ▸ Repositories does. Optional: absent reads as manual.
+     */
+    readonly isAutoDiscovered?: boolean | undefined;
 }
 
 /**
@@ -158,6 +193,13 @@ export interface NewWorkspaceExtras {
     readonly repoPaths?: readonly string[] | undefined;
     /** Create the workspace already muted (agent-lifecycle §7.6). */
     readonly muted?: boolean | undefined;
+    /**
+     * app-state-core.md §5.5: false = the daemon applies none of the group's default repository.
+     * The New Workspace sheet always sends false, because it has already shown those defaults
+     * and `repoPaths` / the worktree request ARE the user's final choice, "no repository"
+     * included. Absent (every other caller) lets the group's defaults apply.
+     */
+    readonly groupDefaults?: boolean | undefined;
 }
 
 export interface WorkspaceWorktreeRequest {
@@ -216,6 +258,13 @@ export interface SidebarCallbacks {
     readonly onSetWorkspaceMuted?: ((workspaceID: string, muted: boolean) => void) | undefined;
     /** §WS-065's "Color ▸". `null` is the submenu's "None": a group's colour is optional. */
     readonly onSetGroupColor?: ((groupID: string, color: WorkspaceColor | null) => void) | undefined;
+    /** app-state-core.md §5.5's repository sheet: the group's default repo and worktree switch. */
+    readonly onSetGroupRepo?: ((groupID: string, change: GroupRepoChange) => void) | undefined;
+    /**
+     * #283's native folder panel, desktop app only (absent in a browser, which hides the
+     * group repository sheet's Choose Folder…). Resolves to the chosen path, or null on cancel.
+     */
+    readonly onBrowseForFolder?: (() => Promise<string | null>) | undefined;
     readonly onRenameGroup?: ((groupID: string, name: string) => void) | undefined;
     readonly onDeleteGroup?: ((groupID: string, cascade: boolean) => void) | undefined;
     /**
@@ -236,8 +285,13 @@ export interface SidebarCallbacks {
               extras?: NewWorkspaceExtras | undefined
           ) => SubmitResult)
         | undefined;
-    /** `color` is the New Group form's swatch; `null`/absent is its "None" option (§WS-082). */
-    readonly onCreateGroup?: ((name: string, color?: WorkspaceColor | null | undefined) => void) | undefined;
+    /**
+     * `color` is the New Group form's swatch; `null`/absent is its "None" option (§WS-082).
+     * `repo` is its optional repository and worktree switch (app-state-core.md §5.5).
+     */
+    readonly onCreateGroup?:
+        | ((name: string, color?: WorkspaceColor | null | undefined, repo?: NewGroupRepo | undefined) => void)
+        | undefined;
 
     // ── bulk operations (§5.6's multi-select menu variant, §WS-055…§WS-060) ─────────
     //
@@ -252,7 +306,12 @@ export interface SidebarCallbacks {
         | undefined;
     /** "Group N Workspaces…": create the group with the selection already inside it. */
     readonly onCreateGroupForWorkspaces?:
-        | ((name: string, workspaceIDs: readonly string[], color?: WorkspaceColor | null | undefined) => void)
+        | ((
+              name: string,
+              workspaceIDs: readonly string[],
+              color?: WorkspaceColor | null | undefined,
+              repo?: NewGroupRepo | undefined
+          ) => void)
         | undefined;
     /** "Delete N Workspaces…", after ONE confirmation. Absent = falls back to N single deletes. */
     readonly onDeleteWorkspaces?: ((workspaceIDs: readonly string[]) => void) | undefined;

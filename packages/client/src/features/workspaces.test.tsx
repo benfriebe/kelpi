@@ -1,6 +1,6 @@
 import { createStore as createDaemonStore, emptyDaemonState } from '@kelpi/daemon/store';
 import { DEFAULT_WS_SETTINGS } from '@kelpi/protocol';
-import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { CommandReply } from '../connection';
@@ -62,6 +62,7 @@ function commands() {
         setGroupCollapsed: vi.fn<Commands['setGroupCollapsed']>().mockResolvedValue({ ok: true }),
         setGroupColor: vi.fn<Commands['setGroupColor']>().mockResolvedValue({ ok: true }),
         setGroupIcon: vi.fn<Commands['setGroupIcon']>().mockResolvedValue({ ok: true }),
+        setGroupRepo: vi.fn<Commands['setGroupRepo']>().mockResolvedValue({ ok: true }),
         setWorkspaceIcon: vi.fn<Commands['setWorkspaceIcon']>().mockResolvedValue({ ok: true }),
         setWorkspaceProfile: vi.fn<Commands['setWorkspaceProfile']>().mockResolvedValue({ ok: true }),
         setWorkspaceMuted: vi.fn<Commands['setWorkspaceMuted']>().mockResolvedValue({ ok: true })
@@ -258,6 +259,57 @@ describe('retained Workspaces actions', () => {
         expect(await h.actions.createWorkspaceWithWorktree('  task  ', G1, worktree, '/repo', { profile: 'work', color: 'purple' })).toBeNull();
         expect(h.rpc.createWorkspace).toHaveBeenLastCalledWith({ name: 'task', group: G1, repo: '/repo', worktree: 'task', branch: 'topic/task', updateMain: true, profile: 'work', color: 'purple' });
         expect(h.activate).toHaveBeenCalledExactlyOnceWith(W3);
+    });
+
+    it('carries a group’s repository through the repository sheet, the New Group sheet and the create sheet (§5.5)', async () => {
+        const h = setup();
+        h.actions.setGroupRepo(G1, { repoPath: '/repo/app', createWorktree: true });
+        expect(h.rpc.setGroupRepo).toHaveBeenLastCalledWith({ group: G1, repo: '/repo/app', createWorktree: true });
+        h.actions.setGroupRepo(G1, { repoPath: null });
+        expect(h.rpc.setGroupRepo).toHaveBeenLastCalledWith({ group: G1, repo: null });
+        h.actions.setGroupRepo(G1, { createWorktree: false });
+        expect(h.rpc.setGroupRepo).toHaveBeenLastCalledWith({ group: G1, createWorktree: false });
+        expect(h.run).toHaveBeenCalledWith('Group repository', expect.anything());
+
+        // A group created with a repository lands with it in one change.
+        h.actions.createGroup('app', null, { repoID: 'r1', createWorktree: true });
+        expect(h.rpc.createGroupForWorkspaces).toHaveBeenLastCalledWith({
+            name: 'app', workspaceIDs: [], repoID: 'r1', createWorktree: true
+        });
+        h.actions.createGroup('plain', null);
+        expect(h.rpc.createGroup).toHaveBeenLastCalledWith({ name: 'plain' });
+
+        // A folder from the sheet's Choose Folder… has no registry id: the group is created, then
+        // `group-set-repo` resolves and registers the folder once the new id is known.
+        h.actions.setGroupRepo(G1, { repoID: 'r1' });
+        expect(h.rpc.setGroupRepo).toHaveBeenLastCalledWith({ group: G1, repoID: 'r1' });
+        h.rpc.createGroupForWorkspaces.mockResolvedValueOnce({ ok: true, group_id: G2 });
+        await act(async () => { h.actions.createGroup('fresh', null, { repoPath: '/src/fresh', createWorktree: true }); });
+        expect(h.rpc.createGroupForWorkspaces).toHaveBeenLastCalledWith({ name: 'fresh', workspaceIDs: [] });
+        await waitFor(() => {
+            expect(h.rpc.setGroupRepo).toHaveBeenLastCalledWith({ group: G2, repo: '/src/fresh', createWorktree: true });
+        });
+
+        // The sheet's route takes its choice literally: the daemon must not add the default back.
+        h.daemon.dispatch({
+            type: 'add-repo',
+            repo: { id: 'r1', path: '/repo/app', name: 'app', remoteURL: null, lastAccessedAt: 1, isAutoDiscovered: false }
+        });
+        h.daemon.dispatch({ type: 'set-group-repo', id: G1, repoID: 'r1', createWorktree: false });
+        h.sync();
+        const props = { ...viewProps(h), repos: [{ id: 'r1', name: 'app', path: '/repo/app', worktreeBase: '/wt/app' }] };
+        render(<WorkspacesFeatureView {...props} />);
+        fireEvent.contextMenu(screen.getByTestId('group-header'));
+        fireEvent.click(within(screen.getByTestId('context-menu')).getByText('New Workspace'));
+        // Prefilled from the mirror's group; the user takes it off for this one.
+        fireEvent.click(screen.getByTestId('new-workspace-repo-remove-r1'));
+        fireEvent.change(screen.getByLabelText('New workspace name'), { target: { value: 'scratch' } });
+        fireEvent.click(screen.getByTestId('new-workspace-submit'));
+        await waitFor(() => { expect(h.rpc.createWorkspace).toHaveBeenCalled(); });
+        expect(h.rpc.createWorkspace).toHaveBeenLastCalledWith(expect.objectContaining({
+            name: 'scratch', group: G1, groupDefaults: false
+        }));
+        expect(h.rpc.addRepoAssociation).not.toHaveBeenCalled();
     });
 
     it('sends muted on create only when asked, for both create routes', async () => {

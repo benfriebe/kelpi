@@ -209,11 +209,13 @@ export function createKelpiAPI(transport, getContext = () => ({})) {
         }),
         workspaces: Object.freeze({
             list: (options = {}) => list('workspace-list', 'workspaces', { group: options.groupID }),
-            create: (options = {}) => run('workspace-create', {
+            // `update_main` is sent only when asked: absent lets a group whose worktree switch is on
+            // make update main the default, as it does for the CLI (app-state-core.md §5.5).
+            create: (options = {}) => run('workspace-create', clean({
                 name: options.name, path: options.path, color: options.color, group: options.groupID,
                 profile: options.profile, worktree: options.worktree, branch: options.branch,
-                update_main: options.updateMain ?? false, repo: options.repo, muted: options.muted,
-            }),
+                update_main: options.updateMain, repo: options.repo, muted: options.muted,
+            })),
             rename: (workspaceID, name) => run('rename-workspace', { workspace_id: workspaceID, name }),
             remove: (workspaceID, options = {}) => run('workspace-delete', { name: workspaceID, force: options.force ?? false }),
             move: (workspaceID, options = {}) => done('workspace-move', { name: workspaceID, group: options.groupID, index: options.index }),

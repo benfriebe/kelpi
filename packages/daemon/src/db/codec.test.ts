@@ -314,8 +314,19 @@ describe('group + association row decoding', () => {
             isCollapsed: true,
             childOrder: [W1],
             createdAt: 1_755_400_000,
-            icon: { kind: 'emoji', grapheme: '📁' }
+            icon: { kind: 'emoji', grapheme: '📁' },
+            repoID: null,
+            createWorktree: false
         } satisfies PersistedGroup);
+    });
+
+    it('reads the group repo columns (v22), and a pre-v22 row as no repo, switch off', () => {
+        const withRepo = decodeGroupRow(groupRow({ repoID: W2.toLowerCase(), createWorktree: 1 }))?.group;
+        expect(withRepo?.repoID).toBe(W2);
+        expect(withRepo?.createWorktree).toBe(true);
+        // `groupRow()` carries neither column: exactly what a row written before v22 reads as.
+        expect(decodeGroupRow(groupRow())?.group).toMatchObject({ repoID: null, createWorktree: false });
+        expect(decodeGroupRow(groupRow({ repoID: 'not-a-uuid', createWorktree: 1 }))?.group.repoID).toBeNull();
     });
 
     it('degrades an undecodable childOrderJSON to []', () => {
@@ -517,6 +528,28 @@ describe('encoding (§5.4)', () => {
         expect(row.childOrderJSON).toBe(`["${W1}"]`);
         expect(row.sortOrder).toBe(2);
         expect(row.color).toBeNull();
+        // A legacy-built group (no repo fields at all) writes NULL / 0.
+        expect(row.repoID).toBeNull();
+        expect(row.createWorktree).toBe(0);
+    });
+
+    it('encodes the group repo (v22) as an uppercase id and the switch as 0/1', () => {
+        const row = encodeGroupRow(
+            {
+                id: G1,
+                name: 'work',
+                color: null,
+                isCollapsed: false,
+                childOrder: [],
+                createdAt: 1_755_400_000,
+                icon: null,
+                repoID: W2.toLowerCase(),
+                createWorktree: true
+            },
+            0
+        );
+        expect(row.repoID).toBe(W2);
+        expect(row.createWorktree).toBe(1);
     });
 });
 

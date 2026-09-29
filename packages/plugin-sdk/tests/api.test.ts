@@ -61,6 +61,17 @@ describe('public SDK over Kelpi command handlers', () => {
         expect(await api.workspaces.remove(created.workspaceID)).toMatchObject({ workspaceID: created.workspaceID, workspaceName: 'Board' });
         expect(await api.workspaces.list()).toHaveLength(1);
     });
+    it('leaves update_main unsaid unless asked, so a group’s worktree switch can decide it (app-state-core §5.5)', async () => {
+        const { api, sent } = host();
+        const nowhere = path.join(os.tmpdir(), 'kelpi-sdk-no-such-repo');
+        await api.workspaces.create({ name: 'Tree', worktree: 'tree', repo: nowhere }).catch(() => undefined);
+        expect(sent.at(-1)).toMatchObject({ command: 'workspace-create', worktree: 'tree' });
+        expect(sent.at(-1)).not.toHaveProperty('update_main');
+        await api.workspaces.create({ name: 'Tree', worktree: 'tree', repo: nowhere, updateMain: false }).catch(() => undefined);
+        expect(sent.at(-1)).toMatchObject({ update_main: false });
+        await api.workspaces.create({ name: 'Tree', worktree: 'tree', repo: nowhere, updateMain: true }).catch(() => undefined);
+        expect(sent.at(-1)).toMatchObject({ update_main: true });
+    });
     it('creates muted workspaces, lists the flag and sets, clears or toggles it', async () => {
         const { api, app, sent } = host();
         const created = await api.workspaces.create({ name: 'Child', muted: true });

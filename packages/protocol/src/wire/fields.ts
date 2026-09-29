@@ -85,7 +85,10 @@ export const WIRE_FIELD_TYPES = {
     label_values: 'string[]',
     order: 'string[]',
     by: 'string',
-    descending: 'bool'
+    descending: 'bool',
+    create_worktree: 'bool',
+    repo_id: 'string',
+    group_defaults: 'bool'
 } as const satisfies Record<string, WireFieldKind>;
 
 export type WireFieldName = keyof typeof WIRE_FIELD_TYPES;
@@ -99,6 +102,7 @@ export const EMPTY_STRING_NORMALIZED_FIELDS: ReadonlySet<string> = new Set([
     'worktree',
     'branch',
     'repo',
+    'repo_id',
     'scope',
     'level',
     'send_to',

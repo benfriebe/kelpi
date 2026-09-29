@@ -350,23 +350,33 @@ Exit codes: 0 on success, non-zero on failure.
 
 export const workspaceCreateUsage = `Usage:
   kelpi workspace create [--name "..."] [--path /dir] [--color blue] \\
-                       [--group <name>] [--profile <name>] [--muted] [--json]
+                       [--group <name>] [--profile <name>] [--repo <path> | --no-repo] \\
+                       [--muted] [--json]
   kelpi workspace create --worktree <name> [--branch <name>] [--repo <path>] \\
-                       [--update-main] [--group <existing>] [--muted] [--json]
+                       [--update-main | --no-update-main] [--group <existing>] [--muted] [--json]
 
 Creates a new workspace and returns its id.
 
 Options:
   --name <name>      Workspace name.
-  --path /dir        Working directory for the workspace's first pane.
+  --path /dir        Working directory for the workspace's first pane; with
+                     --worktree, the source repo when neither --repo nor the
+                     group's repository gives one.
   --color <color>    Workspace color.
   --group <name>     Place the workspace in this group (created if missing,
                      unless --worktree is given, which requires an existing group).
+                     A group with a repository (\`kelpi group set-repo\`) starts the
+                     workspace with that repository associated.
   --profile <name>   Assign a workspace profile at creation.
+  --repo <path>      Repository to associate; with --worktree, the source repo
+                     (defaults to the group's repository, then --path, then
+                     the cwd).
+  --no-repo          Ignore the group's repository for this workspace.
   --worktree <name>  Create a git worktree and open the first pane in it.
   --branch <name>    Branch for the worktree (defaults to the worktree name).
-  --repo <path>      Source repo for the worktree (defaults to the cwd).
-  --update-main      Fetch and branch off origin/<default> for the worktree.
+  --update-main      Fetch and branch off origin/<default> for the worktree (the
+                     default in a group whose worktree switch is on).
+  --no-update-main   Branch off the current HEAD even in such a group.
   --muted            Create the workspace with its notifications muted.
   --json             Print the structured reply (incl. the new workspace id).
   -h, --help         Show this help.
@@ -464,17 +474,44 @@ workspace, --off together with --toggle).
 `;
 
 export const groupUsage = `Usage:
-  kelpi group list|create|rename|delete|reorder|sort [...]
+  kelpi group list|create|rename|delete|reorder|sort|set-repo [...]
 
 Subcommands:
-  list      List groups and their member workspaces.
+  list      List groups, their member workspaces and their repository.
   create    Create a new group.
   rename    Rename a group.
   delete    Delete a group (children promote unless --cascade).
   reorder   Rewrite a group's member order from an explicit id list.
   sort      Sort a group's members by name|last-activity|last-accessed.
+  set-repo  Set or clear a group's repository and its worktree switch.
 
 Run \`kelpi group <subcommand> --help\` for subcommand-specific usage.
+
+`;
+
+export const groupSetRepoUsage = `Usage:
+  kelpi group set-repo <name-or-id> <path> [--worktree | --no-worktree] [--json]
+  kelpi group set-repo <name-or-id> --none [--json]
+  kelpi group set-repo <name-or-id> --worktree | --no-worktree [--json]
+
+Sets a group's repository: new workspaces created in the group start with it
+associated. <path> may be anywhere inside the repository (a linked worktree
+names its main repository); it is registered if it is not already. --none
+clears it.
+
+With the worktree switch on, a new workspace in the group also creates a git
+worktree branched off the latest origin/<default> (a fetch first; the local
+main is never touched). The switch needs a repository, and clearing the
+repository turns it off.
+
+Options:
+  --none           Clear the group's repository (and its worktree switch).
+  --worktree       New workspaces create a worktree from latest main.
+  --no-worktree    New workspaces only associate the repository.
+  --json           Print the structured reply.
+  -h, --help       Show this help.
+
+Exit codes: 0 on success, non-zero on failure.
 
 `;
 

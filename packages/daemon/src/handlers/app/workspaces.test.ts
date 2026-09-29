@@ -1,8 +1,13 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import { GitCommandError, type GitService, type WorktreeAddRequest } from '../../git/index.js';
+import {
+    GitCommandError,
+    WorktreeBranchExistsError,
+    type GitService,
+    type WorktreeAddRequest
+} from '../../git/index.js';
 import { stubGitService } from '../../git/testing.js';
-import { createStore, emptyDaemonState, makeWorkspaceState, type DaemonState } from '../../store/index.js';
+import { createStore, emptyDaemonState, groupByID, makeWorkspaceState, type DaemonState } from '../../store/index.js';
 import { flush, harness, HOME, id, NOW, seeded } from './testing.js';
 
 const W1 = id('aaaaaaaa', 1);
@@ -311,6 +316,8 @@ describe('workspace-create (worktree)', () => {
             workspace_name: 'feature-x',
             worktree_path: `${HOME}/wt/kelpi/feature-x`,
             branch: 'feature-x',
+            update_main: false,
+            repo_path: '/code/kelpi',
             muted: false
         });
 
@@ -565,6 +572,209 @@ describe('workspace-create (worktree)', () => {
         expect(
             h.reply({ command: 'workspace-create', worktree: 'ok', branch: '!!!', repo: '/r' })
         ).toEqual({ ok: false, error: `"!!!" isn't a usable branch name` });
+    });
+
+    it('surfaces the clear existing-branch refusal of an update-main worktree (graft-git §8.5)', async () => {
+        const h = harness({
+            git: stubGit({
+                worktreeAdd: async (request) => {
+                    throw new WorktreeBranchExistsError(request.branchName, 'origin/main');
+                }
+            })
+        });
+        h.send({ ...worktreeRequest, update_main: true });
+        await flush();
+        expect(h.replies[0]?.payloads[0]).toEqual({
+            ok: false,
+            error:
+                "branch 'feature-x' already exists, and update main always creates a new branch off origin/main: " +
+                'choose another worktree or branch name, or turn off update main to check out the existing branch'
+        });
+        expect(h.state().workspaces).toHaveLength(0);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// workspace-create with a group's default repository (app-state-core §5.5)
+// ---------------------------------------------------------------------------
+
+describe('workspace-create (group default repository)', () => {
+    const R1 = id('dddddddd', 90);
+    const REPO = '/code/kelpi';
+
+    /** A group `team` whose default repo is `/code/kelpi`, with the worktree switch as given. */
+    function withGroupRepo(createWorktree: boolean, overrides: Partial<GitService> = {}) {
+        const requests: WorktreeAddRequest[] = [];
+        const h = harness({
+            worktreeBasePath: '~/wt/<repo>',
+            git: stubGit({
+                worktreeAdd: async (request) => {
+                    requests.push(request);
+                },
+                resolveRepoRoot: async (directory) =>
+                    directory.startsWith(REPO) ? { worktreeRoot: REPO, parentRepoRoot: REPO } : null,
+                getCurrentBranch: async () => 'main',
+                ...overrides
+            })
+        });
+        h.dispatch(
+            {
+                type: 'add-repo',
+                repo: { id: R1, path: REPO, name: 'kelpi', remoteURL: null, lastAccessedAt: 1, isAutoDiscovered: false }
+            },
+            { type: 'create-group', id: G1, name: 'team', now: NOW },
+            { type: 'set-group-repo', id: G1, repoID: R1, createWorktree }
+        );
+        return { h, requests };
+    }
+
+    it('branches a worktree from the group’s repo, updating main when the switch is on', async () => {
+        const { h, requests } = withGroupRepo(true);
+        // The CLI's shape with `--group` and no `--repo`: its cwd rides as the `path` fallback.
+        h.send({ command: 'workspace-create', name: 'fix', group: 'team', worktree: 'fix', path: '/Users/test/elsewhere' });
+        await flush();
+        expect(requests).toEqual([
+            { repoPath: REPO, worktreePath: `${HOME}/wt/kelpi/fix`, branchName: 'fix', updateMain: true }
+        ]);
+        expect(h.replies[0]?.payloads[0]).toMatchObject({
+            ok: true,
+            group: 'team',
+            update_main: true,
+            repo_path: REPO,
+            worktree_path: `${HOME}/wt/kelpi/fix`
+        });
+        const workspace = h.state().workspaces[0];
+        expect(workspace?.repoAssociations).toEqual([
+            expect.objectContaining({ repoID: R1, worktreePath: `${HOME}/wt/kelpi/fix`, branchName: 'fix' })
+        ]);
+        expect(groupByID(h.state(), G1)?.childOrder).toEqual([workspace?.id]);
+    });
+
+    it('lets an explicit update_main false (`--no-update-main`) win over the switch', async () => {
+        const { h, requests } = withGroupRepo(true);
+        h.send({ command: 'workspace-create', group: 'team', worktree: 'fix', update_main: false });
+        await flush();
+        expect(requests[0]).toMatchObject({ repoPath: REPO, updateMain: false });
+        expect(h.replies[0]?.payloads[0]).toMatchObject({ ok: true, update_main: false });
+    });
+
+    it('uses the group’s repo but not update main while the switch is off', async () => {
+        const { h, requests } = withGroupRepo(false);
+        h.send({ command: 'workspace-create', group: 'team', worktree: 'fix' });
+        await flush();
+        expect(requests[0]).toMatchObject({ repoPath: REPO, updateMain: false });
+    });
+
+    it('lets an explicit repo win over the group’s', async () => {
+        const { h, requests } = withGroupRepo(true);
+        h.send({ command: 'workspace-create', group: 'team', worktree: 'fix', repo: '/code/other' });
+        await flush();
+        // The switch is the group's policy, so it still chooses update main.
+        expect(requests[0]).toMatchObject({ repoPath: '/code/other', updateMain: true });
+    });
+
+    it('takes the request literally with group_defaults false (the sheet’s own choice)', async () => {
+        const { h, requests } = withGroupRepo(true);
+        h.send({ command: 'workspace-create', group: 'team', worktree: 'fix', path: '/code/other', group_defaults: false });
+        await flush();
+        expect(requests[0]).toMatchObject({ repoPath: '/code/other', updateMain: false });
+
+        // …and without a worktree, no association at all: the user took the repo off.
+        h.send({ command: 'workspace-create', name: 'plain', group: 'team', group_defaults: false });
+        await flush();
+        const plain = h.state().workspaces.find((workspace) => workspace.name === 'plain');
+        expect(plain?.repoAssociations).toEqual([]);
+    });
+
+    it('associates the group’s repo with a plain create, and opens the first pane in it', async () => {
+        const { h } = withGroupRepo(false);
+        expect(h.send({ command: 'workspace-create', name: 'dev', group: 'team' })).toEqual([]);
+        await flush();
+        expect(h.replies[0]?.payloads[0]).toMatchObject({
+            ok: true,
+            workspace_name: 'dev',
+            group: 'team',
+            repo_path: REPO
+        });
+        const workspace = h.state().workspaces[0];
+        expect(workspace?.repoAssociations).toEqual([
+            expect.objectContaining({ repoID: R1, worktreePath: REPO, branchName: 'main', isAutoDetected: false })
+        ]);
+        expect(workspace?.panes[0]?.workingDirectory).toBe(REPO);
+        expect(groupByID(h.state(), G1)?.childOrder).toEqual([workspace?.id]);
+        expect(h.persists.length).toBeGreaterThan(0);
+        // The CLI can see it: `workspace-list` names the association.
+        const entries = h.reply({ command: 'workspace-list' })['workspaces'] as Record<string, unknown>[];
+        expect(entries[0]?.['repos']).toEqual([
+            { repo_id: R1, repo_name: 'kelpi', repo_path: REPO, worktree_path: REPO, branch: 'main' }
+        ]);
+    });
+
+    it('keeps an explicit path for the first pane', async () => {
+        const { h } = withGroupRepo(false);
+        h.send({ command: 'workspace-create', name: 'dev', group: 'team', path: '/Users/test' });
+        await flush();
+        expect(h.state().workspaces[0]?.panes[0]?.workingDirectory).toBe('/Users/test');
+        expect(h.state().workspaces[0]?.repoAssociations).toHaveLength(1);
+    });
+
+    it('associates an explicit repo without a group, registering it when new', async () => {
+        const h = harness({
+            git: stubGit({
+                resolveRepoRoot: async () => ({ worktreeRoot: '/code/new/wt', parentRepoRoot: '/code/new' }),
+                getRemoteURL: async () => 'git@example.com:new.git',
+                getCurrentBranch: async () => 'topic'
+            })
+        });
+        h.send({ command: 'workspace-create', name: 'n', repo: '/code/new/wt/src' });
+        await flush();
+        expect(h.replies[0]?.payloads[0]).toMatchObject({ ok: true, repo_path: '/code/new' });
+        expect(h.state().repos).toEqual([
+            expect.objectContaining({ path: '/code/new', name: 'new', remoteURL: 'git@example.com:new.git', isAutoDiscovered: false })
+        ]);
+        expect(h.state().workspaces[0]?.repoAssociations).toEqual([
+            expect.objectContaining({ worktreePath: '/code/new/wt', branchName: 'topic' })
+        ]);
+    });
+
+    it('refuses a repo that is not a repository and creates nothing', async () => {
+        const h = harness({ git: stubGit({ resolveRepoRoot: async () => null }) });
+        h.send({ command: 'workspace-create', name: 'n', group: 'fresh', repo: '/tmp/plain' });
+        await flush();
+        expect(h.replies[0]?.payloads[0]).toEqual({ ok: false, error: '/tmp/plain is not inside a git repository' });
+        expect(h.state().workspaces).toHaveLength(0);
+        // The unknown group was NOT minted for a create that failed.
+        expect(h.state().groups).toHaveLength(0);
+    });
+
+    it('uses a group’s repo row as is: a subfolder row is never re-resolved into a duplicate', async () => {
+        const SUB = id('dddddddd', 91);
+        const resolveRepoRoot = vi.fn(async () => ({ worktreeRoot: REPO, parentRepoRoot: REPO }));
+        const h = harness({ git: stubGit({ resolveRepoRoot, getCurrentBranch: async () => 'main' }) });
+        h.dispatch(
+            {
+                type: 'add-repo',
+                repo: { id: SUB, path: `${REPO}/packages/app`, name: 'app', remoteURL: null, lastAccessedAt: 1, isAutoDiscovered: false }
+            },
+            { type: 'create-group', id: G1, name: 'team', now: NOW, repoID: SUB }
+        );
+        h.send({ command: 'workspace-create', name: 'dev', group: 'team' });
+        await flush();
+        expect(h.replies[0]?.payloads[0]).toMatchObject({ ok: true, repo_path: `${REPO}/packages/app` });
+        expect(resolveRepoRoot).not.toHaveBeenCalled();
+        expect(h.state().repos.map((repo) => repo.id)).toEqual([SUB]);
+        expect(h.state().workspaces[0]?.repoAssociations).toEqual([
+            expect.objectContaining({ repoID: SUB, worktreePath: `${REPO}/packages/app` })
+        ]);
+    });
+
+    it('does nothing new for a group without a repo: the old reply-before-effect create', () => {
+        const h = harness({ git: stubGit() });
+        h.dispatch({ type: 'create-group', id: G1, name: 'team', now: NOW });
+        const reply = h.reply({ command: 'workspace-create', name: 'dev', group: 'team' });
+        expect(reply).toMatchObject({ ok: true, group: 'team' });
+        expect(reply).not.toHaveProperty('repo_path');
+        expect(h.state().workspaces[0]?.repoAssociations).toEqual([]);
     });
 });
 

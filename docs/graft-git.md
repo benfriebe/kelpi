@@ -1273,7 +1273,10 @@ the 120s worktree command timeout because each can run git for a while.
 Single source of truth for turning a user-entered worktree/branch name into a value
 safe as both a filesystem path component and a git ref. Applied server-side on every
 path (GUI sheet, inspector, socket `workspace-create`); the GUI also shows the
-sanitized preview live.
+sanitized preview live, and the New Workspace sheet autofills the worktree name from the
+workspace name with it (lowercased first). It lives in `@kelpi/core/git`, one implementation
+imported by both the daemon (`git/names.ts` re-exports it) and the client, so the preview
+cannot drift from what the daemon creates.
 
 ```
 slug = name.replace(/[^A-Za-z0-9\/._-]+/g, "-")   // anything unsafe → single hyphen
@@ -1365,9 +1368,15 @@ Socket specifics (`workspace-create` wire fields: `worktree`, `branch`,
  "group":"experiments"}
 ```
 
-- The CLI **always** sends `repo` when `--worktree` is set (defaults to the CLI's
-  cwd). Server guards: missing/empty repo → `{"ok":false,"error":"--worktree
-  requires a source repo (pass --repo <path>)"}`.
+- The source repo is `repo`, else the group's default repository (app-state-core.md
+  §5.5; only for an existing `group`, and not with `"group_defaults":false`), else
+  `path`. The CLI sends `repo` when `--repo` is given; without it, it sends its cwd as
+  `repo` when there is no `--group`, and as the `path` fallback when there is one, so
+  the group's repository is preferred. Server guards: nothing to branch from →
+  `{"ok":false,"error":"--worktree requires a source repo (pass --repo <path>)"}`.
+- `update_main` absent means the group's `createWorktree` switch (true when it is on),
+  else false; an explicit `false` (`--no-update-main`) opts out of the group's default.
+  The reply echoes the value used (`update_main`) and the source (`repo_path`).
 - `repo` path is standardized; matched against the registry by standardized path
   (found → reuse the Repo id; else mint a new Repo).
 - `--group` on the worktree path only composes with an **existing** group: unknown →
@@ -1385,8 +1394,23 @@ Socket specifics (`workspace-create` wire fields: `worktree`, `branch`,
 ```
 
 - CLI success line: `created workspace <name> (<id>)[ in group <g>] with worktree
-  <path> on branch <branch>`. Reply read timeout is extended to 120s for this
-  command.
+  <path> on branch <branch>[ off the latest main]`. Reply read timeout is extended to
+  120s for this command.
+
+**"Latest main" and an existing branch.** Update main is "a worktree from latest main":
+`defaultBranch` (remote symref, then `origin/HEAD`, then `main`), `git fetch origin`,
+then `git worktree add -b <branch> <path> origin/<default>`; the local default branch is
+never checked out or moved. Because `-b` is always passed, a branch name that already
+exists can only fail, and git's own `fatal: a branch named '<b>' already exists` says
+nothing about why. So `performWorktreeAdd` checks `refs/heads/<branch>` first (after the
+default-branch lookup, which may itself ask the remote, and before the fetch, so no fetch is
+made) and
+refuses with `branch '<b>' already exists, and update main always creates a new branch off
+origin/<default>: choose another worktree or branch name, or turn off update main to check
+out the existing branch` (`WorktreeBranchExistsError`, `packages/daemon/src/git/service.ts`).
+Without update main, an existing branch is attached as before. Only a LOCAL branch counts: a
+name that exists solely as the remote branch `origin/<b>` passes the check, and the worktree
+gets a new local `<b>` off `origin/<default>` that does not track `origin/<b>`.
 
 ### 8.6 `worktreeErrorMessage`
 
@@ -1472,7 +1496,8 @@ Not graft-specific but it feeds graft's association set
   `isAutoDetected` association whose worktree no longer contains any pane's cwd
   (exact-or-prefix match on canonicalized paths, standardized and then symlinks
   resolved on both sides, so `/tmp` and `/private/tmp` spellings match; including
-  parked panes). GC auto-discovered repos with no remaining associations anywhere.
+  parked panes). GC auto-discovered repos with no remaining associations anywhere and no group
+  pointing at them as its default repository (app-state-core.md §5.5).
   Fire stopHeadWatcher + graft forceStop per removed association.
 
 ### 8.10 Repo registry verbs (Settings > Repositories)

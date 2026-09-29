@@ -35,12 +35,20 @@ export interface GroupOrder { groupID: string; groupName: string; order: string[
 export interface WorkspaceIdentity { workspaceID: string; workspaceName: string }
 export interface WorkspaceCreateOptions {
     name?: string; path?: string; color?: WorkspaceColor; groupID?: string; profile?: string;
+    /**
+     * `updateMain` omitted follows the group's "create a worktree from latest main" switch; `repo`
+     * omitted uses the group's default repository, when it has one.
+     */
     worktree?: string; branch?: string; updateMain?: boolean; repo?: string;
     /** Create the workspace already muted, so its first agent never notifies. */
     muted?: boolean;
 }
 export interface WorkspaceCreated extends WorkspaceIdentity {
     group?: string; worktreePath?: string; branch?: string;
+    /** The repository the workspace was associated with: the request's, or its group's default. */
+    repoPath?: string;
+    /** Worktree creates only: whether the worktree branched off a freshly fetched origin default. */
+    updateMain?: boolean;
     /** The state the workspace was created in, so a `muted: true` request can be confirmed. */
     muted: boolean;
 }

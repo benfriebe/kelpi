@@ -21,7 +21,7 @@ import { harness, type Harness } from '../handlers/pane/testing.js';
 import { DEVICE_TOKEN_PREFIX } from '../lifecycle/devices.js';
 import type { ControlDispatcher } from '../seams.js';
 import { createDesktopChannel, SHELL_ACTION_EVENT, type DesktopChannel } from './desktop.js';
-import { createSyncHub, MAX_PENDING_FOLDER_CHOICES, type SyncSession } from './sync.js';
+import { createSyncHub, MAX_PENDING_SHELL_ANSWERS, type SyncSession } from './sync.js';
 import { recordingTransport, type RecordedTransport } from './testing.js';
 
 const DAEMON = { version: '0.1.0', build: '42', pid: 4242 };
@@ -308,12 +308,12 @@ describe('every pending request ends (#283)', () => {
         const oldest = f.connect();
         const asker = f.connect();
         await ask(oldest, { request_id: 'R0', window_id: 'WIN-1' });
-        for (let index = 1; index <= MAX_PENDING_FOLDER_CHOICES; index++) {
+        for (let index = 1; index <= MAX_PENDING_SHELL_ANSWERS; index++) {
             await ask(asker, { request_id: `R${String(index)}`, window_id: 'WIN-1' });
         }
         expect(results(oldest)).toEqual([{ type: WS_CHOOSE_FOLDER_RESULT_MESSAGE, requestID: 'R0', path: null, windowID: 'WIN-1' }]);
         answer(shell, { requestID: 'R0', windowID: 'WIN-1', path: '/oldest' });
-        answer(shell, { requestID: `R${String(MAX_PENDING_FOLDER_CHOICES)}`, windowID: 'WIN-1', path: '/newest' });
+        answer(shell, { requestID: `R${String(MAX_PENDING_SHELL_ANSWERS)}`, windowID: 'WIN-1', path: '/newest' });
         expect(paths(oldest)).toEqual([null]);
         expect(paths(asker)).toEqual(['/newest']);
     });
@@ -322,7 +322,7 @@ describe('every pending request ends (#283)', () => {
         const f = fixture();
         const shell = f.shell();
         const asker = f.connect();
-        for (let index = 0; index < MAX_PENDING_FOLDER_CHOICES; index++) {
+        for (let index = 0; index < MAX_PENDING_SHELL_ANSWERS; index++) {
             await ask(asker, { request_id: `R${String(index)}`, window_id: 'WIN-1' });
         }
         // Refused by the channel for its length; it must not have been counted first.

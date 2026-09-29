@@ -9,7 +9,7 @@ import path from 'node:path';
 
 import {
     CLIPBOARD_IMAGE_DIR,
-    MAX_FOLDER_REQUEST_ID_LENGTH,
+    MAX_SHELL_ANSWER_REQUEST_ID_LENGTH,
     MAX_PASTE_IMAGE_BYTES,
     SHELL_ACTION_EVENT,
     clippedByBorder,
@@ -243,7 +243,7 @@ describe('shell-action', () => {
         for (const payload of [
             { action: 'choose-folder-dialog', window_id: 'w-1' },
             { action: 'choose-folder-dialog', request_id: '', window_id: 'w-1' },
-            { action: 'choose-folder-dialog', request_id: 'x'.repeat(MAX_FOLDER_REQUEST_ID_LENGTH + 1), window_id: 'w-1' },
+            { action: 'choose-folder-dialog', request_id: 'x'.repeat(MAX_SHELL_ANSWER_REQUEST_ID_LENGTH + 1), window_id: 'w-1' },
             // Unaddressed, it would raise a panel in every attached shell window for one click.
             { action: 'choose-folder-dialog', request_id: 'req-1' }
         ]) {
@@ -257,10 +257,34 @@ describe('shell-action', () => {
         const f = fixture();
         const reply = await f.channel.run('shell-action', {
             action: 'choose-folder-dialog',
-            request_id: 'x'.repeat(MAX_FOLDER_REQUEST_ID_LENGTH + 1),
+            request_id: 'x'.repeat(MAX_SHELL_ANSWER_REQUEST_ID_LENGTH + 1),
             window_id: 'w-1'
         });
         expect(String(reply['error'])).toContain('too long');
+    });
+
+    it('broadcasts a dropped-files request with its id and window, and refuses one without (#288)', async () => {
+        const f = fixture();
+        const reply = await f.channel.run('shell-action', {
+            action: 'resolve-dropped-files',
+            request_id: 'drop-1',
+            window_id: 'w-1'
+        });
+        expect(reply).toEqual({ ok: true, action: 'resolve-dropped-files', request_id: 'drop-1' });
+        expect(f.h.broadcasts).toEqual([
+            { type: SHELL_ACTION_EVENT, action: 'resolve-dropped-files', windowID: 'w-1', requestID: 'drop-1' }
+        ]);
+        for (const payload of [
+            { action: 'resolve-dropped-files', window_id: 'w-1' },
+            { action: 'resolve-dropped-files', request_id: 'x'.repeat(MAX_SHELL_ANSWER_REQUEST_ID_LENGTH + 1), window_id: 'w-1' },
+            // Unaddressed, every attached window would go looking for a stash only one page holds.
+            { action: 'resolve-dropped-files', request_id: 'drop-2' }
+        ]) {
+            const refused = await f.channel.run('shell-action', payload);
+            expect(refused, JSON.stringify(payload)).toMatchObject({ ok: false });
+            expect(String(refused['error'])).toContain('resolve-dropped-files');
+        }
+        expect(f.h.broadcasts).toHaveLength(1);
     });
 
     it('carries no request id on the one-way actions', async () => {

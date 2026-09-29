@@ -1,7 +1,9 @@
+import { MAX_DROPPED_FILES } from '@kelpi/protocol';
 import { describe, expect, it } from 'vitest';
 
 import {
     chooseFolderAnswer,
+    droppedFilesAnswer,
     isForwardableOpenPath,
     parseShellAction,
     parseWindowChrome,
@@ -106,6 +108,17 @@ describe('parseShellAction', () => {
         expect(parseShellAction({ action: 'choose-folder-dialog', windowID: 'w1', requestID: 7 })).toBeNull();
     });
 
+    it('decodes a dropped-files request, and refuses one with no id or no window (#288)', () => {
+        expect(parseShellAction({ action: 'resolve-dropped-files', windowID: 'w1', requestID: 'd1' })).toEqual({
+            action: 'resolve-dropped-files',
+            windowID: 'w1',
+            paneID: null,
+            requestID: 'd1'
+        });
+        expect(parseShellAction({ action: 'resolve-dropped-files', requestID: 'd1' })).toBeNull();
+        expect(parseShellAction({ action: 'resolve-dropped-files', windowID: 'w1' })).toBeNull();
+    });
+
     it('keeps a request id off the one-way actions', () => {
         expect(parseShellAction({ action: 'open-file-dialog', requestID: 'r1' })?.requestID).toBeNull();
     });
@@ -135,6 +148,33 @@ describe('chooseFolderAnswer (#283)', () => {
     });
 
 
+});
+
+describe('droppedFilesAnswer (#288)', () => {
+    it('carries the paths, the unresolved count, the id and the REQUEST’s window', () => {
+        expect(droppedFilesAnswer('d1', 'w1', { paths: ['/a b', '/c'], unresolved: 1 })).toEqual({
+            type: 'dropped-files-answer',
+            requestID: 'd1',
+            paths: ['/a b', '/c'],
+            unresolved: 1,
+            windowID: 'w1'
+        });
+    });
+
+    it('counts a path that is not absolute as unresolved, and sends an error only when there is one', () => {
+        const answer = droppedFilesAnswer('d1', 'w1', { paths: ['/ok', 'relative', ''], unresolved: 0, error: '' });
+        expect(answer.paths).toEqual(['/ok']);
+        expect(answer.unresolved).toBe(2);
+        expect('error' in answer).toBe(false);
+        expect(droppedFilesAnswer('d1', 'w1', { paths: [], unresolved: 0, error: 'gone' }).error).toBe('gone');
+    });
+
+    it('counts the paths past the cap as unresolved rather than dropping them silently (#288 review)', () => {
+        const many = Array.from({ length: MAX_DROPPED_FILES + 4 }, (_value, index) => `/f${String(index)}`);
+        const answer = droppedFilesAnswer('d1', 'w1', { paths: many, unresolved: 1 });
+        expect(answer.paths).toHaveLength(MAX_DROPPED_FILES);
+        expect(answer.unresolved).toBe(5);
+    });
 });
 
 describe('scriptedFolderAnswer (the KELPI_AUDIT_CHOOSE_FOLDER seam)', () => {

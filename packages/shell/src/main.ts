@@ -110,6 +110,7 @@ import { contentContextMenuLogLine, contentContextMenuTemplate } from './context
 import { createUnresponsiveWatchdog } from './unresponsive.js';
 import { focusWindowContents, presentWindow, presentWindowLogLine } from './window-present.js';
 import { isForwardableOpenPath, scriptedFolderAnswer } from './shell-actions.js';
+import { resolveDroppedFiles, serialized, type DroppedFilesResult } from './dropped-files.js';
 import { titleBarLogLine, titleBarStyleFor, trafficLightQuery, windowButtonsLogLine, windowButtonsVisible } from './titlebar.js';
 import { describeSkillRefresh, refreshBundledSkill } from './skill.js';
 import { createStatusController, type StatusController } from './status.js';
@@ -1077,6 +1078,23 @@ function promptChooseFolder(): Promise<string | null> {
     });
 }
 
+/**
+ * #288: the paths behind the `File`s a drop onto a terminal pane left on this window's page.
+ *
+ * The page cannot read them itself (no preload, so no `webUtils.getPathForFile`, and Chromium
+ * keeps file paths out of a drag's text), so it parks the `File`s and asks through the daemon;
+ * `./dropped-files.ts` does the reading over `webContents.debugger` (`DOM.getFileInfo`) and has
+ * the security argument. Serialized, because the lookup attaches and detaches the debugger and
+ * two overlapping ones would pull it out from under each other.
+ */
+const resolveDroppedFilesInWindow = serialized(async (requestID: string): Promise<DroppedFilesResult> => {
+    const window = mainWindow;
+    if (window === null || window.isDestroyed()) {
+        return { paths: [], unresolved: 0, error: 'the window is gone' };
+    }
+    return resolveDroppedFiles(window.webContents.debugger, requestID);
+});
+
 /** What the updater needs to know about this build (`./updater.ts`). */
 function updateHost(): UpdateHost {
     let repo: string | undefined;
@@ -1534,6 +1552,8 @@ function startStatusController(): void {
                 promptOpenFile: (paneID) => promptOpenFile(paneID),
                 // #283: the folder panel, whose answer `status.ts` sends back to the asking page.
                 promptChooseFolder: () => promptChooseFolder(),
+                // #288: a drop's paths, read off this window's page through its debugger.
+                resolveDroppedFiles: (requestID) => resolveDroppedFilesInWindow(requestID),
                 /**
                  * §AGNT-117's one-shot migration.
                  *

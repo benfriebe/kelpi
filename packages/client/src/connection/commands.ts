@@ -45,7 +45,7 @@ import type {
     SyncAction,
     WorkspaceColor
 } from '@kelpi/protocol';
-import { CHOOSE_FOLDER_DIALOG_ACTION } from '@kelpi/protocol';
+import { CHOOSE_FOLDER_DIALOG_ACTION, type RESOLVE_DROPPED_FILES_ACTION } from '@kelpi/protocol';
 
 import type { ConnectionStatus, KelpiConnection } from './socket';
 
@@ -968,14 +968,20 @@ export class CommandClient {
      * `open` verb — a browser client has no shell to ask, which is why the caller checks
      * `shellWindowID` first and prompts for a path instead.
      *
-     * `choose-folder-dialog` (#283) is the one action with an answer: it carries a `requestID`,
-     * and the chosen directory comes back to this connection as a `choose-folder-result` event
-     * (`app/folder-chooser.ts` holds the pending promise). The reply to THIS command only says
-     * whether the daemon accepted the request.
+     * `choose-folder-dialog` (#283) and `resolve-dropped-files` (#288) are the actions with an
+     * answer: each carries a `requestID`, and the chosen directory or the dropped files' paths
+     * come back to this connection as a `choose-folder-result` / `dropped-files-result` event
+     * (`app/folder-chooser.ts` / `app/dropped-files.ts` hold the pending promises). The reply to
+     * THIS command only says whether the daemon accepted the request.
      */
     shellAction(
         input: {
-            action: 'open-file-dialog' | 'install-cli' | 'check-for-updates' | typeof CHOOSE_FOLDER_DIALOG_ACTION;
+            action:
+                | 'open-file-dialog'
+                | 'install-cli'
+                | 'check-for-updates'
+                | typeof CHOOSE_FOLDER_DIALOG_ACTION
+                | typeof RESOLVE_DROPPED_FILES_ACTION;
             windowID?: string | null;
             paneID?: string | null;
             requestID?: string | null;

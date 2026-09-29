@@ -62,7 +62,7 @@ import { renderRegisteredView } from './plugins/renderers';
 
 import { canonicalTriggerForPlatform, parseKeyTrigger, type KelpiAction } from '@kelpi/core/config';
 import { wireEdgeForDropZone, type DropZone, type SplitDirection } from '@kelpi/core/layout';
-import { CHOOSE_FOLDER_DIALOG_ACTION, type JsonObject } from '@kelpi/protocol';
+import { CHOOSE_FOLDER_DIALOG_ACTION, RESOLVE_DROPPED_FILES_ACTION, type JsonObject } from '@kelpi/protocol';
 import {
     workspaceAgentSummary,
     layoutPaneOrder,
@@ -93,12 +93,15 @@ import { sendLineEdit } from './app/line-editing';
 import { TerminalShortcutContext, terminalWindowChords } from './app/terminal-shortcuts';
 import type { DaemonTarget, StorageLike } from './app/config';
 import {
+    BROWSER_FILE_DROP_NOTICE,
     OPEN_PANEL_MESSAGE,
     cellFromPoint,
     dragCarriesFile,
     dropDecision,
-    terminalDropText
+    resolvedDropOutcome,
+    terminalDropPlan
 } from './app/open-file';
+import { createDroppedFilesResolver } from './app/dropped-files';
 import {
     ChromeIcon,
     ContextMenu,
@@ -1073,6 +1076,41 @@ function Shell(props: AppProps): ReactElement {
         () => (folderChooser === null ? undefined : (): Promise<string | null> => folderChooser.choose()),
         [folderChooser]
     );
+
+    /**
+     * #288: the paths behind a drop from Finder onto a terminal pane.
+     *
+     * The page cannot read them (Chromium keeps file paths out of the drag's text, and there is no
+     * preload for `webUtils.getPathForFile`), so they are read by this window's shell: the dropped
+     * `File`s are parked on the page, the shell resolves them over its own debugger, and the
+     * answer comes back as `dropped-files-result` (`app/dropped-files.ts`; `daemon/src/ws/desktop.ts`
+     * has the loop). Desktop app only, like the folder panel: in a browser this stays null and a
+     * file drop onto a terminal says why nothing was typed.
+     */
+    const droppedFiles = useMemo(
+        () =>
+            shellWindowID === null
+                ? null
+                : createDroppedFilesResolver({
+                      windowID: shellWindowID,
+                      send: (request) => commands.shellAction({ action: RESOLVE_DROPPED_FILES_ACTION, ...request })
+                  }),
+        [commands, shellWindowID]
+    );
+    useEffect(() => {
+        if (droppedFiles === null) return;
+        const offMessage = runtime.connection.on('message', (message) => {
+            droppedFiles.handleMessage(message);
+        });
+        const offStatus = runtime.connection.on('status', (status) => {
+            if (status !== 'connected') droppedFiles.cancelAll();
+        });
+        return () => {
+            offMessage();
+            offStatus();
+            droppedFiles.cancelAll();
+        };
+    }, [droppedFiles, runtime]);
 
     /**
      * The web-pane chrome's verbs, routed through `run` so a refusal (`no web pane host
@@ -2099,7 +2137,8 @@ function Shell(props: AppProps): ReactElement {
             },
 
             /**
-             * TERM-040 — a path dropped onto a terminal is TYPED, not opened. Bare, because the
+             * TERM-040: a path dropped onto a terminal is TYPED, not opened, whether the drag named
+             * it as text or the shell read it off a Finder drop's `File` (#288). Bare, because the
              * user is composing a command around it, and that is what the Swift drop did. Via
              * `drop-text`, not `pane-send --bare`: a drop is mirrored into sync siblings like a
              * paste (terminal-surface.md §8.2 / §12.4), a `pane send` never is (#51).
@@ -3653,19 +3692,41 @@ function Shell(props: AppProps): ReactElement {
             const data = event.dataTransfer;
             if (data === null) return;
 
-            // TERM-040: a drop onto a TERMINAL types the paths instead of opening them —
+            // TERM-040: a drop onto a TERMINAL types the paths instead of opening them,
             // shell-escaped and space-separated, exactly what `SurfaceView.swift:660-701` did.
             // It is the only route that handles several files, and the only one that accepts a
-            // non-markdown path, because a shell can do something useful with either.
+            // non-markdown path (a `.md` included: a terminal types what is dropped on it),
+            // because a shell or an agent can do something useful with either.
+            //
+            // The whole terminal pane body counts, not only the engine's host element: its edge
+            // padding and anything drawn over the canvas are still "this terminal" to the user.
             const target = event.target;
-            const host = target instanceof Element ? target.closest('[data-terminal-host]') : null;
-            const terminalPaneID = host?.closest('[data-pane-id]')?.getAttribute('data-pane-id') ?? null;
+            const terminalPaneID =
+                target instanceof Element
+                    ? target.closest('[data-pane-id][data-terminal-status]')?.getAttribute('data-pane-id') ?? null
+                    : null;
             if (terminalPaneID !== null) {
-                const text = terminalDropText(data);
-                // TERM-041: a drag offering none of the accepted types is refused outright —
-                // nothing is typed, and the window-level route is not consulted either.
-                if (text === null) return;
-                act.typeDroppedPaths(terminalPaneID, text);
+                const plan = terminalDropPlan(data);
+                // TERM-041: a drag offering none of the accepted types (plain text) is refused
+                // outright: nothing is typed, and the window-level route is not consulted either.
+                if (plan.kind === 'ignore') return;
+                const deliver = (outcome: { readonly text: string | null; readonly notice: string | null }): void => {
+                    if (outcome.text !== null) act.typeDroppedPaths(terminalPaneID, outcome.text);
+                    if (outcome.notice !== null) notifyFailure('Drop file', outcome.notice);
+                };
+                if (plan.kind === 'type') {
+                    deliver(resolvedDropOutcome({ paths: plan.paths, unresolved: 0, error: null }));
+                    return;
+                }
+                // #288: a drop from Finder, whose paths only the shell can read. A browser has no
+                // shell to ask, so it says why nothing was typed rather than doing nothing.
+                if (droppedFiles === null) {
+                    notifyFailure('Drop file', BROWSER_FILE_DROP_NOTICE);
+                    return;
+                }
+                void droppedFiles.resolve(plan.files).then((resolution) => {
+                    deliver(resolvedDropOutcome(resolution));
+                });
                 return;
             }
 
@@ -3673,7 +3734,7 @@ function Shell(props: AppProps): ReactElement {
             if (decision.kind === 'open') act.openDroppedPath(decision.path);
             else if (decision.kind === 'reject') notifyFailure('Open file', decision.reason);
         },
-        [act, notifyFailure]
+        [act, droppedFiles, notifyFailure]
     );
 
     /**

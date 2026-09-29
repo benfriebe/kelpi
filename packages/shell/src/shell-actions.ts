@@ -9,13 +9,26 @@
 
 import {
     CHOOSE_FOLDER_DIALOG_ACTION,
+    MAX_DROPPED_FILES,
+    RESOLVE_DROPPED_FILES_ACTION,
     WS_CHOOSE_FOLDER_ANSWER_MESSAGE,
-    type WsChooseFolderAnswerMessage
+    WS_DROPPED_FILES_ANSWER_MESSAGE,
+    type WsChooseFolderAnswerMessage,
+    type WsDroppedFilesAnswerMessage
 } from '@kelpi/protocol';
 
-/** The four things a client can ask the shell to do. Anything else is ignored. */
-export const SHELL_ACTIONS = ['open-file-dialog', 'install-cli', 'check-for-updates', CHOOSE_FOLDER_DIALOG_ACTION] as const;
+/** The five things a client can ask the shell to do. Anything else is ignored. */
+export const SHELL_ACTIONS = [
+    'open-file-dialog',
+    'install-cli',
+    'check-for-updates',
+    CHOOSE_FOLDER_DIALOG_ACTION,
+    RESOLVE_DROPPED_FILES_ACTION
+] as const;
 export type ShellActionName = (typeof SHELL_ACTIONS)[number];
+
+/** The actions whose answer goes back to the page that asked, by the request's id. */
+const ANSWERED_ACTIONS: readonly string[] = [CHOOSE_FOLDER_DIALOG_ACTION, RESOLVE_DROPPED_FILES_ACTION];
 
 export interface ShellActionRequest {
     readonly action: ShellActionName;
@@ -24,9 +37,10 @@ export interface ShellActionRequest {
     /** The pane that asked (the ⌘O route), so the opened file lands in its workspace. */
     readonly paneID: string | null;
     /**
-     * #283: the id a `choose-folder-dialog` answer must carry back so the daemon can route it to
-     * the page that asked. Always present on that action (a request without one is refused, since
-     * its answer could reach nobody) and null on every other.
+     * #283 / #288: the id a `choose-folder-dialog` or `resolve-dropped-files` answer must carry
+     * back so the daemon can route it to the page that asked. Always present on those actions (a
+     * request without one is refused, since its answer could reach nobody) and null on every
+     * other. For a drop it is also the key of the page's stash entry.
      */
     readonly requestID: string | null;
 }
@@ -39,10 +53,12 @@ function readString(source: Record<string, unknown>, key: string): string | null
 export function parseShellAction(message: Record<string, unknown>): ShellActionRequest | null {
     const action = readString(message, 'action');
     if (action === null || !(SHELL_ACTIONS as readonly string[]).includes(action)) return null;
-    const requestID = action === CHOOSE_FOLDER_DIALOG_ACTION ? readString(message, 'requestID') : null;
-    // A panel whose answer has nowhere to go is a panel the user fills in for nothing: the daemon
-    // routes the answer by the id and accepts it only for the window the request named.
-    if (action === CHOOSE_FOLDER_DIALOG_ACTION && (requestID === null || readString(message, 'windowID') === null)) {
+    const answered = ANSWERED_ACTIONS.includes(action);
+    const requestID = answered ? readString(message, 'requestID') : null;
+    // A panel whose answer has nowhere to go is a panel the user fills in for nothing (and a drop
+    // lookup with no id has no stash entry to read): the daemon routes the answer by the id and
+    // accepts it only for the window the request named.
+    if (answered && (requestID === null || readString(message, 'windowID') === null)) {
         return null;
     }
     return {
@@ -70,6 +86,34 @@ export function chooseFolderAnswer(
         type: WS_CHOOSE_FOLDER_ANSWER_MESSAGE,
         requestID,
         path: typeof chosen === 'string' && chosen !== '' ? chosen : null,
+        windowID
+    };
+}
+
+/**
+ * #288: the frame that closes a `resolve-dropped-files`, sent back over the status connection.
+ *
+ * `windowID` is the request's, echoed, for the reason `chooseFolderAnswer` gives. The paths are
+ * filtered to absolute ones and capped here as well as in the daemon, because this is where they
+ * come out of a page and the daemon's copy of the rule is its own defence, not this module's.
+ * An `error` is sent only when there is something to say.
+ */
+export function droppedFilesAnswer(
+    requestID: string,
+    windowID: string,
+    result: { readonly paths: readonly string[]; readonly unresolved: number; readonly error?: string | undefined }
+): WsDroppedFilesAnswerMessage {
+    const absolute = result.paths.filter((entry) => entry.startsWith('/'));
+    const paths = absolute.slice(0, MAX_DROPPED_FILES);
+    // Everything left out is counted, so the page can say how many: a path that was not absolute
+    // (it cannot be typed as a location) and one past the cap alike.
+    const unresolved = Math.max(0, result.unresolved) + (result.paths.length - paths.length);
+    return {
+        type: WS_DROPPED_FILES_ANSWER_MESSAGE,
+        requestID,
+        paths,
+        unresolved,
+        ...(result.error === undefined || result.error === '' ? {} : { error: result.error }),
         windowID
     };
 }

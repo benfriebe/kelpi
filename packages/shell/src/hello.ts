@@ -27,13 +27,14 @@ export interface ShellHelloOptions {
     readonly version: string;
     /**
      * `['web-pane-host']` claims the web-pane host role in the handshake (M6); the status socket
-     * declares `choose-folder` (#283), which says it can answer the folder-panel loop.
+     * declares `choose-folder` (#283), which says it can answer the folder-panel loop, and
+     * `resolve-dropped-files` (#288), which says it can read a drop's paths off its page.
      */
     readonly capabilities?: readonly string[] | undefined;
     /**
-     * The shell window this connection belongs to. #283: the daemon accepts a folder-panel
-     * answer only from the status connection whose hello names the window the request named,
-     * because every attached session hears the request and could copy its ids.
+     * The shell window this connection belongs to. #283 / #288: the daemon accepts a folder-panel
+     * or dropped-files answer only from the status connection whose hello names the window the
+     * request named, because every attached session hears the request and could copy its ids.
      */
     readonly windowID?: string | undefined;
 }

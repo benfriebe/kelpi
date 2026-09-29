@@ -36,8 +36,14 @@ import {
     CHOOSE_FOLDER_CAPABILITY,
     CHOOSE_FOLDER_DIALOG_ACTION,
     CHOOSE_FOLDER_TIMEOUT_MS,
+    DROPPED_FILES_TIMEOUT_MS,
+    MAX_DROPPED_FILES,
+    RESOLVE_DROPPED_FILES_ACTION,
+    RESOLVE_DROPPED_FILES_CAPABILITY,
     WS_CHOOSE_FOLDER_ANSWER_MESSAGE,
     WS_CHOOSE_FOLDER_RESULT_MESSAGE,
+    WS_DROPPED_FILES_ANSWER_MESSAGE,
+    WS_DROPPED_FILES_RESULT_MESSAGE,
     WS_CLIENT_KINDS,
     WS_HOTKEY_STATUS_MESSAGE,
     WS_PROTOCOL_VERSION,
@@ -78,8 +84,10 @@ import {
 } from '../store/derived.js';
 import type { DaemonState, DomainAction, DomainEvent, LabelColor, WorkspaceColor } from '../store/types.js';
 import {
+    isAnsweredShellAction,
     isDesktopCommand,
-    MAX_FOLDER_REQUEST_ID_LENGTH,
+    MAX_SHELL_ANSWER_REQUEST_ID_LENGTH,
+    type AnsweredShellAction,
     type DesktopChannel,
     type DesktopCommand
 } from './desktop.js';
@@ -1096,10 +1104,38 @@ export const MENU_REQUEST_MESSAGE = 'menu-request';
 export const MENU_COMMAND_MESSAGE = 'menu-command';
 
 /**
- * #283: how many folder requests may be outstanding at once, across every client. A person has
- * one panel up at a time per window; this only bounds a client that asks and never waits.
+ * #283 / #288: how many answered shell requests (folder panels, dropped-file lookups) may be
+ * outstanding at once, across every client. A person has one panel up at a time per window, and a
+ * drop is answered in milliseconds; this only bounds a client that asks and never waits.
  */
-export const MAX_PENDING_FOLDER_CHOICES = 32;
+export const MAX_PENDING_SHELL_ANSWERS = 32;
+
+/** #288: the longest dropped path relayed (macOS `PATH_MAX` is 1024; this is generous). */
+const MAX_DROPPED_PATH_LENGTH = 4096;
+/** #288: a shell's error reason is a sentence for a toast, not a log dump. */
+const MAX_DROPPED_ERROR_LENGTH = 300;
+
+/** The `hello` capability a shell must declare to answer each action. */
+const SHELL_ANSWER_CAPABILITY: Readonly<Record<AnsweredShellAction, string>> = {
+    [CHOOSE_FOLDER_DIALOG_ACTION]: CHOOSE_FOLDER_CAPABILITY,
+    [RESOLVE_DROPPED_FILES_ACTION]: RESOLVE_DROPPED_FILES_CAPABILITY
+};
+
+/** How long each action may stay pending: minutes for a person at a panel, seconds for a drop. */
+const SHELL_ANSWER_TIMEOUT_MS: Readonly<Record<AnsweredShellAction, number>> = {
+    [CHOOSE_FOLDER_DIALOG_ACTION]: CHOOSE_FOLDER_TIMEOUT_MS,
+    [RESOLVE_DROPPED_FILES_ACTION]: DROPPED_FILES_TIMEOUT_MS
+};
+
+/** A shell's answer, decoded; which one it is follows from the pending request's action. */
+type ShellAnswer =
+    | { readonly kind: typeof CHOOSE_FOLDER_DIALOG_ACTION; readonly path: string | null }
+    | {
+          readonly kind: typeof RESOLVE_DROPPED_FILES_ACTION;
+          readonly paths: readonly string[];
+          readonly unresolved: number;
+          readonly error?: string | undefined;
+      };
 
 /** The message type carrying one streamed console line to a subscribed client. */
 export const WEB_CONSOLE_LINE_MESSAGE = 'web-console-line';
@@ -1380,64 +1416,90 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
      */
     let lastHotkeyStatus: JsonObject | null = null;
     /**
-     * #283: every folder panel a client has asked for and not yet heard back about, by the
-     * `request_id` it minted. The one relay here that is NOT a fan-out: the answer is a path on
-     * this machine, meaningful only to the surface that asked, so it goes to the session that
-     * sent the `choose-folder-dialog` and nobody else (`ws/desktop.ts` has the whole loop).
+     * #283 / #288: every answered shell action a client has asked for and not yet heard back
+     * about, by the `request_id` it minted: a folder panel (`choose-folder-dialog`) or the paths
+     * of a drop (`resolve-dropped-files`). The one relay here that is NOT a fan-out: the answer is
+     * a path on this machine, meaningful only to the surface that asked, so it goes to the session
+     * that sent the request and nobody else (`ws/desktop.ts` has the whole loop).
      *
-     * `windowID` is the window the request named, and only that window's shell may answer it
-     * (`isFolderShellFor`). The `shell-action` broadcast carries the id and the window to every
-     * attached session, so matching the ids proves nothing about who is answering; the hello the
-     * answering connection authenticated with does.
+     * `windowID` is the window the request named, and only that window's shell, declaring the
+     * action's capability, may answer it (`isAnsweringShellFor`). The `shell-action` broadcast
+     * carries the id and the window to every attached session, so matching the ids proves nothing
+     * about who is answering; the hello the answering connection authenticated with does.
      *
      * Every entry ends in a result for its asker unless the asker itself is gone: the shell's
-     * answer; null when that window's shell disconnects, when the cap evicts the entry, or once it
-     * is older than `CHOOSE_FOLDER_TIMEOUT_MS` (swept whenever the map is touched). So a lost
-     * answer costs the page a "no", never a button that silently does nothing for ten minutes.
+     * answer; an empty one when that window's shell disconnects, when the cap evicts the entry, or
+     * once it is older than its action's timeout (swept whenever the map is touched). So a lost
+     * answer costs the page a "no", never a gesture that silently does nothing.
      */
-    const pendingFolderChoices = new Map<string, { session: SessionImpl; windowID: string; at: number }>();
+    const pendingShellAnswers = new Map<
+        string,
+        { session: SessionImpl; windowID: string; action: AnsweredShellAction; at: number }
+    >();
 
-    /** Tell the asker its request is over (null = nothing chosen), and forget it. */
-    const settleFolderChoice = (requestID: string, path: string | null): void => {
-        const entry = pendingFolderChoices.get(requestID);
+    /**
+     * Tell the asker its request is over, and forget it. `answer` null is the empty answer (no
+     * folder chosen, no paths found), with `reason` saying why when the daemon is the one giving
+     * it; a folder result has no field for a reason, because a cancel needs no explanation.
+     */
+    const settleShellAnswer = (requestID: string, answer: ShellAnswer | null, reason?: string): void => {
+        const entry = pendingShellAnswers.get(requestID);
         if (entry === undefined) return;
-        pendingFolderChoices.delete(requestID);
+        pendingShellAnswers.delete(requestID);
         if (closed || !entry.session.ready) return;
-        entry.session.send({ type: WS_CHOOSE_FOLDER_RESULT_MESSAGE, requestID, path, windowID: entry.windowID });
+        if (entry.action === CHOOSE_FOLDER_DIALOG_ACTION) {
+            const path = answer?.kind === CHOOSE_FOLDER_DIALOG_ACTION ? answer.path : null;
+            entry.session.send({ type: WS_CHOOSE_FOLDER_RESULT_MESSAGE, requestID, path, windowID: entry.windowID });
+            return;
+        }
+        const dropped = answer?.kind === RESOLVE_DROPPED_FILES_ACTION ? answer : null;
+        const error = dropped?.error ?? (dropped === null ? reason : undefined);
+        entry.session.send({
+            type: WS_DROPPED_FILES_RESULT_MESSAGE,
+            requestID,
+            paths: dropped?.paths ?? [],
+            unresolved: dropped?.unresolved ?? 0,
+            ...(error === undefined ? {} : { error }),
+            windowID: entry.windowID
+        });
     };
 
-    const sweepFolderChoices = (): void => {
-        const cutoff = now() - CHOOSE_FOLDER_TIMEOUT_MS;
-        for (const [requestID, entry] of [...pendingFolderChoices]) {
-            if (entry.at <= cutoff) settleFolderChoice(requestID, null);
+    const sweepShellAnswers = (): void => {
+        const at = now();
+        for (const [requestID, entry] of [...pendingShellAnswers]) {
+            if (entry.at <= at - SHELL_ANSWER_TIMEOUT_MS[entry.action]) {
+                settleShellAnswer(requestID, null, 'the desktop window did not answer in time');
+            }
         }
         // Oldest first (a Map iterates in insertion order), so the cap drops the stalest ask,
         // and says so to whoever made it.
-        while (pendingFolderChoices.size > MAX_PENDING_FOLDER_CHOICES) {
-            const oldest = pendingFolderChoices.keys().next().value;
+        while (pendingShellAnswers.size > MAX_PENDING_SHELL_ANSWERS) {
+            const oldest = pendingShellAnswers.keys().next().value;
             if (oldest === undefined) break;
-            settleFolderChoice(oldest, null);
+            settleShellAnswer(oldest, null, 'too many desktop requests were waiting');
         }
     };
 
     /**
-     * Is `session` the shell connection of `windowID` that can answer a folder request?
+     * Is `session` the shell connection of `windowID` that can answer `action`?
      *
-     * The status connection of a current shell declares `CHOOSE_FOLDER_CAPABILITY` and its window
-     * in its `hello` (`shell/src/hello.ts`). A paired device never qualifies whatever it claims,
-     * since a device token is not the owner's; nor does a browser, or the shell's web-host socket,
-     * which declares the window but not the capability.
+     * The status connection of a current shell declares each action's capability
+     * (`CHOOSE_FOLDER_CAPABILITY`, `RESOLVE_DROPPED_FILES_CAPABILITY`) and its window in its
+     * `hello` (`shell/src/hello.ts`). A paired device never qualifies whatever it claims, since a
+     * device token is not the owner's; nor does a browser, or the shell's web-host socket, which
+     * declares the window but not the capability. Per action, so a shell from before #288 (which
+     * declares only the folder capability) is refused a drop at once instead of never answering.
      */
-    const isFolderShellFor = (session: SessionImpl, windowID: string): boolean =>
+    const isAnsweringShellFor = (session: SessionImpl, windowID: string, action: AnsweredShellAction): boolean =>
         session.ready &&
         !session.pairedDevice &&
         session.client?.kind === 'electron' &&
         session.client.windowID === windowID &&
-        session.client.capabilities?.includes(CHOOSE_FOLDER_CAPABILITY) === true;
+        session.client.capabilities?.includes(SHELL_ANSWER_CAPABILITY[action]) === true;
 
-    const folderShellAttached = (windowID: string, except?: SessionImpl): boolean => {
+    const answeringShellAttached = (windowID: string, action: AnsweredShellAction, except?: SessionImpl): boolean => {
         for (const session of sessions) {
-            if (session !== except && isFolderShellFor(session, windowID)) return true;
+            if (session !== except && isAnsweringShellFor(session, windowID, action)) return true;
         }
         return false;
     };
@@ -1662,6 +1724,9 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                 case WS_CHOOSE_FOLDER_ANSWER_MESSAGE:
                     chooseFolderAnswer(this, parsed);
                     return;
+                case WS_DROPPED_FILES_ANSWER_MESSAGE:
+                    droppedFilesAnswer(this, parsed);
+                    return;
                 case FLUSH_SAVES_REQUEST_MESSAGE:
                     this.flushSavesRequest(parsed);
                     return;
@@ -1759,21 +1824,25 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             this.consoleSubs.clear();
             this.panes?.close();
             sessions.delete(this);
-            // #283: a folder answer for a connection that is gone has nowhere to go; the page
+            // #283 / #288: an answer for a connection that is gone has nowhere to go; the page
             // that asked settles its own promise when its socket drops.
-            for (const [requestID, entry] of [...pendingFolderChoices]) {
-                if (entry.session === this) pendingFolderChoices.delete(requestID);
+            for (const [requestID, entry] of [...pendingShellAnswers]) {
+                if (entry.session === this) pendingShellAnswers.delete(requestID);
             }
             // …and when the departing connection was the shell that would have answered, the
-            // pages still waiting on it hear "nothing chosen" now. Its panel may still be up, but
+            // pages still waiting on it hear the empty answer now. Its panel may still be up, but
             // nothing it says can reach this daemon through a socket that is gone, and a
-            // reconnected shell's late answer for a settled id is simply dropped.
+            // reconnected shell's late answer for a settled id is simply dropped. Per action,
+            // because each has its own capability and another shell may still hold one of them.
+            // Whether the departing connection could itself answer does not matter: a request is
+            // admitted only while a capable shell is attached, so if none remains now, the one
+            // that could answer is gone (this one, or an earlier one whose departure raced it).
             const shellWindow = this.client?.windowID;
-            if (shellWindow !== undefined && this.client?.capabilities?.includes(CHOOSE_FOLDER_CAPABILITY) === true) {
-                if (!folderShellAttached(shellWindow, this)) {
-                    for (const [requestID, entry] of [...pendingFolderChoices]) {
-                        if (entry.windowID === shellWindow) settleFolderChoice(requestID, null);
-                    }
+            if (shellWindow !== undefined) {
+                for (const [requestID, entry] of [...pendingShellAnswers]) {
+                    if (entry.windowID !== shellWindow) continue;
+                    if (answeringShellAttached(shellWindow, entry.action, this)) continue;
+                    settleShellAnswer(requestID, null, 'the desktop window disconnected before answering');
                 }
             }
             // The departing owner hands size control to the most recent remaining UI that has
@@ -2548,21 +2617,21 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                 this.send({ type: 'command-reply', id, reply: failure(`${command} is not available`) });
                 return;
             }
-            const folderRequestID =
-                command === 'shell-action' && payload['action'] === CHOOSE_FOLDER_DIALOG_ACTION
-                    ? this.admitFolderRequest(id, payload)
-                    : undefined;
-            if (folderRequestID === null) return;
+            const answeredAction = command === 'shell-action' ? payload['action'] : undefined;
+            const answerRequestID = isAnsweredShellAction(answeredAction)
+                ? this.admitAnsweredRequest(id, answeredAction, payload)
+                : undefined;
+            if (answerRequestID === null) return;
             void channel.run(command, payload).then(
                 (reply) => {
-                    if (folderRequestID !== undefined && reply['ok'] !== true) {
-                        pendingFolderChoices.delete(folderRequestID);
+                    if (answerRequestID !== undefined && reply['ok'] !== true) {
+                        pendingShellAnswers.delete(answerRequestID);
                     }
                     this.send({ type: 'command-reply', id, reply });
                 },
                 (error: unknown) => {
                     // The request never went out, so nothing will ever answer it.
-                    if (folderRequestID !== undefined) pendingFolderChoices.delete(folderRequestID);
+                    if (answerRequestID !== undefined) pendingShellAnswers.delete(answerRequestID);
                     report(error, `ws-command ${command}`);
                     this.send({ type: 'command-reply', id, reply: { ...errorReply('handler failed') } });
                 }
@@ -2570,39 +2639,53 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
         }
 
         /**
-         * #283: the hub's half of a `choose-folder-dialog`, before the channel broadcasts it.
+         * #283 / #288: the hub's half of an answered shell action (`choose-folder-dialog`,
+         * `resolve-dropped-files`), before the channel broadcasts it.
          *
          * Returns the request id to track, `undefined` to let the channel refuse a malformed
          * request itself (nothing is recorded for it, so an invalid request can never evict a
          * valid one from the capped set), or null when the refusal is sent from here:
          *
          *   - a paired device may not ask (owner-only, like `remoteCommand`): the panel opens on
-         *     the owner's desktop and its answer is a path on the owner's machine;
-         *   - no shell able to answer is attached for the window (an older shell, or one whose
-         *     status connection is down): refused now, so the page says so instead of waiting;
+         *     the owner's desktop and its answer is a path on the owner's machine, and a drop's
+         *     paths are the owner's files;
+         *   - no shell able to answer is attached for the window (a browser, an older shell, or one
+         *     whose status connection is down): refused now, so the page says so instead of
+         *     waiting;
          *   - the id is already pending: refused rather than re-pointed, because re-pointing
          *     would hand the first asker's answer to whoever reused the id.
          *
          * Recorded BEFORE the broadcast goes out, so an answer can never outrun its bookkeeping;
          * a refusal from the channel, or a channel that throws, forgets it again.
          */
-        private admitFolderRequest(id: string, payload: Record<string, unknown>): string | null | undefined {
+        private admitAnsweredRequest(
+            id: string,
+            action: AnsweredShellAction,
+            payload: Record<string, unknown>
+        ): string | null | undefined {
             const refuse = (error: string): null => {
                 this.send({ type: 'command-reply', id, reply: failure(error) });
                 return null;
             };
-            if (this.pairedDevice) return refuse(`${CHOOSE_FOLDER_DIALOG_ACTION} is owner-only`);
+            const folder = action === CHOOSE_FOLDER_DIALOG_ACTION;
+            if (this.pairedDevice) return refuse(`${action} is owner-only`);
             const requestID = text(payload['request_id']);
             const windowID = text(payload['window_id']);
-            if (requestID === undefined || windowID === undefined || requestID.length > MAX_FOLDER_REQUEST_ID_LENGTH) {
+            if (requestID === undefined || windowID === undefined || requestID.length > MAX_SHELL_ANSWER_REQUEST_ID_LENGTH) {
                 return undefined;
             }
-            if (!folderShellAttached(windowID)) {
-                return refuse(`no desktop window ${windowID} is connected that can show a folder panel`);
+            if (!answeringShellAttached(windowID, action)) {
+                return refuse(
+                    folder
+                        ? `no desktop window ${windowID} is connected that can show a folder panel`
+                        : `no desktop window ${windowID} is connected that can read a dropped file's path`
+                );
             }
-            if (pendingFolderChoices.has(requestID)) return refuse(`folder request ${requestID} is already pending`);
-            pendingFolderChoices.set(requestID, { session: this, windowID, at: now() });
-            sweepFolderChoices();
+            if (pendingShellAnswers.has(requestID)) {
+                return refuse(`${folder ? 'folder' : 'dropped-files'} request ${requestID} is already pending`);
+            }
+            pendingShellAnswers.set(requestID, { session: this, windowID, action, at: now() });
+            sweepShellAnswers();
             return requestID;
         }
 
@@ -3003,27 +3086,78 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
     }
 
     /**
-     * #283: `choose-folder-answer` from the shell → a `choose-folder-result` for the ONE session
-     * that asked (see `pendingFolderChoices`).
+     * The pending entry `message` answers, or null when the answer must be dropped.
      *
-     * Accepted only from the named window's own shell connection (`isFolderShellFor`): anyone
-     * attached heard the broadcast and could copy its ids, so an answer from any other session is
-     * dropped, as is one for a request nobody is waiting on (already settled, timed out, its
-     * asker gone) or one naming a different window. A path that is not a non-empty string is
-     * relayed as null, a cancel, rather than dropped, because the shell has plainly closed its
-     * panel and the page should hear so now rather than at the timeout.
+     * Accepted only from the named window's own shell connection, declaring the action's
+     * capability (`isAnsweringShellFor`): anyone attached heard the broadcast and could copy its
+     * ids, so an answer from any other session is dropped, as is one for a request nobody is
+     * waiting on (already settled, timed out, its asker gone), one naming a different window, and
+     * one of the wrong kind (a folder answer for a drop's id, or the reverse).
+     */
+    function pendingAnswerFor(
+        sender: SessionImpl,
+        message: Record<string, unknown>,
+        action: AnsweredShellAction
+    ): string | null {
+        if (closed) return null;
+        sweepShellAnswers();
+        const requestID = text(message['requestID']);
+        if (requestID === undefined) return null;
+        const entry = pendingShellAnswers.get(requestID);
+        if (entry === undefined || entry.action !== action) return null;
+        if (!isAnsweringShellFor(sender, entry.windowID, action)) return null;
+        if (text(message['windowID']) !== entry.windowID) return null;
+        return requestID;
+    }
+
+    /**
+     * #283: `choose-folder-answer` from the shell → a `choose-folder-result` for the ONE session
+     * that asked (see `pendingShellAnswers`, and `pendingAnswerFor` for who may answer).
+     *
+     * A path that is not a non-empty string is relayed as null, a cancel, rather than dropped,
+     * because the shell has plainly closed its panel and the page should hear so now rather than
+     * at the timeout.
      */
     function chooseFolderAnswer(sender: SessionImpl, message: Record<string, unknown>): void {
-        if (closed) return;
-        sweepFolderChoices();
-        const requestID = text(message['requestID']);
-        if (requestID === undefined) return;
-        const entry = pendingFolderChoices.get(requestID);
-        if (entry === undefined) return;
-        if (!isFolderShellFor(sender, entry.windowID)) return;
-        if (text(message['windowID']) !== entry.windowID) return;
+        const requestID = pendingAnswerFor(sender, message, CHOOSE_FOLDER_DIALOG_ACTION);
+        if (requestID === null) return;
         const chosen = message['path'];
-        settleFolderChoice(requestID, typeof chosen === 'string' && chosen.length > 0 ? chosen : null);
+        settleShellAnswer(requestID, {
+            kind: CHOOSE_FOLDER_DIALOG_ACTION,
+            path: typeof chosen === 'string' && chosen.length > 0 ? chosen : null
+        });
+    }
+
+    /**
+     * #288: `dropped-files-answer` from the shell → a `dropped-files-result` for the ONE session
+     * that asked, under the same rules as a folder answer (`pendingAnswerFor`).
+     *
+     * What is relayed is normalised rather than trusted field by field: only absolute paths
+     * survive (`DOM.getFileInfo` returns nothing else for a file on disk, and the page types
+     * whatever arrives), at most `MAX_DROPPED_FILES` of them, with a non-negative count of the
+     * items that had none plus every entry dropped here. A malformed answer is still an answer, relayed as an empty one, so the
+     * page hears now that nothing is coming.
+     */
+    function droppedFilesAnswer(sender: SessionImpl, message: Record<string, unknown>): void {
+        const requestID = pendingAnswerFor(sender, message, RESOLVE_DROPPED_FILES_ACTION);
+        if (requestID === null) return;
+        const raw = Array.isArray(message['paths']) ? (message['paths'] as unknown[]) : [];
+        const paths = raw
+            .filter((entry): entry is string => typeof entry === 'string' && entry.startsWith('/') && entry.length <= MAX_DROPPED_PATH_LENGTH)
+            .slice(0, MAX_DROPPED_FILES);
+        const reported = message['unresolved'];
+        // Every entry this drops (not a path, not absolute, too long, past the cap) is counted
+        // with the ones the shell could not resolve, so the page says how many were left out.
+        const unresolved =
+            (typeof reported === 'number' && Number.isInteger(reported) && reported > 0 ? reported : 0) +
+            (raw.length - paths.length);
+        const error = text(message['error']);
+        settleShellAnswer(requestID, {
+            kind: RESOLVE_DROPPED_FILES_ACTION,
+            paths,
+            unresolved,
+            ...(error === undefined ? {} : { error: error.slice(0, MAX_DROPPED_ERROR_LENGTH) })
+        });
     }
 
     /**

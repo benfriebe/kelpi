@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CommandReply } from '../connection/commands';
 import {
     createDroppedFilesResolver,
+    droppedFilesRefusal,
     pageDroppedFilesStash,
     type DroppedFilesRequest,
     type DroppedFilesStash
@@ -72,28 +73,33 @@ describe('createDroppedFilesResolver (#288)', () => {
         expect(resolver.pending).toBe(1);
     });
 
-    it('keeps only absolute paths from the wire, and passes the shell’s reason on only when nothing resolved', async () => {
+    it('keeps only absolute paths from the wire, counting what it drops, and passes the shell’s reason on only when nothing resolved', async () => {
         const { resolver } = setup();
         const first = resolver.resolve([{}]);
         resolver.handleMessage({ type: WS_DROPPED_FILES_RESULT_MESSAGE, requestID: 'D1', paths: ['/ok', 'relative', 3], unresolved: 2 });
-        await expect(first).resolves.toEqual({ paths: ['/ok'], unresolved: 2, error: null });
+        await expect(first).resolves.toEqual({ paths: ['/ok'], unresolved: 4, error: null });
 
         const second = resolver.resolve([{}]);
         resolver.handleMessage({ type: WS_DROPPED_FILES_RESULT_MESSAGE, requestID: 'D2', paths: [], unresolved: 0, error: 'no debugger' });
         await expect(second).resolves.toEqual({ paths: [], unresolved: 0, error: 'no debugger' });
     });
 
-    it('settles empty with the daemon’s refusal as the reason, and clears the stash', async () => {
-        const { resolver, stash } = setup({ reply: { ok: false, error: "no desktop window WIN is connected that can read a dropped file's path" } as CommandReply });
+    it('settles empty with the daemon’s refusal, reworded without the window’s UUID, and clears the stash', async () => {
+        const { resolver, stash } = setup({
+            reply: { ok: false, error: "no desktop window cccccccc-0000-4000-8000-000000000288 is connected that can read a dropped file's path" } as CommandReply
+        });
         const answer = await resolver.resolve([{}]);
-        expect(answer.paths).toEqual([]);
-        expect(answer.error).toContain("dropped file's path");
+        expect(answer).toEqual({ paths: [], unresolved: 0, error: "this window can't read dropped file paths right now; try again" });
         expect(stash.size).toBe(0);
     });
 
     it('settles empty when the send itself fails', async () => {
         const { resolver } = setup({ reply: new Error('socket closed') });
-        await expect(resolver.resolve([{}])).resolves.toEqual({ paths: [], unresolved: 0, error: 'socket closed' });
+        await expect(resolver.resolve([{}])).resolves.toEqual({
+            paths: [],
+            unresolved: 0,
+            error: 'could not ask the desktop window: socket closed'
+        });
     });
 
     it('settles empty after the timeout, and a late result changes nothing', async () => {
@@ -115,6 +121,23 @@ describe('createDroppedFilesResolver (#288)', () => {
         await expect(a).resolves.toMatchObject({ paths: [], error: 'the connection to the daemon dropped' });
         await expect(b).resolves.toMatchObject({ paths: [] });
         expect(stash.size).toBe(0);
+    });
+});
+
+describe('droppedFilesRefusal (#288 review)', () => {
+    it('tells a paired device where dropping files works, and everyone else to try again', () => {
+        expect(droppedFilesRefusal('resolve-dropped-files is owner-only')).toBe(
+            'dropping files onto a terminal works in the Kelpi desktop app'
+        );
+        for (const detail of [
+            "no desktop window cccccccc-0000-4000-8000-000000000288 is connected that can read a dropped file's path",
+            'dropped-files request D1 is already pending',
+            'shell-action resolve-dropped-files requires window_id'
+        ]) {
+            const sentence = droppedFilesRefusal(detail);
+            expect(sentence).toBe("this window can't read dropped file paths right now; try again");
+            expect(sentence).not.toMatch(/[0-9a-f]{8}-/);
+        }
     });
 });
 

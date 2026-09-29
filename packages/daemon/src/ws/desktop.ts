@@ -142,7 +142,7 @@ export function isAnsweredShellAction(action: unknown): action is AnsweredShellA
  * may carry. A client mints a UUID; anything much longer is not one of ours, and the id is held
  * in the daemon's pending map until answered.
  */
-export const MAX_FOLDER_REQUEST_ID_LENGTH = 128;
+export const MAX_SHELL_ANSWER_REQUEST_ID_LENGTH = 128;
 
 /** The broadcast the shell listens for (`shell/src/status.ts`). */
 export const SHELL_ACTION_EVENT = 'shell-action';
@@ -375,9 +375,9 @@ export function createDesktopChannel(options: DesktopChannelOptions): DesktopCha
             if (requestID === undefined) {
                 return failure(`shell-action ${action} requires request_id`);
             }
-            if (requestID.length > MAX_FOLDER_REQUEST_ID_LENGTH) {
+            if (requestID.length > MAX_SHELL_ANSWER_REQUEST_ID_LENGTH) {
                 return failure(
-                    `shell-action ${action} request_id is too long (at most ${String(MAX_FOLDER_REQUEST_ID_LENGTH)} characters)`
+                    `shell-action ${action} request_id is too long (at most ${String(MAX_SHELL_ANSWER_REQUEST_ID_LENGTH)} characters)`
                 );
             }
             if (windowID === undefined) {

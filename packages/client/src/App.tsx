@@ -3710,8 +3710,12 @@ function Shell(props: AppProps): ReactElement {
                 // TERM-041: a drag offering none of the accepted types (plain text) is refused
                 // outright: nothing is typed, and the window-level route is not consulted either.
                 if (plan.kind === 'ignore') return;
+                const deliver = (outcome: { readonly text: string | null; readonly notice: string | null }): void => {
+                    if (outcome.text !== null) act.typeDroppedPaths(terminalPaneID, outcome.text);
+                    if (outcome.notice !== null) notifyFailure('Drop file', outcome.notice);
+                };
                 if (plan.kind === 'type') {
-                    act.typeDroppedPaths(terminalPaneID, plan.text);
+                    deliver(resolvedDropOutcome({ paths: plan.paths, unresolved: 0, error: null }));
                     return;
                 }
                 // #288: a drop from Finder, whose paths only the shell can read. A browser has no
@@ -3721,9 +3725,7 @@ function Shell(props: AppProps): ReactElement {
                     return;
                 }
                 void droppedFiles.resolve(plan.files).then((resolution) => {
-                    const outcome = resolvedDropOutcome(resolution);
-                    if (outcome.text !== null) act.typeDroppedPaths(terminalPaneID, outcome.text);
-                    if (outcome.notice !== null) notifyFailure('Drop file', outcome.notice);
+                    deliver(resolvedDropOutcome(resolution));
                 });
                 return;
             }

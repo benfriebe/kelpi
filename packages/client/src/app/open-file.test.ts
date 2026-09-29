@@ -250,7 +250,7 @@ describe('terminalDropPlan (TERM-040 / TERM-041 / #288)', () => {
     it('types a path the drag names as text, at once', () => {
         expect(terminalDropPlan(transfer({ 'text/uri-list': 'file:///a/b%20c.md' }))).toEqual({
             kind: 'type',
-            text: '/a/b\\ c.md'
+            paths: ['/a/b c.md']
         });
     });
 
@@ -263,7 +263,26 @@ describe('terminalDropPlan (TERM-040 / TERM-041 / #288)', () => {
     });
 
     it('prefers the text path when a drag carries both', () => {
-        expect(terminalDropPlan(finderDrop([{}], { 'text/uri-list': 'file:///x/y' }))).toEqual({ kind: 'type', text: '/x/y' });
+        expect(terminalDropPlan(finderDrop([{}], { 'text/uri-list': 'file:///x/y' }))).toEqual({ kind: 'type', paths: ['/x/y'] });
+    });
+
+    it('keeps refused text paths in the plan, so the outcome says why nothing was typed (#288 review)', () => {
+        const plan = terminalDropPlan(transfer({ 'text/uri-list': 'file:///a/evil%0Arm%20-rf%20~\nfile:///a/fine' }));
+        expect(plan).toEqual({ kind: 'type', paths: ['/a/evil\nrm -rf ~', '/a/fine'] });
+        if (plan.kind !== 'type') return;
+        expect(resolvedDropOutcome({ paths: plan.paths, unresolved: 0, error: null })).toEqual({
+            text: '/a/fine',
+            notice: '1 dropped item had no path that can be typed and was left out'
+        });
+
+        // All of them refused, and no Files to fall back on: nothing typed, and a notice.
+        const refused = terminalDropPlan(transfer({ 'text/uri-list': 'file:///a/evil%0Ax' }));
+        expect(refused).toEqual({ kind: 'type', paths: ['/a/evil\nx'] });
+        if (refused.kind !== 'type') return;
+        expect(resolvedDropOutcome({ paths: refused.paths, unresolved: 0, error: null })).toEqual({
+            text: null,
+            notice: '1 dropped item had no path that can be typed safely, so nothing was typed'
+        });
     });
 
     it('ignores a drag with neither a path nor a file (plain text, TERM-041)', () => {
@@ -293,8 +312,9 @@ describe('resolvedDropOutcome (#288)', () => {
             text: null,
             notice: 'the dropped item is not a file on disk, so there is no path to type'
         });
-        expect(resolvedDropOutcome({ paths: [], unresolved: 0, error: 'the window is gone' }).notice).toBe(
-            "could not read the dropped file's path: the window is gone"
+        // Every producer words its error for a person, so it is shown as it is.
+        expect(resolvedDropOutcome({ paths: [], unresolved: 0, error: 'the window did not answer within 8s' }).notice).toBe(
+            'the window did not answer within 8s'
         );
         expect(resolvedDropOutcome({ paths: ['/evil\n'], unresolved: 0, error: null }).notice).toContain('nothing was typed');
     });

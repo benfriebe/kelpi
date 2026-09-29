@@ -63,6 +63,10 @@ export default async function ({ page, cli, rec, d, sleep }) {
     fs.writeFileSync(file, 'dropped\n');
     fs.mkdirSync(folder);
     fs.writeFileSync(stub, STUB);
+    // Launched through a two-line wrapper by a short relative name, so the command line the
+    // screenshots show carries no home-directory path (the Node binary's own lives in here).
+    const launcher = path.join(root, 'tui-stub');
+    fs.writeFileSync(launcher, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} "$(dirname "$0")/bp-stub.js"\n`, { mode: 0o755 });
     const typedFile = escape(file);
     const typedFolder = escape(folder);
     rec.note(`fixture ${file} -> types ${typedFile}`);
@@ -143,7 +147,7 @@ export default async function ({ page, cli, rec, d, sleep }) {
 
         // ── a full-screen program with bracketed paste on ────────────────────────────
         await d.runInTerminal(page, 'clear', { settleMs: 500 });
-        await d.runInTerminal(page, `${JSON.stringify(process.execPath)} ${JSON.stringify(stub)}`, { settleMs: 400 });
+        await d.runInTerminal(page, `cd ${root} && ./tui-stub`, { settleMs: 400 });
         const ready = await captureUntil((text) => text.includes('STUB READY'));
         rec.check('the bracketed-paste stub is running', ready.includes('STUB READY'), ready.slice(-200));
         const modes = await page.eval(

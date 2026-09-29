@@ -449,9 +449,11 @@ export interface WsChooseFolderResultMessage {
  * What the page then does with the paths (escape them and type them into the pane it was
  * dropped on) is its own business, so the daemon never sees which pane that was.
  *
- * The stash is not a capability: anything that can write to it can already read the `File`s it
- * puts there, and the main process only ever reads `File` objects out of it, so a page can learn
- * the path of nothing but a file the user handed it (a drop, or an `<input type=file>`).
+ * The stash is not a capability. It lives on the Kelpi UI page, which is already owner-trusted
+ * (it can type anything into any PTY through `drop-text`, so learning a path gives it nothing
+ * new), and plugin views are opaque-origin sandboxed iframes that cannot reach it. The main
+ * process only ever reads `File` objects out of it, and the request id is the only value it
+ * interpolates (`shell/src/dropped-files.ts` has the whole argument).
  */
 export const RESOLVE_DROPPED_FILES_ACTION = 'resolve-dropped-files';
 /** The `hello` capability a shell's status connection declares when it can answer the loop. */

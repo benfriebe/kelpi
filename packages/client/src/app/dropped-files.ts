@@ -20,7 +20,7 @@
  *     reason when it could read nothing. The daemon also answers empty itself (with a reason) when
  *     the window's shell disconnects, the pending set overflows, or its own timeout passes;
  *   - the daemon refuses the request (a browser, a shell from before #288, a paired device):
- *     empty at once, with the refusal as the reason;
+ *     empty at once, with the refusal reworded for a person (`droppedFilesRefusal`);
  *   - nothing arrives within `timeoutMs`, or the connection drops (`cancelAll`): empty, with a
  *     reason.
  *
@@ -92,6 +92,19 @@ function defaultNewID(): string {
 
 const EMPTY = (error: string): DroppedFilesResolution => ({ paths: [], unresolved: 0, error });
 
+/**
+ * The daemon's refusal of a lookup, as a sentence for the user.
+ *
+ * The daemon's own wording names the window by its UUID, which means nothing to anyone. The
+ * refusals come in two kinds a person can act on: a paired device (a phone, a remote browser) may
+ * not ask at all, and everything else (the desktop window's shell is reconnecting, or predates
+ * #288) is a "not right now".
+ */
+export function droppedFilesRefusal(detail: string): string {
+    if (detail.includes('owner-only')) return 'dropping files onto a terminal works in the Kelpi desktop app';
+    return "this window can't read dropped file paths right now; try again";
+}
+
 export function createDroppedFilesResolver(options: DroppedFilesResolverOptions): DroppedFilesResolver {
     const timeoutMs = options.timeoutMs ?? DROPPED_FILES_TIMEOUT_MS;
     const newID = options.newID ?? defaultNewID;
@@ -126,10 +139,13 @@ export function createDroppedFilesResolver(options: DroppedFilesResolverOptions)
             void options.send({ requestID, windowID: options.windowID }).then(
                 (reply) => {
                     if (isOkReply(reply)) return;
-                    settle(requestID, EMPTY(replyError(reply)));
+                    settle(requestID, EMPTY(droppedFilesRefusal(replyError(reply))));
                 },
                 (error: unknown) => {
-                    settle(requestID, EMPTY(error instanceof Error ? error.message : String(error)));
+                    settle(
+                        requestID,
+                        EMPTY(`could not ask the desktop window: ${error instanceof Error ? error.message : String(error)}`)
+                    );
                 }
             );
             return answer;
@@ -144,13 +160,16 @@ export function createDroppedFilesResolver(options: DroppedFilesResolverOptions)
             if (typeof windowID === 'string' && windowID !== options.windowID) return false;
             const raw = Array.isArray(record['paths']) ? (record['paths'] as unknown[]) : [];
             // The daemon has already kept only absolute paths; this page types what it keeps, so
-            // it applies the same rule rather than trusting the wire.
+            // it applies the same rule rather than trusting the wire, and counts what it drops.
             const paths = raw.filter((entry): entry is string => typeof entry === 'string' && entry.startsWith('/'));
-            const unresolved = record['unresolved'];
+            const reported = record['unresolved'];
+            const unresolved =
+                (typeof reported === 'number' && Number.isInteger(reported) && reported > 0 ? reported : 0) +
+                (raw.length - paths.length);
             const error = record['error'];
             return settle(requestID, {
                 paths,
-                unresolved: typeof unresolved === 'number' && Number.isInteger(unresolved) && unresolved > 0 ? unresolved : 0,
+                unresolved,
                 error: typeof error === 'string' && error !== '' && paths.length === 0 ? error : null
             });
         },

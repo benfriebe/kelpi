@@ -168,13 +168,14 @@ describe('a Finder drop onto a terminal pane in the desktop app (#288)', () => {
         expect(h.commands('drop-text')).toEqual([]);
     });
 
-    it('types nothing, and says why, when the daemon refuses (a shell that cannot read paths)', async () => {
+    it('types nothing, and says why in words (no window UUID), when the daemon refuses', async () => {
         const h = setup(SHELL_WINDOW);
         fireEvent.drop(terminalHost(), { dataTransfer: finderTransfer([new File(['x'], 'x.txt')]) });
         h.reply('shell-action', { ok: false, error: `no desktop window ${SHELL_WINDOW} is connected that can read a dropped file's path` });
         await waitFor(() => {
-            expect(document.body.textContent).toContain("can read a dropped file's path");
+            expect(document.body.textContent).toContain("this window can't read dropped file paths right now; try again");
         });
+        expect(document.body.textContent).not.toContain(SHELL_WINDOW);
         expect(h.commands('drop-text')).toEqual([]);
         expect(pageStash()?.size ?? 0).toBe(0);
     });
@@ -190,6 +191,18 @@ describe('the other terminal drop routes (TERM-040 / TERM-041)', () => {
         expect(h.commands('shell-action')).toEqual([]);
         // A terminal types what is dropped on it: no markdown pane opens.
         expect(h.commands('open')).toEqual([]);
+    });
+
+    it('says why when a path named as text cannot be typed safely, rather than dropping it silently', async () => {
+        const h = setup(SHELL_WINDOW);
+        fireEvent.drop(terminalHost(), {
+            dataTransfer: finderTransfer([], { 'text/uri-list': 'file:///repo/evil%0Arm%20-rf%20~' })
+        });
+        await waitFor(() => {
+            expect(document.body.textContent).toContain('had no path that can be typed safely, so nothing was typed');
+        });
+        expect(h.commands('drop-text')).toEqual([]);
+        expect(h.commands('shell-action')).toEqual([]);
     });
 
     it('in a browser, types nothing and says why instead of doing nothing', async () => {

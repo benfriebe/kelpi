@@ -1585,10 +1585,14 @@ not only the engine's host element. The decision is `terminalDropPlan`
   3. The shell answers `dropped-files-answer`, and the daemon relays `dropped-files-result` to
      the asking connection only.
 
-  A `File` with no path on disk (an image dragged out of a web page) is left out, and a toast
-  says so. A browser client has no main process to ask, so it types nothing and shows a toast
-  explaining why. So does a desktop shell from before #288 (the daemon refuses the request at
-  once) and a lookup that fails.
+  A `File` with no path on disk (an image dragged out of a web page) is left out, and so is
+  anything past the 256-path cap; every item left out is counted, and a toast says how many. A
+  browser client has no main process to ask, so it types nothing and shows a toast explaining
+  why. So does a desktop shell from before #288 (the daemon refuses the request at once; the
+  toast words the refusal for a person rather than quoting the window's id) and a lookup that
+  fails. The shell bounds each lookup at 8 s (`DROPPED_FILES_LOOKUP_DEADLINE_MS`, inside the
+  page's 15 s): a CDP command that never settles (DevTools paused, a wedged renderer) answers
+  with an error and detaches rather than holding every later drop in that window.
 - **A drag offering neither** (an `http(s)://` URL, arbitrary text) is refused. Nothing is
   typed, and the window-level open route is not consulted either.
 
@@ -1600,7 +1604,8 @@ More rules for every route:
   no trailing newline: the user presses Enter.
 - **A path containing a control character is never typed** (`isTypeablePath`). A newline in a
   filename, or a `%0A` in a `file://` URL, would reach the PTY as a carriage return and run the
-  rest of the name in a program without bracketed paste.
+  rest of the name in a program without bracketed paste. It is left out and counted in the
+  toast, on either route.
 - **Insertion uses the outside-keystroke text path**, so it is paste-piped AND mirrored to sync
   siblings (section 8.2). The client sends the joined text as the `drop-text` desktop command
   (`commands.dropText`, `packages/daemon/src/ws/desktop.ts`), never as `pane-send --bare`,

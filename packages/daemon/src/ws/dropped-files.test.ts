@@ -153,7 +153,7 @@ describe('dropped-files round trip (#288)', () => {
         expect(results(shell)).toEqual([]);
     });
 
-    it('relays only absolute paths, at most MAX_DROPPED_FILES, and a malformed answer as an empty one', async () => {
+    it('relays only absolute paths, at most MAX_DROPPED_FILES, counting what it drops, and a malformed answer as an empty one', async () => {
         const f = fixture();
         const shell = f.shell();
         const asker = f.connect();
@@ -169,9 +169,12 @@ describe('dropped-files round trip (#288)', () => {
         answer(shell, { requestID: 'D3', windowID: 'WIN-1', paths: many, unresolved: 0 });
 
         const byID = new Map(results(asker).map((message) => [message['requestID'], message]));
-        expect(byID.get('D1')).toMatchObject({ paths: ['/ok'], unresolved: 0 });
+        // Five entries dropped, and a nonsense count of its own: the page hears "5 left out".
+        expect(byID.get('D1')).toMatchObject({ paths: ['/ok'], unresolved: 5 });
         expect(byID.get('D2')).toMatchObject({ paths: [], unresolved: 0 });
         expect(byID.get('D3')?.['paths']).toEqual(many.slice(0, MAX_DROPPED_FILES));
+        // Cut by the cap is left out too, and counted as such rather than vanishing.
+        expect(byID.get('D3')?.['unresolved']).toBe(5);
     });
 
     it('carries the shell’s reason when it could read nothing', async () => {

@@ -86,7 +86,7 @@ import type { DaemonState, DomainAction, DomainEvent, LabelColor, WorkspaceColor
 import {
     isAnsweredShellAction,
     isDesktopCommand,
-    MAX_FOLDER_REQUEST_ID_LENGTH,
+    MAX_SHELL_ANSWER_REQUEST_ID_LENGTH,
     type AnsweredShellAction,
     type DesktopChannel,
     type DesktopCommand
@@ -1834,11 +1834,13 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             // nothing it says can reach this daemon through a socket that is gone, and a
             // reconnected shell's late answer for a settled id is simply dropped. Per action,
             // because each has its own capability and another shell may still hold one of them.
+            // Whether the departing connection could itself answer does not matter: a request is
+            // admitted only while a capable shell is attached, so if none remains now, the one
+            // that could answer is gone (this one, or an earlier one whose departure raced it).
             const shellWindow = this.client?.windowID;
             if (shellWindow !== undefined) {
                 for (const [requestID, entry] of [...pendingShellAnswers]) {
                     if (entry.windowID !== shellWindow) continue;
-                    if (this.client?.capabilities?.includes(SHELL_ANSWER_CAPABILITY[entry.action]) !== true) continue;
                     if (answeringShellAttached(shellWindow, entry.action, this)) continue;
                     settleShellAnswer(requestID, null, 'the desktop window disconnected before answering');
                 }
@@ -2669,7 +2671,7 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             if (this.pairedDevice) return refuse(`${action} is owner-only`);
             const requestID = text(payload['request_id']);
             const windowID = text(payload['window_id']);
-            if (requestID === undefined || windowID === undefined || requestID.length > MAX_FOLDER_REQUEST_ID_LENGTH) {
+            if (requestID === undefined || windowID === undefined || requestID.length > MAX_SHELL_ANSWER_REQUEST_ID_LENGTH) {
                 return undefined;
             }
             if (!answeringShellAttached(windowID, action)) {
@@ -3133,7 +3135,7 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
      * What is relayed is normalised rather than trusted field by field: only absolute paths
      * survive (`DOM.getFileInfo` returns nothing else for a file on disk, and the page types
      * whatever arrives), at most `MAX_DROPPED_FILES` of them, with a non-negative count of the
-     * items that had none. A malformed answer is still an answer, relayed as an empty one, so the
+     * items that had none plus every entry dropped here. A malformed answer is still an answer, relayed as an empty one, so the
      * page hears now that nothing is coming.
      */
     function droppedFilesAnswer(sender: SessionImpl, message: Record<string, unknown>): void {
@@ -3143,12 +3145,17 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
         const paths = raw
             .filter((entry): entry is string => typeof entry === 'string' && entry.startsWith('/') && entry.length <= MAX_DROPPED_PATH_LENGTH)
             .slice(0, MAX_DROPPED_FILES);
-        const unresolved = message['unresolved'];
+        const reported = message['unresolved'];
+        // Every entry this drops (not a path, not absolute, too long, past the cap) is counted
+        // with the ones the shell could not resolve, so the page says how many were left out.
+        const unresolved =
+            (typeof reported === 'number' && Number.isInteger(reported) && reported > 0 ? reported : 0) +
+            (raw.length - paths.length);
         const error = text(message['error']);
         settleShellAnswer(requestID, {
             kind: RESOLVE_DROPPED_FILES_ACTION,
             paths,
-            unresolved: typeof unresolved === 'number' && Number.isInteger(unresolved) && unresolved > 0 ? unresolved : 0,
+            unresolved,
             ...(error === undefined ? {} : { error: error.slice(0, MAX_DROPPED_ERROR_LENGTH) })
         });
     }

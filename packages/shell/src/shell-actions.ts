@@ -105,8 +105,9 @@ export function droppedFilesAnswer(
 ): WsDroppedFilesAnswerMessage {
     const absolute = result.paths.filter((entry) => entry.startsWith('/'));
     const paths = absolute.slice(0, MAX_DROPPED_FILES);
-    // A path that was not absolute is as good as unresolved: it cannot be typed as a location.
-    const unresolved = Math.max(0, result.unresolved) + (result.paths.length - absolute.length);
+    // Everything left out is counted, so the page can say how many: a path that was not absolute
+    // (it cannot be typed as a location) and one past the cap alike.
+    const unresolved = Math.max(0, result.unresolved) + (result.paths.length - paths.length);
     return {
         type: WS_DROPPED_FILES_ANSWER_MESSAGE,
         requestID,

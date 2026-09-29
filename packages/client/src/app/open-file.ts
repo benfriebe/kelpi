@@ -287,10 +287,13 @@ export function terminalDropText(data: DropData): string | null {
  * TERM-040 / TERM-041 / #288: what a drop onto a terminal pane does.
  *
  *  - `type`: the drag named its paths as text (`text/uri-list`, a path-shaped `text/plain`), so
- *    they are typed at once. Preferred when present because it is synchronous and exact, and it
- *    is the only route a browser has.
- *  - `resolve`: no path as text, but the drag carries `File`s: a drop from Finder. The paths have
- *    to be read by the main process (`app/dropped-files.ts`), and then they are typed the same way.
+ *    they are typed at once, through `resolvedDropOutcome` like a resolved drop's: a path that
+ *    cannot be typed safely is left out and counted in the notice, never dropped silently.
+ *    Preferred when present because it is synchronous and exact, and it is the only route a
+ *    browser has.
+ *  - `resolve`: no typeable path as text, but the drag carries `File`s: a drop from Finder. The
+ *    paths have to be read by the main process (`app/dropped-files.ts`), and then they are typed
+ *    the same way.
  *  - `ignore`: neither, e.g. a plain text drag. TERM-041's "a drag offering none of the accepted
  *    types is refused": nothing is typed and the window-level markdown route is not consulted.
  *
@@ -299,15 +302,17 @@ export function terminalDropText(data: DropData): string | null {
  * terminal opens a markdown pane (CONT-121).
  */
 export type TerminalDropPlan =
-    | { readonly kind: 'type'; readonly text: string }
+    | { readonly kind: 'type'; readonly paths: readonly string[] }
     | { readonly kind: 'resolve'; readonly files: readonly unknown[] }
     | { readonly kind: 'ignore' };
 
 export function terminalDropPlan(data: DropData): TerminalDropPlan {
-    const text = terminalDropText(data);
-    if (text !== null) return { kind: 'type', text };
+    const paths = pathsFromDrop(data);
+    if (paths.some(isTypeablePath)) return { kind: 'type', paths };
     const files = Array.from(data.files ?? { length: 0 }).filter((file) => file !== undefined && file !== null);
     if (files.length > 0) return { kind: 'resolve', files };
+    // Every path it named was refused: still `type`, so the outcome says why nothing was typed.
+    if (paths.length > 0) return { kind: 'type', paths };
     return { kind: 'ignore' };
 }
 
@@ -324,7 +329,10 @@ export interface DroppedFilesAnswer {
  * `text` is null when there is nothing to type. `notice` is null when the typing says it all; a
  * drop that typed nothing is never silent, because silence is the bug this route exists to fix.
  * Items with no path on disk (a `File` made of bytes) and paths that cannot be typed
- * (`isTypeablePath`) are left out and counted in the notice.
+ * (`isTypeablePath`) are left out and counted in the notice. The same function serves the text
+ * route, whose answer is simply its own paths with nothing unresolved. `error` is shown as it is:
+ * every producer (`app/dropped-files.ts`, the daemon, the shell) words it as a sentence for the
+ * user.
  */
 export function resolvedDropOutcome(answer: DroppedFilesAnswer): { readonly text: string | null; readonly notice: string | null } {
     const typeable = answer.paths.filter(isTypeablePath);
@@ -333,9 +341,7 @@ export function resolvedDropOutcome(answer: DroppedFilesAnswer): { readonly text
     const text = typeable.length === 0 ? null : terminalDropPathsText(typeable);
     const items = (count: number): string => (count === 1 ? '1 dropped item' : `${String(count)} dropped items`);
     if (text === null) {
-        if (answer.error !== null && answer.paths.length === 0) {
-            return { text, notice: `could not read the dropped file's path: ${answer.error}` };
-        }
+        if (answer.error !== null && answer.paths.length === 0) return { text, notice: answer.error };
         if (untypeable > 0) return { text, notice: `${items(leftOut)} had no path that can be typed safely, so nothing was typed` };
         return {
             text,

@@ -1,7 +1,8 @@
 import { DROPPED_FILES_STASH, MAX_DROPPED_FILES } from '@kelpi/protocol';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+    DROPPED_FILES_LOOKUP_DEADLINE_MS,
     DROPPED_FILES_OBJECT_GROUP,
     resolveDroppedFiles,
     serialized,
@@ -18,6 +19,11 @@ interface FakeOptions {
     readonly attached?: boolean;
     readonly attachThrows?: boolean;
     readonly evaluateThrows?: boolean;
+    /**
+     * Commands that never settle on their own, by `method#n` (n counts that method's calls from 1),
+     * e.g. `Runtime.evaluate#1`. Each is parked in `parked` for the test to settle late.
+     */
+    readonly hang?: readonly string[];
 }
 
 function fakeDebugger(options: FakeOptions = {}) {
@@ -26,6 +32,8 @@ function fakeDebugger(options: FakeOptions = {}) {
     const calls: string[] = [];
     const objects = new Map<string, string | null>();
     let expression = '';
+    const counts = new Map<string, number>();
+    const parked: { method: string; settle: () => void }[] = [];
     const target: DebuggerLike = {
         isAttached: () => attached,
         attach: () => {
@@ -40,6 +48,15 @@ function fakeDebugger(options: FakeOptions = {}) {
         sendCommand: (method, params = {}) => {
             calls.push(method);
             if (!attached) return Promise.reject(new Error('not attached'));
+            const count = (counts.get(method) ?? 0) + 1;
+            counts.set(method, count);
+            if (options.hang?.includes(`${method}#${String(count)}`) === true) {
+                // Settled late, the way a command answers once DevTools resumes: with a real
+                // result, so an abandoned lookup that failed to stop would carry on.
+                return new Promise((resolve) => {
+                    parked.push({ method, settle: () => resolve({ result: { type: 'object', objectId: 'array-1' } }) });
+                });
+            }
             switch (method) {
                 case 'Runtime.evaluate': {
                     if (options.evaluateThrows === true) return Promise.reject(new Error('target closed'));
@@ -75,7 +92,7 @@ function fakeDebugger(options: FakeOptions = {}) {
             }
         }
     };
-    return { target, calls, stash, expression: () => expression, attached: () => attached };
+    return { target, calls, stash, parked, expression: () => expression, attached: () => attached };
 }
 
 describe('resolveDroppedFiles (#288)', () => {
@@ -136,7 +153,89 @@ describe('resolveDroppedFiles (#288)', () => {
     it('stops at MAX_DROPPED_FILES', async () => {
         const many = Array.from({ length: MAX_DROPPED_FILES + 3 }, (_value, index) => `/f${String(index)}`);
         const fake = fakeDebugger({ stash: new Map([['R1', many]]) });
-        expect((await resolveDroppedFiles(fake.target, 'R1')).paths).toEqual(many.slice(0, MAX_DROPPED_FILES));
+        const result = await resolveDroppedFiles(fake.target, 'R1');
+        expect(result.paths).toEqual(many.slice(0, MAX_DROPPED_FILES));
+        // The ones past the cap are counted, so the page can say how many were left out.
+        expect(result.unresolved).toBe(3);
+    });
+});
+
+describe('the lookup deadline (#288 review)', () => {
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
+    const count = (calls: readonly string[], method: string): number => calls.filter((call) => call === method).length;
+
+    it('sits well inside the page’s own timeout, so the page hears the shell’s reason', () => {
+        expect(DROPPED_FILES_LOOKUP_DEADLINE_MS).toBeLessThan(15_000);
+    });
+
+    it('answers with an error when a command never settles, and detaches exactly once', async () => {
+        vi.useFakeTimers();
+        const fake = fakeDebugger({ stash: new Map([['R1', ['/a']]]), hang: ['Runtime.evaluate#1'] });
+        let settled: unknown = null;
+        void resolveDroppedFiles(fake.target, 'R1', { deadlineMs: 8_000 }).then((result) => {
+            settled = result;
+        });
+        await vi.advanceTimersByTimeAsync(7_999);
+        expect(settled).toBeNull();
+        await vi.advanceTimersByTimeAsync(1);
+        expect(settled).toEqual({ paths: [], unresolved: 0, error: 'the window did not answer within 8s' });
+        expect(count(fake.calls, 'detach')).toBe(1);
+        expect(fake.attached()).toBe(false);
+
+        // The hung command answers late. The abandoned lookup must stop there: no second answer,
+        // no more commands, and above all no second detach.
+        const before = fake.calls.length;
+        fake.parked[0]?.settle();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fake.calls.length).toBe(before);
+        expect(count(fake.calls, 'detach')).toBe(1);
+    });
+
+    it('lets the next queued lookup run, and a late answer never touches its session', async () => {
+        vi.useFakeTimers();
+        const fake = fakeDebugger({
+            stash: new Map([
+                ['R1', ['/first']],
+                ['R2', ['/second']]
+            ]),
+            hang: ['Runtime.evaluate#1']
+        });
+        const lookup = serialized((requestID: string) => resolveDroppedFiles(fake.target, requestID, { deadlineMs: 8_000 }));
+        const first = lookup('R1');
+        const second = lookup('R2');
+        await vi.advanceTimersByTimeAsync(8_000);
+        await expect(first).resolves.toMatchObject({ error: 'the window did not answer within 8s' });
+        await expect(second).resolves.toEqual({ paths: ['/second'], unresolved: 0 });
+        // One attach and one detach for each lookup, never an extra detach from the abandoned one.
+        expect(count(fake.calls, 'attach')).toBe(2);
+        expect(count(fake.calls, 'detach')).toBe(2);
+
+        // And if the first lookup's command answers only now, while nothing else is attached, it
+        // sends nothing on anyone's session.
+        const before = fake.calls.length;
+        fake.parked[0]?.settle();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fake.calls.length).toBe(before);
+    });
+
+    it('leaves a borrowed debugger attached even when the deadline passes', async () => {
+        vi.useFakeTimers();
+        const fake = fakeDebugger({ attached: true, stash: new Map([['R1', ['/a']]]), hang: ['Runtime.evaluate#1'] });
+        const result = resolveDroppedFiles(fake.target, 'R1', { deadlineMs: 1_000 });
+        await vi.advanceTimersByTimeAsync(1_000);
+        await expect(result).resolves.toMatchObject({ error: 'the window did not answer within 1s' });
+        expect(fake.calls).not.toContain('detach');
+        expect(fake.attached()).toBe(true);
+    });
+
+    it('clears its timer when the lookup finishes first', async () => {
+        vi.useFakeTimers();
+        const fake = fakeDebugger({ stash: new Map([['R1', ['/a']]]) });
+        await expect(resolveDroppedFiles(fake.target, 'R1')).resolves.toEqual({ paths: ['/a'], unresolved: 0 });
+        expect(vi.getTimerCount()).toBe(0);
     });
 });
 

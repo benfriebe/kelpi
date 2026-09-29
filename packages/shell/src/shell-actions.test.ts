@@ -1,3 +1,4 @@
+import { MAX_DROPPED_FILES } from '@kelpi/protocol';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -166,6 +167,13 @@ describe('droppedFilesAnswer (#288)', () => {
         expect(answer.unresolved).toBe(2);
         expect('error' in answer).toBe(false);
         expect(droppedFilesAnswer('d1', 'w1', { paths: [], unresolved: 0, error: 'gone' }).error).toBe('gone');
+    });
+
+    it('counts the paths past the cap as unresolved rather than dropping them silently (#288 review)', () => {
+        const many = Array.from({ length: MAX_DROPPED_FILES + 4 }, (_value, index) => `/f${String(index)}`);
+        const answer = droppedFilesAnswer('d1', 'w1', { paths: many, unresolved: 1 });
+        expect(answer.paths).toHaveLength(MAX_DROPPED_FILES);
+        expect(answer.unresolved).toBe(5);
     });
 });
 

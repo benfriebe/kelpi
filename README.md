@@ -1,24 +1,67 @@
 # Kelpi
 
 **Kelpi** (kelpi.sh) is a terminal multiplexer built for driving fleets of AI agents, with a
-**daemon + web client** architecture. It is a ground-up port of **Nex** — the macOS terminal
-multiplexer built on SwiftUI + libghostty — rebuilt around a daemon and renamed Kelpi, at full
+**daemon + web client** architecture. It is a ground-up port of **Nex** (the macOS terminal
+multiplexer built on SwiftUI + libghostty), rebuilt around a daemon and renamed Kelpi, at full
 feature parity with the app it replaces.
 
 The daemon (`kelpid`) owns the sessions: PTYs, terminal state, workspaces, layouts and agent
 tracking live in a headless Node process that survives app restarts and updates. Clients attach
-to it and render — an Electron shell on the desktop, or any browser over a tailnet. Closing the
+to it and render: an Electron shell on the desktop, or any browser over a tailnet. Closing the
 laptop lid or updating the app never kills an agent.
 
-Read [`ARCHITECTURE.md`](ARCHITECTURE.md) for the process model.
+## Architecture
+
+```mermaid
+flowchart LR
+    subgraph mac["Your Mac"]
+        subgraph app["Kelpi.app"]
+            main["Electron main process<br/>menu, tray, dock, notifications,<br/>global hotkey, updater, web panes"]
+            ui["Window: the web client<br/>React + ghostty-web"]
+        end
+        daemon["kelpid daemon · Node<br/>workspaces, panes, layouts, agents,<br/>terminal state, settings, plugins"]
+        host["Terminal host<br/>holds every PTY"]
+        shells["Your shells and agents<br/>zsh, Claude Code, Codex"]
+        db[("SQLite<br/>kelpi-v2.db")]
+        cfg[/"~/.config/kelpi/config"/]
+        cli["kelpi CLI<br/>and agent hooks"]
+    end
+    remote["Browser or phone<br/>on your tailnet"]
+    gh["GitHub Releases<br/>via update.electronjs.org"]
+
+    ui <-->|"HTTP + WebSocket, token-gated"| daemon
+    main <-->|"status WebSocket"| daemon
+    cli <-->|"newline JSON on /tmp/kelpi.sock"| daemon
+    daemon <-->|"attach, hand off on restart"| host
+    host --- shells
+    daemon --- db
+    daemon --- cfg
+    remote <-->|"HTTPS via tailscale serve"| daemon
+    main -.->|"update checks, opt-in"| gh
+```
+
+- **The daemon is the app.** Everything that matters lives in `kelpid`, and every client is a
+  view of it: the desktop window, a browser, a phone. The daemon serves the web client itself, so
+  the UI and the daemon always match.
+- **Shells live in a separate terminal host.** A daemon restart, a promote or an app update hands
+  every running terminal to the next daemon: same process, same screen, nothing typed into a
+  live agent ([`docs/terminal-host.md`](docs/terminal-host.md)). Only `kelpid stop` ends them.
+- **The Electron shell is thin, and has no preload.** The window's page and the main process
+  never talk directly. Anything between them (menus, native pickers, dropped files' paths, the
+  update sheet) goes through the daemon ([`packages/daemon/src/ws/desktop.ts`](packages/daemon/src/ws/desktop.ts)).
+- **The CLI and agent hooks speak the same control protocol**, so agent tracking works with no
+  window open at all.
+
+[`ARCHITECTURE.md`](ARCHITECTURE.md) has the full process model.
 
 ## What Kelpi is today
 
 - **Workspaces, groups and panes** with a full layout tree (splits, focus, sidebar ordering,
-  collapse state), persisted to SQLite and restored across daemon restarts — panes come back, and
+  collapse state), persisted to SQLite and restored across daemon restarts: panes come back, and
   every pane with a tracked agent session resumes it (`claude --resume <id>` / `codex resume <id>`).
-- **A real terminal**: the vendored `ghostty-web` engine, with the Kitty keyboard protocol, mouse
-  reporting, IME/CJK composition, OSC 52 (writes behind a `clipboard-write` key that ships off,
+- **A real terminal**: each pane runs your login shell (so `~/.zprofile` and Homebrew's `PATH`
+  apply, as in Terminal.app), rendered by the vendored `ghostty-web` engine, with the Kitty
+  keyboard protocol, mouse reporting, IME/CJK composition, OSC 52 (writes behind a `clipboard-write` key that ships off,
   reads refused), search highlighting, themes, and per-pane font/size. One accepted limitation:
   the daemon's VT does not reflow on resize.
 - **Content panes** beyond the shell: markdown (edit/preview), scratchpad, diff, and web panes
@@ -27,17 +70,24 @@ Read [`ARCHITECTURE.md`](ARCHITECTURE.md) for the process model.
   ids and desktop notifications; `kelpi install-hooks` wires them and `kelpi doctor` verifies the
   whole chain.
 - **Graft**: git-worktree-backed workspaces (default base `~/kelpi/worktrees/<repo>`), with repo
-  associations and status surfaced in the UI.
+  associations and status surfaced in the UI. A **group can have a default repository**
+  (group ▸ Add Repository…, or `kelpi group set-repo`): new workspaces in it start with that repo,
+  and optionally with a new worktree branched off the latest `origin/main`, named after the
+  workspace. The group header shows the repo.
 - **A native shell**: menu bar, tray, dock badge, global hotkey, native notifications,
-  hidden-titlebar window with inline traffic lights, an inspector, and Finder "Open With" for
-  markdown.
+  hidden-titlebar window with inline traffic lights, an inspector, Finder "Open With" for
+  markdown, native folder pickers (Settings ▸ Repositories), and **dropping files onto a terminal
+  pane** to type their shell-escaped paths, so an agent receives them as a paste.
+- **Updates that keep your sessions**: signed, notarized releases from GitHub, offered in a sheet
+  with the release notes. Kelpi asks before restarting, and the new version adopts the running
+  terminals. Off by default.
 - **A settings system** over `~/.config/kelpi/config`: keybindings (with conflict detection),
-  appearance, terminal themes, repositories, TCP exposure — edited live in the client, applied by
+  appearance, terminal themes, repositories, TCP exposure, edited live in the client, applied by
   the daemon as the settings authority.
 - **The `kelpi` CLI**: a single-file, dependency-free binary speaking the daemon's newline-JSON
-  control protocol — panes, workspaces, groups, events, web-pane control, doctor, install-hooks,
+  control protocol: panes, workspaces, groups, events, web-pane control, doctor, install-hooks,
   and the legacy importer. The daemon still passes the shipped Swift CLI's 103-test compat
-  suite over TCP — same wire, different socket.
+  suite over TCP: same wire, different socket.
 - **Self-hosting tooling**: an impact-mapped verification battery, a promote flow that upgrades
   the running instance from inside itself, a second full instance for development, and a
   sub-second HMR loop.
@@ -72,7 +122,7 @@ the bundled Claude Code skill is `kelpi-agentic`.
 variables, `~/.config/nex` and `~/Library/Application Support/Nex`; Kelpi has its own of each,
 and the two apps run side by side without touching one another. The bridge between them is
 **`kelpid import`**: it copies the data (from the Swift app's database, or a pre-rename port
-daemon's `nexd/nex.db` — it reads both generations) and the config into Kelpi's locations, once,
+daemon's `nexd/nex.db`; it reads both generations) and the config into Kelpi's locations, once,
 explicitly, with a printed report. See "Importing from the legacy macOS app" below.
 
 Two conveniences remain for our own pre-rename install base, neither shared with the Swift app:
@@ -110,7 +160,7 @@ packages/daemon/dist/kelpid.js status
 
 ```
 kelpid is running (pid 77182)
-  version: 0.1.0 (build 1)
+  version: 0.3.0-dev (build 1)
   protocol: 2
   control: /tmp/kelpi.sock
   discovery: ~/Library/Application Support/kelpid/run/daemon-v2.sock
@@ -119,7 +169,7 @@ kelpid is running (pid 77182)
   run dir: ~/Library/Application Support/kelpid/run
 ```
 
-Open the client with the `url` line, never the bare `http:` one — the WebSocket handshake is
+Open the client with the `url` line, never the bare `http:` one: the WebSocket handshake is
 gated on the run dir's token, so an origin without `?token=` loads the page and is then refused
 (the client says so and stops, rather than retrying). `kelpid url` prints exactly that line and
 nothing else, so it pipes:
@@ -129,11 +179,11 @@ open "$(packages/daemon/dist/kelpid.js url)"
 ```
 
 The token is remembered in `localStorage` and stripped from the address bar on arrival, so
-later visits to the bare origin work — until the daemon's run dir is recreated, at which point
+later visits to the bare origin work, until the daemon's run dir is recreated, at which point
 open a fresh `kelpid url` again.
 
 `--foreground` runs it in the current process instead (what a supervisor or a container wants),
-and `kelpid stop` shuts it down cleanly — pending state is flushed to SQLite before the PTYs are
+and `kelpid stop` shuts it down cleanly: pending state is flushed to SQLite before the PTYs are
 killed.
 
 Shells do not have to die with the daemon. `kelpid start` runs every PTY in a separate **terminal
@@ -186,7 +236,7 @@ hooks into `~/.codex/hooks.json`:
 
 ```bash
 kelpi install-hooks --dry-run     # show what would change, write nothing
-kelpi install-hooks               # merge (safe to re-run — this is what `kelpi doctor` suggests)
+kelpi install-hooks               # merge (safe to re-run; this is what `kelpi doctor` suggests)
 kelpi install-hooks --link        # …and symlink this CLI into /usr/local/bin first
 ```
 
@@ -195,7 +245,7 @@ It **merges**: your own hooks survive, kelpi-managed ones are deduped by their f
 and a stale `"matcher": "startup"` SessionStart group is migrated to a matcher-less one so
 `claude --resume` binds its session id again. An existing file is copied to `<file>.kelpi-backup`
 before it changes, and a file that is not valid JSON is refused rather than overwritten. A
-packaged `Kelpi.app` installs the symlink itself — on first launch it offers, on later launches
+packaged `Kelpi.app` installs the symlink itself: on first launch it offers, on later launches
 it repairs drift, and the tray's **Install CLI** item does it on demand.
 
 **PATH assumption.** The hooks run in the *non-interactive* shell Claude Code spawns, which
@@ -203,7 +253,7 @@ does not read your `~/.zshrc` and inherits the agent's own `PATH`. `install-hook
 `kelpi` only when a `kelpi` on the current `PATH` really resolves to this binary; otherwise it
 writes the absolute path, so the hooks fire either way. `--install-dir` / `KELPI_INSTALL_DIR`
 move the symlink elsewhere, and an unwritable directory prints the `sudo` command to run by
-hand — it never escalates on its own.
+hand; it never escalates on its own.
 
 ### Running a second daemon
 
@@ -225,7 +275,7 @@ is how a CLI reaches a development daemon:
 KELPI_SOCKET=tcp:127.0.0.1:19400 kelpi workspace list
 ```
 
-A development daemon has its own run dir, and therefore its own token — so ask that daemon for
+A development daemon has its own run dir, and therefore its own token, so ask that daemon for
 its URL rather than reusing one from another instance:
 
 ```bash
@@ -234,11 +284,14 @@ KELPID_RUN_DIR=~/.local/state/kelpid-dev open "$(packages/daemon/dist/kelpid.js 
 
 `kelpid --help` lists every environment override (run dir, control socket, TCP port, HTTP
 host/port, database, config file, client build directory, log file).
-`scripts/dev-instance.mjs` automates all of the above — it stands up a complete second Kelpi
-(daemon + client + helpers) on private endpoints, beside the one you are using.
+`scripts/dev-instance.mjs` automates all of the above: it stands up a complete second Kelpi
+(daemon + client + helpers) on private endpoints, beside the one you are using. Its panes run
+your own shell with your real `HOME`, so they look like your everyday shells, while every piece of
+daemon state stays under the instance's own directory; `--isolated-home` gives them an empty home
+instead. Start it from a terminal whose `PATH` you want the panes to inherit.
 
 Beside the database the daemon keeps `pane-geometry.json`: the last grid (cols × rows) each
-pane was actually rendered at. It is a cache, not state — but it is what lets a restored pane's
+pane was actually rendered at. It is a cache, not state, but it is what lets a restored pane's
 shell be **born** at the size it will be shown at instead of at 80×24. The emulator does not
 reflow, so a prompt printed at the wrong width stays wrong in every snapshot after it; deleting
 the file costs one badly-wrapped first prompt per pane and nothing else.
@@ -247,7 +300,7 @@ the file costs one badly-wrapped first prompt per pane and nothing else.
 
 The Swift app (Nex) keeps its state in `~/Library/Application Support/Nex/nex.db`; the daemon
 owns a separate database (`~/Library/Application Support/kelpid/kelpi-v2.db`, or `KELPID_DB_PATH`)
-so the two run side by side. `kelpid import` copies the legacy state into Kelpi's, once — the
+so the two run side by side. `kelpid import` copies the legacy state into Kelpi's, once: the
 database AND `~/.config/nex/config` (never over an existing Kelpi config). Its default source
 is the pre-rename port daemon's `nexd/nex.db` when that exists (the reader handles both
 generations), else the Swift app's.
@@ -261,7 +314,7 @@ kelpid import          # or: kelpid import --dry-run   to see the report first
 kelpid start
 ```
 
-On that `start` the panes come back, and every pane that had an agent session resumes it —
+On that `start` the panes come back, and every pane that had an agent session resumes it:
 `claude --resume <id>` or `codex resume <id>`, chosen by the pane's last-known agent. Session ids
 that fail the shell-safety allowlist are skipped, and the report says which.
 
@@ -269,28 +322,41 @@ that fail the shell-safety allowlist are skipped, and the report says which.
 |------|---------|
 | `--from <db>` | legacy database (default: the Swift app's path above) |
 | `--to <db>` | daemon database (default: `KELPID_DB_PATH`, else the platform default) |
-| `--force` | replace a target that already holds workspaces — the existing database is copied aside as `<target>.<timestamp>.bak` first |
+| `--force` | replace a target that already holds workspaces; the existing database is copied aside as `<target>.<timestamp>.bak` first |
 | `--dry-run` | print the report and write nothing (not even an empty database) |
 | `--json` | one JSON report on stdout; the two paths still go to stderr |
 
 Both paths are printed before anything is opened. The source is opened **read-only** and is never
-written, migrated or deleted, so importing twice — or importing into a scratch `--to` — is safe.
+written, migrated or deleted, so importing twice (or importing into a scratch `--to`) is safe.
 Without `--force`, a target that already holds workspaces is refused; a running daemon is refused
 regardless of `--force`.
 
 What comes across: workspaces (name, color, icon, labels, profile, layout tree, focused pane),
 groups (order, collapse state, members), the sidebar order, panes of every type (shell, markdown,
 scratchpad, diff, web) with their working directories, files, scratchpad contents and web tabs,
-plus the repo registry and its associations. What does not: live pane statuses (reset to idle —
+plus the repo registry and its associations. What does not: live pane statuses (reset to idle:
 no PTY survives an import), private web-pane tabs (the private flag persists, the contents never
 do), and parked/recently-closed panes. Undecodable rows are dropped and *reported*: `skipped`
 names the table, id and reason, and `warnings` covers every fallback taken.
 
 ## Install and run
 
+### From a release
+
+1. Download `Kelpi-<version>-arm64.dmg` from the
+   [latest release](https://github.com/benfriebe/kelpi/releases/latest) (Apple silicon). It's
+   signed and notarized.
+2. Open the DMG and drag **Kelpi** into **Applications**. Run it from there: a copy running from
+   the DMG, or from Downloads, can't update itself.
+3. Install the `kelpi` command: tray ▸ **Install CLI**. If `/usr/local/bin` isn't writable, run
+   the `sudo ln -sfn …` command it prints. Then `kelpi install-hooks` wires Claude Code and
+   Codex into Kelpi (see [Hooks](#hooks-kelpi-install-hooks)).
+4. Optional: Settings ▸ General ▸ Updates ▸ **Check for updates automatically**. Kelpi ▸
+   **Check for Updates…** works any time.
+
 ### From source (development)
 
-The daemon is the only thing you strictly need — a browser is a complete client. The Electron
+The daemon is the only thing you strictly need; a browser is a complete client. The Electron
 shell adds the native chrome (tray, dock badge, global hotkey, native notifications, web panes).
 
 The install below is the whole preparation; see
@@ -309,7 +375,7 @@ KELPID_CLIENT_DIR=packages/client/dist pnpm --filter @kelpi/shell start
 
 `start` runs `electron .`, which discovers a running daemon or starts one detached (and leaves it
 running when you quit). To use the browser instead, start the daemon yourself and open
-`kelpid url` — see [Quickstart](#quickstart) above.
+`kelpid url` (see [Quickstart](#quickstart) above).
 
 ### As an app (`pnpm dist`)
 
@@ -324,7 +390,7 @@ open packages/shell/out/Kelpi-darwin-arm64/Kelpi.app
 |----------|------------|
 | `Kelpi-darwin-arm64/Kelpi.app` | the app bundle (also what `open` above launches) |
 | `make/Kelpi.dmg` | the DMG, for handing to another machine |
-| `make/zip/darwin/arm64/Kelpi-darwin-arm64-<version>.zip` | the ZIP — Squirrel.Mac's format, for when auto-update is switched on |
+| `make/zip/darwin/arm64/Kelpi-darwin-arm64-<version>.zip` | the ZIP: Squirrel.Mac's format, which is what an update downloads |
 
 Use `pnpm --filter @kelpi/shell package` for just the `.app` (no DMG/ZIP), and
 `pnpm --filter @kelpi/shell smoke:packaged` to verify a build end to end: it packages the app,
@@ -352,12 +418,12 @@ cli/         the kelpi CLI + its launchers       ← outside the asar
 node         a Node 24 runtime for the daemon    ← outside the asar
 ```
 
-The staged directories sit outside the archive because a plain `node` process — not Electron —
+The staged directories sit outside the archive because a plain `node` process (not Electron)
 executes the daemon: `node` cannot run a script inside an asar, and `dlopen` cannot load
 node-pty's `pty.node` out of one. On launch the shell finds its daemon at
 `Resources/daemon/kelpid.js`, runs it under `Resources/node` (never `ELECTRON_RUN_AS_NODE`, which
-is fused off), and hands it `KELPID_CLIENT_DIR=…/Resources/client`. All three are overridable —
-`KELPID_ENTRY`, `KELPID_NODE`, `KELPID_CLIENT_DIR` — and a daemon that is *already* running is
+is fused off), and hands it `KELPID_CLIENT_DIR=…/Resources/client`. All three are overridable
+(`KELPID_ENTRY`, `KELPID_NODE`, `KELPID_CLIENT_DIR`), and a daemon that is *already* running is
 adopted as-is, so a packaged app and a development daemon coexist.
 
 Two things about the build worth knowing:
@@ -402,6 +468,16 @@ runs `.github/workflows/release.yml`, which:
 4. checks the app, the DMG and the app inside the ZIP with `codesign`, `stapler` and `spctl`,
 5. drafts a GitHub Release with the DMG and the ZIP (Squirrel installs from the ZIP). Publishing
    the draft is manual.
+
+What to know when cutting one:
+
+- **Versions:** main carries the next version with `-dev` (for example `0.3.0-dev`), so a build
+  from main never reads as older than a published release; the tag stamps the real version.
+- **Offering an update:** installed copies are offered only a **published, non-prerelease**
+  release. `update.electronjs.org` ignores drafts and prereleases, and can take up to about ten
+  minutes to offer a newly published release.
+- **After an update**, the new app hands the old version's daemon off to its own: the terminals
+  carry over.
 
 Running the workflow by hand does everything except the release and leaves the DMG and ZIP as
 workflow artifacts. Its secrets live in the repo's `Kelpi` environment:
@@ -460,7 +536,7 @@ tailscale serve --bg "$port"     # background; foreground is the same command wi
 tailscale serve status           # what is currently proxied
 ```
 
-Then open it with the daemon's token — the tailnet only decides *who can reach the port*; the
+Then open it with the daemon's token: the tailnet only decides *who can reach the port*; the
 WebSocket handshake is still gated on the run dir's token:
 
 ```bash
@@ -504,7 +580,7 @@ not recorded. An unwritable history file produces a note without undoing success
 Remote status shares a 12-second deadline across its two Tailscale invocations, leaving time
 for diagnostics to arrive within the client's 15-second timeout.
 
-Stop sharing with `tailscale serve reset`. Use `serve`, never `funnel` — `funnel` publishes to
+Stop sharing with `tailscale serve reset`. Use `serve`, never `funnel`: `funnel` publishes to
 the open internet, and this port is a shell. Proxied requests arrive with Tailscale's identity
 headers (`Tailscale-User-Login`, `Tailscale-User-Name`), which is where per-user gating would
 go if it is ever wanted.
@@ -518,20 +594,24 @@ packages/
 ├─ daemon/     kelpid: store, PTY manager, terminal state, control + HTTP/WS servers, SQLite,
 │              content + web-pane + graft services, legacy nex.db importer
 ├─ client/     web UI: terminal rendering, pane grid, sidebar, settings, web-pane chrome
-├─ shell/      Electron wrapper: tray, dock, notifications, web-pane host, packaging
-└─ cli/        the `kelpi` CLI
+├─ shell/      Electron wrapper: tray, dock, notifications, web-pane host, updater, packaging
+├─ cli/        the `kelpi` CLI
+└─ plugin-sdk/ the plugin API and its types
+docs/          specs for every surface (terminal host, wire protocol, settings, plugins, …)
+scripts/       verification battery, UI scenarios, dev instance, promote, release helpers
+examples/      example plugins
 ```
 
 ## Development
 
 ```bash
-pnpm check          # typecheck + the full test suite   (the gate — must stay green)
+pnpm check          # typecheck + the full test suite   (the gate: must stay green)
 pnpm test           # vitest across every package
 pnpm typecheck      # tsc -b protocol core daemon cli, then SDK + client + shell
 pnpm --filter @kelpi/daemon watch    # rebuild the bundle on change
 ```
 
-The verification tooling is tiered — the diff picks the tier, not optimism:
+The verification tooling is tiered: the diff picks the tier, not optimism:
 
 ```bash
 node scripts/verify.mjs             # scoped: exactly the tests + audit steps the diff touches
@@ -543,6 +623,10 @@ node scripts/self-upgrade.mjs       # run the battery, package, and promote the 
                                     # instance to this tree's build (detached restart; panes
                                     # and agent sessions come back and resume)
 ```
+
+If you run a **release** Kelpi from `/Applications`, try candidate builds with
+`dev-instance.mjs` rather than promoting. A promoted build from main is a `-dev` version, newer
+than any release, so it would take over the release app's daemon.
 
 A battery runs every component before it decides, and prints a table of what each cost and how
 it ended. A component that goes red is retried once, on its own, and only the part that failed:
@@ -565,7 +649,7 @@ node packages/shell/scripts/packaged-smoke.mjs   # the built Kelpi.app, end to e
 re-boot), and `renderer-start-stress.mjs` creates panes six-at-a-time across workspaces and
 requires that none is stranded on "terminal renderer failed to start".
 
-The compat harness drives a real CLI binary against a real daemon — either implementation:
+The compat harness drives a real CLI binary against a real daemon, either implementation:
 
 ```bash
 npx vitest run packages/daemon/tests/compat                                  # the Swift nex CLI

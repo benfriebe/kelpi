@@ -612,6 +612,13 @@ describe('choose-folder-dialog (#283)', () => {
         expect(answers().map((message) => message['path'])).toEqual([null]);
     });
 
+    it('declares its window and the folder capability in its hello, so the daemon takes its answers', () => {
+        start(async () => null);
+        const hello = JSON.parse(socket.sent[0] ?? '{}') as { type?: string; client?: Record<string, unknown> };
+        expect(hello.type).toBe('hello');
+        expect(hello.client).toMatchObject({ kind: 'electron', windowID: 'w1', capabilities: ['choose-folder'] });
+    });
+
     it('leaves a request for another window, or one with no id, alone', async () => {
         const prompt = vi.fn(async () => '/src/app');
         start(prompt);

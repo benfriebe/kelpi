@@ -32,7 +32,7 @@
 import { Menu, Tray, app, nativeImage, nativeTheme } from 'electron';
 import { WebSocket } from 'ws';
 
-import { type JsonObject, type WsDeltaEvent } from '@kelpi/protocol';
+import { CHOOSE_FOLDER_CAPABILITY, type JsonObject, type WsDeltaEvent } from '@kelpi/protocol';
 
 import {
     AgentModel,
@@ -440,7 +440,7 @@ export function createStatusController(options: StatusOptions): StatusController
      * reconnect while the panel was up still delivers it.
      */
     function answerChooseFolder(requestID: string | null, windowID: string | null): void {
-        if (requestID === null) return;
+        if (requestID === null || windowID === null) return;
         const send = (chosen: string | null): void => {
             if (!sendJson({ ...chooseFolderAnswer(requestID, windowID, chosen) }, 'choose-folder answer')) {
                 warn(`choose-folder answer ${requestID} not sent: the status connection is down`);
@@ -784,7 +784,19 @@ export function createStatusController(options: StatusOptions): StatusController
             // The token rides in the hello as well as the bearer header — see `./hello.ts` for
             // why both halves matter now that the upgrade no longer refuses a bad token.
             next.send(
-                JSON.stringify(shellHello({ token: location.token, name: 'kelpi-shell', version: app.getVersion() }))
+                JSON.stringify(
+                    shellHello({
+                        token: location.token,
+                        name: 'kelpi-shell',
+                        version: app.getVersion(),
+                        // #283: this connection answers the folder panel for this window, and the
+                        // daemon takes an answer from nothing else. Without a window id (a dev
+                        // run) there is nothing to match, so the capability is not claimed.
+                        ...(options.windowID === undefined
+                            ? {}
+                            : { capabilities: [CHOOSE_FOLDER_CAPABILITY], windowID: options.windowID })
+                    })
+                )
             );
         });
 

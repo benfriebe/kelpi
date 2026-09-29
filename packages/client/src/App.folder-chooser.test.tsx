@@ -30,6 +30,8 @@ function snapshotState(): JsonObject {
 
 interface Harness {
     socket(): FakeWebSocket;
+    /** Drop the daemon connection and let the client redial and handshake again. */
+    drop(): Promise<void>;
     commands(name: string): Record<string, unknown>[];
     /** The frame id of the newest command with this name. */
     frameID(name: string): unknown;
@@ -61,6 +63,21 @@ function setup(shellWindow: string | null): Harness {
             .filter((message) => (message['payload'] as Record<string, unknown>)['command'] === name);
     return {
         socket: () => sockets.last(),
+        async drop() {
+            const before = sockets.last();
+            act(() => {
+                before.serverClose();
+            });
+            // The backoff is 10 ms in this harness; the redial creates the next fake socket.
+            await act(async () => {
+                await new Promise((resolve) => setTimeout(resolve, 40));
+            });
+            const next = sockets.last();
+            expect(next).not.toBe(before);
+            act(() => {
+                completeHandshake(next, { state: snapshotState() });
+            });
+        },
         commands: (name) => frames(name).map((message) => message['payload'] as Record<string, unknown>),
         frameID: (name) => frames(name).at(-1)?.['id']
     };
@@ -152,6 +169,75 @@ describe('Settings ▸ Repositories in the desktop app (#283)', () => {
             expect(document.body.textContent).toContain('Choose folder');
         });
         expect(h.commands('repo-add')).toEqual([]);
+    });
+});
+
+describe('a dropped connection (#283)', () => {
+    it('settles a pending panel as a cancel, so the next press asks again', async () => {
+        const h = setup(SHELL_WINDOW);
+        openRepositories(h);
+        fireEvent.click(screen.getByTestId('repo-add'));
+        // The daemon ACCEPTED the request: only the drop can end it now, since the daemon
+        // routes the answer to the connection that asked and that connection is about to go.
+        act(() => {
+            h.socket().emit({ type: 'command-reply', id: h.frameID('shell-action'), reply: { ok: true } });
+        });
+        await h.drop();
+        await waitFor(() => {
+            expect(screen.getByTestId('repo-add')).toBeTruthy();
+        });
+        fireEvent.click(screen.getByTestId('repo-add'));
+        // Without the settle, the tab's one-panel guard would still be held and nothing would go.
+        expect(h.commands('shell-action')).toEqual([
+            expect.objectContaining({ action: 'choose-folder-dialog', window_id: SHELL_WINDOW })
+        ]);
+        // A drop is not the daemon saying no, so it is not toasted as a refusal.
+        expect(document.body.textContent).not.toContain('Choose folder');
+    });
+});
+
+describe('the inspector’s Add Repository ▸ Choose… (#283)', () => {
+    async function openAddRepositorySheet(h: Harness, windowID: string | null): Promise<void> {
+        act(() => {
+            h.socket().emit({ type: 'menu-command', command: 'toggle-inspector', ...(windowID === null ? {} : { windowID }) });
+        });
+        await waitFor(() => {
+            expect(screen.getByTestId('inspector-add-repo')).toBeTruthy();
+        });
+        fireEvent.click(screen.getByTestId('inspector-add-repo'));
+        await waitFor(() => {
+            expect(document.querySelector('[data-menu-item="add-repo"]')).not.toBeNull();
+        });
+        fireEvent.click(document.querySelector('[data-menu-item="add-repo"]') as Element);
+        await waitFor(() => {
+            expect(screen.getByTestId('add-repo-sheet')).toBeTruthy();
+        });
+    }
+
+    it('asks this window’s shell for a folder and fills the sheet with the answer', async () => {
+        const h = setup(SHELL_WINDOW);
+        await openAddRepositorySheet(h, SHELL_WINDOW);
+        fireEvent.click(screen.getByTestId('add-repo-browse'));
+        const request = h.commands('shell-action').at(-1);
+        expect(request).toMatchObject({ action: 'choose-folder-dialog', window_id: SHELL_WINDOW });
+        act(() => {
+            h.socket().emit({ type: 'command-reply', id: h.frameID('shell-action'), reply: { ok: true } });
+            h.socket().emit({
+                type: 'choose-folder-result',
+                requestID: request?.['request_id'],
+                path: '/Users/test/src/app',
+                windowID: SHELL_WINDOW
+            });
+        });
+        await waitFor(() => {
+            expect((screen.getByTestId('add-repo-path') as HTMLInputElement).value).toBe('/Users/test/src/app');
+        });
+    });
+
+    it('draws no Choose… in a browser', async () => {
+        const h = setup(null);
+        await openAddRepositorySheet(h, null);
+        expect(screen.queryByTestId('add-repo-browse')).toBeNull();
     });
 });
 

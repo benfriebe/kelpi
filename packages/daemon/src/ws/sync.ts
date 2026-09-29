@@ -33,6 +33,7 @@ import type { PluginChannel } from '../plugins/service.js';
 import { randomUUID } from 'node:crypto';
 
 import {
+    CHOOSE_FOLDER_CAPABILITY,
     CHOOSE_FOLDER_DIALOG_ACTION,
     CHOOSE_FOLDER_TIMEOUT_MS,
     WS_CHOOSE_FOLDER_ANSWER_MESSAGE,
@@ -78,6 +79,7 @@ import {
 import type { DaemonState, DomainAction, DomainEvent, LabelColor, WorkspaceColor } from '../store/types.js';
 import {
     isDesktopCommand,
+    MAX_FOLDER_REQUEST_ID_LENGTH,
     type DesktopChannel,
     type DesktopCommand
 } from './desktop.js';
@@ -1383,25 +1385,61 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
      * this machine, meaningful only to the surface that asked, so it goes to the session that
      * sent the `choose-folder-dialog` and nobody else (`ws/desktop.ts` has the whole loop).
      *
-     * `windowID` is the window the request named. The shell echoes it back, and an answer from
-     * any other window is dropped: only the shell that raised the panel can have closed it.
+     * `windowID` is the window the request named, and only that window's shell may answer it
+     * (`isFolderShellFor`). The `shell-action` broadcast carries the id and the window to every
+     * attached session, so matching the ids proves nothing about who is answering; the hello the
+     * answering connection authenticated with does.
      *
-     * Entries leave on the answer, when their session closes, or once they are older than
-     * `CHOOSE_FOLDER_TIMEOUT_MS` (swept whenever the map is touched), and the map is capped, so
-     * a shell that quits with a panel up, or a client that asks and never waits, cannot grow it.
+     * Every entry ends in a result for its asker unless the asker itself is gone: the shell's
+     * answer; null when that window's shell disconnects, when the cap evicts the entry, or once it
+     * is older than `CHOOSE_FOLDER_TIMEOUT_MS` (swept whenever the map is touched). So a lost
+     * answer costs the page a "no", never a button that silently does nothing for ten minutes.
      */
     const pendingFolderChoices = new Map<string, { session: SessionImpl; windowID: string; at: number }>();
+
+    /** Tell the asker its request is over (null = nothing chosen), and forget it. */
+    const settleFolderChoice = (requestID: string, path: string | null): void => {
+        const entry = pendingFolderChoices.get(requestID);
+        if (entry === undefined) return;
+        pendingFolderChoices.delete(requestID);
+        if (closed || !entry.session.ready) return;
+        entry.session.send({ type: WS_CHOOSE_FOLDER_RESULT_MESSAGE, requestID, path, windowID: entry.windowID });
+    };
+
     const sweepFolderChoices = (): void => {
         const cutoff = now() - CHOOSE_FOLDER_TIMEOUT_MS;
-        for (const [requestID, entry] of pendingFolderChoices) {
-            if (entry.at <= cutoff) pendingFolderChoices.delete(requestID);
+        for (const [requestID, entry] of [...pendingFolderChoices]) {
+            if (entry.at <= cutoff) settleFolderChoice(requestID, null);
         }
-        // Oldest first (a Map iterates in insertion order), so the cap drops the stalest ask.
+        // Oldest first (a Map iterates in insertion order), so the cap drops the stalest ask,
+        // and says so to whoever made it.
         while (pendingFolderChoices.size > MAX_PENDING_FOLDER_CHOICES) {
             const oldest = pendingFolderChoices.keys().next().value;
             if (oldest === undefined) break;
-            pendingFolderChoices.delete(oldest);
+            settleFolderChoice(oldest, null);
         }
+    };
+
+    /**
+     * Is `session` the shell connection of `windowID` that can answer a folder request?
+     *
+     * The status connection of a current shell declares `CHOOSE_FOLDER_CAPABILITY` and its window
+     * in its `hello` (`shell/src/hello.ts`). A paired device never qualifies whatever it claims,
+     * since a device token is not the owner's; nor does a browser, or the shell's web-host socket,
+     * which declares the window but not the capability.
+     */
+    const isFolderShellFor = (session: SessionImpl, windowID: string): boolean =>
+        session.ready &&
+        !session.pairedDevice &&
+        session.client?.kind === 'electron' &&
+        session.client.windowID === windowID &&
+        session.client.capabilities?.includes(CHOOSE_FOLDER_CAPABILITY) === true;
+
+    const folderShellAttached = (windowID: string, except?: SessionImpl): boolean => {
+        for (const session of sessions) {
+            if (session !== except && isFolderShellFor(session, windowID)) return true;
+        }
+        return false;
     };
 
     const report = (error: unknown, context: string): void => {
@@ -1449,6 +1487,10 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
          * outside the registry and never revocable through it.
          */
         private credential: string | null = null;
+        /** True when this session authenticated with a paired-device token rather than the owner's. */
+        get pairedDevice(): boolean {
+            return this.credential !== null && this.credential.startsWith(DEVICE_TOKEN_PREFIX);
+        }
         /**
          * Every pane geometry this client has reported (attach + resize), owner or not. The
          * cache is what makes `take-size-control` instant: the taker's whole layout is known
@@ -1618,7 +1660,7 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                     this.menuRequest(parsed);
                     return;
                 case WS_CHOOSE_FOLDER_ANSWER_MESSAGE:
-                    chooseFolderAnswer(parsed);
+                    chooseFolderAnswer(this, parsed);
                     return;
                 case FLUSH_SAVES_REQUEST_MESSAGE:
                     this.flushSavesRequest(parsed);
@@ -1719,8 +1761,20 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             sessions.delete(this);
             // #283: a folder answer for a connection that is gone has nowhere to go; the page
             // that asked settles its own promise when its socket drops.
-            for (const [requestID, entry] of pendingFolderChoices) {
+            for (const [requestID, entry] of [...pendingFolderChoices]) {
                 if (entry.session === this) pendingFolderChoices.delete(requestID);
+            }
+            // …and when the departing connection was the shell that would have answered, the
+            // pages still waiting on it hear "nothing chosen" now. Its panel may still be up, but
+            // nothing it says can reach this daemon through a socket that is gone, and a
+            // reconnected shell's late answer for a settled id is simply dropped.
+            const shellWindow = this.client?.windowID;
+            if (shellWindow !== undefined && this.client?.capabilities?.includes(CHOOSE_FOLDER_CAPABILITY) === true) {
+                if (!folderShellAttached(shellWindow, this)) {
+                    for (const [requestID, entry] of [...pendingFolderChoices]) {
+                        if (entry.windowID === shellWindow) settleFolderChoice(requestID, null);
+                    }
+                }
             }
             // The departing owner hands size control to the most recent remaining UI that has
             // reported any geometry, and that UI's cached layout applies at once — panes must
@@ -2494,32 +2548,11 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                 this.send({ type: 'command-reply', id, reply: failure(`${command} is not available`) });
                 return;
             }
-            /*
-             * #283: remember who asked for a folder BEFORE the broadcast goes out, so an answer
-             * can never outrun its own bookkeeping. The channel validates the request; a refusal
-             * forgets it again below. A request id that is already pending is refused outright
-             * rather than re-pointed, because re-pointing would hand the first asker's answer to
-             * whoever reused the id.
-             */
             const folderRequestID =
                 command === 'shell-action' && payload['action'] === CHOOSE_FOLDER_DIALOG_ACTION
-                    ? text(payload['request_id'])
+                    ? this.admitFolderRequest(id, payload)
                     : undefined;
-            const folderWindowID = text(payload['window_id']);
-            if (folderRequestID !== undefined) {
-                if (pendingFolderChoices.has(folderRequestID)) {
-                    this.send({
-                        type: 'command-reply',
-                        id,
-                        reply: failure(`folder request ${folderRequestID} is already pending`)
-                    });
-                    return;
-                }
-                if (folderWindowID !== undefined) {
-                    pendingFolderChoices.set(folderRequestID, { session: this, windowID: folderWindowID, at: now() });
-                    sweepFolderChoices();
-                }
-            }
+            if (folderRequestID === null) return;
             void channel.run(command, payload).then(
                 (reply) => {
                     if (folderRequestID !== undefined && reply['ok'] !== true) {
@@ -2528,10 +2561,49 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                     this.send({ type: 'command-reply', id, reply });
                 },
                 (error: unknown) => {
+                    // The request never went out, so nothing will ever answer it.
+                    if (folderRequestID !== undefined) pendingFolderChoices.delete(folderRequestID);
                     report(error, `ws-command ${command}`);
                     this.send({ type: 'command-reply', id, reply: { ...errorReply('handler failed') } });
                 }
             );
+        }
+
+        /**
+         * #283: the hub's half of a `choose-folder-dialog`, before the channel broadcasts it.
+         *
+         * Returns the request id to track, `undefined` to let the channel refuse a malformed
+         * request itself (nothing is recorded for it, so an invalid request can never evict a
+         * valid one from the capped set), or null when the refusal is sent from here:
+         *
+         *   - a paired device may not ask (owner-only, like `remoteCommand`): the panel opens on
+         *     the owner's desktop and its answer is a path on the owner's machine;
+         *   - no shell able to answer is attached for the window (an older shell, or one whose
+         *     status connection is down): refused now, so the page says so instead of waiting;
+         *   - the id is already pending: refused rather than re-pointed, because re-pointing
+         *     would hand the first asker's answer to whoever reused the id.
+         *
+         * Recorded BEFORE the broadcast goes out, so an answer can never outrun its bookkeeping;
+         * a refusal from the channel, or a channel that throws, forgets it again.
+         */
+        private admitFolderRequest(id: string, payload: Record<string, unknown>): string | null | undefined {
+            const refuse = (error: string): null => {
+                this.send({ type: 'command-reply', id, reply: failure(error) });
+                return null;
+            };
+            if (this.pairedDevice) return refuse(`${CHOOSE_FOLDER_DIALOG_ACTION} is owner-only`);
+            const requestID = text(payload['request_id']);
+            const windowID = text(payload['window_id']);
+            if (requestID === undefined || windowID === undefined || requestID.length > MAX_FOLDER_REQUEST_ID_LENGTH) {
+                return undefined;
+            }
+            if (!folderShellAttached(windowID)) {
+                return refuse(`no desktop window ${windowID} is connected that can show a folder panel`);
+            }
+            if (pendingFolderChoices.has(requestID)) return refuse(`folder request ${requestID} is already pending`);
+            pendingFolderChoices.set(requestID, { session: this, windowID, at: now() });
+            sweepFolderChoices();
+            return requestID;
         }
 
         // ── agent restart ───────────────────────────────────────────────────────────
@@ -2934,29 +3006,24 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
      * #283: `choose-folder-answer` from the shell → a `choose-folder-result` for the ONE session
      * that asked (see `pendingFolderChoices`).
      *
-     * An answer nobody is waiting for (already answered, timed out, its session gone, or from a
-     * window other than the one asked) is dropped: the requester has already settled, or will
-     * on its own timer. A path that is not a non-empty string is relayed as null, a cancel,
-     * rather than dropped, because the shell has plainly closed its panel and the page should
-     * hear so now rather than at the timeout.
+     * Accepted only from the named window's own shell connection (`isFolderShellFor`): anyone
+     * attached heard the broadcast and could copy its ids, so an answer from any other session is
+     * dropped, as is one for a request nobody is waiting on (already settled, timed out, its
+     * asker gone) or one naming a different window. A path that is not a non-empty string is
+     * relayed as null, a cancel, rather than dropped, because the shell has plainly closed its
+     * panel and the page should hear so now rather than at the timeout.
      */
-    function chooseFolderAnswer(message: Record<string, unknown>): void {
+    function chooseFolderAnswer(sender: SessionImpl, message: Record<string, unknown>): void {
         if (closed) return;
         sweepFolderChoices();
         const requestID = text(message['requestID']);
         if (requestID === undefined) return;
         const entry = pendingFolderChoices.get(requestID);
         if (entry === undefined) return;
+        if (!isFolderShellFor(sender, entry.windowID)) return;
         if (text(message['windowID']) !== entry.windowID) return;
-        pendingFolderChoices.delete(requestID);
-        if (!entry.session.ready) return;
         const chosen = message['path'];
-        entry.session.send({
-            type: WS_CHOOSE_FOLDER_RESULT_MESSAGE,
-            requestID,
-            path: typeof chosen === 'string' && chosen.length > 0 ? chosen : null,
-            windowID: entry.windowID
-        });
+        settleFolderChoice(requestID, typeof chosen === 'string' && chosen.length > 0 ? chosen : null);
     }
 
     /**

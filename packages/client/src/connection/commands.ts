@@ -45,6 +45,7 @@ import type {
     SyncAction,
     WorkspaceColor
 } from '@kelpi/protocol';
+import { CHOOSE_FOLDER_DIALOG_ACTION } from '@kelpi/protocol';
 
 import type { ConnectionStatus, KelpiConnection } from './socket';
 
@@ -974,7 +975,7 @@ export class CommandClient {
      */
     shellAction(
         input: {
-            action: 'open-file-dialog' | 'install-cli' | 'check-for-updates' | 'choose-folder-dialog';
+            action: 'open-file-dialog' | 'install-cli' | 'check-for-updates' | typeof CHOOSE_FOLDER_DIALOG_ACTION;
             windowID?: string | null;
             paneID?: string | null;
             requestID?: string | null;

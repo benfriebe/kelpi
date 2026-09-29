@@ -33,11 +33,13 @@
  * the daemon: it is an input to whichever surface asked (Settings ▸ Repositories scans or adds
  * it, the inspector's Add Repository sheet fills its field). So it is a request with an id. This
  * channel validates it (an id, and a window, so exactly one shell raises exactly one panel) and
- * broadcasts it like any other action; `ws/sync.ts` remembers which session sent the command,
- * relays the shell's `choose-folder-answer` to that session alone, and forgets the request after
- * `CHOOSE_FOLDER_TIMEOUT_MS` or when the session closes. It is deliberately generic: the answer
- * is a path or null, and what to do with it is the requester's business, so the next surface that
- * needs a folder adds no protocol.
+ * broadcasts it like any other action. `ws/sync.ts` owns the rest: it refuses the request from a
+ * paired device, or when no shell able to answer is attached for that window; it remembers which
+ * session asked; it relays a `choose-folder-answer` to that session alone, and only when it came
+ * from the named window's own shell connection; and it answers null itself when that shell goes
+ * away, the pending set overflows, or `CHOOSE_FOLDER_TIMEOUT_MS` passes. It is deliberately
+ * generic: the answer is a path or null, and what to do with it is the requester's business, so
+ * the next surface that needs a folder adds no protocol.
  *
  * ## `open-terminal-target` (CONT-122 / TERM-052)
  *
@@ -336,8 +338,13 @@ export function createDesktopChannel(options: DesktopChannelOptions): DesktopCha
             // (`ws/sync.ts` remembers which connection asked), and the window is REQUIRED rather
             // than optional: an unaddressed request would raise a panel in every attached shell
             // window for one click, and only one of them can answer it.
-            if (requestID === undefined || requestID.length > MAX_FOLDER_REQUEST_ID_LENGTH) {
+            if (requestID === undefined) {
                 return failure(`shell-action ${CHOOSE_FOLDER_DIALOG_ACTION} requires request_id`);
+            }
+            if (requestID.length > MAX_FOLDER_REQUEST_ID_LENGTH) {
+                return failure(
+                    `shell-action ${CHOOSE_FOLDER_DIALOG_ACTION} request_id is too long (at most ${String(MAX_FOLDER_REQUEST_ID_LENGTH)} characters)`
+                );
             }
             if (windowID === undefined) {
                 return failure(`shell-action ${CHOOSE_FOLDER_DIALOG_ACTION} requires window_id`);

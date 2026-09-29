@@ -322,13 +322,29 @@ describe('the Add Repository sheet’s Choose… (#283)', () => {
         const onBrowseForFolder = vi.fn().mockResolvedValueOnce(null).mockRejectedValueOnce(new Error('gone'));
         openSheet({ onBrowseForFolder });
         fireEvent.change(screen.getByTestId('add-repo-path'), { target: { value: '/typed' } });
-        fireEvent.click(screen.getByTestId('add-repo-browse'));
-        fireEvent.click(screen.getByTestId('add-repo-browse'));
-        await waitFor(() => {
-            expect(onBrowseForFolder).toHaveBeenCalledTimes(2);
-        });
-        await new Promise((resolve) => setTimeout(resolve, 0));
+        // One panel at a time, so each press waits for the last to answer.
+        for (let press = 0; press < 2; press++) {
+            fireEvent.click(screen.getByTestId('add-repo-browse'));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+        expect(onBrowseForFolder).toHaveBeenCalledTimes(2);
         expect((screen.getByTestId('add-repo-path') as HTMLInputElement).value).toBe('/typed');
+    });
+
+    it('raises one panel at a time, however fast Choose… is pressed', async () => {
+        let resolve: (path: string | null) => void = () => {};
+        const onBrowseForFolder = vi.fn(() => new Promise<string | null>((settle) => { resolve = settle; }));
+        openSheet({ onBrowseForFolder });
+        fireEvent.click(screen.getByTestId('add-repo-browse'));
+        fireEvent.click(screen.getByTestId('add-repo-browse'));
+        expect(onBrowseForFolder).toHaveBeenCalledTimes(1);
+        resolve('/once');
+        await waitFor(() => {
+            expect((screen.getByTestId('add-repo-path') as HTMLInputElement).value).toBe('/once');
+        });
+        // Released once the panel has answered.
+        fireEvent.click(screen.getByTestId('add-repo-browse'));
+        expect(onBrowseForFolder).toHaveBeenCalledTimes(2);
     });
 
     it('clears a standing refusal once a new folder is chosen', async () => {

@@ -133,7 +133,9 @@ export function RepositoriesTab(props: RepositoriesTabProps): ReactElement {
      * One panel at a time. A double-click on an empty-field button would otherwise queue two
      * native panels, and the second would ask again for a folder the user has just chosen. A ref
      * rather than state because nothing is drawn differently while the panel is up: it is modal
-     * over the window, so the buttons cannot be seen, let alone pressed, until it closes.
+     * over the window, so the buttons cannot be seen, let alone pressed, until it closes. The
+     * guard cannot stick: a request with no shell to answer it is refused at once, and a pending
+     * one is answered null when its shell goes away (`daemon/src/ws/sync.ts`).
      */
     const browsing = useRef(false);
     const hasTypedPath = path.trim() !== '';

@@ -12,10 +12,12 @@
  * Every request settles, and a cancel and a failure look the same to the caller (null), because
  * what the caller does with either is nothing:
  *
- *   - the result arrives: the path, or null when the user cancelled;
- *   - the daemon refuses the request (an old daemon, a malformed ask): null at once, and the
- *     refusal is reported through `onRefused` so the user is told why the click did nothing;
- *   - nothing arrives within `timeoutMs` (a shell that quit with the panel up): null;
+ *   - the result arrives: the path, or null when the user cancelled. The daemon also sends a
+ *     null result itself when the window's shell disconnects or its pending set overflows;
+ *   - the daemon refuses the request (no shell able to answer is attached for this window, an
+ *     old daemon, a malformed ask): null at once, and the refusal is reported through
+ *     `onRefused` so the user is told why the click did nothing;
+ *   - nothing arrives within `timeoutMs`, the last resort (a daemon that restarted): null;
  *   - the connection drops (`cancelAll`): null, since the daemon routes the answer to the
  *     connection that asked, and that connection is gone.
  *

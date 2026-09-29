@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+    CHOOSE_FOLDER_CAPABILITY,
     CHOOSE_FOLDER_DIALOG_ACTION,
     CHOOSE_FOLDER_TIMEOUT_MS,
     WS_CHOOSE_FOLDER_ANSWER_MESSAGE,
@@ -166,13 +167,14 @@ describe('web-pane host channel (M6)', () => {
 
     it('round-trips the choose-folder answer and result, a cancel included (#283)', () => {
         expect(CHOOSE_FOLDER_DIALOG_ACTION).toBe('choose-folder-dialog');
+        expect(CHOOSE_FOLDER_CAPABILITY).toBe('choose-folder');
         expect(WS_CHOOSE_FOLDER_ANSWER_MESSAGE).toBe('choose-folder-answer');
         expect(WS_CHOOSE_FOLDER_RESULT_MESSAGE).toBe('choose-folder-result');
         // Long enough for a person to browse, short enough that a lost answer is not forever.
         expect(CHOOSE_FOLDER_TIMEOUT_MS).toBeGreaterThanOrEqual(60_000);
         const messages: (WsClientMessage | WsServerMessage)[] = [
             { type: WS_CHOOSE_FOLDER_ANSWER_MESSAGE, requestID: 'R1', path: '/src/app', windowID: 'WIN' },
-            { type: WS_CHOOSE_FOLDER_ANSWER_MESSAGE, requestID: 'R2', path: null },
+            { type: WS_CHOOSE_FOLDER_ANSWER_MESSAGE, requestID: 'R2', path: null, windowID: 'WIN' },
             { type: WS_CHOOSE_FOLDER_RESULT_MESSAGE, requestID: 'R1', path: '/src/app', windowID: 'WIN' },
             { type: WS_CHOOSE_FOLDER_RESULT_MESSAGE, requestID: 'R2', path: null }
         ];

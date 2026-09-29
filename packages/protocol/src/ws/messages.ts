@@ -380,12 +380,24 @@ export interface WsWindowChromeMessage {
  *      path on this machine is nobody else's business, and a browser attached from another
  *      machine has no use for it.
  *
- * The requester keeps the promise open for at most `CHOOSE_FOLDER_TIMEOUT_MS`, and the daemon
- * forgets a pending request after the same interval, so an answer that never comes (a shell that
- * quit with the panel up, a dropped connection) costs a stale entry for a bounded time and never
- * a hung button.
+ * Who may take part is part of the contract, because the `shell-action` broadcast (id and window
+ * included) reaches every attached session:
+ *
+ *   - only the OWNER may ask: a session authenticated with a paired-device token is refused, so a
+ *     phone cannot raise a panel on the desktop and learn the path chosen in it;
+ *   - only the shell of the named window may answer: its status connection says so in its
+ *     `hello` (`CHOOSE_FOLDER_CAPABILITY` plus its `windowID`), and an answer from any other
+ *     session, however well it copied the ids, is dropped.
+ *
+ * A request is refused at once when no such shell is attached for the window (an older shell, or
+ * one whose status connection is down), and a pending one is answered with null when that shell
+ * disconnects or the pending set overflows, so the page hears "no" rather than waiting. The
+ * requester keeps the promise open for at most `CHOOSE_FOLDER_TIMEOUT_MS`, and the daemon forgets
+ * a pending request after the same interval; that bound is the last resort, not the usual path.
  */
 export const CHOOSE_FOLDER_DIALOG_ACTION = 'choose-folder-dialog';
+/** The `hello` capability a shell's status connection declares when it can answer the loop. */
+export const CHOOSE_FOLDER_CAPABILITY = 'choose-folder';
 export const WS_CHOOSE_FOLDER_ANSWER_MESSAGE = 'choose-folder-answer';
 export const WS_CHOOSE_FOLDER_RESULT_MESSAGE = 'choose-folder-result';
 
@@ -403,8 +415,8 @@ export interface WsChooseFolderAnswerMessage {
     readonly requestID: string;
     /** The absolute directory chosen; null = cancelled. */
     readonly path: string | null;
-    /** The shell window that showed the panel. */
-    readonly windowID?: string;
+    /** The window the request named (the daemon drops an answer without it). */
+    readonly windowID: string;
 }
 
 /** Daemon → the requesting client: the answer to its `choose-folder-dialog`. */

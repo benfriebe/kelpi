@@ -1005,6 +1005,9 @@ function AddRepositorySheet(props: {
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [picked, setPicked] = useState<readonly RepoPickerEntry[]>(EMPTY_PICKED);
+    // One panel at a time, as in Settings ▸ Repositories: a fast double-click on Choose… would
+    // otherwise queue a second native panel asking again for the folder just chosen.
+    const browsing = useRef(false);
     const repos = props.repos ?? [];
     const paths = [...picked.map((repo) => repo.path), ...(value.trim() === '' ? [] : [value.trim()])];
     const submit = async (): Promise<void> => {
@@ -1058,15 +1061,22 @@ function AddRepositorySheet(props: {
                         className="shrink-0 cursor-pointer text-[12px]"
                         style={{ color: tokens.accent }}
                         onClick={() => {
-                            void props.onBrowse?.().then(
-                                (chosen) => {
-                                    const path = chosen?.trim() ?? '';
-                                    if (path === '') return;
-                                    setValue(path);
-                                    setError(null);
-                                },
-                                () => {}
-                            );
+                            const browse = props.onBrowse;
+                            if (browse === undefined || browsing.current) return;
+                            browsing.current = true;
+                            void browse()
+                                .then(
+                                    (chosen) => {
+                                        const path = chosen?.trim() ?? '';
+                                        if (path === '') return;
+                                        setValue(path);
+                                        setError(null);
+                                    },
+                                    () => {}
+                                )
+                                .finally(() => {
+                                    browsing.current = false;
+                                });
                         }}
                     >
                         Choose…

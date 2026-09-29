@@ -40,8 +40,11 @@ export function parseShellAction(message: Record<string, unknown>): ShellActionR
     const action = readString(message, 'action');
     if (action === null || !(SHELL_ACTIONS as readonly string[]).includes(action)) return null;
     const requestID = action === CHOOSE_FOLDER_DIALOG_ACTION ? readString(message, 'requestID') : null;
-    // A panel whose answer has nowhere to go is a panel the user fills in for nothing.
-    if (action === CHOOSE_FOLDER_DIALOG_ACTION && requestID === null) return null;
+    // A panel whose answer has nowhere to go is a panel the user fills in for nothing: the daemon
+    // routes the answer by the id and accepts it only for the window the request named.
+    if (action === CHOOSE_FOLDER_DIALOG_ACTION && (requestID === null || readString(message, 'windowID') === null)) {
+        return null;
+    }
     return {
         action: action as ShellActionName,
         windowID: readString(message, 'windowID'),
@@ -60,14 +63,14 @@ export function parseShellAction(message: Record<string, unknown>): ShellActionR
  */
 export function chooseFolderAnswer(
     requestID: string,
-    windowID: string | null,
+    windowID: string,
     chosen: string | null | undefined
 ): WsChooseFolderAnswerMessage {
     return {
         type: WS_CHOOSE_FOLDER_ANSWER_MESSAGE,
         requestID,
         path: typeof chosen === 'string' && chosen !== '' ? chosen : null,
-        ...(windowID === null ? {} : { windowID })
+        windowID
     };
 }
 

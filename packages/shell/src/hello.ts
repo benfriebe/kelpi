@@ -25,8 +25,17 @@ export interface ShellHelloOptions {
     /** Diagnostics: shows up in the daemon's logs. */
     readonly name: string;
     readonly version: string;
-    /** `['web-pane-host']` claims the web-pane host role in the handshake (M6). */
+    /**
+     * `['web-pane-host']` claims the web-pane host role in the handshake (M6); the status socket
+     * declares `choose-folder` (#283), which says it can answer the folder-panel loop.
+     */
     readonly capabilities?: readonly string[] | undefined;
+    /**
+     * The shell window this connection belongs to. #283: the daemon accepts a folder-panel
+     * answer only from the status connection whose hello names the window the request named,
+     * because every attached session hears the request and could copy its ids.
+     */
+    readonly windowID?: string | undefined;
 }
 
 /** The exact object a shell socket writes as its first frame. */
@@ -39,7 +48,8 @@ export function shellHello(options: ShellHelloOptions): JsonObject {
             kind: 'electron',
             name: options.name,
             version: options.version,
-            ...(options.capabilities === undefined ? {} : { capabilities: [...options.capabilities] })
+            ...(options.capabilities === undefined ? {} : { capabilities: [...options.capabilities] }),
+            ...(options.windowID === undefined ? {} : { windowID: options.windowID })
         }
     };
 }

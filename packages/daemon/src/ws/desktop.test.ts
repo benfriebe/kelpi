@@ -253,6 +253,16 @@ describe('shell-action', () => {
         expect(f.h.broadcasts).toHaveLength(0);
     });
 
+    it('says an oversized id is too long, rather than missing', async () => {
+        const f = fixture();
+        const reply = await f.channel.run('shell-action', {
+            action: 'choose-folder-dialog',
+            request_id: 'x'.repeat(MAX_FOLDER_REQUEST_ID_LENGTH + 1),
+            window_id: 'w-1'
+        });
+        expect(String(reply['error'])).toContain('too long');
+    });
+
     it('carries no request id on the one-way actions', async () => {
         const f = fixture();
         await f.channel.run('shell-action', { action: 'install-cli', request_id: 'req-1', window_id: 'w-1' });

@@ -164,15 +164,27 @@ export default async function ({ page, sandbox, shell, harness, rec, d, sleep })
             const browse = await d.settleDom(page, `document.querySelector('[data-testid="add-repo-browse"]')`, { ceilingMs: 3_000 });
             rec.check('the sheet shows Choose… in the desktop app', browse);
             if (browse) {
+                const associationsBefore = await page.eval(`document.querySelectorAll('[data-testid^="inspector-assoc-"]').length`);
                 d.scriptFolderAnswer(sandbox, solo);
                 await page.click('[data-testid="add-repo-browse"]');
                 const filled = await d.settleDom(page, `document.querySelector('[data-testid="add-repo-path"]')?.value === ${JSON.stringify(solo)}`, { ceilingMs: 10_000 });
                 rec.check('Choose… fills the sheet’s path with the folder the panel returned', filled, String(await page.eval(`document.querySelector('[data-testid="add-repo-path"]')?.value`)));
-                rec.check('and adds nothing until Add is pressed', (await page.eval(`document.querySelector('[data-testid="add-repo-sheet"]') !== null`)) === true);
+                // Give an (unwanted) association or registration the moment it would need to land.
+                await sleep(600);
+                rec.check('and adds nothing until Add is pressed: the sheet stays open', (await page.eval(`document.querySelector('[data-testid="add-repo-sheet"]') !== null`)) === true);
+                rec.check(
+                    'the workspace gained no association',
+                    (await page.eval(`document.querySelectorAll('[data-testid^="inspector-assoc-"]').length`)) === associationsBefore
+                );
                 await rec.shot(page, 'inspector-choose-filled-path');
             }
             await page.click('[data-testid="add-repo-cancel"]');
             await d.settleDom(page, `document.querySelector('[data-testid="add-repo-sheet"]') === null`, { ceilingMs: 3_000 });
+            // The registry itself is the proof that Choose… registered nothing.
+            await d.openSettingsTab(page, 'repositories');
+            rec.check('and the registry did not grow', JSON.stringify(await rowNames()) === JSON.stringify(before), JSON.stringify(await rowNames()));
+            await page.key('Escape');
+            await d.settleDom(page, `document.querySelector('${d.PAGE.settingsPanel}') === null`, { ceilingMs: 3_000 });
         }
     }
     if (!inspectorWasOpen) await harness.menuClick({ path: ['View', 'Toggle Inspector'] });

@@ -62,7 +62,7 @@ import { renderRegisteredView } from './plugins/renderers';
 
 import { canonicalTriggerForPlatform, parseKeyTrigger, type KelpiAction } from '@kelpi/core/config';
 import { wireEdgeForDropZone, type DropZone, type SplitDirection } from '@kelpi/core/layout';
-import type { JsonObject } from '@kelpi/protocol';
+import { CHOOSE_FOLDER_DIALOG_ACTION, type JsonObject } from '@kelpi/protocol';
 import {
     workspaceAgentSummary,
     layoutPaneOrder,
@@ -1050,7 +1050,7 @@ function Shell(props: AppProps): ReactElement {
                 ? null
                 : createFolderChooser({
                       windowID: shellWindowID,
-                      send: (request) => commands.shellAction({ action: 'choose-folder-dialog', ...request }),
+                      send: (request) => commands.shellAction({ action: CHOOSE_FOLDER_DIALOG_ACTION, ...request }),
                       onRefused: (detail) => notifyFailure('Choose folder', detail)
                   }),
         [commands, notifyFailure, shellWindowID]

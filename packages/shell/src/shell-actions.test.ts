@@ -99,7 +99,8 @@ describe('parseShellAction', () => {
         });
     });
 
-    it('refuses a folder request with no usable id: its answer could reach nobody', () => {
+    it('refuses a folder request with no usable id or no window: its answer could reach nobody', () => {
+        expect(parseShellAction({ action: 'choose-folder-dialog', requestID: 'r1' })).toBeNull();
         expect(parseShellAction({ action: 'choose-folder-dialog', windowID: 'w1' })).toBeNull();
         expect(parseShellAction({ action: 'choose-folder-dialog', windowID: 'w1', requestID: '' })).toBeNull();
         expect(parseShellAction({ action: 'choose-folder-dialog', windowID: 'w1', requestID: 7 })).toBeNull();
@@ -133,9 +134,7 @@ describe('chooseFolderAnswer (#283)', () => {
         expect(chooseFolderAnswer('r1', 'w1', undefined).path).toBeNull();
     });
 
-    it('omits the window when the request named none', () => {
-        expect(chooseFolderAnswer('r1', null, '/a')).toEqual({ type: 'choose-folder-answer', requestID: 'r1', path: '/a' });
-    });
+
 });
 
 describe('scriptedFolderAnswer (the KELPI_AUDIT_CHOOSE_FOLDER seam)', () => {

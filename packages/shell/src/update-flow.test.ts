@@ -40,6 +40,10 @@ interface Harness {
     support: UpdateSupport;
     location: InstallLocation;
     readonly last: () => { view: UpdateView; reveal: boolean };
+    /** `prompted`, per present, in step with `presented`. */
+    readonly prompts: boolean[];
+    /** Timers the flow set (the restart timeout), fired by hand. */
+    readonly timers: { run: () => void; ms: number; cleared: boolean }[];
 }
 
 function harness(overrides: Partial<UpdateFlowDeps> = {}): Harness {
@@ -52,6 +56,8 @@ function harness(overrides: Partial<UpdateFlowDeps> = {}): Harness {
         logs: [],
         order,
         changes: [],
+        prompts: [],
+        timers: [],
         reply: OFFER,
         support: { ok: true },
         location: { kind: 'ok', bundlePath: '/Applications/Kelpi.app' },
@@ -68,8 +74,21 @@ function harness(overrides: Partial<UpdateFlowDeps> = {}): Harness {
         fetchUpdate: () => Promise.resolve(h.reply),
         installer: () => installer,
         location: () => h.location,
-        present: (view, reveal) => h.presented.push({ view, reveal }),
+        present: (view, reveal, prompted) => {
+            h.presented.push({ view, reveal });
+            h.prompts.push(prompted);
+        },
         allowQuit: () => order.push('allowQuit'),
+        rearmQuit: () => order.push('rearmQuit'),
+        quit: () => order.push('quit'),
+        setTimer: (run, ms) => {
+            h.timers.push({ run, ms, cleared: false });
+            return h.timers.length - 1;
+        },
+        clearTimer: (timer) => {
+            const entry = h.timers[timer as number];
+            if (entry !== undefined) entry.cleared = true;
+        },
         changed: (view) => h.changes.push(view.phase),
         log: (line) => h.logs.push(line),
         ...overrides
@@ -186,23 +205,48 @@ describe('the update flow: downloading and restarting', () => {
         expect(h.logs.some((line) => line.includes('restarting into 0.2.3 (quitAndInstall); the daemon keeps running'))).toBe(true);
     });
 
-    it('a restart that throws is a failure with Retry, and Retry tries the restart again', async () => {
+    it('a restart that throws re-arms the quit gate and says to quit and reopen, with no Retry in place', async () => {
         const h = harness();
         await toReady(h);
-        let throws = true;
         h.installer.quitAndInstall = () => {
             h.order.push('quitAndInstall');
-            if (throws) throw new Error('Squirrel is not ready');
+            throw new Error('Squirrel is not ready');
         };
         h.flow.act('restart');
-        expect(h.last().view).toMatchObject({ phase: 'failed', retry: 'install', message: 'Squirrel is not ready' });
-        throws = false;
+        expect(h.order).toEqual(['allowQuit', 'quitAndInstall', 'rearmQuit']);
+        expect(h.last()).toMatchObject({ view: { phase: 'failed', retry: 'install', message: 'Squirrel is not ready' }, reveal: true });
+        expect(h.prompts.at(-1)).toBe(true);
         h.flow.act('retry');
-        expect(h.flow.phase).toBe('restarting');
-        expect(h.order).toEqual(['allowQuit', 'quitAndInstall', 'allowQuit', 'quitAndInstall']);
+        expect(h.flow.phase).toBe('failed');
+        expect(h.order).toEqual(['allowQuit', 'quitAndInstall', 'rearmQuit']);
+        h.flow.act('quit');
+        expect(h.order.at(-1)).toBe('quit');
     });
 
-    it('a Squirrel error during the restart becomes a failure with Retry; at other times it is only logged', async () => {
+    it('a restart still pending after the timeout is a failed install, and the gate is re-armed', async () => {
+        const h = harness();
+        await toReady(h);
+        h.flow.act('restart');
+        const timer = h.timers.at(-1);
+        expect(timer?.ms).toBe(60_000);
+        timer?.run();
+        expect(h.flow.phase).toBe('failed');
+        expect(h.last().view).toMatchObject({ retry: 'install', message: 'Kelpi did not quit to install the update within 60 seconds.' });
+        expect(h.order).toEqual(['allowQuit', 'quitAndInstall', 'rearmQuit']);
+    });
+
+    it('a failed install can be closed, leaving Kelpi usable, and the timeout does nothing after a real failure', async () => {
+        const h = harness();
+        await toReady(h);
+        h.flow.act('restart');
+        h.installer.emit('error', new Error('ShipIt could not be launched'));
+        expect(h.timers.at(-1)?.cleared).toBe(true);
+        h.flow.act('dismiss');
+        expect(h.flow.phase).toBe('idle');
+        expect(h.order).toEqual(['allowQuit', 'quitAndInstall', 'rearmQuit']);
+    });
+
+    it('a Squirrel error during the restart becomes a failed install; at other times it is only logged', async () => {
         const h = harness();
         await toReady(h);
         h.flow.installerError(new Error('late noise'));
@@ -210,6 +254,7 @@ describe('the update flow: downloading and restarting', () => {
         h.flow.act('restart');
         h.flow.installerError(new Error('ShipIt could not be launched'));
         expect(h.last()).toMatchObject({ view: { phase: 'failed', retry: 'install', message: 'ShipIt could not be launched' }, reveal: true });
+        expect(h.order).toContain('rearmQuit');
         expect(h.logs.some((line) => line.includes('Squirrel reported an error while ready: late noise'))).toBe(true);
     });
 
@@ -356,8 +401,78 @@ describe('the update flow: logging and the menu', () => {
         h.installer.emit('error', new Error('network lost'));
         await settle();
         h.flow.act('retry');
-        // The first download's listeners are gone; the second is the one that counts.
-        expect(h.installer.listenerCount('update-downloaded')).toBe(1);
+        // The first download's own listener is gone; the flow's standing one and the second
+        // download's are the ones left.
+        expect(h.installer.listenerCount('update-downloaded')).toBe(2);
         expect(h.flow.phase).toBe('downloading');
+    });
+});
+
+describe('the update flow: review fixes (#286)', () => {
+    it('a slow download is "still downloading", never a failure, and its late finish is ready', async () => {
+        const h = harness({ downloadSlowMs: () => 5 });
+        await h.flow.check('manual');
+        h.flow.act('update-now');
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(h.flow.phase).toBe('downloading');
+        expect(h.last()).toMatchObject({ view: { phase: 'downloading', slow: true }, reveal: false });
+        // A manual check while slow shows it, and starts nothing.
+        await h.flow.check('manual');
+        expect(h.last().view.slow).toBe(true);
+        expect(h.installer.checks).toBe(1);
+        h.installer.emit('update-downloaded');
+        await settle();
+        expect(h.flow.phase).toBe('ready');
+        expect(h.installer.checks).toBe(1);
+    });
+
+    it('Squirrel finishing after the flow gave up on a download still ends in ready', async () => {
+        const h = harness();
+        await h.flow.check('manual');
+        h.flow.act('update-now');
+        h.installer.emit('error', new Error('network blip'));
+        await settle();
+        expect(h.flow.phase).toBe('failed');
+        h.installer.emit('update-downloaded');
+        await settle();
+        expect(h.flow.phase).toBe('ready');
+    });
+
+    it('a manual check that joins a running launch check gets the answer revealed', async () => {
+        let answer: (reply: FeedReply) => void = () => undefined;
+        const h = harness({ fetchUpdate: () => new Promise<FeedReply>((resolve) => { answer = resolve; }) });
+        const launch = h.flow.check('launch');
+        expect(h.last()).toMatchObject({ view: { phase: 'checking' }, reveal: false });
+        await h.flow.check('manual');
+        expect(h.last()).toMatchObject({ view: { phase: 'checking' }, reveal: true });
+        answer({ kind: 'none' });
+        await launch;
+        expect(h.last()).toEqual({ view: { phase: 'up-to-date', currentVersion: '0.2.2' }, reveal: true });
+    });
+
+    it('a launch-check offer is revealed but unprompted; a manual one is prompted', async () => {
+        const launch = harness();
+        await launch.flow.check('launch');
+        expect(launch.last().view.phase).toBe('available');
+        expect(launch.prompts.at(-1)).toBe(false);
+        const manual = harness();
+        await manual.flow.check('manual');
+        expect(manual.prompts.at(-1)).toBe(true);
+    });
+
+    it('a finished or failed download is unprompted (it never pulls a hidden window forward)', async () => {
+        const h = harness();
+        await toReady(h);
+        expect(h.prompts.at(-1)).toBe(false);
+    });
+
+    it('show() re-presents the current state as prompted, and does nothing while idle', async () => {
+        const h = harness();
+        h.flow.show();
+        expect(h.presented).toEqual([]);
+        await h.flow.check('launch');
+        h.flow.show();
+        expect(h.last().reveal).toBe(true);
+        expect(h.prompts.at(-1)).toBe(true);
     });
 });

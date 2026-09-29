@@ -45,6 +45,12 @@ describe('UpdateSheet (#286)', () => {
         expect(onAction.mock.calls).toEqual([['update-now'], ['later']]);
     });
 
+    it('draws a mailto link as text: the shell would not open it', () => {
+        sheet(AVAILABLE, { notesHTML: '<p><a href="mailto:team@kelpi.dev">mail us</a></p>' });
+        expect(screen.getByTestId('update-notes').querySelector('a')).toBeNull();
+        expect(screen.getByTestId('update-notes').textContent).toBe('mail us');
+    });
+
     it('opens a release-note link in the system browser, never in the window', () => {
         const openLink = vi.fn();
         sheet(AVAILABLE, { notesHTML: NOTES_HTML, openLink });
@@ -111,11 +117,13 @@ describe('UpdateSheet (#286)', () => {
         expect(onAction).toHaveBeenCalledWith('dismiss');
     });
 
-    it('ready: "Kelpi X is ready", Restart Now (focused) and Later, and that Kelpi reopens by itself', () => {
+    it('ready: "Kelpi X is ready", Restart Now (focused) and Later, that Kelpi reopens by itself, and to give it a few seconds', () => {
         const onAction = sheet({ phase: 'ready', currentVersion: '0.2.2', version: '0.2.3' });
         expect(screen.getByTestId('update-title').textContent).toBe('Kelpi 0.2.3 is ready');
         expect(screen.getByTestId('update-subtitle').textContent).toContain('reopens by itself');
+        expect(screen.getByTestId('update-subtitle').textContent).toContain('Give it those few seconds');
         expect(screen.getByTestId('update-later-note').textContent).toContain('next time you quit');
+        expect(screen.getByTestId('update-later-note').textContent).toContain('wait a few seconds before opening Kelpi again');
         expect(document.activeElement).toBe(screen.getByTestId('update-restart'));
         fireEvent.click(screen.getByTestId('update-restart'));
         fireEvent.click(screen.getByTestId('update-later'));
@@ -135,6 +143,37 @@ describe('UpdateSheet (#286)', () => {
         fireEvent.click(screen.getByTestId('update-retry'));
         fireEvent.click(screen.getByTestId('update-close'));
         expect(onAction.mock.calls).toEqual([['retry'], ['dismiss']]);
+    });
+
+    it('a failed install offers Quit Kelpi (not Retry), says to quit and reopen, and shows the reason', () => {
+        const onAction = sheet({ phase: 'failed', currentVersion: '0.2.2', version: '0.2.3', retry: 'install', message: 'ShipIt could not be launched' });
+        expect(screen.getByTestId('update-title').textContent).toBe('Kelpi could not finish installing the update');
+        expect(screen.getByTestId('update-subtitle').textContent).toContain('Quit Kelpi and open it again');
+        expect(screen.getByTestId('update-message').textContent).toBe('ShipIt could not be launched');
+        expect(screen.queryByTestId('update-retry')).toBeNull();
+        fireEvent.click(screen.getByTestId('update-quit'));
+        fireEvent.click(screen.getByTestId('update-close'));
+        expect(onAction.mock.calls).toEqual([['quit'], ['dismiss']]);
+    });
+
+    it('a slow download says it is still going, not failed', () => {
+        sheet({ phase: 'downloading', currentVersion: '0.2.2', version: '0.2.3', slow: true });
+        expect(screen.getByTestId('update-subtitle').textContent).toContain('taking longer than expected');
+        expect(screen.getByTestId('update-progress')).toBeTruthy();
+    });
+
+    it('acknowledges a view only after it has painted, once per view', async () => {
+        const onShown = vi.fn();
+        const { rerender } = render(<UpdateSheet view={AVAILABLE} seq={4} onAction={vi.fn()} onShown={onShown} />);
+        expect(onShown).not.toHaveBeenCalled();
+        await vi.waitFor(() => {
+            expect(onShown).toHaveBeenCalledWith(4);
+        });
+        rerender(<UpdateSheet view={{ phase: 'downloading', currentVersion: '0.2.2', version: '0.2.3' }} seq={5} onAction={vi.fn()} onShown={onShown} />);
+        await vi.waitFor(() => {
+            expect(onShown).toHaveBeenLastCalledWith(5);
+        });
+        expect(onShown).toHaveBeenCalledTimes(2);
     });
 
     it('checking, up to date, unsupported and restarting each say what is happening', () => {

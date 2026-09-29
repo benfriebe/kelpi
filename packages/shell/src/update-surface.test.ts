@@ -62,13 +62,30 @@ describe('the native fallback', () => {
         expect(dialog?.options.buttons).toEqual(['Restart Now', 'Later']);
         expect(dialog?.actions).toEqual(['restart', 'later']);
         expect(dialog?.options.detail).toContain('reopens by itself');
+        expect(dialog?.options.detail).toContain('Give it those few seconds');
         expect(dialog?.options.detail).toContain('next time you quit');
+        expect(dialog?.options.detail).toContain('wait a few seconds before opening Kelpi again');
     });
 
     it('says a download is under way and that Kelpi will ask', () => {
         const dialog = nativeUpdateDialog({ phase: 'downloading', currentVersion: '0.2.2', version: '0.2.3' });
         expect(dialog?.options.message).toBe('Downloading Kelpi 0.2.3…');
-        expect(dialog?.options.detail).toContain('Kelpi asks before it restarts');
+        expect(dialog?.options.detail).toContain('Kelpi will ask before it restarts');
+        expect(dialog?.actions).toEqual(['dismiss']);
+    });
+
+    it('offers Quit (not Retry) for a failed install, with the Squirrel reason', () => {
+        const dialog = nativeUpdateDialog({ phase: 'failed', currentVersion: '0.2.2', version: '0.2.3', retry: 'install', message: 'ShipIt failed' });
+        expect(dialog?.options.message).toBe('Kelpi could not finish installing the update');
+        expect(dialog?.options.detail).toContain('Quit Kelpi and open it again');
+        expect(dialog?.options.detail).toContain('ShipIt failed');
+        expect(dialog?.options.buttons).toEqual(['Quit Kelpi', 'Close']);
+        expect(dialog?.actions).toEqual(['quit', 'dismiss']);
+    });
+
+    it('says a slow download is still going, not failed', () => {
+        const dialog = nativeUpdateDialog({ phase: 'downloading', currentVersion: '0.2.2', version: '0.2.3', slow: true });
+        expect(dialog?.options.detail).toContain('taking longer than expected');
         expect(dialog?.actions).toEqual(['dismiss']);
     });
 
@@ -78,7 +95,7 @@ describe('the native fallback', () => {
         expect(dialog?.options.buttons).toEqual(['Retry', 'Close']);
         expect(dialog?.actions).toEqual(['retry', 'dismiss']);
         expect(failureTitle({ phase: 'failed', currentVersion: '0.2.2', retry: 'check' })).toBe('Kelpi could not check for updates');
-        expect(failureTitle({ phase: 'failed', currentVersion: '0.2.2', version: '0.2.3', retry: 'install' })).toBe('Kelpi 0.2.3 could not be installed');
+        expect(failureTitle({ phase: 'failed', currentVersion: '0.2.2', version: '0.2.3', retry: 'install' })).toBe('Kelpi could not finish installing the update');
     });
 
     it('has nothing to ask while idle, checking or restarting', () => {
@@ -111,6 +128,8 @@ interface SurfaceHarness {
     closes: number;
     connected: boolean;
     pageUp: boolean;
+    /** What `raise` answers: whether the user can see a surface now. */
+    visible: boolean;
 }
 
 function surfaceHarness(windowID: string | null = 'win-1'): SurfaceHarness {
@@ -122,6 +141,7 @@ function surfaceHarness(windowID: string | null = 'win-1'): SurfaceHarness {
         closes: 0,
         connected: true,
         pageUp: true,
+        visible: true,
         deps: undefined as unknown as UpdateSurfaceDeps
     };
     (h as { deps: UpdateSurfaceDeps }).deps = {
@@ -136,7 +156,10 @@ function surfaceHarness(windowID: string | null = 'win-1'): SurfaceHarness {
         closeNative: () => {
             h.closes += 1;
         },
-        raise: (view) => h.raised.push(view),
+        raise: (view) => {
+            h.raised.push(view);
+            return h.visible;
+        },
         log: () => undefined,
         setTimer: (run) => {
             h.timers.push(run);
@@ -168,6 +191,36 @@ describe('where a view goes', () => {
         surface.present(AVAILABLE, true);
         h.timers.forEach((run) => run());
         expect(h.native).toEqual([AVAILABLE]);
+        // One surface at a time: the page is told to close its sheet first.
+        expect(h.sent.at(-1)).toMatchObject({ seq: 2, reveal: false, hide: true, view: AVAILABLE });
+    });
+
+    it('an unprompted state with the window out of sight waits in the page: no native dialog is forced', () => {
+        const h = surfaceHarness();
+        h.visible = false;
+        const surface = createUpdateSurface(h.deps);
+        surface.present(AVAILABLE, true, false);
+        h.timers.forEach((run) => run());
+        expect(h.sent).toHaveLength(1);
+        expect(h.native).toEqual([]);
+        h.connected = false;
+        surface.present({ phase: 'ready', currentVersion: '0.2.2', version: '0.2.3' }, true, false);
+        expect(h.native).toEqual([]);
+    });
+
+    it('a press on a view the state has moved on from is stale; one on the current question is not', () => {
+        const h = surfaceHarness();
+        const surface = createUpdateSurface(h.deps);
+        surface.present({ phase: 'failed', currentVersion: '0.2.2', retry: 'check', message: 'offline' }, true); // seq 1
+        surface.present(AVAILABLE, true); // seq 2, a new question
+        expect(surface.isCurrent(1)).toBe(false);
+        expect(surface.isCurrent(2)).toBe(true);
+        // The same question re-presented (a slow download, a re-reveal) keeps earlier presses current.
+        surface.present({ phase: 'downloading', currentVersion: '0.2.2', version: '0.2.3' }, true); // seq 3
+        surface.present({ phase: 'downloading', currentVersion: '0.2.2', version: '0.2.3', slow: true }, false); // seq 4
+        expect(surface.isCurrent(3)).toBe(true);
+        expect(surface.isCurrent(2)).toBe(false);
+        expect(surface.isCurrent(undefined)).toBe(true);
     });
 
     it('falls back at once with no connection, no loaded page, or no window id', () => {

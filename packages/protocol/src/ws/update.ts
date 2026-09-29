@@ -71,10 +71,12 @@ export const UPDATE_PHASES_WITH_VERSION: readonly UpdatePhase[] = ['available', 
 
 /**
  * What the page may send back. `update-now` and `later` answer `available`; `restart` and `later`
- * answer `ready`; `retry` answers `failed`; `dismiss` closes whatever else is showing (a download
- * keeps going); `shown` acknowledges a revealed view.
+ * answer `ready`; `retry` answers a failed check or download; `quit` answers a failed install
+ * (Kelpi cannot recover from one in place, so the only real answer is to quit and reopen);
+ * `dismiss` closes whatever else is showing (a download keeps going); `shown` acknowledges a
+ * revealed view once the page has painted it.
  */
-export const UPDATE_USER_ACTIONS = ['update-now', 'later', 'restart', 'retry', 'dismiss', 'shown'] as const;
+export const UPDATE_USER_ACTIONS = ['update-now', 'later', 'restart', 'retry', 'quit', 'dismiss', 'shown'] as const;
 export type UpdateUserAction = (typeof UPDATE_USER_ACTIONS)[number];
 
 export function isUpdateUserAction(value: unknown): value is UpdateUserAction {
@@ -105,9 +107,11 @@ export interface UpdateView {
     readonly notes?: string;
     /** `failed` / `unsupported`: what to tell the user, in a sentence. */
     readonly message?: string;
-    /** `failed`: what Retry repeats. */
+    /** `failed`: what failed, and so what the sheet offers (Retry, or Quit for an install). */
     readonly retry?: 'check' | 'download' | 'install';
     readonly location?: UpdateLocationNote;
+    /** `downloading`: it is taking longer than expected, and Kelpi is still waiting for it. */
+    readonly slow?: boolean;
 }
 
 export interface WsUpdateStateMessage {
@@ -118,10 +122,15 @@ export interface WsUpdateStateMessage {
     readonly seq: number;
     /** Open the sheet if it is closed (a manual check, a new offer, a finished download, a failure). */
     readonly reveal: boolean;
+    /**
+     * Close the sheet now, whatever the view says: the shell has put the same state in a native
+     * dialog instead (the page did not acknowledge it in time), and only one surface may ask.
+     */
+    readonly hide?: boolean;
     readonly view: UpdateView;
     /**
      * Daemon → page only: `view.notes` rendered by the markdown panes' renderer with raw HTML
-     * escaped, images reduced to their alt text and only http(s)/mailto links kept
+     * escaped, images reduced to their alt text and only http(s) links kept
      * (`daemon/src/content/markdown.ts` ▸ `renderReleaseNotes`). A shell cannot supply it; the
      * daemon overwrites it.
      */
@@ -187,11 +196,46 @@ export function normalizeUpdateView(raw: unknown): UpdateView | null {
         ...(notes === undefined ? {} : { notes }),
         ...(message === undefined ? {} : { message }),
         ...(phase === 'failed' && (retry === 'check' || retry === 'download' || retry === 'install') ? { retry } : {}),
-        ...(location === undefined ? {} : { location })
+        ...(location === undefined ? {} : { location }),
+        ...(phase === 'downloading' && record['slow'] === true ? { slow: true } : {})
     };
 }
 
 /** A `seq` as the wire carries it: a non-negative safe integer, or undefined. */
 export function updateSeq(value: unknown): number | undefined {
     return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+// ── the words both surfaces use ─────────────────────────────────────────────────────
+
+/**
+ * What a restart does, said the same way by the in-app sheet (`client/src/chrome/UpdateSheet.tsx`)
+ * and the native fallback (`shell/src/update-surface.ts`). The second sentence is #286's step 4:
+ * Squirrel swaps the app only once no copy is running, so a copy reopened by hand in those few
+ * seconds is the OLD one, and the update waits for it to quit.
+ */
+export const UPDATE_RESTART_EXPLAINED =
+    'Kelpi closes and reopens by itself in about ten seconds. Give it those few seconds to finish updating rather than opening it yourself, or the old version can start again. Your terminals and agents keep running.';
+
+/** What Later means on a ready update, with the same caution about reopening too fast. */
+export const UPDATE_LATER_EXPLAINED =
+    'Choose Later to install it the next time you quit Kelpi. After quitting, wait a few seconds before opening Kelpi again so the update can finish.';
+
+/** A download past its expected time: still waiting, not failed. */
+export const UPDATE_SLOW_EXPLAINED =
+    'This is taking longer than expected. Kelpi keeps waiting for the download and will ask before it restarts; you can hide this and keep working.';
+
+/** A download in progress. */
+export const UPDATE_DOWNLOADING_EXPLAINED = 'This can take a minute or two. Kelpi will ask before it restarts; until then, keep working.';
+
+/** A restart that did not happen: the app cannot recover in place, so the answer is to quit. */
+export const UPDATE_INSTALL_FAILED_EXPLAINED =
+    'Quit Kelpi and open it again. The update installs as Kelpi quits, or is offered again next time.';
+
+/** A failure's headline, by what failed. */
+export function updateFailureTitle(view: Partial<UpdateView>): string {
+    const version = view.version === undefined ? 'The update' : `Kelpi ${view.version}`;
+    if (view.retry === 'download') return `${version} could not be downloaded`;
+    if (view.retry === 'install') return 'Kelpi could not finish installing the update';
+    return 'Kelpi could not check for updates';
 }

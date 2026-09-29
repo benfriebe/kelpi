@@ -15,7 +15,8 @@
  *                 the promise that Kelpi asks before it restarts
  *   ready         "Kelpi X is ready", Restart Now / Later, and that Kelpi reopens by itself
  *   restarting    the moment between Restart Now and the window closing
- *   failed        what went wrong, readably, and Retry
+ *   failed        what went wrong, readably, and Retry; a failed INSTALL offers Quit instead,
+ *                 since Squirrel may have closed every window and Kelpi cannot retry in place
  *   unsupported   why this build cannot update
  *
  * It holds no state of its own beyond the shell's view: every button goes back to the shell
@@ -26,7 +27,16 @@
 import { useEffect, useRef, type ReactElement } from 'react';
 import { createPortal } from 'react-dom';
 
-import type { UpdateUserAction, UpdateView } from '@kelpi/protocol';
+import {
+    UPDATE_DOWNLOADING_EXPLAINED,
+    UPDATE_INSTALL_FAILED_EXPLAINED,
+    UPDATE_LATER_EXPLAINED,
+    UPDATE_RESTART_EXPLAINED,
+    UPDATE_SLOW_EXPLAINED,
+    updateFailureTitle,
+    type UpdateUserAction,
+    type UpdateView
+} from '@kelpi/protocol';
 
 import { DESTRUCTIVE_COLOR } from './QuitConfirmDialog';
 import { ReleaseNotes } from './release-notes';
@@ -36,6 +46,10 @@ import { tokens } from './tokens';
 
 export interface UpdateSheetProps {
     readonly view: UpdateView;
+    /** The frame this view came in (`update-state` `seq`), acknowledged once painted. */
+    readonly seq?: number | undefined;
+    /** The sheet has painted view `seq` (after the browser's next frames, not on arrival). */
+    readonly onShown?: ((seq: number) => void) | undefined;
     readonly notesHTML?: string | undefined;
     readonly onAction: (action: UpdateUserAction) => void;
     /** Test seam: how a release-note link opens (defaults to the system browser). */
@@ -60,17 +74,8 @@ interface SheetCopy {
     readonly progress?: boolean;
 }
 
-/** Said the same way in the native dialog (`shell/src/update-surface.ts` ▸ `RESTART_EXPLAINED`). */
-const RESTART_EXPLAINED =
-    'Kelpi closes and reopens by itself in about ten seconds, so there is no need to open it again yourself. Your terminals and agents keep running.';
-
-/** A failure's headline, by what failed (the shell's `failureTitle`, restated for the page). */
-export function updateFailureTitle(view: UpdateView): string {
-    const version = view.version === undefined ? 'The update' : `Kelpi ${view.version}`;
-    if (view.retry === 'download') return `${version} could not be downloaded`;
-    if (view.retry === 'install') return `${version} could not be installed`;
-    return 'Kelpi could not check for updates';
-}
+/** A failure's headline (`@kelpi/protocol`, so the native fallback says the same). */
+export { updateFailureTitle };
 
 /** The words and buttons for a view. Exported so the tests can read them without rendering. */
 export function updateSheetCopy(view: UpdateView): SheetCopy {
@@ -101,7 +106,7 @@ export function updateSheetCopy(view: UpdateView): SheetCopy {
         case 'downloading':
             return {
                 title: `Downloading Kelpi ${version}…`,
-                subtitle: 'This can take a minute or two. Kelpi will ask before it restarts; until then, keep working.',
+                subtitle: view.slow === true ? UPDATE_SLOW_EXPLAINED : UPDATE_DOWNLOADING_EXPLAINED,
                 secondary: { label: 'Hide', action: 'dismiss', testID: 'update-hide' },
                 escape: 'dismiss',
                 progress: true
@@ -109,14 +114,23 @@ export function updateSheetCopy(view: UpdateView): SheetCopy {
         case 'ready':
             return {
                 title: `Kelpi ${version} is ready`,
-                subtitle: `Restart Kelpi to finish updating. ${RESTART_EXPLAINED}`,
+                subtitle: `Restart Kelpi to finish updating. ${UPDATE_RESTART_EXPLAINED}`,
                 primary: { label: 'Restart Now', action: 'restart', testID: 'update-restart' },
                 secondary: later,
                 escape: 'later'
             };
         case 'restarting':
-            return { title: `Restarting into Kelpi ${version}…`, subtitle: RESTART_EXPLAINED, progress: true };
+            return { title: `Restarting into Kelpi ${version}…`, subtitle: UPDATE_RESTART_EXPLAINED, progress: true };
         case 'failed':
+            if (view.retry === 'install') {
+                return {
+                    title: updateFailureTitle(view),
+                    subtitle: UPDATE_INSTALL_FAILED_EXPLAINED,
+                    primary: { label: 'Quit Kelpi', action: 'quit', testID: 'update-quit' },
+                    secondary: { label: 'Close', action: 'dismiss', testID: 'update-close' },
+                    escape: 'dismiss'
+                };
+            }
             return {
                 title: updateFailureTitle(view),
                 primary: { label: 'Retry', action: 'retry', testID: 'update-retry' },
@@ -159,6 +173,25 @@ export function UpdateSheet(props: UpdateSheetProps): ReactElement | null {
     useEffect(() => {
         (primaryRef.current ?? sheetRef.current)?.focus();
     }, [view.phase]);
+    // Acknowledge a view only once it is on screen: two animation frames after the commit is
+    // after the browser has painted it. A frame the page received but never drew must leave the
+    // shell free to fall back to its native dialog.
+    const onShownRef = useRef(props.onShown);
+    onShownRef.current = props.onShown;
+    const { seq } = props;
+    useEffect(() => {
+        if (seq === undefined) return;
+        let cancelled = false;
+        const raf = globalThis.requestAnimationFrame?.bind(globalThis) ?? ((run: () => void) => setTimeout(run, 16));
+        raf(() =>
+            raf(() => {
+                if (!cancelled) onShownRef.current?.(seq);
+            })
+        );
+        return () => {
+            cancelled = true;
+        };
+    }, [seq]);
     useEffect(() => {
         const before = globalThis.document?.activeElement;
         return () => {
@@ -261,7 +294,7 @@ export function UpdateSheet(props: UpdateSheetProps): ReactElement | null {
 
                 {view.phase === 'ready' ? (
                     <div data-testid="update-later-note" className="px-5 pb-3 text-[11px]" style={{ color: tokens.textTertiary }}>
-                        Choose Later to install it the next time you quit Kelpi.
+                        {UPDATE_LATER_EXPLAINED}
                     </div>
                 ) : null}
 

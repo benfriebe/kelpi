@@ -502,11 +502,12 @@ describe('renderReleaseNotes (#286: release notes drawn in the app page)', () =>
         expect(html).toContain('the new sheet');
     });
 
-    it('keeps only http(s) and mailto links; any other scheme keeps its text and loses the anchor', () => {
-        const html = renderReleaseNotes('[chat](slack://open) [mail](mailto:team@kelpi.dev) [js](javascript:alert(1)) ftp://files.example/x');
+    it('keeps only http(s) links; any other scheme, mailto included, keeps its text and loses the anchor', () => {
+        const html = renderReleaseNotes('[chat](slack://open) [mail](mailto:team@kelpi.dev) [js](javascript:alert(1)) ftp://files.example/x mailto:a@b.c');
         expect(html).toContain('chat');
         expect(html).not.toContain('slack:');
-        expect(html).toContain('<a href="mailto:team@kelpi.dev">mail</a>');
+        expect(html).toContain('mail');
+        expect(html).not.toContain('href="mailto:');
         expect(html).not.toContain('href="javascript:');
         expect(html).not.toContain('href="ftp:');
     });

@@ -179,6 +179,15 @@ describe('update-state: shell to page (#286)', () => {
         expect(state?.['view']).toEqual({ phase: 'ready', currentVersion: '0.2.2', version: '0.2.3' });
     });
 
+    it('relays a hide (the shell moved the state to a native dialog) only as a literal true', () => {
+        const f = fixture();
+        const shell = f.shell();
+        const page = f.connect();
+        push(shell, { seq: 2, reveal: false, hide: true });
+        push(shell, { seq: 3, reveal: false, hide: 'yes' });
+        expect(states(page).map((state) => state['hide'])).toEqual([true, undefined]);
+    });
+
     it('drops unknown view fields rather than passing them through', () => {
         const f = fixture();
         const shell = f.shell();
@@ -193,6 +202,7 @@ describe('update-action: page to shell (#286)', () => {
         const f = fixture();
         f.shell();
         const page = f.connect();
+        expect(await press(page, { window_id: 'WIN-1', update_action: 'quit', seq: 3 })).toMatchObject({ ok: true });
         const reply = await press(page, { window_id: 'WIN-1', update_action: 'shown', seq: 4 });
         expect(reply).toMatchObject({ ok: true, action: 'update-action' });
         expect(f.h.broadcasts).toContainEqual({

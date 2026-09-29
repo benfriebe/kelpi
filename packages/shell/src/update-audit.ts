@@ -13,7 +13,8 @@
  *     file says `download: "done"` (or `"fail:<message>"`), and whose `quitAndInstall` quits the
  *     shell WITHOUT installing anything, so the restart path (quit gate included) runs for real;
  *   - the control file's `bundlePath` stands in for where the app runs from, so the location
- *     guard's refusal can be shown.
+ *     guard's refusal can be shown; `slowAfterMs` brings "taking longer than expected" forward,
+ *     and `install: "fail:<message>"` makes `quitAndInstall` report an error instead of quitting.
  *
  * The gate is `KELPI_AUDIT_UPDATER` naming the control file AND an unpackaged app. A packaged app
  * ignores the variable entirely (`auditUpdaterControlPath` returns null), so no shipped launch can
@@ -42,6 +43,10 @@ export interface AuditUpdaterControl {
     readonly download?: string;
     /** Where the app should appear to run from (`updater.ts` ▸ `installLocation`). */
     readonly bundlePath?: string;
+    /** How soon a download counts as slow, so "still downloading" can be shown without the wait. */
+    readonly slowAfterMs?: number;
+    /** `fail:<message>` makes `quitAndInstall` report that error instead of quitting (a failed install). */
+    readonly install?: string;
 }
 
 /** The control file's path, or null when the seam is off: unset, empty, or a packaged app. */
@@ -68,10 +73,15 @@ export function readAuditUpdaterControl(file: string): AuditUpdaterControl | nul
     const feed = text('feed');
     const download = text('download');
     const bundlePath = text('bundlePath');
+    const install = text('install');
+    const slow = record['slowAfterMs'];
+    const slowAfterMs = typeof slow === 'number' && Number.isFinite(slow) && slow > 0 ? slow : undefined;
     return {
         ...(feed === undefined ? {} : { feed }),
         ...(download === undefined ? {} : { download }),
-        ...(bundlePath === undefined ? {} : { bundlePath })
+        ...(bundlePath === undefined ? {} : { bundlePath }),
+        ...(slowAfterMs === undefined ? {} : { slowAfterMs }),
+        ...(install === undefined ? {} : { install })
     };
 }
 
@@ -116,6 +126,13 @@ export function createAuditInstaller(options: AuditInstallerOptions): Installer 
             poll.unref?.();
         },
         quitAndInstall(): void {
+            const failure = options.read()?.install;
+            if (failure?.startsWith('fail:') === true) {
+                // As Squirrel does: the error arrives as an event, after the call returned.
+                options.log('auto-update: audit installer: quitAndInstall called; reporting an install error instead of quitting');
+                setImmediate(() => emitter.emit('error', new Error(failure.slice('fail:'.length).trim() || 'the audit install failed')));
+                return;
+            }
             const delay = options.quitDelayMs ?? AUDIT_QUIT_DELAY_MS;
             options.log(`auto-update: audit installer: quitAndInstall called; quitting in ${String(delay)} ms without installing`);
             const timer = setTimeout(() => options.quit(), delay);

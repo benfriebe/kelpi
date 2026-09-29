@@ -377,7 +377,8 @@ Check for Updates… asks the same question any time, whatever the setting. The 
 sheet centred in the Kelpi window, with the release notes rendered as markdown: the download shows
 as in progress, and when it finishes Kelpi asks **Restart Now** or **Later** rather than quitting
 by itself (Later installs it the next time you quit, and the Kelpi menu offers "Restart to
-Update…" until then). Kelpi refuses to update a copy it cannot replace, such as one running from
+Update…" until then). Give Kelpi a few seconds to finish before reopening it: a copy opened too
+soon is the old one. Kelpi refuses to update a copy it cannot replace, such as one running from
 the mounted DMG or a translocated copy in Downloads, and says to move it to Applications. After the update the
 app finds the old version's daemon still running and hands it off: the daemon passes its
 terminals to the terminal host and exits, and the new version's daemon adopts them, so shells

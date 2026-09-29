@@ -55,11 +55,12 @@ export const FEED_TIMEOUT_MS = 10_000;
 /** Release notes longer than this are cut in the NATIVE prompt (the in-app sheet scrolls). */
 export const PROMPT_NOTES_LIMIT = 1200;
 /**
- * The longest a download may run before the flow calls it failed. Squirrel.Mac reports no
- * progress at all, so this is the only way a stalled download ever ends; generous, because the
- * ZIP is about 165 MB and a slow connection is not a failure.
+ * How long a download may run before the flow says it is taking longer than expected. Squirrel.Mac
+ * reports no progress at all, so this is the only signal a slow download gives. It is NOT a
+ * failure: Squirrel keeps going, and the flow keeps waiting for it (a download that finished after
+ * a timeout used to be lost, #286 review). Generous, because the ZIP is about 165 MB.
  */
-export const DOWNLOAD_TIMEOUT_MS = 30 * 60_000;
+export const DOWNLOAD_SLOW_MS = 10 * 60_000;
 
 export interface UpdateHost {
     readonly isPackaged: boolean;
@@ -229,15 +230,24 @@ export interface Installer {
     removeListener(event: string, listener: (...args: unknown[]) => void): unknown;
 }
 
+export interface DownloadOptions {
+    /** When the download counts as slow (`DOWNLOAD_SLOW_MS`). */
+    readonly slowMs?: number | undefined;
+    /** Called once when it does; the download goes on. */
+    readonly onSlow?: (() => void) | undefined;
+}
+
 /**
  * Download the update through Squirrel, and resolve once it is downloaded. Nothing quits here:
  * #286 moved the restart behind the user's "Restart Now" (`./update-flow.ts`). Rejects if the
- * download fails, if the feed no longer offers the version, or after `timeoutMs` with no answer.
+ * download fails or the feed no longer offers the version. A download past `slowMs` is reported
+ * through `onSlow` and waited for, never abandoned: Squirrel is still fetching it.
  *
  * Squirrel's own milestones are logged as they happen (it found the update, it finished), so a
  * report like #286's can be read off the log.
  */
-export function downloadUpdate(installer: Installer, update: AvailableUpdate, timeoutMs = DOWNLOAD_TIMEOUT_MS): Promise<void> {
+export function downloadUpdate(installer: Installer, update: AvailableUpdate, options: DownloadOptions = {}): Promise<void> {
+    const slowMs = options.slowMs ?? DOWNLOAD_SLOW_MS;
     return new Promise<void>((resolve, reject) => {
         let timer: ReturnType<typeof setTimeout> | undefined;
         const cleanup = (): void => {
@@ -268,8 +278,10 @@ export function downloadUpdate(installer: Installer, update: AvailableUpdate, ti
         installer.on('update-available', onAvailable);
         installer.on('error', onError);
         timer = setTimeout(() => {
-            onError(new Error(`The download did not finish within ${String(Math.round(timeoutMs / 60_000))} minutes.`));
-        }, timeoutMs);
+            timer = undefined;
+            log(`auto-update: ${update.version} is still downloading after ${String(Math.round(slowMs / 1000))} s; still waiting`);
+            options.onSlow?.();
+        }, slowMs);
         timer.unref?.();
         try {
             installer.setFeedURL({ url: update.feed });

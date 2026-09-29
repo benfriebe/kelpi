@@ -10,7 +10,7 @@ function frame(fields: Record<string, unknown> = {}): Record<string, unknown> {
 
 describe('reading update-state (#286)', () => {
     it('reads a frame for this window, view validated', () => {
-        expect(parseUpdateState(frame(), 'WIN-1')).toEqual({ view: VIEW, seq: 1, reveal: true, notesHTML: '<h2>Fixes</h2>' });
+        expect(parseUpdateState(frame(), 'WIN-1')).toEqual({ view: VIEW, seq: 1, reveal: true, hide: false, notesHTML: '<h2>Fixes</h2>' });
     });
 
     it('ignores another window\'s frame, other message types and malformed frames', () => {
@@ -40,11 +40,23 @@ describe('the update sheet controller (#286)', () => {
         return { c, sent, states };
     }
 
-    it('opens on a revealed view and acknowledges it with its seq', () => {
+    it('opens on a revealed view, and acknowledges it with its seq only once it has painted', () => {
         const { c, sent } = controller();
         c.handleMessage(frame({ seq: 7 }));
         expect(c.current?.view.phase).toBe('available');
+        expect(sent).toEqual([]);
+        c.rendered(7);
+        c.rendered(7);
         expect(sent).toEqual([['shown', 7]]);
+    });
+
+    it('closes on a hide frame (the shell moved the state to a native dialog), and never acknowledges it', () => {
+        const { c, sent } = controller();
+        c.handleMessage(frame({ seq: 1 }));
+        c.handleMessage(frame({ seq: 2, reveal: false, hide: true }));
+        expect(c.current).toBeNull();
+        c.rendered(1);
+        expect(sent).toEqual([]);
     });
 
     it('follows an open sheet on a view that is not revealed, and stays closed on one while closed', () => {
@@ -54,19 +66,20 @@ describe('the update sheet controller (#286)', () => {
         c.handleMessage(frame({ seq: 2 }));
         c.handleMessage(frame({ seq: 3, reveal: false, view: { phase: 'restarting', currentVersion: '0.2.2', version: '0.2.3' } }));
         expect(c.current?.view.phase).toBe('restarting');
+        c.rendered(3);
         expect(sent).toEqual([['shown', 2]]);
     });
 
-    it('sends each button to the shell, closing the sheet for Later and dismiss only', () => {
+    it('sends each button with the seq of the view it was pressed on, closing the sheet for Later and dismiss only', () => {
         const { c, sent } = controller();
-        c.handleMessage(frame());
+        c.handleMessage(frame({ seq: 5 }));
         c.act('update-now');
         expect(c.current).not.toBeNull();
         c.act('later');
         expect(c.current).toBeNull();
-        expect(sent.slice(1)).toEqual([
-            ['update-now', undefined],
-            ['later', undefined]
+        expect(sent).toEqual([
+            ['update-now', 5],
+            ['later', 5]
         ]);
         expect(closesSheet('dismiss')).toBe(true);
         expect(closesSheet('restart')).toBe(false);

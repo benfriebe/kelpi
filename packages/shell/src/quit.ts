@@ -116,12 +116,21 @@ export interface QuitGate {
     /** True while the confirmation is on screen (a second ⌘Q must not stack a dialog). */
     readonly confirming: boolean;
     /**
-     * Let the next quit through without asking: an update the user chose ("Update Now") quits the
+     * Let the next quit through without asking: an update the user chose (Restart Now) quits the
      * app itself, with its windows already closed, and must not be stopped by the agents-active
      * confirmation. Agents keep running anyway: the daemon and the terminal host outlive the app.
-     * Runs the usual quit teardown.
+     *
+     * #286: this ONLY opens the gate. It used to run the quit teardown (`onQuit`: hotkeys, the
+     * status connection, the web-pane host) as well, before `quitAndInstall` had even started, so
+     * an install that then failed left a running app with no status connection, no web host and
+     * no hotkey. The teardown now happens where the quit is final: `main.ts`'s `will-quit`.
      */
     allowQuit(): void;
+    /**
+     * #286: close the gate again after `allowQuit`, when the quit it was opened for did not happen
+     * (Squirrel failed to install). The next ⌘Q then asks about active agents as usual.
+     */
+    rearm(): void;
     dispose(): void;
 }
 
@@ -295,8 +304,13 @@ export function installQuitGate(options: QuitGateOptions): QuitGate {
         allowQuit(): void {
             if (confirmed) return;
             confirmed = true;
-            options.onQuit?.();
+            // Nothing is torn down here: see the interface. `will-quit` does it once the quit is real.
             log('quit: allowed for an update; leaving the daemon running');
+        },
+        rearm(): void {
+            if (!confirmed) return;
+            confirmed = false;
+            log('quit: the update did not quit Kelpi; the quit confirmation applies again');
         },
         dispose(): void {
             app.removeListener('before-quit', onBeforeQuit);

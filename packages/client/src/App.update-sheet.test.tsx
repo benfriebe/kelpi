@@ -9,7 +9,7 @@
 
 import type { JsonObject } from '@kelpi/protocol';
 import { createStore as createDaemonStore, emptyDaemonState } from '@kelpi/daemon/store';
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { App } from './App';
@@ -72,19 +72,18 @@ afterEach(() => {
 });
 
 describe('the update sheet in the desktop app (#286)', () => {
-    it('draws a revealed offer, acknowledges it, and sends Update Now to this window\'s shell', () => {
+    it('draws a revealed offer, acknowledges it once painted, and sends Update Now with its seq', async () => {
         const h = setup(SHELL_WINDOW);
         act(() => {
             h.socket().emit(OFFER);
         });
         expect(screen.getByTestId('update-title').textContent).toBe('Kelpi 0.2.3 is available');
         expect(screen.getByTestId('update-notes').querySelector('h2')?.textContent).toBe('Fixes');
-        expect(h.actions()).toEqual([
-            expect.objectContaining({ window_id: SHELL_WINDOW, update_action: 'shown', seq: 3 })
-        ]);
+        await waitFor(() => {
+            expect(h.actions()).toEqual([expect.objectContaining({ window_id: SHELL_WINDOW, update_action: 'shown', seq: 3 })]);
+        });
         fireEvent.click(screen.getByTestId('update-now'));
-        expect(h.actions().at(-1)).toMatchObject({ window_id: SHELL_WINDOW, update_action: 'update-now' });
-        expect(h.actions().at(-1)?.['seq']).toBeUndefined();
+        expect(h.actions().at(-1)).toMatchObject({ window_id: SHELL_WINDOW, update_action: 'update-now', seq: 3 });
 
         // The shell answers with the next state; the open sheet follows it.
         act(() => {
@@ -101,6 +100,18 @@ describe('the update sheet in the desktop app (#286)', () => {
         fireEvent.click(screen.getByTestId('update-later'));
         expect(screen.queryByTestId('update-sheet')).toBeNull();
         expect(h.actions().at(-1)).toMatchObject({ update_action: 'later' });
+    });
+
+    it('closes the sheet when the shell moves the state to a native dialog', () => {
+        const h = setup(SHELL_WINDOW);
+        act(() => {
+            h.socket().emit(OFFER);
+        });
+        expect(screen.getByTestId('update-sheet')).toBeTruthy();
+        act(() => {
+            h.socket().emit({ ...OFFER, seq: 4, reveal: false, hide: true });
+        });
+        expect(screen.queryByTestId('update-sheet')).toBeNull();
     });
 
     it('ignores a frame addressed to another window', () => {

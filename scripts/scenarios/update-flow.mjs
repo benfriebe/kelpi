@@ -6,10 +6,13 @@
  * the download finished). This drives the replacement through every state and photographs each:
  *
  *   up to date → a blocked offer (running from an App-Translocated copy) → an offer with markdown
- *   release notes → downloading → a second check shows the download, not "checking" → the download
- *   fails → Retry → ready (and NOTHING quits) → Later keeps it ready → a second check shows ready →
- *   the native fallback, parented to the window, when the page does not answer → Restart Now lets
- *   the quit through the quit gate, the shell exits, and the sandbox daemon keeps running.
+ *   release notes → downloading → "still downloading" when it takes longer than expected → a second
+ *   check shows the download, not "checking" → the download fails → Retry → ready (and NOTHING
+ *   quits) → Later keeps it ready → a second check shows ready → the native fallback, parented to
+ *   the window, when the page does not answer, with the page's sheet closed so only one surface
+ *   asks → a restart whose install FAILS: the app stays usable, the quit gate is re-armed and the
+ *   sheet offers Quit → Restart Now lets the quit through the quit gate, the shell exits, and the
+ *   sandbox daemon keeps running.
  *
  * What is real: the page, the daemon relay (`update-state` / `update-action`), the shell's update
  * flow and surface, the feed check (an HTTP request to a local stand-in for update.electronjs.org
@@ -211,6 +214,8 @@ export default async function ({ page, sandbox, shell, harness, daemon, rec, d, 
         rec.check('a release-note link opens in the system browser, not the window', opened && (await harness.counters()).lastExternalUrl === RELEASE_URL, JSON.stringify(await harness.counters()));
 
         // ── 4. Update Now: downloading, visibly ────────────────────────────────────────────
+        // "Taking longer than expected" after 2.5 s instead of ten minutes, so it can be shown.
+        control({ slowAfterMs: 2500 });
         await page.click('[data-testid="update-now"]');
         rec.check('Update Now shows the download in progress', await waitPhase('downloading'), JSON.stringify(await sheet()));
         const downloading = await sheet();
@@ -220,6 +225,10 @@ export default async function ({ page, sandbox, shell, harness, daemon, rec, d, 
         const downloadingRow = await updateRow();
         rec.check('the menu row says it is downloading', downloadingRow?.label === `Downloading Kelpi ${OFFERED}…`, JSON.stringify(downloadingRow));
         rec.note(`menu while downloading: Kelpi ▸ ${String(downloadingRow?.label)}`);
+        const slow = await d.settleDom(page, `(document.querySelector('[data-testid="update-subtitle"]')?.textContent ?? '').includes('taking longer than expected')`, { ceilingMs: 8_000 });
+        const stillDownloading = await sheet();
+        rec.check('a slow download says it is still going, and is not a failure', slow && stillDownloading.phase === 'downloading', JSON.stringify(stillDownloading));
+        await rec.shot(page, 'still-downloading');
 
         // ── 5. a second check during the download shows the download, not "checking" ──────
         await page.click('[data-testid="update-hide"]');
@@ -281,13 +290,46 @@ export default async function ({ page, sandbox, shell, harness, daemon, rec, d, 
         await page.eval(`window.__kelpiRestoreSend?.()`);
         rec.check('with no acknowledgement the shell shows the native dialog instead', fellBack, JSON.stringify(native));
         rec.check('parented to the Kelpi window (a sheet centred on it), asking Restart Now / Later', native?.parented === true && native?.message === `Kelpi ${OFFERED} is ready` && JSON.stringify(native?.buttons) === JSON.stringify(['Restart Now', 'Later']), JSON.stringify(native));
-        await page.eval(`document.querySelector('[data-testid="update-later"]')?.click()`);
-        await waitClosed();
+        rec.check('and the page closed its own sheet, so only one surface asks', await waitClosed());
 
-        // ── 10. Restart Now: through the quit gate, the shell exits, the daemon stays ───────
+        // ── 10. a restart whose install fails: usable app, re-armed gate, Quit offered ───────
+        control({ download: 'done', install: 'fail:ShipIt could not replace the app.' });
+        const failMark = shell.lines.length;
+        await menuCheck();
+        await waitPhase('ready');
+        await page.click('[data-testid="update-restart"]');
+        rec.check('a failed install is shown in the window', await waitPhase('failed'), JSON.stringify(await sheet()));
+        const installFailed = await sheet();
+        rec.check(
+            'it says to quit and reopen, gives the reason, and offers Quit Kelpi instead of Retry',
+            installFailed.title === 'Kelpi could not finish installing the update' &&
+                /Quit Kelpi and open it again/.test(installFailed.subtitle ?? '') &&
+                installFailed.message === 'ShipIt could not replace the app.' &&
+                installFailed.buttons.includes('update-quit') &&
+                !installFailed.buttons.includes('update-retry'),
+            JSON.stringify(installFailed)
+        );
+        const failLog = logSince(failMark);
+        rec.check(
+            'the quit gate was opened, then re-armed, and nothing was torn down (the sheet arrived over the status connection)',
+            failLog.some((line) => line.includes('quit: allowed for an update')) &&
+                failLog.some((line) => line.includes('quit confirmation applies again')) &&
+                !shell.exited,
+            failLog.filter((line) => line.includes('quit') || line.includes('install')).join(' | ')
+        );
+        await rec.shot(page, 'install-failed');
+        await page.click('[data-testid="update-close"]');
+        await waitClosed();
+        const afterFailRow = await updateRow();
+        rec.check('Close leaves Kelpi usable, with the plain Check for Updates… row', afterFailRow?.label === 'Check for Updates…' && afterFailRow?.enabled === true, JSON.stringify(afterFailRow));
+
+        // ── 11. Restart Now: through the quit gate, the shell exits, the daemon stays ───────
+        control({ download: 'done' });
         const pid = daemon?.pid;
         const restartMark = shell.lines.length;
         await menuCheck();
+        await waitPhase('available');
+        await page.click('[data-testid="update-now"]');
         await waitPhase('ready');
         await page.click('[data-testid="update-restart"]');
         const restarting = await waitPhase('restarting', 3_000);

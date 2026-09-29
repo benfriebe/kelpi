@@ -1146,10 +1146,8 @@ function updateInstaller(): Installer {
     if (control === null || auditUpdater() === null) {
         if (!autoUpdaterWatched) {
             autoUpdaterWatched = true;
-            // #286: a standing listener, so an error Squirrel reports when no download is waiting
-            // (a `quitAndInstall` that fails after returning) reaches the flow and the log instead
-            // of being an unhandled 'error' event in the main process.
-            autoUpdater.on('error', (error: Error) => updateFlow().installerError(error));
+            // The flow holds the standing `error` / `update-downloaded` listeners itself
+            // (`update-flow.ts` ▸ `watch`); this one is only for the log.
             autoUpdater.on('before-quit-for-update', () => log('auto-update: Squirrel is quitting Kelpi to install the update'));
         }
         return autoUpdater;
@@ -1211,12 +1209,13 @@ function showNativeUpdate(view: UpdateView): void {
     const controller = new AbortController();
     nativeUpdateBox = controller;
     const options: Electron.MessageBoxOptions = { ...spec.options, buttons: [...spec.options.buttons], signal: controller.signal };
+    // A window that is still not on screen (one `showWindow` has only just created, after an
+    // install that closed every window) would hold a sheet nobody can see: then the box is
+    // app-modal instead, which macOS always shows.
     const target = mainWindow;
-    const shown =
-        parent === 'none' || target === null || target.isDestroyed()
-            ? dialog.showMessageBox(options)
-            : dialog.showMessageBox(target, options);
-    log(`auto-update: native dialog "${spec.options.message}" (${parent === 'none' ? 'no window to attach it to' : 'a sheet on the window'})`);
+    const attach = parent !== 'none' && target !== null && !target.isDestroyed() && target.isVisible();
+    const shown = attach ? dialog.showMessageBox(target, options) : dialog.showMessageBox(options);
+    log(`auto-update: native dialog "${spec.options.message}" (${attach ? 'a sheet on the window' : 'no visible window to attach it to'})`);
     shown.then(
         ({ response }) => {
             if (nativeUpdateBox === controller) nativeUpdateBox = null;
@@ -1233,28 +1232,36 @@ function showNativeUpdate(view: UpdateView): void {
 }
 
 /**
- * #286: a revealed state needs the window in front. A state the USER is waiting on (a check they
- * asked for, an offer) raises it; one that arrives on its own while Kelpi is out of sight or in
- * the background (a finished or failed download) posts a notification instead, so a background
- * download never steals focus. The sheet is in the page either way, waiting.
+ * #286: a revealed state needs the user's attention. One they are waiting on (`prompted`: a check
+ * they asked for, a button they pressed, a restart that failed) brings the window forward. One
+ * nobody asked for right now (a launch-check offer, a finished or failed download) never pulls a
+ * hidden window forward: it posts a notification when Kelpi is not in front, and the sheet waits
+ * in the page (the menu row names the state too). Returns whether the user can see it now.
  */
-function raiseForUpdate(view: UpdateView): void {
+function raiseForUpdate(view: UpdateView, prompted: boolean): boolean {
     const window = mainWindow;
     const onScreen = window !== null && !window.isDestroyed() && window.isVisible() && !window.isMinimized();
-    const unprompted = view.phase === 'ready' || view.phase === 'failed';
-    if (unprompted) {
-        const focused = onScreen && window.isFocused();
-        if (!focused && notificationsSupported()) {
-            presentNotification(
-                view.phase === 'ready'
-                    ? { title: `Kelpi ${view.version ?? ''} is ready`, body: 'Restart Kelpi to finish updating. Your terminals keep running.' }
-                    : { title: 'The Kelpi update did not finish', body: view.message ?? 'Open Kelpi to see what happened.' },
-                { onClick: () => showWindow() }
-            ).show();
-        }
-        return;
+    if (prompted) {
+        if (!onScreen) showWindow();
+        return true;
     }
-    if (!onScreen) showWindow();
+    const focused = onScreen && window.isFocused();
+    if (!focused && notificationsSupported()) {
+        const version = view.version ?? '';
+        const notice =
+            view.phase === 'ready'
+                ? { title: `Kelpi ${version} is ready`, body: 'Restart Kelpi to finish updating. Your terminals keep running.' }
+                : view.phase === 'available'
+                  ? { title: `Kelpi ${version} is available`, body: 'Open Kelpi to see what is new and update.' }
+                  : { title: 'The Kelpi update did not finish', body: view.message ?? 'Open Kelpi to see what happened.' };
+        presentNotification(notice, {
+            onClick: () => {
+                showWindow();
+                updateFlow().show();
+            }
+        }).show();
+    }
+    return onScreen;
 }
 
 const updateSurface = createUpdateSurface({
@@ -1288,10 +1295,15 @@ function updateFlow(): UpdateFlow {
         },
         installer: updateInstaller,
         location: currentInstallLocation,
-        present: (view, reveal) => updateSurface.present(view, reveal),
+        present: (view, reveal, prompted) => updateSurface.present(view, reveal, prompted),
         // The restart path: `allowQuit` lets the quit through the agents-active confirmation, then
-        // the flow calls `quitAndInstall`. The daemon is never stopped (`./quit.ts`).
+        // the flow calls `quitAndInstall`. Opening the gate tears nothing down (that waits for
+        // `will-quit`), and a restart that fails closes it again. The daemon is never stopped.
         allowQuit: () => quitGate?.allowQuit(),
+        rearmQuit: () => quitGate?.rearm(),
+        quit: () => app.quit(),
+        // The harness can make "taking longer than expected" come sooner (`./update-audit.ts`).
+        downloadSlowMs: () => auditUpdater()?.slowAfterMs,
         // The menu's row names the state ("Downloading Kelpi X…", "Restart to Update…").
         changed: () => buildMenu(),
         log
@@ -1763,8 +1775,15 @@ function startStatusController(): void {
                 checkForUpdates: () => void checkForUpdates('manual'),
                 // #286: the update sheet's buttons, and its acknowledgement that it drew a view.
                 updateAction: (action, seq) => {
-                    if (action === 'shown') updateSurface.acknowledge(seq ?? undefined);
-                    else updateFlow().act(action);
+                    if (action === 'shown') {
+                        updateSurface.acknowledge(seq ?? undefined);
+                    } else if (!updateSurface.isCurrent(seq ?? undefined)) {
+                        // Pressed on a view the state has moved on from (Close on a stale failure
+                        // must not dismiss a fresh offer).
+                        log(`auto-update: ignored "${action}" pressed on an earlier state (#${String(seq)})`);
+                    } else {
+                        updateFlow().act(action);
+                    }
                 },
                 installCLINow: () => installCliNow(true),
                 revealPane: (workspaceID, paneID) => {

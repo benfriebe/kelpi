@@ -117,9 +117,13 @@ so the surface says so and promises to ask before restarting), **ready** ("Kelpi
 Restart Now / Later"), **restarting**, **failed** (a readable reason and Retry) and **unsupported**.
 A finished download never quits the app: before #286 it called `quitAndInstall()` the moment
 Squirrel said "downloaded", which read as a crash. Restart Now calls the quit gate's `allowQuit()`
-and then `quitAndInstall()`; Later leaves the download with Squirrel, which installs it when Kelpi
-next quits (and does not relaunch), and the Kelpi menu row reads "Restart to Update to Kelpi X…"
-until then. A second Check for Updates while a check, a download or a ready update is pending shows
+(which only opens the gate; the teardown waits for `will-quit`) and then `quitAndInstall()`; if
+the install fails, or Kelpi has not quit after 60 s, the gate is re-armed and the state says to
+quit and reopen, with a Quit button. Later leaves the download with Squirrel, which installs it
+when Kelpi next quits (and does not relaunch), and the Kelpi menu row reads "Restart to Update to
+Kelpi X…" until then. A download past ten minutes is "taking longer than expected", never a
+failure, and a standing `update-downloaded` listener catches its finish whenever it comes. A
+launch-check offer or a finished download never pulls a hidden window forward (it notifies). A second Check for Updates while a check, a download or a ready update is pending shows
 that state instead of checking again. Update Now is refused up front, with the fix, when Kelpi runs
 from a translocated or read-only copy (`installLocation`).
 
@@ -128,7 +132,9 @@ with the release notes rendered as markdown), reached through the daemon because
 the status connection pushes `update-state` and the page answers with `shell-action` `update-action`
 (`protocol/src/ws/update.ts` has the contract and its guards). When no page answers within 2.5 s the
 same state is a native dialog **parented to the window**, so it is a sheet centred on Kelpi rather
-than an alert macOS places on its own (`src/update-surface.ts`). Every transition is an
+than an alert macOS places on its own, and the page closes its sheet so only one surface asks
+(`src/update-surface.ts`). Buttons carry the `seq` of the view they were pressed on; a press on a
+state the flow has moved on from is ignored. Every transition is an
 `auto-update:` log line, and each launch logs the version it runs against the previous one.
 
 ## Packaging

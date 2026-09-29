@@ -6,6 +6,7 @@ import {
     UPDATE_PHASES,
     isUpdateUserAction,
     normalizeUpdateView,
+    updateFailureTitle,
     updateSeq,
     updateVersion
 } from './update.js';
@@ -79,6 +80,19 @@ describe('the update view (#286)', () => {
         expect(updateSeq(1.5)).toBeUndefined();
         expect(updateSeq('3')).toBeUndefined();
         expect(isUpdateUserAction('restart')).toBe(true);
-        expect(isUpdateUserAction('quit')).toBe(false);
+        expect(isUpdateUserAction('quit')).toBe(true);
+        expect(isUpdateUserAction('install-anything')).toBe(false);
+    });
+
+    it('keeps "slow" only on a download, and only as true', () => {
+        expect(normalizeUpdateView({ phase: 'downloading', currentVersion: '0.2.2', version: '0.2.3', slow: true })?.slow).toBe(true);
+        expect(normalizeUpdateView({ phase: 'downloading', currentVersion: '0.2.2', version: '0.2.3', slow: 'yes' })?.slow).toBeUndefined();
+        expect(normalizeUpdateView({ phase: 'ready', currentVersion: '0.2.2', version: '0.2.3', slow: true })?.slow).toBeUndefined();
+    });
+
+    it('heads each failure by what failed, the words both surfaces use', () => {
+        expect(updateFailureTitle({ retry: 'check' })).toBe('Kelpi could not check for updates');
+        expect(updateFailureTitle({ retry: 'download', version: '0.2.3' })).toBe('Kelpi 0.2.3 could not be downloaded');
+        expect(updateFailureTitle({ retry: 'install', version: '0.2.3' })).toBe('Kelpi could not finish installing the update');
     });
 });

@@ -1087,7 +1087,9 @@ function Shell(props: AppProps): ReactElement {
      * like the folder panel: a browser has no shell window and never gets the frames.
      *
      * A refused button is toasted like any failed command. The `shown` acknowledgement is not: if
-     * it cannot reach the shell, the shell falls back to its native dialog on its own.
+     * it cannot reach the shell, the shell falls back to its native dialog on its own. `shown` is
+     * sent once the sheet has painted (`UpdateSheet` ▸ `onShown`), and every button carries the
+     * `seq` of the view it was pressed on, so the shell can ignore a press on a stale state.
      */
     const [updateSheet, setUpdateSheet] = useState<UpdateSheetState | null>(null);
     const updateSheetController = useMemo(
@@ -4653,8 +4655,10 @@ function Shell(props: AppProps): ReactElement {
             {updateSheet === null ? null : (
                 <UpdateSheet
                     view={updateSheet.view}
+                    seq={updateSheet.seq}
                     notesHTML={updateSheet.notesHTML}
                     onAction={(action) => updateSheetController?.act(action)}
+                    onShown={(seq) => updateSheetController?.rendered(seq)}
                 />
             )}
             <InteractionHost surface={surface} presenters={!phoneActive} chords={presenterChords} />

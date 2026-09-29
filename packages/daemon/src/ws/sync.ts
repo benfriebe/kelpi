@@ -3238,7 +3238,7 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
      * and a frame that fails is dropped rather than relayed as something else.
      *
      * The release notes are rendered HERE, with the markdown panes' renderer in its release-notes
-     * mode (`renderReleaseNotes`: raw HTML escaped, no images, http(s)/mailto links only), and
+     * mode (`renderReleaseNotes`: raw HTML escaped, no images, http(s) links only), and
      * whatever `notesHTML` the sender put on the frame is discarded. Fanned out like a reveal, to
      * owner sessions only (a paired phone has no Kelpi window to draw it in), and the page filters
      * on `windowID` for itself. Nothing is remembered: the flow's state is the shell's, and a page
@@ -3265,6 +3265,8 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             windowID,
             seq,
             reveal: message['reveal'],
+            // The shell moved this state to a native dialog; the page closes its sheet.
+            ...(message['hide'] === true ? { hide: true } : {}),
             view: view as unknown as JsonObject,
             ...(notesHTML === undefined ? {} : { notesHTML })
         };

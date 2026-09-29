@@ -33,6 +33,8 @@ export interface UpdateSheetState {
 /** An `update-state` frame, decoded. */
 export interface UpdateStateFrame extends UpdateSheetState {
     readonly reveal: boolean;
+    /** The shell moved this state to a native dialog: close the sheet (one surface at a time). */
+    readonly hide: boolean;
 }
 
 /**
@@ -50,7 +52,7 @@ export function parseUpdateState(message: unknown, windowID: string): UpdateStat
     if (seq === undefined || view === null || typeof record['reveal'] !== 'boolean') return null;
     const html = record['notesHTML'];
     const notesHTML = typeof html === 'string' && html.length <= MAX_UPDATE_NOTES_LENGTH * 8 && view.notes !== undefined ? html : undefined;
-    return { view, seq, reveal: record['reveal'], ...(notesHTML === undefined ? {} : { notesHTML }) };
+    return { view, seq, reveal: record['reveal'], hide: record['hide'] === true, ...(notesHTML === undefined ? {} : { notesHTML }) };
 }
 
 /** The buttons that close the sheet on the page's side; the rest wait for the next state. */
@@ -61,15 +63,23 @@ export function closesSheet(action: UpdateUserAction): boolean {
 export interface UpdateSheetController {
     /** Offer every message the connection receives. */
     handleMessage(message: unknown): void;
-    /** A button: sends it to the shell, and closes the sheet for Later / dismiss. */
+    /**
+     * A button: sends it to the shell with the `seq` of the view it was pressed on (the shell
+     * ignores a press on a state it has moved on from), and closes the sheet for Later / dismiss.
+     */
     act(action: UpdateUserAction): void;
+    /**
+     * The sheet has painted view `seq`. Only now is a revealed view acknowledged (`shown`): a frame
+     * that arrived but never reached the screen must let the shell fall back to its native dialog.
+     */
+    rendered(seq: number): void;
     /** What the sheet should draw, or null when it is closed. */
     readonly current: UpdateSheetState | null;
 }
 
 export interface UpdateSheetOptions {
     readonly windowID: string;
-    /** Send `update-action` (with the `seq` a `shown` acknowledges). */
+    /** Send `update-action` with the `seq` it answers (the pressed view, or the view a `shown` acknowledges). */
     readonly send: (action: UpdateUserAction, seq: number | undefined) => void;
     /** The sheet opened, closed or changed; `App.tsx` re-renders. */
     readonly onChange: (state: UpdateSheetState | null) => void;
@@ -78,25 +88,38 @@ export interface UpdateSheetOptions {
 export function createUpdateSheetController(options: UpdateSheetOptions): UpdateSheetController {
     let latest: UpdateSheetState | null = null;
     let open = false;
+    /** The revealed view waiting to be painted before it is acknowledged. */
+    let pendingAck: number | null = null;
     const publish = (): void => options.onChange(open ? latest : null);
     return {
         handleMessage(message: unknown): void {
             const frame = parseUpdateState(message, options.windowID);
             if (frame === null) return;
             // Frames arrive in order on one connection, so the latest is the flow's state.
-            const { reveal, ...state } = frame;
+            const { reveal, hide, ...state } = frame;
             latest = state;
-            if (state.view.phase === 'idle') open = false;
-            else if (reveal) open = true;
+            if (hide || state.view.phase === 'idle') {
+                open = false;
+                pendingAck = null;
+            } else if (reveal) {
+                open = true;
+                pendingAck = state.seq;
+            }
             publish();
-            if (reveal && open) options.send('shown', state.seq);
         },
         act(action: UpdateUserAction): void {
-            options.send(action, undefined);
+            options.send(action, latest?.seq);
             if (closesSheet(action)) {
                 open = false;
+                pendingAck = null;
                 publish();
             }
+        },
+        rendered(seq: number): void {
+            if (!open || pendingAck === null || seq < pendingAck) return;
+            const acknowledged = pendingAck;
+            pendingAck = null;
+            options.send('shown', acknowledged);
         },
         get current(): UpdateSheetState | null {
             return open ? latest : null;

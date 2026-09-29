@@ -242,8 +242,8 @@ export function autolinkText(text: string): string {
     return autolinkWith(AUTOLINK_PATTERN, text);
 }
 
-/** #286 release notes: the same autolinking, for `http(s)://` and `mailto:` runs only. */
-const SAFE_AUTOLINK_PATTERN = /https?:\/\/[^\s<>"'`]+|mailto:[^\s<>"'`]+/gi;
+/** #286 release notes: the same autolinking, for `http(s)://` runs only (see `SAFE_LINK`). */
+const SAFE_AUTOLINK_PATTERN = /https?:\/\/[^\s<>"'`]+/gi;
 
 function autolinkSafeText(text: string): string {
     return autolinkWith(SAFE_AUTOLINK_PATTERN, text);
@@ -294,8 +294,12 @@ interface InlineOptions {
     readonly safe?: boolean | undefined;
 }
 
-/** The only link schemes release notes keep (`renderReleaseNotes`); anything else is plain text. */
-const SAFE_LINK = /^(?:https?:\/\/|mailto:)/i;
+/**
+ * The only link schemes release notes keep (`renderReleaseNotes`); anything else is plain text.
+ * Not `mailto:`: the shell opens http(s) only (`main.ts` ▸ `openExternally`), so a mail link would
+ * be drawn as a link and do nothing.
+ */
+const SAFE_LINK = /^https?:\/\//i;
 
 function renderInline(tokens: readonly Token[] | null, options: InlineOptions): string {
     if (tokens === null) return '';
@@ -433,8 +437,9 @@ const releaseNotesParser = new MarkdownIt({ html: false, linkify: false, typogra
  *   - **raw HTML is escaped**, never passed through (markdown-it `html: false`, and every
  *     `html_block` / `html_inline` token that could still appear is escaped as well);
  *   - **images become their alt text**, so a release note cannot make the app fetch anything;
- *   - **only http(s) and mailto links survive**; any other href keeps its text and loses its
- *     anchor. The page opens a surviving link in the system browser.
+ *   - **only http(s) links survive**; any other href (mailto included, which the shell would not
+ *     open) keeps its text and loses its anchor. The page opens a surviving link in the system
+ *     browser.
  *
  * The code block's copy button is also left out, since nothing in the page drives it. The page
  * does not trust this HTML either: it rebuilds it element by element from an allowlist

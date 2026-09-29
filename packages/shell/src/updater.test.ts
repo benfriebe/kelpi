@@ -205,15 +205,23 @@ describe('downloading (#286: nothing quits when it finishes)', () => {
         await expect(downloadUpdate(installer, update)).rejects.toThrow('code signature');
     });
 
-    it('gives up after its time limit, since Squirrel reports no progress to watch', async () => {
+    it('reports a slow download and keeps waiting for it, so a late finish still counts (#286 review)', async () => {
         vi.useFakeTimers();
         try {
             const installer = new FakeInstaller();
-            const done = downloadUpdate(installer, update, 60_000);
-            const verdict = expect(done).rejects.toThrow('did not finish within 1 minutes');
+            const onSlow = vi.fn();
+            let finished = false;
+            const done = downloadUpdate(installer, update, { slowMs: 60_000, onSlow }).then(() => {
+                finished = true;
+            });
             await vi.advanceTimersByTimeAsync(60_001);
-            await verdict;
-            expect(installer.listenerCount('update-downloaded')).toBe(0);
+            expect(onSlow).toHaveBeenCalledTimes(1);
+            expect(finished).toBe(false);
+            expect(installer.listenerCount('update-downloaded')).toBe(1);
+            installer.emit('update-downloaded');
+            await done;
+            expect(finished).toBe(true);
+            expect(installer.checks).toBe(1);
         } finally {
             vi.useRealTimers();
         }

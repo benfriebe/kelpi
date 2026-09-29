@@ -3,7 +3,7 @@
  *
  * The notes are the release's markdown. The daemon renders them with the markdown panes' own
  * renderer in its release-notes mode (`daemon/src/content/markdown.ts` ▸ `renderReleaseNotes`: raw
- * HTML escaped, images reduced to alt text, only http(s)/mailto links) and sends the HTML as
+ * HTML escaped, images reduced to alt text, only http(s) links) and sends the HTML as
  * `notesHTML` beside the markdown. The page is not a preview frame, though: this is the app's own
  * document, so that HTML is NOT put in with `innerHTML`. It is parsed into an inert document
  * (`DOMParser` runs no script and loads nothing) and rebuilt as React elements from an allowlist
@@ -22,7 +22,7 @@ import { openExternalLink } from '../content/bridge';
 import { tokens } from './tokens';
 
 /** Only these schemes become a clickable link; anything else keeps its text. */
-const LINK_SCHEME = /^(?:https?:\/\/|mailto:)/i;
+const LINK_SCHEME = /^https?:\/\//i;
 
 /** Tags drawn as themselves, with the classes that give them the sheet's typography. */
 const BLOCK_CLASSES: Readonly<Record<string, string>> = {

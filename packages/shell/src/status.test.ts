@@ -538,3 +538,87 @@ describe('the keybind lines the menu reads (#47, §7.1)', () => {
         expect(controller.daemonSettings.confirmQuitWhenActive).toBe(false);
     });
 });
+
+/**
+ * #283: the shell half of the folder round trip. A `shell-action` `choose-folder-dialog` raises
+ * the host's panel, and whatever the panel does, exactly one `choose-folder-answer` goes back
+ * over the status socket carrying the request's id and window.
+ */
+describe('choose-folder-dialog (#283)', () => {
+    let socket: FakeSocket;
+    let controller: ReturnType<typeof createStatusController>;
+
+    function start(promptChooseFolder?: () => Promise<string | null>, windowID = 'w1'): void {
+        setLogStreams({ out: { write: () => true }, err: { write: () => true } });
+        electronMock.trays.length = 0;
+        socket = createFakeSocket();
+        controller = createStatusController({
+            location: LOCATION,
+            host: { ...createHost(), ...(promptChooseFolder === undefined ? {} : { promptChooseFolder }) },
+            windowID,
+            socketFactory: () => socket as unknown as WebSocket
+        });
+        controller.start();
+        socket.emit('open');
+        socket.emit('message', WELCOME, false);
+    }
+
+    afterEach(() => {
+        controller.stop();
+        setLogStreams({ out: process.stdout, err: process.stderr });
+    });
+
+    const request = (fields: Record<string, unknown> = {}): void => {
+        socket.emit(
+            'message',
+            JSON.stringify({ type: 'shell-action', action: 'choose-folder-dialog', requestID: 'r1', windowID: 'w1', ...fields }),
+            false
+        );
+    };
+    const answers = (): Record<string, unknown>[] =>
+        socket.sent
+            .map((raw) => JSON.parse(raw) as Record<string, unknown>)
+            .filter((message) => message['type'] === 'choose-folder-answer');
+    const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
+    it('shows the panel and sends the chosen path back with the id and the window', async () => {
+        const prompt = vi.fn(async () => '/src/app');
+        start(prompt);
+        request();
+        await flush();
+        expect(prompt).toHaveBeenCalledTimes(1);
+        expect(answers()).toEqual([{ type: 'choose-folder-answer', requestID: 'r1', path: '/src/app', windowID: 'w1' }]);
+    });
+
+    it('answers a cancel with null', async () => {
+        start(async () => null);
+        request();
+        await flush();
+        expect(answers()).toEqual([{ type: 'choose-folder-answer', requestID: 'r1', path: null, windowID: 'w1' }]);
+    });
+
+    it('answers null when the panel fails, or the host has none, so the page never waits it out', async () => {
+        start(async () => {
+            throw new Error('no window');
+        });
+        request();
+        await flush();
+        expect(answers().map((message) => message['path'])).toEqual([null]);
+        controller.stop();
+
+        start(undefined);
+        request();
+        await flush();
+        expect(answers().map((message) => message['path'])).toEqual([null]);
+    });
+
+    it('leaves a request for another window, or one with no id, alone', async () => {
+        const prompt = vi.fn(async () => '/src/app');
+        start(prompt);
+        request({ windowID: 'w2' });
+        request({ requestID: undefined });
+        await flush();
+        expect(prompt).not.toHaveBeenCalled();
+        expect(answers()).toEqual([]);
+    });
+});

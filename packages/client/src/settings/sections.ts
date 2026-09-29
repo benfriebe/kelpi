@@ -1071,7 +1071,8 @@ export const SETTINGS_INDEX_EXTRAS: readonly SettingsIndexEntry[] = Object.freez
     { sectionID: 'repositories', groupID: 'registry-section', label: 'Filter repos', detail: 'Find a repository in the registry.', testID: 'repo-filter', keywords: ['search', 'repo'] },
     { sectionID: 'repositories', groupID: 'registry-section', label: 'Show auto-detected', detail: 'Include repositories detected from pane directories.', testID: 'repo-show-auto', keywords: ['repository', 'repo'] },
     { sectionID: 'repositories', groupID: 'registry-section', label: 'Repository path', detail: 'A directory to scan or add as a repository.', testID: 'repo-path', keywords: ['folder', 'directory'] },
-    { sectionID: 'repositories', groupID: 'registry-section', label: 'Browse for folder', detail: 'Choose a directory for repository discovery.', testID: 'repo-browse', keywords: ['directory'] },
+    // #283: there is no separate chooser button. Add Repo (and Scan Directory) pressed with the path empty IS the chooser in the desktop app.
+    { sectionID: 'repositories', groupID: 'registry-section', label: 'Browse for folder', detail: 'Press Add Repo or Scan Directory with the path empty to choose a folder.', testID: 'repo-add', keywords: ['directory', 'choose', 'folder'] },
     { sectionID: 'repositories', groupID: 'registry-section', label: 'Scan directory', detail: 'Find repositories below a directory.', testID: 'repo-scan', keywords: ['folder', 'discover'] },
     { sectionID: 'repositories', groupID: 'registry-section', label: 'Add repository', detail: 'Register one repository directly.', testID: 'repo-add', keywords: ['repo', 'git'] },
     { sectionID: 'repositories', groupID: 'registry-section', label: 'Rename repository', detail: 'Choose a repository in the list to rename it.', testID: 'repo-list', keywords: ['repo'] },

@@ -33,7 +33,9 @@ export function settingsSearchDestination(
     }
     if (entry.testID === 'remote-pair-copy' || entry.testID === 'remote-pair-qr')
         return { testID: 'remote-pair-go', message: 'Pair a device to generate its connection link and QR code.' };
-    if (entry.testID === 'repo-browse' && context.onBrowseForFolder === undefined)
+    // #283: the chooser is Add Repo / Scan Directory on an empty path, which only the desktop app
+    // can offer; elsewhere the typed path is the way in, so that is where the hit goes.
+    if (entry.testID === 'repo-add' && entry.label === 'Browse for folder' && context.onBrowseForFolder === undefined)
         return { testID: 'repo-path', message: 'Folder browsing is unavailable here. Enter a repository path instead.' };
     if (entry.testID === 'label-orphans' && orphanLabels(context.domain.workspaces, context.domain.labelPresets).length === 0)
         return { testID: 'label-presets', message: 'There are no workspace labels awaiting a definition.' };

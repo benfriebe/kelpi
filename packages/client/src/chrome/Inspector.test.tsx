@@ -284,6 +284,69 @@ describe('repository associations (§WS-139…§WS-142)', () => {
     });
 });
 
+/**
+ * #283: Add Repository ▸ Choose…, the desktop app's native folder panel. It FILLS the path field
+ * and leaves Add to the user, because the sheet submits the typed path together with any registry
+ * rows picked below it, and shows the daemon's refusal inline.
+ */
+describe('the Add Repository sheet’s Choose… (#283)', () => {
+    function openSheet(props: Partial<InspectorProps> = {}): void {
+        view(props);
+        fireEvent.click(screen.getByTestId('inspector-add-repo'));
+        fireEvent.click(screen.getByText('Add Repository…'));
+    }
+
+    it('draws no Choose… in a browser, where there is no panel', () => {
+        openSheet();
+        expect(screen.queryByTestId('add-repo-browse')).toBeNull();
+    });
+
+    it('fills the path from the panel, and Add then associates it', async () => {
+        const onBrowseForFolder = vi.fn().mockResolvedValue('/chosen/repo');
+        const onAddAssociation = vi.fn().mockResolvedValue(null);
+        openSheet({ onBrowseForFolder, onAddAssociation });
+        fireEvent.click(screen.getByTestId('add-repo-browse'));
+        await waitFor(() => {
+            expect((screen.getByTestId('add-repo-path') as HTMLInputElement).value).toBe('/chosen/repo');
+        });
+        // Nothing is added behind the user's back: the choice is theirs to confirm.
+        expect(onAddAssociation).not.toHaveBeenCalled();
+        fireEvent.click(screen.getByTestId('add-repo-submit'));
+        await waitFor(() => {
+            expect(screen.queryByTestId('add-repo-sheet')).toBeNull();
+        });
+        expect(onAddAssociation).toHaveBeenCalledWith('/chosen/repo');
+    });
+
+    it('leaves the typed path alone on a cancel, or a panel that fails', async () => {
+        const onBrowseForFolder = vi.fn().mockResolvedValueOnce(null).mockRejectedValueOnce(new Error('gone'));
+        openSheet({ onBrowseForFolder });
+        fireEvent.change(screen.getByTestId('add-repo-path'), { target: { value: '/typed' } });
+        fireEvent.click(screen.getByTestId('add-repo-browse'));
+        fireEvent.click(screen.getByTestId('add-repo-browse'));
+        await waitFor(() => {
+            expect(onBrowseForFolder).toHaveBeenCalledTimes(2);
+        });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect((screen.getByTestId('add-repo-path') as HTMLInputElement).value).toBe('/typed');
+    });
+
+    it('clears a standing refusal once a new folder is chosen', async () => {
+        const onAddAssociation = vi.fn().mockResolvedValueOnce('/tmp/x is not inside a git repository');
+        const onBrowseForFolder = vi.fn().mockResolvedValue('/chosen/repo');
+        openSheet({ onAddAssociation, onBrowseForFolder });
+        fireEvent.change(screen.getByTestId('add-repo-path'), { target: { value: '/tmp/x' } });
+        fireEvent.click(screen.getByTestId('add-repo-submit'));
+        await waitFor(() => {
+            expect(screen.getByTestId('sheet-error')).toBeTruthy();
+        });
+        fireEvent.click(screen.getByTestId('add-repo-browse'));
+        await waitFor(() => {
+            expect(screen.queryByTestId('sheet-error')).toBeNull();
+        });
+    });
+});
+
 describe('the Create Worktree sheet (§WS-147/§WS-148, §GIT-098/§GIT-099)', () => {
     it('picks the repo automatically when the workspace references exactly one', () => {
         view({ onCreateWorktree: vi.fn() });

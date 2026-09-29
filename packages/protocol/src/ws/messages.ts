@@ -360,6 +360,61 @@ export interface WsWindowChromeMessage {
     readonly windowID?: string;
 }
 
+/**
+ * #283: the generic "choose a folder" round trip, the one desktop gesture that needs an ANSWER.
+ *
+ * The shell has no preload, so the page cannot open a native panel itself and the main process
+ * cannot hand a value back to the page directly: the daemon is the only channel between them
+ * (`daemon/src/ws/desktop.ts`). Every other desktop gesture is one-way, and `open-file-dialog`
+ * gets away with that because its answer is an `open` the daemon acts on. A chosen DIRECTORY is
+ * only useful to the page that asked (Settings ▸ Repositories scans it, the inspector adds it),
+ * so the loop is closed explicitly:
+ *
+ *   1. client → daemon: the `shell-action` command with action `choose-folder-dialog`, a fresh
+ *      `request_id` and the client's `window_id`. The daemon remembers which connection asked
+ *      and broadcasts `shell-action` (`requestID`, `windowID`) to the shells, exactly as it does
+ *      for ⌘O, so only the named window's shell raises a panel.
+ *   2. shell → daemon: `choose-folder-answer`, carrying the same `requestID` and the chosen path,
+ *      or null when the user cancelled (or the panel could not be shown).
+ *   3. daemon → the ONE client that asked: `choose-folder-result`, same fields. Not a fan-out: a
+ *      path on this machine is nobody else's business, and a browser attached from another
+ *      machine has no use for it.
+ *
+ * The requester keeps the promise open for at most `CHOOSE_FOLDER_TIMEOUT_MS`, and the daemon
+ * forgets a pending request after the same interval, so an answer that never comes (a shell that
+ * quit with the panel up, a dropped connection) costs a stale entry for a bounded time and never
+ * a hung button.
+ */
+export const CHOOSE_FOLDER_DIALOG_ACTION = 'choose-folder-dialog';
+export const WS_CHOOSE_FOLDER_ANSWER_MESSAGE = 'choose-folder-answer';
+export const WS_CHOOSE_FOLDER_RESULT_MESSAGE = 'choose-folder-result';
+
+/**
+ * How long a folder request may stay unanswered. Generous on purpose: the panel is a native
+ * dialog a person may leave open while they look for the right directory, and the only cost of a
+ * long wait is one pending entry. What it bounds is a request whose answer can never arrive.
+ */
+export const CHOOSE_FOLDER_TIMEOUT_MS = 10 * 60_000;
+
+/** Shell → daemon: the panel closed. */
+export interface WsChooseFolderAnswerMessage {
+    readonly type: typeof WS_CHOOSE_FOLDER_ANSWER_MESSAGE;
+    /** The `request_id` the client minted; the daemon routes the answer by it. */
+    readonly requestID: string;
+    /** The absolute directory chosen; null = cancelled. */
+    readonly path: string | null;
+    /** The shell window that showed the panel. */
+    readonly windowID?: string;
+}
+
+/** Daemon → the requesting client: the answer to its `choose-folder-dialog`. */
+export interface WsChooseFolderResultMessage {
+    readonly type: typeof WS_CHOOSE_FOLDER_RESULT_MESSAGE;
+    readonly requestID: string;
+    readonly path: string | null;
+    readonly windowID?: string;
+}
+
 export type WsClientMessage =
     | WsHelloMessage
     | WsAttachPaneMessage
@@ -379,7 +434,8 @@ export type WsClientMessage =
     | WsHotkeyStatusMessage
     | WsShellActivationMessage
     | WsWorkspaceSelectionMessage
-    | WsWindowChromeMessage;
+    | WsWindowChromeMessage
+    | WsChooseFolderAnswerMessage;
 
 // ── server → client ─────────────────────────────────────────────────────────────────
 
@@ -847,6 +903,7 @@ export type WsServerMessage =
     | WsHotkeyStatusMessage
     | WsShellActivationMessage
     | WsWorkspaceSelectionMessage
-    | WsWindowChromeMessage;
+    | WsWindowChromeMessage
+    | WsChooseFolderResultMessage;
 
 export type WsMessage = WsClientMessage | WsServerMessage;

@@ -966,16 +966,27 @@ export class CommandClient {
      * answers with a NATIVE open panel and then sends the chosen path back as an ordinary
      * `open` verb — a browser client has no shell to ask, which is why the caller checks
      * `shellWindowID` first and prompts for a path instead.
+     *
+     * `choose-folder-dialog` (#283) is the one action with an answer: it carries a `requestID`,
+     * and the chosen directory comes back to this connection as a `choose-folder-result` event
+     * (`app/folder-chooser.ts` holds the pending promise). The reply to THIS command only says
+     * whether the daemon accepted the request.
      */
     shellAction(
-        input: { action: 'open-file-dialog' | 'install-cli' | 'check-for-updates'; windowID?: string | null; paneID?: string | null },
+        input: {
+            action: 'open-file-dialog' | 'install-cli' | 'check-for-updates' | 'choose-folder-dialog';
+            windowID?: string | null;
+            paneID?: string | null;
+            requestID?: string | null;
+        },
         options?: SendOptions
     ): Promise<CommandReply> {
         return this.raw(
             wirePayload('shell-action', {
                 action: input.action,
                 window_id: input.windowID ?? undefined,
-                pane_id: input.paneID ?? undefined
+                pane_id: input.paneID ?? undefined,
+                request_id: input.requestID ?? undefined
             }),
             options ?? {}
         );

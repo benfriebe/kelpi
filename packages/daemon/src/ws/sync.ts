@@ -33,6 +33,10 @@ import type { PluginChannel } from '../plugins/service.js';
 import { randomUUID } from 'node:crypto';
 
 import {
+    CHOOSE_FOLDER_DIALOG_ACTION,
+    CHOOSE_FOLDER_TIMEOUT_MS,
+    WS_CHOOSE_FOLDER_ANSWER_MESSAGE,
+    WS_CHOOSE_FOLDER_RESULT_MESSAGE,
     WS_CLIENT_KINDS,
     WS_HOTKEY_STATUS_MESSAGE,
     WS_PROTOCOL_VERSION,
@@ -1089,6 +1093,12 @@ export const REVEAL_PANE_MESSAGE = 'reveal-pane';
 export const MENU_REQUEST_MESSAGE = 'menu-request';
 export const MENU_COMMAND_MESSAGE = 'menu-command';
 
+/**
+ * #283: how many folder requests may be outstanding at once, across every client. A person has
+ * one panel up at a time per window; this only bounds a client that asks and never waits.
+ */
+export const MAX_PENDING_FOLDER_CHOICES = 32;
+
 /** The message type carrying one streamed console line to a subscribed client. */
 export const WEB_CONSOLE_LINE_MESSAGE = 'web-console-line';
 
@@ -1367,6 +1377,32 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
      * daemon has no registrar, so there is nothing to say and Settings shows no warning.
      */
     let lastHotkeyStatus: JsonObject | null = null;
+    /**
+     * #283: every folder panel a client has asked for and not yet heard back about, by the
+     * `request_id` it minted. The one relay here that is NOT a fan-out: the answer is a path on
+     * this machine, meaningful only to the surface that asked, so it goes to the session that
+     * sent the `choose-folder-dialog` and nobody else (`ws/desktop.ts` has the whole loop).
+     *
+     * `windowID` is the window the request named. The shell echoes it back, and an answer from
+     * any other window is dropped: only the shell that raised the panel can have closed it.
+     *
+     * Entries leave on the answer, when their session closes, or once they are older than
+     * `CHOOSE_FOLDER_TIMEOUT_MS` (swept whenever the map is touched), and the map is capped, so
+     * a shell that quits with a panel up, or a client that asks and never waits, cannot grow it.
+     */
+    const pendingFolderChoices = new Map<string, { session: SessionImpl; windowID: string; at: number }>();
+    const sweepFolderChoices = (): void => {
+        const cutoff = now() - CHOOSE_FOLDER_TIMEOUT_MS;
+        for (const [requestID, entry] of pendingFolderChoices) {
+            if (entry.at <= cutoff) pendingFolderChoices.delete(requestID);
+        }
+        // Oldest first (a Map iterates in insertion order), so the cap drops the stalest ask.
+        while (pendingFolderChoices.size > MAX_PENDING_FOLDER_CHOICES) {
+            const oldest = pendingFolderChoices.keys().next().value;
+            if (oldest === undefined) break;
+            pendingFolderChoices.delete(oldest);
+        }
+    };
 
     const report = (error: unknown, context: string): void => {
         options.onError?.(toError(error), context);
@@ -1581,6 +1617,9 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                 case MENU_REQUEST_MESSAGE:
                     this.menuRequest(parsed);
                     return;
+                case WS_CHOOSE_FOLDER_ANSWER_MESSAGE:
+                    chooseFolderAnswer(parsed);
+                    return;
                 case FLUSH_SAVES_REQUEST_MESSAGE:
                     this.flushSavesRequest(parsed);
                     return;
@@ -1678,6 +1717,11 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             this.consoleSubs.clear();
             this.panes?.close();
             sessions.delete(this);
+            // #283: a folder answer for a connection that is gone has nowhere to go; the page
+            // that asked settles its own promise when its socket drops.
+            for (const [requestID, entry] of pendingFolderChoices) {
+                if (entry.session === this) pendingFolderChoices.delete(requestID);
+            }
             // The departing owner hands size control to the most recent remaining UI that has
             // reported any geometry, and that UI's cached layout applies at once — panes must
             // not stay frozen at a window that no longer exists. No candidate = no owner; the
@@ -2450,8 +2494,37 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                 this.send({ type: 'command-reply', id, reply: failure(`${command} is not available`) });
                 return;
             }
+            /*
+             * #283: remember who asked for a folder BEFORE the broadcast goes out, so an answer
+             * can never outrun its own bookkeeping. The channel validates the request; a refusal
+             * forgets it again below. A request id that is already pending is refused outright
+             * rather than re-pointed, because re-pointing would hand the first asker's answer to
+             * whoever reused the id.
+             */
+            const folderRequestID =
+                command === 'shell-action' && payload['action'] === CHOOSE_FOLDER_DIALOG_ACTION
+                    ? text(payload['request_id'])
+                    : undefined;
+            const folderWindowID = text(payload['window_id']);
+            if (folderRequestID !== undefined) {
+                if (pendingFolderChoices.has(folderRequestID)) {
+                    this.send({
+                        type: 'command-reply',
+                        id,
+                        reply: failure(`folder request ${folderRequestID} is already pending`)
+                    });
+                    return;
+                }
+                if (folderWindowID !== undefined) {
+                    pendingFolderChoices.set(folderRequestID, { session: this, windowID: folderWindowID, at: now() });
+                    sweepFolderChoices();
+                }
+            }
             void channel.run(command, payload).then(
                 (reply) => {
+                    if (folderRequestID !== undefined && reply['ok'] !== true) {
+                        pendingFolderChoices.delete(folderRequestID);
+                    }
                     this.send({ type: 'command-reply', id, reply });
                 },
                 (error: unknown) => {
@@ -2855,6 +2928,35 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
         for (const session of sessions) {
             if (session.ready) session.send(message);
         }
+    }
+
+    /**
+     * #283: `choose-folder-answer` from the shell → a `choose-folder-result` for the ONE session
+     * that asked (see `pendingFolderChoices`).
+     *
+     * An answer nobody is waiting for (already answered, timed out, its session gone, or from a
+     * window other than the one asked) is dropped: the requester has already settled, or will
+     * on its own timer. A path that is not a non-empty string is relayed as null, a cancel,
+     * rather than dropped, because the shell has plainly closed its panel and the page should
+     * hear so now rather than at the timeout.
+     */
+    function chooseFolderAnswer(message: Record<string, unknown>): void {
+        if (closed) return;
+        sweepFolderChoices();
+        const requestID = text(message['requestID']);
+        if (requestID === undefined) return;
+        const entry = pendingFolderChoices.get(requestID);
+        if (entry === undefined) return;
+        if (text(message['windowID']) !== entry.windowID) return;
+        pendingFolderChoices.delete(requestID);
+        if (!entry.session.ready) return;
+        const chosen = message['path'];
+        entry.session.send({
+            type: WS_CHOOSE_FOLDER_RESULT_MESSAGE,
+            requestID,
+            path: typeof chosen === 'string' && chosen.length > 0 ? chosen : null,
+            windowID: entry.windowID
+        });
     }
 
     /**

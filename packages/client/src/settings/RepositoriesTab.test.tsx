@@ -156,18 +156,107 @@ describe('the registry gestures (§SET-053, §SET-054, §GIT-071, §GIT-072)', (
         expect((screen.getByTestId('repo-add') as HTMLButtonElement).disabled).toBe(false);
     });
 
-    it('fills the path from a native directory chooser when one is available', async () => {
-        const onBrowse = vi.fn().mockResolvedValue('/chosen/dir');
-        renderTab({ onBrowse });
-        fireEvent.click(screen.getByTestId('repo-browse'));
-        await vi.waitFor(() => {
-            expect((screen.getByTestId('repo-path') as HTMLInputElement).value).toBe('/chosen/dir');
-        });
-    });
-
-    it('offers no chooser button in a browser', () => {
+    it('offers no separate chooser button: the two buttons are the choosers (#283)', () => {
+        renderTab({ onBrowse: vi.fn() });
+        expect(screen.queryByTestId('repo-browse')).toBeNull();
         renderTab();
         expect(screen.queryByTestId('repo-browse')).toBeNull();
+    });
+});
+
+/**
+ * #283: Scan Directory and Add Repo in the desktop app. With the path field empty they raise the
+ * native folder panel (`onBrowse`) and act on the folder chosen, as the shipped app's
+ * `NSOpenPanel` did; a typed path still wins; a browser, with no panel, keeps them disabled
+ * until a path is typed.
+ */
+describe('the folder chooser behind Scan Directory and Add Repo (#283)', () => {
+    const button = (testID: string): HTMLButtonElement => screen.getByTestId(testID) as HTMLButtonElement;
+
+    it('enables both buttons on an empty field when a chooser exists', () => {
+        renderTab({ onBrowse: vi.fn() });
+        expect(button('repo-add').disabled).toBe(false);
+        expect(button('repo-scan').disabled).toBe(false);
+        expect(button('repo-add').title).toContain('Choose');
+    });
+
+    it('Add Repo on an empty field asks for a folder and adds the one chosen', async () => {
+        const onBrowse = vi.fn().mockResolvedValue('/chosen/repo');
+        const acts = renderTab({ onBrowse });
+        fireEvent.click(screen.getByTestId('repo-add'));
+        await vi.waitFor(() => {
+            expect(acts.log.added).toEqual([{ path: '/chosen/repo' }]);
+        });
+        expect(onBrowse).toHaveBeenCalledTimes(1);
+        expect(screen.getByTestId('repo-notice').textContent).toBe('Added /chosen/repo');
+        // The chosen path never went through the field, so the next press asks again.
+        expect((screen.getByTestId('repo-path') as HTMLInputElement).value).toBe('');
+    });
+
+    it('Scan Directory on an empty field asks for a folder and scans the one chosen', async () => {
+        const onBrowse = vi.fn().mockResolvedValue('/chosen/parent');
+        const acts = renderTab({ onBrowse });
+        fireEvent.click(screen.getByTestId('repo-scan'));
+        await vi.waitFor(() => {
+            expect(acts.log.scanned).toEqual(['/chosen/parent']);
+        });
+        expect(screen.getByTestId('repo-notice').textContent).toBe('Scanning /chosen/parent…');
+    });
+
+    it('does nothing on a cancel, or a chooser that fails', async () => {
+        const onBrowse = vi.fn().mockResolvedValueOnce(null).mockResolvedValueOnce('').mockRejectedValueOnce(new Error('gone'));
+        const acts = renderTab({ onBrowse });
+        // One at a time: a press while a panel is up is ignored, so each waits for the last.
+        for (const testID of ['repo-add', 'repo-scan', 'repo-add']) {
+            fireEvent.click(screen.getByTestId(testID));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+        expect(onBrowse).toHaveBeenCalledTimes(3);
+        expect(acts.log.added).toEqual([]);
+        expect(acts.log.scanned).toEqual([]);
+        expect(screen.queryByTestId('repo-notice')).toBeNull();
+    });
+
+    it('acts on a typed path without raising the chooser', () => {
+        const onBrowse = vi.fn().mockResolvedValue('/chosen');
+        const acts = renderTab({ onBrowse });
+        fireEvent.change(screen.getByTestId('repo-path'), { target: { value: '/typed/repo' } });
+        expect(button('repo-add').title).toBe('');
+        fireEvent.click(screen.getByTestId('repo-add'));
+        fireEvent.change(screen.getByTestId('repo-path'), { target: { value: '/typed/parent' } });
+        fireEvent.click(screen.getByTestId('repo-scan'));
+        expect(onBrowse).not.toHaveBeenCalled();
+        expect(acts.log.added).toEqual([{ path: '/typed/repo' }]);
+        expect(acts.log.scanned).toEqual(['/typed/parent']);
+    });
+
+    it('raises one chooser at a time, however fast the button is pressed', async () => {
+        let answer: (path: string | null) => void = () => {};
+        const onBrowse = vi.fn(() => new Promise<string | null>((resolve) => { answer = resolve; }));
+        const acts = renderTab({ onBrowse });
+        fireEvent.click(screen.getByTestId('repo-add'));
+        fireEvent.click(screen.getByTestId('repo-add'));
+        fireEvent.click(screen.getByTestId('repo-scan'));
+        expect(onBrowse).toHaveBeenCalledTimes(1);
+        answer('/once');
+        await vi.waitFor(() => {
+            expect(acts.log.added).toEqual([{ path: '/once' }]);
+        });
+        expect(acts.log.scanned).toEqual([]);
+    });
+
+    it('Return on an empty field does not raise the chooser', () => {
+        const onBrowse = vi.fn();
+        renderTab({ onBrowse });
+        fireEvent.keyDown(screen.getByTestId('repo-path'), { key: 'Enter' });
+        expect(onBrowse).not.toHaveBeenCalled();
+    });
+
+    it('keeps both buttons disabled on an empty field in a browser, where there is no chooser', () => {
+        renderTab();
+        expect(button('repo-add').disabled).toBe(true);
+        expect(button('repo-scan').disabled).toBe(true);
+        expect(button('repo-add').title).toBe('');
     });
 
     it('removes a repo (§GIT-071)', () => {

@@ -1025,8 +1025,10 @@ is in flight (`Inspector.tsx:358-362`).
   - When a repo group has worktrees but no main association, a non-interactive repo
     header anchors them.
 - **Add menu** (borderless "+ Add", always enabled; `packages/client/src/chrome/Inspector.tsx:25-29`,
-  `:597-604`): "Add Repository…" → a sheet with a path field (a native folder browser in the
-  Electron shell) and the multi-select repo picker, with a scan-this-folder row; it is the
+  `:597-604`): "Add Repository…" → a sheet with a path field (in the Electron shell a
+  "Choose…" beside it opens the native folder panel through the daemon's `choose-folder-dialog`
+  round trip and FILLS the field, #283; Add stays the user's, because it also submits any
+  registry rows picked below) and the multi-select repo picker, with a scan-this-folder row; it is the
   only way to register a repo, so it stays live with an empty registry (there is no Scan
   Directory flow); "New Worktree…" (disabled when no repo is registered) → if the workspace
   (or registry) resolves to exactly one candidate repo, jump straight to the Create Worktree

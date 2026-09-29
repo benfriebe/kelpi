@@ -1705,12 +1705,16 @@ registries instead); nothing persists to a per-app preferences store.
    search-highlight colours (`search-match-*`); status-bar system stats (per-metric
    toggles, sparkline style/color/width).
 3. **Repositories**: the repo registry (`packages/client/src/settings/RepositoriesTab.tsx`):
-   a filter field and a "Show auto-detected" toggle (`:162-186`), a path field with a
-   native directory chooser when the shell provides one (`:124-126`, `:199-203`), an
-   editable name per row (`:273`) and the "Auto-detect from pane directories" toggle
-   (`:369-375`). No branch control exists: the default branch is not a registry field,
-   the git service resolves it on demand for worktree creation (`defaultBranch`,
-   `packages/daemon/src/git/service.ts:74`, `:287`).
+   a filter field and a "Show auto-detected" toggle (`:212-236`), a path field beside Scan
+   Directory and Add Repo (`:238-293`), an editable name per row (`:328`) and the
+   "Auto-detect from pane directories" toggle (`:429-435`). In the desktop app (#283) the two
+   buttons pressed with the path field EMPTY open the native folder panel, as the shipped
+   app's `NSOpenPanel` did, and then scan or add the folder chosen; a cancel does nothing and a
+   typed path is used as typed (`:131-198`). In a browser there is no panel and the buttons stay
+   disabled until a path is typed. The panel's answer comes back through the daemon's
+   `choose-folder-dialog` round trip (`packages/daemon/src/ws/desktop.ts`). No branch control
+   exists: the default branch is not a registry field, the git service resolves it on demand
+   for worktree creation (`defaultBranch`, `packages/daemon/src/git/service.ts:74`, `:287`).
 4. **Labels** — label presets (name + color) management; every label applied anywhere
    must exist here (gray default when CLI-created). With no presets, the placeholder sits
    at the vertical centre of the panel below the header row; the caption and the

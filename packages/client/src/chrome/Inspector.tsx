@@ -1043,6 +1043,14 @@ function AddRepositorySheet(props: {
                         }
                     }}
                 />
+                {/*
+                  * #283: the desktop app's native folder panel (absent in a browser). Unlike
+                  * Settings ▸ Repositories, whose buttons add or scan the chosen folder at once,
+                  * this FILLS the field and leaves Add to the user: the sheet is one submit over
+                  * the typed path AND any registry rows picked below, and it shows the daemon's
+                  * refusal inline, so adding behind the user's back would skip both. A cancel,
+                  * or a panel that failed, leaves whatever was typed alone.
+                  */}
                 {props.onBrowse === undefined ? null : (
                     <button
                         type="button"
@@ -1050,9 +1058,15 @@ function AddRepositorySheet(props: {
                         className="shrink-0 cursor-pointer text-[12px]"
                         style={{ color: tokens.accent }}
                         onClick={() => {
-                            void props.onBrowse?.().then((chosen) => {
-                                if (chosen !== null) setValue(chosen);
-                            });
+                            void props.onBrowse?.().then(
+                                (chosen) => {
+                                    const path = chosen?.trim() ?? '';
+                                    if (path === '') return;
+                                    setValue(path);
+                                    setError(null);
+                                },
+                                () => {}
+                            );
                         }}
                     >
                         Choose…

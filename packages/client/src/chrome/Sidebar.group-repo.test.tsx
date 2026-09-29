@@ -410,20 +410,20 @@ describe('the group header’s repo indicator (§5.5)', () => {
     const indicator = (name: string): HTMLElement | null =>
         header(name).querySelector('[data-testid="group-repo"]') as HTMLElement | null;
 
-    it('names the repo, with its path in the tooltip, and marks the worktree switch', () => {
+    it('names the repo, with its path in the tooltip, and says the worktree switch in the tooltip only', () => {
         render(<Sidebar {...base()} entries={entries()} repos={REPOS} />);
         const app = indicator('app-team');
         expect(app?.querySelector('[data-testid="group-repo-name"]')?.textContent).toBe('app');
         expect(app?.getAttribute('title')).toBe('/src/app\nNew workspaces create a worktree from latest main');
         expect(app?.getAttribute('data-create-worktree')).toBe('true');
-        expect(app?.querySelector('[data-testid="group-repo-worktree"]')?.getAttribute('aria-label')).toBe(
-            'New workspaces create a worktree from latest main'
-        );
+        // The switch draws no mark: the header reads the same with it on or off.
+        expect(app?.querySelectorAll('svg')).toHaveLength(1);
+        expect(app?.textContent).toBe('app');
 
         const infra = indicator('infra-team');
         expect(infra?.querySelector('[data-testid="group-repo-name"]')?.textContent).toBe('infra');
         expect(infra?.getAttribute('title')).toBe('/src/infra');
-        expect(infra?.querySelector('[data-testid="group-repo-worktree"]')).toBeNull();
+        expect(infra?.querySelectorAll('svg')).toHaveLength(1);
 
         // No repo: no indicator, and the name is the header's original single span.
         expect(indicator('plain')).toBeNull();
@@ -446,7 +446,8 @@ describe('the group header’s repo indicator (§5.5)', () => {
         expect(indicator('app-team')?.textContent).toContain('infra');
         expect(indicator('app-team')?.getAttribute('data-create-worktree')).toBe('false');
         view.rerender(<Sidebar {...base()} entries={entries({ worktree: { repoID: 'r2', createWorktree: true } })} repos={REPOS} />);
-        expect(indicator('app-team')?.querySelector('[data-testid="group-repo-worktree"]')).not.toBeNull();
+        expect(indicator('app-team')?.getAttribute('data-create-worktree')).toBe('true');
+        expect(indicator('app-team')?.getAttribute('title')).toBe('/src/infra\nNew workspaces create a worktree from latest main');
         view.rerender(<Sidebar {...base()} entries={entries({ worktree: { repoID: null, createWorktree: false } })} repos={REPOS} />);
         expect(indicator('app-team')).toBeNull();
     });

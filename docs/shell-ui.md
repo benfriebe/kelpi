@@ -755,8 +755,8 @@ Contents: `[icon 22×22] [name 13pt bold] [repo indicator] …spacer… [chevron
 
 - **Repo indicator** (Kelpi addition, app-state-core.md §5.5): only for a group with a
   default repository the registry lists, a small branch glyph and the repo's name at 10pt in
-  the tertiary colour, on the name's baseline; with the group's "create a worktree from latest
-  main" switch on, a small `+` mark follows. The tooltip is the repo's full path, plus "New
+  the tertiary colour, centred on the name's line. The group's "create a worktree from latest
+  main" switch draws nothing of its own; the tooltip is the repo's full path, plus "New
   workspaces create a worktree from latest main" when the switch is on. The name keeps
   priority: the indicator gives up its width first (down to its glyph) before the name
   ellipsizes. A group without a repo renders exactly the header it always did, so height and

@@ -200,7 +200,8 @@ export default async function ({ page, cli, sandbox, rec, d, sleep }) {
                         return JSON.stringify({
                             name: box?.querySelector('[data-testid="group-repo-name"]')?.textContent ?? null,
                             title: box?.getAttribute('title') ?? null,
-                            worktree: box?.querySelector('[data-testid="group-repo-worktree"]') !== null && box !== null,
+                            text: box?.textContent ?? null,
+                            glyphs: box?.querySelectorAll('svg').length ?? 0,
                             height: head?.offsetHeight ?? null
                         });
                     })()`)
@@ -209,8 +210,8 @@ export default async function ({ page, cli, sandbox, rec, d, sleep }) {
         const indicatorShown = await d.settle(async () => (await headerIndicator()).name === 'app', { ceilingMs: 5_000, intervalMs: 150 });
         const plainIndicator = await headerIndicator();
         rec.check(
-            'the group header shows the repo name, with its full path as the tooltip, and no worktree mark yet',
-            indicatorShown && plainIndicator.title === repo && plainIndicator.worktree === false,
+            'the group header shows the branch glyph and the repo name, with its full path as the tooltip',
+            indicatorShown && plainIndicator.title === repo && plainIndicator.text === 'app' && plainIndicator.glyphs === 1,
             JSON.stringify(plainIndicator)
         );
         await rec.shot(page, 'group-header-repo-indicator');
@@ -244,8 +245,10 @@ export default async function ({ page, cli, sandbox, rec, d, sleep }) {
         rec.check('Cancel discards the change', (await ourGroup())?.create_worktree === true, JSON.stringify(await ourGroup()));
         const switchIndicator = await headerIndicator();
         rec.check(
-            'with the switch on, the header adds the worktree mark and says so in the tooltip',
-            switchIndicator.worktree === true && switchIndicator.title === `${repo}\nNew workspaces create a worktree from latest main`,
+            'with the switch on, the header reads the same (no extra mark) and only the tooltip says so',
+            switchIndicator.text === 'app' &&
+                switchIndicator.glyphs === 1 &&
+                switchIndicator.title === `${repo}\nNew workspaces create a worktree from latest main`,
             JSON.stringify(switchIndicator)
         );
         rec.check(
@@ -253,7 +256,6 @@ export default async function ({ page, cli, sandbox, rec, d, sleep }) {
             typeof bareHeight === 'number' && bareHeight > 0 && switchIndicator.height === bareHeight,
             `${String(bareHeight)} → ${String(switchIndicator.height)}`
         );
-        await rec.shot(page, 'group-header-repo-indicator-worktree-switch');
         const table = await cli.ok(['group', 'list']);
         rec.check('kelpi group list shows the repository with the switch', table.includes('app +worktree'), table);
 

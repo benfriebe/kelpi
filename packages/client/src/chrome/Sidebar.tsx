@@ -1550,6 +1550,8 @@ export const GroupHeaderRow = memo(function GroupHeaderRow(props: GroupHeaderRow
                         >
                             {group.name}
                         </span>
+                        {/* The worktree switch draws nothing of its own (the owner found a mark
+                            noise); it is said in the tooltip, which costs nothing visually. */}
                         <span
                             data-testid="group-repo"
                             title={
@@ -1567,16 +1569,6 @@ export const GroupHeaderRow = memo(function GroupHeaderRow(props: GroupHeaderRow
                             <span data-testid="group-repo-name" className="min-w-0 truncate">
                                 {props.repo.name}
                             </span>
-                            {group.createWorktree === true ? (
-                                <span
-                                    data-testid="group-repo-worktree"
-                                    role="img"
-                                    aria-label={GROUP_WORKTREE_SWITCH_LABEL}
-                                    className="flex shrink-0 items-center"
-                                >
-                                    <ChromeIcon name="plus" size={8} />
-                                </span>
-                            ) : null}
                         </span>
                     </span>
                 )}

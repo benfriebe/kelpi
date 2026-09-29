@@ -208,6 +208,9 @@ const sandbox = {
         KELPID_HTTP_HOST: '127.0.0.1',
         KELPID_ENTRY: path.join(repoRoot, 'packages', 'daemon', 'dist', 'kelpid.js'),
         KELPID_HELPERS_DIR: helpersDir,
+        // Plain shells, not login shells (#280), so this tree's `kelpi` above stays ahead of the
+        // installed app's /usr/local/bin/kelpi. The instance inherits your terminal's PATH.
+        KELPID_LOGIN_SHELL: '0',
         // Without this the window that comes up is the daemon's placeholder page rather than the
         // app, and nothing else about the instance looks wrong (#37). The env is deliberately
         // clean, so anything the daemon needs has to be listed here by name.

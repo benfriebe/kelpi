@@ -153,9 +153,12 @@ with an **ordered** list built as follows (`mergedEnvVars`,
   `merged-env.ts:18-23`). Profile entries with these names are silently dropped, built-ins
   always win.
 - `helpersDir` is the directory containing the bundled `kelpi` CLI, handed to the daemon by
-  the shell as `KELPID_HELPERS_DIR` (`packages/daemon/src/boot/compose.ts:157`). Its purpose:
-  the `kelpi` binary must be found on PATH inside every pane, ahead of anything else (on macOS
-  it also disambiguates from the `Kelpi` app binary on case-insensitive filesystems). With no
+  the shell as `KELPID_HELPERS_DIR` (`packages/daemon/src/boot/compose.ts`). Its purpose: the
+  `kelpi` binary must be found on PATH inside every pane (on macOS it also disambiguates from
+  the `Kelpi` app binary on case-insensitive filesystems). It is prepended to the PATH the pane
+  starts with, but the pane is a login shell (#280), so `path_helper` and the user's rc files
+  decide the final order and an earlier `kelpi` (such as `/usr/local/bin/kelpi`) can come
+  first. Routing never depends on it: the pane's `KELPI_SOCKET` names its own daemon. With no
   helpers dir (headless/dev boot) PATH is the inherited PATH untouched, never a leading `:`
   (`packages/daemon/src/handlers/pane/support.ts:164-171`).
 - The `KELPI_SOCKET` route is read at env-build time, not captured, so it exists only once the
@@ -218,7 +221,10 @@ Every spawn path injects this env identically through `spawnEnvVars` / `restoreE
   (`packages/daemon/src/pty/manager.ts:100-110`) falls back to `$HOME`, then to `/` if even
   that is gone.
 - `command == undefined` → spawn the user's login shell: the explicit `shell` option, else
-  `$SHELL` from the merged env, else `/bin/sh` (`resolveShell`, `manager.ts:112-125`).
+  `$SHELL` from the merged env, else `/bin/sh` (`resolveShell`, `manager.ts`), started **as a
+  login shell** with `-l` (`LOGIN_SHELL_ARGS`, #280), as macOS terminals do. A daemon started by
+  the app inherits launchd's bare `PATH=/usr/bin:/bin:/usr/sbin:/sbin`; only a login shell reads
+  `~/.zprofile`, where Homebrew and most PATH setup live.
   `command` set → the command is hosted as `<shell> -c <command>` (`manager.ts:165-170`); an
   empty or whitespace-only command is ignored so a blank field can never turn an interactive
   pane into `sh -c ''` (an instant exit). When the command exits the surface reports

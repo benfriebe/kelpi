@@ -261,6 +261,10 @@ export async function makeSandbox(repoRoot, { label = 'audit', clientDir, auditW
         KELPID_HTTP_HOST: '127.0.0.1',
         KELPID_ENTRY: path.join(repoRoot, 'packages', 'daemon', 'dist', 'kelpid.js'),
         KELPID_HELPERS_DIR: helpersDir,
+        // Plain shells, not login shells (#280): a login shell's `path_helper` would put
+        // /usr/local/bin (often the installed app's `kelpi`) ahead of this repo's CLI above. The
+        // sandbox already inherits the full PATH, so it loses nothing.
+        KELPID_LOGIN_SHELL: '0',
         /*
          * The terminal host (docs/terminal-host.md) keeps shells alive across a daemon restart.
          * Off unless a scenario asks for it: `restartableDaemon` promises that a restart is a

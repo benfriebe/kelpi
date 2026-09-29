@@ -204,7 +204,8 @@ describe('createDaemon', () => {
         const daemon = daemonFor(paths, {
             sleep: () => settled,
             settleMs: 5,
-            env: { KELPID_HELPERS_DIR: stubs.dir }
+            // A login shell's path_helper would put system PATH entries ahead of the stubs.
+            env: { KELPID_HELPERS_DIR: stubs.dir, KELPID_LOGIN_SHELL: '0' }
         });
         const info = await daemon.start();
 

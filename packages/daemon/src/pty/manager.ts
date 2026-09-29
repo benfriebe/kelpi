@@ -29,6 +29,14 @@ export const DEFAULT_KILL_ALL_TIMEOUT_MS = 2_000;
 
 export const DEFAULT_TERM = 'xterm-256color';
 export const FALLBACK_SHELL = '/bin/sh';
+/**
+ * An interactive pane's shell runs as a LOGIN shell (#280), as Terminal.app, iTerm2 and Ghostty
+ * start theirs. A daemon the app starts inherits launchd's bare `PATH`; only a login shell reads
+ * `~/.zprofile` (`~/.bash_profile`, fish's login config), which is where Homebrew and most PATH
+ * setup live. `-l` is understood by zsh, bash, fish, dash and sh. A hosted command (`-c`) is not
+ * a login shell, exactly as libghostty runs one.
+ */
+export const LOGIN_SHELL_ARGS: readonly string[] = ['-l'];
 export const DEFAULT_COLS = 80;
 export const DEFAULT_ROWS = 24;
 
@@ -45,6 +53,12 @@ export interface PtyManagerOptions {
     readonly isDirectory?: ((path: string) => boolean) | undefined;
     /** Spawn failures are surfaced here (the pane still gets a synthetic exit event). */
     readonly onError?: ((paneID: string, error: unknown) => void) | undefined;
+    /**
+     * False starts an interactive pane as a plain (non-login) shell. Default true
+     * (`LOGIN_SHELL_ARGS`). Only sandboxes turn it off (`KELPID_LOGIN_SHELL=0`), because a login
+     * shell's `path_helper` would put system `PATH` entries ahead of their helper directory.
+     */
+    readonly loginShell?: boolean | undefined;
 }
 
 /** Widened seam: everything `PtyManager` promises plus read-only introspection. */
@@ -149,6 +163,7 @@ class PtyManagerImpl implements KelpiPtyManager {
     private readonly homeDir: string | undefined;
     private readonly isDirectory: ((path: string) => boolean) | undefined;
     private readonly onError: ((paneID: string, error: unknown) => void) | undefined;
+    private readonly shellArgs: readonly string[];
 
     constructor(options: PtyManagerOptions = {}) {
         this.spawner = options.spawner ?? nodePtySpawner;
@@ -158,6 +173,7 @@ class PtyManagerImpl implements KelpiPtyManager {
         this.homeDir = options.homeDir;
         this.isDirectory = options.isDirectory;
         this.onError = options.onError;
+        this.shellArgs = options.loginShell === false ? [] : LOGIN_SHELL_ARGS;
     }
 
     // -- lifecycle ---------------------------------------------------------
@@ -179,7 +195,7 @@ class PtyManagerImpl implements KelpiPtyManager {
         // as libghostty runs `ghostty_surface_config_s.command`. Empty/whitespace is ignored so
         // a blank field can never turn an interactive pane into `sh -c ''` (an instant exit).
         const command = opts.command?.trim();
-        const args = command === undefined || command === '' ? [] : ['-c', command];
+        const args = command === undefined || command === '' ? [...this.shellArgs] : ['-c', command];
 
         let proc: PtyProcessHandle;
         try {

@@ -228,9 +228,9 @@ export function daemonSpawnEnv(env: NodeJS.ProcessEnv, lookup: EntryLookup = {},
         const bundled = packagedClientDir(resourcesPath);
         if (hasClientBuild(bundled)) result = { ...result, [CLIENT_DIR_ENV]: bundled };
     }
-    // Same shape for the bundled CLI: the daemon prepends this directory to every pane's PATH
-    // so `kelpi event …` fired by a hook inside a pane resolves THIS app's CLI — not whatever
-    // the user's rc files put first (on a machine also running the Swift app, the wrong one).
+    // Same shape for the bundled CLI: the daemon prepends this directory to the PATH every pane
+    // starts with, so a pane can always find a `kelpi`. The pane's login shell may put another
+    // one first (`KELPID_HELPERS_DIR` in `@kelpi/daemon` boot/compose.ts says why that is safe).
     const existingHelpers = env[HELPERS_DIR_ENV]?.trim();
     if (
         (existingHelpers === undefined || existingHelpers.length === 0) &&

@@ -1,4 +1,4 @@
-# Kelpi — Architecture
+# Kelpi architecture
 
 Kelpi is a ground-up port of the Nex terminal multiplexer (macOS SwiftUI + libghostty, at
 `/Users/ben/code/nex`) to a daemon + web-client architecture. The goals, in priority order:
@@ -7,7 +7,7 @@ Kelpi is a ground-up port of the Nex terminal multiplexer (macOS SwiftUI + libgh
    headless daemon that survives app restarts and app updates. Closing the laptop lid or updating
    the app never kills an agent.
 2. **Attach from anywhere**: the desktop app on the same machine, a browser on a remote machine,
-   or a phone — initially over localhost and tailnets (Tailscale handles authn + encryption;
+   or a phone, initially over localhost and tailnets (Tailscale handles authn + encryption;
    the daemon binds loopback + tailnet interfaces only).
 3. **CLI compatibility**: existing `kelpi` command verbs and newline-JSON reply framing remain
    compatible; plugin operations add an explicit envelope. Claude Code / Codex hooks
@@ -21,30 +21,40 @@ Kelpi is a ground-up port of the Nex terminal multiplexer (macOS SwiftUI + libgh
 ```
 ┌────────────────────────────── host machine ──────────────────────────────┐
 │                                                                          │
-│  kelpid (daemon, Node)                                                     │
-│  ├─ PTY manager (node-pty)          one PTY per shell pane               │
-│  ├─ Terminal state (ghostty-vt / headless VT + ring buffer per pane)     │
+│  kelpid (daemon, Node)                                                   │
+│  ├─ PTY manager ─────────────────┐  every PTY lives in the terminal host │
+│  ├─ Terminal state (headless VT + ring buffer per pane)                  │
 │  ├─ Domain store (workspaces, groups, panes, layout, agents, labels)     │
 │  ├─ Persistence (SQLite)                                                 │
-│  ├─ Control listener: versioned Unix socket (+ optional TCP)              │
-│  │    └─ existing kelpi CLI protocol, byte-compatible                      │
+│  ├─ Control listener: versioned Unix socket (+ optional TCP)             │
+│  │    └─ existing kelpi CLI protocol, byte-compatible                    │
 │  └─ HTTP+WS listener: 127.0.0.1:<port> (+ tailnet bind)                  │
 │       ├─ serves the web client (static assets, versioned with daemon)    │
 │       └─ WS: state-sync channel + per-pane PTY streams                   │
+│                                   │                                      │
+│  terminal host (Node) ◄───────────┘  owns the PTYs (node-pty); outlives  │
+│  └─ shells and agents               every daemon restart and app update  │
 │                                                                          │
 │  Electron shell (desktop)          browser / PWA (remote, mobile)        │
 │  └─ loads UI from daemon URL       └─ same UI via tailscale serve        │
 │     + tray, dock badge, notifs,                                          │
-│       global shortcuts, Finder                                           │
+│       global shortcuts, Finder,                                          │
+│       updater (no preload)                                               │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
 - **The daemon is the app.** All product logic lives in `kelpid`. Clients are views: they render
   synced state and send commands. The web client is served BY the daemon, so UI and daemon logic
   always update atomically together and remote browsers are version-matched by construction.
-- **The Electron shell is deliberately thin** and rarely updated: window chrome, tray, dock badge,
-  desktop notifications, global shortcuts, Finder Open With, and embedded web panes
-  (WebContentsView + CDP). It loads the UI from the daemon's localhost URL.
+- **The Electron shell is deliberately thin**: window chrome, tray, dock badge, desktop
+  notifications, global shortcuts, Finder Open With, embedded web panes (WebContentsView + CDP)
+  and the updater. It loads the UI from the daemon's localhost URL, and it has **no preload**: the
+  window's page and the main process never talk directly. Everything between them (menu commands,
+  native pickers, dropped files' paths, the update sheet) goes through the daemon; the directions
+  are documented in `packages/daemon/src/ws/desktop.ts`.
+- **Shells live in the terminal host**, a small separate process that owns every PTY, so the
+  daemon can restart (an app update, a promote, a crash) while every shell keeps running
+  ([terminal host](docs/terminal-host.md)).
 
 ## Daemon lifecycle
 
@@ -55,11 +65,19 @@ session ends, and on demand via `kelpid stop`).
 - Socket paths are **protocol-versioned**: `~/Library/Application Support/kelpid/run/
   daemon-v<PROTO>.sock` + `.token` + `.pid` on macOS. The current generation is 2.
   A client that speaks proto N connects to `daemon-v<N>.sock`, spawning the daemon if absent.
-- **App/daemon updates = side-by-side versioning, not hot handoff.** When a protocol bump ships,
-  new clients spawn a new daemon on the new socket; the old daemon keeps running, still owning its
-  sessions, until they drain. Nothing is ever killed by an update. (A ring-buffer PTY broker that
-  lets new daemons adopt old sessions is a possible later upgrade — deliberately deferred; keep
-  the protocol additive within a generation so bumps are rare.)
+- **Updates hand the terminals over.** A **handoff** (SIGUSR2) checkpoints each terminal into the
+  terminal host, detaches without killing anything and exits; the next daemon reattaches every
+  pane to its live PTY, restores its screen and drains the output produced in between, exactly
+  once. `kelpid restart`, a promote and an app update all use it:
+  - a packaged app stamps its version on the daemon it starts (`KELPID_VERSION`);
+  - on launch, it hands off any daemon older than itself, then starts its own
+    (`packages/shell/src/daemon.ts`);
+  - shells and agents keep running through the update.
+
+  `kelpid stop` (SIGTERM) keeps its meaning: every shell ends. A daemon protocol bump still
+  inherits the shells. Only a change to the host's own protocol (`H`) ends the old host's shells,
+  once, on the first boot of the new version ([versioning](docs/terminal-host.md#11-versioning)).
+  Keep both protocols additive so bumps stay rare.
 - The daemon code ships inside the app bundle (and as a standalone package for headless hosts),
   so there is no separate installer.
 - A `.token` file (0600) next to the socket authenticates local WS clients; tailnet clients are
@@ -73,16 +91,16 @@ session ends, and on demand via `kelpid stop`).
 
 Three channels, one source of truth:
 
-1. **Control protocol (compat)** — the existing newline-JSON `{"command": …}` protocol on
+1. **Control protocol (compat)**: the existing newline-JSON `{"command": …}` protocol on
    the versioned run socket and `/tmp/kelpi.sock` compatibility socket + optional TCP:
    existing commands retain their reply framing (`{"ok":true,…}` / `{"ok":false,"error":…}`)
    and fire-and-forget versus request/response split. See the
    [wire contract](docs/wire-protocol.md) and [handlers](docs/socket-handlers.md).
-2. **State sync (WS)** — clients receive a full snapshot on attach, then ordered deltas
+2. **State sync (WS)**: clients receive a full snapshot on attach, then ordered deltas
    (JSON patches of the domain store). Client sends commands (the same verbs as the control
    protocol, plus UI-only ones like focus). Includes a protocol-version hello; too-old clients
    get a structured "update me" reply.
-3. **PTY streams (WS)** — one multiplexed binary channel per client: raw PTY output per attached
+3. **PTY streams (WS)**: one multiplexed binary channel per client: raw PTY output per attached
    pane (client feeds bytes straight into ghostty-web), input bytes upstream, resize events.
    On attach the daemon replays the pane's state (VT snapshot or ring-buffer tail) before
    going live.
@@ -99,8 +117,10 @@ is copied once from a sibling `kelpi.db`; custom database paths require the docu
 
 ## Terminal state: daemon-side
 
-Each shell pane = one node-pty process + one server-side terminal state holder + one bounded raw
-ring buffer (default ~1MB/pane, spooling to disk optional later).
+Each shell pane = one node-pty process (held by the terminal host) + one server-side terminal state
+holder in the daemon + one bounded raw ring buffer (default ~1MB/pane, spooling to disk optional
+later). A handoff leaves each terminal's state with the host as a checkpoint, so the next daemon
+restores the screen rather than starting blank.
 
 - Server-side state serves: `pane capture` (viewport + scrollback) with no client attached,
   reattach snapshots, and future search.
@@ -176,7 +196,8 @@ CLI and daemon; browser code does not import that subpath.
 
 ## What is explicitly deferred
 
-- PTY broker / cross-version session adoption (side-by-side daemons are the v1 answer)
+- Old and new terminal hosts side by side across a host-protocol bump (today a bump ends the old
+  host's shells once; daemon-protocol bumps and ordinary updates already keep them)
 - Windows support; Linux is kept compiling but untested in v1
 - Streaming native browser page pixels to browser/phone clients (remote controls are supported)
 - Ghostty config file compatibility beyond: colors/opacity, font family/size, theme
@@ -188,7 +209,7 @@ CLI and daemon; browser code does not import that subpath.
 | --- | --- | --- |
 | Client shell | Electron over Tauri | proven PTY/terminal hosts, single language, CDP for web panes, consistent Chromium everywhere |
 | Daemon language | TypeScript/Node | IO-bound workload; shares ghostty-vt WASM + protocol types with client; one language |
-| Update model | side-by-side versioned daemons | zero-risk updates without FD-handoff engineering; old sessions never die |
+| Update model | terminal host + daemon handoff | shells outlive every daemon restart and app update; the host is small and rarely changes, so the daemon updates freely; replaced the earlier side-by-side versioned daemons, which kept old sessions alive but on old code |
 | Terminal render | ghostty-web | libghostty-vt fidelity + xterm-compatible API. Each terminal has its own WASM instance and heap; the compiled module and key encoder are shared. Disposing a terminal releases its engine references. See [vendor provenance](vendor/ghostty-web-patched/PROVENANCE.md) and [related merged fixes](docs/plugin-roadmap.md#completed-and-merged). |
 | UI delivery | daemon-served, shell loads URL | atomic UI+daemon updates; remote browsers version-matched; thin shell |
 | Remote access | bind tailnet + `tailscale serve` | zero auth code; matches existing SSH-tunnel philosophy |

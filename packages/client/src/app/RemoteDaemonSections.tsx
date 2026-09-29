@@ -25,7 +25,7 @@ import { useStore } from 'zustand';
 import { registerGestureReset } from '../chrome/gesture-reset';
 import { hoverFill, hoverText, useHoverKey } from '../chrome/hover';
 import { ChromeIcon } from '../chrome/icons';
-import { agentCounts, groupGuideColor, GroupHeaderRow, WorkspaceRow } from '../chrome/Sidebar';
+import { agentCounts, groupGuideColor, GroupHeaderRow, groupRepoOf, WorkspaceRow } from '../chrome/Sidebar';
 import { tokens } from '../chrome/tokens';
 import type { ChromeBucket } from '../chrome/theme';
 import type { ChromeLabelPreset, ChromeWorkspace } from '../chrome/types';
@@ -144,6 +144,8 @@ function RemoteDaemonSection(props: {
     const { held } = props;
     const entries = useStore(held.runtime.store, selectSidebarEntries);
     const presets = useStore(held.runtime.store, (state) => state.daemon.state.labelPresets);
+    // app-state-core.md §5.5: that daemon's own registry names its groups' repositories.
+    const remoteRepos = useStore(held.runtime.store, (state) => state.daemon.state.repos);
     const connection = useStore(held.runtime.store, (state) => state.ui.connection);
     const [collapsed, setCollapsed] = useState(() => readCollapsed(held.name));
     const [hovered, hover] = useHoverKey();
@@ -389,6 +391,7 @@ function RemoteDaemonSection(props: {
                                     onCommitRename={noop}
                                     onCancelRename={noop}
                                     registerRow={noop}
+                                    repo={groupRepoOf(group, remoteRepos)}
                                 />
                                 {group.isCollapsed
                                     ? null

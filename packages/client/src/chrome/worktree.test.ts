@@ -8,7 +8,7 @@
 import { sanitizedGitName } from '@kelpi/daemon/git';
 import { describe, expect, it } from 'vitest';
 
-import { sanitizeGitName, worktreePreview, worktreePreviewPath } from './worktree';
+import { sanitizeGitName, worktreeNameFromWorkspace, worktreePreview, worktreePreviewPath } from './worktree';
 
 const CORPUS = [
     'feature/foo.bar_baz-1',
@@ -44,6 +44,23 @@ describe('sanitizeGitName', () => {
     it('returns null when nothing survives', () => {
         expect(sanitizeGitName('   ')).toBeNull();
         expect(sanitizeGitName('///')).toBeNull();
+    });
+});
+
+describe('worktreeNameFromWorkspace (app-state-core §5.5)', () => {
+    it('is the lowercased name through the daemon’s own sanitizer, and a fixed point of it', () => {
+        for (const input of [...CORPUS, 'Fix Login Bug', 'Émile’s Fix', 'x'.repeat(300)]) {
+            const followed = worktreeNameFromWorkspace(input);
+            expect(followed, `input: ${JSON.stringify(input)}`).toBe(sanitizedGitName(input.toLowerCase()) ?? '');
+            if (followed !== '') expect(sanitizedGitName(followed)).toBe(followed);
+        }
+        expect(worktreeNameFromWorkspace('Fix Login Bug')).toBe('fix-login-bug');
+    });
+
+    it('is empty, never an invented name, when nothing usable survives', () => {
+        expect(worktreeNameFromWorkspace('!!!')).toBe('');
+        expect(worktreeNameFromWorkspace('🚀✨')).toBe('');
+        expect(worktreeNameFromWorkspace('')).toBe('');
     });
 });
 

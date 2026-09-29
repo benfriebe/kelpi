@@ -832,7 +832,9 @@ can be overridden for a one-off:
 - The **New Workspace sheet** (shell-ui.md §10.1), opened for a group with a repo (from the
   group's menu, the inherited group, or a change of its Group dropdown), preselects the repo in
   its Repositories section. With `createWorktree` on it also turns the worktree toggle on with
-  **update main** ticked; the user types the worktree or branch name. While the user has not
+  **update main** ticked; the worktree and branch names fill in from the workspace name as it is
+  typed (lowercased, through the daemon's own `sanitizedGitName`), until the user types their own
+  (shell-ui.md §10.1). While the user has not
   edited the repo selection, changing the Group dropdown swaps the prefill for the new group's
   (including to nothing for a repo-less group); after an edit, their selection stands. The
   worktree toggle and update main have the same rule of their own: once the user sets either,

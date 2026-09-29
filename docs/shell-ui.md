@@ -751,7 +751,16 @@ A full-width pill "band" (rounded 8): fill = group color (or neutral tertiary wh
 colorless) at `groupBandOpacity × intensity` (or the user's `groupFill` override), plus an
 optional border (`groupStroke`). Same height as a workspace row.
 
-Contents: `[icon 22×22] [name 13pt bold] …spacer… [chevron]`.
+Contents: `[icon 22×22] [name 13pt bold] [repo indicator] …spacer… [chevron]`.
+
+- **Repo indicator** (Kelpi addition, app-state-core.md §5.5): only for a group with a
+  default repository the registry lists, a small branch glyph and the repo's name at 10pt in
+  the tertiary colour, on the name's baseline; with the group's "create a worktree from latest
+  main" switch on, a small `+` mark follows. The tooltip is the repo's full path, plus "New
+  workspaces create a worktree from latest main" when the switch is on. The name keeps
+  priority: the indicator gives up its width first (down to its glyph) before the name
+  ellipsizes. A group without a repo renders exactly the header it always did, so height and
+  layout never change. Remote daemons' groups show it from that daemon's own registry.
 
 - Icon: default = folder glyph tinted group color (`folder.fill` when colored, outlined
   `folder` when not); custom SF symbol (tinted; "folder" auto-upgrades to filled when
@@ -1250,7 +1259,14 @@ Fields, top to bottom:
    - "Create git worktree" checkbox; when on:
    - "Worktree name" field; "Branch name" field — the branch mirrors the worktree name
      until the user hand-edits the branch (then mirroring stops; it resumes if they make
-     them equal again). Enter in the branch field submits when valid.
+     them equal again). Enter in the branch field submits when valid. The worktree name in
+     turn follows the workspace NAME (Kelpi addition, app-state-core.md §5.5): lowercased and
+     passed through the daemon's own `sanitizedGitName` (`@kelpi/core/git`), so "Fix Login
+     Bug" fills `fix-login-bug` and the preview is exactly what git gets; a name that
+     sanitizes to nothing leaves the field empty. It follows even while the section is hidden,
+     so ticking the toggle (or a group's switch pre-ticking it) shows the fields filled from the
+     name already typed. Typing in the worktree field stops the following; clearing it (or
+     typing it back to the followed value) resumes it, the same rule as the branch.
    - "Update main first (fetch + branch off origin)" checkbox.
    - Live preview (tertiary caption): `"<resolvedWorktreeBasePath>/<sanitizedName>"` and
      `"branch: <sanitizedBranch>"` — names are git-sanitized (spaces/unsafe chars →

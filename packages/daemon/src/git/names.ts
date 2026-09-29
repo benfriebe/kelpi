@@ -15,17 +15,11 @@ export const DEFAULT_WORKTREE_BASE_PATH = '~/kelpi/worktrees/<repo>';
 const REPO_TOKEN = '<repo>';
 
 /**
- * `sanitizedGitName(name)` — safe as BOTH a path component and a git ref. Preserves case,
- * `/`, `.`, `_`, `-`; an already-valid name is a fixed point; nothing surviving → null.
+ * `sanitizedGitName(name)`: safe as BOTH a path component and a git ref. It lives in
+ * `@kelpi/core/git` so the client's preview and autofill run the very same rule; re-exported
+ * here so every daemon caller keeps its import.
  */
-export function sanitizedGitName(name: string): string | null {
-    let slug = name.replace(/[^A-Za-z0-9/._-]+/g, '-');
-    slug = slug.replace(/-{2,}/g, '-');
-    slug = slug.replace(/\/{2,}/g, '/');
-    slug = slug.replace(/\.{2,}/g, '.');
-    slug = slug.replace(/^[-/._ ]+/, '').replace(/[-/._ ]+$/, '');
-    return slug === '' ? null : slug;
-}
+export { sanitizedGitName } from '@kelpi/core/git';
 
 /** Expand a leading `~` against `home`; anything else is returned untouched. */
 export function expandTilde(value: string, home: string): string {

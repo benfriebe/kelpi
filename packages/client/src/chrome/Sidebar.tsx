@@ -1352,7 +1352,33 @@ interface GroupHeaderRowProps {
     readonly entering?: boolean | undefined;
     /** L15: this insertion is a SPRING-LOAD reveal, so the entry runs on the 100ms ease. */
     readonly enterFast?: boolean | undefined;
+    /**
+     * app-state-core.md §5.5: the group's default repository, resolved from the registry by the
+     * caller (`groupRepoOf`). Null/absent draws the header exactly as it has always been drawn.
+     */
+    readonly repo?: GroupHeaderRepo | null | undefined;
 }
+
+/** What the header's repo indicator names: the repo's display name, and its path for the tooltip. */
+export interface GroupHeaderRepo {
+    readonly name: string;
+    readonly path: string;
+}
+
+/** §5.5: a group's default repository, looked up in a registry list (local or a remote daemon's). */
+export function groupRepoOf(
+    group: ChromeGroup,
+    repos: readonly { readonly id: string; readonly name: string; readonly path: string }[]
+): GroupHeaderRepo | null {
+    const repoID = group.repoID ?? null;
+    if (repoID === null) return null;
+    // The registry's own object, not a copy: a stable reference keeps the memoized header from
+    // re-rendering on every sidebar render.
+    return repos.find((candidate) => candidate.id === repoID) ?? null;
+}
+
+/** The indicator's tooltip: the full path, and the worktree switch spelled out when it is on. */
+export const GROUP_WORKTREE_SWITCH_LABEL = 'New workspaces create a worktree from latest main';
 
 export const GroupHeaderRow = memo(function GroupHeaderRow(props: GroupHeaderRowProps): ReactElement {
     const { group } = props;
@@ -1497,13 +1523,59 @@ export const GroupHeaderRow = memo(function GroupHeaderRow(props: GroupHeaderRow
                         }}
                         onCancel={props.onCancelRename}
                     />
-                ) : (
+                ) : props.repo === null || props.repo === undefined ? (
                     <span
                         data-testid="group-name"
                         className="truncate text-[13px] font-bold"
                         style={{ color: tokens.textPrimary }}
                     >
                         {group.name}
+                    </span>
+                ) : (
+                    /*
+                     * app-state-core.md §5.5: the group's default repository, after its name, in
+                     * the same tertiary ink and small glyph the row's own adornments use (the
+                     * muted bell, the ⌘N badge). The name keeps priority: both shrink, but the
+                     * indicator's flex-shrink is far larger, so it gives up its width first and
+                     * only then does the name ellipsize. A baseline row of the name's own line
+                     * height, so the band is exactly as tall as a repo-less one.
+                     */
+                    <span className="flex min-w-0 items-baseline gap-1.5">
+                        <span
+                            data-testid="group-name"
+                            className="min-w-0 truncate text-[13px] font-bold"
+                            style={{ color: tokens.textPrimary, flexShrink: 1 }}
+                        >
+                            {group.name}
+                        </span>
+                        <span
+                            data-testid="group-repo"
+                            title={
+                                group.createWorktree === true
+                                    ? `${props.repo.path}\n${GROUP_WORKTREE_SWITCH_LABEL}`
+                                    : props.repo.path
+                            }
+                            data-create-worktree={group.createWorktree === true ? 'true' : 'false'}
+                            className="flex min-w-[12px] items-center gap-[3px] overflow-hidden text-[10px]"
+                            style={{ color: tokens.textTertiary, flexShrink: 1000 }}
+                        >
+                            <span className="flex shrink-0 items-center" aria-hidden>
+                                <ChromeIcon name="branch" size={10} />
+                            </span>
+                            <span data-testid="group-repo-name" className="min-w-0 truncate">
+                                {props.repo.name}
+                            </span>
+                            {group.createWorktree === true ? (
+                                <span
+                                    data-testid="group-repo-worktree"
+                                    role="img"
+                                    aria-label={GROUP_WORKTREE_SWITCH_LABEL}
+                                    className="flex shrink-0 items-center"
+                                >
+                                    <ChromeIcon name="plus" size={8} />
+                                </span>
+                            ) : null}
+                        </span>
                     </span>
                 )}
             </span>
@@ -4497,6 +4569,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
                                 registerRow={registerRow}
                                 entering={entering.has(row.key)}
                                 enterFast={enteringFast}
+                                repo={groupRepoOf(entry.group, props.repos ?? EMPTY_REPOS)}
                             />
                         );
                     }

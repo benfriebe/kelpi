@@ -12,6 +12,8 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { useState, type ReactElement } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { sanitizedGitName } from '@kelpi/core/git';
+
 import { Sidebar } from './index';
 import type { ChromeGroup, ChromePane, ChromeRepo, ChromeSidebarEntry, ChromeWorkspace } from './types';
 
@@ -326,6 +328,110 @@ describe('the New Workspace sheet’s prefill from the group (§5.5)', () => {
         fireEvent.click(screen.getByTestId('load-registry'));
         expect(chosenRepos()).toEqual(['r1']);
         expect(toggle()?.checked).toBe(true);
+    });
+});
+
+describe('the group header’s repo indicator (§5.5)', () => {
+    const indicator = (name: string): HTMLElement | null =>
+        header(name).querySelector('[data-testid="group-repo"]') as HTMLElement | null;
+
+    it('names the repo, with its path in the tooltip, and marks the worktree switch', () => {
+        render(<Sidebar {...base()} entries={entries()} repos={REPOS} />);
+        const app = indicator('app-team');
+        expect(app?.querySelector('[data-testid="group-repo-name"]')?.textContent).toBe('app');
+        expect(app?.getAttribute('title')).toBe('/src/app\nNew workspaces create a worktree from latest main');
+        expect(app?.getAttribute('data-create-worktree')).toBe('true');
+        expect(app?.querySelector('[data-testid="group-repo-worktree"]')?.getAttribute('aria-label')).toBe(
+            'New workspaces create a worktree from latest main'
+        );
+
+        const infra = indicator('infra-team');
+        expect(infra?.querySelector('[data-testid="group-repo-name"]')?.textContent).toBe('infra');
+        expect(infra?.getAttribute('title')).toBe('/src/infra');
+        expect(infra?.querySelector('[data-testid="group-repo-worktree"]')).toBeNull();
+
+        // No repo: no indicator, and the name is the header's original single span.
+        expect(indicator('plain')).toBeNull();
+        expect(header('plain').querySelector('[data-testid="group-name"]')?.parentElement?.className).toContain('flex-col');
+    });
+
+    it('shows on a collapsed group too, and not for a repo the registry does not list', () => {
+        const collapsed = entries({ worktree: { isCollapsed: true } });
+        render(<Sidebar {...base()} entries={collapsed} repos={REPOS.slice(1)} />);
+        expect(header('app-team').getAttribute('data-collapsed')).toBe('true');
+        // r1 is not in this registry, so there is nothing to name: no indicator rather than an id.
+        expect(indicator('app-team')).toBeNull();
+        expect(indicator('infra-team')).not.toBeNull();
+    });
+
+    it('updates when the repo is set, switched or cleared', () => {
+        const view = render(<Sidebar {...base()} entries={entries({ worktree: { repoID: null, createWorktree: false } })} repos={REPOS} />);
+        expect(indicator('app-team')).toBeNull();
+        view.rerender(<Sidebar {...base()} entries={entries({ worktree: { repoID: 'r2', createWorktree: false } })} repos={REPOS} />);
+        expect(indicator('app-team')?.textContent).toContain('infra');
+        expect(indicator('app-team')?.getAttribute('data-create-worktree')).toBe('false');
+        view.rerender(<Sidebar {...base()} entries={entries({ worktree: { repoID: 'r2', createWorktree: true } })} repos={REPOS} />);
+        expect(indicator('app-team')?.querySelector('[data-testid="group-repo-worktree"]')).not.toBeNull();
+        view.rerender(<Sidebar {...base()} entries={entries({ worktree: { repoID: null, createWorktree: false } })} repos={REPOS} />);
+        expect(indicator('app-team')).toBeNull();
+    });
+});
+
+describe('the worktree and branch names follow the workspace name (§5.5)', () => {
+    function openFrom(groupName: string): void {
+        render(<Sidebar {...base()} entries={entries()} repos={REPOS} onCreateWorkspace={vi.fn() as never} />);
+        newWorkspaceFrom(groupName);
+    }
+    const nameField = (): HTMLElement => screen.getByLabelText('New workspace name');
+    const worktreeField = (): HTMLInputElement => screen.getByTestId('new-workspace-worktree-name') as HTMLInputElement;
+    const branchField = (): HTMLInputElement => screen.getByTestId('new-workspace-worktree-branch') as HTMLInputElement;
+
+    it('fills a git-safe worktree name and branch as the workspace name is typed', () => {
+        openFrom('app-team');
+        fireEvent.change(nameField(), { target: { value: 'Fix Login Bug' } });
+        expect(worktreeField().value).toBe('fix-login-bug');
+        expect(branchField().value).toBe('fix-login-bug');
+        // Exactly what the daemon's own sanitizer makes of it, so the preview is what git gets.
+        expect(worktreeField().value).toBe(sanitizedGitName('Fix Login Bug'.toLowerCase()));
+        expect(screen.getByTestId('new-workspace-worktree-preview').textContent).toContain('/wt/app/fix-login-bug');
+    });
+
+    it('stops following once the worktree name is typed, and resumes when it is cleared', () => {
+        openFrom('app-team');
+        fireEvent.change(nameField(), { target: { value: 'Fix Login' } });
+        fireEvent.change(worktreeField(), { target: { value: 'my-tree' } });
+        expect(branchField().value).toBe('my-tree');
+        fireEvent.change(nameField(), { target: { value: 'Something Else' } });
+        expect(worktreeField().value).toBe('my-tree');
+        expect(branchField().value).toBe('my-tree');
+        fireEvent.change(worktreeField(), { target: { value: '' } });
+        fireEvent.change(nameField(), { target: { value: 'Back Again' } });
+        expect(worktreeField().value).toBe('back-again');
+    });
+
+    it('keeps a hand-edited branch while the worktree name keeps following', () => {
+        openFrom('app-team');
+        fireEvent.change(nameField(), { target: { value: 'Fix' } });
+        fireEvent.change(branchField(), { target: { value: 'feature/fix' } });
+        fireEvent.change(nameField(), { target: { value: 'Fix More' } });
+        expect(worktreeField().value).toBe('fix-more');
+        expect(branchField().value).toBe('feature/fix');
+    });
+
+    it('fills from the current name the moment the worktree toggle is ticked', () => {
+        openFrom('infra-team');
+        fireEvent.change(nameField(), { target: { value: 'Infra Tweak' } });
+        expect(screen.queryByTestId('new-workspace-worktree-name')).toBeNull();
+        fireEvent.click(toggle() as HTMLInputElement);
+        expect(worktreeField().value).toBe('infra-tweak');
+        expect(branchField().value).toBe('infra-tweak');
+    });
+
+    it('leaves the fields empty for a name that sanitizes to nothing', () => {
+        openFrom('app-team');
+        fireEvent.change(nameField(), { target: { value: '!!! 🚀' } });
+        expect(worktreeField().value).toBe('');
+        expect(branchField().value).toBe('');
     });
 });
 

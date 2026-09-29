@@ -62,7 +62,7 @@ export {
     type GestureResetReason
 } from './gesture-reset';
 export { RepoPicker, type RepoPickerEntry, type RepoPickerProps } from './RepoPicker';
-export { sanitizeGitName, worktreePreview, worktreePreviewPath, type WorktreePreview } from './worktree';
+export { sanitizeGitName, worktreeNameFromWorkspace, worktreePreview, worktreePreviewPath, type WorktreePreview } from './worktree';
 export {
     BUCKET_POPOVER_WIDTH_PX,
     StatusFooter,

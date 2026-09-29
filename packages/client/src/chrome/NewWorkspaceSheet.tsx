@@ -80,7 +80,7 @@ import {
     type NewGroupRepo,
     type WorkspaceWorktreeRequest
 } from './types';
-import { worktreePreview } from './worktree';
+import { worktreeNameFromWorkspace, worktreePreview } from './worktree';
 
 /** Everything the New Workspace / New Group sheet collects, in one submit (§WS-075/§WS-082). */
 export interface NewEntryDraft {
@@ -236,8 +236,18 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
     const [worktreeTouched, setWorktreeTouched] = useState(false);
     const [pickerOpen, setPickerOpen] = useState(false);
     const [worktree, setWorktree] = useState(initialDefaults.current.worktree);
-    const [worktreeName, setWorktreeName] = useState('');
-    const [branch, setBranch] = useState('');
+    /*
+     * app-state-core.md §5.5: the worktree name FOLLOWS the workspace name (through the daemon's
+     * own sanitizer, `worktreeNameFromWorkspace`) until the user types in the worktree field
+     * themselves; the branch follows the worktree name the way it always has, until the user
+     * types in the branch field. It follows even while the worktree section is hidden, so
+     * ticking "Create git worktree" (or a group's switch pre-ticking it) shows the fields filled
+     * from whatever name is already typed. Clearing the worktree field, or typing it back to
+     * exactly what it would follow, resumes following: the same rule as `branchEdited`.
+     */
+    const [worktreeName, setWorktreeName] = useState(() => worktreeNameFromWorkspace(props.defaultName ?? ''));
+    const [worktreeNameEdited, setWorktreeNameEdited] = useState(false);
+    const [branch, setBranch] = useState(() => worktreeNameFromWorkspace(props.defaultName ?? ''));
     const [branchEdited, setBranchEdited] = useState(false);
     const [updateMain, setUpdateMain] = useState(initialDefaults.current.worktree);
     const [busy, setBusy] = useState(false);
@@ -661,7 +671,13 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
                         }}
                         value={value}
                         onChange={(event) => {
-                            setValue(event.target.value);
+                            const next = event.target.value;
+                            setValue(next);
+                            if (!worktreeNameEdited) {
+                                const followed = worktreeNameFromWorkspace(next);
+                                setWorktreeName(followed);
+                                if (!branchEdited) setBranch(followed);
+                            }
                         }}
                     />
 
@@ -1009,6 +1025,7 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
                                     onChange={(event) => {
                                         const next = event.target.value;
                                         setWorktreeName(next);
+                                        setWorktreeNameEdited(next !== '' && next !== worktreeNameFromWorkspace(value));
                                         if (!branchEdited) setBranch(next);
                                     }}
                                 />

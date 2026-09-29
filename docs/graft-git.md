@@ -1273,7 +1273,10 @@ the 120s worktree command timeout because each can run git for a while.
 Single source of truth for turning a user-entered worktree/branch name into a value
 safe as both a filesystem path component and a git ref. Applied server-side on every
 path (GUI sheet, inspector, socket `workspace-create`); the GUI also shows the
-sanitized preview live.
+sanitized preview live, and the New Workspace sheet autofills the worktree name from the
+workspace name with it (lowercased first). It lives in `@kelpi/core/git`, one implementation
+imported by both the daemon (`git/names.ts` re-exports it) and the client, so the preview
+cannot drift from what the daemon creates.
 
 ```
 slug = name.replace(/[^A-Za-z0-9\/._-]+/g, "-")   // anything unsafe → single hyphen

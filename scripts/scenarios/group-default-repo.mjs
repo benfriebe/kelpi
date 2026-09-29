@@ -137,12 +137,42 @@ export default async function ({ page, cli, sandbox, rec, d, sleep }) {
             JSON.stringify(before)
         );
         await rec.shot(page, 'repository-menu-no-repo');
+        // The header's height with no repo, to prove the indicator does not change it.
+        const bareHeight = await page.eval(
+            `Math.round(Array.from(document.querySelectorAll('${headerSelector}')).find(el => (el.innerText ?? '').includes(${JSON.stringify(GROUP)}))?.getBoundingClientRect().height ?? 0)`
+        );
         d.scriptFolderAnswer(sandbox, repo);
         await d.clickSubmenuItem(page, 'repo:choose');
         const set = await d.settle(async () => (await ourGroup())?.repo?.path === repo, { ceilingMs: 15_000, intervalMs: 200 });
         const afterChoose = await ourGroup();
         rec.check('Choose Folder… registers the folder and makes it the group’s repository', set, JSON.stringify(afterChoose));
         rec.check('…with the worktree switch still off', afterChoose?.create_worktree === false, JSON.stringify(afterChoose));
+
+        // The group header names its repository, with the full path as the tooltip.
+        const headerIndicator = async () =>
+            JSON.parse(
+                String(
+                    await page.eval(`(() => {
+                        const head = Array.from(document.querySelectorAll('${headerSelector}')).find(el => (el.innerText ?? '').includes(${JSON.stringify(GROUP)}));
+                        const box = head?.querySelector('[data-testid="group-repo"]') ?? null;
+                        const r = head?.getBoundingClientRect();
+                        return JSON.stringify({
+                            name: box?.querySelector('[data-testid="group-repo-name"]')?.textContent ?? null,
+                            title: box?.getAttribute('title') ?? null,
+                            worktree: box?.querySelector('[data-testid="group-repo-worktree"]') !== null && box !== null,
+                            height: r === undefined ? null : Math.round(r.height)
+                        });
+                    })()`)
+                )
+            );
+        const indicatorShown = await d.settle(async () => (await headerIndicator()).name === 'app', { ceilingMs: 5_000, intervalMs: 150 });
+        const plainIndicator = await headerIndicator();
+        rec.check(
+            'the group header shows the repo name, with its full path as the tooltip, and no worktree mark yet',
+            indicatorShown && plainIndicator.title === repo && plainIndicator.worktree === false,
+            JSON.stringify(plainIndicator)
+        );
+        await rec.shot(page, 'group-header-repo-indicator');
 
         // The switch appears once there is a repo; it toggles in place.
         const withRepo = await openRepositoryMenu();
@@ -163,6 +193,18 @@ export default async function ({ page, cli, sandbox, rec, d, sleep }) {
         rec.check('the menu stays open and its checkbox shows the new state', boxOn);
         await rec.shot(page, 'repository-menu-switch-on');
         await closeMenus();
+        const switchIndicator = await headerIndicator();
+        rec.check(
+            'with the switch on, the header adds the worktree mark and says so in the tooltip',
+            switchIndicator.worktree === true && switchIndicator.title === `${repo}\nNew workspaces create a worktree from latest main`,
+            JSON.stringify(switchIndicator)
+        );
+        rec.check(
+            'and the header is no taller than it was before it had a repo',
+            typeof bareHeight === 'number' && bareHeight > 0 && switchIndicator.height === bareHeight,
+            `${String(bareHeight)} → ${String(switchIndicator.height)}`
+        );
+        await rec.shot(page, 'group-header-repo-indicator-worktree-switch');
         const table = await cli.ok(['group', 'list']);
         rec.check('kelpi group list shows the repository with the switch', table.includes('app +worktree'), table);
 
@@ -179,30 +221,50 @@ export default async function ({ page, cli, sandbox, rec, d, sleep }) {
                 prefilled.updateMain === true,
             JSON.stringify(prefilled)
         );
-        await typeInto('[aria-label="New workspace name"]', 'Fix Login');
-        await typeInto('[data-testid="new-workspace-worktree-name"]', 'fix-login');
+        // The worktree and branch names follow the workspace name, through the daemon's sanitizer.
+        await typeInto('[aria-label="New workspace name"]', 'Fix Login Bug');
+        const fieldValues = async () =>
+            JSON.parse(
+                String(
+                    await page.eval(`JSON.stringify({
+                        worktree: document.querySelector('[data-testid="new-workspace-worktree-name"]')?.value ?? null,
+                        branch: document.querySelector('[data-testid="new-workspace-worktree-branch"]')?.value ?? null,
+                        preview: document.querySelector('[data-testid="new-workspace-worktree-preview"]')?.innerText ?? null
+                    })`)
+                )
+            );
+        const followed = await fieldValues();
+        rec.check(
+            'typing "Fix Login Bug" fills the worktree and branch names with fix-login-bug',
+            followed.worktree === 'fix-login-bug' && followed.branch === 'fix-login-bug' && (followed.preview ?? '').includes('fix-login-bug'),
+            JSON.stringify(followed)
+        );
         await sleep(200);
         await rec.shot(page, 'sheet-prefilled-worktree-from-latest-main');
         await page.click('[data-testid="new-workspace-submit"]');
         const closed = await d.settleDom(page, `document.querySelector('[data-testid="new-workspace-sheet"]') === null`, { ceilingMs: 60_000 });
         rec.check('Create closes the sheet once the worktree is made', closed, JSON.stringify(await sheetState()));
 
-        const fix = (await listed()).find((workspace) => workspace.name === 'Fix Login');
+        const fix = (await listed()).find((workspace) => workspace.name === 'Fix Login Bug');
         if (fix !== undefined) created.push(fix.id);
         const fixRepo = fix?.repos?.[0];
         rec.check(
-            'the CLI sees the workspace in the group with one association, on branch fix-login',
-            fix?.group_name === GROUP && fix?.repos?.length === 1 && fixRepo?.branch === 'fix-login' && fixRepo?.repo_path === repo,
+            'the CLI sees the workspace in the group with one association, on the autofilled branch fix-login-bug',
+            fix?.group_name === GROUP && fix?.repos?.length === 1 && fixRepo?.branch === 'fix-login-bug' && fixRepo?.repo_path === repo,
             JSON.stringify(fix)
         );
         const worktreePath = fixRepo?.worktree_path ?? '';
         const onDisk = worktreePath !== '' && worktreePath !== repo && fs.existsSync(path.join(worktreePath, '.git'));
-        rec.check('the association is a worktree on disk, not the repo itself', onDisk, worktreePath);
+        rec.check(
+            'the association is a worktree on disk, in a folder named fix-login-bug, not the repo itself',
+            onDisk && path.basename(worktreePath) === 'fix-login-bug',
+            worktreePath
+        );
         if (onDisk) {
             const head = git(worktreePath, 'rev-parse', 'HEAD');
             const branch = git(worktreePath, 'rev-parse', '--abbrev-ref', 'HEAD');
             const base = git(worktreePath, 'merge-base', 'HEAD', 'origin/main');
-            rec.check('the worktree is on the new branch fix-login', branch === 'fix-login', branch);
+            rec.check('the worktree is on the new branch fix-login-bug', branch === 'fix-login-bug', branch);
             rec.check(
                 'its base is origin/main AFTER a fetch: the commit pushed to origin after the clone',
                 base === latestSha && head === latestSha && git(repo, 'rev-parse', 'origin/main') === latestSha,
@@ -217,8 +279,20 @@ export default async function ({ page, cli, sandbox, rec, d, sleep }) {
         rec.check('the sheet opens again from the group menu', await openNewWorkspaceFromGroup());
         const again = await sheetState();
         rec.check('…prefilled the same way', again.repos[0] === 'Remove app' && again.worktree === true, JSON.stringify(again));
-        await page.click('[data-testid="new-workspace-worktree-toggle"]');
+        // A worktree name the user typed is theirs: changing the workspace name no longer moves it.
         await typeInto('[aria-label="New workspace name"]', 'Plain One');
+        const beforeEdit = await fieldValues();
+        await typeInto('[data-testid="new-workspace-worktree-name"]', 'kept-name');
+        await typeInto('[aria-label="New workspace name"]', 'Plain Renamed');
+        const afterEdit = await fieldValues();
+        rec.check(
+            'after the worktree name is edited by hand, a new workspace name does not overwrite it',
+            beforeEdit.worktree === 'plain-one' && afterEdit.worktree === 'kept-name' && afterEdit.branch === 'kept-name',
+            JSON.stringify({ beforeEdit, afterEdit })
+        );
+        await rec.shot(page, 'sheet-worktree-name-kept-after-edit');
+        await typeInto('[aria-label="New workspace name"]', 'Plain One');
+        await page.click('[data-testid="new-workspace-worktree-toggle"]');
         const unticked = await sheetState();
         rec.check('unticking hides the worktree fields and keeps the repo', unticked.worktree === false && unticked.repos.length === 1, JSON.stringify(unticked));
         await rec.shot(page, 'sheet-worktree-unticked');
@@ -250,10 +324,10 @@ export default async function ({ page, cli, sandbox, rec, d, sleep }) {
             fromCli.ok === true && fromCli.repo_path === repo && fromCli.update_main === true && fromCli.branch === 'cli-tree',
             JSON.stringify(fromCli)
         );
-        const taken = await cli.run(['workspace', 'create', '--name', 'Dup', '--group', GROUP, '--worktree', 'fix-login']);
+        const taken = await cli.run(['workspace', 'create', '--name', 'Dup', '--group', GROUP, '--worktree', 'fix-login-bug']);
         rec.check(
             'an update-main worktree on a branch that already exists fails with the clear message',
-            taken.code !== 0 && taken.stderr.includes("branch 'fix-login' already exists") && taken.stderr.includes('turn off update main'),
+            taken.code !== 0 && taken.stderr.includes("branch 'fix-login-bug' already exists") && taken.stderr.includes('turn off update main'),
             taken.stderr
         );
         const optOut = await cli.run(['workspace', 'create', '--name', 'Reuse', '--group', GROUP, '--worktree', 'fix-login-2', '--no-update-main', '--json']);

@@ -1,3 +1,4 @@
+import { sanitizedGitName as coreSanitizedGitName } from '@kelpi/core/git';
 import { describe, expect, it } from 'vitest';
 
 import { GitCommandError } from './exec.js';
@@ -14,27 +15,9 @@ import {
 const HOME = '/Users/test';
 
 describe('sanitizedGitName', () => {
-    it('is a fixed point for an already-valid name', () => {
-        expect(sanitizedGitName('feature/foo.bar_baz-1')).toBe('feature/foo.bar_baz-1');
-    });
-
-    it('collapses unsafe runs to a single hyphen and preserves case', () => {
+    it('is the shared rule from @kelpi/core/git (its corpus lives beside it)', () => {
+        expect(sanitizedGitName).toBe(coreSanitizedGitName);
         expect(sanitizedGitName('My Feature!!')).toBe('My-Feature');
-        expect(sanitizedGitName('a  b   c')).toBe('a-b-c');
-    });
-
-    it('collapses repeated separators', () => {
-        expect(sanitizedGitName('a--b//c..d')).toBe('a-b/c.d');
-    });
-
-    it('trims leading and trailing separator characters (space included)', () => {
-        expect(sanitizedGitName('  /.-_feature-_./  ')).toBe('feature');
-    });
-
-    it('returns null when nothing survives', () => {
-        expect(sanitizedGitName('   ')).toBeNull();
-        expect(sanitizedGitName('///')).toBeNull();
-        expect(sanitizedGitName('!!!')).toBeNull();
     });
 });
 

@@ -166,12 +166,22 @@ import { resolveDaemonVersion, type DaemonVersion } from './version.js';
 export const HTTP_PORT_ENV = 'KELPID_HTTP_PORT';
 export const HTTP_HOST_ENV = 'KELPID_HTTP_HOST';
 /**
- * Directory holding the bundled `kelpi` CLI, prepended to every pane's PATH. Set by the shell
- * at daemon-spawn time (mirroring `KELPID_CLIENT_DIR`): the daemon has no idea it lives inside
- * an app bundle, so the side that knows tells it. Without it a pane's `kelpi` is whatever the
- * user's rc files resolve — which on a machine also running the Swift app is the WRONG one.
+ * Directory holding the bundled `kelpi` CLI, prepended to the PATH every pane starts with. Set by
+ * the shell at daemon-spawn time (mirroring `KELPID_CLIENT_DIR`): the daemon has no idea it lives
+ * inside an app bundle, so the side that knows tells it. It guarantees a pane CAN find a `kelpi`,
+ * not that it comes first: a pane is a login shell (#280), and macOS's `path_helper` plus the
+ * user's rc files reorder PATH, so an earlier `kelpi` (the `/usr/local/bin` link the app keeps
+ * pointed at itself) wins. Routing does not depend on which one runs: every pane is told its own
+ * daemon's `KELPI_SOCKET`, and `install-hooks` writes an absolute path.
  */
 export const HELPERS_DIR_ENV = 'KELPID_HELPERS_DIR';
+/**
+ * `0` starts interactive panes as plain shells instead of login shells (#280). For sandboxes
+ * only: the tests' agent stubs and the harness's repo CLI live in the helpers dir and have to
+ * stay ahead of anything `path_helper` would put first. A sandbox inherits its launcher's full
+ * `PATH`, so it does not need the login shell's.
+ */
+export const LOGIN_SHELL_ENV = 'KELPID_LOGIN_SHELL';
 
 /**
  * Opt in to running WITHOUT persistence (`1` / `true` / `yes`).
@@ -502,6 +512,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
     const hostSlot = options.terminalHost !== undefined ? new HostSpawnerSlot(FALLBACK_SHELL) : undefined;
     const rawPty = createPtyManager({
         ...(hostSlot !== undefined ? { spawner: hostSlot.spawner } : {}),
+        loginShell: env[LOGIN_SHELL_ENV]?.trim() !== '0',
         onError: (paneID, error) => report(error, `pty ${paneID}`)
     });
     // What each pane was last rendered at, so a shell is BORN at that size instead of at

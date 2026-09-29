@@ -29,7 +29,8 @@ import path from 'node:path';
 export interface AgentStubs {
     /**
      * The directory to hand a daemon as `KELPID_HELPERS_DIR`. It is prepended to every pane's
-     * PATH, so the stubs shadow any real `codex` / `claude` on the machine.
+     * PATH, so the stubs shadow any real `codex` / `claude` on the machine, as long as the daemon
+     * also gets `KELPID_LOGIN_SHELL=0` (a login shell's `path_helper` reorders PATH, #280).
      */
     readonly dir: string;
     /** One line per `codex` invocation, holding that invocation's arguments. */

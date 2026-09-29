@@ -64,13 +64,23 @@ describe('PtySpawnOptions.command', () => {
         expect(spawned[0]?.request.args).toEqual(['-c', "/usr/bin/env PATH='/bin' nvim '/docs/a.md'"]);
     });
 
-    it('an absent, empty or whitespace command still starts a plain interactive shell', () => {
+    it('an absent, empty or whitespace command starts an interactive LOGIN shell (#280)', () => {
+        // A login shell reads ~/.zprofile, where Homebrew's PATH lives: a daemon started by the
+        // app inherits launchd's bare PATH, so without `-l` a pane has no `brew`, `gh`, ...
         const { spawner, spawned } = stubSpawner();
         const manager = createPtyManager({ spawner });
         manager.spawn({ ...BASE, paneID: 'a', shell: '/bin/sh' });
         manager.spawn({ ...BASE, paneID: 'b', shell: '/bin/sh', command: '' });
         manager.spawn({ ...BASE, paneID: 'c', shell: '/bin/sh', command: '   ' });
-        for (const proc of spawned) expect(proc.request.args).toEqual([]);
+        for (const proc of spawned) expect(proc.request.args).toEqual(['-l']);
+    });
+
+    it('starts a plain shell when login shells are turned off (sandboxes)', () => {
+        const { spawner, spawned } = stubSpawner();
+        const manager = createPtyManager({ spawner, loginShell: false });
+        manager.spawn({ ...BASE, paneID: 'a', shell: '/bin/zsh' });
+        manager.spawn({ ...BASE, paneID: 'b', shell: '/bin/zsh', command: 'vi' });
+        expect(spawned.map((proc) => proc.request.args)).toEqual([[], ['-c', 'vi']]);
     });
 
     it('carries the command onto the /bin/sh retry when the configured shell cannot start', () => {

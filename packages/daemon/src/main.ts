@@ -198,6 +198,7 @@ Environment:
   KELPID_CLIENT_DIR    Directory holding the built web client
   KELPID_LOG_FILE      Append the detached daemon's stdout/stderr here
   KELPID_TERMINAL_HOST 0 = run PTYs in-process; shells then die with the daemon (default: terminal host)
+  KELPID_LOGIN_SHELL   0 = start panes as plain shells, not login shells (sandboxes; default: login)
   KELPID_VERSION       Override the reported version (packaging)
   KELPID_BUILD         Override the reported build (packaging)
   KELPID_ENTRY         Executable/script re-spawned by \`kelpid start\` when detaching

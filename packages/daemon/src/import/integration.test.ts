@@ -236,7 +236,8 @@ async function boot(paths: Scratch): Promise<Daemon> {
         // own (`boot/testing.ts`). Without it the real Codex starts, repaints the pane on its
         // way to the trust prompt, and the screen this test reads back is whatever Codex
         // decided to draw rather than what the restore typed.
-        env: { KELPID_HELPERS_DIR: paths.stubs.dir },
+        // A login shell's path_helper would put system PATH entries ahead of the stubs.
+        env: { KELPID_HELPERS_DIR: paths.stubs.dir, KELPID_LOGIN_SHELL: '0' },
         home: paths.home,
         runDir: paths.runDir,
         controlSocketPath: paths.socketPath,

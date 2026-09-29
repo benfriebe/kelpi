@@ -1912,7 +1912,10 @@ async function main() {
                     KELPI_AUDIT_WINDOW: options.window,
                     // The ⌘O step's scripted answer to the native open panel — an OS window CDP
                     // cannot click. See `shell/src/main.ts` `promptOpenFile`.
-                    KELPI_AUDIT_OPEN_FILE: path.join(sandbox.root, 'open-file-answer.txt')
+                    KELPI_AUDIT_OPEN_FILE: path.join(sandbox.root, 'open-file-answer.txt'),
+                    // #283: the folder panel's, likewise (`promptChooseFolder`). Unscripted, a
+                    // panel in the battery answers as a cancel instead of opening.
+                    KELPI_AUDIT_CHOOSE_FOLDER: path.join(sandbox.root, 'choose-folder-answer.txt')
                 }
             });
         /*
@@ -28853,7 +28856,8 @@ function buildFlows(ctx) {
                     verbose: runOptions.verbose,
                     extraEnv: {
                         KELPI_AUDIT: '1',
-                        KELPI_AUDIT_OPEN_FILE: path.join(sandbox.root, 'open-file-answer.txt')
+                        KELPI_AUDIT_OPEN_FILE: path.join(sandbox.root, 'open-file-answer.txt'),
+                        KELPI_AUDIT_CHOOSE_FOLDER: path.join(sandbox.root, 'choose-folder-answer.txt')
                     }
                 });
                 runtime.shell = relaunched;

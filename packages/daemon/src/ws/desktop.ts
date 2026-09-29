@@ -8,23 +8,38 @@
  * rather than inside `handleWsOnlyCommand` because each one needs something the store alone
  * cannot give — a PTY, the terminal buffer, the broadcast seam, or the control listeners.
  *
- * ## The two directions, and why both go through the daemon
+ * ## The three shapes, and why all of them go through the daemon
  *
  * The Electron shell has **no preload script** (`shell/src/main.ts` explains why: the renderer
  * surface stays empty and there is no `contextBridge` API for a compromised page to reach), so
  * the page and the main process cannot talk directly. They already have a channel that works in
  * every state — the daemon — and `reveal-path` (client → daemon → shell) and `reveal-request`
- * (shell → daemon → client) are the two shapes it takes. Everything here reuses them:
+ * (shell → daemon → client) are the two one-way shapes it takes. The third closes the loop:
  *
  *   client → daemon → shell   `shell-action` → a `shell-action` broadcast
  *                             (`open-file-dialog`, `install-cli`, `check-for-updates`)
  *   shell  → daemon → client  `menu-request` (`ws/sync.ts`) → a `menu-command` fan-out
  *                             (the Help menu item, ⌘O from the native File menu)
+ *   client → shell → client   `shell-action` `choose-folder-dialog` (a `request_id`), answered
+ *                             by `choose-folder-answer` → a `choose-folder-result` sent to the
+ *                             ONE connection that asked (`ws/sync.ts`)
  *
  * The shell answers `open-file-dialog` with a **native** `dialog.showOpenDialog` and then sends
  * the chosen path back over its own control connection as the ordinary `open` verb — the same
  * path Finder's "Open With" already takes (`shell/src/main.ts` `forwardOpen`). Nothing about the
  * file open is special-cased: the daemon sees one `open` command, whoever raised it.
+ *
+ * `choose-folder-dialog` (#283) cannot work that way, because a chosen directory means nothing to
+ * the daemon: it is an input to whichever surface asked (Settings ▸ Repositories scans or adds
+ * it, the inspector's Add Repository sheet fills its field). So it is a request with an id. This
+ * channel validates it (an id, and a window, so exactly one shell raises exactly one panel) and
+ * broadcasts it like any other action. `ws/sync.ts` owns the rest: it refuses the request from a
+ * paired device, or when no shell able to answer is attached for that window; it remembers which
+ * session asked; it relays a `choose-folder-answer` to that session alone, and only when it came
+ * from the named window's own shell connection; and it answers null itself when that shell goes
+ * away, the pending set overflows, or `CHOOSE_FOLDER_TIMEOUT_MS` passes. It is deliberately
+ * generic: the answer is a path or null, and what to do with it is the requester's business, so
+ * the next surface that needs a folder adds no protocol.
  *
  * ## `open-terminal-target` (CONT-122 / TERM-052)
  *
@@ -61,7 +76,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import type { JsonObject } from '@kelpi/protocol';
+import { CHOOSE_FOLDER_DIALOG_ACTION, type JsonObject } from '@kelpi/protocol';
 
 import type { EditorResolver } from '../content/external-editor.js';
 import { formatEditorCommand } from '../content/external-editor.js';
@@ -88,8 +103,14 @@ export function isDesktopCommand(command: string): command is DesktopCommand {
 }
 
 /** What a client may ask the attached Electron shell to do. Anything else is refused. */
-export const SHELL_ACTIONS = ['open-file-dialog', 'install-cli', 'check-for-updates'] as const;
+export const SHELL_ACTIONS = ['open-file-dialog', 'install-cli', 'check-for-updates', CHOOSE_FOLDER_DIALOG_ACTION] as const;
 export type ShellAction = (typeof SHELL_ACTIONS)[number];
+
+/**
+ * The longest `request_id` a `choose-folder-dialog` may carry. A client mints a UUID; anything
+ * much longer is not one of ours, and the id is held in the daemon's pending map until answered.
+ */
+export const MAX_FOLDER_REQUEST_ID_LENGTH = 128;
 
 /** The broadcast the shell listens for (`shell/src/status.ts`). */
 export const SHELL_ACTION_EVENT = 'shell-action';
@@ -311,13 +332,32 @@ export function createDesktopChannel(options: DesktopChannelOptions): DesktopCha
         }
         const windowID = text(payload['window_id']);
         const paneID = text(payload['pane_id']);
+        const requestID = text(payload['request_id']);
+        if (action === CHOOSE_FOLDER_DIALOG_ACTION) {
+            // #283: the one action with an answer. The id is how the answer finds its way back
+            // (`ws/sync.ts` remembers which connection asked), and the window is REQUIRED rather
+            // than optional: an unaddressed request would raise a panel in every attached shell
+            // window for one click, and only one of them can answer it.
+            if (requestID === undefined) {
+                return failure(`shell-action ${CHOOSE_FOLDER_DIALOG_ACTION} requires request_id`);
+            }
+            if (requestID.length > MAX_FOLDER_REQUEST_ID_LENGTH) {
+                return failure(
+                    `shell-action ${CHOOSE_FOLDER_DIALOG_ACTION} request_id is too long (at most ${String(MAX_FOLDER_REQUEST_ID_LENGTH)} characters)`
+                );
+            }
+            if (windowID === undefined) {
+                return failure(`shell-action ${CHOOSE_FOLDER_DIALOG_ACTION} requires window_id`);
+            }
+        }
         ctx.broadcast({
             type: SHELL_ACTION_EVENT,
             action,
             ...(windowID === undefined ? {} : { windowID }),
-            ...(paneID === undefined ? {} : { paneID })
+            ...(paneID === undefined ? {} : { paneID }),
+            ...(action === CHOOSE_FOLDER_DIALOG_ACTION && requestID !== undefined ? { requestID } : {})
         });
-        return { ok: true, action };
+        return { ok: true, action, ...(action === CHOOSE_FOLDER_DIALOG_ACTION && requestID !== undefined ? { request_id: requestID } : {}) };
     };
 
     /**

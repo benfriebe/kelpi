@@ -9,6 +9,7 @@ import path from 'node:path';
 
 import {
     CLIPBOARD_IMAGE_DIR,
+    MAX_FOLDER_REQUEST_ID_LENGTH,
     MAX_PASTE_IMAGE_BYTES,
     SHELL_ACTION_EVENT,
     clippedByBorder,
@@ -222,6 +223,50 @@ describe('shell-action', () => {
         const reply = await f.channel.run('shell-action', { action: 'rm-rf' });
         expect(reply).toMatchObject({ ok: false });
         expect(f.h.broadcasts).toHaveLength(0);
+    });
+
+    it('broadcasts a folder request with its id and window (#283)', async () => {
+        const f = fixture();
+        const reply = await f.channel.run('shell-action', {
+            action: 'choose-folder-dialog',
+            request_id: 'req-1',
+            window_id: 'w-1'
+        });
+        expect(reply).toEqual({ ok: true, action: 'choose-folder-dialog', request_id: 'req-1' });
+        expect(f.h.broadcasts).toEqual([
+            { type: SHELL_ACTION_EVENT, action: 'choose-folder-dialog', windowID: 'w-1', requestID: 'req-1' }
+        ]);
+    });
+
+    it('refuses a folder request with no id, an oversized id or no window, and broadcasts nothing', async () => {
+        const f = fixture();
+        for (const payload of [
+            { action: 'choose-folder-dialog', window_id: 'w-1' },
+            { action: 'choose-folder-dialog', request_id: '', window_id: 'w-1' },
+            { action: 'choose-folder-dialog', request_id: 'x'.repeat(MAX_FOLDER_REQUEST_ID_LENGTH + 1), window_id: 'w-1' },
+            // Unaddressed, it would raise a panel in every attached shell window for one click.
+            { action: 'choose-folder-dialog', request_id: 'req-1' }
+        ]) {
+            const reply = await f.channel.run('shell-action', payload);
+            expect(reply, JSON.stringify(payload)).toMatchObject({ ok: false });
+        }
+        expect(f.h.broadcasts).toHaveLength(0);
+    });
+
+    it('says an oversized id is too long, rather than missing', async () => {
+        const f = fixture();
+        const reply = await f.channel.run('shell-action', {
+            action: 'choose-folder-dialog',
+            request_id: 'x'.repeat(MAX_FOLDER_REQUEST_ID_LENGTH + 1),
+            window_id: 'w-1'
+        });
+        expect(String(reply['error'])).toContain('too long');
+    });
+
+    it('carries no request id on the one-way actions', async () => {
+        const f = fixture();
+        await f.channel.run('shell-action', { action: 'install-cli', request_id: 'req-1', window_id: 'w-1' });
+        expect(f.h.broadcasts).toEqual([{ type: SHELL_ACTION_EVENT, action: 'install-cli', windowID: 'w-1' }]);
     });
 });
 

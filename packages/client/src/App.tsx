@@ -62,7 +62,7 @@ import { renderRegisteredView } from './plugins/renderers';
 
 import { canonicalTriggerForPlatform, parseKeyTrigger, type KelpiAction } from '@kelpi/core/config';
 import { wireEdgeForDropZone, type DropZone, type SplitDirection } from '@kelpi/core/layout';
-import type { JsonObject } from '@kelpi/protocol';
+import { CHOOSE_FOLDER_DIALOG_ACTION, type JsonObject } from '@kelpi/protocol';
 import {
     workspaceAgentSummary,
     layoutPaneOrder,
@@ -162,6 +162,7 @@ import {
     workspaceSelectionReport
 } from './app/file-menu';
 import { createFrameTick, type FrameTick } from './app/frame-tick';
+import { createFolderChooser } from './app/folder-chooser';
 import { createTextSizeStep } from './app/text-size';
 import { focusPaneSurface, handCaretToPaneWhenReady, mayClaimPaneCaret, releaseFocusedPaneCaret } from './app/pane-focus';
 import { navigationTrustedRuntimes, useRemoteDaemons, type RemoteRuntimeFactory } from './app/remote-daemons';
@@ -1025,6 +1026,52 @@ function Shell(props: AppProps): ReactElement {
             return true;
         },
         [notifyFailure]
+    );
+
+    /**
+     * #283: the native folder panel, for Settings ▸ Repositories' Scan Directory / Add Repo and
+     * the inspector's Add Repository ▸ Choose….
+     *
+     * Only inside the Electron shell (the same `shellWindowID` test ⌘O's `openFile` uses): a
+     * browser, or a phone attached to a remote daemon, has no panel to raise and could not name
+     * a directory on the daemon's filesystem with one anyway, so there the hook stays undefined
+     * and both surfaces keep their typed path field as the only input.
+     *
+     * The panel is raised the long way round (client → daemon → this window's shell) and its
+     * answer comes back as `choose-folder-result`, which `folderChooser` matches to the pending
+     * request by id (`app/folder-chooser.ts`; `daemon/src/ws/desktop.ts` has the loop). A
+     * refused request is toasted like any other failed command, and a dropped connection settles
+     * every pending request as a cancel, since the daemon routes the answer to the connection
+     * that asked and that connection is gone.
+     */
+    const folderChooser = useMemo(
+        () =>
+            shellWindowID === null
+                ? null
+                : createFolderChooser({
+                      windowID: shellWindowID,
+                      send: (request) => commands.shellAction({ action: CHOOSE_FOLDER_DIALOG_ACTION, ...request }),
+                      onRefused: (detail) => notifyFailure('Choose folder', detail)
+                  }),
+        [commands, notifyFailure, shellWindowID]
+    );
+    useEffect(() => {
+        if (folderChooser === null) return;
+        const offMessage = runtime.connection.on('message', (message) => {
+            folderChooser.handleMessage(message);
+        });
+        const offStatus = runtime.connection.on('status', (status) => {
+            if (status !== 'connected') folderChooser.cancelAll();
+        });
+        return () => {
+            offMessage();
+            offStatus();
+            folderChooser.cancelAll();
+        };
+    }, [folderChooser, runtime]);
+    const browseForFolder = useMemo(
+        () => (folderChooser === null ? undefined : (): Promise<string | null> => folderChooser.choose()),
+        [folderChooser]
     );
 
     /**
@@ -3941,7 +3988,9 @@ function Shell(props: AppProps): ReactElement {
                     reportFailure: notifyFailure
                 }),
                 bindInspectorFeature({ model: inspectorData, actions: act, focusedPaneID,
-                    profiles: settings.profiles, labelPresets: daemon.state.labelPresets, bucket }),
+                    profiles: settings.profiles, labelPresets: daemon.state.labelPresets, bucket,
+                    // #283: Add Repository ▸ Choose…, desktop app only (see `browseForFolder`).
+                    ...(browseForFolder === undefined ? {} : { onBrowseForFolder: browseForFolder }) }),
                 bindToolbarFeature({ model: chromeModel, presentation: { panes, bucket, connectionError: ui.connectionError, dragRegion: shellWindowID !== null },
                     contributions: contributionItems('workspace.header'), execute: executeChrome }),
                 bindStatusbarFeature({ model: statusModel, presentation: { bucket }, contributions: contributionItems('statusbar'),
@@ -4472,12 +4521,12 @@ function Shell(props: AppProps): ReactElement {
                     delete: (target) => commands.remoteDelete(target)
                 }}
                 /*
-                 * No `onBrowseForFolder`: the shell's dialog loop is one-way (it answers
-                 * `open-file-dialog` by sending the chosen path back to the DAEMON as an `open`
-                 * verb), so nothing can return a directory to this page today. The tab's path
-                 * field is the input on every client — and the only one that can name a
-                 * directory on a REMOTE daemon's filesystem anyway.
+                 * #283: the native folder panel, in the desktop app only (`browseForFolder` is
+                 * undefined in a browser). With it, Scan Directory and Add Repo on an empty path
+                 * field ask for a folder; without it, the typed path is the only input, which is
+                 * also the only one that can name a directory on a REMOTE daemon's filesystem.
                  */
+                {...(browseForFolder === undefined ? {} : { onBrowseForFolder: browseForFolder })}
             />
 
             {/*

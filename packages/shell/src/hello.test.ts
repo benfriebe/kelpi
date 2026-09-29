@@ -9,7 +9,7 @@
  * shell working purely by grace of the exemption and break it the day the exemption narrows.
  */
 
-import { WS_PROTOCOL_VERSION } from '@kelpi/protocol';
+import { CHOOSE_FOLDER_CAPABILITY, WS_PROTOCOL_VERSION } from '@kelpi/protocol';
 import { describe, expect, it } from 'vitest';
 
 import { shellHello } from './hello.js';
@@ -36,9 +36,21 @@ describe('shellHello', () => {
         expect((hello['client'] as Record<string, unknown>)['capabilities']).toEqual(['web-pane-host']);
     });
 
-    it('omits capabilities entirely when there are none (the status socket)', () => {
+    it('omits capabilities and the window entirely when there are none', () => {
         const client = shellHello({ token: 't', name: 'kelpi-shell', version: '1' })['client'] as Record<string, unknown>;
         expect('capabilities' in client).toBe(false);
+        expect('windowID' in client).toBe(false);
+    });
+
+    it('names its window and the folder-panel capability for the status socket (#283)', () => {
+        const client = shellHello({
+            token: 't',
+            name: 'kelpi-shell',
+            version: '1',
+            capabilities: [CHOOSE_FOLDER_CAPABILITY],
+            windowID: 'w1'
+        })['client'] as Record<string, unknown>;
+        expect(client).toMatchObject({ kind: 'electron', capabilities: ['choose-folder'], windowID: 'w1' });
     });
 
     it('round-trips as JSON — it is written straight onto the wire', () => {

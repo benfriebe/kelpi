@@ -109,7 +109,7 @@ import {
 import { contentContextMenuLogLine, contentContextMenuTemplate } from './context-menu.js';
 import { createUnresponsiveWatchdog } from './unresponsive.js';
 import { focusWindowContents, presentWindow, presentWindowLogLine } from './window-present.js';
-import { isForwardableOpenPath } from './shell-actions.js';
+import { isForwardableOpenPath, scriptedFolderAnswer } from './shell-actions.js';
 import { titleBarLogLine, titleBarStyleFor, trafficLightQuery, windowButtonsLogLine, windowButtonsVisible } from './titlebar.js';
 import { describeSkillRefresh, refreshBundledSkill } from './skill.js';
 import { createStatusController, type StatusController } from './status.js';
@@ -1028,6 +1028,55 @@ function promptOpenFile(paneID: string | null): void {
         });
 }
 
+/**
+ * #283: the native folder panel behind Settings ▸ Repositories' Scan Directory / Add Repo and the
+ * inspector's Add Repository ▸ Choose…, which the shipped app raised with an `NSOpenPanel`.
+ *
+ * Resolves with the chosen directory, or null for a cancel. Unlike `promptOpenFile` nothing is
+ * forwarded from here: `status.ts` sends the answer back through the daemon to the page that
+ * asked, because a directory is an input to that page rather than something the daemon opens.
+ */
+function promptChooseFolder(): Promise<string | null> {
+    // Audit seam, the `KELPI_AUDIT_OPEN_FILE` pattern exactly: an `NSOpenPanel` is an OS window
+    // CDP cannot click and a screenshot cannot see, so `scripts/ui-audit` and the scenario lane
+    // write the ANSWER to the named file and the rest of the round trip (client → daemon → shell →
+    // daemon → client) runs for real. The file is consumed on read, and an empty or missing one
+    // is a cancel, so a harness run never raises a real panel it has no way to dismiss. Off
+    // unless the env var names a path, which no shipped launch does.
+    const scripted = process.env['KELPI_AUDIT_CHOOSE_FOLDER'];
+    if (scripted !== undefined && scripted !== '') {
+        let contents: string | null = null;
+        try {
+            contents = readFileSync(scripted, 'utf8');
+            unlinkSync(scripted);
+        } catch {
+            contents = null;
+        }
+        const answer = scriptedFolderAnswer(contents);
+        log(`choose-folder dialog: scripted answer ${answer ?? '(cancelled)'}`);
+        return Promise.resolve(answer);
+    }
+    const parent = mainWindow !== null && !mainWindow.isDestroyed() ? mainWindow : undefined;
+    const options: Electron.OpenDialogOptions = {
+        title: 'Choose Folder',
+        message: 'Choose a repository, or a folder to scan for repositories',
+        buttonLabel: 'Choose',
+        // `createDirectory` is macOS's "New Folder" button: harmless here, since what the page
+        // does next (register or scan) works on an empty directory too.
+        properties: ['openDirectory', 'createDirectory']
+    };
+    const shown = parent === undefined ? dialog.showOpenDialog(options) : dialog.showOpenDialog(parent, options);
+    return shown.then((answer) => {
+        const chosen = answer.canceled ? undefined : answer.filePaths[0];
+        if (chosen === undefined || chosen === '') {
+            log('choose-folder dialog: cancelled');
+            return null;
+        }
+        log(`choose-folder dialog: ${chosen}`);
+        return chosen;
+    });
+}
+
 /** What the updater needs to know about this build (`./updater.ts`). */
 function updateHost(): UpdateHost {
     let repo: string | undefined;
@@ -1483,6 +1532,8 @@ function startStatusController(): void {
                 // offered unconditionally — unlike the tray item, the menu row already exists
                 // and its answer ("no CLI payload in this build") is worth showing.
                 promptOpenFile: (paneID) => promptOpenFile(paneID),
+                // #283: the folder panel, whose answer `status.ts` sends back to the asking page.
+                promptChooseFolder: () => promptChooseFolder(),
                 /**
                  * §AGNT-117's one-shot migration.
                  *

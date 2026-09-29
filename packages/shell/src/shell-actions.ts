@@ -7,8 +7,14 @@
  * here so those rules have tests, and `status.ts` is left with the side effects.
  */
 
-/** The three things a client can ask the shell to do. Anything else is ignored. */
-export const SHELL_ACTIONS = ['open-file-dialog', 'install-cli', 'check-for-updates'] as const;
+import {
+    CHOOSE_FOLDER_DIALOG_ACTION,
+    WS_CHOOSE_FOLDER_ANSWER_MESSAGE,
+    type WsChooseFolderAnswerMessage
+} from '@kelpi/protocol';
+
+/** The four things a client can ask the shell to do. Anything else is ignored. */
+export const SHELL_ACTIONS = ['open-file-dialog', 'install-cli', 'check-for-updates', CHOOSE_FOLDER_DIALOG_ACTION] as const;
 export type ShellActionName = (typeof SHELL_ACTIONS)[number];
 
 export interface ShellActionRequest {
@@ -17,6 +23,12 @@ export interface ShellActionRequest {
     readonly windowID: string | null;
     /** The pane that asked (the ⌘O route), so the opened file lands in its workspace. */
     readonly paneID: string | null;
+    /**
+     * #283: the id a `choose-folder-dialog` answer must carry back so the daemon can route it to
+     * the page that asked. Always present on that action (a request without one is refused, since
+     * its answer could reach nobody) and null on every other.
+     */
+    readonly requestID: string | null;
 }
 
 function readString(source: Record<string, unknown>, key: string): string | null {
@@ -27,11 +39,49 @@ function readString(source: Record<string, unknown>, key: string): string | null
 export function parseShellAction(message: Record<string, unknown>): ShellActionRequest | null {
     const action = readString(message, 'action');
     if (action === null || !(SHELL_ACTIONS as readonly string[]).includes(action)) return null;
+    const requestID = action === CHOOSE_FOLDER_DIALOG_ACTION ? readString(message, 'requestID') : null;
+    // A panel whose answer has nowhere to go is a panel the user fills in for nothing: the daemon
+    // routes the answer by the id and accepts it only for the window the request named.
+    if (action === CHOOSE_FOLDER_DIALOG_ACTION && (requestID === null || readString(message, 'windowID') === null)) {
+        return null;
+    }
     return {
         action: action as ShellActionName,
         windowID: readString(message, 'windowID'),
-        paneID: readString(message, 'paneID')
+        paneID: readString(message, 'paneID'),
+        requestID
     };
+}
+
+/**
+ * #283: the frame that closes a `choose-folder-dialog`, sent back over the status connection.
+ *
+ * `windowID` is the window the REQUEST named, echoed rather than this shell's own id: the daemon
+ * matches it against the request, and the request's is the one it holds. An empty path is a
+ * cancel, as is null, so a panel that returned nothing usable still settles the page's promise
+ * now rather than at its timeout.
+ */
+export function chooseFolderAnswer(
+    requestID: string,
+    windowID: string,
+    chosen: string | null | undefined
+): WsChooseFolderAnswerMessage {
+    return {
+        type: WS_CHOOSE_FOLDER_ANSWER_MESSAGE,
+        requestID,
+        path: typeof chosen === 'string' && chosen !== '' ? chosen : null,
+        windowID
+    };
+}
+
+/**
+ * The audit seam's answer file, read (`KELPI_AUDIT_CHOOSE_FOLDER`, `main.ts` ▸
+ * `promptChooseFolder`). The file holds one path; whitespace around it is the harness's newline,
+ * and an empty file (or none at all) is a cancel.
+ */
+export function scriptedFolderAnswer(contents: string | null): string | null {
+    const trimmed = contents?.trim() ?? '';
+    return trimmed === '' ? null : trimmed;
 }
 
 /**

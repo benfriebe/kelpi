@@ -707,6 +707,25 @@ export async function attach({ debugPort, harnessSocket, repoRoot = process.cwd(
  * above has the rule, the reason and the measurement.
  */
 export const WINDOW_PLACEMENTS = ['hidden', 'offscreen', 'onscreen'];
+
+/**
+ * #283: the native folder panel's scripted answer. A panel is an OS window CDP cannot click, so
+ * every shell `boot` starts carries `KELPI_AUDIT_CHOOSE_FOLDER` naming this file under the
+ * sandbox root, and `packages/shell/src/main.ts` ▸ `promptChooseFolder` answers the next panel
+ * with its contents (consumed on read) instead of raising one. No file, or an empty one, is a
+ * cancel, so an unscripted panel in a run is a cancel rather than an OS window nobody can close.
+ * The request and the answer still make the full trip (page → daemon → shell → daemon → page).
+ */
+export const CHOOSE_FOLDER_ANSWER_FILE = 'choose-folder-answer.txt';
+
+export function chooseFolderAnswerPath(sandbox) {
+    return path.join(sandbox.root, CHOOSE_FOLDER_ANSWER_FILE);
+}
+
+/** Script the NEXT folder panel's answer: a directory, or null for a cancel. */
+export function scriptFolderAnswer(sandbox, answer) {
+    fs.writeFileSync(chooseFolderAnswerPath(sandbox), answer === null ? '' : `${answer}\n`);
+}
 /** What `windowPlacement` reports when no placement was asked for: the shell's own choice. */
 export const SHIPPED_WINDOW_PLACEMENT = 'default';
 
@@ -782,7 +801,9 @@ export async function boot({ repoRoot, label = 'scenario', build = true, log = (
         await daemon.start();
         shell = startShell(sandbox, { repoRoot, extraEnv: {
             KELPI_HARNESS_SOCKET: harnessSocket,
-            KELPI_HARNESS_DEFER_LOAD: '1'
+            KELPI_HARNESS_DEFER_LOAD: '1',
+            // #283: the folder panel's scripted answer (`scriptFolderAnswer` above).
+            KELPI_AUDIT_CHOOSE_FOLDER: chooseFolderAnswerPath(sandbox)
         } });
         clearBackgroundTaskPolicy(shell.child?.pid);
         // Before CDP, because a `hidden` window that did not actually go hidden is a run that has

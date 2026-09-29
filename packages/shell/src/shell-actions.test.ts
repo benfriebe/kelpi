@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+    chooseFolderAnswer,
     isForwardableOpenPath,
     parseShellAction,
     parseWindowChrome,
     parseWorkspaceSelection,
+    scriptedFolderAnswer,
     shellActionAppliesHere
 } from './shell-actions.js';
 
@@ -72,18 +74,40 @@ describe('parseWindowChrome', () => {
 });
 
 describe('parseShellAction', () => {
-    it('decodes the three actions with their optional scope fields', () => {
+    it('decodes the one-way actions with their optional scope fields', () => {
         expect(parseShellAction({ action: 'open-file-dialog', windowID: 'w1', paneID: 'p1' })).toEqual({
             action: 'open-file-dialog',
             windowID: 'w1',
-            paneID: 'p1'
+            paneID: 'p1',
+            requestID: null
         });
         expect(parseShellAction({ action: 'install-cli' })).toEqual({
             action: 'install-cli',
             windowID: null,
-            paneID: null
+            paneID: null,
+            requestID: null
         });
         expect(parseShellAction({ action: 'check-for-updates' })?.action).toBe('check-for-updates');
+    });
+
+    it('decodes a folder request with the id its answer must carry back (#283)', () => {
+        expect(parseShellAction({ action: 'choose-folder-dialog', windowID: 'w1', requestID: 'r1' })).toEqual({
+            action: 'choose-folder-dialog',
+            windowID: 'w1',
+            paneID: null,
+            requestID: 'r1'
+        });
+    });
+
+    it('refuses a folder request with no usable id or no window: its answer could reach nobody', () => {
+        expect(parseShellAction({ action: 'choose-folder-dialog', requestID: 'r1' })).toBeNull();
+        expect(parseShellAction({ action: 'choose-folder-dialog', windowID: 'w1' })).toBeNull();
+        expect(parseShellAction({ action: 'choose-folder-dialog', windowID: 'w1', requestID: '' })).toBeNull();
+        expect(parseShellAction({ action: 'choose-folder-dialog', windowID: 'w1', requestID: 7 })).toBeNull();
+    });
+
+    it('keeps a request id off the one-way actions', () => {
+        expect(parseShellAction({ action: 'open-file-dialog', requestID: 'r1' })?.requestID).toBeNull();
     });
 
     it('ignores anything outside the allowlist and anything malformed', () => {
@@ -91,6 +115,37 @@ describe('parseShellAction', () => {
         expect(parseShellAction({ action: '' })).toBeNull();
         expect(parseShellAction({ action: 42 })).toBeNull();
         expect(parseShellAction({})).toBeNull();
+    });
+});
+
+describe('chooseFolderAnswer (#283)', () => {
+    it('carries the chosen path with the id and the REQUEST’s window', () => {
+        expect(chooseFolderAnswer('r1', 'w1', '/src/app')).toEqual({
+            type: 'choose-folder-answer',
+            requestID: 'r1',
+            path: '/src/app',
+            windowID: 'w1'
+        });
+    });
+
+    it('reads a cancel, an empty path and a missing one all as null', () => {
+        expect(chooseFolderAnswer('r1', 'w1', null).path).toBeNull();
+        expect(chooseFolderAnswer('r1', 'w1', '').path).toBeNull();
+        expect(chooseFolderAnswer('r1', 'w1', undefined).path).toBeNull();
+    });
+
+
+});
+
+describe('scriptedFolderAnswer (the KELPI_AUDIT_CHOOSE_FOLDER seam)', () => {
+    it('is the file’s one path, without the harness’s newline', () => {
+        expect(scriptedFolderAnswer('/tmp/repo\n')).toBe('/tmp/repo');
+    });
+
+    it('reads an empty file, or none at all, as a cancel', () => {
+        expect(scriptedFolderAnswer('')).toBeNull();
+        expect(scriptedFolderAnswer('  \n')).toBeNull();
+        expect(scriptedFolderAnswer(null)).toBeNull();
     });
 });
 

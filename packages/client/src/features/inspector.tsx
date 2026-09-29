@@ -191,6 +191,11 @@ export interface InspectorFeatureViewProps {
     readonly bucket: ChromeBucket;
     readonly side?: 'left' | 'right';
     readonly viewPicker?: ReactNode;
+    /**
+     * #283: the desktop app's native folder panel, for Add Repository ▸ Choose…. Absent in a
+     * browser, where the sheet's typed path is the only input and no Choose… button is drawn.
+     */
+    readonly onBrowseForFolder?: (() => Promise<string | null>) | undefined;
 }
 
 /** The existing Inspector remains the pure view; all feature-specific binding lives here. */
@@ -219,6 +224,7 @@ export function InspectorFeatureView(props: InspectorFeatureViewProps): ReactEle
         onRemoveAssociation={actions.removeRepoAssociation}
         onAddAssociation={actions.addRepoAssociation}
         onScanForRepos={actions.scanForRepos}
+        {...(props.onBrowseForFolder === undefined ? {} : { onBrowseForFolder: props.onBrowseForFolder })}
         onCreateWorktree={actions.addWorktree}
         onFocusPane={actions.focusPane}
         onClosePane={actions.closePane}

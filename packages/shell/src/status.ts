@@ -32,7 +32,7 @@
 import { Menu, Tray, app, nativeImage, nativeTheme } from 'electron';
 import { WebSocket } from 'ws';
 
-import { type JsonObject, type WsDeltaEvent } from '@kelpi/protocol';
+import { CHOOSE_FOLDER_CAPABILITY, type JsonObject, type WsDeltaEvent } from '@kelpi/protocol';
 
 import {
     AgentModel,
@@ -69,6 +69,7 @@ import {
     type KelpiNotificationHandle
 } from './notify.js';
 import {
+    chooseFolderAnswer,
     parseShellAction,
     parseWindowChrome,
     parseWorkspaceSelection,
@@ -165,6 +166,17 @@ export interface StatusHost {
      * lands in that pane's workspace exactly as `kelpi md` would.
      */
     promptOpenFile?(paneID: string | null): void;
+    /**
+     * #283: show the NATIVE folder panel and resolve with the chosen directory, or null when the
+     * user cancelled.
+     *
+     * Unlike `promptOpenFile` the answer comes back HERE rather than going out as a control verb,
+     * because a directory means nothing to the daemon: it is an input to the page that asked. This
+     * module sends it as `choose-folder-answer` over the same status connection the request
+     * arrived on, and the daemon hands it to that page alone (`daemon/src/ws/desktop.ts`).
+     * Absent (or throwing) reads as a cancel, so the page's promise settles either way.
+     */
+    promptChooseFolder?(): Promise<string | null>;
     /** The ••• menu's "Check for Updates…" (APP-026). */
     checkForUpdates?(): void;
     /** The ••• menu's "Install CLI" — the same action the tray item runs. */
@@ -416,6 +428,41 @@ export function createStatusController(options: StatusOptions): StatusController
         );
         if (sent) log(`activation report: ${active ? 'active' : 'inactive'}`);
         return sent;
+    }
+
+    /**
+     * #283: raise the folder panel and send its answer back, whatever happens to it.
+     *
+     * Every path ends in exactly one `choose-folder-answer`: a chosen path, a cancel, a host with
+     * no panel to show, or a panel that failed to open. Silence would leave the page waiting out
+     * its timeout on a button that did nothing. The answer is sent on whatever status socket is
+     * current when the panel closes; the daemon keys the request by id, not by connection, so a
+     * reconnect while the panel was up still delivers it.
+     */
+    function answerChooseFolder(requestID: string | null, windowID: string | null): void {
+        if (requestID === null || windowID === null) return;
+        const send = (chosen: string | null): void => {
+            if (!sendJson({ ...chooseFolderAnswer(requestID, windowID, chosen) }, 'choose-folder answer')) {
+                warn(`choose-folder answer ${requestID} not sent: the status connection is down`);
+            }
+        };
+        const prompt = host.promptChooseFolder;
+        if (prompt === undefined) {
+            send(null);
+            return;
+        }
+        let pending: Promise<string | null>;
+        try {
+            pending = prompt();
+        } catch (error) {
+            logError('choose-folder dialog failed', error);
+            send(null);
+            return;
+        }
+        pending.then(send, (error: unknown) => {
+            logError('choose-folder dialog failed', error);
+            send(null);
+        });
     }
 
     function sendJson(message: Record<string, unknown>, what: string): boolean {
@@ -737,7 +784,19 @@ export function createStatusController(options: StatusOptions): StatusController
             // The token rides in the hello as well as the bearer header — see `./hello.ts` for
             // why both halves matter now that the upgrade no longer refuses a bad token.
             next.send(
-                JSON.stringify(shellHello({ token: location.token, name: 'kelpi-shell', version: app.getVersion() }))
+                JSON.stringify(
+                    shellHello({
+                        token: location.token,
+                        name: 'kelpi-shell',
+                        version: app.getVersion(),
+                        // #283: this connection answers the folder panel for this window, and the
+                        // daemon takes an answer from nothing else. Without a window id (a dev
+                        // run) there is nothing to match, so the capability is not claimed.
+                        ...(options.windowID === undefined
+                            ? {}
+                            : { capabilities: [CHOOSE_FOLDER_CAPABILITY], windowID: options.windowID })
+                    })
+                )
             );
         });
 
@@ -895,6 +954,7 @@ export function createStatusController(options: StatusOptions): StatusController
                 log(`shell-action: ${request.action}`);
                 if (request.action === 'open-file-dialog') host.promptOpenFile?.(request.paneID);
                 else if (request.action === 'install-cli') host.installCLINow?.();
+                else if (request.action === 'choose-folder-dialog') answerChooseFolder(request.requestID, request.windowID);
                 else host.checkForUpdates?.();
                 break;
             }

@@ -8,9 +8,14 @@
  *
  *   - a **filter field** matching name OR path, case-insensitively (§SET-052);
  *   - **Scan Directory** and **Add Repo**, both taking a directory (§SET-053/§SET-054). The
- *     shipped app opens an `NSOpenPanel`; in the shell that is `onBrowse` (a native dialog), and
- *     in a browser — where no such thing exists — it is the path field beside it, which also
- *     keeps the flow usable against a REMOTE daemon whose filesystem this machine cannot browse;
+ *     shipped app opens an `NSOpenPanel` from both. Here (#283) a button pressed with the path
+ *     field EMPTY does the same in the desktop app, through `onBrowse` (a native panel raised by
+ *     the shell), and then scans or adds the folder chosen; a cancel does nothing. A typed path
+ *     always wins, so the field doubles as the way to name a path without the panel. In a
+ *     browser there is no `onBrowse` and the field is the only input (the buttons stay disabled
+ *     until it holds something), which also keeps the flow usable against a REMOTE daemon whose
+ *     filesystem this machine cannot browse. There is no separate "Choose…" button: the two
+ *     buttons ARE the choosers, as they were in the shipped app;
  *   - a row per repo: name, middle-truncated path, remote URL when known (§SET-056);
  *   - the **two distinct empty states** (§SET-057): "No repositories registered", with a hint
  *     naming both buttons, versus "No matching repositories" when the filter excludes them all.
@@ -27,7 +32,7 @@
  *      reducer-only), so this is its first surface.
  */
 
-import { useMemo, useState, type ReactElement, type ReactNode } from 'react';
+import { useMemo, useRef, useState, type ReactElement, type ReactNode } from 'react';
 
 import { tokens } from '../chrome';
 import { ExternalDriveGlyph, FolderBadgeGearGlyph, PlusGlyph } from './glyphs';
@@ -88,7 +93,10 @@ export interface RepositoriesTabProps {
     readonly paths: SettingsPaths;
     /** `auto-detect-repos`; the toggle renders from this, never from local state (§GIT-074). */
     readonly autoDetectRepos: boolean;
-    /** Electron's native directory chooser. Absent in a browser — the path field stands in. */
+    /**
+     * Electron's native directory chooser, resolving null on a cancel. Present only in the
+     * desktop app; absent in a browser, where the path field is the only input.
+     */
     readonly onBrowse?: (() => Promise<string | null>) | undefined;
 }
 
@@ -121,25 +129,74 @@ export function RepositoriesTab(props: RepositoriesTabProps): ReactElement {
     const manualCount = props.repos.filter((repo) => repo.isAutoDiscovered !== true).length;
     const registryEmpty = includeAuto ? props.repos.length === 0 : manualCount === 0;
 
-    const chooseDirectory = async (): Promise<void> => {
-        if (props.onBrowse === undefined) return;
-        const chosen = await props.onBrowse();
-        if (chosen !== null && chosen !== '') setPath(chosen);
+    /*
+     * One panel at a time. A double-click on an empty-field button would otherwise queue two
+     * native panels, and the second would ask again for a folder the user has just chosen. A ref
+     * rather than state because nothing is drawn differently while the panel is up: it is modal
+     * over the window, so the buttons cannot be seen, let alone pressed, until it closes. The
+     * guard cannot stick: a request with no shell to answer it is refused at once, and a pending
+     * one is answered null when its shell goes away (`daemon/src/ws/sync.ts`).
+     */
+    const browsing = useRef(false);
+    const hasTypedPath = path.trim() !== '';
+    const canBrowse = props.onBrowse !== undefined;
+
+    /**
+     * The folder the native panel returns, or null for "do nothing": no panel here, a panel
+     * already up, a cancel, or a panel that failed. Only reached with the path field empty.
+     */
+    const chooseFolder = async (): Promise<string | null> => {
+        const browse = props.onBrowse;
+        if (browse === undefined || browsing.current) return null;
+        browsing.current = true;
+        try {
+            const chosen = (await browse())?.trim() ?? '';
+            return chosen === '' ? null : chosen;
+        } catch {
+            return null;
+        } finally {
+            browsing.current = false;
+        }
     };
 
-    const submitAdd = (): void => {
-        const target = path.trim();
-        if (target === '' || actions.addRepo === undefined) return;
-        actions.addRepo({ path: target });
-        setPath('');
+    const add = (target: string): void => {
+        actions.addRepo?.({ path: target });
         setNotice(`Added ${target}`);
     };
 
-    const submitScan = (): void => {
-        const target = path.trim();
-        if (target === '' || actions.scanRepos === undefined) return;
-        actions.scanRepos({ path: target });
+    const scan = (target: string): void => {
+        actions.scanRepos?.({ path: target });
         setNotice(`Scanning ${target}…`);
+    };
+
+    /*
+     * A typed path is acted on at once, exactly as before the panel existed. An empty field asks
+     * the panel (desktop app only) and acts on the folder it returns; the field is left alone, so
+     * it stays empty and the next press asks again.
+     */
+    const submitAdd = (): void => {
+        if (actions.addRepo === undefined) return;
+        const typed = path.trim();
+        if (typed !== '') {
+            add(typed);
+            setPath('');
+            return;
+        }
+        void chooseFolder().then((chosen) => {
+            if (chosen !== null) add(chosen);
+        });
+    };
+
+    const submitScan = (): void => {
+        if (actions.scanRepos === undefined) return;
+        const typed = path.trim();
+        if (typed !== '') {
+            scan(typed);
+            return;
+        }
+        void chooseFolder().then((chosen) => {
+            if (chosen !== null) scan(chosen);
+        });
     };
 
     return (
@@ -184,7 +241,11 @@ export function RepositoriesTab(props: RepositoriesTabProps): ReactElement {
                     <input
                         type="text"
                         aria-label="Repository path"
-                        placeholder="/path/to/repo or a folder to scan"
+                        placeholder={
+                            canBrowse
+                                ? 'Leave empty to choose a folder, or type a path'
+                                : '/path/to/repo or a folder to scan'
+                        }
                         data-testid="repo-path"
                         className="min-w-0 flex-1 rounded border bg-transparent px-2 py-1 text-[12px] outline-none"
                         style={{ borderColor: tokens.divider, color: tokens.textPrimary }}
@@ -193,28 +254,26 @@ export function RepositoriesTab(props: RepositoriesTabProps): ReactElement {
                             setPath(event.target.value);
                         }}
                         onKeyDown={(event) => {
-                            if (event.key === 'Enter') submitAdd();
+                            // Return adds what was TYPED. On an empty field it does nothing rather
+                            // than raising a panel: a key press in a text field is not a click on
+                            // a button that says it opens one.
+                            if (event.key === 'Enter' && hasTypedPath) submitAdd();
                         }}
                     />
-                    {props.onBrowse === undefined ? null : (
-                        <SettingsButton
-                            testID="repo-browse"
-                            onClick={() => {
-                                void chooseDirectory();
-                            }}
-                        >
-                            Choose…
-                        </SettingsButton>
-                    )}
                     {/*
                      * L86: both toolbar buttons are `Label(_, systemImage:)` in the shipped app
                      * (`RepoRegistryView.swift:18-24`) — `folder.badge.gearshape` on Scan,
                      * `plus` on Add — and the port had dropped the glyphs and kept the words.
                      * Hand-rolled on `glyphs.tsx`'s 12 × 12 grid, sized to the 11 px button text.
                      */}
+                    {/*
+                     * Enabled on an empty field only when a panel can fill it (#283); in a browser
+                     * the buttons wait for a typed path exactly as before.
+                     */}
                     <SettingsButton
                         testID="repo-scan"
-                        disabled={path.trim() === '' || actions.scanRepos === undefined}
+                        disabled={(!hasTypedPath && !canBrowse) || actions.scanRepos === undefined}
+                        {...(canBrowse && !hasTypedPath ? { title: 'Choose a folder to scan for repositories' } : {})}
                         onClick={submitScan}
                     >
                         <span className="flex items-center gap-1.5">
@@ -225,7 +284,8 @@ export function RepositoriesTab(props: RepositoriesTabProps): ReactElement {
                     <SettingsButton
                         testID="repo-add"
                         tone="accent"
-                        disabled={path.trim() === '' || actions.addRepo === undefined}
+                        disabled={(!hasTypedPath && !canBrowse) || actions.addRepo === undefined}
+                        {...(canBrowse && !hasTypedPath ? { title: 'Choose a repository folder to add' } : {})}
                         onClick={submitAdd}
                     >
                         <span className="flex items-center gap-1.5">

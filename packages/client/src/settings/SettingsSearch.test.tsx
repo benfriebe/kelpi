@@ -98,7 +98,7 @@ describe('Settings search in the host', () => {
         ['Port', 'tcp-port', 'tcp-listener-row', 'Enable TCP listener'],
         ['Focus delay', 'focus-delay-row', 'focus-follows-mouse-row', 'Enable Focus follows mouse'],
         ['TCP listener failed to bind', 'tcp-bind-error', 'tcp-listener-row', 'No TCP bind failure'],
-        ['Browse for folder', 'repo-browse', 'repo-path', 'Enter a repository path'],
+        ['Browse for folder', 'repo-add', 'repo-path', 'Enter a repository path'],
         ['Labels not defined here', 'label-orphans', 'label-presets', 'no workspace labels'],
         ['Rename repository', 'repo-list', 'repo-path', 'Add a repository'],
         ['Trust plugins with navigation', 'remote-daemon-navigation-trust', 'remote-daemon-add-name', 'Add a remote daemon'],
@@ -111,6 +111,16 @@ describe('Settings search in the host', () => {
         fireEvent.click(result);
         expect(screen.getByTestId('settings-search-notice').textContent).toContain(message);
         expect(screen.getByTestId(target).dataset['settingsSearchHit']).toBe('true');
+    });
+
+    it('sends "Browse for folder" to Add Repo in the desktop app, where an empty press opens the chooser (#283)', () => {
+        setup({ onBrowseForFolder: async () => null });
+        fireEvent.change(screen.getByTestId('settings-search'), { target: { value: 'Browse for folder' } });
+        const result = screen.getAllByTestId('settings-search-result-repo-add').find(node => node.querySelector('span')?.textContent === 'Browse for folder')!;
+        fireEvent.click(result);
+        // The plain "Showing …" notice, not the browser's "unavailable here".
+        expect(screen.getByTestId('settings-search-notice').textContent).not.toContain('unavailable');
+        expect(screen.getByTestId('repo-add').dataset['settingsSearchHit']).toBe('true');
     });
 
     it('finds the real error when the daemon reports a failed TCP listener', () => {

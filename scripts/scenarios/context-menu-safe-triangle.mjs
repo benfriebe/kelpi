@@ -19,9 +19,13 @@
  * The diagonal itself is driven without pausing: a screenshot takes about as long as the grace
  * period (measured 250 to 275 ms offscreen), and a pointer that stops that long on a crossed row
  * is RESTING there, so the row rightly takes over (a first draft photographed exactly that). The
- * mid-crossing picture is therefore its own pass: it creeps along the diagonal inside the first
- * crossed row while the capture runs, which is a pointer still on its way, then stops and checks
- * that resting there does hand the submenu over. CDP screenshots carry no cursor, so the
+ * mid-crossing picture is therefore its own pass: it creeps horizontally towards the submenu
+ * inside the first crossed row while the capture runs (always progress, always inside the
+ * triangle, with over a second of room before the row ends), which is a pointer still on its
+ * way, then stops and checks that resting there does hand the submenu over. For the same reason
+ * no observation may stall the pointer: while any `page.eval` between steps is outstanding, the
+ * pointer keeps creeping along the route (`keepMoving`), so a slow round trip can never read as
+ * a rest. CDP screenshots carry no cursor, so the
  * pointer's route is drawn as a trail of dots on a `pointer-events: none` layer, which hit
  * testing (and so the menu) never sees.
  */
@@ -146,6 +150,30 @@ export default async function ({ page, cli, rec, d, sleep }) {
     });
 
     /**
+     * Await `work` without letting the pointer rest: until it settles, nudge the pointer from
+     * `at` towards `limit` by half a pixel every 50 ms, stopping a pixel short of `limit`. Each
+     * nudge gets closer to the submenu, which restarts the grace clock, so only a stall of over a
+     * second could read as a rest. Returns the work's result and where the pointer ended up.
+     */
+    const keepMoving = async (work, at, limit) => {
+        let settled = false;
+        const result = Promise.resolve(work).finally(() => {
+            settled = true;
+        });
+        const span = Math.hypot(limit.x - at.x, limit.y - at.y);
+        let point = at;
+        let travelled = 0;
+        while (!settled) {
+            await sleep(50);
+            if (settled || travelled + 0.5 > span - 1) continue;
+            travelled += 0.5;
+            point = { x: at.x + ((limit.x - at.x) * travelled) / span, y: at.y + ((limit.y - at.y) * travelled) / span };
+            await moveTo(point.x, point.y);
+        }
+        return { value: await result, point };
+    };
+
+    /**
      * Right-click the workspace, hover Color, then travel in a straight line from Color's lower
      * edge to a colour well below it, without stopping, and click that colour.
      */
@@ -165,7 +193,8 @@ export default async function ({ page, cli, rec, d, sleep }) {
             const { x, y } = along(route, step);
             await moveTo(x, y);
             await sleep(12);
-            const seen = await under(x, y);
+            // Observe where the pointer was sent, while it creeps on towards the next step.
+            const seen = (await keepMoving(under(x, y), { x, y }, along(route, Math.min(STEPS, step + 1)))).value;
             if (seen.row !== null && seen.row !== 'color' && !crossed.includes(seen.row)) crossed.push(seen.row);
             if (seen.submenu !== 'Color' && lost === null) lost = { step, x, y, ...seen };
             if (seen.row !== null && seen.row !== 'color' && seen.rowHighlighted !== 'false' && litCrossing === null) {
@@ -210,11 +239,13 @@ export default async function ({ page, cli, rec, d, sleep }) {
             const { x, y } = along(route, step);
             await moveTo(x, y);
             await sleep(12);
-            const seen = await under(x, y);
-            // Well inside the row rather than on its edge, so the picture is unambiguous.
+            const observed = await keepMoving(under(x, y), { x, y }, along(route, Math.min(STEPS, step + 1)));
+            const seen = observed.value;
+            // Clear of the row's top edge, so the picture is unambiguous, and as near it as that
+            // allows, so the horizontal creep below has the whole row width to use.
             const crossing = seen.row === null || seen.row === 'color' ? null : route.rows.find((r) => r.id === seen.row);
-            if (crossing && y >= crossing.top + 8) {
-                held = { step, x, y, ...seen };
+            if (crossing && y >= crossing.top + 6) {
+                held = { step, ...observed.point, ...seen };
                 break;
             }
         }
@@ -225,17 +256,19 @@ export default async function ({ page, cli, rec, d, sleep }) {
             JSON.stringify(held)
         );
         const row = (await geometry()).rows.find((r) => r.id === held.row);
-        // Creep on along the diagonal, inside the row, for as long as the capture takes.
-        const length = Math.hypot(route.to.x - route.from.x, route.to.y - route.from.y);
-        const unit = { x: (route.to.x - route.from.x) / length, y: (route.to.y - route.from.y) / length };
+        // Creep horizontally towards the submenu, inside the row, for as long as the capture
+        // takes: straight at the near edge is always inside the triangle and always progress.
+        const toward = expectedSide === 'right' ? 1 : -1;
+        const rowEnd = expectedSide === 'right' ? row.right - 4 : row.left + 4;
         let point = { x: held.x, y: held.y };
         let capturing = true;
+        const started = Date.now();
         const capture = rec.shot(page, `${tag}-pointer-crossing-${held.row}-colours-held`).finally(() => {
             capturing = false;
         });
         while (capturing) {
-            const next = { x: point.x + unit.x * 1.5, y: point.y + unit.y * 1.5 };
-            if (next.y < row.bottom - 2) {
+            const next = { x: point.x + 1.5 * toward, y: point.y };
+            if ((next.x - rowEnd) * toward < 0) {
                 point = next;
                 await moveTo(point.x, point.y);
                 await under(point.x, point.y);
@@ -243,6 +276,10 @@ export default async function ({ page, cli, rec, d, sleep }) {
             await sleep(40);
         }
         await capture;
+        rec.note(
+            `${tag}: the capture took ${String(Date.now() - started)} ms; the creep used ` +
+                `${String(Math.round(Math.abs(point.x - held.x)))} of ${String(Math.round(Math.abs(rowEnd - held.x)))} px of row`
+        );
         const during = await under(point.x, point.y);
         rec.check(
             `${tag}: still crossing ${held.row} after the capture, the colours are still held`,
@@ -265,23 +302,43 @@ export default async function ({ page, cli, rec, d, sleep }) {
 
     const sidebarSide = async () =>
         await page.eval(`document.querySelector('[data-testid="sidebar-slot"]')?.getAttribute('data-sidebar-side') ?? null`);
-    /** Settings ▸ Plugins: which view the left (primary) sidebar shows. */
-    const choosePrimarySidebar = async (viewID) => {
-        await page.key('Comma', { modifiers: d.MOD.meta, key: ',' });
+    const settingsOpen = async () => await page.eval(`Boolean(document.querySelector('[data-testid="settings-close"]'))`);
+    const closeSettings = async () => {
+        if (await settingsOpen()) await page.click('[data-testid="settings-close"]');
+        await d.settleDom(page, `!document.querySelector('[data-testid="settings-close"]')`, { ceilingMs: 5_000 });
+    };
+    /** Settings ▸ Plugins, open on the `sidebar.primary` select (the view the left sidebar shows). */
+    const openSidebarSettings = async () => {
+        if (!(await settingsOpen())) await page.key('Comma', { modifiers: d.MOD.meta, key: ',' });
         await d.settleDom(page, `document.querySelector('[data-testid="settings-tab-button-plugins"]')`, { ceilingMs: 5_000 });
         await page.click('[data-testid="settings-tab-button-plugins"]');
         await d.settleDom(page, `document.querySelector('select[aria-label="sidebar.primary"]')`, { ceilingMs: 5_000 });
+    };
+    const readPrimarySidebar = async () => {
+        await openSidebarSettings();
+        const value = await page.eval(`document.querySelector('select[aria-label="sidebar.primary"]')?.value ?? null`);
+        await closeSettings();
+        return value;
+    };
+    const choosePrimarySidebar = async (viewID) => {
+        await openSidebarSettings();
         await page.eval(`(() => {
             const select = document.querySelector('select[aria-label="sidebar.primary"]');
             select.value = ${JSON.stringify(viewID)};
             select.dispatchEvent(new Event('change', { bubbles: true }));
             return true;
         })()`);
-        await page.click('[data-testid="settings-close"]');
+        await closeSettings();
     };
-    const sideAtStart = await sidebarSide();
+    let sideAtStart = null;
+    let primaryAtStart = null;
 
     try {
+        // The arrangement this scenario found, so the cleanup hands back exactly that rather than
+        // whatever a hard-coded default would be. Read inside the `try`, so even a failed read
+        // still reaches the workspace delete.
+        sideAtStart = await sidebarSide();
+        primaryAtStart = await readPrimarySidebar();
         await d.settleDom(page, `document.querySelector('[data-testid="workspace-row"][data-workspace-id="${workspaceID}"]')`, { ceilingMs: 5_000 });
 
         // ── 1. right-opening: the reported case ─────────────────────────────────────────
@@ -342,12 +399,18 @@ export default async function ({ page, cli, rec, d, sleep }) {
             await crossAndRest('left', 'left');
         }
     } finally {
-        await clearTrail();
-        if (await menuOpen()) await page.key('Escape');
-        if (sideAtStart !== null && (await sidebarSide()) !== sideAtStart) {
-            await choosePrimarySidebar('kelpi.workspaces');
-            await d.settle(async () => (await sidebarSide()) === sideAtStart, { ceilingMs: 5_000 });
+        // As `sidebar-swap.mjs` does: undo the arrangement first, and delete the workspace in
+        // its own `finally`, so a restore that throws cannot leak it into a shared run.
+        try {
+            await clearTrail();
+            if (await menuOpen()) await page.key('Escape');
+            await closeSettings();
+            if (primaryAtStart !== null && (await readPrimarySidebar()) !== primaryAtStart) {
+                await choosePrimarySidebar(primaryAtStart);
+                await d.settle(async () => (await sidebarSide()) === sideAtStart, { ceilingMs: 5_000 });
+            }
+        } finally {
+            await cli.run(['workspace', 'delete', workspaceID, '--force']);
         }
-        await cli.run(['workspace', 'delete', workspaceID, '--force']);
     }
 }

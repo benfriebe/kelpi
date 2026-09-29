@@ -96,6 +96,19 @@ describe('isAimingAtSubmenu', () => {
         expect(SAFE_TRIANGLE_APEX_BACKOFF).toBeGreaterThan(0);
     });
 
+    it('holds a straight-down move for longer the nearer the exit is to the submenu (the back-off cost)', () => {
+        // dy <= BACKOFF * H / (nearEdge.x - apex.x + BACKOFF), with H = 264 - 46 = 218 here.
+        // Exit near the row's left, 94 px from the near edge: out after about 9 px.
+        expect(isAimingAtSubmenu({ x: 100, y: 46 }, { x: 100, y: 54 }, RIGHT, 'right')).toBe(true);
+        expect(isAimingAtSubmenu({ x: 100, y: 46 }, { x: 100, y: 60 }, RIGHT, 'right')).toBe(false);
+        // Exit from the chevron column, 14 px from the near edge: the next row's middle (60) and
+        // most of the row after it stay inside for about 48 px, so a deliberate move straight
+        // down from there is held and pays the grace period. Documented, and accepted.
+        expect(isAimingAtSubmenu({ x: 180, y: 46 }, { x: 180, y: 60 }, RIGHT, 'right')).toBe(true);
+        expect(isAimingAtSubmenu({ x: 180, y: 46 }, { x: 180, y: 94 }, RIGHT, 'right')).toBe(true);
+        expect(isAimingAtSubmenu({ x: 180, y: 46 }, { x: 180, y: 100 }, RIGHT, 'right')).toBe(false);
+    });
+
     it('points the other way for a submenu that flipped left', () => {
         const leftExit = { x: 870, y: 46 };
         // The mirror of the right-hand diagonal is protected...

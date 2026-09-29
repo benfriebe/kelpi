@@ -1687,8 +1687,13 @@ submenu's parent row to the submenu's near edge (the right edge of a submenu tha
 near the window's edge). The switch is held instead: it happens once the pointer rests, or
 stops closing in, for 250ms (`SUBMENU_AIM_GRACE_MS`), or at once when a move leaves the
 triangle, and it is dropped when the pointer reaches the submenu or leaves the row. A row
-entered from outside the triangle switches immediately, as do the keyboard walk and a click;
-a crossed row does not highlight while its switch is held. Dismissal is unchanged: an outside
+entered from outside the triangle switches immediately, as do the keyboard walk and a click
+(which also forget the triangle's apex, so a submenu they open is not aimed at from the last
+hover point); a crossed row does not highlight while its switch is held. The cost falls on a
+deliberate switch whose move stays inside the triangle: any move aimed at the submenu, and a
+move straight down from the right-hand part of the parent row (towards the chevron), where
+the triangle is widest, can wait up to 250ms. From the left of the row a straight-down move
+leaves the triangle within about 10px and switches at once. Dismissal is unchanged: an outside
 press or Escape, never the pointer leaving the menu. Geometry:
 `packages/client/src/chrome/safe-triangle.ts`; timing: `useSubmenuAim` in `ContextMenu.tsx`;
 real-pointer coverage: `scripts/scenarios/context-menu-safe-triangle.mjs`.

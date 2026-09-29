@@ -731,7 +731,7 @@ describe('the opt-in checkbox control', () => {
  * the events a browser sends for it: `mouseenter`/`mouseleave` at each row boundary, and
  * `mousemove` in between, each with the coordinates of a real path. The layout they describe is
  * a panel at x 0..190 with 24 px rows (Rename 0..24, Color 24..48, Profile 48..72, Change Icon
- * 72..96, Delete 96..120) and the submenu at x 194..374 hanging from Color's top. The real
+ * 72..96, Delete 96..120, Mute 120..144) and the submenu at x 194..374 hanging from Color's top. The real
  * pointer, in a real window, is the scenario's (`scripts/scenarios/context-menu-safe-triangle.mjs`).
  */
 describe('safe triangles: crossing rows on the way into a submenu (#279)', () => {
@@ -764,6 +764,7 @@ describe('safe triangles: crossing rows on the way into a submenu (#279)', () =>
     interface Opened {
         readonly selected: string[];
         readonly closed: () => number;
+        readonly unmount: () => void;
     }
 
     function open(x = 0, box: { right: SubmenuBox; left?: SubmenuBox } = { right: RIGHT_BOX }): Opened {
@@ -785,9 +786,10 @@ describe('safe triangles: crossing rows on the way into a submenu (#279)', () =>
             },
             { id: 'profile', label: 'Profile', submenu: [{ id: 'profile:default', label: 'default' }] },
             { id: 'icon', label: 'Change Icon', submenu: [{ id: 'icon:none', label: 'None' }] },
-            { id: 'delete', label: 'Delete', danger: true, onSelect: () => selected.push('delete') }
+            { id: 'delete', label: 'Delete', danger: true, onSelect: () => selected.push('delete') },
+            { id: 'mute', label: 'Mute', control: 'checkbox', checked: false, onSelect: () => selected.push('mute') }
         ];
-        render(
+        const { unmount } = render(
             <ContextMenu
                 x={x}
                 y={0}
@@ -797,7 +799,7 @@ describe('safe triangles: crossing rows on the way into a submenu (#279)', () =>
                 }}
             />
         );
-        return { selected, closed: () => closed };
+        return { selected, closed: () => closed, unmount };
     }
 
     const row = (id: string): HTMLElement => {
@@ -991,5 +993,68 @@ describe('safe triangles: crossing rows on the way into a submenu (#279)', () =>
         enter(row('profile'), 126, 52);
         fireEvent.mouseDown(document.body);
         expect(menu.closed()).toBe(1);
+    });
+
+    it('a click on a held row that keeps the menu open lights it, and no late switch follows', () => {
+        const menu = open();
+        openColorAndHeadDown();
+        enter(row('mute'), 160, 124);
+        expect(openSubmenu()).toBe('Color');
+        expect(row('mute').getAttribute('data-highlighted')).toBe('false');
+        fireEvent.click(row('mute'));
+        expect(menu.selected).toEqual(['mute']);
+        expect(menu.closed()).toBe(0);
+        // The click was a decision: the hold is gone, so the row lights up as the one acting...
+        expect(row('mute').getAttribute('data-highlighted')).toBe('true');
+        // ...and the grace period that would have handed it the submenu never fires.
+        wait(SUBMENU_AIM_GRACE_MS * 4);
+        expect(openSubmenu()).toBe('Color');
+        expect(row('mute').getAttribute('data-highlighted')).toBe('true');
+    });
+
+    it('a menu closed mid-hold leaves no timer behind to fire into it', () => {
+        const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+        try {
+            const menu = open();
+            openColorAndHeadDown();
+            enter(row('profile'), 126, 52);
+            expect(vi.getTimerCount()).toBeGreaterThan(0);
+            menu.unmount();
+            expect(vi.getTimerCount()).toBe(0);
+            wait(SUBMENU_AIM_GRACE_MS * 4);
+            expect(errors).not.toHaveBeenCalled();
+        } finally {
+            errors.mockRestore();
+        }
+    });
+
+    it('a submenu the keyboard opens is not aimed at from the last hover point', () => {
+        open();
+        // A hover on Color leaves a triangle apex behind...
+        openColorAndHeadDown();
+        // ...then the keyboard walks to Profile and opens it.
+        fireEvent.keyDown(document, { key: 'ArrowDown' });
+        fireEvent.keyDown(document, { key: 'ArrowDown' });
+        fireEvent.keyDown(document, { key: 'ArrowDown' });
+        fireEvent.keyDown(document, { key: 'ArrowRight' });
+        expect(openSubmenu()).toBe('Profile');
+        // jsdom lets the pointer arrive on Change Icon without crossing Profile, which isolates
+        // the apex: from the stale Color point this entry is inside a triangle and would be
+        // held; with no apex there is no triangle and it switches at once.
+        enter(row('icon'), 126, 52);
+        expect(openSubmenu()).toBe('Change Icon');
+    });
+
+    it('a move straight down from the chevron column is held for the grace period (the documented cost)', () => {
+        open();
+        enter(row('color'), 170, 36);
+        move(row('color'), 180, 47);
+        fireEvent.mouseLeave(row('color'));
+        // Straight down into the middle of Profile: still inside the backed-off triangle.
+        enter(row('profile'), 180, 52);
+        move(row('profile'), 180, 60);
+        expect(openSubmenu()).toBe('Color');
+        wait(SUBMENU_AIM_GRACE_MS);
+        expect(openSubmenu()).toBe('Profile');
     });
 });

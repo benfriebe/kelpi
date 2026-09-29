@@ -23,7 +23,6 @@
 import {
     useEffect,
     useLayoutEffect,
-    useMemo,
     useRef,
     useState,
     type ReactElement,
@@ -83,10 +82,12 @@ function useSubmenuFlip(open: boolean): { ref: RefObject<HTMLDivElement | null>;
  * The clock restarts every time the pointer gets closer to the submenu, so this is not a budget
  * for the whole journey: it is how long the pointer may stop, or dawdle without progress, inside
  * the safe triangle before the row under it is taken as the one the user wants. It is therefore
- * also the delay a deliberate switch pays when the move onto the new row happened to point at
- * the old submenu (a move that points anywhere else switches at once). 250 ms bridges the
- * hesitation of a hand changing direction mid-diagonal, and stays under the quarter-second at
- * which a menu that has not answered starts to feel stuck.
+ * also the delay a deliberate switch pays when the move onto the new row stayed inside the
+ * triangle: any move aimed at the submenu, and a move straight down from the right-hand part of
+ * the parent row, where the triangle is widest (see `SAFE_TRIANGLE_APEX_BACKOFF`). A move that
+ * leaves the triangle switches at once. 250 ms bridges the hesitation of a hand changing
+ * direction mid-diagonal, and stays under the quarter-second at which a menu that has not
+ * answered starts to feel stuck.
  */
 export const SUBMENU_AIM_GRACE_MS = 250;
 
@@ -106,7 +107,12 @@ interface SubmenuAim {
     rowLeft(rowID: string): void;
     pointerMoved(point: Point): void;
     submenuEntered(): void;
-    cancel(): void;
+    /**
+     * A click or a key changed (or may be about to change) the submenu without the pointer: drop
+     * any held switch AND the apex, so the next submenu is not aimed at from a point on a row
+     * that is no longer its parent. The pointer's next move over the new parent sets a fresh one.
+     */
+    reset(): void;
 }
 
 /**
@@ -122,24 +128,30 @@ interface SubmenuAim {
  *
  * Now, a row entered while a submenu is open first asks whether the pointer is on its way to
  * that submenu: inside the triangle from where it last was on the submenu's parent row to the
- * submenu's near edge (`safe-triangle.ts`, which knows which edge that is for a submenu that
- * flipped left). If so the switch is HELD: it happens if the pointer rests or dawdles for
- * `SUBMENU_AIM_GRACE_MS`, or at once when a move leaves the triangle, and is dropped when the
- * pointer reaches the submenu or leaves the row. A row entered any other way switches at once,
- * exactly as before, so deliberately moving to another row is not slowed down.
+ * submenu's near edge (`safe-triangle.ts`). If so the switch is HELD: it happens if the pointer
+ * rests or dawdles for `SUBMENU_AIM_GRACE_MS`, or at once when a move leaves the triangle, and is
+ * dropped when the pointer reaches the submenu or leaves the row. A row entered from outside the
+ * triangle switches at once, exactly as before. The cost is borne by a deliberate switch whose
+ * move stays inside the triangle: one aimed at the submenu, or straight down from the right-hand
+ * part of the parent row (towards the chevron), waits up to the grace period.
  *
- * All of it is refs read at event time, so the handlers are made once: the keyboard listener
- * below holds `cancel` in its dependency list and must not be re-subscribed per render.
+ * Which side the submenu is on is read off its measured box against the apex, not from
+ * `useSubmenuFlip`'s verdict, so the triangle points the right way even where that verdict is
+ * stale (it is measured when a submenu first opens, and not again when the pointer moves
+ * straight from one submenu parent to another).
+ *
+ * All of it is refs read at event time, so the handlers are made once, in a `useState`
+ * initialiser (which React never re-runs, unlike a `useMemo` it may discard): the keyboard
+ * listener below holds `reset` in its dependency list and must not be re-subscribed per render.
  */
 function useSubmenuAim(
     openSubmenuID: string | null,
     setOpenSubmenuID: (id: string | null) => void,
-    submenuRef: RefObject<HTMLDivElement | null>,
-    opened: SubmenuSide
+    submenuRef: RefObject<HTMLDivElement | null>
 ): SubmenuAim {
     const [heldRowID, setHeldRowID] = useState<string | null>(null);
-    const live = useRef({ openSubmenuID, opened });
-    live.current = { openSubmenuID, opened };
+    const openRef = useRef(openSubmenuID);
+    openRef.current = openSubmenuID;
     const state = useRef<{
         /** The pointer's last known position. */
         pointer: Point | null;
@@ -159,7 +171,7 @@ function useSubmenuAim(
         []
     );
 
-    const handlers = useMemo(() => {
+    const [handlers] = useState(() => {
         const s = state.current;
         const stopTimer = (): void => {
             if (s.timer === null) return;
@@ -187,8 +199,8 @@ function useSubmenuAim(
         };
         /* The pointer's distance from the submenu when it is on its way there, else null. No box
            (jsdom, or a host that reports an empty rect) and no apex (a submenu opened from the
-           keyboard, or a pointer coming back OUT of the submenu) mean no triangle: the old
-           immediate switch. */
+           keyboard or by a click, or a pointer coming back OUT of the submenu) mean no triangle:
+           the old immediate switch. */
         const aiming = (point: Point): number | null => {
             const node = submenuRef.current;
             const apex = s.apex;
@@ -196,15 +208,20 @@ function useSubmenuAim(
             const rect = node.getBoundingClientRect();
             if (rect.width <= 0 || rect.height <= 0) return null;
             const box: SubmenuBox = { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom };
-            const side = live.current.opened;
+            // The apex is on the parent row, so a submenu whose left edge is past it hangs off
+            // the right, and one whose left edge is short of it flipped to the left.
+            const side: SubmenuSide = rect.left >= apex.x ? 'right' : 'left';
             return isAimingAtSubmenu(apex, point, box, side) ? distanceToSubmenu(point, box, side) : null;
         };
         return {
-            cancel,
+            reset(): void {
+                cancel();
+                s.apex = null;
+            },
             rowEntered(rowID: string, target: string | null, point: Point): void {
                 s.overRow = rowID;
                 s.pointer = point;
-                const open = live.current.openSubmenuID;
+                const open = openRef.current;
                 if (target === open) {
                     // Back on the open submenu's own parent (or a plain row with nothing open).
                     cancel();
@@ -231,7 +248,7 @@ function useSubmenuAim(
             },
             pointerMoved(point: Point): void {
                 s.pointer = point;
-                const open = live.current.openSubmenuID;
+                const open = openRef.current;
                 if (open !== null && s.overRow === open) {
                     s.apex = point;
                     return;
@@ -250,11 +267,13 @@ function useSubmenuAim(
                 }
             },
             submenuEntered(): void {
+                // Defensive: the parent panel's padding sits between any row and the submenu, so
+                // a real pointer has always left the held row (and `rowLeft` cancelled) by now.
                 cancel();
                 s.apex = null;
             }
         };
-    }, [setOpenSubmenuID, submenuRef]);
+    });
 
     return { heldRowID, ...handlers };
 }
@@ -651,8 +670,8 @@ export function ContextMenu(props: ContextMenuProps): ReactElement | null {
 
     const submenuItems = props.items.find((item) => item.id === openSubmenuID)?.submenu;
     const submenu = useSubmenuFlip(openSubmenuID !== null && submenuItems !== undefined);
-    const aim = useSubmenuAim(openSubmenuID, setOpenSubmenuID, submenu.ref, submenu.flipped ? 'left' : 'right');
-    const cancelAim = aim.cancel;
+    const aim = useSubmenuAim(openSubmenuID, setOpenSubmenuID, submenu.ref);
+    const resetAim = aim.reset;
 
     /*
      * UI-FIDELITY M58 — an `NSMenu` walks with the keyboard, and this one did not.
@@ -712,8 +731,9 @@ export function ContextMenu(props: ContextMenuProps): ReactElement | null {
             const root = rootRef.current;
             if (root === null) return;
             // The keyboard takes over from the pointer: a switch held for a pointer crossing
-            // rows must not land late on top of the walk.
-            cancelAim();
+            // rows must not land late on top of the walk, and a submenu the keyboard opens is
+            // not aimed at from wherever the pointer last was.
+            resetAim();
             const panel = submenuRef.current;
             const active = globalThis.document.activeElement as HTMLElement | null;
             const inSubmenu = active !== null && panel !== null && panel.contains(active);
@@ -771,7 +791,7 @@ export function ContextMenu(props: ContextMenuProps): ReactElement | null {
         return () => {
             doc.removeEventListener('keydown', onKeyDown, true);
         };
-    }, [submenuRef, cancelAim]);
+    }, [submenuRef, resetAim]);
 
     const container = props.container ?? globalThis.document?.body;
     if (container === undefined || container === null) return null;
@@ -808,7 +828,7 @@ export function ContextMenu(props: ContextMenuProps): ReactElement | null {
                         }}
                         onActivate={() => {
                             // A click is a decision, whatever the pointer was crossing.
-                            aim.cancel();
+                            aim.reset();
                             if (item.submenu !== undefined) {
                                 setOpenSubmenuID(openSubmenuID === item.id ? null : item.id);
                                 return;

@@ -41,8 +41,17 @@ export type SubmenuSide = 'left' | 'right';
  * With the apex exactly on the exit point, a pointer that leaves the parent row straight down for
  * one sample (a hand's diagonal is not a perfect line, and one mouse event can carry dy with no
  * dx) sits on the triangle's very tip and reads as "not heading for the submenu". Four pixels
- * gives that first sample somewhere to land without widening the triangle enough to swallow a
- * deliberate vertical move to the next row, which leaves it within a row's height.
+ * gives that first sample somewhere to land.
+ *
+ * The price is that a move straight down stays inside the triangle while
+ * `dy <= BACKOFF * H / (nearEdge.x - apex.x + BACKOFF)`, with H the submenu's height below the
+ * apex, and that grows as the exit point nears the submenu. With 218 px of submenu below the
+ * apex and the near edge 94 px away (an exit near the row's left) a straight-down move leaves
+ * after about 9 px, early in the next row; from the chevron column, 14 px away, it stays inside
+ * for about 48 px, the whole next row and more, so a deliberate move straight
+ * down from there is held and pays `ContextMenu`'s grace period (250 ms) before it switches. A
+ * taller submenu (Move to Workspace can reach 320 px) widens the zone further. That is accepted:
+ * the alternative, a tip on the exit point, drops the colours on one jittery sample.
  */
 export const SAFE_TRIANGLE_APEX_BACKOFF = 4;
 

@@ -806,15 +806,17 @@ a `repoID` the registry does not hold is a no-op; `createWorktree` absent keeps 
 `repoID` also clears the switch. `createGroup` takes the same two optionally (the New Group sheet).
 Three surfaces drive it:
 
-- the group context menu's **Repository ▸** (shell-ui.md §5.7): the registered repos (the current
-  one ticked), **Choose Folder…** (the native folder panel, desktop app only), **None**, and, only
-  while a repo is set, the checkbox "New workspaces create a worktree from latest main";
+- the group context menu's **Add Repository…** / **Edit Repository…** (shell-ui.md §5.7), which
+  opens the group repository sheet (shell-ui.md §10.7): a filterable list of the registered repos
+  (the current one selected), **Choose Folder…** (the native folder panel, desktop app only),
+  **Remove Repository** (only when the group has one), and the checkbox "New workspaces create a
+  worktree from latest main", enabled only while a repo is selected; one `group-set-repo` on Save;
 - the **New Group sheet** (shell-ui.md §10.4): an optional Repository and the same checkbox;
 - the **CLI**: `kelpi group set-repo <group> <path> | --none [--worktree | --no-worktree]`
   (cli.md §11.7), over the `group-set-repo` wire verb (socket-handlers.md §7.6).
 
-The menu's registry rows and the New Group sheet's dropdown name a repo BY ID, and it is taken
-as is. A PATH (Choose Folder… in the menu or the New Group sheet, the CLI) that the registry
+The repository sheet's registry rows and the New Group sheet's dropdown name a repo BY ID, and it is taken
+as is. A PATH (Choose Folder… in the repository sheet or the New Group sheet, the CLI) that the registry
 holds exactly is that row, as is; any other path inside a checkout names that checkout's main
 repository, which is registered (manual, not auto-discovered) when the registry lacks it. This
 order matters because the registry may hold a monorepo subfolder or a linked worktree as a row

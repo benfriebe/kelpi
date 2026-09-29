@@ -4047,7 +4047,7 @@ function Shell(props: AppProps): ReactElement {
                     suppressDeleteConfirm: () => { settingsActions.setGeneralSetting('confirm-workspace-delete', 'false'); },
                     openSettings: section => openSettings(section === 'labels' ? 'labels' : DEFAULT_SETTINGS_TAB),
                     reportFailure: notifyFailure,
-                    // app-state-core.md §5.5: the group menu's Repository ▸ Choose Folder…,
+                    // app-state-core.md §5.5: the group repository sheet's Choose Folder…,
                     // desktop app only (see `browseForFolder`).
                     ...(browseForFolder === undefined ? {} : { onBrowseForFolder: browseForFolder })
                 }),

@@ -87,7 +87,7 @@ export interface WorkspacesFeatureViewProps {
     readonly suppressDeleteConfirm: () => void;
     readonly openSettings: NonNullable<SidebarProps['onOpenSettings']>;
     readonly reportFailure: (label: string, message: string) => void;
-    /** #283's native folder panel (desktop app only): the group menu's Repository ▸ Choose Folder…. */
+    /** #283's native folder panel (desktop app only): the group repository sheet's Choose Folder…. */
     readonly onBrowseForFolder?: (() => Promise<string | null>) | undefined;
 }
 

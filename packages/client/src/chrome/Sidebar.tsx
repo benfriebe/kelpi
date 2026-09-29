@@ -44,6 +44,7 @@ import { createPortal } from 'react-dom';
 import { ContextMenu, menuAnchorFromEvent, type MenuAvoidRect, type MenuItemSpec } from './ContextMenu';
 import { hoverFill, useHoverKey } from './hover';
 import { useModalPresence } from './modal-presence';
+import { GroupRepoSheet } from './GroupRepoSheet';
 import { NewEntrySheet } from './NewWorkspaceSheet';
 import {
     ChromeIcon,
@@ -101,7 +102,6 @@ import {
     type ChromeRepo,
     type ChromeSidebarEntry,
     type ChromeWorkspace,
-    type GroupRepoChange,
     type SidebarCallbacks
 } from './types';
 
@@ -1537,10 +1537,12 @@ export const GroupHeaderRow = memo(function GroupHeaderRow(props: GroupHeaderRow
                      * the same tertiary ink and small glyph the row's own adornments use (the
                      * muted bell, the ⌘N badge). The name keeps priority: both shrink, but the
                      * indicator's flex-shrink is far larger, so it gives up its width first and
-                     * only then does the name ellipsize. A baseline row of the name's own line
-                     * height, so the band is exactly as tall as a repo-less one.
+                     * only then does the name ellipsize. The indicator is `leading-none` and
+                     * centred on the name's line rather than sharing its baseline: a baseline row
+                     * of mixed sizes grows its line box by a fraction of a pixel, and the band
+                     * must be exactly as tall as a repo-less one.
                      */
-                    <span className="flex min-w-0 items-baseline gap-1.5">
+                    <span className="flex min-w-0 items-center gap-1.5">
                         <span
                             data-testid="group-name"
                             className="min-w-0 truncate text-[13px] font-bold"
@@ -1556,7 +1558,7 @@ export const GroupHeaderRow = memo(function GroupHeaderRow(props: GroupHeaderRow
                                     : props.repo.path
                             }
                             data-create-worktree={group.createWorktree === true ? 'true' : 'false'}
-                            className="flex min-w-[12px] items-center gap-[3px] overflow-hidden text-[10px]"
+                            className="flex min-w-[12px] items-center gap-[3px] overflow-hidden text-[10px] leading-none"
                             style={{ color: tokens.textTertiary, flexShrink: 1000 }}
                         >
                             <span className="flex shrink-0 items-center" aria-hidden>
@@ -2024,6 +2026,8 @@ export function Sidebar(props: SidebarProps): ReactElement {
     const [springLoadedGroupID, setSpringLoadedGroupID] = useState<string | null>(null);
     /** The workspace whose icon is being picked in the custom-emoji sheet. */
     const [emojiSheet, setEmojiSheet] = useState<{ kind: 'workspace' | 'group'; id: string } | null>(null);
+    /** The group whose repository sheet is open (app-state-core.md §5.5). */
+    const [repoSheet, setRepoSheet] = useState<string | null>(null);
     /**
      * §WS-075's default swatch, drawn ONCE per opening of the form (the dep is the form state's
      * identity, and every `setNewForm` mints a new object). Re-rolling it on each keystroke
@@ -2294,7 +2298,12 @@ export function Sidebar(props: SidebarProps): ReactElement {
      */
     const escapeRefProp = props.escapeRef;
     const overlayOpen =
-        menu !== null || rename !== null || confirm !== null || newForm !== null || emojiSheet !== null;
+        menu !== null ||
+        rename !== null ||
+        confirm !== null ||
+        newForm !== null ||
+        emojiSheet !== null ||
+        repoSheet !== null;
     const selectionSize = selection.size;
     useEffect(() => {
         if (escapeRefProp === undefined) return;
@@ -4095,80 +4104,6 @@ export function Sidebar(props: SidebarProps): ReactElement {
         ]
     );
 
-    /**
-     * app-state-core.md §5.5's "Repository ▸": the group's default repository, picked from the
-     * registry, from a folder (#283's native panel, desktop app only; the daemon registers a
-     * folder it has not seen), or None. The worktree switch is a checkbox row that exists only
-     * while a repository is set, because it acts on that repository; it toggles in place, like
-     * the row menu's Mute Notifications, so the new state is seen.
-     */
-    const onSetGroupRepo = props.onSetGroupRepo;
-    const onBrowseForFolder = props.onBrowseForFolder;
-    const registry = props.repos ?? EMPTY_REPOS;
-    const groupRepoMenu = useCallback(
-        (group: ChromeGroup): MenuItemSpec => {
-            const current = group.repoID ?? null;
-            const set = (change: GroupRepoChange): void => {
-                onSetGroupRepo?.(group.id, change);
-            };
-            const rows: MenuItemSpec[] = registry.map(
-                (repo): MenuItemSpec => ({
-                    id: `repo:${repo.id}`,
-                    label: repo.name,
-                    checked: current === repo.id,
-                    onSelect: () => {
-                        // By id: the row as registered, never re-resolved from its path.
-                        set({ repoID: repo.id });
-                    }
-                })
-            );
-            if (rows.length > 0) rows.push({ id: 'repo:sep', label: '', kind: 'separator' });
-            if (onBrowseForFolder !== undefined) {
-                rows.push({
-                    id: 'repo:choose',
-                    label: 'Choose Folder…',
-                    // Never ticked, but it keeps the tick column so the label lines up with the
-                    // repo rows and None around it.
-                    checked: false,
-                    onSelect: () => {
-                        void onBrowseForFolder()
-                            .then((chosen) => {
-                                if (chosen !== null) set({ repoPath: chosen });
-                            })
-                            .catch(() => {
-                                // A panel that failed to open is the same answer as a cancel.
-                            });
-                    }
-                });
-            }
-            rows.push({
-                id: 'repo:none',
-                label: 'None',
-                checked: current === null,
-                onSelect: () => {
-                    set({ repoPath: null });
-                }
-            });
-            if (current !== null) {
-                const createWorktree = group.createWorktree === true;
-                rows.push(
-                    { id: 'repo:sep2', label: '', kind: 'separator' },
-                    {
-                        id: 'repo:worktree',
-                        label: 'New workspaces create a worktree from latest main',
-                        control: 'checkbox',
-                        checked: createWorktree,
-                        onSelect: () => {
-                            set({ createWorktree: !createWorktree });
-                        }
-                    }
-                );
-            }
-            return { id: 'repo', label: 'Repository', submenu: rows };
-        },
-        [onBrowseForFolder, onSetGroupRepo, registry]
-    );
-
     const groupMenuItems = useCallback(
         (groupID: string): MenuItemSpec[] => {
             const group = groups.find((candidate) => candidate.id === groupID);
@@ -4231,7 +4166,22 @@ export function Sidebar(props: SidebarProps): ReactElement {
                     label: 'Change Icon',
                     submenu: iconSubmenu('group', groupID, group.icon)
                 },
-                ...(props.onSetGroupRepo === undefined ? [] : [groupRepoMenu(group)]),
+                /*
+                 * app-state-core.md §5.5: the group's default repository, in its own sheet
+                 * (`GroupRepoSheet`) rather than a submenu listing the whole registry. The
+                 * label says what it will do: add one, or edit the one the group has.
+                 */
+                ...(props.onSetGroupRepo === undefined
+                    ? []
+                    : [
+                          {
+                              id: 'repo',
+                              label: (group.repoID ?? null) === null ? 'Add Repository…' : 'Edit Repository…',
+                              onSelect: () => {
+                                  setRepoSheet(groupID);
+                              }
+                          } satisfies MenuItemSpec
+                      ]),
                 {
                     id: 'collapse',
                     label: collapsed ? 'Expand' : 'Collapse',
@@ -4258,7 +4208,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
                 }
             ];
         },
-        [bucket, collapseOverrides, groupRepoMenu, groups, iconSubmenu, props, toggleCollapse]
+        [bucket, collapseOverrides, groups, iconSubmenu, props, toggleCollapse]
     );
 
     /**
@@ -5149,6 +5099,27 @@ export function Sidebar(props: SidebarProps): ReactElement {
                     }}
                 />
             )}
+
+            {(() => {
+                // Resolved here, not carried on the state, so the sheet follows a rename or a
+                // repo change that lands while it is open; a group deleted meanwhile closes it.
+                const repoGroup = repoSheet === null ? undefined : groups.find((candidate) => candidate.id === repoSheet);
+                if (repoGroup === undefined) return null;
+                return (
+                    <GroupRepoSheet
+                        group={repoGroup}
+                        repos={props.repos ?? EMPTY_REPOS}
+                        {...(props.onBrowseForFolder === undefined ? {} : { onBrowseForFolder: props.onBrowseForFolder })}
+                        onCancel={() => {
+                            setRepoSheet(null);
+                        }}
+                        onSave={(change) => {
+                            props.onSetGroupRepo?.(repoGroup.id, change);
+                            setRepoSheet(null);
+                        }}
+                    />
+                );
+            })()}
 
             {confirm === null ? null : (
                 <ConfirmDialog

@@ -1090,7 +1090,7 @@ A group's default repository and its "new workspaces create a worktree from late
 switch (app-state-core.md §5.5). `name` (name-or-id) required non-empty, plus at least one
 of: `repo` (a path: one the registry holds exactly is that row as is; any other path inside a
 checkout names that checkout's main repository, registered if the registry lacks it),
-`repo_id` (a registry row by id, taken as is: what the GUI's Repository ▸ rows send, so a
+`repo_id` (a registry row by id, taken as is: what the GUI's repository sheet sends for a registry row, so a
 registered monorepo subfolder or linked worktree is never re-resolved into a different repo),
 `clear` (bool: no repository, and the switch goes off with it), `create_worktree` (bool: the
 switch; absent keeps it). More than one of `repo` / `repo_id` / `clear`, or `clear` with

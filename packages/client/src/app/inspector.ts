@@ -94,7 +94,8 @@ export function parseRepos(reply: CommandReply): readonly InspectorRepo[] {
             id,
             name: text(row['name']),
             path: text(row['path']),
-            worktreeBase: text(row['worktree_base'])
+            worktreeBase: text(row['worktree_base']),
+            ...(row['is_auto_discovered'] === true ? { isAutoDiscovered: true } : {})
         });
     }
     return parsed;

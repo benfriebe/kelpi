@@ -3,9 +3,10 @@
  * in it create a worktree off the latest main (app-state-core.md §5.5).
  *
  * Everything here is real: a bare `origin` and a clone of it under the sandbox root (so
- * `git fetch origin` has somewhere to fetch from), the group menu's Repository ▸ (its Choose
- * Folder… answered through the shell's `KELPI_AUDIT_CHOOSE_FOLDER` seam, exactly as
- * `repo-folder-selector` answers it), the New Workspace sheet raised from the group's own menu,
+ * `git fetch origin` has somewhere to fetch from), the group repository sheet raised by the
+ * group menu's Add Repository… / Edit Repository… (its Choose Folder… answered through the
+ * shell's `KELPI_AUDIT_CHOOSE_FOLDER` seam, exactly as `repo-folder-selector` answers it; its
+ * filter, its rows, its switch, Save and Cancel), the New Workspace sheet raised from the group's own menu,
  * and git on disk. A commit lands on origin AFTER the clone, so a worktree whose HEAD is that
  * commit proves the create fetched first; the clone's own `main` is checked untouched.
  *
@@ -21,6 +22,8 @@ import path from 'node:path';
 /** The source this drives, so `verify.mjs` re-runs it when any hop moves. */
 export const covers = [
     'packages/client/src/chrome/Sidebar.tsx',
+    'packages/client/src/chrome/GroupRepoSheet.tsx',
+    'packages/client/src/chrome/RepoPicker.tsx',
     'packages/client/src/chrome/NewWorkspaceSheet.tsx',
     'packages/client/src/features/workspaces.tsx',
     'packages/client/src/features/workspaces-actions.ts',
@@ -90,14 +93,48 @@ export default async function ({ page, cli, sandbox, rec, d, sleep }) {
     const answerFile = d.chooseFolderAnswerPath(sandbox);
     const headerSelector = '[data-testid="group-header"]';
 
-    /** The Repository ▸ submenu of our group, opened from its header's context menu. */
-    const openRepositoryMenu = async () => {
+    /** The group's context menu rows (to see Add Repository… versus Edit Repository…). */
+    const groupMenuRows = async () => {
         await d.openSidebarMenu(page, headerSelector, GROUP);
-        return d.openSubmenu(page, 'Repository');
+        return d.contextMenuRows(page);
     };
-    const closeMenus = async () => {
-        await page.key('Escape');
-        await d.settleDom(page, `document.querySelector('${d.PAGE.contextMenu}') === null`, { ceilingMs: 3_000 });
+    /** The group repository sheet, opened from the header's context menu; returns the menu rows. */
+    const openRepoSheet = async () => {
+        const rows = await groupMenuRows();
+        const label = rows.find((row) => /^(Add|Edit) Repository…$/.test(row)) ?? 'Add Repository…';
+        await d.clickMenuItem(page, label);
+        await d.settleDom(page, `document.querySelector('[data-testid="group-repo-sheet"]') !== null`, { ceilingMs: 5_000 });
+        return rows;
+    };
+    const repoSheetState = async () =>
+        JSON.parse(
+            String(
+                await page.eval(`(() => {
+                    const sheet = document.querySelector('[data-testid="group-repo-sheet"]');
+                    const box = document.querySelector('[data-testid="group-repo-create-worktree"]');
+                    return JSON.stringify({
+                        open: sheet !== null,
+                        title: document.querySelector('[data-testid="group-repo-title"]')?.textContent ?? null,
+                        rows: Array.from(sheet?.querySelectorAll('[data-testid^="repo-choice-"]') ?? []).map(el => ({
+                            name: el.querySelector('.font-medium')?.textContent ?? '',
+                            selected: el.getAttribute('data-selected') === 'true'
+                        })),
+                        folder: document.querySelector('[data-testid="group-repo-folder"]')?.getAttribute('title') ?? null,
+                        worktree: box?.checked ?? null,
+                        worktreeDisabled: box?.disabled ?? null,
+                        remove: document.querySelector('[data-testid="group-repo-remove"]') !== null,
+                        focusInFilter: document.activeElement === document.querySelector('[data-testid="repo-picker-search"]')
+                    });
+                })()`)
+            )
+        );
+    const saveRepoSheet = async () => {
+        await page.click('[data-testid="group-repo-save"]');
+        return d.settleDom(page, `document.querySelector('[data-testid="group-repo-sheet"]') === null`, { ceilingMs: 5_000 });
+    };
+    const cancelRepoSheet = async () => {
+        await page.click('[data-testid="group-repo-cancel"]');
+        await d.settleDom(page, `document.querySelector('[data-testid="group-repo-sheet"]') === null`, { ceilingMs: 5_000 });
     };
     const sheetState = async () =>
         JSON.parse(
@@ -128,24 +165,29 @@ export default async function ({ page, cli, sandbox, rec, d, sleep }) {
         await cli.ok(['group', 'create', GROUP]);
         rec.check('the group exists', await d.settleDom(page, `Array.from(document.querySelectorAll('${headerSelector}')).some(el => (el.innerText ?? '').includes(${JSON.stringify(GROUP)}))`, { ceilingMs: 5_000 }));
 
-        const before = await openRepositoryMenu();
-        rec.check(
-            'Repository ▸ offers Choose Folder… and None (ticked), and no worktree switch while there is no repo',
-            before.some((row) => row.id === 'repo:choose') &&
-                before.find((row) => row.id === 'repo:none')?.checked === 'true' &&
-                !before.some((row) => row.id === 'repo:worktree'),
-            JSON.stringify(before)
-        );
-        await rec.shot(page, 'repository-menu-no-repo');
-        // The header's height with no repo, to prove the indicator does not change it.
+        // The header's height with no repo, to prove the indicator does not change it. Its LAYOUT
+        // height (`offsetHeight`): a new header is still running its entry animation, and a
+        // bounding box would measure the transform rather than the band.
         const bareHeight = await page.eval(
-            `Math.round(Array.from(document.querySelectorAll('${headerSelector}')).find(el => (el.innerText ?? '').includes(${JSON.stringify(GROUP)}))?.getBoundingClientRect().height ?? 0)`
+            `Array.from(document.querySelectorAll('${headerSelector}')).find(el => (el.innerText ?? '').includes(${JSON.stringify(GROUP)}))?.offsetHeight ?? 0`
         );
+        const addRows = await openRepoSheet();
+        rec.check('with no repository the group menu offers Add Repository…', addRows.includes('Add Repository…') && !addRows.includes('Edit Repository…'), JSON.stringify(addRows));
+        const empty = await repoSheetState();
+        rec.check(
+            'the sheet is titled Add Repository to the group, focus in its filter, the switch disabled, no Remove',
+            empty.title === `Add Repository to ${GROUP}` && empty.focusInFilter && empty.worktreeDisabled === true && empty.remove === false,
+            JSON.stringify(empty)
+        );
+        await rec.shot(page, 'repository-sheet-add');
         d.scriptFolderAnswer(sandbox, repo);
-        await d.clickSubmenuItem(page, 'repo:choose');
+        await page.click('[data-testid="group-repo-browse"]');
+        const folderPicked = await d.settle(async () => (await repoSheetState()).folder === repo, { ceilingMs: 10_000, intervalMs: 150 });
+        rec.check('Choose Folder… selects the folder the (scripted) panel returned, before anything is saved', folderPicked && (await ourGroup())?.repo === undefined, JSON.stringify(await repoSheetState()));
+        rec.check('Save closes the sheet', await saveRepoSheet());
         const set = await d.settle(async () => (await ourGroup())?.repo?.path === repo, { ceilingMs: 15_000, intervalMs: 200 });
         const afterChoose = await ourGroup();
-        rec.check('Choose Folder… registers the folder and makes it the group’s repository', set, JSON.stringify(afterChoose));
+        rec.check('Save registers the folder and makes it the group’s repository', set, JSON.stringify(afterChoose));
         rec.check('…with the worktree switch still off', afterChoose?.create_worktree === false, JSON.stringify(afterChoose));
 
         // The group header names its repository, with the full path as the tooltip.
@@ -155,12 +197,11 @@ export default async function ({ page, cli, sandbox, rec, d, sleep }) {
                     await page.eval(`(() => {
                         const head = Array.from(document.querySelectorAll('${headerSelector}')).find(el => (el.innerText ?? '').includes(${JSON.stringify(GROUP)}));
                         const box = head?.querySelector('[data-testid="group-repo"]') ?? null;
-                        const r = head?.getBoundingClientRect();
                         return JSON.stringify({
                             name: box?.querySelector('[data-testid="group-repo-name"]')?.textContent ?? null,
                             title: box?.getAttribute('title') ?? null,
                             worktree: box?.querySelector('[data-testid="group-repo-worktree"]') !== null && box !== null,
-                            height: r === undefined ? null : Math.round(r.height)
+                            height: head?.offsetHeight ?? null
                         });
                     })()`)
                 )
@@ -174,25 +215,33 @@ export default async function ({ page, cli, sandbox, rec, d, sleep }) {
         );
         await rec.shot(page, 'group-header-repo-indicator');
 
-        // The switch appears once there is a repo; it toggles in place.
-        const withRepo = await openRepositoryMenu();
-        const repoRow = withRepo.find((row) => row.label === 'app');
+        // Reopened, it says Edit and shows the saved repo selected; the switch is saved with it.
+        const editRows = await openRepoSheet();
+        const editing = await repoSheetState();
+        rec.check('with a repository the group menu offers Edit Repository…', editRows.includes('Edit Repository…') && !editRows.includes('Add Repository…'), JSON.stringify(editRows));
         rec.check(
-            'the registered repo is listed and ticked, and the worktree switch is now offered',
-            repoRow?.checked === 'true' && withRepo.some((row) => row.id === 'repo:worktree'),
-            JSON.stringify(withRepo)
+            'the sheet is titled Edit Repository for the group, the saved repo selected, the switch enabled, Remove offered',
+            editing.title === `Edit Repository for ${GROUP}` &&
+                editing.rows.some((row) => row.name === 'app' && row.selected) &&
+                editing.worktreeDisabled === false &&
+                editing.worktree === false &&
+                editing.remove === true,
+            JSON.stringify(editing)
         );
-        await d.clickSubmenuItem(page, 'repo:worktree');
+        await page.click('[data-testid="group-repo-create-worktree"]');
+        rec.check('the switch ticks, and nothing is sent before Save', (await repoSheetState()).worktree === true && (await ourGroup())?.create_worktree === false);
+        await rec.shot(page, 'repository-sheet-list-and-switch');
+        await saveRepoSheet();
         const switched = await d.settle(async () => (await ourGroup())?.create_worktree === true, { ceilingMs: 10_000, intervalMs: 200 });
-        rec.check('the switch turns on (kelpi group list --json says create_worktree: true)', switched, JSON.stringify(await ourGroup()));
-        const boxOn = await d.settleDom(
-            page,
-            `document.querySelector('${d.PAGE.contextSubmenu} [data-menu-item="repo:worktree"]')?.getAttribute('aria-checked') === 'true'`,
-            { ceilingMs: 3_000 }
-        );
-        rec.check('the menu stays open and its checkbox shows the new state', boxOn);
-        await rec.shot(page, 'repository-menu-switch-on');
-        await closeMenus();
+        rec.check('Save turns the switch on (kelpi group list --json says create_worktree: true)', switched, JSON.stringify(await ourGroup()));
+        await openRepoSheet();
+        const reopened = await repoSheetState();
+        rec.check('reopened, the sheet shows the saved repo and the switch on', reopened.rows.some((row) => row.name === 'app' && row.selected) && reopened.worktree === true, JSON.stringify(reopened));
+        // Cancel discards: untick, cancel, and the saved switch is still on.
+        await page.click('[data-testid="group-repo-create-worktree"]');
+        await cancelRepoSheet();
+        await sleep(300);
+        rec.check('Cancel discards the change', (await ourGroup())?.create_worktree === true, JSON.stringify(await ourGroup()));
         const switchIndicator = await headerIndicator();
         rec.check(
             'with the switch on, the header adds the worktree mark and says so in the tooltip',
@@ -361,19 +410,31 @@ export default async function ({ page, cli, sandbox, rec, d, sleep }) {
         rec.check('Settings registers the monorepo subfolder as a row of its own', subAdded, JSON.stringify(beforePick));
         await closeSettings();
 
-        const menuWithSub = await openRepositoryMenu();
-        const webRow = menuWithSub.find((row) => row.label === 'web');
-        await d.clickSubmenuItem(page, webRow?.id ?? 'repo:missing');
+        await openRepoSheet();
+        await page.click('[data-testid="repo-picker-search"]');
+        await page.insertText('WEB');
+        const filtered = await d.settle(async () => {
+            const state = await repoSheetState();
+            return state.rows.length === 1 && state.rows[0]?.name === 'web';
+        }, { ceilingMs: 3_000, intervalMs: 100 });
+        rec.check('the filter narrows the list by name, case-insensitively, to the subfolder row', filtered, JSON.stringify(await repoSheetState()));
+        const webRowID = await page.eval(
+            `(Array.from(document.querySelectorAll('[data-testid^="repo-choice-"]')).find(el => el.querySelector('.font-medium')?.textContent === 'web')?.getAttribute('data-testid') ?? '').slice('repo-choice-'.length)`
+        );
+        await page.click(`[data-testid="repo-choice-${String(webRowID)}"]`);
+        await rec.shot(page, 'repository-sheet-filtered');
+        await saveRepoSheet();
         const picked = await d.settle(async () => (await ourGroup())?.repo?.path === sub, { ceilingMs: 10_000, intervalMs: 200 });
         rec.check('picking the subfolder row makes THAT row the group’s repo, not its top level', picked, JSON.stringify(await ourGroup()));
-        const ticked = await openRepositoryMenu();
+        await openRepoSheet();
+        const ticked = await repoSheetState();
         rec.check(
-            'the menu ticks the subfolder row, and only it',
-            ticked.find((row) => row.label === 'web')?.checked === 'true' && ticked.find((row) => row.label === 'app')?.checked === 'false',
+            'reopened, the sheet selects the subfolder row, and only it',
+            ticked.rows.find((row) => row.name === 'web')?.selected === true && ticked.rows.find((row) => row.name === 'app')?.selected === false,
             JSON.stringify(ticked)
         );
-        await rec.shot(page, 'repository-menu-subfolder-row-ticked');
-        await closeMenus();
+        await rec.shot(page, 'repository-sheet-subfolder-row-selected');
+        await cancelRepoSheet();
         await d.openSettingsTab(page, 'repositories');
         const afterPick = await rowNames();
         rec.check('and registered no duplicate', JSON.stringify(afterPick) === JSON.stringify(beforePick), JSON.stringify(afterPick));

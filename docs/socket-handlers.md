@@ -1189,7 +1189,7 @@ Inputs: `nameOrID` (required), `repo?` (a path), `repoID?` (a registry row), `cl
    reply.
 3. `repoID` → the registry row, or `error("no repo matches '{repoID}'")`; taken as is (no git
    work), promoted out of auto-discovered status, dispatch set-group-repo(id, repoID,
-   createWorktree?), persist, reply. This is what the GUI's Repository ▸ rows send.
+   createWorktree?), persist, reply. This is what the GUI's repository sheet sends for a registry row.
 4. No `repo` (the switch alone) → a group with no repository and `createWorktree: true` →
    `error("group '{name}' has no repository to create worktrees from: set one first (kelpi group set-repo <group> <path>)")`;
    else dispatch set-group-repo(id, its current repoID, createWorktree), persist, reply.
@@ -1209,8 +1209,8 @@ Reply (the group's state after the change):
 `repo` is null when the group has none. The reducer keeps the invariants on its own as well:
 a `repoID` the registry does not hold is refused, and `createWorktree` is never true without
 a repo. `remove-repo` (Settings ▸ Repositories) clears every group's repo that pointed at it.
-The GUI reaches the same handler: the group menu's Repository ▸ sends this verb over the WS
-(a Choose Folder… path is registered here), and the New Group sheet instead passes
+The GUI reaches the same handler: the group repository sheet's Save sends this verb over the
+WS (a Choose Folder… path is registered here), and the New Group sheet instead passes
 `repo_id` / `create_worktree` on the WS-only `create-group-for-workspaces`, so a group is
 created with its repository in one change (that verb promotes an auto-discovered row too). A
 repository any group references is skipped by the auto-unlink GC (§GIT-081).

@@ -57,8 +57,8 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
      * §5.5: a group created from the New Group sheet, with its optional repository. A registry
      * row rides the create itself (`repo_id`), so the group lands with it in one change. A
      * folder from the sheet's Choose Folder… has no id yet: the daemon's `group-set-repo`
-     * resolves and registers it (the same path the menu's Choose Folder… takes), sent once the
-     * create has answered with the new group's id.
+     * resolves and registers it (the same path the repository sheet's Choose Folder… takes),
+     * sent once the create has answered with the new group's id.
      */
     const createGroupWithRepo = (
         name: string,
@@ -278,7 +278,7 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
             return run('Group color', commands.setGroupColor({ groupID, color }));
         },
 
-        /** app-state-core.md §5.5: the group menu's Repository ▸ (a refusal surfaces as a toast). */
+        /** app-state-core.md §5.5: the group repository sheet's Save (a refusal surfaces as a toast). */
         setGroupRepo(groupID: string, change: GroupRepoChange): boolean {
             return run(
                 'Group repository',

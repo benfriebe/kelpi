@@ -261,7 +261,7 @@ describe('retained Workspaces actions', () => {
         expect(h.activate).toHaveBeenCalledExactlyOnceWith(W3);
     });
 
-    it('carries a group’s repository through Repository ▸, the New Group sheet and the create sheet (§5.5)', async () => {
+    it('carries a group’s repository through the repository sheet, the New Group sheet and the create sheet (§5.5)', async () => {
         const h = setup();
         h.actions.setGroupRepo(G1, { repoPath: '/repo/app', createWorktree: true });
         expect(h.rpc.setGroupRepo).toHaveBeenLastCalledWith({ group: G1, repo: '/repo/app', createWorktree: true });

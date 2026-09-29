@@ -68,7 +68,7 @@ export type ChromeGroup = Pick<WorkspaceGroup, 'id' | 'name' | 'color' | 'icon' 
     /**
      * app-state-core.md §5.5: the group's default repository (a registry id) and its "new
      * workspaces create a worktree from latest main" switch. Optional for the same reason as
-     * `ChromeWorkspace.profileName`: only the group menu's Repository ▸ and the create sheets
+     * `ChromeWorkspace.profileName`: only the group repository sheet and the create sheets
      * read them, and every hand-built fixture predates them. Absent reads as no repo, off.
      */
     readonly repoID?: string | null | undefined;
@@ -76,7 +76,7 @@ export type ChromeGroup = Pick<WorkspaceGroup, 'id' | 'name' | 'color' | 'icon' 
 };
 
 /**
- * What the group menu's Repository ▸ changes (§5.5). `repoID` is a registry row, taken as is (a
+ * What the group repository sheet saves (§5.5). `repoID` is a registry row, taken as is (a
  * row may be a monorepo subfolder or a linked worktree, which a path would re-resolve into a
  * different repo); `repoPath` is a folder the native panel returned (the daemon registers it),
  * and `repoPath: null` is "None"; neither leaves the repository alone. `createWorktree` absent
@@ -169,6 +169,11 @@ export interface ChromeRepo {
     readonly name: string;
     readonly path: string;
     readonly worktreeBase: string;
+    /**
+     * Registered by auto-detect rather than by hand (§GIT-074). The group repository sheet hides
+     * these by default, as Settings ▸ Repositories does. Optional: absent reads as manual.
+     */
+    readonly isAutoDiscovered?: boolean | undefined;
 }
 
 /**
@@ -253,11 +258,11 @@ export interface SidebarCallbacks {
     readonly onSetWorkspaceMuted?: ((workspaceID: string, muted: boolean) => void) | undefined;
     /** §WS-065's "Color ▸". `null` is the submenu's "None": a group's colour is optional. */
     readonly onSetGroupColor?: ((groupID: string, color: WorkspaceColor | null) => void) | undefined;
-    /** app-state-core.md §5.5's "Repository ▸": the group's default repo and worktree switch. */
+    /** app-state-core.md §5.5's repository sheet: the group's default repo and worktree switch. */
     readonly onSetGroupRepo?: ((groupID: string, change: GroupRepoChange) => void) | undefined;
     /**
      * #283's native folder panel, desktop app only (absent in a browser, which hides the
-     * Repository ▸ menu's Choose Folder… row). Resolves to the chosen path, or null on cancel.
+     * group repository sheet's Choose Folder…). Resolves to the chosen path, or null on cancel.
      */
     readonly onBrowseForFolder?: (() => Promise<string | null>) | undefined;
     readonly onRenameGroup?: ((groupID: string, name: string) => void) | undefined;

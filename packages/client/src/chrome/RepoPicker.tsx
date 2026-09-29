@@ -83,6 +83,15 @@ export interface RepoPickerProps {
      */
     readonly hideFooter?: boolean | undefined;
     readonly onSelectionChange?: ((chosen: readonly RepoPickerEntry[]) => void) | undefined;
+    /**
+     * Rows selected when the picker opens (and the keyboard anchor on the first of them): the
+     * group repository sheet opens on the group's current repo (app-state-core.md §5.5).
+     */
+    readonly initialSelectedIDs?: readonly string[] | undefined;
+    /** What an EMPTY registry says, in place of the default scan / Settings hint. */
+    readonly emptyRegistryHint?: string | undefined;
+    /** The search field's placeholder; the Settings tab's wording where the host wants it. */
+    readonly searchPlaceholder?: string | undefined;
 }
 
 const EMPTY_IDS: ReadonlySet<string> = new Set();
@@ -122,9 +131,13 @@ export function RepoPicker(props: RepoPickerProps): ReactElement {
     const mode = props.mode ?? 'single';
     const disabled = props.disabledRepoIDs ?? EMPTY_IDS;
     const [query, setQuery] = useState('');
-    const [selected, setSelected] = useState<ReadonlySet<string>>(EMPTY_IDS);
+    const [selected, setSelected] = useState<ReadonlySet<string>>(() =>
+        props.initialSelectedIDs === undefined || props.initialSelectedIDs.length === 0
+            ? EMPTY_IDS
+            : new Set(props.initialSelectedIDs)
+    );
     /** The last interacted-with row: it drives keyboard nav and shift-click ranges. */
-    const [anchor, setAnchor] = useState<string | null>(null);
+    const [anchor, setAnchor] = useState<string | null>(() => props.initialSelectedIDs?.[0] ?? null);
     const [scanPath, setScanPath] = useState('');
     const [listFocused, setListFocused] = useState(false);
 
@@ -325,7 +338,7 @@ export function RepoPicker(props: RepoPickerProps): ReactElement {
                 ref={searchRef}
                 aria-label="Search repositories"
                 data-testid="repo-picker-search"
-                placeholder="Search repos…"
+                placeholder={props.searchPlaceholder ?? 'Search repos…'}
                 className="w-full rounded border bg-transparent px-1.5 py-1 text-[12px] outline-none"
                 style={{ borderColor: tokens.divider, color: tokens.textPrimary }}
                 value={query}
@@ -355,8 +368,14 @@ export function RepoPicker(props: RepoPickerProps): ReactElement {
                     className="flex flex-col items-center justify-center rounded px-2 text-center text-[11px]"
                     style={{ color: tokens.textTertiary, height: `${String(LIST_HEIGHT_PX)}px` }}
                 >
-                    <div style={{ color: tokens.textSecondary }}>No matching repositories</div>
-                    <div>{props.repos.length === 0 ? 'Scan a folder, or add one in Settings ▸ Repositories.' : 'Try a different filter.'}</div>
+                    <div style={{ color: tokens.textSecondary }}>
+                        {props.repos.length === 0 ? 'No repositories registered' : 'No matching repositories'}
+                    </div>
+                    <div>
+                        {props.repos.length === 0
+                            ? (props.emptyRegistryHint ?? 'Scan a folder, or add one in Settings ▸ Repositories.')
+                            : 'Try a different filter.'}
+                    </div>
                 </div>
             ) : (
                 <div

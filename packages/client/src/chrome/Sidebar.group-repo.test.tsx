@@ -1,7 +1,8 @@
 /**
  * A group's default repository (app-state-core.md §5.5), everywhere the sidebar shows it:
  *
- *   - the group menu's Repository ▸ (registered repos, Choose Folder… in the desktop app, None,
+ *   - the group repository sheet, raised by Add Repository… / Edit Repository… (a filterable
+ *     registry list, Choose Folder… in the desktop app, Remove Repository,
  *     and the "create a worktree from latest main" switch while a repo is set);
  *   - the New Workspace sheet's prefill (the repo, and the worktree toggle with update main
  *     ticked when the switch is on), which a Group change swaps until the user edits the repos;
@@ -82,10 +83,17 @@ function header(name: string): HTMLElement {
     return found;
 }
 
-function openRepositoryMenu(groupName: string): HTMLElement {
+function menuRow(groupName: string, label: RegExp): HTMLElement | null {
     fireEvent.contextMenu(header(groupName));
-    fireEvent.mouseEnter(within(screen.getByTestId('context-menu')).getByText('Repository'));
-    return screen.getByTestId('context-submenu');
+    return within(screen.getByTestId('context-menu')).queryByText(label);
+}
+
+/** The group's repository sheet, opened the way a user opens it: its context menu row. */
+function openRepoSheet(groupName: string): HTMLElement {
+    const row = menuRow(groupName, /^(Add|Edit) Repository…$/);
+    if (row === null) throw new Error(`no repository row for ${groupName}`);
+    fireEvent.click(row);
+    return screen.getByTestId('group-repo-sheet');
 }
 
 function newWorkspaceFrom(groupName: string): void {
@@ -102,91 +110,158 @@ const chosenRepos = (): string[] =>
         (element) => (element.getAttribute('data-testid') ?? '').slice('new-workspace-repo-remove-'.length)
     );
 
-describe('the group menu’s Repository ▸ (§5.5)', () => {
-    it('lists the registry with the current repo ticked, then Choose Folder…, None and the switch', () => {
+describe('the group’s repository sheet (§5.5)', () => {
+    const AUTO: ChromeRepo = { id: 'r3', name: 'auto-found', path: '/src/auto-found', worktreeBase: '/wt/auto', isAutoDiscovered: true };
+    function renderWith(props: Record<string, unknown> = {}) {
         const onSetGroupRepo = vi.fn();
-        render(
-            <Sidebar
-                {...base()}
-                entries={entries()}
-                repos={REPOS}
-                onSetGroupRepo={onSetGroupRepo}
-                onBrowseForFolder={vi.fn()}
-            />
+        render(<Sidebar {...base()} entries={entries()} repos={REPOS} onSetGroupRepo={onSetGroupRepo} {...props} />);
+        return onSetGroupRepo;
+    }
+    const rowIDs = (): string[] =>
+        [...screen.getByTestId('group-repo-sheet').querySelectorAll('[data-testid^="repo-choice-"]')].map((element) =>
+            (element.getAttribute('data-testid') ?? '').slice('repo-choice-'.length)
         );
-        const submenu = openRepositoryMenu('app-team');
-        const ids = [...submenu.querySelectorAll('[data-menu-item]')].map((row) => row.getAttribute('data-menu-item'));
-        expect(ids).toEqual(['repo:r1', 'repo:r2', 'repo:choose', 'repo:none', 'repo:worktree']);
-        expect(submenu.querySelector('[data-menu-item="repo:r1"]')?.getAttribute('data-checked')).toBe('true');
-        expect(submenu.querySelector('[data-menu-item="repo:none"]')?.getAttribute('data-checked')).not.toBe('true');
+    const worktreeBox = (): HTMLInputElement => screen.getByTestId('group-repo-create-worktree') as HTMLInputElement;
 
-        const worktree = submenu.querySelector('[data-menu-item="repo:worktree"]') as HTMLElement;
-        expect(worktree.getAttribute('role')).toBe('menuitemcheckbox');
-        expect(worktree.getAttribute('aria-checked')).toBe('true');
-        expect((worktree.textContent ?? '').trim()).toBe('New workspaces create a worktree from latest main');
-
-        // By id: a registered row is taken as is, never re-resolved from its path.
-        fireEvent.click(within(submenu).getByText('infra'));
-        expect(onSetGroupRepo).toHaveBeenLastCalledWith(G_WORKTREE, { repoID: 'r2' });
-    });
-
-    it('flips the switch in place, sending the opposite state', () => {
-        const onSetGroupRepo = vi.fn();
-        render(<Sidebar {...base()} entries={entries()} repos={REPOS} onSetGroupRepo={onSetGroupRepo} />);
-        const submenu = openRepositoryMenu('infra-team');
-        const worktree = submenu.querySelector('[data-menu-item="repo:worktree"]') as HTMLElement;
-        expect(worktree.getAttribute('aria-checked')).toBe('false');
-        fireEvent.click(worktree);
-        expect(onSetGroupRepo).toHaveBeenLastCalledWith(G_ASSOCIATE, { createWorktree: true });
-    });
-
-    it('offers no switch on a group without a repo, and None clears one', () => {
-        const onSetGroupRepo = vi.fn();
-        render(<Sidebar {...base()} entries={entries()} repos={REPOS} onSetGroupRepo={onSetGroupRepo} />);
-        const plain = openRepositoryMenu('plain');
-        expect(plain.querySelector('[data-menu-item="repo:worktree"]')).toBeNull();
-        expect(plain.querySelector('[data-menu-item="repo:none"]')?.getAttribute('data-checked')).toBe('true');
+    it('says Add Repository… for a group without a repo and Edit Repository… for one with a repo, and titles the sheet to match', () => {
+        renderWith();
+        expect(menuRow('plain', /^Add Repository…$/)).not.toBeNull();
         fireEvent.keyDown(document, { key: 'Escape' });
-        cleanup();
-
-        render(<Sidebar {...base()} entries={entries()} repos={REPOS} onSetGroupRepo={onSetGroupRepo} />);
-        fireEvent.click(within(openRepositoryMenu('app-team')).getByText('None'));
-        expect(onSetGroupRepo).toHaveBeenLastCalledWith(G_WORKTREE, { repoPath: null });
-    });
-
-    it('Choose Folder… sets the folder the native panel returned, and a cancel sets nothing', async () => {
-        const onSetGroupRepo = vi.fn();
-        const onBrowseForFolder = vi.fn().mockResolvedValueOnce('/src/new-repo').mockResolvedValueOnce(null);
-        render(
-            <Sidebar
-                {...base()}
-                entries={entries()}
-                repos={REPOS}
-                onSetGroupRepo={onSetGroupRepo}
-                onBrowseForFolder={onBrowseForFolder}
-            />
-        );
-        fireEvent.click(within(openRepositoryMenu('plain')).getByText('Choose Folder…'));
-        await waitFor(() => {
-            expect(onSetGroupRepo).toHaveBeenCalledWith(G_PLAIN, { repoPath: '/src/new-repo' });
-        });
-
-        fireEvent.click(within(openRepositoryMenu('plain')).getByText('Choose Folder…'));
-        await waitFor(() => {
-            expect(onBrowseForFolder).toHaveBeenCalledTimes(2);
-        });
-        expect(onSetGroupRepo).toHaveBeenCalledTimes(1);
-    });
-
-    it('has no Choose Folder… outside the desktop app, and no Repository ▸ without a handler', () => {
-        render(<Sidebar {...base()} entries={entries()} repos={REPOS} onSetGroupRepo={vi.fn()} />);
-        expect(openRepositoryMenu('plain').querySelector('[data-menu-item="repo:choose"]')).toBeNull();
+        expect(menuRow('app-team', /^Edit Repository…$/)).not.toBeNull();
+        // No submenu any more: the row is a plain item.
+        expect(screen.queryByTestId('context-submenu')).toBeNull();
         fireEvent.keyDown(document, { key: 'Escape' });
+        openRepoSheet('app-team');
+        expect(screen.getByTestId('group-repo-title').textContent).toBe('Edit Repository for app-team');
+        fireEvent.click(screen.getByTestId('group-repo-cancel'));
+        openRepoSheet('plain');
+        expect(screen.getByTestId('group-repo-title').textContent).toBe('Add Repository to plain');
+    });
+
+    it('opens on the current repo with the switch as set, focus in the filter', () => {
+        renderWith();
+        openRepoSheet('app-team');
+        expect(screen.getByTestId('repo-choice-r1').getAttribute('data-selected')).toBe('true');
+        expect(screen.getByTestId('repo-choice-r2').getAttribute('data-selected')).toBe('false');
+        expect(worktreeBox().checked).toBe(true);
+        expect(document.activeElement).toBe(screen.getByTestId('repo-picker-search'));
+    });
+
+    it('filters by name or path, and Save sends the picked row by id with the switch', () => {
+        const onSetGroupRepo = renderWith();
+        openRepoSheet('plain');
+        expect(worktreeBox().disabled).toBe(true);
+        fireEvent.change(screen.getByTestId('repo-picker-search'), { target: { value: 'INFRA' } });
+        expect(rowIDs()).toEqual(['r2']);
+        fireEvent.change(screen.getByTestId('repo-picker-search'), { target: { value: '/src/ap' } });
+        expect(rowIDs()).toEqual(['r1']);
+        fireEvent.click(screen.getByTestId('repo-choice-r1'));
+        expect(worktreeBox().disabled).toBe(false);
+        fireEvent.click(worktreeBox());
+        // Nothing is sent until Save.
+        expect(onSetGroupRepo).not.toHaveBeenCalled();
+        fireEvent.click(screen.getByTestId('group-repo-save'));
+        expect(onSetGroupRepo).toHaveBeenCalledExactlyOnceWith(G_PLAIN, { repoID: 'r1', createWorktree: true });
+        expect(screen.queryByTestId('group-repo-sheet')).toBeNull();
+    });
+
+    it('Cancel, Escape and the backdrop send nothing', () => {
+        const onSetGroupRepo = renderWith();
+        openRepoSheet('app-team');
+        fireEvent.click(screen.getByTestId('repo-choice-r2'));
+        fireEvent.click(screen.getByTestId('group-repo-cancel'));
+        openRepoSheet('app-team');
+        fireEvent.click(screen.getByTestId('repo-choice-r2'));
+        fireEvent.keyDown(window, { key: 'Escape' });
+        expect(screen.queryByTestId('group-repo-sheet')).toBeNull();
+        openRepoSheet('app-team');
+        fireEvent.mouseDown(screen.getByTestId('group-repo-backdrop'));
+        expect(screen.queryByTestId('group-repo-sheet')).toBeNull();
+        expect(onSetGroupRepo).not.toHaveBeenCalled();
+    });
+
+    it('Return saves, from the list as from anywhere else in the sheet', () => {
+        const onSetGroupRepo = renderWith();
+        openRepoSheet('infra-team');
+        fireEvent.click(worktreeBox());
+        fireEvent.keyDown(worktreeBox(), { key: 'Enter' });
+        expect(onSetGroupRepo).toHaveBeenCalledExactlyOnceWith(G_ASSOCIATE, { repoID: 'r2', createWorktree: true });
+    });
+
+    it('Remove Repository is offered only for a group with one, clears it, and turns the switch off', () => {
+        const onSetGroupRepo = renderWith();
+        openRepoSheet('plain');
+        expect(screen.queryByTestId('group-repo-remove')).toBeNull();
+        // Nothing chosen for a group with nothing: there is nothing to save.
+        expect((screen.getByTestId('group-repo-save') as HTMLButtonElement).disabled).toBe(true);
+        fireEvent.click(screen.getByTestId('group-repo-cancel'));
+
+        openRepoSheet('app-team');
+        fireEvent.click(screen.getByTestId('group-repo-remove'));
+        expect(screen.getByTestId('repo-choice-r1').getAttribute('data-selected')).toBe('false');
+        expect(worktreeBox().disabled).toBe(true);
+        expect(worktreeBox().checked).toBe(false);
+        fireEvent.click(screen.getByTestId('group-repo-save'));
+        expect(onSetGroupRepo).toHaveBeenCalledExactlyOnceWith(G_WORKTREE, { repoPath: null });
+    });
+
+    it('Choose Folder… (desktop app) selects the folder the panel returned; a cancel changes nothing', async () => {
+        const onBrowseForFolder = vi.fn().mockResolvedValueOnce(null).mockResolvedValueOnce('/src/new-repo');
+        const onSetGroupRepo = renderWith({ onBrowseForFolder });
+        openRepoSheet('plain');
+        fireEvent.click(screen.getByTestId('group-repo-browse'));
+        await waitFor(() => {
+            expect(onBrowseForFolder).toHaveBeenCalledTimes(1);
+        });
+        expect(screen.queryByTestId('group-repo-folder')).toBeNull();
+        fireEvent.click(screen.getByTestId('group-repo-browse'));
+        await waitFor(() => {
+            expect(screen.getByTestId('group-repo-folder').getAttribute('title')).toBe('/src/new-repo');
+        });
+        fireEvent.click(worktreeBox());
+        fireEvent.click(screen.getByTestId('group-repo-save'));
+        expect(onSetGroupRepo).toHaveBeenCalledExactlyOnceWith(G_PLAIN, { repoPath: '/src/new-repo', createWorktree: true });
+    });
+
+    it('has no Choose Folder… outside the desktop app, and no row without a handler', () => {
+        renderWith();
+        openRepoSheet('plain');
+        expect(screen.queryByTestId('group-repo-browse')).toBeNull();
+        fireEvent.click(screen.getByTestId('group-repo-cancel'));
         cleanup();
 
         render(<Sidebar {...base()} entries={entries()} repos={REPOS} />);
-        fireEvent.contextMenu(header('plain'));
-        expect(within(screen.getByTestId('context-menu')).queryByText('Repository')).toBeNull();
+        expect(menuRow('plain', /Repository…$/)).toBeNull();
+    });
+
+    it('hides auto-discovered repos unless one is the current repo, or they are asked for', () => {
+        renderWith({ repos: [...REPOS, AUTO] });
+        openRepoSheet('plain');
+        expect(rowIDs()).toEqual(['r1', 'r2']);
+        fireEvent.click(screen.getByTestId('group-repo-show-auto'));
+        expect(rowIDs()).toEqual(['r1', 'r2', 'r3']);
+        fireEvent.click(screen.getByTestId('group-repo-cancel'));
+        cleanup();
+
+        const current = entries({ worktree: { repoID: 'r3', createWorktree: false } });
+        render(<Sidebar {...base()} entries={current} repos={[...REPOS, AUTO]} onSetGroupRepo={vi.fn()} />);
+        openRepoSheet('app-team');
+        expect(rowIDs()).toEqual(['r1', 'r2', 'r3']);
+        expect(screen.getByTestId('repo-choice-r3').getAttribute('data-selected')).toBe('true');
+    });
+
+    it('points an empty registry at Choose Folder… in the desktop app and at Settings in a browser', () => {
+        render(<Sidebar {...base()} entries={entries()} repos={[]} onSetGroupRepo={vi.fn()} onBrowseForFolder={vi.fn()} />);
+        openRepoSheet('plain');
+        expect(screen.getByTestId('repo-picker-empty').textContent).toContain('No repositories registered');
+        expect(screen.getByTestId('repo-picker-empty').textContent).toContain('Choose Folder…');
+        fireEvent.click(screen.getByTestId('group-repo-cancel'));
+        cleanup();
+
+        render(<Sidebar {...base()} entries={entries()} repos={[]} onSetGroupRepo={vi.fn()} />);
+        openRepoSheet('plain');
+        expect(screen.getByTestId('repo-picker-empty').textContent).toContain('Settings ▸ Repositories');
+        expect(screen.getByTestId('repo-picker-empty').textContent).not.toContain('Choose Folder');
     });
 });
 

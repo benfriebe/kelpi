@@ -27,6 +27,7 @@ export {
 } from './Sidebar';
 /** §WS-075's create sheet — a modal over the window, no longer a form inside the sidebar. */
 export { NewEntrySheet, type NewEntryDraft, type NewEntrySheetProps } from './NewWorkspaceSheet';
+export { GroupRepoSheet, type GroupRepoChoice, type GroupRepoSheetProps } from './GroupRepoSheet';
 export { TopBar, identityDotColor, type TopBarProps } from './TopBar';
 export {
     CreateWorktreeSheet,

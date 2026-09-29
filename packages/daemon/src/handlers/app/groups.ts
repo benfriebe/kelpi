@@ -189,7 +189,7 @@ function replyWithGroupRepo(ctx: AppContext, reply: ReplyHandle | null, groupID:
  * the caller has to hear about: the path is not a repository, or the switch was asked for on a
  * group with no repository to branch from. `repo` is a PATH (the CLI's natural argument, and the
  * registry row's own identity), registered when the registry lacks it; `repo_id` is a registry
- * row taken as is (the GUI's menu rows); `clear` drops the repo and the switch with it;
+ * row taken as is (the GUI repository sheet's rows); `clear` drops the repo and the switch with it;
  * `create_worktree` alone flips the switch on the current repo. Whatever repo the group adopts
  * is promoted out of auto-discovered status, so §GIT-081's GC can never collect it.
  */

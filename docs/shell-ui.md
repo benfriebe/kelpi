@@ -973,20 +973,17 @@ Rename…                    → inline rename in the header row
 Color ▸                    → "None" + the 10 colors
 Change Icon ▸              → the same flat submenu as §5.6 (Symbol and Emoji captions,
                              Custom Emoji…), ending in Reset to Folder
-Repository ▸               → the group's default repository (Kelpi addition, below)
+Add Repository… | Edit Repository…
+                           → the group repository sheet (§10.7; Kelpi addition, below)
 Expand | Collapse
 ──────────
 Delete Group…              → group delete confirmation (§12.4)
 ```
 
-**Repository ▸** (app-state-core.md §5.5): every registered repo by name, the group's current
-one ticked (a row is sent by id, so a registered subfolder or worktree row is taken as is); a
-separator; **Choose Folder…** (desktop app only: #283's native folder panel, and the daemon
-registers a folder the registry lacks); **None** (ticked when the group has no
-repo). While a repo is set, a separator and the checkbox row "New workspaces create a worktree
-from latest main" follow; it toggles in place like the row menu's Mute Notifications (§5.6),
-so the new state is seen. Every row goes over the `group-set-repo` verb; a refusal (a folder
-that is not a git repository) surfaces as the usual error toast. The submenu is absent when
+**Add Repository… / Edit Repository…** (app-state-core.md §5.5): a plain item that says what it
+will do, **Add Repository…** for a group with no default repository and **Edit Repository…**
+for one with a repository. It opens the group repository sheet (§10.7) rather than listing the
+registry in a submenu, which did not scale past a handful of repos. The item is absent when
 assembly wires no handler.
 
 ### 5.8 Selection header & footer
@@ -1351,6 +1348,36 @@ preview; Cancel / **Create** (disabled unless both sanitize to something usable;
 the branch field submits).
 
 ---
+
+### 10.7 Group repository (380 wide; Kelpi addition)
+
+Raised by the group context menu's Add Repository… / Edit Repository… (§5.7); app-state-core.md
+§5.5 has the model. Title **"Add Repository to <group>"** for a group with no repository,
+**"Edit Repository for <group>"** for one with a repository, and a caption saying new workspaces
+in the group start with it.
+
+- **The list** is the shared repo picker (the New Workspace sheet's and the inspector's, single
+  mode, embedded): a filter field ("Filter by name or path", matching name or path
+  case-insensitively, Settings ▸ Repositories' rule) over a fixed-height list of registry rows,
+  each a name over a middle-truncated path (the full path on hover). ↑/↓ move through it,
+  Return saves the highlighted row, a double-click saves that row. It opens with focus in the
+  filter and the group's current repository selected. Auto-discovered repos are hidden, as in
+  Settings ▸ Repositories, unless one is the current repository; a **Show auto-detected**
+  checkbox appears when any are hidden. An empty registry says **No repositories registered**,
+  pointing at Choose Folder… in the desktop app and at Settings ▸ Repositories in a browser.
+- **Choose Folder…** (desktop app only, #283's native folder panel): the chosen folder becomes
+  the selection (shown as a "Folder: …" line, the list's selection cleared); the daemon resolves
+  and registers it on save. A cancelled panel changes nothing.
+- **Remove Repository**, only when the group has a repository: the selection becomes none.
+- **The switch** "New workspaces create a worktree from latest main", disabled (and unticked)
+  while nothing is selected, so it can never be saved on without a repository.
+- **Cancel / Save.** Nothing is sent until Save, which sends ONE `group-set-repo`: `repo_id` for
+  a registry row (taken as is, never re-resolved), `repo` for a chosen folder, `clear` for
+  Remove Repository; `create_worktree` rides only with a repository. Save is disabled when there
+  is nothing to save (no repository chosen for a group that has none). Cancel, Escape (from
+  anywhere, capture phase) and a click on the backdrop discard. Return saves from anywhere but a
+  button. On close, focus goes back to where it was when the sheet opened, if that element is
+  still there.
 
 ## 11. Help window
 

@@ -729,6 +729,12 @@ export interface AppMenuDeps {
      * unconditional for the same reason: it is where a user finds out WHY.
      */
     readonly canCheckForUpdates: boolean;
+    /**
+     * #286: the row's label while the update flow has a state worth naming ("Downloading Kelpi
+     * X…", "Restart to Update to Kelpi X…"; `update-surface.ts` ▸ `updateMenuRow`). Absent is
+     * the plain "Check for Updates…". A click on it shows that state, whatever the label says.
+     */
+    readonly updateLabel?: string | undefined;
 }
 
 /**
@@ -760,7 +766,7 @@ export function appMenuTemplate(deps: AppMenuDeps): MenuItemConstructorOptions[]
     return [
         { role: 'about' },
         {
-            label: CHECK_FOR_UPDATES_LABEL,
+            label: deps.updateLabel ?? CHECK_FOR_UPDATES_LABEL,
             enabled: deps.canCheckForUpdates,
             click: () => deps.checkForUpdates()
         },
@@ -889,8 +895,10 @@ export function menuLogLine(options: {
      * guessed would be worse than one that is silent.
      */
     readonly isPackaged?: boolean | undefined;
+    /** #286: the updater row's label when the flow has renamed it (`AppMenuDeps.updateLabel`). */
+    readonly updateLabel?: string | undefined;
 }): string {
-    const updates = `${CHECK_FOR_UPDATES_LABEL} (${options.canCheckForUpdates ? 'enabled' : 'disabled'})`;
+    const updates = `${options.updateLabel ?? CHECK_FOR_UPDATES_LABEL} (${options.canCheckForUpdates ? 'enabled' : 'disabled'})`;
     const debug = options.isPackaged === undefined ? '' : ` · ${debugMenuLogFragment(options.isPackaged)}`;
     return `menu: Kelpi ▸ ${updates} · ${FILE_MENU_LOG_FRAGMENT} · ${VIEW_MENU_LOG_FRAGMENT} · Help ▸ Kelpi Help (⌘?)${debug}`;
 }

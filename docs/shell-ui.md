@@ -1517,6 +1517,34 @@ daemon to activate the workspace and focus the pane; "Dismiss" only dismisses; a
 stops waiting withdraws its notification; a repost for the same pane replaces the previous
 toast.
 
+Updates (#272, #286; `packages/shell/src/update-flow.ts`, `update-surface.ts`): the update flow
+lives in the main process and is drawn by the page in the same window, as a sheet centred on it
+(`packages/client/src/chrome/UpdateSheet.tsx`): checking (manual checks only), up to date, an
+offer with the current and new versions and the release notes rendered as markdown (raw HTML
+escaped by the daemon's `renderReleaseNotes`, then rebuilt from an allowlist by the page; only
+http(s) links are kept, and they open in the system browser), downloading (indeterminate, since Squirrel.Mac reports no progress),
+ready ("Kelpi X is ready", Restart Now / Later, and that Kelpi reopens by itself), restarting,
+failed (the reason and Retry) and unsupported. The page and the main process meet through the
+daemon: the status connection pushes `update-state`, accepted only from the named window's own
+owner Electron session that declared `update-surface` in its hello, and the page sends
+`shell-action` `update-action` (owner only; refused at once with no update-capable shell for the
+window). The page acknowledges a revealed state once it has painted it; one it does not
+acknowledge within 2.5 s becomes a native dialog parented to the window, and the page is told to
+close its sheet so only one surface asks. Every button carries the `seq` of the view it was
+pressed on, and the shell ignores a press on a state it has moved on from. A finished download
+never quits the app; Restart Now opens the quit gate (`allowQuit`, which tears nothing down: that
+waits for `will-quit`) and then calls `quitAndInstall`, leaving the daemon running, and Later
+leaves the download for Squirrel to install at the next quit. A restart that fails (Squirrel
+reports an error, or Kelpi has not quit after 60 s) re-arms the quit gate and shows "Kelpi could
+not finish installing the update. Quit Kelpi and open it again" with a Quit button, since
+Squirrel may already have closed the windows. A download past ten minutes is "taking longer than
+expected" and still waited for; Squirrel's finish reaches the flow through a standing listener
+whenever it comes. A state nobody asked for right now (a launch-check offer, a finished or failed
+download) never pulls a hidden window forward: it posts a notification when Kelpi is not in
+front, and the sheet waits in the page. Update Now is refused, with the fix, when the app runs
+from a translocated or read-only copy. The ready sheet asks the user to give Kelpi a few seconds
+before reopening it, since a copy reopened too soon is the old one.
+
 Shell-level event plumbing, delivered to the client as daemon events:
 
 - terminal title change → `surfaceTitleChanged(paneID, title)` (header/status bar text);
@@ -1535,7 +1563,9 @@ all shortcuts are user-rebindable, the menu reflects the current binding.
 
 The full application menu (`packages/shell/src/menu.ts`, assembled in
 `packages/shell/src/main.ts:1077-1143`): Kelpi ▸ About, Check for Updates… (greyed unless
-the build is packaged and updater-capable; `menu.ts:454-469`); File ▸ the rows above plus
+the build is packaged and updater-capable; `menu.ts:454-469`; #286: while an update is under way
+the row names it, "Checking for Updates…", "Downloading Kelpi X…", "Restart to Update to Kelpi
+X…", and a click shows that state rather than checking again); File ▸ the rows above plus
 Close (⌘W), which asks the focused window's page to run `close_pane` and closes the window
 only when the page reports nothing to close or does not answer within 500ms
 (`menu.ts:133-169`); Edit (standard roles); View ▸ Toggle Sidebar, Toggle Inspector, Toggle

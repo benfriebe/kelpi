@@ -239,11 +239,22 @@ function trimUrlTail(match: string): string {
  * re-canonicalizing (e.g. `new URL()`) would append slashes the source never had.
  */
 export function autolinkText(text: string): string {
-    AUTOLINK_PATTERN.lastIndex = 0;
+    return autolinkWith(AUTOLINK_PATTERN, text);
+}
+
+/** #286 release notes: the same autolinking, for `http(s)://` runs only (see `SAFE_LINK`). */
+const SAFE_AUTOLINK_PATTERN = /https?:\/\/[^\s<>"'`]+/gi;
+
+function autolinkSafeText(text: string): string {
+    return autolinkWith(SAFE_AUTOLINK_PATTERN, text);
+}
+
+function autolinkWith(pattern: RegExp, text: string): string {
+    pattern.lastIndex = 0;
     let out = '';
     let cursor = 0;
     for (;;) {
-        const match = AUTOLINK_PATTERN.exec(text);
+        const match = pattern.exec(text);
         if (match === null) break;
         const url = trimUrlTail(match[0]);
         if (url.length === 0) continue;
@@ -251,7 +262,7 @@ export function autolinkText(text: string): string {
         out += escapeHtml(text.slice(cursor, start));
         out += `<a href="${escapeHtml(url)}">${escapeHtml(url)}</a>`;
         cursor = start + url.length;
-        AUTOLINK_PATTERN.lastIndex = cursor;
+        pattern.lastIndex = cursor;
     }
     out += escapeHtml(text.slice(cursor));
     return out;
@@ -279,17 +290,28 @@ function attr(token: Token, name: string): string | null {
 interface InlineOptions {
     /** Autolinking is disabled inside explicit links and image alt text (§3.4). */
     readonly suppressAutolink: boolean;
+    /** #286 release notes: no raw HTML, no images, only http(s)/mailto links (`renderReleaseNotes`). */
+    readonly safe?: boolean | undefined;
 }
+
+/**
+ * The only link schemes release notes keep (`renderReleaseNotes`); anything else is plain text.
+ * Not `mailto:`: the shell opens http(s) only (`main.ts` ▸ `openExternally`), so a mail link would
+ * be drawn as a link and do nothing.
+ */
+const SAFE_LINK = /^https?:\/\//i;
 
 function renderInline(tokens: readonly Token[] | null, options: InlineOptions): string {
     if (tokens === null) return '';
     let out = '';
     let linkDepth = 0;
+    /** Depths of `link_open`s whose anchor was dropped (safe mode), so their close is dropped too. */
+    const droppedLinks: number[] = [];
     for (const token of tokens) {
         const suppress = options.suppressAutolink || linkDepth > 0;
         switch (token.type) {
             case 'text':
-                out += suppress ? escapeHtml(token.content) : autolinkText(token.content);
+                out += suppress ? escapeHtml(token.content) : options.safe === true ? autolinkSafeText(token.content) : autolinkText(token.content);
                 break;
             case 'code_inline':
                 out += `<code>${escapeHtml(token.content)}</code>`;
@@ -314,14 +336,28 @@ function renderInline(tokens: readonly Token[] | null, options: InlineOptions): 
                 break;
             case 'link_open': {
                 linkDepth += 1;
-                out += `<a href="${escapeHtml(attr(token, 'href') ?? '')}">`;
+                const href = attr(token, 'href') ?? '';
+                // Release notes keep a link only when it goes somewhere a browser should open;
+                // a `file:` or custom-scheme link keeps its text and loses the anchor. The
+                // anchor's close tag follows the same decision (`droppedLinks`).
+                if (options.safe === true && !SAFE_LINK.test(href)) {
+                    droppedLinks.push(linkDepth);
+                    break;
+                }
+                out += `<a href="${escapeHtml(href)}">`;
                 break;
             }
             case 'link_close':
+                if (droppedLinks[droppedLinks.length - 1] === linkDepth) droppedLinks.pop();
+                else out += '</a>';
                 linkDepth = Math.max(0, linkDepth - 1);
-                out += '</a>';
                 break;
             case 'image': {
+                if (options.safe === true) {
+                    // No remote image loads from a release note: the alt text stands in.
+                    out += renderInline(token.children, { suppressAutolink: true, safe: true });
+                    break;
+                }
                 const alt = renderInline(token.children, { suppressAutolink: true });
                 const title = attr(token, 'title');
                 out +=
@@ -337,7 +373,7 @@ function renderInline(tokens: readonly Token[] | null, options: InlineOptions): 
                 out += '<br>\n';
                 break;
             case 'html_inline':
-                out += token.content;
+                out += options.safe === true ? escapeHtml(token.content) : token.content;
                 break;
             default:
                 // Unknown inline nodes render their children (swift-markdown's default visit).
@@ -348,7 +384,7 @@ function renderInline(tokens: readonly Token[] | null, options: InlineOptions): 
     return out;
 }
 
-function renderCodeBlock(content: string, info: string): string {
+function renderCodeBlock(content: string, info: string, safe = false): string {
     const language = info.trim();
     const open =
         language === ''
@@ -359,7 +395,9 @@ function renderCodeBlock(content: string, info: string): string {
         open +
         escapeHtml(content) +
         '</code></pre>' +
-        '<button class="code-copy-btn" type="button" aria-label="Copy code"></button>' +
+        // The copy button is driven by the preview document's own script, which release notes
+        // (drawn in the app's page, not a preview frame) do not have.
+        (safe ? '' : '<button class="code-copy-btn" type="button" aria-label="Copy code"></button>') +
         '</div>\n'
     );
 }
@@ -381,13 +419,44 @@ function takeTaskMarker(tokens: readonly Token[], itemIndex: number): boolean | 
 }
 
 export function renderMarkdownBody(source: string): string {
-    const tokens = parser.parse(source, {});
+    return renderTokens(parser.parse(source, {}), false);
+}
+
+/**
+ * The same parser configuration with raw HTML OFF: markdown-it then emits a raw `<b>` or
+ * `<script>` as text, which `renderTokens` escapes.
+ */
+const releaseNotesParser = new MarkdownIt({ html: false, linkify: false, typographer: false, breaks: false });
+
+/**
+ * #286: a release's notes as HTML that is safe to put in the app's own page.
+ *
+ * The markdown panes' renderer, with three things taken away, because the output is not drawn in
+ * an isolated preview frame (content-panes.md §3.3) but inside the Kelpi window's update sheet:
+ *
+ *   - **raw HTML is escaped**, never passed through (markdown-it `html: false`, and every
+ *     `html_block` / `html_inline` token that could still appear is escaped as well);
+ *   - **images become their alt text**, so a release note cannot make the app fetch anything;
+ *   - **only http(s) links survive**; any other href (mailto included, which the shell would not
+ *     open) keeps its text and loses its anchor. The page opens a surviving link in the system
+ *     browser.
+ *
+ * The code block's copy button is also left out, since nothing in the page drives it. The page
+ * does not trust this HTML either: it rebuilds it element by element from an allowlist
+ * (`client/src/chrome/release-notes.tsx`), so this is one of two independent defences.
+ */
+export function renderReleaseNotes(source: string): string {
+    return renderTokens(releaseNotesParser.parse(source, {}), true);
+}
+
+/** The block walker behind `renderMarkdownBody` and `renderReleaseNotes`. */
+function renderTokens(tokens: readonly Token[], safe: boolean): string {
     let out = '';
     for (let index = 0; index < tokens.length; index += 1) {
         const token = tokens[index] as Token;
         switch (token.type) {
             case 'inline':
-                out += renderInline(token.children, { suppressAutolink: false });
+                out += renderInline(token.children, { suppressAutolink: false, safe });
                 break;
             case 'heading_open':
                 out += `<${token.tag}>`;
@@ -405,7 +474,7 @@ export function renderMarkdownBody(source: string): string {
                 break;
             case 'fence':
             case 'code_block':
-                out += renderCodeBlock(token.content, token.info);
+                out += renderCodeBlock(token.content, token.info, safe);
                 break;
             case 'bullet_list_open':
                 out += '<ul>\n';
@@ -483,7 +552,7 @@ export function renderMarkdownBody(source: string): string {
                 out += '</td>';
                 break;
             case 'html_block':
-                out += token.content;
+                out += safe ? `<p>${escapeHtml(token.content)}</p>\n` : token.content;
                 break;
             default:
                 break;

@@ -1006,6 +1006,15 @@ describe('the app menu’s Check for Updates… (§APP-026)', () => {
         expect(checkForUpdates).toHaveBeenCalledTimes(1);
     });
 
+    it('names the update flow\'s state when it has one, and still shows it on click (#286)', () => {
+        const checkForUpdates = vi.fn();
+        const template = appMenuTemplate({ checkForUpdates, canCheckForUpdates: true, updateLabel: 'Restart to Update to Kelpi 0.2.3…' });
+        expect(template[1]?.label).toBe('Restart to Update to Kelpi 0.2.3…');
+        (template[1]?.click as (() => void) | undefined)?.();
+        expect(checkForUpdates).toHaveBeenCalledTimes(1);
+        expect(menuLogLine({ canCheckForUpdates: true, updateLabel: 'Downloading Kelpi 0.2.3…' })).toContain('Kelpi ▸ Downloading Kelpi 0.2.3… (enabled)');
+    });
+
     it('says which state it installed, in the line the smoke reads', () => {
         expect(menuLogLine({ canCheckForUpdates: false })).toContain('Check for Updates… (disabled)');
         expect(menuLogLine({ canCheckForUpdates: true })).toContain('Check for Updates… (enabled)');

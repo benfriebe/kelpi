@@ -912,7 +912,8 @@ actions too, section 7.2):
   binding; section 7.7).
 - **Help**: "Kelpi Help" hard-bound ⌘? (not part of the binding map); opens the client's
   Help overlay through the daemon.
-- App menu: "Check for Updates…" (unbound).
+- App menu: "Check for Updates…" (unbound; #286: the row's label names an update in progress,
+  "Downloading Kelpi X…" or "Restart to Update to Kelpi X…", and a click shows it).
 - Unpackaged (dev) builds only (`app.isPackaged` is false): Debug ▸ Seed Test Group.
 - Rows outside the map, whose chords are FIXED: File ▸ Close (⌘W: it routes to the page's
   `close_pane`, which is deliberately not a menu-bar action, and keeps the platform's Close

@@ -9,7 +9,8 @@ import {
     markdownStylesheet,
     renderFrontMatter,
     renderMarkdownBody,
-    renderMarkdownDocument
+    renderMarkdownDocument,
+    renderReleaseNotes
 } from './markdown.js';
 
 // ---------------------------------------------------------------------------
@@ -468,5 +469,51 @@ describe('fileLoadErrorMarkdown', () => {
         expect(html).toContain('<blockquote>');
         expect(html).toContain('Failed to load file: /tmp/x.md');
         expect(html).toContain('ENOENT');
+    });
+});
+
+describe('renderReleaseNotes (#286: release notes drawn in the app page)', () => {
+    it('renders headings, lists, emphasis, code and http links like a markdown pane', () => {
+        const html = renderReleaseNotes(
+            '## What changed\n\n- **Faster** restarts\n- `kelpi update`\n\n```sh\nkelpi --version\n```\n\nSee [the release](https://github.com/o/r/releases/tag/v0.2.3) or https://kelpi.dev.'
+        );
+        expect(html).toContain('<h2>What changed</h2>');
+        expect(html).toContain('<strong>Faster</strong>');
+        expect(html).toContain('<code>kelpi update</code>');
+        expect(html).toContain('<pre><code class="language-sh">kelpi --version\n</code></pre>');
+        expect(html).toContain('<a href="https://github.com/o/r/releases/tag/v0.2.3">the release</a>');
+        expect(html).toContain('<a href="https://kelpi.dev">https://kelpi.dev</a>');
+        // The preview's copy button needs the preview's script, which the app page does not have.
+        expect(html).not.toContain('code-copy-btn');
+    });
+
+    it('escapes raw HTML, block and inline, instead of passing it through', () => {
+        const html = renderReleaseNotes('<div onclick="x()">block</div>\n\nInline <b>bold</b> and <script>alert(1)</script>.');
+        expect(html).not.toMatch(/<(div|b|script)[\s>]/);
+        expect(html).toContain('&lt;div onclick=&quot;x()&quot;&gt;block&lt;/div&gt;');
+        expect(html).toContain('&lt;b&gt;bold&lt;/b&gt;');
+        expect(html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
+    });
+
+    it('turns images into their alt text, so a note loads nothing', () => {
+        const html = renderReleaseNotes('![the new sheet](https://example.com/sheet.png)');
+        expect(html).not.toContain('<img');
+        expect(html).not.toContain('example.com');
+        expect(html).toContain('the new sheet');
+    });
+
+    it('keeps only http(s) links; any other scheme, mailto included, keeps its text and loses the anchor', () => {
+        const html = renderReleaseNotes('[chat](slack://open) [mail](mailto:team@kelpi.dev) [js](javascript:alert(1)) ftp://files.example/x mailto:a@b.c');
+        expect(html).toContain('chat');
+        expect(html).not.toContain('slack:');
+        expect(html).toContain('mail');
+        expect(html).not.toContain('href="mailto:');
+        expect(html).not.toContain('href="javascript:');
+        expect(html).not.toContain('href="ftp:');
+    });
+
+    it('leaves the markdown panes\' own rendering alone', () => {
+        expect(renderMarkdownBody('Inline <b>bold</b>')).toContain('<b>bold</b>');
+        expect(renderMarkdownBody('```\nx\n```')).toContain('code-copy-btn');
     });
 });

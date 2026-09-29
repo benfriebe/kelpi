@@ -81,13 +81,17 @@ describe('parseShellAction', () => {
             action: 'open-file-dialog',
             windowID: 'w1',
             paneID: 'p1',
-            requestID: null
+            requestID: null,
+            updateAction: null,
+            seq: null
         });
         expect(parseShellAction({ action: 'install-cli' })).toEqual({
             action: 'install-cli',
             windowID: null,
             paneID: null,
-            requestID: null
+            requestID: null,
+            updateAction: null,
+            seq: null
         });
         expect(parseShellAction({ action: 'check-for-updates' })?.action).toBe('check-for-updates');
     });
@@ -97,7 +101,9 @@ describe('parseShellAction', () => {
             action: 'choose-folder-dialog',
             windowID: 'w1',
             paneID: null,
-            requestID: 'r1'
+            requestID: 'r1',
+            updateAction: null,
+            seq: null
         });
     });
 
@@ -113,10 +119,31 @@ describe('parseShellAction', () => {
             action: 'resolve-dropped-files',
             windowID: 'w1',
             paneID: null,
-            requestID: 'd1'
+            requestID: 'd1',
+            updateAction: null,
+            seq: null
         });
         expect(parseShellAction({ action: 'resolve-dropped-files', requestID: 'd1' })).toBeNull();
         expect(parseShellAction({ action: 'resolve-dropped-files', windowID: 'w1' })).toBeNull();
+    });
+
+    it('decodes an update-sheet button with its verb and sequence (#286)', () => {
+        expect(parseShellAction({ action: 'update-action', windowID: 'w1', updateAction: 'restart' })).toEqual({
+            action: 'update-action',
+            windowID: 'w1',
+            paneID: null,
+            requestID: null,
+            updateAction: 'restart',
+            seq: null
+        });
+        expect(parseShellAction({ action: 'update-action', windowID: 'w1', updateAction: 'shown', seq: 3 })?.seq).toBe(3);
+    });
+
+    it('refuses an update-sheet button with an unknown verb, or no window (#286)', () => {
+        expect(parseShellAction({ action: 'update-action', windowID: 'w1', updateAction: 'install-anything' })).toBeNull();
+        expect(parseShellAction({ action: 'update-action', windowID: 'w1' })).toBeNull();
+        expect(parseShellAction({ action: 'update-action', updateAction: 'restart' })).toBeNull();
+        expect(parseShellAction({ action: 'check-for-updates', updateAction: 'restart' })?.updateAction).toBeNull();
     });
 
     it('keeps a request id off the one-way actions', () => {

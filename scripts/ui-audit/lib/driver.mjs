@@ -726,6 +726,32 @@ export function chooseFolderAnswerPath(sandbox) {
 export function scriptFolderAnswer(sandbox, answer) {
     fs.writeFileSync(chooseFolderAnswerPath(sandbox), answer === null ? '' : `${answer}\n`);
 }
+
+/**
+ * #286: the update flow's test seam. Every shell `boot` starts carries `KELPI_AUDIT_UPDATER`
+ * naming this file under the sandbox root, and a development shell (never a packaged one) reads
+ * it on every update check (`packages/shell/src/update-audit.ts`). With no file the seam is
+ * dormant and the shell is the ordinary development build that cannot update, so no other
+ * scenario sees a difference. Written, it points the real feed check at a local stand-in for
+ * update.electronjs.org (`feed`), swaps Squirrel for an installer that "downloads" until
+ * `download` says `done` or `fail:<message>` and quits without installing, and can pretend the
+ * app runs from `bundlePath`.
+ */
+export const UPDATER_CONTROL_FILE = 'updater-control.json';
+
+export function updaterControlPath(sandbox) {
+    return path.join(sandbox.root, UPDATER_CONTROL_FILE);
+}
+
+/** Write the update seam's control file (`{ feed, download, bundlePath }`), or remove it with null. */
+export function scriptUpdater(sandbox, control) {
+    const file = updaterControlPath(sandbox);
+    if (control === null) {
+        fs.rmSync(file, { force: true });
+        return;
+    }
+    fs.writeFileSync(file, `${JSON.stringify(control)}\n`);
+}
 /** What `windowPlacement` reports when no placement was asked for: the shell's own choice. */
 export const SHIPPED_WINDOW_PLACEMENT = 'default';
 
@@ -803,7 +829,9 @@ export async function boot({ repoRoot, label = 'scenario', build = true, log = (
             KELPI_HARNESS_SOCKET: harnessSocket,
             KELPI_HARNESS_DEFER_LOAD: '1',
             // #283: the folder panel's scripted answer (`scriptFolderAnswer` above).
-            KELPI_AUDIT_CHOOSE_FOLDER: chooseFolderAnswerPath(sandbox)
+            KELPI_AUDIT_CHOOSE_FOLDER: chooseFolderAnswerPath(sandbox),
+            // #286: the update flow's seam, dormant until a scenario writes the file (`scriptUpdater`).
+            KELPI_AUDIT_UPDATER: updaterControlPath(sandbox)
         } });
         clearBackgroundTaskPolicy(shell.child?.pid);
         // Before CDP, because a `hidden` window that did not actually go hidden is a run that has

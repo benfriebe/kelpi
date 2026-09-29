@@ -1678,6 +1678,21 @@ menus are portals with state-independent lifetimes (`packages/client/src/chrome/
 which avoids the workaround entirely, and the requirement stands: an open menu/submenu must
 survive 1s-cadence status updates in the row beneath it.
 
+**Submenu safe triangle.** Submenus open on hover, and an open submenu must also survive the
+pointer travelling into it (issue #279). A submenu hangs from its parent row's top and runs
+down past the rows below it, so the straight line to a lower item (a colour near the bottom of
+the workspace Color ▸ list) crosses other parent rows. A row entered while a submenu is open
+does not switch or close it if the pointer is inside the triangle from its last point on the
+submenu's parent row to the submenu's near edge (the right edge of a submenu that flipped left
+near the window's edge). The switch is held instead: it happens once the pointer rests, or
+stops closing in, for 250ms (`SUBMENU_AIM_GRACE_MS`), or at once when a move leaves the
+triangle, and it is dropped when the pointer reaches the submenu or leaves the row. A row
+entered from outside the triangle switches immediately, as do the keyboard walk and a click;
+a crossed row does not highlight while its switch is held. Dismissal is unchanged: an outside
+press or Escape, never the pointer leaving the menu. Geometry:
+`packages/client/src/chrome/safe-triangle.ts`; timing: `useSubmenuAim` in `ContextMenu.tsx`;
+real-pointer coverage: `scripts/scenarios/context-menu-safe-triangle.mjs`.
+
 **Focus management.** Keyboard-focus handoff is sequenced deliberately (palette close →
 200ms → focus surface; popover row click → focus surface before dismissal; suppression of
 focus grabs while sidebar text fields are editing). In the client this collapses to
@@ -1694,7 +1709,7 @@ mid-edit is not lost, the pane collects the caret when the field lets go (issue 
 linger; 650ms drag spring-load; 40pt/3pt/15ms drag auto-scroll; 1s pulse animation; 1s
 elapsed/clock tickers; 2s system-stat sampling with 60-sample history; 500ms editor
 debounces (other subsystem); 0.15s palette transition; ~0.35s spring for sidebar
-reorders; 0.22s scroll-reveal.
+reorders; 0.22s scroll-reveal; 250ms submenu safe-triangle grace.
 
 **Terminal-surface identity.** The grid's contract — pane DOM/view instances are stable
 across every layout mutation, only repositioned, is essential for ghostty-web.

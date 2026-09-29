@@ -12,10 +12,11 @@
  * it is talking about, so the cases that do live against a stubbed panel box.
  */
 
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
-import { afterEach, describe, expect, it } from 'vitest';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { ContextMenu, menuAnchorFromEvent, menuPlacement } from './ContextMenu';
+import { ContextMenu, menuAnchorFromEvent, menuPlacement, SUBMENU_AIM_GRACE_MS, type MenuItemSpec } from './ContextMenu';
+import type { SubmenuBox } from './safe-triangle';
 
 /** jsdom has no box model, so a panel that has to be measured is given one. */
 function panelBox(height: number, width = 190): DOMRect {
@@ -718,5 +719,277 @@ describe('the opt-in checkbox control', () => {
             />
         );
         expect((document.activeElement as HTMLElement).getAttribute('data-menu-item')).toBe('mute');
+    });
+});
+
+/**
+ * #279: safe triangles. A user reaching for a workspace colour kept losing the Color ▸ list,
+ * because the submenu hangs from the Color row's top and a natural diagonal towards a lower
+ * colour enters Profile or Change Icon first, and entering a row switched submenus at once.
+ *
+ * jsdom has no layout, so the submenu's box is stubbed and the pointer's route is written out as
+ * the events a browser sends for it: `mouseenter`/`mouseleave` at each row boundary, and
+ * `mousemove` in between, each with the coordinates of a real path. The layout they describe is
+ * a panel at x 0..190 with 24 px rows (Rename 0..24, Color 24..48, Profile 48..72, Change Icon
+ * 72..96, Delete 96..120) and the submenu at x 194..374 hanging from Color's top. The real
+ * pointer, in a real window, is the scenario's (`scripts/scenarios/context-menu-safe-triangle.mjs`).
+ */
+describe('safe triangles: crossing rows on the way into a submenu (#279)', () => {
+    const COLORS = ['red', 'orange', 'yellow', 'green', 'blue', 'purple', 'pink', 'gray'];
+    const RIGHT_BOX: SubmenuBox = { left: 194, right: 374, top: 24, bottom: 264 };
+
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
+    function stubSubmenuBox(right: SubmenuBox, left?: SubmenuBox): void {
+        const real = Element.prototype.getBoundingClientRect;
+        Element.prototype.getBoundingClientRect = function (this: Element): DOMRect {
+            if (this.getAttribute('data-testid') !== 'context-submenu') return real.call(this);
+            const box = left !== undefined && this.getAttribute('data-submenu-side') === 'left' ? left : right;
+            return {
+                ...box,
+                x: box.left,
+                y: box.top,
+                width: box.right - box.left,
+                height: box.bottom - box.top,
+                toJSON: () => ({})
+            } as DOMRect;
+        };
+        restoreRect = () => {
+            Element.prototype.getBoundingClientRect = real;
+        };
+    }
+
+    interface Opened {
+        readonly selected: string[];
+        readonly closed: () => number;
+    }
+
+    function open(x = 0, box: { right: SubmenuBox; left?: SubmenuBox } = { right: RIGHT_BOX }): Opened {
+        vi.useFakeTimers();
+        stubSubmenuBox(box.right, box.left);
+        const selected: string[] = [];
+        let closed = 0;
+        const items: MenuItemSpec[] = [
+            { id: 'rename', label: 'Rename…', onSelect: () => selected.push('rename') },
+            {
+                id: 'color',
+                label: 'Color',
+                submenu: COLORS.map((color) => ({
+                    id: `color:${color}`,
+                    label: color,
+                    swatch: '#888888',
+                    onSelect: () => selected.push(color)
+                }))
+            },
+            { id: 'profile', label: 'Profile', submenu: [{ id: 'profile:default', label: 'default' }] },
+            { id: 'icon', label: 'Change Icon', submenu: [{ id: 'icon:none', label: 'None' }] },
+            { id: 'delete', label: 'Delete', danger: true, onSelect: () => selected.push('delete') }
+        ];
+        render(
+            <ContextMenu
+                x={x}
+                y={0}
+                items={items}
+                onClose={() => {
+                    closed += 1;
+                }}
+            />
+        );
+        return { selected, closed: () => closed };
+    }
+
+    const row = (id: string): HTMLElement => {
+        const found = screen
+            .getByTestId('context-menu')
+            .querySelector<HTMLElement>(`:scope > div > [data-menu-item="${id}"]`);
+        if (found === null) throw new Error(`no parent row ${id}`);
+        return found;
+    };
+    const submenuRow = (id: string): HTMLElement => {
+        const found = screen.getByTestId('context-submenu').querySelector<HTMLElement>(`[data-menu-item="${id}"]`);
+        if (found === null) throw new Error(`no submenu row ${id}`);
+        return found;
+    };
+    const openSubmenu = (): string | null =>
+        screen.queryByTestId('context-submenu')?.getAttribute('aria-label') ?? null;
+    const enter = (element: HTMLElement, x: number, y: number): void => {
+        fireEvent.mouseEnter(element, { clientX: x, clientY: y });
+    };
+    const move = (element: HTMLElement, x: number, y: number): void => {
+        fireEvent.mouseMove(element, { clientX: x, clientY: y });
+    };
+    const wait = (ms: number): void => {
+        act(() => {
+            vi.advanceTimersByTime(ms);
+        });
+    };
+    /** Open Color ▸ by hovering it, and leave its row at its lower edge heading down-right. */
+    const openColorAndHeadDown = (): void => {
+        enter(row('color'), 100, 36);
+        move(row('color'), 112, 42);
+        move(row('color'), 120, 47);
+        fireEvent.mouseLeave(row('color'));
+        expect(openSubmenu()).toBe('Color');
+    };
+
+    it('a diagonal across Profile and Change Icon keeps the colours, and a colour can be clicked', () => {
+        const menu = open();
+        openColorAndHeadDown();
+
+        enter(row('profile'), 126, 52);
+        expect(openSubmenu()).toBe('Color');
+        // The crossed row is on the way, not chosen, so it does not light up as if it were.
+        expect(row('profile').getAttribute('data-highlighted')).toBe('false');
+        expect(row('color').getAttribute('data-highlighted')).toBe('true');
+        move(row('profile'), 136, 60);
+        move(row('profile'), 146, 70);
+        fireEvent.mouseLeave(row('profile'));
+
+        enter(row('icon'), 150, 74);
+        move(row('icon'), 164, 84);
+        move(row('icon'), 178, 94);
+        fireEvent.mouseLeave(row('icon'));
+        expect(openSubmenu()).toBe('Color');
+
+        // Through the panel's padding and the gap, into the submenu, down to green.
+        enter(submenuRow('color:green'), 200, 100);
+        wait(SUBMENU_AIM_GRACE_MS * 4);
+        expect(openSubmenu()).toBe('Color');
+        fireEvent.click(submenuRow('color:green'));
+        expect(menu.selected).toEqual(['green']);
+        expect(menu.closed()).toBe(1);
+    });
+
+    it('points the triangle LEFT for a submenu that flipped to the left near the window edge', () => {
+        // A panel at x 800..990: the right-hand placement would end at 1174, past jsdom's
+        // 1024 px window, so the submenu flips to x 606..796.
+        const menu = open(800, {
+            right: { left: 994, right: 1174, top: 24, bottom: 264 },
+            left: { left: 606, right: 796, top: 24, bottom: 264 }
+        });
+        enter(row('color'), 900, 36);
+        expect(screen.getByTestId('context-submenu').getAttribute('data-submenu-side')).toBe('left');
+        move(row('color'), 888, 42);
+        move(row('color'), 880, 47);
+        fireEvent.mouseLeave(row('color'));
+
+        enter(row('profile'), 874, 52);
+        move(row('profile'), 864, 60);
+        fireEvent.mouseLeave(row('profile'));
+        enter(row('icon'), 856, 76);
+        move(row('icon'), 840, 88);
+        fireEvent.mouseLeave(row('icon'));
+        expect(openSubmenu()).toBe('Color');
+
+        enter(submenuRow('color:blue'), 790, 110);
+        fireEvent.click(submenuRow('color:blue'));
+        expect(menu.selected).toEqual(['blue']);
+    });
+
+    it('the same leftward diagonal on a RIGHT-opening submenu is a switch, not a journey', () => {
+        open();
+        enter(row('color'), 100, 36);
+        move(row('color'), 108, 42);
+        move(row('color'), 100, 47);
+        fireEvent.mouseLeave(row('color'));
+        enter(row('profile'), 92, 52);
+        expect(openSubmenu()).toBe('Profile');
+    });
+
+    it('resting on a crossed row hands it the submenu after the grace period', () => {
+        open();
+        openColorAndHeadDown();
+        enter(row('profile'), 126, 52);
+        wait(SUBMENU_AIM_GRACE_MS - 1);
+        expect(openSubmenu()).toBe('Color');
+        wait(1);
+        expect(openSubmenu()).toBe('Profile');
+        expect(row('profile').getAttribute('data-highlighted')).toBe('true');
+    });
+
+    it('each move that gets closer restarts the clock; stopping short lets the row take over', () => {
+        open();
+        openColorAndHeadDown();
+        enter(row('profile'), 126, 52);
+        wait(SUBMENU_AIM_GRACE_MS - 50);
+        move(row('profile'), 140, 62);
+        wait(SUBMENU_AIM_GRACE_MS - 50);
+        // Longer than one grace period in all, but the pointer was still closing in.
+        expect(openSubmenu()).toBe('Color');
+        wait(50);
+        expect(openSubmenu()).toBe('Profile');
+    });
+
+    it('a move that leaves the triangle switches at once', () => {
+        open();
+        openColorAndHeadDown();
+        enter(row('profile'), 126, 52);
+        expect(openSubmenu()).toBe('Color');
+        // Back towards the panel's left: not heading for the colours after all.
+        move(row('profile'), 60, 64);
+        expect(openSubmenu()).toBe('Profile');
+    });
+
+    it('a row entered outside the triangle switches at once, exactly as before', () => {
+        open();
+        openColorAndHeadDown();
+        // Up onto Rename: above the submenu's top, so never on the way to it.
+        enter(row('rename'), 110, 20);
+        expect(openSubmenu()).toBeNull();
+        expect(row('rename').getAttribute('data-highlighted')).toBe('true');
+    });
+
+    it('a pointer leaving towards nowhere leaves the submenu open, as it always did', () => {
+        open();
+        openColorAndHeadDown();
+        wait(SUBMENU_AIM_GRACE_MS * 4);
+        expect(openSubmenu()).toBe('Color');
+        // And a crossed row the pointer then leaves for empty space drops its claim.
+        enter(row('profile'), 126, 52);
+        fireEvent.mouseLeave(row('profile'));
+        wait(SUBMENU_AIM_GRACE_MS * 4);
+        expect(openSubmenu()).toBe('Color');
+    });
+
+    it('coming back out of the submenu onto another row switches at once', () => {
+        open();
+        openColorAndHeadDown();
+        enter(submenuRow('color:red'), 200, 36);
+        fireEvent.mouseLeave(submenuRow('color:red'));
+        // From the submenu towards Profile: moving away from the submenu, so no triangle.
+        enter(row('profile'), 180, 60);
+        expect(openSubmenu()).toBe('Profile');
+    });
+
+    it('a click on a crossed row is a decision and acts at once', () => {
+        const menu = open();
+        openColorAndHeadDown();
+        enter(row('delete'), 150, 100);
+        expect(openSubmenu()).toBe('Color');
+        fireEvent.click(row('delete'));
+        expect(menu.selected).toEqual(['delete']);
+        expect(menu.closed()).toBe(1);
+    });
+
+    it('the keyboard walk takes over from a held switch, which never lands late', () => {
+        open();
+        openColorAndHeadDown();
+        enter(row('profile'), 126, 52);
+        fireEvent.keyDown(document, { key: 'ArrowDown' });
+        // M58's rule: walking the parent panel closes the submenu.
+        expect(openSubmenu()).toBeNull();
+        wait(SUBMENU_AIM_GRACE_MS * 4);
+        expect(openSubmenu()).toBeNull();
+        expect((document.activeElement as HTMLElement).getAttribute('data-menu-item')).toBe('rename');
+    });
+
+    it('an outside click still dismisses the menu mid-journey', () => {
+        const menu = open();
+        openColorAndHeadDown();
+        enter(row('profile'), 126, 52);
+        fireEvent.mouseDown(document.body);
+        expect(menu.closed()).toBe(1);
     });
 });

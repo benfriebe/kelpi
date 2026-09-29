@@ -1154,12 +1154,158 @@ describe('workspace create / label / mute', () => {
             port: server.port,
             cwd: home
         });
+        // With a group and no --repo, the source is left to the group's repository and the
+        // cwd rides as the `path` fallback (app-state-core §5.5).
         expect(await lastRequest()).toEqual({
             command: 'workspace-create',
             group: 'squad',
             muted: true,
             worktree: 'feature',
-            repo: home
+            path: home
+        });
+    });
+
+    describe('a group’s default repository (app-state-core §5.5)', () => {
+        it('leaves update main to the group unless a flag says otherwise', async () => {
+            const home = scratchHome();
+            server.respond(() => ({
+                lines: [
+                    {
+                        ok: true,
+                        workspace_id: PANE,
+                        workspace_name: 'fix',
+                        worktree_path: '/tmp/wt/fix',
+                        branch: 'fix',
+                        update_main: true,
+                        group: 'kelpi'
+                    }
+                ]
+            }));
+            const result = await runCLI(['workspace', 'create', '--group', 'kelpi', '--worktree', 'fix'], {
+                port: server.port,
+                cwd: home
+            });
+            expect(result.stdout).toBe(
+                `created workspace fix (${PANE}) in group kelpi with worktree /tmp/wt/fix on branch fix off the latest main\n`
+            );
+            expect(await lastRequest()).toEqual({ command: 'workspace-create', group: 'kelpi', worktree: 'fix', path: home });
+
+            await runCLI(['workspace', 'create', '--group', 'kelpi', '--worktree', 'fix', '--no-update-main'], {
+                port: server.port,
+                cwd: home
+            });
+            expect(await lastRequest()).toMatchObject({ update_main: false });
+
+            await runCLI(['workspace', 'create', '--group', 'kelpi', '--worktree', 'fix', '--update-main'], {
+                port: server.port,
+                cwd: home
+            });
+            expect(await lastRequest()).toMatchObject({ update_main: true });
+        });
+
+        it('sends an explicit repo (made absolute) and --no-repo, and refuses contradictory flags', async () => {
+            const home = scratchHome();
+            server.respond(() => ({
+                lines: [{ ok: true, workspace_id: PANE, workspace_name: 'dev', group: 'kelpi', repo_path: '/code/kelpi' }]
+            }));
+            const associated = await runCLI(['workspace', 'create', '--name', 'dev', '--group', 'kelpi'], {
+                port: server.port
+            });
+            expect(associated.stdout).toBe(`created workspace dev (${PANE}) in group kelpi with repo /code/kelpi\n`);
+
+            await runCLI(['workspace', 'create', '--name', 'dev', '--repo', 'sub/repo'], { port: server.port, cwd: home });
+            expect(await lastRequest()).toEqual({
+                command: 'workspace-create',
+                name: 'dev',
+                repo: path.join(fs.realpathSync(home), 'sub/repo')
+            });
+
+            await runCLI(['workspace', 'create', '--name', 'dev', '--group', 'kelpi', '--no-repo'], { port: server.port });
+            expect(await lastRequest()).toEqual({
+                command: 'workspace-create',
+                name: 'dev',
+                group: 'kelpi',
+                group_defaults: false
+            });
+
+            const before = server.requests.length;
+            const both = await runCLI(['workspace', 'create', '--worktree', 'x', '--update-main', '--no-update-main'], {
+                port: server.port
+            });
+            expect(both.code).toBe(1);
+            expect(both.stderr).toBe("workspace create can't take both --update-main and --no-update-main\n");
+            const repoBoth = await runCLI(['workspace', 'create', '--repo', '/r', '--no-repo'], { port: server.port });
+            expect(repoBoth.code).toBe(1);
+            expect(server.requests).toHaveLength(before);
+        });
+
+        it('sets, clears and switches a group’s repository with `group set-repo`', async () => {
+            const home = scratchHome();
+            server.respond((request) => ({
+                lines: [
+                    {
+                        ok: true,
+                        group_id: PANE,
+                        group_name: 'kelpi',
+                        repo: request['clear'] === true ? null : { id: OTHER, name: 'kelpi', path: '/code/kelpi' },
+                        create_worktree: request['create_worktree'] === true
+                    }
+                ]
+            }));
+            const set = await runCLI(['group', 'set-repo', 'kelpi', 'code/kelpi', '--worktree'], {
+                port: server.port,
+                cwd: home
+            });
+            expect(set.code).toBe(0);
+            expect(set.stdout).toBe('group kelpi repo: /code/kelpi (new workspaces create a worktree from latest main)\n');
+            expect(await lastRequest()).toEqual({
+                command: 'group-set-repo',
+                name: 'kelpi',
+                repo: path.join(fs.realpathSync(home), 'code/kelpi'),
+                create_worktree: true
+            });
+
+            const none = await runCLI(['group', 'set-repo', 'kelpi', '--none'], { port: server.port });
+            expect(none.stdout).toBe('group kelpi repo: none\n');
+            expect(await lastRequest()).toEqual({ command: 'group-set-repo', name: 'kelpi', clear: true });
+
+            await runCLI(['group', 'set-repo', 'kelpi', '--no-worktree', '--json'], { port: server.port });
+            expect(await lastRequest()).toEqual({ command: 'group-set-repo', name: 'kelpi', create_worktree: false });
+
+            const before = server.requests.length;
+            expect((await runCLI(['group', 'set-repo', 'kelpi'], { port: server.port })).code).toBe(1);
+            expect((await runCLI(['group', 'set-repo', 'kelpi', '/r', '--none'], { port: server.port })).code).toBe(1);
+            expect((await runCLI(['group', 'set-repo', 'kelpi', '--none', '--worktree'], { port: server.port })).code).toBe(1);
+            expect(server.requests).toHaveLength(before);
+        });
+
+        it('exits 1 with the daemon’s message when set-repo is refused', async () => {
+            server.respond(() => ({ lines: [{ ok: false, error: '/tmp/plain is not inside a git repository' }] }));
+            const result = await runCLI(['group', 'set-repo', 'kelpi', '/tmp/plain'], { port: server.port });
+            expect(result.code).toBe(1);
+            expect(result.stderr).toContain('/tmp/plain is not inside a git repository');
+        });
+
+        it('shows the repository in `group list`', async () => {
+            server.respond(() => ({
+                lines: [
+                    {
+                        ok: true,
+                        groups: [
+                            {
+                                id: PANE,
+                                name: 'kelpi',
+                                workspaces: [],
+                                repo: { id: OTHER, name: 'kelpi', path: '/code/kelpi' },
+                                create_worktree: true
+                            }
+                        ]
+                    }
+                ]
+            }));
+            const result = await runCLI(['group', 'list'], { port: server.port });
+            expect(result.stdout).toContain('REPO');
+            expect(result.stdout).toContain('kelpi +worktree');
         });
     });
 

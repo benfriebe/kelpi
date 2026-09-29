@@ -964,10 +964,20 @@ Rename…                    → inline rename in the header row
 Color ▸                    → "None" + the 10 colors
 Change Icon ▸              → the same flat submenu as §5.6 (Symbol and Emoji captions,
                              Custom Emoji…), ending in Reset to Folder
+Repository ▸               → the group's default repository (Kelpi addition, below)
 Expand | Collapse
 ──────────
 Delete Group…              → group delete confirmation (§12.4)
 ```
+
+**Repository ▸** (app-state-core.md §5.5): every registered repo by name, the group's current
+one ticked; a separator; **Choose Folder…** (desktop app only: #283's native folder panel,
+and the daemon registers a folder the registry lacks); **None** (ticked when the group has no
+repo). While a repo is set, a separator and the checkbox row "New workspaces create a worktree
+from latest main" follow; it toggles in place like the row menu's Mute Notifications (§5.6),
+so the new state is seen. Every row goes over the `group-set-repo` verb; a refusal (a folder
+that is not a git repository) surfaces as the usual error toast. The submenu is absent when
+assembly wires no handler.
 
 ### 5.8 Selection header & footer
 
@@ -1244,6 +1254,16 @@ Fields, top to bottom:
    - Live preview (tertiary caption): `"<resolvedWorktreeBasePath>/<sanitizedName>"` and
      `"branch: <sanitizedBranch>"` — names are git-sanitized (spaces/unsafe chars →
      hyphens); an unsanitizable value renders `<name>`/`<branch>` and disables Create.
+   **Group defaults** (Kelpi addition, app-state-core.md §5.5): opened for a group with a
+   default repository (from the group's "New Workspace", the inherited group, or a change of
+   the Group dropdown), the sheet preselects that repo in the Repositories section; when the
+   group's "create a worktree from latest main" switch is on it also turns "Create git
+   worktree" on with "Update main first" ticked, leaving the worktree name for the user to
+   type. All of it stays editable for a one-off. Until the user edits the repo selection, a
+   change of Group swaps the prefill for the new group's (to nothing for a repo-less group);
+   after an edit, their selection stands. The sheet submits exactly what it shows
+   (`group_defaults: false` on `workspace-create`), so a prefilled repo the user removed is
+   not added back by the daemon.
 8. Error line (red caption) when an async worktree creation failed — the sheet stays
    open for retry; the Create button un-disables when the error arrives.
 9. Cancel / **Create**. Create is disabled while a worktree submission is in flight
@@ -1279,8 +1299,12 @@ a color row of 16pt circles — a "None" stroke-only swatch first, then the 10 c
 chosen one showing a small checkmark; Cancel / **Create** (disabled while empty). The sheet
 is the shared `NewEntrySheet` in group mode (`packages/client/src/chrome/NewWorkspaceSheet.tsx:91-95`,
 `:116-117`); when remote daemons are registered it also carries a "Runs on" dropdown choosing
-which daemon creates the group (this one by default; multi-daemon groups). Return submits
-from anywhere in the sheet.
+which daemon creates the group (this one by default; multi-daemon groups). With a non-empty
+registry, and the group created on this daemon, it also offers an optional **Repository**
+dropdown ("None" + the registered repos) and, once a repo is chosen, the checkbox "New
+workspaces create a worktree from latest main" (app-state-core.md §5.5); the group is then
+created with both in one change (`create-group-for-workspaces` with `repo_id` /
+`create_worktree`). Return submits from anywhere in the sheet.
 
 ### 10.5 Custom Emoji (340 wide)
 

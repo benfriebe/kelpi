@@ -1,14 +1,14 @@
 /** Workspaces feature commands. Retained callbacks resolve the current mirror on invocation. */
 import type { WorkspaceColor } from '@kelpi/daemon/store';
 import type { Dispatch, SetStateAction } from 'react';
-import { DEFAULT_PROFILE_NAME, defaultGroupName, type WorkspaceWorktreeRequest } from '../chrome';
+import { DEFAULT_PROFILE_NAME, defaultGroupName, type GroupRepoChange, type NewGroupRepo, type WorkspaceWorktreeRequest } from '../chrome';
 import { isOkReply, replyError, replyText, type CommandClient, type CommandReply } from '../connection';
 import { selectActiveWorkspace, selectVisibleWorkspaceIDs, type KelpiStoreApi } from '../state';
 import type { WorkspacesFeatureLifecycle } from './workspaces';
 
 export interface WorkspacesActionHost {
     readonly store: KelpiStoreApi;
-    readonly commands: Pick<CommandClient, 'addRepoAssociation' | 'createGroup' | 'createGroupForWorkspaces' | 'createWorkspace' | 'deleteGroup' | 'deleteWorkspace' | 'labelWorkspace' | 'moveGroup' | 'moveWorkspace' | 'moveWorkspaces' | 'renameGroup' | 'renameWorkspace' | 'setBulkColor' | 'setBulkLabel' | 'setGroupCollapsed' | 'setGroupColor' | 'setGroupIcon' | 'setWorkspaceIcon' | 'setWorkspaceMuted' | 'setWorkspaceProfile'>;
+    readonly commands: Pick<CommandClient, 'addRepoAssociation' | 'createGroup' | 'createGroupForWorkspaces' | 'createWorkspace' | 'deleteGroup' | 'deleteWorkspace' | 'labelWorkspace' | 'moveGroup' | 'moveWorkspace' | 'moveWorkspaces' | 'renameGroup' | 'renameWorkspace' | 'setBulkColor' | 'setBulkLabel' | 'setGroupCollapsed' | 'setGroupColor' | 'setGroupIcon' | 'setGroupRepo' | 'setWorkspaceIcon' | 'setWorkspaceMuted' | 'setWorkspaceProfile'>;
     readonly run: (label: string, command: Promise<CommandReply>) => boolean;
     readonly notifyFailure: (label: string, message: string) => void;
     readonly activateWorkspaceAndReveal: (workspaceID: string) => void;
@@ -144,6 +144,7 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
                 profile?: string | null | undefined;
                 repoPaths?: readonly string[] | undefined;
                 muted?: boolean | undefined;
+                groupDefaults?: boolean | undefined;
             } = {}
         ): boolean {
             const trimmed = name.trim();
@@ -165,7 +166,9 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
                     options.profile === DEFAULT_PROFILE_NAME
                         ? {}
                         : { profile: options.profile }),
-                    ...(options.muted === true ? { muted: true } : {})
+                    ...(options.muted === true ? { muted: true } : {}),
+                    // app-state-core.md §5.5: the sheet's repos ARE the user's choice.
+                    ...(options.groupDefaults === false ? { groupDefaults: false } : {})
                 }),
                 repoPaths
             );
@@ -241,6 +244,18 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
             return run('Group color', commands.setGroupColor({ groupID, color }));
         },
 
+        /** app-state-core.md §5.5: the group menu's Repository ▸ (a refusal surfaces as a toast). */
+        setGroupRepo(groupID: string, change: GroupRepoChange): boolean {
+            return run(
+                'Group repository',
+                commands.setGroupRepo({
+                    group: groupID,
+                    ...(change.repoPath === undefined ? {} : { repo: change.repoPath }),
+                    ...(change.createWorktree === undefined ? {} : { createWorktree: change.createWorktree })
+                })
+            );
+        },
+
         toggleWorkspaceLabel(workspaceID: string, label: string, applied: boolean): boolean {
             return run(
                 'Label workspace',
@@ -252,9 +267,22 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
             );
         },
 
-        createGroup(name: string, color?: WorkspaceColor | null | undefined): boolean {
+        createGroup(name: string, color?: WorkspaceColor | null | undefined, repo?: NewGroupRepo | undefined): boolean {
             const trimmed = name.trim();
             if (trimmed.length === 0) return false;
+            // §5.5: a group created WITH a repository goes through the verb that can carry one,
+            // so it lands with its repo in one change (the CLI's `group-create` cannot).
+            if (repo !== undefined) {
+                return runCreateGroup(
+                    commands.createGroupForWorkspaces({
+                        name: trimmed,
+                        workspaceIDs: [],
+                        ...(color === undefined || color === null ? {} : { color }),
+                        repoID: repo.repoID,
+                        createWorktree: repo.createWorktree
+                    })
+                );
+            }
             return runCreateGroup(
                 commands.createGroup({
                     name: trimmed,
@@ -329,7 +357,8 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
         createGroupForWorkspaces(
             name: string,
             workspaceIDs: readonly string[],
-            color?: WorkspaceColor | null | undefined
+            color?: WorkspaceColor | null | undefined,
+            repo?: NewGroupRepo | undefined
         ): boolean {
             const trimmed = name.trim();
             if (trimmed.length === 0) return false;
@@ -337,7 +366,8 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
                 commands.createGroupForWorkspaces({
                     name: trimmed,
                     workspaceIDs,
-                    ...(color === undefined || color === null ? {} : { color })
+                    ...(color === undefined || color === null ? {} : { color }),
+                    ...(repo === undefined ? {} : { repoID: repo.repoID, createWorktree: repo.createWorktree })
                 })
             );
         },
@@ -381,6 +411,7 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
                 color?: WorkspaceColor | undefined;
                 profile?: string | null | undefined;
                 muted?: boolean | undefined;
+                groupDefaults?: boolean | undefined;
             } = {}
         ): Promise<string | null> {
             try {
@@ -397,7 +428,8 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
                     repo: repoPath,
                     worktree: worktree.name,
                     branch: worktree.branch,
-                    updateMain: worktree.updateMain
+                    updateMain: worktree.updateMain,
+                    ...(extras.groupDefaults === false ? { groupDefaults: false } : {})
                 });
                 if (!isOkReply(reply)) return replyError(reply);
                 const created = replyText(reply, 'workspace_id');

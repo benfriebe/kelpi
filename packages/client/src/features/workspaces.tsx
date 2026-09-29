@@ -87,6 +87,8 @@ export interface WorkspacesFeatureViewProps {
     readonly suppressDeleteConfirm: () => void;
     readonly openSettings: NonNullable<SidebarProps['onOpenSettings']>;
     readonly reportFailure: (label: string, message: string) => void;
+    /** #283's native folder panel (desktop app only): the group menu's Repository ▸ Choose Folder…. */
+    readonly onBrowseForFolder?: (() => Promise<string | null>) | undefined;
 }
 
 /**
@@ -113,10 +115,13 @@ function createWorkspaceFromSheet(
     worktree?: WorkspaceWorktreeRequest | undefined,
     extras?: NewWorkspaceExtras | undefined
 ): SubmitResult {
-    if (worktree === undefined) return host.actions.createWorkspace(name, groupID, extras ?? {});
+    // app-state-core.md §5.5: the sheet has already shown the group's default repository and
+    // what it submits is the user's final choice, so the daemon must not add the default back.
+    const literal = { ...(extras ?? {}), groupDefaults: false };
+    if (worktree === undefined) return host.actions.createWorkspace(name, groupID, literal);
     const repo = host.repos.find(candidate => candidate.id === worktree.repoID);
     if (repo === undefined) return 'that repository is no longer registered';
-    return host.actions.createWorkspaceWithWorktree(name, groupID, worktree, repo.path, extras ?? {});
+    return host.actions.createWorkspaceWithWorktree(name, groupID, worktree, repo.path, literal);
 }
 
 export function WorkspacesFeatureView(props: WorkspacesFeatureViewProps): ReactElement {
@@ -147,6 +152,8 @@ export function WorkspacesFeatureView(props: WorkspacesFeatureViewProps): ReactE
         onSetWorkspaceProfile={actions.setWorkspaceProfile}
         onSetWorkspaceMuted={actions.setWorkspaceMuted}
         onSetGroupColor={actions.setGroupColor}
+        onSetGroupRepo={actions.setGroupRepo}
+        {...(props.onBrowseForFolder === undefined ? {} : { onBrowseForFolder: props.onBrowseForFolder })}
         escapeRef={lifecycle.sidebarEscapeRef}
         selectionCommandsRef={lifecycle.sidebarSelectionRef}
         onSelectionChange={props.reportSelection}
@@ -254,7 +261,7 @@ function WorkspacesCreateSheet(props: WorkspacesCreateSheetProps): ReactElement 
         onSubmit={async draft => {
             if (form.kind === 'group') {
                 if (draft.remoteDaemon !== null) createRemoteGroup(props, draft.remoteDaemon, draft.name, draft.color);
-                else props.actions.createGroup(draft.name, draft.color);
+                else props.actions.createGroup(draft.name, draft.color, draft.groupRepo ?? undefined);
                 setForm(null);
                 return null;
             }

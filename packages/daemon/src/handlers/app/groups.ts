@@ -1,9 +1,9 @@
 /**
  * `group-*` command handlers (socket-handlers.md §7).
  *
- * `group-list` / `group-reorder` / `group-sort` are request/response; `group-create` /
- * `group-rename` / `group-delete` / `group-move` are fire-and-forget (an unresolvable name is a
- * silent no-op).
+ * `group-list` / `group-set-repo` / `group-reorder` / `group-sort` are request/response;
+ * `group-create` / `group-rename` / `group-delete` / `group-move` are fire-and-forget (an
+ * unresolvable name is a silent no-op).
  *
  * The reorder/sort pair share one handler: both rewrite the group's `childOrder`, both preserve
  * ids whose workspace vanished at the TAIL of the stored order, and both reply with the LIVE
@@ -12,7 +12,7 @@
 
 import { groupSidebarID } from '@kelpi/core/codec';
 import { resolveGroupMember, resolveGroupStrict } from '@kelpi/core/resolve';
-import type { WorkspaceColor } from '@kelpi/protocol';
+import type { GroupSetRepoMessage, WorkspaceColor } from '@kelpi/protocol';
 
 import type { ReplyHandle } from '../../seams.js';
 import {
@@ -25,6 +25,7 @@ import {
 } from '../../store/index.js';
 import { forCommand, listedGroupIDs, refreshSyncGroup, uuidOut } from './common.js';
 import { fail, ok, type AppContext, type AppDeps, type AppHandler } from './context.js';
+import { groupRepo, repoRef, resolveRepo } from './repos.js';
 
 /** Group child order filtered to live workspaces and deduped (§7.4 step 2). */
 function liveMembers(state: DaemonState, group: WorkspaceGroup): string[] {
@@ -53,12 +54,17 @@ function handleGroupList(ctx: AppContext, reply: ReplyHandle | null): void {
             const workspace = workspaceByID(state, memberID);
             return workspace === null ? [] : [{ id: uuidOut(workspace.id), name: workspace.name }];
         });
+        const repo = groupRepo(state, group);
         return [
             {
                 id: uuidOut(group.id),
                 name: group.name,
                 ...(group.color !== null ? { color: group.color } : {}),
-                workspaces
+                workspaces,
+                // §7.1 / app-state-core.md §5.5: present only while the group has a default
+                // repository, the same absence rule `color` follows, so a repo-less group's
+                // entry is byte-identical to what it always was.
+                ...(repo !== null ? { repo: repoRef(repo), create_worktree: group.createWorktree } : {})
             }
         ];
     });
@@ -154,6 +160,104 @@ function handleGroupMove(
     if (group === null) return;
     ctx.store.dispatch({ type: 'move-group', id: group.id, toIndex: index });
     deps.persist();
+}
+
+// ---------------------------------------------------------------------------
+// group-set-repo (§7.6)
+// ---------------------------------------------------------------------------
+
+function replyWithGroupRepo(ctx: AppContext, reply: ReplyHandle | null, groupID: string): void {
+    const state = ctx.store.getState();
+    const group = groupByID(state, groupID);
+    if (group === null) {
+        fail(reply, `no group matches '${groupID}'`);
+        return;
+    }
+    const repo = groupRepo(state, group);
+    ok(reply, {
+        group_id: uuidOut(group.id),
+        group_name: group.name,
+        repo: repo === null ? null : repoRef(repo),
+        create_worktree: group.createWorktree
+    });
+}
+
+/**
+ * app-state-core.md §5.5: a group's default repository and its worktree switch.
+ *
+ * Request/response, unlike the rest of the group family's setters, because it can fail in ways
+ * the caller has to hear about: the path is not a repository, or the switch was asked for on a
+ * group with no repository to branch from. `repo` is a PATH (the CLI's natural argument, and the
+ * registry row's own identity), registered when the registry lacks it; `clear` drops the repo
+ * and the switch with it; `create_worktree` alone flips the switch on the current repo.
+ */
+function handleGroupSetRepo(
+    msg: GroupSetRepoMessage,
+    ctx: AppContext,
+    reply: ReplyHandle | null,
+    deps: AppDeps
+): void {
+    const state = ctx.store.getState();
+    const resolved = resolveGroupStrict(resolveStateOf(state), msg.name);
+    const group = resolved === null ? null : groupByID(state, resolved.id);
+    if (group === null) {
+        fail(reply, `no group matches '${msg.name}'`);
+        return;
+    }
+
+    if (msg.clear) {
+        ctx.store.dispatch({ type: 'set-group-repo', id: group.id, repoID: null });
+        deps.persist();
+        replyWithGroupRepo(ctx, reply, group.id);
+        return;
+    }
+
+    const repoPath = msg.repo;
+    if (repoPath === undefined) {
+        // The switch alone. It acts on the group's repository, so there has to be one.
+        if (group.repoID === null && msg.create_worktree === true) {
+            fail(
+                reply,
+                `group '${group.name}' has no repository to create worktrees from: set one first (kelpi group set-repo <group> <path>)`
+            );
+            return;
+        }
+        ctx.store.dispatch({
+            type: 'set-group-repo',
+            id: group.id,
+            repoID: group.repoID,
+            ...(msg.create_worktree !== undefined ? { createWorktree: msg.create_worktree } : {})
+        });
+        deps.persist();
+        replyWithGroupRepo(ctx, reply, group.id);
+        return;
+    }
+
+    void resolveRepo(ctx, deps, repoPath)
+        .then((resolution) => {
+            if (!resolution.ok) {
+                fail(reply, resolution.error);
+                return;
+            }
+            // The group can have gone while git answered; a registration that already landed
+            // is kept (it is a real repository the user named), but nothing points at it.
+            if (groupByID(ctx.store.getState(), group.id) === null) {
+                deps.persist();
+                fail(reply, `no group matches '${msg.name}'`);
+                return;
+            }
+            ctx.store.dispatch({
+                type: 'set-group-repo',
+                id: group.id,
+                repoID: resolution.repo.id,
+                ...(msg.create_worktree !== undefined ? { createWorktree: msg.create_worktree } : {})
+            });
+            deps.persist();
+            replyWithGroupRepo(ctx, reply, group.id);
+        })
+        .catch((error: unknown) => {
+            fail(reply, error instanceof Error ? error.message : String(error));
+        });
 }
 
 // ---------------------------------------------------------------------------
@@ -267,6 +371,9 @@ export function groupHandlerEntries(deps: AppDeps): readonly (readonly [string, 
         }),
         forCommand('group-move', (msg, ctx) => {
             handleGroupMove(msg.name, msg.index, ctx, deps);
+        }),
+        forCommand('group-set-repo', (msg, ctx, reply) => {
+            handleGroupSetRepo(msg, ctx, reply, deps);
         }),
         forCommand('group-reorder', (msg, ctx, reply) => {
             handleGroupReorder(msg.name, msg.order, null, ctx, reply, deps);

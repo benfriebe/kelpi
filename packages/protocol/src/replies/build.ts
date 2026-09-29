@@ -5,7 +5,7 @@
  */
 
 import type { AgentKind, PaneStatus, PaneType } from '../wire/vocab.js';
-import type { PaneListEntry, WorkspaceListEntry } from './types.js';
+import type { PaneListEntry, WorkspaceListEntry, WorkspaceListRepo } from './types.js';
 
 export interface GroupRef {
     readonly id: string;
@@ -80,6 +80,7 @@ export interface WorkspaceListEntryInput {
     readonly last_activity_at?: string | undefined;
     readonly agent_session_id?: string | undefined;
     readonly group?: GroupRef | undefined;
+    readonly repos?: readonly WorkspaceListRepo[] | undefined;
 }
 
 export function buildWorkspaceListEntry(input: WorkspaceListEntryInput): WorkspaceListEntry {
@@ -98,6 +99,9 @@ export function buildWorkspaceListEntry(input: WorkspaceListEntryInput): Workspa
         muted: input.muted,
         ...(lastActivity ? { last_activity_at: lastActivity.value } : {}),
         ...(session ? { agent_session_id: session.value } : {}),
-        ...(input.group !== undefined ? { group_id: input.group.id, group_name: input.group.name } : {})
+        ...(input.group !== undefined ? { group_id: input.group.id, group_name: input.group.name } : {}),
+        // Elided when empty, like every other optional field, so an entry for a workspace with
+        // no repository is byte-identical to what it always was.
+        ...(input.repos !== undefined && input.repos.length > 0 ? { repos: input.repos } : {})
     };
 }

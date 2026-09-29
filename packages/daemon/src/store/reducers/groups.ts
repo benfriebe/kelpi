@@ -67,6 +67,12 @@ function createGroup(
                       validInitial.includes(entry.id)
               ).length;
 
+    // §5.5: a repo the registry does not hold is dropped rather than stored dangling, and the
+    // worktree switch only survives alongside a repo.
+    const repoID =
+        action.repoID !== undefined && action.repoID !== null && state.repos.some((repo) => repo.id === action.repoID)
+            ? action.repoID
+            : null;
     const group = {
         id: action.id,
         name,
@@ -74,7 +80,9 @@ function createGroup(
         isCollapsed: false,
         childOrder: validInitial,
         createdAt: seconds(action.now),
-        icon: null
+        icon: null,
+        repoID,
+        createWorktree: repoID !== null && action.createWorktree === true
     };
 
     // §5.1 step 6: detach every member from its previous parent.
@@ -103,6 +111,27 @@ function createGroup(
     }
 
     return { ...state, groups, topLevelOrder: order };
+}
+
+/**
+ * §5.5: the group's default repository and its worktree switch.
+ *
+ * Two invariants hold here so every reader can trust them: `repoID` names a repo the registry
+ * holds (a dangling id is refused, the same way `create-group` drops one), and `createWorktree`
+ * is never true without a repo (clearing the repo clears the switch, and asking for the switch
+ * on a repo-less group leaves it off).
+ */
+function setGroupRepo(
+    state: DaemonState,
+    action: Extract<DomainAction, { type: 'set-group-repo' }>
+): DaemonState {
+    if (action.repoID !== null && !state.repos.some((repo) => repo.id === action.repoID)) return state;
+    return updateGroup(state, action.id, (group) => {
+        const createWorktree =
+            action.repoID !== null && (action.createWorktree ?? group.createWorktree);
+        if (group.repoID === action.repoID && group.createWorktree === createWorktree) return group;
+        return { ...group, repoID: action.repoID, createWorktree };
+    });
 }
 
 function deleteGroup(state: DaemonState, groupID: string, cascade: boolean): DaemonState {
@@ -269,6 +298,8 @@ export function reduceGroupAction(state: DaemonState, action: DomainAction): Dae
             return updateGroup(state, action.id, (group) => ({ ...group, color: action.color }));
         case 'set-group-icon':
             return updateGroup(state, action.id, (group) => ({ ...group, icon: action.icon }));
+        case 'set-group-repo':
+            return setGroupRepo(state, action);
         case 'toggle-group-collapse':
             return updateGroup(state, action.id, (group) => ({
                 ...group,

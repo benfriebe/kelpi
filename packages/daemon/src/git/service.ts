@@ -44,6 +44,25 @@ export interface RepoRootInfo {
     readonly parentRepoRoot: string;
 }
 
+/**
+ * graft-git.md §8.5: an update-main worktree asked for a branch that already exists.
+ *
+ * Its message reaches the user verbatim (the sheet's inline error, the CLI's stderr), so it
+ * says what happened and the two ways out, in words that fit both surfaces: pick a name that
+ * is free, or turn update main off, which checks the existing branch out instead.
+ */
+export class WorktreeBranchExistsError extends Error {
+    readonly branchName: string;
+    constructor(branchName: string, baseRef: string) {
+        super(
+            `branch '${branchName}' already exists, and update main always creates a new branch off ${baseRef}: ` +
+                'choose another worktree or branch name, or turn off update main to check out the existing branch'
+        );
+        this.name = 'WorktreeBranchExistsError';
+        this.branchName = branchName;
+    }
+}
+
 export interface WorktreeAddRequest {
     readonly repoPath: string;
     readonly worktreePath: string;
@@ -249,6 +268,16 @@ export function createGitService(options: CreateGitServiceOptions = {}): GitServ
     const longGit = async (args: readonly string[], cwd: string): Promise<string> =>
         run(args, { cwd, ...(long !== undefined ? { timeoutMs: long } : {}) });
 
+    /** `rev-parse --verify --quiet refs/heads/<name>`: a sha when it exists, exit 1 when not. */
+    const localBranchExists = async (repoPath: string, branchName: string): Promise<boolean> => {
+        try {
+            const out = await readGit(['rev-parse', '--verify', '--quiet', `refs/heads/${branchName}`], repoPath);
+            return out.trim() !== '';
+        } catch {
+            return false;
+        }
+    };
+
     const service: GitService = {
         async getCurrentBranch(repoPath) {
             try {
@@ -334,6 +363,13 @@ export function createGitService(options: CreateGitServiceOptions = {}): GitServ
                 return;
             }
             const base = await service.defaultBranch(request.repoPath);
+            // graft-git.md §8.5: update main ALWAYS creates the branch (`-b`), so a name that
+            // already exists can only fail, and git's own `fatal: a branch named 'x' already
+            // exists` says nothing about why or what to do. Checked before the fetch, so the
+            // refusal costs no network round trip.
+            if (await localBranchExists(request.repoPath, request.branchName)) {
+                throw new WorktreeBranchExistsError(request.branchName, `${remote}/${base}`);
+            }
             await service.fetch(request.repoPath, remote);
             await service.createWorktreeFromBase(
                 request.repoPath,

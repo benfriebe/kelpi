@@ -290,6 +290,8 @@ export {
     type ChromeSidebarEntry,
     type ChromeWorkspace,
     type GroupMoveRequest,
+    type GroupRepoChange,
+    type NewGroupRepo,
     type SidebarCallbacks,
     type WorkspaceMoveRequest,
     type WorkspacesMoveRequest

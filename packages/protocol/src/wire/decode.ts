@@ -313,9 +313,12 @@ function decodeCommand(
                 profile: fields.text('profile'),
                 worktree: fields.text('worktree'),
                 branch: fields.text('branch'),
-                update_main: fields.flag('update_main', false),
+                // Kept tri-state (app-state-core.md §5.5): absent lets a group's worktree
+                // switch decide, where an explicit false is `--no-update-main`.
+                update_main: fields.bool('update_main'),
                 repo: fields.text('repo'),
-                muted: fields.flag('muted', false)
+                muted: fields.flag('muted', false),
+                group_defaults: fields.flag('group_defaults', true)
             };
         case 'workspace-move': {
             const name = fields.nonEmpty('name');
@@ -377,6 +380,27 @@ function decodeCommand(
             // meaningful move), a group has one axis: without a slot there is nothing to do.
             if (index === undefined) return guard(command, 'group-move requires index', 'index');
             return { command, name, index };
+        }
+        case 'group-set-repo': {
+            const name = fields.nonEmpty('name');
+            if (name === undefined) return guard(command, 'group-set-repo requires name', 'name');
+            const repo = fields.text('repo');
+            const clear = fields.flag('clear', false);
+            const createWorktree = fields.bool('create_worktree');
+            // `repo` and `clear` are the two answers to one question; both at once is a caller
+            // bug, and neither with no switch either is a request that changes nothing.
+            if (repo !== undefined && clear) {
+                return guard(command, 'group-set-repo takes repo or clear, not both', 'clear');
+            }
+            // The switch acts on the group's repository, so it cannot be turned ON while the
+            // same request removes that repository.
+            if (clear && createWorktree === true) {
+                return guard(command, 'group-set-repo cannot turn create_worktree on while clearing the repo', 'create_worktree');
+            }
+            if (repo === undefined && !clear && createWorktree === undefined) {
+                return guard(command, 'group-set-repo requires repo, clear or create_worktree', 'repo');
+            }
+            return { command, name, repo, clear, create_worktree: createWorktree };
         }
         case 'group-reorder': {
             const name = fields.nonEmpty('name');

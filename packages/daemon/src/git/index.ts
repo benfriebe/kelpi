@@ -32,7 +32,8 @@ export {
     GRAFT_TEMP_INDEX_PREFIX,
     parseSymrefLine,
     stripRemotePrefix,
-    sweepGraftTempIndexes
+    sweepGraftTempIndexes,
+    WorktreeBranchExistsError
 } from './service.js';
 
 /** Settings ▸ Repositories' "Scan Directory" walk (§GIT-066). */

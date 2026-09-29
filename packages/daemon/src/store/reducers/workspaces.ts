@@ -491,7 +491,13 @@ export function reduceWorkspaceAction(state: DaemonState, action: DomainAction):
                     return associations.length === workspace.repoAssociations.length
                         ? workspace
                         : { ...workspace, repoAssociations: associations };
-                })
+                }),
+                // app-state-core.md §5.5: a group whose default repo left the registry falls
+                // back to none, and its worktree switch goes with it (the switch never outlives
+                // the repo it acts on).
+                groups: state.groups.map((group) =>
+                    group.repoID === action.id ? { ...group, repoID: null, createWorktree: false } : group
+                )
             };
         }
         case 'rename-repo':

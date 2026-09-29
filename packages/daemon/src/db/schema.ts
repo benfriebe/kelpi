@@ -200,6 +200,16 @@ export const MIGRATIONS: readonly Migration[] = [
         // Kelpi-only: a muted workspace raises no attention signals (agent-lifecycle §7.6).
         identifier: 'v21_workspace_muted',
         apply: (db) => addColumn(db, 'workspace', 'muted', 'BOOLEAN NOT NULL DEFAULT 0')
+    },
+    {
+        // Kelpi-only: a group's default repository and its "create a worktree from latest main"
+        // switch (app-state-core.md §5.5). Guarded per column, independently (§4); an existing
+        // group reads back as no repo, switch off.
+        identifier: 'v22_workspace_group_repo',
+        apply: (db) => {
+            addColumn(db, 'workspace_group', 'repoID', 'TEXT');
+            addColumn(db, 'workspace_group', 'createWorktree', 'BOOLEAN NOT NULL DEFAULT 0');
+        }
     }
 ];
 
@@ -214,7 +224,8 @@ export const MIGRATION_IDENTIFIERS: readonly string[] = MIGRATIONS.map((m) => m.
 export const DAEMON_ONLY_MIGRATIONS: readonly string[] = [
     'v19_pane_agent_profile',
     'v20_plugin_panes',
-    'v21_workspace_muted'
+    'v21_workspace_muted',
+    'v22_workspace_group_repo'
 ];
 
 export function ensureMigrationsTable(db: SqlDatabase): void {

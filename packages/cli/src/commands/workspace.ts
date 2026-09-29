@@ -15,7 +15,16 @@
 
 import path from 'node:path';
 
-import { hasHelpFlag, isHelpToken, parseFlag, parseFlagAll, parseIntStrict, popSwitch, rejectLeftoverArgs } from '../args.js';
+import {
+    absoluteUserPath,
+    hasHelpFlag,
+    isHelpToken,
+    parseFlag,
+    parseFlagAll,
+    parseIntStrict,
+    popSwitch,
+    rejectLeftoverArgs
+} from '../args.js';
 import { errLine, exit, printLine, writeErr, writeOut } from '../io.js';
 import { asBool, asInt, asString, asStringArray, stableStringify, type JsonObject, type JsonValue } from '../json.js';
 import { runProcess, type ProcessRunner } from '../proc.js';
@@ -100,10 +109,20 @@ async function handleWorkspaceCreate(args: string[]): Promise<void> {
     const worktree = parseFlag('--worktree', args);
     const branch = parseFlag('--branch', args);
     const repo = parseFlag('--repo', args);
+    const noRepo = popSwitch('--no-repo', args);
     const updateMain = popSwitch('--update-main', args);
+    const noUpdateMain = popSwitch('--no-update-main', args);
     const muted = popSwitch('--muted', args);
     const asJSON = popSwitch('--json', args);
     rejectLeftoverArgs(args, 'kelpi workspace create', { usage: (write) => write(workspaceCreateUsage) });
+    if (updateMain && noUpdateMain) {
+        errLine("workspace create can't take both --update-main and --no-update-main");
+        exit(1);
+    }
+    if (repo !== null && noRepo) {
+        errLine("workspace create can't take both --repo and --no-repo");
+        exit(1);
+    }
 
     const payload: JsonObject = { command: 'workspace-create' };
     if (name !== null) payload['name'] = name;
@@ -112,20 +131,37 @@ async function handleWorkspaceCreate(args: string[]): Promise<void> {
     if (group !== null) payload['group'] = group;
     if (profile !== null) payload['profile'] = profile;
     if (muted) payload['muted'] = true;
+    // app-state-core.md §5.5: an explicit repo is associated even without --worktree, and
+    // --no-repo is the one-off opt-out from the group's default repository.
+    // Made absolute here: a relative path means the shell's cwd, not the daemon's.
+    if (repo !== null) payload['repo'] = absoluteUserPath(repo);
+    if (noRepo) payload['group_defaults'] = false;
     if (worktree !== null) {
         payload['worktree'] = worktree;
         if (branch !== null) payload['branch'] = branch;
+        // Only an explicit flag is sent: absent lets a group whose worktree switch is on make
+        // update main the default, which `--no-update-main` then opts out of.
         if (updateMain) payload['update_main'] = true;
-        // Always send the source repo so the daemon can branch from it; default to the cwd.
-        payload['repo'] = repo ?? process.cwd();
+        if (noUpdateMain) payload['update_main'] = false;
+        if (repo === null) {
+            if (group !== null && !noRepo) {
+                // Leave the source to the group's default repository, with the cwd as the
+                // fallback the daemon reaches for when the group has none (`repo ?? group ?? path`).
+                if (dir === null) payload['path'] = process.cwd();
+            } else {
+                // No group to defer to: the source repo is the cwd, as it always was.
+                payload['repo'] = process.cwd();
+            }
+        }
     }
 
     // `git worktree add` (plus a network fetch with --update-main) runs well past the 5s
-    // default, and a slow-but-succeeding create must not read as a failure.
+    // default, and a slow-but-succeeding create must not read as a failure. A create that
+    // associates a repository (explicitly, or the group's) reads git too, though only briefly.
     const reply = await decodeReply(
         payload,
         'kelpi workspace create',
-        worktree !== null ? { timeoutSeconds: 120 } : {}
+        worktree !== null ? { timeoutSeconds: 120 } : repo !== null || group !== null ? { timeoutSeconds: 30 } : {}
     );
     const workspaceName = asString(reply['workspace_name']) ?? name ?? 'Workspace';
     const workspaceID = asString(reply['workspace_id']) ?? '?';
@@ -145,17 +181,19 @@ async function handleWorkspaceCreate(args: string[]): Promise<void> {
     }
     const worktreePath = asString(reply['worktree_path']);
     const groupName = asString(reply['group']);
+    const inGroup = groupName !== undefined ? ` in group ${groupName}` : '';
     if (worktreePath !== undefined) {
         const resolvedBranch = asString(reply['branch']) ?? '?';
-        const inGroup = groupName !== undefined ? ` in group ${groupName}` : '';
+        // §5.5: a group's switch can choose update main on the caller's behalf, so say so.
+        const fromMain = asBool(reply['update_main']) === true ? ' off the latest main' : '';
         printLine(
-            `created workspace ${workspaceName} (${workspaceID})${inGroup} with worktree ${worktreePath} on branch ${resolvedBranch}`
+            `created workspace ${workspaceName} (${workspaceID})${inGroup} with worktree ${worktreePath} on branch ${resolvedBranch}${fromMain}`
         );
-    } else if (groupName !== undefined) {
-        printLine(`created workspace ${workspaceName} (${workspaceID}) in group ${groupName}`);
-    } else {
-        printLine(`created workspace ${workspaceName} (${workspaceID})`);
+        return;
     }
+    const repoPath = asString(reply['repo_path']);
+    const withRepo = repoPath !== undefined ? ` with repo ${repoPath}` : '';
+    printLine(`created workspace ${workspaceName} (${workspaceID})${inGroup}${withRepo}`);
 }
 
 async function handleWorkspaceMove(args: string[]): Promise<void> {

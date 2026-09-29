@@ -139,6 +139,9 @@ export interface WorkspaceGroupRow {
     readonly createdAt: number;
     readonly sortOrder: number;
     readonly icon: string | null;
+    /** persistence.md §2.5 (v22): the group's default repository id, or NULL. */
+    readonly repoID: string | null;
+    readonly createWorktree: number;
 }
 
 export interface AppStateRow {
@@ -418,7 +421,9 @@ export function encodeGroupRow(group: PersistedGroup, sortOrder: number): Worksp
         childOrderJSON: encodeChildOrderJSON(group.childOrder),
         createdAt: toEpochSecondsColumn(group.createdAt),
         sortOrder,
-        icon: iconColumn(group.icon)
+        icon: iconColumn(group.icon),
+        repoID: group.repoID === undefined || group.repoID === null ? null : normalizeUUIDLoose(group.repoID),
+        createWorktree: group.createWorktree === true ? 1 : 0
     };
 }
 
@@ -684,7 +689,11 @@ export function decodeGroupRow(row: SqlRow): DecodedGroupRow | null {
             isCollapsed: boolColumn(row, 'isCollapsed') ?? false,
             childOrder: decodeChildOrderJSON(textColumn(row, 'childOrderJSON')),
             createdAt: timestampColumn(row, 'createdAt'),
-            icon: parseIconString(textColumn(row, 'icon'))
+            icon: parseIconString(textColumn(row, 'icon')),
+            // A pre-v22 row has neither column: no repo, switch off. An unparseable id is
+            // dropped the same way, and `restoreState` drops one the registry no longer holds.
+            repoID: parseUUID(textColumn(row, 'repoID')),
+            createWorktree: boolColumn(row, 'createWorktree') ?? false
         }
     };
 }

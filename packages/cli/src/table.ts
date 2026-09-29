@@ -93,7 +93,11 @@ export function printWorkspaceTable(workspaces: readonly JsonObject[], noHeader:
     renderRows(['ID', 'NAME', 'GROUP', 'PANES', 'ACTIVE', 'LABELS'], rows, noHeader, 5);
 }
 
-/** `ID  NAME  COLOR  WORKSPACES` — members render as `name (short-id)`. */
+/**
+ * `ID  NAME  COLOR  REPO  WORKSPACES`: members render as `name (short-id)`. REPO is the
+ * group's default repository by name (app-state-core.md §5.5), marked `+worktree` when new
+ * workspaces create a worktree from latest main; `-` when it has none.
+ */
 export function printGroupTable(groups: readonly JsonObject[], noHeader: boolean): void {
     const rows = groups.map((entry) => {
         const members = asObjectArray(entry['workspaces']).map((member) => {
@@ -102,14 +106,20 @@ export function printGroupTable(groups: readonly JsonObject[], noHeader: boolean
             return name.length === 0 ? id : `${name} (${id})`;
         });
         const memberText = members.join(', ');
+        const repo = entry['repo'];
+        const repoName =
+            typeof repo === 'object' && repo !== null && !Array.isArray(repo) ? asString(repo['name']) : undefined;
+        const repoText =
+            repoName === undefined ? '-' : `${repoName}${asBool(entry['create_worktree']) === true ? ' +worktree' : ''}`;
         return [
             shortUUID(asString(entry['id']) ?? ''),
             asString(entry['name']) ?? '',
             asString(entry['color']) ?? '-',
+            repoText,
             memberText.length === 0 ? '-' : memberText
         ];
     });
-    renderRows(['ID', 'NAME', 'COLOR', 'WORKSPACES'], rows, noHeader, 3);
+    renderRows(['ID', 'NAME', 'COLOR', 'REPO', 'WORKSPACES'], rows, noHeader, 4);
 }
 
 /** `IDX  A  TITLE  URL` — fixed widths (not data-driven), `*` marks the active tab. */

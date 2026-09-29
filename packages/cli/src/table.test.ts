@@ -97,15 +97,36 @@ describe('printGroupTable', () => {
                 false
             );
         });
-        expect(lines[0]).toBe('ID             NAME   COLOR  WORKSPACES');
-        expect(lines[1]).toBe('9C2B9A2E…6666  squad  red    alpha (0A1B2C3D…E8F9)');
+        expect(lines[0]).toBe('ID             NAME   COLOR  REPO  WORKSPACES');
+        expect(lines[1]).toBe('9C2B9A2E…6666  squad  red    -     alpha (0A1B2C3D…E8F9)');
     });
 
-    it('falls back to `-` for a colorless, memberless group', () => {
+    it('falls back to `-` for a colorless, memberless, repo-less group', () => {
         const lines = capture(() => {
             printGroupTable([{ id: PANE_A, name: 'solo', workspaces: [] }], true);
         });
-        expect(lines[0]).toBe('9C2B9A2E…6666  solo  -  -');
+        expect(lines[0]).toBe('9C2B9A2E…6666  solo  -  -  -');
+    });
+
+    it('names the group’s repository, marking the worktree switch (app-state-core §5.5)', () => {
+        const lines = capture(() => {
+            printGroupTable(
+                [
+                    {
+                        id: PANE_A,
+                        name: 'kelpi',
+                        workspaces: [],
+                        repo: { id: PANE_B, name: 'kelpi', path: '/code/kelpi' },
+                        create_worktree: true
+                    },
+                    { id: PANE_B, name: 'otel', workspaces: [], repo: { id: PANE_A, name: 'otel', path: '/code/otel' }, create_worktree: false }
+                ],
+                false
+            );
+        });
+        expect(lines[0]).toBe('ID             NAME   COLOR  REPO             WORKSPACES');
+        expect(lines[1]).toBe('9C2B9A2E…6666  kelpi  -      kelpi +worktree  -');
+        expect(lines[2]).toBe('0A1B2C3D…E8F9  otel   -      otel             -');
     });
 });
 

@@ -109,6 +109,9 @@ const SCRIPT: readonly DomainAction[] = [
             isAutoDetected: false
         }
     },
+    // app-state-core.md §5.5: a group's default repository and its switch, each a delta alone.
+    { type: 'set-group-repo', id: G1, repoID: id('99999999', 1) },
+    { type: 'set-group-repo', id: G1, repoID: id('99999999', 1), createWorktree: true },
     { type: 'move-workspace-to-group', id: W1, groupID: null, index: 0 },
     { type: 'move-group', id: G1, toIndex: 0 },
     { type: 'delete-group', id: G1, cascade: false },

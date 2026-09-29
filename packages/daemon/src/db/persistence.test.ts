@@ -199,7 +199,10 @@ function richSnapshot(): PersistedSnapshot {
                 isCollapsed: true,
                 childOrder: [W2],
                 createdAt: 1_755_300_000,
-                icon: { kind: 'system', name: 'folder' }
+                icon: { kind: 'system', name: 'folder' },
+                // app-state-core.md §5.5 (v22): the group's default repo and its switch.
+                repoID: R1,
+                createWorktree: true
             }
         ],
         topLevelOrder: [

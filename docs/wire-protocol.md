@@ -261,7 +261,7 @@ Every request carries `"command": "<verb>"`. Parsing happens in three stages:
    its own field guards (documented per command in §6): `workspace-create`,
    `workspace-list`, `workspace-move`, `workspace-delete`, `workspace-profile`,
    `workspace-label`, `workspace-mute`, `group-list`, `group-create`, `group-rename`,
-   `group-delete`, `group-move`, `group-reorder`, `group-sort`, `open`, `diff`,
+   `group-delete`, `group-move`, `group-set-repo`, `group-reorder`, `group-sort`, `open`, `diff`,
    `pane-close`, `pane-list`, `pane-capture`, `graft-start`, `graft-stop`,
    `graft-status`, `ping`, all `web-*` commands, `pane-sync`, `pane-sync-exclude`,
    `pane-send-key`, `pane-send`, `pane-split`, `pane-create`, `pane-name`, `pane-resize`,
@@ -314,7 +314,7 @@ pane-list, pane-close, pane-capture, pane-send, pane-send-key,
 pane-split, pane-create, pane-name, pane-resize, pane-move-adjacent,
 pane-sync, pane-sync-exclude,
 workspace-create, workspace-delete, workspace-label, workspace-mute,
-group-reorder, group-sort,
+group-set-repo, group-reorder, group-sort,
 graft-start, graft-stop, graft-status,
 ping,
 web-open, web-navigate, web-url, web-back, web-forward, web-reload, web-capture,
@@ -485,7 +485,7 @@ carry `"command"`.
 | `pane-sync` | R/R | `action` | `pane_id`, `workspace` |
 | `pane-sync-exclude` | R/R | `target`, `excluded` | `pane_id`, `workspace` |
 | `workspace-list` | R/R | — | `group` |
-| `workspace-create` | R/R | — | `name`, `path`, `color`, `group`, `profile`, `worktree`, `branch`, `update_main`, `repo`, `muted` |
+| `workspace-create` | R/R | — | `name`, `path`, `color`, `group`, `profile`, `worktree`, `branch`, `update_main`, `repo`, `muted`, `group_defaults` |
 | `workspace-move` | F&F | `name` | `group`, `index` |
 | `workspace-delete` | R/R | `name` | `force` |
 | `workspace-profile` | F&F | `name` | `profile` |
@@ -496,6 +496,7 @@ carry `"command"`.
 | `group-rename` | F&F | `name`, `new_name` | — |
 | `group-delete` | F&F | `name` | `cascade` |
 | `group-move` | F&F | `name`, `index` | — |
+| `group-set-repo` | R/R | `name`; one of `repo`/`clear`/`create_worktree` | `repo`, `clear`, `create_worktree` |
 | `group-reorder` | R/R | `name` | `order` |
 | `group-sort` | R/R | `name`, `by` | `descending` |
 | `layout-cycle` | F&F | `pane_id` | — |
@@ -870,7 +871,10 @@ Always-present per entry: `id`, `name`, `color`, `pane_count`, `is_active`,
 `created_at`, `last_accessed_at`, `labels` (array, possibly empty), `muted` (bool; see
 `workspace-mute`). Conditionals:
 `last_activity_at` (max across panes; absent when no panes), `agent_session_id`
-(first pane carrying one), `group_id`/`group_name` (absent for top-level).
+(first pane carrying one), `group_id`/`group_name` (absent for top-level), `repos` (the
+workspace's repo associations in stored order, each `{"repo_id", "repo_name", "repo_path",
+"worktree_path", "branch"}` with `repo_name`/`repo_path` absent when the repo left the
+registry and `branch` absent when unknown; the whole field is absent when there are none).
 
 #### `workspace-create` (R/R)
 
@@ -884,11 +888,25 @@ in, so a caller that asked for `muted` can tell a daemon that predates it (which
 unknown field and creates the workspace unmuted); `kelpi workspace create --muted` then exits
 non-zero. Worktree flow (all empty strings normalized to
 absent): `worktree` = worktree/folder name to create, `branch` (defaults to the
-worktree name), `update_main` (bool, default false — fetch and branch off
-`origin/<default>`), `repo` = source repo path (the CLI always sends it when `worktree`
-is set; the handler falls back to `path`, and only when both are absent or blank →
-`{"ok":false,"error":"--worktree requires a source repo (pass --repo <path>)"}`;
-`packages/daemon/src/handlers/app/workspaces.ts:253-257`).
+worktree name), `update_main` (bool: fetch and branch off `origin/<default>`; absent means
+the group's `createWorktree` switch when the workspace goes into a group that has one on,
+else false), `repo` = source repo path (the handler falls back to the group's default
+repository, then to `path`, and only when all are absent or blank →
+`{"ok":false,"error":"--worktree requires a source repo (pass --repo <path>)"}`). The `kelpi`
+CLI sends `repo` whenever `--repo` is given; with `--group` and no `--repo` it sends its cwd
+as `path` instead, so the group's repository is preferred and the cwd is the fallback.
+
+Group defaults (app-state-core.md §5.5): `group_defaults` (bool, default true) applies the
+group's default repository to whatever the request leaves unsaid, for a group that already
+exists. Without `worktree`, a `repo` (explicit, or the group's) is resolved to a registered
+repository (registered if new; a path inside a linked worktree registers its parent), the
+workspace starts with it associated, and the first pane opens in that checkout unless `path`
+is given; the reply then comes AFTER the effect and carries `repo_path`. A `repo` that is not
+inside a git repository (and is not already registered) → `{"ok":false,"error":"<path> is not
+inside a git repository"}`, with nothing created. The New Workspace sheet sends
+`"group_defaults":false`: it has already shown the group's defaults and sends the user's
+final choice, including "no repository". The worktree reply also carries `update_main` (the
+value used) and `repo_path` (the source repository).
 
 ```json
 {"command":"workspace-create","name":"Test","color":"blue","group":"projects"}
@@ -897,8 +915,19 @@ is set; the handler falls back to `path`, and only when both are absent or blank
 {"command":"workspace-create","name":"feat-x","worktree":"feat-x","branch":"feat-x",
  "update_main":true,"repo":"/Users/ben/code/kelpi"}
 → {"ok":true,"workspace_id":"<uuid>","workspace_name":"feat-x",
-   "worktree_path":"/…/worktrees/feat-x","branch":"feat-x","muted":false}
+   "worktree_path":"/…/worktrees/feat-x","branch":"feat-x","update_main":true,
+   "repo_path":"/Users/ben/code/kelpi","muted":false}
+
+{"command":"workspace-create","name":"fix-y","group":"kelpi","worktree":"fix-y","path":"/Users/ben"}
+→ (group "kelpi" has repo /Users/ben/code/kelpi with createWorktree on: the worktree
+   branches off the freshly fetched origin/<default> of that repo, and the reply says
+   "update_main":true,"repo_path":"/Users/ben/code/kelpi")
 ```
+
+With `update_main` true, the branch is always created (`-b`), so a branch name that already
+exists is refused before the fetch: `{"ok":false,"error":"branch '<name>' already exists, and
+update main always creates a new branch off origin/<default>: choose another worktree or
+branch name, or turn off update main to check out the existing branch"}` (graft-git.md §8.5).
 
 Ambiguous `group` name → `{"ok":false,"error":"group name is ambiguous: <name> (use
 the id or rename an existing group)"}`. With `worktree`, an unknown group →
@@ -1014,7 +1043,9 @@ de-duplicated); members in each group's child order.
      "workspaces":[{"id":"<uuid>","name":"main"},{"id":"<uuid>","name":"beta"}]}]}
 ```
 
-`color` present only when the group has one.
+`color` present only when the group has one. `repo` (`{"id","name","path"}`) and
+`create_worktree` (bool) are present only while the group has a default repository
+(app-state-core.md §5.5; set with `group-set-repo`).
 
 #### `group-create` (F&F)
 
@@ -1052,6 +1083,32 @@ is the other axis entirely: it rewrites a group's member order.
 ```json
 {"command":"group-move","name":"projects","index":0}
 ```
+
+#### `group-set-repo` (R/R)
+
+A group's default repository and its "new workspaces create a worktree from latest main"
+switch (app-state-core.md §5.5). `name` (name-or-id) required non-empty, plus at least one
+of: `repo` (a path; resolved like `workspace-create`'s, so a path inside a checkout names
+that checkout's main repository, registered if the registry lacks it), `clear` (bool: no
+repository, and the switch goes off with it), `create_worktree` (bool: the switch; absent
+keeps it). `repo` with `clear`, or `clear` with `"create_worktree":true`, is a guard error;
+so is a request carrying none of the three. The switch alone on a group with no repository
+→ `{"ok":false,"error":"group '<name>' has no repository to create worktrees from: set one
+first (kelpi group set-repo <group> <path>)"}`; a path outside any repository →
+`{"ok":false,"error":"<path> is not inside a git repository"}`; unknown or ambiguous group →
+`{"ok":false,"error":"no group matches '<name>'"}`. The reply is the group's state after the
+change.
+
+```json
+{"command":"group-set-repo","name":"kelpi","repo":"~/code/kelpi","create_worktree":true}
+→ {"ok":true,"group_id":"<uuid>","group_name":"kelpi",
+   "repo":{"id":"<uuid>","name":"kelpi","path":"/Users/ben/code/kelpi"},"create_worktree":true}
+
+{"command":"group-set-repo","name":"kelpi","clear":true}
+→ {"ok":true,"group_id":"<uuid>","group_name":"kelpi","repo":null,"create_worktree":false}
+```
+
+Removing a repository from the registry clears every group's `repo` that pointed at it.
 
 #### `group-reorder` (R/R)
 
@@ -1330,7 +1387,7 @@ other key is ignored. (A known key with the wrong type poisons the whole message
 | `repo_path`, `target_path` | string | `diff` |
 | `lines` | int | `pane-capture` |
 | `scrollback` | bool | `pane-capture` |
-| `repo` | string | `graft-start`, `graft-stop`, `workspace-create` (worktree source) |
+| `repo` | string | `graft-start`, `graft-stop`, `workspace-create` (worktree source, or the repo to associate), `group-set-repo` |
 | `url` | string | `web-open`, `web-navigate`, `web-tab-new` |
 | `mode` | string | `web-capture` |
 | `hard` | bool | `web-reload` |
@@ -1338,7 +1395,7 @@ other key is ignored. (A known key with the wrong type poisons the whole message
 | `make_active` | bool | `web-tab-new` |
 | `since` | uint64 | `web-console` |
 | `level` | string | `web-console` |
-| `clear` | bool | `web-console`, `web-inspect-result` |
+| `clear` | bool | `web-console`, `web-inspect-result`, `group-set-repo` |
 | `follow` | bool | `web-console` |
 | `send_to` | string | `web-inspect` |
 | `submit` | bool | `web-inspect`, `web-type` |
@@ -1370,6 +1427,8 @@ other key is ignored. (A known key with the wrong type poisons the whole message
 | `order` | string[] | `group-reorder` |
 | `by` | string | `group-sort` |
 | `descending` | bool | `group-sort` |
+| `create_worktree` | bool | `group-set-repo` |
+| `group_defaults` | bool | `workspace-create` |
 
 ---
 

@@ -94,6 +94,12 @@ export interface PersistedGroup {
     /** Epoch seconds. */
     readonly createdAt: number;
     readonly icon: IconRef | null;
+    /**
+     * app-state-core.md §5.5. Optional because a snapshot built by the legacy importer (a Swift
+     * `nex.db` never had the columns) carries neither; absent restores as no repo, switch off.
+     */
+    readonly repoID?: string | null | undefined;
+    readonly createWorktree?: boolean | undefined;
 }
 
 export interface PersistedSnapshot {
@@ -176,7 +182,9 @@ export function toSnapshot(state: DaemonState): PersistedSnapshot {
             isCollapsed: group.isCollapsed,
             childOrder: [...group.childOrder],
             createdAt: group.createdAt,
-            icon: group.icon
+            icon: group.icon,
+            repoID: group.repoID,
+            createWorktree: group.createWorktree
         })),
         topLevelOrder: [...state.topLevelOrder],
         activeWorkspaceID: state.lastActiveWorkspaceID,
@@ -275,15 +283,26 @@ export function fromSnapshot(
         } satisfies WorkspaceState;
     });
 
-    const groups: WorkspaceGroup[] = (snapshot.groups ?? []).map((record) => ({
-        id: record.id,
-        name: record.name,
-        color: record.color,
-        isCollapsed: record.isCollapsed,
-        childOrder: record.childOrder ?? [],
-        createdAt: record.createdAt,
-        icon: record.icon
-    }));
+    // §5.5: a group's repo must still be in the registry. A row naming a repo that is gone (a
+    // hand-edited file, or a save racing a removal) restores as no repo rather than dangling.
+    const repoIDs = new Set((snapshot.repos ?? []).map((repo) => repo.id));
+    const groups: WorkspaceGroup[] = (snapshot.groups ?? []).map((record) => {
+        const repoID =
+            record.repoID !== undefined && record.repoID !== null && repoIDs.has(record.repoID)
+                ? record.repoID
+                : null;
+        return {
+            id: record.id,
+            name: record.name,
+            color: record.color,
+            isCollapsed: record.isCollapsed,
+            childOrder: record.childOrder ?? [],
+            createdAt: record.createdAt,
+            icon: record.icon,
+            repoID,
+            createWorktree: repoID !== null && record.createWorktree === true
+        };
+    });
 
     // Legacy synthesis: a DB predating groups has no top-level order (§2.1 / §6.2 step 3).
     const loadedOrder = snapshot.topLevelOrder ?? [];

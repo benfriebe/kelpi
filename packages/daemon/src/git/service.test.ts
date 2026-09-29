@@ -17,8 +17,10 @@ import {
     GRAFT_TEMP_INDEX_PREFIX,
     parseSymrefLine,
     stripRemotePrefix,
-    sweepGraftTempIndexes
+    sweepGraftTempIndexes,
+    WorktreeBranchExistsError
 } from './service.js';
+import { worktreeErrorMessage } from './names.js';
 import { describeRepoState, parseShortstat, parseWorktreeList } from './status.js';
 
 const GIT = resolveGitExecutable();
@@ -259,9 +261,56 @@ describe.skipIf(!HAS_GIT)('GitService', () => {
         });
         expect(calls).toEqual([
             ['ls-remote', '--symref', 'origin', 'HEAD'],
+            // graft-git §8.5: the branch must not exist yet, checked before any network.
+            ['rev-parse', '--verify', '--quiet', 'refs/heads/b'],
             ['fetch', 'origin'],
             ['worktree', 'add', '-b', 'b', '/wt', 'origin/trunk']
         ]);
+    });
+
+    it('refuses an existing branch on the update-main path with a clear message, before fetching', async () => {
+        const calls: string[][] = [];
+        const service = createGitService({
+            run: async (args) => {
+                calls.push([...args]);
+                if (args[0] === 'ls-remote') return 'ref: refs/heads/main\tHEAD\n';
+                if (args[0] === 'rev-parse') return `${'a'.repeat(40)}\n`;
+                return '';
+            }
+        });
+        const error = await service
+            .worktreeAdd({ repoPath: '/repo', worktreePath: '/wt', branchName: 'taken', updateMain: true })
+            .catch((caught: unknown) => caught);
+        expect(error).toBeInstanceOf(WorktreeBranchExistsError);
+        expect((error as Error).message).toBe(
+            "branch 'taken' already exists, and update main always creates a new branch off origin/main: " +
+                'choose another worktree or branch name, or turn off update main to check out the existing branch'
+        );
+        expect(calls.some((call) => call[0] === 'fetch' || call[0] === 'worktree')).toBe(false);
+    });
+
+    it('refuses an existing branch against a real repo, and the plain path still attaches to it', async () => {
+        const service = createGitService();
+        const origin = initRepo('exists-origin');
+        const cloneRoot = tmpDir('exists-clone');
+        git(cloneRoot, 'clone', origin, 'work');
+        const work = path.join(cloneRoot, 'work');
+        git(work, 'branch', 'taken');
+
+        const refused = await service
+            .worktreeAdd({
+                repoPath: work,
+                worktreePath: path.join(tmpDir('exists-wt'), 'taken'),
+                branchName: 'taken',
+                updateMain: true
+            })
+            .catch((caught: unknown) => caught);
+        expect(refused).toBeInstanceOf(WorktreeBranchExistsError);
+        expect(worktreeErrorMessage(refused)).toContain("branch 'taken' already exists");
+
+        const attached = path.join(tmpDir('exists-wt2'), 'taken');
+        await service.worktreeAdd({ repoPath: work, worktreePath: attached, branchName: 'taken', updateMain: false });
+        expect(await service.getCurrentBranch(attached)).toBe('taken');
     });
 
     it('clamps a short long-op budget up to the 120s floor', async () => {

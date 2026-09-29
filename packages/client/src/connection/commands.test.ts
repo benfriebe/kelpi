@@ -186,6 +186,32 @@ describe('CommandClient RPC', () => {
         expect(h.lastCommand()).toEqual({ command: 'group-move', name: 'squad', index: 0 });
     });
 
+    it('speaks `group-set-repo` and carries a group’s repo on create (app-state-core §5.5)', () => {
+        const h = harness();
+
+        void h.client.setGroupRepo({ group: 'G1', repo: '/src/app', createWorktree: true });
+        expect(h.lastCommand()).toEqual({ command: 'group-set-repo', name: 'G1', repo: '/src/app', create_worktree: true });
+        // `repo: null` is the menu's None: the verb's `clear`, never a null field.
+        void h.client.setGroupRepo({ group: 'G1', repo: null });
+        expect(h.lastCommand()).toEqual({ command: 'group-set-repo', name: 'G1', clear: true });
+        void h.client.setGroupRepo({ group: 'G1', createWorktree: false });
+        expect(h.lastCommand()).toEqual({ command: 'group-set-repo', name: 'G1', create_worktree: false });
+
+        void h.client.createGroupForWorkspaces({ name: 'app', workspaceIDs: [], repoID: 'r1', createWorktree: true });
+        expect(h.lastCommand()).toEqual({
+            command: 'create-group-for-workspaces',
+            name: 'app',
+            workspace_ids: [],
+            repo_id: 'r1',
+            create_worktree: true
+        });
+        void h.client.createGroupForWorkspaces({ name: 'plain', workspaceIDs: [] });
+        expect(h.lastCommand()).toEqual({ command: 'create-group-for-workspaces', name: 'plain', workspace_ids: [] });
+
+        void h.client.createWorkspace({ name: 'dev', group: 'G1', groupDefaults: false });
+        expect(h.lastCommand()).toEqual({ command: 'workspace-create', name: 'dev', group: 'G1', group_defaults: false });
+    });
+
     it('refuses a resize with both or neither directive', async () => {
         const h = harness();
         await expect(h.client.resizePane({ target: PANE })).rejects.toThrow(/exactly one/);

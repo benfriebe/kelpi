@@ -184,6 +184,8 @@ interface WorkspaceGroup {
   childOrder: UUID[];       // member workspace ids, in sidebar render order
   createdAt: Date;
   icon: GroupIcon | null;   // null = color-tinted folder glyph fallback
+  repoID: UUID | null;      // default repository (a Repo in the registry), see 5.5
+  createWorktree: boolean;  // new workspaces create a worktree from latest main, see 5.5
 }
 ```
 
@@ -197,6 +199,10 @@ Invariants:
 - `childOrder` may reference deleted workspaces transiently; all readers filter by
   "workspace still exists" (defensive), and deletion paths scrub `childOrder` of removed ids.
 - Group names are NOT unique. Name-based resolution requires exactly one match (see 15.1).
+- `repoID` names a repo the registry holds, or is null: removing a repo from the registry clears
+  every group's `repoID` that pointed at it (7.3), and a restore drops one the registry lacks.
+- `createWorktree` is never true without a `repoID`: clearing the repo clears the switch, and the
+  switch cannot be turned on for a group with no repo (5.5).
 
 ### 1.6 GroupIcon
 
@@ -789,6 +795,50 @@ only children that still exist. The dialog offers "delete group only" (promote) 
 and its N workspaces" (cascade) vs cancel; `cancelGroupDelete` clears the staged prompt. The CLI
 maps `group delete [--cascade]` onto the same action without a prompt.
 
+### 5.5 A group's default repository (Kelpi-only)
+
+A group can have a default repository (`repoID`, a repo in the registry, or null) and a switch,
+`createWorktree` (default false): "new workspaces create a worktree from latest main". Both are
+persisted (persistence.md §2.5, migration `v22_workspace_group_repo`) and mirrored to clients.
+
+**Setting it.** `setGroupRepo(id, repoID | null, createWorktree?)` (store action `set-group-repo`):
+a `repoID` the registry does not hold is a no-op; `createWorktree` absent keeps the switch; a null
+`repoID` also clears the switch. `createGroup` takes the same two optionally (the New Group sheet).
+Three surfaces drive it:
+
+- the group context menu's **Repository ▸** (shell-ui.md §5.7): the registered repos (the current
+  one ticked), **Choose Folder…** (the native folder panel, desktop app only), **None**, and, only
+  while a repo is set, the checkbox "New workspaces create a worktree from latest main";
+- the **New Group sheet** (shell-ui.md §10.4): an optional Repository and the same checkbox;
+- the **CLI**: `kelpi group set-repo <group> <path> | --none [--worktree | --no-worktree]`
+  (cli.md §11.7), over the `group-set-repo` wire verb (socket-handlers.md §7.6).
+
+A PATH (the menu's Choose Folder…, the CLI) resolves to a registered repo by canonical path;
+a path inside a checkout names that checkout's main repository, which is registered (manual, not
+auto-discovered) when the registry lacks it. A path outside any repository is refused. A repo
+reached this way that was auto-discovered is promoted to manual, so the auto-unlink GC (7.7) can
+never collect a group's default repository.
+
+**Using it.** A workspace created in the group starts from those defaults, and every one of them
+can be overridden for a one-off:
+
+- The **New Workspace sheet** (shell-ui.md §10.1), opened for a group with a repo (from the
+  group's menu, the inherited group, or a change of its Group dropdown), preselects the repo in
+  its Repositories section. With `createWorktree` on it also turns the worktree toggle on with
+  **update main** ticked; the user types the worktree or branch name. While the user has not
+  edited the repo selection, changing the Group dropdown swaps the prefill for the new group's
+  (including to nothing for a repo-less group); after an edit, their selection stands. The sheet
+  submits its choice literally (`group_defaults: false`), so a repo the user removed stays removed.
+- **`workspace-create`** with a `group` that exists and `group_defaults` not false: with no `repo`,
+  the group's repo is the worktree source (before `path`) or, without `worktree`, the repo the new
+  workspace is associated with (its first pane opening in the checkout unless `path` is given).
+  With `worktree` and no explicit `update_main`, `createWorktree` decides it; `--no-update-main`
+  (`update_main: false`) opts out.
+- **"Latest main"** is exactly update main (4.2, graft-git.md §8.5): `git fetch origin`, then
+  `git worktree add -b <branch> <path> origin/<default>`. The local default branch is never
+  touched. Because `-b` is always passed, a branch name that already exists is refused up front
+  with a message that says so and suggests another name or turning update main off.
+
 ---
 
 ## 6. Labels and the LabelPreset system
@@ -913,8 +963,10 @@ gray)` for every label they introduce, so a CLI-applied label is never an orphan
 ### 7.3 removeRepo(id)
 
 Remove from the registry; cascade-remove every association with `repoID == id` from EVERY
-workspace; drop each removed association's `gitStatuses` entry; stop each removed association's
-HEAD watcher; force-stop any graft session per removed association (unconditional); persist.
+workspace; clear every group's default repository that pointed at it (`repoID = null`,
+`createWorktree = false`, 5.5); drop each removed association's `gitStatuses` entry; stop each
+removed association's HEAD watcher; force-stop any graft session per removed association
+(unconditional); persist.
 
 ### 7.4 renameRepo(id, name)
 

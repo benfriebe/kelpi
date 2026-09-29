@@ -193,6 +193,13 @@ written by a future version would survive saves from an older version.
 | `createdAt`     | DOUBLE  | no   |         | epoch seconds |
 | `sortOrder`     | INTEGER | no   | 0       | index in the app's groups array at save time; load orders by this |
 | `icon`          | TEXT    | yes  |         | same prefix-qualified icon format as workspaces (§3.4) |
+| `repoID`        | TEXT    | yes  |         | the group's default repository, a `repo.id` (uppercase UUID), or NULL (v22; app-state-core.md §5.5) |
+| `createWorktree`| BOOLEAN | no   | 0       | new workspaces in the group create a worktree from latest main (v22) |
+
+`repoID` is not a foreign key (the legacy schema's `workspace_group` has none, and the save
+path rewrites every table in one transaction anyway): an unparseable id decodes as NULL, and
+the load drops one that names no row in `repo`, restoring the group with no repository and the
+switch off. A row written before v22 has neither column and loads the same way.
 
 ### 2.6 Migration bookkeeping table
 
@@ -203,7 +210,7 @@ Kelpi keeps under the same name (`packages/daemon/src/db/schema.ts:22`):
 CREATE TABLE grdb_migrations (identifier TEXT NOT NULL PRIMARY KEY);
 ```
 
-One row per applied migration identifier (`"v1_initial"` … `"v21_workspace_muted"`). On
+One row per applied migration identifier (`"v1_initial"` … `"v22_workspace_group_repo"`). On
 startup, any registered migration whose identifier is not present is run, in registration
 order, each in its own transaction together with its ledger row (`INSERT OR IGNORE`, so a
 failure can never record an unapplied step); identifiers already present are skipped
@@ -320,9 +327,9 @@ labels are trimmed, non-empty, order-preserving, deduped case-sensitively.
 ## 4. Migration history
 
 Migration identifiers are strings; each runs once, recorded in `grdb_migrations`
-(`MIGRATIONS`, `packages/daemon/src/db/schema.ts`). There are 21 in total: the 18 shared
-with the legacy app plus `v19_pane_agent_profile`, `v20_plugin_panes` and
-`v21_workspace_muted`. From v3 onward, every
+(`MIGRATIONS`, `packages/daemon/src/db/schema.ts`). There are 22 in total: the 18 shared
+with the legacy app plus `v19_pane_agent_profile`, `v20_plugin_panes`,
+`v21_workspace_muted` and `v22_workspace_group_repo`. From v3 onward, every
 `ALTER TABLE ADD COLUMN` (and the v15 rename) is **guarded**: it first checks the live column
 list and skips if the column already exists (or, for v15, if the target name already exists /
 the source is missing). This guard exists because pre-release builds of the legacy app
@@ -355,6 +362,7 @@ migration idempotent regardless of ledger drift.
 | `v19_pane_agent_profile` | `pane` + `agentProfileName TEXT` (§2.2). Kelpi-only, no legacy counterpart: listed in `DAEMON_ONLY_MIGRATIONS` (`schema.ts:205`) so the importer does not treat a legacy ledger that lacks it as stale. Guarded. |
 | `v20_plugin_panes` | `pane` + `pluginJSON TEXT` and `pluginParked BOOLEAN NOT NULL DEFAULT 0`. Kelpi-only and guarded. Uses a new default database generation; see [plugin upgrades](plugins.md#database-and-protocol-upgrade). |
 | `v21_workspace_muted` | `workspace` + `muted BOOLEAN NOT NULL DEFAULT 0` (§2.1). Kelpi-only (in `DAEMON_ONLY_MIGRATIONS`) and guarded. A plain additive column, so no new database generation: an older daemon ignores it (its explicit-column INSERT leaves the default), and a downgrade simply loses the flag. |
+| `v22_workspace_group_repo` | `workspace_group` + `repoID TEXT` (nullable) and + `createWorktree BOOLEAN NOT NULL DEFAULT 0` (§2.5). Kelpi-only (in `DAEMON_ONLY_MIGRATIONS`) and guarded, each column independently. Additive, so no new database generation: an older daemon's explicit-column INSERT leaves NULL / 0, so a downgrade loses each group's repository and switch but nothing else. |
 
 ---
 
@@ -785,7 +793,9 @@ CREATE TABLE workspace_group (
   childOrderJSON TEXT NOT NULL DEFAULT '[]', -- [UUID] JSON
   createdAt      DOUBLE NOT NULL,
   sortOrder      INTEGER NOT NULL DEFAULT 0,
-  icon           TEXT
+  icon           TEXT,
+  repoID         TEXT,                       -- v22: default repository, no FK (§2.5)
+  createWorktree BOOLEAN NOT NULL DEFAULT 0  -- v22
 );
 
 -- Migration ledger, kept under the legacy GRDB name so an adopted database is not re-migrated

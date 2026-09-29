@@ -897,7 +897,9 @@ kelpi workspace list [--group <name-or-id>] [--json] [--no-header]
   `is_active`, `created_at`, `last_accessed_at`, `labels` (always present, possibly `[]`),
   `muted` (always present; §10.7), optional `last_activity_at`, optional
   `agent_session_id`, optional
-  `group_id`/`group_name` (both absent for top-level). Timestamps ISO 8601.
+  `group_id`/`group_name` (both absent for top-level), optional `repos` (the repo
+  associations: `repo_id`, `repo_name?`, `repo_path?`, `worktree_path`, `branch?`; absent
+  when there are none; `--json` only). Timestamps ISO 8601.
 - `--group` scoping an unknown/ambiguous group is an `ok:false` error (distinct from an
   empty group => empty list, exit 0).
 - `--json`: the array unwrapped, compact, sorted keys.
@@ -915,19 +917,26 @@ kelpi workspace list [--group <name-or-id>] [--json] [--no-header]
 
 ```
 kelpi workspace create [--name "..."] [--path /dir] [--color blue] [--group <name>]
-                     [--profile <name>] [--muted] [--json]
+                     [--profile <name>] [--repo <path> | --no-repo] [--muted] [--json]
 kelpi workspace create --worktree <name> [--branch <name>] [--repo <path>]
-                     [--update-main] [--group <existing>] [--muted] [--json]
+                     [--update-main | --no-update-main] [--group <existing>] [--muted] [--json]
 ```
 
-- Help to stdout, exit 0. Leftovers rejected.
+- Help to stdout, exit 0. Leftovers rejected. `--update-main` with `--no-update-main`, or
+  `--repo` with `--no-repo`, => an error line, exit 1, nothing sent.
 - Payload: `{"command":"workspace-create", name?, path?, color?, group?, profile?}`, plus
-  `muted: true` only when `--muted` was passed (§10.7).
-  When `--worktree` is given, additionally: `worktree`, `branch?`,
-  `update_main: true` (only when the switch was passed), and **always** `repo`
-  (= `--repo` value, defaulting to the CLI process's cwd).
+  `muted: true` only when `--muted` was passed (§10.7), `repo` whenever `--repo` was passed
+  (made absolute against the CLI's cwd; `~` is left for the daemon), and
+  `group_defaults: false` for `--no-repo` (ignore the group's repository for this one).
+  When `--worktree` is given, additionally: `worktree`, `branch?`, `update_main: true` for
+  `--update-main` or `false` for `--no-update-main` (absent otherwise, so a group whose
+  worktree switch is on makes it the default), and the source repo: `--repo` if given; else,
+  with `--group` (and no `--no-repo`), the CLI's cwd as `path` (unless `--path` was given),
+  so the daemon prefers the group's repository and falls back to the cwd; else the cwd as
+  `repo`, as it always was.
 - Request/response. Read timeout 120 seconds when `--worktree` present (worktree add plus
-  optional `git fetch`), default otherwise.
+  optional `git fetch`), 30 seconds with `--repo` or `--group` (a repo association reads
+  git), default otherwise.
 - `--json`: prints the **full reply including `ok`**, compact, sorted keys.
 - `--muted` confirmation: when `--muted` was passed and the reply does not carry
   `muted: true` (a daemon that predates the field drops it and creates the workspace unmuted),
@@ -936,10 +945,10 @@ kelpi workspace create --worktree <name> [--branch <name>] [--repo <path>]
   prints the reply first.
 - Default output variants (from reply fields; name falls back to the `--name` argument or
   `"Workspace"`, id to `?`):
-  - worktree: `created workspace <name> (<id>)[ in group <g>] with worktree <path> on branch <branch>`
-    (branch falls back to `?`).
-  - plain with group: `created workspace <name> (<id>) in group <g>`
-  - plain: `created workspace <name> (<id>)`
+  - worktree: `created workspace <name> (<id>)[ in group <g>] with worktree <path> on branch <branch>[ off the latest main]`
+    (branch falls back to `?`; the suffix when the reply says `update_main: true`).
+  - plain: `created workspace <name> (<id>)[ in group <g>][ with repo <repo_path>]` (the
+    repo when the reply names one).
 
 Server contract highlights: `--group` creates the group if missing UNLESS `--worktree` is
 present (then the group must already exist; unknown/ambiguous => `ok:false`, avoiding an
@@ -950,7 +959,14 @@ workspace muted from its first frame, so a conductor can spawn children that nev
 `resolvedWorktreeBasePath/<sanitized-name>`; `--branch` defaults to the worktree name;
 `--update-main` fetches and branches off `origin/<default>` (resolved via
 `git ls-remote --symref`). Every success reply carries `muted`; the worktree reply adds
-`worktree_path` and `branch`.
+`worktree_path`, `branch`, `update_main` and `repo_path`.
+
+Group defaults (app-state-core.md §5.5): in a group with a repository (`kelpi group set-repo`,
+§11.7), a create with no `--repo` starts with that repository: associated (and the first
+pane opened in it, unless `--path`) without `--worktree`, or as the worktree's source with
+it. When the group's worktree switch is on, `--worktree <name>` defaults to update main
+(`--no-update-main` opts out). The reply's `repo_path` names the repository used. A `--repo`
+that is not inside a git repository => `ok:false`, nothing created.
 
 ### 10.3 `kelpi workspace move`
 
@@ -1090,10 +1106,10 @@ to every attached client. Unknown or ambiguous workspace => `ok:false` `no works
 
 ## 11. `kelpi group`
 
-Dispatcher: missing action => `Usage: kelpi group list|create|rename|delete|reorder|sort [...]`
+Dispatcher: missing action => `Usage: kelpi group list|create|rename|delete|reorder|sort|set-repo [...]`
 to stderr, exit 1; `--help|-h|help` => overview (with subcommand one-liners) to stdout,
 exit 0; unknown => `Unknown group action: <x>` +
-`Valid actions: list, create, rename, delete, reorder, sort`, exit 1.
+`Valid actions: list, create, rename, delete, reorder, sort, set-repo`, exit 1.
 
 ### 11.1 `kelpi group list`
 
@@ -1103,11 +1119,13 @@ kelpi group list [--json] [--no-header]
 
 - Leftover args (after the two switches) => usage line, exit 1.
 - Payload `{"command":"group-list"}`; reply `{ok, "groups":[...]}` where each group has
-  `id`, `name`, `color?`, `workspaces: [{id, name}]` in sidebar order.
+  `id`, `name`, `color?`, `workspaces: [{id, name}]` in sidebar order, and, only while the
+  group has a default repository (§11.7), `repo: {id, name, path}` and `create_worktree`.
 - `--json`: the array unwrapped, compact sorted. Empty => `[]`, exit 0.
-- Table: `ID  NAME  COLOR  WORKSPACES`; ID short-uuid; COLOR falls back `-`; WORKSPACES is
-  `name (shortid)` pairs comma-joined (name-less members print just the short id), `-`
-  when empty; last column unpadded.
+- Table: `ID  NAME  COLOR  REPO  WORKSPACES`; ID short-uuid; COLOR falls back `-`; REPO is
+  the repository's name, suffixed ` +worktree` when the worktree switch is on, `-` when the
+  group has none; WORKSPACES is `name (shortid)` pairs comma-joined (name-less members print
+  just the short id), `-` when empty; last column unpadded.
 
 ### 11.2 `kelpi group create <name> [--color blue]`
 
@@ -1155,6 +1173,35 @@ kelpi group sort <name-or-id> --by name|last-activity|last-accessed [--desc] [--
   last-accessed).
 - Payload: `{"command":"group-sort","name":...,"by":...,"descending":<bool>}`.
 - Same reply/renderer as reorder. Sorting is stable server-side, ascending by default.
+
+### 11.7 `kelpi group set-repo` (issue #285)
+
+```
+kelpi group set-repo <name-or-id> <path> [--worktree | --no-worktree] [--json]
+kelpi group set-repo <name-or-id> --none [--json]
+kelpi group set-repo <name-or-id> --worktree | --no-worktree [--json]
+```
+
+A group's default repository and its "new workspaces create a worktree from latest main"
+switch (app-state-core.md §5.5; §10.2 for what a create in the group then does).
+
+- Help to stdout, exit 0. Missing name-or-id, or none of a path / `--none` / a switch flag
+  => usage to stderr, exit 1. A path with `--none`, `--none` with `--worktree`, or both
+  switch flags => an error line, exit 1. Leftovers rejected. Nothing is sent on any of these.
+- Payload: `{"command":"group-set-repo","name":..., repo?, clear?, create_worktree?}`:
+  `repo` is the path made absolute against the CLI's cwd (`~` left for the daemon),
+  `clear: true` for `--none`, `create_worktree: true|false` for `--worktree` /
+  `--no-worktree` (absent keeps the switch).
+- Request/response, read timeout 30 seconds (resolving the path reads git). Reply
+  `{ok, group_id, group_name, repo: {id, name, path} | null, create_worktree}`.
+- `--json` => full reply incl. `ok`, compact sorted; default => `group <name> repo: <path>`
+  (suffixed ` (new workspaces create a worktree from latest main)` when the switch is on) or
+  `group <name> repo: none`.
+- Server contract: the path may be anywhere inside the repository (a linked worktree names
+  its main repository), and is registered if the registry lacks it; outside any repository
+  => `ok:false` (`<path> is not inside a git repository`), exit 1. The switch on a group
+  with no repository => `ok:false`, exit 1. `--none` also turns the switch off. Removing the
+  repository from the registry (Settings > Repositories) clears the group's repository.
 
 ---
 

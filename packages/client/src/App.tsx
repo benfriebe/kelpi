@@ -4046,7 +4046,10 @@ function Shell(props: AppProps): ReactElement {
                     selectRemote: setRemoteSelection, bucket, reportSelection: reportWorkspaceSelection,
                     suppressDeleteConfirm: () => { settingsActions.setGeneralSetting('confirm-workspace-delete', 'false'); },
                     openSettings: section => openSettings(section === 'labels' ? 'labels' : DEFAULT_SETTINGS_TAB),
-                    reportFailure: notifyFailure
+                    reportFailure: notifyFailure,
+                    // app-state-core.md §5.5: the group menu's Repository ▸ Choose Folder…,
+                    // desktop app only (see `browseForFolder`).
+                    ...(browseForFolder === undefined ? {} : { onBrowseForFolder: browseForFolder })
                 }),
                 bindInspectorFeature({ model: inspectorData, actions: act, focusedPaneID,
                     profiles: settings.profiles, labelPresets: daemon.state.labelPresets, bucket,

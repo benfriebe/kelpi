@@ -101,6 +101,7 @@ import {
     type ChromeRepo,
     type ChromeSidebarEntry,
     type ChromeWorkspace,
+    type GroupRepoChange,
     type SidebarCallbacks
 } from './types';
 
@@ -4022,6 +4023,79 @@ export function Sidebar(props: SidebarProps): ReactElement {
         ]
     );
 
+    /**
+     * app-state-core.md §5.5's "Repository ▸": the group's default repository, picked from the
+     * registry, from a folder (#283's native panel, desktop app only; the daemon registers a
+     * folder it has not seen), or None. The worktree switch is a checkbox row that exists only
+     * while a repository is set, because it acts on that repository; it toggles in place, like
+     * the row menu's Mute Notifications, so the new state is seen.
+     */
+    const onSetGroupRepo = props.onSetGroupRepo;
+    const onBrowseForFolder = props.onBrowseForFolder;
+    const registry = props.repos ?? EMPTY_REPOS;
+    const groupRepoMenu = useCallback(
+        (group: ChromeGroup): MenuItemSpec => {
+            const current = group.repoID ?? null;
+            const set = (change: GroupRepoChange): void => {
+                onSetGroupRepo?.(group.id, change);
+            };
+            const rows: MenuItemSpec[] = registry.map(
+                (repo): MenuItemSpec => ({
+                    id: `repo:${repo.id}`,
+                    label: repo.name,
+                    checked: current === repo.id,
+                    onSelect: () => {
+                        set({ repoPath: repo.path });
+                    }
+                })
+            );
+            if (rows.length > 0) rows.push({ id: 'repo:sep', label: '', kind: 'separator' });
+            if (onBrowseForFolder !== undefined) {
+                rows.push({
+                    id: 'repo:choose',
+                    label: 'Choose Folder…',
+                    // Never ticked, but it keeps the tick column so the label lines up with the
+                    // repo rows and None around it.
+                    checked: false,
+                    onSelect: () => {
+                        void onBrowseForFolder()
+                            .then((chosen) => {
+                                if (chosen !== null) set({ repoPath: chosen });
+                            })
+                            .catch(() => {
+                                // A panel that failed to open is the same answer as a cancel.
+                            });
+                    }
+                });
+            }
+            rows.push({
+                id: 'repo:none',
+                label: 'None',
+                checked: current === null,
+                onSelect: () => {
+                    set({ repoPath: null });
+                }
+            });
+            if (current !== null) {
+                const createWorktree = group.createWorktree === true;
+                rows.push(
+                    { id: 'repo:sep2', label: '', kind: 'separator' },
+                    {
+                        id: 'repo:worktree',
+                        label: 'New workspaces create a worktree from latest main',
+                        control: 'checkbox',
+                        checked: createWorktree,
+                        onSelect: () => {
+                            set({ createWorktree: !createWorktree });
+                        }
+                    }
+                );
+            }
+            return { id: 'repo', label: 'Repository', submenu: rows };
+        },
+        [onBrowseForFolder, onSetGroupRepo, registry]
+    );
+
     const groupMenuItems = useCallback(
         (groupID: string): MenuItemSpec[] => {
             const group = groups.find((candidate) => candidate.id === groupID);
@@ -4084,6 +4158,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
                     label: 'Change Icon',
                     submenu: iconSubmenu('group', groupID, group.icon)
                 },
+                ...(props.onSetGroupRepo === undefined ? [] : [groupRepoMenu(group)]),
                 {
                     id: 'collapse',
                     label: collapsed ? 'Expand' : 'Collapse',
@@ -4110,7 +4185,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
                 }
             ];
         },
-        [bucket, collapseOverrides, groups, iconSubmenu, props, toggleCollapse]
+        [bucket, collapseOverrides, groupRepoMenu, groups, iconSubmenu, props, toggleCollapse]
     );
 
     /**
@@ -4924,10 +4999,13 @@ export function Sidebar(props: SidebarProps): ReactElement {
                             }
                             // §WS-058: a group raised from the bulk menu is created AROUND
                             // the selection, in one command, and the selection is released.
+                            // §5.5: the sheet's optional repository rides the same create; it is
+                            // passed only when chosen, so a repo-less create calls exactly as before.
+                            const repoArgs = draft.groupRepo === null ? [] : ([draft.groupRepo] as const);
                             if (members !== undefined && props.onCreateGroupForWorkspaces !== undefined) {
-                                props.onCreateGroupForWorkspaces(draft.name, members, draft.color);
+                                props.onCreateGroupForWorkspaces(draft.name, members, draft.color, ...repoArgs);
                                 setSelection(EMPTY_SELECTION);
-                            } else props.onCreateGroup?.(draft.name, draft.color);
+                            } else props.onCreateGroup?.(draft.name, draft.color, ...repoArgs);
                             setNewForm(null);
                             return null;
                         }

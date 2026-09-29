@@ -90,6 +90,18 @@ export interface WorkspaceGroup {
     /** Epoch seconds. */
     readonly createdAt: number;
     readonly icon: IconRef | null;
+    /**
+     * app-state-core.md §5.5: the group's default repository, a `Repo.id` in the registry, or
+     * null. A workspace created in the group starts with this repo associated. Removing the
+     * repo from the registry clears it (the reducer's `remove-repo` cascade).
+     */
+    readonly repoID: string | null;
+    /**
+     * §5.5: new workspaces in the group create a worktree off the latest `origin/<default>`
+     * (update main) rather than only associating the repo. Only ever true while `repoID` is
+     * set: clearing the repo clears this too, so a stale switch can never outlive its repo.
+     */
+    readonly createWorktree: boolean;
 }
 
 export type LabelColor =
@@ -272,8 +284,22 @@ export type DomainAction =
           readonly insertAfter?: SidebarID | null | undefined;
           readonly initialWorkspaceIDs?: readonly string[] | undefined;
           readonly placement?: NewWorkspacePlacement | undefined;
+          /** §5.5: the New Group sheet's optional repository and worktree switch. */
+          readonly repoID?: string | null | undefined;
+          readonly createWorktree?: boolean | undefined;
       }
     | { readonly type: 'rename-group'; readonly id: string; readonly name: string }
+    /**
+     * §5.5: set or clear the group's default repository. `createWorktree` absent keeps the
+     * current switch; `repoID: null` always clears the switch with it. A `repoID` the registry
+     * does not hold is a no-op, like every other dangling reference in this reducer.
+     */
+    | {
+          readonly type: 'set-group-repo';
+          readonly id: string;
+          readonly repoID: string | null;
+          readonly createWorktree?: boolean | undefined;
+      }
     | {
           readonly type: 'set-group-color';
           readonly id: string;

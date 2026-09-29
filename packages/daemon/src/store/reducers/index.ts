@@ -53,6 +53,7 @@ const ROUTES = {
     'rename-group': 'group',
     'set-group-color': 'group',
     'set-group-icon': 'group',
+    'set-group-repo': 'group',
     'toggle-group-collapse': 'group',
     'set-group-collapsed': 'group',
     'delete-group': 'group',

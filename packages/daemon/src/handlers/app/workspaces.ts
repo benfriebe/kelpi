@@ -10,7 +10,8 @@
  *   - list order = sidebar order INCLUDING collapsed group members, deduped, with any
  *     unreachable workspace appended so the CLI can never lose one (§6.1);
  *   - create replies BEFORE the effect on the two synchronous branches and AFTER the git work
- *     on the worktree branch (§1 reply-before-effect, §6.2a);
+ *     on the worktree branch and on a create that associates a repository (§1
+ *     reply-before-effect, §6.2a, §6.2d);
  *   - delete's guards run in order (resolve → last-workspace → agent panes) and the `path`
  *     field is the first SHELL pane's cwd (port note 17 — `--prune-worktree` depends on it).
  */
@@ -37,12 +38,14 @@ import {
 import type { ReplyHandle } from '../../seams.js';
 import {
     workspaceAgentSummary,
+    groupByID,
     groupIDForWorkspace,
     nextRandomColor,
     resolveStateOf,
     workspaceByID,
     type DaemonState,
     type RepoAssociation,
+    type WorkspaceGroup,
     type WorkspaceState
 } from '../../store/index.js';
 import {
@@ -53,6 +56,7 @@ import {
 } from '../../git/index.js';
 import { forCommand, listedWorkspaceIDs, refreshSyncGroup, uuidOut, wireTimestamp } from './common.js';
 import { fail, ok, type AppContext, type AppDeps, type AppHandler } from './context.js';
+import { associationFor, groupRepo, resolveRepo } from './repos.js';
 
 const DEFAULT_WORKSPACE_NAME = 'Workspace';
 
@@ -77,6 +81,17 @@ function workspaceEntry(state: DaemonState, workspace: WorkspaceState): Workspac
     }
     const session = workspace.panes.find((pane) => pane.agentSessionID !== null)?.agentSessionID;
     const group = groupRef(state, workspace.id);
+    // §6.1: the repo associations, so a script (or a scenario) can see which checkout a
+    // workspace works in without the GUI's inspector. Elided by the builder when empty.
+    const repos = workspace.repoAssociations.map((association) => {
+        const repo = state.repos.find((candidate) => candidate.id === association.repoID);
+        return {
+            repo_id: uuidOut(association.repoID),
+            ...(repo !== undefined ? { repo_name: repo.name, repo_path: repo.path } : {}),
+            worktree_path: association.worktreePath,
+            ...(association.branchName !== null ? { branch: association.branchName } : {})
+        };
+    });
     return buildWorkspaceListEntry({
         id: uuidOut(workspace.id),
         name: workspace.name,
@@ -89,7 +104,8 @@ function workspaceEntry(state: DaemonState, workspace: WorkspaceState): Workspac
         muted: workspace.muted,
         ...(lastActivity !== undefined ? { last_activity_at: wireTimestamp(lastActivity) } : {}),
         ...(session !== undefined && session !== null ? { agent_session_id: session } : {}),
-        ...(group !== undefined ? { group } : {})
+        ...(group !== undefined ? { group } : {}),
+        repos
     });
 }
 
@@ -240,6 +256,7 @@ function handleWorktreeCreate(
     // 1. Group pre-resolution — never creates a group here (a failed add would orphan it).
     let groupID: string | undefined;
     let groupName: string | undefined;
+    let groupDefault: WorkspaceGroup | null = null;
     if (trimmedGroup !== '') {
         const group = resolveGroupStrict(resolveStateOf(state), trimmedGroup);
         if (group === null) {
@@ -254,15 +271,22 @@ function handleWorktreeCreate(
         }
         groupID = group.id;
         groupName = group.name;
+        if (msg.group_defaults) groupDefault = groupByID(state, group.id);
     }
 
-    // 2. Source repo.
-    const repoPathRaw = msg.repo ?? msg.path;
+    // 2. Source repo: an explicit `repo` wins, then the group's default repository
+    // (app-state-core.md §5.5), then `path` (which the CLI fills with its cwd when it leaves
+    // the choice to the group).
+    const defaultRepo = groupDefault === null ? null : groupRepo(state, groupDefault);
+    const repoPathRaw = msg.repo ?? defaultRepo?.path ?? msg.path;
     if (repoPathRaw === undefined || repoPathRaw.trim() === '') {
         fail(reply, '--worktree requires a source repo (pass --repo <path>)');
         return;
     }
     const repoPath = standardizePath(repoPathRaw, state.homeDirectory);
+    // §5.5: a group whose switch is on makes update main the default; only an explicit
+    // `update_main` (`--update-main` / `--no-update-main`, or the sheet's checkbox) overrides it.
+    const updateMain = msg.update_main ?? (groupDefault?.createWorktree === true);
 
     // 3. Name sanitization.
     const folderName = sanitizedGitName(worktreeName);
@@ -300,7 +324,7 @@ function handleWorktreeCreate(
             repoPath,
             worktreePath: seed.path,
             branchName: seed.branchName,
-            updateMain: msg.update_main
+            updateMain
         })
         .then(() => {
             if (existingRepo !== undefined) {
@@ -361,6 +385,9 @@ function handleWorktreeCreate(
                 workspace_name: created?.name ?? workspaceName,
                 worktree_path: seed.path,
                 branch: seed.branchName,
+                // §5.5: echoed, since a group's switch can have chosen it on the caller's behalf.
+                update_main: updateMain,
+                repo_path: repoPath,
                 // Echoed so `--muted` is confirmed: a daemon that predates it drops the field.
                 muted: created?.muted ?? false,
                 ...(groupName !== undefined ? { group: groupName } : {})
@@ -368,6 +395,74 @@ function handleWorktreeCreate(
         })
         .catch((error: unknown) => {
             fail(reply, worktreeErrorMessage(error));
+        });
+}
+
+/**
+ * §6.2 (d) / app-state-core.md §5.5: a plain (non-worktree) create that starts with a repository
+ * associated: the request's `repo`, or the group's default repository.
+ *
+ * The repository is resolved first (git work, so the reply comes AFTER the effect here, as on
+ * the worktree branch) and nothing is mutated until it has resolved: a path that is not a
+ * repository fails the whole create, and never leaves a workspace or a new group behind. The
+ * first pane opens in the checkout unless `path` says otherwise, the same rule the New Workspace
+ * sheet applies to a single chosen repository (issue #38).
+ */
+function handleCreateWithRepo(
+    msg: WorkspaceCreateMessage,
+    repoPath: string,
+    ctx: AppContext,
+    reply: ReplyHandle | null,
+    deps: AppDeps
+): void {
+    const workspaceName = msg.name ?? DEFAULT_WORKSPACE_NAME;
+    const trimmedGroup = msg.group?.trim() ?? '';
+    const workspaceID = deps.uuid();
+    void resolveRepo(ctx, deps, repoPath)
+        .then(async (resolution) => {
+            if (!resolution.ok) {
+                fail(reply, resolution.error);
+                return;
+            }
+            const association = await associationFor(deps, resolution);
+            // Re-resolved after the git work: the group the request named can have been
+            // created, renamed or deleted while it ran.
+            let groupID: string | undefined;
+            if (trimmedGroup !== '') {
+                const scope = resolveStateOf(ctx.store.getState());
+                const existing = resolveGroupStrict(scope, trimmedGroup);
+                if (existing === null && groupsMatchingName(scope, trimmedGroup).length > 0) {
+                    deps.persist();
+                    fail(reply, ambiguousGroupError(trimmedGroup));
+                    return;
+                }
+                groupID = existing?.id;
+                if (groupID === undefined) {
+                    groupID = deps.uuid();
+                    ctx.store.dispatch({ type: 'create-group', id: groupID, name: trimmedGroup, now: deps.now() });
+                }
+            }
+            dispatchCreate(ctx, deps, {
+                name: workspaceName,
+                workingDirectory: msg.path ?? association.worktreePath,
+                color: msg.color,
+                profile: msg.profile,
+                muted: msg.muted === true,
+                groupID,
+                workspaceID,
+                repoAssociations: [association]
+            });
+            const created = workspaceByID(ctx.store.getState(), workspaceID);
+            ok(reply, {
+                workspace_id: uuidOut(workspaceID),
+                workspace_name: created?.name ?? workspaceName,
+                muted: created?.muted ?? msg.muted === true,
+                repo_path: resolution.repo.path,
+                ...(trimmedGroup !== '' ? { group: trimmedGroup } : {})
+            });
+        })
+        .catch((error: unknown) => {
+            fail(reply, error instanceof Error ? error.message : String(error));
         });
 }
 
@@ -386,6 +481,25 @@ function handleWorkspaceCreate(
     const state = ctx.store.getState();
     const workspaceName = msg.name ?? DEFAULT_WORKSPACE_NAME;
     const trimmedGroup = msg.group?.trim() ?? '';
+
+    // (d) A repository to associate: the request's own `repo`, else the group's default
+    // (app-state-core.md §5.5). Resolving it is git work, so this is the one synchronous-shaped
+    // create that replies AFTER the effect, like the worktree branch.
+    const scope = resolveStateOf(state);
+    const existing = trimmedGroup === '' ? null : resolveGroupStrict(scope, trimmedGroup);
+    const existingGroup = existing === null ? null : groupByID(state, existing.id);
+    const defaultRepo =
+        msg.group_defaults && existingGroup !== null ? groupRepo(state, existingGroup) : null;
+    const repoToAssociate = msg.repo ?? defaultRepo?.path;
+    if (repoToAssociate !== undefined) {
+        if (trimmedGroup !== '' && existing === null && groupsMatchingName(scope, trimmedGroup).length > 0) {
+            fail(reply, ambiguousGroupError(trimmedGroup));
+            return;
+        }
+        handleCreateWithRepo(msg, repoToAssociate, ctx, reply, deps);
+        return;
+    }
+
     const workspaceID = deps.uuid();
 
     // (b) Top-level branch: reply first, then create.
@@ -405,8 +519,6 @@ function handleWorkspaceCreate(
     }
 
     // (c) Group branch: ambiguity is rejected BEFORE any mutation.
-    const scope = resolveStateOf(state);
-    const existing = resolveGroupStrict(scope, trimmedGroup);
     if (existing === null && groupsMatchingName(scope, trimmedGroup).length > 0) {
         fail(reply, ambiguousGroupError(trimmedGroup));
         return;

@@ -14,6 +14,7 @@
  *   node scripts/dev-instance.mjs --packaged      # run the packaged Kelpi.app instead
  *   node scripts/dev-instance.mjs --state ~/tmp/kelpi-candidate   # persistent state dir
  *   node scripts/dev-instance.mjs --verbose      # echo the daemon's and shell's own logs
+ *   node scripts/dev-instance.mjs --isolated-home   # panes get a bare HOME (no rc files) and /bin/sh
  *
  * Ctrl-C stops the instance. A throwaway state dir is deleted on exit; a --state dir is kept
  * (config and DB survive, so a candidate can be tested against accumulated state).
@@ -55,6 +56,18 @@ const noBuild = has('--no-build');
  * That is the one thing this script exists to make possible, so it is a flag rather than a patch.
  */
 const verbose = has('--verbose');
+/*
+ * Panes run YOUR shell (`$SHELL`) with YOUR `HOME`, so they read your rc files (oh-my-zsh, prompt,
+ * aliases) and look like the shells you use every day. A candidate build is being judged by a
+ * person, and a bare `sh-3.2$` with no working directory hides exactly what they came to check.
+ *
+ * That is safe because every piece of daemon state that would otherwise live under `HOME` is
+ * pinned below by name (run dir, database, config, Ghostty config, client dir), and Electron gets
+ * its own `--user-data-dir`: a real `HOME` changes what a pane's shell sees and nothing the
+ * daemon writes. `--isolated-home` restores the old sandbox: an empty `HOME` under the state dir
+ * and no `SHELL`, so panes fall back to `/bin/sh` with no rc files.
+ */
+const isolatedHome = has('--isolated-home');
 const persistent = stateDir !== undefined;
 
 // ── the instance root ───────────────────────────────────────────────────────────────
@@ -197,7 +210,8 @@ const sandbox = {
     base: `http://127.0.0.1:${String(httpPort)}`,
     env: {
         PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
-        HOME: path.join(root, 'home'),
+        HOME: isolatedHome ? path.join(root, 'home') : os.homedir(),
+        ...(!isolatedHome && process.env.SHELL ? { SHELL: process.env.SHELL } : {}),
         KELPID_RUN_DIR: path.join(root, 'run'),
         KELPID_SOCKET_PATH: socketPath,
         KELPID_TCP_PORT: String(controlPort),

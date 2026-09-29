@@ -430,9 +430,14 @@ describe('workspace and group commands', () => {
             command: 'group-set-repo',
             name: 'kelpi',
             repo: '~/code/kelpi',
+            repo_id: undefined,
             clear: false,
             create_worktree: true
         });
+        // A registry row by id: what the group menu's rows send, so a row is taken as is.
+        expect(ok({ command: 'group-set-repo', name: 'kelpi', repo_id: 'R1' })).toMatchObject({ repo_id: 'R1', repo: undefined });
+        expect(rejected({ command: 'group-set-repo', name: 'kelpi', repo: '/r', repo_id: 'R1' }).field).toBe('clear');
+        expect(rejected({ command: 'group-set-repo', name: 'kelpi', repo_id: 'R1', clear: true }).field).toBe('clear');
         expect(ok({ command: 'group-set-repo', name: 'kelpi', clear: true })).toMatchObject({
             clear: true,
             repo: undefined,

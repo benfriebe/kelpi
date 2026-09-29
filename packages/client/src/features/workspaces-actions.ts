@@ -26,7 +26,7 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
 
     const runCreateGroup = (
         promise: Promise<CommandReply>,
-        options: { readonly rename?: boolean } = {}
+        options: { readonly rename?: boolean; readonly then?: ((groupID: string) => void) | undefined } = {}
     ): true => {
         void promise.then(
             (reply) => {
@@ -37,6 +37,7 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
                 const created = replyText(reply, 'group_id');
                 if (created === undefined) return;
                 setScrollToGroupID(created);
+                options.then?.(created);
                 // §WS-052 / §APP-019: the gestures that mint a PLACEHOLDER name drop
                 // straight into inline rename on the header the reply named — the id
                 // exists nowhere else, so this is the only place the request can be made.
@@ -51,6 +52,39 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
         );
         return true;
     };
+
+    /**
+     * §5.5: a group created from the New Group sheet, with its optional repository. A registry
+     * row rides the create itself (`repo_id`), so the group lands with it in one change. A
+     * folder from the sheet's Choose Folder… has no id yet: the daemon's `group-set-repo`
+     * resolves and registers it (the same path the menu's Choose Folder… takes), sent once the
+     * create has answered with the new group's id.
+     */
+    const createGroupWithRepo = (
+        name: string,
+        workspaceIDs: readonly string[],
+        color: WorkspaceColor | null | undefined,
+        repo: NewGroupRepo | undefined
+    ): true =>
+        runCreateGroup(
+            commands.createGroupForWorkspaces({
+                name,
+                workspaceIDs,
+                ...(color === undefined || color === null ? {} : { color }),
+                ...(repo !== undefined && 'repoID' in repo ? { repoID: repo.repoID, createWorktree: repo.createWorktree } : {})
+            }),
+            {
+                then:
+                    repo !== undefined && 'repoPath' in repo
+                        ? (groupID) => {
+                              run(
+                                  'Group repository',
+                                  commands.setGroupRepo({ group: groupID, repo: repo.repoPath, createWorktree: repo.createWorktree })
+                              );
+                          }
+                        : undefined
+            }
+        );
 
     const runCreateWorkspace = (
         promise: Promise<CommandReply>,
@@ -250,6 +284,7 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
                 'Group repository',
                 commands.setGroupRepo({
                     group: groupID,
+                    ...(change.repoID === undefined ? {} : { repoID: change.repoID }),
                     ...(change.repoPath === undefined ? {} : { repo: change.repoPath }),
                     ...(change.createWorktree === undefined ? {} : { createWorktree: change.createWorktree })
                 })
@@ -272,17 +307,7 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
             if (trimmed.length === 0) return false;
             // §5.5: a group created WITH a repository goes through the verb that can carry one,
             // so it lands with its repo in one change (the CLI's `group-create` cannot).
-            if (repo !== undefined) {
-                return runCreateGroup(
-                    commands.createGroupForWorkspaces({
-                        name: trimmed,
-                        workspaceIDs: [],
-                        ...(color === undefined || color === null ? {} : { color }),
-                        repoID: repo.repoID,
-                        createWorktree: repo.createWorktree
-                    })
-                );
-            }
+            if (repo !== undefined) return createGroupWithRepo(trimmed, [], color, repo);
             return runCreateGroup(
                 commands.createGroup({
                     name: trimmed,
@@ -362,14 +387,7 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
         ): boolean {
             const trimmed = name.trim();
             if (trimmed.length === 0) return false;
-            return runCreateGroup(
-                commands.createGroupForWorkspaces({
-                    name: trimmed,
-                    workspaceIDs,
-                    ...(color === undefined || color === null ? {} : { color }),
-                    ...(repo === undefined ? {} : { repoID: repo.repoID, createWorktree: repo.createWorktree })
-                })
-            );
+            return createGroupWithRepo(trimmed, workspaceIDs, color, repo);
         },
 
         newGroupForWorkspace(workspaceID: string): boolean {

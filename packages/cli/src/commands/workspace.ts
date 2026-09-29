@@ -126,7 +126,9 @@ async function handleWorkspaceCreate(args: string[]): Promise<void> {
 
     const payload: JsonObject = { command: 'workspace-create' };
     if (name !== null) payload['name'] = name;
-    if (dir !== null) payload['path'] = dir;
+    // Absolute here, like --repo: the daemon's cwd is not the shell's, and with --group
+    // --worktree on a repo-less group this path is the worktree's source repo.
+    if (dir !== null) payload['path'] = absoluteUserPath(dir);
     if (color !== null) payload['color'] = color;
     if (group !== null) payload['group'] = group;
     if (profile !== null) payload['profile'] = profile;

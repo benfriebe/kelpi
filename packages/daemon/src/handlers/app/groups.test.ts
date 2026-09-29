@@ -271,6 +271,48 @@ describe('group-set-repo (app-state-core §5.5)', () => {
             error: "no group matches 'ghost'"
         });
     });
+
+    /** A registry row that is a monorepo SUBFOLDER: git would resolve it to `/code/kelpi`. */
+    const SUB = id('bbbbbbbb', 7);
+    function withSubfolderRow(isAutoDiscovered = false) {
+        const resolveRepoRoot = vi.fn(async (directory: string) =>
+            directory.startsWith(REPO) ? { worktreeRoot: REPO, parentRepoRoot: REPO } : null
+        );
+        const h = setup({ resolveRepoRoot });
+        h.dispatch({
+            type: 'add-repo',
+            repo: { id: SUB, path: `${REPO}/packages/app`, name: 'app', remoteURL: null, lastAccessedAt: 1, isAutoDiscovered }
+        });
+        return { h, resolveRepoRoot };
+    }
+
+    it('takes a registry row by id as is, promoting it, with no git and no duplicate', () => {
+        const { h, resolveRepoRoot } = withSubfolderRow(true);
+        expect(h.reply({ command: 'group-set-repo', name: 'team', repo_id: SUB, create_worktree: true })).toEqual({
+            ok: true,
+            group_id: G1,
+            group_name: 'team',
+            repo: { id: SUB, name: 'app', path: `${REPO}/packages/app` },
+            create_worktree: true
+        });
+        expect(resolveRepoRoot).not.toHaveBeenCalled();
+        expect(h.state().repos).toHaveLength(1);
+        // Adopted by a group, so §GIT-081's GC may never collect it.
+        expect(h.state().repos[0]?.isAutoDiscovered).toBe(false);
+        expect(h.reply({ command: 'group-set-repo', name: 'team', repo_id: id('bbbbbbbb', 99) })).toEqual({
+            ok: false,
+            error: `no repo matches '${id('bbbbbbbb', 99)}'`
+        });
+    });
+
+    it('takes a path the registry holds exactly as that row, not its top level', async () => {
+        const { h, resolveRepoRoot } = withSubfolderRow();
+        h.send({ command: 'group-set-repo', name: 'team', repo: `${REPO}/packages/app/` });
+        await flush();
+        expect(h.replies[0]?.payloads[0]).toMatchObject({ ok: true, repo: { id: SUB } });
+        expect(resolveRepoRoot).not.toHaveBeenCalled();
+        expect(h.state().repos.map((repo) => repo.id)).toEqual([SUB]);
+    });
 });
 
 describe('group-move', () => {

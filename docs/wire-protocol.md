@@ -496,7 +496,7 @@ carry `"command"`.
 | `group-rename` | F&F | `name`, `new_name` | — |
 | `group-delete` | F&F | `name` | `cascade` |
 | `group-move` | F&F | `name`, `index` | — |
-| `group-set-repo` | R/R | `name`; one of `repo`/`clear`/`create_worktree` | `repo`, `clear`, `create_worktree` |
+| `group-set-repo` | R/R | `name`; one of `repo`/`repo_id`/`clear`/`create_worktree` | `repo`, `repo_id`, `clear`, `create_worktree` |
 | `group-reorder` | R/R | `name` | `order` |
 | `group-sort` | R/R | `name`, `by` | `descending` |
 | `layout-cycle` | F&F | `pane_id` | — |
@@ -1088,11 +1088,15 @@ is the other axis entirely: it rewrites a group's member order.
 
 A group's default repository and its "new workspaces create a worktree from latest main"
 switch (app-state-core.md §5.5). `name` (name-or-id) required non-empty, plus at least one
-of: `repo` (a path; resolved like `workspace-create`'s, so a path inside a checkout names
-that checkout's main repository, registered if the registry lacks it), `clear` (bool: no
-repository, and the switch goes off with it), `create_worktree` (bool: the switch; absent
-keeps it). `repo` with `clear`, or `clear` with `"create_worktree":true`, is a guard error;
-so is a request carrying none of the three. The switch alone on a group with no repository
+of: `repo` (a path: one the registry holds exactly is that row as is; any other path inside a
+checkout names that checkout's main repository, registered if the registry lacks it),
+`repo_id` (a registry row by id, taken as is: what the GUI's Repository ▸ rows send, so a
+registered monorepo subfolder or linked worktree is never re-resolved into a different repo),
+`clear` (bool: no repository, and the switch goes off with it), `create_worktree` (bool: the
+switch; absent keeps it). More than one of `repo` / `repo_id` / `clear`, or `clear` with
+`"create_worktree":true`, is a guard error; so is a request carrying none of them. An unknown
+`repo_id` → `{"ok":false,"error":"no repo matches '<id>'"}`. A repository a group adopts is
+promoted out of auto-discovered status, so the auto-unlink GC never collects it. The switch alone on a group with no repository
 → `{"ok":false,"error":"group '<name>' has no repository to create worktrees from: set one
 first (kelpi group set-repo <group> <path>)"}`; a path outside any repository →
 `{"ok":false,"error":"<path> is not inside a git repository"}`; unknown or ambiguous group →
@@ -1428,6 +1432,7 @@ other key is ignored. (A known key with the wrong type poisons the whole message
 | `by` | string | `group-sort` |
 | `descending` | bool | `group-sort` |
 | `create_worktree` | bool | `group-set-repo` |
+| `repo_id` | string | `group-set-repo` |
 | `group_defaults` | bool | `workspace-create` |
 
 ---
@@ -1541,8 +1546,10 @@ saved state keep working:
 
 11. **Timeout budget.** Handlers reply within ~5 s (default CLI timeout) except the known
     long-poll commands (`web-wait`, `web-exec`: the CLI extends per `--timeout`;
-    `workspace-create` with `worktree`: the CLI allows 120 s). Anything async (capture,
-    graft git work, web JS evaluation) still sends its reply from the async completion.
+    `workspace-create` with `worktree`: the CLI allows 120 s; `group-set-repo`, and
+    `workspace-create` with `repo` or `group` but no `worktree`, which may resolve a repository
+    with git before replying: the CLI allows 30 s). Anything async (capture, graft git work,
+    repository resolution, web JS evaluation) still sends its reply from the async completion.
 
 12. **Allowlist is by command name only.** A future command that wants a reply must be
     added to the allowlist; conversely nothing in the request opts into a reply. The

@@ -76,20 +76,25 @@ export type ChromeGroup = Pick<WorkspaceGroup, 'id' | 'name' | 'color' | 'icon' 
 };
 
 /**
- * What the group menu's Repository ▸ changes (§5.5). `repoPath: null` is "None"; a path is a
- * registered repo's, or a folder the native panel returned (the daemon registers it); absent
- * leaves the repository alone. `createWorktree` absent leaves the switch alone.
+ * What the group menu's Repository ▸ changes (§5.5). `repoID` is a registry row, taken as is (a
+ * row may be a monorepo subfolder or a linked worktree, which a path would re-resolve into a
+ * different repo); `repoPath` is a folder the native panel returned (the daemon registers it),
+ * and `repoPath: null` is "None"; neither leaves the repository alone. `createWorktree` absent
+ * leaves the switch alone.
  */
 export interface GroupRepoChange {
+    readonly repoID?: string | undefined;
     readonly repoPath?: string | null | undefined;
     readonly createWorktree?: boolean | undefined;
 }
 
-/** The New Group sheet's optional repository (§5.5): a registry id and the switch. */
-export interface NewGroupRepo {
-    readonly repoID: string;
-    readonly createWorktree: boolean;
-}
+/**
+ * The New Group sheet's optional repository (§5.5) and the switch: a registry row by id, or a
+ * folder its Choose Folder… returned (desktop app only), which the daemon resolves and registers.
+ */
+export type NewGroupRepo =
+    | { readonly repoID: string; readonly createWorktree: boolean }
+    | { readonly repoPath: string; readonly createWorktree: boolean };
 
 /**
  * One top-level sidebar slot. Structurally identical to `state/selectors.ts`'s `SidebarEntry`,

@@ -264,20 +264,59 @@ export default async function ({ page, cli, sandbox, rec, d, sleep }) {
         if (typeof plainCli.workspace_id === 'string') created.push(plainCli.workspace_id);
         rec.check('without --worktree the group’s repo is associated', plainCli.repo_path === repo, JSON.stringify(plainCli));
 
-        // ── 5 · removing the repository from the registry clears the group's repo ──────────────
+        // ── 5 · a registered SUBFOLDER row is picked as is: no duplicate, the right row ticked ──
         for (const id of created.splice(0)) await cli.run(['workspace', 'delete', id, '--force']);
+        const sub = path.join(repo, 'packages', 'web');
+        fs.mkdirSync(sub, { recursive: true });
+        const rowNames = async () =>
+            JSON.parse(String(await page.eval(`JSON.stringify(Array.from(document.querySelectorAll('[data-testid^="repo-row-"]')).map(el => (el.innerText ?? '').split('\\n')[0].trim()))`)));
+        const rowIDOf = async (name) =>
+            page.eval(
+                `(Array.from(document.querySelectorAll('[data-testid^="repo-row-"]')).find(el => (el.innerText ?? '').split('\\n')[0].trim() === ${JSON.stringify(name)})?.getAttribute('data-testid') ?? '').slice('repo-row-'.length)`
+            );
+        const closeSettings = async () => {
+            await page.key('Escape');
+            await d.settleDom(page, `document.querySelector('${d.PAGE.settingsPanel}') === null`, { ceilingMs: 3_000 });
+        };
         await d.openSettingsTab(page, 'repositories');
-        const rowID = await page.eval(
-            `(Array.from(document.querySelectorAll('[data-testid^="repo-row-"]')).find(el => (el.innerText ?? '').split('\\n')[0].trim() === 'app')?.getAttribute('data-testid') ?? '').slice('repo-row-'.length)`
+        await page.click('[data-testid="repo-path"]');
+        await page.insertText(sub);
+        await page.click('[data-testid="repo-add"]');
+        const subAdded = await d.settle(async () => (await rowNames()).includes('web'), { ceilingMs: 10_000, intervalMs: 200 });
+        const beforePick = await rowNames();
+        rec.check('Settings registers the monorepo subfolder as a row of its own', subAdded, JSON.stringify(beforePick));
+        await closeSettings();
+
+        const menuWithSub = await openRepositoryMenu();
+        const webRow = menuWithSub.find((row) => row.label === 'web');
+        await d.clickSubmenuItem(page, webRow?.id ?? 'repo:missing');
+        const picked = await d.settle(async () => (await ourGroup())?.repo?.path === sub, { ceilingMs: 10_000, intervalMs: 200 });
+        rec.check('picking the subfolder row makes THAT row the group’s repo, not its top level', picked, JSON.stringify(await ourGroup()));
+        const ticked = await openRepositoryMenu();
+        rec.check(
+            'the menu ticks the subfolder row, and only it',
+            ticked.find((row) => row.label === 'web')?.checked === 'true' && ticked.find((row) => row.label === 'app')?.checked === 'false',
+            JSON.stringify(ticked)
         );
-        if (typeof rowID === 'string' && rowID !== '') {
-            await page.click(`[data-testid="repo-remove-${rowID}"]`);
-            await d.settleDom(page, `document.querySelector('[data-testid="repo-row-${rowID}"]') === null`, { ceilingMs: 5_000 });
+        await rec.shot(page, 'repository-menu-subfolder-row-ticked');
+        await closeMenus();
+        await d.openSettingsTab(page, 'repositories');
+        const afterPick = await rowNames();
+        rec.check('and registered no duplicate', JSON.stringify(afterPick) === JSON.stringify(beforePick), JSON.stringify(afterPick));
+
+        // ── 6 · removing the repository from the registry clears the group's repo ──────────────
+        for (const name of ['web', 'app']) {
+            const rowID = await rowIDOf(name);
+            if (typeof rowID === 'string' && rowID !== '') {
+                await page.click(`[data-testid="repo-remove-${rowID}"]`);
+                await d.settleDom(page, `document.querySelector('[data-testid="repo-row-${rowID}"]') === null`, { ceilingMs: 5_000 });
+            }
+            if (name === 'web') {
+                const cleared = await d.settle(async () => (await ourGroup())?.repo === undefined, { ceilingMs: 5_000, intervalMs: 200 });
+                rec.check('removing the group’s repository from the registry clears its repo and switch', cleared, JSON.stringify(await ourGroup()));
+            }
         }
-        const cleared = await d.settle(async () => (await ourGroup())?.repo === undefined, { ceilingMs: 5_000, intervalMs: 200 });
-        rec.check('removing the repository from the registry clears the group’s repo and switch', cleared, JSON.stringify(await ourGroup()));
-        await page.key('Escape');
-        await d.settleDom(page, `document.querySelector('${d.PAGE.settingsPanel}') === null`, { ceilingMs: 3_000 });
+        await closeSettings();
     } finally {
         for (const id of created) await cli.run(['workspace', 'delete', id, '--force']);
         await cli.run(['group', 'delete', GROUP]);

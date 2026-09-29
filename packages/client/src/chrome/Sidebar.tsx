@@ -4045,7 +4045,8 @@ export function Sidebar(props: SidebarProps): ReactElement {
                     label: repo.name,
                     checked: current === repo.id,
                     onSelect: () => {
-                        set({ repoPath: repo.path });
+                        // By id: the row as registered, never re-resolved from its path.
+                        set({ repoID: repo.id });
                     }
                 })
             );
@@ -4974,6 +4975,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
                     groups={groups}
                     profiles={props.profiles ?? EMPTY_PROFILES}
                     remoteDaemons={props.remoteDaemons ?? []}
+                    {...(props.onBrowseForFolder === undefined ? {} : { onBrowseForFolder: props.onBrowseForFolder })}
                     defaultColor={newFormColor}
                     // §WS-076: an explicitly scoped group (the group menu's "New Workspace")
                     // wins; otherwise SET-011's inherited group, which assembly resolves.

@@ -87,6 +87,7 @@ export const WIRE_FIELD_TYPES = {
     by: 'string',
     descending: 'bool',
     create_worktree: 'bool',
+    repo_id: 'string',
     group_defaults: 'bool'
 } as const satisfies Record<string, WireFieldKind>;
 
@@ -101,6 +102,7 @@ export const EMPTY_STRING_NORMALIZED_FIELDS: ReadonlySet<string> = new Set([
     'worktree',
     'branch',
     'repo',
+    'repo_id',
     'scope',
     'level',
     'send_to',

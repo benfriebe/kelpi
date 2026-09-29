@@ -406,6 +406,28 @@ describe('auto-unlink + GC (§GIT-080/§GIT-081)', () => {
         expect(h.store.getState().repos).toHaveLength(0);
     });
 
+    it('never GCs an auto-discovered repo a group has as its default repository (app-state-core §5.5)', async () => {
+        const h = harness({
+            resolveRepoRoot: async () => ({ worktreeRoot: '/work/wt', parentRepoRoot: '/work/repo' })
+        });
+        setPaneDirectory(h.store, P1, '/work/wt');
+        h.detect.paneDirectoryChanged({ workspaceID: W1, paneID: P1, directory: '/work/wt' });
+        await h.settle();
+        const repo = h.store.getState().repos[0];
+        expect(repo?.isAutoDiscovered).toBe(true);
+        // A group adopts the auto-discovered row directly (the reducer does not promote).
+        h.store.dispatch({ type: 'create-group', id: 'CCCCCCCC-0000-4000-8000-000000000009', name: 'g', now: NOW, repoID: repo?.id });
+
+        setPaneDirectory(h.store, P1, '/elsewhere');
+        h.detect.paneDirectoryChanged({ workspaceID: W1, paneID: P1, directory: '/elsewhere' });
+        await h.settle();
+
+        // The auto association lapses, but the repo stays, and so does the group's pointer at it.
+        expect(associationsOf(h.store)).toHaveLength(0);
+        expect(h.store.getState().repos.map((entry) => entry.id)).toEqual([repo?.id]);
+        expect(h.store.getState().groups[0]?.repoID).toBe(repo?.id);
+    });
+
     it('never removes a manually added association, and never GCs a manual repo', async () => {
         const h = harness();
         h.store.dispatch({

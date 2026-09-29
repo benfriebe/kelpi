@@ -1,33 +1,18 @@
 /**
- * Repo-registry lookups shared by the wire handlers that name a repository by PATH: a group's
- * default repository (`group-set-repo`) and the repository a new workspace starts with
+ * Repo-registry lookups for the wire handlers that name a repository: a group's default
+ * repository (`group-set-repo`) and the repository a new workspace starts with
  * (`workspace-create`'s `repo`, or its group's default).
  *
  * Spec: docs/app-state-core.md §5.5; docs/socket-handlers.md §6.2, §7.6.
  *
- * The comparison is the one the inspector's verbs use (`ws/repos.ts` ▸ `repoKey`): standardized
- * AND symlink-resolved, because git answers with the physical path (`/private/var/…`) while a
- * path a user typed or picked is usually the logical one (`/var/…`), and comparing raw strings
- * would register the same checkout twice.
+ * The path identity and the register-if-new step are `git/registry.ts`, the same ones the
+ * inspector's repo verbs use, so a path resolves to the same registry row whichever verb names it.
  */
 
-import path from 'node:path';
-
 import { standardizePath } from '../../git/index.js';
-import { canonicalizeUserPath } from '../../graft/index.js';
+import { ensureRegisteredRepo, findRepoByPath, promoteRepo } from '../../git/registry.js';
 import type { DaemonState, Repo, RepoAssociation, WorkspaceGroup } from '../../store/index.js';
 import type { AppContext, AppDeps } from './context.js';
-
-function repoKey(value: string, home: string): string {
-    return canonicalizeUserPath(value, home);
-}
-
-/** The registered repo at `candidate`, by canonical path; undefined when none is. */
-export function findRegisteredRepo(state: DaemonState, candidate: string): Repo | undefined {
-    const home = state.homeDirectory;
-    const key = repoKey(candidate, home);
-    return state.repos.find((repo) => repoKey(repo.path, home) === key);
-}
 
 /** A group's default repository, or null when it has none (or it left the registry). */
 export function groupRepo(state: DaemonState, group: WorkspaceGroup): Repo | null {
@@ -45,65 +30,55 @@ export type RepoResolution =
     | { readonly ok: false; readonly error: string };
 
 /**
+ * A registered repo taken AS IS: its own path is the checkout, and nothing is re-resolved. This
+ * is how a group's repo and a registry row picked by id are used, because the registry may hold
+ * a monorepo subfolder or a linked worktree as a row of its own (Settings ▸ Repositories
+ * registers any folder, §GIT-068), and resolving that path to its top level would pick a
+ * DIFFERENT repo and register it as a duplicate. The row is promoted to manual on the way
+ * (§GIT-068): a group or a workspace now depends on it.
+ */
+export function registeredRepo(ctx: AppContext, repo: Repo): Extract<RepoResolution, { ok: true }> {
+    return { ok: true, repo: promoteRepo(ctx.store, repo), worktreeRoot: repo.path };
+}
+
+/**
  * Resolve `rawPath` to a registered repository, registering it when the registry lacks it.
  *
- *   - a path inside a checkout resolves to that checkout's MAIN repository (a linked worktree
- *     registers its parent, the shape `workspace-create --worktree` produces), and
+ *   - a path the registry holds EXACTLY (by canonical path) is that row, as is
+ *     (`registeredRepo`), whatever git would say its top level is;
+ *   - any other path inside a checkout resolves to that checkout's MAIN repository (a linked
+ *     worktree registers its parent, the shape `workspace-create --worktree` produces), and
  *     `worktreeRoot` is the checkout the path itself lives in;
- *   - a path the registry already holds is accepted even when git cannot read it (Settings ▸
- *     Repositories registers any folder, §GIT-068), with `worktreeRoot` its own path;
  *   - anything else is refused: a group's repository and a workspace's association both have
  *     to be a repository.
  *
  * A repo reached this way was chosen deliberately, so an auto-discovered row is promoted to
- * manual (§GIT-068): §GIT-081's GC collects auto-discovered repos whose last association
- * lapses, and would otherwise take a group's default repository with it.
+ * manual: §GIT-081's GC collects auto-discovered repos whose last association lapses.
  */
 export async function resolveRepo(ctx: AppContext, deps: AppDeps, rawPath: string): Promise<RepoResolution> {
     const state = ctx.store.getState();
     const candidate = standardizePath(rawPath, state.homeDirectory);
+    const exact = findRepoByPath(state, candidate);
+    if (exact !== undefined) return registeredRepo(ctx, exact);
+
     let root: { worktreeRoot: string; parentRepoRoot: string } | null;
     try {
         root = await deps.git.resolveRepoRoot(candidate);
     } catch {
         root = null;
     }
-    if (root === null) {
-        const registered = findRegisteredRepo(ctx.store.getState(), candidate);
-        if (registered === undefined) return { ok: false, error: `${candidate} is not inside a git repository` };
-        return { ok: true, repo: promoted(ctx, registered), worktreeRoot: registered.path };
-    }
-
-    const existing = findRegisteredRepo(ctx.store.getState(), root.parentRepoRoot);
-    if (existing !== undefined) {
-        return { ok: true, repo: promoted(ctx, existing), worktreeRoot: root.worktreeRoot };
-    }
-    let remoteURL: string | null = null;
-    try {
-        remoteURL = await deps.git.getRemoteURL(root.parentRepoRoot);
-    } catch {
-        remoteURL = null;
-    }
-    // Re-checked after the await: a concurrent registration of the same path must not add a
-    // second row for it.
-    const raced = findRegisteredRepo(ctx.store.getState(), root.parentRepoRoot);
-    if (raced !== undefined) return { ok: true, repo: promoted(ctx, raced), worktreeRoot: root.worktreeRoot };
-    const repo: Repo = {
-        id: deps.uuid(),
-        path: root.parentRepoRoot,
-        name: path.basename(root.parentRepoRoot),
-        remoteURL,
-        lastAccessedAt: deps.now() / 1000,
-        isAutoDiscovered: false
-    };
-    ctx.store.dispatch({ type: 'add-repo', repo });
+    if (root === null) return { ok: false, error: `${candidate} is not inside a git repository` };
+    const repo = await ensureRegisteredRepo(
+        {
+            store: ctx.store,
+            uuid: deps.uuid,
+            now: deps.now,
+            getRemoteURL: (repoPath) => deps.git.getRemoteURL(repoPath)
+        },
+        root.parentRepoRoot,
+        { promote: true }
+    );
     return { ok: true, repo, worktreeRoot: root.worktreeRoot };
-}
-
-function promoted(ctx: AppContext, repo: Repo): Repo {
-    if (!repo.isAutoDiscovered) return repo;
-    ctx.store.dispatch({ type: 'set-repo-auto-discovered', id: repo.id, isAutoDiscovered: false });
-    return { ...repo, isAutoDiscovered: false };
 }
 
 /**

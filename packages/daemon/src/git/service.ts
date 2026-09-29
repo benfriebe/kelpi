@@ -365,8 +365,10 @@ export function createGitService(options: CreateGitServiceOptions = {}): GitServ
             const base = await service.defaultBranch(request.repoPath);
             // graft-git.md §8.5: update main ALWAYS creates the branch (`-b`), so a name that
             // already exists can only fail, and git's own `fatal: a branch named 'x' already
-            // exists` says nothing about why or what to do. Checked before the fetch, so the
-            // refusal costs no network round trip.
+            // exists` says nothing about why or what to do. Checked after the default-branch
+            // lookup (which may ask the remote) but before the fetch, so no fetch is made. Only a
+            // LOCAL branch counts: a name that exists solely as `origin/<b>` passes, and gets a
+            // new local branch off `origin/<default>` that does not track the remote one.
             if (await localBranchExists(request.repoPath, request.branchName)) {
                 throw new WorktreeBranchExistsError(request.branchName, `${remote}/${base}`);
             }

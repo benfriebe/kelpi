@@ -309,9 +309,13 @@ export function createRepoAutoDetect(options: CreateRepoAutoDetectOptions): Repo
         for (const repoID of removedRepoIDs) {
             const repo = after.repos.find((entry) => entry.id === repoID);
             if (repo === undefined || !repo.isAutoDiscovered) continue;
-            const stillReferenced = after.workspaces.some((entry) =>
-                entry.repoAssociations.some((association) => association.repoID === repoID)
-            );
+            // A group's default repository is a reference too (app-state-core.md §5.5): a group
+            // adopting a repo promotes it, but a row that predates that rule, or one adopted
+            // behind the verbs' back, must still never be collected out from under its group.
+            const stillReferenced =
+                after.workspaces.some((entry) =>
+                    entry.repoAssociations.some((association) => association.repoID === repoID)
+                ) || after.groups.some((group) => group.repoID === repoID);
             if (!stillReferenced) {
                 remoteGeneration.delete(repoID);
                 store.dispatch({ type: 'remove-repo', id: repoID });

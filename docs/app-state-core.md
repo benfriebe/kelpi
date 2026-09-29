@@ -813,11 +813,18 @@ Three surfaces drive it:
 - the **CLI**: `kelpi group set-repo <group> <path> | --none [--worktree | --no-worktree]`
   (cli.md §11.7), over the `group-set-repo` wire verb (socket-handlers.md §7.6).
 
-A PATH (the menu's Choose Folder…, the CLI) resolves to a registered repo by canonical path;
-a path inside a checkout names that checkout's main repository, which is registered (manual, not
-auto-discovered) when the registry lacks it. A path outside any repository is refused. A repo
-reached this way that was auto-discovered is promoted to manual, so the auto-unlink GC (7.7) can
-never collect a group's default repository.
+The menu's registry rows and the New Group sheet's dropdown name a repo BY ID, and it is taken
+as is. A PATH (Choose Folder… in the menu or the New Group sheet, the CLI) that the registry
+holds exactly is that row, as is; any other path inside a checkout names that checkout's main
+repository, which is registered (manual, not auto-discovered) when the registry lacks it. This
+order matters because the registry may hold a monorepo subfolder or a linked worktree as a row
+of its own: resolving such a row's path to its top level would pick a different repo and
+register a duplicate. A path outside any repository is refused.
+
+A repo a group adopts, by any route, is promoted out of auto-discovered status, and the
+auto-unlink GC (7.7) additionally skips any repo a group references, so a group's default
+repository is never collected out from under it (the `remove-repo` cascade would otherwise clear
+the group's repo without a word).
 
 **Using it.** A workspace created in the group starts from those defaults, and every one of them
 can be overridden for a one-off:
@@ -827,13 +834,18 @@ can be overridden for a one-off:
   its Repositories section. With `createWorktree` on it also turns the worktree toggle on with
   **update main** ticked; the user types the worktree or branch name. While the user has not
   edited the repo selection, changing the Group dropdown swaps the prefill for the new group's
-  (including to nothing for a repo-less group); after an edit, their selection stands. The sheet
-  submits its choice literally (`group_defaults: false`), so a repo the user removed stays removed.
+  (including to nothing for a repo-less group); after an edit, their selection stands. The
+  worktree toggle and update main have the same rule of their own: once the user sets either,
+  neither a Group change nor the group's switch changing under the open sheet overwrites it. The
+  sheet submits its choice literally (`group_defaults: false`), so a repo the user removed stays
+  removed.
 - **`workspace-create`** with a `group` that exists and `group_defaults` not false: with no `repo`,
   the group's repo is the worktree source (before `path`) or, without `worktree`, the repo the new
   workspace is associated with (its first pane opening in the checkout unless `path` is given).
   With `worktree` and no explicit `update_main`, `createWorktree` decides it; `--no-update-main`
-  (`update_main: false`) opts out.
+  (`update_main: false`) opts out. The group's repo is used by id, as registered, never
+  re-resolved from its path. The plugin SDK's `workspaces.create` leaves `update_main` unsaid
+  unless given, so the switch reaches plugins too.
 - **"Latest main"** is exactly update main (4.2, graft-git.md §8.5): `git fetch origin`, then
   `git worktree add -b <branch> <path> origin/<default>`. The local default branch is never
   touched. Because `-b` is always passed, a branch name that already exists is refused up front
@@ -1051,8 +1063,8 @@ workspace whenever a pane vanishes from it or moves; issue #48):
 3. An association is "still in use" when any pane path (normalized) equals its `worktreePath` or is
    inside it. Unused candidates are removed (association + git status entry).
 4. Repo GC: for each repo whose association was removed here, if the repo is `isAutoDiscovered`
-   AND no association in ANY workspace references it anymore, remove it from the registry.
-   Manually added repos are never GC'd.
+   AND no association in ANY workspace references it anymore AND no group has it as its default
+   repository (5.5), remove it from the registry. Manually added repos are never GC'd.
 5. If anything was removed: stop the removed associations' HEAD watchers, force-stop their graft
    sessions, persist.
 

@@ -1400,11 +1400,14 @@ then `git worktree add -b <branch> <path> origin/<default>`; the local default b
 never checked out or moved. Because `-b` is always passed, a branch name that already
 exists can only fail, and git's own `fatal: a branch named '<b>' already exists` says
 nothing about why. So `performWorktreeAdd` checks `refs/heads/<branch>` first (after the
-default-branch lookup, before the fetch, so the refusal costs no network round trip) and
+default-branch lookup, which may itself ask the remote, and before the fetch, so no fetch is
+made) and
 refuses with `branch '<b>' already exists, and update main always creates a new branch off
 origin/<default>: choose another worktree or branch name, or turn off update main to check
 out the existing branch` (`WorktreeBranchExistsError`, `packages/daemon/src/git/service.ts`).
-Without update main, an existing branch is attached as before.
+Without update main, an existing branch is attached as before. Only a LOCAL branch counts: a
+name that exists solely as the remote branch `origin/<b>` passes the check, and the worktree
+gets a new local `<b>` off `origin/<default>` that does not track `origin/<b>`.
 
 ### 8.6 `worktreeErrorMessage`
 
@@ -1490,7 +1493,8 @@ Not graft-specific but it feeds graft's association set
   `isAutoDetected` association whose worktree no longer contains any pane's cwd
   (exact-or-prefix match on canonicalized paths, standardized and then symlinks
   resolved on both sides, so `/tmp` and `/private/tmp` spellings match; including
-  parked panes). GC auto-discovered repos with no remaining associations anywhere.
+  parked panes). GC auto-discovered repos with no remaining associations anywhere and no group
+  pointing at them as its default repository (app-state-core.md §5.5).
   Fire stopHeadWatcher + graft forceStop per removed association.
 
 ### 8.10 Repo registry verbs (Settings > Repositories)

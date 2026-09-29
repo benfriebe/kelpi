@@ -4187,6 +4187,7 @@ function Shell(props: AppProps): ReactElement {
                 actions={act}
                 lifecycle={workspacesLifecycle}
                 repos={inspectorData.repos}
+                {...(browseForFolder === undefined ? {} : { onBrowseForFolder: browseForFolder })}
                 remotes={remoteDaemonRuntimes}
                 bucket={bucket}
                 reportFailure={notifyFailure}

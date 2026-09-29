@@ -902,10 +902,11 @@ Four branches, checked in this order ((d) is checked before (b) and (c)):
 with git) and replies AFTER the effect, like (a):
 
 1. Ambiguous `group` name → the same ambiguity error as (c), before anything else.
-2. Pre-mint the workspace id, then resolve the path (`handlers/app/repos.ts` ▸
-   `resolveRepo`): a path inside a checkout names that checkout's main repository, which is
-   registered (manual) when the registry lacks it; a path git cannot read that the registry
-   already holds is accepted as is; anything else →
+2. Pre-mint the workspace id. The group's repository is used as registered, by id, with no git
+   work (a registered subfolder or linked worktree row stays that row). A `repo` path is
+   resolved (`handlers/app/repos.ts` ▸ `resolveRepo`): a path the registry holds exactly is
+   that row, as is; any other path inside a checkout names that checkout's main repository,
+   which is registered (manual) when the registry lacks it; anything else →
    `error("{path} is not inside a git repository")` with **nothing** created (no workspace,
    no group). A repo reached this way that was auto-discovered is promoted to manual.
 3. The association is `{repoID, worktreePath: the checkout, branchName: its current branch
@@ -1179,17 +1180,20 @@ along with the header: only the group's entry lives in the top-level order.
 
 ### 7.6 `group-set-repo` → handleGroupSetRepo (request/response)
 
-Inputs: `nameOrID` (required), `repo?` (a path), `clear` (bool), `createWorktree?` (bool).
-The decoder has already refused `repo` with `clear`, `clear` with `createWorktree: true`, and
-a request with none of the three. app-state-core.md §5.5 has the model.
+Inputs: `nameOrID` (required), `repo?` (a path), `repoID?` (a registry row), `clear` (bool),
+`createWorktree?` (bool). The decoder has already refused more than one of `repo` / `repoID` /
+`clear`, `clear` with `createWorktree: true`, and a request with none of them. app-state-core.md §5.5 has the model.
 
 1. Strict `resolveGroup` or `error("no group matches '{nameOrID}'")`.
 2. `clear` → dispatch set-group-repo(id, repoID: null) (the switch goes off with it), persist,
    reply.
-3. No `repo` (the switch alone) → a group with no repository and `createWorktree: true` →
+3. `repoID` → the registry row, or `error("no repo matches '{repoID}'")`; taken as is (no git
+   work), promoted out of auto-discovered status, dispatch set-group-repo(id, repoID,
+   createWorktree?), persist, reply. This is what the GUI's Repository ▸ rows send.
+4. No `repo` (the switch alone) → a group with no repository and `createWorktree: true` →
    `error("group '{name}' has no repository to create worktrees from: set one first (kelpi group set-repo <group> <path>)")`;
    else dispatch set-group-repo(id, its current repoID, createWorktree), persist, reply.
-4. `repo` → **asynchronously** resolve it exactly as §6.2 (d) step 2 does (registering or
+5. `repo` → **asynchronously** resolve it exactly as §6.2 (d) step 2 does (registering or
    promoting the repo; `error("{path} is not inside a git repository")` otherwise). If the
    group was deleted meanwhile → `error("no group matches '{nameOrID}'")` (a registration
    that already landed is kept and persisted). Else dispatch set-group-repo(id, repoID,
@@ -1208,7 +1212,8 @@ a repo. `remove-repo` (Settings ▸ Repositories) clears every group's repo that
 The GUI reaches the same handler: the group menu's Repository ▸ sends this verb over the WS
 (a Choose Folder… path is registered here), and the New Group sheet instead passes
 `repo_id` / `create_worktree` on the WS-only `create-group-for-workspaces`, so a group is
-created with its repository in one change.
+created with its repository in one change (that verb promotes an auto-discovered row too). A
+repository any group references is skipped by the auto-unlink GC (§GIT-081).
 
 ---
 

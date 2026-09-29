@@ -279,6 +279,17 @@ describe('retained Workspaces actions', () => {
         h.actions.createGroup('plain', null);
         expect(h.rpc.createGroup).toHaveBeenLastCalledWith({ name: 'plain' });
 
+        // A folder from the sheet's Choose Folder… has no registry id: the group is created, then
+        // `group-set-repo` resolves and registers the folder once the new id is known.
+        h.actions.setGroupRepo(G1, { repoID: 'r1' });
+        expect(h.rpc.setGroupRepo).toHaveBeenLastCalledWith({ group: G1, repoID: 'r1' });
+        h.rpc.createGroupForWorkspaces.mockResolvedValueOnce({ ok: true, group_id: G2 });
+        await act(async () => { h.actions.createGroup('fresh', null, { repoPath: '/src/fresh', createWorktree: true }); });
+        expect(h.rpc.createGroupForWorkspaces).toHaveBeenLastCalledWith({ name: 'fresh', workspaceIDs: [] });
+        await waitFor(() => {
+            expect(h.rpc.setGroupRepo).toHaveBeenLastCalledWith({ group: G2, repo: '/src/fresh', createWorktree: true });
+        });
+
         // The sheet's route takes its choice literally: the daemon must not add the default back.
         h.daemon.dispatch({
             type: 'add-repo',

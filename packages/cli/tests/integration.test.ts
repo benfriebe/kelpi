@@ -1220,6 +1220,20 @@ describe('workspace create / label / mute', () => {
                 repo: path.join(fs.realpathSync(home), 'sub/repo')
             });
 
+            // `--path` is made absolute too: with `--group --worktree` on a repo-less group it is
+            // the worktree's source, and the daemon's cwd is not the shell's.
+            await runCLI(['workspace', 'create', '--name', 'dev', '--group', 'kelpi', '--worktree', 'wt', '--path', 'src/app'], {
+                port: server.port,
+                cwd: home
+            });
+            expect(await lastRequest()).toEqual({
+                command: 'workspace-create',
+                name: 'dev',
+                group: 'kelpi',
+                worktree: 'wt',
+                path: path.join(fs.realpathSync(home), 'src/app')
+            });
+
             await runCLI(['workspace', 'create', '--name', 'dev', '--group', 'kelpi', '--no-repo'], { port: server.port });
             expect(await lastRequest()).toEqual({
                 command: 'workspace-create',

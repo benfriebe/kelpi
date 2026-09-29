@@ -385,22 +385,23 @@ function decodeCommand(
             const name = fields.nonEmpty('name');
             if (name === undefined) return guard(command, 'group-set-repo requires name', 'name');
             const repo = fields.text('repo');
+            const repoID = fields.text('repo_id');
             const clear = fields.flag('clear', false);
             const createWorktree = fields.bool('create_worktree');
-            // `repo` and `clear` are the two answers to one question; both at once is a caller
-            // bug, and neither with no switch either is a request that changes nothing.
-            if (repo !== undefined && clear) {
-                return guard(command, 'group-set-repo takes repo or clear, not both', 'clear');
+            // `repo`, `repo_id` and `clear` are three answers to one question; two at once is a
+            // caller bug, and none with no switch either is a request that changes nothing.
+            if ([repo !== undefined, repoID !== undefined, clear].filter(Boolean).length > 1) {
+                return guard(command, 'group-set-repo takes one of repo, repo_id or clear', 'clear');
             }
             // The switch acts on the group's repository, so it cannot be turned ON while the
             // same request removes that repository.
             if (clear && createWorktree === true) {
                 return guard(command, 'group-set-repo cannot turn create_worktree on while clearing the repo', 'create_worktree');
             }
-            if (repo === undefined && !clear && createWorktree === undefined) {
-                return guard(command, 'group-set-repo requires repo, clear or create_worktree', 'repo');
+            if (repo === undefined && repoID === undefined && !clear && createWorktree === undefined) {
+                return guard(command, 'group-set-repo requires repo, repo_id, clear or create_worktree', 'repo');
             }
-            return { command, name, repo, clear, create_worktree: createWorktree };
+            return { command, name, repo, repo_id: repoID, clear, create_worktree: createWorktree };
         }
         case 'group-reorder': {
             const name = fields.nonEmpty('name');

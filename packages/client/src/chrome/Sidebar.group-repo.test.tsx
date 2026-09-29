@@ -123,8 +123,9 @@ describe('the group menu’s Repository ▸ (§5.5)', () => {
         expect(worktree.getAttribute('aria-checked')).toBe('true');
         expect((worktree.textContent ?? '').trim()).toBe('New workspaces create a worktree from latest main');
 
+        // By id: a registered row is taken as is, never re-resolved from its path.
         fireEvent.click(within(submenu).getByText('infra'));
-        expect(onSetGroupRepo).toHaveBeenLastCalledWith(G_WORKTREE, { repoPath: '/src/infra' });
+        expect(onSetGroupRepo).toHaveBeenLastCalledWith(G_WORKTREE, { repoID: 'r2' });
     });
 
     it('flips the switch in place, sending the opposite state', () => {
@@ -268,6 +269,35 @@ describe('the New Workspace sheet’s prefill from the group (§5.5)', () => {
         expect(chosenRepos()).toEqual([]);
     });
 
+    it('no longer swaps once the user has ADDED a repo through the picker', () => {
+        renderSheetHost();
+        newWorkspaceFrom('plain');
+        fireEvent.click(screen.getByTestId('new-workspace-add-repo'));
+        const picker = screen.getByTestId('new-workspace-repo-picker');
+        fireEvent.click(within(picker).getByTestId('repo-choice-r2'));
+        fireEvent.click(within(picker).getByTestId('repo-picker-choose'));
+        expect(chosenRepos()).toEqual(['r2']);
+        fireEvent.change(screen.getByTestId('new-workspace-group'), { target: { value: G_WORKTREE } });
+        expect(chosenRepos()).toEqual(['r2']);
+        expect(toggle()?.checked).toBe(false);
+    });
+
+    it('never overwrites the user’s own worktree or update-main choice, while still swapping the repo', () => {
+        renderSheetHost();
+        newWorkspaceFrom('app-team');
+        // Keep the worktree, but turn update main off for this one.
+        fireEvent.click(updateMain() as HTMLInputElement);
+        expect(updateMain()?.checked).toBe(false);
+        fireEvent.change(screen.getByTestId('new-workspace-group'), { target: { value: G_ASSOCIATE } });
+        expect(chosenRepos()).toEqual(['r2']);
+        // The associate-only group would untick both; the user's choice stands.
+        expect(toggle()?.checked).toBe(true);
+        expect(updateMain()?.checked).toBe(false);
+        fireEvent.change(screen.getByTestId('new-workspace-group'), { target: { value: G_WORKTREE } });
+        expect(chosenRepos()).toEqual(['r1']);
+        expect(updateMain()?.checked).toBe(false);
+    });
+
     it('no longer swaps once the user has edited the repo selection', () => {
         renderSheetHost();
         newWorkspaceFrom('app-team');
@@ -325,6 +355,25 @@ describe('the New Group sheet’s repository (§5.5)', () => {
         openGroupSheet({ repos: REPOS, onCreateGroup });
         fireEvent.click(screen.getByTestId('new-group-submit'));
         expect(onCreateGroup.mock.calls[0]).toHaveLength(2);
+    });
+
+    it('Choose Folder… (desktop app) offers the folder the panel returned, even over an empty registry', async () => {
+        const onCreateGroup = vi.fn();
+        const onBrowseForFolder = vi.fn().mockResolvedValue('/src/fresh-repo/');
+        openGroupSheet({ onCreateGroup, onBrowseForFolder });
+        const select = screen.getByTestId('new-group-repo') as HTMLSelectElement;
+        expect([...select.options].map((option) => option.textContent)).toEqual(['None']);
+        fireEvent.click(screen.getByTestId('new-group-repo-browse'));
+        await waitFor(() => {
+            expect([...select.options].map((option) => option.textContent)).toEqual(['None', 'fresh-repo']);
+        });
+        expect(select.value).not.toBe('');
+        fireEvent.click(screen.getByTestId('new-group-create-worktree'));
+        fireEvent.click(screen.getByTestId('new-group-submit'));
+        expect(onCreateGroup).toHaveBeenCalledWith(expect.any(String), null, {
+            repoPath: '/src/fresh-repo/',
+            createWorktree: true
+        });
     });
 
     it('has no repository row without a registry, or for a group bound for a remote daemon', () => {

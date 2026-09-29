@@ -924,16 +924,17 @@ kelpi workspace create --worktree <name> [--branch <name>] [--repo <path>]
 
 - Help to stdout, exit 0. Leftovers rejected. `--update-main` with `--no-update-main`, or
   `--repo` with `--no-repo`, => an error line, exit 1, nothing sent.
-- Payload: `{"command":"workspace-create", name?, path?, color?, group?, profile?}`, plus
+- Payload: `{"command":"workspace-create", name?, path?, color?, group?, profile?}` (`path`
+  made absolute against the CLI's cwd; `~` is left for the daemon), plus
   `muted: true` only when `--muted` was passed (§10.7), `repo` whenever `--repo` was passed
-  (made absolute against the CLI's cwd; `~` is left for the daemon), and
+  (made absolute the same way), and
   `group_defaults: false` for `--no-repo` (ignore the group's repository for this one).
   When `--worktree` is given, additionally: `worktree`, `branch?`, `update_main: true` for
   `--update-main` or `false` for `--no-update-main` (absent otherwise, so a group whose
   worktree switch is on makes it the default), and the source repo: `--repo` if given; else,
-  with `--group` (and no `--no-repo`), the CLI's cwd as `path` (unless `--path` was given),
-  so the daemon prefers the group's repository and falls back to the cwd; else the cwd as
-  `repo`, as it always was.
+  with `--group` (and no `--no-repo`), no `repo` at all and the CLI's cwd as `path` unless
+  `--path` was given, so the daemon's order is the group's repository, then `--path`, then the
+  cwd; else (no `--group`) the cwd as `repo`, as it always was.
 - Request/response. Read timeout 120 seconds when `--worktree` present (worktree add plus
   optional `git fetch`), 30 seconds with `--repo` or `--group` (a repo association reads
   git), default otherwise.

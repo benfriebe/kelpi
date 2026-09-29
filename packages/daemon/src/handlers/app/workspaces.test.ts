@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
     GitCommandError,
@@ -745,6 +745,27 @@ describe('workspace-create (group default repository)', () => {
         expect(h.state().workspaces).toHaveLength(0);
         // The unknown group was NOT minted for a create that failed.
         expect(h.state().groups).toHaveLength(0);
+    });
+
+    it('uses a group’s repo row as is: a subfolder row is never re-resolved into a duplicate', async () => {
+        const SUB = id('dddddddd', 91);
+        const resolveRepoRoot = vi.fn(async () => ({ worktreeRoot: REPO, parentRepoRoot: REPO }));
+        const h = harness({ git: stubGit({ resolveRepoRoot, getCurrentBranch: async () => 'main' }) });
+        h.dispatch(
+            {
+                type: 'add-repo',
+                repo: { id: SUB, path: `${REPO}/packages/app`, name: 'app', remoteURL: null, lastAccessedAt: 1, isAutoDiscovered: false }
+            },
+            { type: 'create-group', id: G1, name: 'team', now: NOW, repoID: SUB }
+        );
+        h.send({ command: 'workspace-create', name: 'dev', group: 'team' });
+        await flush();
+        expect(h.replies[0]?.payloads[0]).toMatchObject({ ok: true, repo_path: `${REPO}/packages/app` });
+        expect(resolveRepoRoot).not.toHaveBeenCalled();
+        expect(h.state().repos.map((repo) => repo.id)).toEqual([SUB]);
+        expect(h.state().workspaces[0]?.repoAssociations).toEqual([
+            expect.objectContaining({ repoID: SUB, worktreePath: `${REPO}/packages/app` })
+        ]);
     });
 
     it('does nothing new for a group without a repo: the old reply-before-effect create', () => {

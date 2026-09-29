@@ -96,7 +96,7 @@ export interface WorkspacesFeatureViewProps {
  * and `WorkspacesCreateSheetHost` below hand a submitted draft to the same two functions.
  */
 export type WorkspacesCreateHost = Pick<WorkspacesFeatureViewProps,
-    'model' | 'actions' | 'lifecycle' | 'repos' | 'remotes' | 'bucket' | 'reportFailure'>;
+    'model' | 'actions' | 'lifecycle' | 'repos' | 'remotes' | 'bucket' | 'reportFailure' | 'onBrowseForFolder'>;
 
 /** §1.7: a group destined for another daemon is created THERE: no local row exists. */
 function createRemoteGroup(host: WorkspacesCreateHost, daemonName: string, name: string, color: WorkspaceColor | null): void {
@@ -253,6 +253,7 @@ function WorkspacesCreateSheet(props: WorkspacesCreateSheetProps): ReactElement 
         groups={groups}
         profiles={model.profiles}
         remoteDaemons={model.remoteNames}
+        {...(props.onBrowseForFolder === undefined ? {} : { onBrowseForFolder: props.onBrowseForFolder })}
         defaultColor={color}
         // §WS-076 then §SET-011, the order the sidebar's own sheet resolves them in.
         defaultGroupID={form.groupID ?? model.inheritGroupID}

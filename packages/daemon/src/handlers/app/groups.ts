@@ -25,7 +25,7 @@ import {
 } from '../../store/index.js';
 import { forCommand, listedGroupIDs, refreshSyncGroup, uuidOut } from './common.js';
 import { fail, ok, type AppContext, type AppDeps, type AppHandler } from './context.js';
-import { groupRepo, repoRef, resolveRepo } from './repos.js';
+import { groupRepo, registeredRepo, repoRef, resolveRepo } from './repos.js';
 
 /** Group child order filtered to live workspaces and deduped (§7.4 step 2). */
 function liveMembers(state: DaemonState, group: WorkspaceGroup): string[] {
@@ -188,8 +188,10 @@ function replyWithGroupRepo(ctx: AppContext, reply: ReplyHandle | null, groupID:
  * Request/response, unlike the rest of the group family's setters, because it can fail in ways
  * the caller has to hear about: the path is not a repository, or the switch was asked for on a
  * group with no repository to branch from. `repo` is a PATH (the CLI's natural argument, and the
- * registry row's own identity), registered when the registry lacks it; `clear` drops the repo
- * and the switch with it; `create_worktree` alone flips the switch on the current repo.
+ * registry row's own identity), registered when the registry lacks it; `repo_id` is a registry
+ * row taken as is (the GUI's menu rows); `clear` drops the repo and the switch with it;
+ * `create_worktree` alone flips the switch on the current repo. Whatever repo the group adopts
+ * is promoted out of auto-discovered status, so §GIT-081's GC can never collect it.
  */
 function handleGroupSetRepo(
     msg: GroupSetRepoMessage,
@@ -207,6 +209,27 @@ function handleGroupSetRepo(
 
     if (msg.clear) {
         ctx.store.dispatch({ type: 'set-group-repo', id: group.id, repoID: null });
+        deps.persist();
+        replyWithGroupRepo(ctx, reply, group.id);
+        return;
+    }
+
+    // A registry row by id (the menu's rows): taken as is and never re-resolved, so a row that
+    // is a monorepo subfolder or a linked worktree stays that row rather than becoming its top
+    // level (a different repo, registered as a duplicate).
+    if (msg.repo_id !== undefined) {
+        const row = state.repos.find((repo) => repo.id.toUpperCase() === msg.repo_id?.toUpperCase());
+        if (row === undefined) {
+            fail(reply, `no repo matches '${msg.repo_id}'`);
+            return;
+        }
+        const adopted = registeredRepo(ctx, row);
+        ctx.store.dispatch({
+            type: 'set-group-repo',
+            id: group.id,
+            repoID: adopted.repo.id,
+            ...(msg.create_worktree !== undefined ? { createWorktree: msg.create_worktree } : {})
+        });
         deps.persist();
         replyWithGroupRepo(ctx, reply, group.id);
         return;

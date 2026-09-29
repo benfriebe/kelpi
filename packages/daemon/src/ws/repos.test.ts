@@ -778,6 +778,17 @@ describe('bulk workspace verbs', () => {
         expect(f.store.state().groups[0]).toMatchObject({ name: 'Kelpi', repoID, createWorktree: true });
         expect(f.store.batches.length).toBe(before + 1);
 
+        // An auto-discovered row a group adopts is promoted, so §GIT-081's GC cannot collect it.
+        const autoID = 'bbbbbbbb-0000-4000-8000-000000000078';
+        f.store.dispatch({
+            type: 'add-repo',
+            repo: { id: autoID, path: '/code/auto', name: 'auto', remoteURL: null, lastAccessedAt: 1, isAutoDiscovered: true }
+        });
+        expect(
+            await ask(session, transport, { command: 'create-group-for-workspaces', name: 'Auto', workspace_ids: [], repo_id: autoID })
+        ).toMatchObject({ ok: true, repo_id: autoID });
+        expect(f.store.state().repos.find((repo) => repo.id === autoID)?.isAutoDiscovered).toBe(false);
+
         // A repo the registry does not hold is refused, not silently dropped.
         expect(
             await ask(session, transport, {
@@ -787,7 +798,7 @@ describe('bulk workspace verbs', () => {
                 repo_id: 'bbbbbbbb-0000-4000-8000-000000000099'
             })
         ).toEqual({ ok: false, error: "no repo matches 'bbbbbbbb-0000-4000-8000-000000000099'" });
-        expect(f.store.state().groups).toHaveLength(1);
+        expect(f.store.state().groups).toHaveLength(2);
     });
 
     it('still refuses an unknown workspace id in the member list', async () => {

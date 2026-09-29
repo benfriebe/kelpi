@@ -62,7 +62,7 @@ import {
     type GitService,
     type RepoGitStatus
 } from '../git/index.js';
-import { canonicalizeUserPath } from '../graft/index.js';
+import { ensureRegisteredRepo, findRepoByPath, repoKey } from '../git/registry.js';
 import { canonicalizeForClient } from './paths.js';
 import { workspaceByID } from '../store/derived.js';
 import type { DaemonState, DomainAction, DomainEvent, Repo, RepoAssociation } from '../store/types.js';
@@ -187,25 +187,6 @@ export function serializeAssociation(
     };
 }
 
-/**
- * The identity a registry lookup compares on: standardized AND symlink-resolved.
- *
- * `git rev-parse` always answers with the real path (`/private/var/…` on macOS), while a path
- * the user typed, dropped or scanned is usually the symlinked one (`/var/…`). Comparing the
- * raw strings registers the same repository twice — one row from Add/Scan and another from the
- * association flow — and then a Remove only cascades one of them. The Swift app has the same
- * latent split; this is the port fixing it rather than reproducing it.
- */
-function repoKey(value: string, home: string): string {
-    return canonicalizeUserPath(value, home);
-}
-
-function findRepoByPath(state: DaemonState, value: string): Repo | undefined {
-    const home = state.homeDirectory;
-    const key = repoKey(value, home);
-    return state.repos.find((repo) => repoKey(repo.path, home) === key);
-}
-
 function statusOf(channel: RepoChannel, associationID: string): RepoGitStatus {
     return channel.status?.statusFor(associationID) ?? { kind: 'unknown' };
 }
@@ -261,7 +242,8 @@ async function handleStatus(channel: RepoChannel, payload: Record<string, unknow
 /**
  * Register `repoPath` if the registry does not have it yet, and answer with its id. The remote
  * URL is read best-effort (a repo without an `origin` is normal), and a repo reached through
- * this gesture is a DELIBERATE one, so it is never marked auto-discovered.
+ * this gesture is a DELIBERATE one, so it is never marked auto-discovered. The step itself is
+ * `git/registry.ts` ▸ `ensureRegisteredRepo`, shared with the group and create verbs.
  *
  * `promote` is §GIT-103's other half, and it only applies to a repo the registry ALREADY has:
  * the Swift's `worktreeCreated` sets `isAutoDiscovered = false` unconditionally
@@ -274,39 +256,18 @@ async function ensureRepo(
     repoPath: string,
     options: { promote?: boolean } = {}
 ): Promise<string> {
-    const state = channel.store.getState();
-    const home = state.homeDirectory;
-    const standardized = standardizePath(repoPath, home);
-    const existing = findRepoByPath(state, standardized);
-    if (existing !== undefined) {
-        if (options.promote === true && existing.isAutoDiscovered) {
-            channel.store.dispatch({
-                type: 'set-repo-auto-discovered',
-                id: existing.id,
-                isAutoDiscovered: false
-            });
-        }
-        return existing.id;
-    }
-    let remoteURL: string | null = null;
-    try {
-        remoteURL = await channel.git.getRemoteURL(standardized);
-    } catch {
-        remoteURL = null;
-    }
-    const id = channel.uuid();
-    channel.store.dispatch({
-        type: 'add-repo',
-        repo: {
-            id,
-            path: standardized,
-            name: path.basename(standardized),
-            remoteURL,
-            lastAccessedAt: channel.now() / 1000,
-            isAutoDiscovered: false
-        }
-    });
-    return id;
+    const standardized = standardizePath(repoPath, channel.store.getState().homeDirectory);
+    const repo = await ensureRegisteredRepo(
+        {
+            store: channel.store,
+            uuid: channel.uuid,
+            now: channel.now,
+            getRemoteURL: (candidate) => channel.git.getRemoteURL(candidate)
+        },
+        standardized,
+        options
+    );
+    return repo.id;
 }
 
 async function handleAddAssociation(

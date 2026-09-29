@@ -359,7 +359,9 @@ Creates a new workspace and returns its id.
 
 Options:
   --name <name>      Workspace name.
-  --path /dir        Working directory for the workspace's first pane.
+  --path /dir        Working directory for the workspace's first pane; with
+                     --worktree, the source repo when neither --repo nor the
+                     group's repository gives one.
   --color <color>    Workspace color.
   --group <name>     Place the workspace in this group (created if missing,
                      unless --worktree is given, which requires an existing group).
@@ -367,7 +369,8 @@ Options:
                      workspace with that repository associated.
   --profile <name>   Assign a workspace profile at creation.
   --repo <path>      Repository to associate; with --worktree, the source repo
-                     (defaults to the group's repository, then the cwd).
+                     (defaults to the group's repository, then --path, then
+                     the cwd).
   --no-repo          Ignore the group's repository for this workspace.
   --worktree <name>  Create a git worktree and open the first pane in it.
   --branch <name>    Branch for the worktree (defaults to the worktree name).

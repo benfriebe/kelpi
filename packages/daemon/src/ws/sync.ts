@@ -74,6 +74,7 @@ import { ratioAtPath } from '@kelpi/core/layout';
 
 import type { ContentMode, ContentPaneState, ContentSubscription } from '../content/index.js';
 import { dualFireMessage } from '../control/server.js';
+import { promoteRepo } from '../git/registry.js';
 import type { ControlDispatchItem, ControlDispatcher, DomainStore, ReplyHandle } from '../seams.js';
 import {
     findPaneAnywhere,
@@ -689,9 +690,14 @@ export function handleWsOnlyCommand(
          * rather than silently dropped by the reducer.
          */
         const repoID = text(payload['repo_id']);
-        if (repoID !== undefined && !state.repos.some((repo) => repo.id === repoID)) {
+        const adopted = repoID === undefined ? undefined : state.repos.find((repo) => repo.id === repoID);
+        if (repoID !== undefined && adopted === undefined) {
             return failure(`no repo matches '${repoID}'`);
         }
+        // A group depends on its repo now, so an auto-discovered row is promoted to manual
+        // (§GIT-068): §GIT-081's GC would otherwise collect it once its last auto association
+        // lapsed, and the `remove-repo` cascade would clear the group's repo without a word.
+        if (adopted !== undefined) promoteRepo(store, adopted);
         const createWorktree = repoID !== undefined && payload['create_worktree'] === true;
         const id = (options.uuid ?? newUUID)();
         store.dispatch({

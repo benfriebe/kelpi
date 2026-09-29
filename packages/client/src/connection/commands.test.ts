@@ -194,6 +194,9 @@ describe('CommandClient RPC', () => {
         // `repo: null` is the menu's None: the verb's `clear`, never a null field.
         void h.client.setGroupRepo({ group: 'G1', repo: null });
         expect(h.lastCommand()).toEqual({ command: 'group-set-repo', name: 'G1', clear: true });
+        // A registry row by id: the daemon takes it as is.
+        void h.client.setGroupRepo({ group: 'G1', repoID: 'r1' });
+        expect(h.lastCommand()).toEqual({ command: 'group-set-repo', name: 'G1', repo_id: 'r1' });
         void h.client.setGroupRepo({ group: 'G1', createWorktree: false });
         expect(h.lastCommand()).toEqual({ command: 'group-set-repo', name: 'G1', create_worktree: false });
 

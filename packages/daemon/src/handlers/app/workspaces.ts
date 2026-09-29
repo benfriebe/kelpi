@@ -44,6 +44,7 @@ import {
     resolveStateOf,
     workspaceByID,
     type DaemonState,
+    type Repo,
     type RepoAssociation,
     type WorkspaceGroup,
     type WorkspaceState
@@ -56,7 +57,7 @@ import {
 } from '../../git/index.js';
 import { forCommand, listedWorkspaceIDs, refreshSyncGroup, uuidOut, wireTimestamp } from './common.js';
 import { fail, ok, type AppContext, type AppDeps, type AppHandler } from './context.js';
-import { associationFor, groupRepo, resolveRepo } from './repos.js';
+import { associationFor, groupRepo, registeredRepo, resolveRepo, type RepoResolution } from './repos.js';
 
 const DEFAULT_WORKSPACE_NAME = 'Workspace';
 
@@ -400,17 +401,19 @@ function handleWorktreeCreate(
 
 /**
  * §6.2 (d) / app-state-core.md §5.5: a plain (non-worktree) create that starts with a repository
- * associated: the request's `repo`, or the group's default repository.
+ * associated: the request's `repo` (a path), or the group's default repository (a registry row).
  *
- * The repository is resolved first (git work, so the reply comes AFTER the effect here, as on
- * the worktree branch) and nothing is mutated until it has resolved: a path that is not a
- * repository fails the whole create, and never leaves a workspace or a new group behind. The
+ * A path is resolved first (git work, so the reply comes AFTER the effect here, as on the
+ * worktree branch) and nothing is mutated until it has resolved: a path that is not a repository
+ * fails the whole create, and never leaves a workspace or a new group behind. The group's repo is
+ * taken AS IS, by id, and never re-resolved: the registry may hold a monorepo subfolder or a
+ * linked worktree as a row of its own, and resolving its path would pick a different repo. The
  * first pane opens in the checkout unless `path` says otherwise, the same rule the New Workspace
  * sheet applies to a single chosen repository (issue #38).
  */
 function handleCreateWithRepo(
     msg: WorkspaceCreateMessage,
-    repoPath: string,
+    source: { readonly path: string } | { readonly repo: Repo },
     ctx: AppContext,
     reply: ReplyHandle | null,
     deps: AppDeps
@@ -418,7 +421,9 @@ function handleCreateWithRepo(
     const workspaceName = msg.name ?? DEFAULT_WORKSPACE_NAME;
     const trimmedGroup = msg.group?.trim() ?? '';
     const workspaceID = deps.uuid();
-    void resolveRepo(ctx, deps, repoPath)
+    const resolving: Promise<RepoResolution> =
+        'repo' in source ? Promise.resolve(registeredRepo(ctx, source.repo)) : resolveRepo(ctx, deps, source.path);
+    void resolving
         .then(async (resolution) => {
             if (!resolution.ok) {
                 fail(reply, resolution.error);
@@ -490,13 +495,13 @@ function handleWorkspaceCreate(
     const existingGroup = existing === null ? null : groupByID(state, existing.id);
     const defaultRepo =
         msg.group_defaults && existingGroup !== null ? groupRepo(state, existingGroup) : null;
-    const repoToAssociate = msg.repo ?? defaultRepo?.path;
-    if (repoToAssociate !== undefined) {
+    const source = msg.repo !== undefined ? { path: msg.repo } : defaultRepo !== null ? { repo: defaultRepo } : null;
+    if (source !== null) {
         if (trimmedGroup !== '' && existing === null && groupsMatchingName(scope, trimmedGroup).length > 0) {
             fail(reply, ambiguousGroupError(trimmedGroup));
             return;
         }
-        handleCreateWithRepo(msg, repoToAssociate, ctx, reply, deps);
+        handleCreateWithRepo(msg, source, ctx, reply, deps);
         return;
     }
 

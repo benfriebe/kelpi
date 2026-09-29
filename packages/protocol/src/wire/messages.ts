@@ -289,13 +289,15 @@ export interface GroupMoveMessage {
 
 /**
  * app-state-core.md §5.5: a group's default repository and its "new workspaces create a
- * worktree from latest main" switch. `repo` (a path; registered if the registry lacks it) and
- * `clear` are mutually exclusive, and `create_worktree` may ride with either or alone.
+ * worktree from latest main" switch. `repo` (a path; registered if the registry lacks it),
+ * `repo_id` (a registry row, taken as is) and `clear` are mutually exclusive, and
+ * `create_worktree` may ride with any of them or alone.
  */
 export interface GroupSetRepoMessage {
     command: 'group-set-repo';
     name: string;
     repo?: string | undefined;
+    repo_id?: string | undefined;
     clear: boolean;
     create_worktree?: boolean | undefined;
 }

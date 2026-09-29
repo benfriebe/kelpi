@@ -748,17 +748,19 @@ export class CommandClient {
      * app-state-core.md §5.5: a group's default repository and its worktree switch, over the
      * same `group-set-repo` verb `kelpi group set-repo` sends. `repo` is a PATH (the daemon
      * registers it if the registry lacks it, which is how the menu's Choose Folder… adds a new
-     * repository); `repo: null` clears it; `createWorktree` absent keeps the switch. Resolving
+     * repository); `repoID` is a registry row taken as is (the menu's rows); `repo: null`
+     * clears it; `createWorktree` absent keeps the switch. Resolving
      * a path is git work, hence the longer deadline.
      */
     setGroupRepo(
-        input: { group: string; repo?: string | null; createWorktree?: boolean },
+        input: { group: string; repo?: string | null; repoID?: string; createWorktree?: boolean },
         options?: SendOptions
     ): Promise<CommandReply> {
         return this.raw(
             wirePayload('group-set-repo', {
                 name: input.group,
                 repo: input.repo === null ? undefined : input.repo,
+                repo_id: input.repoID,
                 clear: input.repo === null ? true : undefined,
                 create_worktree: input.createWorktree
             }),

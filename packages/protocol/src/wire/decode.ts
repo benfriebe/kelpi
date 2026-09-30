@@ -200,7 +200,9 @@ function decodeCommand(
                 ...scope(),
                 direction: parseSplitDirection(fields.rawText('direction')),
                 path: fields.rawText('path'),
-                name: fields.rawText('name')
+                name: fields.rawText('name'),
+                // #295: absent is BACKGROUND, the default for every caller but the window.
+                focus: fields.flag('focus', false)
             };
         }
         case 'pane-create': {
@@ -208,7 +210,13 @@ function decodeCommand(
             if (paneId === undefined && fields.text('target') === undefined && workspace === undefined) {
                 return guard(command, 'pane-create requires pane_id, target or workspace');
             }
-            return { command, ...scope(), path: fields.rawText('path'), name: fields.rawText('name') };
+            return {
+                command,
+                ...scope(),
+                path: fields.rawText('path'),
+                name: fields.rawText('name'),
+                focus: fields.flag('focus', false)
+            };
         }
         case 'pane-close': {
             const failure = requireTargetable();
@@ -251,7 +259,7 @@ function decodeCommand(
             if (direction === undefined) {
                 return guard(command, 'pane-move requires direction left|right|up|down', 'direction');
             }
-            return { command, pane_id: paneId as string, direction };
+            return { command, pane_id: paneId as string, direction, focus: fields.flag('focus', false) };
         }
         case 'pane-move-adjacent': {
             const target = fields.text('target');
@@ -262,7 +270,7 @@ function decodeCommand(
             if (zone === undefined) {
                 return guard(command, 'pane-move-adjacent requires zone above|below|left-of|right-of', 'zone');
             }
-            return { command, ...scope(), target, anchor, zone };
+            return { command, ...scope(), target, anchor, zone, focus: fields.flag('focus', false) };
         }
         case 'pane-move-to-workspace': {
             const name = fields.nonEmpty('name');
@@ -436,7 +444,13 @@ function decodeCommand(
         case 'open': {
             const path = fields.nonEmpty('path');
             if (path === undefined) return guard(command, 'open requires path', 'path');
-            return { command, path, pane_id: paneId, reuse: fields.flag('reuse', false) };
+            return {
+                command,
+                path,
+                pane_id: paneId,
+                reuse: fields.flag('reuse', false),
+                focus: fields.flag('focus', false)
+            };
         }
         case 'diff': {
             const repoPath = fields.nonEmpty('repo_path');
@@ -475,7 +489,8 @@ function decodeCommand(
                 private: fields.flag('private', false),
                 pane_id: paneId,
                 target: fields.text('target'),
-                direction: parseSplitDirection(fields.text('direction'))
+                direction: parseSplitDirection(fields.text('direction')),
+                focus: fields.flag('focus', false)
             };
         }
         case 'web-navigate': {

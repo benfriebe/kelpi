@@ -452,7 +452,8 @@ describe('the same two gestures from the keyboard', () => {
             expect(h.commands().at(-1)).toMatchObject({
                 command: 'web-open',
                 url: 'about:blank',
-                pane_id: PANE_A
+                pane_id: PANE_A,
+                focus: true
             });
         }, LOADED);
     });

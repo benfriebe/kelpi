@@ -217,7 +217,8 @@ describe('the inspector', () => {
             expect(h.commands().at(-1)).toMatchObject({
                 command: 'pane-split',
                 direction: 'vertical',
-                path: '/src/app'
+                path: '/src/app',
+                focus: true
             });
         });
     });

@@ -150,12 +150,16 @@ Entry points (all converge on this one action):
      like any other dropped file (terminal-surface.md §12.4, #288). That is what a terminal
      does, and what an agent user dropping a spec onto Claude Code expects.
 2. **Finder "Open With → Kelpi"** → same `openFileAtPath` path.
-3. **CLI**: `kelpi md [--here] <file>` and the markdown route of `kelpi open [--here] <path>`
-   send the `open` wire command
-   `{"command":"open","path":"/abs/file.md","pane_id":"<uuid or absent>","reuse":true|false}`.
-   Server side: if `pane_id` resolves to a live pane, that pane's workspace is targeted,
-   the calling pane is focused first, and `reusePaneID = pane_id` when `reuse` is true;
-   otherwise the active workspace is targeted with no reuse.
+3. **CLI**: `kelpi md [--here] [--focus] <file>` and the markdown route of
+   `kelpi open [--here] [--focus] <path>` send the `open` wire command
+   `{"command":"open","path":"/abs/file.md","pane_id":"<uuid or absent>","reuse":true|false,"focus":true?}`.
+   Server side: if `pane_id` resolves to a live pane, that pane's workspace is targeted, the
+   calling pane is the split source, and `reusePaneID = pane_id` when `reuse` is true;
+   otherwise the active workspace is targeted with no reuse. Issue #295: without `focus:true`
+   the preview opens in the **background** (the calling pane is named as the split source
+   rather than focused first, and focus stays where it was); with it, the calling pane is
+   focused first and the preview takes the focus. The window's own routes (⌘O, Finder, a
+   drop) send `focus:true`.
 
 Behavior of `openMarkdownFile`:
 

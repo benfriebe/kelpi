@@ -51,6 +51,7 @@ import {
     appendPane,
     clearSearchIfTargets,
     findParkedPane,
+    focusCreatedPane,
     findVisiblePane,
     mutatePane,
     mutateVisiblePane,
@@ -90,7 +91,7 @@ function createPane(
             ...appendPane(workspace, pane),
             layout: leaf(pane.id)
         };
-        return setFocus(next, pane.id);
+        return focusCreatedPane(next, pane.id, action.focus);
     });
 }
 
@@ -115,7 +116,7 @@ function splitPane(
             layout: splitting(unzoomed.layout, sourceID, action.direction, pane.id).layout,
             currentLayoutIndex: null
         };
-        return setFocus(next, pane.id);
+        return focusCreatedPane(next, pane.id, action.focus);
     });
 }
 
@@ -125,7 +126,13 @@ function splitPaneAtPath(
 ): DaemonState {
     return updateWorkspace(state, action.workspaceID, (workspace) => {
         const unzoomed = restoreZoomIfNeeded(workspace);
-        const sourceID = unzoomed.focusedPaneID;
+        // #295: a named source is how a background split avoids focusing it first. It must be
+        // a visible pane (the same rule as `split-pane`); only the focused-pane fallback keeps
+        // the unverified QUIRK below.
+        if (action.sourcePaneID !== undefined && findVisiblePane(unzoomed, action.sourcePaneID) === null) {
+            return workspace;
+        }
+        const sourceID = action.sourcePaneID ?? unzoomed.focusedPaneID;
         if (sourceID === null) return workspace;
         // QUIRK: the focused pane's existence is NOT verified (§7.2 warning).
         const pane = newPane({
@@ -144,7 +151,7 @@ function splitPaneAtPath(
             ).layout,
             currentLayoutIndex: null
         };
-        return setFocus(next, pane.id);
+        return focusCreatedPane(next, pane.id, action.focus);
     });
 }
 
@@ -382,7 +389,8 @@ function reopenClosedPane(
 function reuseBranch(
     workspace: WorkspaceState,
     reusePaneID: string,
-    pane: Pane
+    pane: Pane,
+    focus: boolean | undefined
 ): WorkspaceState | null {
     const source = findVisiblePane(workspace, reusePaneID);
     if (source === null) return null;
@@ -396,7 +404,9 @@ function reuseBranch(
         parkedPanes: [...next.parkedPanes, source],
         currentLayoutIndex: null
     };
-    return setFocus(next, pane.id);
+    // #295: in the background the new pane takes the parked pane's slot but not the focus,
+    // unless the parked pane WAS the focused one (then the slot keeps it; see focusCreatedPane).
+    return focusCreatedPane(next, pane.id, focus);
 }
 
 function openMarkdownPane(
@@ -415,13 +425,18 @@ function openMarkdownPane(
     });
 
     if (action.reusePaneID !== undefined) {
-        const reused = reuseBranch(workspace, action.reusePaneID, pane);
+        const reused = reuseBranch(workspace, action.reusePaneID, pane, action.focus);
         if (reused !== null) return reused;
         // A reusePaneID naming no visible pane falls through to the split path.
     }
 
     // QUIRK (§7.4): no restoreZoomIfNeeded() on this branch.
-    const sourceID = workspace.focusedPaneID ?? allPaneIDs(workspace.layout)[0] ?? null;
+    // #295: a background open names the caller as its source rather than focusing it first.
+    const named =
+        action.sourcePaneID !== undefined && findVisiblePane(workspace, action.sourcePaneID) !== null
+            ? action.sourcePaneID
+            : null;
+    const sourceID = named ?? workspace.focusedPaneID ?? allPaneIDs(workspace.layout)[0] ?? null;
     const next: WorkspaceState = {
         ...appendPane(workspace, pane),
         layout:
@@ -430,7 +445,7 @@ function openMarkdownPane(
                 : splitting(workspace.layout, sourceID, 'horizontal', pane.id).layout,
         currentLayoutIndex: null
     };
-    return setFocus(next, pane.id);
+    return focusCreatedPane(next, pane.id, action.focus);
 }
 
 function openDiffPane(
@@ -450,7 +465,7 @@ function openDiffPane(
     });
 
     if (action.reusePaneID !== undefined) {
-        const reused = reuseBranch(workspace, action.reusePaneID, pane);
+        const reused = reuseBranch(workspace, action.reusePaneID, pane, undefined);
         if (reused !== null) return reused;
     }
 
@@ -516,7 +531,7 @@ function openWebPane(
     };
 
     if (action.reusePaneID !== undefined) {
-        const reused = reuseBranch(seeded, action.reusePaneID, pane);
+        const reused = reuseBranch(seeded, action.reusePaneID, pane, action.focus);
         if (reused !== null) return reused;
     }
 
@@ -531,7 +546,7 @@ function openWebPane(
                       .layout,
         currentLayoutIndex: null
     };
-    return setFocus(next, pane.id);
+    return focusCreatedPane(next, pane.id, action.focus);
 }
 
 // ---------------------------------------------------------------------------
@@ -659,18 +674,24 @@ export function reducePaneAction(state: DaemonState, action: DomainAction): Daem
                     ),
                     currentLayoutIndex: null
                 };
-                return setFocus(next, action.paneID);
+                // #295: a background move (an agent's `kelpi pane move`) docks the pane without
+                // taking the user's focus; both panes are visible, so there is focus to keep.
+                return action.focus === false ? next : setFocus(next, action.paneID);
             });
         case 'move-pane-direction':
             return updateWorkspace(state, action.workspaceID, (workspace) => {
                 if (workspace.zoomedPaneID !== null) return workspace; // no-op, not an un-zoom
-                const focused = workspace.focusedPaneID;
-                if (focused === null) return workspace;
-                const neighbor = neighborPaneID(workspace.layout, focused, action.direction);
+                // #295: a background move names its pane; only the focused-pane fallback is old.
+                if (action.paneID !== undefined && findVisiblePane(workspace, action.paneID) === null) {
+                    return workspace;
+                }
+                const moving = action.paneID ?? workspace.focusedPaneID;
+                if (moving === null) return workspace;
+                const neighbor = neighborPaneID(workspace.layout, moving, action.direction);
                 if (neighbor === null) return workspace;
                 return {
                     ...workspace,
-                    layout: swappingLeaves(workspace.layout, focused, neighbor),
+                    layout: swappingLeaves(workspace.layout, moving, neighbor),
                     currentLayoutIndex: null
                 };
             });

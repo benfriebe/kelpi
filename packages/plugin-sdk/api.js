@@ -91,13 +91,18 @@ export function createKelpiAPI(transport, getContext = () => ({})) {
     };
     const panes = Object.freeze({
         list: async (options = {}) => list('pane-list', 'panes', paneListScope(options)),
-        create: async (options = {}) => run('pane-create', { ...creationTarget(options), path: options.path, name: options.name }),
-        split: (pane, options = {}) => run('pane-split', { ...target(pane), direction: options.direction, path: options.path, name: options.name }),
+        // #295: the wire's absent `focus` is a background open (the CLI/agent default). A plugin
+        // usually creates a pane because the user clicked something, so the helpers keep the
+        // pane taking focus unless the plugin passes `focus: false`. Raw `api.command` keeps the
+        // wire default.
+        create: async (options = {}) => run('pane-create', { ...creationTarget(options), path: options.path, name: options.name, focus: options.focus ?? true }),
+        split: (pane, options = {}) => run('pane-split', { ...target(pane), direction: options.direction, path: options.path, name: options.name, focus: options.focus ?? true }),
         close: pane => run('pane-close', target(pane)),
         rename: (pane, name) => run('pane-name', { ...target(pane), name }),
         resize: (pane, options) => run('pane-resize', { ...target(pane), ratio: options.ratio, delta: options.delta }),
-        moveAdjacent: (pane, anchor, zone) => run('pane-move-adjacent', { ...target(pane), anchor, zone }),
-        move: (paneID, direction) => done('pane-move', { pane_id: paneID, direction }),
+        // #295: like create/split, the move helpers keep focusing the moved pane by default.
+        moveAdjacent: (pane, anchor, zone, options = {}) => run('pane-move-adjacent', { ...target(pane), anchor, zone, focus: options.focus ?? true }),
+        move: (paneID, direction, options = {}) => done('pane-move', { pane_id: paneID, direction, focus: options.focus ?? true }),
         moveToWorkspace: (paneID, workspaceID, options = {}) => done('pane-move-to-workspace', { pane_id: paneID, name: workspaceID, text: options.create ? 'true' : 'false' }),
         reopen: workspaceID => run('reopen-closed-pane', { workspace_id: workspaceID }),
         scratchpad: workspaceID => run('create-scratchpad', { workspace_id: workspaceID }),
@@ -142,7 +147,7 @@ export function createKelpiAPI(transport, getContext = () => ({})) {
         files: Object.freeze({
             read: path => call('files.read', { path }),
             write: async (path, text) => { await call('files.write', { path, text }); },
-            open: async (path, options = {}) => done('open', { path, pane_id: await sourcePane(options, 'open'), reuse: options.reuse ?? false }),
+            open: async (path, options = {}) => done('open', { path, pane_id: await sourcePane(options, 'open'), reuse: options.reuse ?? false, focus: options.focus ?? true }),
             reveal: (path, options = {}) => done('reveal-path', { path, select: options.select ?? false }),
         }),
         process: Object.freeze({ exec: (file, args = [], options = {}) => call('process.exec', clean({ file, args, ...options })) }),

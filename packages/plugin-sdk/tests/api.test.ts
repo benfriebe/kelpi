@@ -153,6 +153,45 @@ describe('public SDK over Kelpi command handlers', () => {
             await expect(operation()).rejects.toMatchObject({ code: 'CONTEXT_UNAVAILABLE' });
         }
     });
+    /**
+     * #295: on the wire an absent `focus` is a background open (the CLI/agent default), but the
+     * SDK helpers act for a plugin that is usually answering the user's click, so they keep
+     * focusing the new pane unless the plugin passes `focus: false`.
+     */
+    it('pane and file helpers focus the new pane by default and open it in the background on focus:false', async () => {
+        const { api, app, sent } = host({}, () => ({ workspaceID: W1, paneID: P1 }));
+        const focusedPane = () => app.state().workspaces.find(workspace => workspace.id === W1)?.focusedPaneID;
+        const created = await api.panes.create();
+        expect(sent.at(-1)).toMatchObject({ command: 'pane-create', focus: true });
+        expect(focusedPane()).toBe(created.paneID);
+        const split = await api.panes.split(P1);
+        expect(sent.at(-1)).toMatchObject({ command: 'pane-split', focus: true });
+        expect(focusedPane()).toBe(split.paneID);
+        const background = await api.panes.split(P1, { focus: false });
+        expect(sent.at(-1)).toMatchObject({ command: 'pane-split', focus: false });
+        expect(focusedPane()).toBe(split.paneID);
+        expect(app.state().workspaces[0]?.panes.some(pane => pane.id === background.paneID)).toBe(true);
+        await api.panes.create({ focus: false });
+        expect(focusedPane()).toBe(split.paneID);
+        await api.files.open('/tmp/quiet.md', { focus: false });
+        expect(sent.at(-1)).toMatchObject({ command: 'open', focus: false });
+        expect(focusedPane()).toBe(split.paneID);
+        // The move helpers follow the same rule (#295).
+        await api.panes.moveAdjacent(background.paneID, P1, 'below', { focus: false });
+        expect(sent.at(-1)).toMatchObject({ command: 'pane-move-adjacent', zone: 'below', focus: false });
+        expect(focusedPane()).toBe(split.paneID);
+        await api.panes.move(background.paneID, 'up', { focus: false });
+        expect(sent.at(-1)).toMatchObject({ command: 'pane-move', direction: 'up', focus: false });
+        expect(focusedPane()).toBe(split.paneID);
+        await api.panes.move(background.paneID, 'down');
+        expect(sent.at(-1)).toMatchObject({ command: 'pane-move', direction: 'down', focus: true });
+        await api.panes.moveAdjacent(background.paneID, P1, 'above');
+        expect(sent.at(-1)).toMatchObject({ command: 'pane-move-adjacent', zone: 'above', focus: true });
+        expect(focusedPane()).toBe(background.paneID);
+        await api.files.open('/tmp/loud.md');
+        expect(sent.at(-1)).toMatchObject({ command: 'open', focus: true });
+        expect(app.state().workspaces[0]?.panes.find(pane => pane.id === focusedPane())?.filePath).toBe('/tmp/loud.md');
+    });
     it('models terminal find at workspace scope and keeps its active search pane', async () => {
         const searchAsync = vi.fn(async () => [{ line: 0, col: 0, length: 3, linesFromBottom: 0 }]);
         const { api, app } = host(app => ({ search: createTerminalSearchChannel({ store: app.store, term: { searchAsync } }) }));

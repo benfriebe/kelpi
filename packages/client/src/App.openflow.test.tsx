@@ -124,7 +124,7 @@ describe('drag-and-drop a markdown file (CONT-121 / APP-103)', () => {
     it('opens a dropped .md path through the `open` verb', () => {
         const h = setup();
         drop(screen.getByTestId('kelpi-app'), { 'text/uri-list': 'file:///repo/README.md' });
-        expect(h.lastCommand('open')).toMatchObject({ command: 'open', path: '/repo/README.md' });
+        expect(h.lastCommand('open')).toMatchObject({ command: 'open', path: '/repo/README.md', focus: true });
     });
 
     it('refuses a non-markdown drop with a toast rather than silence', async () => {

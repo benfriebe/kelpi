@@ -1392,7 +1392,10 @@ function Shell(props: AppProps): ReactElement {
     // §N35: `hasSnapshot` is what tells the rule an ARRIVAL from an OPENING. A client that
     // reloads is handed every web pane the workspace already had, and none of them was opened
     // here — see the hook's own note.
-    useBlankWebPaneURLFocus(blankURLTargets, webAct.focusURLBar, daemon.hasSnapshot);
+    //
+    // #295: and only for a pane that arrives wearing the ring. A background `kelpi web open`
+    // lands blank too, and must leave the caret in the pane the user is typing in.
+    useBlankWebPaneURLFocus(blankURLTargets, webAct.focusURLBar, daemon.hasSnapshot, focusedPaneID);
 
     /**
      * §7.3's tri-state layer, behind a ref so the key dispatcher (rebuilt only on a keybinding
@@ -1955,7 +1958,9 @@ function Shell(props: AppProps): ReactElement {
                         private: false,
                         pane_id: paneID,
                         target: paneID,
-                        direction
+                        direction,
+                        // #295: the wire default is a background open; this one is a gesture.
+                        focus: true
                     })
                 );
             },
@@ -1972,7 +1977,13 @@ function Shell(props: AppProps): ReactElement {
                 if (paneID === null) return false;
                 return run(
                     'New web pane',
-                    commands.raw({ command: 'web-open', url: 'about:blank', private: false, pane_id: paneID })
+                    commands.raw({
+                        command: 'web-open',
+                        url: 'about:blank',
+                        private: false,
+                        pane_id: paneID,
+                        focus: true
+                    })
                 );
             },
 

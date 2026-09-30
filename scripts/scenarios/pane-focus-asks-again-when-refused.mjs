@@ -71,7 +71,9 @@ export default async function ({ page, cli, rec, d, sleep }) {
     await page.click(`[data-testid="workspace-row"][data-workspace-id="${workspaceID}"]`);
     await d.settleDom(page, `${ENGINES_UP} === ${String(before.length)}`, { ceilingMs: 30_000 });
 
-    const spawned = JSON.parse(await cli.ok(['pane', 'create', '--workspace', 'Default', '--json'])).pane_id;
+    // `--focus`: the close below must take focus AWAY from this pane, so it has to hold it, and
+    // since #295 a CLI create opens in the background unless asked.
+    const spawned = JSON.parse(await cli.ok(['pane', 'create', '--workspace', 'Default', '--focus', '--json'])).pane_id;
     await d.settleDom(page, `${ENGINES_UP} === ${String(before.length + 1)}`, { ceilingMs: 30_000 });
     // The new pane's own engine grab has to be over before the caret is put in the filter,
     // otherwise the arbiter's hand-off is what the assertions below would be reading.

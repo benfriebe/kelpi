@@ -129,15 +129,19 @@ trust, dependencies and recovery; the
 ### Pane Commands
 
 ```bash
-# Split a pane (creates a new pane alongside). Works from outside Kelpi
+# Split a pane (creates a new pane alongside). Splits YOUR pane by
+# default, or the pane named by --target. Works from outside Kelpi
 # via --target (UUID = global, label needs scope) or --workspace.
-# Request/response: prints the new pane id, exits non-zero on failure.
-kelpi pane split [--direction horizontal|vertical] [--path /dir] [--name <label>] [--target <name-or-uuid>] [--workspace <name-or-uuid>] [--json]
+# The new pane opens in the BACKGROUND (focus stays where the user has
+# it); --focus moves focus to it. Request/response: prints the new pane
+# id, exits non-zero on failure.
+kelpi pane split [--direction horizontal|vertical] [--path /dir] [--name <label>] [--target <name-or-uuid>] [--workspace <name-or-uuid>] [--focus] [--json]
 
 # Create a new pane (alias for horizontal split). Works from outside Kelpi
-# via --workspace (or --target's workspace). Request/response: prints the
-# new pane id, exits non-zero on failure.
-kelpi pane create [--path /dir] [--name <label>] [--target <name-or-uuid>] [--workspace <name-or-uuid>] [--json]
+# via --workspace (or --target's workspace). Background by default, like
+# split; --focus moves focus to it. Request/response: prints the new pane
+# id, exits non-zero on failure.
+kelpi pane create [--path /dir] [--name <label>] [--target <name-or-uuid>] [--workspace <name-or-uuid>] [--focus] [--json]
 
 # Close current pane
 kelpi pane close
@@ -175,10 +179,13 @@ kelpi pane capture [--target <name-or-uuid>] [--workspace <name-or-uuid>] [--lin
 # drag-drop). --below stacks the target under the anchor; --above /
 # --left-of / --right-of are the other edges. Both panes resolve within
 # the same workspace. Pairs with `pane resize` for full layout control.
-kelpi pane move --target <name-or-uuid> (--above|--below|--left-of|--right-of) <anchor> [--workspace <name-or-uuid>] [--json]
+# Background by default (the user's focus stays put); --focus focuses
+# the moved pane.
+kelpi pane move --target <name-or-uuid> (--above|--below|--left-of|--right-of) <anchor> [--workspace <name-or-uuid>] [--focus] [--json]
 
 # Move the calling pane toward its neighbour (directional form).
-kelpi pane move <left|right|up|down>
+# Also background by default; --focus focuses the calling pane.
+kelpi pane move [--focus] <left|right|up|down>
 
 # Move a pane to another workspace (creates it with --create).
 kelpi pane move-to-workspace --to-workspace <name-or-uuid> [--create]
@@ -192,6 +199,31 @@ kelpi workspace list [--json] [--no-header]
 # Print current pane's UUID (local; no socket). Exit 1 if not in Kelpi.
 kelpi pane id
 ```
+
+### New panes open in the background (never take the user's focus)
+
+The user is often typing in another pane while you work. Every pane you
+create (`pane split`, `pane create`, `web open`, `open`, `md`) opens in
+the **background**: it appears in the layout, but the focused pane and
+the keyboard stay exactly where the user left them, and your own pane is
+not focused either. So spawning workers never sends the user's
+keystrokes into the wrong pane.
+
+- **Do not pass `--focus`** unless the user asked to be taken to the new
+  pane ("open it and put me there"). `--focus` moves focus and the
+  keyboard to the new pane, interrupting whatever the user is typing.
+- **Place panes with `--target`**, not with focus. `pane split` splits
+  your own pane unless `--target` names another; nothing you do moves
+  focus, so there is no "split the focused pane" trick to rely on. Use
+  `kelpi pane move --target <new> --right-of <anchor>` (or `--below`,
+  ...) to dock a pane somewhere else after creating it. `pane move` is
+  background too: it rearranges the layout without moving focus (pass
+  `--focus` only if the user asked to be taken to the moved pane).
+- `kelpi web open` still splits the workspace's *focused* pane (often
+  the user's, not yours). If it lands somewhere awkward, move it with
+  `kelpi pane move`.
+- Address panes by name or UUID (`--target worker-1`), never by
+  assuming which pane is focused.
 
 ### Keep the layout readable (grid + prominent coordinator)
 
@@ -213,11 +245,12 @@ kelpi layout select main-horizontal  # main on top,    workers in a row below
 ```
 
 **Caveat — which pane becomes "main".** `layout select main-*` makes
-the **currently focused** pane the large "main" pane, and every
-`kelpi pane split` moves focus to the pane it just created. So right
-after the spawn loop the focused pane is the *last worker*, not the
-coordinator — running `main-vertical` then would enlarge a worker, and
-there is no `kelpi pane focus` CLI to re-focus the coordinator first.
+the **currently focused** pane the large "main" pane. Your splits no
+longer move focus, so after the spawn loop the focused pane is whatever
+the user last had focused: maybe the coordinator, maybe a pane in the
+middle of their own work. Running `main-vertical` would enlarge that
+pane, and there is no `kelpi pane focus` CLI to pick one (and you should
+not steal the user's focus to fix a layout anyway).
 
 The focus-independent lever is `kelpi pane resize`, which addresses the
 pane **by name**. `--ratio` is the pane's *share* of its split, so use
@@ -237,8 +270,9 @@ the whole grid the way a `main-*` layout's root split does. So:
   `layout select tiled` + `pane resize --target coordinator --ratio 0.65`.
   Focus-independent, safe to run straight from the coordinator script.
 - Want one pane that dominates the entire workspace? `layout select
-  main-vertical` — but it enlarges whatever is *focused*, so it's only
-  reliable when the coordinator is the focused pane at call time.
+  main-vertical`, but it enlarges whatever is *focused* (the user's
+  choice, not yours), so it's only reliable when you know the
+  coordinator is the focused pane at call time.
 
 `pane resize` also lets a coordinator fine-tune any pane at any time
 (`--grow` / `--shrink` to nudge, `--ratio` to set exactly) without
@@ -559,13 +593,14 @@ and the pane lands in the caller's workspace (via `KELPI_PANE_ID`).
 # TLD (notes.txt, foo.museum) is NOT a host — use `kelpi web open` for those.
 # --here reuses the calling pane (markdown route only). Request/response
 # on the web/URL route (prints `open ok: <pane-uuid>`); fire-and-forget
-# on the markdown route.
-kelpi open [--here] <path-or-url>
+# on the markdown route. The pane opens in the background; --focus moves
+# focus to it (only when the user asked for that).
+kelpi open [--here] [--focus] <path-or-url>
 
 # Always open a markdown preview pane, whatever the extension. The
 # escape hatch for forcing markdown on a file `kelpi open` would reject
 # (a .log, a .txt) or render as web (a .html you want to read as source).
-kelpi md [--here] <file>
+kelpi md [--here] [--focus] <file>
 
 # Open a git diff pane for the cwd repo (or scoped to <path>). Refreshes
 # on focus and via the header refresh button.
@@ -608,7 +643,8 @@ lowest layer that solves your problem; `exec` is the escape hatch.
 # becomes a file:// URL, so `kelpi web open report.html` works without hand-building
 # file://. Bare hostnames (example.com) and single-label hosts (app, api) stay
 # URLs — use ./name to force a local path.
-kelpi web open [--private] <url>
+# Opens in the background (splitting the focused pane); --focus moves focus to it.
+kelpi web open [--private] [--focus] <url>
 
 # Redirect the active tab of an existing web pane to <url>
 kelpi web navigate <url> [--target <name-or-uuid>] [--workspace <name-or-uuid>]
@@ -921,8 +957,10 @@ Each task file should include:
 #### Step 3: Spawn named worker panes
 
 ```bash
-# Create named worker panes. Direction barely matters here — we reflow
-# into a clean grid immediately after, so don't hand-tune splits.
+# Create named worker panes. Each one splits YOUR pane and opens in the
+# background, so the user keeps typing wherever they are. Direction
+# barely matters here: we reflow into a clean grid immediately after,
+# so don't hand-tune splits.
 kelpi pane split --name worker-1
 kelpi pane split --name worker-2
 kelpi pane split --name worker-3
@@ -1223,8 +1261,12 @@ Workers should write results in this format:
    loop, run `kelpi layout select tiled` for a balanced grid, then
    `kelpi pane resize --target coordinator --ratio 0.65` to keep the coordinator
    prominent. Prefer `pane resize` over `layout select main-*` for the
-   coordinator: `main-*` enlarges the *focused* pane, and focus sits on the
-   last-spawned worker after the loop.
+   coordinator: `main-*` enlarges the *focused* pane, which is whatever the
+   user has focused (spawned panes open in the background and never move it).
+
+10. **Never take the user's focus.** Panes you create open in the background;
+    only pass `--focus` when the user asked to be taken to the new pane. Place
+    panes with `--target` and `pane move`, and address them by name.
 
 ## Coordinator Script Template
 
@@ -1255,9 +1297,10 @@ for worker in "${WORKERS[@]}"; do
 done
 
 # Reflow into a balanced grid and keep the coordinator prominent.
-# `pane resize` addresses the coordinator by name, so it works even
-# though focus is on the last-spawned worker after the loop (unlike
-# `layout select main-*`, which enlarges whichever pane is focused).
+# `pane resize` addresses the coordinator by name, so it works wherever
+# the user's focus is (spawned panes open in the background and never
+# move it), unlike `layout select main-*`, which enlarges whichever pane
+# is focused.
 kelpi layout select tiled
 kelpi pane resize --target coordinator --ratio 0.65
 

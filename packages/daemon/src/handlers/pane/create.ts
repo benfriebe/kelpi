@@ -9,12 +9,17 @@
  * `--workspace`-alone branch tolerates an empty workspace (routing to the create-first-pane
  * action, which is the case a split cannot serve), and its outside-caller error names
  * `create` instead of `split`.
+ *
+ * #295: both open the new pane in the BACKGROUND unless the message carries `focus: true`. An
+ * agent in one pane spawning workers must not pull the keyboard out of the pane the user is
+ * typing in, so a background create never dispatches `focus-pane` and names its source on the
+ * split instead. The window's own gestures and `kelpi pane split --focus` send `focus: true`.
  */
 
 import { resolveWorkspaceStrict } from '@kelpi/core/resolve';
 
 import type { CommandHandler, ReplyHandle } from '../../seams.js';
-import { resolveStateOf, workspaceByID, type WorkspaceState } from '../../store/index.js';
+import { resolveStateOf, workspaceByID, type SplitDirection, type WorkspaceState } from '../../store/index.js';
 import type { PaneHandlerContext } from './context.js';
 import {
     labelField,
@@ -99,6 +104,44 @@ function ackCreation(
     });
 }
 
+/**
+ * #295: a FOCUSING create (the window's gestures, `--focus`) focuses the source first, as the
+ * verbs always have, so the history reads source then new pane and closing the new pane hands
+ * focus back to the pane it came from. A BACKGROUND create must not touch focus at all, so it
+ * skips this and names the source on the split action instead.
+ */
+function focusSourceIfFocusing(
+    ctx: PaneHandlerContext,
+    workspaceID: string,
+    sourcePaneID: string,
+    focus: boolean
+): void {
+    if (!focus) return;
+    ctx.store.dispatch({ type: 'focus-pane', workspaceID, paneID: sourcePaneID });
+}
+
+/** The split both verbs end in: at `path` when given, else inheriting the source's directory. */
+function dispatchSplit(
+    ctx: PaneHandlerContext,
+    split: {
+        readonly workspaceID: string;
+        readonly paneID: string;
+        readonly sourcePaneID: string;
+        readonly direction: SplitDirection;
+        readonly path: string | undefined;
+        readonly label: string | null;
+        readonly now: number;
+        readonly focus: boolean;
+    }
+): void {
+    const { path, ...common } = split;
+    if (path !== undefined) {
+        ctx.store.dispatch({ type: 'split-pane-at-path', ...common, path });
+    } else {
+        ctx.store.dispatch({ type: 'split-pane', ...common });
+    }
+}
+
 export const handlePaneSplit: CommandHandler<PaneHandlerContext> = (msg, ctx, reply) => {
     if (msg.command !== 'pane-split') return;
     const routed = routeCreation(ctx, msg, 'split');
@@ -117,33 +160,20 @@ export const handlePaneSplit: CommandHandler<PaneHandlerContext> = (msg, ctx, re
     const newPaneID = mintPaneID(ctx);
     const now = nowMillis(ctx);
     const direction = msg.direction ?? 'horizontal';
+    const focus = msg.focus === true;
 
-    // The split-at-path action splits the FOCUSED pane, so focus moves first, and that focus
-    // change is deliberately user-visible (§4.1 step 2).
-    ctx.store.dispatch({ type: 'focus-pane', workspaceID: workspace.id, paneID: sourcePaneID });
+    focusSourceIfFocusing(ctx, workspace.id, sourcePaneID, focus);
     ackCreation(reply, newPaneID, workspace, msg.name);
-
-    if (msg.path !== undefined) {
-        ctx.store.dispatch({
-            type: 'split-pane-at-path',
-            workspaceID: workspace.id,
-            paneID: newPaneID,
-            path: msg.path,
-            direction,
-            label: msg.name ?? null,
-            now
-        });
-    } else {
-        ctx.store.dispatch({
-            type: 'split-pane',
-            workspaceID: workspace.id,
-            paneID: newPaneID,
-            direction,
-            sourcePaneID,
-            label: msg.name ?? null,
-            now
-        });
-    }
+    dispatchSplit(ctx, {
+        workspaceID: workspace.id,
+        paneID: newPaneID,
+        sourcePaneID,
+        direction,
+        path: msg.path,
+        label: msg.name ?? null,
+        now,
+        focus
+    });
 
     spawnPaneIfShell(ctx, workspace.id, newPaneID);
     refreshSyncGroup(ctx, workspace.id);
@@ -174,35 +204,24 @@ export const handlePaneCreate: CommandHandler<PaneHandlerContext> = (msg, ctx, r
             paneID: newPaneID,
             label: msg.name ?? null,
             workingDirectory: msg.path ?? null,
-            now
+            now,
+            // An empty workspace has no focus to keep, so the reducer focuses the first pane
+            // either way; the flag is passed for symmetry with the split routes.
+            focus: msg.focus === true
         });
     } else {
-        ctx.store.dispatch({
-            type: 'focus-pane',
+        const focus = msg.focus === true;
+        focusSourceIfFocusing(ctx, workspace.id, sourcePaneID, focus);
+        dispatchSplit(ctx, {
             workspaceID: workspace.id,
-            paneID: sourcePaneID
+            paneID: newPaneID,
+            sourcePaneID,
+            direction: 'horizontal',
+            path: msg.path,
+            label: msg.name ?? null,
+            now,
+            focus
         });
-        if (msg.path !== undefined) {
-            ctx.store.dispatch({
-                type: 'split-pane-at-path',
-                workspaceID: workspace.id,
-                paneID: newPaneID,
-                path: msg.path,
-                direction: 'horizontal',
-                label: msg.name ?? null,
-                now
-            });
-        } else {
-            ctx.store.dispatch({
-                type: 'split-pane',
-                workspaceID: workspace.id,
-                paneID: newPaneID,
-                direction: 'horizontal',
-                sourcePaneID,
-                label: msg.name ?? null,
-                now
-            });
-        }
     }
 
     spawnPaneIfShell(ctx, workspace.id, newPaneID);

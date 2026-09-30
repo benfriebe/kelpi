@@ -459,7 +459,9 @@ async function main() {
                 }
             }
             workspace.panes = ids;
-            const opened = await cli.ok(['web', 'open', site.url], { timeoutMs: 60_000 });
+            // `--focus` keeps the starting state this probe was measured against (each workspace
+            // focused on its web pane); since #295 a CLI `web open` is a background open.
+            const opened = await cli.ok(['web', 'open', site.url, '--focus'], { timeoutMs: 60_000 });
             const webID = (/open ok:\s*([0-9a-f-]{36})/i.exec(opened) ?? [])[1];
             if (webID === undefined) throw new Error(`no web pane opened in ${workspace.name}: ${opened}`);
             workspace.web = webID;

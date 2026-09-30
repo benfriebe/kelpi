@@ -157,7 +157,9 @@ describe('open_web_pane (⌘⇧O)', () => {
                 command: 'web-open',
                 url: 'about:blank',
                 private: false,
-                pane_id: PANE_A
+                pane_id: PANE_A,
+                // #295: a gesture, so it takes focus (the wire default is background).
+                focus: true
             });
         });
     });

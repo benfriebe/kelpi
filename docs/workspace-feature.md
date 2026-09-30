@@ -821,14 +821,16 @@ currentLayoutIndex = null
 effect: spawn surface (5.3) for id at pane.workingDirectory
 ```
 
-**splitPaneAtPath(path, label?: string, direction = "horizontal", newPaneID?: string)**
+**splitPaneAtPath(path, label?: string, direction = "horizontal", newPaneID?: string, sourcePaneID?: string)**
 
-Same as splitPane but the new pane's working directory is the given path, and the split
-source is ALWAYS the focused pane:
+Same as splitPane but the new pane's working directory is the given path. The split source
+is `sourcePaneID` when given (it must be a visible pane, else no-op; issue #295 added it so a
+background split need not focus its source first), else the focused pane:
 
 ```
 restoreZoomIfNeeded()
-guard sourceID = focusedPaneID else no-op
+if sourcePaneID given: guard visible pane with sourcePaneID else no-op
+guard sourceID = sourcePaneID ?? focusedPaneID else no-op
 // note: does NOT verify the focused pane exists in `panes` or in the layout;
 // if focusedPaneID is stale the split is a structural no-op but the new pane is
 // still appended (orphaned). Invariant: focusedPaneID must always be a live leaf.
@@ -838,6 +840,15 @@ layout = splitting(layout, sourceID, direction, id)
 panes.push(pane); apply label; setFocus(id); currentLayoutIndex = null
 effect: spawn surface (5.3)
 ```
+
+**Background creates (issue #295).** `createPane`, `splitPane`, `splitPaneAtPath`,
+`openMarkdownPane` and `openWebPane` all take an optional `focus` flag. Absent or `true`
+ends in `setFocus(id)` as above. `false` (what the socket handlers pass for a CLI or agent
+create without `--focus`) skips it: the new pane joins the layout and `focusedPaneID` and
+`focusHistory` are untouched, unless the workspace has no visible focused pane to keep (an
+empty workspace's first pane, or a `--here` reuse that just parked the focused pane), in
+which case the new pane takes the focus anyway (`focusCreatedPane` in
+`packages/daemon/src/store/reducers/helpers.ts`).
 
 ### 7.3 Scratchpad
 
@@ -1467,17 +1478,20 @@ resolves to null, never to an error.
 above->top, below->bottom, left-of->left, right-of->right)
 - Guard BOTH ids name visible panes, else no-op.
 - `layout = movingPane(layout, paneID, targetPaneID, zone)` (1.6).
-- `setFocus(paneID)`; `currentLayoutIndex = null`.
+- `setFocus(paneID)` unless the action carries `focus: false` (issue #295: an agent's
+  `kelpi pane move` without `--focus` docks the pane in the background); `currentLayoutIndex = null`.
 - Edge: `paneID === targetPaneID` passes the guards; the layout is unchanged (movingPane
   no-ops) but focus is still set and the layout index still resets.
 
-**movePaneInDirection(direction)** (keyboard "move pane left/right/up/down"; the CLI's
-fire-and-forget directional `kelpi pane move <dir>` for the calling pane)
+**movePaneInDirection(direction, paneID?)** (keyboard "move pane left/right/up/down"; the
+CLI's fire-and-forget directional `kelpi pane move <dir>` for the calling pane)
 - Guard `zoomedPaneID === null` (moving while zoomed is a no-op, NOT an un-zoom).
-- Guard `focusedPaneID != null`.
-- `neighbor = neighborPaneID(layout, focusedPaneID, direction)` (geometric, 1.6);
+- `moving = paneID ?? focusedPaneID`; a given `paneID` must be visible, else no-op (issue
+  #295: a background CLI move names the caller here instead of focusing it first). Guard
+  `moving != null`.
+- `neighbor = neighborPaneID(layout, moving, direction)` (geometric, 1.6);
   guard non-null.
-- `layout = swappingLeaves(layout, focusedPaneID, neighbor)`: the two panes exchange
+- `layout = swappingLeaves(layout, moving, neighbor)`: the two panes exchange
   positions; every split direction and ratio is preserved; focus stays on the same pane
   id (now in the neighbor's slot).
 - `currentLayoutIndex = null`.

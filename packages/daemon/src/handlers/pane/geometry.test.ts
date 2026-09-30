@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { allPaneIDs } from '@kelpi/core/layout';
 
@@ -106,14 +106,31 @@ describe('pane-resize', () => {
 });
 
 describe('pane-move (directional)', () => {
-    it('focuses the caller pane and swaps it with its neighbour', () => {
+    it('with focus: true focuses the caller pane and swaps it with its neighbour', () => {
         const h = pair();
         expect(h.workspace(W1).focusedPaneID).toBe(P2);
 
-        h.runSilent({ command: 'pane-move', pane_id: P1, direction: 'right' });
+        h.runSilent({ command: 'pane-move', pane_id: P1, direction: 'right', focus: true });
 
         expect(h.workspace(W1).focusedPaneID).toBe(P1);
         expect(allPaneIDs(h.workspace(W1).layout)).toEqual([P2, P1]);
+    });
+
+    /**
+     * #295: an agent in P1 runs `kelpi pane move right` while the user types in P2. The caller
+     * moves, and neither the focused pane nor its history changes; no `focus-pane` is dispatched.
+     */
+    it('without focus moves the caller in the background', () => {
+        const h = pair();
+        const history = h.workspace(W1).focusHistory;
+        const dispatch = vi.spyOn(h.store, 'dispatch');
+
+        h.runSilent({ command: 'pane-move', pane_id: P1, direction: 'right' });
+
+        expect(allPaneIDs(h.workspace(W1).layout)).toEqual([P2, P1]);
+        expect(h.workspace(W1).focusedPaneID).toBe(P2);
+        expect(h.workspace(W1).focusHistory).toEqual(history);
+        expect(dispatch.mock.calls.map(([action]) => action.type)).not.toContain('focus-pane');
     });
 
     it('drops silently when the pane belongs to no workspace', () => {
@@ -159,6 +176,32 @@ describe('pane-move-adjacent', () => {
             },
             second: { kind: 'leaf', paneID: P2 }
         });
+        expect(h.workspace(W1).focusedPaneID).toBe(P3);
+    });
+
+    /**
+     * #295: the skill tells agents to dock a background worker with `pane move`. That must not
+     * take the user's focus either: with the user in P1, docking P3 leaves P1 focused.
+     */
+    it('without focus docks the pane in the background, leaving the user\'s focus alone', () => {
+        const h = trio();
+        h.store.dispatch({ type: 'focus-pane', workspaceID: W1, paneID: P1 });
+        const history = h.workspace(W1).focusHistory;
+
+        h.run({ command: 'pane-move-adjacent', target: P3, anchor: P1, zone: 'right-of' });
+
+        expect(allPaneIDs(h.workspace(W1).layout)).toEqual([P1, P3, P2]);
+        expect(h.workspace(W1).focusedPaneID).toBe(P1);
+        expect(h.workspace(W1).focusHistory).toEqual(history);
+    });
+
+    it('with focus: true (drag-to-dock, --focus) focuses the moved pane', () => {
+        const h = trio();
+        h.store.dispatch({ type: 'focus-pane', workspaceID: W1, paneID: P1 });
+
+        h.run({ command: 'pane-move-adjacent', target: P3, anchor: P1, zone: 'right-of', focus: true });
+
+        expect(allPaneIDs(h.workspace(W1).layout)).toEqual([P1, P3, P2]);
         expect(h.workspace(W1).focusedPaneID).toBe(P3);
     });
 

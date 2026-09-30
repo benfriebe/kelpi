@@ -246,7 +246,40 @@ describe('pane commands', () => {
         expect(rejected({ command: 'pane-split' }).reason).toBe('guard');
     });
 
-    it('treats an invalid split direction as absent instead of dropping', () => {
+    /**
+     * #295: `focus` on the four pane-creating verbs. Absent is BACKGROUND (false), so an older
+     * CLI that never sends it gets the new default; `true` is the window's gestures and
+     * `--focus`. A wrong-typed value poisons the line like any other known bool (§2.2).
+     */
+    it('decodes focus on every pane-creating verb, absent meaning background', () => {
+        const creators: readonly Record<string, unknown>[] = [
+            { command: 'pane-split', pane_id: PANE },
+            { command: 'pane-create', pane_id: PANE },
+            { command: 'web-open', url: 'https://example.com' },
+            { command: 'open', path: '/notes/plan.md' }
+        ];
+        for (const payload of creators) {
+            expect(ok(payload)).toMatchObject({ focus: false });
+            expect(ok({ ...payload, focus: false })).toMatchObject({ focus: false });
+            expect(ok({ ...payload, focus: true })).toMatchObject({ focus: true });
+            expect(ok({ ...payload, focus: null })).toMatchObject({ focus: false });
+            expect(rejected({ ...payload, focus: 'true' })).toMatchObject({ field: 'focus' });
+        }
+    });
+
+    it('decodes focus on pane-move and pane-move-adjacent, absent meaning background (#295)', () => {
+        const moves: readonly Record<string, unknown>[] = [
+            { command: 'pane-move', pane_id: PANE, direction: 'left' },
+            { command: 'pane-move-adjacent', target: 'worker', anchor: 'main', zone: 'below' }
+        ];
+        for (const payload of moves) {
+            expect(ok(payload)).toMatchObject({ focus: false });
+            expect(ok({ ...payload, focus: true })).toMatchObject({ focus: true });
+            expect(rejected({ ...payload, focus: 1 })).toMatchObject({ field: 'focus' });
+        }
+    });
+
+        it('treats an invalid split direction as absent instead of dropping', () => {
         expect(ok({ command: 'pane-split', pane_id: PANE, direction: 'diagonal' })).toMatchObject({
             direction: undefined
         });
@@ -259,7 +292,8 @@ describe('pane commands', () => {
         expect(ok({ command: 'pane-move', pane_id: PANE, direction: 'up' })).toEqual({
             command: 'pane-move',
             pane_id: PANE_UPPER,
-            direction: 'up'
+            direction: 'up',
+            focus: false
         });
         expect(rejected({ command: 'pane-move', pane_id: PANE, direction: 'diagonal' })).toMatchObject({
             reason: 'guard',
@@ -309,7 +343,8 @@ describe('pane commands', () => {
             target: 'logs',
             anchor: 'coordinator',
             zone: 'below',
-            workspace: 'main'
+            workspace: 'main',
+            focus: false
         });
         expect(rejected({ command: 'pane-move-adjacent', target: 'a', anchor: 'b', zone: 'beside' }).field).toBe('zone');
         expect(rejected({ command: 'pane-move-adjacent', target: 'a', anchor: 'b' }).field).toBe('zone');
@@ -612,7 +647,8 @@ describe('layout, file and graft commands', () => {
             command: 'open',
             path: '/notes/plan.md',
             pane_id: PANE_UPPER,
-            reuse: true
+            reuse: true,
+            focus: false
         });
         expect(ok({ command: 'open', path: '/notes/plan.md' })).toMatchObject({ reuse: false, pane_id: undefined });
         expect(rejected({ command: 'open', path: '' }).field).toBe('path');
@@ -648,7 +684,8 @@ describe('web pane commands', () => {
             command: 'web-open',
             url: 'https://example.com',
             private: false,
-            pane_id: undefined
+            pane_id: undefined,
+            focus: false
         });
         expect(rejected({ command: 'web-open', url: '' }).field).toBe('url');
         for (const command of ['web-url', 'web-back', 'web-forward', 'web-tabs', 'web-cookies-list', 'web-reload']) {

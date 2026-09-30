@@ -29,51 +29,60 @@ function routingContext(): { cwd: string; home: string } {
     return { cwd: process.cwd(), home: homeDirectory() };
 }
 
-/** Fire-and-forget `open` — the markdown route shared by `kelpi md` and `kelpi open`. */
-async function sendMarkdownOpen(absolutePath: string, reuse: boolean): Promise<void> {
+/**
+ * Fire-and-forget `open`: the markdown route shared by `kelpi md` and `kelpi open`.
+ *
+ * #295: `focus` rides only with `--focus`; absent, the daemon opens the preview in the
+ * background beside the calling pane.
+ */
+async function sendMarkdownOpen(absolutePath: string, reuse: boolean, focus: boolean): Promise<void> {
     const payload: JsonObject = { command: 'open', path: absolutePath };
     const paneID = rawPaneID();
     // Note: forwarded even when EMPTY (Swift parity).
     if (paneID !== undefined) payload['pane_id'] = paneID;
     if (reuse) payload['reuse'] = true;
+    if (focus) payload['focus'] = true;
     await sendJSON(payload);
 }
 
 export async function handleMarkdown(args: string[]): Promise<void> {
     const first = args[0];
     if (first !== undefined && isHelpToken(first)) {
-        printLine('Usage: kelpi md [--here] <filepath>');
+        printLine('Usage: kelpi md [--here] [--focus] <filepath>');
         exit(0);
     }
     const reuse = popSwitch('--here', args);
+    const focus = popSwitch('--focus', args);
     const filePath = args.shift();
     if (filePath === undefined || filePath.startsWith('-')) {
-        errLine('Usage: kelpi md [--here] <filepath>');
+        errLine('Usage: kelpi md [--here] [--focus] <filepath>');
         exit(1);
     }
-    await sendMarkdownOpen(path.resolve(process.cwd(), filePath), reuse);
+    await sendMarkdownOpen(path.resolve(process.cwd(), filePath), reuse, focus);
 }
 
 export async function handleOpen(args: string[]): Promise<void> {
     const first = args[0];
     if (first !== undefined && isHelpToken(first)) {
-        printLine('Usage: kelpi open [--here] <path-or-url>');
+        printLine('Usage: kelpi open [--here] [--focus] <path-or-url>');
         printLine('URLs & hostnames (google.com, https://…, localhost:3000) → web pane.');
         printLine('Local files route by type: .md/.markdown → markdown pane;');
         printLine('.html/.htm/.pdf/.svg and images (.png/.jpg/.gif/.webp) → web pane.');
+        printLine('The new pane opens in the background; --focus moves focus to it.');
         exit(0);
     }
     const reuse = popSwitch('--here', args);
+    const focus = popSwitch('--focus', args);
     const argument = args.shift();
     if (argument === undefined || argument.startsWith('-')) {
-        errLine('Usage: kelpi open [--here] <path-or-url>');
+        errLine('Usage: kelpi open [--here] [--focus] <path-or-url>');
         exit(1);
     }
 
     const webTarget = webTargetForOpenArg(argument, routingContext());
     if (webTarget !== null) {
         if (reuse) errLine('kelpi open: --here is ignored for URLs (web panes always open in a new pane)');
-        await sendWebOpen(webTarget);
+        await sendWebOpen(webTarget, focus);
         return;
     }
 
@@ -81,12 +90,12 @@ export async function handleOpen(args: string[]): Promise<void> {
     const extension = pathExtensionLower(absolutePath);
 
     if (markdownOpenExtensions.has(extension)) {
-        await sendMarkdownOpen(absolutePath, reuse);
+        await sendMarkdownOpen(absolutePath, reuse, focus);
         return;
     }
     if (webOpenExtensions.has(extension)) {
         if (reuse) errLine('kelpi open: --here is ignored for web files (web panes always open in a new pane)');
-        await sendWebOpen(fileURLString(absolutePath, false));
+        await sendWebOpen(fileURLString(absolutePath, false), focus);
         return;
     }
     const shown = extension.length === 0 ? 'files without an extension' : `'.${extension}' files`;

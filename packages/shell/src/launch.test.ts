@@ -12,6 +12,7 @@ import { describe, expect, it } from 'vitest';
 import type { CliInstallPlan, CliInstallResult } from './cli-install.js';
 import {
     createOpenFileQueue,
+    openFileCommand,
     runCliInstallPolicy,
     runDaemonConnectSequence,
     runLaunchSequence,
@@ -210,6 +211,26 @@ function policyHarness(
     };
     return { calls, reported, deps };
 }
+
+/**
+ * #295: Finder's Open With and the ⌘O panel are the user's gestures, and on the wire an absent
+ * `focus` opens the preview in the background. The forward must ask for focus every time.
+ */
+describe('the forwarded `open` command (#295)', () => {
+    it('asks for focus, with the asking pane when there is one', () => {
+        expect(openFileCommand({ path: '/notes/plan.md', paneID: null })).toEqual({
+            command: 'open',
+            path: '/notes/plan.md',
+            focus: true
+        });
+        expect(openFileCommand({ path: '/notes/plan.md', paneID: 'P1' })).toEqual({
+            command: 'open',
+            path: '/notes/plan.md',
+            pane_id: 'P1',
+            focus: true
+        });
+    });
+});
 
 describe('the launch-time CLI policy (APP-004)', () => {
     it('a dev run (unpackaged) never touches /usr/local/bin', () => {

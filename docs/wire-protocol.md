@@ -615,9 +615,14 @@ Split an existing pane. Anchor precedence in the handler: `target` (name-or-UUID
 least one of `pane_id` (valid UUID) / `target` / `workspace` present.
 `direction`: `"horizontal"`/`"vertical"` (invalid → absent → handler default).
 `path` = new pane's working directory; `name` = new pane's label.
+`focus` (bool, default false, issue #295): `true` moves focus to the new pane; absent or
+false opens it in the **background** (the workspace's focused pane and focus history do not
+change, and the source pane is not focused first). The GUI sends `true` for its own gestures;
+the CLI sends it only with `--focus`. See §9 item 17.
 
 ```json
 {"command":"pane-split","pane_id":"1B4E…","direction":"horizontal","path":"/tmp","name":"worker"}
+{"command":"pane-split","pane_id":"1B4E…","name":"worker","focus":true}
 ```
 
 Reply (shared with `pane-create`; the new pane's UUID is minted server-side before the
@@ -634,7 +639,8 @@ pane is built):
 Create a pane in a workspace (splitting off the focused pane, or laying out the first
 pane when the workspace is empty). Guard identical to `pane-split` (`workspace` alone is
 sufficient). When `workspace` is given without `target`, it wins outright — even over
-the caller's `pane_id`. Same reply shape as `pane-split`.
+the caller's `pane_id`. Same reply shape as `pane-split`, and the same `focus` field with the
+same background default (the first pane of an empty workspace takes its focus regardless).
 
 ```json
 {"command":"pane-create","workspace":"beta","path":"/Users/ben/code","name":"builder"}
@@ -725,7 +731,10 @@ write; `target_share` is the clamped share of the addressed pane.
 #### `pane-move` (F&F)
 
 Directional move of the **caller** pane. `pane_id` and `direction`
-(`left|right|up|down`) both required; invalid direction drops the message.
+(`left|right|up|down`) both required; invalid direction drops the message. `focus` (bool,
+default false, issue #295): `true` focuses the caller first and leaves it focused; absent
+moves it in the background. The GUI's move key bindings send `true`; the CLI only with
+`--focus`.
 
 ```json
 {"command":"pane-move","pane_id":"1B4E…","direction":"left"}
@@ -737,7 +746,9 @@ Re-parent pane `target` onto an edge of pane `anchor` (the CLI form of GUI
 drag-and-drop). `target` + `anchor` (both name-or-UUID) + `zone`
 (`above|below|left-of|right-of`) required; `pane_id` only scopes label lookup.
 `anchor` must resolve within the moved pane's workspace; anchor==target is refused
-(`"cannot move a pane adjacent to itself"`).
+(`"cannot move a pane adjacent to itself"`). `focus` (bool, default false, issue #295):
+`true` focuses the moved pane; absent docks it in the background. GUI drag-to-dock sends
+`true`; the CLI only with `--focus`.
 
 ```json
 {"command":"pane-move-adjacent","target":"logs","anchor":"coordinator","zone":"below","workspace":"main"}
@@ -1194,7 +1205,10 @@ validation happens in the handler, silently.
 
 **`open`**: open a markdown pane for `path` (required non-empty).
 `pane_id` optional (originating pane); `reuse` (bool, default false) = replace the
-originating pane in place (`kelpi open --here` / `kelpi md --here`).
+originating pane in place (`kelpi open --here` / `kelpi md --here`); `focus` (bool, default
+false, issue #295) = take the focus. Without it the preview opens in the background beside
+the originating pane, and a background `reuse` keeps the focus where it was unless the
+originating pane was the focused one (then the preview inherits it).
 
 ```json
 {"command":"open","path":"/Users/ben/notes/plan.md","pane_id":"1B4E…","reuse":true}
@@ -1307,7 +1321,9 @@ workspace, otherwise in the active workspace (no workspace at all →
 `direction` (§5.2; unrecognized → absent), decoded in
 `packages/protocol/src/wire/decode.ts:417-431`: the handler splits that pane when it is a
 visible pane of the routed workspace and otherwise ignores the anchor
-(`webpane/handlers.ts:190-200`). Only the GUI sends them; the CLI never does. Reply payload
+(`webpane/handlers.ts:190-200`). Only the GUI sends them; the CLI never does. `web-open` also
+takes `focus` (bool, default false, issue #295): absent opens the pane in the background, and
+the GUI's globe, context menu and ⌘⇧O send `true`, as does `kelpi web open --focus`. Reply payload
 details are specified in the web-pane subsystem doc; every reply follows the `{"ok":true,…}` /
 `{"ok":false,"error":…}` convention on a single line + EOF, except the
 `web-console --follow` stream (§2.4). Request shapes:
@@ -1466,6 +1482,7 @@ other key is ignored. (A known key with the wrong type poisons the whole message
 | `create_worktree` | bool | `group-set-repo` |
 | `repo_id` | string | `group-set-repo` |
 | `group_defaults` | bool | `workspace-create` |
+| `focus` | bool | `pane-split`, `pane-create`, `open`, `web-open`, `pane-move`, `pane-move-adjacent` (absent = background, #295) |
 
 ---
 
@@ -1613,3 +1630,25 @@ saved state keep working:
     resolved and accepted", not "bytes hit the PTY". That ordering is kept; orchestrator
     scripts pipeline `pane send` + `pane send-key` and rely on low latency, not on
     delivery confirmation.
+
+17. **Pane-creating and pane-moving verbs work in the background by default (issue #295).**
+    `pane-split`, `pane-create`, `open` and `web-open` used to move focus to the new pane, and
+    `pane-move` / `pane-move-adjacent` to the moved pane, and the window then moved the
+    keyboard there, so an agent spawning or docking panes pulled the user's typing into the
+    wrong pane. The optional `focus` bool is an additive field: absent (or `false`) now means
+    **background**, and `true` restores the old behaviour. Compatibility, in each direction:
+    - **Old CLI or agent, new daemon:** its creates and moves happen in the background. This
+      is the deliberate behaviour change, and the point of it.
+    - **New CLI, old daemon:** the `focus` key is ignored as an unknown field (§2.2), so
+      `--focus` is a no-op there and every create and move focuses, as that daemon always did.
+    - **Old window client, new daemon:** a window client that predates the field (a cached
+      phone PWA bundle, an older remote-view client) sends its gestures without `focus`, so
+      until it reloads the current bundle the panes it creates or moves land in the background
+      and the user has to click them. This is a transition-only effect: the bundle the daemon
+      serves sends `focus: true` for every gesture.
+    The window's own gestures send `focus: true` explicitly, so they are unaffected. The
+    plugin SDK's `panes.create`, `panes.split`, `panes.move`, `panes.moveAdjacent` and
+    `files.open` helpers send `focus: true` unless the plugin passes `focus: false`, because
+    they assume a user's click; plugin code that runs without a gesture (a backend reacting to
+    events or timers) must pass `focus: false`. A raw plugin `command` follows the wire
+    default.

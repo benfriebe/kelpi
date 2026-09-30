@@ -44,6 +44,21 @@
  *   repo-scan                `path`, `max_depth?`               → depth-3 walk, registering the
  *                                                                 finds that are new
  *
+ * …and one the New Workspace sheet sends while it is open (issue #294, graft-git.md §8.5.1):
+ *
+ *   repo-prefetch            `repo_id`                          → start fetching that repo's
+ *                                                                 default branch in the
+ *                                                                 background, so a worktree
+ *                                                                 create off latest main can
+ *                                                                 reuse it. OWNER-ONLY, a
+ *                                                                 REGISTERED repo only (by id,
+ *                                                                 never a path), and rate-limited
+ *                                                                 per repo by `fetch-cache.ts`;
+ *                                                                 answers `status: started |
+ *                                                                 in-flight | recent |
+ *                                                                 rate-limited` at once, never
+ *                                                                 the fetch's outcome
+ *
  * Every mutation is an existing `DomainAction`, so the delta stream, persistence and the CLI's
  * view of the world stay identical to a change made any other way.
  */
@@ -60,6 +75,7 @@ import {
     worktreePathFor,
     resolvedWorktreeBasePath,
     type GitService,
+    type PrefetchResult,
     type RepoGitStatus
 } from '../git/index.js';
 import { ensureRegisteredRepo, findRepoByPath, repoKey } from '../git/registry.js';
@@ -83,12 +99,26 @@ export const REPO_COMMANDS = [
     'repo-add',
     'repo-remove',
     'repo-rename',
-    'repo-scan'
+    'repo-scan',
+    // #294: the New Workspace sheet's background fetch of a worktree's base.
+    'repo-prefetch'
 ] as const;
 export type RepoCommand = (typeof REPO_COMMANDS)[number];
 
 export function isRepoCommand(command: string): command is RepoCommand {
     return (REPO_COMMANDS as readonly string[]).includes(command);
+}
+
+/** The verbs `sync.ts` refuses to a paired device (the `remoteCommand` rule). */
+const OWNER_ONLY_REPO_COMMANDS: readonly RepoCommand[] = ['repo-prefetch'];
+
+export function isOwnerOnlyRepoCommand(command: RepoCommand): boolean {
+    return OWNER_ONLY_REPO_COMMANDS.includes(command);
+}
+
+/** The slice of the shared fetch cache (`git/fetch-cache.ts`) `repo-prefetch` needs. */
+export interface RepoPrefetcher {
+    prefetch(repoPath: string): PrefetchResult;
 }
 
 /** The slice of `GitService` these verbs need — the rest is not this module's business. */
@@ -117,6 +147,8 @@ export interface RepoChannel {
     readonly status?: RepoStatusReader | undefined;
     /** Debounced full-state save; a registry/association change must survive a restart. */
     readonly persist?: (() => void) | undefined;
+    /** #294's shared default-branch fetch. Absent = `repo-prefetch` answers "not available". */
+    readonly prefetch?: RepoPrefetcher | undefined;
 }
 
 function failure(error: string): JsonObject {
@@ -545,6 +577,24 @@ async function handleRepoRemove(channel: RepoChannel, payload: Record<string, un
     };
 }
 
+/**
+ * #294: `repo-prefetch`. The repo is named by registry id and nothing else, so the verb can only
+ * ever fetch a checkout the owner registered; the id is matched case-insensitively (the wire
+ * spells UUIDs in either case). Everything about WHETHER a fetch starts (one at a time, reuse,
+ * the per-repo rate limit) is `fetch-cache.ts`'s; this answers with its decision at once.
+ */
+async function handleRepoPrefetch(channel: RepoChannel, payload: Record<string, unknown>): Promise<JsonObject> {
+    const prefetcher = channel.prefetch;
+    if (prefetcher === undefined) return failure('repo-prefetch is not available');
+    const repoID = text(payload['repo_id']);
+    if (repoID === undefined) return failure('repo-prefetch requires repo_id');
+    const state = channel.store.getState();
+    const repo = state.repos.find((entry) => entry.id.toUpperCase() === repoID.toUpperCase());
+    if (repo === undefined) return failure(`no repo matches '${repoID}'`);
+    const status = prefetcher.prefetch(standardizePath(repo.path, state.homeDirectory));
+    return { ok: true, repo_id: repo.id, status };
+}
+
 /** §GIT-072: rename the registry's display name (the path is identity and never moves). */
 async function handleRepoRename(channel: RepoChannel, payload: Record<string, unknown>): Promise<JsonObject> {
     const repoID = text(payload['repo_id']);
@@ -652,5 +702,7 @@ export async function handleRepoCommand(
             return await handleRepoRename(channel, payload);
         case 'repo-scan':
             return await handleRepoScan(channel, payload);
+        case 'repo-prefetch':
+            return await handleRepoPrefetch(channel, payload);
     }
 }

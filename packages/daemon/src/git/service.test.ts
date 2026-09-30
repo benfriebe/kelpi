@@ -137,7 +137,7 @@ describe.skipIf(!HAS_GIT)('GitService', () => {
         expect(await service.resolveRepoRoot('/nope/does/not/exist')).toBeNull();
     });
 
-    it('resolves the default branch from the remote symref, then the local one, then "main"', async () => {
+    it('resolves the default branch from the local origin/HEAD, then the remote symref, then "main"', async () => {
         const service = createGitService();
 
         const origin = initRepo('origin');
@@ -260,10 +260,35 @@ describe.skipIf(!HAS_GIT)('GitService', () => {
             updateMain: true
         });
         expect(calls).toEqual([
+            // #294: the local origin/HEAD first; unset here (empty), so the remote is asked.
+            ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'],
             ['ls-remote', '--symref', 'origin', 'HEAD'],
             // graft-git §8.5: the branch must not exist yet, checked before any network.
             ['rev-parse', '--verify', '--quiet', 'refs/heads/b'],
-            ['fetch', 'origin'],
+            // #294: one branch, no tags, straight into its remote-tracking ref.
+            ['fetch', '--no-tags', 'origin', '+refs/heads/trunk:refs/remotes/origin/trunk'],
+            ['worktree', 'add', '-b', 'b', '/wt', 'origin/trunk']
+        ]);
+    });
+
+    it('skips ls-remote when the local origin/HEAD names an existing origin branch', async () => {
+        const calls: string[][] = [];
+        const service = createGitService({
+            run: async (args) => {
+                calls.push([...args]);
+                if (args[0] === 'symbolic-ref') return 'origin/trunk\n';
+                if (args[0] === 'rev-parse' && args[3] === 'refs/remotes/origin/trunk') return `${'c'.repeat(40)}\n`;
+                if (args[0] === 'rev-parse') throw new Error('exit 1');
+                if (args[0] === 'ls-remote') throw new Error('ls-remote must not run');
+                return '';
+            }
+        });
+        await service.worktreeAdd({ repoPath: '/repo', worktreePath: '/wt', branchName: 'b', updateMain: true });
+        expect(calls).toEqual([
+            ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'],
+            ['rev-parse', '--verify', '--quiet', 'refs/remotes/origin/trunk'],
+            ['rev-parse', '--verify', '--quiet', 'refs/heads/b'],
+            ['fetch', '--no-tags', 'origin', '+refs/heads/trunk:refs/remotes/origin/trunk'],
             ['worktree', 'add', '-b', 'b', '/wt', 'origin/trunk']
         ]);
     });

@@ -369,3 +369,63 @@ it('preserves explicit remote navigation trust grants and clears on the settings
         }
     } finally { h.client.dispose(); h.connection.close(); }
 });
+
+describe('worktree create progress and cancel (#294)', () => {
+    beforeEach(() => {
+        vi.useFakeTimers();
+    });
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
+    const commandFrames = (h: Harness): Record<string, unknown>[] => h.socket().messages().filter((message) => message['type'] === 'command');
+
+    it('names the create, routes its command-progress frames to onProgress, and only its own', async () => {
+        const h = harness();
+        const seen: unknown[] = [];
+        const pending = h.client.createWorkspace(
+            { name: 'x', worktree: 'x', repo: '/code/app', updateMain: true, requestID: 'req-1' },
+            { onProgress: (progress) => seen.push(progress) }
+        );
+        expect(h.lastCommand()).toMatchObject({ command: 'workspace-create', request_id: 'req-1', worktree: 'x', update_main: true });
+        const id = commandFrames(h).at(-1)?.['id'] as string;
+        h.socket().emit({ type: 'command-progress', id, progress: { kind: 'worktree-create', steps: [] } });
+        h.socket().emit({ type: 'command-progress', id: 'someone-else', progress: { kind: 'worktree-create', steps: [{ id: 'fetch' }] } });
+        expect(seen).toEqual([{ kind: 'worktree-create', steps: [] }]);
+        h.answer({ ok: true, workspace_id: 'W' });
+        expect(await pending).toEqual({ ok: true, workspace_id: 'W' });
+        // After the reply the id is settled: a late frame goes nowhere.
+        h.socket().emit({ type: 'command-progress', id, progress: { kind: 'worktree-create', steps: [] } });
+        expect(seen).toHaveLength(1);
+    });
+
+    it('re-arms the deadline on every progress frame, so a long create that keeps reporting never times out', async () => {
+        const h = harness();
+        let settled: unknown = null;
+        const pending = h.client
+            .createWorkspace({ worktree: 'x', repo: '/code/app' }, { onProgress: () => {} })
+            .then((reply) => { settled = reply; }, (error: unknown) => { settled = error; });
+        const id = commandFrames(h).at(-1)?.['id'] as string;
+        // Five minutes of steady progress, far past the 120 s worktree deadline.
+        for (let second = 0; second < 300; second += 10) {
+            vi.advanceTimersByTime(10_000);
+            h.socket().emit({ type: 'command-progress', id, progress: { kind: 'worktree-create', steps: [] } });
+        }
+        await Promise.resolve();
+        expect(settled).toBeNull();
+        // …and silence still times out.
+        vi.advanceTimersByTime(120_000);
+        await pending;
+        expect(settled).toBeInstanceOf(CommandTimeoutError);
+    });
+
+    it('omits request_id when there is none, and sends the cancel and prefetch verbs', () => {
+        const h = harness();
+        void h.client.createWorkspace({ worktree: 'x', repo: '/code/app' });
+        expect(h.lastCommand()).not.toHaveProperty('request_id');
+        void h.client.cancelWorkspaceCreate('req-1');
+        expect(h.lastCommand()).toEqual({ command: 'workspace-create-cancel', request_id: 'req-1' });
+        void h.client.prefetchRepo('R1');
+        expect(h.lastCommand()).toEqual({ command: 'repo-prefetch', repo_id: 'R1' });
+    });
+});

@@ -14,6 +14,7 @@
  */
 
 import type { Pane, WorkspaceColor, WorkspaceGroup, WorkspaceState } from '@kelpi/daemon/store';
+import type { WorktreeStepID, WorktreeStepStatus } from '@kelpi/daemon/git';
 
 /** The pane fields the chrome reads. */
 export type ChromePane = Pick<
@@ -207,6 +208,33 @@ export interface WorkspaceWorktreeRequest {
     readonly name: string;
     readonly branch: string;
     readonly updateMain: boolean;
+    /**
+     * #294: the create's own id, so the sheet can cancel it (`workspace-create-cancel`). The
+     * sheet mints it; a caller without one gets a create that cannot be cancelled.
+     */
+    readonly requestID?: string | undefined;
+    /** #294: the daemon's step snapshots while the create runs (graft-git.md §8.5.1). */
+    readonly onProgress?: ((progress: WorktreeCreateProgress) => void) | undefined;
+}
+
+/** graft-git.md §8.5.1's steps, in the order a create runs them: the daemon's own names. */
+export type WorktreeCreateStepID = WorktreeStepID;
+export type WorktreeCreateStepStatus = WorktreeStepStatus;
+
+export interface WorktreeCreateStep {
+    readonly id: WorktreeCreateStepID;
+    readonly status: WorktreeCreateStepStatus;
+    readonly detail?: string | undefined;
+    readonly phase?: string | undefined;
+    /** 0–100 while running with git's meter; absent = indeterminate. */
+    readonly percent?: number | undefined;
+    readonly error?: string | undefined;
+}
+
+/** One `command-progress` snapshot of a worktree create: the whole step list, every time. */
+export interface WorktreeCreateProgress {
+    readonly steps: readonly WorktreeCreateStep[];
+    readonly cancelled: boolean;
 }
 
 /**
@@ -288,6 +316,10 @@ export interface SidebarCallbacks {
               extras?: NewWorkspaceExtras | undefined
           ) => SubmitResult)
         | undefined;
+    /** #294: the New Workspace sheet's background fetch of a worktree's base (`repo-prefetch`). */
+    readonly onPrefetchWorktreeRepo?: ((repoID: string) => void) | undefined;
+    /** #294: stop a running worktree create by the request id the sheet minted. */
+    readonly onCancelWorkspaceCreate?: ((requestID: string) => void) | undefined;
     /**
      * `color` is the New Group form's swatch; `null`/absent is its "None" option (§WS-082).
      * `repo` is its optional repository and worktree switch (app-state-core.md §5.5).

@@ -21,6 +21,12 @@ import {
     type GitRunner
 } from './exec.js';
 import {
+    performWorktreeAdd,
+    resolveDefaultBranch,
+    worktreeGitOps,
+    type WorktreeAddRequest
+} from './worktree-add.js';
+import {
     NOTHING_TO_STASH,
     parseShortstat,
     parseStashList,
@@ -34,42 +40,21 @@ import {
 /** `git rev-parse --abbrev-ref HEAD` prints this literal when HEAD is detached. */
 export const DETACHED_HEAD = 'HEAD';
 
-/** Last-resort default branch when neither symref lookup answers (§3.2). */
-export const FALLBACK_DEFAULT_BRANCH = 'main';
+// The worktree flow lives in worktree-add.ts (#294); its public names are re-exported here so
+// every caller that imported them from the service keeps its import.
+export {
+    FALLBACK_DEFAULT_BRANCH,
+    parseSymrefLine,
+    stripRemotePrefix,
+    WorktreeBranchExistsError,
+    type WorktreeAddRequest
+} from './worktree-add.js';
 
 export interface RepoRootInfo {
     /** `git rev-parse --show-toplevel` — the worktree the path lives in. */
     readonly worktreeRoot: string;
     /** The MAIN checkout for that worktree; equal to `worktreeRoot` for the main one. */
     readonly parentRepoRoot: string;
-}
-
-/**
- * graft-git.md §8.5: an update-main worktree asked for a branch that already exists.
- *
- * Its message reaches the user verbatim (the sheet's inline error, the CLI's stderr), so it
- * says what happened and the two ways out, in words that fit both surfaces: pick a name that
- * is free, or turn update main off, which checks the existing branch out instead.
- */
-export class WorktreeBranchExistsError extends Error {
-    readonly branchName: string;
-    constructor(branchName: string, baseRef: string) {
-        super(
-            `branch '${branchName}' already exists, and update main always creates a new branch off ${baseRef}: ` +
-                'choose another worktree or branch name, or turn off update main to check out the existing branch'
-        );
-        this.name = 'WorktreeBranchExistsError';
-        this.branchName = branchName;
-    }
-}
-
-export interface WorktreeAddRequest {
-    readonly repoPath: string;
-    readonly worktreePath: string;
-    readonly branchName: string;
-    /** Fetch `origin` and branch off `origin/<default>` instead of current HEAD. */
-    readonly updateMain: boolean;
-    readonly remote?: string | undefined;
 }
 
 export interface GitService {
@@ -89,8 +74,12 @@ export interface GitService {
     ): Promise<string>;
     /** `git remote get-url origin`; trimmed, empty → null. Never throws. */
     getRemoteURL(repoPath: string): Promise<string | null>;
-    /** ls-remote symref → local `origin/HEAD` symref → `"main"`. Never throws. */
+    /**
+     * Local `origin/HEAD` symref (no network) → `ls-remote --symref` → `"main"` (#294's order;
+     * `resolveDefaultBranch` has the rules). Never throws.
+     */
     defaultBranch(repoPath: string): Promise<string>;
+    /** A full `git fetch <remote>` (the plugin surface's primitive; worktree creates fetch one branch). */
     fetch(repoPath: string, remote?: string): Promise<void>;
     /** Attach to an EXISTING branch, falling back to `-b <branch>` off current HEAD. */
     createWorktree(repoPath: string, worktreePath: string, branchName: string): Promise<void>;
@@ -101,7 +90,10 @@ export interface GitService {
         branchName: string,
         baseRef: string
     ): Promise<void>;
-    /** `performWorktreeAdd` (graft-git §8.3): the shared GUI + socket entry point. */
+    /**
+     * `performWorktreeAdd` (graft-git §8.3): the shared GUI + socket entry point, without step
+     * reporting or cancellation (the workspace-create handler drives the flow with both).
+     */
     worktreeAdd(request: WorktreeAddRequest): Promise<void>;
     /** `git rev-parse --show-toplevel`; null when the path is not inside a checkout. */
     toplevel(directory: string): Promise<string | null>;
@@ -168,24 +160,6 @@ function firstNonEmptyLine(text: string): string | null {
         if (trimmed !== '') return trimmed;
     }
     return null;
-}
-
-/** `ref: refs/heads/main\tHEAD` → `main`; anything else → null. */
-export function parseSymrefLine(line: string): string | null {
-    const trimmed = line.trim();
-    if (!trimmed.startsWith('ref:')) return null;
-    const token = trimmed.slice('ref:'.length).trim().split(/\s+/)[0];
-    if (token === undefined) return null;
-    const prefix = 'refs/heads/';
-    if (!token.startsWith(prefix)) return null;
-    const name = token.slice(prefix.length);
-    return name === '' ? null : name;
-}
-
-/** `origin/main` → `main`; a name without `/` is returned whole. */
-export function stripRemotePrefix(ref: string): string {
-    const slash = ref.indexOf('/');
-    return slash < 0 ? ref : ref.slice(slash + 1);
 }
 
 function isDirectory(candidate: string): boolean {
@@ -268,15 +242,7 @@ export function createGitService(options: CreateGitServiceOptions = {}): GitServ
     const longGit = async (args: readonly string[], cwd: string): Promise<string> =>
         run(args, { cwd, ...(long !== undefined ? { timeoutMs: long } : {}) });
 
-    /** `rev-parse --verify --quiet refs/heads/<name>`: a sha when it exists, exit 1 when not. */
-    const localBranchExists = async (repoPath: string, branchName: string): Promise<boolean> => {
-        try {
-            const out = await readGit(['rev-parse', '--verify', '--quiet', `refs/heads/${branchName}`], repoPath);
-            return out.trim() !== '';
-        } catch {
-            return false;
-        }
-    };
+    const ops = worktreeGitOps(run, { short, long });
 
     const service: GitService = {
         async getCurrentBranch(repoPath) {
@@ -314,24 +280,7 @@ export function createGitService(options: CreateGitServiceOptions = {}): GitServ
         },
 
         async defaultBranch(repoPath) {
-            try {
-                const out = await readGit(['ls-remote', '--symref', 'origin', 'HEAD'], repoPath);
-                for (const line of out.split('\n')) {
-                    const branch = parseSymrefLine(line);
-                    if (branch !== null) return branch;
-                }
-            } catch {
-                // fall through to the local symref
-            }
-            try {
-                const out = (
-                    await readGit(['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], repoPath)
-                ).trim();
-                if (out !== '') return stripRemotePrefix(out);
-            } catch {
-                // fall through to the literal default
-            }
-            return FALLBACK_DEFAULT_BRANCH;
+            return (await resolveDefaultBranch(ops, repoPath)).branch;
         },
 
         async fetch(repoPath, remote = 'origin') {
@@ -353,32 +302,7 @@ export function createGitService(options: CreateGitServiceOptions = {}): GitServ
         },
 
         async worktreeAdd(request) {
-            const remote = request.remote ?? 'origin';
-            if (!request.updateMain) {
-                await service.createWorktree(
-                    request.repoPath,
-                    request.worktreePath,
-                    request.branchName
-                );
-                return;
-            }
-            const base = await service.defaultBranch(request.repoPath);
-            // graft-git.md §8.5: update main ALWAYS creates the branch (`-b`), so a name that
-            // already exists can only fail, and git's own `fatal: a branch named 'x' already
-            // exists` says nothing about why or what to do. Checked after the default-branch
-            // lookup (which may ask the remote) but before the fetch, so no fetch is made. Only a
-            // LOCAL branch counts: a name that exists solely as `origin/<b>` passes, and gets a
-            // new local branch off `origin/<default>` that does not track the remote one.
-            if (await localBranchExists(request.repoPath, request.branchName)) {
-                throw new WorktreeBranchExistsError(request.branchName, `${remote}/${base}`);
-            }
-            await service.fetch(request.repoPath, remote);
-            await service.createWorktreeFromBase(
-                request.repoPath,
-                request.worktreePath,
-                request.branchName,
-                `${remote}/${base}`
-            );
+            await performWorktreeAdd(ops, request);
         },
 
         async toplevel(directory) {

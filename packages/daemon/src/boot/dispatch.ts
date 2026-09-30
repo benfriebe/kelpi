@@ -114,7 +114,10 @@ export function createDispatcher<Ctx>(options: DispatcherOptions<Ctx>): ControlD
                 get closed() { return reply.closed; },
                 send(value) { reply.send(value); complete(value as JsonObject); },
                 close() { reply.close(); complete({ ok: false, error: 'daemon produced no reply' }); },
-                onDisconnect(callback) { reply.onDisconnect(callback); }
+                onDisconnect(callback) { reply.onDisconnect(callback); },
+                // #294: progress and cancellation belong to the request, hooks or not.
+                ...(reply.progress === undefined ? {} : { progress: (value: Record<string, unknown>) => reply.progress?.(value) }),
+                ...(reply.signal === undefined ? {} : { signal: reply.signal })
             };
             run(tracked);
         })).then(result => {

@@ -1,11 +1,16 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import { decodeWireObject, type WireMessage } from '@kelpi/protocol';
+
 import {
     GitCommandError,
     WorktreeBranchExistsError,
+    WorktreeCreateCancelledError,
     type GitService,
+    type WorktreeAddHooks,
     type WorktreeAddRequest
 } from '../../git/index.js';
+import type { ReplyHandle } from '../../seams.js';
 import { stubGitService } from '../../git/testing.js';
 import { createStore, emptyDaemonState, groupByID, makeWorkspaceState, type DaemonState } from '../../store/index.js';
 import { flush, harness, HOME, id, NOW, seeded } from './testing.js';
@@ -593,6 +598,153 @@ describe('workspace-create (worktree)', () => {
                 'choose another worktree or branch name, or turn off update main to check out the existing branch'
         });
         expect(h.state().workspaces).toHaveLength(0);
+    });
+});
+
+/**
+ * #294: the worktree create's steps reach the requester through `reply.progress`, the last one
+ * before the unchanged reply, and `reply.signal` cancels it. The control socket's handle has
+ * neither, and gets exactly the reply it always got (the tests above).
+ */
+describe('workspace-create (worktree) progress and cancel', () => {
+    interface ProgressReply extends ReplyHandle {
+        readonly events: { kind: 'progress' | 'send'; payload: Record<string, unknown> }[];
+        readonly controller: AbortController;
+    }
+    function progressReply(): ProgressReply {
+        const events: ProgressReply['events'] = [];
+        const controller = new AbortController();
+        let closed = false;
+        return {
+            events,
+            controller,
+            send: (payload) => events.push({ kind: 'send', payload }),
+            progress: (payload) => events.push({ kind: 'progress', payload }),
+            close: () => {
+                closed = true;
+            },
+            get closed() {
+                return closed;
+            },
+            onDisconnect: () => {},
+            signal: controller.signal
+        };
+    }
+    const request = { command: 'workspace-create', name: 'feature-x', worktree: 'feature x', repo: '/code/kelpi', update_main: true };
+    const decoded = (object: Record<string, unknown>): WireMessage => {
+        const result = decodeWireObject(object);
+        if (!result.ok) throw new Error(result.detail);
+        return result.message as WireMessage;
+    };
+
+    it('streams the steps to the requester, flushes the last one, then replies exactly as before', async () => {
+        const seen: WorktreeAddHooks[] = [];
+        const h = harness({
+            ids: [id('bbbbbbbb', 9), W1, P1, id('eeeeeeee', 1)],
+            worktreeBasePath: '~/wt/<repo>',
+            worktrees: {
+                add: async (_request, hooks) => {
+                    seen.push(hooks);
+                    hooks.steps?.running('resolve-default-branch');
+                    hooks.steps?.done('resolve-default-branch', 'main (from origin/HEAD)');
+                    hooks.steps?.skipped('fetch', 'prefetched 2.0 s ago');
+                    hooks.steps?.running('worktree-add');
+                    hooks.steps?.done('worktree-add');
+                }
+            }
+        });
+        const reply = progressReply();
+        h.table.get('workspace-create')?.(decoded(request), h.ctx, reply);
+        await flush();
+
+        expect(seen[0]?.signal).toBe(reply.controller.signal);
+        const kinds = reply.events.map((event) => event.kind);
+        expect(kinds.at(-1)).toBe('send');
+        expect(kinds.filter((kind) => kind === 'send')).toHaveLength(1);
+        const lastProgress = reply.events.filter((event) => event.kind === 'progress').at(-1)?.payload;
+        expect(lastProgress).toEqual({
+            kind: 'worktree-create',
+            steps: [
+                { id: 'resolve-default-branch', status: 'done', detail: 'main (from origin/HEAD)' },
+                { id: 'fetch', status: 'skipped', detail: 'prefetched 2.0 s ago' },
+                { id: 'worktree-add', status: 'done' },
+                { id: 'create-workspace', status: 'done', detail: 'feature-x' }
+            ]
+        });
+        expect(reply.events.at(-1)?.payload).toEqual({
+            ok: true,
+            workspace_id: W1,
+            workspace_name: 'feature-x',
+            worktree_path: `${HOME}/wt/kelpi/feature-x`,
+            branch: 'feature-x',
+            update_main: true,
+            repo_path: '/code/kelpi',
+            muted: false
+        });
+    });
+
+    it('lists only the worktree and workspace steps without update main', async () => {
+        const h = harness({ worktrees: { add: async (_request, hooks) => { hooks.steps?.running('worktree-add'); hooks.steps?.done('worktree-add'); } } });
+        const reply = progressReply();
+        h.table.get('workspace-create')?.(decoded({ ...request, update_main: false }), h.ctx, reply);
+        await flush();
+        const last = reply.events.filter((event) => event.kind === 'progress').at(-1)?.payload as { steps: { id: string }[] };
+        expect(last.steps.map((step) => step.id)).toEqual(['worktree-add', 'create-workspace']);
+    });
+
+    it('a cancelled create replies with the cancelled failure and creates nothing', async () => {
+        const h = harness({
+            worktrees: {
+                add: async (_request, hooks) => {
+                    hooks.steps?.running('resolve-default-branch');
+                    hooks.steps?.done('resolve-default-branch');
+                    hooks.steps?.running('fetch');
+                    await new Promise<void>((resolve) => hooks.signal?.addEventListener('abort', () => resolve(), { once: true }));
+                    hooks.steps?.cancelled('fetch');
+                    throw new WorktreeCreateCancelledError('fetch');
+                }
+            }
+        });
+        const reply = progressReply();
+        h.table.get('workspace-create')?.(decoded(request), h.ctx, reply);
+        await flush();
+        expect(reply.events.some((event) => event.kind === 'send')).toBe(false);
+        reply.controller.abort();
+        await flush();
+        const last = reply.events.filter((event) => event.kind === 'progress').at(-1)?.payload;
+        expect(last).toMatchObject({ cancelled: true });
+        expect(reply.events.at(-1)).toEqual({ kind: 'send', payload: { ok: false, error: 'worktree create cancelled' } });
+        expect(h.state().workspaces).toEqual([]);
+        expect(h.state().repos).toEqual([]);
+    });
+
+    it('a failed step is flushed before the unchanged failure reply', async () => {
+        const h = harness({
+            worktrees: {
+                add: async (_request, hooks) => {
+                    hooks.steps?.running('resolve-default-branch');
+                    hooks.steps?.failed('resolve-default-branch', 'fatal: not a git repository');
+                    throw new GitCommandError({ command: 'git', exitCode: 128, stderr: 'fatal: not a git repository', cwd: '/code/kelpi' });
+                }
+            }
+        });
+        const reply = progressReply();
+        h.table.get('workspace-create')?.(decoded(request), h.ctx, reply);
+        await flush();
+        const frame = reply.events.at(-2);
+        expect(frame?.kind).toBe('progress');
+        expect((frame?.payload as { steps: unknown[] }).steps[0]).toEqual({ id: 'resolve-default-branch', status: 'failed', error: 'fatal: not a git repository' });
+        expect(reply.events.at(-1)).toEqual({ kind: 'send', payload: { ok: false, error: 'fatal: not a git repository' } });
+    });
+
+    it('a control-socket request (no progress, no signal) still drives the creator, silently', async () => {
+        const seen: WorktreeAddHooks[] = [];
+        const h = harness({ worktrees: { add: async (_request, hooks) => { seen.push(hooks); } } });
+        h.send(request);
+        await flush();
+        expect(seen[0]).toEqual({ steps: null });
+        expect(h.replies[0]?.payloads).toHaveLength(1);
+        expect(h.replies[0]?.payloads[0]).toMatchObject({ ok: true, update_main: true });
     });
 });
 

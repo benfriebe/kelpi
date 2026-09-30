@@ -160,6 +160,8 @@ export function WorkspacesFeatureView(props: WorkspacesFeatureViewProps): ReactE
         onRenameGroup={actions.renameGroup}
         onDeleteGroup={actions.deleteGroup}
         onCreateWorkspace={(name, groupID, worktree, extras) => createWorkspaceFromSheet(props, name, groupID, worktree, extras)}
+        onPrefetchWorktreeRepo={actions.prefetchWorktreeRepo}
+        onCancelWorkspaceCreate={actions.cancelWorkspaceCreate}
         onCreateGroup={actions.createGroup}
         profiles={model.profiles}
         inheritGroupID={model.inheritGroupID}
@@ -258,6 +260,8 @@ function WorkspacesCreateSheet(props: WorkspacesCreateSheetProps): ReactElement 
         // §WS-076 then §SET-011, the order the sidebar's own sheet resolves them in.
         defaultGroupID={form.groupID ?? model.inheritGroupID}
         {...(form.kind === 'group' ? { defaultName: defaultGroupName(groups.map(group => group.name)) } : {})}
+        onPrefetchRepo={props.actions.prefetchWorktreeRepo}
+        onCancelCreate={props.actions.cancelWorkspaceCreate}
         onCancel={() => { setForm(null); }}
         onSubmit={async draft => {
             if (form.kind === 'group') {

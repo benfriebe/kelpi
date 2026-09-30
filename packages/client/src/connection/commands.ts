@@ -176,6 +176,11 @@ export interface CommandClientOptions {
 
 export interface SendOptions {
     readonly timeoutMs?: number | undefined;
+    /**
+     * #294: the command's interim `command-progress` frames (only `workspace-create --worktree`
+     * sends any today). Each one also re-arms the deadline, so `timeoutMs` bounds SILENCE.
+     */
+    readonly onProgress?: ((progress: JsonObject) => void) | undefined;
 }
 
 export const DEFAULT_COMMAND_TIMEOUT_MS = 15_000;
@@ -210,6 +215,10 @@ interface PendingCommand {
     readonly resolve: (reply: CommandReply) => void;
     readonly reject: (error: Error) => void;
     timer: ReturnType<typeof setTimeout> | null;
+    /** #294: the command's `command-progress` frames, while it is in flight. */
+    readonly onProgress?: ((progress: JsonObject) => void) | undefined;
+    /** Re-arms the deadline: a command still reporting progress is not a stuck one. */
+    readonly rearm: () => void;
 }
 
 interface ReportedFocus {
@@ -258,6 +267,20 @@ export class CommandClient {
             })
         );
         this.unsubscribers.push(
+            connection.on('command-progress', (message) => {
+                const entry = this.pending.get(message.id);
+                if (entry === undefined) return;
+                // #294: the deadline measures silence, not duration. A worktree create that is
+                // still streaming git's meter after two minutes is a big fetch, not a hang.
+                entry.rearm();
+                try {
+                    entry.onProgress?.(message.progress);
+                } catch {
+                    // A throwing progress callback must not cost the command its reply.
+                }
+            })
+        );
+        this.unsubscribers.push(
             connection.on('status', (status: ConnectionStatus) => {
                 if (status === 'connected') {
                     // A reconnect resets the daemon's per-connection session, so this client's
@@ -303,11 +326,24 @@ export class CommandClient {
         const timeoutMs = options.timeoutMs ?? this.timeoutMs;
 
         return new Promise<CommandReply>((resolve, reject) => {
-            const entry: PendingCommand = { command, resolve, reject, timer: null };
-            entry.timer = setTimeout(() => {
-                this.settle(id);
-                reject(new CommandTimeoutError(command, timeoutMs));
-            }, timeoutMs);
+            const arm = (): ReturnType<typeof setTimeout> =>
+                setTimeout(() => {
+                    this.settle(id);
+                    reject(new CommandTimeoutError(command, timeoutMs));
+                }, timeoutMs);
+            const entry: PendingCommand = {
+                command,
+                resolve,
+                reject,
+                timer: null,
+                ...(options.onProgress === undefined ? {} : { onProgress: options.onProgress }),
+                rearm: () => {
+                    if (entry.timer === null) return;
+                    clearTimeout(entry.timer);
+                    entry.timer = arm();
+                }
+            };
+            entry.timer = arm();
             this.pending.set(id, entry);
             this.connection.send({ type: 'command', id, payload });
         });
@@ -649,6 +685,11 @@ export class CommandClient {
              * already shown those defaults and carries the user's final choice.
              */
             groupDefaults?: boolean;
+            /**
+             * #294: names this create so `cancelWorkspaceCreate` can stop it. WS-only: the daemon's
+             * session reads it before the wire decode, and the CLI has no way to send it.
+             */
+            requestID?: string;
         } = {},
         options?: SendOptions
     ): Promise<CommandReply> {
@@ -656,6 +697,7 @@ export class CommandClient {
             options?.timeoutMs ?? (input.worktree !== undefined ? WORKTREE_COMMAND_TIMEOUT_MS : undefined);
         return this.raw(
             wirePayload('workspace-create', {
+                request_id: input.requestID,
                 name: input.name,
                 path: input.path,
                 color: input.color,
@@ -668,8 +710,30 @@ export class CommandClient {
                 muted: input.muted,
                 group_defaults: input.groupDefaults
             }),
-            timeout !== undefined ? { timeoutMs: timeout } : {}
+            {
+                ...(timeout !== undefined ? { timeoutMs: timeout } : {}),
+                ...(options?.onProgress !== undefined ? { onProgress: options.onProgress } : {})
+            }
         );
+    }
+
+    /**
+     * #294: stop the `createWorkspace` sent with this `requestID` (graft-git.md §8.5.2). The
+     * daemon kills the running git step and removes what that create made; the create's own
+     * reply then fails with `worktree create cancelled`. `cancelled: false` in THIS reply means
+     * the create had already finished (or was never this connection's).
+     */
+    cancelWorkspaceCreate(requestID: string, options?: SendOptions): Promise<CommandReply> {
+        return this.raw(wirePayload('workspace-create-cancel', { request_id: requestID }), options ?? {});
+    }
+
+    /**
+     * #294: ask the daemon to start fetching a registered repo's default branch now, so a
+     * worktree create off latest main can reuse it. Answers at once with the daemon's decision
+     * (`status: started | in-flight | recent | rate-limited`), never with the fetch's outcome.
+     */
+    prefetchRepo(repoID: string, options?: SendOptions): Promise<CommandReply> {
+        return this.raw(wirePayload('repo-prefetch', { repo_id: repoID }), options ?? {});
     }
 
     /** Omit `group` to move the workspace to top level. */

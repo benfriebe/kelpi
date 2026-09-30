@@ -949,6 +949,19 @@ groups; create it first (`kelpi group create`) or omit --group"}`. Worktree git 
 → `{"ok":false,"error":"<git error text>"}`. The CLI reads this command with a 120 s
 timeout when `worktree` is set (slow `git fetch` is not a spurious failure).
 
+The control-socket reply above is the whole contract, and it did not change with issue #294.
+Over the WS sync socket (which carries the same request object in a `command` frame), a
+worktree create additionally streams `command-progress` frames to the connection that sent it,
+keyed by that frame's `id`, every one before the `command-reply` and none after it:
+`{"type":"command-progress","id":"<command id>","progress":{"kind":"worktree-create",
+"steps":[{"id":"fetch","status":"running","percent":45,…},…],"cancelled"?:true}}`
+(graft-git.md §8.5.1 has the step shapes). A WS create may also carry `request_id` (a short
+client-minted string, read by the WS session before this decoder and never a control-socket
+field), which the WS-only `workspace-create-cancel {request_id}` from the same connection uses
+to cancel it: the create then fails with `{"ok":false,"error":"worktree create cancelled"}`
+after removing the partial worktree and branch (graft-git.md §8.5.2). A client that predates
+either ignores the unknown frame type and gets the reply as before.
+
 Names are sanitized before any git work: an unusable `worktree` →
 `{"ok":false,"error":"\"<name>\" isn't a usable worktree name"}`, an unusable `branch` →
 `{"ok":false,"error":"\"<branch>\" isn't a usable branch name"}`

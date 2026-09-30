@@ -26,6 +26,7 @@
  */
 
 import {
+    WS_COMMAND_PROGRESS_MESSAGE,
     WS_PANE_MODES_MESSAGE,
     WS_PROTOCOL_VERSION,
     decodePtyFrame,
@@ -33,6 +34,7 @@ import {
     type PtyFrame,
     type WsClientInfo,
     type WsClientMessage,
+    type WsCommandProgressMessage,
     type WsCommandReplyMessage,
     type WsDeltaMessage,
     type WsNotificationMessage,
@@ -141,6 +143,8 @@ export interface ConnectionEvents {
     snapshot: WsSnapshotMessage;
     delta: WsDeltaMessage;
     'command-reply': WsCommandReplyMessage;
+    /** #294: an interim report on a command still in flight, for this connection only. */
+    'command-progress': WsCommandProgressMessage;
     notification: WsNotificationMessage;
     attention: AttentionMessage;
     'pane-exit': WsPaneExitMessage;
@@ -546,6 +550,9 @@ export class KelpiConnection {
                 break;
             case 'command-reply':
                 this.emit('command-reply', message as unknown as WsCommandReplyMessage);
+                break;
+            case WS_COMMAND_PROGRESS_MESSAGE:
+                this.emit('command-progress', message as unknown as WsCommandProgressMessage);
                 break;
             case 'notification':
                 this.emit('notification', message as unknown as WsNotificationMessage);

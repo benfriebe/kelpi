@@ -53,7 +53,8 @@ export type {
     AppHandler,
     AppHandlerOptions,
     AppHandlerTable,
-    SpawnPaneRequest
+    SpawnPaneRequest,
+    WorktreeCreator
 } from './context.js';
 export { forCommand, listedGroupIDs, listedWorkspaceIDs, uuidOut, wireTimestamp } from './common.js';
 export { applyAgentEvent, ATTENTION_EVENT, notificationDedupeKey } from './events.js';

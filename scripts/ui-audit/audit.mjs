@@ -12552,6 +12552,9 @@ function buildFlows(ctx) {
                 await page.click('[data-testid="new-workspace-worktree-toggle"]');
                 await sleep(300);
                 await page.click('[data-testid="new-workspace-worktree-name"]');
+                // The field arrives prefilled from the workspace name (#287), so replace it
+                // rather than append to it.
+                await page.eval(`document.execCommand('selectAll')`);
                 await page.insertText('audit branch');
                 await sleep(300);
                 await recorder.shot(page, 'form');

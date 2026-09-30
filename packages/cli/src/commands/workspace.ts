@@ -496,7 +496,9 @@ async function handleWorkspaceRename(args: string[]): Promise<void> {
     const nameOrID = args.shift();
     const newName = args.shift();
     for (const positional of [nameOrID, newName]) {
-        if (positional !== undefined && positional.startsWith('-')) {
+        // Checked after trimming, the same trim the new name gets below: `' -draft'` would
+        // otherwise slip past as a name and become `-draft`, a workspace named like a flag.
+        if (positional !== undefined && positional.trim().startsWith('-')) {
             errLine(`kelpi workspace rename: unknown option ${positional}`);
             writeErr(workspaceRenameUsage);
             exit(1);

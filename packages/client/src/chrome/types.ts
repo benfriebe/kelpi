@@ -226,7 +226,10 @@ export interface SidebarCallbacks {
     readonly onActivateWorkspace?: ((workspaceID: string) => void) | undefined;
     /** NO WIRE VERB YET: the sidebar also keeps a client-local collapse so the UI responds. */
     readonly onToggleGroupCollapse?: ((groupID: string, collapsed: boolean) => void) | undefined;
-    /** NO WIRE VERB YET (`workspace-rename` does not exist); the inline editor still commits. */
+    /**
+     * The inline editor commits through the WS-only, id-addressed `rename-workspace`.
+     * `workspace-rename` is the CLI's name-or-id control verb for the same rename (#266).
+     */
     readonly onRenameWorkspace?: ((workspaceID: string, name: string) => void) | undefined;
     readonly onDeleteWorkspace?: ((workspaceID: string) => void) | undefined;
     readonly onSetWorkspaceColor?: ((workspaceID: string, color: WorkspaceColor) => void) | undefined;

@@ -143,6 +143,9 @@ export async function startCompatDaemon(compat: CompatDaemonOptions = {}): Promi
                     HOME: home,
                     KELPI_SOCKET: `tcp:127.0.0.1:${String(port)}`,
                     NEX_SOCKET: `tcp:127.0.0.1:${String(port)}`,
+                    // Our CLI then refuses to fall back to `/tmp/kelpi.sock` (the user's live Kelpi)
+                    // when this daemon is unreachable; the Swift binary ignores it.
+                    KELPI_REQUIRE_SOCKET: '1',
                     // Both spellings, like the socket pair above: the Swift nex reads NEX_PANE_ID,
                     // a KELPI_COMPAT_CLI pointed at our own bundle reads KELPI_PANE_ID (#46).
                     ...(options.paneID !== undefined

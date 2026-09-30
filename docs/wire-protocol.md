@@ -492,7 +492,7 @@ carry `"command"`.
 | `workspace-profile` | F&F | `name` | `profile` |
 | `workspace-label` | R/R | `name`, `label_op` | `label_values` |
 | `workspace-mute` | R/R | `name` | `muted` |
-| `workspace-rename` | R/R | `name`, `new_name` | none |
+| `workspace-rename` | R/R | `name`, `new_name` | - |
 | `group-list` | R/R | — | — |
 | `group-create` | F&F | `name` | `color` |
 | `group-rename` | F&F | `name`, `new_name` | — |

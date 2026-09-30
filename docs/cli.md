@@ -2097,11 +2097,12 @@ Request/response: `ping`, `pane-split`, `pane-create`, `pane-close`, `pane-name`
 `workspace-delete`, `workspace-label`, `workspace-mute`, `workspace-rename`, `group-list`,
 `group-set-repo`, `group-reorder`, `group-sort`, `graft-start`, `graft-stop`,
 `graft-status`, and the web family: `web-open`, `web-navigate`, `web-url`, `web-back`,
-`web-forward`, `web-reload`, `web-capture`, `web-tabs`, `web-tab-new`, `web-tab-close`, `web-tab-select`, `web-console` (streaming
-with `follow:true`), `web-inspect`, `web-inspect-result`, `web-private`,
-`web-cookies-list`, `web-cookies-clear`, `web-cookies-delete`, `web-click`, `web-type`,
-`web-q-text`, `web-q-attr`, `web-q-count`, `web-q-exists`, `web-q-dom`, `web-select`,
-`web-scroll`, `web-hover`, `web-key`, `web-exec`, `web-wait`.
+`web-forward`, `web-reload`, `web-capture`, `web-tabs`, `web-tab-new`, `web-tab-close`,
+`web-tab-select`, `web-console` (streaming with `follow:true`), `web-inspect`,
+`web-inspect-result`, `web-private`, `web-cookies-list`, `web-cookies-clear`,
+`web-cookies-delete`, `web-click`, `web-type`, `web-q-text`, `web-q-attr`, `web-q-count`,
+`web-q-exists`, `web-q-dom`, `web-select`, `web-scroll`, `web-hover`, `web-key`, `web-exec`,
+`web-wait`.
 
 ---
 

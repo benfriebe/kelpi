@@ -1480,6 +1480,19 @@ describe('workspace rename', () => {
         expect(option.code).toBe(1);
         expect(option.stderr).toContain('kelpi workspace rename: unknown option --force');
 
+        // A leading space does not smuggle a dash past the check: the new name is trimmed.
+        const dashedCases: [string[], string][] = [
+            [['alpha', '-draft'], '-draft'],
+            [['alpha', ' -draft'], ' -draft'],
+            [[' -x', 'beta'], ' -x']
+        ];
+        for (const [argv, flag] of dashedCases) {
+            const dashed = await runCLI(['workspace', 'rename', ...argv], { port: server.port });
+            expect(dashed.code).toBe(1);
+            expect(dashed.stderr).toContain(`kelpi workspace rename: unknown option ${flag}\n`);
+            expect(dashed.stderr).toContain('kelpi workspace rename <name-or-id> <new-name> [--json]');
+        }
+
         const stray = await runCLI(['workspace', 'rename', 'alpha', 'auth', 'refactor'], { port: server.port });
         expect(stray.code).toBe(1);
         expect(stray.stderr).toContain("unexpected argument 'refactor'");

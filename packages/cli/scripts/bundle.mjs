@@ -27,11 +27,22 @@ import { fileURLToPath } from 'node:url';
 import * as esbuild from 'esbuild';
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const outfileFlag = process.argv.indexOf('--outfile');
-const outfile =
-    outfileFlag >= 0 && process.argv[outfileFlag + 1] !== undefined
-        ? path.resolve(process.argv[outfileFlag + 1])
-        : path.join(packageRoot, 'dist', 'kelpi.js');
+/**
+ * `--outfile <path>`, or the default. A flag with no path after it is an error rather than a
+ * silent fall back to `dist/kelpi.js`, which is exactly the file a private copy exists to avoid.
+ */
+function resolveOutfile(argv) {
+    const index = argv.indexOf('--outfile');
+    if (index < 0) return path.join(packageRoot, 'dist', 'kelpi.js');
+    const value = argv[index + 1];
+    if (value === undefined || value === '' || value.startsWith('-')) {
+        process.stderr.write('bundle.mjs: --outfile needs a path\n');
+        process.exit(1);
+    }
+    return path.resolve(value);
+}
+
+const outfile = resolveOutfile(process.argv);
 
 /** @type {import('esbuild').BuildOptions} */
 const options = {

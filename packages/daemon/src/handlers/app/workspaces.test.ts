@@ -16,6 +16,8 @@ const W3 = id('aaaaaaaa', 3);
 const P1 = id('dddddddd', 1);
 const P2 = id('dddddddd', 2);
 const G1 = id('cccccccc', 1);
+/** A well-formed UUID that is no workspace's id. */
+const OTHER_UUID = id('eeeeeeee', 7);
 
 function stubGit(overrides: Partial<GitService> = {}): GitService {
     return stubGitService(overrides);
@@ -1288,6 +1290,21 @@ describe('workspace-rename', () => {
         });
         expect(h.state()).toBe(before);
         expect(h.persists).toEqual([]);
+    });
+
+    it('calls two workspaces NAMED after an unmatched UUID "not found", for rename and delete alike', () => {
+        // The UUID token matches no id, falls through to the name match and finds two: the
+        // shared helper still says "not found", never "ambiguous" (its doc comment's rule).
+        const h = harness({ initial: seeded(3) });
+        h.dispatch(
+            { type: 'rename-workspace', id: W1, name: OTHER_UUID },
+            { type: 'rename-workspace', id: W2, name: OTHER_UUID }
+        );
+        const before = h.state();
+        const notFound = { ok: false, error: `workspace not found: ${OTHER_UUID}` };
+        expect(h.reply({ command: 'workspace-rename', name: OTHER_UUID, new_name: 'x' })).toEqual(notFound);
+        expect(h.reply({ command: 'workspace-delete', name: OTHER_UUID })).toEqual(notFound);
+        expect(h.state()).toBe(before);
     });
 
     it('treats renaming to the current name as a successful no-op', () => {

@@ -1,4 +1,195 @@
-# Kelpi
+<p align="center">
+  <img src="docs/assets/kelpi-logo.png" width="128" height="128" alt="The Kelpi mark: a kelpie's head in white line art on a dark rounded tile">
+</p>
+
+<h1 align="center">Kelpi</h1>
+
+<p align="center"><strong>A terminal multiplexer built for driving fleets of AI agents.</strong></p>
+
+<p align="center">
+  <a href="https://github.com/benfriebe/kelpi/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/benfriebe/kelpi?label=release"></a>
+  <img alt="Platform: macOS on Apple silicon" src="https://img.shields.io/badge/platform-macOS%20arm64-lightgrey">
+</p>
+
+Kelpi (kelpi.sh) gives every agent a named pane, tells you which ones are running and which are
+waiting for you, and lets agents drive each other with the `kelpi` CLI. A daemon owns every shell,
+so closing the window, restarting the app or updating it never kills an agent.
+
+## Tour
+
+![The checkout-v2 workspace: a coordinator pane on top has split off worker-1 and worker-2 with kelpi pane split, sent them commands with kelpi pane send, and listed every pane with its status. worker-1 has run the unit tests, worker-2 shows the git log. The sidebar shows the Acme group with its acme-web repository, its workspaces and their status dots.](docs/assets/readme/hero.png)
+
+**Agents at work.** A coordinator splits off two workers with `kelpi pane split`, hands them work
+with `kelpi pane send` and reads the fleet back with `kelpi pane list`. Each pane's dot, the sidebar
+and the status bar show which agents are running and which are waiting for you. The `Acme` group
+carries a default repository, so every workspace in it starts in `acme-web`.
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/assets/readme/web-pane.png" alt="The storefront workspace: a terminal running the dev server on the left, and a web pane on the right showing the checkout page it serves.">
+      <p><b>A browser beside the code.</b> <code>kelpi web open</code> puts a real Chromium page next to the dev server. Agents can read it, click it, watch its console and screenshot it with <code>kelpi web …</code>.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/assets/readme/markdown.png" alt="The design-docs workspace: a terminal on the left, and a rendered markdown preview of the checkout plan on the right, with a table and a task list.">
+      <p><b>Markdown next to the terminal.</b> <code>kelpi md docs/checkout-plan.md</code> opens a live preview, with the editor a click away. Scratchpad and diff panes open beside your terminals too.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/assets/readme/new-workspace-worktree.png" alt="The New Workspace sheet creating search-autocomplete in the Acme group on a new git worktree, with its progress list: the default branch found, the latest main being fetched at 48 percent, then the worktree and the workspace still to come.">
+      <p><b>A worktree per task.</b> New Workspace in a group with a repository cuts a git worktree off the latest <code>origin/main</code> and shows each step as it runs, with Cancel leaving nothing behind.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/assets/readme/settings.png" alt="Settings open on Keybindings: a global hotkey, and pane management shortcuts such as Split Right and Split Down, each with Record and Reset buttons.">
+      <p><b>Settings, applied live.</b> Keybindings with conflict detection, appearance, terminal themes and repositories, edited in the window and kept in <code>~/.config/kelpi/config</code>.</p>
+    </td>
+  </tr>
+</table>
+
+The pictures in this README come from a sandboxed Kelpi that `scripts/readme-screenshots.mjs`
+stages: real git repositories, real commands, the real CLI and the example plugin. No agent runs
+in them; the pane status comes from `kelpi event`, the command the Claude Code and Codex hooks
+call.
+
+## Plugins
+
+Plugins let you make Kelpi your own. A plugin can add its own panes, replace either sidebar, the
+toolbar, the status bar or the bottom panel, draw terminal, browser and document panes its own
+way, and use the daemon's commands, events and services from a backend that keeps running with
+no window open. Plugins are trusted code, developed anywhere and installed as local directories
+or portable `.kelpi-plugin` packages, and they need no build step.
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/assets/readme/plugin-sidebar.png" alt="The flaky-tests workspace with the Agent Board plugin in the right sidebar, listing every pane in every workspace with its live status: coordinator running, worker-1 waitingForInput, worker-2 running, and so on.">
+      <p><b>A sidebar of your own.</b> The <a href="examples/plugins/agent-board">Agent Board</a> example, a few dozen lines of plain HTML and JavaScript, replaces the right sidebar with a live list of every pane in every workspace and its agent's status.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/assets/readme/plugin-settings.png" alt="Settings, Plugins, Workbench views: a list of the window's slots (sidebar.primary, sidebar.secondary, topbar, statusbar, panel.bottom, workspace, document panes, terminal, browser, palette, prompts, notifications, pane header) each with the view that fills it, with Agent Board chosen for sidebar.secondary.">
+      <p><b>Every slot is replaceable.</b> Settings ▸ Plugins ▸ Workbench views lists each part of the window, from the sidebars and bars to the terminal, browser and document panes and the command palette, and takes the bundled view or any plugin's.</p>
+    </td>
+  </tr>
+</table>
+
+Make your own from a template, and keep it installed while you edit:
+
+```bash
+kelpi plugin init ~/code/my-pane --id me.my-pane --name "My Pane" --template pane
+kelpi plugin dev ~/code/my-pane --trust      # reinstalls on every save
+kelpi plugin open me.my-pane me.my-pane.home
+```
+
+The other templates are `sidebar`, `document` and `browser`.
+
+The [plugin roadmap](docs/plugin-roadmap.md) tracks the overall plan, merged phases and
+remaining work. Start with the [development guide](docs/plugin-development.md) to create a
+plugin and test it beside an installed Kelpi; use the [API guide](docs/plugins.md) for supported
+contracts and the [validation record](docs/plugin-validation.md) for results and evidence.
+The [Agent Board example](examples/plugins/agent-board) demonstrates a custom pane and
+workbench views. The [agent handoff](docs/plugin-handoff.md) records the current branch/PR,
+integration baseline, validation limits and the next implementation task.
+
+This generation uses protocol 2 and `kelpi-v2.db`; see the
+[database upgrade notes](docs/plugins.md#database-and-protocol-upgrade) and the separate
+[plugin revision recovery contract](docs/plugins.md#updates-and-recovery).
+
+## Themes
+
+<table>
+  <tr>
+    <td width="33%" valign="top" align="center">
+      <img src="docs/assets/readme/theme-nord.png" alt="The checkout-v2 workspace from the tour under the Nord theme: slate blue-grey chrome and terminals with Nord's frost-blue accents.">
+      <b>Nord</b>
+    </td>
+    <td width="33%" valign="top" align="center">
+      <img src="docs/assets/readme/theme-gruvbox-dark.png" alt="The same workspace under Gruvbox Dark: warm dark greys with orange and yellow accents.">
+      <b>Gruvbox Dark</b>
+    </td>
+    <td width="33%" valign="top" align="center">
+      <img src="docs/assets/readme/theme-solarized-light.png" alt="The same workspace under Solarized Light: a light cream window and terminals with Solarized colours.">
+      <b>Solarized Light</b>
+    </td>
+  </tr>
+</table>
+
+The workspace from the tour, three ways, each a preset paired with the terminal theme of the same
+name. In Settings ▸ Appearance, a preset theme (Dracula, Nord, Gruvbox Dark, Tokyo Night,
+Catppuccin Mocha, Solarized Light or Gruvbox Light) recolours the sidebar, title bar, status bar
+and agent dots in one click and switches between light and dark to suit. The terminal theme
+beside it picks one of ten built-in palettes, saved as `theme = <name>` in
+`~/.config/ghostty/config` and read from Ghostty's theme files. Your own colours can be saved and
+shared as a theme file or a one-line code.
+
+## Examples
+
+Every command below runs from any shell inside a Kelpi pane. Panes that the CLI creates open in
+the background, so an agent spawning workers never moves your cursor; add `--focus` when you do
+want to jump to the new pane.
+
+Spawn workers from a coordinator agent's pane, start agents in them, and read their output:
+
+```bash
+kelpi pane split --name worker-1
+kelpi pane split --target worker-1 --direction vertical --name worker-2
+kelpi pane send --target worker-1 'claude "Fix the flaky test in test/cart.test.js"'
+kelpi pane send --target worker-2 'codex "Add a shipping step to the checkout"'
+kelpi pane capture --target worker-1 --lines 40
+kelpi pane list
+kelpi pane split --name logs --focus      # this one takes the cursor
+```
+
+Give each task its own workspace on a fresh worktree:
+
+```bash
+kelpi workspace create --name fix-login --worktree fix-login --update-main
+
+# or let a group carry the repository, so every new workspace in it starts there
+kelpi group create Acme
+kelpi group set-repo Acme ~/code/acme-web --worktree
+kelpi workspace create --name search --worktree search --group Acme
+
+kelpi workspace rename fix-login "fix-login: SSO redirect"
+```
+
+Drive a web pane, from you or from an agent:
+
+```bash
+kelpi web open http://localhost:5173
+kelpi web capture --mode text
+kelpi web capture --mode screenshot
+kelpi web console --level error
+```
+
+Wire Claude Code and Codex into pane status, session resume and notifications, then check the
+whole chain:
+
+```bash
+kelpi install-hooks
+kelpi doctor
+```
+
+[`docs/cli.md`](docs/cli.md) specifies every command, and the bundled `kelpi-agentic` skill
+teaches Claude Code to orchestrate panes this way.
+
+## Install
+
+1. Download `Kelpi-<version>-arm64.dmg` from the
+   [latest release](https://github.com/benfriebe/kelpi/releases/latest) (Apple silicon). It's
+   signed and notarized.
+2. Open the DMG and drag **Kelpi** into **Applications**. Run it from there: a copy running from
+   the DMG, or from Downloads, can't update itself.
+3. Install the `kelpi` command: tray ▸ **Install CLI**. If `/usr/local/bin` isn't writable, run
+   the `sudo ln -sfn …` command it prints. Then `kelpi install-hooks` wires Claude Code and
+   Codex into Kelpi (see [Hooks](#hooks-kelpi-install-hooks)).
+4. Optional: Settings ▸ General ▸ Updates ▸ **Check for updates automatically**. Kelpi ▸
+   **Check for Updates…** works any time.
+
+To build it yourself, see [From source](#from-source-development) and
+[As an app](#as-an-app-pnpm-dist).
+
+## Architecture
 
 **Kelpi** (kelpi.sh) is a terminal multiplexer built for driving fleets of AI agents, with a
 **daemon + web client** architecture. It is a ground-up port of **Nex** (the macOS terminal
@@ -9,8 +200,6 @@ The daemon (`kelpid`) owns the sessions: PTYs, terminal state, workspaces, layou
 tracking live in a headless Node process that survives app restarts and updates. Clients attach
 to it and render: an Electron shell on the desktop, or any browser over a tailnet. Closing the
 laptop lid or updating the app never kills an agent.
-
-## Architecture
 
 ```mermaid
 flowchart LR
@@ -91,24 +280,6 @@ flowchart LR
 - **Self-hosting tooling**: an impact-mapped verification battery, a promote flow that upgrades
   the running instance from inside itself, a second full instance for development, and a
   sub-second HMR loop.
-
-## Plugins
-
-Trusted plugins can add custom panes, replace sidebars, desktop bars and native pane
-renderers, and use daemon commands, events and services. They can be developed outside the
-repository and installed as local directories or portable `.kelpi-plugin` packages.
-
-The [plugin roadmap](docs/plugin-roadmap.md) tracks the overall plan, merged phases and
-remaining work. Start with the [development guide](docs/plugin-development.md) to create a
-plugin and test it beside an installed Kelpi; use the [API guide](docs/plugins.md) for supported
-contracts and the [validation record](docs/plugin-validation.md) for results and evidence.
-The [Agent Board example](examples/plugins/agent-board) demonstrates a custom pane and
-workbench views. The [agent handoff](docs/plugin-handoff.md) records the current branch/PR,
-integration baseline, validation limits and the next implementation task.
-
-This generation uses protocol 2 and `kelpi-v2.db`; see the
-[database upgrade notes](docs/plugins.md#database-and-protocol-upgrade) and the separate
-[plugin revision recovery contract](docs/plugins.md#updates-and-recovery).
 
 ## Naming
 
@@ -343,16 +514,7 @@ names the table, id and reason, and `warnings` covers every fallback taken.
 
 ### From a release
 
-1. Download `Kelpi-<version>-arm64.dmg` from the
-   [latest release](https://github.com/benfriebe/kelpi/releases/latest) (Apple silicon). It's
-   signed and notarized.
-2. Open the DMG and drag **Kelpi** into **Applications**. Run it from there: a copy running from
-   the DMG, or from Downloads, can't update itself.
-3. Install the `kelpi` command: tray ▸ **Install CLI**. If `/usr/local/bin` isn't writable, run
-   the `sudo ln -sfn …` command it prints. Then `kelpi install-hooks` wires Claude Code and
-   Codex into Kelpi (see [Hooks](#hooks-kelpi-install-hooks)).
-4. Optional: Settings ▸ General ▸ Updates ▸ **Check for updates automatically**. Kelpi ▸
-   **Check for Updates…** works any time.
+See [Install](#install) above.
 
 ### From source (development)
 
@@ -623,6 +785,11 @@ node scripts/self-upgrade.mjs       # run the battery, package, and promote the 
                                     # instance to this tree's build (detached restart; panes
                                     # and agent sessions come back and resume)
 ```
+
+The README's screenshots (the tour, the plugin and the theme pictures) are regenerated with
+`node scripts/readme-screenshots.mjs`: it stages the demo in a private sandbox whose window sits
+off screen, so it never covers yours or touches your Kelpi, and writes `docs/assets/readme/*.png`
+at 2x (its header says how to shrink them before committing). `node scripts/readme-logo.mjs` exports the logo from the code that draws the app icon.
 
 If you run a **release** Kelpi from `/Applications`, try candidate builds with
 `dev-instance.mjs` rather than promoting. A promoted build from main is a `-dev` version, newer

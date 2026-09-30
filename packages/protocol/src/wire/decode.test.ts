@@ -466,6 +466,7 @@ describe('workspace and group commands', () => {
             'workspace-profile',
             'workspace-label',
             'workspace-mute',
+            'workspace-rename',
             'group-create',
             'group-rename',
             'group-delete',
@@ -491,6 +492,36 @@ describe('workspace and group commands', () => {
             command: 'workspace-mute',
             name: 'feat-x',
             muted: undefined
+        });
+    });
+
+    it('decodes workspace-rename from a plain shell, keeping new_name verbatim for the handler', () => {
+        // Explicit chain: no pane_id needed, so an agent outside a pane can rename.
+        expect(ok({ command: 'workspace-rename', name: 'feat-x', new_name: 'auth refactor' })).toEqual({
+            command: 'workspace-rename',
+            name: 'feat-x',
+            new_name: 'auth refactor'
+        });
+        // Trimming (and refusing whitespace only) is the handler's job, so the reply can say why.
+        expect(ok({ command: 'workspace-rename', name: 'feat-x', new_name: '  padded  ' })).toMatchObject({
+            new_name: '  padded  '
+        });
+        expect(ok({ command: 'workspace-rename', name: 'feat-x', new_name: '   ' })).toMatchObject({ new_name: '   ' });
+    });
+
+    it('requires a non-empty string new_name on workspace-rename', () => {
+        expect(rejected({ command: 'workspace-rename', name: 'feat-x' })).toMatchObject({
+            reason: 'guard',
+            command: 'workspace-rename',
+            field: 'new_name',
+            detail: 'workspace-rename requires new_name'
+        });
+        expect(rejected({ command: 'workspace-rename', name: 'feat-x', new_name: '' }).field).toBe('new_name');
+        // null reads as absent, not as a type error
+        expect(rejected({ command: 'workspace-rename', name: 'feat-x', new_name: null }).field).toBe('new_name');
+        expect(rejected({ command: 'workspace-rename', name: 'feat-x', new_name: 7 })).toMatchObject({
+            reason: 'field-type',
+            field: 'new_name'
         });
     });
 

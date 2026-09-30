@@ -351,6 +351,13 @@ function decodeCommand(
             if (name === undefined) return guard(command, 'workspace-mute requires name', 'name');
             return { command, name, muted: fields.bool('muted') };
         }
+        case 'workspace-rename': {
+            const name = fields.nonEmpty('name');
+            if (name === undefined) return guard(command, 'workspace-rename requires name', 'name');
+            const newName = fields.nonEmpty('new_name');
+            if (newName === undefined) return guard(command, 'workspace-rename requires new_name', 'new_name');
+            return { command, name, new_name: newName };
+        }
 
         // ── 6.4 group commands ───────────────────────────────────────────────────────
         case 'group-list':

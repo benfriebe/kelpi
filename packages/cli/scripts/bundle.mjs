@@ -16,6 +16,8 @@
  *     packaging step can stamp identity without a rebuild.
  *
  * Usage: `pnpm --filter @kelpi/cli build` (or `node scripts/bundle.mjs --watch`).
+ * `--outfile <path>` writes a private copy elsewhere: the daemon's compat suite bundles its own
+ * so it never reads `dist/kelpi.js` while the CLI's integration suite is rewriting it.
  */
 
 import { chmodSync, mkdirSync } from 'node:fs';
@@ -25,7 +27,22 @@ import { fileURLToPath } from 'node:url';
 import * as esbuild from 'esbuild';
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const outfile = path.join(packageRoot, 'dist', 'kelpi.js');
+/**
+ * `--outfile <path>`, or the default. A flag with no path after it is an error rather than a
+ * silent fall back to `dist/kelpi.js`, which is exactly the file a private copy exists to avoid.
+ */
+function resolveOutfile(argv) {
+    const index = argv.indexOf('--outfile');
+    if (index < 0) return path.join(packageRoot, 'dist', 'kelpi.js');
+    const value = argv[index + 1];
+    if (value === undefined || value === '' || value.startsWith('-')) {
+        process.stderr.write('bundle.mjs: --outfile needs a path\n');
+        process.exit(1);
+    }
+    return path.resolve(value);
+}
+
+const outfile = resolveOutfile(process.argv);
 
 /** @type {import('esbuild').BuildOptions} */
 const options = {

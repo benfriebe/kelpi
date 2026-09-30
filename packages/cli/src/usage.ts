@@ -40,6 +40,7 @@ export const globalUsage = `Usage:
   kelpi workspace profile <name-or-id> (<profile> | --clear)
   kelpi workspace label <name-or-id> (--set v | --add v | --remove v | --clear) [--json]
   kelpi workspace mute <name-or-id> [--off | --toggle] [--json]
+  kelpi workspace rename <name-or-id> <new-name> [--json]
   kelpi group list [--json] [--no-header]
   kelpi group create <name> [--color blue]
   kelpi group rename <name-or-id> <new-name>
@@ -316,7 +317,7 @@ when --workspace is not supplied.
 `;
 
 export const workspaceUsage = `Usage:
-  kelpi workspace list|create|move|delete|profile|label|mute [...]
+  kelpi workspace list|create|move|delete|profile|label|mute|rename [...]
 
 Subcommands:
   list      List every workspace (grouped + top-level).
@@ -326,6 +327,7 @@ Subcommands:
   profile   Assign or clear a workspace's profile.
   label     Set/add/remove/clear a workspace's labels.
   mute      Mute or unmute a workspace's notifications.
+  rename    Rename a workspace.
 
 Run \`kelpi workspace <subcommand> --help\` for subcommand-specific usage.
 
@@ -470,6 +472,25 @@ Options:
 
 Exit codes: 0 on success, non-zero on failure (unknown/ambiguous
 workspace, --off together with --toggle).
+
+`;
+
+export const workspaceRenameUsage = `Usage:
+  kelpi workspace rename <name-or-id> <new-name> [--json]
+
+Renames a workspace, like the sidebar's inline rename (Shift-Cmd-R). The
+new name is trimmed; it may not be empty, and another workspace may
+already have it (a name that matches two workspaces then needs the id).
+Renaming to the current name succeeds and changes nothing. The new name
+syncs to every attached client.
+
+Options:
+  --json         Print the structured reply (workspace_id, workspace_name,
+                 old_name).
+  -h, --help     Show this help.
+
+Exit codes: 0 on success, non-zero on failure (unknown/ambiguous
+workspace, empty new name).
 
 `;
 

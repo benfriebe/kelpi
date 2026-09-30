@@ -354,7 +354,9 @@ function parseClientInfo(value: unknown): WsClientInfo {
  *   toggle-zoom          `pane_id`                       → focus-pane (if needed) + toggle-zoom
  *   set-split-ratio      `workspace_id`, `split_path`, `ratio` → update-split-ratio
  *   set-group-collapsed  `group_id`, `collapsed`         → set-group-collapsed
- *   rename-workspace     `workspace_id`, `name`          → rename-workspace
+ *   rename-workspace     `workspace_id`, `name`          → rename-workspace (the CLI's own
+ *                        spelling, `workspace-rename`, came later with #266: a name-or-id
+ *                        verb in `WIRE_COMMANDS`; the GUI keeps this id-addressed one)
  *   set-workspace-icon   `workspace_id`, `icon`          → set-workspace-icon
  *   set-group-icon       `group_id`, `icon`              → set-group-icon
  *   set-group-color      `group_id`, `color?`            → set-group-color

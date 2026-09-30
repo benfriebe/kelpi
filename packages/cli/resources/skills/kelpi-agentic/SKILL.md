@@ -452,6 +452,17 @@ kelpi workspace create [--name "..."] [--path /dir] [--color blue|green|red|yell
 # KELPIT pane spawned in the workspace; existing panes keep their env.
 kelpi workspace profile <name-or-id> (<profile> | --clear)
 
+# Rename a workspace (request/response), the same as the sidebar's inline
+# rename. Use it when a workspace's purpose has become clearer than its
+# name; don't fake a rename with a label. The target is a name or an id;
+# prefer the id you captured from `workspace create` (a name another
+# workspace shares is refused as ambiguous). The new name is trimmed, must
+# not be empty, and may repeat another workspace's name. Quote a name with
+# spaces. Prints `renamed workspace <old> to <new> (<uuid>)`; --json gives
+# {ok,workspace_id,workspace_name,old_name}. Exits non-zero, with the
+# reason on stderr, for a missing or ambiguous workspace or an empty name.
+kelpi workspace rename <name-or-id> <new-name> [--json]
+
 # Delete one or more workspaces by name-or-id (request/response). Deletes
 # outright — no CLI prompt — closing any remaining panes. Refuses to
 # delete the last remaining workspace. Exits non-zero if any delete fails.

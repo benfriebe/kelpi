@@ -15,6 +15,12 @@
  * a native view that surface does not contain, so it is captured from its own target at the same
  * scale and composited into place.
  *
+ * After the tour it installs the example Agent Board plugin (`examples/plugins/agent-board`, as
+ * `plugin-workbench.mjs` does) and shows it in the right sidebar and in Settings ▸ Plugins, and it
+ * photographs the hero workspace under three of Settings ▸ Appearance's preset themes, each with
+ * the terminal theme of the same name. All of that is the sandbox's own config: the daemon's
+ * `KELPID_CONFIG_PATH` and `KELPID_GHOSTTY_CONFIG`, never yours.
+ *
  * The demo is staged, but nothing in it is faked: the repositories are real git repos under the
  * sandbox HOME, the terminals run real commands (`node --test`, `git log`, a small dev server),
  * the coordinator really spawns and drives its workers with the `kelpi` CLI, and the status
@@ -314,6 +320,43 @@ function makeRepo(sandbox) {
 
 const SCALE = 2;
 const WORKTREE_LINK = '/tmp/kelpi-readme';
+const AGENT_BOARD = path.join(repoRoot, 'examples', 'plugins', 'agent-board');
+const AGENT_BOARD_VIEW = 'example.agent-board.board';
+
+/**
+ * The themes the gallery shows: a chrome preset from Settings ▸ Appearance ▸ Preset themes, and
+ * the built-in terminal theme of the same name. Kelpi reads a terminal theme's colours from a
+ * ghostty theme file (`packages/daemon/src/settings/theme.ts`), normally found in Ghostty's own
+ * install. The sandbox cannot count on one, so these are the themes' published palettes, written
+ * into the `themes` directory beside the sandbox's ghostty config, the first place Kelpi looks.
+ */
+const THEMES = [
+    {
+        preset: 'Dracula', terminal: 'Dracula', file: 'theme-dracula',
+        colors: { background: '#282a36', foreground: '#f8f8f2', 'cursor-color': '#f8f8f2', 'selection-background': '#44475a', 'selection-foreground': '#f8f8f2' },
+        palette: ['#21222c', '#ff5555', '#50fa7b', '#f1fa8c', '#bd93f9', '#ff79c6', '#8be9fd', '#f8f8f2', '#6272a4', '#ff6e6e', '#69ff94', '#ffffa5', '#d6acff', '#ff92df', '#a4ffff', '#ffffff']
+    },
+    {
+        preset: 'Gruvbox Dark', terminal: 'Gruvbox Dark', file: 'theme-gruvbox-dark',
+        colors: { background: '#282828', foreground: '#ebdbb2', 'cursor-color': '#ebdbb2', 'selection-background': '#665c54', 'selection-foreground': '#ebdbb2' },
+        palette: ['#282828', '#cc241d', '#98971a', '#d79921', '#458588', '#b16286', '#689d6a', '#a89984', '#928374', '#fb4934', '#b8bb26', '#fabd2f', '#83a598', '#d3869b', '#8ec07c', '#ebdbb2']
+    },
+    {
+        preset: 'Solarized Light', terminal: 'iTerm2 Solarized Light', file: 'theme-solarized-light',
+        colors: { background: '#fdf6e3', foreground: '#657b83', 'cursor-color': '#657b83', 'selection-background': '#eee8d5', 'selection-foreground': '#586e75' },
+        palette: ['#073642', '#dc322f', '#859900', '#b58900', '#268bd2', '#d33682', '#2aa198', '#eee8d5', '#002b36', '#cb4b16', '#586e75', '#657b83', '#839496', '#6c71c4', '#93a1a1', '#fdf6e3']
+    }
+];
+
+function writeThemeFiles(sandbox) {
+    for (const theme of THEMES) {
+        const lines = [
+            ...Object.entries(theme.colors).map(([key, color]) => `${key} = ${color}`),
+            ...theme.palette.map((color, index) => `palette = ${String(index)}=${color}`)
+        ];
+        write(path.join(path.dirname(sandbox.ghosttyConfigPath), 'themes', theme.terminal), `${lines.join('\n')}\n`);
+    }
+}
 
 /** Render at SCALE; `size` pins the viewport too (a web pane's view, to exactly its hole). */
 async function emulateScale(session, size) {
@@ -401,6 +444,24 @@ await runDesktopTest(async () => {
         await page.click(row);
         await sleep(900);
     };
+    /** Choose an option in a React-controlled <select>, the way a click on it would. */
+    const choose = (selector, value) => page.eval(`(() => {
+        const select = document.querySelector(${JSON.stringify(selector)});
+        if (select === null) return false;
+        Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(select, ${JSON.stringify(value)});
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+        return true;
+    })()`);
+    const closeSettings = async () => {
+        await page.click('[data-testid="settings-close"]');
+        await d.settleDom(page, `document.querySelector('[data-testid="settings-close"]') === null`, { ceilingMs: 3_000 });
+        await sleep(400);
+    };
+    const inspectorOpen = () => page.eval(`document.querySelector('[data-testid="toggle-inspector"]')?.getAttribute('aria-pressed') === 'true'`);
+    const setInspector = async (open) => {
+        if ((await inspectorOpen()) !== open) await page.click('[data-testid="toggle-inspector"]');
+        await sleep(700);
+    };
     const createWorkspace = async (name, extra = []) => {
         const created = await json(['workspace', 'create', '--name', name, ...extra]);
         const workspaceID = created.workspace_id;
@@ -415,6 +476,7 @@ await runDesktopTest(async () => {
         write(path.join(sandbox.home, '.zshrc'), ZSHRC);
         write(path.join(sandbox.home, '.gitconfig'), '[user]\n\tname = Sam Rivera\n\temail = sam@acme.test\n[init]\n\tdefaultBranch = main\n');
         const { repo } = makeRepo(sandbox);
+        writeThemeFiles(sandbox);
         // New worktrees go under a short, stable path instead of the sandbox's temp directory,
         // which the New Workspace sheet would print in full: a symlink into the sandbox, so
         // everything still lives (and dies) with it.
@@ -543,6 +605,51 @@ await runDesktopTest(async () => {
         if (!counting) log('the fetch step never showed a percentage between 35 and 80; capturing what is there');
         await shot('new-workspace-worktree');
         await d.settleDom(page, `document.querySelector('[data-testid="new-workspace-sheet"]') === null`, { ceilingMs: 60_000 });
+
+        // ── 6 · themes: the hero again under three presets ────────────────────────────
+        // Before the plugin shots: those open the right sidebar, and a pane narrowed while on
+        // screen loses what it printed past the new width (the emulator does not reflow).
+        await showWorkspace(hero.workspaceID);
+        const configFiles = [sandbox.configPath, sandbox.ghosttyConfigPath];
+        const shippedLook = configFiles.map((file) => fs.readFileSync(file, 'utf8'));
+        for (const theme of THEMES) {
+            await d.openSettingsTab(page, 'appearance');
+            const slug = theme.preset.toLowerCase().replace(/\s+/g, '-');
+            await page.eval(`document.querySelector('[data-testid="theme-preset-${slug}"]')?.scrollIntoView({ block: 'center' })`);
+            await page.click(`[data-testid="theme-preset-${slug}"]`);
+            await sleep(400);
+            if (!(await choose('[data-testid="terminal-theme-select"]', theme.terminal))) throw new Error('no terminal theme picker');
+            const resolved = await d.settleDom(page, `document.querySelector('[data-testid="terminal-theme-resolved"]') !== null`, { ceilingMs: 5_000 });
+            if (!resolved) throw new Error(`the ${theme.terminal} terminal theme did not resolve: ${String(await page.eval(`document.querySelector('[data-testid="terminal-theme-error"]')?.textContent ?? 'no note'`))}`);
+            await closeSettings();
+            await sleep(800);
+            await shot(theme.file);
+        }
+        // Back to the shipped look for the plugin shots: the daemon watches both config files,
+        // so putting back what they held before the presets restores the default theme.
+        configFiles.forEach((file, index) => fs.writeFileSync(file, shippedLook[index]));
+        await sleep(1500);
+
+        // ── 7 · a plugin: the example Agent Board, as the right sidebar ──────────────
+        await page.watchFrames();
+        await cli.ok(['plugin', 'install', AGENT_BOARD, '--trust']);
+        await showWorkspace(flaky.workspaceID);
+        await d.openSettingsTab(page, 'plugins');
+        await d.settleDom(page, `document.querySelector('select[aria-label="sidebar.secondary"]')`, { ceilingMs: 5_000 });
+        await choose('select[aria-label="sidebar.secondary"]', AGENT_BOARD_VIEW);
+        await sleep(500);
+        await page.eval(`document.querySelector('[data-testid="plugin-placements"]')?.scrollIntoView({ block: 'start' })`);
+        await sleep(400);
+        await shot('plugin-settings');
+        await closeSettings();
+        await setInspector(true);
+        const boardFrame = '[data-workbench-slot="sidebar.secondary"] iframe';
+        const boardReady = await d.settle(async () => {
+            try { return (await page.evalInFrame(boardFrame, `document.querySelectorAll('.pane').length`)) > 0; } catch { return false; }
+        }, { ceilingMs: 15_000, intervalMs: 200 });
+        if (!boardReady) throw new Error('the Agent Board sidebar never listed a pane');
+        await shot('plugin-sidebar');
+        await setInspector(false);
 
         log(`done: ${String(written.length)} screenshots in ${path.relative(repoRoot, outDir) || outDir}`);
     } finally {

@@ -47,9 +47,80 @@ carries a default repository, so every workspace in it starts in `acme-web`.
   </tr>
 </table>
 
-These pictures come from a sandboxed Kelpi that `scripts/readme-screenshots.mjs` stages: real git
-repositories, real commands and the real CLI. No agent runs in them; the pane status comes from
-`kelpi event`, the command the Claude Code and Codex hooks call.
+The pictures in this README come from a sandboxed Kelpi that `scripts/readme-screenshots.mjs`
+stages: real git repositories, real commands, the real CLI and the example plugin. No agent runs
+in them; the pane status comes from `kelpi event`, the command the Claude Code and Codex hooks
+call.
+
+## Plugins
+
+Plugins let you make Kelpi your own. A plugin can add its own panes, replace either sidebar, the
+toolbar, the status bar or the bottom panel, draw terminal, browser and document panes its own
+way, and use the daemon's commands, events and services from a backend that keeps running with
+no window open. Plugins are trusted code, developed anywhere and installed as local directories
+or portable `.kelpi-plugin` packages, and they need no build step.
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/assets/readme/plugin-sidebar.png" alt="The flaky-tests workspace with the Agent Board plugin in the right sidebar, listing every pane in every workspace with its live status: coordinator running, worker-1 waitingForInput, worker-2 running, and so on.">
+      <p><b>A sidebar of your own.</b> The <a href="examples/plugins/agent-board">Agent Board</a> example, a few dozen lines of plain HTML and JavaScript, replaces the right sidebar with a live list of every pane in every workspace and its agent's status.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/assets/readme/plugin-settings.png" alt="Settings, Plugins, Workbench views: a list of the window's slots (sidebar.primary, sidebar.secondary, topbar, statusbar, panel.bottom, workspace, document panes, terminal, browser, palette, prompts, notifications, pane header) each with the view that fills it, with Agent Board chosen for sidebar.secondary.">
+      <p><b>Every slot is replaceable.</b> Settings ▸ Plugins ▸ Workbench views lists each part of the window, from the sidebars and bars to the terminal, browser and document panes and the command palette, and takes the bundled view or any plugin's.</p>
+    </td>
+  </tr>
+</table>
+
+Make your own from a template, and keep it installed while you edit:
+
+```bash
+kelpi plugin init ~/code/my-pane --id me.my-pane --name "My Pane" --template pane
+kelpi plugin dev ~/code/my-pane --trust      # reinstalls on every save
+kelpi plugin open me.my-pane me.my-pane.home
+```
+
+The other templates are `sidebar`, `document` and `browser`.
+
+The [plugin roadmap](docs/plugin-roadmap.md) tracks the overall plan, merged phases and
+remaining work. Start with the [development guide](docs/plugin-development.md) to create a
+plugin and test it beside an installed Kelpi; use the [API guide](docs/plugins.md) for supported
+contracts and the [validation record](docs/plugin-validation.md) for results and evidence.
+The [Agent Board example](examples/plugins/agent-board) demonstrates a custom pane and
+workbench views. The [agent handoff](docs/plugin-handoff.md) records the current branch/PR,
+integration baseline, validation limits and the next implementation task.
+
+This generation uses protocol 2 and `kelpi-v2.db`; see the
+[database upgrade notes](docs/plugins.md#database-and-protocol-upgrade) and the separate
+[plugin revision recovery contract](docs/plugins.md#updates-and-recovery).
+
+## Themes
+
+<table>
+  <tr>
+    <td width="33%" valign="top" align="center">
+      <img src="docs/assets/readme/theme-dracula.png" alt="The checkout-v2 workspace from the tour under the Dracula theme: purple-grey chrome and a Dracula terminal palette.">
+      <b>Dracula</b>
+    </td>
+    <td width="33%" valign="top" align="center">
+      <img src="docs/assets/readme/theme-gruvbox-dark.png" alt="The same workspace under Gruvbox Dark: warm dark greys with orange and yellow accents.">
+      <b>Gruvbox Dark</b>
+    </td>
+    <td width="33%" valign="top" align="center">
+      <img src="docs/assets/readme/theme-solarized-light.png" alt="The same workspace under Solarized Light: a light cream window and terminals with Solarized colours.">
+      <b>Solarized Light</b>
+    </td>
+  </tr>
+</table>
+
+The workspace from the tour, three ways, each a preset paired with the terminal theme of the same
+name. In Settings ▸ Appearance, a preset theme (Dracula, Nord, Gruvbox Dark, Tokyo Night,
+Catppuccin Mocha, Solarized Light or Gruvbox Light) recolours the sidebar, title bar, status bar
+and agent dots in one click and switches between light and dark to suit. The terminal theme
+beside it picks one of ten built-in palettes, saved as `theme = <name>` in
+`~/.config/ghostty/config` and read from Ghostty's theme files. Your own colours can be saved and
+shared as a theme file or a one-line code.
 
 ## Examples
 
@@ -209,24 +280,6 @@ flowchart LR
 - **Self-hosting tooling**: an impact-mapped verification battery, a promote flow that upgrades
   the running instance from inside itself, a second full instance for development, and a
   sub-second HMR loop.
-
-## Plugins
-
-Trusted plugins can add custom panes, replace sidebars, desktop bars and native pane
-renderers, and use daemon commands, events and services. They can be developed outside the
-repository and installed as local directories or portable `.kelpi-plugin` packages.
-
-The [plugin roadmap](docs/plugin-roadmap.md) tracks the overall plan, merged phases and
-remaining work. Start with the [development guide](docs/plugin-development.md) to create a
-plugin and test it beside an installed Kelpi; use the [API guide](docs/plugins.md) for supported
-contracts and the [validation record](docs/plugin-validation.md) for results and evidence.
-The [Agent Board example](examples/plugins/agent-board) demonstrates a custom pane and
-workbench views. The [agent handoff](docs/plugin-handoff.md) records the current branch/PR,
-integration baseline, validation limits and the next implementation task.
-
-This generation uses protocol 2 and `kelpi-v2.db`; see the
-[database upgrade notes](docs/plugins.md#database-and-protocol-upgrade) and the separate
-[plugin revision recovery contract](docs/plugins.md#updates-and-recovery).
 
 ## Naming
 
@@ -733,10 +786,10 @@ node scripts/self-upgrade.mjs       # run the battery, package, and promote the 
                                     # and agent sessions come back and resume)
 ```
 
-The README's screenshots are regenerated with `node scripts/readme-screenshots.mjs`: it stages
-the demo in a private sandbox whose window sits off screen, so it never covers yours or touches
-your Kelpi, and writes `docs/assets/readme/*.png` at 2x (its header says how to shrink them before
-committing). `node scripts/readme-logo.mjs` exports the logo from the code that draws the app icon.
+The README's screenshots (the tour, the plugin and the theme pictures) are regenerated with
+`node scripts/readme-screenshots.mjs`: it stages the demo in a private sandbox whose window sits
+off screen, so it never covers yours or touches your Kelpi, and writes `docs/assets/readme/*.png`
+at 2x (its header says how to shrink them before committing). `node scripts/readme-logo.mjs` exports the logo from the code that draws the app icon.
 
 If you run a **release** Kelpi from `/Applications`, try candidate builds with
 `dev-instance.mjs` rather than promoting. A promoted build from main is a `-dev` version, newer

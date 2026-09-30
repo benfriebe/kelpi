@@ -973,7 +973,10 @@ const openFiles = createOpenFileQueue({
             path: filePath,
             // The pane that asked, when one did (the ⌘O route). `open` routes into that pane's
             // workspace exactly as `kelpi md` from inside a pane does; Finder's route names none.
-            ...(paneID === null ? {} : { pane_id: paneID })
+            ...(paneID === null ? {} : { pane_id: paneID }),
+            // #295: Finder and the ⌘O panel are the user's own gestures, so the preview takes
+            // the focus; on the wire an absent `focus` opens it in the background.
+            focus: true
         }).then((result) => {
             if (!result.ok) warn(`open ${filePath} failed: ${result.error ?? 'no reply'}`);
         });

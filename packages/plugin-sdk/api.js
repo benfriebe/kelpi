@@ -91,8 +91,12 @@ export function createKelpiAPI(transport, getContext = () => ({})) {
     };
     const panes = Object.freeze({
         list: async (options = {}) => list('pane-list', 'panes', paneListScope(options)),
-        create: async (options = {}) => run('pane-create', { ...creationTarget(options), path: options.path, name: options.name }),
-        split: (pane, options = {}) => run('pane-split', { ...target(pane), direction: options.direction, path: options.path, name: options.name }),
+        // #295: the wire's absent `focus` is a background open (the CLI/agent default). A plugin
+        // usually creates a pane because the user clicked something, so the helpers keep the
+        // pane taking focus unless the plugin passes `focus: false`. Raw `api.command` keeps the
+        // wire default.
+        create: async (options = {}) => run('pane-create', { ...creationTarget(options), path: options.path, name: options.name, focus: options.focus ?? true }),
+        split: (pane, options = {}) => run('pane-split', { ...target(pane), direction: options.direction, path: options.path, name: options.name, focus: options.focus ?? true }),
         close: pane => run('pane-close', target(pane)),
         rename: (pane, name) => run('pane-name', { ...target(pane), name }),
         resize: (pane, options) => run('pane-resize', { ...target(pane), ratio: options.ratio, delta: options.delta }),
@@ -142,7 +146,7 @@ export function createKelpiAPI(transport, getContext = () => ({})) {
         files: Object.freeze({
             read: path => call('files.read', { path }),
             write: async (path, text) => { await call('files.write', { path, text }); },
-            open: async (path, options = {}) => done('open', { path, pane_id: await sourcePane(options, 'open'), reuse: options.reuse ?? false }),
+            open: async (path, options = {}) => done('open', { path, pane_id: await sourcePane(options, 'open'), reuse: options.reuse ?? false, focus: options.focus ?? true }),
             reveal: (path, options = {}) => done('reveal-path', { path, select: options.select ?? false }),
         }),
         process: Object.freeze({ exec: (file, args = [], options = {}) => call('process.exec', clean({ file, args, ...options })) }),

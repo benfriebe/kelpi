@@ -144,6 +144,7 @@ async function handlePaneSplit(args: string[]): Promise<void> {
     const target = parseFlag('--target', args);
     const workspace = parseFlag('--workspace', args);
     const asJSON = popSwitch('--json', args);
+    const focus = popSwitch('--focus', args);
     rejectLeftoverArgs(args, 'kelpi pane split', { usage: (write) => write(paneSplitUsage) });
 
     const origin = originPaneID();
@@ -161,6 +162,8 @@ async function handlePaneSplit(args: string[]): Promise<void> {
     if (target !== null) payload['target'] = target;
     if (workspace !== null) payload['workspace'] = workspace;
     if (origin !== undefined) payload['pane_id'] = origin;
+    // #295: without --focus nothing is sent, and the daemon opens the pane in the background.
+    if (focus) payload['focus'] = true;
     await sendPaneMutationReply(payload, 'split', asJSON, 'split pane');
 }
 
@@ -174,6 +177,7 @@ async function handlePaneCreate(args: string[]): Promise<void> {
     const target = parseFlag('--target', args);
     const workspace = parseFlag('--workspace', args);
     const asJSON = popSwitch('--json', args);
+    const focus = popSwitch('--focus', args);
     rejectLeftoverArgs(args, 'kelpi pane create', { usage: (write) => write(paneCreateUsage) });
 
     const origin = originPaneID();
@@ -190,6 +194,7 @@ async function handlePaneCreate(args: string[]): Promise<void> {
     if (target !== null) payload['target'] = target;
     if (workspace !== null) payload['workspace'] = workspace;
     if (origin !== undefined) payload['pane_id'] = origin;
+    if (focus) payload['focus'] = true;
     await sendPaneMutationReply(payload, 'create', asJSON, 'created pane');
 }
 

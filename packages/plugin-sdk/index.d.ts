@@ -50,7 +50,7 @@ export interface KelpiAPI {
     storage: { get(key: string): Promise<Json>; set(key: string, value: Json): Promise<void> };
     settings: { get(): Promise<Data>; set(key: string, value: string | number | boolean): Promise<void> };
     contributions: ContributionsAPI;
-    files: { read(path: string): Promise<string>; write(path: string, text: string): Promise<void>; open(path: string, options?: { paneID?: string; workspaceID?: string; reuse?: boolean }): Promise<void>; reveal(path: string, options?: { select?: boolean }): Promise<void> };
+    files: { read(path: string): Promise<string>; write(path: string, text: string): Promise<void>; open(path: string, options?: { paneID?: string; workspaceID?: string; reuse?: boolean; focus?: boolean }): Promise<void>; reveal(path: string, options?: { select?: boolean }): Promise<void> };
     process: { exec(file: string, args?: string[], options?: { cwd?: string }): Promise<ProcessExecResult> };
     terminal: TerminalAPI;
     browser: BrowserAPI;

@@ -16,8 +16,8 @@ export const globalUsage = `Usage:
   kelpi plugin list|contributions|install|enable|disable|reload|remove|history|rollback|logs [--help]
   kelpi plugin open|run|settings|watch|services|service-call|service-select [--help]
   kelpi event stop|start|error|notification|session-start|session-end [--agent claude|codex] [--message ...] [--title ...] [--body ...]
-  kelpi pane split [--direction horizontal|vertical] [--path /dir] [--name <label>] [--target <name-or-uuid>]
-  kelpi pane create [--path /dir] [--name <label>] [--target <name-or-uuid>]
+  kelpi pane split [--direction horizontal|vertical] [--path /dir] [--name <label>] [--target <name-or-uuid>] [--focus]
+  kelpi pane create [--path /dir] [--name <label>] [--target <name-or-uuid>] [--focus]
   kelpi pane close [--target <name-or-uuid>] [--workspace <name-or-uuid>]
   kelpi pane name <name>
   kelpi pane resize [--target <name-or-uuid>] [--workspace <name-or-uuid>] (--ratio <0..1> | --grow [amt] | --shrink [amt])
@@ -49,13 +49,13 @@ export const globalUsage = `Usage:
   kelpi group sort <name-or-id> --by name|last-activity|last-accessed [--desc] [--json]
   kelpi layout cycle
   kelpi layout select <name>
-  kelpi open [--here] <filepath>   # routes by file type: .md→markdown, .html/.pdf/images→web pane
-  kelpi md [--here] <filepath>     # always opens a markdown preview pane
+  kelpi open [--here] [--focus] <filepath>   # routes by file type: .md→markdown, .html/.pdf/images→web pane
+  kelpi md [--here] [--focus] <filepath>     # always opens a markdown preview pane
   kelpi diff [<path>]
   kelpi graft start [--workspace <name-or-uuid>] [--repo <name-or-path>]
   kelpi graft stop [--workspace <name-or-uuid>] [--repo <name-or-path>]
   kelpi graft status [--json]
-  kelpi web open [--private] <url>
+  kelpi web open [--private] [--focus] <url>
   kelpi web navigate <url> [--target <name-or-uuid>] [--workspace <name-or-uuid>]
   kelpi web url|back|forward|reload [--target <name-or-uuid>] [--workspace <name-or-uuid>] [--hard]
   kelpi web capture [--target <name-or-uuid>] [--workspace <name-or-uuid>] [--mode meta|text|screenshot]
@@ -156,9 +156,10 @@ or --workspace is given. Exit codes: 0 on success, non-zero on failure.
 
 export const paneSplitUsage = `Usage:
   kelpi pane split [--direction horizontal|vertical] [--path /dir] [--name <label>] \\
-                 [--target <name-or-uuid>] [--workspace <name-or-uuid>] [--json]
+                 [--target <name-or-uuid>] [--workspace <name-or-uuid>] [--focus] [--json]
 
-Splits a pane, creating a new one beside it.
+Splits a pane, creating a new one beside it. The new pane opens in the
+background: focus stays where it is unless --focus is given.
 
 Options:
   --target <name-or-uuid>     Pane to split (UUID = global, label needs scope).
@@ -167,6 +168,7 @@ Options:
   --direction h|v             Split direction (default horizontal).
   --path /dir                 Working directory for the new pane.
   --name <label>              Label for the new pane.
+  --focus                     Move focus to the new pane (default: background).
   --json                      Print the structured reply (incl. the new pane id).
   -h, --help                  Show this help.
 
@@ -177,10 +179,11 @@ carries the new pane's id. Exit codes: 0 on success, non-zero on failure.
 
 export const paneCreateUsage = `Usage:
   kelpi pane create [--path /dir] [--name <label>] [--workspace <name-or-uuid>] \\
-                  [--target <name-or-uuid>] [--json]
+                  [--target <name-or-uuid>] [--focus] [--json]
 
-Adds a pane to a workspace (splitting the focused pane, or creating the first
-pane if the workspace is empty).
+Adds a pane to a workspace (splitting the calling or focused pane, or creating
+the first pane if the workspace is empty). The new pane opens in the
+background: focus stays where it is unless --focus is given.
 
 Options:
   --workspace <name-or-uuid>  Workspace to create the pane in.
@@ -188,6 +191,7 @@ Options:
                               to --workspace).
   --path /dir                 Working directory for the new pane.
   --name <label>              Label for the new pane.
+  --focus                     Move focus to the new pane (default: background).
   --json                      Print the structured reply (incl. the new pane id).
   -h, --help                  Show this help.
 
@@ -588,7 +592,7 @@ in another workspace.
 `;
 
 export const webUsage = `Usage:
-  kelpi web open      [--private] <url>
+  kelpi web open      [--private] [--focus] <url>
   kelpi web navigate  [--target <name-or-uuid>] [--workspace <name-or-uuid>] <url>
   kelpi web url       [--target <name-or-uuid>] [--workspace <name-or-uuid>]
   kelpi web back     [--target <name-or-uuid>] [--workspace <name-or-uuid>]

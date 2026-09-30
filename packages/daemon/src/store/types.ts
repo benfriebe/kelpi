@@ -385,6 +385,12 @@ export type DomainAction =
           readonly now: number;
           readonly label?: string | null | undefined;
           readonly workingDirectory?: string | null | undefined;
+          /**
+           * #295: false opens the pane in the BACKGROUND (focus and its history untouched, as
+           * long as the workspace has a visible focused pane to keep). Absent means focus, which
+           * is what every internal dispatcher has always meant; only the wire handlers pass false.
+           */
+          readonly focus?: boolean | undefined;
       }
     | {
           readonly type: 'split-pane';
@@ -394,6 +400,8 @@ export type DomainAction =
           readonly now: number;
           readonly sourcePaneID?: string | undefined;
           readonly label?: string | null | undefined;
+          /** #295: false opens the pane in the background; see `create-pane`. */
+          readonly focus?: boolean | undefined;
       }
     | {
           readonly type: 'split-pane-at-path';
@@ -403,6 +411,13 @@ export type DomainAction =
           readonly now: number;
           readonly direction?: SplitDirection | undefined;
           readonly label?: string | null | undefined;
+          /**
+           * #295: the pane to split. Absent splits the FOCUSED pane (the original contract), so a
+           * background split names its source here instead of focusing it first.
+           */
+          readonly sourcePaneID?: string | undefined;
+          /** #295: false opens the pane in the background; see `create-pane`. */
+          readonly focus?: boolean | undefined;
       }
     | { readonly type: 'close-pane'; readonly workspaceID: string; readonly paneID: string }
     | {
@@ -469,6 +484,13 @@ export type DomainAction =
           readonly filePath: string;
           readonly now: number;
           readonly reusePaneID?: string | undefined;
+          /**
+           * #295: the pane to split beside when not reusing. Absent (or not a visible pane)
+           * splits the focused pane, else the first; the background `open` names the caller.
+           */
+          readonly sourcePaneID?: string | undefined;
+          /** #295: false opens the pane in the background; see `create-pane`. */
+          readonly focus?: boolean | undefined;
       }
     | {
           readonly type: 'open-diff-pane';
@@ -496,6 +518,8 @@ export type DomainAction =
           readonly isPrivate?: boolean | undefined;
           readonly sourcePaneID?: string | undefined;
           readonly direction?: SplitDirection | undefined;
+          /** #295: false opens the pane in the background; see `create-pane`. */
+          readonly focus?: boolean | undefined;
       }
     // ── web panes (tabs live in the sidecar; the browser itself is the shell's) ─
     | {

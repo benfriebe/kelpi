@@ -428,8 +428,14 @@ export class CommandClient {
 
     // ── pane verbs ─────────────────────────────────────────────────────────────────
 
+    /**
+     * #295: the pane-creating verbs default to `focus: true` here, and only here. On the wire an
+     * absent `focus` is a BACKGROUND open (what an agent's `kelpi pane split` gets), but every
+     * caller of these builders is one of the window's own gestures (⌘D, New Pane, the context
+     * menu, the inspector, ⌘O), and a pane the user just asked for takes the focus and the caret.
+     */
     splitPane(
-        input: PaneScope & { direction?: SplitDirection; path?: string; name?: string },
+        input: PaneScope & { direction?: SplitDirection; path?: string; name?: string; focus?: boolean },
         options?: SendOptions
     ): Promise<CommandReply> {
         return this.raw(
@@ -437,15 +443,24 @@ export class CommandClient {
                 ...scopeFields(input),
                 direction: input.direction,
                 path: input.path,
-                name: input.name
+                name: input.name,
+                focus: input.focus ?? true
             }),
             options ?? {}
         );
     }
 
-    createPane(input: PaneScope & { path?: string; name?: string }, options?: SendOptions): Promise<CommandReply> {
+    createPane(
+        input: PaneScope & { path?: string; name?: string; focus?: boolean },
+        options?: SendOptions
+    ): Promise<CommandReply> {
         return this.raw(
-            wirePayload('pane-create', { ...scopeFields(input), path: input.path, name: input.name }),
+            wirePayload('pane-create', {
+                ...scopeFields(input),
+                path: input.path,
+                name: input.name,
+                focus: input.focus ?? true
+            }),
             options ?? {}
         );
     }
@@ -804,9 +819,18 @@ export class CommandClient {
         return this.raw(wirePayload('layout-select', { pane_id: input.paneID, name: input.layout }), options ?? {});
     }
 
-    openFile(input: { path: string; paneID?: string; reuse?: boolean }, options?: SendOptions): Promise<CommandReply> {
+    /** #295: a gesture's open, so it focuses by default; see `splitPane`. */
+    openFile(
+        input: { path: string; paneID?: string; reuse?: boolean; focus?: boolean },
+        options?: SendOptions
+    ): Promise<CommandReply> {
         return this.raw(
-            wirePayload('open', { path: input.path, pane_id: input.paneID, reuse: input.reuse ?? false }),
+            wirePayload('open', {
+                path: input.path,
+                pane_id: input.paneID,
+                reuse: input.reuse ?? false,
+                focus: input.focus ?? true
+            }),
             options ?? {}
         );
     }

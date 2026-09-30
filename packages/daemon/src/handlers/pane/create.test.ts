@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { allPaneIDs } from '@kelpi/core/layout';
 
@@ -31,7 +31,8 @@ describe('pane-split', () => {
         expect(workspace.panes.map((pane) => pane.id)).toEqual([P1, NEW]);
         expect(allPaneIDs(workspace.layout)).toEqual([P1, NEW]);
         expect(workspace.layout).toMatchObject({ kind: 'split', direction: 'horizontal' });
-        expect(workspace.focusedPaneID).toBe(NEW);
+        // #295: no `focus` on the wire is a background split, so focus stays on the caller.
+        expect(workspace.focusedPaneID).toBe(P1);
     });
 
     it('spawns the new shell pane with the source cwd, merged env and terminal state', () => {
@@ -75,13 +76,13 @@ describe('pane-split', () => {
         expect(h.pty.spawns[0]?.cwd).toBe('/tmp/work');
     });
 
-    it('focuses the resolved source before splitting so split-at-path targets it', () => {
+    it('splits the resolved source at a path, not the focused pane, with focus: true', () => {
         const h = harness({ minted: [NEW] });
         seedWorkspace(h, { id: W1, name: 'dev', paneID: P1 });
         seedSplit(h, { workspaceID: W1, sourcePaneID: P1, paneID: P2, label: 'other' });
         expect(h.workspace(W1).focusedPaneID).toBe(P2);
 
-        h.run({ command: 'pane-split', pane_id: P1, target: P1, path: '/elsewhere' });
+        h.run({ command: 'pane-split', pane_id: P1, target: P1, path: '/elsewhere', focus: true });
 
         // The at-path split hangs off P1 (the resolved target), not the previously focused P2.
         const layout = h.workspace(W1).layout;
@@ -90,6 +91,10 @@ describe('pane-split', () => {
             first: { kind: 'split', first: { kind: 'leaf', paneID: P1 }, second: { kind: 'leaf', paneID: NEW } },
             second: { kind: 'leaf', paneID: P2 }
         });
+        // A focusing split still focuses the source first, so the history reads P2, P1 and
+        // closing the new pane hands focus back to the pane it came from.
+        expect(h.workspace(W1).focusedPaneID).toBe(NEW);
+        expect(h.workspace(W1).focusHistory).toEqual([P2, P1]);
     });
 
     it('--workspace alone beats the caller pane and picks the destination workspace', () => {
@@ -147,6 +152,83 @@ describe('pane-split', () => {
         const h = seeded();
         h.runSilent({ command: 'pane-split', pane_id: P1 });
         expect(h.workspace(W1).panes.map((pane) => pane.id)).toEqual([P1, NEW]);
+    });
+});
+
+/**
+ * #295: a create with no `focus` is a BACKGROUND create. The user is typing in P2 while an agent
+ * in P1 (its `KELPI_PANE_ID`) spawns a pane: the pane lands beside P1, and neither the focused
+ * pane nor its history moves. `focus: true` is the old behaviour, which the window's gestures
+ * and `--focus` ask for.
+ */
+describe('background vs focusing creates (#295)', () => {
+    function userTypingInP2() {
+        const h = harness({ minted: [NEW] });
+        seedWorkspace(h, { id: W1, name: 'dev', paneID: P1, path: '/repo' });
+        seedSplit(h, { workspaceID: W1, sourcePaneID: P1, paneID: P2, label: 'user' });
+        const before = h.workspace(W1);
+        expect(before.focusedPaneID).toBe(P2);
+        return { h, history: before.focusHistory };
+    }
+
+    const besideP1 = {
+        kind: 'split',
+        first: { kind: 'split', first: { kind: 'leaf', paneID: P1 }, second: { kind: 'leaf', paneID: NEW } },
+        second: { kind: 'leaf', paneID: P2 }
+    };
+
+    const backgroundCases = [
+        { label: 'pane-split', msg: { command: 'pane-split', pane_id: P1 } },
+        { label: 'pane-split --path', msg: { command: 'pane-split', pane_id: P1, path: '/tmp/work' } },
+        { label: 'pane-split focus:false', msg: { command: 'pane-split', pane_id: P1, focus: false } },
+        { label: 'pane-create', msg: { command: 'pane-create', pane_id: P1 } },
+        { label: 'pane-create --path', msg: { command: 'pane-create', pane_id: P1, path: '/tmp/work' } }
+    ] as const;
+
+    for (const { label, msg } of backgroundCases) {
+        it(`${label}: lands beside the caller and leaves focus and its history alone`, () => {
+            const { h, history } = userTypingInP2();
+            const dispatch = vi.spyOn(h.store, 'dispatch');
+
+            h.run(msg);
+
+            const workspace = h.workspace(W1);
+            expect(workspace.layout).toMatchObject(besideP1);
+            expect(workspace.focusedPaneID).toBe(P2);
+            expect(workspace.focusHistory).toEqual(history);
+            // …and the caller was never focused on the way (no pre-focus of the source).
+            const types = dispatch.mock.calls.map(([action]) => action.type);
+            expect(types).not.toContain('focus-pane');
+            expect(types.some((type) => type === 'split-pane' || type === 'split-pane-at-path')).toBe(true);
+        });
+    }
+
+    it('a --workspace-alone background split hangs off that workspace\'s focused pane without focusing', () => {
+        const { h, history } = userTypingInP2();
+        h.run({ command: 'pane-split', workspace: 'dev' });
+        const workspace = h.workspace(W1);
+        expect(allPaneIDs(workspace.layout)).toEqual([P1, P2, NEW]);
+        expect(workspace.focusedPaneID).toBe(P2);
+        expect(workspace.focusHistory).toEqual(history);
+    });
+
+    for (const command of ['pane-split', 'pane-create'] as const) {
+        it(`${command} with focus: true moves focus to the new pane, as it always did`, () => {
+            const { h } = userTypingInP2();
+            h.run({ command, pane_id: P1, focus: true });
+            const workspace = h.workspace(W1);
+            expect(workspace.layout).toMatchObject(besideP1);
+            expect(workspace.focusedPaneID).toBe(NEW);
+            expect(workspace.focusHistory.slice(-2)).toEqual([P2, P1]);
+        });
+    }
+
+    it('the first pane of an empty workspace takes focus even in the background', () => {
+        const h = harness({ minted: [NEW] });
+        seedWorkspace(h, { id: W1, name: 'dev', paneID: P1 });
+        h.store.dispatch({ type: 'close-pane', workspaceID: W1, paneID: P1 });
+        h.run({ command: 'pane-create', workspace: 'dev' });
+        expect(h.workspace(W1).focusedPaneID).toBe(NEW);
     });
 });
 

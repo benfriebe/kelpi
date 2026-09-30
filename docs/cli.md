@@ -554,7 +554,7 @@ non-empty; exits 1 (no output) otherwise.
 
 ```
 kelpi pane split [--direction horizontal|vertical] [--path /dir] [--name <label>]
-               [--target <name-or-uuid>] [--workspace <name-or-uuid>] [--json]
+               [--target <name-or-uuid>] [--workspace <name-or-uuid>] [--focus] [--json]
 ```
 
 - `--help`/`-h`: usage to stdout, exit 0.
@@ -562,14 +562,22 @@ kelpi pane split [--direction horizontal|vertical] [--path /dir] [--name <label>
 - Requires at least one of `--target`, `--workspace`, or a non-empty `KELPI_PANE_ID`;
   otherwise: `kelpi pane split: requires --target <name-or-uuid> or --workspace <name-or-id> when called from outside a Kelpi pane`
   + usage to stderr, exit 1.
-- Payload: `{"command":"pane-split", direction?, path?, name?, target?, workspace?, pane_id?}`
+- Payload: `{"command":"pane-split", direction?, path?, name?, target?, workspace?, pane_id?, focus?}`
   (pane_id = non-empty `KELPI_PANE_ID`). Direction is forwarded verbatim (server defaults it,
-  the CLI performs no validation).
+  the CLI performs no validation). `focus` is sent as `true` only with `--focus`; without it
+  the key is absent.
+- **Background by default (issue #295).** The new pane opens in the background: it joins the
+  layout beside its source, and the workspace's focused pane, its focus history and the
+  window's keyboard caret stay where they were, so an agent spawning panes never pulls the
+  user's typing into the wrong pane. The source pane is not focused either. `--focus` moves
+  focus (and the caret) to the new pane, as every split did before #295. The window's own
+  gestures (⌘D and the other split commands) still focus the new pane.
 - Request/response via the shared pane-mutation printer (9.2.1). The reply carries the
   **newly created** pane's id.
 
 Server semantics (contract): with `--target`, splits that pane; with only `--workspace`,
-splits that workspace's focused pane; with neither, splits the caller pane. Reply includes
+splits that workspace's focused pane; with neither, splits the caller pane. Focus moves only
+with `focus:true` (see above). Reply includes
 `pane_id` (new pane), `workspace_id`, `workspace_name`, `label?`.
 
 #### 9.2.1 Shared pane-mutation printer (`split`/`create`/`name`)
@@ -586,18 +594,21 @@ Decodes via `decodeReply` under the label `kelpi pane <verb>`. Then:
 
 ```
 kelpi pane create [--path /dir] [--name <label>] [--workspace <name-or-uuid>]
-                [--target <name-or-uuid>] [--json]
+                [--target <name-or-uuid>] [--focus] [--json]
 ```
 
 Same structure as split (help, leftover rejection, outside-pane guard with message
 `requires --workspace <name-or-id> or --target <name-or-uuid> when called from outside a Kelpi pane`).
-Payload: `{"command":"pane-create", path?, name?, target?, workspace?, pane_id?}`.
-Printer verb: `created pane`.
+Payload: `{"command":"pane-create", path?, name?, target?, workspace?, pane_id?, focus?}`.
+Printer verb: `created pane`. Like `split`, the new pane opens in the background unless
+`--focus` is given (issue #295); the first pane of an empty workspace takes that workspace's
+focus either way, since there is no focused pane to keep.
 
 Server semantics (contract): destination workspace precedence is `--target`'s workspace >
 `--workspace` (wins over the caller's forwarded pane_id) > caller pane's workspace. Into an
 empty workspace, creates the first pane (with the label/path applied); otherwise splits the
-focused pane. Reply carries the real new pane id.
+caller's pane (or, with `--workspace` alone, that workspace's focused pane). Reply carries the
+real new pane id.
 
 ### 9.4 `kelpi pane close`
 
@@ -1351,19 +1362,23 @@ Note the interaction: `./google.com` is a file (explicit path); an existing loca
 `report.pdf` in the cwd stays local even though `.pdf` is a web extension type — it goes
 through the file router (which then routes it to a web pane as `file://`).
 
-### 13.4 `kelpi open [--here] <path-or-url>`
+### 13.4 `kelpi open [--here] [--focus] <path-or-url>`
 
-- `-h|--help|help` as first arg: 4-line help to stdout, exit 0:
+- `-h|--help|help` as first arg: 5-line help to stdout, exit 0:
 
   ```
-  Usage: kelpi open [--here] <path-or-url>
+  Usage: kelpi open [--here] [--focus] <path-or-url>
   URLs & hostnames (google.com, https://…, localhost:3000) → web pane.
   Local files route by type: .md/.markdown → markdown pane;
   .html/.htm/.pdf/.svg and images (.png/.jpg/.gif/.webp) → web pane.
+  The new pane opens in the background; --focus moves focus to it.
   ```
 
-- `--here` popped; then exactly one positional required and it must not start with `-`,
-  else usage to stderr, exit 1.
+- `--here` and `--focus` popped; then exactly one positional required and it must not start
+  with `-`, else usage to stderr, exit 1.
+- **Background by default (issue #295).** Every route opens its pane in the background: the
+  focused pane and the keyboard caret stay put. `--focus` adds `"focus":true` to whichever
+  wire command the route sends (`open` or `web-open`) and the new pane takes the focus.
 - If `webTargetForOpenArg` returns a URL: if `--here` was given, print
   `kelpi open: --here is ignored for URLs (web panes always open in a new pane)` to stderr;
   then send `web-open` (13.7) and print its ack. Request/response.
@@ -1382,10 +1397,11 @@ through the file router (which then routes it to a web pane as `file://`).
            Use `kelpi md <file>` to force a markdown pane, or `kelpi web open <url>`.
     ```
 
-### 13.5 `kelpi md [--here] <filepath>`
+### 13.5 `kelpi md [--here] [--focus] <filepath>`
 
-- Help token as first arg: `Usage: kelpi md [--here] <filepath>` to stdout, exit 0.
-- `--here` popped; one positional required, must not start with `-`, else usage, exit 1.
+- Help token as first arg: `Usage: kelpi md [--here] [--focus] <filepath>` to stdout, exit 0.
+- `--here` and `--focus` popped; one positional required, must not start with `-`, else
+  usage, exit 1. Background by default, as `open` (13.4).
 - Always the markdown route (13.6) regardless of extension (the escape hatch for forcing
   markdown on any file). The path is standardized to absolute against cwd.
 
@@ -1397,14 +1413,19 @@ Fire-and-forget payload:
 {"command":"open","path":"/abs/standardized/path.md","pane_id":"<KELPI_PANE_ID if set, even empty>","reuse":true}
 ```
 
-`reuse` present only with `--here` (reuse the calling pane instead of opening a new one).
-Note this path forwards `KELPI_PANE_ID` even when it is an empty string (plain `if let`, no
-isEmpty check).
+`reuse` present only with `--here` (reuse the calling pane instead of opening a new one);
+`focus` (`true`) present only with `--focus`. Note this path forwards `KELPI_PANE_ID` even when
+it is an empty string (plain `if let`, no isEmpty check).
+
+Without `focus` the preview splits beside the calling pane and the user's focus does not move.
+A background `--here` still swaps the calling pane for the preview (that is what `--here`
+asks for); the focus stays where it was unless the calling pane itself was the focused one, in
+which case the preview inherits it, because focus cannot stay on a pane that was just parked.
 
 ### 13.7 `kelpi open`'s web route
 
-Request/response payload `{"command":"web-open","url":<url>, pane_id?}` (pane_id only when
-`KELPI_PANE_ID` non-empty), decoded via the standard envelope and printed with the basic web
+Request/response payload `{"command":"web-open","url":<url>, pane_id?, focus?}` (pane_id only when
+`KELPI_PANE_ID` non-empty, focus only with `--focus`), decoded via the standard envelope and printed with the basic web
 printer under the label/verb `open`: `open ok: <pane_id>[ (<url>)]`.
 
 ### 13.8 `kelpi diff [<path>]`
@@ -1486,7 +1507,7 @@ errors), a UUID target is global, a label target resolves in the scoped workspac
   keys) BEFORE the ok check, so failures still dump their JSON.
 - `ok == false`: without `--json`, `kelpi web <verb>: <error>` to stderr; either way exit 1.
 
-### 15.3 `kelpi web open [--private] <url>`
+### 15.3 `kelpi web open [--private] [--focus] <url>`
 
 - Explicit `--target`/`--workspace` present anywhere => 3-line error, exit 1:
 
@@ -1500,8 +1521,13 @@ errors), a UUID target is global, a label target resolves in the scoped workspac
   (`kelpi web open: unexpected option '<x>' (URL must not start with '-')`).
 - URL is passed through `localFileURL` first (13.2); the file URL replaces the argument
   when it resolves. Payload: `{"command":"web-open","url":...,
-  "private":true?, pane_id?}`.
+  "private":true?, pane_id?, "focus":true?}`.
 - Printed with the basic printer: `open ok: <pane_id>[ (<url>)]`.
+- **Background by default (issue #295).** The web pane opens without taking the focus or the
+  keyboard caret; a blank page (`about:blank`) does not hand its URL bar the caret either.
+  `--focus` sends `"focus":true` and the pane takes the focus as it did before #295. The
+  window's globe button and ⌘⇧O always focus the pane they open. Where the pane lands is
+  unchanged: it still splits the workspace's focused pane.
 
 ### 15.4 `kelpi web navigate <url> [--target X] [--workspace Y]`
 

@@ -151,7 +151,7 @@ Invariants: `seq` is per-pane-buffer monotonic; `entries(since:N)` returns inser
 | Menu bar **File → New Web Pane** / ⌘⇧O (`open_web_pane`, default-bound) | the client sends `web-open` (§3.3) with `pane_id` = `target` = the focused pane (`packages/client/src/App.tsx:1651-1660`) | new blank pane split off the *focused* pane, URL bar auto-focused |
 | Pane-header globe button | `web-open` with `target` = that pane and `direction`: click = split right (`horizontal`), ⇧-click = split down (`vertical`) | new blank pane split off *that* pane |
 | Pane context menu "New Web Pane" | same, direction horizontal | |
-| `kelpi web open [--private] <url>` | wire `web-open` | new pane in caller's workspace (below) |
+| `kelpi web open [--private] [--focus] <url>` | wire `web-open` | new pane in caller's workspace, in the background unless `--focus` (below) |
 | `kelpi open <url-or-hostname>` / `kelpi open <web-file>` | routes to `web-open` CLI-side (§8.3) | same |
 | Favourites menu entry / URL bar submit on an existing pane | navigates, does not open |
 
@@ -165,9 +165,9 @@ Algorithm:
 2. Build pane: `type: "web"`, `title: "Web"`, `workingDirectory: $HOME`, timestamps = now.
 3. `webPanes[paneID] = { tabs: [tab], activeTabID: tabID, isPrivate }`.
 4. If `reusePaneID` given and that pane exists (the `--here`-style park path — currently no caller passes it, but the machinery mirrors markdown's): cancel any active search on the reused pane, restore a zoom-saved layout, mark the new pane with `parkedSourcePaneID = reusePaneID`, replace the old leaf in the layout with the new pane, move the old pane into `parkedPanes` (closing the web pane later un-parks it). Focus new pane. Done.
-5. Otherwise split: source = `sourcePaneID ?? focusedPaneID`. If a zoomed layout was saved, restore it first. Split the source leaf in `direction`, insert new pane; if there is no source (empty workspace), layout becomes a single leaf. Append pane, focus it, reset the predefined-layout index.
+5. Otherwise split: source = `sourcePaneID ?? focusedPaneID`. If a zoomed layout was saved, restore it first. Split the source leaf in `direction`, insert new pane; if there is no source (empty workspace), layout becomes a single leaf. Append pane, reset the predefined-layout index, and focus it unless the action carries `focus: false` (issue #295: a background open keeps the workspace's focused pane and history, unless there is no visible focused pane to keep).
 
-Blank-URL opens (`url === ""`) additionally make the client focus the fresh pane's URL bar (`packages/client/src/webpane/hooks.ts:179-217`: the client diffs the blank web panes on screen against its last snapshot, so a reload or re-attach adopts restored blank panes without stealing the caret, and only a pane that appeared after the first snapshot is treated as an open). The focus request must win the race against the web view claiming keyboard focus: the client hands the keyboard to the page only when no chrome text field holds the caret (`packages/client/src/webpane/WebPane.tsx:599-618`).
+Blank-URL opens (`url === ""`) that arrive focused additionally make the client focus the fresh pane's URL bar (a blank pane opened in the background leaves the caret where it was, issue #295) (`packages/client/src/webpane/hooks.ts:179-217`: the client diffs the blank web panes on screen against its last snapshot, so a reload or re-attach adopts restored blank panes without stealing the caret, and only a pane that appeared after the first snapshot is treated as an open). The focus request must win the race against the web view claiming keyboard focus: the client hands the keyboard to the page only when no chrome text field holds the caret (`packages/client/src/webpane/WebPane.tsx:599-618`).
 
 ### 3.3 `web-open` socket handler (`handleWebOpen`)
 
@@ -175,6 +175,7 @@ Implemented in `packages/daemon/src/webpane/handlers.ts:181-229`.
 
 - Target workspace: if the wire `pane_id` (caller's `KELPI_PANE_ID`) resolves to a pane, use *that pane's workspace*; else the active workspace. (So `kelpi web open` from a background-workspace pane lands next to the caller.) No workspace at all → `{"ok":false,"error":"no active workspace"}`.
 - Blank opens: the wire requires a non-empty `url` (§8.2), so the GUI's New Web Pane (globe, context menu, ⌘⇧O) sends `url: "about:blank"` as its stand-in; the handler maps `about:blank` to `""` before the reply and the reducer, so the pane is the blank one §3.2 describes (one tab with url `""`, URL bar focused) rather than a tab holding an `about:blank` page (`handlers.ts`, issue #50). `kelpi web open about:blank` means the same thing.
+- Optional `focus` (bool, issue #295): absent or false opens the pane in the **background** (the workspace's focused pane and the caret stay put); `true` focuses it. The client's globe button, context menu and ⌘⇧O send `true`; `kelpi web open` sends it only with `--focus`.
 - Optional `target` + `direction` (`packages/protocol/src/wire/decode.ts:417-431`): `target` names the pane to split off, honoured only when it is a visible pane of the routed workspace, otherwise the focused pane is split (`handlers.ts:188-204`); `direction` defaults to horizontal and an unrecognised value reads as absent, so a typo never drops the open. The client's globe button (click = `horizontal`, ⇧-click = `vertical`) and pane context menu send both (`packages/client/src/App.tsx:1651-1660`); the CLI never does (§8.6).
 - Mint `newPaneID`, `newTabID`; reply **immediately** (before the state mutation):
 

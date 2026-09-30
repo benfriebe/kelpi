@@ -273,13 +273,15 @@ export default async function ({ page, cli, rec, d, sleep }) {
 
         /*
          * "opening claude shell / btw sometimes triggers the no typing bug". A single `pane create`
-         * self-corrects (the daemon focuses the new pane and a lone new engine claims correctly);
+         * self-corrects (with `--focus` the daemon focuses the new pane and a lone new engine claims correctly);
          * two in quick succession are the failing shape, because the second engine can finish after
          * the first and hand the caret to whatever the arbiter thinks owns it.
          */
+        // `--focus`: since #295 a CLI create opens in the background, and this route is about
+        // spawns that DO take the ring, one after another.
         const spawned = [];
-        spawned.push(JSON.parse(await cli.ok(['pane', 'create', '--workspace', 'Two', '--json'])).pane_id);
-        spawned.push(JSON.parse(await cli.ok(['pane', 'create', '--workspace', 'Two', '--json'])).pane_id);
+        spawned.push(JSON.parse(await cli.ok(['pane', 'create', '--workspace', 'Two', '--focus', '--json'])).pane_id);
+        spawned.push(JSON.parse(await cli.ok(['pane', 'create', '--workspace', 'Two', '--focus', '--json'])).pane_id);
         rec.note(`spawned ${spawned.join(', ')}`);
         await enginesUp(page, d, rec, 5, 'workspace Two after the two spawns');
         await sleep(1_200);

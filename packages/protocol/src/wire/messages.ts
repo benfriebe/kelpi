@@ -75,12 +75,20 @@ export interface PaneSplitMessage extends PaneTargetScope {
     direction?: SplitDirection | undefined;
     path?: string | undefined;
     name?: string | undefined;
+    /**
+     * #295: take focus. Absent (or false) opens the new pane in the BACKGROUND: it joins the
+     * layout and the workspace's focused pane does not change, so a user typing in another pane
+     * keeps typing there. The window's own gestures send `true`; `kelpi ... --focus` does too.
+     */
+    focus?: boolean | undefined;
 }
 
 export interface PaneCreateMessage extends PaneTargetScope {
     command: 'pane-create';
     path?: string | undefined;
     name?: string | undefined;
+    /** #295: as on `pane-split`; absent means background. */
+    focus?: boolean | undefined;
 }
 
 export interface PaneCloseMessage extends PaneTargetScope {
@@ -349,6 +357,8 @@ export interface OpenMessage {
     path: string;
     pane_id?: string | undefined;
     reuse: boolean;
+    /** #295: as on `pane-split`; absent means background. */
+    focus?: boolean | undefined;
 }
 
 export interface DiffMessage {
@@ -403,6 +413,8 @@ export interface WebOpenMessage {
      */
     target?: string | undefined;
     direction?: SplitDirection | undefined;
+    /** #295: as on `pane-split`; absent means background. */
+    focus?: boolean | undefined;
 }
 
 export interface WebNavigateMessage extends PaneTargetScope {

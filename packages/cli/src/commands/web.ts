@@ -115,11 +115,17 @@ export async function printBasicWebReply(payload: JsonObject, command: string): 
     printLine(`${command} ok: ${paneID}${url !== undefined ? ` (${url})` : ''}`);
 }
 
-/** `kelpi open`'s web route reuses `web open`'s wire command and printer. */
-export async function sendWebOpen(url: string): Promise<void> {
+/**
+ * `kelpi open`'s web route reuses `web open`'s wire command and printer.
+ *
+ * #295: `focus` is sent only when true. Absent, the daemon opens the pane in the background, so
+ * an agent opening a page never pulls the keyboard out of the pane the user is typing in.
+ */
+export async function sendWebOpen(url: string, focus = false): Promise<void> {
     const payload: JsonObject = { command: 'web-open', url };
     const origin = originPaneID();
     if (origin !== undefined) payload['pane_id'] = origin;
+    if (focus) payload['focus'] = true;
     await printBasicWebReply(payload, 'open');
 }
 
@@ -196,6 +202,7 @@ export async function handleWeb(args: string[]): Promise<void> {
 
 async function webOpen(args: string[]): Promise<void> {
     const isPrivate = popSwitch('--private', args);
+    const focus = popSwitch('--focus', args);
     if (args.includes('--target') || args.includes('--workspace')) {
         errLine('kelpi web open: --target / --workspace are not supported (open always creates a new pane).');
         errLine(
@@ -206,7 +213,7 @@ async function webOpen(args: string[]): Promise<void> {
     }
     const url = args.shift();
     if (url === undefined || url.length === 0) {
-        errLine('Usage: kelpi web open [--private] <url>');
+        errLine('Usage: kelpi web open [--private] [--focus] <url>');
         exit(1);
     }
     if (url.startsWith('-')) {
@@ -217,6 +224,7 @@ async function webOpen(args: string[]): Promise<void> {
     if (isPrivate) payload['private'] = true;
     const origin = originPaneID();
     if (origin !== undefined) payload['pane_id'] = origin;
+    if (focus) payload['focus'] = true;
     await printBasicWebReply(payload, 'open');
 }
 

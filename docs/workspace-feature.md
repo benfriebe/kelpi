@@ -821,14 +821,16 @@ currentLayoutIndex = null
 effect: spawn surface (5.3) for id at pane.workingDirectory
 ```
 
-**splitPaneAtPath(path, label?: string, direction = "horizontal", newPaneID?: string)**
+**splitPaneAtPath(path, label?: string, direction = "horizontal", newPaneID?: string, sourcePaneID?: string)**
 
-Same as splitPane but the new pane's working directory is the given path, and the split
-source is ALWAYS the focused pane:
+Same as splitPane but the new pane's working directory is the given path. The split source
+is `sourcePaneID` when given (it must be a visible pane, else no-op; issue #295 added it so a
+background split need not focus its source first), else the focused pane:
 
 ```
 restoreZoomIfNeeded()
-guard sourceID = focusedPaneID else no-op
+if sourcePaneID given: guard visible pane with sourcePaneID else no-op
+guard sourceID = sourcePaneID ?? focusedPaneID else no-op
 // note: does NOT verify the focused pane exists in `panes` or in the layout;
 // if focusedPaneID is stale the split is a structural no-op but the new pane is
 // still appended (orphaned). Invariant: focusedPaneID must always be a live leaf.
@@ -838,6 +840,15 @@ layout = splitting(layout, sourceID, direction, id)
 panes.push(pane); apply label; setFocus(id); currentLayoutIndex = null
 effect: spawn surface (5.3)
 ```
+
+**Background creates (issue #295).** `createPane`, `splitPane`, `splitPaneAtPath`,
+`openMarkdownPane` and `openWebPane` all take an optional `focus` flag. Absent or `true`
+ends in `setFocus(id)` as above. `false` (what the socket handlers pass for a CLI or agent
+create without `--focus`) skips it: the new pane joins the layout and `focusedPaneID` and
+`focusHistory` are untouched, unless the workspace has no visible focused pane to keep (an
+empty workspace's first pane, or a `--here` reuse that just parked the focused pane), in
+which case the new pane takes the focus anyway (`focusCreatedPane` in
+`packages/daemon/src/store/reducers/helpers.ts`).
 
 ### 7.3 Scratchpad
 

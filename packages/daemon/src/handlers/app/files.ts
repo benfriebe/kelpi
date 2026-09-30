@@ -71,7 +71,14 @@ export function fileHandlerEntries(deps: AppDeps): readonly (readonly [string, A
             const target = route(state, msg.pane_id);
             if (target === null) return;
             const filePath = resolveAgainstPane(state, target, msg.path);
-            if (target.paneID !== null) {
+            /*
+             * #295: only a FOCUSING open (the window's ⌘O, Finder, a drop, `--focus`) focuses the
+             * caller first, which is what makes the preview split beside it. A background open
+             * (an agent's `kelpi open`) names the caller as the split source instead, so the pane
+             * lands in the same place and the user's focus never moves.
+             */
+            const focus = msg.focus === true;
+            if (focus && target.paneID !== null) {
                 ctx.store.dispatch({
                     type: 'focus-pane',
                     workspaceID: target.workspaceID,
@@ -85,7 +92,9 @@ export function fileHandlerEntries(deps: AppDeps): readonly (readonly [string, A
                 filePath,
                 now: deps.now(),
                 // Reuse only applies to the caller's own pane; the fallback branch never reuses.
-                ...(msg.reuse && target.paneID !== null ? { reusePaneID: target.paneID } : {})
+                ...(msg.reuse && target.paneID !== null ? { reusePaneID: target.paneID } : {}),
+                ...(target.paneID !== null ? { sourcePaneID: target.paneID } : {}),
+                focus
             });
             // `--here` parks a shell, which changes the sync broadcast group.
             refreshSyncGroup(ctx, target.workspaceID);

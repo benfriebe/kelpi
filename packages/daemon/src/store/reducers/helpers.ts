@@ -136,6 +136,27 @@ export function setFocus(workspace: WorkspaceState, newID: string | null): Works
     return { ...workspace, focusedPaneID: newID, focusHistory: history };
 }
 
+/**
+ * #295: the last step of every pane-creating reducer. `focus: false` is a BACKGROUND open (an
+ * agent or the CLI made the pane while the user may be typing elsewhere): the new pane joins
+ * the layout and focus, with its history, stays exactly where it was.
+ *
+ * The one exception is a workspace with no visible focused pane to keep: an empty workspace's
+ * first pane, or a `--here` open that just parked the focused pane. Leaving focus there would
+ * point it at nothing, so the new pane takes it, as it always has.
+ */
+export function focusCreatedPane(
+    workspace: WorkspaceState,
+    newID: string,
+    focus: boolean | undefined
+): WorkspaceState {
+    if (focus === false) {
+        const current = workspace.focusedPaneID;
+        if (current !== null && findVisiblePane(workspace, current) !== null) return workspace;
+    }
+    return setFocus(workspace, newID);
+}
+
 export interface PoppedFocus {
     readonly history: readonly string[];
     /** Most-recent VISIBLE pane id; dead/parked entries are discarded on the way. */

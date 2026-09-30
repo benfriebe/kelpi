@@ -232,7 +232,10 @@ export function webHandlerEntries(deps: AppDeps): readonly (readonly [string, Ap
                 now: now(),
                 isPrivate: msg.private,
                 sourcePaneID,
-                direction: msg.direction
+                direction: msg.direction,
+                // #295: background unless asked. The pane still splits the focused pane when no
+                // `target` names one (Swift parity, above); it just does not take the focus.
+                focus: msg.focus === true
             });
             // The pane itself is daemon state; the host learns about it through the store
             // subscription in `./service.ts` (and on its next registration).

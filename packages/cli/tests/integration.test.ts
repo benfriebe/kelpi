@@ -170,6 +170,37 @@ describe('request/response', () => {
         });
     });
 
+    /**
+     * #295: new panes open in the BACKGROUND unless asked. Without `--focus` the CLI sends no
+     * `focus` field at all (the daemon's default is background); with it, `focus: true`.
+     */
+    it('sends focus: true only with --focus on pane split and pane create', async () => {
+        server.respond(() => ({ lines: [{ ok: true, pane_id: OTHER, workspace_name: 'alpha', workspace_id: PANE }] }));
+
+        await runCLI(['pane', 'split', '--focus', '--name', 'w'], { port: server.port, paneID: PANE });
+        expect(await lastRequest()).toEqual({ command: 'pane-split', name: 'w', pane_id: PANE, focus: true });
+
+        await runCLI(['pane', 'split', '--name', 'w'], { port: server.port, paneID: PANE });
+        expect(await lastRequest()).toEqual({ command: 'pane-split', name: 'w', pane_id: PANE });
+
+        await runCLI(['pane', 'create', '--workspace', 'alpha', '--focus'], { port: server.port });
+        expect(await lastRequest()).toEqual({ command: 'pane-create', workspace: 'alpha', focus: true });
+
+        await runCLI(['pane', 'create', '--workspace', 'alpha'], { port: server.port });
+        expect(await lastRequest()).toEqual({ command: 'pane-create', workspace: 'alpha' });
+    });
+
+    it('documents --focus and the background default in pane split/create help', async () => {
+        for (const verb of ['split', 'create']) {
+            const help = await runCLI(['pane', verb, '--help'], { port: server.port });
+            expect(help.code).toBe(0);
+            expect(help.stdout).toContain('[--focus]');
+            expect(help.stdout).toContain('--focus                     Move focus to the new pane (default: background).');
+            expect(help.stdout).toContain('The new pane opens in the');
+        }
+        expect(server.requests).toHaveLength(0);
+    });
+
     it('exits 1 with the server\'s error on stderr and nothing on stdout', async () => {
         server.respond(() => ({ lines: [{ ok: false, error: "no pane matched target 'ghost'" }] }));
         const result = await runCLI(['pane', 'close', '--target', 'ghost', '--workspace', 'alpha'], {
@@ -553,6 +584,38 @@ describe('open / md / diff routing', () => {
         server.respond(() => ({ lines: [{ ok: true, pane_id: OTHER }] }));
         await runCLI(['open', 'page one.html'], { port: server.port, cwd: home });
         expect(String((await lastRequest())['url']).endsWith('/page%20one.html')).toBe(true);
+    });
+
+    /** #295: `--focus` rides every route `kelpi open` / `kelpi md` can take; absent sends nothing. */
+    it('sends focus: true only with --focus, on the markdown and web routes alike', async () => {
+        const home = scratchHome();
+        fs.writeFileSync(path.join(home, 'notes.md'), '# hi\n');
+        server.respond(() => ({ lines: [{ ok: true, pane_id: OTHER, url: 'https://example.com' }] }));
+
+        await runCLI(['open', '--focus', 'notes.md'], { port: server.port, cwd: home, paneID: PANE });
+        expect(await lastRequest()).toEqual({
+            command: 'open',
+            path: path.join(home, 'notes.md'),
+            pane_id: PANE,
+            focus: true
+        });
+        await runCLI(['open', 'notes.md'], { port: server.port, cwd: home, paneID: PANE });
+        expect(await lastRequest()).toEqual({ command: 'open', path: path.join(home, 'notes.md'), pane_id: PANE });
+
+        await runCLI(['md', '--focus', 'notes.md'], { port: server.port, cwd: home });
+        expect(await lastRequest()).toEqual({ command: 'open', path: path.join(home, 'notes.md'), focus: true });
+
+        await runCLI(['open', '--focus', 'example.com'], { port: server.port });
+        expect(await lastRequest()).toEqual({ command: 'web-open', url: 'example.com', focus: true });
+
+        await runCLI(['web', 'open', '--focus', 'example.com'], { port: server.port, paneID: PANE });
+        expect(await lastRequest()).toEqual({ command: 'web-open', url: 'example.com', pane_id: PANE, focus: true });
+        await runCLI(['web', 'open', 'example.com'], { port: server.port, paneID: PANE });
+        expect(await lastRequest()).toEqual({ command: 'web-open', url: 'example.com', pane_id: PANE });
+
+        const help = await runCLI(['open', '--help'], { port: server.port });
+        expect(help.stdout).toContain('Usage: kelpi open [--here] [--focus] <path-or-url>');
+        expect(help.stdout).toContain('The new pane opens in the background; --focus moves focus to it.');
     });
 
     it('refuses a file type it has no pane for', async () => {

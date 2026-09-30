@@ -1,3 +1,4 @@
+import { allPaneIDs } from '@kelpi/core/layout';
 import { WIRE_COMMANDS } from '@kelpi/protocol';
 import { describe, expect, it } from 'vitest';
 
@@ -70,9 +71,9 @@ describe('layout commands', () => {
 // ---------------------------------------------------------------------------
 
 describe('open', () => {
-    it('focuses the caller pane and opens a markdown pane in its workspace', () => {
+    it('with focus: true focuses the caller pane and opens a markdown pane in its workspace', () => {
         const h = harness({ initial: seeded(2), ids: [PNEW] });
-        expect(h.send({ command: 'open', path: '/docs/readme.md', pane_id: P1 })).toEqual([]);
+        expect(h.send({ command: 'open', path: '/docs/readme.md', pane_id: P1, focus: true })).toEqual([]);
         const workspace = h.state().workspaces[0];
         expect(workspace?.panes.map((pane) => pane.id)).toEqual([P1, PNEW]);
         expect(workspace?.panes[1]).toMatchObject({
@@ -83,6 +84,64 @@ describe('open', () => {
         });
         expect(workspace?.focusedPaneID).toBe(PNEW);
         expect(workspace?.parkedPanes).toEqual([]);
+    });
+
+    /**
+     * #295: the user is typing in P3 while an agent in P1 runs `kelpi open notes.md`. The preview
+     * lands beside P1 (the caller, named as the split source rather than focused first), and
+     * P3 keeps the focus and its history.
+     */
+    function userTypingInP3() {
+        const P3 = id('dddddddd', 3);
+        const h = harness({ initial: seeded(1), ids: [PNEW] });
+        h.dispatch({ type: 'split-pane', workspaceID: W1, paneID: P3, direction: 'horizontal', sourcePaneID: P1, now: NOW });
+        const before = h.state().workspaces[0];
+        expect(before?.focusedPaneID).toBe(P3);
+        return { h, P3, history: before?.focusHistory };
+    }
+
+    it('in the background (no focus field) lands beside the caller and leaves focus alone', () => {
+        const { h, P3, history } = userTypingInP3();
+        h.send({ command: 'open', path: '/docs/readme.md', pane_id: P1 });
+        const workspace = h.state().workspaces[0];
+        expect(workspace?.layout).toMatchObject({
+            kind: 'split',
+            first: { kind: 'split', first: { kind: 'leaf', paneID: P1 }, second: { kind: 'leaf', paneID: PNEW } },
+            second: { kind: 'leaf', paneID: P3 }
+        });
+        expect(workspace?.focusedPaneID).toBe(P3);
+        expect(workspace?.focusHistory).toEqual(history);
+    });
+
+    it('with focus: true lands in the same place and takes the focus', () => {
+        const { h } = userTypingInP3();
+        h.send({ command: 'open', path: '/docs/readme.md', pane_id: P1, focus: true });
+        const workspace = h.state().workspaces[0];
+        expect(allPaneIDs(workspace?.layout ?? { kind: 'empty' })).toEqual([P1, PNEW, id('dddddddd', 3)]);
+        expect(workspace?.focusedPaneID).toBe(PNEW);
+    });
+
+    it('a background --here swaps the caller for the preview without moving the user\'s focus', () => {
+        const { h, P3, history } = userTypingInP3();
+        h.send({ command: 'open', path: '/docs/readme.md', pane_id: P1, reuse: true });
+        const workspace = h.state().workspaces[0];
+        expect(allPaneIDs(workspace?.layout ?? { kind: 'empty' })).toEqual([PNEW, P3]);
+        expect(workspace?.parkedPanes.map((pane) => pane.id)).toEqual([P1]);
+        expect(workspace?.focusedPaneID).toBe(P3);
+        expect(workspace?.focusHistory).toEqual(history);
+    });
+
+    it('a background --here on the FOCUSED pane hands focus to the preview in its slot', () => {
+        // Focus cannot stay on a pane that was just parked, so the slot keeps it.
+        const h = harness({ initial: seeded(1), ids: [PNEW] });
+        h.send({ command: 'open', path: '/docs/readme.md', pane_id: P1, reuse: true });
+        expect(h.state().workspaces[0]?.focusedPaneID).toBe(PNEW);
+    });
+
+    it('a focusing --here takes the focus even when the caller was not focused', () => {
+        const { h } = userTypingInP3();
+        h.send({ command: 'open', path: '/docs/readme.md', pane_id: P1, reuse: true, focus: true });
+        expect(h.state().workspaces[0]?.focusedPaneID).toBe(PNEW);
     });
 
     it('reuses (parks) the caller pane with --here', () => {

@@ -77,17 +77,36 @@ describe('CommandClient RPC', () => {
         const h = harness();
         const pending = h.client.splitPane({ paneID: PANE, direction: 'vertical', name: 'worker' });
 
+        // #295: the client's builders are the window's gestures, so they ask for focus.
         expect(h.lastCommand()).toEqual({
             command: 'pane-split',
             pane_id: PANE,
             direction: 'vertical',
-            name: 'worker'
+            name: 'worker',
+            focus: true
         });
 
         h.answer({ ok: true, pane_id: 'NEW', workspace_id: 'W', workspace_name: 'dev' });
         const reply = await pending;
         expect(isOkReply(reply)).toBe(true);
         expect(replyText(reply, 'pane_id')).toBe('NEW');
+    });
+
+    /**
+     * #295: on the wire an absent `focus` opens the pane in the background (the CLI default).
+     * Every caller of these builders is one of the window's own gestures (New Pane, ⌘D, the
+     * inspector, ⌘O), so they ask for focus unless told otherwise.
+     */
+    it('asks for focus on every pane-creating builder, unless told otherwise', () => {
+        const h = harness();
+        void h.client.createPane({ workspace: 'dev' }).catch(() => undefined);
+        expect(h.lastCommand()).toEqual({ command: 'pane-create', workspace: 'dev', focus: true });
+        void h.client.openFile({ path: '/notes.md', paneID: PANE }).catch(() => undefined);
+        expect(h.lastCommand()).toEqual({ command: 'open', path: '/notes.md', pane_id: PANE, reuse: false, focus: true });
+        void h.client.splitPane({ paneID: PANE, focus: false }).catch(() => undefined);
+        expect(h.lastCommand()).toEqual({ command: 'pane-split', pane_id: PANE, focus: false });
+        void h.client.createPane({ workspace: 'dev', focus: false }).catch(() => undefined);
+        expect(h.lastCommand()).toEqual({ command: 'pane-create', workspace: 'dev', focus: false });
     });
 
     it('sends the WS-only verbs with snake_case fields', async () => {

@@ -798,8 +798,14 @@ wires it into the daemon (`packages/daemon/src/store/reducers/panes.ts`, `layout
 - If zoomed: restore `savedLayout`, clear zoom state, then split within the restored
   tree.
 - New pane: fresh UUID minted by the daemon handler (§4.3), `workingDirectory` inherited
-  from the source pane, optional label. Appended to the pane list; layout ← `splitting(...)`; focus moves
-  to the **new** pane; `currentLayoutIndex ← null`; a PTY surface is spawned for it.
+  from the source pane, optional label. Appended to the pane list; layout ← `splitting(...)`;
+  `currentLayoutIndex ← null`; a PTY surface is spawned for it.
+- Focus (issue #295): a **GUI** split (⌘D, ⌘⇧D, the pane menu) moves focus to the **new** pane,
+  because the window sends `focus: true`. A **CLI** split (`kelpi pane split`, which is how
+  agents spawn panes) opens the pane in the **background**: `focusedPaneID`, `focusHistory` and
+  the window's caret stay on the pane the user is typing in, and the source is not focused
+  either. `kelpi pane split --focus` asks for the GUI behaviour. The same rule covers
+  `pane create`, `web open` and the markdown `open`.
 - `createPane` (CLI `pane create` into an empty workspace) instead sets
   `layout ← leaf(newPaneID)` semantics via the same splitting path when a source exists,
   or a plain first-pane layout when the workspace is empty.

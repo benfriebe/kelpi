@@ -430,7 +430,9 @@ describe('gestures and keys become wire commands', () => {
             expect(h.commands().at(-1)).toMatchObject({
                 command: 'pane-split',
                 pane_id: PANE_A,
-                direction: 'horizontal'
+                direction: 'horizontal',
+                // #295: the window's own gesture asks for focus; the wire default is background.
+                focus: true
             });
         });
     });

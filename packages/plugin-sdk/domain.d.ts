@@ -85,8 +85,9 @@ export interface GroupsAPI {
 }
 export interface PanesAPI {
     list(options?: PaneListOptions): Promise<PaneInfo[]>;
-    create(options?: { paneID?: string; workspaceID?: string; path?: string; name?: string }): Promise<PaneMutation>;
-    split(pane: PaneTarget, options?: { direction?: SplitDirection; path?: string; name?: string }): Promise<PaneMutation>;
+    /** `focus` defaults to true for these helpers; pass false to open the pane in the background. */
+    create(options?: { paneID?: string; workspaceID?: string; path?: string; name?: string; focus?: boolean }): Promise<PaneMutation>;
+    split(pane: PaneTarget, options?: { direction?: SplitDirection; path?: string; name?: string; focus?: boolean }): Promise<PaneMutation>;
     close(pane: PaneTarget): Promise<PaneMutation>;
     rename(pane: PaneTarget, name: string): Promise<PaneMutation>;
     resize(pane: PaneTarget, options: { ratio: number; delta?: never } | { delta: number; ratio?: never }): Promise<PaneResize>;

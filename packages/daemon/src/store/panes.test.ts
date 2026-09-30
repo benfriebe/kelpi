@@ -918,3 +918,128 @@ describe('move-pane-to-workspace', () => {
         expect(ws(h.state(), W2).webPanes[PA]?.tabs[0]?.url).toBe('https://example.com');
     });
 });
+
+/**
+ * #295: `focus: false` on a pane-creating action is a BACKGROUND open. The workspace below has
+ * P0 (the agent's pane, the split source) and PA (the pane the user is typing in, focused). A
+ * background create lands beside P0 and leaves `focusedPaneID` and `focusHistory` exactly as they
+ * were; `focus: true` (and an absent flag, which every internal dispatcher relies on) focuses the
+ * new pane as before.
+ */
+describe('background creates (#295)', () => {
+    function userTypingInPA() {
+        const h = harness(seededState());
+        h.dispatch({ type: 'split-pane', workspaceID: W1, paneID: PA, direction: 'horizontal', sourcePaneID: P0, now: NOW });
+        const before = ws(h.state());
+        expect(before.focusedPaneID).toBe(PA);
+        expect(before.focusHistory).toEqual([P0]);
+        return h;
+    }
+
+    const besideP0 = {
+        kind: 'split',
+        first: { kind: 'split', first: { kind: 'leaf', paneID: P0 }, second: { kind: 'leaf', paneID: PB } },
+        second: { kind: 'leaf', paneID: PA }
+    };
+
+    const creates = {
+        'split-pane': (focus: boolean | undefined) =>
+            ({ type: 'split-pane', workspaceID: W1, paneID: PB, direction: 'horizontal', sourcePaneID: P0, now: NOW, focus }) as const,
+        'split-pane-at-path': (focus: boolean | undefined) =>
+            ({ type: 'split-pane-at-path', workspaceID: W1, paneID: PB, path: '/tmp/w', sourcePaneID: P0, now: NOW, focus }) as const,
+        'open-markdown-pane': (focus: boolean | undefined) =>
+            ({ type: 'open-markdown-pane', workspaceID: W1, paneID: PB, filePath: '/docs/a.md', sourcePaneID: P0, now: NOW, focus }) as const,
+        'open-web-pane': (focus: boolean | undefined) =>
+            ({ type: 'open-web-pane', workspaceID: W1, paneID: PB, tabID: PC, url: 'https://example.com', sourcePaneID: P0, now: NOW, focus }) as const
+    };
+
+    for (const [type, build] of Object.entries(creates)) {
+        it(`${type} with focus: false adds the pane beside its source and keeps focus and history`, () => {
+            const h = userTypingInPA();
+            h.dispatch(build(false));
+            const workspace = ws(h.state());
+            expect(workspace.layout).toMatchObject(besideP0);
+            expect(workspace.panes.map((pane) => pane.id)).toContain(PB);
+            expect(workspace.focusedPaneID).toBe(PA);
+            expect(workspace.focusHistory).toEqual([P0]);
+        });
+
+        for (const focus of [true, undefined]) {
+            it(`${type} with focus: ${String(focus)} focuses the new pane`, () => {
+                const h = userTypingInPA();
+                h.dispatch(build(focus));
+                const workspace = ws(h.state());
+                expect(workspace.layout).toMatchObject(besideP0);
+                expect(workspace.focusedPaneID).toBe(PB);
+                expect(workspace.focusHistory).toEqual([P0, PA]);
+            });
+        }
+    }
+
+    it('split-pane-at-path ignores a source that is not a visible pane', () => {
+        const h = userTypingInPA();
+        const before = h.state();
+        h.dispatch({ type: 'split-pane-at-path', workspaceID: W1, paneID: PB, path: '/tmp', sourcePaneID: PC, now: NOW, focus: false });
+        expect(ws(h.state())).toBe(ws(before));
+    });
+
+    it('split-pane-at-path without a source still splits the focused pane', () => {
+        const h = userTypingInPA();
+        h.dispatch({ type: 'split-pane-at-path', workspaceID: W1, paneID: PB, path: '/tmp', now: NOW, focus: false });
+        expect(allPaneIDs(ws(h.state()).layout)).toEqual([P0, PA, PB]);
+        expect(ws(h.state()).focusedPaneID).toBe(PA);
+    });
+
+    it('open-markdown-pane falls back to the focused pane when its source is not visible', () => {
+        const h = userTypingInPA();
+        h.dispatch({ type: 'open-markdown-pane', workspaceID: W1, paneID: PB, filePath: '/docs/a.md', sourcePaneID: PC, now: NOW, focus: false });
+        expect(allPaneIDs(ws(h.state()).layout)).toEqual([P0, PA, PB]);
+        expect(ws(h.state()).focusedPaneID).toBe(PA);
+    });
+
+    describe('--here (reuse) in the background', () => {
+        it('swaps the source for the preview and leaves the user\'s focus where it was', () => {
+            const h = userTypingInPA();
+            h.dispatch({ type: 'open-markdown-pane', workspaceID: W1, paneID: PB, filePath: '/docs/a.md', reusePaneID: P0, now: NOW, focus: false });
+            const workspace = ws(h.state());
+            expect(allPaneIDs(workspace.layout)).toEqual([PB, PA]);
+            expect(workspace.parkedPanes.map((pane) => pane.id)).toEqual([P0]);
+            expect(workspace.focusedPaneID).toBe(PA);
+            expect(workspace.focusHistory).toEqual([P0]);
+        });
+
+        it('hands the focus to the preview when the parked pane was the focused one', () => {
+            const h = userTypingInPA();
+            h.dispatch({ type: 'open-markdown-pane', workspaceID: W1, paneID: PB, filePath: '/docs/a.md', reusePaneID: PA, now: NOW, focus: false });
+            const workspace = ws(h.state());
+            expect(workspace.parkedPanes.map((pane) => pane.id)).toEqual([PA]);
+            expect(workspace.focusedPaneID).toBe(PB);
+        });
+
+        it('with focus: true takes the focus whichever pane it replaced', () => {
+            const h = userTypingInPA();
+            h.dispatch({ type: 'open-markdown-pane', workspaceID: W1, paneID: PB, filePath: '/docs/a.md', reusePaneID: P0, now: NOW, focus: true });
+            expect(ws(h.state()).focusedPaneID).toBe(PB);
+        });
+    });
+
+    it('create-pane on an empty workspace focuses its first pane even in the background', () => {
+        const h = harness(seededState());
+        h.dispatch({ type: 'close-pane', workspaceID: W1, paneID: P0 });
+        h.dispatch({ type: 'create-pane', workspaceID: W1, paneID: PA, now: NOW, focus: false });
+        expect(ws(h.state()).focusedPaneID).toBe(PA);
+    });
+
+    for (const [type, build] of Object.entries(creates)) {
+        it(`${type} in the background never changes the active workspace`, () => {
+            const h = userTypingInPA();
+            // Another workspace is the one on screen; the background pane lands in W1 regardless.
+            h.dispatch({ type: 'create-workspace', id: W2, paneID: PC, name: 'other', color: 'red', now: NOW });
+            const active = h.state().lastActiveWorkspaceID;
+            expect(active).not.toBe(null);
+            h.dispatch(build(false));
+            expect(ws(h.state()).panes.map((pane) => pane.id)).toContain(PB);
+            expect(h.state().lastActiveWorkspaceID).toBe(active);
+        });
+    }
+});

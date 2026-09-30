@@ -347,8 +347,17 @@ stale profile (`machine.ts:164`).
 ### 4.1 `pane-split` → handlePaneSplit
 
 Inputs: `paneID?` (KELPI_PANE_ID), `direction?` (`horizontal`/`vertical`; default
-horizontal), `path?` (`--path`), `name?` (`--name`, the label), `target?`, `workspaceFilter?`.
-Implemented in `packages/daemon/src/handlers/pane/create.ts`.
+horizontal), `path?` (`--path`), `name?` (`--name`, the label), `target?`, `workspaceFilter?`,
+`focus` (bool, default false: issue #295). Implemented in
+`packages/daemon/src/handlers/pane/create.ts`.
+
+**Background by default (issue #295).** Without `focus: true` the split is a background
+create: the new pane joins the layout beside `source`, and the workspace's `focusedPaneID`,
+its `focusHistory` and the active workspace are untouched. No `focus-pane` is dispatched at
+all, not even on the source, so an agent in one pane spawning workers cannot pull the
+keyboard out of the pane the user is typing in. The window's own gestures (⌘D, the split
+menu items, the inspector) and `kelpi pane split --focus` send `focus: true`, which keeps the
+pre-#295 behaviour below.
 
 Routing precedence (identical for `pane-create`):
 
@@ -370,8 +379,9 @@ Then (defensive re-lookup): if the workspace vanished, `error("workspace not fou
 
 Side effects & reply:
 1. Mint `newID` (fresh UUID) up front.
-2. Set focus to the resolved source pane (the split-at-path action splits the *focused*
-   pane, so focus must be set first; this focus change is user-visible).
+2. Only when `focus` is true: set focus to the resolved source pane, so the focus history
+   reads source then new pane and closing the new pane hands focus back to where it came
+   from. A background split skips this step.
 3. **Reply immediately** (before the pane exists):
 
 ```json
@@ -380,13 +390,16 @@ Side effects & reply:
 
 `label` is included only when `name` is non-null and non-empty.
 
-4. Dispatch the split: with `path` → split the focused pane with the new pane's cwd set to
-   `path`; without → split `source` directly. Both carry `direction ?? horizontal`,
-   `label = name`, and the pre-minted `newID` so the created pane really gets the acked id.
+4. Dispatch the split of `source`: with `path` → split-at-path with the new pane's cwd set to
+   `path` (and `sourcePaneID = source`, so it no longer depends on the focused pane);
+   without → a plain split inheriting `source`'s cwd. Both carry `direction ?? horizontal`,
+   `label = name`, `focus`, and the pre-minted `newID` so the created pane really gets the
+   acked id. The reducer focuses the new pane only when `focus` is true.
 
 ### 4.2 `pane-create` → handlePaneCreate
 
-Same inputs minus `direction`. Same three-way routing as `pane-split`, except the
+Same inputs minus `direction` (so `focus` too, with the same background default). Same
+three-way routing as `pane-split`, except the
 `--workspace`-alone branch does **not** require the workspace to have a pane
 (`source = ws.focusedPaneID ?? ws.panes.first?.id`, possibly null), and the
 outside-caller error string is
@@ -398,10 +411,11 @@ After the defensive workspace check:
 2. `source = resolvedSource ?? ws.focusedPaneID ?? ws.panes.first?.id`.
 3. If `source == null` (**empty workspace**): dispatch create-first-pane carrying `newID`,
    `label = name`, `workingDirectory = path` — this is the route a split-only handler
-   cannot serve, and the acked pane must actually get the label/path.
-4. Otherwise (populated workspace): focus `source`; with `path` → split-at-path
-   (default horizontal) with `label`/`newID`; without → plain horizontal split of `source`
-   with `label`/`newID`.
+   cannot serve, and the acked pane must actually get the label/path. The first pane of a
+   workspace takes its focus whatever `focus` says: there is no focused pane to keep.
+4. Otherwise (populated workspace): focus `source` only when `focus` is true; with `path` →
+   split-at-path of `source` (default horizontal) with `label`/`newID`; without → plain
+   horizontal split of `source` with `label`/`newID`. Background as in §4.1.
 
 ### 4.3 `pane-close` → handlePaneClose
 
@@ -1251,9 +1265,14 @@ repository any group references is skipped by the auto-unlink GC (§GIT-081).
 ### 8.1 `open` → openFile(path, paneID?, reuse)
 
 The CLI's `kelpi open`/`kelpi md` markdown route. If `paneID` is set and some workspace's
-`panes` contain it: focus that pane, then open the markdown file in that workspace —
-reusing the caller's pane (converting it in place) when `reuse` is true, else opening a
-new markdown pane. Otherwise fall back to the active workspace (no reuse); with no active
+`panes` contain it: open the markdown file in that workspace, reusing the caller's pane
+(converting it in place) when `reuse` is true, else opening a new markdown pane split beside
+the caller (`sourcePaneID = paneID`). Issue #295: the open is a **background** open unless the
+message carries `focus: true`. Only a focusing open focuses the caller first and leaves the
+new pane focused (the window's ⌘O, Finder's Open With and a dropped file send `focus: true`;
+the CLI only with `--focus`). A background `reuse` still swaps the caller for the preview in
+its slot, and focus stays where it was unless the caller was the focused pane, in which case
+the preview inherits the focus (focus cannot stay on a parked pane). Otherwise fall back to the active workspace (no reuse); with no active
 workspace, drop. Afterwards refresh the workspace's sync group (`--here` parks a shell,
 which changes the broadcast group) (`handlers/app/files.ts:90`).
 

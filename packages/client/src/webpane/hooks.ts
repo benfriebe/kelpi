@@ -182,6 +182,13 @@ function blankTargetKey(paneID: string, tabID: string | null): string {
     return `${paneID}:${tabID ?? ''}`;
 }
 
+/** Did any tab of this pane (or the pane itself, tabless) exist on the previous pass? */
+function paneWasKnown(previous: ReadonlySet<string>, paneID: string): boolean {
+    const prefix = `${paneID}:`;
+    for (const key of previous) if (key.startsWith(prefix)) return true;
+    return false;
+}
+
 /** Every tab that currently EXISTS, which is what makes a closed tab prune itself. */
 function existingTabKeys(targets: readonly BlankURLTarget[]): Set<string> {
     const keys = new Set<string>();
@@ -206,7 +213,15 @@ function existingTabKeys(targets: readonly BlankURLTarget[]): Set<string> {
 export function useBlankWebPaneURLFocus(
     targets: readonly BlankURLTarget[],
     focusURLBar: (paneID: string) => void,
-    attached = true
+    attached = true,
+    /**
+     * #295: the pane wearing the ring, when the caller knows it. A PANE that arrives blank
+     * without the ring was opened in the background (`kelpi web open about:blank` from an
+     * agent), and handing its URL bar the caret would pull the keyboard out of the pane the user
+     * is typing in: exactly what a background open promises not to do. A new TAB in a pane that
+     * already existed keeps the old rule. `undefined` (no caller opinion) gates nothing.
+     */
+    focusedPaneID?: string | null
 ): void {
     const seen = useRef<Set<string> | null>(null);
     useEffect(() => {
@@ -238,7 +253,10 @@ export function useBlankWebPaneURLFocus(
             // "Did this TAB exist last time?" - not "was it the one on screen last time?".
             if (previous.has(blankTargetKey(target.paneID, target.activeTabID))) continue;
             if (target.activeURL.trim() !== '') continue;
+            if (focusedPaneID !== undefined && target.paneID !== focusedPaneID && !paneWasKnown(previous, target.paneID)) {
+                continue;
+            }
             focusURLBar(target.paneID);
         }
-    }, [attached, targets, focusURLBar]);
+    }, [attached, targets, focusURLBar, focusedPaneID]);
 }

@@ -260,6 +260,36 @@ describe('web-open (§3.3)', () => {
             expect(split?.direction).toBe('vertical');
         });
     });
+
+    /**
+     * #295: an agent's `kelpi web open` (no `focus` on the wire) opens the pane in the
+     * BACKGROUND, so the user typing in the focused pane keeps the focus. The window's globe and
+     * ⌘⇧O send `focus: true` and still move focus to the new pane.
+     */
+    describe('focus (#295)', () => {
+        it('without focus the pane opens in the background: focus and history stay put', () => {
+            const h = webHarness();
+            const before = h.state().workspaces[0];
+            expect(before?.focusedPaneID).toBe(WEB_PANE);
+            const reply = h.reply({ command: 'web-open', url: 'about:blank', pane_id: SHELL_PANE });
+            const workspace = h.state().workspaces[0];
+            expect(workspace?.panes.some((pane) => pane.id === String(reply['pane_id']))).toBe(true);
+            expect(workspace?.focusedPaneID).toBe(WEB_PANE);
+            expect(workspace?.focusHistory).toEqual(before?.focusHistory);
+        });
+
+        it('with focus: true (the globe, ⌘⇧O, --focus) the new pane takes the focus', () => {
+            const h = webHarness();
+            const reply = h.reply({
+                command: 'web-open',
+                url: 'about:blank',
+                pane_id: SHELL_PANE,
+                target: SHELL_PANE,
+                focus: true
+            });
+            expect(h.state().workspaces[0]?.focusedPaneID).toBe(String(reply['pane_id']));
+        });
+    });
 });
 
 describe('tabs (§5)', () => {

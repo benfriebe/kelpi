@@ -246,6 +246,27 @@ describe('pane commands', () => {
         expect(rejected({ command: 'pane-split' }).reason).toBe('guard');
     });
 
+    /**
+     * #295: `focus` on the four pane-creating verbs. Absent is BACKGROUND (false), so an older
+     * CLI that never sends it gets the new default; `true` is the window's gestures and
+     * `--focus`. A wrong-typed value poisons the line like any other known bool (§2.2).
+     */
+    it('decodes focus on every pane-creating verb, absent meaning background', () => {
+        const creators: readonly Record<string, unknown>[] = [
+            { command: 'pane-split', pane_id: PANE },
+            { command: 'pane-create', pane_id: PANE },
+            { command: 'web-open', url: 'https://example.com' },
+            { command: 'open', path: '/notes/plan.md' }
+        ];
+        for (const payload of creators) {
+            expect(ok(payload)).toMatchObject({ focus: false });
+            expect(ok({ ...payload, focus: false })).toMatchObject({ focus: false });
+            expect(ok({ ...payload, focus: true })).toMatchObject({ focus: true });
+            expect(ok({ ...payload, focus: null })).toMatchObject({ focus: false });
+            expect(rejected({ ...payload, focus: 'true' })).toMatchObject({ field: 'focus' });
+        }
+    });
+
     it('treats an invalid split direction as absent instead of dropping', () => {
         expect(ok({ command: 'pane-split', pane_id: PANE, direction: 'diagonal' })).toMatchObject({
             direction: undefined
@@ -612,7 +633,8 @@ describe('layout, file and graft commands', () => {
             command: 'open',
             path: '/notes/plan.md',
             pane_id: PANE_UPPER,
-            reuse: true
+            reuse: true,
+            focus: false
         });
         expect(ok({ command: 'open', path: '/notes/plan.md' })).toMatchObject({ reuse: false, pane_id: undefined });
         expect(rejected({ command: 'open', path: '' }).field).toBe('path');
@@ -648,7 +670,8 @@ describe('web pane commands', () => {
             command: 'web-open',
             url: 'https://example.com',
             private: false,
-            pane_id: undefined
+            pane_id: undefined,
+            focus: false
         });
         expect(rejected({ command: 'web-open', url: '' }).field).toBe('url');
         for (const command of ['web-url', 'web-back', 'web-forward', 'web-tabs', 'web-cookies-list', 'web-reload']) {

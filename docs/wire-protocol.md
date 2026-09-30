@@ -615,9 +615,14 @@ Split an existing pane. Anchor precedence in the handler: `target` (name-or-UUID
 least one of `pane_id` (valid UUID) / `target` / `workspace` present.
 `direction`: `"horizontal"`/`"vertical"` (invalid → absent → handler default).
 `path` = new pane's working directory; `name` = new pane's label.
+`focus` (bool, default false, issue #295): `true` moves focus to the new pane; absent or
+false opens it in the **background** (the workspace's focused pane and focus history do not
+change, and the source pane is not focused first). The GUI sends `true` for its own gestures;
+the CLI sends it only with `--focus`. See §9 item 17.
 
 ```json
 {"command":"pane-split","pane_id":"1B4E…","direction":"horizontal","path":"/tmp","name":"worker"}
+{"command":"pane-split","pane_id":"1B4E…","name":"worker","focus":true}
 ```
 
 Reply (shared with `pane-create`; the new pane's UUID is minted server-side before the
@@ -634,7 +639,8 @@ pane is built):
 Create a pane in a workspace (splitting off the focused pane, or laying out the first
 pane when the workspace is empty). Guard identical to `pane-split` (`workspace` alone is
 sufficient). When `workspace` is given without `target`, it wins outright — even over
-the caller's `pane_id`. Same reply shape as `pane-split`.
+the caller's `pane_id`. Same reply shape as `pane-split`, and the same `focus` field with the
+same background default (the first pane of an empty workspace takes its focus regardless).
 
 ```json
 {"command":"pane-create","workspace":"beta","path":"/Users/ben/code","name":"builder"}
@@ -1194,7 +1200,10 @@ validation happens in the handler, silently.
 
 **`open`**: open a markdown pane for `path` (required non-empty).
 `pane_id` optional (originating pane); `reuse` (bool, default false) = replace the
-originating pane in place (`kelpi open --here` / `kelpi md --here`).
+originating pane in place (`kelpi open --here` / `kelpi md --here`); `focus` (bool, default
+false, issue #295) = take the focus. Without it the preview opens in the background beside
+the originating pane, and a background `reuse` keeps the focus where it was unless the
+originating pane was the focused one (then the preview inherits it).
 
 ```json
 {"command":"open","path":"/Users/ben/notes/plan.md","pane_id":"1B4E…","reuse":true}
@@ -1307,7 +1316,9 @@ workspace, otherwise in the active workspace (no workspace at all →
 `direction` (§5.2; unrecognized → absent), decoded in
 `packages/protocol/src/wire/decode.ts:417-431`: the handler splits that pane when it is a
 visible pane of the routed workspace and otherwise ignores the anchor
-(`webpane/handlers.ts:190-200`). Only the GUI sends them; the CLI never does. Reply payload
+(`webpane/handlers.ts:190-200`). Only the GUI sends them; the CLI never does. `web-open` also
+takes `focus` (bool, default false, issue #295): absent opens the pane in the background, and
+the GUI's globe, context menu and ⌘⇧O send `true`, as does `kelpi web open --focus`. Reply payload
 details are specified in the web-pane subsystem doc; every reply follows the `{"ok":true,…}` /
 `{"ok":false,"error":…}` convention on a single line + EOF, except the
 `web-console --follow` stream (§2.4). Request shapes:
@@ -1466,6 +1477,7 @@ other key is ignored. (A known key with the wrong type poisons the whole message
 | `create_worktree` | bool | `group-set-repo` |
 | `repo_id` | string | `group-set-repo` |
 | `group_defaults` | bool | `workspace-create` |
+| `focus` | bool | `pane-split`, `pane-create`, `open`, `web-open` (absent = background, #295) |
 
 ---
 
@@ -1613,3 +1625,17 @@ saved state keep working:
     resolved and accepted", not "bytes hit the PTY". That ordering is kept; orchestrator
     scripts pipeline `pane send` + `pane send-key` and rely on low latency, not on
     delivery confirmation.
+
+17. **Pane-creating verbs open in the background by default (issue #295).** `pane-split`,
+    `pane-create`, `open` and `web-open` used to move focus to the new pane, and the window
+    then moved the keyboard into it, so an agent spawning panes pulled the user's typing into
+    the wrong pane. The optional `focus` bool is an additive field: absent (or `false`) now
+    means **background**, and `true` restores the old behaviour. This is a deliberate
+    behaviour change for callers that send nothing: an older `kelpi` CLI talking to a newer
+    daemon gets background panes, which is the point. The reverse is also safe: a newer CLI
+    talking to an older daemon has its `focus` key ignored as an unknown field (§2.2), so
+    `--focus` is a no-op there and every create focuses, as that daemon always did. The
+    window's own gestures send `focus: true` explicitly, so they are unaffected. The plugin
+    SDK's `panes.create`, `panes.split` and `files.open` helpers send `focus: true` unless
+    the plugin passes `focus: false`, because a plugin usually acts on a user's click; a raw
+    plugin `command` follows the wire default.

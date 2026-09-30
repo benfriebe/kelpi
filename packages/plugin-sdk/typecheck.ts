@@ -29,6 +29,9 @@ async function authoring(api: BackendAPI): Promise<void> {
     await api.workspaces.create({ name: 'child', muted });
     const associations: RepositoryAssociation[] = await api.git.status(first.id);
     await api.panes.create({ workspaceID: first.id, name: associations[0]?.repoName });
+    // #295: the helpers focus by default; `focus: false` opens the pane in the background.
+    await api.panes.split('pane', { direction: 'vertical', focus: false });
+    await api.files.open('/tmp/notes.md', { focus: false });
     await api.panes.resize('pane', { ratio: 0.3 });
     // @ts-expect-error Exactly one resize operation is allowed.
     await api.panes.resize('pane', { ratio: 0.3, delta: 0.2 });

@@ -329,12 +329,16 @@ const AGENT_BOARD_VIEW = 'example.agent-board.board';
  * ghostty theme file (`packages/daemon/src/settings/theme.ts`), normally found in Ghostty's own
  * install. The sandbox cannot count on one, so these are the themes' published palettes, written
  * into the `themes` directory beside the sandbox's ghostty config, the first place Kelpi looks.
+ *
+ * Chosen to read as three different looks at thumbnail size, and different from the default.
+ * Dracula was tried first and dropped: its #282a36 is applied, but the captures render every
+ * colour slightly darker (#282a36 comes out as #24262f), and at that size it read as the default.
  */
 const THEMES = [
     {
-        preset: 'Dracula', terminal: 'Dracula', file: 'theme-dracula',
-        colors: { background: '#282a36', foreground: '#f8f8f2', 'cursor-color': '#f8f8f2', 'selection-background': '#44475a', 'selection-foreground': '#f8f8f2' },
-        palette: ['#21222c', '#ff5555', '#50fa7b', '#f1fa8c', '#bd93f9', '#ff79c6', '#8be9fd', '#f8f8f2', '#6272a4', '#ff6e6e', '#69ff94', '#ffffa5', '#d6acff', '#ff92df', '#a4ffff', '#ffffff']
+        preset: 'Nord', terminal: 'Nord', file: 'theme-nord',
+        colors: { background: '#2e3440', foreground: '#d8dee9', 'cursor-color': '#eceff4', 'selection-background': '#eceff4', 'selection-foreground': '#4c566a' },
+        palette: ['#3b4252', '#bf616a', '#a3be8c', '#ebcb8b', '#81a1c1', '#b48ead', '#88c0d0', '#e5e9f0', '#596377', '#bf616a', '#a3be8c', '#ebcb8b', '#81a1c1', '#b48ead', '#8fbcbb', '#eceff4']
     },
     {
         preset: 'Gruvbox Dark', terminal: 'Gruvbox Dark', file: 'theme-gruvbox-dark',

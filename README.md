@@ -100,8 +100,8 @@ This generation uses protocol 2 and `kelpi-v2.db`; see the
 <table>
   <tr>
     <td width="33%" valign="top" align="center">
-      <img src="docs/assets/readme/theme-dracula.png" alt="The checkout-v2 workspace from the tour under the Dracula theme: purple-grey chrome and a Dracula terminal palette.">
-      <b>Dracula</b>
+      <img src="docs/assets/readme/theme-nord.png" alt="The checkout-v2 workspace from the tour under the Nord theme: slate blue-grey chrome and terminals with Nord's frost-blue accents.">
+      <b>Nord</b>
     </td>
     <td width="33%" valign="top" align="center">
       <img src="docs/assets/readme/theme-gruvbox-dark.png" alt="The same workspace under Gruvbox Dark: warm dark greys with orange and yellow accents.">

@@ -18,7 +18,15 @@ import { PROTOCOL_VERSION } from '@kelpi/protocol';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { CLI_VERSION } from '../src/version.js';
-import { buildCLI, deadPort, runCLI as invokeCLI, scratchHome, startFakeServer, type FakeServer } from './harness.js';
+import {
+    buildCLI,
+    deadPort,
+    runCLI as invokeCLI,
+    scratchHome,
+    startFakeServer,
+    type FakeServer,
+    type ServerReply
+} from './harness.js';
 
 const PANE = '9C2B9A2E-1111-2222-3333-444455556666';
 const OTHER = '0A1B2C3D-4E5F-6071-8293-A4B5C6D7E8F9';
@@ -1393,5 +1401,117 @@ describe('workspace create / label / mute', () => {
         const result = await runCLI(['workspace', 'mute', 'ghost'], { port: server.port });
         expect(result.code).not.toBe(0);
         expect(result.stderr).toContain("no workspace matches 'ghost'");
+    });
+});
+
+describe('workspace rename', () => {
+    const renamed = (request: Record<string, unknown>): ServerReply => ({
+        lines: [{ ok: true, workspace_id: PANE, workspace_name: request['new_name'], old_name: 'alpha' }]
+    });
+
+    it('sends name and new_name, waits for the reply and prints what changed', async () => {
+        server.respond(renamed);
+        const result = await runCLI(['workspace', 'rename', 'alpha', 'auth refactor'], { port: server.port });
+        expect(result.code).toBe(0);
+        expect(result.stdout).toBe(`renamed workspace alpha to auth refactor (${PANE})\n`);
+        expect(result.stderr).toBe('');
+        expect(await lastRequest()).toEqual({ command: 'workspace-rename', name: 'alpha', new_name: 'auth refactor' });
+    });
+
+    it('passes an id through untouched and trims the new name before sending', async () => {
+        server.respond(renamed);
+        const result = await runCLI(['workspace', 'rename', PANE, '  beta  '], { port: server.port });
+        expect(result.code).toBe(0);
+        expect(await lastRequest()).toEqual({ command: 'workspace-rename', name: PANE, new_name: 'beta' });
+    });
+
+    it('prints the full reply including ok under --json, wherever the flag sits', async () => {
+        server.respond(renamed);
+        const result = await runCLI(['workspace', 'rename', '--json', 'alpha', 'beta'], { port: server.port });
+        expect(result.code).toBe(0);
+        expect(JSON.parse(result.stdout)).toEqual({
+            ok: true,
+            workspace_id: PANE,
+            workspace_name: 'beta',
+            old_name: 'alpha'
+        });
+    });
+
+    it('says so when the workspace already had that name', async () => {
+        server.respond(() => ({ lines: [{ ok: true, workspace_id: PANE, workspace_name: 'alpha', old_name: 'alpha' }] }));
+        const result = await runCLI(['workspace', 'rename', 'alpha', 'alpha'], { port: server.port });
+        expect(result.code).toBe(0);
+        expect(result.stdout).toBe(`workspace alpha (${PANE}) already has that name\n`);
+    });
+
+    it('exits 1 with the daemon error for a missing or ambiguous workspace', async () => {
+        server.respond(() => ({ lines: [{ ok: false, error: 'workspace not found: ghost' }] }));
+        const missing = await runCLI(['workspace', 'rename', 'ghost', 'x'], { port: server.port });
+        expect(missing.code).toBe(1);
+        expect(missing.stdout).toBe('');
+        expect(missing.stderr).toBe('kelpi workspace rename: workspace not found: ghost\n');
+
+        server.respond(() => ({ lines: [{ ok: false, error: 'workspace name is ambiguous: dup (use the id)' }] }));
+        const ambiguous = await runCLI(['workspace', 'rename', 'dup', 'x'], { port: server.port });
+        expect(ambiguous.code).toBe(1);
+        expect(ambiguous.stderr).toBe('kelpi workspace rename: workspace name is ambiguous: dup (use the id)\n');
+    });
+
+    it('rejects an empty or whitespace-only new name before sending', async () => {
+        for (const blank of ['', '   ']) {
+            const result = await runCLI(['workspace', 'rename', 'alpha', blank], { port: server.port });
+            expect(result.code).toBe(1);
+            expect(result.stdout).toBe('');
+            expect(result.stderr).toBe('kelpi workspace rename: the new name cannot be empty\n');
+        }
+        expect(server.requests).toHaveLength(0);
+    });
+
+    it('prints usage and exits 1 for missing arguments, an unknown option and a stray argument', async () => {
+        const none = await runCLI(['workspace', 'rename'], { port: server.port });
+        expect(none.code).toBe(1);
+        expect(none.stderr).toContain('kelpi workspace rename <name-or-id> <new-name> [--json]');
+
+        const one = await runCLI(['workspace', 'rename', 'alpha'], { port: server.port });
+        expect(one.code).toBe(1);
+        expect(one.stderr).toContain('kelpi workspace rename <name-or-id> <new-name> [--json]');
+
+        const option = await runCLI(['workspace', 'rename', 'alpha', '--force'], { port: server.port });
+        expect(option.code).toBe(1);
+        expect(option.stderr).toContain('kelpi workspace rename: unknown option --force');
+
+        const stray = await runCLI(['workspace', 'rename', 'alpha', 'auth', 'refactor'], { port: server.port });
+        expect(stray.code).toBe(1);
+        expect(stray.stderr).toContain("unexpected argument 'refactor'");
+        expect(stray.stderr).toContain('quote a new name that contains spaces');
+        expect(server.requests).toHaveLength(0);
+    });
+
+    it('fails loudly against a daemon too old to know the verb', async () => {
+        server.respond(() => ({ silent: true }));
+        const result = await runCLI(['workspace', 'rename', 'alpha', 'beta'], { port: server.port });
+        expect(result.code).toBe(1);
+        expect(result.stderr).toContain('kelpi workspace rename: no response from Kelpi (upgrade required?)');
+    });
+
+    it('is listed in workspace --help and has its own --help', async () => {
+        const group = await runCLI(['workspace', '--help'], { port: server.port });
+        expect(group.code).toBe(0);
+        expect(group.stdout).toContain('list|create|move|delete|profile|label|mute|rename');
+        expect(group.stdout).toMatch(/^ {2}rename {4}Rename a workspace\.$/m);
+
+        const own = await runCLI(['workspace', 'rename', '--help'], { port: server.port });
+        expect(own.code).toBe(0);
+        expect(own.stdout).toContain('kelpi workspace rename <name-or-id> <new-name> [--json]');
+        expect(own.stdout).toContain('old_name');
+
+        // The global usage goes to stderr even for --help (the dispatcher test pins that quirk).
+        const global = await runCLI(['--help'], { port: server.port });
+        expect(global.stderr).toContain('kelpi workspace rename <name-or-id> <new-name> [--json]');
+
+        const unknown = await runCLI(['workspace', 'retitle'], { port: server.port });
+        expect(unknown.code).toBe(1);
+        expect(unknown.stderr).toContain('Valid actions: list, create, move, delete, profile, label, mute, rename');
+        expect(server.requests).toHaveLength(0);
     });
 });

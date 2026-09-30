@@ -96,7 +96,8 @@ rules. This asymmetry is load-bearing for CLI compatibility. Both live in
 
 Used by: `pane list --workspace`, `pane sync --workspace`, `resolvePaneTarget`'s
 `--workspace` scope, `pane split/create --workspace`, `workspace-move`, `workspace-delete`,
-`workspace-profile`, `workspace-label`, `workspace-list --group` (via `resolveGroup`).
+`workspace-profile`, `workspace-label`, `workspace-mute`, `workspace-rename`,
+`workspace-list --group` (via `resolveGroup`).
 
 ```
 resolveWorkspace(nameOrID):
@@ -111,8 +112,8 @@ resolveWorkspace(nameOrID):
 - A UUID string that matches no workspace id falls through to the name match (so a
   workspace literally named a UUID is still reachable).
 - Ambiguous names (2+ workspaces with the same exact name) return `null`. Callers that
-  want to distinguish "ambiguous" from "missing" must re-check themselves (only
-  `workspace-delete` does; see §6.4).
+  want to distinguish "ambiguous" from "missing" must re-check themselves (`workspace-delete`
+  and `workspace-rename` do, through one shared helper, so their messages match; see §6.4).
 
 ### 2.2 `resolveGroup(nameOrID)` — identical contract for groups
 
@@ -1093,6 +1094,34 @@ What the flag does is agent-lifecycle.md §7.6: the event handlers (§3.2 to §3
 sink mark a muted workspace's `notification` / `attention-request` broadcasts `muted: true`,
 and the sync hub delivers those to plugin observers only.
 
+### 6.8 `workspace-rename` → handleWorkspaceRename
+
+Inputs: `nameOrID`, `newName` (the decoder guarantees a non-empty string; an absent or empty
+`new_name` never reaches the handler and is answered with the guard's
+`workspace-rename requires new_name`). Request/response, unlike the fire-and-forget
+`group-rename`: the CLI's rename exists for agents, which need to know whether the name
+resolved and what the workspace is called now (issue #266). The GUI's inline rename stays on
+its WS-only `rename-workspace` (id-addressed, `packages/daemon/src/ws/sync.ts`); both end in
+the same reducer action.
+
+1. Strict `resolveWorkspace`, else the §6.4 pair: `workspace name is ambiguous: {nameOrID}
+   (use the id)` when a non-UUID token names 2+ workspaces, `workspace not found: {nameOrID}`
+   otherwise.
+2. `trimmed = newName.trim()`; empty => `error("workspace name cannot be empty")`. No length or
+   character limit and no uniqueness check: the sidebar's editor has none, so a name another
+   workspace already has is allowed (the resolver then reports that name as ambiguous).
+3. If `trimmed` differs from the current name, dispatch `rename-workspace(id, trimmed)` (the
+   reducer recomputes the slug) and persist. The same name is a successful no-op that writes
+   nothing, the counterpart of the editor's "unchanged → cancel".
+4. Reply, `workspace_name` being the new name:
+
+```json
+{"ok": true, "workspace_id": "…", "workspace_name": "auth refactor", "old_name": "feat-x"}
+```
+
+The rename reaches attached windows the ordinary way, as a `workspace-upserted` event in the
+next store delta; nothing here broadcasts.
+
 ---
 
 ## 7. Group command handlers
@@ -1444,6 +1473,7 @@ web-pane subsystem (see its spec): `web-open`, `web-navigate`, `web-url`, `web-b
 | workspace-delete | `workspace_id`, `workspace_name`, `path?` (failure may add `active_agents`, `running`, `waiting`, `inactive`) |
 | workspace-label | `workspace_id`, `workspace_name`, `labels` |
 | workspace-mute | `workspace_id`, `workspace_name`, `muted` |
+| workspace-rename | `workspace_id`, `workspace_name` (the new name), `old_name` |
 | group-list | `groups: [...]` |
 | group-reorder / group-sort | `group_id`, `group_name`, `order` |
 | graft-start | `started: [...]`, `partial_error?`, `partial_error_kind?` (failures add `error_kind`) |

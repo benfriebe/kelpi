@@ -1203,3 +1203,124 @@ describe('workspace-mute', () => {
         expect(h.state()).toBe(before);
     });
 });
+
+// ---------------------------------------------------------------------------
+// workspace-rename
+// ---------------------------------------------------------------------------
+
+describe('workspace-rename', () => {
+    it('renames by name, replying with the id, the new name and the old one, and persisting', () => {
+        const h = harness({ initial: seeded(2) });
+        expect(h.reply({ command: 'workspace-rename', name: 'w1', new_name: 'auth refactor' })).toEqual({
+            ok: true,
+            workspace_id: W1,
+            workspace_name: 'auth refactor',
+            old_name: 'w1'
+        });
+        expect(h.state().workspaces.map((workspace) => workspace.name)).toEqual(['auth refactor', 'w2']);
+        // The reducer recomputes the slug, exactly as for the sidebar's rename.
+        expect(h.state().workspaces[0]?.slug).not.toBe(seeded(2).workspaces[0]?.slug);
+        expect(h.persists.length).toBeGreaterThan(0);
+    });
+
+    it('renames by id, in either case, even when the old name is ambiguous', () => {
+        const h = harness({ initial: seeded(2) });
+        h.dispatch({ type: 'rename-workspace', id: W2, name: 'w1' });
+        expect(h.reply({ command: 'workspace-rename', name: W2, new_name: 'second' })).toMatchObject({
+            ok: true,
+            workspace_id: W2,
+            workspace_name: 'second',
+            old_name: 'w1'
+        });
+        expect(h.reply({ command: 'workspace-rename', name: W1.toLowerCase(), new_name: 'first' })).toMatchObject({
+            ok: true,
+            workspace_id: W1
+        });
+        expect(h.state().workspaces.map((workspace) => workspace.name)).toEqual(['first', 'second']);
+    });
+
+    it('trims the new name, as the inline editor does', () => {
+        const h = harness({ initial: seeded(1) });
+        expect(h.reply({ command: 'workspace-rename', name: 'w1', new_name: '  spaced out \t' })).toMatchObject({
+            workspace_name: 'spaced out'
+        });
+        expect(h.state().workspaces[0]?.name).toBe('spaced out');
+    });
+
+    it('refuses a whitespace-only name without mutating or persisting', () => {
+        const h = harness({ initial: seeded(1) });
+        const before = h.state();
+        expect(h.reply({ command: 'workspace-rename', name: 'w1', new_name: ' \t ' })).toEqual({
+            ok: false,
+            error: 'workspace name cannot be empty'
+        });
+        expect(h.state()).toBe(before);
+        expect(h.persists).toEqual([]);
+    });
+
+    it('answers an empty or missing new_name with the decoder guard', () => {
+        // The daemon replies to a malformed ALLOWLISTED request (wire-protocol.md §2.1); this is
+        // the decode half of that: the rejection names the field, and nothing reaches the table.
+        const h = harness({ initial: seeded(1) });
+        expect(() => h.send({ command: 'workspace-rename', name: 'w1', new_name: '' })).toThrow(
+            'workspace-rename requires new_name'
+        );
+        expect(() => h.send({ command: 'workspace-rename', name: 'w1' })).toThrow('workspace-rename requires new_name');
+        expect(h.state().workspaces[0]?.name).toBe('w1');
+    });
+
+    it('distinguishes a missing workspace from an ambiguous name, mutating nothing', () => {
+        const h = harness({ initial: seeded(2) });
+        h.dispatch({ type: 'rename-workspace', id: W2, name: 'w1' });
+        const before = h.state();
+        expect(h.reply({ command: 'workspace-rename', name: 'ghost', new_name: 'x' })).toEqual({
+            ok: false,
+            error: 'workspace not found: ghost'
+        });
+        expect(h.reply({ command: 'workspace-rename', name: 'w1', new_name: 'x' })).toEqual({
+            ok: false,
+            error: 'workspace name is ambiguous: w1 (use the id)'
+        });
+        // A UUID that matches no id is "not found", never "ambiguous".
+        expect(h.reply({ command: 'workspace-rename', name: W3, new_name: 'x' })).toEqual({
+            ok: false,
+            error: `workspace not found: ${W3}`
+        });
+        expect(h.state()).toBe(before);
+        expect(h.persists).toEqual([]);
+    });
+
+    it('treats renaming to the current name as a successful no-op', () => {
+        const h = harness({ initial: seeded(1) });
+        const before = h.state();
+        expect(h.reply({ command: 'workspace-rename', name: 'w1', new_name: ' w1 ' })).toEqual({
+            ok: true,
+            workspace_id: W1,
+            workspace_name: 'w1',
+            old_name: 'w1'
+        });
+        expect(h.state()).toBe(before);
+        expect(h.persists).toEqual([]);
+    });
+
+    it('allows a duplicate name, as the sidebar does, after which the name is ambiguous', () => {
+        const h = harness({ initial: seeded(2) });
+        expect(h.reply({ command: 'workspace-rename', name: 'w2', new_name: 'w1' })['ok']).toBe(true);
+        expect(h.state().workspaces.map((workspace) => workspace.name)).toEqual(['w1', 'w1']);
+        expect(h.reply({ command: 'workspace-rename', name: 'w1', new_name: 'x' })['error']).toBe(
+            'workspace name is ambiguous: w1 (use the id)'
+        );
+    });
+
+    it('streams the new name to subscribers as a workspace upsert', () => {
+        const h = harness({ initial: seeded(1) });
+        const upserted: string[] = [];
+        h.store.subscribe((batch) => {
+            for (const event of batch) {
+                if (event.kind === 'workspace-upserted') upserted.push(event.workspace.name);
+            }
+        });
+        h.reply({ command: 'workspace-rename', name: 'w1', new_name: 'live' });
+        expect(upserted).toEqual(['live']);
+    });
+});

@@ -18,15 +18,39 @@
  * machine. The daemon always gets `controlSocketPath` inside the test's tmp dir.
  */
 
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { createDaemon, type Daemon, type DaemonInfo } from '../../src/boot/index.js';
 
 /** The shipped Swift CLI. Absent on a machine without Kelpi installed → the suites skip. */
 export const KELPI_CLI = process.env['KELPI_COMPAT_CLI'] ?? '/Applications/Nex.app/Contents/Helpers/nex';
+
+const CLI_BUNDLER = path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    '..', '..', '..', 'cli', 'scripts', 'bundle.mjs'
+);
+
+/**
+ * Bundle THIS repo's `kelpi` CLI into `dir` and return the executable's path.
+ *
+ * For verbs the shipped Swift binary never had (`workspace rename`, #266), the compat question
+ * is "does our CLI agree with our daemon", so those cases run this bundle whatever
+ * `KELPI_COMPAT_CLI` says. It is a private copy, built fresh: `dist/kelpi.js` may be stale, and
+ * the CLI's own integration suite rewrites it while other files are running.
+ */
+export function bundleKelpiCLI(dir: string): Promise<string> {
+    const outfile = path.join(dir, 'kelpi.js');
+    return new Promise<string>((resolve, reject) => {
+        execFile(process.execPath, [CLI_BUNDLER, '--outfile', outfile], (error) => {
+            if (error !== null) reject(error);
+            else resolve(outfile);
+        });
+    });
+}
 
 export function swiftCLIAvailable(): boolean {
     try {
@@ -54,6 +78,11 @@ export interface CliOptions {
     readonly stdin?: string | undefined;
 }
 
+export interface CompatDaemonOptions {
+    /** The CLI executable to drive; defaults to `KELPI_CLI`. */
+    readonly cli?: string | undefined;
+}
+
 export interface CompatDaemon {
     readonly daemon: Daemon;
     readonly info: DaemonInfo;
@@ -61,7 +90,7 @@ export interface CompatDaemon {
     readonly port: number;
     readonly home: string;
     readonly root: string;
-    /** Run the Swift CLI against this daemon. */
+    /** Run the CLI (the Swift one unless `cli` said otherwise) against this daemon. */
     run(args: readonly string[], options?: CliOptions): Promise<CliResult>;
     /** Run + require exit 0 + JSON.parse stdout. */
     json<T = unknown>(args: readonly string[], options?: CliOptions): Promise<T>;
@@ -78,7 +107,8 @@ function scratchRoot(): string {
  * nothing to resume in a fresh DB) and `/bin/sh` keeps the shell deterministic — a user's
  * zsh with a fancy prompt makes `pane capture` assertions flaky.
  */
-export async function startCompatDaemon(): Promise<CompatDaemon> {
+export async function startCompatDaemon(compat: CompatDaemonOptions = {}): Promise<CompatDaemon> {
+    const cli = compat.cli ?? KELPI_CLI;
     const root = scratchRoot();
     const home = path.join(root, 'home');
     fs.mkdirSync(home, { recursive: true });
@@ -106,7 +136,7 @@ export async function startCompatDaemon(): Promise<CompatDaemon> {
 
     const run = (args: readonly string[], options: CliOptions = {}): Promise<CliResult> =>
         new Promise<CliResult>((resolve, reject) => {
-            const child = spawn(KELPI_CLI, [...args], {
+            const child = spawn(cli, [...args], {
                 cwd: options.cwd ?? home,
                 env: {
                     PATH: process.env['PATH'] ?? '/usr/bin:/bin',

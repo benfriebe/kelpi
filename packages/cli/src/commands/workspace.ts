@@ -3,7 +3,7 @@
  *
  * Three shapes of output live here and scripts depend on all three staying distinct:
  *   - `list` unwraps the array;
- *   - `create`, `label` and `mute` print the FULL reply including `ok` under `--json`;
+ *   - `create`, `label`, `mute` and `rename` print the FULL reply including `ok` under `--json`;
  *   - `delete` prints a bespoke per-id record array, and exits 1 when any DELETE failed
  *     (a failed *prune* is a warning, never an exit code — the workspace is gone either way).
  *
@@ -39,6 +39,7 @@ import {
     workspaceMoveUsage,
     workspaceMuteUsage,
     workspaceProfileUsage,
+    workspaceRenameUsage,
     workspaceUsage
 } from '../usage.js';
 
@@ -68,9 +69,11 @@ export async function handleWorkspace(args: string[]): Promise<void> {
             return handleWorkspaceLabel(args);
         case 'mute':
             return handleWorkspaceMute(args);
+        case 'rename':
+            return handleWorkspaceRename(args);
         default:
             errLine(`Unknown workspace action: ${action}`);
-            errLine('Valid actions: list, create, move, delete, profile, label, mute');
+            errLine('Valid actions: list, create, move, delete, profile, label, mute, rename');
             exit(1);
     }
 }
@@ -477,4 +480,57 @@ async function handleWorkspaceMute(args: string[]): Promise<void> {
     const workspaceName = asString(reply['workspace_name']) ?? nameOrID;
     const muted = asBool(reply['muted']) ?? false;
     printLine(`${workspaceName}: notifications ${muted ? 'muted' : 'unmuted'}`);
+}
+
+/**
+ * `kelpi workspace rename` (cli.md §10.8): the sidebar's inline rename, for agents. Unlike the
+ * fire-and-forget `group rename` it waits for the reply, so a name that does not resolve (or
+ * resolves to two workspaces) exits 1 with the daemon's reason instead of silently doing nothing.
+ */
+async function handleWorkspaceRename(args: string[]): Promise<void> {
+    if (hasHelpFlag(args)) {
+        writeOut(workspaceRenameUsage);
+        exit(0);
+    }
+    const asJSON = popSwitch('--json', args);
+    const nameOrID = args.shift();
+    const newName = args.shift();
+    for (const positional of [nameOrID, newName]) {
+        if (positional !== undefined && positional.startsWith('-')) {
+            errLine(`kelpi workspace rename: unknown option ${positional}`);
+            writeErr(workspaceRenameUsage);
+            exit(1);
+        }
+    }
+    if (nameOrID === undefined || newName === undefined) {
+        writeErr(workspaceRenameUsage);
+        exit(1);
+    }
+    rejectLeftoverArgs(args, 'kelpi workspace rename', {
+        usage: (write) => write(workspaceRenameUsage),
+        positionalHint: 'quote a new name that contains spaces'
+    });
+    // The daemon refuses this too; saying so here spares the round trip and names the argument.
+    const trimmed = newName.trim();
+    if (trimmed === '') {
+        errLine('kelpi workspace rename: the new name cannot be empty');
+        exit(1);
+    }
+
+    const reply = await decodeReply(
+        { command: 'workspace-rename', name: nameOrID, new_name: trimmed },
+        'kelpi workspace rename'
+    );
+    if (asJSON) {
+        printLine(stableStringify(reply));
+        return;
+    }
+    const workspaceID = asString(reply['workspace_id']) ?? '?';
+    const workspaceName = asString(reply['workspace_name']) ?? trimmed;
+    const oldName = asString(reply['old_name']) ?? nameOrID;
+    printLine(
+        oldName === workspaceName
+            ? `workspace ${workspaceName} (${workspaceID}) already has that name`
+            : `renamed workspace ${oldName} to ${workspaceName} (${workspaceID})`
+    );
 }

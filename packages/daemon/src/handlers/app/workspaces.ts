@@ -4,7 +4,8 @@
  * `workspace-list` / `workspace-create` / `workspace-delete` / `workspace-label` are
  * request/response; `workspace-move` / `workspace-profile` are fire-and-forget (guards still
  * run, failures are silently dropped — §1 legacy path).
- * `workspace-mute` is request/response too, so a toggle can report the state it produced.
+ * `workspace-mute` is request/response too, so a toggle can report the state it produced, and
+ * so is `workspace-rename`, so a rename that did not resolve is an error rather than silence.
  *
  * Ordering rules that are contract:
  *   - list order = sidebar order INCLUDING collapsed group members, deduped, with any
@@ -26,7 +27,8 @@ import {
     normalizeLabel,
     resolveGroupStrict,
     resolveWorkspaceStrict,
-    workspacesMatchingName
+    workspacesMatchingName,
+    type WorkspaceScope
 } from '@kelpi/core/resolve';
 import {
     buildWorkspaceListEntry,
@@ -558,6 +560,20 @@ function handleWorkspaceCreate(
     });
 }
 
+/**
+ * Why `resolveWorkspaceStrict` returned null, for the request/response verbs that tell the two
+ * apart (wire-protocol.md §5.8): a name that matches 2+ workspaces is "ambiguous" and points at
+ * the id, anything else is "not found". A UUID token is never ambiguous: an id that matched
+ * nothing fell through to a name match, and several workspaces named after one UUID is not a
+ * case worth a message of its own.
+ */
+function unresolvedWorkspaceError(scope: WorkspaceScope, nameOrID: string): string {
+    if (!isUUIDToken(nameOrID) && workspacesMatchingName(scope, nameOrID).length > 1) {
+        return `workspace name is ambiguous: ${nameOrID} (use the id)`;
+    }
+    return `workspace not found: ${nameOrID}`;
+}
+
 // ---------------------------------------------------------------------------
 // workspace-delete (§6.4)
 // ---------------------------------------------------------------------------
@@ -574,11 +590,7 @@ function handleWorkspaceDelete(
     const scope = resolveStateOf(state);
     const resolved = resolveWorkspaceStrict(scope, nameOrID);
     if (resolved === null) {
-        if (!isUUIDToken(nameOrID) && workspacesMatchingName(scope, nameOrID).length > 1) {
-            fail(reply, `workspace name is ambiguous: ${nameOrID} (use the id)`);
-        } else {
-            fail(reply, `workspace not found: ${nameOrID}`);
-        }
+        fail(reply, unresolvedWorkspaceError(scope, nameOrID));
         return;
     }
     const workspace = workspaceByID(state, resolved.id);
@@ -774,6 +786,47 @@ function handleWorkspaceMute(
 }
 
 // ---------------------------------------------------------------------------
+// workspace-rename (§6.8)
+// ---------------------------------------------------------------------------
+
+/**
+ * The sidebar's inline rename (⇧⌘R), for the CLI. The rules are the GUI's, so a name typed in
+ * either place ends up the same: trimmed, refused when nothing is left, no length or character
+ * limit, and duplicates allowed (a later name lookup reports the ambiguity, which is what the
+ * error below is for). Renaming to the current name is a successful no-op, the CLI's answer to
+ * the inline editor's "unchanged → cancel". The reducer recomputes the slug.
+ */
+function handleWorkspaceRename(
+    nameOrID: string,
+    newName: string,
+    ctx: AppContext,
+    reply: ReplyHandle | null,
+    deps: AppDeps
+): void {
+    const state = ctx.store.getState();
+    const scope = resolveStateOf(state);
+    const resolved = resolveWorkspaceStrict(scope, nameOrID);
+    const workspace = resolved === null ? null : workspaceByID(state, resolved.id);
+    if (workspace === null) {
+        fail(reply, unresolvedWorkspaceError(scope, nameOrID));
+        return;
+    }
+    const trimmed = newName.trim();
+    // The decoder only guarantees a non-empty string; whitespace alone would leave a blank row
+    // that no name lookup could ever reach again.
+    if (trimmed === '') {
+        fail(reply, 'workspace name cannot be empty');
+        return;
+    }
+    const oldName = workspace.name;
+    if (trimmed !== oldName) {
+        ctx.store.dispatch({ type: 'rename-workspace', id: workspace.id, name: trimmed });
+        deps.persist();
+    }
+    ok(reply, { workspace_id: uuidOut(workspace.id), workspace_name: trimmed, old_name: oldName });
+}
+
+// ---------------------------------------------------------------------------
 // Table
 // ---------------------------------------------------------------------------
 
@@ -799,6 +852,9 @@ export function workspaceHandlerEntries(deps: AppDeps): readonly (readonly [stri
         }),
         forCommand('workspace-mute', (msg, ctx, reply) => {
             handleWorkspaceMute(msg.name, msg.muted, ctx, reply, deps);
+        }),
+        forCommand('workspace-rename', (msg, ctx, reply) => {
+            handleWorkspaceRename(msg.name, msg.new_name, ctx, reply, deps);
         })
     ];
 }

@@ -197,6 +197,14 @@ export interface WorkspaceMuteReply extends ReplySuccess {
     readonly muted: boolean;
 }
 
+export interface WorkspaceRenameReply extends ReplySuccess {
+    readonly workspace_id: string;
+    /** The name the workspace has now (the trimmed `new_name`). */
+    readonly workspace_name: string;
+    /** The name it had before; equal to `workspace_name` when the rename changed nothing. */
+    readonly old_name: string;
+}
+
 // ── group replies ───────────────────────────────────────────────────────────────────
 
 export interface GroupListMember {
@@ -496,6 +504,7 @@ export type WireReply =
     | WorkspaceDeleteReply
     | WorkspaceLabelReply
     | WorkspaceMuteReply
+    | WorkspaceRenameReply
     | GroupListReply
     | GroupOrderReply
     | GraftStartReply

@@ -260,8 +260,9 @@ Every request carries `"command": "<verb>"`. Parsing happens in three stages:
 1. **Explicit command chain** — each of the following commands is matched by name and has
    its own field guards (documented per command in §6): `workspace-create`,
    `workspace-list`, `workspace-move`, `workspace-delete`, `workspace-profile`,
-   `workspace-label`, `workspace-mute`, `group-list`, `group-create`, `group-rename`,
-   `group-delete`, `group-move`, `group-set-repo`, `group-reorder`, `group-sort`, `open`, `diff`,
+   `workspace-label`, `workspace-mute`, `workspace-rename`, `group-list`, `group-create`,
+   `group-rename`, `group-delete`, `group-move`, `group-set-repo`, `group-reorder`,
+   `group-sort`, `open`, `diff`,
    `pane-close`, `pane-list`, `pane-capture`, `graft-start`, `graft-stop`,
    `graft-status`, `ping`, all `web-*` commands, `pane-sync`, `pane-sync-exclude`,
    `pane-send-key`, `pane-send`, `pane-split`, `pane-create`, `pane-name`, `pane-resize`,
@@ -313,7 +314,7 @@ plugin, workspace-list, group-list,
 pane-list, pane-close, pane-capture, pane-send, pane-send-key,
 pane-split, pane-create, pane-name, pane-resize, pane-move-adjacent,
 pane-sync, pane-sync-exclude,
-workspace-create, workspace-delete, workspace-label, workspace-mute,
+workspace-create, workspace-delete, workspace-label, workspace-mute, workspace-rename,
 group-set-repo, group-reorder, group-sort,
 graft-start, graft-stop, graft-status,
 ping,
@@ -491,6 +492,7 @@ carry `"command"`.
 | `workspace-profile` | F&F | `name` | `profile` |
 | `workspace-label` | R/R | `name`, `label_op` | `label_values` |
 | `workspace-mute` | R/R | `name` | `muted` |
+| `workspace-rename` | R/R | `name`, `new_name` | none |
 | `group-list` | R/R | — | — |
 | `group-create` | F&F | `name` | `color` |
 | `group-rename` | F&F | `name`, `new_name` | — |
@@ -1027,6 +1029,36 @@ This is request/response, unlike the fire-and-forget `workspace-profile`: a togg
 report the state it produced, and a caller scripting a fan-out needs an error when the name
 does not resolve.
 
+#### `workspace-rename` (R/R)
+
+`name` (required non-empty) = workspace name-or-id (§5.8, strict); `new_name` (required
+non-empty) = the name to give it. The CLI's spelling of the sidebar's inline rename (⇧⌘R), with
+the same rules (`packages/daemon/src/handlers/app/workspaces.ts` ▸ `handleWorkspaceRename`):
+`new_name` is trimmed, whitespace only is refused, there is no length or character limit, and
+a name another workspace already has is allowed (a later name lookup then reports the
+ambiguity). The reducer recomputes the workspace's slug and the rename reaches every attached
+client through the ordinary store delta. The reply names the workspace by id and carries the
+name it has now (`workspace_name`) and the one it had (`old_name`); renaming to the current
+name succeeds without writing anything, and the two are then equal.
+
+```json
+{"command":"workspace-rename","name":"feat-x","new_name":"auth refactor"}
+→ {"ok":true,"workspace_id":"<uuid>","workspace_name":"auth refactor","old_name":"feat-x"}
+```
+
+Refusals: `{"ok":false,"error":"workspace not found: <name>"}`, `{"ok":false,"error":"workspace
+name is ambiguous: <name> (use the id)"}` (the same two messages as `workspace-delete`), and
+`{"ok":false,"error":"workspace name cannot be empty"}` for a whitespace-only `new_name`. An
+absent or empty `new_name` fails the decoder guard and, the command being allowlisted, is
+answered `{"ok":false,"error":"workspace-rename requires new_name"}` (§2.1).
+
+It is request/response, unlike `group-rename`, so an agent learns whether the name resolved
+and what the workspace is called now. The GUI does not use it: the sidebar keeps its WS-only
+`rename-workspace`, which addresses the workspace by id (`packages/daemon/src/ws/sync.ts`).
+Against a daemon that predates the verb, the line names an unknown command and is dropped
+without a reply (§2.1), which the CLI reports as "no response from Kelpi (upgrade required?)"
+with exit 1.
+
 ---
 
 ### 6.4 Group commands
@@ -1379,7 +1411,7 @@ other key is ignored. (A known key with the wrong type poisons the whole message
 | `text` | string | `pane-send`; **`pane-move-to-workspace`'s create flag (`"true"`)**; `web-type` |
 | `key` | string | `pane-send-key`, `web-key` |
 | `bare` | bool | `pane-send` |
-| `new_name` | string | `group-rename` |
+| `new_name` | string | `group-rename`, `workspace-rename` |
 | `cascade` | bool | `group-delete` |
 | `force` | bool | `workspace-delete` |
 | `index` | int | `workspace-move`, `group-move` |

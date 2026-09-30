@@ -396,8 +396,9 @@ silent fallthrough is dangerous for verbs whose no-target default is "the callin
 
 Commands wired to `rejectLeftoverArgs`: `pane split`, `pane create`, `pane resize`,
 `pane move` (adjacent form), `pane list`, `pane capture`, `workspace list`,
-`workspace create`, `workspace label`, `group reorder`, `group sort`, `install-hooks`
-(hint `this command takes options only`). Several other
+`workspace create`, `workspace label`, `workspace mute`, `workspace rename` (hint `quote a
+new name that contains spaces`), `group reorder`, `group sort`, `install-hooks` (hint `this
+command takes options only`). Several other
 commands implement equivalent bespoke checks (`pane close`, `pane name`, `pane send-key`,
 `pane sync`, `workspace profile`, `workspace delete`, `group list`, `doctor`); commands
 NOT listed here silently ignore extra args (e.g. `diff`, `layout select`, `group create`,
@@ -882,7 +883,7 @@ the caller's workspace via `KELPI_PANE_ID`; `--workspace` overrides.
 
 Dispatcher: missing action => group usage to stderr, exit 1; `--help|-h|help` => group
 usage to stdout, exit 0; unknown action => `Unknown workspace action: <x>` +
-`Valid actions: list, create, move, delete, profile, label, mute`, exit 1.
+`Valid actions: list, create, move, delete, profile, label, mute, rename`, exit 1.
 
 ### 10.1 `kelpi workspace list`
 
@@ -1102,6 +1103,38 @@ bounce or title flash, `error` events included; plugins still observe the events
 `muted: true` (agent-lifecycle.md §7.6). The flag persists across a daemon restart and syncs
 to every attached client. Unknown or ambiguous workspace => `ok:false` `no workspace matches
 '<name>'`, exit non-zero. Reply `{ok, workspace_id, workspace_name, muted}`.
+
+### 10.8 `kelpi workspace rename` (issue #266)
+
+```
+kelpi workspace rename <name-or-id> <new-name> [--json]
+```
+
+The sidebar's inline rename (⇧⌘R) for the terminal, so an agent whose workspace outgrew its
+name can fix it without asking the user.
+
+- Help to stdout, exit 0. A missing `<name-or-id>` or `<new-name>` => usage to stderr, exit 1.
+- A dash-prefixed positional => `kelpi workspace rename: unknown option <x>` + usage, exit 1.
+  A third positional => `kelpi workspace rename: unexpected argument '<x>'` with the hint to
+  quote a new name that contains spaces, exit 1.
+- The new name is trimmed; empty or whitespace only =>
+  `kelpi workspace rename: the new name cannot be empty`, exit 1, before anything is sent.
+- Payload: `{"command":"workspace-rename","name":<name-or-id>,"new_name":<trimmed>}`.
+- Request/response (unlike `group rename`, §11.3). `--json`: full reply **including `ok`**,
+  compact sorted.
+- Default: `renamed workspace <old_name> to <workspace_name> (<workspace_id>)`, or
+  `workspace <name> (<workspace_id>) already has that name` when the two are equal.
+- Against a daemon that predates the verb: `no response from Kelpi (upgrade required?)`,
+  exit 1 (§6.1).
+
+Server contract: `<name-or-id>` resolves strictly (a matching id wins, else a unique
+case-sensitive name), as for `workspace delete`, with the same errors: `workspace not found:
+<name>` and `workspace name is ambiguous: <name> (use the id)`, both exit 1. The rules are the
+sidebar's: trimmed, whitespace only refused (`workspace name cannot be empty`), no length or
+character limit, and another workspace's name is allowed (after which that name needs the id).
+Renaming to the current name succeeds and writes nothing. The slug is recomputed, the change
+persists and it syncs to every attached client. Reply `{ok, workspace_id, workspace_name,
+old_name}`, where `workspace_name` is the new name.
 
 ---
 
@@ -2061,10 +2094,10 @@ Fire-and-forget: `stop`, `start`, `error`, `notification`, `session-start`, `ses
 Request/response: `ping`, `pane-split`, `pane-create`, `pane-close`, `pane-name`,
 `pane-resize`, `pane-send`, `pane-send-key`, `pane-move-adjacent`, `pane-list`,
 `pane-capture`, `pane-sync`, `pane-sync-exclude`, `workspace-list`, `workspace-create`,
-`workspace-delete`, `workspace-label`, `group-list`, `group-reorder`, `group-sort`,
-`graft-start`, `graft-stop`, `graft-status`, and the web family: `web-open`,
-`web-navigate`, `web-url`, `web-back`, `web-forward`, `web-reload`, `web-capture`,
-`web-tabs`, `web-tab-new`, `web-tab-close`, `web-tab-select`, `web-console` (streaming
+`workspace-delete`, `workspace-label`, `workspace-mute`, `workspace-rename`, `group-list`,
+`group-set-repo`, `group-reorder`, `group-sort`, `graft-start`, `graft-stop`,
+`graft-status`, and the web family: `web-open`, `web-navigate`, `web-url`, `web-back`,
+`web-forward`, `web-reload`, `web-capture`, `web-tabs`, `web-tab-new`, `web-tab-close`, `web-tab-select`, `web-console` (streaming
 with `follow:true`), `web-inspect`, `web-inspect-result`, `web-private`,
 `web-cookies-list`, `web-cookies-clear`, `web-cookies-delete`, `web-click`, `web-type`,
 `web-q-text`, `web-q-attr`, `web-q-count`, `web-q-exists`, `web-q-dom`, `web-select`,

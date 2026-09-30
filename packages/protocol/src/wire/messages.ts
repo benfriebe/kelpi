@@ -252,6 +252,18 @@ export interface WorkspaceMuteMessage {
     muted?: boolean | undefined;
 }
 
+/**
+ * The CLI's spelling of the sidebar's inline rename (#266). The GUI keeps its WS-only
+ * `rename-workspace`, which addresses the workspace by id; this one takes a name-or-id like
+ * every other `workspace-*` verb, so it resolves (and refuses) the way they do.
+ */
+export interface WorkspaceRenameMessage {
+    command: 'workspace-rename';
+    name: string;
+    /** Required non-empty on the wire; the handler trims it and refuses whitespace only. */
+    new_name: string;
+}
+
 // ── 6.4 Group commands ──────────────────────────────────────────────────────────────
 
 export interface GroupListMessage {
@@ -604,6 +616,7 @@ export type WireMessage =
     | WorkspaceProfileMessage
     | WorkspaceLabelMessage
     | WorkspaceMuteMessage
+    | WorkspaceRenameMessage
     | GroupListMessage
     | GroupCreateMessage
     | GroupRenameMessage
@@ -667,6 +680,7 @@ export const EXPLICIT_CHAIN_COMMANDS: ReadonlySet<WireCommandName> = new Set([
     'workspace-profile',
     'workspace-label',
     'workspace-mute',
+    'workspace-rename',
     'group-list',
     'group-create',
     'group-rename',

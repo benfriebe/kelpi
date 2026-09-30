@@ -440,11 +440,18 @@ export type DomainAction =
           readonly paneID: string;
           readonly targetPaneID: string;
           readonly zone: DropZone;
+          /** #295: false moves the pane without focusing it; absent focuses it, as always. */
+          readonly focus?: boolean | undefined;
       }
     | {
           readonly type: 'move-pane-direction';
           readonly workspaceID: string;
           readonly direction: Direction;
+          /**
+           * #295: the pane to move. Absent moves the FOCUSED pane (the original contract), so a
+           * background move names its pane here instead of focusing it first.
+           */
+          readonly paneID?: string | undefined;
       }
     | {
           readonly type: 'move-pane-to-workspace';

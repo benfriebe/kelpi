@@ -777,6 +777,64 @@ describe('moving and resizing', () => {
         expect(h.state()).toBe(zoomed);
     });
 
+    /**
+     * #295: a background move (`focus: false`, or a directional move that names its pane) leaves
+     * the user's focus and history alone. Setup: P0 | PA | PB, the user focused on PA.
+     */
+    describe('background moves (#295)', () => {
+        function userInPA() {
+            const h = harness(seededState());
+            h.dispatch(
+                { type: 'split-pane', workspaceID: W1, paneID: PA, direction: 'horizontal', now: NOW },
+                { type: 'split-pane', workspaceID: W1, paneID: PB, direction: 'horizontal', now: NOW },
+                { type: 'focus-pane', workspaceID: W1, paneID: PA }
+            );
+            const before = ws(h.state());
+            expect(allPaneIDs(before.layout)).toEqual([P0, PA, PB]);
+            expect(before.focusedPaneID).toBe(PA);
+            return { h, history: before.focusHistory };
+        }
+
+        it('move-pane-adjacent with focus: false docks the pane and keeps focus and history', () => {
+            const { h, history } = userInPA();
+            h.dispatch({ type: 'move-pane-adjacent', workspaceID: W1, paneID: PB, targetPaneID: P0, zone: 'top', focus: false });
+            const workspace = ws(h.state());
+            expect(workspace.layout).toMatchObject({ first: { kind: 'split', first: { kind: 'leaf', paneID: PB } } });
+            expect(workspace.focusedPaneID).toBe(PA);
+            expect(workspace.focusHistory).toEqual(history);
+        });
+
+        for (const focus of [true, undefined]) {
+            it(`move-pane-adjacent with focus: ${String(focus)} focuses the moved pane`, () => {
+                const { h } = userInPA();
+                h.dispatch({ type: 'move-pane-adjacent', workspaceID: W1, paneID: PB, targetPaneID: P0, zone: 'top', focus });
+                expect(ws(h.state()).focusedPaneID).toBe(PB);
+            });
+        }
+
+        it('move-pane-direction with a named pane moves THAT pane, not the focused one', () => {
+            const { h, history } = userInPA();
+            h.dispatch({ type: 'move-pane-direction', workspaceID: W1, direction: 'left', paneID: PB });
+            const workspace = ws(h.state());
+            expect(allPaneIDs(workspace.layout)).toEqual([P0, PB, PA]);
+            expect(workspace.focusedPaneID).toBe(PA);
+            expect(workspace.focusHistory).toEqual(history);
+        });
+
+        it('move-pane-direction without a pane still moves the focused one', () => {
+            const { h } = userInPA();
+            h.dispatch({ type: 'move-pane-direction', workspaceID: W1, direction: 'left' });
+            expect(allPaneIDs(ws(h.state()).layout)).toEqual([PA, P0, PB]);
+        });
+
+        it('move-pane-direction ignores a named pane that is not visible', () => {
+            const { h } = userInPA();
+            const before = h.state();
+            h.dispatch({ type: 'move-pane-direction', workspaceID: W1, direction: 'left', paneID: PC });
+            expect(ws(h.state())).toBe(ws(before));
+        });
+    });
+
     it('resizes a pane against its sibling and clamps the share', () => {
         const h = harness(seededState());
         h.dispatch({
@@ -1030,8 +1088,12 @@ describe('background creates (#295)', () => {
         expect(ws(h.state()).focusedPaneID).toBe(PA);
     });
 
+    /*
+     * Regression guards, not tests of the #295 change: these reducers never touched
+     * `lastActiveWorkspaceID`, and these pin that a background create keeps it that way.
+     */
     for (const [type, build] of Object.entries(creates)) {
-        it(`${type} in the background never changes the active workspace`, () => {
+        it(`regression guard: ${type} in the background does not change the active workspace`, () => {
             const h = userTypingInPA();
             // Another workspace is the one on screen; the background pane lands in W1 regardless.
             h.dispatch({ type: 'create-workspace', id: W2, paneID: PC, name: 'other', color: 'red', now: NOW });

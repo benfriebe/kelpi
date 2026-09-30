@@ -537,16 +537,27 @@ export class CommandClient {
         return this.resizePane({ target: paneID, ratio: share }, options);
     }
 
-    movePane(input: { paneID: string; direction: MoveDirection }, options?: SendOptions): Promise<CommandReply> {
+    /** #295: a gesture's move (the keyboard move chords), so it keeps focus; see `splitPane`. */
+    movePane(
+        input: { paneID: string; direction: MoveDirection; focus?: boolean },
+        options?: SendOptions
+    ): Promise<CommandReply> {
         return this.raw(
-            wirePayload('pane-move', { pane_id: input.paneID, direction: input.direction }),
+            wirePayload('pane-move', {
+                pane_id: input.paneID,
+                direction: input.direction,
+                focus: input.focus ?? true
+            }),
             options ?? {}
         );
     }
 
-    /** Drag-and-drop equivalent: re-parent `target` onto an edge of `anchor`. */
+    /**
+     * Drag-and-drop equivalent: re-parent `target` onto an edge of `anchor`. #295: the drag is
+     * the user's gesture, so the moved pane takes the focus unless told otherwise.
+     */
     movePaneAdjacent(
-        input: PaneScope & { target: string; anchor: string; zone: DropZone },
+        input: PaneScope & { target: string; anchor: string; zone: DropZone; focus?: boolean },
         options?: SendOptions
     ): Promise<CommandReply> {
         return this.raw(
@@ -554,7 +565,8 @@ export class CommandClient {
                 ...scopeFields(input),
                 target: input.target,
                 anchor: input.anchor,
-                zone: input.zone
+                zone: input.zone,
+                focus: input.focus ?? true
             }),
             options ?? {}
         );

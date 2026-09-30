@@ -110,16 +110,17 @@ export const handlePaneMove: CommandHandler<PaneHandlerContext> = (msg, ctx) => 
     if (msg.command !== 'pane-move') return;
     const workspace = workspaceOfVisiblePane(ctx.store.getState(), msg.pane_id);
     if (workspace === null) return;
-    // The directional move operates on the FOCUSED pane, so the caller pane is focused first.
-    ctx.store.dispatch({
-        type: 'focus-pane',
-        workspaceID: workspace.id,
-        paneID: msg.pane_id
-    });
+    // #295: only a FOCUSING move (the window's keyboard move, `--focus`) focuses the caller
+    // first, as the verb always did. A background move (an agent's `kelpi pane move left`) names
+    // the pane on the action instead, so the user's focus never moves.
+    if (msg.focus === true) {
+        ctx.store.dispatch({ type: 'focus-pane', workspaceID: workspace.id, paneID: msg.pane_id });
+    }
     ctx.store.dispatch({
         type: 'move-pane-direction',
         workspaceID: workspace.id,
-        direction: msg.direction
+        direction: msg.direction,
+        paneID: msg.pane_id
     });
 };
 
@@ -170,7 +171,9 @@ export const handlePaneMoveAdjacent: CommandHandler<PaneHandlerContext> = (msg, 
         workspaceID: workspace.id,
         paneID,
         targetPaneID: anchorID,
-        zone: dropZoneForWireEdge(msg.zone)
+        zone: dropZoneForWireEdge(msg.zone),
+        // #295: background unless asked; drag-to-dock in the window sends `focus: true`.
+        focus: msg.focus === true
     });
 };
 

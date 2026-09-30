@@ -125,6 +125,12 @@ export interface PaneMoveMessage {
     command: 'pane-move';
     pane_id: string;
     direction: MoveDirection;
+    /**
+     * #295: leave the moved pane focused. Absent (or false) moves it in the BACKGROUND: the
+     * workspace's focused pane and history do not change and the caller is not focused first.
+     * The window's keyboard move sends `true`; `kelpi pane move --focus` does too.
+     */
+    focus?: boolean | undefined;
 }
 
 export interface PaneMoveAdjacentMessage extends PaneTargetScope {
@@ -132,6 +138,8 @@ export interface PaneMoveAdjacentMessage extends PaneTargetScope {
     target: string;
     anchor: string;
     zone: DropZone;
+    /** #295: as on `pane-move`; absent means background (drag-to-dock sends `true`). */
+    focus?: boolean | undefined;
 }
 
 export interface PaneMoveToWorkspaceMessage {

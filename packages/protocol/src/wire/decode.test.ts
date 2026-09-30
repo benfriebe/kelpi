@@ -267,7 +267,19 @@ describe('pane commands', () => {
         }
     });
 
-    it('treats an invalid split direction as absent instead of dropping', () => {
+    it('decodes focus on pane-move and pane-move-adjacent, absent meaning background (#295)', () => {
+        const moves: readonly Record<string, unknown>[] = [
+            { command: 'pane-move', pane_id: PANE, direction: 'left' },
+            { command: 'pane-move-adjacent', target: 'worker', anchor: 'main', zone: 'below' }
+        ];
+        for (const payload of moves) {
+            expect(ok(payload)).toMatchObject({ focus: false });
+            expect(ok({ ...payload, focus: true })).toMatchObject({ focus: true });
+            expect(rejected({ ...payload, focus: 1 })).toMatchObject({ field: 'focus' });
+        }
+    });
+
+        it('treats an invalid split direction as absent instead of dropping', () => {
         expect(ok({ command: 'pane-split', pane_id: PANE, direction: 'diagonal' })).toMatchObject({
             direction: undefined
         });
@@ -280,7 +292,8 @@ describe('pane commands', () => {
         expect(ok({ command: 'pane-move', pane_id: PANE, direction: 'up' })).toEqual({
             command: 'pane-move',
             pane_id: PANE_UPPER,
-            direction: 'up'
+            direction: 'up',
+            focus: false
         });
         expect(rejected({ command: 'pane-move', pane_id: PANE, direction: 'diagonal' })).toMatchObject({
             reason: 'guard',
@@ -330,7 +343,8 @@ describe('pane commands', () => {
             target: 'logs',
             anchor: 'coordinator',
             zone: 'below',
-            workspace: 'main'
+            workspace: 'main',
+            focus: false
         });
         expect(rejected({ command: 'pane-move-adjacent', target: 'a', anchor: 'b', zone: 'beside' }).field).toBe('zone');
         expect(rejected({ command: 'pane-move-adjacent', target: 'a', anchor: 'b' }).field).toBe('zone');

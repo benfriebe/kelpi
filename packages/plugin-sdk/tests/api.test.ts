@@ -176,6 +176,18 @@ describe('public SDK over Kelpi command handlers', () => {
         await api.files.open('/tmp/quiet.md', { focus: false });
         expect(sent.at(-1)).toMatchObject({ command: 'open', focus: false });
         expect(focusedPane()).toBe(split.paneID);
+        // The move helpers follow the same rule (#295).
+        await api.panes.moveAdjacent(background.paneID, P1, 'below', { focus: false });
+        expect(sent.at(-1)).toMatchObject({ command: 'pane-move-adjacent', zone: 'below', focus: false });
+        expect(focusedPane()).toBe(split.paneID);
+        await api.panes.move(background.paneID, 'up', { focus: false });
+        expect(sent.at(-1)).toMatchObject({ command: 'pane-move', direction: 'up', focus: false });
+        expect(focusedPane()).toBe(split.paneID);
+        await api.panes.move(background.paneID, 'down');
+        expect(sent.at(-1)).toMatchObject({ command: 'pane-move', direction: 'down', focus: true });
+        await api.panes.moveAdjacent(background.paneID, P1, 'above');
+        expect(sent.at(-1)).toMatchObject({ command: 'pane-move-adjacent', zone: 'above', focus: true });
+        expect(focusedPane()).toBe(background.paneID);
         await api.files.open('/tmp/loud.md');
         expect(sent.at(-1)).toMatchObject({ command: 'open', focus: true });
         expect(app.state().workspaces[0]?.panes.find(pane => pane.id === focusedPane())?.filePath).toBe('/tmp/loud.md');

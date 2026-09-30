@@ -537,10 +537,12 @@ Success reply:
 
 ### 4.8 `pane-move` (directional form) → fire-and-forget
 
-Inputs: `paneID` (required), `direction` (`left|right|up|down`). No reply, no errors.
-Find the workspace whose `panes` contain the pane (silently drop if none), focus the pane,
-then dispatch the workspace's directional-move action (swap/move toward the neighbouring
-pane in the layout).
+Inputs: `paneID` (required), `direction` (`left|right|up|down`), `focus` (bool, default
+false: issue #295). No reply, no errors. Find the workspace whose `panes` contain the pane
+(silently drop if none); only when `focus` is true, focus the pane first (the window's move
+key bindings send it). Then dispatch the workspace's directional-move action naming the pane
+(`paneID`), which swaps it with its neighbour in the layout. A background move (no `focus`,
+an agent's `kelpi pane move left`) never touches the focused pane or its history.
 
 ### 4.9 `pane-resize` → handlePaneResize
 
@@ -587,8 +589,8 @@ The CLI form of GUI drag-and-drop. Inputs: `paneID?`, `target` (moved pane), `an
 (pane to dock against), `zone` (`above|below|left-of|right-of`, the wire vocabulary of
 wire-protocol.md §5.4; the CLI sends exactly those names and the decoder rejects anything
 else with `pane-move-adjacent requires zone above|below|left-of|right-of`,
-`packages/protocol/src/wire/decode.ts:259`), `workspaceFilter?`. Implemented in
-`packages/daemon/src/handlers/pane/geometry.ts`.
+`packages/protocol/src/wire/decode.ts:259`), `workspaceFilter?`, `focus` (bool, default
+false: issue #295). Implemented in `packages/daemon/src/handlers/pane/geometry.ts`.
 
 1. Resolve the moved pane via `resolvePaneTarget`.
 2. Resolve the anchor via `resolvePaneInWorkspace(movedPane's workspace, anchor)` — the
@@ -606,7 +608,10 @@ else with `pane-move-adjacent requires zone above|below|left-of|right-of`,
 ```
 
 6. Dispatch the workspace's move-pane action (re-parents the moved pane's leaf onto the
-   given edge of the anchor — same operation as GUI drag-drop) **and** persist state.
+   given edge of the anchor, the same operation as GUI drag-drop) **and** persist state. The
+   reducer focuses the moved pane only when `focus` is true (drag-to-dock and
+   `kelpi pane move --focus`); a background move leaves the focused pane and its history
+   alone (issue #295).
 
 ### 4.11 `pane-move-to-workspace` → inline (fire-and-forget, no reply)
 

@@ -23,8 +23,8 @@ export const globalUsage = `Usage:
   kelpi pane resize [--target <name-or-uuid>] [--workspace <name-or-uuid>] (--ratio <0..1> | --grow [amt] | --shrink [amt])
   kelpi pane send [--bare] --target <name-or-uuid> [--workspace <name-or-uuid>] <command...>
   kelpi pane send-key --target <name-or-uuid> [--workspace <name-or-uuid>] <key>
-  kelpi pane move [left|right|up|down]
-  kelpi pane move --target X (--above|--below|--left-of|--right-of) Y
+  kelpi pane move [--focus] [left|right|up|down]
+  kelpi pane move --target X (--above|--below|--left-of|--right-of) Y [--focus]
   kelpi pane move-to-workspace --to-workspace <name-or-uuid> [--create]
   kelpi pane list [--workspace <name-or-id> | --current] [--json] [--no-header]
   kelpi pane capture [--target <name-or-uuid>] [--workspace <name-or-uuid>] [--lines N] [--scrollback]
@@ -217,14 +217,15 @@ failure.
 `;
 
 export const paneMoveUsage = `Usage:
-  kelpi pane move <left|right|up|down>                    # move the calling pane
-  kelpi pane move --target X --below Y                    # dock pane X under pane Y
-  kelpi pane move --target X --right-of Y                 # dock pane X beside pane Y
+  kelpi pane move [--focus] <left|right|up|down>          # move the calling pane
+  kelpi pane move --target X --below Y [--focus]          # dock pane X under pane Y
+  kelpi pane move --target X --right-of Y [--focus]       # dock pane X beside pane Y
 
 The directional form moves the calling pane (requires KELPI_PANE_ID) toward its
 neighbour. The adjacent form is the CLI equivalent of GUI drag-and-drop: it
 re-parents pane X onto an edge of pane Y (both name-or-uuid, resolved in the
-same workspace).
+same workspace). Either way the move happens in the background: focus stays
+where it is unless --focus is given, which focuses the moved pane.
 
 Adjacent options:
   --target <name-or-uuid>     Pane to move (X). Required for the adjacent form.
@@ -233,6 +234,7 @@ Adjacent options:
   --left-of <name-or-uuid>    Dock X to the left of the anchor.
   --right-of <name-or-uuid>   Dock X to the right of the anchor.
   --workspace <name-or-uuid>  Scope label resolution to a specific workspace.
+  --focus                     Focus the moved pane (default: background).
   --json                      Print the structured reply instead of the ack.
   -h, --help                  Show this help.
 

@@ -107,6 +107,13 @@ describe('CommandClient RPC', () => {
         expect(h.lastCommand()).toEqual({ command: 'pane-split', pane_id: PANE, focus: false });
         void h.client.createPane({ workspace: 'dev', focus: false }).catch(() => undefined);
         expect(h.lastCommand()).toEqual({ command: 'pane-create', workspace: 'dev', focus: false });
+        // The move builders are gestures too: the keyboard move chords and drag-to-dock.
+        void h.client.movePane({ paneID: PANE, direction: 'left' }).catch(() => undefined);
+        expect(h.lastCommand()).toEqual({ command: 'pane-move', pane_id: PANE, direction: 'left', focus: true });
+        void h.client.movePaneAdjacent({ target: PANE, anchor: 'main', zone: 'below' }).catch(() => undefined);
+        expect(h.lastCommand()).toEqual({ command: 'pane-move-adjacent', target: PANE, anchor: 'main', zone: 'below', focus: true });
+        void h.client.movePaneAdjacent({ target: PANE, anchor: 'main', zone: 'below', focus: false }).catch(() => undefined);
+        expect(h.lastCommand()).toEqual({ command: 'pane-move-adjacent', target: PANE, anchor: 'main', zone: 'below', focus: false });
     });
 
     it('sends the WS-only verbs with snake_case fields', async () => {

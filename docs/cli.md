@@ -740,18 +740,18 @@ form.
 **Directional (fire-and-forget, caller pane):**
 
 ```
-kelpi pane move <left|right|up|down>
+kelpi pane move [--focus] <left|right|up|down>
 ```
 
-- `requirePaneID()` (silent exit 0 outside).
+- `--focus` popped first (either form); `requirePaneID()` (silent exit 0 outside).
 - Missing direction => usage to stderr, exit 1. Invalid =>
   `Invalid direction: <x>` + `Valid directions: left, right, up, down`, exit 1.
-- Payload: `{"command":"pane-move","pane_id":...,"direction":"left"}`. No reply.
+- Payload: `{"command":"pane-move","pane_id":...,"direction":"left", "focus":true?}`. No reply.
 
 **Adjacent (request/response, issue #241):**
 
 ```
-kelpi pane move --target X (--above|--below|--left-of|--right-of) Y [--workspace Z] [--json]
+kelpi pane move --target X (--above|--below|--left-of|--right-of) Y [--workspace Z] [--focus] [--json]
 ```
 
 - Zone flags are value-taking flags (the value is the anchor pane Y).
@@ -762,7 +762,7 @@ kelpi pane move --target X (--above|--below|--left-of|--right-of) Y [--workspace
 - Leftovers rejected with hint
   `dock a pane with --target X --below/--above/--left-of/--right-of Y`.
 - Payload: `{"command":"pane-move-adjacent","target":X,"anchor":Y,
-  "zone":"above"|"below"|"left-of"|"right-of", workspace?, pane_id?}`.
+  "zone":"above"|"below"|"left-of"|"right-of", workspace?, pane_id?, "focus":true?}`.
 - Bespoke empty-reply error. `--json` prints reply minus `ok` (compact sorted).
 - Ack: `moved <pane_id>[ (<label>)] <zone> <anchor_id>[ in workspace <ws>]` (ids fall back
   to the input strings).
@@ -771,6 +771,14 @@ Server semantics (contract): X resolved like `pane name`; Y must resolve **withi
 workspace**; edges map to drop zones top/bottom/left/right; rejects X == Y, a missing
 anchor, or a cross-workspace anchor. Reply:
 `{ok, pane_id, anchor_id, zone, workspace_id, workspace_name, label?}`.
+
+**Background by default (issue #295), both forms.** Without `--focus` the move happens in the
+background: the workspace's focused pane, its focus history and the window's caret stay where
+they were, and the directional form no longer focuses the caller first (it names the pane to
+move instead). So an agent can dock a worker it just created (`kelpi pane move --target worker
+--right-of coordinator`) without taking the user's keyboard. `--focus` sends `"focus":true`
+and the moved pane takes the focus, as every move did before #295. The window's own gestures
+(drag-to-dock, the move-pane key bindings) always focus the moved pane.
 
 ### 9.10 `kelpi pane move-to-workspace`
 

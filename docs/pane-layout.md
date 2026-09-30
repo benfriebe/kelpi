@@ -814,8 +814,9 @@ wires it into the daemon (`packages/daemon/src/store/reducers/panes.ts`, `layout
 
 - Guard: both moved pane and anchor exist in this workspace's pane list (socket handler
   additionally rejects cross-workspace anchors and X == Y with typed errors).
-- `layout ← movingPane(paneID, toAdjacentOf: targetID, zone)`; focus ← moved pane;
-  `currentLayoutIndex ← null`.
+- `layout ← movingPane(paneID, toAdjacentOf: targetID, zone)`; `currentLayoutIndex ← null`;
+  focus ← moved pane for a drag (the window sends `focus: true`) or `pane move --focus`. A
+  plain CLI `pane move` docks the pane in the **background** and leaves focus alone (issue #295).
 - Zone mapping on the wire: `above→top`, `below→bottom`, `left-of→left`,
   `right-of→right`.
 

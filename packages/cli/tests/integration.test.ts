@@ -190,7 +190,27 @@ describe('request/response', () => {
         expect(await lastRequest()).toEqual({ command: 'pane-create', workspace: 'alpha' });
     });
 
-    it('documents --focus and the background default in pane split/create help', async () => {
+    /** #295: `pane move` is background by default too; `--focus` focuses the moved pane. */
+    it('sends focus: true only with --focus on both forms of pane move', async () => {
+        server.respond(() => ({ lines: [{ ok: true, pane_id: OTHER, anchor_id: PANE, workspace_name: 'alpha' }] }));
+
+        await runCLI(['pane', 'move', '--target', 'worker', '--right-of', PANE], { port: server.port, paneID: PANE });
+        expect(await lastRequest()).toEqual({ command: 'pane-move-adjacent', target: 'worker', anchor: PANE, zone: 'right-of', pane_id: PANE });
+
+        await runCLI(['pane', 'move', '--target', 'worker', '--below', PANE, '--focus'], { port: server.port, paneID: PANE });
+        expect(await lastRequest()).toEqual({ command: 'pane-move-adjacent', target: 'worker', anchor: PANE, zone: 'below', pane_id: PANE, focus: true });
+
+        await runCLI(['pane', 'move', 'left'], { port: server.port, paneID: PANE });
+        expect(await lastRequest()).toEqual({ command: 'pane-move', pane_id: PANE, direction: 'left' });
+
+        await runCLI(['pane', 'move', '--focus', 'right'], { port: server.port, paneID: PANE });
+        expect(await lastRequest()).toEqual({ command: 'pane-move', pane_id: PANE, direction: 'right', focus: true });
+
+        const help = await runCLI(['pane', 'move', '--help'], { port: server.port });
+        expect(help.stdout).toContain('--focus                     Focus the moved pane (default: background).');
+    });
+
+        it('documents --focus and the background default in pane split/create help', async () => {
         for (const verb of ['split', 'create']) {
             const help = await runCLI(['pane', verb, '--help'], { port: server.port });
             expect(help.code).toBe(0);

@@ -85,14 +85,19 @@ export interface GroupsAPI {
 }
 export interface PanesAPI {
     list(options?: PaneListOptions): Promise<PaneInfo[]>;
-    /** `focus` defaults to true for these helpers; pass false to open the pane in the background. */
+    /**
+     * `focus` defaults to true for `create`, `split`, `move` and `moveAdjacent`: the helpers
+     * assume a user gesture (a click in a view) and focus the pane. Code that runs WITHOUT a
+     * gesture (a backend reacting to events, timers or services) must pass `focus: false`, or the
+     * pane takes the keyboard from whatever the user is typing into.
+     */
     create(options?: { paneID?: string; workspaceID?: string; path?: string; name?: string; focus?: boolean }): Promise<PaneMutation>;
     split(pane: PaneTarget, options?: { direction?: SplitDirection; path?: string; name?: string; focus?: boolean }): Promise<PaneMutation>;
     close(pane: PaneTarget): Promise<PaneMutation>;
     rename(pane: PaneTarget, name: string): Promise<PaneMutation>;
     resize(pane: PaneTarget, options: { ratio: number; delta?: never } | { delta: number; ratio?: never }): Promise<PaneResize>;
-    moveAdjacent(pane: PaneTarget, anchor: string, zone: DropZone): Promise<PaneMutation & { anchorID: string; zone: DropZone }>;
-    move(paneID: string, direction: MoveDirection): Promise<void>;
+    moveAdjacent(pane: PaneTarget, anchor: string, zone: DropZone, options?: { focus?: boolean }): Promise<PaneMutation & { anchorID: string; zone: DropZone }>;
+    move(paneID: string, direction: MoveDirection, options?: { focus?: boolean }): Promise<void>;
     moveToWorkspace(paneID: string, workspaceID: string, options?: { create?: boolean }): Promise<void>;
     reopen(workspaceID: string): Promise<PanePlacement & { type: PaneType }>;
     scratchpad(workspaceID: string): Promise<PanePlacement>;

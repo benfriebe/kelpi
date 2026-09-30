@@ -447,6 +447,8 @@ async function handlePaneMove(args: string[]): Promise<void> {
         exit(0);
     }
     const target = parseFlag('--target', args);
+    // #295: without --focus the move happens in the background (focus stays with the user).
+    const focus = popSwitch('--focus', args);
     const zones = ZONE_FLAGS.map(([zone, flag]) => [zone, parseFlag(flag, args)] as const);
     const given = zones.filter(([, anchor]) => anchor !== null);
 
@@ -474,6 +476,7 @@ async function handlePaneMove(args: string[]): Promise<void> {
         if (workspace !== null) payload['workspace'] = workspace;
         const origin = originPaneID();
         if (origin !== undefined) payload['pane_id'] = origin;
+        if (focus) payload['focus'] = true;
 
         const reply = await readReplyOrEmptyError(payload, 'kelpi pane move');
         if (asJSON) {
@@ -504,7 +507,9 @@ async function handlePaneMove(args: string[]): Promise<void> {
         errLine('Valid directions: left, right, up, down');
         exit(1);
     }
-    await sendJSON({ command: 'pane-move', pane_id: paneID, direction });
+    const payload: JsonObject = { command: 'pane-move', pane_id: paneID, direction };
+    if (focus) payload['focus'] = true;
+    await sendJSON(payload);
 }
 
 async function handlePaneMoveToWorkspace(args: string[]): Promise<void> {

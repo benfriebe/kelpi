@@ -364,7 +364,53 @@ describe('pane context menu (TERM-106…TERM-111)', () => {
         expect(screen.getByTestId(`pane-rename-input-${PANE_A}`)).toBeTruthy();
     });
 
-    it('closes the focused pane from Close Pane', async () => {
+    /**
+     * #295: on the wire an absent `focus` is a background open. These are the user's own
+     * gestures, so each one must ask for focus explicitly or the pane they asked for would open
+     * behind them.
+     */
+    it('New Web Pane and Split Right from the pane menu send focus: true', async () => {
+        const h = setup();
+        openPaneMenu();
+        fireEvent.click(screen.getByTestId('context-menu').querySelector('[data-menu-item="new-web"]') as Element);
+        await waitFor(() => {
+            expect(h.commands().at(-1)).toMatchObject({
+                command: 'web-open',
+                url: 'about:blank',
+                pane_id: PANE_A,
+                target: PANE_A,
+                direction: 'horizontal',
+                focus: true
+            });
+        });
+        openPaneMenu();
+        fireEvent.click(screen.getByTestId('context-menu').querySelector('[data-menu-item="split-right"]') as Element);
+        await waitFor(() => {
+            expect(h.commands().at(-1)).toMatchObject({ command: 'pane-split', pane_id: PANE_A, direction: 'horizontal', focus: true });
+        });
+    });
+
+    it('the header globe sends web-open with focus: true (click right, shift-click down)', async () => {
+        const h = setup();
+        fireEvent.click(screen.getByTestId(`pane-new-web-${PANE_A}`));
+        await waitFor(() => {
+            expect(h.commands().at(-1)).toMatchObject({ command: 'web-open', target: PANE_A, direction: 'horizontal', focus: true });
+        });
+        fireEvent.click(screen.getByTestId(`pane-new-web-${PANE_A}`), { shiftKey: true });
+        await waitFor(() => {
+            expect(h.commands().at(-1)).toMatchObject({ command: 'web-open', target: PANE_A, direction: 'vertical', focus: true });
+        });
+    });
+
+    it('the keyboard move chord sends pane-move with focus: true', async () => {
+        const h = setup({ split: true });
+        fireEvent.keyDown(window, { code: 'ArrowLeft', key: 'ArrowLeft', ctrlKey: true, shiftKey: true });
+        await waitFor(() => {
+            expect(h.commands().at(-1)).toMatchObject({ command: 'pane-move', direction: 'left', focus: true });
+        });
+    });
+
+        it('closes the focused pane from Close Pane', async () => {
         const h = setup({ split: true });
         openPaneMenu(PANE_B);
         fireEvent.click(screen.getByTestId('context-menu').querySelector('[data-menu-item="close"]') as Element);

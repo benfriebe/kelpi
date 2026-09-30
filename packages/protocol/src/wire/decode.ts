@@ -259,7 +259,7 @@ function decodeCommand(
             if (direction === undefined) {
                 return guard(command, 'pane-move requires direction left|right|up|down', 'direction');
             }
-            return { command, pane_id: paneId as string, direction };
+            return { command, pane_id: paneId as string, direction, focus: fields.flag('focus', false) };
         }
         case 'pane-move-adjacent': {
             const target = fields.text('target');
@@ -270,7 +270,7 @@ function decodeCommand(
             if (zone === undefined) {
                 return guard(command, 'pane-move-adjacent requires zone above|below|left-of|right-of', 'zone');
             }
-            return { command, ...scope(), target, anchor, zone };
+            return { command, ...scope(), target, anchor, zone, focus: fields.flag('focus', false) };
         }
         case 'pane-move-to-workspace': {
             const name = fields.nonEmpty('name');

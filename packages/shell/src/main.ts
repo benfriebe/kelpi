@@ -56,6 +56,7 @@ import { startHarness, stopHarness } from './harness.js';
 import { notificationsSupported, presentNotification } from './notify-present.js';
 import {
     createOpenFileQueue,
+    openFileCommand,
     runCliInstallPolicy,
     runDaemonConnectSequence,
     runLaunchSequence
@@ -968,16 +969,8 @@ const openFiles = createOpenFileQueue({
     ready: () => daemon !== null,
     send: ({ path: filePath, paneID }) => {
         if (daemon === null) return;
-        void sendControlCommand(daemon.paths.socket, {
-            command: 'open',
-            path: filePath,
-            // The pane that asked, when one did (the ⌘O route). `open` routes into that pane's
-            // workspace exactly as `kelpi md` from inside a pane does; Finder's route names none.
-            ...(paneID === null ? {} : { pane_id: paneID }),
-            // #295: Finder and the ⌘O panel are the user's own gestures, so the preview takes
-            // the focus; on the wire an absent `focus` opens it in the background.
-            focus: true
-        }).then((result) => {
+        // `openFileCommand` carries the pane that asked (⌘O) and `focus: true` (#295).
+        void sendControlCommand(daemon.paths.socket, openFileCommand({ path: filePath, paneID })).then((result) => {
             if (!result.ok) warn(`open ${filePath} failed: ${result.error ?? 'no reply'}`);
         });
     },

@@ -9,7 +9,8 @@
  * (`KELPI_PANE_ID` set to that pane):
  *
  *   1. focus a terminal and start typing a command into it, WITHOUT pressing Enter;
- *   2. `kelpi pane split --name worker`, `pane create`, `web open about:blank` and `open notes.md`,
+ *   2. `kelpi pane split --name worker`, then `pane move --target worker` (docking it, twice),
+ *      `pane create`, `web open about:blank` and `open notes.md`,
  *      one at a time, from the typing pane itself, and one more split from a separate agent pane;
  *   3. after each, keep typing, press Enter, and read the typing pane's own screen with
  *      `kelpi pane capture`: the finished line must have landed there. The daemon's focused pane,
@@ -33,7 +34,8 @@ export const covers = [
     'packages/daemon/src/store/reducers/panes.ts',
     'packages/client/src/webpane/hooks.ts',
     'packages/client/src/connection/commands.ts',
-    'packages/cli/src/commands/pane.ts'
+    'packages/cli/src/commands/pane.ts',
+    'packages/daemon/src/handlers/pane/geometry.ts'
 ];
 
 /** The pane whose SURFACE holds the caret, or '' when the caret is not in a pane at all. */
@@ -115,24 +117,26 @@ export default async function ({ page, cli, rec, d, sleep, sandbox }) {
          * One agent create while the user is mid-command. `run` is the CLI call; `from` is the
          * pane whose `KELPI_PANE_ID` the agent speaks with.
          */
-        const midTyping = async (label, marker, args, from, shot) => {
+        const midTyping = async (label, marker, args, from, shot, { creates = true } = {}) => {
             const before = new Set((await panesOf(workspaceName)).map((pane) => pane.id));
             // Half a command, no Enter: the user is in the middle of typing.
             await typeText(`echo ${marker.slice(0, 4)}`);
             const result = await cli.run(args, { paneID: from });
             rec.check(`${label}: the CLI call succeeded`, result.code === 0, `${args.join(' ')} -> ${String(result.code)} ${result.stderr}`);
             let added = '';
-            await d.settle(
-                async () => {
-                    added = (await panesOf(workspaceName)).map((pane) => pane.id).find((id) => !before.has(id)) ?? '';
-                    return added !== '';
-                },
-                { ceilingMs: 8_000, intervalMs: 200 }
-            );
-            rec.check(`${label}: a new pane joined the layout`, added !== '' && (await d.settleDom(page, paneInDom(added), { ceilingMs: 10_000 })));
-            // Every split halves the pane it splits off, so reflow into a grid to keep the
-            // screenshots readable. A layout change is not a focus change either.
-            await cli.run(['layout', 'select', 'tiled'], { paneID: user });
+            if (creates) {
+                await d.settle(
+                    async () => {
+                        added = (await panesOf(workspaceName)).map((pane) => pane.id).find((id) => !before.has(id)) ?? '';
+                        return added !== '';
+                    },
+                    { ceilingMs: 8_000, intervalMs: 200 }
+                );
+                rec.check(`${label}: a new pane joined the layout`, added !== '' && (await d.settleDom(page, paneInDom(added), { ceilingMs: 10_000 })));
+                // Every split halves the pane it splits off, so reflow into a grid to keep the
+                // screenshots readable. A layout change is not a focus change either.
+                await cli.run(['layout', 'select', 'tiled'], { paneID: user });
+            }
             // Every mount-time handoff (engine open, its delayed backup grab, WEB-002, the page
             // claim) is bounded at 1.5 s; wait past all of them before asking who has the keyboard.
             await sleep(1_800);
@@ -154,6 +158,16 @@ export default async function ({ page, cli, rec, d, sleep, sandbox }) {
         };
 
         await midTyping('pane split --name worker', 'bgsplit1', ['pane', 'split', '--name', 'worker'], user, 'background-split-focus-stays');
+        /*
+         * Docking a background worker, which is what the skill tells an agent to do next. The
+         * move must not take the keyboard either (it used to focus the moved pane).
+         */
+        const gridBefore = await page.eval(`JSON.stringify([...document.querySelectorAll('[data-pane-id]')].map((el) => { const r = el.getBoundingClientRect(); return [el.getAttribute('data-pane-id'), Math.round(r.x), Math.round(r.y)]; }))`);
+        await midTyping('pane move --target worker --below the user pane', 'bgmove1', ['pane', 'move', '--target', 'worker', '--below', user], user, 'background-pane-move-below-focus-stays', { creates: false });
+        await midTyping('pane move --target worker --right-of the user pane', 'bgmove2', ['pane', 'move', '--target', 'worker', '--right-of', user], agent, 'background-pane-move-right-of-focus-stays', { creates: false });
+        const gridAfterBelow = await page.eval(`JSON.stringify([...document.querySelectorAll('[data-pane-id]')].map((el) => { const r = el.getBoundingClientRect(); return [el.getAttribute('data-pane-id'), Math.round(r.x), Math.round(r.y)]; }))`);
+        rec.check('pane move: the layout really changed while focus stayed put', gridAfterBelow !== gridBefore, `${String(gridBefore)} -> ${String(gridAfterBelow)}`);
+
         await midTyping('pane create', 'bgcreate2', ['pane', 'create', '--name', 'created'], user);
         await midTyping('web open about:blank', 'bgweb3', ['web', 'open', 'about:blank'], user, 'background-web-open-focus-stays');
         await midTyping('open notes.md', 'bgmark4', ['open', notes], user, 'background-markdown-focus-stays');

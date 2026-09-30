@@ -1478,17 +1478,20 @@ resolves to null, never to an error.
 above->top, below->bottom, left-of->left, right-of->right)
 - Guard BOTH ids name visible panes, else no-op.
 - `layout = movingPane(layout, paneID, targetPaneID, zone)` (1.6).
-- `setFocus(paneID)`; `currentLayoutIndex = null`.
+- `setFocus(paneID)` unless the action carries `focus: false` (issue #295: an agent's
+  `kelpi pane move` without `--focus` docks the pane in the background); `currentLayoutIndex = null`.
 - Edge: `paneID === targetPaneID` passes the guards; the layout is unchanged (movingPane
   no-ops) but focus is still set and the layout index still resets.
 
-**movePaneInDirection(direction)** (keyboard "move pane left/right/up/down"; the CLI's
-fire-and-forget directional `kelpi pane move <dir>` for the calling pane)
+**movePaneInDirection(direction, paneID?)** (keyboard "move pane left/right/up/down"; the
+CLI's fire-and-forget directional `kelpi pane move <dir>` for the calling pane)
 - Guard `zoomedPaneID === null` (moving while zoomed is a no-op, NOT an un-zoom).
-- Guard `focusedPaneID != null`.
-- `neighbor = neighborPaneID(layout, focusedPaneID, direction)` (geometric, 1.6);
+- `moving = paneID ?? focusedPaneID`; a given `paneID` must be visible, else no-op (issue
+  #295: a background CLI move names the caller here instead of focusing it first). Guard
+  `moving != null`.
+- `neighbor = neighborPaneID(layout, moving, direction)` (geometric, 1.6);
   guard non-null.
-- `layout = swappingLeaves(layout, focusedPaneID, neighbor)`: the two panes exchange
+- `layout = swappingLeaves(layout, moving, neighbor)`: the two panes exchange
   positions; every split direction and ratio is preserved; focus stays on the same pane
   id (now in the neighbor's slot).
 - `currentLayoutIndex = null`.

@@ -179,10 +179,13 @@ kelpi pane capture [--target <name-or-uuid>] [--workspace <name-or-uuid>] [--lin
 # drag-drop). --below stacks the target under the anchor; --above /
 # --left-of / --right-of are the other edges. Both panes resolve within
 # the same workspace. Pairs with `pane resize` for full layout control.
-kelpi pane move --target <name-or-uuid> (--above|--below|--left-of|--right-of) <anchor> [--workspace <name-or-uuid>] [--json]
+# Background by default (the user's focus stays put); --focus focuses
+# the moved pane.
+kelpi pane move --target <name-or-uuid> (--above|--below|--left-of|--right-of) <anchor> [--workspace <name-or-uuid>] [--focus] [--json]
 
 # Move the calling pane toward its neighbour (directional form).
-kelpi pane move <left|right|up|down>
+# Also background by default; --focus focuses the calling pane.
+kelpi pane move [--focus] <left|right|up|down>
 
 # Move a pane to another workspace (creates it with --create).
 kelpi pane move-to-workspace --to-workspace <name-or-uuid> [--create]
@@ -213,7 +216,9 @@ keystrokes into the wrong pane.
   your own pane unless `--target` names another; nothing you do moves
   focus, so there is no "split the focused pane" trick to rely on. Use
   `kelpi pane move --target <new> --right-of <anchor>` (or `--below`,
-  ...) to dock a pane somewhere else after creating it.
+  ...) to dock a pane somewhere else after creating it. `pane move` is
+  background too: it rearranges the layout without moving focus (pass
+  `--focus` only if the user asked to be taken to the moved pane).
 - `kelpi web open` still splits the workspace's *focused* pane (often
   the user's, not yours). If it lands somewhere awkward, move it with
   `kelpi pane move`.

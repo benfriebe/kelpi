@@ -674,18 +674,24 @@ export function reducePaneAction(state: DaemonState, action: DomainAction): Daem
                     ),
                     currentLayoutIndex: null
                 };
-                return setFocus(next, action.paneID);
+                // #295: a background move (an agent's `kelpi pane move`) docks the pane without
+                // taking the user's focus; both panes are visible, so there is focus to keep.
+                return action.focus === false ? next : setFocus(next, action.paneID);
             });
         case 'move-pane-direction':
             return updateWorkspace(state, action.workspaceID, (workspace) => {
                 if (workspace.zoomedPaneID !== null) return workspace; // no-op, not an un-zoom
-                const focused = workspace.focusedPaneID;
-                if (focused === null) return workspace;
-                const neighbor = neighborPaneID(workspace.layout, focused, action.direction);
+                // #295: a background move names its pane; only the focused-pane fallback is old.
+                if (action.paneID !== undefined && findVisiblePane(workspace, action.paneID) === null) {
+                    return workspace;
+                }
+                const moving = action.paneID ?? workspace.focusedPaneID;
+                if (moving === null) return workspace;
+                const neighbor = neighborPaneID(workspace.layout, moving, action.direction);
                 if (neighbor === null) return workspace;
                 return {
                     ...workspace,
-                    layout: swappingLeaves(workspace.layout, focused, neighbor),
+                    layout: swappingLeaves(workspace.layout, moving, neighbor),
                     currentLayoutIndex: null
                 };
             });

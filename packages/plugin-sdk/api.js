@@ -100,8 +100,9 @@ export function createKelpiAPI(transport, getContext = () => ({})) {
         close: pane => run('pane-close', target(pane)),
         rename: (pane, name) => run('pane-name', { ...target(pane), name }),
         resize: (pane, options) => run('pane-resize', { ...target(pane), ratio: options.ratio, delta: options.delta }),
-        moveAdjacent: (pane, anchor, zone) => run('pane-move-adjacent', { ...target(pane), anchor, zone }),
-        move: (paneID, direction) => done('pane-move', { pane_id: paneID, direction }),
+        // #295: like create/split, the move helpers keep focusing the moved pane by default.
+        moveAdjacent: (pane, anchor, zone, options = {}) => run('pane-move-adjacent', { ...target(pane), anchor, zone, focus: options.focus ?? true }),
+        move: (paneID, direction, options = {}) => done('pane-move', { pane_id: paneID, direction, focus: options.focus ?? true }),
         moveToWorkspace: (paneID, workspaceID, options = {}) => done('pane-move-to-workspace', { pane_id: paneID, name: workspaceID, text: options.create ? 'true' : 'false' }),
         reopen: workspaceID => run('reopen-closed-pane', { workspace_id: workspaceID }),
         scratchpad: workspaceID => run('create-scratchpad', { workspace_id: workspaceID }),

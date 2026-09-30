@@ -35,6 +35,28 @@ export interface OpenFileRequest {
     readonly paneID: string | null;
 }
 
+/**
+ * The `open` control command for one forwarded file.
+ *
+ * #295: `focus: true` always. Finder's Open With and the ⌘O panel are the user's own gestures,
+ * so the preview takes the focus; on the wire an absent `focus` would open it in the background
+ * (the default an agent's `kelpi open` gets). The pane that asked, when one did (the ⌘O route),
+ * routes the open into that pane's workspace exactly as `kelpi md` from inside a pane does.
+ */
+export function openFileCommand(request: OpenFileRequest): {
+    readonly command: 'open';
+    readonly path: string;
+    readonly pane_id?: string;
+    readonly focus: true;
+} {
+    return {
+        command: 'open',
+        path: request.path,
+        ...(request.paneID === null ? {} : { pane_id: request.paneID }),
+        focus: true
+    };
+}
+
 export interface OpenFileQueueDeps {
     /**
      * Is the daemon connection up? Called on **every** forward, never cached: a file can arrive

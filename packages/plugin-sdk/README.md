@@ -105,10 +105,12 @@ Scoped helpers prefer explicit options, then the live view/backend command conte
 `panes.create()`, `panes.list({scope:'current'})`, file opening, diffs and graft operations. A sidebar
 with workspace context can create/list panes there; file and diff helpers use that workspace's
 focused or first visible pane; `reuse:true` requires an actual caller pane or explicit `paneID`.
-`panes.create()`, `panes.split()` and `files.open()` focus the new pane by default, because a plugin
-usually acts on the user's click; pass `focus:false` to open it in the background instead. A raw
-`api.command({command:'pane-split', ...})` follows the wire default, where an absent `focus` means
-background (the same default an agent's `kelpi pane split` gets).
+`panes.create()`, `panes.split()`, `panes.move()`, `panes.moveAdjacent()` and `files.open()` focus
+the pane by default, because they assume a user gesture such as a click in a view. **Code that runs
+without a gesture must pass `focus:false`**: a backend creating or moving panes from events, timers,
+hooks or service calls would otherwise take the keyboard from whatever the user is typing into. A
+raw `api.command({command:'pane-split', ...})` follows the wire default, where an absent `focus`
+means background (the same default an agent's `kelpi pane split` gets).
 Terminal `search(workspaceID, action, options)` controls that workspace's find UI: toggle starts
 on its focused pane, while set/next/prev operate on its existing search pane.
 An empty source workspace or background call without the required

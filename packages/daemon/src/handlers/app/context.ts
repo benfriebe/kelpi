@@ -23,7 +23,14 @@ import type {
     DomainEvent,
     NewWorkspacePlacement
 } from '../../store/index.js';
-import { createGitService, DEFAULT_WORKTREE_BASE_PATH, type GitService } from '../../git/index.js';
+import {
+    createGitService,
+    DEFAULT_WORKTREE_BASE_PATH,
+    type GitService,
+    createWorktreeAddGuard,
+    type WorktreeAddHooks,
+    type WorktreeAddRequest
+} from '../../git/index.js';
 import { createGraftService, type GraftService } from '../../graft/index.js';
 import { createWebPaneService, type WebPaneService } from '../../webpane/service.js';
 
@@ -40,8 +47,56 @@ export interface SpawnPaneRequest {
     readonly profileName: string | null;
 }
 
+/**
+ * The git half of `workspace-create --worktree` (issue #294). `begin()` decides, once per create,
+ * how this create runs:
+ *
+ *   - `detailed: true`: `performWorktreeAdd` with the request's step sink and cancel signal plus
+ *     the shared prefetch (what boot composes while bundled git is in charge);
+ *   - `detailed: false`: `git.worktreeAdd`, which takes no hooks, so no steps and no cancel. It is
+ *     the default (a table built with a stub git keeps driving the stub exactly as before), and
+ *     what boot uses while a plugin provider owns `kelpi.git`. The handler then tells the sheet
+ *     there are no steps, and makes the request uncancellable, rather than showing a checklist
+ *     that never moves and a Cancel that does nothing.
+ */
+export interface WorktreeCreator {
+    begin(): WorktreeCreateRun;
+}
+
+export interface WorktreeCreateRun {
+    readonly detailed: boolean;
+    run(request: WorktreeAddRequest, hooks: WorktreeAddHooks): Promise<void>;
+}
+
+/**
+ * The creator every handler table actually uses: `inner`, behind the one-create-per-(repo, path)
+ * and per-(repo, branch) guard (`createWorktreeAddGuard`). A second create for the same worktree
+ * path or branch while one runs is refused at once with `WorktreeBusyError`.
+ */
+function guardedCreator(inner: WorktreeCreator): WorktreeCreator {
+    const guard = createWorktreeAddGuard();
+    return {
+        begin() {
+            const run = inner.begin();
+            return {
+                detailed: run.detailed,
+                async run(request, hooks) {
+                    const release = guard.acquire(request);
+                    try {
+                        await run.run(request, hooks);
+                    } finally {
+                        release();
+                    }
+                }
+            };
+        }
+    };
+}
+
 export interface AppHandlerOptions {
     readonly git?: GitService | undefined;
+    /** Defaults to `git.worktreeAdd` without steps or cancellation (see `WorktreeCreator`). */
+    readonly worktrees?: WorktreeCreator | undefined;
     /** M7 graft engine (`graft-*` verbs). Defaults to one bound to this table's git service. */
     readonly graft?: GraftService | undefined;
     /**
@@ -97,6 +152,7 @@ export interface AppHandlerOptions {
 
 export interface AppDeps {
     readonly git: GitService;
+    readonly worktrees: WorktreeCreator;
     readonly graft: GraftService;
     readonly webPanes: WebPaneService;
     readonly uuid: () => string;
@@ -123,6 +179,9 @@ export function resolveAppDeps(options: AppHandlerOptions = {}): AppDeps {
     const git = options.git ?? createGitService();
     return {
         git,
+        worktrees: guardedCreator(
+            options.worktrees ?? { begin: () => ({ detailed: false, run: (request) => git.worktreeAdd(request) }) }
+        ),
         // Nothing spawns or watches until a `graft-start` actually runs, so the default is
         // free for the handler families that never touch it.
         graft: options.graft ?? createGraftService({ git }),

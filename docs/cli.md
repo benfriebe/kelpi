@@ -978,8 +978,10 @@ orphaned group on worktree-add failure). Ambiguous `--group` name => `ok:false`
 workspace muted from its first frame, so a conductor can spawn children that never notify
 (it composes with `--worktree`, `--group` and `--profile`). Worktree path is
 `resolvedWorktreeBasePath/<sanitized-name>`; `--branch` defaults to the worktree name;
-`--update-main` fetches and branches off `origin/<default>` (resolved via
-`git ls-remote --symref`). Every success reply carries `muted`; the worktree reply adds
+`--update-main` fetches the default branch (only that branch, no tags) and branches off
+`origin/<default>`; the default branch is the local `origin/HEAD` when it is set, else asked of
+the remote (`git ls-remote --symref`), else `main`. A fetch the New Workspace sheet prefetched
+under a minute ago is reused, so the CLI create skips it (graft-git.md §8.5.1). Every success reply carries `muted`; the worktree reply adds
 `worktree_path`, `branch`, `update_main` and `repo_path`.
 
 Group defaults (app-state-core.md §5.5): in a group with a repository (`kelpi group set-repo`,

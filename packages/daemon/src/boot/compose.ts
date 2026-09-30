@@ -56,8 +56,12 @@ import {
     type SqlitePersistence
 } from '../db/index.js';
 import {
+    createDefaultBranchFetchCache,
+    createGitRunner,
     createGitService,
+    performWorktreeAdd,
     sweepGraftTempIndexes,
+    worktreeGitOps,
     type GitService
 } from '../git/index.js';
 import {
@@ -69,7 +73,7 @@ import {
     type GraftService,
     type RepoAssociationWatchService
 } from '../graft/index.js';
-import { createAppHandlers } from '../handlers/app/index.js';
+import { createAppHandlers, type WorktreeCreator } from '../handlers/app/index.js';
 // §TERM-050: the OSC desktop-notification sink, the sibling of the agent-event path.
 import { createOscNotificationSink } from '../handlers/app/osc-notifications.js';
 // §TERM-046: the OSC 52 clipboard sink — the gate, the log lines and the client broadcast.
@@ -648,6 +652,24 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
     let pluginHost: PluginService | undefined;
     const pluginGit = createPluginGitService(createGitService(), () => pluginHost);
     const git: GitService = pluginGit.git;
+    /*
+     * Issue #294 (graft-git.md §8.5.1): the worktree create's own git, run directly so it can
+     * stream git's progress and kill the child on a cancel, and the one default-branch fetch per
+     * repo that the New Workspace sheet's `repo-prefetch` and the creates after it share. While a
+     * plugin provider owns `kelpi.git`, a create goes through it instead (no steps, no cancel).
+     */
+    const worktreeGit = worktreeGitOps(createGitRunner());
+    const worktreeFetches = createDefaultBranchFetchCache({
+        ops: worktreeGit,
+        log,
+        ...(options.now !== undefined ? { now: options.now } : {})
+    });
+    const worktrees: WorktreeCreator = {
+        begin: () =>
+            pluginGit.providerSelected()
+                ? { detailed: false, run: (request) => git.worktreeAdd(request) }
+                : { detailed: true, run: (request, hooks) => performWorktreeAdd(worktreeGit, request, { ...hooks, fetches: worktreeFetches, log }) }
+    };
     const content = createContentService({
         store,
         git,
@@ -1149,7 +1171,8 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         uuid: options.uuid ?? newUUID,
         now: options.now ?? Date.now,
         status: repoWatch,
-        persist
+        persist,
+        prefetch: worktreeFetches
     };
 
     /**
@@ -1277,6 +1300,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
 
     const appHandlers = createAppHandlers({
         git,
+        worktrees,
         graft,
         webPanes,
         persist,

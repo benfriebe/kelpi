@@ -757,6 +757,26 @@ export interface WsCommandReplyMessage {
     readonly reply: JsonObject;
 }
 
+export const WS_COMMAND_PROGRESS_MESSAGE = 'command-progress';
+
+/**
+ * Issue #294: an interim report on a command that has not answered yet, sent to the connection
+ * that issued it and to nobody else (the daemon's reply handle for that command id sends it).
+ *
+ * `id` is the `command` message's id, the same one its eventual `command-reply` carries; every
+ * progress frame for an id arrives before that reply, and none after it. `progress` is the
+ * verb's own shape: today only `workspace-create --worktree` sends one, a whole step-list
+ * snapshot `{kind:'worktree-create', steps:[{id, status, detail?, phase?, percent?, error?}],
+ * cancelled?}` (graft-git.md §8.5.1), so the latest frame alone is the whole picture.
+ *
+ * Additive: a client that predates it ignores an unknown frame type and just gets the reply.
+ */
+export interface WsCommandProgressMessage {
+    readonly type: typeof WS_COMMAND_PROGRESS_MESSAGE;
+    readonly id: string;
+    readonly progress: JsonObject;
+}
+
 export const WS_NOTIFICATION_KINDS = ['agent-waiting', 'agent-error', 'agent-notification', 'osc'] as const;
 export type WsNotificationKind = (typeof WS_NOTIFICATION_KINDS)[number];
 
@@ -969,6 +989,7 @@ export type WsServerMessage =
     | WsSnapshotMessage
     | WsDeltaMessage
     | WsCommandReplyMessage
+    | WsCommandProgressMessage
     | WsSizeControlMessage
     | WsNotificationMessage
     | WsClipboardWriteMessage

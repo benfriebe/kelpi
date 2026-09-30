@@ -53,7 +53,17 @@ interface MethodAdapter<K extends keyof GitService> {
  * cross the provider boundary. Bundled delegation calls this injected implementation
  * directly, so it cannot select the same provider recursively.
  */
-export function createPluginGitService(bundled: GitService, getHost: () => BuiltinServiceHost | undefined): { git: GitService; service: BuiltinPluginService } {
+export function createPluginGitService(bundled: GitService, getHost: () => BuiltinServiceHost | undefined): {
+    git: GitService;
+    service: BuiltinPluginService;
+    /**
+     * True while a plugin provider is selected for `kelpi.git`. Issue #294's worktree create
+     * runs bundled git directly (it needs the child process to stream progress and to kill
+     * on cancel), so it asks this first and routes through `git.worktreeAdd` instead while a
+     * provider is in charge, keeping the provider's say over every worktree it creates.
+     */
+    providerSelected(): boolean;
+} {
     const method = <K extends keyof GitService>(
         name: K,
         fields: Fields,
@@ -126,6 +136,7 @@ export function createPluginGitService(bundled: GitService, getHost: () => Built
     } satisfies { [K in keyof GitService]: MethodAdapter<K> };
 
     return {
+        providerSelected: () => getHost()?.hasSelectedProvider(SERVICE, VERSION) ?? false,
         git: Object.fromEntries(Object.entries(adapters).map(([name, adapter]) => [name, adapter.wrapped])) as unknown as GitService,
         service: { id: SERVICE, title: 'Git', version: VERSION, methods: Object.fromEntries(Object.entries(adapters).map(([name, adapter]) => [name, adapter.definition])) }
     };

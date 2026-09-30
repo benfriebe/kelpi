@@ -344,7 +344,10 @@ describe('New Workspace form — create git worktree (§WS-078/§WS-079)', () =>
                     repoID: 'r1',
                     name: 'login',
                     branch: 'login',
-                    updateMain: true
+                    updateMain: true,
+                    // #294: the create names itself for Cancel and takes its step reports.
+                    requestID: expect.any(String) as unknown as string,
+                    onProgress: expect.any(Function) as unknown as () => void
                 },
                 // §WS-075's extras ride along: the swatch (a random colour that avoids the
                 // neighbour's), the profile, and the repos chosen for association — which, since

@@ -8,7 +8,15 @@
 import { sanitizedGitName } from '@kelpi/daemon/git';
 import { describe, expect, it } from 'vitest';
 
-import { sanitizeGitName, worktreeNameFromWorkspace, worktreePreview, worktreePreviewPath } from './worktree';
+import {
+    formatElapsed,
+    initialWorktreeProgress,
+    parseWorktreeProgress,
+    sanitizeGitName,
+    worktreeNameFromWorkspace,
+    worktreePreview,
+    worktreePreviewPath
+} from './worktree';
 
 const CORPUS = [
     'feature/foo.bar_baz-1',
@@ -92,5 +100,53 @@ describe('worktreePreview', () => {
         expect(preview.path).toBe('/base/<name>');
         expect(preview.branchLine).toBe('branch: <branch>');
         expect(preview.valid).toBe(false);
+    });
+});
+
+describe('worktree create progress (#294)', () => {
+    it('starts the checklist with the steps this create runs, the first one running', () => {
+        expect(initialWorktreeProgress(true).steps.map((step) => `${step.id}:${step.status}`)).toEqual([
+            'resolve-default-branch:running',
+            'fetch:pending',
+            'worktree-add:pending',
+            'create-workspace:pending'
+        ]);
+        expect(initialWorktreeProgress(false).steps.map((step) => step.id)).toEqual(['worktree-add', 'create-workspace']);
+    });
+
+    it('reads the daemon’s snapshot, dropping what it does not understand row by row', () => {
+        expect(
+            parseWorktreeProgress({
+                kind: 'worktree-create',
+                steps: [
+                    { id: 'fetch', status: 'running', detail: 'origin/main', phase: 'Receiving objects', percent: 45 },
+                    { id: 'teleport', status: 'running' },
+                    { id: 'worktree-add', status: 'exploded' },
+                    { id: 'create-workspace', status: 'pending', percent: 250, detail: '' },
+                    'nonsense'
+                ],
+                cancelled: true
+            })
+        ).toEqual({
+            cancelled: true,
+            detailed: true,
+            steps: [
+                { id: 'fetch', status: 'running', detail: 'origin/main', phase: 'Receiving objects', percent: 45 },
+                { id: 'create-workspace', status: 'pending', percent: 100 }
+            ]
+        });
+        expect(parseWorktreeProgress({ kind: 'something-else', steps: [] })).toBeNull();
+        expect(parseWorktreeProgress({ kind: 'worktree-create' })).toBeNull();
+        expect(parseWorktreeProgress(null)).toBeNull();
+        expect(parseWorktreeProgress({ kind: 'worktree-create', steps: [] })).toEqual({ steps: [], cancelled: false, detailed: true });
+        expect(parseWorktreeProgress({ kind: 'worktree-create', steps: [], detailed: false })).toEqual({ steps: [], cancelled: false, detailed: false });
+    });
+
+    it('formats the elapsed clock', () => {
+        expect(formatElapsed(0)).toBe('0.0 s');
+        expect(formatElapsed(3_450)).toBe('3.5 s');
+        expect(formatElapsed(12_400)).toBe('12 s');
+        expect(formatElapsed(65_000)).toBe('1:05');
+        expect(formatElapsed(-5)).toBe('0.0 s');
     });
 });

@@ -70,6 +70,7 @@ import { createPortal } from 'react-dom';
 
 import { ChromeIcon } from './icons';
 import { RepoPicker } from './RepoPicker';
+import { WorktreeCreateProgressPanel, type WorktreeCreatePhase } from './WorktreeCreateProgress';
 import { withAlpha, workspaceColorHex, type ChromeBucket } from './theme';
 import { tokens } from './tokens';
 import {
@@ -78,9 +79,10 @@ import {
     type ChromeGroup,
     type ChromeRepo,
     type NewGroupRepo,
-    type WorkspaceWorktreeRequest
+    type WorkspaceWorktreeRequest,
+    type WorktreeCreateProgress
 } from './types';
-import { worktreeNameFromWorkspace, worktreePreview } from './worktree';
+import { initialWorktreeProgress, worktreeNameFromWorkspace, worktreePreview } from './worktree';
 
 /** Everything the New Workspace / New Group sheet collects, in one submit (§WS-075/§WS-082). */
 export interface NewEntryDraft {
@@ -139,8 +141,31 @@ export interface NewEntrySheetProps {
      * registry. Resolves to the chosen path, or null on cancel.
      */
     readonly onBrowseForFolder?: (() => Promise<string | null>) | undefined;
+    /**
+     * #294: start fetching a repo's default branch in the background, called once per repo per
+     * opening while the sheet shows a worktree off latest main for it (a group's switch
+     * pre-ticking it included). Fire-and-forget: its outcome is never shown.
+     */
+    readonly onPrefetchRepo?: ((repoID: string) => void) | undefined;
+    /**
+     * #294: stop the running worktree create sent with this request id. Absent = the host cannot
+     * cancel, and Cancel closes the sheet as it always did (the create finishes on its own).
+     */
+    readonly onCancelCreate?: ((requestID: string) => void) | undefined;
     readonly onSubmit: (draft: NewEntryDraft) => Promise<string | null>;
     readonly onCancel: () => void;
+}
+
+/** No step frame by then: the daemon cannot report steps (it predates #294). */
+export const PLAIN_PROGRESS_AFTER_MS = 1_000;
+
+/** A create id the daemon can cancel by: a UUID where the page has one, else unique enough. */
+let requestCounter = 0;
+function mintRequestID(): string {
+    const crypto = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;
+    if (typeof crypto?.randomUUID === 'function') return crypto.randomUUID();
+    requestCounter += 1;
+    return `create-${Date.now().toString(36)}-${String(requestCounter)}`;
 }
 
 const EMPTY_REPOS: readonly ChromeRepo[] = [];
@@ -252,6 +277,31 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
     const [updateMain, setUpdateMain] = useState(initialDefaults.current.worktree);
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    /*
+     * #294 (shell-ui.md §10.1): a worktree create's steps, from the moment Create is pressed until
+     * the sheet closes or the next submit. `createPhase` is null for every other create, which
+     * keeps the sheet exactly as it was for them.
+     */
+    const [progress, setProgress] = useState<WorktreeCreateProgress | null>(null);
+    const [createPhase, setCreatePhase] = useState<WorktreeCreatePhase | null>(null);
+    const [createStartedAt, setCreateStartedAt] = useState(0);
+    const [createEndedAt, setCreateEndedAt] = useState<number | null>(null);
+    const [clock, setClock] = useState(() => Date.now());
+    const [closeHint, setCloseHint] = useState(false);
+    const requestID = useRef<string | null>(null);
+    /** Cancels the "no frame yet" fallback timer of the create in flight. */
+    const stopFallback = useRef<() => void>(() => {});
+    const worktreeRunning = createPhase === 'running' || createPhase === 'cancelling';
+    /*
+     * A create that reports steps can be cancelled, so the sheet holds on to it (Escape and the
+     * backdrop are blocked, Cancel cancels). One that cannot (`detailed: false`: a plugin git
+     * provider, or a daemon that sends no frames) behaves as creates did before #294: Cancel,
+     * Escape and the backdrop close the sheet and the create finishes on its own.
+     */
+    const holdsCreate = worktreeRunning && progress?.detailed !== false;
+    /** Read by the window-level Escape handler, installed once. */
+    const worktreeRunningRef = useRef(holdsCreate);
+    worktreeRunningRef.current = holdsCreate;
     /** The New Group sheet's optional repository (§5.5): a registry id, '' = none. */
     const [groupRepoID, setGroupRepoID] = useState('');
     /** A folder the New Group sheet's Choose Folder… returned; picked while `groupRepoID` is FOLDER_CHOICE. */
@@ -318,6 +368,12 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
                 setPickerOpen(false);
                 return;
             }
+            // #294: a running worktree create is not dismissed by a stray Escape (that would
+            // leave it running with nothing on screen); the sheet says to press Cancel instead.
+            if (worktreeRunningRef.current) {
+                setCloseHint(true);
+                return;
+            }
             cancelRef.current();
         };
         globalThis.window?.addEventListener('keydown', onKeyDown, true);
@@ -349,6 +405,43 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
     });
     const worktreeOn = isWorkspace && worktree && repo !== null;
     const canSubmit = value.trim() !== '' && !busy && (!worktreeOn || preview.valid);
+
+    /*
+     * #294: a worktree off latest main for `repo` is on screen, so start its fetch now: by the
+     * time Create is pressed the network is usually done, and the create reuses it. Once per repo
+     * per opening (the daemon rate-limits as well); unticking and re-ticking does not ask again.
+     */
+    const prefetchRepoID = worktreeOn && updateMain && repo !== null ? repo.id : null;
+    const prefetchedRepoIDs = useRef(new Set<string>());
+    const onPrefetchRepo = props.onPrefetchRepo;
+    useEffect(() => {
+        if (prefetchRepoID === null || onPrefetchRepo === undefined) return;
+        if (prefetchedRepoIDs.current.has(prefetchRepoID)) return;
+        prefetchedRepoIDs.current.add(prefetchRepoID);
+        onPrefetchRepo(prefetchRepoID);
+    }, [prefetchRepoID, onPrefetchRepo]);
+
+    /*
+     * #294: the step list, the error line and Cancel are at the BOTTOM of a sheet that scrolls
+     * (max 76vh), and a worktree sheet with its fields is taller than that on a small window. So
+     * when a create starts, when the Escape hint appears under the steps, and again when it ends,
+     * the sheet scrolls to the bottom: the running steps, the way to stop them, and then the
+     * outcome are what the user is looking for.
+     */
+    const sheetRef = useRef<HTMLDivElement | null>(null);
+    const hasError = error !== null;
+    useEffect(() => {
+        if (createPhase === null) return;
+        const sheet = sheetRef.current;
+        if (sheet !== null) sheet.scrollTop = sheet.scrollHeight;
+    }, [createPhase, hasError, closeHint]);
+
+    /** The elapsed clock ticks only while a create runs; it stops where it ended. */
+    useEffect(() => {
+        if (!worktreeRunning) return;
+        const timer = setInterval(() => setClock(Date.now()), 200);
+        return () => clearInterval(timer);
+    }, [worktreeRunning]);
     /*
      * §5.5: the New Group sheet's repository row exists only for a group created HERE (a remote
      * group's registry is its own daemon's) and only when there is a registry to pick from.
@@ -385,6 +478,43 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
         inFlight.current = true;
         setBusy(true);
         setError(null);
+        setCloseHint(false);
+        // #294: a worktree create names itself (for Cancel) and reports its steps here. Frames
+        // from an earlier, abandoned request id are ignored.
+        let worktreeHooks: Pick<WorkspaceWorktreeRequest, 'requestID' | 'onProgress'> = {};
+        if (worktreeOn && repo !== null) {
+            const id = mintRequestID();
+            requestID.current = id;
+            const startedAt = Date.now();
+            setProgress(initialWorktreeProgress(updateMain));
+            setCreatePhase('running');
+            setCreateStartedAt(startedAt);
+            setCreateEndedAt(null);
+            setClock(startedAt);
+            // Create is about to be disabled under the keyboard: Cancel is the live control now.
+            stops.current.get('cancel')?.focus();
+            /*
+             * A daemon that predates #294 sends no frames at all (and ignores the request id): if
+             * none has arrived within a second, show the plain panel instead of a checklist that
+             * would sit on its first step. The daemon's first frame normally lands in milliseconds.
+             */
+            let framed = false;
+            const fallback = setTimeout(() => {
+                if (!framed && requestID.current === id) setProgress((current) => (current === null ? current : { ...current, detailed: false }));
+            }, PLAIN_PROGRESS_AFTER_MS);
+            stopFallback.current = () => clearTimeout(fallback);
+            worktreeHooks = {
+                requestID: id,
+                onProgress: (next) => {
+                    framed = true;
+                    if (requestID.current === id) setProgress(next);
+                }
+            };
+        } else {
+            requestID.current = null;
+            setProgress(null);
+            setCreatePhase(null);
+        }
         const failure = await props.onSubmit({
             name: value.trim(),
             color,
@@ -394,13 +524,36 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
             remoteDaemon: remoteDaemon === '' ? null : remoteDaemon,
             repoPaths: chosenRepos.map((entry) => entry.path),
             ...(worktreeOn && repo !== null
-                ? { worktree: { repoID: repo.id, name: worktreeName, branch, updateMain } }
+                ? { worktree: { repoID: repo.id, name: worktreeName, branch, updateMain, ...worktreeHooks } }
                 : {}),
             groupRepo: groupRepoChoice
         });
         inFlight.current = false;
         setBusy(false);
+        stopFallback.current();
+        if (requestID.current !== null) {
+            // Success closes the sheet (the host unmounts it); these only matter when it stays.
+            setCreateEndedAt(Date.now());
+            setCreatePhase((phase) => (failure === null ? 'done' : phase === 'cancelling' ? 'cancelled' : 'failed'));
+            requestID.current = null;
+        }
         if (failure !== null) setError(failure);
+    };
+
+    /**
+     * #294: Cancel while a worktree create runs STOPS it (the daemon kills git and removes what
+     * the create made) instead of closing the sheet over a create that would carry on unseen.
+     * The create's own reply then re-enables the form. A second press does nothing.
+     */
+    const onCancelPressed = (): void => {
+        const running = requestID.current;
+        if (holdsCreate && running !== null && props.onCancelCreate !== undefined) {
+            if (createPhase === 'cancelling') return;
+            setCreatePhase('cancelling');
+            props.onCancelCreate(running);
+            return;
+        }
+        props.onCancel();
     };
 
     /**
@@ -408,6 +561,8 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
      * 378-399`), Cancel included. A disabled Create is omitted, never landed on.
      */
     const fieldOrder = (): string[] => {
+        // #294: while a worktree create runs every field is disabled; Cancel is the one stop.
+        if (worktreeRunning) return ['cancel'];
         const order = ['name', 'colors'];
         if (isWorkspace) {
             if (groups.length > 0) order.push('group');
@@ -516,6 +671,8 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
             className={`flex items-center rounded ${isWorkspace ? 'gap-2' : 'ml-auto gap-1.5'}`}
             onKeyDown={(event) => {
                 if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+                // The row is a focusable div, which a disabled fieldset does not reach.
+                if (worktreeRunning) return;
                 event.preventDefault();
                 // The row is a single Tab stop with the arrows cycling inside it (§WS-077).
                 const options: (WorkspaceColor | null)[] = isWorkspace
@@ -605,10 +762,16 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
                     setPickerOpen(false);
                     return;
                 }
+                // #294: the same rule as Escape: a running worktree create is not dismissed.
+                if (holdsCreate) {
+                    setCloseHint(true);
+                    return;
+                }
                 props.onCancel();
             }}
         >
             <div
+                ref={sheetRef}
                 data-testid={`new-${props.kind}-sheet`}
                 role="dialog"
                 aria-modal="true"
@@ -645,6 +808,15 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
                         void submit();
                     }}
                 >
+                    {/* #294: every field is disabled while a worktree create runs; Cancel and
+                        the step list below stay live. A fieldset rather than a prop on each
+                        control, so a control added later cannot be forgotten. */}
+                    <fieldset
+                        data-testid={`new-${props.kind}-fields`}
+                        disabled={worktreeRunning}
+                        className={`m-0 flex min-w-0 flex-col border-0 p-0 ${isWorkspace ? 'gap-4' : 'gap-[14px]'}`}
+                        style={worktreeRunning ? { opacity: 0.55 } : undefined}
+                    >
                     {props.workspaceCount === undefined ? null : (
                         <div
                             data-testid="new-group-count"
@@ -1082,9 +1254,20 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
                         </div>
                     ) : null}
 
+                    </fieldset>
+
+                    {progress === null || createPhase === null ? null : (
+                        <WorktreeCreateProgressPanel
+                            progress={progress}
+                            phase={createPhase}
+                            elapsedMs={(createEndedAt ?? clock) - createStartedAt}
+                            closeHint={closeHint}
+                        />
+                    )}
+
                     {error === null ? null : (
                         <div data-testid="new-workspace-error" className="text-[11px]" style={{ color: '#E0655C' }}>
-                            {error}
+                            {createPhase === 'cancelled' ? 'Create cancelled: nothing it made was kept.' : error}
                         </div>
                     )}
 
@@ -1104,9 +1287,10 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
                                was 2 px short of. */
                             className="rounded border px-2.5 py-1 text-[12px]"
                             style={{ borderColor: tokens.divider, color: tokens.textSecondary }}
-                            onClick={props.onCancel}
+                            disabled={createPhase === 'cancelling'}
+                            onClick={onCancelPressed}
                         >
-                            Cancel
+                            {createPhase === 'cancelling' ? 'Cancelling…' : 'Cancel'}
                         </button>
                         {/*
                           * M9: the DEFAULT ACTION button. `.keyboardShortcut(.defaultAction)`

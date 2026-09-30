@@ -140,9 +140,9 @@ describe.skipIf(!RUNNABLE)('compat: workspace worktrees', () => {
 
     it('branches off origin/<default> after a fetch with --update-main', async () => {
         // A REAL remote: a bare repo `repo` pushes to, plus a second clone that moves it ahead.
-        // `--update-main` must resolve the default branch (`ls-remote --symref origin HEAD`),
-        // `git fetch`, then branch off `origin/<default>` — so the new worktree carries a commit
-        // the LOCAL checkout has never seen.
+        // `--update-main` must resolve the default branch (the local `origin/HEAD`, else
+        // `ls-remote --symref origin HEAD`), fetch it, then branch off `origin/<default>`, so the
+        // new worktree carries a commit the LOCAL checkout has never seen.
         const origin = path.join(kelpi.root, 'origin.git');
         git(kelpi.root, 'init', '--bare', '--initial-branch=main', origin);
         git(repo, 'remote', 'add', 'origin', origin);

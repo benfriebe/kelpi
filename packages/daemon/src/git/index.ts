@@ -36,6 +36,56 @@ export {
     WorktreeBranchExistsError
 } from './service.js';
 
+/** Issue #294: the worktree create's steps, git's progress meter and the shared prefetch. */
+export {
+    cleanupCancelledWorktreeAdd,
+    createWorktreeAddGuard,
+    fetchWithRenameFallback,
+    isMissingRemoteRef,
+    resolveDefaultBranchFromRemote,
+    WorktreeBusyError,
+    defaultBranchFetchArgs,
+    describeDefaultBranchSource,
+    fetchDefaultBranch,
+    performWorktreeAdd,
+    resolveDefaultBranch,
+    worktreeGitOps,
+    WorktreeCreateCancelledError
+} from './worktree-add.js';
+export type {
+    DefaultBranchFetches,
+    DefaultBranchSource,
+    FetchForCreateOutcome,
+    ResolvedDefaultBranch,
+    WorktreeAddHooks,
+    WorktreeAddSnapshot,
+    WorktreeGitOps
+} from './worktree-add.js';
+export { createGitProgressParser, parseGitProgressLine, stripGitProgress } from './progress.js';
+export type { GitProgress, GitProgressParser } from './progress.js';
+export {
+    createStepTracker,
+    serializeWorktreeProgress,
+    WORKTREE_PROGRESS_INTERVAL_MS,
+    WORKTREE_STEP_IDS,
+    worktreeStepsFor
+} from './worktree-steps.js';
+export type {
+    WorktreeProgressSnapshot,
+    WorktreeStepID,
+    WorktreeStepSink,
+    WorktreeStepState,
+    WorktreeStepStatus,
+    WorktreeStepTracker
+} from './worktree-steps.js';
+export {
+    createDefaultBranchFetchCache,
+    PREFETCH_MIN_INTERVAL_MS,
+    PREFETCH_REUSE_MS,
+    PREFETCH_TIMEOUT_MS
+} from './fetch-cache.js';
+export type { DefaultBranchFetchCache, PrefetchResult } from './fetch-cache.js';
+
 /** Settings ▸ Repositories' "Scan Directory" walk (§GIT-066). */
 export { REPO_SCAN_MAX_DEPTH, scanForRepos } from './scan.js';
 export type { ScanForReposOptions, ScannedRepo } from './scan.js';

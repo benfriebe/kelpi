@@ -575,10 +575,12 @@ Inputs: `name, color?, repo, worktreeName, branchName, updateMain=false, groupID
 4. Async: perform the worktree add:
    - `updateMain=false`: `git worktree add <path> <branch>`; on failure retry as
      `git worktree add -b <branch> <path>` (create-from-existing-branch first, new branch fallback).
-   - `updateMain=true`: resolve the repo's default branch (via
-     `git ls-remote --symref origin HEAD`, falling back to the local `origin/HEAD` symref, then
-     `"main"`), `git fetch origin`, then
-     `git worktree add -b <branch> <path> origin/<default>`.
+   - `updateMain=true`: resolve the repo's default branch (the local `origin/HEAD` symref,
+     then `git ls-remote --symref origin HEAD`, then `"main"`), fetch that one branch
+     (`git fetch --no-tags origin +refs/heads/<default>:refs/remotes/origin/<default>`, or reuse
+     a running or recent prefetch), then `git worktree add -b <branch> <path> origin/<default>`
+     (graft-git.md §8.3, §8.5.1). The New Workspace sheet shows the steps while they run and
+     can cancel them (§8.5.2).
 5. On success: dispatch `createWorkspace(name, color, groupID, profileName, id,
    worktree={path, branchName: sanitizedBranch})` (i.e. all of 4.1 runs with the worktree seed).
 6. On failure: `worktreeCreationFailed(workspaceID: null, error: worktreeErrorMessage(err))` ->
@@ -1747,8 +1749,9 @@ departs from the legacy macOS app:
 14. **git invocations are plain subprocess calls** and their exact flag sets are kept for parity
     (`packages/daemon/src/git/service.ts`): `status --porcelain` + `diff --shortstat HEAD` (dirty
     math, 1.8), `rev-parse --abbrev-ref HEAD` (branch), `rev-parse --git-path HEAD` (watch target;
-    relative results resolve against the worktree), `ls-remote --symref origin HEAD` with
-    local-symref and `"main"` fallbacks (default branch), worktree add existing-branch-then`-b`
+    relative results resolve against the worktree), the local `origin/HEAD` symref with
+    `ls-remote --symref origin HEAD` and `"main"` fallbacks (default branch, issue #294's order),
+    a single-branch `fetch --no-tags` for update main, worktree add existing-branch-then`-b`
     fallback, and the stderr diagnostic extraction (last `fatal:`/`error:` line) for user-facing
     worktree errors.
 

@@ -298,7 +298,14 @@ describe('the New Workspace sheet’s prefill from the group (§5.5)', () => {
         const [name, groupID, worktree, extras] = onCreateWorkspace.mock.calls[0] as unknown[];
         expect(name).toBe('fix-login');
         expect(groupID).toBe(G_WORKTREE);
-        expect(worktree).toEqual({ repoID: 'r1', name: 'fix-login', branch: 'fix-login', updateMain: true });
+        expect(worktree).toEqual({
+            repoID: 'r1',
+            name: 'fix-login',
+            branch: 'fix-login',
+            updateMain: true,
+            requestID: expect.any(String),
+            onProgress: expect.any(Function)
+        });
         expect(extras).toMatchObject({ repoPaths: ['/src/app'] });
     });
 

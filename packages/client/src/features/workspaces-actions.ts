@@ -2,13 +2,14 @@
 import type { WorkspaceColor } from '@kelpi/daemon/store';
 import type { Dispatch, SetStateAction } from 'react';
 import { DEFAULT_PROFILE_NAME, defaultGroupName, type GroupRepoChange, type NewGroupRepo, type WorkspaceWorktreeRequest } from '../chrome';
+import { parseWorktreeProgress } from '../chrome/worktree';
 import { isOkReply, replyError, replyText, type CommandClient, type CommandReply } from '../connection';
 import { selectActiveWorkspace, selectVisibleWorkspaceIDs, type KelpiStoreApi } from '../state';
 import type { WorkspacesFeatureLifecycle } from './workspaces';
 
 export interface WorkspacesActionHost {
     readonly store: KelpiStoreApi;
-    readonly commands: Pick<CommandClient, 'addRepoAssociation' | 'createGroup' | 'createGroupForWorkspaces' | 'createWorkspace' | 'deleteGroup' | 'deleteWorkspace' | 'labelWorkspace' | 'moveGroup' | 'moveWorkspace' | 'moveWorkspaces' | 'renameGroup' | 'renameWorkspace' | 'setBulkColor' | 'setBulkLabel' | 'setGroupCollapsed' | 'setGroupColor' | 'setGroupIcon' | 'setGroupRepo' | 'setWorkspaceIcon' | 'setWorkspaceMuted' | 'setWorkspaceProfile'>;
+    readonly commands: Pick<CommandClient, 'addRepoAssociation' | 'cancelWorkspaceCreate' | 'prefetchRepo' | 'createGroup' | 'createGroupForWorkspaces' | 'createWorkspace' | 'deleteGroup' | 'deleteWorkspace' | 'labelWorkspace' | 'moveGroup' | 'moveWorkspace' | 'moveWorkspaces' | 'renameGroup' | 'renameWorkspace' | 'setBulkColor' | 'setBulkLabel' | 'setGroupCollapsed' | 'setGroupColor' | 'setGroupIcon' | 'setGroupRepo' | 'setWorkspaceIcon' | 'setWorkspaceMuted' | 'setWorkspaceProfile'>;
     readonly run: (label: string, command: Promise<CommandReply>) => boolean;
     readonly notifyFailure: (label: string, message: string) => void;
     readonly activateWorkspaceAndReveal: (workspaceID: string) => void;
@@ -432,8 +433,9 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
                 groupDefaults?: boolean | undefined;
             } = {}
         ): Promise<string | null> {
+            const onProgress = worktree.onProgress;
             try {
-                const reply = await commands.createWorkspace({
+                const input = {
                     ...(name.trim().length > 0 ? { name: name.trim() } : {}),
                     ...(groupID === null ? {} : { group: groupID }),
                     ...(extras.color === undefined ? {} : { color: extras.color }),
@@ -447,8 +449,18 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
                     worktree: worktree.name,
                     branch: worktree.branch,
                     updateMain: worktree.updateMain,
-                    ...(extras.groupDefaults === false ? { groupDefaults: false } : {})
-                });
+                    ...(extras.groupDefaults === false ? { groupDefaults: false } : {}),
+                    ...(worktree.requestID !== undefined ? { requestID: worktree.requestID } : {})
+                };
+                const reply = await (onProgress === undefined
+                    ? commands.createWorkspace(input)
+                    : commands.createWorkspace(input, {
+                          // #294: the daemon's step snapshots; a frame this client cannot read is dropped.
+                          onProgress: (raw) => {
+                              const progress = parseWorktreeProgress(raw);
+                              if (progress !== null) onProgress(progress);
+                          }
+                      }));
                 if (!isOkReply(reply)) return replyError(reply);
                 const created = replyText(reply, 'workspace_id');
                 if (created !== undefined) activateWorkspaceAndReveal(created);
@@ -456,6 +468,25 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
             } catch (error) {
                 return error instanceof Error ? error.message : String(error);
             }
+        },
+
+        /**
+         * #294: stop the worktree create the sheet sent with `requestID`. Fire-and-forget: the
+         * create's own reply is what reports the outcome (a cancelled failure, or success when
+         * the create was already past the point of no return).
+         */
+        cancelWorkspaceCreate(requestID: string): void {
+            void commands.cancelWorkspaceCreate(requestID).catch(() => {
+                // The connection dropped: the create's own promise reports that.
+            });
+        },
+
+        /**
+         * #294: start fetching a repo's default branch while the sheet is open. Silent by design:
+         * a prefetch that fails, or is refused, only means the create fetches for itself.
+         */
+        prefetchWorktreeRepo(repoID: string): void {
+            void commands.prefetchRepo(repoID).catch(() => {});
         }
     };
 }

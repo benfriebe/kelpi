@@ -1280,17 +1280,49 @@ Fields, top to bottom:
    open) no longer overwrites it. The sheet submits exactly what it shows
    (`group_defaults: false` on `workspace-create`), so a prefilled repo the user removed is
    not added back by the daemon.
-8. Error line (red caption) when an async worktree creation failed — the sheet stays
-   open for retry; the Create button un-disables when the error arrives.
-9. Cancel / **Create**. Create is disabled while a worktree submission is in flight
-   (double-submit guard). The worktree route dispatches
-   `createWorkspaceWithWorktree(...)`; success dismisses the sheet from the reducer;
-   failure surfaces the inline error. The plain route dispatches
-   `createWorkspace(name, color, repos, groupID, profileName)`.
+   **Prefetch** (Kelpi addition, issue #294): the moment the section shows a worktree with
+   "Update main first" ticked for a repo (a group's switch pre-ticking it included), the sheet
+   asks the daemon to start fetching that repo's default branch (`repo-prefetch`), once per
+   repo per opening. Nothing about it is shown; a create moments later reuses it
+   (graft-git.md §8.5.1).
+8. **Progress** (Kelpi addition, issue #294; `WorktreeCreateProgress.tsx`), a worktree create
+   only: from the moment Create is pressed, a compact bordered panel under the fields with a
+   headline ("Creating the workspace…", "Cancelling…", "Cancelled", "The workspace was not
+   created"), the elapsed time on the right (tabular, `3.4 s` / `12 s` / `1:05`), and one row
+   per step the create runs: Find the default branch, Fetch the latest main, Create the
+   worktree, Open the workspace (the first two only with update main). Each row has a state
+   icon (spinner running, ✓ done, – skipped, ✕ failed, hollow dot pending), the name, and the
+   daemon's short detail on the right (`main (from origin/HEAD)`, `prefetched 5.0 s ago`,
+   `fix-login off origin/main`). A running step with git's percentage gets a determinate
+   4 px bar and `Receiving objects 45%`; a running git step without one gets the update
+   sheet's indeterminate sweep (`kelpi-update-progress`). The panel stays after a failure or a
+   cancel, with the failed row marked, until the next submit.
+   A create that cannot report steps (the daemon's git is a plugin provider's, which sends one
+   `detailed: false` frame, or a daemon older than #294, which sends none within a second) gets a
+   plain panel instead: the headline, the elapsed time and one indeterminate bar, no checklist;
+   Cancel, Escape and the backdrop then close the sheet as they did before, and the create
+   finishes on its own.
+   While it runs every field is disabled (one `fieldset`), Tab reaches only Cancel, and
+   Escape or a backdrop click does NOT close the sheet: a hint under the steps says to press
+   Cancel, and that the sheet closes by itself when done (closing over a running create would
+   leave it running with nothing on screen).
+9. Error line (red caption) when an async worktree creation failed: the daemon's message
+   (e.g. `branch 'x' already exists, …`), or "Create cancelled: nothing it made was kept."
+   after a cancel. The sheet stays open for retry, with the form re-enabled.
+10. Cancel / **Create**. Create is disabled while a worktree submission is in flight
+   (double-submit guard) and reads "Creating…". While a worktree create runs, Cancel CANCELS
+   it (`workspace-create-cancel` for the request id the sheet minted; the daemon kills git
+   and removes the partial worktree and branch, graft-git.md §8.5.2) and reads
+   "Cancelling…" until the create's own reply re-enables the form; otherwise it closes the
+   sheet. The worktree route dispatches `createWorkspaceWithWorktree(...)`; success dismisses
+   the sheet (a cancel that lost the race to success closes it too); failure surfaces the
+   inline error. The plain route dispatches
+   `createWorkspace(name, color, repos, groupID, profileName)` and shows no progress.
 
 Keyboard: Tab / Shift-Tab cycle through every *visible* control in reading order
 (name → color → group → profile → mute → repo removes → add-repo → worktree toggle →
-worktree fields → cancel → create), wrapping; the Create stop is omitted while disabled.
+worktree fields → cancel → create), wrapping; the Create stop is omitted while disabled,
+and while a worktree create runs Cancel is the only stop (and takes focus).
 Return submits from anywhere in the sheet, not only from a text field
 (`NewWorkspaceSheet.tsx:297-314`).
 

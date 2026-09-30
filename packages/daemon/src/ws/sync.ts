@@ -50,6 +50,7 @@ import {
     WS_DROPPED_FILES_ANSWER_MESSAGE,
     WS_DROPPED_FILES_RESULT_MESSAGE,
     WS_CLIENT_KINDS,
+    WS_COMMAND_PROGRESS_MESSAGE,
     WS_HOTKEY_STATUS_MESSAGE,
     WS_PROTOCOL_VERSION,
     WS_SHELL_ACTIVATION_MESSAGE,
@@ -105,7 +106,7 @@ import {
 } from './panes.js';
 import { DEVICE_TOKEN_PREFIX } from '../lifecycle/devices.js';
 import { isRemoteCommand, type RemoteChannel, type RemoteCommand } from './remote.js';
-import { handleRepoCommand, isRepoCommand, type RepoChannel, type RepoCommand } from './repos.js';
+import { handleRepoCommand, isOwnerOnlyRepoCommand, isRepoCommand, type RepoChannel, type RepoCommand } from './repos.js';
 import {
     FAVOURITE_COMMANDS,
     WEB_BATCH_MESSAGE,
@@ -422,6 +423,23 @@ export type WsOnlyCommand = (typeof WS_ONLY_COMMANDS)[number];
  * app dispatcher instead (`guiDeleteWorkspace`), which is why it carries its own constant.
  */
 export const GUI_DELETE_WORKSPACE_COMMAND = 'delete-workspace';
+
+/**
+ * Issue #294 (graft-git.md §8.5.2): cancel a running `workspace-create --worktree`.
+ *
+ * WS-only, and not in `WS_ONLY_COMMANDS` for the same reason `delete-workspace` is not: it
+ * answers from the SESSION, not the store. A `workspace-create` sent over WS may carry a
+ * `request_id` (the client mints it); the session remembers that id against the command's reply
+ * handle until the reply goes out, and `{command:'workspace-create-cancel', request_id}` aborts
+ * that handle's signal. The id is looked up in the asking session only, so one connection can
+ * never cancel another's create, and an unknown or finished id is `{ok:true, cancelled:false}`
+ * rather than an error (the create simply won the race). `request_id` never reaches the wire
+ * decoder: it is not a control-socket field, and the CLI has no way to send it.
+ */
+export const WORKSPACE_CREATE_CANCEL_COMMAND = 'workspace-create-cancel';
+
+/** A `request_id` is a client-minted UUID; anything this long is not one. */
+const MAX_CREATE_REQUEST_ID_LENGTH = 128;
 
 export function isWsOnlyCommand(command: string): command is WsOnlyCommand {
     return (WS_ONLY_COMMANDS as readonly string[]).includes(command);
@@ -1328,6 +1346,9 @@ class WsReplyHandle implements ReplyHandle {
     private sends = 0;
     private dead = false;
     private callbacks: (() => void)[] = [];
+    /** #294: `workspace-create-cancel` aborts this; the handler reads it as `reply.signal`. */
+    private readonly cancel = new AbortController();
+    private cancellable = true;
 
     constructor(
         private readonly transport: SyncTransport,
@@ -1343,6 +1364,39 @@ class WsReplyHandle implements ReplyHandle {
             id: this.id,
             reply: payload as JsonObject
         });
+    }
+
+    /**
+     * #294: an interim `command-progress` frame for THIS command id, on this connection only.
+     * The client routes it to the pending command's `onProgress`; a client that predates it
+     * ignores an unknown frame type. Nothing is sent once the reply has gone out.
+     */
+    progress(payload: Record<string, unknown>): void {
+        if (this.dead) return;
+        this.transport.sendJson({
+            type: WS_COMMAND_PROGRESS_MESSAGE,
+            id: this.id,
+            progress: payload as JsonObject
+        });
+    }
+
+    get signal(): AbortSignal {
+        return this.cancel.signal;
+    }
+
+    /** #294: the handler found no way to cancel this request (a plugin git provider). */
+    uncancellable(): void {
+        this.cancellable = false;
+    }
+
+    /**
+     * True when this call aborted a live request; false when it had already answered, or cannot
+     * be cancelled at all.
+     */
+    abort(): boolean {
+        if (this.dead || !this.cancellable || this.cancel.signal.aborted) return false;
+        this.cancel.abort();
+        return true;
     }
 
     close(): void {
@@ -1568,6 +1622,8 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
         private originatingClientID: string | undefined;
         private readonly transport: SyncTransport;
         private readonly handles = new Set<WsReplyHandle>();
+        /** #294: this session's running worktree creates, by the `request_id` it sent. */
+        private readonly cancellableCreates = new Map<string, WsReplyHandle>();
         /** paneID → this connection's content subscription (events go nowhere else). */
         private readonly contentSubs = new Map<string, ContentSubscription>();
         /** Bumped on every subscribe/unsubscribe so an in-flight subscribe can be voided. */
@@ -2354,7 +2410,7 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             const plugins = options.plugins;
             const name = isRecord(payload) ? text(payload['command']) : undefined;
             if (id === undefined || name === undefined || !plugins?.hasOperationHooks?.(name) || !plugins.interceptOperation) { this.commandNow(message); return; }
-            const supported = isContentCommand(name) || isWebCommand(name) || isAgentCommand(name) || isRemoteCommand(name) || isWsSettingsCommand(name) || isWsOnlyCommand(name) || isRepoCommand(name) || isGraftUiCommand(name) || isTerminalSearchCommand(name) || isPaneLifecycleCommand(name) || isDesktopCommand(name) || name === GUI_DELETE_WORKSPACE_COMMAND || decodeWireObject(payload).ok;
+            const supported = isContentCommand(name) || isWebCommand(name) || isAgentCommand(name) || isRemoteCommand(name) || isWsSettingsCommand(name) || isWsOnlyCommand(name) || isRepoCommand(name) || isGraftUiCommand(name) || isTerminalSearchCommand(name) || isPaneLifecycleCommand(name) || isDesktopCommand(name) || name === GUI_DELETE_WORKSPACE_COMMAND || name === WORKSPACE_CREATE_CANCEL_COMMAND || decodeWireObject(payload).ok;
             if (!supported) { this.commandNow(message); return; }
             if (this.pendingHookCommands.has(id)) { this.send({ type: 'command-reply', id, reply: failure('command id is already in use') }); return; }
             this.pendingHookCommands.add(id);
@@ -2473,9 +2529,30 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                     this.guiDeleteWorkspace(id, payload);
                     return;
                 }
+                if (name === WORKSPACE_CREATE_CANCEL_COMMAND) {
+                    this.cancelWorkspaceCreate(id, payload);
+                    return;
+                }
             }
 
             const decoded = decodeWireObject(payload);
+
+            // #294: a WS `workspace-create` may name itself so it can be cancelled. Checked
+            // before dispatch: a malformed or reused id is refused rather than silently made
+            // uncancellable.
+            let createRequestID: string | undefined;
+            if (decoded.ok && isRecord(payload) && payload['command'] === 'workspace-create' && payload['request_id'] !== undefined) {
+                const requested = text(payload['request_id']);
+                if (requested === undefined || requested.length > MAX_CREATE_REQUEST_ID_LENGTH) {
+                    this.send({ type: 'command-reply', id, reply: failure('request_id must be a short non-empty string') });
+                    return;
+                }
+                if (this.cancellableCreates.has(requested)) {
+                    this.send({ type: 'command-reply', id, reply: failure(`request id ${requested} is already in use`) });
+                    return;
+                }
+                createRequestID = requested;
+            }
 
             if (!decoded.ok) {
                 // Deliberate divergence from the control socket's silent drop (PLAN.md
@@ -2491,8 +2568,15 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                 let handle: WsReplyHandle | null = null;
                 if (item.reply && !answered) {
                     answered = true;
-                    handle = new WsReplyHandle(this.transport, id, (h) => this.handles.delete(h));
+                    const requestID = createRequestID;
+                    handle = new WsReplyHandle(this.transport, id, (h) => {
+                        this.handles.delete(h);
+                        if (requestID !== undefined && this.cancellableCreates.get(requestID) === h) {
+                            this.cancellableCreates.delete(requestID);
+                        }
+                    });
                     this.handles.add(handle);
+                    if (requestID !== undefined) this.cancellableCreates.set(requestID, handle);
                 }
                 if (dispatcher.dispatchBatch) { batch.push({ message: wire, reply: handle }); continue; }
                 try {
@@ -2511,6 +2595,17 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             if (!answered) this.send({ type: 'command-reply', id, reply: { ok: true } });
         }
 
+        /** #294: `workspace-create-cancel`, scoped to this session's own creates. */
+        private cancelWorkspaceCreate(id: string, payload: Record<string, unknown>): void {
+            const requestID = text(payload['request_id']);
+            if (requestID === undefined) {
+                this.send({ type: 'command-reply', id, reply: failure(`${WORKSPACE_CREATE_CANCEL_COMMAND} requires request_id`) });
+                return;
+            }
+            const cancelled = this.cancellableCreates.get(requestID)?.abort() ?? false;
+            this.send({ type: 'command-reply', id, reply: { ok: true, cancelled } });
+        }
+
         // ── inspector repo verbs (M9) ───────────────────────────────────────────────
 
         /**
@@ -2521,6 +2616,12 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             const channel = options.repos;
             if (channel === undefined) {
                 this.send({ type: 'command-reply', id, reply: failure('repo commands are not available') });
+                return;
+            }
+            // #294: `repo-prefetch` spends the owner's network and credentials on a background
+            // fetch, so a paired device may not start one (the `remoteCommand` rule).
+            if (isOwnerOnlyRepoCommand(command) && this.pairedDevice) {
+                this.send({ type: 'command-reply', id, reply: failure(`${command} is owner-only`) });
                 return;
             }
             void handleRepoCommand(channel, command, payload)

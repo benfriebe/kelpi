@@ -5001,6 +5001,8 @@ export function Sidebar(props: SidebarProps): ReactElement {
                     {...(newForm.workspaceIDs === undefined
                         ? {}
                         : { workspaceCount: newForm.workspaceIDs.length })}
+                    {...(props.onPrefetchWorktreeRepo === undefined ? {} : { onPrefetchRepo: props.onPrefetchWorktreeRepo })}
+                    {...(props.onCancelWorkspaceCreate === undefined ? {} : { onCancelCreate: props.onCancelWorkspaceCreate })}
                     onCancel={() => {
                         setNewForm(null);
                     }}

@@ -42,8 +42,19 @@ interface ReplyHandle {                          // packages/daemon/src/seams.ts
   close(): void;                 // ends the connection -> client sees EOF; idempotent
   readonly closed: boolean;      // true once closed or the peer disconnected
   onDisconnect(cb: () => void): void; // fires once when the client hangs up
+  progress?(payload: object): void;   // #294, WS only: an interim frame to THIS requester
+  readonly signal?: AbortSignal;      // #294, WS only: aborted by `workspace-create-cancel`
+  uncancellable?(): void;             // #294, WS only: a later cancel answers cancelled:false
 }
 ```
+
+`progress` and `signal` exist only on the WS sync socket's handle (`WsReplyHandle` in
+`packages/daemon/src/ws/sync.ts`): `progress` sends a `command-progress` frame keyed by the
+command's id to the connection that sent it (never a broadcast, never after the reply), and
+`signal` is aborted by a `workspace-create-cancel` naming the create's `request_id` from the same
+connection. The control socket's handle has neither, so a handler reports progress as
+`reply?.progress?.(…)` and the CLI still gets exactly one line. Only the worktree
+`workspace-create` uses them (§6.2 (a)). The plugin-hook wrapper (`boot/dispatch.ts`) forwards both.
 
 The transport implementation is `createReplyHandle` in `packages/daemon/src/control/reply.ts:43`.
 `onDisconnect` registers a callback the transport fires exactly once when the client
@@ -882,20 +893,34 @@ Four branches, checked in this order ((d) is checked before (b) and (c)):
 5. `worktreePath = resolvedWorktreeBasePath(repoPath) + "/" + folderName`. The base path
    setting expands `~` and a `<repo>` placeholder (`<repo>` at the start ⇒ the full repo
    path; elsewhere ⇒ the repo's directory name).
-6. Pre-mint the workspace id. Then **asynchronously** (`worktreeAdd` in
-   `packages/daemon/src/git/service.ts:326`):
+6. Pre-mint the workspace id. Then **asynchronously** (`deps.worktrees.add`, which boot
+   binds to `performWorktreeAdd` in `packages/daemon/src/git/worktree-add.ts` with the shared
+   prefetch cache, graft-git.md §8.3; a table built without it uses `git.worktreeAdd`):
    - `updateMain == false`: first try `git worktree add <worktreePath> <safeBranch>`, which
      attaches the worktree to an already-existing local branch of that name; only if that
      fails, `git worktree add -b <safeBranch> <worktreePath>` off current HEAD
      (`service.ts:312`). It is this second command's stderr that feeds
      `worktreeErrorMessage`. Net effect: a pre-existing branch named like the worktree is
      reused rather than failing with "a branch named ... already exists".
-   - `updateMain == true`: resolve the repo's default branch (via
-     `git ls-remote --symref`); refuse a `safeBranch` that already exists locally
+   - `updateMain == true`: resolve the repo's default branch (the local
+     `refs/remotes/origin/HEAD` first, `git ls-remote --symref` only when that is not usable,
+     then `main`); refuse a `safeBranch` that already exists locally
      (`rev-parse --verify --quiet refs/heads/<b>`) with
      `branch '<b>' already exists, and update main always creates a new branch off origin/<default>: choose another worktree or branch name, or turn off update main to check out the existing branch`
-     (no fetch is made); else `git fetch origin`, then
+     (no fetch is made); else fetch that ONE branch
+     (`git fetch --no-tags origin +refs/heads/<def>:refs/remotes/origin/<def>`, or join a
+     running prefetch, or skip it after one under 60 s old), then
      `git worktree add -b <safeBranch> <worktreePath> origin/<default>`.
+   - Issue #294: `deps.worktrees.begin()` decides per create whether it is `detailed` (bundled
+     git: steps and cancel) or not (a plugin provider: one `detailed:false` frame, and
+     `reply.uncancellable()`), and every run sits behind the per-(repo, path) and per-(repo,
+     branch) guard, which refuses a concurrent second create with `WorktreeBusyError`.
+   - Issue #294, WS requesters only: when the reply handle has `progress` (§1), the step
+     list is streamed through it, throttled to one frame per 150 ms and flushed before the
+     reply; when it has `signal`, `workspace-create-cancel` aborts the create, which kills git
+     and removes only what it created, then fails with `worktree create cancelled`. A cancel
+     after `worktree add` returned is too late and the create completes (graft-git.md §8.5.1,
+     §8.5.2).
    - On success: dispatch workspace creation seeded with the worktree (name, color,
      `repos:[sourceRepo]`, resolved groupID, profile, the pre-minted id, and a worktree
      seed `{path, branchName}` so the first pane opens in the worktree and a repo

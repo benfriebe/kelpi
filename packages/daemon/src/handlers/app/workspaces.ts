@@ -12,7 +12,8 @@
  *     unreachable workspace appended so the CLI can never lose one (§6.1);
  *   - create replies BEFORE the effect on the two synchronous branches and AFTER the git work
  *     on the worktree branch and on a create that associates a repository (§1
- *     reply-before-effect, §6.2a, §6.2d);
+ *     reply-before-effect, §6.2a, §6.2d); the worktree branch streams its steps to a WS
+ *     requester first (`reply.progress`, #294) and can be cancelled until git is done;
  *   - delete's guards run in order (resolve → last-workspace → agent panes) and the `path`
  *     field is the first SHELL pane's cwd (port note 17 — `--prune-worktree` depends on it).
  */
@@ -52,10 +53,13 @@ import {
     type WorkspaceState
 } from '../../store/index.js';
 import {
+    createStepTracker,
     sanitizedGitName,
+    serializeWorktreeProgress,
     standardizePath,
     worktreeErrorMessage,
-    worktreePathFor
+    worktreePathFor,
+    worktreeStepsFor
 } from '../../git/index.js';
 import { forCommand, listedWorkspaceIDs, refreshSyncGroup, uuidOut, wireTimestamp } from './common.js';
 import { fail, ok, type AppContext, type AppDeps, type AppHandler } from './context.js';
@@ -322,14 +326,50 @@ function handleWorktreeCreate(
     const workspaceID = deps.uuid();
     const seed: WorktreeSeed = { path: worktreePath, branchName: safeBranch };
 
-    void deps.git
-        .worktreeAdd({
-            repoPath,
-            worktreePath: seed.path,
-            branchName: seed.branchName,
-            updateMain
-        })
+    /*
+     * #294 (graft-git.md §8.5.1): the steps are streamed to the connection that asked, when it
+     * can take them (a WS client; `reply.progress` is absent on the control socket, so the CLI
+     * gets exactly the one reply it always got). The last snapshot is flushed BEFORE the reply,
+     * so the step list a client ends on always agrees with the reply that follows it.
+     */
+    const progress = reply?.progress?.bind(reply);
+    const creation = deps.worktrees.begin();
+    const steps =
+        progress === undefined || !creation.detailed
+            ? null
+            : createStepTracker({
+                  steps: worktreeStepsFor(updateMain),
+                  emit: (snapshot) => progress(serializeWorktreeProgress(snapshot))
+              });
+    if (progress !== undefined && !creation.detailed) {
+        // No steps and no cancel on this path (a plugin provider owns `kelpi.git`, graft-git.md
+        // §8.3): one frame says so, so the sheet shows a plain "Creating…" instead of a
+        // checklist that never moves, and a cancel of this request answers `cancelled: false`.
+        reply?.uncancellable?.();
+        progress(serializeWorktreeProgress({ steps: [], detailed: false }));
+    }
+    const signal = creation.detailed ? reply?.signal : undefined;
+
+    void creation
+        .run(
+            {
+                repoPath,
+                worktreePath: seed.path,
+                branchName: seed.branchName,
+                updateMain
+            },
+            { ...(signal !== undefined ? { signal } : {}), steps }
+        )
         .then(() => {
+            /*
+             * §8.5.2: once the worktree exists the create COMPLETES, even if a cancel arrives
+             * now. Everything below is synchronous store work that cannot be half-done, and
+             * rolling a finished worktree back would destroy a checkout the user may already be
+             * looking at in the reply's reveal; completing is the simpler of the two safe
+             * answers. (`performWorktreeAdd` checks the signal after git returns, so a cancel
+             * that raced git's exit is still honoured there.)
+             */
+            steps?.running('create-workspace');
             if (existingRepo !== undefined) {
                 /*
                  * §GIT-103, the half the insert-skip used to swallow.
@@ -383,6 +423,8 @@ function handleWorktreeCreate(
                 ]
             });
             const created = workspaceByID(ctx.store.getState(), workspaceID);
+            steps?.done('create-workspace', created?.name ?? workspaceName);
+            steps?.flush();
             ok(reply, {
                 workspace_id: uuidOut(workspaceID),
                 workspace_name: created?.name ?? workspaceName,
@@ -397,7 +439,13 @@ function handleWorktreeCreate(
             });
         })
         .catch((error: unknown) => {
-            fail(reply, worktreeErrorMessage(error));
+            // The flow has already marked a failed (or cancelled) git step. Anything else is pinned
+            // on the running step (`create-workspace` when the store work threw) or, when none ran
+            // (the busy guard), the first one, so the final frame always names the step.
+            const message = worktreeErrorMessage(error);
+            steps?.failUnfinished(message);
+            steps?.flush();
+            fail(reply, message);
         });
 }
 

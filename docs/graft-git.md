@@ -214,8 +214,15 @@ Every operation shells out to git (`packages/daemon/src/git/exec.ts`):
 - **No timeout by default.** Calls block until git exits. (`git fetch` during
   `--update-main` can take a long time; the CLI compensates with a 120s reply
   timeout, see §7.6.) `RunGitOptions` (`exec.ts:60-75`) accepts an optional
-  `timeoutMs`, a `maxBuffer` and an `AbortSignal` (the diff pane uses the signal to
-  kill a superseded `git diff`). `createGitService` (`packages/daemon/src/git/service.ts:137-144`)
+  `timeoutMs`, a `maxBuffer`, an `AbortSignal` (the diff pane uses the signal to
+  kill a superseded `git diff`, and a cancelled worktree create its fetch or checkout) and
+  an `onStderr` tap (the worktree create reads git's meter from it, §8.5.1). A run with a
+  signal is spawned as its own process group and an abort kills the GROUP (SIGTERM, then
+  SIGKILL after 5 s), so git's children (`reset --hard`, hooks, smudge filters, the fetch
+  transport) die with it; it settles only once the whole group is gone (the SIGKILL stays armed
+  past git's own exit), so a caller's cleanup never runs while a child is still writing. It
+  otherwise keeps `execFile`'s contract (a timeout is a `GitCommandError`, `maxBuffer` counts
+  bytes and fails with `ERR_CHILD_PROCESS_STDIO_MAXBUFFER`); stdin is `/dev/null`. `createGitService` (`packages/daemon/src/git/service.ts:137-144`)
   takes `timeoutMs` for ordinary reads and `longTimeoutMs` for the worktree/fetch
   family; the latter is clamped **up** to `MIN_LONG_GIT_TIMEOUT_MS = 120000`
   (`exec.ts:23`, `exec.ts:155-158`) so a daemon-side budget can never be shorter than
@@ -302,19 +309,36 @@ explicit ref (e.g. `origin/main`). Used by the `--update-main` flow only.
 
 #### `defaultBranch(repoPath) -> string`
 
-Resolution order (each step falls through on failure/no match):
+Resolution order (each step falls through on failure/no match; `resolveDefaultBranch`,
+`packages/daemon/src/git/worktree-add.ts`, which also reports which step answered):
 
-1. `git ls-remote --symref origin HEAD` — scan output lines starting with `ref:`;
-   the ref token is the first whitespace-separated field after `ref:`; if it starts
-   with `refs/heads/`, return the remainder. (Robust when the *local* `origin/HEAD`
-   symref is unset, which is common and which `git fetch` does not create.)
-2. `git symbolic-ref --short refs/remotes/origin/HEAD` — e.g. `origin/main`; return
-   the substring after the first `/` (or the whole string if no `/`).
+1. `git symbolic-ref --quiet --short refs/remotes/origin/HEAD`: e.g. `origin/main`.
+   Believed only when it starts with `origin/` AND `refs/remotes/origin/<branch>` exists
+   (`rev-parse --verify --quiet`); no network. `git clone` sets it, `git fetch` does not
+   create it, and `git remote set-head origin --auto` refreshes it.
+2. `git ls-remote --symref origin HEAD`: scan output lines starting with `ref:`; the ref
+   token is the first whitespace-separated field after `ref:`; if it starts with
+   `refs/heads/`, return the remainder. A network round trip (measured at 2.8 s on a
+   real repo), which is why it moved behind the local symref (issue #294). A repo whose
+   `origin/HEAD` is unset, dangling or points outside `origin/` lands here, exactly as
+   every repo did before.
 3. Literal `"main"`.
+
+A stale local symref is recovered from, not trusted (`fetchWithRenameFallback`). When the
+remote renames its default branch (`main` to `trunk`), a clone keeps `origin/HEAD -> origin/main`,
+and `refs/remotes/origin/main` too (fetch does not prune), so step 1 still answers `main` and the
+one-branch fetch fails with `couldn't find remote ref refs/heads/main`. For a name that came
+from the local symref, and only for that error, the create (and the prefetch) asks the remote
+(`ls-remote`), fetches what it names instead, once, and runs `git remote set-head origin <b>`
+so the next create resolves locally again. The step list shows `trunk (asked origin;
+origin/HEAD said main)`. Any other failure, or a remote that names the same branch, fails as
+before. The worktree create logs which source answered (`worktree-create: default branch of
+<repo> is main (from origin/HEAD)`) and, on a recovery, what it did.
 
 #### `fetch(repoPath, remote)`
 
-`git fetch <remote>`. Blocking, no timeout.
+`git fetch <remote>`. Blocking, no timeout. The plugin surface's primitive (`kelpi.git@1`);
+the worktree flows no longer call it (they fetch one branch, §8.3).
 
 #### `removeWorktree(repoPath, worktreePath)`
 
@@ -1312,14 +1336,33 @@ Final worktree path = `resolvedBase + "/" + sanitizedFolderName`.
 
 ### 8.3 `performWorktreeAdd` (shared by GUI + socket)
 
+`packages/daemon/src/git/worktree-add.ts`:
+
 ```
 if updateMain:
-  def = defaultBranch(repoPath)              // §3
-  fetch(repoPath, "origin")
-  createWorktreeFromBase(repoPath, worktreePath, branch, "origin/" + def)
+  def = resolveDefaultBranch(repoPath)                     // §3: local origin/HEAD first
+  refuse if refs/heads/<branch> exists                     // §8.5, before any network
+  git fetch --no-tags origin +refs/heads/<def>:refs/remotes/origin/<def>
+      (or none: a running prefetch is joined, a recent one reused, §8.5.1)
+  git worktree add -b <branch> <worktreePath> origin/<def>
 else:
-  createWorktree(repoPath, worktreePath, branch)   // existing-branch-first fallback
+  createWorktree(repoPath, worktreePath, branch)           // existing-branch-first fallback
 ```
+
+**One branch, no tags.** A full `git fetch origin` fetched every branch and tag (2.8 s on
+an up-to-date repo with 95 remote branches). The explicit refspec fetches only the default
+branch and writes it straight into `refs/remotes/origin/<def>`, the ref the worktree is cut
+from. A bare `git fetch origin <def>` would only update that ref opportunistically, through
+the remote's configured fetch refspec, so a single-branch clone or a hand-edited refspec
+would have left it stale. `+` because the default refspec forces too.
+
+The same function backs `GitService.worktreeAdd` (the inspector's `workspace-add-worktree`
+and any caller without hooks) and the `workspace-create` handler, which passes three hooks:
+a step sink (§8.5.1), an `AbortSignal` (§8.5.2) and the shared fetch cache. Without a
+sink, git runs without its meter (no `--progress`), so the CLI's and the inspector's git is
+exactly the commands above. While a plugin provider owns `kelpi.git`, the handler routes the
+create through `git.worktreeAdd` instead (no steps, no cancel), so the provider still decides
+every worktree it creates.
 
 ### 8.4 Inspector flow (`createWorktree` action)
 
@@ -1398,19 +1441,135 @@ Socket specifics (`workspace-create` wire fields: `worktree`, `branch`,
   120s for this command.
 
 **"Latest main" and an existing branch.** Update main is "a worktree from latest main":
-`defaultBranch` (remote symref, then `origin/HEAD`, then `main`), `git fetch origin`,
-then `git worktree add -b <branch> <path> origin/<default>`; the local default branch is
-never checked out or moved. Because `-b` is always passed, a branch name that already
-exists can only fail, and git's own `fatal: a branch named '<b>' already exists` says
-nothing about why. So `performWorktreeAdd` checks `refs/heads/<branch>` first (after the
+`defaultBranch` (local `origin/HEAD`, then the remote symref, then `main`), a fetch of that
+one branch (§8.3), then `git worktree add -b <branch> <path> origin/<default>`; the local
+default branch is never checked out or moved. Because `-b` is always passed, a branch name
+that already exists can only fail, and git's own `fatal: a branch named '<b>' already exists`
+says nothing about why. So `performWorktreeAdd` checks `refs/heads/<branch>` first (after the
 default-branch lookup, which may itself ask the remote, and before the fetch, so no fetch is
 made) and
 refuses with `branch '<b>' already exists, and update main always creates a new branch off
 origin/<default>: choose another worktree or branch name, or turn off update main to check
-out the existing branch` (`WorktreeBranchExistsError`, `packages/daemon/src/git/service.ts`).
+out the existing branch` (`WorktreeBranchExistsError`, `packages/daemon/src/git/worktree-add.ts`,
+re-exported from `service.ts`; the step list marks it against `worktree-add`).
 Without update main, an existing branch is attached as before. Only a LOCAL branch counts: a
 name that exists solely as the remote branch `origin/<b>` passes the check, and the worktree
 gets a new local `<b>` off `origin/<default>` that does not track `origin/<b>`.
+
+### 8.5.1 Step progress and the shared prefetch (issue #294)
+
+A worktree create used to answer once, after every git step, so the New Workspace sheet
+showed "Creating…" and nothing else for as long as the network took. Now:
+
+**Steps.** A create over WS reports its steps to the connection that sent it, and to
+nobody else: the command's reply handle sends `command-progress` frames
+(`{type:'command-progress', id:<the command's id>, progress}`, wire-protocol.md) and the
+control socket's handle has no `progress`, so the CLI gets its one reply as before. Each
+frame is the WHOLE list (`serializeWorktreeProgress`, `git/worktree-steps.ts`):
+
+```json
+{"kind":"worktree-create","steps":[
+  {"id":"resolve-default-branch","status":"done","detail":"main (from origin/HEAD)"},
+  {"id":"fetch","status":"running","detail":"origin/main","phase":"Receiving objects","percent":45},
+  {"id":"worktree-add","status":"pending"},
+  {"id":"create-workspace","status":"pending"}],
+ "cancelled":true}
+```
+
+- Steps: `resolve-default-branch`, `fetch`, `worktree-add`, `create-workspace`; without
+  update main only the last two. Status: `pending`, `running`, `done`, `skipped` (the fetch,
+  `prefetched 5.0 s ago`), `failed` (with `error`: `worktreeErrorMessage`'s text, or
+  `cancelled`). `cancelled` appears once the create was cancelled.
+- `phase` and `percent` while a running step has git's meter: the fetch runs with
+  `--progress`, and the checkout's delayed "Updating files" meter is switched on with
+  `GIT_PROGRESS_DELAY=0` (`git worktree add` has no `--progress`; its internal
+  `reset --hard` honours the variable). `git/progress.ts` parses `\r`- and
+  `\n`-terminated meter lines, across chunk boundaries, and strips the meter back out of
+  an error's stderr. No `percent` = indeterminate.
+- Throttled per request: the first change goes out at once, then at most one frame per
+  150 ms carrying the latest state (a trailing frame, never a dropped one). The last
+  snapshot is flushed BEFORE the reply, so the list a client ends on agrees with it.
+- The reply itself is unchanged, success and failure alike.
+
+**Prefetch.** While the sheet shows a worktree off latest main for a repo (including when
+a group's switch pre-ticked it), the client sends `repo-prefetch {repo_id}` once per repo
+per opening. `git/fetch-cache.ts` keeps ONE fetch record per repo (by resolved path):
+
+- a prefetch while one is running is `in-flight` (no second fetch); a prefetch within
+  10 s of the previous start, whatever its outcome, is `rate-limited`; one within 60 s of
+  a successful finish is `recent`; otherwise it `started` (resolve the default branch as in
+  §3, then the single-branch fetch with the stale-symref recovery, bounded at 120 s, and with
+  `GIT_TERMINAL_PROMPT=0`, `GCM_INTERACTIVE=never` and `SSH_ASKPASS_REQUIRE=never` on its
+  `ls-remote` and its fetch, so nothing can prompt; `GIT_SSH_COMMAND` / `core.sshCommand` are left
+  alone, and foreground creates keep their own environment);
+- a create with update main WAITS for a running fetch of its repo (`joined`, the step
+  reads "finishing the prefetch" and shows its meter) or SKIPS the fetch when one for the
+  same remote and branch finished under 60 s ago (`reused`); otherwise it fetches for itself,
+  registered as the repo's running fetch so a second create joins it. A joined wait gives up
+  after 120 s and fetches for itself: a CLI create's own fetch has no signal or timeout, and a
+  sheet create must not be stuck behind one that hangs;
+- a failed prefetch is logged (`worktree-prefetch: … failed`) and otherwise silent: the next
+  create fetches for itself and reports its own error;
+- guards: owner sessions only (a paired device is refused), a REGISTERED repo named by id
+  only (never a path), the rate limit above, and never two fetches of one repo at once.
+  The CLI never prefetches, but a CLI create reuses a recent sheet prefetch like any other.
+
+**No steps.** While a plugin provider owns `kelpi.git`, a create runs through
+`git.worktreeAdd` (no steps, no cancel, §8.3). The handler then sends ONE frame,
+`{"kind":"worktree-create","steps":[],"detailed":false}`, and marks the request uncancellable
+(`ReplyHandle.uncancellable`), so a cancel of it answers `cancelled:false`; the sheet shows a
+plain "Creating…" with an indeterminate bar, and its Cancel closes the sheet as before. A client
+that receives no frame within a second (a daemon that predates #294) falls back to the same.
+
+**One create per path and branch.** Every handler table's creator runs behind
+`createWorktreeAddGuard`: while a create is making a worktree at a path, or a branch, of a repo,
+a second create for the same (repo, path) or (repo, branch) is refused at once with
+`another create is already making the worktree at <path>: …` / `… making branch '<b>': …`.
+Otherwise a cancelled loser could believe the winner's directory or branch was its own.
+
+### 8.5.2 Cancelling a worktree create (issue #294)
+
+A WS `workspace-create` may carry `request_id` (client-minted; read by the WS session
+before the wire decode, so it is not a control-socket field). `workspace-create-cancel
+{request_id}` from the SAME session aborts that request's signal and answers
+`{ok:true, cancelled:true}`; an unknown, finished or another session's id answers
+`cancelled:false`. A malformed or already-running id on the create is refused before
+dispatch. A session that disconnects does NOT cancel its create (it finishes, as before).
+
+On abort, `performWorktreeAdd` kills the running git child and its whole process group
+(`git/exec.ts` spawns a cancellable run as its own group, so `git reset --hard`, hooks and
+the fetch transport die with it), waits for it to exit, then removes what THIS request
+created and nothing else, using a snapshot taken just before `worktree add`:
+
+- the worktree directory and its registration (`git worktree remove -f -f <path>`: double,
+  because a checkout in progress leaves the entry LOCKED "initializing" and a single `--force`
+  refuses it; then deleting the directory if anything is left; then, if git still lists the
+  path, removing only the `<common-dir>/worktrees/<id>` entry whose `gitdir` names it, never
+  `git worktree prune`, which would drop the user's other stale entries), only when the path
+  did not exist before; a pre-existing directory is left exactly as it is (logged);
+- the branch (`git branch -D`), only when it did not exist before AND its tip is one of
+  the commits this add could have created it at (the base ref, HEAD, or a DWIM
+  `origin/<branch>`); a branch someone else made or moved is left (logged);
+- a cancel during the resolve or the fetch has nothing to remove (a fetch only moves
+  `origin/<default>`).
+
+The snapshot FAILS CLOSED: only rev-parse's own "no such ref" (exit 1) and `ENOENT`/`ENOTDIR`
+count as absent. Any other error reading the branch or the path (a transient spawn failure,
+`EACCES`) reads as "it existed", so the cleanup leaves that item alone; a candidate tip that
+cannot be read is simply not a candidate.
+
+`git worktree add`'s own signal handler sometimes removes its half-made directory and
+registration first; the branch it made is never its concern, so the cleanup's branch step is
+what always matters. The log line states the end result either way
+(`worktree-create: cancelled during worktree-add for <path>; removed [worktree, ]branch <b>;
+no directory left`).
+
+The reply is `{ok:false, error:"worktree create cancelled"}` and the last snapshot marks the
+running step `failed` with `cancelled:true`. A cancel that arrives once `worktree add` has
+returned is too late: the create COMPLETES (the remaining step is synchronous store work,
+and rolling back a finished worktree the reply is about to reveal would be the riskier
+answer); `performWorktreeAdd` checks the signal right after git exits, so a cancel that
+raced git's exit is still rolled back.
 
 ### 8.6 `worktreeErrorMessage`
 

@@ -17,7 +17,9 @@
  *   - **a failed prefetch is silent**: it is logged, remembered only for the rate limit, and the
  *     create that follows fetches for itself and reports its own error;
  *   - **a prefetch is bounded** (`prefetchTimeoutMs`) and never prompts for credentials, since
- *     nobody asked for it interactively.
+ *     nobody asked for it interactively (`BACKGROUND_GIT_ENV`, on its `ls-remote` too);
+ *   - **a joined wait is bounded** (`joinTimeoutMs`): a CLI create's own fetch has no signal or
+ *     timeout, so a create joining a hung one stops waiting after 120 s and fetches for itself.
  *
  * A create that joins a fetch it did not start does not own it: cancelling the create stops the
  * WAIT, never the shared fetch. A create's OWN fetch is registered here too, so a second create
@@ -33,6 +35,7 @@ import type { GitProgress } from './progress.js';
 import {
     describeDefaultBranchSource,
     fetchDefaultBranch,
+    fetchWithRenameFallback,
     resolveDefaultBranch,
     WorktreeCreateCancelledError,
     type DefaultBranchFetches,
@@ -44,6 +47,23 @@ import {
 export const PREFETCH_REUSE_MS = 60_000;
 export const PREFETCH_MIN_INTERVAL_MS = 10_000;
 export const PREFETCH_TIMEOUT_MS = 120_000;
+/**
+ * The longest a create WAITS on a fetch it joined before fetching for itself. A CLI create's
+ * own fetch has neither a signal nor a timeout (its caller waits as long as git takes), so a
+ * create that joined a hung one must not be stuck with it.
+ */
+export const JOIN_TIMEOUT_MS = 120_000;
+
+/**
+ * Nobody is at a prompt for a background fetch, so none may be shown: no terminal prompt, no
+ * Git Credential Manager dialog, no ssh askpass. `GIT_SSH_COMMAND` / `core.sshCommand` are left
+ * alone (a user's own ssh setup must keep working). Foreground creates keep their environment.
+ */
+export const BACKGROUND_GIT_ENV: Readonly<Record<string, string>> = {
+    GIT_TERMINAL_PROMPT: '0',
+    GCM_INTERACTIVE: 'never',
+    SSH_ASKPASS_REQUIRE: 'never'
+};
 
 export type PrefetchResult = 'started' | 'in-flight' | 'recent' | 'rate-limited';
 
@@ -83,10 +103,31 @@ export interface CreateFetchCacheOptions {
     readonly reuseMs?: number | undefined;
     readonly minIntervalMs?: number | undefined;
     readonly prefetchTimeoutMs?: number | undefined;
+    readonly joinTimeoutMs?: number | undefined;
 }
 
 function keyOf(repoPath: string): string {
     return path.resolve(repoPath);
+}
+
+const TIMED_OUT = Symbol('timed out');
+
+/** `promise`, or `TIMED_OUT` once `ms` have passed without it settling. */
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | typeof TIMED_OUT> {
+    return new Promise<T | typeof TIMED_OUT>((resolve, reject) => {
+        const timer = setTimeout(() => resolve(TIMED_OUT), ms);
+        timer.unref?.();
+        promise.then(
+            (value) => {
+                clearTimeout(timer);
+                resolve(value);
+            },
+            (error: unknown) => {
+                clearTimeout(timer);
+                reject(error instanceof Error ? error : new Error(String(error)));
+            }
+        );
+    });
 }
 
 function abortable<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
@@ -115,6 +156,7 @@ export function createDefaultBranchFetchCache(options: CreateFetchCacheOptions):
     const reuseMs = options.reuseMs ?? PREFETCH_REUSE_MS;
     const minIntervalMs = options.minIntervalMs ?? PREFETCH_MIN_INTERVAL_MS;
     const prefetchTimeoutMs = options.prefetchTimeoutMs ?? PREFETCH_TIMEOUT_MS;
+    const joinTimeoutMs = options.joinTimeoutMs ?? JOIN_TIMEOUT_MS;
     const records = new Map<string, FetchRecord>();
 
     const prune = (): void => {
@@ -183,15 +225,24 @@ export function createDefaultBranchFetchCache(options: CreateFetchCacheOptions):
                 const timer = setTimeout(() => controller.abort(), prefetchTimeoutMs);
                 timer.unref?.();
                 try {
-                    const resolved = await resolveDefaultBranch(ops, repoPath, remote, controller.signal);
+                    const resolved = await resolveDefaultBranch(ops, repoPath, remote, controller.signal, BACKGROUND_GIT_ENV);
                     record.branch = resolved.branch;
                     log(`worktree-prefetch: fetching ${remote}/${resolved.branch} for ${repoPath} (default branch ${describeDefaultBranchSource(resolved, remote)})`);
-                    await fetchDefaultBranch(ops, repoPath, remote, resolved.branch, {
-                        signal: controller.signal,
-                        onProgress: broadcast(record),
-                        // Nobody is at a prompt for a background fetch.
-                        env: { GIT_TERMINAL_PROMPT: '0' }
-                    });
+                    // The same stale-origin/HEAD recovery a create gets (worktree-add.ts).
+                    const fetched = await fetchWithRenameFallback(
+                        ops,
+                        repoPath,
+                        remote,
+                        resolved,
+                        (branch) =>
+                            fetchDefaultBranch(ops, repoPath, remote, branch, {
+                                signal: controller.signal,
+                                onProgress: broadcast(record),
+                                env: BACKGROUND_GIT_ENV
+                            }),
+                        { signal: controller.signal, env: BACKGROUND_GIT_ENV, log }
+                    );
+                    record.branch = fetched.branch;
                 } finally {
                     clearTimeout(timer);
                 }
@@ -234,12 +285,23 @@ export function createDefaultBranchFetchCache(options: CreateFetchCacheOptions):
             input.onJoin?.(existing.origin);
             const listener = input.onProgress;
             if (listener !== undefined) existing.listeners.add(listener);
+            let gaveUp = false;
             try {
-                await abortable(existing.settled, input.signal);
+                gaveUp = (await abortable(withTimeout(existing.settled, joinTimeoutMs), input.signal)) === TIMED_OUT;
             } catch {
                 throw new WorktreeCreateCancelledError('fetch');
             } finally {
                 if (listener !== undefined) existing.listeners.delete(listener);
+            }
+            if (gaveUp) {
+                // A hung fetch this create does not own: stop waiting and fetch for itself,
+                // outside the cache (the record still belongs to the fetch that is hung).
+                log(`worktree-create: gave up waiting ${String(joinTimeoutMs)} ms on the running fetch for ${input.repoPath}; fetching for itself`);
+                await fetchDefaultBranch(ops, input.repoPath, input.remote, input.branch, {
+                    ...(input.signal !== undefined ? { signal: input.signal } : {}),
+                    ...(input.onProgress !== undefined ? { onProgress: input.onProgress } : {})
+                });
+                return { kind: 'fetched' };
             }
             if (existing.ok === true && matches(existing)) return { kind: 'joined', origin: existing.origin };
             // It failed, or fetched another branch: fall through to a fetch of our own.

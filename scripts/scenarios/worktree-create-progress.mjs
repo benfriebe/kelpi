@@ -10,8 +10,9 @@
  *   - `remote.origin.uploadpack` is a wrapper that pipes `git-upload-pack` through a throttle
  *     (about 0.8 MB/s), and origin gets an 8 MB commit after the clone, so a fetch takes seconds
  *     and git prints a moving "Receiving objects" percentage;
- *   - a `post-checkout` hook sleeps 3 s, holding `git worktree add` open after its checkout so
- *     the step can be seen, screenshotted and cancelled.
+ *   - a `post-checkout` hook sleeps (3 s, and 10 s for the cancel step), holding
+ *     `git worktree add` open after its checkout so the step can be seen, screenshotted and
+ *     cancelled.
  *
  * Steps:
  *   1. group A: open the sheet (the prefetch starts and finishes on its own), then Create: the
@@ -111,9 +112,16 @@ function fixture(root, name) {
         { mode: 0o755 }
     );
     git(repo, 'config', 'remote.origin.uploadpack', throttle);
+    // How long the hook holds the add open, read per run so the cancel step can lengthen it.
+    const hookSeconds = path.join(root, `${name}-hook-seconds`);
+    fs.writeFileSync(hookSeconds, '3\n');
     const hook = path.join(repo, '.git', 'hooks', 'post-checkout');
-    fs.writeFileSync(hook, '#!/bin/sh\n# Test fixture: hold `git worktree add` open so its step can be seen.\nsleep 3\n', { mode: 0o755 });
-    return { origin, seed, repo, firstSha, latestSha };
+    fs.writeFileSync(
+        hook,
+        `#!/bin/sh\n# Test fixture: hold \`git worktree add\` open so its step can be seen.\nsleep "$(cat '${hookSeconds}')"\n`,
+        { mode: 0o755 }
+    );
+    return { origin, seed, repo, firstSha, latestSha, hookSeconds };
 }
 
 export default async function ({ page, cli, sandbox, daemon, rec, d, sleep }) {
@@ -297,6 +305,8 @@ export default async function ({ page, cli, sandbox, daemon, rec, d, sleep }) {
         await rec.shot(page, 'failure-branch-exists');
 
         // ── 4 · Cancel during `worktree add`: only what this create made is removed ────────────
+        // A long hold, so the Cancel click cannot miss the window on a loaded machine.
+        fs.writeFileSync(a.hookSeconds, '10\n');
         await typeInto('[data-testid="new-workspace-worktree-name"]', 'cancel-me');
         await typeInto('[data-testid="new-workspace-worktree-branch"]', 'cancel-me');
         await typeInto('[aria-label="New workspace name"]', 'Cancel Me');

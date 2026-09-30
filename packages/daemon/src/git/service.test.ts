@@ -115,6 +115,41 @@ describe.skipIf(!HAS_GIT)('runner', () => {
         expect(error.stderr).toBe(error.stderr.trim());
         expect(error.command.startsWith('git worktree add')).toBe(true);
     });
+
+    /*
+     * #294 review: a run with a signal is spawned (process group) rather than execFile'd, and must
+     * keep execFile's error contract for the caller that was already passing one (getDiff).
+     */
+    it('with a signal, fails the way execFile did: GitCommandError, timeout included; maxBuffer in bytes', async () => {
+        const repo = initRepo('runner-signal');
+        const signal = new AbortController().signal;
+        const git = createGitRunner();
+        const failed = await git(['worktree', 'add', path.join(repo, 'README.md'), 'main'], { cwd: repo, signal }).catch((error: unknown) => error);
+        expect(failed).toBeInstanceOf(GitCommandError);
+        expect((failed as GitCommandError).stderr).toBe((failed as GitCommandError).stderr.trim());
+
+        const shell = createGitRunner({ executable: '/bin/sh' });
+        const both = async (args: string[], extra: { timeoutMs?: number; maxBuffer?: number }): Promise<[unknown, unknown]> => [
+            await shell(args, { cwd: repo, ...extra }).catch((error: unknown) => error),
+            await shell(args, { cwd: repo, signal, ...extra }).catch((error: unknown) => error)
+        ];
+        const [plainTimeout, signalTimeout] = await both(['-c', 'sleep 5'], { timeoutMs: 200 });
+        expect(plainTimeout).toBeInstanceOf(GitCommandError);
+        expect(signalTimeout).toBeInstanceOf(GitCommandError);
+        // Ten two-byte characters: 20 bytes but 10 UTF-16 units. A 15-byte budget refuses it.
+        const [plainOverflow, signalOverflow] = await both(['-c', "printf 'éééééééééé'"], { maxBuffer: 15 });
+        expect((plainOverflow as { code?: string }).code).toBe('ERR_CHILD_PROCESS_STDIO_MAXBUFFER');
+        expect((signalOverflow as { code?: string }).code).toBe('ERR_CHILD_PROCESS_STDIO_MAXBUFFER');
+        await expect(shell(['-c', "printf 'éééééééééé'"], { cwd: repo, signal, maxBuffer: 20 })).resolves.toBe('éééééééééé');
+    });
+
+    it('getDiff with a signal still rejects with GitCommandError for a failed diff', async () => {
+        const service = createGitService();
+        const error = await service
+            .getDiff(tmpDir('not-a-repo'), null, { signal: new AbortController().signal })
+            .catch((caught: unknown) => caught);
+        expect(error).toBeInstanceOf(GitCommandError);
+    });
 });
 
 describe.skipIf(!HAS_GIT)('GitService', () => {

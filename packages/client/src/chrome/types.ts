@@ -235,6 +235,11 @@ export interface WorktreeCreateStep {
 export interface WorktreeCreateProgress {
     readonly steps: readonly WorktreeCreateStep[];
     readonly cancelled: boolean;
+    /**
+     * False when the create cannot report steps (a plugin git provider on the daemon, or a daemon
+     * that predates #294 and sends no frames at all): the sheet shows a plain "Creating…".
+     */
+    readonly detailed: boolean;
 }
 
 /**

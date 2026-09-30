@@ -174,9 +174,10 @@ export async function resolveDefaultBranch(
     ops: WorktreeGitOps,
     repoPath: string,
     remote = 'origin',
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    env?: Readonly<Record<string, string>>
 ): Promise<ResolvedDefaultBranch> {
-    const opts = signal !== undefined ? { signal } : {};
+    const opts = { ...(signal !== undefined ? { signal } : {}), ...(env !== undefined ? { env } : {}) };
     try {
         const out = (await ops.read(['symbolic-ref', '--quiet', '--short', `refs/remotes/${remote}/HEAD`], repoPath, opts)).trim();
         const prefix = `${remote}/`;
@@ -190,6 +191,21 @@ export async function resolveDefaultBranch(
         if (signal?.aborted) throw error;
         // Not set (exit 1 under --quiet): ask the remote.
     }
+    return (await resolveDefaultBranchFromRemote(ops, repoPath, remote, signal, env)) ?? { branch: FALLBACK_DEFAULT_BRANCH, source: 'fallback' };
+}
+
+/**
+ * `git ls-remote --symref <remote> HEAD` alone: what the remote says its default branch is NOW.
+ * Null when it cannot say (offline, no such remote). An abort propagates.
+ */
+export async function resolveDefaultBranchFromRemote(
+    ops: WorktreeGitOps,
+    repoPath: string,
+    remote = 'origin',
+    signal?: AbortSignal,
+    env?: Readonly<Record<string, string>>
+): Promise<ResolvedDefaultBranch | null> {
+    const opts = { ...(signal !== undefined ? { signal } : {}), ...(env !== undefined ? { env } : {}) };
     try {
         const out = await ops.read(['ls-remote', '--symref', remote, 'HEAD'], repoPath, opts);
         for (const line of out.split('\n')) {
@@ -198,9 +214,60 @@ export async function resolveDefaultBranch(
         }
     } catch (error) {
         if (signal?.aborted) throw error;
-        // Offline, or no such remote: the literal default.
     }
-    return { branch: FALLBACK_DEFAULT_BRANCH, source: 'fallback' };
+    return null;
+}
+
+/** `fatal: couldn't find remote ref refs/heads/<b>`: the branch is gone from the remote. */
+export function isMissingRemoteRef(error: unknown): boolean {
+    return isGitCommandError(error) && /couldn't find remote ref/i.test(error.stderr);
+}
+
+export interface RenameFallbackOptions {
+    readonly signal?: AbortSignal | undefined;
+    readonly env?: Readonly<Record<string, string>> | undefined;
+    readonly log?: ((message: string) => void) | undefined;
+    /** The default branch turned out to have moved: `from` was stale, `to` is what is fetched. */
+    readonly onRenamed?: ((from: string, to: ResolvedDefaultBranch) => void) | undefined;
+}
+
+/**
+ * Fetch the resolved default branch, recovering from a STALE local `origin/HEAD` (#294 review).
+ *
+ * When the remote renames its default branch (`main` → `trunk`), a clone keeps
+ * `origin/HEAD -> origin/main` and, since fetch does not prune, `refs/remotes/origin/main` too, so
+ * the local lookup still believes `main` and the one-branch fetch fails with `couldn't find
+ * remote ref refs/heads/main`. Only for a name that came from the local symref, and only for
+ * that error: ask the remote (`ls-remote`), fetch what it names instead, once, and point the
+ * local `origin/HEAD` at it (`git remote set-head`) so the next create is fast again. Anything
+ * else (the remote says the same name, or cannot be asked) rethrows the original error.
+ */
+export async function fetchWithRenameFallback(
+    ops: WorktreeGitOps,
+    repoPath: string,
+    remote: string,
+    resolved: ResolvedDefaultBranch,
+    fetch: (branch: string) => Promise<void>,
+    options: RenameFallbackOptions = {}
+): Promise<ResolvedDefaultBranch> {
+    try {
+        await fetch(resolved.branch);
+        return resolved;
+    } catch (error) {
+        if (options.signal?.aborted || resolved.source !== 'origin-head' || !isMissingRemoteRef(error)) throw error;
+        const fresh = await resolveDefaultBranchFromRemote(ops, repoPath, remote, options.signal, options.env);
+        if (fresh === null || fresh.branch === resolved.branch) throw error;
+        options.log?.(`worktree-create: ${remote}/HEAD in ${repoPath} named ${resolved.branch}, which ${remote} no longer has; ${remote} says ${fresh.branch}`);
+        options.onRenamed?.(resolved.branch, fresh);
+        await fetch(fresh.branch);
+        try {
+            await ops.read(['remote', 'set-head', remote, fresh.branch], repoPath, options.env !== undefined ? { env: options.env } : {});
+            options.log?.(`worktree-create: pointed ${remote}/HEAD in ${repoPath} at ${remote}/${fresh.branch}`);
+        } catch (setHeadError) {
+            options.log?.(`worktree-create: could not update ${remote}/HEAD in ${repoPath}: ${setHeadError instanceof Error ? setHeadError.message : String(setHeadError)}`);
+        }
+        return fresh;
+    }
 }
 
 /**
@@ -313,37 +380,118 @@ export interface WorktreeAddHooks {
 export interface WorktreeAddSnapshot {
     readonly pathExisted: boolean;
     readonly branchExisted: boolean;
-    /** Every commit the add could have created the branch at (HEAD, base, a DWIM remote ref). */
+    /**
+     * Every commit the add could have created the branch at: the base ref with update main;
+     * HEAD or git's DWIM `origin/<branch>` without it.
+     */
     readonly possibleTips: ReadonlySet<string>;
 }
 
 function pathExists(candidate: string): boolean {
+    return pathState(candidate) !== 'absent';
+}
+
+/**
+ * `absent` only for ENOENT / ENOTDIR. Anything else (EACCES, EIO, a transient error) is
+ * `unknown`, which every cleanup decision reads as "it was there": the snapshot FAILS CLOSED, so
+ * a flaky read can make a cancel leave something behind, never delete something the user had.
+ */
+function pathState(candidate: string): 'exists' | 'absent' | 'unknown' {
     try {
         fs.lstatSync(candidate);
-        return true;
-    } catch {
-        return false;
+        return 'exists';
+    } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        return code === 'ENOENT' || code === 'ENOTDIR' ? 'absent' : 'unknown';
     }
 }
 
+/**
+ * The snapshot's ref read, failing closed: the sha, `null` only for rev-parse's own "no such
+ * ref" (exit 1 under `--verify --quiet`), and `undefined` for any other failure (a spawn error,
+ * a broken repo), which the cleanup reads as "it existed".
+ */
+async function probeRef(ops: WorktreeGitOps, repoPath: string, ref: string): Promise<string | null | undefined> {
+    try {
+        const out = (await ops.read(['rev-parse', '--verify', '--quiet', ref], repoPath)).trim();
+        return out === '' ? null : out;
+    } catch (error) {
+        return isGitCommandError(error) && error.exitCode === 1 ? null : undefined;
+    }
+}
+
+/**
+ * @param refs every ref whose commit the add could create the branch at: the base ref on the
+ *   update-main path; HEAD and git's DWIM `origin/<branch>` on the plain path.
+ */
 async function snapshotBeforeAdd(
     ops: WorktreeGitOps,
     request: WorktreeAddRequest,
-    remote: string,
     refs: readonly string[]
 ): Promise<WorktreeAddSnapshot> {
     // Deliberately NOT given the abort signal: these reads are what the cleanup trusts, so a
     // cancel landing mid-snapshot must not leave half of it. They are quick.
     const tips = new Set<string>();
-    for (const ref of [...refs, `refs/remotes/${remote}/${request.branchName}`]) {
-        const sha = await verifiedRef(ops, request.repoPath, ref);
-        if (sha !== null) tips.add(sha);
+    for (const ref of refs) {
+        const sha = await probeRef(ops, request.repoPath, ref);
+        // An unreadable candidate is simply not a candidate: fewer tips is the safe direction.
+        if (typeof sha === 'string') tips.add(sha);
     }
     return {
-        pathExisted: pathExists(request.worktreePath),
-        branchExisted: (await verifiedRef(ops, request.repoPath, `refs/heads/${request.branchName}`)) !== null,
+        pathExisted: pathState(request.worktreePath) !== 'absent',
+        branchExisted: (await probeRef(ops, request.repoPath, `refs/heads/${request.branchName}`)) !== null,
         possibleTips: tips
     };
+}
+
+/** A path compared the way git stores it: through symlinks (`/var` → `/private/var`). */
+function canonical(candidate: string): string {
+    const absolute = path.resolve(candidate);
+    try {
+        return fs.realpathSync(absolute);
+    } catch {
+        try {
+            return path.join(fs.realpathSync(path.dirname(absolute)), path.basename(absolute));
+        } catch {
+            return absolute;
+        }
+    }
+}
+
+/**
+ * Remove the registration git keeps for `worktreePath` (`<common-dir>/worktrees/<id>`) when
+ * `git worktree remove -f -f` could not: its directory is gone, or git never finished writing it.
+ * Only the entry whose `gitdir` names THIS path is touched. `git worktree prune` is deliberately
+ * not used: it would also drop the user's other stale entries (a worktree on an unmounted disk).
+ */
+async function removeOwnRegistration(ops: WorktreeGitOps, repoPath: string, worktreePath: string): Promise<boolean> {
+    let common: string;
+    try {
+        const out = (await ops.read(['rev-parse', '--git-common-dir'], repoPath)).trim();
+        common = path.isAbsolute(out) ? out : path.join(repoPath, out);
+    } catch {
+        return false;
+    }
+    const admin = path.join(common, 'worktrees');
+    let entries: string[];
+    try {
+        entries = fs.readdirSync(admin);
+    } catch {
+        return false;
+    }
+    const target = canonical(worktreePath);
+    for (const entry of entries) {
+        let gitdir: string;
+        try {
+            gitdir = fs.readFileSync(path.join(admin, entry, 'gitdir'), 'utf8').trim();
+        } catch {
+            continue;
+        }
+        if (canonical(path.dirname(gitdir)) !== target) continue;
+        fs.rmSync(path.join(admin, entry), { recursive: true, force: true });
+        return true;
+    }
+    return false;
 }
 
 /**
@@ -360,14 +508,15 @@ export async function cleanupCancelledWorktreeAdd(
     const { repoPath, worktreePath, branchName } = request;
     const samePlaceAsRepo = path.resolve(worktreePath) === path.resolve(repoPath);
     if (!before.pathExisted && !samePlaceAsRepo) {
-        // Unregisters the worktree and deletes its directory; also unregisters one whose directory
-        // git's own signal handler already removed. "not a working tree" (git died before it
-        // registered anything) is fine: the directory, if any, is still this request's.
+        // `-f -f`: a checkout in progress leaves the entry LOCKED ("initializing"), which a
+        // single --force refuses, and a later `branch -D` then fails with "used by worktree".
+        // Safe here because this branch only runs for a path that did not exist before the add.
+        // It also unregisters an entry whose directory git's own signal handler already removed.
         try {
-            await ops.long(['worktree', 'remove', '--force', worktreePath], repoPath);
+            await ops.long(['worktree', 'remove', '-f', '-f', worktreePath], repoPath);
             removed.push('worktree');
         } catch {
-            // Nothing registered.
+            // Not registered (git died first), or its directory is half-written: handled below.
         }
         if (pathExists(worktreePath)) {
             try {
@@ -377,23 +526,64 @@ export async function cleanupCancelledWorktreeAdd(
                 log(`worktree-create: could not remove ${worktreePath} after a cancel: ${String(error)}`);
             }
         }
+        if (!removed.includes('worktree') && (await removeOwnRegistration(ops, repoPath, worktreePath))) {
+            removed.push('worktree registration');
+        }
     } else if (before.pathExisted) {
-        log(`worktree-create: left ${worktreePath} alone after a cancel: it existed before this create`);
+        log(`worktree-create: left ${worktreePath} alone after a cancel: it existed before this create (or could not be checked)`);
     }
     if (!before.branchExisted) {
-        const tip = await verifiedRef(ops, repoPath, `refs/heads/${branchName}`);
-        if (tip !== null && before.possibleTips.has(tip)) {
+        const tip = await probeRef(ops, repoPath, `refs/heads/${branchName}`);
+        if (typeof tip === 'string' && before.possibleTips.has(tip)) {
             try {
                 await ops.long(['branch', '-D', branchName], repoPath);
                 removed.push(`branch ${branchName}`);
             } catch (error) {
                 log(`worktree-create: could not delete branch ${branchName} after a cancel: ${error instanceof Error ? error.message : String(error)}`);
             }
-        } else if (tip !== null) {
+        } else if (typeof tip === 'string') {
             log(`worktree-create: left branch ${branchName} alone after a cancel: its tip ${tip.slice(0, 12)} is not where this create would have made it`);
+        } else if (tip === undefined) {
+            log(`worktree-create: left branch ${branchName} alone after a cancel: it could not be read`);
         }
     }
     return removed;
+}
+
+/** Issue #294 review: a second create for a worktree path or branch that one is already making. */
+export class WorktreeBusyError extends Error {
+    constructor(message: string) {
+        super(message);
+        this.name = 'WorktreeBusyError';
+    }
+}
+
+/**
+ * One create at a time per (repo, worktree path) and per (repo, branch). Two creates racing
+ * for the same path or branch would each believe the other's directory or branch was theirs,
+ * and a cancelled loser could clean up the winner's worktree. So the second is refused at once.
+ */
+export function createWorktreeAddGuard(): { acquire(request: WorktreeAddRequest): () => void } {
+    const busy = new Set<string>();
+    return {
+        acquire(request) {
+            const repo = path.resolve(request.repoPath);
+            const pathKey = `${repo}\0path\0${path.resolve(request.worktreePath)}`;
+            const branchKey = `${repo}\0branch\0${request.branchName}`;
+            if (busy.has(pathKey)) {
+                throw new WorktreeBusyError(`another create is already making the worktree at ${request.worktreePath}: wait for it to finish, or choose another worktree name`);
+            }
+            if (busy.has(branchKey)) {
+                throw new WorktreeBusyError(`another create is already making branch '${request.branchName}': wait for it to finish, or choose another branch name`);
+            }
+            busy.add(pathKey);
+            busy.add(branchKey);
+            return () => {
+                busy.delete(pathKey);
+                busy.delete(branchKey);
+            };
+        }
+    };
 }
 
 function seconds(ms: number): string {
@@ -430,7 +620,7 @@ export async function performWorktreeAdd(
             steps?.running('worktree-add', request.branchName);
             // Only a cancellable add needs the snapshot (it is the cleanup's authority), so an
             // uncancellable one (the CLI, the inspector) runs exactly the git it always ran.
-            before = signal !== undefined ? await snapshotBeforeAdd(ops, request, remote, ['HEAD']) : null;
+            before = signal !== undefined ? await snapshotBeforeAdd(ops, request, ['HEAD', `refs/remotes/${remote}/${request.branchName}`]) : null;
             bail();
             const add = (args: readonly string[]): Promise<string> =>
                 withProgress((extra) => ops.long(args, request.repoPath, { ...callOptions('worktree-add'), ...extra }), onProgress('worktree-add'));
@@ -450,8 +640,6 @@ export async function performWorktreeAdd(
         steps?.running('resolve-default-branch');
         const resolved = await resolveDefaultBranch(ops, request.repoPath, remote, signal);
         bail();
-        const base = resolved.branch;
-        const baseRef = `${remote}/${base}`;
         log(`worktree-create: default branch of ${request.repoPath} is ${describeDefaultBranchSource(resolved, remote)}`);
         steps?.done('resolve-default-branch', describeDefaultBranchSource(resolved, remote));
 
@@ -464,49 +652,62 @@ export async function performWorktreeAdd(
         // worktree step, since that is the step it stops.
         current = 'worktree-add';
         if ((await verifiedRef(ops, request.repoPath, `refs/heads/${request.branchName}`, signal)) !== null) {
-            throw new WorktreeBranchExistsError(request.branchName, baseRef);
+            throw new WorktreeBranchExistsError(request.branchName, `${remote}/${resolved.branch}`);
         }
         bail();
 
         current = 'fetch';
-        steps?.running('fetch', baseRef);
-        const startedAt = Date.now();
-        if (hooks.fetches !== undefined && hooks.fetches !== null) {
-            const outcome = await hooks.fetches.fetchForCreate({
-                repoPath: request.repoPath,
-                remote,
-                branch: base,
-                signal,
-                onProgress: onProgress('fetch'),
-                onJoin: (origin) => {
-                    // Short: the sheet is 360 px wide and the row also carries the step's name.
-                    steps?.running('fetch', origin === 'prefetch' ? 'finishing the prefetch' : "finishing another create's fetch");
+        steps?.running('fetch', `${remote}/${resolved.branch}`);
+        const fetchOne = async (branch: string): Promise<void> => {
+            const ref = `${remote}/${branch}`;
+            const startedAt = Date.now();
+            if (hooks.fetches !== undefined && hooks.fetches !== null) {
+                const outcome = await hooks.fetches.fetchForCreate({
+                    repoPath: request.repoPath,
+                    remote,
+                    branch,
+                    signal,
+                    onProgress: onProgress('fetch'),
+                    onJoin: (origin) => {
+                        // Short: the sheet is 360 px wide and the row also carries the step's name.
+                        steps?.running('fetch', origin === 'prefetch' ? 'finishing the prefetch' : "finishing another create's fetch");
+                    }
+                });
+                bail();
+                if (outcome.kind === 'reused') {
+                    const detail = outcome.origin === 'prefetch' ? `prefetched ${seconds(outcome.ageMs)} ago` : `fetched ${seconds(outcome.ageMs)} ago`;
+                    log(`worktree-create: fetch of ${ref} skipped for ${request.repoPath}: ${detail}`);
+                    steps?.skipped('fetch', detail);
+                } else if (outcome.kind === 'joined') {
+                    log(`worktree-create: fetch of ${ref} for ${request.repoPath} joined the ${outcome.origin} already running (${seconds(Date.now() - startedAt)} waited)`);
+                    steps?.done('fetch', `${ref} (${outcome.origin === 'prefetch' ? 'prefetch' : 'shared fetch'}, ${seconds(Date.now() - startedAt)})`);
+                } else {
+                    log(`worktree-create: fetched ${ref} for ${request.repoPath} in ${seconds(Date.now() - startedAt)}`);
+                    steps?.done('fetch', `${ref} (${seconds(Date.now() - startedAt)})`);
                 }
-            });
-            bail();
-            if (outcome.kind === 'reused') {
-                const detail = outcome.origin === 'prefetch' ? `prefetched ${seconds(outcome.ageMs)} ago` : `fetched ${seconds(outcome.ageMs)} ago`;
-                log(`worktree-create: fetch of ${baseRef} skipped for ${request.repoPath}: ${detail}`);
-                steps?.skipped('fetch', detail);
-            } else if (outcome.kind === 'joined') {
-                log(`worktree-create: fetch of ${baseRef} for ${request.repoPath} joined the ${outcome.origin} already running (${seconds(Date.now() - startedAt)} waited)`);
-                steps?.done('fetch', `${baseRef} (${outcome.origin === 'prefetch' ? 'prefetch' : 'shared fetch'}, ${seconds(Date.now() - startedAt)})`);
-            } else {
-                log(`worktree-create: fetched ${baseRef} for ${request.repoPath} in ${seconds(Date.now() - startedAt)}`);
-                steps?.done('fetch', `${baseRef} (${seconds(Date.now() - startedAt)})`);
+                return;
             }
-        } else {
-            await fetchDefaultBranch(ops, request.repoPath, remote, base, {
+            await fetchDefaultBranch(ops, request.repoPath, remote, branch, {
                 ...(signal !== undefined ? { signal } : {}),
                 onProgress: onProgress('fetch')
             });
             bail();
-            steps?.done('fetch', `${baseRef} (${seconds(Date.now() - startedAt)})`);
-        }
+            steps?.done('fetch', `${ref} (${seconds(Date.now() - startedAt)})`);
+        };
+        const fetched = await fetchWithRenameFallback(ops, request.repoPath, remote, resolved, fetchOne, {
+            signal,
+            log,
+            onRenamed: (from, to) => {
+                steps?.done('resolve-default-branch', `${to.branch} (asked ${remote}; ${remote}/HEAD said ${from})`);
+                steps?.running('fetch', `${remote}/${to.branch}`);
+            }
+        });
+        const base = fetched.branch;
+        const baseRef = `${remote}/${base}`;
 
         current = 'worktree-add';
         steps?.running('worktree-add', `${request.branchName} off ${baseRef}`);
-        before = signal !== undefined ? await snapshotBeforeAdd(ops, request, remote, [`refs/remotes/${remote}/${base}`]) : null;
+        before = signal !== undefined ? await snapshotBeforeAdd(ops, request, [`refs/remotes/${remote}/${base}`]) : null;
         bail();
         await withProgress(
             (extra) =>

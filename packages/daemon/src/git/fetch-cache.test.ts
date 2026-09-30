@@ -75,7 +75,8 @@ describe('prefetch', () => {
         expect(h.fetches).toHaveLength(1);
         expect(h.fetches[0]?.args).toEqual(['fetch', '--no-tags', '--progress', 'origin', '+refs/heads/main:refs/remotes/origin/main']);
         expect(h.fetches[0]?.cwd).toBe('/code/app');
-        expect(h.fetches[0]?.options?.env).toEqual({ GIT_TERMINAL_PROMPT: '0' });
+        // #294 review: no terminal prompt, no credential-manager dialog, no ssh askpass.
+        expect(h.fetches[0]?.options?.env).toEqual({ GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never', SSH_ASKPASS_REQUIRE: 'never' });
         expect(h.logs.some((line) => line.includes('fetching origin/main for /code/app') && line.includes('from origin/HEAD'))).toBe(true);
     });
 
@@ -111,6 +112,31 @@ describe('prefetch', () => {
         expect(h.cache.prefetch('/code/other')).toBe('started');
         await flush();
         expect(h.fetches.map((fetch) => fetch.cwd)).toEqual(['/code/app', '/code/other']);
+    });
+});
+
+describe('prefetch prompts', () => {
+    it("keeps prompts off for the prefetch's ls-remote too, and never touches the ssh command", async () => {
+        const seen: { args: readonly string[]; env: unknown }[] = [];
+        const ops: WorktreeGitOps = {
+            read: async (args, _cwd, options) => {
+                seen.push({ args, env: options?.env });
+                if (args[0] === 'symbolic-ref') throw new Error('exit 1');
+                if (args[0] === 'ls-remote') return 'ref: refs/heads/main\tHEAD\n';
+                throw new Error(`unexpected read ${args.join(' ')}`);
+            },
+            long: async (args, _cwd, options) => {
+                seen.push({ args, env: options?.env });
+                return '';
+            }
+        };
+        const cache = createDefaultBranchFetchCache({ ops });
+        cache.prefetch('/code/app');
+        await flush();
+        const env = { GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never', SSH_ASKPASS_REQUIRE: 'never' };
+        expect(seen.find((call) => call.args[0] === 'ls-remote')?.env).toEqual(env);
+        expect(seen.find((call) => call.args[0] === 'fetch')?.env).toEqual(env);
+        expect(JSON.stringify(seen)).not.toContain('GIT_SSH_COMMAND');
     });
 });
 
@@ -210,6 +236,21 @@ describe('fetchForCreate', () => {
         expect(await second).toEqual({ kind: 'fetched' });
         // A prefetch now is rate-limited by the create's fetch as well: one fetch per repo.
         expect(h.cache.prefetch('/code/app')).toBe('rate-limited');
+    });
+
+    it("stops waiting on a hung fetch it joined after the join timeout, and fetches for itself", async () => {
+        const git = fakeGit();
+        const cache = createDefaultBranchFetchCache({ ops: git.ops, joinTimeoutMs: 50 });
+        // A CLI create's own fetch: no signal, and it never finishes.
+        void cache.fetchForCreate(create()).catch(() => {});
+        await flush();
+        const joiner = cache.fetchForCreate(create());
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        expect(git.fetches).toHaveLength(2);
+        git.fetches[1]?.resolve();
+        expect(await joiner).toEqual({ kind: 'fetched' });
+        // The hung fetch still owns the repo's record.
+        expect(cache.peek('/code/app')).toMatchObject({ origin: 'create', finishedAt: null });
     });
 
     it('a cancelled joiner stops waiting but never kills the shared prefetch', async () => {

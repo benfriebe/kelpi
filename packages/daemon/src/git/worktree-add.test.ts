@@ -20,10 +20,12 @@ import { createDefaultBranchFetchCache } from './fetch-cache.js';
 import type { GitProgress } from './progress.js';
 import {
     cleanupCancelledWorktreeAdd,
+    createWorktreeAddGuard,
     defaultBranchFetchArgs,
     performWorktreeAdd,
     resolveDefaultBranch,
     WorktreeBranchExistsError,
+    WorktreeBusyError,
     WorktreeCreateCancelledError,
     worktreeGitOps,
     type DefaultBranchFetches,
@@ -121,6 +123,20 @@ describe('resolveDefaultBranch (#294 order)', () => {
             throw new Error('killed');
         });
         await expect(resolveDefaultBranch(ops, '/repo', 'origin', controller.signal)).rejects.toThrow('killed');
+    });
+});
+
+describe('createWorktreeAddGuard', () => {
+    it('refuses a second create for the same (repo, path) or (repo, branch) until the first releases', () => {
+        const guard = createWorktreeAddGuard();
+        const release = guard.acquire({ repoPath: '/repo', worktreePath: '/wt/x', branchName: 'x', updateMain: true });
+        expect(() => guard.acquire({ repoPath: '/repo/', worktreePath: '/wt/x/', branchName: 'y', updateMain: true })).toThrow(WorktreeBusyError);
+        expect(() => guard.acquire({ repoPath: '/repo', worktreePath: '/wt/y', branchName: 'x', updateMain: false })).toThrow(/branch 'x'/);
+        // Another repo, or another path and branch, is independent.
+        guard.acquire({ repoPath: '/other', worktreePath: '/wt/x', branchName: 'x', updateMain: true })();
+        guard.acquire({ repoPath: '/repo', worktreePath: '/wt/z', branchName: 'z', updateMain: true })();
+        release();
+        guard.acquire({ repoPath: '/repo', worktreePath: '/wt/x', branchName: 'x', updateMain: true })();
     });
 });
 
@@ -261,6 +277,96 @@ describe('performWorktreeAdd, scripted', () => {
         expect(steps.snapshot().steps[0]).toEqual({ id: 'resolve-default-branch', status: 'failed', error: 'cancelled' });
     });
 
+    it('retries once with what the remote says when a local origin/HEAD names a branch the remote dropped', async () => {
+        const base = repoScript({ head: 'main', remoteBranches: ['main', 'trunk'], lsRemote: 'trunk' });
+        const { ops, calls } = scripted((args, options) => {
+            if (args[0] === 'fetch' && args.at(-1) === '+refs/heads/main:refs/remotes/origin/main') {
+                throw new GitCommandError({ command: 'git fetch', exitCode: 128, stderr: "fatal: couldn't find remote ref refs/heads/main", cwd: '/repo' });
+            }
+            return base(args, options);
+        });
+        const { steps } = recordingTracker();
+        const logs: string[] = [];
+        await performWorktreeAdd(ops, REQUEST, { steps, log: (line) => logs.push(line) });
+        expect(calls.map((call) => call.args.join(' ')).filter((line) => /^(fetch|ls-remote|remote|worktree)/.test(line))).toEqual([
+            'fetch --no-tags --progress origin +refs/heads/main:refs/remotes/origin/main',
+            'ls-remote --symref origin HEAD',
+            'fetch --no-tags --progress origin +refs/heads/trunk:refs/remotes/origin/trunk',
+            'remote set-head origin trunk',
+            'worktree add -b x /wt/x origin/trunk'
+        ]);
+        expect(steps.snapshot().steps[0]).toEqual({ id: 'resolve-default-branch', status: 'done', detail: 'trunk (asked origin; origin/HEAD said main)' });
+        expect(logs.some((line) => line.includes('named main, which origin no longer has; origin says trunk'))).toBe(true);
+    });
+
+    it('does not second-guess a name the remote itself gave, or any other fetch failure', async () => {
+        const missing = new GitCommandError({ command: 'git fetch', exitCode: 128, stderr: "fatal: couldn't find remote ref refs/heads/main", cwd: '/repo' });
+        // Asked the remote already (no local origin/HEAD): the failure stands.
+        const asked = scripted((args, options) => (args[0] === 'fetch' ? Promise.reject(missing) : repoScript({ head: null, lsRemote: 'main' })(args, options)));
+        await expect(performWorktreeAdd(asked.ops, REQUEST)).rejects.toBe(missing);
+        expect(asked.calls.filter((call) => call.args[0] === 'ls-remote')).toHaveLength(1);
+        // A local name, but a different failure (no network): no retry either.
+        const offline = new GitCommandError({ command: 'git fetch', exitCode: 128, stderr: 'fatal: unable to access', cwd: '/repo' });
+        const local = scripted((args, options) => (args[0] === 'fetch' ? Promise.reject(offline) : repoScript()(args, options)));
+        await expect(performWorktreeAdd(local.ops, REQUEST)).rejects.toBe(offline);
+        expect(local.calls.some((call) => call.args[0] === 'ls-remote')).toBe(false);
+    });
+
+    it('fails closed: a snapshot read that errors (not "no such ref") keeps the cleanup off that branch', async () => {
+        const controller = new AbortController();
+        let snapshotRead = true;
+        const cleanup: string[][] = [];
+        const { ops } = scripted((args) => {
+            if (args[0] === 'rev-parse' && args[3] === 'refs/heads/x') {
+                if (snapshotRead) {
+                    snapshotRead = false;
+                    // A transient spawn failure, not rev-parse's exit 1.
+                    throw Object.assign(new Error('spawn EAGAIN'), { code: 'EAGAIN' });
+                }
+                return `${SHA}\n`; // after the cancel it exists, at a tip this add could have made
+            }
+            if (args[0] === 'rev-parse') return `${SHA}\n`;
+            if (args[0] === 'worktree' && args[1] === 'add') {
+                controller.abort();
+                return '';
+            }
+            if (args[0] === 'branch' || (args[0] === 'worktree' && args[1] === 'remove')) cleanup.push([...args]);
+            return '';
+        });
+        const logs: string[] = [];
+        await expect(
+            performWorktreeAdd(ops, { ...REQUEST, updateMain: false }, { signal: controller.signal, log: (line) => logs.push(line) })
+        ).rejects.toBeInstanceOf(WorktreeCreateCancelledError);
+        expect(cleanup.some((call) => call[0] === 'branch')).toBe(false);
+    });
+
+    it("with update main, a same-named origin branch's commit is not a tip this add could have made", async () => {
+        const controller = new AbortController();
+        const REMOTE_X = 'c'.repeat(40);
+        let branchCreatedBySomeoneElse = false;
+        const cleanup: string[][] = [];
+        const { ops } = scripted((args) => {
+            if (args[0] === 'symbolic-ref') return 'origin/main\n';
+            if (args[0] === 'rev-parse') {
+                const ref = args[3] ?? '';
+                if (ref === 'refs/remotes/origin/main') return `${SHA}\n`;
+                if (ref === 'refs/remotes/origin/x') return `${REMOTE_X}\n`;
+                if (ref === 'refs/heads/x') return branchCreatedBySomeoneElse ? `${REMOTE_X}\n` : notFound();
+                return notFound();
+            }
+            if (args[0] === 'worktree' && args[1] === 'add') {
+                // Someone else makes `x` at origin/x while this add runs, then the cancel lands.
+                branchCreatedBySomeoneElse = true;
+                controller.abort();
+                return '';
+            }
+            if (args[0] === 'branch') cleanup.push([...args]);
+            return '';
+        });
+        await expect(performWorktreeAdd(ops, REQUEST, { signal: controller.signal })).rejects.toBeInstanceOf(WorktreeCreateCancelledError);
+        expect(cleanup).toEqual([]);
+    });
+
     it('an abort that lands as git exits still rolls the add back', async () => {
         const controller = new AbortController();
         const base = repoScript();
@@ -276,7 +382,7 @@ describe('performWorktreeAdd, scripted', () => {
         await expect(performWorktreeAdd(ops, REQUEST, { signal: controller.signal })).rejects.toBeInstanceOf(WorktreeCreateCancelledError);
         // No real directory or branch appeared in this scripted repo, so the cleanup had nothing
         // it could prove was this request's except the (never-existing) path's registration.
-        expect(cleanup).toEqual([['worktree', 'remove', '--force', '/wt/x']]);
+        expect(cleanup).toEqual([['worktree', 'remove', '-f', '-f', '/wt/x']]);
     });
 });
 
@@ -543,6 +649,126 @@ describe.skipIf(!HAS_GIT)('performWorktreeAdd against real git', { timeout: 30_0
         await expect(pending).rejects.toBeInstanceOf(WorktreeCreateCancelledError);
         expect(tryGit(fx.work, 'rev-parse', '--verify', '--quiet', 'refs/heads/fresh')).toBeNull();
         expect(fs.existsSync(worktreePath)).toBe(false);
+    });
+
+    it('recovers when the remote renamed its default branch after the clone (stale origin/HEAD)', async () => {
+        const fx = fixture();
+        // Upstream renames main to trunk and moves it on; the clone still says origin/HEAD -> main.
+        git(fx.origin, 'branch', '-m', 'main', 'trunk');
+        git(fx.origin, 'symbolic-ref', 'HEAD', 'refs/heads/trunk');
+        git(fx.seed, 'fetch', '-q', 'origin');
+        git(fx.seed, 'checkout', '-q', '-B', 'trunk', 'origin/trunk');
+        const latest = commit(fx.seed, 'after-rename.txt', 'x\n', 'after the rename');
+        git(fx.seed, 'push', '-q', 'origin', 'trunk');
+        expect(git(fx.work, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD')).toBe('origin/main');
+        expect(tryGit(fx.work, 'rev-parse', '--verify', '--quiet', 'refs/remotes/origin/main')).not.toBeNull();
+
+        const logs: string[] = [];
+        const worktreePath = path.join(fx.root, 'wt', 'renamed');
+        const { steps } = recordingTracker();
+        await performWorktreeAdd(realOps(), { repoPath: fx.work, worktreePath, branchName: 'renamed', updateMain: true }, { steps, log: (line) => logs.push(line) });
+        expect(git(worktreePath, 'rev-parse', 'HEAD')).toBe(latest);
+        // The local symref was refreshed, so the next create resolves without asking.
+        expect(git(fx.work, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD')).toBe('origin/trunk');
+        expect(await resolveDefaultBranch(realOps(), fx.work)).toEqual({ branch: 'trunk', source: 'origin-head' });
+        expect(steps.snapshot().steps[0]?.detail).toBe('trunk (asked origin; origin/HEAD said main)');
+        expect(logs.some((line) => line.includes('pointed origin/HEAD'))).toBe(true);
+    });
+
+    it('the prefetch recovers from a stale origin/HEAD the same way, and a create then reuses it', async () => {
+        const fx = fixture();
+        git(fx.origin, 'branch', '-m', 'main', 'trunk');
+        git(fx.origin, 'symbolic-ref', 'HEAD', 'refs/heads/trunk');
+        const ops = realOps();
+        const cache = createDefaultBranchFetchCache({ ops });
+        expect(cache.prefetch(fx.work)).toBe('started');
+        await waitFor(() => cache.peek(fx.work)?.finishedAt !== null);
+        expect(cache.peek(fx.work)).toMatchObject({ ok: true, branch: 'trunk' });
+        const { steps } = recordingTracker();
+        const worktreePath = path.join(fx.root, 'wt', 'after-prefetch');
+        await performWorktreeAdd(ops, { repoPath: fx.work, worktreePath, branchName: 'after-prefetch', updateMain: true }, { steps, fetches: cache });
+        expect(git(worktreePath, 'rev-parse', 'HEAD')).toBe(git(fx.origin, 'rev-parse', 'trunk'));
+        expect(steps.snapshot().steps[1]?.status).toBe('skipped');
+    });
+
+    it('the cleanup removes a LOCKED half-made worktree (checkout in progress) and then its branch', async () => {
+        const fx = fixture();
+        const ops = realOps();
+        for (const gone of [false, true]) {
+            const name = gone ? 'locked-gone' : 'locked-here';
+            const worktreePath = path.join(fx.root, 'wt', name);
+            const tip = git(fx.work, 'rev-parse', 'origin/main');
+            git(fx.work, 'worktree', 'add', '-q', '-b', name, worktreePath, 'origin/main');
+            git(fx.work, 'worktree', 'lock', '--reason', 'initializing', worktreePath);
+            // `gone`: git was SIGKILLed after we removed nothing, and the directory went anyway.
+            if (gone) fs.rmSync(worktreePath, { recursive: true, force: true });
+            const removed = await cleanupCancelledWorktreeAdd(
+                ops,
+                { repoPath: fx.work, worktreePath, branchName: name, updateMain: true },
+                { pathExisted: false, branchExisted: false, possibleTips: new Set([tip]) }
+            );
+            expect(removed).toContain(`branch ${name}`);
+            expect(fs.existsSync(worktreePath)).toBe(false);
+            expect(git(fx.work, 'worktree', 'list', '--porcelain')).not.toContain(name);
+            expect(tryGit(fx.work, 'rev-parse', '--verify', '--quiet', `refs/heads/${name}`)).toBeNull();
+        }
+        // …and the next create with that name works.
+        await performWorktreeAdd(ops, { repoPath: fx.work, worktreePath: path.join(fx.root, 'wt', 'locked-here'), branchName: 'locked-here', updateMain: true });
+    });
+
+    it("removes only its OWN leftover registration when git will not, never another's", async () => {
+        const fx = fixture();
+        const admin = path.join(fx.work, '.git', 'worktrees');
+        fs.mkdirSync(path.join(admin, 'half'), { recursive: true });
+        fs.mkdirSync(path.join(admin, 'someone-else'), { recursive: true });
+        const ours = path.join(fx.root, 'wt', 'half');
+        // What a git killed mid-registration leaves: a gitdir file and nothing else.
+        fs.writeFileSync(path.join(admin, 'half', 'gitdir'), `${ours}/.git\n`);
+        fs.writeFileSync(path.join(admin, 'someone-else', 'gitdir'), `${path.join(fx.root, 'elsewhere')}/.git\n`);
+        // A git that refuses to remove it (whatever the reason): the cleanup's own step runs.
+        const real = realOps();
+        const refusing: WorktreeGitOps = {
+            read: real.read,
+            long: (args, cwd, options) =>
+                args[0] === 'worktree' && args[1] === 'remove'
+                    ? Promise.reject(new GitCommandError({ command: 'git worktree remove', exitCode: 128, stderr: "fatal: 'half' is not a working tree", cwd }))
+                    : real.long(args, cwd, options)
+        };
+        const removed = await cleanupCancelledWorktreeAdd(
+            refusing,
+            { repoPath: fx.work, worktreePath: ours, branchName: 'half', updateMain: true },
+            { pathExisted: false, branchExisted: false, possibleTips: new Set() }
+        );
+        expect(removed).toContain('worktree registration');
+        expect(fs.existsSync(path.join(admin, 'half'))).toBe(false);
+        expect(fs.existsSync(path.join(admin, 'someone-else'))).toBe(true);
+    });
+
+    it('a cancel MID-CHECKOUT waits for every process of git to be gone (SIGKILL for one ignoring SIGTERM) before cleaning up', async () => {
+        const fx = fixture();
+        // A smudge filter that ignores SIGTERM runs inside the checkout, with the worktree locked.
+        fs.writeFileSync(path.join(fx.seed, '.gitattributes'), '*.slow filter=slow\n');
+        fs.writeFileSync(path.join(fx.seed, 'big.slow'), 'slow\n');
+        git(fx.seed, 'add', '.');
+        git(fx.seed, 'commit', '-q', '-m', 'a slow file');
+        git(fx.seed, 'push', '-q', 'origin', 'main');
+        const marker = path.join(fx.root, 'smudge-started');
+        const filter = path.join(fx.root, 'slow-smudge.sh');
+        fs.writeFileSync(filter, `#!/bin/sh\ntrap '' TERM\necho $$ > '${marker}'\nsleep 30\ncat\n`, { mode: 0o755 });
+        git(fx.work, 'config', 'filter.slow.smudge', filter);
+        const ops = worktreeGitOps(createGitRunner({ abortGraceMs: 500 }));
+        const controller = new AbortController();
+        const worktreePath = path.join(fx.root, 'wt', 'mid');
+        const pending = performWorktreeAdd(ops, { repoPath: fx.work, worktreePath, branchName: 'mid', updateMain: true }, { signal: controller.signal });
+        await waitFor(() => fs.existsSync(marker) && fs.readFileSync(marker, 'utf8').trim() !== '');
+        const filterPid = Number(fs.readFileSync(marker, 'utf8').trim());
+        controller.abort();
+        await expect(pending).rejects.toBeInstanceOf(WorktreeCreateCancelledError);
+        // Settled only once the SIGTERM-proof filter was gone (SIGKILLed after the grace).
+        expect(alive(filterPid)).toBe(false);
+        expect(fs.existsSync(worktreePath)).toBe(false);
+        expect(git(fx.work, 'worktree', 'list', '--porcelain')).not.toContain('/mid');
+        expect(tryGit(fx.work, 'rev-parse', '--verify', '--quiet', 'refs/heads/mid')).toBeNull();
     });
 
     it('the cleanup leaves a new branch whose tip it cannot account for', async () => {

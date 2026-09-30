@@ -333,17 +333,25 @@ function handleWorktreeCreate(
      * so the step list a client ends on always agrees with the reply that follows it.
      */
     const progress = reply?.progress?.bind(reply);
+    const creation = deps.worktrees.begin();
     const steps =
-        progress === undefined
+        progress === undefined || !creation.detailed
             ? null
             : createStepTracker({
                   steps: worktreeStepsFor(updateMain),
                   emit: (snapshot) => progress(serializeWorktreeProgress(snapshot))
               });
-    const signal = reply?.signal;
+    if (progress !== undefined && !creation.detailed) {
+        // No steps and no cancel on this path (a plugin provider owns `kelpi.git`, graft-git.md
+        // §8.3): one frame says so, so the sheet shows a plain "Creating…" instead of a
+        // checklist that never moves, and a cancel of this request answers `cancelled: false`.
+        reply?.uncancellable?.();
+        progress(serializeWorktreeProgress({ steps: [], detailed: false }));
+    }
+    const signal = creation.detailed ? reply?.signal : undefined;
 
-    void deps.worktrees
-        .add(
+    void creation
+        .run(
             {
                 repoPath,
                 worktreePath: seed.path,
@@ -431,9 +439,13 @@ function handleWorktreeCreate(
             });
         })
         .catch((error: unknown) => {
-            // The flow has already marked the failed (or cancelled) step; send that state first.
+            // The flow has already marked a failed (or cancelled) git step. Anything else is pinned
+            // on the running step (`create-workspace` when the store work threw) or, when none ran
+            // (the busy guard), the first one, so the final frame always names the step.
+            const message = worktreeErrorMessage(error);
+            steps?.failUnfinished(message);
             steps?.flush();
-            fail(reply, worktreeErrorMessage(error));
+            fail(reply, message);
         });
 }
 

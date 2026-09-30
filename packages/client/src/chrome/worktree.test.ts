@@ -129,6 +129,7 @@ describe('worktree create progress (#294)', () => {
             })
         ).toEqual({
             cancelled: true,
+            detailed: true,
             steps: [
                 { id: 'fetch', status: 'running', detail: 'origin/main', phase: 'Receiving objects', percent: 45 },
                 { id: 'create-workspace', status: 'pending', percent: 100 }
@@ -137,7 +138,8 @@ describe('worktree create progress (#294)', () => {
         expect(parseWorktreeProgress({ kind: 'something-else', steps: [] })).toBeNull();
         expect(parseWorktreeProgress({ kind: 'worktree-create' })).toBeNull();
         expect(parseWorktreeProgress(null)).toBeNull();
-        expect(parseWorktreeProgress({ kind: 'worktree-create', steps: [] })).toEqual({ steps: [], cancelled: false });
+        expect(parseWorktreeProgress({ kind: 'worktree-create', steps: [] })).toEqual({ steps: [], cancelled: false, detailed: true });
+        expect(parseWorktreeProgress({ kind: 'worktree-create', steps: [], detailed: false })).toEqual({ steps: [], cancelled: false, detailed: false });
     });
 
     it('formats the elapsed clock', () => {

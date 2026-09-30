@@ -38,6 +38,11 @@ export interface WorktreeProgressSnapshot {
     readonly steps: readonly WorktreeStepState[];
     /** Set once the create was cancelled; the step that was running is `failed`. */
     readonly cancelled?: true | undefined;
+    /**
+     * `false` when this create cannot report steps at all (a plugin provider owns `kelpi.git`):
+     * the one frame such a create sends, with no steps. Absent means detailed.
+     */
+    readonly detailed?: false | undefined;
 }
 
 /** What the create flow reports into. Every method is safe to call in any order. */
@@ -55,6 +60,11 @@ export interface WorktreeStepTracker extends WorktreeStepSink {
     snapshot(): WorktreeProgressSnapshot;
     /** Send any pending state now and stop the trailing timer. */
     flush(): void;
+    /**
+     * Mark the running step failed, or the first pending one when none runs, unless a step has
+     * already failed: a create that failed outside the flow still names a step.
+     */
+    failUnfinished(error: string): void;
 }
 
 /** The steps a create runs: without update main there is nothing to resolve or fetch. */
@@ -155,6 +165,13 @@ export function createStepTracker(options: CreateStepTrackerOptions): WorktreeSt
             set(step, { id: step, status: 'failed', error: 'cancelled', ...(current?.detail !== undefined ? { detail: current.detail } : {}) });
         },
         snapshot,
+        failUnfinished(error) {
+            const all = options.steps.map((id) => states.get(id)).filter((state): state is WorktreeStepState => state !== undefined);
+            if (all.some((state) => state.status === 'failed')) return;
+            const target = all.find((state) => state.status === 'running') ?? all.find((state) => state.status === 'pending');
+            if (target === undefined) return;
+            set(target.id, { id: target.id, status: 'failed', error, ...(target.detail !== undefined ? { detail: target.detail } : {}) });
+        },
         flush() {
             if (dirty) send();
             else if (timer !== null) {
@@ -177,6 +194,7 @@ export function serializeWorktreeProgress(snapshot: WorktreeProgressSnapshot): R
             ...(step.percent !== undefined ? { percent: step.percent } : {}),
             ...(step.error !== undefined ? { error: step.error } : {})
         })),
-        ...(snapshot.cancelled === true ? { cancelled: true } : {})
+        ...(snapshot.cancelled === true ? { cancelled: true } : {}),
+        ...(snapshot.detailed === false ? { detailed: false } : {})
     };
 }

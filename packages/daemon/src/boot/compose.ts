@@ -665,10 +665,10 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         ...(options.now !== undefined ? { now: options.now } : {})
     });
     const worktrees: WorktreeCreator = {
-        add: (request, hooks) =>
+        begin: () =>
             pluginGit.providerSelected()
-                ? git.worktreeAdd(request)
-                : performWorktreeAdd(worktreeGit, request, { ...hooks, fetches: worktreeFetches, log })
+                ? { detailed: false, run: (request) => git.worktreeAdd(request) }
+                : { detailed: true, run: (request, hooks) => performWorktreeAdd(worktreeGit, request, { ...hooks, fetches: worktreeFetches, log }) }
     };
     const content = createContentService({
         store,

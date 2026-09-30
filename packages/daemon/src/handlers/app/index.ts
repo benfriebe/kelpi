@@ -54,6 +54,7 @@ export type {
     AppHandlerOptions,
     AppHandlerTable,
     SpawnPaneRequest,
+    WorktreeCreateRun,
     WorktreeCreator
 } from './context.js';
 export { forCommand, listedGroupIDs, listedWorkspaceIDs, uuidOut, wireTimestamp } from './common.js';

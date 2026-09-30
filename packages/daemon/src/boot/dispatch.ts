@@ -117,7 +117,8 @@ export function createDispatcher<Ctx>(options: DispatcherOptions<Ctx>): ControlD
                 onDisconnect(callback) { reply.onDisconnect(callback); },
                 // #294: progress and cancellation belong to the request, hooks or not.
                 ...(reply.progress === undefined ? {} : { progress: (value: Record<string, unknown>) => reply.progress?.(value) }),
-                ...(reply.signal === undefined ? {} : { signal: reply.signal })
+                ...(reply.signal === undefined ? {} : { signal: reply.signal }),
+                ...(reply.uncancellable === undefined ? {} : { uncancellable: () => reply.uncancellable?.() })
             };
             run(tracked);
         })).then(result => {

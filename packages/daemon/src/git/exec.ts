@@ -16,6 +16,7 @@
  */
 
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
+import { StringDecoder } from 'node:string_decoder';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -114,6 +115,8 @@ export function resolveGitExecutable(
 
 export interface CreateGitRunnerOptions {
     readonly executable?: string | undefined;
+    /** SIGTERM → SIGKILL grace for an aborted run's process group (tests shorten it). */
+    readonly abortGraceMs?: number | undefined;
     readonly env?: Readonly<Record<string, string | undefined>> | undefined;
 }
 
@@ -142,21 +145,47 @@ function killRunTree(child: ChildProcess, signal: NodeJS.Signals = 'SIGTERM'): v
     child.kill(signal);
 }
 
-/** How long an aborted run gets to exit on SIGTERM before its group is SIGKILLed. */
-const ABORT_KILL_GRACE_MS = 5_000;
+/** How long an aborted run's group gets to exit on SIGTERM before it is SIGKILLed. */
+export const ABORT_KILL_GRACE_MS = 5_000;
+
+/** How often an aborted run checks whether its process group is gone yet. */
+const GROUP_POLL_MS = 25;
+
+/** True while any process of the group led by `pid` is alive (the leader may already be reaped). */
+function groupAlive(pid: number): boolean {
+    try {
+        process.kill(-pid, 0);
+        return true;
+    } catch (error) {
+        // EPERM means it exists but is not ours to signal; only ESRCH means gone.
+        return (error as NodeJS.ErrnoException).code === 'EPERM';
+    }
+}
+
+/** The error `execFile` rejects with on overflow, so both runner paths fail the same way. */
+function maxBufferError(stream: 'stdout' | 'stderr'): Error {
+    return Object.assign(new RangeError(`${stream} maxBuffer length exceeded`), { code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' });
+}
 
 /**
  * The cancellable run: `spawn` rather than `execFile`, because `execFile` does not pass
  * `detached` through, and a group of its own is what lets an abort reach git's children.
- * Otherwise the same contract: stdout on exit 0, a `GitCommandError` with trimmed stderr on a
- * non-zero exit, the raw error when git cannot be started, and an `AbortError` once aborted
- * (settled when git EXITS, so the caller's cleanup never races git's own).
+ *
+ * Kept to `execFile`'s contract for the callers that were already passing a signal (the diff
+ * pane's `getDiff`, §CONT-107): stdout on exit 0; a `GitCommandError` with trimmed stderr on a
+ * non-zero exit AND on a timeout (what `execFile` produced for a killed child); the raw Node
+ * error when git cannot be started; `ERR_CHILD_PROCESS_STDIO_MAXBUFFER` when either stream
+ * passes `maxBuffer` BYTES. What differs, deliberately: stdin is `/dev/null` (nothing in the
+ * cancellable family reads it), and an abort rejects with an `AbortError` only once the whole
+ * process GROUP is gone (SIGTERM, then SIGKILL after `ABORT_KILL_GRACE_MS`), so a caller's
+ * cleanup never runs while a child of git (a checkout's filter, a hook) is still writing.
  */
 function runCancellable(
     executable: string,
     args: readonly string[],
     runOptions: RunGitOptions & { readonly signal: AbortSignal },
-    command: string
+    command: string,
+    graceMs: number
 ): Promise<string> {
     return new Promise<string>((resolve, reject) => {
         const { signal } = runOptions;
@@ -168,67 +197,106 @@ function runCancellable(
             cwd: runOptions.cwd,
             env: { ...process.env, ...(runOptions.env ?? {}) },
             detached: true,
-            // Nothing the cancellable family runs reads stdin.
             stdio: ['ignore', 'pipe', 'pipe']
         });
         const maxBuffer = runOptions.maxBuffer ?? DEFAULT_MAX_BUFFER;
-        let stdout = '';
-        let stderr = '';
+        const stdout: Buffer[] = [];
+        const stderr: Buffer[] = [];
+        let stdoutBytes = 0;
+        let stderrBytes = 0;
+        const stderrText = new StringDecoder('utf8');
         let settled = false;
         let failure: Error | null = null;
+        let timedOut = false;
         let timer: ReturnType<typeof setTimeout> | null = null;
-        let escalate: ReturnType<typeof setTimeout> | null = null;
+        let abortedAt: number | null = null;
+        let killedHard = false;
         const finish = (settle: () => void): void => {
             if (settled) return;
             settled = true;
             signal.removeEventListener('abort', onAbort);
             if (timer !== null) clearTimeout(timer);
-            if (escalate !== null) clearTimeout(escalate);
             settle();
         };
+        /*
+         * After an abort the run settles when the GROUP is gone, not when the leader exits: git's
+         * `worktree add` can die on SIGTERM while a child that ignores it (a smudge filter, a hook)
+         * keeps writing into the directory the caller is about to delete. The SIGKILL escalation
+         * therefore stays armed past the leader's exit, and `kill(-pid)` on a group that is already
+         * gone only gets ESRCH.
+         */
+        const settleWhenGroupGone = (): void => {
+            const pid = child.pid;
+            if (pid === undefined || !groupAlive(pid)) {
+                finish(() => reject(gitAbortError(command)));
+                return;
+            }
+            if (!killedHard && abortedAt !== null && Date.now() - abortedAt >= graceMs) {
+                killedHard = true;
+                killRunTree(child, 'SIGKILL');
+            }
+            // Give up waiting a second after SIGKILL: a process that survives it is not ours.
+            if (killedHard && abortedAt !== null && Date.now() - abortedAt >= graceMs + 1_000) {
+                finish(() => reject(gitAbortError(command)));
+                return;
+            }
+            setTimeout(settleWhenGroupGone, GROUP_POLL_MS);
+        };
         const onAbort = (): void => {
+            abortedAt = Date.now();
             killRunTree(child);
-            escalate = setTimeout(() => killRunTree(child, 'SIGKILL'), ABORT_KILL_GRACE_MS);
+            const escalate = setTimeout(() => {
+                if (settled || killedHard) return;
+                killedHard = true;
+                killRunTree(child, 'SIGKILL');
+            }, graceMs);
             escalate.unref?.();
+            // The leader may already have exited (its pipes held open by a child): settle from here.
+            if (child.exitCode !== null || child.signalCode !== null) settleWhenGroupGone();
         };
         signal.addEventListener('abort', onAbort, { once: true });
         if (runOptions.timeoutMs !== undefined && runOptions.timeoutMs > 0) {
             timer = setTimeout(() => {
-                failure = new Error(`${command} timed out after ${String(runOptions.timeoutMs)} ms`);
+                timedOut = true;
                 killRunTree(child);
             }, runOptions.timeoutMs);
             timer.unref?.();
         }
-        const overflow = (): void => {
-            failure = new Error(`${command} produced more than ${String(maxBuffer)} bytes of output`);
-            killRunTree(child);
-        };
-        child.stdout?.setEncoding('utf8');
-        child.stderr?.setEncoding('utf8');
-        child.stdout?.on('data', (chunk: string) => {
-            stdout += chunk;
-            if (stdout.length > maxBuffer) overflow();
+        child.stdout?.on('data', (chunk: Buffer) => {
+            stdoutBytes += chunk.length;
+            if (stdoutBytes > maxBuffer) {
+                failure ??= maxBufferError('stdout');
+                killRunTree(child);
+                return;
+            }
+            stdout.push(chunk);
         });
-        child.stderr?.on('data', (chunk: string) => {
-            stderr += chunk;
-            if (stderr.length > maxBuffer) overflow();
-            runOptions.onStderr?.(chunk);
+        child.stderr?.on('data', (chunk: Buffer) => {
+            stderrBytes += chunk.length;
+            if (stderrBytes > maxBuffer) {
+                failure ??= maxBufferError('stderr');
+                killRunTree(child);
+                return;
+            }
+            stderr.push(chunk);
+            // A decoder, so a multi-byte character split across chunks reaches the tap whole.
+            const text = stderrText.write(chunk);
+            if (text !== '') runOptions.onStderr?.(text);
         });
         child.on('error', (error) => {
             // ENOENT / EACCES: git itself is missing, not a failed git command.
             finish(() => reject(error));
         });
-        // An aborted run settles on EXIT: a grandchild that escaped the group must not be able
-        // to hold the pipes, and with them the cancel, open.
         child.on('exit', () => {
-            if (signal.aborted) finish(() => reject(gitAbortError(command)));
+            if (signal.aborted) settleWhenGroupGone();
         });
         child.on('close', (code) => {
+            if (signal.aborted) return; // settled by `settleWhenGroupGone`
             finish(() => {
-                if (signal.aborted) reject(gitAbortError(command));
-                else if (failure !== null) reject(failure);
-                else if (code === 0) resolve(stdout);
-                else reject(new GitCommandError({ command, exitCode: code ?? 1, stderr: stderr.trim(), cwd: runOptions.cwd }));
+                const stderrString = Buffer.concat(stderr).toString('utf8').trim();
+                if (failure !== null) reject(failure);
+                else if (code === 0 && !timedOut) resolve(Buffer.concat(stdout).toString('utf8'));
+                else reject(new GitCommandError({ command, exitCode: code ?? 1, stderr: stderrString, cwd: runOptions.cwd }));
             });
         });
     });
@@ -239,7 +307,9 @@ export function createGitRunner(options: CreateGitRunnerOptions = {}): GitRunner
     return (args, runOptions) => {
         const command = `git ${args.join(' ')}`;
         const signal = runOptions.signal;
-        if (signal !== undefined) return runCancellable(executable, args, { ...runOptions, signal }, command);
+        if (signal !== undefined) {
+            return runCancellable(executable, args, { ...runOptions, signal }, command, options.abortGraceMs ?? ABORT_KILL_GRACE_MS);
+        }
         return new Promise<string>((resolve, reject) => {
             const child = execFile(
                 executable,

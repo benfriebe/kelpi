@@ -114,6 +114,11 @@ const steps = (): Record<string, string | null> =>
 
 const fieldsDisabled = (): boolean => (screen.getByTestId('new-workspace-fields') as HTMLFieldSetElement).disabled;
 
+/** The daemon's first frame: what a create that reports steps sends at once. */
+function started(pending: Deferred): void {
+    report(pending, { cancelled: false, detailed: true, steps: [{ id: 'resolve-default-branch', status: 'running' }, { id: 'fetch', status: 'pending' }, { id: 'worktree-add', status: 'pending' }, { id: 'create-workspace', status: 'pending' }] });
+}
+
 function report(pending: Deferred, progress: WorktreeCreateProgress): void {
     act(() => {
         pending.worktree?.onProgress?.(progress);
@@ -168,6 +173,7 @@ describe('while a worktree create runs', () => {
 
         report(h.pending, {
             cancelled: false,
+            detailed: true,
             steps: [
                 { id: 'resolve-default-branch', status: 'done', detail: 'main (from origin/HEAD)' },
                 { id: 'fetch', status: 'running', detail: 'origin/main', phase: 'Receiving objects', percent: 45 },
@@ -185,6 +191,7 @@ describe('while a worktree create runs', () => {
         // A git step without a meter still moves: the indeterminate sweep.
         report(h.pending, {
             cancelled: false,
+            detailed: true,
             steps: [
                 { id: 'resolve-default-branch', status: 'done' },
                 { id: 'fetch', status: 'skipped', detail: 'prefetched 5.0 s ago' },
@@ -210,9 +217,10 @@ describe('while a worktree create runs', () => {
     });
 
     it('Escape and the backdrop do not close it; they say how to stop it instead', () => {
-        open();
+        const h = open();
         fillWorktree();
         fireEvent.click(screen.getByTestId('new-workspace-submit'));
+        started(h.pending);
         fireEvent.keyDown(window, { key: 'Escape' });
         expect(screen.getByTestId('new-workspace-sheet')).toBeTruthy();
         expect(screen.getByTestId('new-workspace-progress-hint').textContent).toContain('Press Cancel');
@@ -225,6 +233,7 @@ describe('while a worktree create runs', () => {
         const h = open();
         fillWorktree();
         fireEvent.click(screen.getByTestId('new-workspace-submit'));
+        started(h.pending);
         const requestID = h.pending.worktree?.requestID;
         fireEvent.click(screen.getByTestId('new-workspace-cancel'));
         expect(h.onCancelWorkspaceCreate).toHaveBeenCalledExactlyOnceWith(requestID);
@@ -234,6 +243,7 @@ describe('while a worktree create runs', () => {
 
         report(h.pending, {
             cancelled: true,
+            detailed: true,
             steps: [
                 { id: 'resolve-default-branch', status: 'done' },
                 { id: 'fetch', status: 'failed', error: 'cancelled' },
@@ -262,6 +272,7 @@ describe('while a worktree create runs', () => {
         fireEvent.click(screen.getByTestId('new-workspace-submit'));
         report(h.pending, {
             cancelled: false,
+            detailed: true,
             steps: [
                 { id: 'resolve-default-branch', status: 'done' },
                 { id: 'fetch', status: 'pending' },
@@ -284,6 +295,36 @@ describe('while a worktree create runs', () => {
         expect(h.pending.worktree?.requestID).not.toBe(first);
         expect(screen.getByTestId('new-workspace-progress').getAttribute('data-phase')).toBe('running');
         expect(screen.queryByTestId('new-workspace-error')).toBeNull();
+    });
+
+    it('a create that cannot report steps shows a plain "Creating…", and Cancel closes as before', () => {
+        const h = open();
+        fillWorktree();
+        fireEvent.click(screen.getByTestId('new-workspace-submit'));
+        report(h.pending, { cancelled: false, detailed: false, steps: [] });
+        const panel = screen.getByTestId('new-workspace-progress');
+        expect(panel.getAttribute('data-detailed')).toBe('false');
+        expect(steps()).toEqual({});
+        expect(within(panel).getByRole('progressbar').getAttribute('aria-busy')).toBe('true');
+        fireEvent.click(screen.getByTestId('new-workspace-cancel'));
+        expect(h.onCancelWorkspaceCreate).not.toHaveBeenCalled();
+        expect(screen.queryByTestId('new-workspace-sheet')).toBeNull();
+    });
+
+    it('falls back to the plain panel when no frame arrives within a second (an older daemon)', async () => {
+        open();
+        fillWorktree();
+        fireEvent.click(screen.getByTestId('new-workspace-submit'));
+        expect(screen.getByTestId('new-workspace-progress').getAttribute('data-detailed')).toBeNull();
+        await waitFor(
+            () => {
+                expect(screen.getByTestId('new-workspace-progress').getAttribute('data-detailed')).toBe('false');
+            },
+            { timeout: 2_500 }
+        );
+        // An older daemon cannot cancel: Escape closes the sheet as it always did.
+        fireEvent.keyDown(window, { key: 'Escape' });
+        expect(screen.queryByTestId('new-workspace-sheet')).toBeNull();
     });
 
     it('a create without a worktree shows no checklist at all', () => {

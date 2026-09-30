@@ -11,6 +11,7 @@ import {
     type WorktreeAddRequest
 } from '../../git/index.js';
 import type { ReplyHandle } from '../../seams.js';
+import type { WorktreeCreateRun, WorktreeCreator } from './context.js';
 import { stubGitService } from '../../git/testing.js';
 import { createStore, emptyDaemonState, groupByID, makeWorkspaceState, type DaemonState } from '../../store/index.js';
 import { flush, harness, HOME, id, NOW, seeded } from './testing.js';
@@ -607,6 +608,8 @@ describe('workspace-create (worktree)', () => {
  * neither, and gets exactly the reply it always got (the tests above).
  */
 describe('workspace-create (worktree) progress and cancel', () => {
+    /** A creator on the detailed path (bundled git): steps and cancel reach `run`. */
+    const detailed = (run: WorktreeCreateRun['run']): WorktreeCreator => ({ begin: () => ({ detailed: true, run }) });
     interface ProgressReply extends ReplyHandle {
         readonly events: { kind: 'progress' | 'send'; payload: Record<string, unknown> }[];
         readonly controller: AbortController;
@@ -642,16 +645,14 @@ describe('workspace-create (worktree) progress and cancel', () => {
         const h = harness({
             ids: [id('bbbbbbbb', 9), W1, P1, id('eeeeeeee', 1)],
             worktreeBasePath: '~/wt/<repo>',
-            worktrees: {
-                add: async (_request, hooks) => {
+            worktrees: detailed(async (_request, hooks) => {
                     seen.push(hooks);
                     hooks.steps?.running('resolve-default-branch');
                     hooks.steps?.done('resolve-default-branch', 'main (from origin/HEAD)');
                     hooks.steps?.skipped('fetch', 'prefetched 2.0 s ago');
                     hooks.steps?.running('worktree-add');
                     hooks.steps?.done('worktree-add');
-                }
-            }
+            })
         });
         const reply = progressReply();
         h.table.get('workspace-create')?.(decoded(request), h.ctx, reply);
@@ -684,7 +685,7 @@ describe('workspace-create (worktree) progress and cancel', () => {
     });
 
     it('lists only the worktree and workspace steps without update main', async () => {
-        const h = harness({ worktrees: { add: async (_request, hooks) => { hooks.steps?.running('worktree-add'); hooks.steps?.done('worktree-add'); } } });
+        const h = harness({ worktrees: detailed(async (_request, hooks) => { hooks.steps?.running('worktree-add'); hooks.steps?.done('worktree-add'); }) });
         const reply = progressReply();
         h.table.get('workspace-create')?.(decoded({ ...request, update_main: false }), h.ctx, reply);
         await flush();
@@ -694,16 +695,14 @@ describe('workspace-create (worktree) progress and cancel', () => {
 
     it('a cancelled create replies with the cancelled failure and creates nothing', async () => {
         const h = harness({
-            worktrees: {
-                add: async (_request, hooks) => {
+            worktrees: detailed(async (_request, hooks) => {
                     hooks.steps?.running('resolve-default-branch');
                     hooks.steps?.done('resolve-default-branch');
                     hooks.steps?.running('fetch');
                     await new Promise<void>((resolve) => hooks.signal?.addEventListener('abort', () => resolve(), { once: true }));
                     hooks.steps?.cancelled('fetch');
                     throw new WorktreeCreateCancelledError('fetch');
-                }
-            }
+            })
         });
         const reply = progressReply();
         h.table.get('workspace-create')?.(decoded(request), h.ctx, reply);
@@ -720,13 +719,11 @@ describe('workspace-create (worktree) progress and cancel', () => {
 
     it('a failed step is flushed before the unchanged failure reply', async () => {
         const h = harness({
-            worktrees: {
-                add: async (_request, hooks) => {
+            worktrees: detailed(async (_request, hooks) => {
                     hooks.steps?.running('resolve-default-branch');
                     hooks.steps?.failed('resolve-default-branch', 'fatal: not a git repository');
                     throw new GitCommandError({ command: 'git', exitCode: 128, stderr: 'fatal: not a git repository', cwd: '/code/kelpi' });
-                }
-            }
+            })
         });
         const reply = progressReply();
         h.table.get('workspace-create')?.(decoded(request), h.ctx, reply);
@@ -737,9 +734,78 @@ describe('workspace-create (worktree) progress and cancel', () => {
         expect(reply.events.at(-1)).toEqual({ kind: 'send', payload: { ok: false, error: 'fatal: not a git repository' } });
     });
 
+    it('with no steps to report (a plugin git provider) says so once, and makes the request uncancellable', async () => {
+        const seen: WorktreeAddHooks[] = [];
+        let uncancellable = 0;
+        const h = harness({ worktrees: { begin: () => ({ detailed: false, run: async (_request, hooks) => { seen.push(hooks); } }) } });
+        const reply = { ...progressReply(), uncancellable: () => { uncancellable += 1; } };
+        h.table.get('workspace-create')?.(decoded(request), h.ctx, reply);
+        await flush();
+        expect(uncancellable).toBe(1);
+        expect(seen[0]).toEqual({ steps: null });
+        const frames = reply.events.filter((event) => event.kind === 'progress').map((event) => event.payload);
+        expect(frames).toEqual([{ kind: 'worktree-create', steps: [], detailed: false }]);
+        expect(reply.events.at(-1)?.payload).toMatchObject({ ok: true });
+    });
+
+    it('refuses a second create for the same worktree path or branch while the first runs', async () => {
+        let finish: () => void = () => {};
+        const h = harness({
+            worktrees: detailed(async (_request, hooks) => {
+                hooks.steps?.running('resolve-default-branch');
+                await new Promise<void>((resolve) => {
+                    finish = resolve;
+                });
+            })
+        });
+        const first = progressReply();
+        h.table.get('workspace-create')?.(decoded(request), h.ctx, first);
+        await flush();
+        const samePath = progressReply();
+        h.table.get('workspace-create')?.(decoded({ ...request, name: 'other', branch: 'another-branch' }), h.ctx, samePath);
+        await flush();
+        expect(samePath.events.at(-1)?.payload).toEqual({
+            ok: false,
+            error: `another create is already making the worktree at ${HOME}/kelpi/worktrees/kelpi/feature-x: wait for it to finish, or choose another worktree name`
+        });
+        // Its final frame still names a step.
+        const frame = samePath.events.filter((event) => event.kind === 'progress').at(-1)?.payload as { steps: { status: string }[] };
+        expect(frame.steps[0]?.status).toBe('failed');
+        const sameBranch = progressReply();
+        h.table.get('workspace-create')?.(decoded({ ...request, worktree: 'elsewhere', branch: 'feature-x' }), h.ctx, sameBranch);
+        await flush();
+        expect(sameBranch.events.at(-1)?.payload).toMatchObject({ ok: false, error: expect.stringContaining("another create is already making branch 'feature-x'") as unknown as string });
+        finish();
+        await flush();
+        expect(first.events.at(-1)?.payload).toMatchObject({ ok: true });
+        // Free again once the first is done.
+        const after = progressReply();
+        h.table.get('workspace-create')?.(decoded({ ...request, name: 'again' }), h.ctx, after);
+        await flush();
+        expect(after.events.some((event) => event.kind === 'send' && event.payload['ok'] === false)).toBe(false);
+    });
+
+    it('a failure in the workspace step after git succeeded is marked on create-workspace', async () => {
+        const h = harness({
+            worktrees: detailed(async (_request, hooks) => {
+                hooks.steps?.running('worktree-add');
+                hooks.steps?.done('worktree-add');
+            }),
+            spawnPane: () => {
+                throw new Error('pty unavailable');
+            }
+        });
+        const reply = progressReply();
+        h.table.get('workspace-create')?.(decoded(request), h.ctx, reply);
+        await flush();
+        const frame = reply.events.filter((event) => event.kind === 'progress').at(-1)?.payload as { steps: { id: string; status: string; error?: string }[] };
+        expect(frame.steps.at(-1)).toEqual({ id: 'create-workspace', status: 'failed', error: 'pty unavailable' });
+        expect(reply.events.at(-1)?.payload).toEqual({ ok: false, error: 'pty unavailable' });
+    });
+
     it('a control-socket request (no progress, no signal) still drives the creator, silently', async () => {
         const seen: WorktreeAddHooks[] = [];
-        const h = harness({ worktrees: { add: async (_request, hooks) => { seen.push(hooks); } } });
+        const h = harness({ worktrees: detailed(async (_request, hooks) => { seen.push(hooks); }) });
         h.send(request);
         await flush();
         expect(seen[0]).toEqual({ steps: null });

@@ -93,7 +93,8 @@ export function initialWorktreeProgress(updateMain: boolean): WorktreeCreateProg
     const ids: readonly WorktreeCreateStepID[] = updateMain ? STEP_IDS : ['worktree-add', 'create-workspace'];
     return {
         steps: ids.map((id, index) => ({ id, status: index === 0 ? 'running' : 'pending' })),
-        cancelled: false
+        cancelled: false,
+        detailed: true
     };
 }
 
@@ -131,7 +132,7 @@ export function parseWorktreeProgress(raw: unknown): WorktreeCreateProgress | nu
             ...(error !== undefined ? { error } : {})
         });
     }
-    return { steps, cancelled: record['cancelled'] === true };
+    return { steps, cancelled: record['cancelled'] === true, detailed: record['detailed'] !== false };
 }
 
 /** `3.4 s` under ten seconds, `12 s` after, `1:05` past a minute: the sheet's elapsed clock. */

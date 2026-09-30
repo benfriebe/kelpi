@@ -174,6 +174,16 @@ describe('workspace-create-cancel', () => {
         expect(f.held).toHaveLength(1);
     });
 
+    it('answers cancelled:false for a create the handler made uncancellable (a plugin git provider)', () => {
+        const f = fixture();
+        const asker = f.connect();
+        command(asker, { ...CREATE, request_id: 'req-1' });
+        f.held[0]?.reply.uncancellable?.();
+        const cancel = command(asker, { command: WORKSPACE_CREATE_CANCEL_COMMAND, request_id: 'req-1' });
+        expect(replyTo(asker, cancel)).toEqual({ ok: true, cancelled: false });
+        expect(f.held[0]?.reply.signal?.aborted).toBe(false);
+    });
+
     it('a connection that drops does not cancel its create (it finishes, as it always did)', () => {
         const f = fixture();
         const asker = f.connect();

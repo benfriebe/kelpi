@@ -18,9 +18,11 @@ export interface ReplyHandle {
   close(): void;
   /** True once closed or the peer disconnected. */
   readonly closed: boolean;
-  /** Fires on peer disconnect (drives web-console --follow subscriber cleanup). */
+  /**
+   * Fires on peer disconnect (drives web-console --follow subscriber cleanup). For follow
+   * streams, `send` is called repeatedly without closing; `close()` is what ends the stream.
+   */
   onDisconnect(cb: () => void): void;
-  /** For follow streams: send without closing. Same as send(); close() is what ends it. */
   /**
    * Issue #294: an interim progress object for THIS request, delivered only to the connection
    * that asked (a WS `command-progress` frame keyed by the command id). Never settles the reply.
@@ -33,6 +35,12 @@ export interface ReplyHandle {
    * the same WS session). Absent where no cancel can arrive (the control socket).
    */
   readonly signal?: AbortSignal | undefined;
+  /**
+   * Issue #294: this request turned out not to be cancellable after all (the worktree create runs
+   * through a plugin provider): a later cancel of it answers `cancelled: false`. Absent where no
+   * cancel can arrive.
+   */
+  uncancellable?(): void;
 }
 
 /** Dispatch decoded wire messages. reply is null for fire-and-forget commands. */

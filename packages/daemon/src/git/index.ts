@@ -39,6 +39,11 @@ export {
 /** Issue #294: the worktree create's steps, git's progress meter and the shared prefetch. */
 export {
     cleanupCancelledWorktreeAdd,
+    createWorktreeAddGuard,
+    fetchWithRenameFallback,
+    isMissingRemoteRef,
+    resolveDefaultBranchFromRemote,
+    WorktreeBusyError,
     defaultBranchFetchArgs,
     describeDefaultBranchSource,
     fetchDefaultBranch,

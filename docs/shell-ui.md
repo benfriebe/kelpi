@@ -1297,6 +1297,11 @@ Fields, top to bottom:
    4 px bar and `Receiving objects 45%`; a running git step without one gets the update
    sheet's indeterminate sweep (`kelpi-update-progress`). The panel stays after a failure or a
    cancel, with the failed row marked, until the next submit.
+   A create that cannot report steps (the daemon's git is a plugin provider's, which sends one
+   `detailed: false` frame, or a daemon older than #294, which sends none within a second) gets a
+   plain panel instead: the headline, the elapsed time and one indeterminate bar, no checklist;
+   Cancel, Escape and the backdrop then close the sheet as they did before, and the create
+   finishes on its own.
    While it runs every field is disabled (one `fieldset`), Tab reaches only Cancel, and
    Escape or a backdrop click does NOT close the sheet: a hint under the steps says to press
    Cancel, and that the sheet closes by itself when done (closing over a running create would

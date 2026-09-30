@@ -44,6 +44,7 @@ interface ReplyHandle {                          // packages/daemon/src/seams.ts
   onDisconnect(cb: () => void): void; // fires once when the client hangs up
   progress?(payload: object): void;   // #294, WS only: an interim frame to THIS requester
   readonly signal?: AbortSignal;      // #294, WS only: aborted by `workspace-create-cancel`
+  uncancellable?(): void;             // #294, WS only: a later cancel answers cancelled:false
 }
 ```
 
@@ -910,6 +911,10 @@ Four branches, checked in this order ((d) is checked before (b) and (c)):
      (`git fetch --no-tags origin +refs/heads/<def>:refs/remotes/origin/<def>`, or join a
      running prefetch, or skip it after one under 60 s old), then
      `git worktree add -b <safeBranch> <worktreePath> origin/<default>`.
+   - Issue #294: `deps.worktrees.begin()` decides per create whether it is `detailed` (bundled
+     git: steps and cancel) or not (a plugin provider: one `detailed:false` frame, and
+     `reply.uncancellable()`), and every run sits behind the per-(repo, path) and per-(repo,
+     branch) guard, which refuses a concurrent second create with `WorktreeBusyError`.
    - Issue #294, WS requesters only: when the reply handle has `progress` (§1), the step
      list is streamed through it, throttled to one frame per 150 ms and flushed before the
      reply; when it has `signal`, `workspace-create-cancel` aborts the create, which kills git

@@ -156,6 +156,9 @@ export interface NewEntrySheetProps {
     readonly onCancel: () => void;
 }
 
+/** No step frame by then: the daemon cannot report steps (it predates #294). */
+export const PLAIN_PROGRESS_AFTER_MS = 1_000;
+
 /** A create id the daemon can cancel by: a UUID where the page has one, else unique enough. */
 let requestCounter = 0;
 function mintRequestID(): string {
@@ -286,10 +289,19 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
     const [clock, setClock] = useState(() => Date.now());
     const [closeHint, setCloseHint] = useState(false);
     const requestID = useRef<string | null>(null);
+    /** Cancels the "no frame yet" fallback timer of the create in flight. */
+    const stopFallback = useRef<() => void>(() => {});
     const worktreeRunning = createPhase === 'running' || createPhase === 'cancelling';
+    /*
+     * A create that reports steps can be cancelled, so the sheet holds on to it (Escape and the
+     * backdrop are blocked, Cancel cancels). One that cannot (`detailed: false`: a plugin git
+     * provider, or a daemon that sends no frames) behaves as creates did before #294: Cancel,
+     * Escape and the backdrop close the sheet and the create finishes on its own.
+     */
+    const holdsCreate = worktreeRunning && progress?.detailed !== false;
     /** Read by the window-level Escape handler, installed once. */
-    const worktreeRunningRef = useRef(worktreeRunning);
-    worktreeRunningRef.current = worktreeRunning;
+    const worktreeRunningRef = useRef(holdsCreate);
+    worktreeRunningRef.current = holdsCreate;
     /** The New Group sheet's optional repository (§5.5): a registry id, '' = none. */
     const [groupRepoID, setGroupRepoID] = useState('');
     /** A folder the New Group sheet's Choose Folder… returned; picked while `groupRepoID` is FOLDER_CHOICE. */
@@ -481,9 +493,20 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
             setClock(startedAt);
             // Create is about to be disabled under the keyboard: Cancel is the live control now.
             stops.current.get('cancel')?.focus();
+            /*
+             * A daemon that predates #294 sends no frames at all (and ignores the request id): if
+             * none has arrived within a second, show the plain panel instead of a checklist that
+             * would sit on its first step. The daemon's first frame normally lands in milliseconds.
+             */
+            let framed = false;
+            const fallback = setTimeout(() => {
+                if (!framed && requestID.current === id) setProgress((current) => (current === null ? current : { ...current, detailed: false }));
+            }, PLAIN_PROGRESS_AFTER_MS);
+            stopFallback.current = () => clearTimeout(fallback);
             worktreeHooks = {
                 requestID: id,
                 onProgress: (next) => {
+                    framed = true;
                     if (requestID.current === id) setProgress(next);
                 }
             };
@@ -507,6 +530,7 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
         });
         inFlight.current = false;
         setBusy(false);
+        stopFallback.current();
         if (requestID.current !== null) {
             // Success closes the sheet (the host unmounts it); these only matter when it stays.
             setCreateEndedAt(Date.now());
@@ -523,7 +547,7 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
      */
     const onCancelPressed = (): void => {
         const running = requestID.current;
-        if (worktreeRunning && running !== null && props.onCancelCreate !== undefined) {
+        if (holdsCreate && running !== null && props.onCancelCreate !== undefined) {
             if (createPhase === 'cancelling') return;
             setCreatePhase('cancelling');
             props.onCancelCreate(running);
@@ -739,7 +763,7 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
                     return;
                 }
                 // #294: the same rule as Escape: a running worktree create is not dismissed.
-                if (worktreeRunning) {
+                if (holdsCreate) {
                     setCloseHint(true);
                     return;
                 }

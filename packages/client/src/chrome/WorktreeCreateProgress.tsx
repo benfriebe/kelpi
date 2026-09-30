@@ -149,8 +149,54 @@ function StepRow({ step }: { readonly step: WorktreeCreateStep }): ReactElement 
     );
 }
 
+/**
+ * The panel for a create that cannot report steps (#294 review): a plugin git provider owns the
+ * daemon's git, or the daemon predates step reporting. A headline, the elapsed time and one
+ * indeterminate bar while it runs; no checklist that would never move, and no Cancel of its own
+ * (the sheet's Cancel closes it, as it always did for such a create).
+ */
+function PlainProgress(props: WorktreeCreateProgressProps): ReactElement {
+    const running = props.phase === 'running' || props.phase === 'cancelling';
+    return (
+        <div
+            data-testid="new-workspace-progress"
+            data-phase={props.phase}
+            data-detailed="false"
+            role="status"
+            aria-live="polite"
+            className="flex flex-col gap-2 rounded-md border px-3 py-2.5 text-[11px]"
+            style={{ borderColor: tokens.divider, background: withAlpha(tokens.textPrimary, 0.03) }}
+        >
+            <div className="flex items-center">
+                <span
+                    data-testid="new-workspace-progress-headline"
+                    className="font-medium"
+                    style={{ color: props.phase === 'failed' ? FAILURE : tokens.textPrimary }}
+                >
+                    {HEADLINES[props.phase]}
+                </span>
+                <span data-testid="new-workspace-progress-elapsed" className="ml-auto text-[10px] tabular-nums" style={{ color: tokens.textTertiary }}>
+                    {formatElapsed(props.elapsedMs)}
+                </span>
+            </div>
+            {running ? (
+                <div
+                    role="progressbar"
+                    aria-label={HEADLINES[props.phase]}
+                    aria-busy="true"
+                    className="relative h-1 w-full overflow-hidden rounded-full"
+                    style={{ background: withAlpha(tokens.textPrimary, 0.1) }}
+                >
+                    <div className="kelpi-update-progress absolute inset-y-0 left-0 w-2/5 rounded-full" style={{ background: tokens.accent }} />
+                </div>
+            ) : null}
+        </div>
+    );
+}
+
 export function WorktreeCreateProgressPanel(props: WorktreeCreateProgressProps): ReactElement {
     const { progress, phase } = props;
+    if (!progress.detailed) return <PlainProgress {...props} />;
     return (
         <div
             data-testid="new-workspace-progress"

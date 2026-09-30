@@ -1348,6 +1348,7 @@ class WsReplyHandle implements ReplyHandle {
     private callbacks: (() => void)[] = [];
     /** #294: `workspace-create-cancel` aborts this; the handler reads it as `reply.signal`. */
     private readonly cancel = new AbortController();
+    private cancellable = true;
 
     constructor(
         private readonly transport: SyncTransport,
@@ -1383,9 +1384,17 @@ class WsReplyHandle implements ReplyHandle {
         return this.cancel.signal;
     }
 
-    /** True when this call aborted a live request; false when it had already answered. */
+    /** #294: the handler found no way to cancel this request (a plugin git provider). */
+    uncancellable(): void {
+        this.cancellable = false;
+    }
+
+    /**
+     * True when this call aborted a live request; false when it had already answered, or cannot
+     * be cancelled at all.
+     */
     abort(): boolean {
-        if (this.dead || this.cancel.signal.aborted) return false;
+        if (this.dead || !this.cancellable || this.cancel.signal.aborted) return false;
         this.cancel.abort();
         return true;
     }

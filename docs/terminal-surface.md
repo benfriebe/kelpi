@@ -321,9 +321,14 @@ spawn path therefore settles the birth grid before it spawns:
    ```
 
    (High-contrast in-terminal search match colors, aligned with the markdown find overlay.)
-   Every search highlight in Kelpi is drawn by Kelpi itself (the terminal search reveal, the
-   injected markdown/diff find script, the web pane's find script), so there is no defaults
-   file laid under the user's ghostty config; an unparseable or blank value keeps the default.
+   Every search highlight in Kelpi is drawn by Kelpi itself (the terminal's search-highlight
+   layer, the injected markdown/diff find script, the web pane's find script), so there is no
+   defaults file laid under the user's ghostty config; an unparseable or blank value keeps the
+   default. In a terminal the first pair paints every visible match and the `-current` pair the
+   selected one: they reach the engine as the theme's `searchBackground` / `searchForeground` /
+   `searchSelectedBackground` / `searchSelectedForeground` (ghostty's `search-background` and
+   `search-selected-*` roles, section 7.7), never as the selection colours, so a drag-selection
+   keeps the theme's own.
 3. User's `~/.config/ghostty/config` (or whatever `KELPID_GHOSTTY_CONFIG` names,
    `packages/daemon/src/settings/service.ts:85-93`): the daemon parses it and serves the
    resolved appearance to every client, so the user's existing Ghostty setup (font, theme,
@@ -910,10 +915,46 @@ row is read bounded to the grid (section 5.2). Counts are computed only for **sh
 markdown/diff pane's find runs inside its own sandboxed frame and a web pane's in the host's
 `webContents`, so for those the reply reports `total: null` and the client's own backend counts.
 
-Match highlight colors come from the kelpi-config keys in section 3.1.
+**Highlights (#306).** While the bar is open, every visible match of the daemon's needle is
+highlighted in the pane, and the selected match is painted distinctly; typing a needle
+highlights straight away, with the counter still at `-/N`. The client hands its engine the
+needle (the daemon's, so every attached window highlights the same one and the highlights always
+describe the needle the counter counts; the case flag is the window's own, the one thing two
+windows can disagree about, so a window whose flag differs from the last request's paints its own
+reading of the needle), the window's case flag, and the selected match as the
+step reply stated it. The engine (ghostty-web `0.4.0-nex.16`, `lib/search-highlight.ts`) finds the
+matches itself in the rows it paints, by the same rules as the daemon (wrap-joined rows, case
+folding that never changes a string's length so offsets agree, overlapping occurrences, UTF-16
+offsets into each row's text mapped back to cells), so the highlights follow scrolling, output and
+resizes without a round trip. It is a layer of its own, not the selection: copy, a drag and the
+selection's own tracking are untouched, and a selection over a match draws as the selection.
 
-**Location**: daemon (`ws/search.ts`, `term/search.ts`); the client is a viewer of the
-daemon's answer and scrolls its engine to the reveal.
+The selected match is painted only while the workspace's `searchSelected` still names the match the
+reply did. Each reply carries a `seq` that only grows for the window's lifetime, and a renderer
+pins a reply at most once, never an older one, and never while a replay is still being parsed. The
+pin is to an absolute row, so later output leaves it on its text, and only where the needle really
+is (`setSearchCurrent` answers false otherwise, and the renderer tries again when the next replay
+completes). A pinned row that trimmed history or a replay moves is followed by its text, or the
+current match ends: it is never painted on text that is not the needle. Return / ⇧Return scroll the
+match to the middle of the viewport. Closing the bar clears every highlight.
+
+Limits, stated: the engine knows a soft wrap only where its continuation row is on the screen
+(the WASM reports wrap linkage for screen rows only), so a needle straddling the wrap of a line
+further back in history is counted by the daemon but not painted as an ordinary match; stepping
+to it still paints it as the selected match, after the text it covers has been checked against
+the needle. The `@xterm/xterm` fallback engine has no highlight layer and shows the selected match
+by selecting it, as every engine did before #306, in the `-current` colours while a search is
+open. A replacement (plugin) terminal renderer gets the reveal through its own contract and no
+highlight query.
+
+Match highlight colors come from the kelpi-config keys in section 3.1. Each pane publishes what
+its engine painted as `data-terminal-search-matches` (painted spans) and
+`data-terminal-search-current` (`row:startCol-endCol` of the selected match, empty when none is on
+screen).
+
+**Location**: daemon (`ws/search.ts`, `term/search.ts`) for the counts and the selection; client
+(`App.tsx` → `TerminalPane` → `renderer.setSearchHighlight` / `revealMatch`) and the vendored
+engine for the highlights and the scroll.
 
 ### 7.8 Render wakeup (`RENDER`)
 
@@ -1812,9 +1853,10 @@ hook scripts and saved state keep working, and why the layer is split the way it
    scripts that match on it keep working.
 6. **Search.** Neither renderer exposes find, so the daemon implements text search over its
    own grid/scrollback (`packages/daemon/src/term/search.ts`) and publishes the same
-   searching/needle/total/selected state as workspace deltas; highlight rendering is a
-   client-side reveal. The Kelpi default match colors stay overridable by user config as
-   kelpi-config keys.
+   searching/needle/total/selected state as workspace deltas; highlight rendering is
+   client-side: the engine paints every visible match of the daemon's needle and the selected
+   match the daemon's reply names (section 7.7). The Kelpi default match colors stay overridable
+   by user config as kelpi-config keys.
 7. **`cellSize` provenance.** The renderer (client) owns font metrics; the daemon holds
    cols/rows authoritatively (it drives PTY size), while cell-pixel size is client-reported.
    The client is the source of "px per cell" and the daemon the source of "cols × rows".

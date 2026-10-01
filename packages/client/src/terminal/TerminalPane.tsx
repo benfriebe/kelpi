@@ -76,6 +76,8 @@ import {
     type TerminalMatchLocation,
     type TerminalRenderer,
     type TerminalRendererFactory,
+    type TerminalSearchHighlight,
+    type TerminalSearchSpan,
     type TerminalTheme
 } from './renderer';
 import { clearTouchScrollOffset, createTouchScroll, publishTouchScrollOffset } from './touch-scroll';
@@ -319,6 +321,16 @@ export interface TerminalPaneProps {
      * effect. The daemon owns the search (`daemon/src/ws/search.ts`); this only shows the answer.
      */
     readonly reveal?: (TerminalMatchLocation & { readonly seq: number }) | null | undefined;
+    /**
+     * The search open on this pane, if any (#306): the needle the daemon is counting, the case
+     * flag this window counts it with, and the selected match while one is selected.
+     *
+     * Every visible match is highlighted while it is set and `current` is painted distinctly.
+     * Separate from `reveal`, which only scrolls: the owner decides whether the last reveal is
+     * still the daemon's selection. `null`/absent clears every highlight (the bar closed, or it
+     * is open on another pane).
+     */
+    readonly search?: TerminalSearchHighlight | null | undefined;
     /** Measured grid, for the resize badge (`grid/types.ts` `PaneDimensions`). */
     readonly onDimensionsChange?: ((paneID: string, geometry: TerminalGeometry) => void) | undefined;
     readonly onExit?: ((paneID: string, exitCode: number | null, signal?: string) => void) | undefined;
@@ -1239,6 +1251,27 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
             const offHold = renderer.onPaintHoldChange(publishHold);
 
             /**
+             * #306: publish what the search highlight layer painted, by the same imperative
+             * route as the hold above (it changes on a scroll frame, so no React render per
+             * change). The engine paints into a canvas, so without this "every visible match is
+             * highlighted" would be a claim about pixels the audit could only screenshot.
+             * `-matches` counts painted spans (a match across a wrap is two); `-current` is the
+             * selected match's first span as `row:startCol-endCol`, empty when none is on screen.
+             */
+            const publishSearch = (spans: readonly TerminalSearchSpan[]): void => {
+                const root = rootRef.current;
+                if (root === null) return;
+                const current = spans.find((span) => span.current);
+                root.setAttribute('data-terminal-search-matches', String(spans.length));
+                root.setAttribute(
+                    'data-terminal-search-current',
+                    current === undefined ? '' : `${String(current.row)}:${String(current.startCol)}-${String(current.endCol)}`
+                );
+            };
+            publishSearch([]);
+            const offSearch = renderer.onSearchHighlightChange(publishSearch);
+
+            /**
              * §N35 — the engine focuses ITSELF, and the port has to be able to say no.
              *
              * `Terminal.open()` ends with `this.focus()` ("auto-focus so user can start typing
@@ -1353,6 +1386,7 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
                 offRegistry();
                 offFailure();
                 offHold();
+                offSearch();
                 stream.unsubscribe();
                 renderer.dispose();
                 rendererRef.current = null;
@@ -2352,6 +2386,33 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
             length: match.length
         });
     }, [revealSeq, status]);
+
+    // ── search highlight (#306) ─────────────────────────────────────────────────────
+    //
+    // Every visible match, and the current one. Keyed on the needle, the flag and the current
+    // match's `seq` rather than on object identity, so a re-render hands the engine nothing new;
+    // `status` re-applies it to an engine that was rebuilt (the adapter also holds it across the
+    // load of the first one).
+    const searchNeedle = props.search?.needle ?? '';
+    const searchCaseSensitive = props.search?.caseSensitive === true;
+    const searchCurrentSeq = props.search?.current?.seq ?? 0;
+    useEffect(() => {
+        const renderer = rendererRef.current;
+        if (renderer === null) return;
+        if (searchNeedle === '') {
+            renderer.setSearchHighlight(null);
+            return;
+        }
+        const current = latest.current.search?.current ?? null;
+        renderer.setSearchHighlight({
+            needle: searchNeedle,
+            caseSensitive: searchCaseSensitive,
+            current:
+                current === null
+                    ? null
+                    : { linesFromBottom: current.linesFromBottom, col: current.col, length: current.length, seq: current.seq }
+        });
+    }, [searchNeedle, searchCaseSensitive, searchCurrentSeq, status]);
 
     const requestFocus = useCallback((): void => {
         const current = latest.current;

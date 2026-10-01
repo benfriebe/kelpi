@@ -199,6 +199,7 @@ import {
 import {
     isOkReply,
     replyError,
+    replyNumber,
     replySearchMatch,
     replyText,
     type CommandReply,
@@ -251,6 +252,7 @@ import {
     visiblePaneIDs,
     type TerminalGeometry,
     type TerminalRendererFactory,
+    type TerminalSearchHighlight,
     type TerminalTheme
 } from './terminal';
 import {
@@ -592,10 +594,29 @@ function Shell(props: AppProps): ReactElement {
      * to it. The search itself is DAEMON state (needle, total, selected all ride the workspace's
      * delta stream); this is only the reply's transient "and it is here" — carrying a `seq` so
      * pressing Return on the same match twice scrolls back to it (`TerminalPane`'s reveal effect).
+     *
+     * `selected` is the index the reply stepped to (null from a daemon that did not say). The
+     * pane is handed this match as the CURRENT one only while the workspace's `searchSelected`
+     * still names it (#306): a new needle drops the selection to `-/N`, and a step from another
+     * window moves it to a match this window was never told the position of.
      */
     const [searchReveal, setSearchReveal] = useState<
-        { paneID: string; linesFromBottom: number; col: number; length: number; line: number | null; seq: number } | null
+        {
+            paneID: string;
+            linesFromBottom: number;
+            col: number;
+            length: number;
+            line: number | null;
+            selected: number | null;
+            seq: number;
+        } | null
     >(null);
+    /**
+     * The last reveal's `seq`, never reset (#306). A renderer pins a current match only for a
+     * `seq` newer than the last one it pinned, so a number that restarted when the bar closed or
+     * the case flag flipped would leave the next session's first match unpinned.
+     */
+    const searchRevealSeqRef = useRef(0);
     /**
      * Whether this window's search is case sensitive, for the length of one session.
      *
@@ -1917,14 +1938,16 @@ function Shell(props: AppProps): ReactElement {
                         if (match === null) return;
                         // A fresh seq every time: Return on the SAME match has to scroll back to
                         // it after the user has scrolled away.
-                        setSearchReveal((current) => ({
+                        searchRevealSeqRef.current += 1;
+                        setSearchReveal({
                             paneID,
                             linesFromBottom: match.linesFromBottom,
                             col: match.col,
                             length: match.length,
                             line: match.line,
-                            seq: (current?.seq ?? 0) + 1
-                        }));
+                            selected: replyNumber(reply, 'selected') ?? null,
+                            seq: searchRevealSeqRef.current
+                        });
                     },
                     (error: unknown) => {
                         notifyFailure('Search', error instanceof Error ? error.message : String(error));
@@ -2535,13 +2558,25 @@ function Shell(props: AppProps): ReactElement {
         ]
     );
 
-    /** `paneTheme` with the search-match colours in the selection slots (see `renderPane`). */
-    const searchPaneTheme = useMemo<TerminalTheme>(
-        () => ({
-            ...(paneTheme ?? {}),
-            selectionBackground: findPalette.current,
-            selectionForeground: findPalette.currentText
-        }),
+    /**
+     * `paneTheme` with the search-highlight roles filled in (see `renderPane`), for every shell
+     * pane whether or not a search is open on it: the colours sit unused until one is, and a
+     * theme that does not change when the bar opens is a canvas that is not repainted for it.
+     *
+     * Undefined while `paneTheme` is, so a pane keeps resolving its palette from the DOM rather
+     * than being handed an engine theme that names only these four roles.
+     */
+    const shellPaneTheme = useMemo<TerminalTheme | undefined>(
+        () =>
+            paneTheme === undefined
+                ? undefined
+                : {
+                      ...paneTheme,
+                      searchBackground: findPalette.match,
+                      searchForeground: findPalette.matchText,
+                      searchSelectedBackground: findPalette.current,
+                      searchSelectedForeground: findPalette.currentText
+                  },
         [paneTheme, findPalette]
     );
 
@@ -4037,15 +4072,32 @@ function Shell(props: AppProps): ReactElement {
                         return <ContentPanePlaceholder pane={pane} variant="detached" />;
                     }
                     /*
-                     * SET-219 / TERM-021's terminal half. A terminal search match is shown by the
-                     * engine SELECTING it (`renderer.revealMatch`), so the selection colours ARE the
-                     * search-match colours while a search is open on this pane — which is exactly what
-                     * ghostty's `search-selected-background` / `-foreground` did for the Swift app.
-                     * Off the search path the palette is untouched, so an ordinary drag-selection keeps
-                     * the theme's own colours.
+                     * SET-219 / TERM-021's terminal half, and #306. The engine highlights every
+                     * visible match of the needle the daemon is counting in the `search-match-*`
+                     * colours, and the selected one in the `-current` pair - ghostty's
+                     * `search-background` and `search-selected-background` - on a layer of its own,
+                     * so a drag-selection keeps the theme's selection colours throughout.
+                     *
+                     * The daemon's needle, not this window's draft, so the highlights and the counter
+                     * always describe the same needle, in every window attached to the workspace. The
+                     * revealed match is the current one only while the daemon's selection still
+                     * names it (see `searchReveal`).
                      */
-                    const searching = workspace !== null && workspace.searchingPaneID === paneID;
-                    const theme = searching ? searchPaneTheme : paneTheme;
+                    const searching = workspace !== null && workspace.searchingPaneID === paneID ? workspace : null;
+                    const reveal = searchReveal?.paneID === paneID ? searchReveal : null;
+                    const search: TerminalSearchHighlight | null =
+                        searching === null || searching.searchNeedle === ''
+                            ? null
+                            : {
+                                  needle: searching.searchNeedle,
+                                  caseSensitive: searchCaseSensitive,
+                                  current:
+                                      reveal !== null &&
+                                      searching.searchSelected !== null &&
+                                      (reveal.selected === null || reveal.selected === searching.searchSelected)
+                                          ? reveal
+                                          : null
+                              };
                     return (
                         <TerminalFeaturePane
                             runtime={runtime}
@@ -4057,7 +4109,7 @@ function Shell(props: AppProps): ReactElement {
                             visible={renderState.visible}
                             // §TERM-036: the accessible name is what the header shows, not the id.
                             accessibilityName={paneDisplayTitle(pane, daemonHome)}
-                            theme={theme}
+                            theme={shellPaneTheme}
                             background={paneFill}
                             allowTransparency={paneTransparency}
                             {...(terminalFont.fontFamily !== null ? { fontFamily: terminalFont.fontFamily } : {})}
@@ -4068,7 +4120,8 @@ function Shell(props: AppProps): ReactElement {
                             macosOptionAsAlt={optionAsAlt}
                             onFocusRequest={onTerminalFocus}
                             onDimensionsChange={onDimensionsChange}
-                            reveal={searchReveal?.paneID === paneID ? searchReveal : null}
+                            reveal={reveal}
+                            search={search}
                             createRenderer={createRenderer}
                         />
                     );
@@ -4086,8 +4139,9 @@ function Shell(props: AppProps): ReactElement {
             // H9: a re-recorded keybinding has to reach a preview that is already open.
             contentPaneChords,
             allViewChords,
-            searchPaneTheme,
+            shellPaneTheme,
             searchReveal,
+            searchCaseSensitive,
             paneByID,
             workspace,
             mountedSet,

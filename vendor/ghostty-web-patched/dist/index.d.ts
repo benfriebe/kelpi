@@ -65,6 +65,8 @@ export declare class CanvasRenderer {
     private lastViewportY;
     private currentBuffer;
     private selectionManager?;
+    private searchHighlighter;
+    private searchHighlightListener;
     private currentSelectionCoords;
     private hoveredHyperlinkId;
     private previousHoveredHyperlinkId;
@@ -300,6 +302,24 @@ export declare class CanvasRenderer {
      * Set selection manager (for rendering selection)
      */
     setSelectionManager(manager: SelectionManager): void;
+    /** Highlight every visible occurrence of a needle, or nothing (`null`). Drops the current one. */
+    setSearchHighlight(query: ISearchHighlight | null): void;
+    /**
+     * Pin the selected match against this buffer as it is now (`Terminal.setSearchCurrent`), or
+     * drop it (`null`). Returns whether a match is pinned: false when there is no highlight to pin
+     * it to, or the needle is not where the match says it is.
+     */
+    setSearchCurrent(match: ISearchCurrentMatch | null, buffer: IRenderable, scrollbackProvider: IScrollbackProvider | undefined): boolean;
+    /** Told the spans of every frame whose highlights differ from the frame before. */
+    setSearchHighlightListener(listener: ((spans: readonly ISearchHighlightSpan[]) => void) | null): void;
+    /** What the highlight layer would paint over this viewport right now, without painting. */
+    getSearchHighlights(buffer: IRenderable, scrollbackProvider: IScrollbackProvider | undefined, viewportY: number): ISearchHighlightSpan[];
+    /**
+     * The rows the highlight layer reads, in the absolute numbering the selection manager uses:
+     * scrollback offsets first, then the screen. The screen is read ONCE, lazily, and each row's
+     * cells are turned into text before anything else can reuse the engine's cell pool.
+     */
+    private searchRowSource;
     /**
      * Check if a cell at (x, y) is within the current selection.
      * Uses cached selection coordinates for performance.
@@ -1076,11 +1096,47 @@ export declare interface IRenderable {
      * For simple cells, returns the single character.
      */
     getGraphemeString?(row: number, col: number): string;
+    /**
+     * vendor 0.4.0-nex.16, for the search-highlight layer: whether a SCREEN row is the soft-wrap
+     * continuation of the row above it (measured: the head row of a wrapped line reads false and
+     * every row after it true, xterm.js's `isWrapped`), a scrollback row's grapheme cluster, and
+     * the whole screen in one read (the per-row `getLine` re-reads it every call). All optional:
+     * `GhosttyTerminal` has them, a stub need not.
+     */
+    isRowWrapped?(row: number): boolean;
+    getScrollbackGraphemeString?(offset: number, col: number): string;
+    getViewport?(): GhosttyCell[];
 }
 
 declare interface IScrollbackProvider {
     getScrollbackLine(offset: number): GhosttyCell[] | null;
     getScrollbackLength(): number;
+}
+
+/**
+ * The selected match, as an embedder that searched elsewhere states it: counted up from the
+ * bottom of the buffer (`linesFromBottom` 1 is the last row), `col` a UTF-16 offset into that
+ * row's text and `length` the needle's length in the same units.
+ */
+export declare interface ISearchCurrentMatch {
+    linesFromBottom: number;
+    col: number;
+    length: number;
+}
+
+/** What to highlight: every occurrence of `needle` in the rows on screen. */
+export declare interface ISearchHighlight {
+    needle: string;
+    /** Default false: the needle and the text are both case-folded before matching. */
+    caseSensitive?: boolean;
+}
+
+/** One painted run of cells, in viewport coordinates, end column inclusive. */
+export declare interface ISearchHighlightSpan {
+    row: number;
+    startCol: number;
+    endCol: number;
+    current: boolean;
 }
 
 export declare interface ITerminalAddon {
@@ -1172,6 +1228,10 @@ export declare interface ITheme {
     cursorAccent?: string;
     selectionBackground?: string;
     selectionForeground?: string;
+    searchBackground?: string;
+    searchForeground?: string;
+    searchSelectedBackground?: string;
+    searchSelectedForeground?: string;
     black?: string;
     red?: string;
     green?: string;
@@ -1788,6 +1848,11 @@ export declare class Terminal implements ITerminalCore {
      * the renderer does not exist until `open()`, and an embedder may suspend before then.
      */
     private paintSuspended;
+    /**
+     * The search highlight (vendor 0.4.0-nex.16): see `setSearchHighlight`. Held here as well for
+     * the same reason as the two above: an embedder may set it before `open()` builds a renderer.
+     */
+    private searchHighlight;
     private imeCaretLeft;
     private imeCaretTop;
     private imeCaretWidth;
@@ -1807,6 +1872,7 @@ export declare class Terminal implements ITerminalCore {
     private scrollEmitter;
     private renderEmitter;
     private cursorMoveEmitter;
+    private searchHighlightEmitter;
     readonly onData: IEvent<string>;
     readonly onResize: IEvent<{
         cols: number;
@@ -1822,6 +1888,12 @@ export declare class Terminal implements ITerminalCore {
         end: number;
     }>;
     readonly onCursorMove: IEvent<void>;
+    /**
+     * vendor 0.4.0-nex.16: fires after a frame whose search highlights differ from the frame
+     * before (a new needle, a scroll, output that moved or added a match, the bar closing), with
+     * that frame's spans. See `setSearchHighlight`.
+     */
+    readonly onSearchHighlightChange: IEvent<ISearchHighlightSpan[]>;
     private isOpen;
     private isDisposed;
     private animationFrameId?;
@@ -1989,6 +2061,36 @@ export declare class Terminal implements ITerminalCore {
      */
     getViewportY(): number;
     getSelectionPosition(): IBufferRange | undefined;
+    /**
+     * Highlight every occurrence of `needle` in the rows on screen, in the theme's
+     * `searchBackground` / `searchForeground`, until called with `null`.
+     *
+     * The terminal finds the matches itself, at paint time, in exactly the rows it paints, so
+     * the highlights follow the text through scrolling, output and resizes. It is a layer of its
+     * own, not the selection: copy, a drag and the selection's own tracking are untouched, and a
+     * selection over a match is drawn as the selection. A new needle or case flag (or `null`) also
+     * drops the current match, which belonged to the needle it was counted for.
+     */
+    setSearchHighlight(query: ISearchHighlight | null): void;
+    /**
+     * Mark one match as the current one, in `searchSelected*` colours, or none (`null`).
+     *
+     * Stated from the BOTTOM of the buffer (`linesFromBottom` 1 is the last row; `col` and
+     * `length` in UTF-16 units of that row's text), because an embedder that searched another
+     * copy of the buffer agrees with this one about where the bottom is and about nothing else.
+     * It is pinned to an absolute row NOW, so it stays on its text as output grows the buffer, and
+     * it follows its row when trimmed history or a replay moves it (or ends, if the row is gone).
+     *
+     * Returns whether it was pinned: false when no highlight is set or the needle is not at that
+     * spot in this buffer right now (a replay still arriving, output not parsed yet). Nothing is
+     * painted then, and the embedder may try again once the buffer has caught up.
+     */
+    setSearchCurrent(match: ISearchCurrentMatch | null): boolean;
+    /**
+     * The highlights over the current viewport, as the next frame will paint them: one span per
+     * row a match covers, viewport rows, end column inclusive. For diagnostics and tests.
+     */
+    getSearchHighlights(): ISearchHighlightSpan[];
     /**
      * Attach a custom keyboard event handler
      * Returns true to prevent default handling

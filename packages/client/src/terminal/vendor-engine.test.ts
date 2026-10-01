@@ -45,7 +45,7 @@ const repoRoot = path.resolve(here, '..', '..', '..', '..');
 const vendorRoot = path.join(repoRoot, 'vendor', 'ghostty-web-patched');
 
 /** The version the audit evidence and PROVENANCE.md were written against. */
-const EXPECTED_VERSION = '0.4.0-nex.15';
+const EXPECTED_VERSION = '0.4.0-nex.16';
 
 /** Markers of the caret-anchored IME, in the built ESM bundle the client imports. */
 const CARET_MARKERS = ['data-ime-preedit', 'data-ime-caret', 'syncImeCaret'];
@@ -110,6 +110,22 @@ const PAINT_SUSPEND_MARKERS = ['setPaintSuspended', 'isPaintSuspended', 'this.pa
  * pattern rather than a literal.
  */
 const PAINT_SUSPEND_GUARD = /render\([^)]*\)\s*\{\s*(?:var\s+\w+;\s*)?if\s*\(this\.paintSuspended\)\s*return;/;
+
+/**
+ * Markers of `-nex.16`'s search-highlight layer (#306).
+ *
+ * The find bar's highlights are the engine's own paint: Kelpi hands it a needle and the selected
+ * match, and the renderer finds and paints every visible occurrence. Take a future npm release
+ * wholesale and `setSearchHighlight` becomes a call into nothing, so ⌘F goes back to counting
+ * matches nobody can see.
+ */
+const SEARCH_HIGHLIGHT_MARKERS = [
+    'setSearchHighlight',
+    'setSearchCurrent',
+    'onSearchHighlightChange',
+    'searchSelectedBackground',
+    'getSearchHighlights'
+];
 
 /**
  * Markers of `-nex.7`'s live default colours (§N18).
@@ -349,6 +365,22 @@ describe('vendored ghostty-web engine', () => {
         // field nothing consults: the read is the forceAll trigger, the write arms it.
         expect(bundle).toMatch(/this\.scrollbarWasPainted\s*&&/);
         expect(bundle).toMatch(/this\.scrollbarWasPainted\s*=[^=]/);
+    });
+
+    it('ships a search highlight layer and a select() that lands on the row it names (§-nex.16, #306)', () => {
+        const bundle = read(path.join(vendorRoot, 'dist', 'ghostty-web.js'));
+        for (const marker of SEARCH_HIGHLIGHT_MARKERS) {
+            expect(bundle).toContain(marker);
+        }
+        // Both paint passes consult the layer: the cell background AND the glyph colour.
+        expect(bundle.match(/this\.theme\.searchSelectedBackground/g) ?? []).toHaveLength(1);
+        expect(bundle.match(/this\.theme\.searchSelectedForeground/g) ?? []).toHaveLength(1);
+        // `select`, `selectAll` and `selectLines` convert through the manager's own helper, six
+        // endpoints in all; upstream's `viewportY + row` landed off screen once there was history.
+        expect(bundle.match(/absoluteRow: this\.viewportRowToAbsolute\(/g) ?? []).toHaveLength(6);
+        const selectionSource = read(path.join(vendorRoot, 'source', 'lib', 'selection-manager.ts'));
+        expect(selectionSource).not.toMatch(/absoluteRow: viewportY \+/);
+        expect(selectionSource.match(/absoluteRow: this\.viewportRowToAbsolute\(/g) ?? []).toHaveLength(6);
     });
 
     it('keeps the snapshotted source in step with the bundle', () => {

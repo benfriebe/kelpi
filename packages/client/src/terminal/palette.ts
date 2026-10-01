@@ -23,12 +23,13 @@
  * rule) then follows the theme too, rather than only the canvas the engine paints.
  */
 
-import { TERMINAL_TOKEN_NAMES, isEngineColor, type TerminalTheme } from './renderer';
+import { TERMINAL_TOKEN_NAMES, isEngineColor, type TerminalSearchRole, type TerminalTheme } from './renderer';
 
 /** The wire shape: `TerminalTheme` keys → colour, carrying only what the theme file set. */
 export type ResolvedThemePalette = Readonly<Record<string, string>>;
 
-const THEME_KEYS = Object.keys(TERMINAL_TOKEN_NAMES) as readonly (keyof TerminalTheme)[];
+/** The palette's roles; a theme file never names the search-highlight ones (#306). */
+const THEME_KEYS = Object.keys(TERMINAL_TOKEN_NAMES) as readonly Exclude<keyof TerminalTheme, TerminalSearchRole>[];
 
 /**
  * `base`, with every colour the theme actually defines laid over it.

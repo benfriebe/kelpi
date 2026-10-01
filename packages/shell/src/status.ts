@@ -84,6 +84,7 @@ import {
     parseWorkspaceSelection,
     shellActionAppliesHere
 } from './shell-actions.js';
+import { createFailureLog } from './failure-log.js';
 import { log, logError, warn } from './log.js';
 
 const RECONNECT_INITIAL_MS = 500;
@@ -227,6 +228,8 @@ export interface StatusHost {
      * would stay that way; the host shows them, and the page re-reports on reconnect.
      */
     statusDisconnected?(): void;
+    /** The status connection completed its handshake (after a launch, or after an outage, #312). */
+    statusConnected?(): void;
 }
 
 /**
@@ -355,6 +358,7 @@ export function createStatusController(options: StatusOptions): StatusController
     let stopped = true;
     let fatal = false;
     let attempt = 0;
+    const socketFailures = createFailureLog('status socket error', warn);
     let reconnectTimer: NodeJS.Timeout | null = null;
 
     let counts: AgentCounts = EMPTY_COUNTS;
@@ -891,7 +895,7 @@ export function createStatusController(options: StatusOptions): StatusController
 
         next.on('error', (error: Error) => {
             if (socket !== next) return;
-            warn(`status socket error: ${error.message}`);
+            socketFailures.failed(error.message);
         });
 
         next.on('close', (code: number) => {
@@ -940,6 +944,9 @@ export function createStatusController(options: StatusOptions): StatusController
                 log(
                     `status ws connected ${wsUrl()} daemon=${String(daemon['version'] ?? '?')} pid=${String(daemon['pid'] ?? '?')}`
                 );
+                const failed = socketFailures.recovered();
+                if (failed > 0) log(`status ws: back after ${String(failed)} failed attempt(s)`);
+                host.statusConnected?.();
                 // §AGNT-056: state the window's CURRENT activation the moment there is a socket
                 // to state it on. Focus/blur only report transitions, and a client that
                 // attaches to a window it cannot see (page reload while the app is in the

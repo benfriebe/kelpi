@@ -76,7 +76,21 @@ export const globalUsage = `Usage:
   kelpi web console [--since N] [--level log|debug|info|warn|error] [--clear] [--follow] [--json]
   kelpi web exec (--file <path> | <js>) [--timeout 30] [--target X] [--workspace Y] [--json]
   kelpi doctor [--json]                                   # IPC health check
+  kelpi daemon restart|status|start                      # restart keeps running terminals and agents
+  kelpi daemon stop [--force]                            # ends every terminal and agent; asks first
   kelpi install-hooks [--claude-dir <dir>] [--codex-dir <dir>] [--link] [--dry-run] [--json]
+
+`;
+
+export const daemonUsage = `Usage:
+  kelpi daemon status [--json]   Is the daemon running? Version, pid, ports, run dir
+  kelpi daemon start             Start the daemon if it is not running
+  kelpi daemon restart           Restart the daemon. Running terminals and agents are kept
+  kelpi daemon stop [--force]    Stop the daemon. Every terminal and agent in it ends, so
+                                 at a terminal it asks first; --force does not ask
+
+Runs the kelpid bundled with this kelpi, so it works on the daemon's own machine.
+To pick up a new daemon build, or to get a stuck one going again, use restart.
 
 `;
 

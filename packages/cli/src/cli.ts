@@ -13,6 +13,7 @@ import { handleDocument } from './commands/document.js';
 import { isHelpToken } from './args.js';
 import { setEnv } from './env.js';
 import { exit, printLine, writeErr } from './io.js';
+import { handleDaemon } from './commands/daemon.js';
 import { handleDoctor } from './commands/doctor.js';
 import { handleEvent } from './commands/event.js';
 import { handleGraft } from './commands/graft.js';
@@ -79,6 +80,8 @@ export async function run(argv: readonly string[], environment: NodeJS.ProcessEn
             return handleWeb(args);
         case 'doctor':
             return handleDoctor(args);
+        case 'daemon':
+            return handleDaemon(args);
         case 'install-hooks':
             return handleInstallHooks(args);
         default:

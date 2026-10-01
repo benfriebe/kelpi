@@ -273,7 +273,10 @@ describe('ping', () => {
             version: '9.9.9',
             build: '4242',
             pid: process.pid,
-            protocol: 1
+            protocol: 1,
+            // #311: what a stop would end; always present, so `kelpid stop` can tell "none" from
+            // a daemon too old to say.
+            terminals: { live: 0, agents: 0, running: 0, waiting: 0 }
         });
         expect(h.replies[0]?.closed).toBe(true);
     });

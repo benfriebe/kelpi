@@ -1535,6 +1535,11 @@ terminal search (shell), markdown-preview find, web-view find (per active tab).
 `searchTotal` = number of matches, `searchSelected` = current match index; both start
 null.
 
+Content panes' bars are per CLIENT and never touch these fields: the markdown or diff
+preview's find (content-panes.md §3.13) and the built-in editor's find over a scratchpad
+or a markdown pane in edit mode (content-panes.md §4.4) are opened by the client's
+`toggleSearch` and live in the pane body's own state.
+
 **toggleSearch** (find keybinding)
 - Guard: there is a focused pane AND its type is `"shell"`, `"web"`, or
   (`"markdown"` AND not editing). Scratchpad/diff and editing markdown panes cannot

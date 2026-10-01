@@ -35,6 +35,7 @@ Source files this spec describes (TypeScript):
 - `packages/client/src/content/copy.ts`: the whole-document copy commands
 - `packages/client/src/content/MarkdownPane.tsx`, `DiffPane.tsx`, `ScratchpadPane.tsx`: the three pane bodies
 - `packages/client/src/content/PlainTextEditor.tsx`, `gutter.ts`: the built-in plain-text editor and its line-number gutter
+- `packages/client/src/content/text-find.ts`: the built-in editor's find (matches, stepping, highlight runs)
 - `packages/client/src/content/scroll.ts`: the shared scroll-position store
 - `packages/client/src/content/client.ts`: the client's content API (keystroke coalescing, mode, refresh)
 - Plus the surrounding wiring in `packages/client/src/App.tsx`, `packages/client/src/grid/PaneHeader.tsx`,
@@ -790,13 +791,17 @@ the file itself):
 
 The workspace-level search overlay (same UI as terminal scrollback search) drives
 markdown panes through an injected JS namespace `window.__kelpiFind` with
-`search(needle)`, `next()`, `prev()`, `clear()`.
+`search(needle)`, `next()`, `prev()`, `clear()`. (A markdown pane in edit mode has no
+preview to search; ⌘F there opens the built-in editor's find over the source, §4.4.)
 
 State (host side, per pane, **per client**): `ContentFrame`
 (`packages/client/src/content/ContentFrame.tsx`) keeps the needle, the open/closed bar and
 the last `{total, current}` in component state and replays the stored needle on every
 `ready`; two clients searching the same pane never see each other's highlights. The bar
-itself is the grid's `PaneSearchOverlay`, the same one every pane type gets. Actions:
+itself is the grid's `PaneSearchOverlay`, the same one every pane type gets. The app opens
+it with a per-pane token (`findToken`) that only the focused pane's body sees bumped; every
+other content pane's token drops to 0, which is not a request and never opens a bar.
+Actions:
 
 - `searchNeedleChanged(needle)` → `__kelpiFind.search(needle)` immediately (no debounce —
   it's local JS; terminal panes debounce, markdown does not). The needle is
@@ -972,9 +977,7 @@ A plain-text (never rich), monospace 13 px editor (`PlainTextEditor` in
 with:
 
 - Undo enabled (the textarea's own); spellcheck, autocorrect and autocapitalize
-  disabled. No find bar: `toggle_search` over a markdown pane in edit mode declines
-  (`toggleSearch` in `packages/client/src/App.tsx`) and the chord falls through to the
-  host.
+  disabled. ⌘F (`toggle_search`) opens the editor's own find bar (§4.4).
 - Content: the raw file bytes as UTF-8. A read failure seeds the edit buffer with the
   same `> Failed to load file: <path>` blockquote the preview renders (§3.11), and
   `setMode('edit')` re-seeds from that content; this is still a known sharp edge, the
@@ -1038,6 +1041,54 @@ with:
   (`content/PlainTextEditor.tsx`, `armCaretClaim` in `app/pane-focus.ts`).
 - Editors additionally *release* keyboard focus explicitly on focused→unfocused so the
   next pane's claim isn't blocked.
+
+### 4.4 Find in the built-in editor
+
+⌘F (`toggle_search`) over a scratchpad, or over a markdown pane in edit mode, opens a find
+bar over the text being edited. (A markdown pane whose edit session is an external
+`$EDITOR` is a terminal running that program, and the binding declines there.) The editor
+has no `NSTextView` `usesFindBar`, and the desktop shell has no host find for the chord to
+fall through to, so the editor draws its own (issue #305).
+
+- **The bar** is the same `PaneSearchOverlay` a preview mounts (§3.13), with the same
+  `content-find-…` test ids, in the same corner of the pane, so ⌘E between the two modes of
+  a markdown pane leaves one bar in one place. It claims the caret when it opens; a second
+  ⌘F from the pane re-focuses its field. Return / the up chevron steps to the next match,
+  ⇧Return / the down chevron to the previous, both wrapping. The counter follows the shared
+  rule: nothing until a needle is typed, then `n/N`, or `-/0` with no match.
+- **State is per client**, held by `PlainTextEditor`
+  (`packages/client/src/content/PlainTextEditor.tsx`), as a preview's is by
+  `ContentFrame`: the needle, the matches and the selected match never reach the daemon,
+  and two windows searching the same pane do not see each other's highlights. Closing the
+  bar keeps the needle, so ⌘F again reopens it on the same needle with its matches
+  highlighted, but with none selected (`-/N`) until it is stepped or the needle is edited:
+  opening the bar never moves the caret or the scroll.
+- **Matching** follows §3.13's rules over the editor's buffer
+  (`packages/client/src/content/text-find.ts`): a literal substring, case-folded by the
+  regex engine (escaped needle, `gi`), zero-length matches skipped. The matches are
+  recomputed whenever the buffer changes under an open bar (a keystroke, an adopted
+  snapshot), with the selection clamped rather than reset.
+- **Typing** a needle selects the first match in the document; each step selects the next.
+  Selecting means `setSelectionRange` on the textarea and scrolling the match into view
+  when it is off screen (vertically to the middle of the viewport; sideways too in the
+  scratchpad, which does not wrap). The match's position is measured in a hidden node
+  styled to the textarea's content box, so wrapped lines, tabs and wide glyphs land where
+  the textarea draws them. Offsets are mapped to the field's own: a textarea normalizes
+  CRLF to LF, so a buffer that still has a file's CRLFs is longer than the field. When the
+  buffer changes under an open bar, the selection follows the selected match without a
+  scroll, unless the textarea itself holds the caret.
+- **Highlights.** A browser neither scrolls nor (in Chromium) paints the selection of a
+  textarea that does not hold the caret, and the bar's field holds it. So the editor draws
+  the visible lines a second time in an inert layer over the textarea, in the same
+  typography and scroll: plain runs transparent, each match an opaque mark in §3.13's
+  palette (the selected one in the current colours), including SET-219's overrides. Only
+  the lines the gutter draws are drawn (CONT-078's bounded node count).
+- **Closing** (Escape, the ✕, or ⌘F from the field) hands the caret back to the textarea
+  with the selected match selected, so the next keystroke edits where the search ended.
+  With no match selected it gets back the selection it had when the bar opened. Escape
+  pressed in the TEXT while the bar is open closes the bar and leaves the caret alone.
+  A pane that goes off screen keeps its bar hidden rather than unmounted, so coming back
+  does not pull the caret into the bar's field.
 
 ---
 
@@ -1415,8 +1466,8 @@ Behavior = the built-in markdown editor (4.2) with these differences:
   branch.
 - Same line-number gutter, scroll-fraction persistence, undo, transparent
   background over the ghostty-colored pane fill, luminance-based text color. Like the
-  markdown editor it has no find bar (`toggle_search` declines for scratchpads and the
-  chord falls through to the host). Unlike the markdown editor it does not soft-wrap:
+  markdown editor, ⌘F opens the editor's find bar (§4.4). Unlike the markdown editor it
+  does not soft-wrap:
   the scratchpad textarea keeps `wrap="off"` and scrolls horizontally.
 - Close/reopen: content rides the closed-pane snapshot, so ⌘⇧T restores the text.
 

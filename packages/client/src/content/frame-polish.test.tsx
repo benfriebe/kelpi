@@ -154,6 +154,27 @@ describe('find bar', () => {
         expect(await screen.findByTestId(`content-find-${PANE}`)).toBeTruthy();
     });
 
+    /**
+     * The app gives every pane but the requested one a 0, so ⌘F in ANOTHER pane drops this
+     * one's token to 0. That is the request moving away: reading it as a request popped this
+     * preview's closed bar back open (and pulled the caret into it) whenever ⌘F was pressed in a
+     * diff, another preview, or (since issue #305) a scratchpad.
+     */
+    it('does not open when the token falls back to 0 (⌘F went to another pane)', async () => {
+        const view = render(
+            <ContentFrame paneID={PANE} title="markdown preview" html={DOCUMENT} findToken={1} />
+        );
+        view.rerender(<ContentFrame paneID={PANE} title="markdown preview" html={DOCUMENT} findToken={2} />);
+        fireEvent.click(await screen.findByTestId(`content-find-close-${PANE}`));
+        expect(screen.queryByTestId(`content-find-${PANE}`)).toBeNull();
+
+        view.rerender(<ContentFrame paneID={PANE} title="markdown preview" html={DOCUMENT} findToken={0} />);
+        expect(screen.queryByTestId(`content-find-${PANE}`)).toBeNull();
+
+        view.rerender(<ContentFrame paneID={PANE} title="markdown preview" html={DOCUMENT} findToken={1} />);
+        expect(await screen.findByTestId(`content-find-${PANE}`)).toBeTruthy();
+    });
+
     it('shows the match count the frame reports and steps through matches', async () => {
         render(<ContentFrame paneID={PANE} title="markdown preview" html={DOCUMENT} />);
         const posted = captureToFrame();

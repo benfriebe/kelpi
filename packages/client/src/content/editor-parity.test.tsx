@@ -8,13 +8,14 @@
  * render the SAME `PlainTextEditor` — but "by construction" is an argument, not evidence, and a
  * prop added to one call site and not the other would quietly break it.
  *
- * So this renders both bodies and compares them attribute by attribute. The one clause that is
- * NOT here is the native find bar: a `<textarea>` has no `usesFindBar`, the port leaves ⌘F to
- * the host's own find for both editors, and that divergence is recorded under §CONT-072 (with
- * the binding's refusal exercised in `App.find-gate.test.tsx`).
+ * So this renders both bodies and compares them attribute by attribute. The find bar is
+ * compared too: a `<textarea>` has no `usesFindBar`, so §CONT-072's clause is met by the
+ * editor's own bar (§4.4, issue #305) rather than left to a host find the desktop app does not
+ * have, and both editors have to open the same one (the binding's routing to it is exercised in
+ * `App.find-gate.test.tsx`).
  */
 
-import { act, cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { MarkdownPane } from './MarkdownPane';
@@ -188,5 +189,48 @@ describe('CONT-117: the scratchpad editor and the markdown editor', () => {
         );
         // A light document and a dark one must not read the same, or the rule is not applied.
         expect(dark).not.toBe(light.scratch);
+    });
+
+    it('open the same find bar, in the same corner, searching the same way (§CONT-072, §4.4)', () => {
+        const api = createFakeContentApi();
+        const body = 'alpha beta\nBeta gamma\n';
+        const markdown = (token: number) => <MarkdownPane paneID={MD} content={api} findToken={token} />;
+        const scratchpad = (token: number) => <ScratchpadPane paneID={SCRATCH} content={api} findToken={token} />;
+        const md = render(markdown(0));
+        const scratch = render(scratchpad(0));
+        act(() => {
+            api.push(contentState({ paneID: MD, type: 'markdown', mode: 'edit', text: body }));
+            api.push(
+                contentState({
+                    paneID: SCRATCH,
+                    type: 'scratchpad',
+                    mode: 'edit',
+                    filePath: null,
+                    html: null,
+                    text: body
+                })
+            );
+        });
+
+        const profile = (paneID: string): Record<string, unknown> => {
+            const bar = screen.getByTestId(`content-find-${paneID}`);
+            const field = screen.getByTestId(`content-find-input-${paneID}`) as HTMLInputElement;
+            fireEvent.change(field, { target: { value: 'beta' } });
+            const area = screen.getByTestId(`content-textarea-${paneID}`) as HTMLTextAreaElement;
+            return {
+                role: bar.getAttribute('role'),
+                top: bar.style.top,
+                right: bar.style.right,
+                count: screen.getByTestId(`content-find-count-${paneID}`).textContent,
+                selection: [area.selectionStart, area.selectionEnd],
+                marks: screen.getByTestId(`content-find-highlights-${paneID}`).querySelectorAll('mark').length
+            };
+        };
+
+        md.rerender(markdown(1));
+        const markdownBar = profile(MD);
+        scratch.rerender(scratchpad(1));
+        expect(profile(SCRATCH)).toEqual(markdownBar);
+        expect(markdownBar).toMatchObject({ role: 'search', count: '1/2', selection: [6, 10], marks: 2 });
     });
 });

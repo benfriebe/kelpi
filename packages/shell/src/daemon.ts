@@ -427,13 +427,31 @@ export async function ensureDaemon(options: EnsureDaemonOptions = {}): Promise<D
     );
 }
 
+/** What `findDaemon` saw in the run dir. */
+export type DaemonPresence =
+    /** A daemon is serving: ping, port, `/healthz` and token all agree. */
+    | { readonly kind: 'ready'; readonly location: DaemonLocation }
+    /**
+     * Something holds the socket but the daemon is not usable yet: a ping that timed out (busy,
+     * or mid-restore), or a ping that answered before `/healthz` did (still starting).
+     */
+    | { readonly kind: 'busy'; readonly runDir: string; readonly reason: string }
+    /** Nothing is listening: no socket file, or a refused connect. */
+    | { readonly kind: 'gone'; readonly runDir: string; readonly reason: string };
+
 /**
- * Re-check an adopted daemon, e.g. after the status socket has been failing. Returns the
- * refreshed location, or undefined when it is gone (the tray then offers "Start Daemon").
+ * Look for a daemon again, after the one this shell adopted stopped answering (#312). Never
+ * spawns one: starting the daemon is the user's call (`./daemon-watch.ts` says why), and a daemon
+ * someone else started, with `kelpid start` or a restart, is simply adopted.
  */
-export async function probeExisting(env: NodeJS.ProcessEnv = process.env): Promise<DaemonLocation | undefined> {
+export async function findDaemon(env: NodeJS.ProcessEnv = process.env): Promise<DaemonPresence> {
     const paths = resolveRunPaths({ env });
     const location = await readyLocation(paths, false);
-    if (location === undefined) warn(`no daemon answering in ${paths.dir}`);
-    return location;
+    if (location !== undefined) return { kind: 'ready', location };
+    const probe = await probeDaemon(paths, { timeoutMs: PROBE_TIMEOUT_MS });
+    if (probe.alive) return { kind: 'busy', runDir: paths.dir, reason: 'answering ping but not serving yet' };
+    const reason = probe.reason ?? 'no answer';
+    // A connect that was accepted and then never answered is a daemon that is wedged or busy;
+    // anything else (ENOENT, ECONNREFUSED) means no process is listening on the socket at all.
+    return reason === 'timeout' ? { kind: 'busy', runDir: paths.dir, reason } : { kind: 'gone', runDir: paths.dir, reason };
 }

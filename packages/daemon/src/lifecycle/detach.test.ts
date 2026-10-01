@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { createControlServer, type ControlServer } from '../control/server.js';
 import type { ControlDispatcher } from '../seams.js';
-import { isDaemonAlive, probeDaemon, spawnDetached } from './detach.js';
+import { isDaemonAlive, probeDaemon, rotateLogFile, spawnDetached } from './detach.js';
 import { resolveRunPaths, writePidRecord, type RunPaths } from './rundir.js';
 
 const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -71,6 +71,20 @@ describe('spawnDetached', () => {
         spawnDetached('/bin/sh', ['-c', 'printf detached-hello'], { logFile });
         const contents = await waitForFile(logFile);
         expect(contents).toContain('detached-hello');
+    });
+
+    it('keeps the log private, and moves an oversized one aside first (#314)', async () => {
+        const logFile = path.join(directory, 'logs', 'kelpid.log');
+        fs.mkdirSync(path.dirname(logFile), { recursive: true });
+        fs.writeFileSync(logFile, 'x'.repeat(64));
+        expect(rotateLogFile(logFile, 128)).toBe(false);
+        expect(rotateLogFile(logFile, 32)).toBe(true);
+        expect(fs.readFileSync(`${logFile}.1`, 'utf8')).toBe('x'.repeat(64));
+        expect(rotateLogFile(path.join(directory, 'missing.log'), 0)).toBe(false);
+
+        spawnDetached('/bin/sh', ['-c', 'printf fresh'], { logFile });
+        expect(await waitForFile(logFile)).toBe('fresh');
+        expect(fs.statSync(logFile).mode & 0o777).toBe(0o600);
     });
 
     it('passes cwd and env through', async () => {

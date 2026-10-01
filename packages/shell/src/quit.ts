@@ -189,7 +189,17 @@ export function installQuitGate(options: QuitGateOptions): QuitGate {
         options.onQuit?.();
         // Deliberately absent, here and everywhere else: anything that stops the daemon.
         log('quit: leaving the daemon running');
-        app.quit();
+        /*
+         * #315: on a later turn, never inside the `before-quit` that is being held.
+         *
+         * With the daemon down there is nothing to flush, so the chain in `onBeforeQuit` settles
+         * in the microtask checkpoint Electron runs as that very emission returns. An `app.quit()`
+         * from there re-enters Electron's quit while the held one is still unwinding: the inner
+         * call starts closing the windows, then the outer one stores "prevented" over the inner
+         * one's "quitting". Every window closed and the app stayed up with none, which is what a
+         * ⌘Q during the 2026-10-01 outage did.
+         */
+        setImmediate(() => app.quit());
     };
 
     const onBeforeQuit = (event: Electron.Event): void => {

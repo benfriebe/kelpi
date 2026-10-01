@@ -237,9 +237,11 @@ ends them. OSC 8 hyperlinks in content from before the handoff are not in the sn
 
 ## 10. Restarting
 
-- **`kelpid stop`, SIGTERM**: a full stop. Shells die; the host exits.
+- **`kelpid stop`, SIGTERM**: a full stop. Shells die; the host exits. At a terminal, `kelpid stop`
+  (and `kelpi daemon stop`) says how many terminals and agents will end and asks first, unless
+  `--force` (#311).
 - **SIGUSR2**: hand off and exit. Whoever sent it starts the successor.
-- **`kelpid restart`**: leaves `<run dir>/daemon-v<N>.respawn`, sends SIGUSR2, and the old daemon
+- **`kelpid restart`** (or `kelpi daemon restart`): leaves `<run dir>/daemon-v<N>.respawn`, sends SIGUSR2, and the old daemon
   starts its own successor with its own environment and entry (never the environment of the shell
   that ran `restart`). A daemon without `handoff` gets a full stop and start.
 - **`scripts/self-upgrade.mjs`**: the restarter sends SIGUSR2 to daemons that advertise handoff

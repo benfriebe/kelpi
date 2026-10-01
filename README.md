@@ -360,7 +360,9 @@ killed.
 Shells do not have to die with the daemon. `kelpid start` runs every PTY in a separate **terminal
 host** process, so `kelpid restart` (and a promote, or an app update) hands each running terminal
 to the next daemon instead: same process, same screen, nothing typed into a live agent. `kelpid stop`
-still ends everything. `KELPID_TERMINAL_HOST=0` keeps the old in-process behaviour. See
+still ends everything, so at a terminal it asks first (`--force` does not). From a Kelpi pane, or
+anywhere the `kelpi` CLI is installed, `kelpi daemon restart` and `kelpi daemon stop` run the
+bundled `kelpid` for you. `KELPID_TERMINAL_HOST=0` keeps the old in-process behaviour. See
 [docs/terminal-host.md](docs/terminal-host.md).
 
 ### Talking to it

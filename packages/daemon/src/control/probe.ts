@@ -49,6 +49,8 @@ export interface ControlPingProbe {
     readonly paneRoute?: string | undefined;
     /** Live primary HTTP endpoint. Absent from older daemons; never infer from client env. */
     readonly http?: ControlPingHttp | undefined;
+    /** What a stop would end (#311). Undefined = an older daemon that did not say. */
+    readonly terminals?: ControlPingTerminals | undefined;
     /** Why the probe concluded "not alive" (`ENOENT`, `ECONNREFUSED`, `timeout`, …). */
     readonly reason?: string | undefined;
 }
@@ -66,6 +68,34 @@ export function readHttpEndpoint(reply: Record<string, unknown>): ControlPingHtt
     if (typeof host !== 'string' || net.isIP(host) === 0 ||
         typeof port !== 'number' || !Number.isInteger(port) || port < 1 || port > 65535) return undefined;
     return { host, port };
+}
+
+/**
+ * The `terminals` block of a `ping` reply (#311): live terminals and the agent sessions in them.
+ *
+ * Absent from an older daemon, which is "unknown", never "none": `kelpid stop` must not read a
+ * missing block as a daemon with nothing to lose.
+ */
+export interface ControlPingTerminals {
+    readonly live: number;
+    readonly agents: number;
+    readonly running: number;
+    readonly waiting: number;
+}
+
+/** Decode `ping`'s additive `terminals` block; undefined when absent or malformed. */
+export function readTerminalCounts(reply: Record<string, unknown>): ControlPingTerminals | undefined {
+    const raw = reply['terminals'];
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return undefined;
+    const source = raw as Record<string, unknown>;
+    const live = readNumber(source, 'live');
+    if (live === undefined) return undefined;
+    return {
+        live,
+        agents: readNumber(source, 'agents') ?? 0,
+        running: readNumber(source, 'running') ?? 0,
+        waiting: readNumber(source, 'waiting') ?? 0
+    };
 }
 
 /**
@@ -215,6 +245,7 @@ export function probeControlPing(target: ControlProbeTarget, options: ControlPro
                 const compat = readCompatStatus(reply);
                 const paneRoute = readString(reply, 'pane_route');
                 const http = reply['ok'] === true ? readHttpEndpoint(reply) : undefined;
+                const terminals = readTerminalCounts(reply);
                 finish({
                     alive: true,
                     reply,
@@ -225,7 +256,8 @@ export function probeControlPing(target: ControlProbeTarget, options: ControlPro
                     ...(tcp !== undefined ? { tcp } : {}),
                     ...(compat !== undefined ? { compat } : {}),
                     ...(paneRoute !== undefined ? { paneRoute } : {}),
-                    ...(http !== undefined ? { http } : {})
+                    ...(http !== undefined ? { http } : {}),
+                    ...(terminals !== undefined ? { terminals } : {})
                 });
                 return;
             }

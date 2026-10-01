@@ -1353,6 +1353,7 @@ Health check + version probe (used by `kelpi doctor`). No parameters.
 {"command":"ping"}
 → {"ok":true,"version":"0.1.0","build":"1","pid":48291,"protocol":1,
    "pane_route":"tcp:127.0.0.1:52144",
+   "terminals":{"live":4,"agents":1,"running":0,"waiting":1},
    "persistence":{"ok":true,"degraded":false,"path":"/…/kelpi.db","failed_saves":0,"last_save_at":"2026-08-18T09:05:12Z"}}
 ```
 
@@ -1374,6 +1375,9 @@ ignores unless it understands them (`packages/daemon/src/handlers/app/ping.ts:33
   server's TCP listener is bound.
 - `persistence` `{ok, degraded, path, failed_saves, last_save_at, error?, errno?, phase?}`:
   the database health, so a daemon whose store failed to open does not look healthy.
+- `terminals` `{live, agents, running, waiting}`: live terminals (panes with a PTY) and the agent
+  sessions among them. `kelpid stop` reads it to say what a stop ends (#311); an older daemon
+  omits it, which a reader treats as unknown, never as none.
 
 `kelpid status` and the daemon's own startup probe parse these blocks
 (`packages/daemon/src/control/probe.ts:20-108`).

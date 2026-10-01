@@ -119,9 +119,19 @@ function isDirectoryOnDisk(path: string): boolean {
  * fixed list: every `CLAUDE_*` marker (session id, child flag, messaging socket, config dir,
  * pid, effort), the bare `CLAUDECODE` flag, and the `AI_AGENT` tag are all descriptions of
  * whatever Claude session happened to launch the daemon, and none of them describes a pane.
+ *
+ * The test lanes' markers are the same kind of thing (#313): `KELPI_HARNESS_SOCKET` names a
+ * dev instance's or a sandbox's control channel for its SHELL, and it reached every program in
+ * every pane. A packaged Kelpi.app launched from such a pane opened that socket as its own.
  */
 export function inheritableEnvKey(key: string): boolean {
-    return !(key.startsWith('CLAUDE_') || key === 'CLAUDECODE' || key === 'AI_AGENT');
+    return !(
+        key.startsWith('CLAUDE_') ||
+        key === 'CLAUDECODE' ||
+        key === 'AI_AGENT' ||
+        key.startsWith('KELPI_HARNESS') ||
+        key.startsWith('KELPI_AUDIT')
+    );
 }
 
 export function resolveSpawnCwd(

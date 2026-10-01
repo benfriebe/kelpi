@@ -232,7 +232,8 @@ const sandbox = {
         // The test-only control channel (`packages/shell/src/harness.ts`) for the native
         // surfaces CDP cannot reach: the application menu, native dialogs, the dock bounce.
         // Not the KELPI_HARNESS watchdog marker, see below; this socket alone changes nothing
-        // about who outlives whom.
+        // about who outlives whom. The daemon does not pass it on to pane programs (#313), so
+        // an app launched from one of this instance's panes never opens it.
         KELPI_HARNESS_SOCKET: path.join(root, 'harness.sock')
         // Deliberately NO KELPI_HARNESS: this instance should outlive a crashed launcher the way
         // the real one outlives its shell — kill it with Ctrl-C here, or `kelpid stop` with the

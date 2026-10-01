@@ -90,6 +90,11 @@ export { InputHandler } from './input-handler';
 export { EventEmitter } from './event-emitter';
 export { SelectionManager } from './selection-manager';
 export type { SelectionCoordinates } from './selection-manager';
+export type {
+  ISearchHighlight,
+  ISearchCurrentMatch,
+  ISearchHighlightSpan,
+} from './search-highlight';
 
 // Addons
 export { FitAddon } from './addons/fit';

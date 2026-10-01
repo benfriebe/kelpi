@@ -281,9 +281,10 @@ export class SelectionManager {
    */
   selectAll(): void {
     const dims = this.wasmTerm.getDimensions();
-    const viewportY = this.getViewportY();
-    this.selectionStart = { col: 0, absoluteRow: viewportY };
-    this.selectionEnd = { col: dims.cols - 1, absoluteRow: viewportY + dims.rows - 1 };
+    // vendor 0.4.0-nex.16: the rows on screen, in the same absolute numbering every other
+    // reader here uses (see `select`).
+    this.selectionStart = { col: 0, absoluteRow: this.viewportRowToAbsolute(0) };
+    this.selectionEnd = { col: dims.cols - 1, absoluteRow: this.viewportRowToAbsolute(dims.rows - 1) };
     this.requestRender();
     this.selectionChangedEmitter.fire();
   }
@@ -311,10 +312,14 @@ export class SelectionManager {
     // Clamp end row
     endRow = Math.min(endRow, dims.rows - 1);
 
-    // Convert viewport rows to absolute rows
-    const viewportY = this.getViewportY();
-    this.selectionStart = { col: column, absoluteRow: viewportY + row };
-    this.selectionEnd = { col: endCol, absoluteRow: viewportY + endRow };
+    // Convert viewport rows to absolute rows.
+    //
+    // vendor 0.4.0-nex.16: through `viewportRowToAbsolute`, like the mouse path. Upstream stored
+    // `viewportY + row`, which `absoluteRowToViewport` paints back at
+    // `row + 2 * viewportY - scrollbackLength`: right only with no scrollback (or at
+    // `viewportY = scrollbackLength / 2`), and usually off screen, so nothing painted at all.
+    this.selectionStart = { col: column, absoluteRow: this.viewportRowToAbsolute(row) };
+    this.selectionEnd = { col: endCol, absoluteRow: this.viewportRowToAbsolute(endRow) };
     this.requestRender();
     this.selectionChangedEmitter.fire();
   }
@@ -335,10 +340,9 @@ export class SelectionManager {
       [start, end] = [end, start];
     }
 
-    // Convert viewport rows to absolute rows
-    const viewportY = this.getViewportY();
-    this.selectionStart = { col: 0, absoluteRow: viewportY + start };
-    this.selectionEnd = { col: dims.cols - 1, absoluteRow: viewportY + end };
+    // Convert viewport rows to absolute rows (vendor 0.4.0-nex.16: see `select`).
+    this.selectionStart = { col: 0, absoluteRow: this.viewportRowToAbsolute(start) };
+    this.selectionEnd = { col: dims.cols - 1, absoluteRow: this.viewportRowToAbsolute(end) };
     this.requestRender();
     this.selectionChangedEmitter.fire();
   }

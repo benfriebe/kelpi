@@ -19,6 +19,8 @@ import type {
     TerminalRenderer,
     TerminalRendererFactory,
     TerminalRendererOptions,
+    TerminalSearchHighlight,
+    TerminalSearchSpan,
     TerminalTheme
 } from './renderer';
 
@@ -89,6 +91,9 @@ export class FakeRenderer implements TerminalRenderer {
     repaints = 0;
     /** Every `revealMatch` the search overlay asked for, in order. */
     readonly revealed: TerminalMatchLocation[] = [];
+    /** #306 - every `setSearchHighlight`, in order; the last one is what the layer shows. */
+    readonly searchHighlights: (TerminalSearchHighlight | null)[] = [];
+    private readonly searchListeners = new Set<(spans: readonly TerminalSearchSpan[]) => void>();
     disposed = false;
     opened: HTMLElement | null = null;
 
@@ -374,6 +379,20 @@ export class FakeRenderer implements TerminalRenderer {
         this.revealed.push(match);
     }
 
+    setSearchHighlight(highlight: TerminalSearchHighlight | null): void {
+        this.searchHighlights.push(highlight);
+    }
+
+    onSearchHighlightChange(listener: (spans: readonly TerminalSearchSpan[]) => void): () => void {
+        this.searchListeners.add(listener);
+        return () => this.searchListeners.delete(listener);
+    }
+
+    /** Test hook: announce a painted frame's highlights, as the engine does after a frame. */
+    emitSearchHighlights(spans: readonly TerminalSearchSpan[]): void {
+        for (const listener of [...this.searchListeners]) listener(spans);
+    }
+
     dispose(): void {
         this.disposed = true;
         this.dataListeners.clear();
@@ -381,6 +400,7 @@ export class FakeRenderer implements TerminalRenderer {
         this.titleListeners.clear();
         this.selectionListeners.clear();
         this.scrollListeners.clear();
+        this.searchListeners.clear();
         this.failureListeners.clear();
     }
 

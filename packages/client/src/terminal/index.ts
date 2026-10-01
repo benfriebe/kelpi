@@ -249,6 +249,9 @@ export {
     type TerminalRenderer,
     type TerminalRendererFactory,
     type TerminalRendererOptions,
+    type TerminalSearchHighlight,
+    type TerminalSearchRole,
+    type TerminalSearchSpan,
     type TerminalTheme,
     type XtermLikeTerminal
 } from './renderer';

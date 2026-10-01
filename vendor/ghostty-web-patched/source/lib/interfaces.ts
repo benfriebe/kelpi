@@ -36,6 +36,14 @@ export interface ITheme {
   selectionBackground?: string;
   selectionForeground?: string;
 
+  // vendor 0.4.0-nex.16: the search-highlight layer (`search-highlight.ts`). Ghostty's own
+  // `search-background` / `search-foreground` and `search-selected-*` keys: every visible match,
+  // and the one the embedder's counter is on.
+  searchBackground?: string;
+  searchForeground?: string;
+  searchSelectedBackground?: string;
+  searchSelectedForeground?: string;
+
   // ANSI colors (0-15)
   black?: string;
   red?: string;

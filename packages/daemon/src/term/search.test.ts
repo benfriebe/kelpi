@@ -47,6 +47,13 @@ describe('findMatches', () => {
         expect(findMatches([line], 'alpha', { bufferLength: 10, caseSensitive: true })).toHaveLength(2);
     });
 
+    it('folds case without moving an offset, even past a character that lowercases longer (#306)', () => {
+        // `'İ'.toLowerCase()` is two UTF-16 units: a plain lowercase put this `x` at offset 2.
+        const dotted = { text: '\u0130x needle', startLine: 0, cols: 80, rows: [{ line: 0, offset: 0 }] };
+        expect(findMatches([dotted], 'x', { bufferLength: 1 }).map((match) => match.col)).toEqual([1]);
+        expect(findMatches([dotted], 'NEEDLE', { bufferLength: 1 }).map((match) => match.col)).toEqual([3]);
+    });
+
     it('counts overlapping occurrences separately', () => {
         const matches = findMatches([{ text: 'aaa', startLine: 0, cols: 80, rows: [{ line: 0, offset: 0 }] }], 'aa', {
             bufferLength: 1

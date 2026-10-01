@@ -11,6 +11,16 @@
  */
 
 import type { ITheme } from './interfaces';
+import {
+  SEARCH_KIND_CURRENT,
+  SEARCH_KIND_NONE,
+  SearchHighlighter,
+  pinSearchCurrent,
+  type ISearchCurrentMatch,
+  type ISearchHighlight,
+  type ISearchHighlightSpan,
+  type SearchRowSource,
+} from './search-highlight';
 import type { SelectionManager } from './selection-manager';
 import type { GhosttyCell, ILink } from './types';
 import { CellFlags } from './types';
@@ -30,6 +40,16 @@ export interface IRenderable {
    * For simple cells, returns the single character.
    */
   getGraphemeString?(row: number, col: number): string;
+  /**
+   * vendor 0.4.0-nex.16, for the search-highlight layer: whether a SCREEN row is the soft-wrap
+   * continuation of the row above it (measured: the head row of a wrapped line reads false and
+   * every row after it true, xterm.js's `isWrapped`), a scrollback row's grapheme cluster, and
+   * the whole screen in one read (the per-row `getLine` re-reads it every call). All optional:
+   * `GhosttyTerminal` has them, a stub need not.
+   */
+  isRowWrapped?(row: number): boolean;
+  getScrollbackGraphemeString?(offset: number, col: number): string;
+  getViewport?(): GhosttyCell[];
 }
 
 export interface IScrollbackProvider {
@@ -113,6 +133,12 @@ export const DEFAULT_THEME: Required<ITheme> = {
   // Using Ghostty's approach: selection bg = default fg, selection fg = default bg
   selectionBackground: '#d4d4d4',
   selectionForeground: '#1e1e1e',
+  // vendor 0.4.0-nex.16: high-contrast match colours, readable over light and dark themes alike
+  // because they carry their own foreground (Kelpi's `search-match-*` defaults).
+  searchBackground: '#f2d027',
+  searchForeground: '#000000',
+  searchSelectedBackground: '#ff7a00',
+  searchSelectedForeground: '#000000',
   black: '#000000',
   red: '#cd3131',
   green: '#0dbc79',
@@ -210,6 +236,10 @@ export class CanvasRenderer {
 
   // Selection manager (for rendering selection)
   private selectionManager?: SelectionManager;
+  // vendor 0.4.0-nex.16: every visible search match, and the current one (`search-highlight.ts`)
+  private searchHighlighter = new SearchHighlighter();
+  private searchHighlightListener: ((spans: readonly ISearchHighlightSpan[]) => void) | null =
+    null;
   // Cached selection coordinates for current render pass (viewport-relative)
   private currentSelectionCoords: {
     startCol: number;
@@ -528,6 +558,29 @@ export class CanvasRenderer {
       this.lastViewportY = viewportY;
     }
 
+    // vendor 0.4.0-nex.16: the search highlights, settled BEFORE the first row of this frame is
+    // painted (the cursor rows just below paint first). Recomputed only when a row is dirty, the
+    // frame is forced (scroll, resize, screen switch) or the query moved; the rows whose
+    // highlight changed are repainted below exactly as selection rows are.
+    let searchRows: Set<number> | null = null;
+    if (this.searchHighlighter.isActive()) {
+      let changed = forceAll;
+      for (let y = 0; !changed && y < dims.rows; y++) changed = buffer.isRowDirty(y);
+      const update = this.searchHighlighter.update(
+        { scrollbackLength, rows: dims.rows, cols: dims.cols },
+        scrollbackLength - Math.floor(viewportY),
+        changed,
+        () => this.searchRowSource(buffer, scrollbackProvider)
+      );
+      searchRows = update.repaint;
+      // No optional chaining in `render()`: the bundle hoists a temp for each one ABOVE the
+      // paint-suspend guard, which has to stay the method's first statement (§N24's test).
+      const listener = this.searchHighlightListener;
+      if ((update.spansChanged || searchRows.size > 0) && listener !== null) {
+        listener(this.searchHighlighter.getSpans());
+      }
+    }
+
     // Check if cursor position changed, if blinking, or if the cursor's TREATMENT changed
     // under it (focus flipped — see `cursorStateDirty`): all three need the cursor line
     // redrawn so the previous frame's cursor is erased before this one's is painted.
@@ -660,7 +713,11 @@ export class CanvasRenderer {
       const needsRender =
         viewportY > 0
           ? true
-          : forceAll || buffer.isRowDirty(y) || selectionRows.has(y) || hyperlinkRows.has(y);
+          : forceAll ||
+            buffer.isRowDirty(y) ||
+            selectionRows.has(y) ||
+            hyperlinkRows.has(y) ||
+            (searchRows !== null && searchRows.has(y));
 
       if (needsRender) {
         rowsToRender.add(y);
@@ -869,6 +926,18 @@ export class CanvasRenderer {
       return; // Selection background replaces cell background
     }
 
+    // vendor 0.4.0-nex.16: a search match, under the selection (the user's own act wins) and over
+    // whatever the application coloured the cell, as Ghostty draws it.
+    const searchKind = this.searchHighlighter.kindAt(x, y);
+    if (searchKind !== SEARCH_KIND_NONE) {
+      this.ctx.fillStyle =
+        searchKind === SEARCH_KIND_CURRENT
+          ? this.theme.searchSelectedBackground
+          : this.theme.searchBackground;
+      this.ctx.fillRect(cellX, cellY, cellWidth, this.metrics.height);
+      return;
+    }
+
     // Extract background color and handle inverse
     let bg_r = cell.bg_r,
       bg_g = cell.bg_g,
@@ -917,8 +986,15 @@ export class CanvasRenderer {
     this.ctx.font = `${fontStyle}${this.fontSize}px ${this.fontFamily}`;
 
     // Set text color - use selection foreground if selected
+    const searchKind = isSelected ? SEARCH_KIND_NONE : this.searchHighlighter.kindAt(x, y);
     if (isSelected) {
       this.ctx.fillStyle = this.theme.selectionForeground;
+    } else if (searchKind !== SEARCH_KIND_NONE) {
+      // vendor 0.4.0-nex.16: the match's own foreground, so it reads on its own background.
+      this.ctx.fillStyle =
+        searchKind === SEARCH_KIND_CURRENT
+          ? this.theme.searchSelectedForeground
+          : this.theme.searchForeground;
     } else {
       // Extract colors and handle inverse
       let fg_r = cell.fg_r,
@@ -1324,6 +1400,96 @@ export class CanvasRenderer {
    */
   public setSelectionManager(manager: SelectionManager): void {
     this.selectionManager = manager;
+  }
+
+  // ==========================================================================
+  // Search highlight (vendor 0.4.0-nex.16)
+  // ==========================================================================
+
+  /** Highlight every visible occurrence of a needle, or nothing (`null`). Drops the current one. */
+  public setSearchHighlight(query: ISearchHighlight | null): void {
+    this.searchHighlighter.setQuery(query);
+  }
+
+  /**
+   * Pin the selected match against this buffer as it is now (`Terminal.setSearchCurrent`), or
+   * drop it (`null`). Returns whether a match is pinned: false when there is no highlight to pin
+   * it to, or the needle is not where the match says it is.
+   */
+  public setSearchCurrent(
+    match: ISearchCurrentMatch | null,
+    buffer: IRenderable,
+    scrollbackProvider: IScrollbackProvider | undefined
+  ): boolean {
+    const query = this.searchHighlighter.getQuery();
+    const anchor =
+      match === null || query === null
+        ? null
+        : pinSearchCurrent(this.searchRowSource(buffer, scrollbackProvider), query, match);
+    this.searchHighlighter.setCurrent(anchor);
+    return anchor !== null;
+  }
+
+  /** Told the spans of every frame whose highlights differ from the frame before. */
+  public setSearchHighlightListener(
+    listener: ((spans: readonly ISearchHighlightSpan[]) => void) | null
+  ): void {
+    this.searchHighlightListener = listener;
+  }
+
+  /** What the highlight layer would paint over this viewport right now, without painting. */
+  public getSearchHighlights(
+    buffer: IRenderable,
+    scrollbackProvider: IScrollbackProvider | undefined,
+    viewportY: number
+  ): ISearchHighlightSpan[] {
+    const scrollbackLength = scrollbackProvider ? scrollbackProvider.getScrollbackLength() : 0;
+    return this.searchHighlighter.peek(
+      this.searchRowSource(buffer, scrollbackProvider),
+      scrollbackLength - Math.floor(viewportY)
+    );
+  }
+
+  /**
+   * The rows the highlight layer reads, in the absolute numbering the selection manager uses:
+   * scrollback offsets first, then the screen. The screen is read ONCE, lazily, and each row's
+   * cells are turned into text before anything else can reuse the engine's cell pool.
+   */
+  private searchRowSource(
+    buffer: IRenderable,
+    scrollbackProvider: IScrollbackProvider | undefined
+  ): SearchRowSource {
+    const scrollbackLength = scrollbackProvider ? scrollbackProvider.getScrollbackLength() : 0;
+    const { cols, rows } = buffer.getDimensions();
+    let screen: GhosttyCell[] | null | undefined;
+    const screenLine = (row: number): readonly GhosttyCell[] | null => {
+      if (screen === undefined) {
+        // `getCursor` refreshes the render state, which `getViewport` reads without refreshing.
+        buffer.getCursor();
+        screen = buffer.getViewport ? buffer.getViewport() : null;
+      }
+      if (screen === null || screen.length < (row + 1) * cols) return buffer.getLine(row);
+      return screen.slice(row * cols, (row + 1) * cols);
+    };
+    return {
+      scrollbackLength,
+      rows,
+      cols,
+      line: (row) => {
+        if (row < scrollbackLength) return scrollbackProvider?.getScrollbackLine(row) ?? null;
+        return screenLine(row - scrollbackLength);
+      },
+      // `row` wraps onto the next exactly when the next is a continuation, which the WASM can
+      // say for a screen row only. Screen row 0 still answers for the newest history row above.
+      wraps: (row) =>
+        row + 1 >= scrollbackLength && row + 1 < scrollbackLength + rows && buffer.isRowWrapped
+          ? buffer.isRowWrapped(row + 1 - scrollbackLength)
+          : false,
+      grapheme: (row, col) => {
+        if (row < scrollbackLength) return buffer.getScrollbackGraphemeString?.(row, col) ?? null;
+        return buffer.getGraphemeString?.(row - scrollbackLength, col) ?? null;
+      },
+    };
   }
 
   /**

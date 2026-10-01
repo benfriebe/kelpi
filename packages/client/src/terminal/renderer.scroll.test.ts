@@ -9,11 +9,12 @@
  *
  *   1. **The engine half.** The spike (MOBILE-PLAN.md §7) says `scrollLines` / `scrollToBottom` /
  *      `getViewportY` are the engine's whole scroll API and that its PUBLIC `select()` cannot be
- *      used to select a word, because it converts a viewport row to an absolute one as
- *      `viewportY + row` while its own renderer converts back as
- *      `absoluteRow - scrollbackLength + viewportY`. Both claims are measured here against the
- *      vendored engine (its WASM loads in Node perfectly well) over the stub 2D context
- *      `KeyBar.test.tsx` established, because a fake engine cannot disprove either.
+ *      used to select a word: it needs the word's extent, which only the engine's private lookup
+ *      knows (and until `0.4.0-nex.16` it also converted a viewport row to an absolute one as
+ *      `viewportY + row`, which #306 fixed and `search-highlight.wasm.test.ts` pins). Both claims
+ *      are measured here against the vendored engine (its WASM loads in Node perfectly well)
+ *      over the stub 2D context `KeyBar.test.tsx` established, because a fake engine cannot
+ *      disprove either.
  *   2. **The adapter half.** That the port's four new members reach whatever engine it is holding,
  *      and that a disposed or poisoned one is inert.
  */
@@ -166,11 +167,11 @@ describe('the scroll API against a real ghostty-web', () => {
      * The long press, and the measurement that decided how it is implemented.
      *
      * `offsetX`/`offsetY` are 0 in jsdom (it has no layout), so the synthesized `dblclick` lands
-     * on cell 0,0 - the FIRST VISIBLE ROW, which is exactly the row that tells the two candidate
-     * implementations apart. Scrolled back 5 lines with 93 lines of scrollback, the first visible
-     * row is `line89`; the engine's public `select(0, 0, 7)` answers `line6`, and its own
-     * double-click path answers `line89`. That is why `selectWordAt` raises the event the engine
-     * already listens for instead of calling `select`.
+     * on cell 0,0 - the FIRST VISIBLE ROW, which is the row a wrong viewport-to-buffer conversion
+     * gives away. Scrolled back 5 lines with 93 lines of scrollback, the first visible row is
+     * `line89`, and the engine's own double-click path answers `line89`. (Its public
+     * `select(0, 0, 7)` answered `line6` until `0.4.0-nex.16`; it needs the word's length either
+     * way, which is why `selectWordAt` raises the event the engine already listens for.)
      */
     it('selects the word under the point, at the row that is actually on screen', () => {
         renderer.scrollLines(-5);

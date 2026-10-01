@@ -17,7 +17,7 @@ import { App } from './App';
 import { completeHandshake, createFakeSocketFactory, type FakeWebSocket } from './connection';
 import { FOCUS_DWELL_MS } from './grid/FocusRing';
 import { createKelpiRuntime, createKelpiStore, type KelpiRuntime } from './state';
-import { createFakeRendererFactory, type FakeRendererFactory } from './terminal/testing';
+import { createFakeRendererFactory, type FakeRenderer, type FakeRendererFactory } from './terminal/testing';
 
 const W1 = 'AAAAAAAA-0000-4000-8000-000000000001';
 const W2 = 'AAAAAAAA-0000-4000-8000-000000000002';
@@ -474,6 +474,73 @@ describe('terminal search (TERM-113…TERM-120)', () => {
                 length: 6
             });
         });
+    });
+
+    it('highlights the daemon’s needle in the pane, with the stepped-to match current (#306)', async () => {
+        const h = setup({ search: { needle: 'MARKER', total: 3, selected: 0 } });
+        const engine = (): FakeRenderer => h.renderers.instances.at(-1)!;
+
+        // Every visible match straight away: the needle the daemon counts, nothing current yet.
+        await waitFor(() => {
+            expect(engine().searchHighlights.at(-1)).toEqual({ needle: 'MARKER', caseSensitive: false, current: null });
+        });
+        // The `search-match-*` defaults (as the config parser normalises them) ride the theme
+        // every shell pane has, not the selection slots.
+        await waitFor(() => {
+            expect(engine().themes.at(-1)).toMatchObject({
+                searchBackground: '#f2d027',
+                searchForeground: '#000000',
+                searchSelectedBackground: '#ff7a00',
+                searchSelectedForeground: '#000000'
+            });
+        });
+        expect(engine().themes.at(-1)?.selectionBackground).not.toBe('#ff7a00');
+
+        fireEvent.keyDown(screen.getByTestId(`pane-search-input-${PANE_A}`), { key: 'Enter' });
+        await waitFor(() => {
+            expect(h.commands().at(-1)).toMatchObject({ command: 'terminal-search', action: 'next' });
+        });
+        h.reply('terminal-search', {
+            ok: true,
+            workspace_id: W1,
+            pane_id: PANE_A,
+            needle: 'MARKER',
+            total: 3,
+            selected: 0,
+            match: { line: 40, col: 6, length: 6, lines_from_bottom: 60 }
+        });
+        await waitFor(() => {
+            expect(engine().searchHighlights.at(-1)).toMatchObject({
+                needle: 'MARKER',
+                current: { linesFromBottom: 60, col: 6, length: 6 }
+            });
+        });
+        // Revealing scrolls; it is the highlight, not a selection, that shows the match.
+        expect(engine().revealed.at(-1)).toEqual({ linesFromBottom: 60, col: 6, length: 6 });
+    });
+
+    it('paints no current match while the daemon’s selection names another one (#306)', async () => {
+        // The daemon says match 0 is selected; a reply for match 2 has not been confirmed by it
+        // (another window stepped, or the needle changed under it), so it is not painted current.
+        const h = setup({ search: { needle: 'MARKER', total: 3, selected: 0 } });
+        const engine = (): FakeRenderer => h.renderers.instances.at(-1)!;
+        fireEvent.keyDown(screen.getByTestId(`pane-search-input-${PANE_A}`), { key: 'Enter' });
+        await waitFor(() => {
+            expect(h.commands().at(-1)).toMatchObject({ command: 'terminal-search', action: 'next' });
+        });
+        h.reply('terminal-search', {
+            ok: true,
+            workspace_id: W1,
+            pane_id: PANE_A,
+            needle: 'MARKER',
+            total: 3,
+            selected: 2,
+            match: { line: 90, col: 0, length: 6, lines_from_bottom: 10 }
+        });
+        await waitFor(() => {
+            expect(engine().revealed.at(-1)).toEqual({ linesFromBottom: 10, col: 0, length: 6 });
+        });
+        expect(engine().searchHighlights.at(-1)).toEqual({ needle: 'MARKER', caseSensitive: false, current: null });
     });
 
     it('renders the daemon’s counter, including the "-/N" pre-selection state', () => {

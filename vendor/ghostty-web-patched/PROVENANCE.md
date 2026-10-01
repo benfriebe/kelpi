@@ -1,7 +1,7 @@
-# ghostty-web 0.4.0-nex.15 (vendored)
+# ghostty-web 0.4.0-nex.16 (vendored)
 
 A build of `ghostty-web` v0.4.0 carrying two open upstream PRs — applied after a line-by-line
-review in the orchestrating session and explicit user authorization to integrate both, plus fourteen
+review in the orchestrating session and explicit user authorization to integrate both, plus fifteen
 Nex-authored adaptations on top of them (`-nex.2`: the caret-anchored IME; `-nex.3`: an
 `allowTransparency` that does something; `-nex.4`: a cursor that knows whether its surface has
 focus; `-nex.5`: a `write()` that survives zero bytes; `-nex.6`: a paint that can be suspended;
@@ -10,7 +10,8 @@ repainted when the scrollbar goes away; `-nex.9`: replays receive fresh WASM sto
 every terminal on its own WASM instance; `-nex.11`: output never moves a scrolled viewport;
 `-nex.12`: a disposed terminal is garbage, the document listener that pinned it is removed;
 `-nex.13`: an `ESC[2K`'d row forgets it was ever wrapped; `-nex.14`: selected conversation
-rows remain anchored when older history is trimmed; `-nex.15`: DOM focus preserves the embedder's pan position).
+rows remain anchored when older history is trimmed; `-nex.15`: DOM focus preserves the embedder's pan position;
+`-nex.16`: a search-highlight layer, and a public `select()` that lands on the row it names).
 
 **`-nex.13` is the first adaptation that is NOT TypeScript-only.** Every version up to `-nex.12`
 shipped `ghostty-vt.wasm` byte-identical to the npm `ghostty-web@0.4.0` package; `-nex.13`
@@ -36,6 +37,85 @@ reproduces the `0.4.0` wasm BYTE-IDENTICALLY when run without the patch, is in
 | `0.4.0-nex.13` | **wasm patch**: `ESC[2K` breaks the row's soft-wrap linkage on BOTH sides, so a column reflow can never glue an erased row to its neighbours (#165) |
 | `0.4.0-nex.14` | **wasm + TypeScript**: native selection pins keep retained rows selected across scrollback trims; discarded endpoints clear and announce the selection (#170) |
 | `0.4.0-nex.15` | terminal and selection DOM focus uses `preventScroll`, preserving the embedder's mirrored-canvas pan (#178) |
+| `0.4.0-nex.16` | `select`/`selectAll`/`selectLines` convert rows through `viewportRowToAbsolute`; a search-highlight layer paints every visible match of a needle and a current match in the theme's `search*` colours (#306) |
+
+## Kelpi adaptation: search highlights, and `select()` on the right row (`0.4.0-nex.16`, 2026-10-01)
+
+Issue #306: ⌘F over a terminal pane counted matches (the daemon searches its own copy of the
+buffer) and showed none of them. Kelpi's only way to show one was `Terminal.select()` on the match
+the daemon had stepped to, and that selection landed on the wrong row in any terminal with history.
+
+**`select()`, `selectAll()` and `selectLines()`.** All three stored an absolute row as
+`viewportY + row`. Everywhere else in `selection-manager.ts` an absolute row is
+`scrollbackLength + row - viewportY` (`viewportRowToAbsolute`), and the renderer converts back with
+`absoluteRowToViewport`, so the painted row was `row + 2 * viewportY - scrollbackLength`. That is
+right with no history and usually off screen otherwise, where `normalizeSelection` returns null and
+nothing paints. Measured on the shipped engine (40x8, 100 lines, 93 of them history): scrolled back
+5 rows, row 0 shows `line89` and `select(0, 0, 6)` selected `line6`; at the bottom, row 2 shows
+`line96` and `select(0, 2, 6)` selected `line3`. All six endpoints now go through
+`viewportRowToAbsolute`, and both measurements answer `line89` and `line96`.
+
+**The search-highlight layer** (`lib/search-highlight.ts`). Native Ghostty paints every visible
+match (`search-background` / `search-foreground`) and the selected one (`search-selected-*`). The
+embedder hands over a needle, never positions: `Terminal.setSearchHighlight({ needle,
+caseSensitive })` (null clears it). The renderer finds the matches in the rows it is about to paint,
+once per frame in which a row is dirty, the frame is forced (scroll, resize, screen switch) or the
+query moved, and repaints the rows whose highlight changed, as it does for selection rows. The
+highlights therefore follow scrolling, output and resizes with no help from the embedder.
+`Terminal.setSearchCurrent({ linesFromBottom, col, length })` marks one match current. It is stated
+from the bottom because an embedder that searched another copy of the buffer agrees with this one
+about the bottom and nothing else. It is pinned to an absolute row when it is set, so output
+growing the buffer leaves it on its text, and only if the needle really is at that spot: it returns
+false (and paints nothing) otherwise, which is what a buffer that has not caught up looks like, so
+the embedder can try again later. The pin records its row's text. History trimmed at the scrollback
+cap shifts every retained row down and the WASM reports no count, and a replay rebuilds the rows;
+so a pinned row that no longer reads the same is looked for within 4,096 rows either side (older
+first) and re-pinned where it went, or the current match ends. It is never painted on text that is
+not the needle. `onSearchHighlightChange` fires after a frame whose highlights changed (the spans,
+not only the painted cells: `a` and then `aa` over `aa` paint the same cells as two matches and
+then one), and `getSearchHighlights()` returns what the next frame paints (viewport row, start and
+end column, current), for diagnostics.
+
+Each row's text is built the way xterm.js's `translateToString(true)` builds it: a wide
+character's spacer skipped, an unwritten cell a space, the unwritten tail trimmed, a grapheme
+cluster as its full string. Rows are joined across soft wraps, matching is case-insensitive unless
+asked otherwise, and overlapping occurrences count separately. Case folding never changes a
+string's length (`foldSearchCase`: a character whose lowercase is longer, such as U+0130, is kept
+as it is), so an offset in the folded text is an offset in the text. Those are the daemon
+matcher's rules (`packages/daemon/src/term/search.ts`), so a current match stated as a
+UTF-16 offset into its row's text is recognised among the matches found here, and every offset maps
+back to the cell that shows it (a match after a wide character is painted on the right cells).
+
+The selection is drawn over a match (the user's own act wins) and the match colours replace the
+cell's own, as Ghostty draws them. `ITheme` gains `searchBackground`, `searchForeground`,
+`searchSelectedBackground` and `searchSelectedForeground`; the defaults (`#f2d027` / `#000000`,
+`#ff7a00` / `#000000`) carry their own foreground, so they read over light and dark themes alike.
+
+Known limit: `ghostty_terminal_is_row_wrapped` answers for screen rows only (`buffer.ts` assumes
+"not wrapped" for history for the same reason), so a wrap is known only where its continuation row
+is on the screen. A needle straddling the wrap of a line further back in history is not painted as
+an ordinary match. The current match is still painted there, because it is located from its own
+anchor (and checked against the needle) rather than found by the scan. Re-pinning by row text
+picks the nearest row that reads the same, so in output whose rows repeat exactly it can settle on
+an identical copy of the row; nothing else is a candidate.
+`IRenderable` gains three optional reads the layer uses when present (`isRowWrapped`,
+`getScrollbackGraphemeString`, `getViewport`); `GhosttyTerminal` already had all three.
+
+`render()` uses no optional chaining in the new code: the bundle hoists a temporary per optional
+chain above the paint-suspend guard, which has to remain the method's first statement (§N24, and
+`vendor-engine.test.ts`'s pattern for it).
+
+This is TypeScript-only; the WASM is unchanged from `-nex.14`. Rebuilt with `pnpm vendor:build`
+(it prints the four known `Bun` / `fs/promises` errors from `lib/ghostty.ts` and exits 0).
+Regression coverage against the installed bundle and real WASM, over a 2D context that records its
+paint calls, is `packages/client/src/terminal/search-highlight.wasm.test.ts`: `select()` with
+history (selected text and painted cells), every visible match with nothing current, a long
+history scrolled to the matches, the current match in its own colour on the daemon's row, following
+a scroll and new output, clearing on close with the rows repainted, a soft wrap on screen, a match
+after a wide character, a selection over a match, a current match across a wrap in history and a
+stale anchor, the current match following its row across a real page trim (and ending when its row
+is trimmed away), a match after U+0130, the change event when only the spans change, and parity
+with the daemon's own emulator and matcher over the same bytes.
 
 ## Kelpi adaptation: focus preserves a panned terminal (`0.4.0-nex.15`, 2026-09-20)
 

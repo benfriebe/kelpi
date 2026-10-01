@@ -154,6 +154,28 @@ function locate(line: LogicalLine, offset: number): { line: number; col: number 
 }
 
 /**
+ * Case folding that never changes a string's length (#306).
+ *
+ * `toLowerCase` per character, except where that would LENGTHEN it: U+0130 `İ` lowercases to two
+ * UTF-16 units, so a plain `toLowerCase()` shifted every offset after it, and a match was reported
+ * one column to the right of where it sits. Keeping such a character as it is keeps offsets into
+ * the folded text offsets into the text. The client's engine folds the same way
+ * (`vendor/ghostty-web-patched/source/lib/search-highlight.ts` `foldSearchCase`), which is what
+ * lets it recognise the match this side selected among the ones it highlights.
+ */
+export function foldSearchCase(value: string): string {
+    const lowered = value.toLowerCase();
+    // No character lowercases to something SHORTER, so equal lengths mean nothing grew.
+    if (lowered.length === value.length) return lowered;
+    let folded = '';
+    for (const char of value) {
+        const lower = char.toLowerCase();
+        folded += lower.length === char.length ? lower : char;
+    }
+    return folded;
+}
+
+/**
  * Every occurrence of `needle`, in buffer order (top → bottom, left → right).
  *
  * Case-insensitive by default — the Swift overlay drove ghostty's own search, which is
@@ -169,11 +191,11 @@ export function findMatches(
     const matches: TerminalMatch[] = [];
     if (needle.length === 0) return matches;
     const caseSensitive = options.caseSensitive === true;
-    const target = caseSensitive ? needle : needle.toLowerCase();
+    const target = caseSensitive ? needle : foldSearchCase(needle);
     const limit = options.limit ?? MAX_TERMINAL_MATCHES;
 
     for (const line of lines) {
-        const haystack = caseSensitive ? line.text : line.text.toLowerCase();
+        const haystack = caseSensitive ? line.text : foldSearchCase(line.text);
         let from = 0;
         for (;;) {
             const at = haystack.indexOf(target, from);

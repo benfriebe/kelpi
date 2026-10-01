@@ -35,6 +35,11 @@ import { LinkDetector } from './link-detector';
 import { OSC8LinkProvider } from './providers/osc8-link-provider';
 import { UrlRegexProvider } from './providers/url-regex-provider';
 import { CanvasRenderer, DEFAULT_THEME } from './renderer';
+import type {
+  ISearchCurrentMatch,
+  ISearchHighlight,
+  ISearchHighlightSpan,
+} from './search-highlight';
 import { SelectionManager } from './selection-manager';
 import type { ILink, ILinkProvider } from './types';
 
@@ -89,6 +94,12 @@ export class Terminal implements ITerminalCore {
    */
   private paintSuspended = false;
 
+  /**
+   * The search highlight (vendor 0.4.0-nex.16): see `setSearchHighlight`. Held here as well for
+   * the same reason as the two above: an embedder may set it before `open()` builds a renderer.
+   */
+  private searchHighlight: ISearchHighlight | null = null;
+
   // ── Caret-anchored IME (vendor 0.4.0-nex.2) ───────────────────────────────
   // The cursor cell's box in the coordinate space the absolutely-positioned textarea and
   // preedit overlay share (their containing block == the canvas's offsetParent), so a canvas
@@ -117,6 +128,8 @@ export class Terminal implements ITerminalCore {
   private scrollEmitter = new EventEmitter<number>();
   private renderEmitter = new EventEmitter<{ start: number; end: number }>();
   private cursorMoveEmitter = new EventEmitter<void>();
+  // vendor 0.4.0-nex.16
+  private searchHighlightEmitter = new EventEmitter<ISearchHighlightSpan[]>();
   // Public event accessors (xterm.js compatibility)
   public readonly onData: IEvent<string> = this.dataEmitter.event;
   public readonly onResize: IEvent<{ cols: number; rows: number }> = this.resizeEmitter.event;
@@ -127,6 +140,13 @@ export class Terminal implements ITerminalCore {
   public readonly onScroll: IEvent<number> = this.scrollEmitter.event;
   public readonly onRender: IEvent<{ start: number; end: number }> = this.renderEmitter.event;
   public readonly onCursorMove: IEvent<void> = this.cursorMoveEmitter.event;
+  /**
+   * vendor 0.4.0-nex.16: fires after a frame whose search highlights differ from the frame
+   * before (a new needle, a scroll, output that moved or added a match, the bar closing), with
+   * that frame's spans. See `setSearchHighlight`.
+   */
+  public readonly onSearchHighlightChange: IEvent<ISearchHighlightSpan[]> =
+    this.searchHighlightEmitter.event;
 
   // Lifecycle state
   private isOpen = false;
@@ -528,6 +548,11 @@ export class Terminal implements ITerminalCore {
       // vendor 0.4.0-nex.6: carry a suspension asked for before `open()` onto the renderer that
       // is only now being built. See `setPaintSuspended`.
       if (this.paintSuspended) this.renderer.setPaintSuspended(true);
+      // vendor 0.4.0-nex.16: and a search highlight. See `setSearchHighlight`.
+      if (this.searchHighlight) this.renderer.setSearchHighlight(this.searchHighlight);
+      this.renderer.setSearchHighlightListener((spans) => {
+        this.searchHighlightEmitter.fire(spans.map((span) => ({ ...span })));
+      });
       /**
        * vendor 0.4.0-nex.7 (Nex §N18): tell the renderer which default colours the WASM terminal
        * a few lines above was BUILT with.
@@ -1046,6 +1071,53 @@ export class Terminal implements ITerminalCore {
   }
 
   // ==========================================================================
+  // Search highlight (vendor 0.4.0-nex.16)
+  // ==========================================================================
+
+  /**
+   * Highlight every occurrence of `needle` in the rows on screen, in the theme's
+   * `searchBackground` / `searchForeground`, until called with `null`.
+   *
+   * The terminal finds the matches itself, at paint time, in exactly the rows it paints, so
+   * the highlights follow the text through scrolling, output and resizes. It is a layer of its
+   * own, not the selection: copy, a drag and the selection's own tracking are untouched, and a
+   * selection over a match is drawn as the selection. A new needle or case flag (or `null`) also
+   * drops the current match, which belonged to the needle it was counted for.
+   */
+  public setSearchHighlight(query: ISearchHighlight | null): void {
+    this.searchHighlight =
+      query === null ? null : { needle: query.needle, caseSensitive: query.caseSensitive === true };
+    this.renderer?.setSearchHighlight(this.searchHighlight);
+  }
+
+  /**
+   * Mark one match as the current one, in `searchSelected*` colours, or none (`null`).
+   *
+   * Stated from the BOTTOM of the buffer (`linesFromBottom` 1 is the last row; `col` and
+   * `length` in UTF-16 units of that row's text), because an embedder that searched another
+   * copy of the buffer agrees with this one about where the bottom is and about nothing else.
+   * It is pinned to an absolute row NOW, so it stays on its text as output grows the buffer, and
+   * it follows its row when trimmed history or a replay moves it (or ends, if the row is gone).
+   *
+   * Returns whether it was pinned: false when no highlight is set or the needle is not at that
+   * spot in this buffer right now (a replay still arriving, output not parsed yet). Nothing is
+   * painted then, and the embedder may try again once the buffer has caught up.
+   */
+  public setSearchCurrent(match: ISearchCurrentMatch | null): boolean {
+    if (!this.renderer || !this.wasmTerm) return false;
+    return this.renderer.setSearchCurrent(match, this.wasmTerm, this);
+  }
+
+  /**
+   * The highlights over the current viewport, as the next frame will paint them: one span per
+   * row a match covers, viewport rows, end column inclusive. For diagnostics and tests.
+   */
+  public getSearchHighlights(): ISearchHighlightSpan[] {
+    if (!this.renderer || !this.wasmTerm) return [];
+    return this.renderer.getSearchHighlights(this.wasmTerm, this, this.viewportY);
+  }
+
+  // ==========================================================================
   // Phase 1: Custom Event Handlers
   // ==========================================================================
 
@@ -1349,6 +1421,7 @@ export class Terminal implements ITerminalCore {
     this.scrollEmitter.dispose();
     this.renderEmitter.dispose();
     this.cursorMoveEmitter.dispose();
+    this.searchHighlightEmitter.dispose();
   }
 
   // ==========================================================================

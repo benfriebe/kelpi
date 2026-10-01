@@ -69,6 +69,16 @@ export interface TerminalTheme {
     readonly cursorAccent?: string | undefined;
     readonly selectionBackground?: string | undefined;
     readonly selectionForeground?: string | undefined;
+    /**
+     * The search highlight (terminal-surface.md §7.7): every visible match, and the selected one.
+     * ghostty's own `search-background` / `search-foreground` / `search-selected-*` roles, which
+     * ghostty-web paints from `0.4.0-nex.16`; `@xterm/xterm` has no such roles and ignores them.
+     * Kelpi fills them from the `search-match-*` config keys (§3.1).
+     */
+    readonly searchBackground?: string | undefined;
+    readonly searchForeground?: string | undefined;
+    readonly searchSelectedBackground?: string | undefined;
+    readonly searchSelectedForeground?: string | undefined;
     readonly black?: string | undefined;
     readonly red?: string | undefined;
     readonly green?: string | undefined;
@@ -126,6 +136,36 @@ export interface TerminalMatchLocation {
     readonly linesFromBottom: number;
     readonly col: number;
     readonly length: number;
+}
+
+/**
+ * What a pane's search highlight shows (terminal-surface.md §7.7): every visible occurrence of the
+ * needle the daemon is counting, and the selected match in the stronger colour.
+ *
+ * A needle and not a list of positions, because the daemon's match list is a fact about ITS
+ * buffer at the moment it counted: the engine finds the matches in the rows it paints, so they
+ * follow a scroll, new output and a resize with no round trip.
+ */
+export interface TerminalSearchHighlight {
+    readonly needle: string;
+    readonly caseSensitive: boolean;
+    /**
+     * The selected match, as the step reply that revealed it stated it, or null while nothing is
+     * selected (the counter's `-/N`).
+     *
+     * `seq` is that reply's: a match is pinned to the engine's buffer the FIRST time its `seq` is
+     * seen, so the same highlight handed over again later (any re-render) cannot re-pin it
+     * against a buffer that output has grown since.
+     */
+    readonly current: (TerminalMatchLocation & { readonly seq: number }) | null;
+}
+
+/** One painted run of a search highlight: a viewport row, end column inclusive. */
+export interface TerminalSearchSpan {
+    readonly row: number;
+    readonly startCol: number;
+    readonly endCol: number;
+    readonly current: boolean;
 }
 
 /**
@@ -200,16 +240,16 @@ export interface TerminalRenderer {
      *
      * Client coordinates rather than a cell, because the mapping from a pixel to a cell is the
      * ENGINE'S: ghostty-web's `pixelToCell` and `getWordAtCell` are both private, and its public
-     * `select(col, row, len)` cannot be used from outside for this at all - it converts a viewport
-     * row to an absolute one as `viewportY + row` while its own renderer converts back as
-     * `absoluteRow - scrollbackLength + viewportY`, so the two agree only at
-     * `viewportY = scrollbackLength / 2`. Measured on the vendored engine (40x8, 100 lines of
-     * output, `scrollbackLength` 93): at `viewportY` 5 the visible first row is `line89` and
-     * `select(0, 0, 7)` selects `line6`; at the bottom, `select(0, 2, 7)` selects `line3` where
-     * row 2 shows `line96`.
+     * `select(col, row, len)` needs the word's extent, which only `getWordAtCell` knows. Until
+     * `0.4.0-nex.16` it could not have been used anyway: it converted a viewport row to an
+     * absolute one as `viewportY + row` while its own renderer converts back as
+     * `absoluteRow - scrollbackLength + viewportY`, so the two agreed only at
+     * `viewportY = scrollbackLength / 2` (40x8, 100 lines of output: scrolled back 5, the first
+     * visible row was `line89` and `select(0, 0, 7)` selected `line6`). #306 fixed that
+     * conversion; `renderer.scroll.test.ts` measures both answers now.
      *
-     * What DOES work is the engine's own double-click path, which uses its own conversion and is
-     * therefore right at every scroll position (same measurement: `line89`, correct). So the
+     * The engine's own double-click path uses the right conversion and picks the word itself
+     * (same measurement: `line89`, correct). So the
      * ghostty loader raises a `dblclick` at the point, exactly as `dispatchKey` raises a `keydown`
      * - the event travels the engine's own listener, the engine picks the word, paints the
      * highlight and fires the change that `onSelectionChange` is already wired to.
@@ -327,13 +367,32 @@ export interface TerminalRenderer {
     /** Best-effort full repaint (visibility regain). No-op where the engine has no hook. */
     repaint(): void;
     /**
-     * Scroll a search match into view and select it (`grid/PaneSearchOverlay.tsx`).
+     * Scroll a search match into view (`grid/PaneSearchOverlay.tsx`).
      *
      * Best-effort by contract: an engine with no scroll hook, or a match older than this
      * renderer's retained scrollback, leaves the viewport where it is. The overlay's counter
      * stays correct either way, because the count is the daemon's, not the engine's.
+     *
+     * Scrolling is all it does where the engine has a highlight layer (`setSearchHighlight`
+     * paints the match). `@xterm/xterm` has none here, so its handle SELECTS the match instead,
+     * which is how every engine showed one before #306.
      */
     revealMatch(match: TerminalMatchLocation): void;
+    /**
+     * Highlight every visible match of the open search, and its selected match distinctly, or
+     * nothing (`null`, the bar closed). Issue #306.
+     *
+     * Its own layer, never the selection: a copy, a drag and the user's own selection are
+     * untouched, and a selection over a match is drawn as the selection. Held across the
+     * engine's load and a rebuild, like the surface focus, so a pane that mounts or restarts
+     * mid-search comes up highlighted. A no-op on an engine with no highlight layer.
+     */
+    setSearchHighlight(highlight: TerminalSearchHighlight | null): void;
+    /**
+     * Fires with the spans of every frame whose search highlights differ from the frame before.
+     * Returns an unsubscribe. Diagnostics: the pane mirrors it so the audit can see the layer.
+     */
+    onSearchHighlightChange(listener: (spans: readonly TerminalSearchSpan[]) => void): () => void;
     /**
      * Re-measure the cell after a font has loaded. Optional because a fake or a third engine
      * may have nothing to re-measure; the pane calls it when the bundled face settles AFTER
@@ -438,12 +497,25 @@ export interface EngineHandle {
      */
     setPaintSuspended?(suspended: boolean): void;
     /**
-     * Scroll a search match into view and select it. Engine-specific on purpose: the two
-     * engines' `scrollToLine` mean different things (xterm.js takes the absolute buffer line to
-     * put at the top of the viewport; ghostty-web takes the number of lines scrolled UP from the
-     * bottom), and their `select()` row is absolute vs viewport-relative respectively.
+     * Scroll a search match into view (and, on an engine with no highlight layer, select it).
+     * Engine-specific on purpose: the two engines' `scrollToLine` mean different things (xterm.js
+     * takes the absolute buffer line to put at the top of the viewport; ghostty-web takes the
+     * number of lines scrolled UP from the bottom).
      */
     revealMatch?(match: TerminalMatchLocation): void;
+    /**
+     * The search highlight (#306): the needle to highlight every visible match of, or null.
+     * ghostty-web paints them (`0.4.0-nex.16`); xterm.js has no layer and uses this only to give
+     * the selection that shows its revealed match the search colours. A fake omits it.
+     */
+    setSearchHighlight?(query: { readonly needle: string; readonly caseSensitive: boolean } | null): void;
+    /**
+     * Pin the current match against the engine's buffer as it is NOW, or drop it (`null`).
+     * Returns whether it was pinned: false when the needle is not where the match says, which is
+     * what a buffer that has not caught up looks like. Only an engine with a layer has this.
+     */
+    setSearchCurrent?(match: TerminalMatchLocation | null): boolean;
+    onSearchHighlightChange?(listener: (spans: readonly TerminalSearchSpan[]) => void): EngineDisposable;
     /**
      * C3's scroll, engine-specific for the same reason `revealMatch` is: the two engines count
      * their viewports from opposite ends. `offset` is normalized here to "lines above the live
@@ -617,10 +689,21 @@ export function terminalThemePreset(bucket: 'light' | 'dark'): TerminalTheme {
 }
 
 /**
+ * The search-highlight roles (#306). Kelpi config keys (`search-match-*`, terminal-surface.md
+ * §3.1) rather than palette colours, so they have no CSS token below and a `theme =` palette
+ * never names them.
+ */
+export type TerminalSearchRole =
+    | 'searchBackground'
+    | 'searchForeground'
+    | 'searchSelectedBackground'
+    | 'searchSelectedForeground';
+
+/**
  * CSS custom properties the terminal reads, with the dark preset as the fallback — same
  * pattern as `grid/tokens.ts`, so assembly unifies the palette by defining them on `:root`.
  */
-export const TERMINAL_TOKEN_NAMES: Readonly<Record<keyof TerminalTheme, string>> = {
+export const TERMINAL_TOKEN_NAMES: Readonly<Record<Exclude<keyof TerminalTheme, TerminalSearchRole>, string>> = {
     background: '--kelpi-term-bg',
     foreground: '--kelpi-term-fg',
     cursor: '--kelpi-term-cursor',
@@ -906,6 +989,23 @@ class AdapterRenderer implements TerminalRenderer {
     private readonly selectionListeners = new Set<(selection: string) => void>();
     /** C3 - every listener on the viewport's distance from the live bottom. */
     private readonly scrollListeners = new Set<(offset: number) => void>();
+    /** #306 - every listener on what the search highlight painted. */
+    private readonly searchListeners = new Set<(spans: readonly TerminalSearchSpan[]) => void>();
+    /** #306 - the search highlight the owner asked for, re-applied to every engine it builds. */
+    private searchHighlight: TerminalSearchHighlight | null = null;
+    /**
+     * #306 - the `seq` of the newest current match pinned on THIS engine (0: none yet).
+     *
+     * A current match is stated from the bottom of the buffer as it was when the reply was
+     * written, so it can be pinned once, and only against a buffer that is complete: a reply is
+     * never pinned twice (by then output has moved the bottom), and an older one handed back
+     * (another window stepped away and back) is never pinned at all.
+     */
+    private pinnedSearchSeq = 0;
+    /** Bytes of a replay still to be parsed: no current match is pinned against half a screen. */
+    private searchReplayLeft = 0;
+    /** Has THIS engine been handed a search? An engine that never was needs no `null`. */
+    private searchOnEngine = false;
     private readonly failureListeners = new Set<(error: unknown) => void>();
     private readonly engineDisposables: EngineDisposable[] = [];
 
@@ -1085,12 +1185,16 @@ class AdapterRenderer implements TerminalRenderer {
         if (this.disposed || this.poisoned) return;
         this.sawResetWhileHeld = false;
         this.replayRemaining = null;
+        // #306: the superseding replay's `reset()` states its own length.
+        this.searchReplayLeft = 0;
         this.cancelDrain();
         this.write(REPLAY_CANCEL_SEQUENCE);
     }
 
     reset(replayLength?: number): void {
         if (this.disposed || this.poisoned) return;
+        // #306: a replay is arriving; a current match is pinned only once all of it is parsed.
+        this.searchReplayLeft = replayLength ?? 0;
         // §N24: a reset while held is the leading edge of the replay — the write behind it is
         // the authoritative screen, and that is what ends the hold (see `write`).
         if (this.holding) {
@@ -1137,6 +1241,8 @@ class AdapterRenderer implements TerminalRenderer {
         // xterm keeps an in-stream RIS; Ghostty's dedicated reset replaces its allocator.
         this.guard(() => this.resetTerminal(terminal), 'reset');
         if (this.holding && this.replayRemaining === 0) this.releaseHold();
+        // #306: an empty replay is complete already (its write never reaches `deliver`).
+        if (this.searchReplayLeft <= 0) this.applySearchHighlight();
     }
 
     onData(listener: (data: string) => void): () => void {
@@ -1373,6 +1479,54 @@ class AdapterRenderer implements TerminalRenderer {
         // Cosmetic: a scroll or a selection that did not take is not worth poisoning a pane
         // whose PTY is otherwise fine, and the overlay's counter is unaffected either way.
         this.swallow(() => this.handle?.revealMatch?.(match));
+    }
+
+    setSearchHighlight(highlight: TerminalSearchHighlight | null): void {
+        if (this.disposed) return;
+        this.searchHighlight = highlight;
+        this.applySearchHighlight();
+    }
+
+    /**
+     * Hand the engine the needle, and the current match if it is new and the buffer is whole.
+     *
+     * Called on every change and again whenever the buffer finishes catching up (the mount flush
+     * drains, a replay's last byte is parsed), because a pin refused against a half-built buffer
+     * is retried then. Cosmetic by the same rule as `revealMatch`: a highlight that did not take
+     * is no reason to lose the terminal under it.
+     */
+    private applySearchHighlight(): void {
+        const handle = this.handle;
+        if (handle === undefined || this.disposed || this.poisoned) return;
+        const highlight = this.searchHighlight;
+        if (highlight === null && !this.searchOnEngine) return;
+        this.searchOnEngine = highlight !== null;
+        this.swallow(() =>
+            handle.setSearchHighlight?.(
+                highlight === null ? null : { needle: highlight.needle, caseSensitive: highlight.caseSensitive }
+            )
+        );
+        const current = highlight?.current ?? null;
+        if (current === null) {
+            this.swallow(() => handle.setSearchCurrent?.(null));
+            return;
+        }
+        if (current.seq <= this.pinnedSearchSeq) return;
+        if (this.draining !== null || this.searchReplayLeft > 0) return;
+        let pinned = false;
+        this.swallow(() => {
+            pinned = handle.setSearchCurrent?.({
+                linesFromBottom: current.linesFromBottom,
+                col: current.col,
+                length: current.length
+            }) === true;
+        });
+        if (pinned) this.pinnedSearchSeq = current.seq;
+    }
+
+    onSearchHighlightChange(listener: (spans: readonly TerminalSearchSpan[]) => void): () => void {
+        this.searchListeners.add(listener);
+        return () => this.searchListeners.delete(listener);
     }
 
     dispose(): void {
@@ -1633,6 +1787,11 @@ class AdapterRenderer implements TerminalRenderer {
             if (this.replayRemaining !== null) this.replayRemaining -= data.length;
             if (this.replayRemaining === null || this.replayRemaining <= 0) this.releaseHold();
         }
+        // #306: the replay's last byte is in; retry a current match it held back.
+        if (!queuedReset && this.searchReplayLeft > 0) {
+            this.searchReplayLeft -= data.length;
+            if (this.searchReplayLeft <= 0) this.applySearchHighlight();
+        }
     }
 
     /**
@@ -1694,6 +1853,8 @@ class AdapterRenderer implements TerminalRenderer {
             }
         }
         this.draining = null;
+        // #306: the buffer is whole now, so a current match held back can be pinned.
+        this.applySearchHighlight();
     }
 
     /** Abandon whatever the flush had left: a supersession, a poison, a teardown. */
@@ -1792,6 +1953,10 @@ class AdapterRenderer implements TerminalRenderer {
                 for (const listener of [...this.scrollListeners]) listener(offset);
             });
             if (scroll !== undefined) this.engineDisposables.push(scroll);
+            const search = handle.onSearchHighlightChange?.((spans): void => {
+                for (const listener of [...this.searchListeners]) listener(spans);
+            });
+            if (search !== undefined) this.engineDisposables.push(search);
 
             // Metrics first, then geometry, then the bytes. A replay written before the resize
             // would be parsed at the CONSTRUCTION grid and then reflowed by it, which is what
@@ -1829,6 +1994,12 @@ class AdapterRenderer implements TerminalRenderer {
             // so a pane that was told it is unfocused BEFORE its engine finished loading (every
             // pane in a restored grid but one) would otherwise open blinking.
             handle.setSurfaceFocus?.(this.wantSurfaceFocus);
+            // #306: and a search that is already open, so a pane that mounts or is rebuilt
+            // mid-search comes up highlighted rather than waiting for the next keystroke. A new
+            // engine has pinned nothing; its current match waits for the replay (see `deliver`).
+            this.pinnedSearchSeq = 0;
+            this.searchOnEngine = false;
+            this.applySearchHighlight();
         } catch (error) {
             this.poisoned = true;
             // A first tick that threw leaves the rest of the queue pointing at an engine that is
@@ -1954,15 +2125,24 @@ export const loadGhosttyEngine: EngineLoader = async (options) => {
             // it to 0) — its doc comment says "0 = top of scrollback", which the implementation
             // contradicts. So `linesFromBottom` is already in its units; centring the match in
             // the viewport is one subtraction.
+            //
+            // #306: and that is all. The match is PAINTED by the highlight layer below, not
+            // selected: a selection is the user's (copy, drag, its own tracking across trims),
+            // and it used to land on the wrong row anyway (`select()` before `0.4.0-nex.16`).
             const scrollback = terminal.getScrollbackLength();
-            const rows = terminal.rows;
-            const viewportY = clamp(match.linesFromBottom - Math.floor(rows / 2), 0, scrollback);
+            const viewportY = clamp(match.linesFromBottom - Math.floor(terminal.rows / 2), 0, scrollback);
             terminal.scrollToLine(viewportY);
-            // Its `select(col, row, len)` row is VIEWPORT-relative (it adds `getViewportY()`
-            // itself and clamps to `rows - 1`), so the row has to be derived after the scroll.
-            const row = rows + viewportY - match.linesFromBottom;
-            if (row >= 0 && row < rows) terminal.select(match.col, row, match.length);
         },
+        // #306. A new needle or case flag also drops the engine's current match (it belonged to
+        // the count it was selected in); which reply to pin, and when, is the adapter's call.
+        setSearchHighlight: (query): void => {
+            terminal.setSearchHighlight(query);
+        },
+        setSearchCurrent: (match): boolean => terminal.setSearchCurrent(match),
+        onSearchHighlightChange: (listener): EngineDisposable =>
+            terminal.onSearchHighlightChange((spans) => {
+                listener(spans);
+            }),
         // C3. `viewportY` IS "lines above the live bottom" here (see `revealMatch` above), so
         // the adapter's normalization is the identity for this engine.
         scroll: (delta): void => {
@@ -1979,11 +2159,11 @@ export const loadGhosttyEngine: EngineLoader = async (options) => {
         /*
          * C3's long-press: a `dblclick` at the point, on the engine's own canvas.
          *
-         * The engine's public `select()` cannot express this (see `TerminalRenderer.selectWordAt`
-         * for the measurement), and its word lookup and pixel→cell mapping are both private. Its
-         * `dblclick` listener is the one path that uses them, and it uses the CORRECT row
-         * conversion, so raising the event the engine already listens for is both the smallest
-         * change and the only one that is right when the pane is scrolled back. Nothing about the
+         * The engine's public `select()` cannot express this (it needs the word's extent, see
+         * `TerminalRenderer.selectWordAt`), and its word lookup and pixel→cell mapping are both
+         * private. Its `dblclick` listener is the one path that uses them, so raising the event
+         * the engine already listens for is the smallest change that is right at every scroll
+         * position. Nothing about the
          * event is engine-internal: it is a `MouseEvent` on a canvas, and the engine never reads
          * `isTrusted` (zero hits in `dist/` and `source/` - MOBILE-PLAN.md §7).
          *
@@ -2035,6 +2215,25 @@ export const loadXtermEngine: EngineLoader = async (options) => {
         convertEol: false
     });
     const engineTerminal = terminal as unknown as XtermLikeTerminal;
+    /**
+     * #306: this engine has no highlight layer, so it shows a revealed match by SELECTING it, and
+     * while a search is open the selection takes the search's current-match colours (what every
+     * engine did before #306, when the app swapped them in). Off the search path the theme's own
+     * selection colours come back, so a drag-selection looks as it always did.
+     */
+    let theme = options.theme;
+    let searching = false;
+    const applyTheme = (): void => {
+        terminal.options.theme = compactTheme(
+            searching
+                ? {
+                      ...theme,
+                      selectionBackground: theme.searchSelectedBackground ?? theme.selectionBackground,
+                      selectionForeground: theme.searchSelectedForeground ?? theme.selectionForeground
+                  }
+                : theme
+        );
+    };
     return {
         terminal: engineTerminal,
         cellSize: (): CellSize | undefined => {
@@ -2049,8 +2248,14 @@ export const loadXtermEngine: EngineLoader = async (options) => {
             if (width <= 0 || height <= 0) return undefined;
             return { width, height };
         },
-        setTheme: (theme): void => {
-            terminal.options.theme = compactTheme(theme);
+        setTheme: (next): void => {
+            theme = next;
+            applyTheme();
+        },
+        setSearchHighlight: (query): void => {
+            if (searching === (query !== null)) return;
+            searching = query !== null;
+            applyTheme();
         },
         remeasure: (): void => {
             // xterm re-measures its cell when the font option CHANGES — and its setter compares
@@ -2068,6 +2273,9 @@ export const loadXtermEngine: EngineLoader = async (options) => {
             // xterm.js is the mirror image of ghostty-web here: `scrollToLine(n)` takes the
             // ABSOLUTE buffer line to place at the TOP of the viewport, and `select(col, row,
             // len)`'s row is an absolute buffer row too.
+            //
+            // The fallback engine has no search highlight layer (#306 wired ghostty-web's), so
+            // the selection is still how it shows the match: one at a time, but on the right row.
             const total = terminal.buffer.active.length;
             const absolute = total - match.linesFromBottom;
             if (absolute < 0) return;

@@ -61,8 +61,10 @@ import {
     createGitService,
     performWorktreeAdd,
     sweepGraftTempIndexes,
+    bundledWorktreeOps,
     worktreeGitOps,
-    type GitService
+    type GitService,
+    type BundledWorktreeOps
 } from '../git/index.js';
 import {
     createGraftService,
@@ -670,6 +672,14 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
                 ? { detailed: false, run: (request) => git.worktreeAdd(request) }
                 : { detailed: true, run: (request, hooks) => performWorktreeAdd(worktreeGit, request, { ...hooks, fetches: worktreeFetches, log }) }
     };
+    /*
+     * Worktree cleanup's branch reads and `branch -D` (graft-git.md §8.7): the `kelpi.git`
+     * provider contract has no method for them, so they run on bundled git, and not at all while
+     * a plugin provider owns `kelpi.git` (no branch is offered for deletion then).
+     */
+    const bundledWorktreeGit = bundledWorktreeOps(worktreeGit);
+    const bundledWorktrees = (): BundledWorktreeOps | null =>
+        pluginGit.providerSelected() ? null : bundledWorktreeGit;
     const content = createContentService({
         store,
         git,
@@ -1172,7 +1182,8 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         now: options.now ?? Date.now,
         status: repoWatch,
         persist,
-        prefetch: worktreeFetches
+        prefetch: worktreeFetches,
+        bundledWorktrees
     };
 
     /**
@@ -1301,6 +1312,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
     const appHandlers = createAppHandlers({
         git,
         worktrees,
+        bundledWorktrees,
         graft,
         webPanes,
         persist,

@@ -1256,6 +1256,31 @@ describe('the GUI’s delete-workspace (§WS-156)', () => {
         expect(f.calls[0]?.reply).not.toBeNull();
     });
 
+    it('carries the worktree cleanup fields when the window sends them (graft-git §8.7)', () => {
+        const f = drive({
+            command: 'delete-workspace',
+            workspace_id: W1,
+            force: true,
+            allow_last: true,
+            worktree_paths: ['/w/a', 7, ''],
+            force_worktree_paths: ['/w/a'],
+            prune_worktrees: true,
+            delete_branches: true,
+            batch_ids: ['W0']
+        });
+        expect(f.calls[0]?.message).toEqual({
+            command: 'workspace-delete',
+            name: W1,
+            force: true,
+            allow_last: true,
+            worktree_paths: ['/w/a'],
+            force_worktree_paths: ['/w/a'],
+            prune_worktrees: true,
+            delete_branches: true,
+            batch_ids: ['W0']
+        });
+    });
+
     it('never asserts allow_last on its own — the caller has to say so', () => {
         const f = drive({ command: 'delete-workspace', workspace_id: W1 });
         expect(f.calls[0]?.message).toMatchObject({ allow_last: false, force: false });

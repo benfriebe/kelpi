@@ -51,8 +51,12 @@ export async function decodeReply(payload: JsonObject, command: string, options:
 }
 
 /** Bulk `workspace delete`: `{ok:false}` comes back instead of exiting. */
-export async function decodeReplyAllowingFailure(payload: JsonObject, command: string): Promise<JsonObject> {
-    const data = await readReplyOrExit(payload, command);
+export async function decodeReplyAllowingFailure(
+    payload: JsonObject,
+    command: string,
+    options: ReadOptions = {}
+): Promise<JsonObject> {
+    const data = await readReplyOrExit(payload, command, options);
     const json = parseJsonObject(data);
     if (json === null) {
         errLine(`${command}: invalid JSON response`);

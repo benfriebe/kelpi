@@ -320,7 +320,11 @@ export function createGitService(options: CreateGitServiceOptions = {}): GitServ
             if (!isDirectory(directory)) return null;
             let out: string;
             try {
-                out = await readGit(['rev-parse', '--show-toplevel', '--git-common-dir'], directory);
+                // Absolute: a main checkout's common dir is otherwise printed relative to the
+                // directory git ran in (`../../.git` from two levels down), not to the toplevel,
+                // and joining it onto the toplevel registered an ancestor (`/Users/me`) as the
+                // parent repo of every checkout a pane was in a subfolder of.
+                out = await readGit(['rev-parse', '--path-format=absolute', '--show-toplevel', '--git-common-dir'], directory);
             } catch {
                 return null;
             }

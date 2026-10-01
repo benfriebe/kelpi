@@ -340,7 +340,17 @@ function decodeCommand(
             // entry in §7's dictionary, and nothing arriving over the control socket may set it.
             // The GUI's own `delete-workspace` verb constructs it (`ws/sync.ts`); see
             // `WorkspaceDeleteMessage`.
-            return { command, name, force: fields.flag('force', false) };
+            return {
+                command,
+                name,
+                force: fields.flag('force', false),
+                // Worktree cleanup (graft-git.md §8.7): all absent = the delete touches no worktree.
+                worktree_paths: fields.list('worktree_paths'),
+                force_worktree_paths: fields.list('force_worktree_paths'),
+                prune_worktrees: fields.bool('prune_worktrees'),
+                delete_branches: fields.bool('delete_branches'),
+                batch_ids: fields.list('batch_ids')
+            };
         }
         case 'workspace-profile': {
             const name = fields.nonEmpty('name');

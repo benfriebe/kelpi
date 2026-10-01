@@ -23,7 +23,13 @@
  *                                                                 then appends the association
  *   remove-repo-association  `workspace_id`, `association_id`,  → drops it; optionally runs a
  *                            `delete_worktree?`                   NON-forcing `git worktree
- *                                                                 remove` first
+ *                                                                 remove` first, planned like a
+ *                                                                 workspace delete's (§8.7)
+ *   worktree-cleanup-preview `workspace_ids`                    → the linked worktrees a delete
+ *                                                                 of those workspaces could
+ *                                                                 remove, each with what keeps
+ *                                                                 it (the delete dialog's list,
+ *                                                                 graft-git.md §8.7)
  *   workspace-add-worktree   `workspace_id`, `repo_id`|`repo_path`, `name`, `branch?`,
  *                            `update_main?`                     → `git worktree add` + registry
  *                                                                 + association, on the CURRENT
@@ -68,6 +74,9 @@ import path from 'node:path';
 import type { JsonObject } from '@kelpi/protocol';
 
 import {
+    describeWorktreeBlock,
+    describeWorktreeSkip,
+    planWorktreeCleanup,
     sanitizedGitName,
     scanForRepos,
     standardizePath,
@@ -76,7 +85,11 @@ import {
     resolvedWorktreeBasePath,
     type GitService,
     type PrefetchResult,
-    type RepoGitStatus
+    type RepoGitStatus,
+    type BundledWorktreeOps,
+    type WorktreeCleanupBlock,
+    type WorktreeCleanupCandidate,
+    type WorktreeCleanupDeps
 } from '../git/index.js';
 import { ensureRegisteredRepo, findRepoByPath, repoKey } from '../git/registry.js';
 import { canonicalizeForClient } from './paths.js';
@@ -92,6 +105,8 @@ export const REPO_COMMANDS = [
     'add-repo-association',
     'remove-repo-association',
     'workspace-add-worktree',
+    // graft-git.md §8.7: what a workspace delete could take with it, for the delete dialog.
+    'worktree-cleanup-preview',
     // Settings ▸ Repositories (graft-git.md §GIT-065…§GIT-072, settings §SET-052…§SET-057):
     // the registry's own add / remove / rename / scan, which the inspector verbs above
     // deliberately do not cover — they associate a repo with a workspace, this family edits
@@ -124,7 +139,7 @@ export interface RepoPrefetcher {
 /** The slice of `GitService` these verbs need — the rest is not this module's business. */
 export type RepoCommandGit = Pick<
     GitService,
-    'resolveRepoRoot' | 'getCurrentBranch' | 'getStatus' | 'worktreeAdd' | 'removeWorktree' | 'getRemoteURL'
+    'resolveRepoRoot' | 'getCurrentBranch' | 'getStatus' | 'worktreeAdd' | 'removeWorktree' | 'getRemoteURL' | 'listWorktrees'
 >;
 
 /**
@@ -149,6 +164,19 @@ export interface RepoChannel {
     readonly persist?: (() => void) | undefined;
     /** #294's shared default-branch fetch. Absent = `repo-prefetch` answers "not available". */
     readonly prefetch?: RepoPrefetcher | undefined;
+    /**
+     * Worktree cleanup's bundled branch reads (graft-git.md §8.7); null while a plugin provider
+     * owns `kelpi.git`. Absent = null: no branch is offered for deletion.
+     */
+    readonly bundledWorktrees?: (() => BundledWorktreeOps | null) | undefined;
+}
+
+function cleanupDeps(channel: RepoChannel): WorktreeCleanupDeps {
+    return {
+        git: channel.git,
+        bundled: channel.bundledWorktrees?.() ?? null,
+        worktreeBasePath: channel.worktreeBasePath
+    };
 }
 
 function failure(error: string): JsonObject {
@@ -373,21 +401,26 @@ async function handleRemoveAssociation(
     const association = workspace.repoAssociations.find((entry) => entry.id === associationID);
     if (association === undefined) return failure(`no repo association matches '${associationID}'`);
 
-    // "Remove & Delete Worktree" (WS-142). NON-forcing, like `workspace delete --prune-worktree`:
-    // git refuses a dirty or locked worktree, and that refusal is reported rather than forced.
+    // "Remove & Delete Worktree" (WS-142). NON-forcing, like a workspace delete's cleanup, and
+    // planned the same way (graft-git.md §8.7): git decides what is a linked worktree and where
+    // its main checkout is, and the plan refuses what git alone would not (another worktree
+    // inside it, another workspace using it, a detached HEAD holding commits no branch has).
+    // This workspace's own panes do not count: the user is taking the row off it right now.
     let worktreeError: string | undefined;
     if (payload['delete_worktree'] === true) {
-        const repo = state.repos.find((entry) => entry.id === association.repoID);
-        if (repo === undefined) {
-            worktreeError = 'the parent repository is no longer registered';
-        } else if (
-            standardizePath(repo.path, state.homeDirectory) ===
-            standardizePath(association.worktreePath, state.homeDirectory)
-        ) {
-            worktreeError = 'that association is the main checkout, not a worktree';
+        const plan = await planWorktreeCleanup(
+            { state, rows: [{ workspaceID, association }], excluding: new Set([workspaceID]) },
+            cleanupDeps(channel)
+        );
+        const candidate = plan.candidates[0];
+        const skipped = plan.skipped[0];
+        if (candidate === undefined) {
+            worktreeError = `that association is ${describeWorktreeSkip(skipped?.reason ?? 'not-a-worktree')}`;
+        } else if (candidate.blocked !== null) {
+            worktreeError = `kept: ${describeWorktreeBlock(candidate.blocked)}`;
         } else {
             try {
-                await channel.git.removeWorktree(repo.path, association.worktreePath);
+                await channel.git.removeWorktree(candidate.repoPath, candidate.worktreePath);
             } catch (error) {
                 worktreeError = worktreeErrorMessage(error);
             }
@@ -408,6 +441,62 @@ async function handleRemoveAssociation(
         worktree_path: association.worktreePath,
         worktree_deleted: payload['delete_worktree'] === true
     };
+}
+
+function serializeBlock(block: WorktreeCleanupBlock): JsonObject {
+    const reason = describeWorktreeBlock(block);
+    switch (block.kind) {
+        case 'shared':
+            return { kind: block.kind, reason, workspaces: [...block.workspaces] };
+        case 'nested':
+            return { kind: block.kind, reason, worktrees: [...block.worktrees] };
+        case 'dirty':
+            return { kind: block.kind, reason, changed_files: block.changedFiles };
+        case 'unreadable':
+            return { kind: block.kind, reason };
+        case 'detached-commits':
+            return { kind: block.kind, reason, commits: block.commits };
+    }
+}
+
+export function serializeCleanupCandidate(candidate: WorktreeCleanupCandidate): JsonObject {
+    return {
+        worktree_path: candidate.worktreePath,
+        repo_path: candidate.repoPath,
+        associations: candidate.associations.map((entry) => ({
+            workspace_id: entry.workspaceID,
+            ...(entry.associationID !== null ? { association_id: entry.associationID } : {})
+        })),
+        branch: candidate.branch,
+        managed: candidate.managed,
+        changed_files: candidate.changedFiles,
+        commits_only_here: candidate.commitsOnlyHere,
+        blocked: candidate.blocked === null ? null : serializeBlock(candidate.blocked),
+        forceable: candidate.forceable,
+        recommended: candidate.recommended,
+        branch_deletable: candidate.branchDeletable
+    };
+}
+
+/**
+ * The delete dialog's list (graft-git.md §8.7): every linked worktree the given workspaces have
+ * a row for, planned as ONE delete (a worktree only these workspaces use is not "shared"). The
+ * delete itself plans again; this is what the user decides from.
+ */
+async function handleCleanupPreview(channel: RepoChannel, payload: Record<string, unknown>): Promise<JsonObject> {
+    const raw = payload['workspace_ids'];
+    if (!Array.isArray(raw)) return failure('worktree-cleanup-preview requires workspace_ids');
+    const state = channel.store.getState();
+    const ids = raw.filter((entry): entry is string => typeof entry === 'string');
+    const workspaces = ids.map((id) => workspaceByID(state, id)).filter((entry) => entry !== null);
+    const rows = workspaces.flatMap((workspace) =>
+        workspace.repoAssociations.map((association) => ({ workspaceID: workspace.id, association }))
+    );
+    const plan = await planWorktreeCleanup(
+        { state, rows, excluding: new Set(workspaces.map((workspace) => workspace.id)) },
+        cleanupDeps(channel)
+    );
+    return { ok: true, worktrees: plan.candidates.map(serializeCleanupCandidate) };
 }
 
 async function handleAddWorktree(channel: RepoChannel, payload: Record<string, unknown>): Promise<JsonObject> {
@@ -694,6 +783,8 @@ export async function handleRepoCommand(
             return await handleRemoveAssociation(channel, payload);
         case 'workspace-add-worktree':
             return await handleAddWorktree(channel, payload);
+        case 'worktree-cleanup-preview':
+            return await handleCleanupPreview(channel, payload);
         case 'repo-add':
             return await handleRepoAdd(channel, payload);
         case 'repo-remove':

@@ -3,6 +3,8 @@ import type { WorkspaceColor } from '@kelpi/daemon/store';
 import type { Dispatch, SetStateAction } from 'react';
 import { DEFAULT_PROFILE_NAME, defaultGroupName, type GroupRepoChange, type NewGroupRepo, type WorkspaceWorktreeRequest } from '../chrome';
 import { parseWorktreeProgress } from '../chrome/worktree';
+import type { WorktreeCleanupChoice } from '../chrome/WorktreeCleanupList';
+import { targetWorkspaceIDs, worktreeCleanupToasts, type WorktreeCleanupToast } from '../app/worktree-cleanup';
 import { isOkReply, replyError, replyText, type CommandClient, type CommandReply } from '../connection';
 import { selectActiveWorkspace, selectVisibleWorkspaceIDs, type KelpiStoreApi } from '../state';
 import type { WorkspacesFeatureLifecycle } from './workspaces';
@@ -17,8 +19,119 @@ export interface WorkspacesActionHost {
     readonly lifecycle: WorkspacesFeatureLifecycle;
 }
 
+/** How long a "Removed worktree" toast stays up; a "Kept on disk" one stays until dismissed. */
+const WORKTREE_TOAST_MS = 6_000;
+/** Module-wide, so a rebuilt actions object never reuses the id of a toast still on screen. */
+let worktreeToastSequence = 0;
+
+/**
+ * A delete's worktree cleanup (graft-git.md §8.7): the dialog's choice, `null` for none (the
+ * list never arrived), or absent to let the `workspace-delete-worktrees` setting decide
+ * (`remove` takes every worktree Kelpi made that is safe; `ask` and `keep` take none, since a
+ * caller that asked has passed its answer).
+ */
+export type WorkspaceDeleteCleanup = WorktreeCleanupChoice | null | undefined;
+
 export function createWorkspacesActions(host: WorkspacesActionHost) {
     const { store, commands, run, notifyFailure, activateWorkspaceAndReveal, setSidebarVisible } = host;
+    const pushCleanupToast = (toast: WorktreeCleanupToast): void => {
+        worktreeToastSequence += 1;
+        const id = `worktree-cleanup-${String(worktreeToastSequence)}`;
+        store.getState().pushToast({
+            id,
+            kind: 'info',
+            title: toast.title,
+            body: toast.body,
+            paneID: null,
+            workspaceID: null,
+            createdAt: Date.now()
+        });
+        if (!toast.sticky) setTimeout(() => store.getState().dismissToast(id), WORKTREE_TOAST_MS);
+    };
+    /**
+     * The cleanup a delete asks the daemon for: the dialog's ticked worktrees (by path), the
+     * `remove` setting's "every worktree Kelpi made that is safe" (`prune_worktrees`, chosen by
+     * the daemon, so nothing waits on a preview), or none.
+     */
+    const cleanupFields = (
+        cleanup: WorkspaceDeleteCleanup
+    ): {
+        worktreePaths?: readonly string[];
+        forceWorktreePaths?: readonly string[];
+        pruneWorktrees?: boolean;
+        deleteBranches: boolean;
+    } | null => {
+        if (cleanup === null) return null;
+        if (cleanup !== undefined) {
+            if (cleanup.candidates.length === 0) return null;
+            // A ticked row the plan blocked can only be one whose uncommitted changes the user
+            // chose to lose (the list never lets any other blocked row be ticked).
+            const force = cleanup.candidates.filter((candidate) => candidate.blocked !== null && candidate.forceable);
+            return {
+                worktreePaths: cleanup.candidates.map((candidate) => candidate.worktreePath),
+                ...(force.length > 0 ? { forceWorktreePaths: force.map((candidate) => candidate.worktreePath) } : {}),
+                deleteBranches: cleanup.deleteBranches
+            };
+        }
+        const general = store.getState().settings.value.general;
+        return general.workspaceDeleteWorktrees === 'remove'
+            ? { pruneWorktrees: true, deleteBranches: general.workspaceDeleteBranches }
+            : null;
+    };
+    /** One delete, reported: a refusal as a failure toast, worktree outcomes as their own. */
+    const sendDelete = async (
+        label: string,
+        workspaceID: string,
+        allowLast: boolean,
+        extra: Partial<Parameters<typeof commands.deleteWorkspace>[0]> = {}
+    ): Promise<boolean> => {
+        try {
+            const reply = await commands.deleteWorkspace({
+                workspace: workspaceID,
+                force: true,
+                ...(allowLast ? { allowLast: true } : {}),
+                ...extra
+            });
+            if (!isOkReply(reply)) {
+                notifyFailure(label, replyError(reply));
+                return false;
+            }
+            const home = store.getState().daemon.info?.home ?? '';
+            for (const toast of worktreeCleanupToasts(reply, home)) pushCleanupToast(toast);
+            return true;
+        } catch (error) {
+            notifyFailure(label, error instanceof Error ? error.message : String(error));
+            return false;
+        }
+    };
+    /**
+     * Delete `workspaceIDs` in order (graft-git.md §8.7). Without cleanup every delete goes out
+     * at once, as before. With it, the cleanup rides on the LAST delete, sent once the others
+     * have replied and naming the ones that went (`batch_ids`): the daemon then plans the whole
+     * batch's worktrees after all of them are gone and their shells have exited, and a
+     * workspace whose delete was refused is still there, still using its worktrees.
+     */
+    const sendDeletes = async (
+        label: string,
+        workspaceIDs: readonly string[],
+        cleanup: WorkspaceDeleteCleanup,
+        allowLast: boolean
+    ): Promise<void> => {
+        const fields = cleanupFields(cleanup);
+        const last = workspaceIDs.at(-1);
+        if (fields === null || last === undefined) {
+            await Promise.all(workspaceIDs.map((workspaceID) => sendDelete(label, workspaceID, allowLast)));
+            return;
+        }
+        const leading = workspaceIDs.slice(0, -1);
+        // Single deletes (the common case) go out synchronously, exactly like the plain path.
+        const deleted = leading.length === 0 ? [] : await Promise.all(leading.map((workspaceID) => sendDelete(label, workspaceID, allowLast)));
+        const batchIDs = leading.filter((_, index) => deleted[index] === true);
+        const ok = await sendDelete(label, last, allowLast, { ...fields, ...(batchIDs.length > 0 ? { batchIDs } : {}) });
+        if (!ok && batchIDs.length > 0) {
+            notifyFailure('Worktrees kept', 'the delete carrying the worktree cleanup was refused, so no worktree was removed');
+        }
+    };
     const { setScrollToGroupID, setSidebarRenameRequest, setSidebarCreateRequest, sidebarSelectionRef, pendingSelectAllRef } = host.lifecycle;
     const activeWorkspaceID = (): string | null => selectActiveWorkspace(store.getState())?.id ?? null;
     /** The row menu, the Inspector and the palette all send an explicit state (§7.6). */
@@ -211,7 +324,7 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
 
         deleteWorkspace(
             workspaceID: string,
-            options: { allowLast?: boolean } = {}
+            options: { allowLast?: boolean; cleanup?: WorkspaceDeleteCleanup } = {}
         ): boolean {
             // The sidebar runs its own confirmation first, which is the GUI's
             // "delete anyway?" — so the command goes out forced, as the app's own
@@ -220,14 +333,8 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
             // `allowLast` defaults OFF, so the sidebar's Delete keeps the shipped app's
             // `.disabled(store.workspaces.count <= 1)` rule; only the ⌘W gate passes it on
             // (§WS-156).
-            return run(
-                'Delete workspace',
-                commands.deleteWorkspace({
-                    workspace: workspaceID,
-                    force: true,
-                    ...(options.allowLast === true ? { allowLast: true } : {})
-                })
-            );
+            void sendDeletes('Delete workspace', [workspaceID], options.cleanup, options.allowLast === true);
+            return true;
         },
 
         renameWorkspace(workspaceID: string, name: string): boolean {
@@ -355,8 +462,18 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
             return run('Rename group', commands.renameGroup({ group: groupID, newName: trimmed }));
         },
 
-        deleteGroup(groupID: string, cascade: boolean): boolean {
-            return run('Delete group', commands.deleteGroup({ group: groupID, cascade }));
+        deleteGroup(groupID: string, cascade: boolean, cleanup?: WorkspaceDeleteCleanup): boolean {
+            if (!cascade || cleanupFields(cleanup) === null) {
+                return run('Delete group', commands.deleteGroup({ group: groupID, cascade }));
+            }
+            // `group-delete` is fire-and-forget, so it has no reply to carry worktree outcomes
+            // on: the members go one delete each (forced and allowed to reach zero, exactly as
+            // the cascade is), then the group, empty by then.
+            const members = targetWorkspaceIDs(store.getState().daemon.state, { groupID });
+            void sendDeletes('Delete group', members, cleanup, true).then(() => {
+                run('Delete group', commands.deleteGroup({ group: groupID, cascade: false }));
+            });
+            return true;
         },
 
         setGroupCollapsed(groupID: string, collapsed: boolean): boolean {
@@ -402,10 +519,8 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
             );
         },
 
-        deleteWorkspaces(workspaceIDs: readonly string[]): boolean {
-            for (const workspaceID of workspaceIDs) {
-                run('Delete workspaces', commands.deleteWorkspace({ workspace: workspaceID, force: true }));
-            }
+        deleteWorkspaces(workspaceIDs: readonly string[], cleanup?: WorkspaceDeleteCleanup): boolean {
+            void sendDeletes('Delete workspaces', workspaceIDs, cleanup, false);
             return true;
         },
 

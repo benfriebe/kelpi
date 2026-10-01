@@ -488,7 +488,7 @@ carry `"command"`.
 | `workspace-list` | R/R | — | `group` |
 | `workspace-create` | R/R | — | `name`, `path`, `color`, `group`, `profile`, `worktree`, `branch`, `update_main`, `repo`, `muted`, `group_defaults` |
 | `workspace-move` | F&F | `name` | `group`, `index` |
-| `workspace-delete` | R/R | `name` | `force` |
+| `workspace-delete` | R/R | `name` | `force`, `worktree_paths`, `force_worktree_paths`, `prune_worktrees`, `delete_branches`, `batch_ids` |
 | `workspace-profile` | F&F | `name` | `profile` |
 | `workspace-label` | R/R | `name`, `label_op` | `label_values` |
 | `workspace-mute` | R/R | `name` | `muted` |
@@ -995,15 +995,66 @@ parked panes; see agent-lifecycle §11) —
    "active_agents":2,"running":2,"waiting":0,"inactive":0}
 ```
 
-Success (the `path` field — a shell pane's cwd, else the first pane's cwd, absent for
-an empty workspace — feeds the CLI's `--prune-worktree`):
+Success (`path` = a shell pane's cwd, else the first pane's cwd, absent for an empty
+workspace; kept for scripts, and for a CLI talking to a daemon that predates the worktree
+fields below):
 
 ```json
 {"ok":true,"workspace_id":"<uuid>","workspace_name":"feat-x","path":"/…/worktrees/feat-x"}
 ```
 
-The CLI performs bulk delete as one request per id and any `--prune-worktree` git work
-client-side.
+**Worktree cleanup** (graft-git.md §8.7). Optional fields ask the daemon to remove linked
+worktrees with the workspace, on its own host:
+
+- `worktree_paths` (string[]): the worktrees to remove, by path as the window's preview named
+  them (the delete dialog's ticked rows). Only a worktree that this workspace, or a workspace
+  of its batch, had a repo association for is planned;
+- `force_worktree_paths` (string[]): of `worktree_paths`, the ones the user agreed to lose
+  uncommitted changes in. Removed with `git worktree remove --force` when uncommitted
+  changes (modified or untracked files) are the ONLY thing keeping them; never one another
+  workspace uses, one with another worktree inside it, or a detached HEAD holding commits no
+  branch has, and never a locked one. The entry then carries `discarded_changes` (the count).
+  Ignored with `prune_worktrees`, which never forces, and while a plugin provider owns
+  `kelpi.git`;
+- `prune_worktrees` (bool, default false): every worktree Kelpi made (directly inside the
+  worktree base path) that this workspace or its batch had a row for, or a shell in when it
+  was deleted, and that is safe to remove; any other worktree is left alone and not listed.
+  The CLI's `--prune-worktree` and the window's `remove` setting;
+- `delete_branches` (bool, default false): also delete each removed worktree's branch, when
+  every commit on it is reachable from another branch, a remote-tracking ref or a tag and it
+  is not the branch `origin/HEAD` names;
+- `batch_ids` (string[]): workspaces deleted EARLIER in the same gesture (a bulk or group
+  delete sends its cleanup on the last delete, after the others have replied). Their rows,
+  shells and pane exits count as this delete's. Only workspaces the daemon actually deleted in
+  the last two minutes count, each once; any other id is ignored, so a workspace a plugin hook
+  kept is still there, and still counts as using its worktrees.
+
+The guards and the delete itself are unchanged. With `worktree_paths` or `prune_worktrees`
+present, the reply is sent **after** the git work rather than before the effect: the panes are
+killed, the workspace is deleted and persisted, then (once its panes and its batch's have
+exited, at most 2 s each) the rows are planned against the state as it is then and each
+worktree the plan allows is removed with a non-forcing `git worktree remove`:
+
+```json
+{"command":"workspace-delete","name":"feat-x","force":true,"worktree_paths":["/…/worktrees/feat-x"],"delete_branches":true}
+→ {"ok":true,"workspace_id":"<uuid>","workspace_name":"feat-x","path":"/…/worktrees/feat-x",
+   "worktrees":[{"association_id":"<assoc-uuid>","worktree_path":"/…/worktrees/feat-x",
+                 "branch":"feat-x","removed":true,"branch_deleted":true}]}
+```
+
+Entry fields: `association_id` (absent for a worktree planned from a shell's cwd),
+`worktree_path`, `branch` (absent on a detached HEAD), `removed` (bool), `discarded_changes`
+(a forced removal: how many uncommitted changes went with it), `blocked` (when the
+plan kept it: `shared`, `nested`, `dirty`, `unreadable` or `detached-commits`), `error` (why
+not, in words: the plan's reason, or git's own refusal such as a lock), and with
+`delete_branches`, `branch_deleted` (bool) and `branch_error`. With `worktree_paths`, a named
+row that is not a linked worktree answers `"error":"the main checkout, not a worktree"` (or
+"not a linked worktree …"), and a path no deleted workspace had a row for answers
+`"error":"not a worktree of the deleted workspaces"`. A workspace with nothing to prune
+answers `"worktrees":[]`. A failed removal never fails the reply: the workspace is gone
+either way.
+
+The CLI performs bulk delete as one request per id.
 
 #### `workspace-profile` (F&F)
 
@@ -1446,6 +1497,8 @@ other key is ignored. (A known key with the wrong type poisons the whole message
 | `new_name` | string | `group-rename`, `workspace-rename` |
 | `cascade` | bool | `group-delete` |
 | `force` | bool | `workspace-delete` |
+| `worktree_paths`, `force_worktree_paths`, `batch_ids` | string[] | `workspace-delete` |
+| `prune_worktrees`, `delete_branches` | bool | `workspace-delete` |
 | `index` | int | `workspace-move`, `group-move` |
 | `group` | string | `workspace-create`, `workspace-move`, `workspace-list` |
 | `profile` | string | `workspace-create`, `workspace-profile`, `session-start` (+ dual-fire on any session-id-bearing event, §3.1) |

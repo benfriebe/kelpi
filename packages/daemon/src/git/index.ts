@@ -86,6 +86,30 @@ export {
 } from './fetch-cache.js';
 export type { DefaultBranchFetchCache, PrefetchResult } from './fetch-cache.js';
 
+/** Worktree cleanup on workspace delete (graft-git.md §8.7). */
+export {
+    describeWorktreeBlock,
+    describeWorktreeSkip,
+    isInsideKey,
+    planWorktreeCleanup,
+    removeWorktrees,
+    bundledWorktreeOps,
+    worktreeKey
+} from './worktree-cleanup.js';
+export type {
+    PlanWorktreeCleanupInput,
+    BundledWorktreeOps,
+    WorktreeCleanupBlock,
+    WorktreeCleanupCandidate,
+    WorktreeCleanupDeps,
+    WorktreeCleanupGit,
+    WorktreeCleanupOwners,
+    WorktreeCleanupPlan,
+    WorktreeCleanupResult,
+    WorktreeCleanupRow,
+    WorktreeCleanupSkipped
+} from './worktree-cleanup.js';
+
 /** Settings ▸ Repositories' "Scan Directory" walk (§GIT-066). */
 export { REPO_SCAN_MAX_DEPTH, scanForRepos } from './scan.js';
 export type { ScanForReposOptions, ScannedRepo } from './scan.js';

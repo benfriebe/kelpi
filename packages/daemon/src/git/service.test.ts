@@ -197,6 +197,12 @@ describe.skipIf(!HAS_GIT)('GitService', () => {
             worktreeRoot: repo,
             parentRepoRoot: repo
         });
+        // From a subfolder, git prints the main checkout's common dir relative to where it ran
+        // (`../../.git`); it must still resolve to the checkout, not an ancestor of it.
+        expect(await service.resolveRepoRoot(path.join(repo, 'nested/deep'))).toEqual({
+            worktreeRoot: repo,
+            parentRepoRoot: repo
+        });
 
         const worktreePath = path.join(tmpDir('wt'), 'feature');
         await service.worktreeAdd({

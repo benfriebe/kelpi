@@ -15,6 +15,7 @@
 
 import type { Pane, WorkspaceColor, WorkspaceGroup, WorkspaceState } from '@kelpi/daemon/store';
 import type { WorktreeStepID, WorktreeStepStatus } from '@kelpi/daemon/git';
+import type { WorktreeCleanupChoice } from './WorktreeCleanupList';
 
 /** The pane fields the chrome reads. */
 export type ChromePane = Pick<
@@ -264,7 +265,12 @@ export interface SidebarCallbacks {
      * `workspace-rename` is the CLI's name-or-id control verb for the same rename (#266).
      */
     readonly onRenameWorkspace?: ((workspaceID: string, name: string) => void) | undefined;
-    readonly onDeleteWorkspace?: ((workspaceID: string) => void) | undefined;
+    /**
+     * `cleanup` is the dialog's worktree choice (graft-git.md §8.7): absent when it had no list
+     * (the `workspace-delete-worktrees` setting decides), null when the list never arrived (keep
+     * every worktree).
+     */
+    readonly onDeleteWorkspace?: ((workspaceID: string, cleanup?: WorktreeCleanupChoice | null) => void) | undefined;
     readonly onSetWorkspaceColor?: ((workspaceID: string, color: WorkspaceColor) => void) | undefined;
     /** `applied` is the state AFTER the toggle: true = add the label, false = remove it. */
     readonly onToggleWorkspaceLabel?:
@@ -302,7 +308,10 @@ export interface SidebarCallbacks {
      */
     readonly onBrowseForFolder?: (() => Promise<string | null>) | undefined;
     readonly onRenameGroup?: ((groupID: string, name: string) => void) | undefined;
-    readonly onDeleteGroup?: ((groupID: string, cascade: boolean) => void) | undefined;
+    /** `cleanup` as `onDeleteWorkspace`'s; only ever passed with `cascade`. */
+    readonly onDeleteGroup?:
+        | ((groupID: string, cascade: boolean, cleanup?: WorktreeCleanupChoice | null) => void)
+        | undefined;
     /**
      * The New Workspace form. `worktree` is present when its "Create git worktree" section is
      * on (§WS-078); the callback may answer with a message so the form can keep itself open on
@@ -354,5 +363,7 @@ export interface SidebarCallbacks {
           ) => void)
         | undefined;
     /** "Delete N Workspaces…", after ONE confirmation. Absent = falls back to N single deletes. */
-    readonly onDeleteWorkspaces?: ((workspaceIDs: readonly string[]) => void) | undefined;
+    readonly onDeleteWorkspaces?:
+        | ((workspaceIDs: readonly string[], cleanup?: WorktreeCleanupChoice | null) => void)
+        | undefined;
 }

@@ -1029,8 +1029,11 @@ setting is applied at the verb rather than at the gesture and governs the CLI fo
 
 ### 6.4 `workspace-delete` → handleWorkspaceDelete
 
-Inputs: `nameOrID`, `force` (bool). (The CLI's bulk form loops one message per id;
-`--prune-worktree` is entirely client-side, driven by the reply's `path`.)
+Inputs: `nameOrID`, `force` (bool), and the worktree cleanup fields `worktree_paths`
+(string[]), `force_worktree_paths` (string[]), `prune_worktrees` (bool), `delete_branches`
+(bool), `batch_ids` (string[])
+(graft-git.md §8.7). (The CLI's bulk form loops one message per id; `--prune-worktree`
+sends `prune_worktrees`.)
 
 ```
 ws = resolveWorkspace(nameOrID)
@@ -1073,9 +1076,35 @@ Success reply, sent before the delete executes:
 ```
 
 `path` = the working directory of the first **shell** pane, falling back to the first pane
-of any type; omitted when the workspace has no panes (documented limitation: an empty
-workspace's worktree can't be auto-pruned). Then dispatch workspace deletion (closes
-remaining panes/surfaces, removes from orders, fixes active workspace, persists).
+of any type; omitted when the workspace has no panes. Then dispatch workspace deletion
+(closes remaining panes/surfaces, removes from orders, fixes active workspace, persists).
+
+**With worktree cleanup** (`worktree_paths` non-empty, or `prune_worktrees`), the reply
+moves AFTER the git work, because it is where each worktree's outcome is:
+
+```
+exited = wait for every killed pane that had a live PTY to exit, at most 2 s
+         (listening starts BEFORE the kills, so an immediate exit is not missed)
+kill panes; dispatch delete; refreshSyncGroup; persist      // exactly as without cleanup
+remember {ws.id, rows, path, exited} for 2 min              // every delete, cleanup or not
+owners = [ws] + remembered workspaces named by batch_ids    // claimed once; others ignored
+await every owner's exited
+rows = owners' repoAssociations
+       prune: + each owner's `path` worktree root (resolveRepoRoot), a row with no id
+       paths: only rows whose canonical path was named
+plan = planWorktreeCleanup(current state, rows, excluding: owners)   // graft-git §8.7
+       prune: keep only managed candidates
+results = removeWorktrees(plan, delete_branches,
+                          force: paths ∩ force_worktree_paths)   // forceable ones only; prune never forces
+reply {ok, workspace_id, workspace_name, path?, worktrees: [results…,
+       paths: a skipped row → {association_id?, worktree_path, removed:false, error:"the main checkout, not a worktree"},
+       paths: a path no owner had a row for → {worktree_path, removed:false, error:"not a worktree of the deleted workspaces"}]}
+```
+
+A worktree the plan blocks, or git refuses, is an entry, never a failed reply: the workspace
+is deleted either way. The plan reads the state AFTER every owner is deleted, so a worktree
+only the batch used is removable, while a `batch_ids` workspace that was never deleted is
+still in the state and still blocks it.
 
 Legacy `reply == null`: guards still apply; delete dispatched on success, dropped silently
 on failure.
@@ -1618,6 +1647,8 @@ hook scripts and saved state keep working; each explains why the code does somet
 16. **Zoom interactions.** `pane-resize` refuses while zoomed (specific error), and
     `pane-move-to-workspace` un-zooms by restoring the saved layout minus the moved pane.
     Both touch points are preserved.
-17. **`workspace-delete --prune-worktree` is client-side.** The server's only contribution
-    is the `path` field (first shell pane's cwd). It keeps emitting it; otherwise the CLI
-    flag would silently stop working.
+17. **`workspace-delete --prune-worktree` is daemon-side.** The CLI sends
+    `prune_worktrees` and the daemon removes the workspace's linked worktrees from its repo
+    associations (graft-git.md §8.7). The `path` field (first shell pane's cwd) is still
+    emitted, for scripts and for a newer CLI's fallback against a daemon that predates the
+    field.

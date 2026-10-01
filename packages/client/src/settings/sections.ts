@@ -416,6 +416,12 @@ const PLACEMENT_CHOICES: readonly SettingsChoice[] = Object.freeze([
     Object.freeze({ value: 'end-of-list', label: 'End of list' })
 ]);
 
+const DELETE_WORKTREE_CHOICES: readonly SettingsChoice[] = Object.freeze([
+    Object.freeze({ value: 'ask', label: 'Ask' }),
+    Object.freeze({ value: 'remove', label: 'Remove clean Kelpi worktrees' }),
+    Object.freeze({ value: 'keep', label: 'Keep them' })
+]);
+
 /**
  * Every field, in the order its tab renders it.
  *
@@ -554,6 +560,35 @@ export const SETTINGS_FIELD_DEFINITIONS: readonly SettingsFieldDefinition[] = Ob
         target: { file: 'kelpi', key: 'confirm-workspace-delete' },
         default: true,
         read: (settings) => settings.general.confirmWorkspaceDeleteWhenActive,
+        encode: BOOLEAN
+    },
+    {
+        id: 'workspaces.deleteWorktrees',
+        sectionID: 'workspaces',
+        groupID: 'workspaces-section',
+        kind: 'select',
+        label: 'Worktrees when deleting a workspace',
+        detail: "Ask lists the workspace's linked git worktrees in the delete dialog. Remove takes the clean ones Kelpi created without asking. A worktree with uncommitted changes, or one another workspace uses, is always kept.",
+        testID: 'delete-worktrees',
+        target: { file: 'kelpi', key: 'workspace-delete-worktrees' },
+        default: 'ask',
+        choices: DELETE_WORKTREE_CHOICES,
+        read: (settings) => settings.general.workspaceDeleteWorktrees,
+        encode: (value) => value
+    },
+    {
+        id: 'workspaces.deleteBranches',
+        sectionID: 'workspaces',
+        groupID: 'workspaces-section',
+        kind: 'toggle',
+        label: "Also delete a removed worktree's branch",
+        detail: 'Only when every commit on it is also on another branch or a remote, so nothing is lost.',
+        testID: 'delete-branches-toggle',
+        rowTestID: 'delete-branches-row',
+        target: { file: 'kelpi', key: 'workspace-delete-branches' },
+        default: true,
+        visible: (settings) => settings.general.workspaceDeleteWorktrees !== 'keep',
+        read: (settings) => settings.general.workspaceDeleteBranches,
         encode: BOOLEAN
     },
     {

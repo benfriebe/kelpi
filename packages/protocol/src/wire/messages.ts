@@ -244,6 +244,35 @@ export interface WorkspaceDeleteMessage {
      * state unreachable by any gesture. This is that asymmetry, restored.
      */
     allow_last?: boolean | undefined;
+    /**
+     * Worktree cleanup (graft-git.md §8.7): the linked worktrees (paths, as the preview named
+     * them) that go with this workspace and its batch: a delete dialog's ticked rows. Only a
+     * worktree one of those workspaces had a row for is planned; the daemon re-plans each at
+     * delete time and removes only what is still safe, never forcing.
+     */
+    worktree_paths?: readonly string[] | undefined;
+    /**
+     * Of `worktree_paths`, the ones the user agreed to lose uncommitted changes in: removed
+     * with `git worktree remove --force` when uncommitted changes are the ONLY thing keeping
+     * them (never one another workspace uses, one with a worktree inside it, or a detached
+     * HEAD holding commits no branch has). Ignored with `prune_worktrees`, which never forces.
+     */
+    force_worktree_paths?: readonly string[] | undefined;
+    /**
+     * `kelpi workspace delete --prune-worktree`, and the window's `remove` setting: every
+     * worktree Kelpi made (inside the worktree base path) that the workspace, or its batch, had
+     * a row for or a shell in, and that is safe to remove. Chosen by the daemon, on its own host.
+     */
+    prune_worktrees?: boolean | undefined;
+    /** Also delete a removed worktree's branch when every commit on it is reachable elsewhere. */
+    delete_branches?: boolean | undefined;
+    /**
+     * Workspaces deleted EARLIER in the same gesture (a bulk or group delete) whose worktrees
+     * this delete's cleanup covers too. Only ones the daemon actually deleted, within the last
+     * two minutes, count; any other id is ignored, so a workspace a plugin hook kept is still
+     * a sharer.
+     */
+    batch_ids?: readonly string[] | undefined;
 }
 
 export interface WorkspaceProfileMessage {

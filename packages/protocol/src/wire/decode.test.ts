@@ -515,6 +515,29 @@ describe('workspace and group commands', () => {
         }
     });
 
+    it('decodes workspace-delete with its worktree cleanup fields (graft-git §8.7)', () => {
+        expect(ok({ command: 'workspace-delete', name: 'feat-x' })).toEqual({
+            command: 'workspace-delete',
+            name: 'feat-x',
+            force: false,
+            worktree_paths: undefined,
+            force_worktree_paths: undefined,
+            prune_worktrees: undefined,
+            delete_branches: undefined,
+            batch_ids: undefined
+        });
+        expect(
+            ok({ command: 'workspace-delete', name: 'feat-x', force: true, worktree_paths: ['/w/a', '/w/b'], force_worktree_paths: ['/w/b'], delete_branches: true, batch_ids: ['W0'] })
+        ).toMatchObject({ force: true, worktree_paths: ['/w/a', '/w/b'], force_worktree_paths: ['/w/b'], delete_branches: true, batch_ids: ['W0'] });
+        expect(ok({ command: 'workspace-delete', name: 'feat-x', prune_worktrees: true })).toMatchObject({ prune_worktrees: true });
+        // `allow_last` is still not a wire field.
+        expect(ok({ command: 'workspace-delete', name: 'feat-x', allow_last: true })).not.toHaveProperty('allow_last');
+        expect(rejected({ command: 'workspace-delete', name: 'feat-x', worktree_paths: '/w/a' })).toMatchObject({
+            reason: 'field-type',
+            field: 'worktree_paths'
+        });
+    });
+
     it('decodes workspace-mute with an explicit state or a toggle', () => {
         expect(ok({ command: 'workspace-mute', name: 'feat-x', muted: true })).toEqual({
             command: 'workspace-mute',

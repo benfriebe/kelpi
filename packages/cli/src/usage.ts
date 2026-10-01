@@ -36,7 +36,7 @@ export const globalUsage = `Usage:
   kelpi workspace create [--name "..."] [--path /dir] [--color blue] [--group <name>] [--profile <name>] [--muted] [--json]
   kelpi workspace create --worktree <name> [--branch <name>] [--repo <path>] [--update-main] [--group <existing>] [--muted]
   kelpi workspace move <name-or-id> (--group <name> | --top-level) [--index N]
-  kelpi workspace delete <name-or-id> [<name-or-id> ...] [--force|-y] [--prune-worktree] [--json]
+  kelpi workspace delete <name-or-id> [<name-or-id> ...] [--force|-y] [--prune-worktree [--delete-branch]] [--json]
   kelpi workspace profile <name-or-id> (<profile> | --clear)
   kelpi workspace label <name-or-id> (--set v | --add v | --remove v | --clear) [--json]
   kelpi workspace mute <name-or-id> [--off | --toggle] [--json]
@@ -411,14 +411,21 @@ non-zero on failure.
 
 export const workspaceDeleteUsage = `Usage:
   kelpi workspace delete <name-or-id> [<name-or-id> ...] [--force|-y] \\
-                       [--prune-worktree] [--json]
+                       [--prune-worktree [--delete-branch]] [--json]
 
 Deletes one or more workspaces (closing any remaining panes). Refuses to
 delete the last remaining workspace.
 
 Options:
   --force, -y        Delete even with running, waiting or inactive agent sessions.
-  --prune-worktree   Best-effort \`git worktree remove\` of the deleted dir.
+  --prune-worktree   Also remove the git worktrees Kelpi created for the
+                     workspace (inside the worktree base path), on the Kelpi
+                     host. Never forced: a worktree with uncommitted changes,
+                     another worktree inside it, or another workspace using it
+                     is kept, with a warning.
+  --delete-branch    With --prune-worktree, also delete each removed worktree's
+                     branch when every commit on it is on another branch or a
+                     remote.
   --json             Print a per-id JSON result array.
   -h, --help         Show this help.
 

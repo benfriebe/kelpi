@@ -33,7 +33,8 @@ function stubGit(remote: string | null = 'git@example.invalid:acme/app.git'): Re
         getStatus: async (): Promise<RepoGitStatus> => ({ kind: 'clean' }),
         getRemoteURL: async () => remote,
         worktreeAdd: async () => {},
-        removeWorktree: async () => {}
+        removeWorktree: async () => {},
+        listWorktrees: async () => []
     };
 }
 

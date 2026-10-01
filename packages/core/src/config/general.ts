@@ -26,6 +26,26 @@ export interface GeneralSettings {
      */
     readonly confirmWorkspaceDeleteWhenActive: boolean;
     /**
+     * `workspace-delete-worktrees` (graft-git.md §8.7), default `ask`: what deleting a workspace
+     * from the window does with its linked git worktrees.
+     *
+     *   - `ask`: the delete dialog lists them, with the clean ones Kelpi made ticked;
+     *   - `remove`: no list; the clean ones Kelpi made are removed with the workspace;
+     *   - `keep`: no list; every worktree stays on disk (what a delete did before this key).
+     *
+     * A CLIENT-side rule, like SET-011: the wire verb only removes what a request names, so
+     * `kelpi workspace delete` keeps its own `--prune-worktree` flag. Unknown values keep the
+     * default.
+     */
+    readonly workspaceDeleteWorktrees: 'ask' | 'remove' | 'keep';
+    /**
+     * `workspace-delete-branches`, default **true**: when a worktree goes with its workspace,
+     * also delete its branch. Only ever a branch whose every commit another branch, a
+     * remote-tracking ref or a tag also has, so it loses nothing. The delete dialog's checkbox
+     * starts from it. Lenient like the default-true flags: only the literal `false` turns it off.
+     */
+    readonly workspaceDeleteBranches: boolean;
+    /**
      * §10 step 2's "Confirm before quitting while agents are active", default true — the twin
      * of `confirm-workspace-delete` and, until now, the one suppression flag that was NOT here.
      *
@@ -158,6 +178,8 @@ export const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
     globalHotkey: null,
     globalHotkeyHideOnRepress: true,
     confirmWorkspaceDeleteWhenActive: true,
+    workspaceDeleteWorktrees: 'ask',
+    workspaceDeleteBranches: true,
     confirmQuitWhenActive: true,
     autoUpdate: false,
     autoDetectRepos: true,
@@ -222,6 +244,14 @@ export function parseGeneralSettings(contents: string): GeneralSettings {
                 break;
             case 'confirm-workspace-delete':
                 settings = { ...settings, confirmWorkspaceDeleteWhenActive: lowered !== 'false' };
+                break;
+            case 'workspace-delete-worktrees':
+                if (lowered === 'ask' || lowered === 'remove' || lowered === 'keep') {
+                    settings = { ...settings, workspaceDeleteWorktrees: lowered };
+                }
+                break;
+            case 'workspace-delete-branches':
+                settings = { ...settings, workspaceDeleteBranches: lowered !== 'false' };
                 break;
             case 'confirm-quit-when-active':
                 settings = { ...settings, confirmQuitWhenActive: lowered !== 'false' };

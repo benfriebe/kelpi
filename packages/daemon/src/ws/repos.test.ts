@@ -38,6 +38,9 @@ interface StubGitOptions {
     readonly branches?: Record<string, string> | undefined;
     readonly worktreeAddError?: Error | undefined;
     readonly removeError?: Error | undefined;
+    /** `git worktree list` per repo path: what the cleanup plan checks for nesting. */
+    readonly worktrees?: Record<string, { path: string; branch: string | null; isMain: boolean }[]> | undefined;
+    readonly statuses?: Record<string, RepoGitStatus> | undefined;
 }
 
 function stubGit(options: StubGitOptions = {}): { git: RepoCommandGit; calls: GitCalls } {
@@ -49,8 +52,8 @@ function stubGit(options: StubGitOptions = {}): { git: RepoCommandGit; calls: Gi
         async getCurrentBranch(repoPath) {
             return options.branches?.[repoPath] ?? null;
         },
-        async getStatus(): Promise<RepoGitStatus> {
-            return { kind: 'clean' };
+        async getStatus(repoPath): Promise<RepoGitStatus> {
+            return options.statuses?.[repoPath] ?? { kind: 'clean' };
         },
         async getRemoteURL() {
             return 'git@example.invalid:acme/app.git';
@@ -67,6 +70,9 @@ function stubGit(options: StubGitOptions = {}): { git: RepoCommandGit; calls: Gi
         async removeWorktree(repoPath, worktreePath) {
             calls.removals.push({ repoPath, worktreePath });
             if (options.removeError !== undefined) throw options.removeError;
+        },
+        async listWorktrees(repoPath) {
+            return options.worktrees?.[repoPath] ?? [];
         }
     };
     return { git, calls };
@@ -431,7 +437,10 @@ describe('remove-repo-association', () => {
     });
 
     it('runs a non-forcing worktree remove for "Remove & Delete Worktree"', async () => {
-        const f = fixture();
+        const f = fixture({
+            roots: { '/src/worktrees/feature': { worktreeRoot: '/src/worktrees/feature', parentRepoRoot: '/src/app' } },
+            branches: { '/src/worktrees/feature': 'feature' }
+        });
         seedRepo(f);
         f.store.dispatch({
             type: 'add-repo-association',
@@ -457,7 +466,13 @@ describe('remove-repo-association', () => {
     });
 
     it('keeps the row when git refuses to delete the worktree', async () => {
-        const f = fixture({ removeError: new Error('fatal: contains modified or untracked files') });
+        const f = fixture({
+            ...{
+            roots: { '/src/worktrees/feature': { worktreeRoot: '/src/worktrees/feature', parentRepoRoot: '/src/app' } },
+            branches: { '/src/worktrees/feature': 'feature' }
+        },
+            removeError: new Error('fatal: contains modified or untracked files')
+        });
         seedRepo(f);
         f.store.dispatch({
             type: 'add-repo-association',
@@ -484,7 +499,8 @@ describe('remove-repo-association', () => {
     });
 
     it('refuses to delete the main checkout as if it were a worktree', async () => {
-        const f = fixture();
+        // Git's answer decides, not the registry: a checkout whose parent is itself is main.
+        const f = fixture({ roots: { '/src/app': { worktreeRoot: '/src/app', parentRepoRoot: '/src/app' } } });
         seedRepo(f);
         f.store.dispatch({
             type: 'add-repo-association',
@@ -507,6 +523,129 @@ describe('remove-repo-association', () => {
         expect(reply['ok']).toBe(false);
         expect(String(reply['error'])).toContain('main checkout');
         expect(f.calls.removals).toEqual([]);
+    });
+
+    it('keeps a worktree with another worktree inside it, which git would delete as ignored files', async () => {
+        const f = fixture({
+            ...{
+            roots: { '/src/worktrees/feature': { worktreeRoot: '/src/worktrees/feature', parentRepoRoot: '/src/app' } },
+            branches: { '/src/worktrees/feature': 'feature' }
+        },
+            worktrees: {
+                '/src/app': [
+                    { path: '/src/app', branch: 'main', isMain: true },
+                    { path: '/src/worktrees/feature', branch: 'feature', isMain: false },
+                    { path: '/src/worktrees/feature/.claude/worktrees/agent', branch: 'agent', isMain: false }
+                ]
+            }
+        });
+        seedRepo(f);
+        f.store.dispatch({
+            type: 'add-repo-association',
+            workspaceID: W1,
+            association: { id: 'assoc-wt', repoID: REPO_ID, worktreePath: '/src/worktrees/feature', branchName: 'feature', isAutoDetected: false }
+        });
+        const { session, transport } = f.connect();
+        const reply = await ask(session, transport, {
+            command: 'remove-repo-association',
+            workspace_id: W1,
+            association_id: 'assoc-wt',
+            delete_worktree: true
+        });
+        expect(reply['ok']).toBe(false);
+        expect(String(reply['error'])).toBe('kept: has another worktree inside it (/src/worktrees/feature/.claude/worktrees/agent)');
+        expect(f.calls.removals).toEqual([]);
+        expect(f.store.state().workspaces[0]?.repoAssociations).toHaveLength(1);
+    });
+});
+
+describe('worktree-cleanup-preview (graft-git §8.7)', () => {
+    it("plans the workspaces' linked worktrees and leaves the main checkout out", async () => {
+        const f = fixture({
+            roots: {
+                '/src/app': { worktreeRoot: '/src/app', parentRepoRoot: '/src/app' },
+                '/src/worktrees/feature': { worktreeRoot: '/src/worktrees/feature', parentRepoRoot: '/src/app' },
+                '/src/worktrees/busy': { worktreeRoot: '/src/worktrees/busy', parentRepoRoot: '/src/app' }
+            },
+            branches: { '/src/worktrees/feature': 'feature', '/src/worktrees/busy': 'busy' },
+            statuses: { '/src/worktrees/busy': { kind: 'dirty', changedFiles: 2, additions: 1, deletions: 0 } },
+            worktreeBasePath: () => '/src/worktrees'
+        });
+        seedRepo(f);
+        for (const [id, worktreePath, branchName] of [
+            ['assoc-main', '/src/app', 'main'],
+            ['assoc-feature', '/src/worktrees/feature', 'feature'],
+            ['assoc-busy', '/src/worktrees/busy', 'busy']
+        ] as const) {
+            f.store.dispatch({
+                type: 'add-repo-association',
+                workspaceID: W1,
+                association: { id, repoID: REPO_ID, worktreePath, branchName, isAutoDetected: false }
+            });
+        }
+        const { session, transport } = f.connect();
+        const reply = await ask(session, transport, { command: 'worktree-cleanup-preview', workspace_ids: [W1] });
+
+        expect(reply['ok']).toBe(true);
+        expect(reply['worktrees']).toEqual([
+            {
+                worktree_path: '/src/worktrees/feature',
+                repo_path: '/src/app',
+                associations: [{ workspace_id: W1, association_id: 'assoc-feature' }],
+                branch: 'feature',
+                managed: true,
+                changed_files: 0,
+                // No bundled branch reads on this channel: nothing is known about its commits.
+                commits_only_here: null,
+                blocked: null,
+                forceable: false,
+                recommended: true,
+                branch_deletable: false
+            },
+            {
+                worktree_path: '/src/worktrees/busy',
+                repo_path: '/src/app',
+                associations: [{ workspace_id: W1, association_id: 'assoc-busy' }],
+                branch: 'busy',
+                managed: true,
+                changed_files: 2,
+                commits_only_here: null,
+                blocked: { kind: 'dirty', reason: 'has 2 uncommitted changes', changed_files: 2 },
+                // No bundled git on this channel, so it cannot be forced either.
+                forceable: false,
+                recommended: false,
+                branch_deletable: false
+            }
+        ]);
+    });
+
+    it('reports a worktree another workspace has a pane in as shared', async () => {
+        const f = fixture({
+            roots: { '/src/worktrees/feature': { worktreeRoot: '/src/worktrees/feature', parentRepoRoot: '/src/app' } },
+            branches: { '/src/worktrees/feature': 'feature' }
+        });
+        seedRepo(f);
+        f.store.dispatch({
+            type: 'add-repo-association',
+            workspaceID: W1,
+            association: { id: 'assoc-wt', repoID: REPO_ID, worktreePath: '/src/worktrees/feature', branchName: 'feature', isAutoDetected: false }
+        });
+        f.store.dispatch({ type: 'create-workspace', id: W2, paneID: 'dddddddd-0000-4000-8000-000000000200', name: 'other', now: 0, workingDirectory: '/src/worktrees/feature/src' });
+        const { session, transport } = f.connect();
+        const reply = await ask(session, transport, { command: 'worktree-cleanup-preview', workspace_ids: [W1] });
+        const [entry] = reply['worktrees'] as JsonObject[];
+        expect(entry?.['blocked']).toEqual({ kind: 'shared', reason: 'also used by workspace "other"', workspaces: ['other'] });
+
+        // Previewing both together, the other workspace is going too: not shared any more.
+        const both = await ask(session, transport, { command: 'worktree-cleanup-preview', workspace_ids: [W1, W2] });
+        expect((both['worktrees'] as JsonObject[])[0]?.['blocked']).toBeNull();
+    });
+
+    it('requires workspace_ids', async () => {
+        const f = fixture();
+        const { session, transport } = f.connect();
+        const reply = await ask(session, transport, { command: 'worktree-cleanup-preview' });
+        expect(reply).toMatchObject({ ok: false, error: 'worktree-cleanup-preview requires workspace_ids' });
     });
 });
 

@@ -15,7 +15,9 @@
  *     reply-before-effect, §6.2a, §6.2d); the worktree branch streams its steps to a WS
  *     requester first (`reply.progress`, #294) and can be cancelled until git is done;
  *   - delete's guards run in order (resolve → last-workspace → agent panes) and the `path`
- *     field is the first SHELL pane's cwd (port note 17 — `--prune-worktree` depends on it).
+ *     field is the first SHELL pane's cwd (port note 17);
+ *   - a delete that asks for worktree cleanup (`worktree_paths` / `prune_worktrees`, graft-git.md
+ *     §8.7) replies AFTER the git work instead: the reply is where each worktree's outcome is.
  */
 
 import path from 'node:path';
@@ -33,8 +35,10 @@ import {
 } from '@kelpi/core/resolve';
 import {
     buildWorkspaceListEntry,
+    type JsonObject,
     type WorkspaceColor,
     type WorkspaceCreateMessage,
+    type WorkspaceDeleteMessage,
     type WorkspaceListEntry
 } from '@kelpi/protocol';
 
@@ -54,12 +58,18 @@ import {
 } from '../../store/index.js';
 import {
     createStepTracker,
+    describeWorktreeSkip,
+    planWorktreeCleanup,
+    removeWorktrees,
     sanitizedGitName,
     serializeWorktreeProgress,
     standardizePath,
     worktreeErrorMessage,
+    worktreeKey,
     worktreePathFor,
-    worktreeStepsFor
+    worktreeStepsFor,
+    type WorktreeCleanupResult,
+    type WorktreeCleanupRow
 } from '../../git/index.js';
 import { forCommand, listedWorkspaceIDs, refreshSyncGroup, uuidOut, wireTimestamp } from './common.js';
 import { fail, ok, type AppContext, type AppDeps, type AppHandler } from './context.js';
@@ -626,14 +636,215 @@ function unresolvedWorkspaceError(scope: WorkspaceScope, nameOrID: string): stri
 // workspace-delete (§6.4)
 // ---------------------------------------------------------------------------
 
-function handleWorkspaceDelete(
-    nameOrID: string,
-    force: boolean,
-    allowLast: boolean,
+/**
+ * How long a delete waits for its panes' processes to exit before any worktree is removed. A
+ * kill is SIGHUP then SIGKILL after 300 ms, so this is the ceiling for a process that ignores
+ * both, not the usual wait; a shell still writing into the tree when git looks is what would
+ * make it refuse a worktree the user just saw as clean.
+ */
+export const PANE_EXIT_WAIT_MS = 2_000;
+
+/**
+ * How long a deleted workspace's rows stay claimable by a later delete of the same gesture
+ * (`batch_ids`). A bulk or group delete sends the worktree cleanup on its LAST delete, after the
+ * earlier ones have replied, so this only has to outlast one gesture.
+ */
+export const DELETED_WORKSPACE_MEMORY_MS = 120_000;
+
+/** What a delete remembers about the workspace it removed, for a later delete of its batch. */
+interface DeletedWorkspace {
+    readonly id: string;
+    readonly rows: readonly RepoAssociation[];
+    /** The reply's `path`: where its first shell was, for a worktree it has no row for. */
+    readonly path: string | undefined;
+    readonly exited: Promise<void>;
+    readonly at: number;
+}
+
+/**
+ * The batch memory (graft-git.md §8.7). Only a workspace that was ACTUALLY deleted is in it: one
+ * a plugin hook vetoed, or a guard refused, never reaches the handler's delete, so a later
+ * `batch_ids` naming it finds nothing, and the workspace (still there) counts as a sharer.
+ */
+export interface DeletedWorkspaceMemory {
+    remember(entry: Omit<DeletedWorkspace, 'at'>): void;
+    /** The named, still-remembered workspaces, removed from memory: a batch is claimed once. */
+    take(ids: readonly string[]): DeletedWorkspace[];
+}
+
+export function createDeletedWorkspaceMemory(now: () => number): DeletedWorkspaceMemory {
+    const entries = new Map<string, DeletedWorkspace>();
+    const prune = (): void => {
+        const oldest = now() - DELETED_WORKSPACE_MEMORY_MS;
+        for (const [id, entry] of entries) if (entry.at < oldest) entries.delete(id);
+    };
+    return {
+        remember(entry) {
+            prune();
+            entries.set(uuidOut(entry.id), { ...entry, at: now() });
+        },
+        take(ids) {
+            prune();
+            const found: DeletedWorkspace[] = [];
+            for (const id of ids) {
+                const entry = entries.get(uuidOut(id));
+                if (entry === undefined) continue;
+                entries.delete(uuidOut(id));
+                found.push(entry);
+            }
+            return found;
+        }
+    };
+}
+
+/** What a delete asked to do with worktrees; null = nothing. */
+interface WorktreeCleanupRequest {
+    /** Named worktrees (the dialog's ticks), or the ones Kelpi made (`prune_worktrees`). */
+    readonly selection:
+        | { readonly kind: 'paths'; readonly paths: readonly string[]; readonly force: readonly string[] }
+        | { readonly kind: 'kelpi' };
+    readonly deleteBranches: boolean;
+    /** Workspaces deleted earlier in the same gesture whose worktrees this delete takes too. */
+    readonly batch: readonly string[];
+}
+
+function worktreeCleanupOf(msg: WorkspaceDeleteMessage): WorktreeCleanupRequest | null {
+    const deleteBranches = msg.delete_branches === true;
+    const batch = [...new Set(msg.batch_ids ?? [])];
+    if (msg.prune_worktrees === true) return { selection: { kind: 'kelpi' }, deleteBranches, batch };
+    const paths = [...new Set(msg.worktree_paths ?? [])].filter((entry) => entry.trim() !== '');
+    const force = [...new Set(msg.force_worktree_paths ?? [])].filter((entry) => paths.includes(entry));
+    return paths.length === 0 ? null : { selection: { kind: 'paths', paths, force }, deleteBranches, batch };
+}
+
+/** Resolves once every listed pane that has a live PTY has exited, or after `ms`. */
+function paneExits(ctx: AppContext, paneIDs: readonly string[], ms: number): Promise<void> {
+    const waiting = new Set(paneIDs.filter((paneID) => ctx.pty.has(paneID)));
+    if (waiting.size === 0) return Promise.resolve();
+    return new Promise((resolve) => {
+        let done = false;
+        const finish = (): void => {
+            if (done) return;
+            done = true;
+            clearTimeout(timer);
+            off();
+            resolve();
+        };
+        const timer = setTimeout(finish, ms);
+        timer.unref?.();
+        const off = ctx.pty.onExit((paneID) => {
+            waiting.delete(paneID);
+            if (waiting.size === 0) finish();
+        });
+    });
+}
+
+function serializeCleanupResult(result: WorktreeCleanupResult): JsonObject {
+    return {
+        ...(result.associationID !== undefined ? { association_id: uuidOut(result.associationID) } : {}),
+        worktree_path: result.worktreePath,
+        ...(result.branch !== undefined ? { branch: result.branch } : {}),
+        removed: result.removed,
+        ...(result.discardedChanges !== undefined ? { discarded_changes: result.discardedChanges } : {}),
+        ...(result.blocked !== undefined ? { blocked: result.blocked } : {}),
+        ...(result.error !== undefined ? { error: result.error } : {}),
+        ...(result.branchDeleted !== undefined ? { branch_deleted: result.branchDeleted } : {}),
+        ...(result.branchError !== undefined ? { branch_error: result.branchError } : {})
+    };
+}
+
+/**
+ * The worktree half of a delete (graft-git.md §8.7), after the workspace is already gone: wait
+ * for its panes (and its batch's) to exit, plan the rows against the state as it is NOW, so
+ * every workspace of the batch is already gone and none of them counts as sharing, remove what
+ * the plan allows, and reply. Never fails the reply: the workspace is deleted either way.
+ */
+async function removeDeletedWorkspaceWorktrees(
+    owners: readonly Omit<DeletedWorkspace, 'at'>[],
+    request: WorktreeCleanupRequest,
+    head: JsonObject,
     ctx: AppContext,
     reply: ReplyHandle | null,
     deps: AppDeps
+): Promise<void> {
+    const entries: JsonObject[] = [];
+    try {
+        await Promise.all(owners.map((owner) => owner.exited));
+        const state = ctx.store.getState();
+        const cleanupDeps = { git: deps.git, bundled: deps.bundledWorktrees(), worktreeBasePath: deps.worktreeBasePath };
+        const rows: WorktreeCleanupRow[] = owners.flatMap((owner) =>
+            owner.rows.map((association) => ({ workspaceID: owner.id, association }))
+        );
+        if (request.selection.kind === 'kelpi') {
+            // The worktree each shell was in: a workspace may have no row for it (auto-detect
+            // off, or not linked yet), which is the one `--prune-worktree` used to prune.
+            for (const owner of owners) {
+                if (owner.path === undefined) continue;
+                let info: Awaited<ReturnType<AppDeps['git']['resolveRepoRoot']>> = null;
+                try {
+                    info = await deps.git.resolveRepoRoot(owner.path);
+                } catch {
+                    info = null;
+                }
+                if (info !== null) rows.push({ workspaceID: owner.id, association: { id: null, worktreePath: info.worktreeRoot } });
+            }
+        }
+        const home = state.homeDirectory;
+        const wanted =
+            request.selection.kind === 'paths'
+                ? new Map(request.selection.paths.map((entry) => [worktreeKey(entry, home), entry]))
+                : null;
+        const chosen = wanted === null ? rows : rows.filter((row) => wanted.has(worktreeKey(row.association.worktreePath, home)));
+        const plan = await planWorktreeCleanup(
+            { state, rows: chosen, excluding: new Set(owners.map((owner) => owner.id)) },
+            cleanupDeps
+        );
+        // `prune_worktrees` takes only what Kelpi made; a worktree a pane merely visited stays,
+        // unmentioned, exactly as the window's `remove` setting leaves it.
+        const candidates = wanted === null ? plan.candidates.filter((candidate) => candidate.managed) : plan.candidates;
+        // Only a named worktree the user agreed to lose changes in is ever forced; prune never is.
+        const force =
+            request.selection.kind === 'paths'
+                ? new Set(request.selection.force.map((entry) => worktreeKey(entry, home)))
+                : undefined;
+        const results = await removeWorktrees(candidates, { deleteBranches: request.deleteBranches, force }, cleanupDeps);
+        entries.push(...results.map(serializeCleanupResult));
+        if (wanted !== null) {
+            for (const skipped of plan.skipped) {
+                const associationID = skipped.associations.find((entry) => entry.associationID !== null)?.associationID;
+                entries.push({
+                    ...(associationID !== undefined && associationID !== null ? { association_id: uuidOut(associationID) } : {}),
+                    worktree_path: skipped.worktreePath,
+                    removed: false,
+                    error: describeWorktreeSkip(skipped.reason)
+                });
+            }
+            const planned = new Set(chosen.map((row) => worktreeKey(row.association.worktreePath, home)));
+            for (const [key, requested] of wanted) {
+                if (!planned.has(key)) {
+                    entries.push({ worktree_path: requested, removed: false, error: 'not a worktree of the deleted workspaces' });
+                }
+            }
+        }
+    } catch (error) {
+        // Planning never throws on a git failure (each becomes a result), so this is a bug
+        // path; the delete still stands, and the reply says what did not happen.
+        ok(reply, { ...head, worktrees: entries, worktrees_error: error instanceof Error ? error.message : String(error) });
+        return;
+    }
+    ok(reply, { ...head, worktrees: entries });
+}
+
+function handleWorkspaceDelete(
+    msg: WorkspaceDeleteMessage,
+    ctx: AppContext,
+    reply: ReplyHandle | null,
+    deps: AppDeps,
+    deleted: DeletedWorkspaceMemory
 ): void {
+    const nameOrID = msg.name;
+    const force = msg.force;
+    const allowLast = msg.allow_last === true;
     const state = ctx.store.getState();
     const scope = resolveStateOf(state);
     const resolved = resolveWorkspaceStrict(scope, nameOrID);
@@ -676,21 +887,34 @@ function handleWorkspaceDelete(
         return;
     }
 
-    try { ctx.prepareDocumentClose?.([...workspace.panes, ...workspace.parkedPanes].map(pane => pane.id)); }
+    const panes = [...workspace.panes, ...workspace.parkedPanes];
+    try { ctx.prepareDocumentClose?.(panes.map(pane => pane.id)); }
     catch (error) { fail(reply, error instanceof Error ? error.message : String(error)); return; }
     const path = workspacePath(workspace);
-    ok(reply, {
+    const head: JsonObject = {
         workspace_id: uuidOut(workspace.id),
         workspace_name: workspace.name,
         ...(path !== undefined ? { path } : {})
-    });
+    };
+    const cleanup = worktreeCleanupOf(msg);
+    if (cleanup === null) ok(reply, head);
 
-    for (const pane of [...workspace.panes, ...workspace.parkedPanes]) {
+    // Listening before the kill, so an exit that lands at once is not missed. Every delete
+    // remembers what a later delete of its batch needs (graft-git.md §8.7), cleanup or not.
+    const exited = paneExits(ctx, panes.map((pane) => pane.id), PANE_EXIT_WAIT_MS);
+    for (const pane of panes) {
         deps.killPane(pane.id, ctx);
     }
     ctx.store.dispatch({ type: 'delete-workspace', id: workspace.id });
     refreshSyncGroup(ctx, workspace.id);
     deps.persist();
+    const self = { id: workspace.id, rows: workspace.repoAssociations, path, exited };
+    if (cleanup === null) {
+        deleted.remember(self);
+        return;
+    }
+    const batch = deleted.take(cleanup.batch.filter((id) => uuidOut(id) !== uuidOut(workspace.id)));
+    void removeDeletedWorkspaceWorktrees([self, ...batch], cleanup, head, ctx, reply, deps);
 }
 
 // ---------------------------------------------------------------------------
@@ -879,6 +1103,7 @@ function handleWorkspaceRename(
 // ---------------------------------------------------------------------------
 
 export function workspaceHandlerEntries(deps: AppDeps): readonly (readonly [string, AppHandler])[] {
+    const deleted = createDeletedWorkspaceMemory(deps.now);
     return [
         forCommand('workspace-list', (msg, ctx, reply) => {
             handleWorkspaceList(msg.group, ctx, reply);
@@ -887,7 +1112,7 @@ export function workspaceHandlerEntries(deps: AppDeps): readonly (readonly [stri
             handleWorkspaceCreate(msg, ctx, reply, deps);
         }),
         forCommand('workspace-delete', (msg, ctx, reply) => {
-            handleWorkspaceDelete(msg.name, msg.force, msg.allow_last === true, ctx, reply, deps);
+            handleWorkspaceDelete(msg, ctx, reply, deps, deleted);
         }),
         forCommand('workspace-move', (msg, ctx) => {
             handleWorkspaceMove(msg.name, msg.group, msg.index, ctx, deps);

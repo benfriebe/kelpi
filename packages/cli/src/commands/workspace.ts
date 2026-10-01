@@ -5,12 +5,14 @@
  *   - `list` unwraps the array;
  *   - `create`, `label`, `mute` and `rename` print the FULL reply including `ok` under `--json`;
  *   - `delete` prints a bespoke per-id record array, and exits 1 when any DELETE failed
- *     (a failed *prune* is a warning, never an exit code — the workspace is gone either way).
+ *     (a failed *prune* is a warning, never an exit code: the workspace is gone either way).
  *
- * `--prune-worktree` is the one place the CLI shells out to git on the caller's machine: it
- * keys off the `path` the delete reply carries (a shell pane's current cwd) and runs a
- * deliberately NON-forcing `git worktree remove`, so a dirty or locked worktree is refused by
- * git and reported as a warning rather than losing someone's uncommitted work.
+ * `--prune-worktree` asks the DAEMON to remove the worktrees Kelpi made for the workspace
+ * (`prune_worktrees`, graft-git.md §8.7): it runs git on its own host, which is where the
+ * worktrees are, from the workspace's repo associations and the worktree its shell was in, and
+ * never forcing, so a dirty or locked worktree is kept and reported as a warning. Only a daemon that
+ * predates the field (its reply has no `worktrees`) falls back to the old CLI-side prune of the
+ * reply's `path`.
  */
 
 import path from 'node:path';
@@ -253,23 +255,25 @@ async function handleWorkspaceDelete(args: string[], options: DeleteOptions = {}
     const yFlag = popSwitch('-y', args);
     const force = forceFlag || yFlag;
     const prune = popSwitch('--prune-worktree', args);
+    const deleteBranch = popSwitch('--delete-branch', args);
     const asJSON = popSwitch('--json', args);
 
     const bad = args.find((token) => token.startsWith('-'));
     if (bad !== undefined) {
         errLine(`Unknown option for workspace delete: ${bad}`);
-        errLine(
-            'Usage: kelpi workspace delete <name-or-id> [<name-or-id> ...] [--force|-y] [--prune-worktree] [--json]'
-        );
+        errLine(DELETE_USAGE_LINE);
+        exit(1);
+    }
+    if (deleteBranch && !prune) {
+        errLine('--delete-branch requires --prune-worktree');
+        errLine(DELETE_USAGE_LINE);
         exit(1);
     }
     // Dedupe exact duplicates, first-seen order, so a repeated argument does not resolve to
     // "not found" the second time.
     const ids = [...new Set(args)];
     if (ids.length === 0) {
-        errLine(
-            'Usage: kelpi workspace delete <name-or-id> [<name-or-id> ...] [--force|-y] [--prune-worktree] [--json]'
-        );
+        errLine(DELETE_USAGE_LINE);
         exit(1);
     }
 
@@ -277,8 +281,17 @@ async function handleWorkspaceDelete(args: string[], options: DeleteOptions = {}
     let anyFailed = false;
     for (const id of ids) {
         const reply = await decodeReplyAllowingFailure(
-            { command: 'workspace-delete', name: id, force },
-            'kelpi workspace delete'
+            {
+                command: 'workspace-delete',
+                name: id,
+                force,
+                ...(prune ? { prune_worktrees: true } : {}),
+                ...(deleteBranch ? { delete_branches: true } : {})
+            },
+            'kelpi workspace delete',
+            // The prune's reply waits for git, and removing a worktree deletes every file in it
+            // (a `node_modules` is a lot of files): well past the 5 s default.
+            prune ? { timeoutSeconds: PRUNE_TIMEOUT_SECONDS } : {}
         );
         const ok = asBool(reply['ok']) ?? false;
         const workspaceName = asString(reply['workspace_name']) ?? id;
@@ -293,7 +306,11 @@ async function handleWorkspaceDelete(args: string[], options: DeleteOptions = {}
 
             if (!asJSON) printLine(`deleted workspace ${workspaceName}`);
 
-            if (prune) {
+            const worktrees = reply['worktrees'];
+            if (prune && Array.isArray(worktrees)) {
+                recordDaemonPrune(record, workspaceName, worktrees, asJSON);
+            } else if (prune) {
+                // A daemon that predates `prune_worktrees`: the old CLI-side prune of `path`.
                 if (workspacePath !== undefined) {
                     const { removed, message } = await pruneWorktree(workspacePath, options.runner ?? runProcess);
                     record['worktree_pruned'] = removed;
@@ -326,8 +343,53 @@ async function handleWorkspaceDelete(args: string[], options: DeleteOptions = {}
     if (anyFailed) exit(1);
 }
 
+const DELETE_USAGE_LINE =
+    'Usage: kelpi workspace delete <name-or-id> [<name-or-id> ...] [--force|-y] [--prune-worktree [--delete-branch]] [--json]';
+
+/** How long a `--prune-worktree` delete waits for the daemon's git work. */
+const PRUNE_TIMEOUT_SECONDS = 300;
+
 /**
- * Best-effort `git worktree remove` for a just-deleted workspace's directory.
+ * Fold the daemon's per-worktree results (`worktrees`, wire-protocol.md §6.3) into the record
+ * and the human output. `worktree_pruned` / `worktree_error` keep the meaning scripts read:
+ * true only when every linked worktree went, with every reason it did not otherwise.
+ */
+function recordDaemonPrune(record: JsonObject, workspaceName: string, worktrees: readonly unknown[], asJSON: boolean): void {
+    const entries = worktrees.filter((entry): entry is JsonObject => typeof entry === 'object' && entry !== null && !Array.isArray(entry));
+    record['worktrees'] = entries;
+    if (entries.length === 0) {
+        const message = `workspace ${workspaceName} has no worktree Kelpi created to prune`;
+        record['worktree_pruned'] = false;
+        record['worktree_error'] = message;
+        if (!asJSON) errLine(`Warning: ${message}`);
+        return;
+    }
+    const errors: string[] = [];
+    for (const entry of entries) {
+        const worktreePath = asString(entry['worktree_path']) ?? asString(entry['association_id']) ?? '?';
+        const branch = asString(entry['branch']);
+        if (asBool(entry['removed']) === true) {
+            if (!asJSON) printLine(`  removed worktree: ${worktreePath}`);
+            if (asBool(entry['branch_deleted']) === true && branch !== undefined && !asJSON) {
+                printLine(`  deleted branch: ${branch}`);
+            }
+            const branchError = asString(entry['branch_error']);
+            if (branchError !== undefined && branch !== undefined && !asJSON) {
+                errLine(`Warning: kept branch ${branch}: ${branchError}`);
+            }
+        } else {
+            const message = `worktree ${worktreePath} not removed: ${asString(entry['error']) ?? 'unknown error'}`;
+            errors.push(message);
+            if (!asJSON) errLine(`Warning: ${message}`);
+        }
+    }
+    record['worktree_pruned'] = errors.length === 0;
+    if (errors.length > 0) record['worktree_error'] = errors.join('; ');
+}
+
+/**
+ * Best-effort `git worktree remove` for a just-deleted workspace's directory: the fallback for
+ * a daemon too old to prune on its own host (its delete reply has no `worktrees`).
  * Non-forcing on purpose: git refuses a dirty or locked worktree and the primary checkout,
  * and every refusal comes back as a message the caller renders as a `Warning:` with git's own
  * stderr folded in. The workspace stays deleted regardless.

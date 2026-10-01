@@ -506,6 +506,97 @@ describe('auto-unlink + GC (§GIT-080/§GIT-081)', () => {
 
         expect(associationsOf(h.store)).toHaveLength(1);
     });
+
+    it('GCs the auto-discovered repo when the workspace that linked it is deleted (graft-git §8.9)', async () => {
+        const h = harness({
+            resolveRepoRoot: async () => ({ worktreeRoot: '/work/wt', parentRepoRoot: '/work/repo' })
+        });
+        h.store.dispatch({ type: 'create-workspace', id: W2, paneID: P2, name: 'w2', now: NOW });
+        setPaneDirectory(h.store, P1, '/work/wt');
+        await h.settle();
+        expect(h.store.getState().repos).toHaveLength(1);
+
+        const before = h.persists();
+        h.store.dispatch({ type: 'delete-workspace', id: W1 });
+        await h.settle();
+
+        expect(h.store.getState().repos).toHaveLength(0);
+        expect(h.persists()).toBeGreaterThan(before);
+    });
+
+    it('GCs on the delete of a workspace with no panes left to vanish', async () => {
+        const h = harness();
+        h.store.dispatch({
+            type: 'add-repo',
+            repo: { id: 'BBBBBBBB-0000-4000-8000-000000000002', path: '/work/repo', name: 'repo', remoteURL: null, lastAccessedAt: NOW / 1000, isAutoDiscovered: true }
+        });
+        h.store.dispatch({ type: 'create-workspace', id: W2, paneID: P2, name: 'w2', now: NOW });
+        h.store.dispatch({ type: 'close-pane', workspaceID: W2, paneID: P2 });
+        // A hand-added row does not promote an auto-discovered repo, so this is its only reference.
+        h.store.dispatch({
+            type: 'add-repo-association',
+            workspaceID: W2,
+            association: { id: 'CCCCCCCC-0000-4000-8000-000000000002', repoID: 'BBBBBBBB-0000-4000-8000-000000000002', worktreePath: '/work/repo', branchName: 'main', isAutoDetected: false }
+        });
+        await h.settle();
+        expect(h.store.getState().repos).toHaveLength(1);
+
+        h.store.dispatch({ type: 'delete-workspace', id: W2 });
+        await h.settle();
+
+        expect(h.store.getState().repos).toHaveLength(0);
+    });
+
+    it('re-points an automatic row at the parent git names, and GCs the wrong parent', async () => {
+        // A row linked before `resolveRepoRoot` asked git for absolute paths: a pane in a
+        // subfolder registered an ancestor directory as the checkout's parent repo.
+        const h = harness(
+            { resolveRepoRoot: async () => ({ worktreeRoot: '/work/repo', parentRepoRoot: '/work/repo' }) },
+            { paneDirectory: '/work/repo/src/deep', start: false }
+        );
+        h.store.dispatch({
+            type: 'add-repo',
+            repo: { id: 'BBBBBBBB-0000-4000-8000-000000000003', path: '/work', name: 'work', remoteURL: null, lastAccessedAt: NOW / 1000, isAutoDiscovered: true }
+        });
+        h.store.dispatch({
+            type: 'add-repo-association',
+            workspaceID: W1,
+            association: { id: 'CCCCCCCC-0000-4000-8000-000000000003', repoID: 'BBBBBBBB-0000-4000-8000-000000000003', worktreePath: '/work/repo', branchName: 'main', isAutoDetected: true }
+        });
+
+        h.detect.start();
+        await h.settle();
+
+        const repos = h.store.getState().repos;
+        expect(repos.map((repo) => repo.path)).toEqual(['/work/repo']);
+        const associations = associationsOf(h.store);
+        expect(associations).toHaveLength(1);
+        expect(associations[0]).toMatchObject({ worktreePath: '/work/repo', repoID: repos[0]?.id, isAutoDetected: true });
+        expect(associations[0]?.id).not.toBe('CCCCCCCC-0000-4000-8000-000000000003');
+    });
+
+    it('never re-points a manual row, whatever its parent', async () => {
+        const h = harness(
+            { resolveRepoRoot: async () => ({ worktreeRoot: '/work/repo', parentRepoRoot: '/work/repo' }) },
+            { paneDirectory: '/work/repo', start: false }
+        );
+        h.store.dispatch({
+            type: 'add-repo',
+            repo: { id: 'BBBBBBBB-0000-4000-8000-000000000004', path: '/work', name: 'work', remoteURL: null, lastAccessedAt: NOW / 1000, isAutoDiscovered: false }
+        });
+        h.store.dispatch({
+            type: 'add-repo-association',
+            workspaceID: W1,
+            association: { id: 'CCCCCCCC-0000-4000-8000-000000000004', repoID: 'BBBBBBBB-0000-4000-8000-000000000004', worktreePath: '/work/repo', branchName: 'main', isAutoDetected: false }
+        });
+
+        h.detect.start();
+        await h.settle();
+
+        expect(associationsOf(h.store)).toEqual([
+            expect.objectContaining({ id: 'CCCCCCCC-0000-4000-8000-000000000004', repoID: 'BBBBBBBB-0000-4000-8000-000000000004' })
+        ]);
+    });
 });
 
 describe('store-driven triggers (issue #48: graft-git.md §8.9, app-state-core.md §7.7)', () => {

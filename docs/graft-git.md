@@ -205,7 +205,7 @@ Every operation shells out to git (`packages/daemon/src/git/exec.ts`):
   is not installed. The `KELPI_GIT` environment variable overrides the resolution
   (`exec.ts:97`; used by tests and odd installs).
 - `cwd` = the repo/worktree path argument. **No `-C` flag is used** (except in the
-  CLI's `pruneWorktree`, which is a separate binary).
+  CLI's `pruneWorktree` fallback for an older daemon, which is a separate binary).
 - Environment: inherits the daemon's full environment. When an op supplies extra env
   (only `writeTreeForWorktree` does, for `GIT_INDEX_FILE`), it is **merged over** the
   inherited environment, not a replacement.
@@ -365,10 +365,14 @@ Maps any directory to its (worktreeRoot, parentRepoRoot) pair:
 
 1. If `path` doesn't exist or isn't a directory → null (avoid spawning git for
    transient pwd values).
-2. `git rev-parse --show-toplevel --git-common-dir` (one spawn, two output lines).
-   Failure → null. Trim both lines; need ≥ 2 non-empty lines.
-3. `worktreeRoot` = line 1. `commonDir` = line 2; if relative (e.g. `.git` for the
-   main worktree), resolve against `worktreeRoot`.
+2. `git rev-parse --path-format=absolute --show-toplevel --git-common-dir` (one spawn,
+   two output lines). Failure → null. Trim both lines; need ≥ 2 non-empty lines.
+3. `worktreeRoot` = line 1. `commonDir` = line 2, absolute. Without
+   `--path-format=absolute` git prints a main checkout's common dir relative to the
+   directory it ran in (`../../.git` from two levels down), NOT to the toplevel; joining
+   that onto `worktreeRoot` registered an ancestor (`/`, `/Users/me`) as the parent repo of
+   every checkout a pane sat in a subfolder of, and made the main checkout read as a linked
+   worktree. Auto-link repairs rows linked that way (§8.9).
 4. Standardize `commonDir`; if its last path component is `.git`, the parent repo
    root is its parent directory; otherwise (bare repo — common dir *is* the repo)
    use the standardized common dir itself.
@@ -1587,16 +1591,93 @@ Examples surfaced: `fatal: '<path>' already exists`,
 
 ### 8.7 Deleting worktrees
 
+Every path that deletes a worktree goes through one plan
+(`packages/daemon/src/git/worktree-cleanup.ts`, `planWorktreeCleanup`), so a preview and
+the delete it leads to never disagree. The plan takes association rows and answers one
+candidate per distinct worktree (rows merged on the canonical path), plus the rows it
+`skipped` and why, so no caller asks git a second time:
+
+- **Only git's answer counts.** A row is a candidate only when `resolveRepoRoot` says its
+  path is the ROOT of a LINKED worktree (its parent is a different checkout) and
+  `git worktree list` does not mark it the main one (a submodule's or a
+  `--separate-git-dir` checkout's parent reads as its git dir). A main checkout is skipped
+  as `main-checkout`; a folder inside a checkout or a path that is gone as `not-a-worktree`.
+  The registry is not consulted: rows linked before §3's absolute-path fix name an ancestor
+  as the parent of a main checkout.
+- One plan canonicalizes each path once and lists each repo's worktrees once, however many
+  candidates and other workspaces there are.
+- **Blocked** (kept, with a reason; nothing is ever forced):
+  - `shared`: another workspace, outside the ones being deleted, has a row for it or a
+    visible/parked pane inside it;
+  - `nested`: `git worktree list` shows another worktree inside it. Git counts an ignored
+    directory as clean, so a `.claude/worktrees/<agent>` under an ignored `.claude/` would
+    be deleted with its parent, uncommitted work included, and left `prunable`;
+  - `unreadable`: its status or the worktree list could not be read;
+  - `dirty`: modified or untracked files (git would refuse anyway);
+  - `detached-commits`: a detached HEAD with commits no branch, remote-tracking ref or tag
+    reaches (its reflog goes with the worktree). Unknown counts as blocked.
+- `forceable`: uncommitted changes are the ONLY reason it is blocked (every reason above is
+  evaluated, not just the first), and bundled git is in charge. The user may opt in to losing
+  them: the delete names it in `force_worktree_paths` and it is removed with
+  `git worktree remove --force` (one `--force`, so a lock still refuses). Never the default,
+  never under `prune_worktrees`.
+- `managed`: the worktree sits directly in the resolved worktree base path for its repo,
+  i.e. Kelpi made it. `recommended` = not blocked and managed: the dialog's default tick.
+- `branchDeletable`: on a branch, not blocked, `commitsOnlyHere == 0` and not the branch
+  `origin/HEAD` names locally. `commitsOnlyHere` =
+  `git rev-list --count refs/heads/<b> --not --exclude=<b> --branches --remotes --tags`
+  (`HEAD` with no exclusion when detached): what deleting the branch would lose. `git
+  branch -d` cannot answer this: a branch made off `origin/<default>` tracks it, and a
+  squash-merged branch never looks merged into its upstream.
+
+The two branch reads, `git branch -D` and `git worktree remove --force` have no method in
+the `kelpi.git` v1 provider contract, so they run on bundled git (`bundledWorktreeOps`) and
+not at all while a plugin provider owns `kelpi.git`: then no branch is offered, a detached
+HEAD is blocked and nothing is forceable.
+
+Removal (`removeWorktrees`) runs one candidate at a time, never throwing: a blocked one is
+reported with its `blocked` kind and the reason in words (unless it is forceable and named in
+`force_worktree_paths`: then it is removed with `--force` and its entry carries
+`discarded_changes`), the rest get a **non-forcing** `git worktree remove` from the
+main checkout, and git's own refusal (a lock) is reported through `worktreeErrorMessage`.
+With branch deletion asked for, a removed worktree's branch is re-checked
+(`commitsOnlyHere == 0`) and deleted with `git branch -D`. Removing a worktree on a branch
+never loses commits; files git ignores (build output, `.env`) go with it.
+
+- **Workspace delete with cleanup** (`workspace-delete` with `worktree_paths` or
+  `prune_worktrees`, plus `delete_branches` and `batch_ids`; wire-protocol.md §6.3): the
+  guards and the delete are unchanged. Listening for the panes' exits BEFORE killing them,
+  the handler deletes the workspace. Every delete, with cleanup or not, remembers the
+  deleted workspace's rows, its `path` and its pane exits for two minutes
+  (`createDeletedWorkspaceMemory`). A delete with cleanup claims the remembered workspaces
+  its `batch_ids` name (each once), waits for all their PTYs and its own to exit (≤ 2 s
+  each), and plans the rows of all of them against the state as it is then, when every one
+  of them is gone and none counts as sharing:
+  - `worktree_paths` plans the rows whose canonical path was named (paths, not row ids: a
+    row auto-link re-pointed keeps its path but not its id);
+  - `prune_worktrees` plans every row, plus the worktree each workspace's shell was in
+    (`path`), for a workspace with no row for it (auto-detect off, or not linked yet), and
+    keeps only the MANAGED candidates: a worktree a pane merely visited is left alone and
+    not listed.
+
+  A workspace named in `batch_ids` that was never deleted (a plugin hook vetoed it, a guard
+  refused it) is not in memory, so it is still in the state and still counts as sharing its
+  worktrees. The reply comes after the git work and carries one `worktrees` entry per
+  worktree. The window's delete dialogs preview the same plan with
+  `worktree-cleanup-preview {workspace_ids}` (WS-only, `ws/repos.ts`), which plans the
+  listed workspaces as ONE delete, and a bulk or group delete sends the cleanup on its LAST
+  delete, after the others replied, with `batch_ids` naming those that went (shell-ui.md
+  §12.6), so the delete plans exactly what the dialog previewed.
 - **Inspector "remove association" with delete-worktree checked**
   (`remove-repo-association {workspace_id, association_id, delete_worktree: true}`,
-  `packages/daemon/src/ws/repos.ts:369-418`): run a **non-forcing** `git worktree
-  remove` (§3.2 `removeWorktree`) FIRST. If git refuses (dirty or locked worktree),
-  the association is the main checkout itself (standardized paths equal), or the
-  parent repo is no longer registered, reply
-  `{ok:false, error: <worktreeErrorMessage or the reason>, workspace_id,
-  association_id}` and keep the association in place, so the directory is never
-  stranded with nothing in the window pointing at it (`repos.ts:402-405`). Only
-  after a successful removal is `remove-repo-association` dispatched and persisted;
+  `packages/daemon/src/ws/repos.ts`): plan the one row (this workspace's own panes do not
+  count as sharing) and remove it FIRST. No candidate (the main checkout, or nothing git
+  knows), a blocked candidate or git's refusal replies
+  `{ok:false, error: <the reason>, workspace_id, association_id}` (`that association is the
+  main checkout, not a worktree`, `kept: has 2 uncommitted changes`, git's refusal) and keeps the
+  association in place, so the directory is never stranded with nothing in the window
+  pointing at it. Only after a successful removal is `remove-repo-association` dispatched
+  and persisted;
   the store reconciler (§8.8, `packages/daemon/src/graft/associations.ts:176-186`)
   then stops the HEAD watcher and force-stops the graft session, i.e. AFTER the
   worktree directory is gone rather than before. That ordering is safe because
@@ -1605,26 +1686,22 @@ Examples surfaced: `fatal: '<path>' already exists`,
   and the session stays alive until the force-stop lands. The success reply carries
   `worktree_path` and `worktree_deleted: true`. Without the checkbox, just drop the
   association (`worktree_deleted: false`).
-- **CLI `workspace delete --prune-worktree`**: after a successful workspace delete
-  the CLI (client-side, its own git spawns via `/usr/bin/env git`;
-  `packages/cli/src/commands/workspace.ts:275-311`) takes the deleted
-  workspace's directory (`path` in the delete reply — a shell pane's current cwd; an
-  empty workspace has none, documented limitation), resolves the worktree root via
-  `git -C <path> rev-parse --show-toplevel`, resolves the main worktree via
-  `git -C <path> rev-parse --path-format=absolute --git-common-dir` (parent dir of
-  the common dir; falls back to the root itself), then runs a **non-forcing**
-  `git -C <mainWorktree> worktree remove <root>` so git isn't invoked from inside
-  the tree being removed. Failures (dirty/locked worktree, primary checkout,
-  non-repo path) become a `Warning:` with git's stderr folded in and do NOT change
-  the exit code — the workspace stays deleted. Per-id JSON adds
-  `worktree_pruned: bool` and `worktree_error` on failure.
+- **CLI `workspace delete --prune-worktree [--delete-branch]`** sends
+  `prune_worktrees` (and `delete_branches`): the DAEMON removes the worktrees Kelpi made for
+  the workspace that the plan allows, on its own host, from the workspace's rows and the
+  worktree its shell was in. Kept worktrees become `Warning:` lines and do NOT change the
+  exit code; the workspace stays deleted. Per-id JSON adds `worktrees` (the reply's entries),
+  `worktree_pruned: bool` (every one of them went) and `worktree_error` otherwise
+  (cli.md §10.4). Only a daemon that predates the field (no `worktrees` in its reply) gets
+  the old CLI-side prune of the reply's `path` (cli.md §10.4.1).
 
 ### 8.8 Removal paths that must fire graft forceStop + HEAD-watcher stop
 
 Every path that drops associations dispatches, per removed association id, BOTH a
 `stopHeadWatcher` and a graft `forceStop` (unconditional — issue #231):
 
-- workspace delete (single, bulk multi-select, ⌘W-last-pane path)
+- workspace delete (single, bulk multi-select, ⌘W-last-pane path, and the member deletes a
+  group delete with worktree cleanup sends)
 - group cascade delete (all member workspaces' associations)
 - repo removal from the registry (cascades association removal across all
   workspaces, also drops cached git statuses)
@@ -1649,6 +1726,11 @@ Not graft-specific but it feeds graft's association set
   `RepoAssociation {worktreePath: worktreeRoot, isAutoDetected: true}` to the pane's
   workspace unless one for that worktree already exists. Follow-ups: resolve branch +
   status async, start a HEAD watcher, resolve the repo's remote URL, persist once.
+- Repair: when auto-link finds the workspace already has an AUTO-detected row for the
+  resolved worktree but pointing at a different parent repo (rows linked before §3's
+  absolute-path fix), it re-points the row at the parent git names (a new row id, so the
+  association reconciler treats it as fresh) and GCs the wrong registry entry. A manual
+  row is never rewritten.
 - Auto-unlink: on pane close/cwd changes (also a shell exit, a reaped parked source or
   a workspace delete: any pane vanishing from the store, via the same reconciler;
   issue #48), debounce **5s**, then remove every
@@ -1656,7 +1738,10 @@ Not graft-specific but it feeds graft's association set
   (exact-or-prefix match on canonicalized paths, standardized and then symlinks
   resolved on both sides, so `/tmp` and `/private/tmp` spellings match; including
   parked panes). GC auto-discovered repos with no remaining associations anywhere and no group
-  pointing at them as its default repository (app-state-core.md §5.5).
+  pointing at them as its default repository (app-state-core.md §5.5). A deleted workspace
+  (with or without panes: the reconciler also notices a workspace id vanishing) has no rows
+  left to say which repos it used, so its unlink sweeps every auto-discovered repo for the
+  same condition.
   Fire stopHeadWatcher + graft forceStop per removed association.
 
 ### 8.10 Repo registry verbs (Settings > Repositories)

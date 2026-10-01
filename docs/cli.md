@@ -1010,7 +1010,7 @@ kelpi workspace move <name-or-id> (--group <name> | --top-level) [--index N]
 ### 10.4 `kelpi workspace delete`
 
 ```
-kelpi workspace delete <name-or-id> [<name-or-id> ...] [--force|-y] [--prune-worktree] [--json]
+kelpi workspace delete <name-or-id> [<name-or-id> ...] [--force|-y] [--prune-worktree [--delete-branch]] [--json]
 ```
 
 - Help to stdout, exit 0.
@@ -1018,16 +1018,28 @@ kelpi workspace delete <name-or-id> [<name-or-id> ...] [--force|-y] [--prune-wor
   together); either sets force.
 - Remaining args must all be bare name-or-id targets; any dash-prefixed token =>
   `Unknown option for workspace delete: <tok>` + usage line, exit 1.
+- `--delete-branch` without `--prune-worktree` => `--delete-branch requires --prune-worktree`
+  + usage line, exit 1, nothing sent.
 - Exact-duplicate ids deduped preserving first-seen order. Zero targets => usage, exit 1.
 - Loop: one `{"command":"workspace-delete","name":<id>,"force":<bool>}` request per id via
   `decodeReplyAllowingFailure` (6.4; transport/empty/invalid-JSON is fatal for the whole
-  batch, `ok:false` is recorded and the loop continues).
+  batch, `ok:false` is recorded and the loop continues). `--prune-worktree` adds
+  `"prune_worktrees":true` and `--delete-branch` `"delete_branches":true`; the reply then
+  waits for the daemon's git work, so the read timeout is 300 s instead of 5 s.
 - Per-id result record (for `--json`): `{"id": <argument as typed>, "ok": bool}` plus on
   success `workspace_id?`, `workspace_name`, `path?`, and when `--prune-worktree`:
-  `worktree_pruned: bool`, `worktree_error?`; on failure `error`, `active_agents?`, `running?`, `waiting?` and `inactive?`
-  (from an agent-panes refusal; `active_agents` is their sum).
-- Human output: per success `deleted workspace <name>`; per prune result an indented
-  `  <message>` on success or `Warning: <message>` to stderr on failure; per failed delete
+  `worktrees` (the reply's entries, wire-protocol.md §6.3), `worktree_pruned: bool` (true
+  only when every linked worktree was removed) and `worktree_error?` (every reason one was
+  not, `; `-joined, or `workspace <name> has no worktree Kelpi created to prune`); on failure
+  `error`, `active_agents?`, `running?`, `waiting?` and `inactive?` (from an agent-panes
+  refusal; `active_agents` is their sum).
+- `--prune-worktree` covers the worktrees Kelpi created (directly inside the worktree base
+  path) that the workspace had a row for or its shell was in; any other worktree is left
+  alone and not listed.
+- Human output: per success `deleted workspace <name>`; per removed worktree an indented
+  `  removed worktree: <path>` (and `  deleted branch: <branch>`), per kept one
+  `Warning: worktree <path> not removed: <reason>` and per kept branch
+  `Warning: kept branch <branch>: <reason>` to stderr; per failed delete
   `kelpi workspace delete: <error>` to stderr.
 - `--json`: single-line compact sorted array of the records (printed at the end).
 - Exit 1 if **any** delete failed (prune failures do NOT affect the exit code).
@@ -1039,7 +1051,10 @@ agent panes, including parked panes:
 names get a distinct "ambiguous" error; success reply carries `workspace_id`,
 `workspace_name`, and `path` (a shell pane's current cwd; absent for empty workspaces).
 
-#### 10.4.1 `pruneWorktree(path)` algorithm (CLI-side, best effort)
+#### 10.4.1 `pruneWorktree(path)` algorithm (CLI-side fallback for an older daemon)
+
+Only when a `--prune-worktree` delete's reply carries no `worktrees` (a daemon that predates
+`prune_worktrees`) does the CLI prune the reply's `path` itself:
 
 ```
 top = run(env git -C <path> rev-parse --show-toplevel)
@@ -2217,13 +2232,13 @@ state keep working; each explains why the code does something that would otherwi
 14. **The `event` path must never fail or spam**: exit 0 on every transport problem,
     suppress warnings by default (`KELPI_VERBOSE_HOOKS` opt-in), silent exit 0 without
     `KELPI_PANE_ID`. Hooks run on every agent turn on machines where Kelpi may not be running.
-15. **`workspace delete --prune-worktree` and `workspace create --worktree` shell out to
-    git on the CLI side / server side respectively.** The daemon owns worktree creation
-    (`workspace-create` with `worktree` fields, 120s client timeout) while the *prune* is
-    CLI-local (`pruneWorktree`, `packages/cli/src/commands/workspace.ts:275`, runs `git` from
-    the caller's machine). When the daemon runs on a different host than the CLI (tailnet
-    clients), CLI-local pruning cannot reach the worktree; moving prune server-side behind a
-    new reply field while keeping the CLI flags stable is the open option.
+15. **`workspace delete --prune-worktree` and `workspace create --worktree` both run git on
+    the daemon's host.** Creation is `workspace-create` with `worktree` fields (120s client
+    timeout); the prune is `workspace-delete` with `prune_worktrees` (300s), planned from
+    the workspace's repo associations (graft-git.md §8.7). The CLI flags and the per-id
+    `worktree_pruned` / `worktree_error` fields are unchanged; a CLI talking to a daemon that
+    predates `prune_worktrees` still falls back to pruning the reply's `path` locally
+    (`pruneWorktree`, §10.4.1).
 16. **doctor's hooks checks are CLI-local filesystem reads** (`~/.claude`, `~/.codex`);
     they inspect the machine where the CLI (and thus the agent CLIs) run, which stays
     correct with a remote daemon. They stay CLI-local.

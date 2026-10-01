@@ -27,6 +27,7 @@ import {
     createGitService,
     DEFAULT_WORKTREE_BASE_PATH,
     type GitService,
+    type BundledWorktreeOps,
     createWorktreeAddGuard,
     type WorktreeAddHooks,
     type WorktreeAddRequest
@@ -97,6 +98,12 @@ export interface AppHandlerOptions {
     readonly git?: GitService | undefined;
     /** Defaults to `git.worktreeAdd` without steps or cancellation (see `WorktreeCreator`). */
     readonly worktrees?: WorktreeCreator | undefined;
+    /**
+     * Worktree cleanup's branch reads and `branch -D` (graft-git.md §8.7), which the `kelpi.git`
+     * provider contract has no method for. A getter, read per delete: boot answers null while a
+     * plugin provider owns `kelpi.git`. Absent = null (no branch is offered for deletion).
+     */
+    readonly bundledWorktrees?: (() => BundledWorktreeOps | null) | undefined;
     /** M7 graft engine (`graft-*` verbs). Defaults to one bound to this table's git service. */
     readonly graft?: GraftService | undefined;
     /**
@@ -153,6 +160,7 @@ export interface AppHandlerOptions {
 export interface AppDeps {
     readonly git: GitService;
     readonly worktrees: WorktreeCreator;
+    readonly bundledWorktrees: () => BundledWorktreeOps | null;
     readonly graft: GraftService;
     readonly webPanes: WebPaneService;
     readonly uuid: () => string;
@@ -182,6 +190,7 @@ export function resolveAppDeps(options: AppHandlerOptions = {}): AppDeps {
         worktrees: guardedCreator(
             options.worktrees ?? { begin: () => ({ detailed: false, run: (request) => git.worktreeAdd(request) }) }
         ),
+        bundledWorktrees: options.bundledWorktrees ?? (() => null),
         // Nothing spawns or watches until a `graft-start` actually runs, so the default is
         // free for the handler families that never touch it.
         graft: options.graft ?? createGraftService({ git }),

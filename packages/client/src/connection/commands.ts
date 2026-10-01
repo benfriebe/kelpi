@@ -186,6 +186,11 @@ export interface SendOptions {
 export const DEFAULT_COMMAND_TIMEOUT_MS = 15_000;
 /** A worktree create shells out to `git fetch`; a slow network is not a failure. */
 export const WORKTREE_COMMAND_TIMEOUT_MS = 120_000;
+/**
+ * A delete that removes worktrees replies after git has deleted every file in them, and a
+ * checkout with a `node_modules` is a lot of files (graft-git.md §8.7).
+ */
+export const WORKTREE_REMOVE_TIMEOUT_MS = 300_000;
 
 /** The shared pane-addressing triple (`PaneTargetScope`, wire §5.7). */
 export interface PaneScope {
@@ -760,22 +765,67 @@ export class CommandClient {
      * running-agents guard, the PTY teardown, the reply — is the one handler.
      */
     deleteWorkspace(
-        input: { workspace: string; force?: boolean; allowLast?: boolean },
+        input: {
+            workspace: string;
+            force?: boolean;
+            allowLast?: boolean;
+            /**
+             * graft-git.md §8.7: the linked worktrees (by path, as the preview named them) that
+             * go with this workspace and its batch: the dialog's ticked rows. The reply then
+             * waits for git and carries a `worktrees` entry per worktree.
+             */
+            worktreePaths?: readonly string[];
+            /** Of `worktreePaths`, the ones whose uncommitted changes the user agreed to lose. */
+            forceWorktreePaths?: readonly string[];
+            /** The `remove` setting: every worktree Kelpi made that is safe to remove. */
+            pruneWorktrees?: boolean;
+            /** Also delete each removed worktree's branch, when nothing would be lost. */
+            deleteBranches?: boolean;
+            /** Workspaces deleted earlier in the same gesture whose worktrees this one takes too. */
+            batchIDs?: readonly string[];
+        },
         options?: SendOptions
     ): Promise<CommandReply> {
+        const paths = input.worktreePaths ?? [];
+        const cleanup =
+            paths.length > 0 || input.pruneWorktrees === true
+                ? {
+                      ...(paths.length > 0 ? { worktree_paths: [...paths] } : {}),
+                      ...(input.forceWorktreePaths !== undefined && input.forceWorktreePaths.length > 0
+                          ? { force_worktree_paths: [...input.forceWorktreePaths] }
+                          : {}),
+                      ...(input.pruneWorktrees === true ? { prune_worktrees: true } : {}),
+                      ...(input.deleteBranches === true ? { delete_branches: true } : {}),
+                      ...(input.batchIDs !== undefined && input.batchIDs.length > 0 ? { batch_ids: [...input.batchIDs] } : {})
+                  }
+                : null;
+        const sendOptions = options ?? (cleanup === null ? {} : { timeoutMs: WORKTREE_REMOVE_TIMEOUT_MS });
         if (input.allowLast === true) {
             return this.raw(
                 wirePayload('delete-workspace', {
                     workspace_id: input.workspace,
                     force: input.force ?? false,
-                    allow_last: true
+                    allow_last: true,
+                    ...cleanup
                 }),
-                options ?? {}
+                sendOptions
             );
         }
         return this.raw(
-            wirePayload('workspace-delete', { name: input.workspace, force: input.force ?? false }),
-            options ?? {}
+            wirePayload('workspace-delete', { name: input.workspace, force: input.force ?? false, ...cleanup }),
+            sendOptions
+        );
+    }
+
+    /**
+     * graft-git.md §8.7: the linked worktrees a delete of these workspaces could remove, each
+     * with what would keep it (uncommitted changes, another workspace using it, …). Plans the
+     * workspaces as ONE delete, so a worktree only they share is not reported as shared.
+     */
+    worktreeCleanupPreview(input: { workspaceIDs: readonly string[] }, options?: SendOptions): Promise<CommandReply> {
+        return this.raw(
+            wirePayload('worktree-cleanup-preview', { workspace_ids: [...input.workspaceIDs] }),
+            options ?? { timeoutMs: 30_000 }
         );
     }
 

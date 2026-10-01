@@ -314,6 +314,12 @@ function text(value: unknown): string | undefined {
     return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
+/** The non-empty strings of an array; anything else reads as absent. */
+function stringList(value: unknown): readonly string[] | undefined {
+    if (!Array.isArray(value)) return undefined;
+    return value.filter((entry): entry is string => typeof entry === 'string' && entry.length > 0);
+}
+
 function count(value: unknown): number | undefined {
     return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
@@ -2735,6 +2741,9 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                 });
                 return;
             }
+            const worktreePaths = stringList(payload['worktree_paths']);
+            const forcePaths = stringList(payload['force_worktree_paths']);
+            const batchIDs = stringList(payload['batch_ids']);
             const handle = new WsReplyHandle(this.transport, id, (h) => this.handles.delete(h));
             this.handles.add(handle);
             try {
@@ -2743,7 +2752,14 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                         command: 'workspace-delete',
                         name: workspaceID,
                         force: payload['force'] === true,
-                        allow_last: payload['allow_last'] === true
+                        allow_last: payload['allow_last'] === true,
+                        // The same worktree cleanup the wire verb takes (graft-git.md §8.7),
+                        // present only when the window asked for it.
+                        ...(worktreePaths !== undefined && worktreePaths.length > 0 ? { worktree_paths: worktreePaths } : {}),
+                        ...(forcePaths !== undefined && forcePaths.length > 0 ? { force_worktree_paths: forcePaths } : {}),
+                        ...(payload['prune_worktrees'] === true ? { prune_worktrees: true } : {}),
+                        ...(payload['delete_branches'] === true ? { delete_branches: true } : {}),
+                        ...(batchIDs !== undefined && batchIDs.length > 0 ? { batch_ids: batchIDs } : {})
                     },
                     handle
                 );

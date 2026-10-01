@@ -7,7 +7,7 @@
  * 500 ms debounced atomic write for markdown, the pane record for a scratchpad); this owns
  * only what a text field must: the caret, the local buffer, and the scroll position.
  *
- * Two rules are worth naming:
+ * Three rules are worth naming:
  *
  *   - **The typist wins.** An incoming buffer (another client's autosave echoing back, the
  *     daemon re-reading the file) is refused while this field holds the caret AND has unsaved
@@ -19,6 +19,10 @@
  *   - **⌘E is handled here.** The app's key interceptor deliberately ignores pane bindings while
  *     a text field has focus, so the editor answers the toggle itself — otherwise ⌘E would work
  *     going into edit mode and not coming back out.
+ *   - **⌘F is the editor's own find (§4.4).** `NSTextView`'s `usesFindBar` has no `<textarea>`
+ *     equivalent, and the Electron shell has no find of its own for the key to fall through to,
+ *     so the app routes `toggle_search` here (`findToken`) and this draws the same
+ *     `PaneSearchOverlay` a preview does, over a scan of the buffer it already holds.
  */
 
 import {
@@ -32,8 +36,12 @@ import {
 } from 'react';
 
 import { PANE_SURFACE_ATTR, armCaretClaim } from '../app/pane-focus';
-import { cachedLineStarts, visibleLineWindow, type LineWindow } from './gutter';
+import { PaneSearchOverlay } from '../grid/PaneSearchOverlay';
+import { resolveFindPalette, type FindPalette } from './bridge';
+import { CONTENT_FIND_BAR_OFFSET } from './ContentFrame';
+import { cachedLineStarts, lineNumberAt, visibleLineWindow, type LineWindow } from './gutter';
 import { contentScrollStore, type ScrollStore } from './scroll';
+import { fieldOffset, findSegments, findTextMatches, shownRun, stepMatch, type TextMatch } from './text-find';
 import { editorTextColor } from './types';
 import {
     CHAR_PROBE,
@@ -129,6 +137,10 @@ export interface PlainTextEditorProps {
      * SCRATCHPAD's is ledgered that way (`CONT-070` `[d]`) — the markdown editor opts in.
      */
     readonly wrap?: 'off' | 'soft' | undefined;
+    /** Bump to open the find bar (the app's `toggle_search` binding, §4.4); 0 never opens it. */
+    readonly findToken?: number | undefined;
+    /** SET-219's overridable find-highlight colours; absent = the Swift defaults (§3.13). */
+    readonly findPalette?: Partial<FindPalette> | undefined;
     readonly testID?: string | undefined;
 }
 
@@ -402,6 +414,149 @@ export function PlainTextEditor(props: PlainTextEditorProps): ReactElement {
         };
     }, [measureWindow, remeasure, wrapping]);
 
+    // ── find (§4.4), per client ──────────────────────────────────────────────────────
+    //
+    // The needle, the matches and the selected one live here, in component state, exactly as a
+    // preview's live in `ContentFrame`: two windows searching the same scratchpad never see each
+    // other's highlights, and nothing about a find reaches the daemon.
+    const softWrap = props.wrap === 'soft';
+    const [findOpen, setFindOpen] = useState(false);
+    /** Mirrors `findOpen` for the handlers, which must not wait for a render to read it. */
+    const findOpenRef = useRef(false);
+    /** Bumped per open request and used as the bar's `key`, as `ContentFrame` does (L29). */
+    const [findSeq, setFindSeq] = useState(0);
+    const [needle, setNeedle] = useState('');
+    /** The selected match's index, or -1 for "none yet" (a bar reopened on its old needle). */
+    const [currentMatch, setCurrentMatch] = useState(-1);
+    /** Bumped whenever the selected match should be selected and scrolled to. */
+    const [revealSeq, setRevealSeq] = useState(0);
+    const revealedSeq = useRef(0);
+    /** The field's own selection when the bar opened: what a close with no match hands back. */
+    const originRef = useRef<readonly [number, number] | null>(null);
+
+    /*
+     * Recomputed when the BUFFER moves too, not only the needle: an adopted snapshot (another
+     * client's autosave) or a keystroke made with the bar open shifts every offset, and a stale
+     * list would highlight and select the wrong characters. The selection is clamped rather than
+     * reset, so editing near the end of a find session does not throw the bar back to match 1.
+     */
+    const matches = useMemo(
+        () => (findOpen ? findTextMatches(value, needle) : NO_MATCHES),
+        [findOpen, value, needle]
+    );
+    const selectedMatch = currentMatch < 0 || matches.length === 0 ? -1 : Math.min(currentMatch, matches.length - 1);
+    const findState = useRef({ matches: NO_MATCHES as readonly TextMatch[], selected: -1, text: '' });
+    useEffect(() => {
+        findState.current = { matches, selected: selectedMatch, text: value };
+    });
+
+    // The app's `toggle_search` binding: a token bump opens the bar and claims the caret.
+    const findToken = props.findToken ?? 0;
+    const lastFindToken = useRef(findToken);
+    useEffect(() => {
+        if (findToken === lastFindToken.current) return;
+        lastFindToken.current = findToken;
+        // The app hands every OTHER pane a 0 when a request moves elsewhere: that is this pane
+        // losing the request, not being asked, so it must not open (or re-key) the bar.
+        if (findToken === 0) return;
+        setFindSeq((seq) => seq + 1);
+        if (findOpenRef.current) return;
+        /*
+         * A reopened bar keeps its needle (as a preview's does) and highlights its matches, but
+         * SELECTS nothing until the needle is edited or stepped: opening the bar is not a request
+         * to move, so ⌘F then Escape leaves the caret and the scroll exactly where they were.
+         */
+        const area = areaRef.current;
+        originRef.current = area === null ? null : [area.selectionStart, area.selectionEnd];
+        findOpenRef.current = true;
+        setFindOpen(true);
+        setCurrentMatch(-1);
+    }, [findToken]);
+
+    const changeNeedle = useCallback((next: string): void => {
+        setNeedle(next);
+        setCurrentMatch(0);
+        setRevealSeq((seq) => seq + 1);
+    }, []);
+
+    const stepFind = useCallback((delta: 1 | -1): void => {
+        const { matches: found, selected } = findState.current;
+        if (found.length === 0) return;
+        setCurrentMatch(stepMatch(selected, found.length, delta));
+        setRevealSeq((seq) => seq + 1);
+    }, []);
+
+    /**
+     * Escape, the ✕, or a second ⌘F from the bar. The caret goes back to the TEXT with the match
+     * the bar was on selected (`NSTextView` leaves the found text selected when its find bar
+     * closes), so the next keystroke edits where the search ended rather than where it began.
+     * With no match selected (nothing typed, or a needle that matches nothing) it goes back to
+     * where it was when the bar opened, not to a match an earlier, shorter needle passed through.
+     */
+    const closeFind = useCallback((): void => {
+        const { matches: found, selected, text } = findState.current;
+        const match = found[selected];
+        const origin = originRef.current;
+        findOpenRef.current = false;
+        setFindOpen(false);
+        const area = areaRef.current;
+        if (area === null) return;
+        area.focus();
+        if (match !== undefined) area.setSelectionRange(fieldOffset(text, match.start), fieldOffset(text, match.end));
+        else if (origin !== null) area.setSelectionRange(origin[0], origin[1]);
+    }, []);
+
+    /**
+     * Escape in the TEXT with the bar still open (the user clicked back in to edit). The marks go,
+     * and the caret stays exactly where the user put it: it is theirs, not the find's.
+     */
+    const dismissFind = useCallback((): void => {
+        findOpenRef.current = false;
+        setFindOpen(false);
+    }, []);
+
+    /**
+     * The highlight layer's two boxes: the clip, sized to the textarea's CLIENT box (so a mark
+     * never paints over a scrollbar), and the text, moved by the textarea's own scroll offsets.
+     * Imperative for the same reason the gutter's transform is: a scroll must not cost a render.
+     * A scroll moves the text and nothing else; the box and the typography (a computed-style read)
+     * are synced on a render or a resize, which are the only things that can change them.
+     */
+    const findClipRef = useRef<HTMLDivElement | null>(null);
+    const findLayerRef = useRef<HTMLDivElement | null>(null);
+    const scrollFindLayer = useCallback((): void => {
+        const layer = findLayerRef.current;
+        const area = areaRef.current;
+        if (layer === null || area === null) return;
+        layer.style.transform = `translate(${String(-area.scrollLeft)}px, ${String(-area.scrollTop)}px)`;
+    }, []);
+    const syncFindLayer = useCallback((): void => {
+        const clip = findClipRef.current;
+        const layer = findLayerRef.current;
+        const area = areaRef.current;
+        if (clip === null || layer === null || area === null) return;
+        if (area.clientWidth > 0) clip.style.width = `${String(area.clientWidth)}px`;
+        if (area.clientHeight > 0) clip.style.height = `${String(area.clientHeight)}px`;
+        syncMirrorStyle(layer, area, softWrap && area.clientWidth > 0 ? area.clientWidth : undefined);
+        scrollFindLayer();
+    }, [scrollFindLayer, softWrap]);
+    useLayoutEffect(() => {
+        syncFindLayer();
+    });
+    // A split being dragged resizes the field without re-rendering it, and the scratchpad has no
+    // wrap observer of its own (§M60), so the open bar watches the box itself.
+    useEffect(() => {
+        const area = areaRef.current;
+        if (!findOpen || area === null || typeof ResizeObserver === 'undefined') return undefined;
+        const observer = new ResizeObserver(() => {
+            syncFindLayer();
+        });
+        observer.observe(area);
+        return () => {
+            observer.disconnect();
+        };
+    }, [findOpen, syncFindLayer]);
+
     const onScroll = useCallback((): void => {
         const area = areaRef.current;
         if (area === null) return;
@@ -409,8 +564,99 @@ export function PlainTextEditor(props: PlainTextEditorProps): ReactElement {
         store.set(paneID, { top: area.scrollTop, fraction: max > 0 ? area.scrollTop / max : 0 });
         const gutter = gutterRef.current;
         if (gutter !== null) gutter.style.transform = `translateY(${String(-area.scrollTop)}px)`;
+        scrollFindLayer();
         if (showGutter) measureWindow();
-    }, [measureWindow, paneID, showGutter, store]);
+    }, [measureWindow, paneID, scrollFindLayer, showGutter, store]);
+
+    /**
+     * The hidden node the selected match is measured in: the match's own LINE, styled to the
+     * textarea's content box, with the match in a marker span. The marker's offsets are where the
+     * match sits inside that line, wrapped or not, tabs and wide glyphs included: the standard
+     * caret-position technique, and the same apparatus the gutter's mirror is (§M60).
+     */
+    const findMeasureRef = useRef<HTMLDivElement | null>(null);
+
+    /**
+     * Select the match and scroll it into view. Neither half is optional: the bar's field holds the
+     * caret while it is open, and a browser does not scroll (nor, in Chromium, paint) the selection
+     * of a field that is not focused, which is why the highlight layer below exists at all.
+     */
+    const revealMatch = useCallback(
+        (match: TextMatch): void => {
+            const area = areaRef.current;
+            if (area === null) return;
+            area.setSelectionRange(fieldOffset(value, match.start), fieldOffset(value, match.end));
+
+            const lineStartsNow = cachedLineStarts(value);
+            const line = lineNumberAt(lineStartsNow, match.start) - 1;
+            const lineStart = lineStartsNow[line] ?? 0;
+            // The line's first visual row: the measured prefix sums when the editor wraps and has
+            // them (§M60), the fixed pitch otherwise.
+            const measured = metricsRef.current;
+            const firstRow =
+                measured !== null && measured.rows.length === lineStartsNow.length
+                    ? (measured.offsets[line] ?? line)
+                    : line;
+            let top = EDITOR_PADDING + firstRow * EDITOR_LINE_PX;
+            let left = EDITOR_PADDING;
+            let width = 0;
+            const probe = findMeasureRef.current;
+            if (probe !== null) {
+                syncMirrorStyle(probe, area, softWrap ? contentBoxWidth(area) : undefined);
+                probe.textContent = value.slice(lineStart, match.start);
+                const marker = probe.ownerDocument.createElement('span');
+                marker.textContent = value.slice(match.start, match.end);
+                probe.appendChild(marker);
+                top += marker.offsetTop;
+                left += marker.offsetLeft;
+                width = marker.offsetWidth;
+                probe.textContent = '';
+            }
+
+            // Only when it is not already on screen, and then to the middle: the preview's
+            // `block:'center'`, without moving a match the reader can already see.
+            const viewport = area.clientHeight;
+            let moved = false;
+            if (viewport > 0 && (top < area.scrollTop || top + EDITOR_LINE_PX > area.scrollTop + viewport)) {
+                area.scrollTop = Math.max(0, top - (viewport - EDITOR_LINE_PX) / 2);
+                moved = true;
+            }
+            // `wrap="off"` (the scratchpad, CONT-070) scrolls sideways too; a wrapping editor never
+            // has anything off to the right.
+            const across = area.clientWidth;
+            if (!softWrap && across > 0 && (left < area.scrollLeft || left + width > area.scrollLeft + across)) {
+                area.scrollLeft = Math.max(0, left - across / 2);
+                moved = true;
+            }
+            // The `scroll` event arrives a frame later. Answering it now moves the gutter and the
+            // highlight window in this commit, so the match is never drawn without its mark.
+            if (moved) onScroll();
+        },
+        [onScroll, softWrap, value]
+    );
+
+    // After the render that moved the selection, so the measuring node exists and the matches
+    // are the ones the bar is counting.
+    useLayoutEffect(() => {
+        if (revealSeq === revealedSeq.current) return;
+        revealedSeq.current = revealSeq;
+        const match = matches[selectedMatch];
+        if (!findOpen || match === undefined) return;
+        revealMatch(match);
+    }, [findOpen, matches, revealMatch, revealSeq, selectedMatch]);
+
+    /*
+     * The selection follows the selected match when the BUFFER moves under the bar (an adopted
+     * snapshot shifts every offset), without a scroll: nobody asked to go anywhere. Never while
+     * the field itself holds the caret, because then the selection is the typist's.
+     */
+    useLayoutEffect(() => {
+        const area = areaRef.current;
+        const match = matches[selectedMatch];
+        if (!findOpen || area === null || match === undefined) return;
+        if (area.ownerDocument.activeElement === area) return;
+        area.setSelectionRange(fieldOffset(value, match.start), fieldOffset(value, match.end));
+    }, [findOpen, matches, selectedMatch, value]);
 
     const firstLine = lineWindow === null ? 1 : Math.min(lineWindow.first, lines);
     const lastLine = lineWindow === null ? lines : Math.min(lineWindow.last, lines);
@@ -422,8 +668,33 @@ export function PlainTextEditor(props: PlainTextEditorProps): ReactElement {
      * the line count whenever nothing wraps.
      */
     const totalRows = wrapOffsets === null ? lines : (wrapOffsets[lines] ?? lines);
+    /**
+     * The window's own top edge: the rows above it are not drawn, so the padding stands in for
+     * their height. §M60: with measured heights that is the TRUE first visual row of `firstLine`
+     * (the prefix sum), not `firstLine - 1` fixed-pitch rows. Shared by the gutter and the find
+     * highlights, which draw the same window.
+     */
+    const windowTop =
+        EDITOR_PADDING +
+        (wrapOffsets === null
+            ? (firstLine - 1) * EDITOR_LINE_PX
+            : (wrapOffsets[firstLine - 1] ?? firstLine - 1) * EDITOR_LINE_PX);
+
+    /*
+     * §4.4's highlights, for the lines the gutter draws and no others (CONT-078's bounded node
+     * count holds for a find in a 200k-line buffer too). Without a gutter there is no window, and
+     * the whole buffer is drawn.
+     */
+    const palette = useMemo(() => resolveFindPalette(props.findPalette), [props.findPalette]);
+    const highlightFrom = showGutter ? (starts[firstLine - 1] ?? 0) : 0;
+    const highlightTo = showGutter && lastLine < starts.length ? (starts[lastLine] as number) - 1 : value.length;
+    const highlights =
+        findOpen && matches.length > 0
+            ? findSegments(value, highlightFrom, highlightTo, matches, selectedMatch)
+            : null;
 
     return (
+        <>
         <div
             data-testid={props.testID ?? `content-editor-${paneID}`}
             data-pane-id={paneID}
@@ -467,17 +738,10 @@ export function PlainTextEditor(props: PlainTextEditorProps): ReactElement {
                         ref={gutterRef}
                         className="text-right"
                         style={{
-                            // The window's own top edge: the rows above it are not drawn, so
-                            // the padding stands in for their height and row N stays on the
-                            // same baseline as the text it numbers. §M60: with measured heights
-                            // that is the TRUE first visual row of `firstLine` (the prefix sum),
-                            // not `firstLine - 1` fixed-pitch rows — a wrapped line above the
-                            // window takes two rows and the padding has to carry both.
-                            paddingTop:
-                                EDITOR_PADDING +
-                                (wrapOffsets === null
-                                    ? (firstLine - 1) * EDITOR_LINE_PX
-                                    : (wrapOffsets[firstLine - 1] ?? firstLine - 1) * EDITOR_LINE_PX),
+                            // The window's own top edge (`windowTop`), so row N stays on the same
+                            // baseline as the text it numbers. A wrapped line above the window
+                            // takes two rows and the padding has to carry both.
+                            paddingTop: windowTop,
                             paddingRight: GUTTER_TEXT_PADDING,
                             color: 'var(--kelpi-fg-tertiary, #6A6A72)',
                             fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
@@ -602,6 +866,21 @@ export function PlainTextEditor(props: PlainTextEditorProps): ReactElement {
                     latest.current.onChange(next);
                 }}
                 onKeyDown={(event) => {
+                    // §4.4: Escape in the text closes an open find bar. The app's `close_search`
+                    // only knows the daemon's terminal search, so it leaves the key to us.
+                    if (
+                        event.key === 'Escape' &&
+                        findOpenRef.current &&
+                        !event.metaKey &&
+                        !event.ctrlKey &&
+                        !event.altKey &&
+                        !event.shiftKey
+                    ) {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        dismissFind();
+                        return;
+                    }
                     if ((event.metaKey || event.ctrlKey) && (event.key === 'e' || event.key === 'E')) {
                         event.preventDefault();
                         event.stopPropagation();
@@ -657,6 +936,127 @@ export function PlainTextEditor(props: PlainTextEditorProps): ReactElement {
                 }}
                 onScroll={onScroll}
             />
+            {highlights === null ? null : (
+                /*
+                 * §4.4: the highlight layer, OVER the field and inert.
+                 *
+                 * A `<textarea>` can colour nothing inside itself, and the selection `revealMatch`
+                 * sets is not painted while the bar's field holds the caret. So the visible lines
+                 * are drawn a second time on top, in the field's own typography and scroll, with
+                 * the plain runs transparent and each match an opaque `<mark>` in §3.13's palette:
+                 * the match glyphs under it are covered and redrawn in the match text colour, so
+                 * an editor's find reads exactly as a preview's does. `pointer-events: none` keeps
+                 * every click on the field.
+                 */
+                <div
+                    ref={findClipRef}
+                    aria-hidden
+                    data-testid={`content-find-highlights-${paneID}`}
+                    className="pointer-events-none absolute overflow-hidden"
+                    style={{ top: 0, right: 0, bottom: 0, left: gutterPx }}
+                >
+                    <div
+                        ref={findLayerRef}
+                        style={{
+                            boxSizing: 'border-box',
+                            paddingTop: windowTop,
+                            paddingLeft: EDITOR_PADDING,
+                            paddingRight: EDITOR_PADDING,
+                            whiteSpace: softWrap ? 'pre-wrap' : 'pre',
+                            overflowWrap: softWrap ? 'break-word' : 'normal',
+                            wordBreak: 'normal',
+                            color: 'transparent',
+                            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                            fontSize: `${EDITOR_FONT_SIZE}px`,
+                            lineHeight: `${String(EDITOR_LINE_PX)}px`,
+                            tabSize: 4
+                        }}
+                    >
+                        {highlights.map((segment, index) =>
+                            segment.kind === 'text' ? (
+                                shownRun(segment.text)
+                            ) : (
+                                <mark
+                                    key={index}
+                                    data-find-match={segment.kind}
+                                    style={{
+                                        background: segment.kind === 'current' ? palette.current : palette.match,
+                                        color: segment.kind === 'current' ? palette.currentText : palette.matchText,
+                                        borderRadius: 2,
+                                        padding: 0
+                                    }}
+                                >
+                                    {segment.text}
+                                </mark>
+                            )
+                        )}
+                    </div>
+                </div>
+            )}
+            {findOpen ? (
+                <div
+                    ref={findMeasureRef}
+                    aria-hidden
+                    data-testid={`content-find-measure-${paneID}`}
+                    style={{
+                        position: 'absolute',
+                        top: 0,
+                        left: 0,
+                        visibility: 'hidden',
+                        pointerEvents: 'none',
+                        zIndex: -1,
+                        margin: 0,
+                        padding: 0,
+                        border: 0,
+                        boxSizing: 'content-box',
+                        whiteSpace: softWrap ? 'pre-wrap' : 'pre',
+                        overflowWrap: softWrap ? 'break-word' : 'normal',
+                        wordBreak: 'normal',
+                        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                        fontSize: `${EDITOR_FONT_SIZE}px`,
+                        lineHeight: `${String(EDITOR_LINE_PX)}px`,
+                        tabSize: 4
+                    }}
+                />
+            ) : null}
         </div>
+
+        {/*
+          * §4.4's bar IS the preview's, which is the terminal's (`PaneSearchOverlay`, §H29): the
+          * same field, chevrons, ✕ and counter rule, the same `content-find-…` test ids, and the
+          * same corner of the pane (`CONTENT_FIND_BAR_OFFSET`), so ⌘E between the two modes of a
+          * markdown pane leaves one bar in one place. It hangs beside the editor rather than in
+          * it for the reason the preview's does (§S9): the editor is `overflow-hidden`, and the
+          * bar has to reach back up over the pane header.
+          */}
+        {findOpen ? (
+            /*
+             * Hidden rather than unmounted while the pane is off screen (a zoomed sibling, a
+             * parked pane): the bar claims the caret when it MOUNTS (L29), so remounting it on
+             * the way back would pull the keyboard out of whatever the user is typing in by then.
+             * `display: contents` keeps the pane body as the bar's containing block.
+             */
+            <div style={{ display: onScreen ? 'contents' : 'none' }}>
+            <PaneSearchOverlay
+                key={findSeq}
+                paneID={paneID}
+                testIDPrefix="content-find"
+                label={`Find in ${ariaLabel}`}
+                needle={needle}
+                total={matches.length}
+                selected={selectedMatch >= 0 ? selectedMatch : null}
+                top={CONTENT_FIND_BAR_OFFSET.top}
+                right={CONTENT_FIND_BAR_OFFSET.right}
+                onNeedleChange={changeNeedle}
+                onNext={() => stepFind(1)}
+                onPrevious={() => stepFind(-1)}
+                onClose={closeFind}
+            />
+            </div>
+        ) : null}
+        </>
     );
 }
+
+/** A stable empty list, so a closed bar does not hand the memo a new identity every render. */
+const NO_MATCHES: readonly TextMatch[] = [];

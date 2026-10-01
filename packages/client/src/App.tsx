@@ -71,7 +71,7 @@ import { renderRegisteredView } from './plugins/renderers';
  */
 
 import { canonicalTriggerForPlatform, parseKeyTrigger, type KelpiAction } from '@kelpi/core/config';
-import { wireEdgeForDropZone, type DropZone, type SplitDirection } from '@kelpi/core/layout';
+import { isUsingExternalEditor, wireEdgeForDropZone, type DropZone, type SplitDirection } from '@kelpi/core/layout';
 import { CHOOSE_FOLDER_DIALOG_ACTION, RESOLVE_DROPPED_FILES_ACTION, UPDATE_ACTION_SHELL_ACTION, type JsonObject } from '@kelpi/protocol';
 import {
     workspaceAgentSummary,
@@ -1542,6 +1542,31 @@ function Shell(props: AppProps): ReactElement {
         };
 
         /**
+         * §3.13 / §4.4: open the find bar of a CONTENT pane, a markdown or diff preview's, which
+         * searches the rendered document, or the built-in editor's (a scratchpad, a markdown pane
+         * in edit mode), which searches the text being edited. The request is a per-pane token
+         * the pane body turns into an open bar, so nothing here reaches the daemon.
+         *
+         * Issue #305: the editors used to decline here (§CONT-051/§CONT-072), leaving ⌘F to "the
+         * host's own find" as the stand-in for `NSTextView`'s native find bar. The Electron shell
+         * has no find for the key to fall through to, so it did nothing at all; the editor now
+         * draws the same bar a preview does.
+         *
+         * Declined: every other pane type, and a markdown pane whose edit session is an external
+         * `$EDITOR` (CONT-090), whose body is a terminal running someone else's program.
+         */
+        const openContentFind = (paneID: string): boolean => {
+            const pane = selectPane(store.getState(), paneID);
+            if (pane === null) return false;
+            if (pane.type !== 'markdown' && pane.type !== 'diff' && pane.type !== 'scratchpad') return false;
+            if (isUsingExternalEditor(pane)) return false;
+            setFindRequest((current) =>
+                current?.paneID === paneID ? { paneID, seq: current.seq + 1 } : { paneID, seq: 1 }
+            );
+            return true;
+        };
+
+        /**
          * TERM-043's upload, factored out of `pasteImage` so #81's paste action can reach it
          * too: a clipboard holding a PNG and no text takes this route from both entry points.
          */
@@ -1800,26 +1825,14 @@ function Shell(props: AppProps): ReactElement {
             },
 
             /**
-             * §3.13 — ⌘F over a content pane opens ITS find bar. The needle, the marks and the
-             * counts are per client (they live in the pane's iframe and its host component), so
-             * this only nudges the pane that has focus; a terminal pane declines and the
-             * binding falls through to whatever the terminal search will be.
-             *
-             * §CONT-051: a markdown pane in EDIT mode declines, exactly as the Swift reducer
-             * does — the find bar searches the rendered preview, and there is no preview while
-             * the editor is up. The keystroke falls through to the host's own find, which is
-             * the port's stand-in for `NSTextView`'s native find bar (§CONT-072).
+             * §3.13 / §4.4: ⌘F over a content pane opens ITS find bar. The needle, the marks and
+             * the counts are per client (they live in the pane's iframe or editor and its host
+             * component), so this only nudges the pane that has focus; a terminal pane declines
+             * and the binding falls through to whatever the terminal search will be.
              */
             openFind(): boolean {
                 const paneID = focused();
-                if (paneID === null) return false;
-                const pane = selectPane(store.getState(), paneID);
-                if (pane === null || (pane.type !== 'markdown' && pane.type !== 'diff')) return false;
-                if (pane.type === 'markdown' && pane.isEditing) return false;
-                setFindRequest((current) =>
-                    current?.paneID === paneID ? { paneID, seq: current.seq + 1 } : { paneID, seq: 1 }
-                );
-                return true;
+                return paneID !== null && openContentFind(paneID);
             },
 
             /**
@@ -1841,27 +1854,17 @@ function Shell(props: AppProps): ReactElement {
 
             /**
              * ⌘F. One binding, three backends — the split the Swift reducer makes by pane type
-             * (`WorkspaceFeature.swift:1742-1835`): a markdown/diff pane's find runs inside its
-             * own sandboxed frame, a terminal's runs against the daemon's scrollback buffer, and
-             * a web pane's would run in the host's `webContents` (not wired yet, so ⌘F over one
-             * falls through rather than opening a bar that could not count).
+             * (`WorkspaceFeature.swift:1742-1835`): a content pane's find runs in the client (a
+             * markdown/diff preview's inside its own sandboxed frame, an editor's over the buffer
+             * it holds), a terminal's runs against the daemon's scrollback buffer, and a web
+             * pane's runs in the host's `webContents` (`webAct.openFind`, ahead of this).
              */
             toggleSearch(): boolean {
                 const paneID = focused();
                 if (paneID === null) return false;
                 const pane = selectPane(store.getState(), paneID);
                 if (pane === null) return false;
-                if (pane.type === 'markdown' || pane.type === 'diff') {
-                    // §CONT-051: preview only. A markdown pane in edit mode declines and the
-                    // keystroke falls through to the host's own find (§CONT-072) — the same
-                    // split the daemon reducer makes in `canHostSearch`, which admits a
-                    // markdown pane only while `!pane.isEditing`.
-                    if (pane.type === 'markdown' && pane.isEditing) return false;
-                    setFindRequest((current) =>
-                        current?.paneID === paneID ? { paneID, seq: current.seq + 1 } : { paneID, seq: 1 }
-                    );
-                    return true;
-                }
+                if (openContentFind(paneID)) return true;
                 if (pane.type !== 'shell') return false;
                 const id = activeWorkspaceID();
                 if (id === null) return false;

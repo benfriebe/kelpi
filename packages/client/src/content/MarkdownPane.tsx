@@ -43,7 +43,7 @@ export interface MarkdownPaneProps {
     readonly writeClipboard?: ClipboardWriter | undefined;
     readonly writeRichClipboard?: RichClipboardWriter | undefined;
     readonly openLink?: LinkOpener | undefined;
-    /** Bump to open the preview's find bar (the app's `toggle_search` binding, §3.13). */
+    /** Bump to open the find bar: the preview's (§3.13), or the editor's in edit mode (§4.4). */
     readonly findToken?: number | undefined;
     /** §TERM-103: bump to open the Copy menu from the pane header's copy button. */
     readonly copyToken?: number | undefined;
@@ -107,6 +107,10 @@ export function MarkdownPane(props: MarkdownPaneProps): ReactElement {
                  * ledgered as a deliberate divergence (`CONT-070`).
                  */
                 wrap="soft"
+                // §4.4: ⌘F in edit mode is the EDITOR's find, over the source text. It is the same
+                // token the preview's bar answers, so one binding serves both modes.
+                findToken={props.findToken}
+                findPalette={props.findPalette}
             />
         );
     }

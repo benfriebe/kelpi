@@ -72,6 +72,13 @@ export const FRAME_DOCUMENT_BACKGROUND = { dark: '#0A0A0C', light: '#FFFFFF' } a
 const OVERLAY_INSET = 14;
 
 /**
+ * Where a content pane's find bar floats, relative to the pane BODY it is mounted beside (§S9 /
+ * §S63, explained where `ContentFrame` mounts it). Shared with the built-in editor's bar
+ * (`PlainTextEditor.tsx`, §4.4) so ⌘E between preview and editor leaves the bar in one place.
+ */
+export const CONTENT_FIND_BAR_OFFSET = { top: -(PANE_HEADER_HEIGHT - 8), right: OVERLAY_INSET } as const;
+
+/**
  * Where the Copy menu opens. A measured `{x, y}` is the in-frame chip's own anchor (its
  * bottom-left); `{anchor:'top-right'}` is the pane HEADER's button (§TERM-103), which is not in
  * this component's coordinate space at all — it sits one row above, so the menu is pinned to
@@ -264,6 +271,9 @@ export function ContentFrame(props: ContentFrameProps): ReactElement {
     useEffect(() => {
         if (findToken === lastFindToken.current) return;
         lastFindToken.current = findToken;
+        // The app hands every OTHER pane a 0 when a request moves elsewhere: that is this pane
+        // losing the request, not being asked, so it must not reopen a bar the user closed.
+        if (findToken === 0) return;
         if (props.findEnabled === false) return;
         openFind();
     }, [findToken, props.findEnabled, openFind]);
@@ -640,11 +650,11 @@ export function ContentFrame(props: ContentFrameProps): ReactElement {
                 // terminal's bar sits at pane-top + 8 — §M12's ledgered `top-2` residue — so
                 // −20 would have left the two mounts 4 px apart, which is the defect this
                 // row is about. Stated as a deviation in the lane's notes.)
-                top={-(PANE_HEADER_HEIGHT - 8)}
+                top={CONTENT_FIND_BAR_OFFSET.top}
                 // §S63: the SAME inset the Copy menu uses. Both overlays open in this
                 // corner; at `right-2` the bar's right edge sat on the document's own 8 px
                 // scroller while the menu 6 px away cleared it.
-                right={OVERLAY_INSET}
+                right={CONTENT_FIND_BAR_OFFSET.right}
                 onNeedleChange={setNeedle}
                 onNext={() => sendFind('next')}
                 onPrevious={() => sendFind('prev')}

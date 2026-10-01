@@ -13,6 +13,7 @@
 
 import { type ReactElement } from 'react';
 
+import type { FindPalette } from './bridge';
 import type { ContentApi } from './client';
 import { ContentStatus } from './ContentFrame';
 import { contentPaneLabel } from './labels';
@@ -29,6 +30,10 @@ export interface ScratchpadPaneProps {
     readonly background?: string | undefined;
     readonly onFocusRequest?: ((paneID: string) => void) | undefined;
     readonly scrollStore?: ScrollStore | undefined;
+    /** Bump to open the editor's find bar (the app's `toggle_search` binding, §4.4). */
+    readonly findToken?: number | undefined;
+    /** SET-219's user-overridable find-highlight colours; absent = the Swift defaults. */
+    readonly findPalette?: Partial<FindPalette> | undefined;
 }
 
 export function ScratchpadPane(props: ScratchpadPaneProps): ReactElement {
@@ -82,6 +87,8 @@ export function ScratchpadPane(props: ScratchpadPaneProps): ReactElement {
             onFocusRequest={props.onFocusRequest}
             scrollStore={props.scrollStore}
             showGutter
+            findToken={props.findToken}
+            findPalette={props.findPalette}
         />
     );
 }

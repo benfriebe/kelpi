@@ -231,6 +231,8 @@ describe('the field table', () => {
             )
         ).toEqual([
             'confirm-delete-toggle',
+            'delete-worktrees',
+            'delete-branches-toggle',
             'expand-group-on-drop-toggle',
             'confirm-quit-toggle',
             'focus-follows-mouse-toggle',

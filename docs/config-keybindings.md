@@ -106,6 +106,8 @@ through `set-general-setting` (section 1.3; `WS_WRITABLE_GENERAL_KEYS`,
 | key | rule |
 |---|---|
 | `confirm-workspace-delete` | default true; only the literal `false` (lowercased) disables. The GUI workspace-delete gate (section 4, `close_pane`) |
+| `workspace-delete-worktrees` | `ask` (default), `remove` or `keep`; any other value keeps the prior one. What deleting a workspace from a window does with its linked git worktrees: `ask` lists them in the delete dialog (and ⌘W on the last pane raises the gate when there is one to choose), `remove` takes the clean ones Kelpi made without asking, `keep` leaves every one (graft-git.md §8.7). The dialog's "Remember my choice" writes `remove` or `keep` |
+| `workspace-delete-branches` | default true; only `false` disables. Also delete a removed worktree's branch when every commit on it is on another branch, a remote-tracking ref or a tag. The dialog's branch checkbox starts from it |
 | `confirm-quit-when-active` | default true; only `false` disables. The ⌘Q dialog; both the dialog's "Don't ask again" and Settings write it |
 | `auto-detect-repos` | default true; only `false` disables |
 | `inherit-group-on-new-workspace` | default true; only `false` disables |

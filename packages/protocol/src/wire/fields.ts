@@ -89,7 +89,12 @@ export const WIRE_FIELD_TYPES = {
     create_worktree: 'bool',
     repo_id: 'string',
     group_defaults: 'bool',
-    focus: 'bool'
+    focus: 'bool',
+    worktree_paths: 'string[]',
+    force_worktree_paths: 'string[]',
+    prune_worktrees: 'bool',
+    delete_branches: 'bool',
+    batch_ids: 'string[]'
 } as const satisfies Record<string, WireFieldKind>;
 
 export type WireFieldName = keyof typeof WIRE_FIELD_TYPES;

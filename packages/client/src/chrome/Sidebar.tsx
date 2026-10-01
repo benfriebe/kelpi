@@ -45,6 +45,15 @@ import { ContextMenu, menuAnchorFromEvent, type MenuAvoidRect, type MenuItemSpec
 import { hoverFill, useHoverKey } from './hover';
 import { useModalPresence } from './modal-presence';
 import { GroupRepoSheet } from './GroupRepoSheet';
+import {
+    hasWorktreeList,
+    useWorktreeCleanup,
+    WorktreeCleanupList,
+    WorktreeCleanupRemember,
+    type WorktreeCleanupChoice,
+    type WorktreeCleanupSource,
+    type WorktreeCleanupTarget
+} from './WorktreeCleanupList';
 import { NewEntrySheet } from './NewWorkspaceSheet';
 import {
     ChromeIcon,
@@ -1781,6 +1790,11 @@ export interface SidebarProps extends SidebarCallbacks {
     readonly confirmDeleteWhenActive?: boolean | undefined;
     /** The alert's suppression button — honoured whichever button ended the dialog. */
     readonly onSuppressDeleteConfirm?: (() => void) | undefined;
+    /**
+     * graft-git.md §8.7: the delete dialogs' "Also remove worktrees" list. Absent = no list, and
+     * every delete leaves its worktrees alone, which is what it did before.
+     */
+    readonly worktreeCleanup?: WorktreeCleanupSource | undefined;
     /**
      * §WS-052: "Move to Group ▸ New Group…" for a single row.
      *
@@ -5118,17 +5132,23 @@ export function Sidebar(props: SidebarProps): ReactElement {
             {confirm === null ? null : (
                 <ConfirmDialog
                     confirm={confirm}
+                    worktrees={props.worktreeCleanup}
                     onCancel={(suppress) => {
                         // macOS HIG (`WorkspaceDeleteGate.swift:78`): the suppression box is
                         // honoured whichever button ended the dialog, Cancel included.
                         if (suppress) props.onSuppressDeleteConfirm?.();
                         setConfirm(null);
                     }}
-                    onConfirm={(cascade, suppress) => {
+                    onConfirm={(cascade, suppress, cleanup) => {
                         if (suppress) props.onSuppressDeleteConfirm?.();
-                        if (confirm.kind === 'workspace') props.onDeleteWorkspace?.(confirm.id);
-                        else if (confirm.kind === 'group') props.onDeleteGroup?.(confirm.id, cascade);
-                        else if (props.onDeleteWorkspaces !== undefined) props.onDeleteWorkspaces(confirm.ids);
+                        // `cleanup` stays off the call entirely when the dialog had no list, so a
+                        // callback written before it existed sees exactly the arguments it did.
+                        const extra = cleanup === undefined ? [] : ([cleanup] as const);
+                        if (confirm.kind === 'workspace') props.onDeleteWorkspace?.(confirm.id, ...extra);
+                        else if (confirm.kind === 'group') {
+                            if (cascade) props.onDeleteGroup?.(confirm.id, true, ...extra);
+                            else props.onDeleteGroup?.(confirm.id, false);
+                        } else if (props.onDeleteWorkspaces !== undefined) props.onDeleteWorkspaces(confirm.ids, ...extra);
                         // No bulk callback wired: N single deletes still beat doing nothing.
                         else for (const id of confirm.ids) props.onDeleteWorkspace?.(id);
                         if (confirm.kind === 'workspaces') setSelection(EMPTY_SELECTION);
@@ -5305,8 +5325,17 @@ function CustomEmojiSheet(props: CustomEmojiSheetProps): ReactElement | null {
 
 interface ConfirmDialogProps {
     readonly confirm: ConfirmState;
+    /** graft-git.md §8.7's list; absent = none. */
+    readonly worktrees?: WorktreeCleanupSource | undefined;
     readonly onCancel: (suppress: boolean) => void;
-    readonly onConfirm: (cascade: boolean, suppress: boolean) => void;
+    /** `cleanup` as `onDeleteWorkspace`'s (`chrome/types.ts`). */
+    readonly onConfirm: (cascade: boolean, suppress: boolean, cleanup?: WorktreeCleanupChoice | null) => void;
+}
+
+function cleanupTarget(confirm: ConfirmState): WorktreeCleanupTarget {
+    if (confirm.kind === 'workspace') return { workspaceIDs: [confirm.id] };
+    if (confirm.kind === 'workspaces') return { workspaceIDs: confirm.ids };
+    return { groupID: confirm.id };
 }
 
 /**
@@ -5321,6 +5350,13 @@ function ConfirmDialog(props: ConfirmDialogProps): ReactElement | null {
     // Hooks before the container guard: a conditional early return above `useState` would make
     // the hook order depend on the DOM being present.
     const [suppress, setSuppress] = useState(false);
+    /*
+     * graft-git.md §8.7: the workspaces' linked worktrees, planned by the daemon when the dialog
+     * opens. An empty group deletes no workspace, so it asks nothing.
+     */
+    const cleanupSource =
+        props.confirm.kind === 'group' && props.confirm.memberCount === 0 ? undefined : props.worktrees;
+    const cleanup = useWorktreeCleanup(cleanupSource, cleanupTarget(props.confirm));
     /*
      * H11's fill tone for the three answers. The global reset strips the user-agent hover
      * response and nothing here painted one back, so `Delete "<name>"?`'s buttons were the only
@@ -5388,7 +5424,8 @@ function ConfirmDialog(props: ConfirmDialogProps): ReactElement | null {
             data-active-agents={String(activeAgents)}
             role="dialog"
             aria-label={isGroup ? 'Delete group' : isBulk ? 'Delete workspaces' : 'Delete workspace'}
-            className="fixed left-1/2 top-1/3 z-50 w-[320px] -translate-x-1/2 rounded-lg p-4 text-[12px]"
+            // Wider while it lists worktrees: a row carries a name, a branch and a location.
+            className={`fixed left-1/2 top-1/3 z-50 ${hasWorktreeList(cleanup) ? 'w-[400px]' : 'w-[320px]'} -translate-x-1/2 rounded-lg p-4 text-[12px]`}
             style={{
                 background: tokens.surfaceBackground,
                 border: `1px solid ${tokens.divider}`,
@@ -5433,6 +5470,10 @@ function ConfirmDialog(props: ConfirmDialogProps): ReactElement | null {
                     </div>
                 ) : null}
             </div>
+            <WorktreeCleanupList
+                state={cleanup}
+                note={isGroup ? `Only when the ${workspaceNoun} ${members === 1 ? 'is' : 'are'} deleted too.` : undefined}
+            />
             {activeAgents > 0 ? (
                 <label className="mb-3 flex items-center gap-2 text-[11px]" style={{ color: tokens.textSecondary }}>
                     <input
@@ -5457,14 +5498,17 @@ function ConfirmDialog(props: ConfirmDialogProps): ReactElement | null {
              * default at the top, Cancel at the bottom, which reversing the DOM order gives while
              * leaving the tab order (Cancel first) alone.
              */}
+            {isGroup && members > 0 ? <WorktreeCleanupRemember state={cleanup} className="mb-3" /> : null}
             <div
                 data-testid="confirm-actions"
                 className={
                     isGroup && members > 0
                         ? 'flex flex-col-reverse gap-3'
-                        : 'flex flex-wrap justify-end gap-3'
+                        : 'flex flex-wrap items-center justify-end gap-3'
                 }
             >
+                {/* "Remember my choice" sits where an alert's suppression box does: bottom left. */}
+                {isGroup && members > 0 ? null : <WorktreeCleanupRemember state={cleanup} className="mr-auto" />}
                 <button
                     type="button"
                     data-testid="confirm-cancel"
@@ -5497,7 +5541,7 @@ function ConfirmDialog(props: ConfirmDialogProps): ReactElement | null {
                             background: hoverFill(hoveredAction === 'cascade')
                         }}
                         onClick={() => {
-                            props.onConfirm(true, suppress);
+                            props.onConfirm(true, suppress, cleanup.confirm());
                         }}
                     >
                         {`Delete Group and ${String(members)} ${workspaceNoun[0]?.toUpperCase() ?? ''}${workspaceNoun.slice(1)}`}
@@ -5514,7 +5558,10 @@ function ConfirmDialog(props: ConfirmDialogProps): ReactElement | null {
                         background: hoverFill(hoveredAction === 'delete')
                     }}
                     onClick={() => {
-                        props.onConfirm(false, suppress);
+                        // Moving a group's workspaces to the top level deletes none of them, so
+                        // it takes no worktree with it (and remembers no choice about them).
+                        if (isGroup) props.onConfirm(false, suppress);
+                        else props.onConfirm(false, suppress, cleanup.confirm());
                     }}
                 >
                     {isGroup ? (members > 0 ? 'Move Workspaces to Top Level' : 'Delete Group') : 'Delete'}

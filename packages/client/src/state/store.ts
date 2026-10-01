@@ -421,6 +421,8 @@ export function hydrateSettings(raw: unknown): WsSettingsSnapshot | null {
         fallback: 'end-of-list' | 'near-selection'
     ): 'end-of-list' | 'near-selection' =>
         value === 'end-of-list' || value === 'near-selection' ? value : fallback;
+    const worktreeChoice = (value: unknown, fallback: 'ask' | 'remove' | 'keep'): 'ask' | 'remove' | 'keep' =>
+        value === 'ask' || value === 'remove' || value === 'keep' ? value : fallback;
     const nullableNum = (value: unknown): number | null =>
         typeof value === 'number' && Number.isFinite(value) ? value : null;
 
@@ -458,6 +460,11 @@ export function hydrateSettings(raw: unknown): WsSettingsSnapshot | null {
                 general['confirmWorkspaceDeleteWhenActive'],
                 fallbackGeneral.confirmWorkspaceDeleteWhenActive
             ),
+            // graft-git.md §8.7. An older daemon omits both, and the defaults (ask; branches
+            // on) stand: the dialog then lists worktrees its daemon cannot remove, and each
+            // delete's reply, carrying no `worktrees`, says nothing was removed.
+            workspaceDeleteWorktrees: worktreeChoice(general['workspaceDeleteWorktrees'], fallbackGeneral.workspaceDeleteWorktrees),
+            workspaceDeleteBranches: bool(general['workspaceDeleteBranches'], fallbackGeneral.workspaceDeleteBranches),
             // §AGNT-117: the quit suppression's twin, daemon-owned since the quit gate moved.
             confirmQuitWhenActive: bool(
                 general['confirmQuitWhenActive'],

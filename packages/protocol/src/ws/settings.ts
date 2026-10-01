@@ -37,6 +37,14 @@ export interface WsGeneralSettings {
      */
     readonly confirmWorkspaceDeleteWhenActive: boolean;
     /**
+     * `workspace-delete-worktrees` (graft-git.md §8.7), default `ask`: whether a window's delete
+     * lists the workspace's linked worktrees (`ask`), removes the clean ones Kelpi made without
+     * asking (`remove`), or leaves every one on disk (`keep`). Read by the CLIENT.
+     */
+    readonly workspaceDeleteWorktrees: 'ask' | 'remove' | 'keep';
+    /** `workspace-delete-branches`, default true: the delete dialog's branch checkbox default. */
+    readonly workspaceDeleteBranches: boolean;
+    /**
      * §10 step 2 "Confirm before quitting while agents are active" (default true), config key
      * `confirm-quit-when-active`.
      *
@@ -405,6 +413,8 @@ export const DEFAULT_WS_SETTINGS: WsSettingsSnapshot = {
         focusFollowsMouseDelay: 100,
         theme: null,
         confirmWorkspaceDeleteWhenActive: true,
+        workspaceDeleteWorktrees: 'ask',
+        workspaceDeleteBranches: true,
         confirmQuitWhenActive: true,
         autoUpdate: false,
         tcpPort: 0,
@@ -488,6 +498,10 @@ export const WS_WRITABLE_GENERAL_KEYS = [
     // Additive to §1.3's list: the Swift app keeps this suppression flag in UserDefaults, which
     // a multi-client daemon has no equivalent of (shell-ui.md port note "Suppression settings").
     'confirm-workspace-delete',
+    // graft-git.md §8.7: the delete dialog's worktree list and its branch checkbox. Writable
+    // because both Settings ▸ Workspaces and the dialog's "Remember my choice" write them.
+    'workspace-delete-worktrees',
+    'workspace-delete-branches',
     // The quit dialog's twin (§AGNT-117). Writable because BOTH sides now write it: the ⌘Q
     // dialog's "Don't ask again" checkbox and Settings ▸ Workspaces' toggle.
     'confirm-quit-when-active',

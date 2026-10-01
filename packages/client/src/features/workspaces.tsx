@@ -6,6 +6,7 @@ import type { RemoteDaemonRuntime } from '../app/remote-daemons';
 import type { InspectorData } from '../app/inspector';
 import { isOkReply, replyError } from '../connection';
 import { Sidebar, type SidebarProps, type SidebarSelectionCommands } from '../chrome/Sidebar';
+import type { WorktreeCleanupSource } from '../chrome/WorktreeCleanupList';
 import { NewEntrySheet } from '../chrome/NewWorkspaceSheet';
 import { defaultGroupName, nextCreateColor } from '../chrome/sidebar-model';
 import type { ChromeBucket } from '../chrome/theme';
@@ -85,6 +86,8 @@ export interface WorkspacesFeatureViewProps {
     readonly bucket: ChromeBucket;
     readonly reportSelection: NonNullable<SidebarProps['onSelectionChange']>;
     readonly suppressDeleteConfirm: () => void;
+    /** graft-git.md §8.7: the delete dialogs' worktree list. Absent = no list. */
+    readonly worktreeCleanup?: WorktreeCleanupSource | undefined;
     readonly openSettings: NonNullable<SidebarProps['onOpenSettings']>;
     readonly reportFailure: (label: string, message: string) => void;
     /** #283's native folder panel (desktop app only): the group repository sheet's Choose Folder…. */
@@ -139,7 +142,8 @@ export function WorkspacesFeatureView(props: WorkspacesFeatureViewProps): ReactE
         onActivateWorkspace={actions.activateWorkspace}
         onToggleGroupCollapse={actions.setGroupCollapsed}
         onRenameWorkspace={actions.renameWorkspace}
-        onDeleteWorkspace={actions.deleteWorkspace}
+        onDeleteWorkspace={(workspaceID, cleanup) => actions.deleteWorkspace(workspaceID, { cleanup })}
+        worktreeCleanup={props.worktreeCleanup}
         workspaceAgentSummary={model.workspaceAgentSummary}
         confirmDeleteWhenActive={model.confirmDeleteWhenActive}
         onSuppressDeleteConfirm={props.suppressDeleteConfirm}

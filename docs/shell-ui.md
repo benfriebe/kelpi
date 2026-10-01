@@ -1484,9 +1484,10 @@ which the bulk and group dialogs below share). When the workspace has active age
 has N active agent(s). Deleting it will terminate it/them." and a "Don't ask again" checkbox
 that writes the same setting. With no active agents, or the setting off, the plain
 confirmation is shown without the agent line. The ⌘W close-last-pane route is the one
-exception: it deletes the workspace silently unless the active-agent alert applies
-(`packages/client/src/App.tsx:1364-1380`). The sidebar Delete item is disabled when only one
-workspace remains. (The CLI's `--force` bypass is server-side and independent.)
+exception: it deletes the workspace silently unless the active-agent alert applies, or the
+workspace has linked worktrees to choose from (§12.6). The sidebar Delete item is disabled
+when only one workspace remains. (The CLI's `--force` bypass is server-side and
+independent.)
 
 ### 12.3 Bulk delete confirmation
 
@@ -1506,6 +1507,66 @@ destructive options: "Move Workspaces to Top Level" (delete group, promote child
 `Already grafting into <repo>` — body naming the existing graft branch/worktree and the
 requested one, options "Stop existing & swap" (destructive) / "Keep existing" (cancel).
 (Graft subsystem supplies the state; the shell just presents it.)
+
+### 12.6 Worktrees in the delete dialogs
+
+The workspace, bulk and group delete dialogs, and the ⌘W gate, can remove the deleted
+workspaces' linked git worktrees with them (graft-git.md §8.7; the plan and its rules are the
+daemon's). What the window does is set by `workspace-delete-worktrees`
+(Settings ▸ Workspaces ▸ "Worktrees when deleting a workspace"):
+
+- `ask` (default): when any of the workspaces has a repo row whose path is not its repo's
+  own path (`mayHaveLinkedWorktrees`, `packages/client/src/app/worktree-cleanup.ts`), the
+  dialog asks the daemon for the plan (`worktree-cleanup-preview`) while it is up, showing
+  "Checking worktrees…" until it lands, widens from 320 to 400 px, and lists every candidate
+  under "Also remove worktrees" ("Also remove its worktree" for one)
+  (`packages/client/src/chrome/WorktreeCleanupList.tsx`), in an inset, scrollable panel.
+  Each row is one line: the worktree's folder name, then where it lives (`~`-abbreviated,
+  middle-truncated, the first thing to give way; the full path on hover), then its branch
+  with the branch glyph when the branch is not the folder's name ("detached HEAD" when
+  there is none). A second line appears only when there is something to weigh:
+  - "Not created by Kelpi" for one outside the worktree base path, and "N unpushed commits"
+    (", branch kept" when it is ticked and branches are being deleted);
+  - for one whose only problem is uncommitted changes: "N uncommitted changes" in amber,
+    unticked; ticking it turns the line red, "N uncommitted changes will be lost", and the
+    delete names it in `force_worktree_paths`;
+  - for any other blocked one: the reason ("Also used by workspace …"), on a dimmed row that
+    cannot be ticked.
+
+  The clean worktrees Kelpi made start ticked; any other linked worktree is offered unticked.
+  Main checkouts never appear, so a workspace that only works in one gets no list and no git
+  round trip. Under the panel: "Also delete branches that are pushed or merged" ("its branch"
+  for one; starting from `workspace-delete-branches`, disabled while no ticked row has a
+  branch) and "Files git ignores, like .env, are deleted too." "Remember my choice" sits at the
+  bottom left beside Cancel and Delete (above the stacked buttons in the group dialog) and,
+  on Delete, writes `remove` (something was ticked) or `keep`, plus the branch checkbox.
+- `remove`: no list; the dialog notes "Clean worktrees Kelpi created are removed too" when a
+  workspace may have one, and the delete sends `prune_worktrees`: the daemon takes every
+  worktree Kelpi made that is safe, which is what `ask` would have ticked, without a preview.
+- `keep`: no list, nothing removed.
+
+A group dialog's list covers every member (as the cascade deletes all of them) and applies
+only to "Delete Group and N Workspaces"; "Move Workspaces to Top Level" removes nothing.
+A delete confirmed before the plan arrives, or after it failed ("Could not check worktrees
+(…); they will be kept."), keeps every worktree.
+
+⌘W on the last pane, with `ask` and a possible worktree, asks for the plan FIRST and raises
+the gate (`AgentDeleteGate`, `packages/client/src/App.tsx`) only when there is a worktree to
+choose or the agents alert applies; otherwise it deletes at once, as before. Without agents
+to warn about, the gate shows no agents line and no "Don't ask again".
+
+The chosen worktrees go by path (`worktree_paths`) on the LAST delete of the gesture, sent
+once the others have replied and naming the ones that went (`batch_ids`): the daemon then
+plans the whole batch after every member is gone and its shells have exited, which is the
+plan the dialog previewed. A member whose delete was refused is not named, still exists, and
+still counts as using its worktrees; if the last delete itself is refused, nothing is removed
+and a "Worktrees kept" toast says so. A single delete with a choice goes out at once. A
+group cascade with worktrees is sent as one delete per member (forced, allowed to reach
+zero, as the cascade is) and then the emptied group, since `group-delete` has no reply. A
+second ⌘W while its plan is being fetched does nothing. The results come back on
+each delete's reply: a "Removed worktree(s)" toast (auto-dismissed) and, for anything kept, a
+"Kept on disk" toast with each reason, which stays until clicked, since nothing in the
+window points at that directory any more.
 
 ---
 

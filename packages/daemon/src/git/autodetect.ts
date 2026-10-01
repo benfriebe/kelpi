@@ -247,9 +247,29 @@ export function createRepoAutoDetect(options: CreateRepoAutoDetectOptions): Repo
             addedRepo = true;
         }
 
-        const alreadyLinked = workspace.repoAssociations.some(
+        const linked = workspace.repoAssociations.find(
             (association) => association.worktreePath === info.worktreeRoot
         );
+        const alreadyLinked = linked !== undefined;
+        let repointed = false;
+        if (linked !== undefined && linked.isAutoDetected && linked.repoID !== repoID) {
+            /*
+             * An automatic row whose parent is not the repo git names now: rows linked before
+             * `resolveRepoRoot` asked for absolute paths point at an ancestor directory (`/`,
+             * `/Users/me`) whenever the pane was in a subfolder. Re-point it at the real parent
+             * (a new id, so the association reconciler treats it as a fresh row) and let the GC
+             * below collect the wrong registry entry. A manual row is the user's choice and is
+             * never rewritten.
+             */
+            store.dispatch({ type: 'remove-repo-association', workspaceID, associationID: linked.id });
+            store.dispatch({
+                type: 'add-repo-association',
+                workspaceID,
+                association: { ...linked, id: uuid(), repoID, branchName: null }
+            });
+            collectOrphanedRepos([linked.repoID]);
+            repointed = true;
+        }
         if (!alreadyLinked) {
             const association: RepoAssociation = {
                 id: uuid(),
@@ -264,7 +284,7 @@ export function createRepoAutoDetect(options: CreateRepoAutoDetectOptions): Repo
         }
 
         // Persist the association before a remote read that can be retired or remain pending.
-        if (!alreadyLinked || addedRepo) persist?.();
+        if (!alreadyLinked || addedRepo || repointed) persist?.();
         if (addedRepo || existing?.isAutoDiscovered) {
             // §GIT-069/§GIT-077: remote metadata follows automatic repos, including a rescan
             // after switching providers. Manual registry entries retain their own metadata.
@@ -272,12 +292,47 @@ export function createRepoAutoDetect(options: CreateRepoAutoDetectOptions): Repo
         }
     };
 
+    /**
+     * §GIT-081: remove auto-discovered repos nothing references any more. `candidates` limits
+     * the sweep to the repos a caller just dropped rows for; null sweeps the whole registry,
+     * which is what a deleted workspace needs (its rows are already gone from the state, so
+     * there is nothing left to say which repos they pointed at). Returns whether any went.
+     */
+    function collectOrphanedRepos(candidates: Iterable<string> | null): boolean {
+        const ids = candidates === null ? store.getState().repos.map((repo) => repo.id) : [...candidates];
+        let removed = false;
+        for (const repoID of ids) {
+            const current = store.getState();
+            const repo = current.repos.find((entry) => entry.id === repoID);
+            // A manual repo (`isAutoDiscovered === false`) is never collected, however
+            // unreferenced it is.
+            if (repo === undefined || !repo.isAutoDiscovered) continue;
+            // A group's default repository is a reference too (app-state-core.md §5.5): a group
+            // adopting a repo promotes it, but a row that predates that rule, or one adopted
+            // behind the verbs' back, must still never be collected out from under its group.
+            const stillReferenced =
+                current.workspaces.some((entry) =>
+                    entry.repoAssociations.some((association) => association.repoID === repoID)
+                ) || current.groups.some((group) => group.repoID === repoID);
+            if (stillReferenced) continue;
+            remoteGeneration.delete(repoID);
+            store.dispatch({ type: 'remove-repo', id: repoID });
+            removed = true;
+        }
+        return removed;
+    }
+
     /** §GIT-080 + §GIT-081. Synchronous: everything it needs is already in the store. */
     const unlink = (workspaceID: string): void => {
         if (!enabled()) return;
         const state = store.getState();
         const workspace = workspaceOf(state, workspaceID);
-        if (workspace === undefined) return;
+        if (workspace === undefined) {
+            // The workspace was deleted (on its own or in a group cascade): its rows went with
+            // it, so the repos only it referenced are collected here or never.
+            if (collectOrphanedRepos(null)) persist?.();
+            return;
+        }
 
         const candidates = workspace.repoAssociations.filter((association) => association.isAutoDetected);
         if (candidates.length === 0) return;
@@ -302,25 +357,7 @@ export function createRepoAutoDetect(options: CreateRepoAutoDetectOptions): Repo
             removedRepoIDs.add(association.repoID);
         }
         if (removedRepoIDs.size === 0) return;
-
-        // §GIT-081: collect auto-discovered repos nothing references any more. A manual repo
-        // (`isAutoDiscovered === false`) is never collected, however unreferenced it is.
-        const after = store.getState();
-        for (const repoID of removedRepoIDs) {
-            const repo = after.repos.find((entry) => entry.id === repoID);
-            if (repo === undefined || !repo.isAutoDiscovered) continue;
-            // A group's default repository is a reference too (app-state-core.md §5.5): a group
-            // adopting a repo promotes it, but a row that predates that rule, or one adopted
-            // behind the verbs' back, must still never be collected out from under its group.
-            const stillReferenced =
-                after.workspaces.some((entry) =>
-                    entry.repoAssociations.some((association) => association.repoID === repoID)
-                ) || after.groups.some((group) => group.repoID === repoID);
-            if (!stillReferenced) {
-                remoteGeneration.delete(repoID);
-                store.dispatch({ type: 'remove-repo', id: repoID });
-            }
-        }
+        collectOrphanedRepos(removedRepoIDs);
         persist?.();
     };
 
@@ -383,6 +420,8 @@ export function createRepoAutoDetect(options: CreateRepoAutoDetectOptions): Repo
      * auto-link's own dispatches produce).
      */
     const seen = new Map<string, { workspaceID: string; directory: string }>();
+    /** Workspace ids at the last pass, so one deleted with no panes still reaches `unlink`. */
+    let knownWorkspaces = new Set<string>();
 
     /** The Swift `paneDirectoryChanged` interception: refresh, then both debounced passes. */
     const moved = (workspaceID: string, paneID: string, directory: string): void => {
@@ -442,6 +481,12 @@ export function createRepoAutoDetect(options: CreateRepoAutoDetectOptions): Repo
             linkGeneration.delete(paneID);
             scheduleUnlink(previous.workspaceID);
         }
+        const workspaceIDs = new Set(state.workspaces.map((workspace) => workspace.id));
+        for (const workspaceID of knownWorkspaces) {
+            // An empty workspace has no pane to vanish; its delete still owes the repo GC.
+            if (!workspaceIDs.has(workspaceID)) scheduleUnlink(workspaceID);
+        }
+        knownWorkspaces = workspaceIDs;
     };
 
     return {

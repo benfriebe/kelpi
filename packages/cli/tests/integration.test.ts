@@ -545,7 +545,66 @@ describe('workspace delete', () => {
         expect(await lastRequest()).toEqual({ command: 'workspace-delete', name: 'agents', force: true });
     });
 
-    it('reports a prune that had no directory to work with', async () => {
+    it('asks the daemon to prune, and reports each worktree it removed or kept (graft-git §8.7)', async () => {
+        server.respond(() => ({
+            lines: [
+                {
+                    ok: true,
+                    workspace_id: PANE,
+                    workspace_name: 'feat',
+                    path: '/wt/feat',
+                    worktrees: [
+                        { association_id: 'A1', worktree_path: '/wt/feat', branch: 'feat', removed: true, branch_deleted: true },
+                        { association_id: 'A2', worktree_path: '/wt/other', branch: 'other', removed: true, branch_deleted: false, branch_error: '2 commits no other branch or remote has' },
+                        { association_id: 'A3', worktree_path: '/wt/busy', branch: 'busy', removed: false, blocked: 'dirty', error: 'has 1 uncommitted change' }
+                    ]
+                }
+            ]
+        }));
+        const result = await runCLI(['workspace', 'delete', 'feat', '--prune-worktree', '--delete-branch'], { port: server.port });
+        expect(result.code).toBe(0);
+        expect(await lastRequest()).toEqual({
+            command: 'workspace-delete',
+            name: 'feat',
+            force: false,
+            prune_worktrees: true,
+            delete_branches: true
+        });
+        expect(result.stdout).toBe(
+            'deleted workspace feat\n  removed worktree: /wt/feat\n  deleted branch: feat\n  removed worktree: /wt/other\n'
+        );
+        expect(result.stderr).toBe(
+            'Warning: kept branch other: 2 commits no other branch or remote has\n' +
+                'Warning: worktree /wt/busy not removed: has 1 uncommitted change\n'
+        );
+
+        const json = await runCLI(['workspace', 'delete', 'feat', '--prune-worktree', '--json'], { port: server.port });
+        const [record] = JSON.parse(json.stdout) as Record<string, unknown>[];
+        expect(record).toMatchObject({
+            ok: true,
+            worktree_pruned: false,
+            worktree_error: 'worktree /wt/busy not removed: has 1 uncommitted change'
+        });
+        expect(record?.['worktrees']).toHaveLength(3);
+    });
+
+    it('warns when the daemon found no Kelpi worktree to prune', async () => {
+        server.respond(() => ({ lines: [{ ok: true, workspace_id: PANE, workspace_name: 'Main', path: '/code/app', worktrees: [] }] }));
+        const result = await runCLI(['workspace', 'delete', 'Main', '--prune-worktree'], { port: server.port });
+        expect(result.code).toBe(0);
+        expect(result.stderr).toBe('Warning: workspace Main has no worktree Kelpi created to prune\n');
+    });
+
+    it('refuses --delete-branch without --prune-worktree, before sending anything', async () => {
+        const result = await runCLI(['workspace', 'delete', 'feat', '--delete-branch'], { port: server.port });
+        expect(result.code).toBe(1);
+        expect(result.stderr).toContain('--delete-branch requires --prune-worktree');
+        expect(server.requests).toHaveLength(0);
+    });
+
+    // A daemon that predates `prune_worktrees` answers without `worktrees`: the CLI falls back
+    // to pruning the reply's `path` itself, as it always did.
+    it('reports a prune that had no directory to work with (older daemon)', async () => {
         server.respond(() => ({ lines: [{ ok: true, workspace_id: PANE, workspace_name: 'Emptied' }] }));
         const result = await runCLI(['workspace', 'delete', 'Emptied', '--prune-worktree', '--json'], {
             port: server.port
@@ -563,7 +622,7 @@ describe('workspace delete', () => {
         ]);
     });
 
-    it('warns (exit 0) when the deleted directory is not a git worktree', async () => {
+    it('warns (exit 0) when the deleted directory is not a git worktree (older daemon)', async () => {
         const home = scratchHome();
         server.respond(() => ({ lines: [{ ok: true, workspace_id: PANE, workspace_name: 'Plain', path: home }] }));
         const result = await runCLI(['workspace', 'delete', 'Plain', '--prune-worktree'], {

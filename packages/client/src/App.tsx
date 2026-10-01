@@ -29,6 +29,16 @@ import { WorkbenchProvider, WorkbenchSidebar, WorkbenchSlot, useWorkbenchLayout,
 import { resolveSidebarViews, resolveSlot, selectWorkbenchView } from './plugins/registry';
 import { DEFAULT_ARRANGEMENT, setBandVisible, toggleZenMode, zenModeActive, type ArrangementSlotBand } from './plugins/arrangement';
 import { RestoreStrip } from './chrome/RestoreStrip';
+import {
+    hasWorktreeList,
+    useWorktreeCleanup,
+    WorktreeCleanupList,
+    WorktreeCleanupRemember,
+    type WorktreeCleanupCandidate,
+    type WorktreeCleanupChoice,
+    type WorktreeCleanupSource
+} from './chrome/WorktreeCleanupList';
+import { createWorktreeCleanupSource, mayHaveLinkedWorktrees, parseWorktreeCleanupPreview } from './app/worktree-cleanup';
 import { PluginsTab } from './plugins/PluginsTab';
 import { usePluginCommands } from './plugins/commands';
 import { renderRegisteredView } from './plugins/renderers';
@@ -635,9 +645,19 @@ function Shell(props: AppProps): ReactElement {
      * sessions) and `confirm-workspace-delete` is on — so this is null in every other
      * case and the delete goes straight out.
      */
-    const [closeGate, setCloseGate] = useState<
-        { workspaceID: string; name: string; agents: WorkspaceAgentSummary; allowLast?: boolean } | null
-    >(null);
+    const [closeGate, setCloseGate] = useState<{
+        workspaceID: string;
+        name: string;
+        agents: WorkspaceAgentSummary;
+        allowLast?: boolean;
+        /** Show the agents warning and its "Don't ask again" (`confirm-workspace-delete`). */
+        askAgents: boolean;
+        /**
+         * graft-git.md §8.7: the plan ⌘W fetched before raising the gate. Null = not fetched
+         * (the gate asks its source itself, which answers per the setting).
+         */
+        worktrees: readonly WorktreeCleanupCandidate[] | null;
+    } | null>(null);
     /**
      * The Settings window (M8): open flag + which tab, so a deep link ("Manage labels…") can
      * name one. It is client-local UI state like the sidebar's visibility — the daemon owns the
@@ -1501,6 +1521,11 @@ function Shell(props: AppProps): ReactElement {
      * `store.getState()` rather than closing over a render's values, so the object is stable
      * and the key dispatcher / menus never go stale.
      */
+    /**
+     * graft-git.md §8.7: the workspace whose ⌘W is waiting on its worktree plan. A second ⌘W
+     * while it is out does nothing, rather than asking again and deleting twice.
+     */
+    const closePlanRef = useRef<string | null>(null);
     const act = useMemo(() => {
         const activeWorkspace = (): WorkspaceState | null => selectActiveWorkspace(store.getState());
         const activeWorkspaceID = (): string | null => activeWorkspace()?.id ?? null;
@@ -1584,10 +1609,11 @@ function Shell(props: AppProps): ReactElement {
             }
         };
 
+        const workspacesActions = createWorkspacesActions({ store, commands, run, notifyFailure, activateWorkspaceAndReveal, setSidebarVisible, lifecycle: workspacesLifecycle });
         return {
             ...createInspectorActions({ commands, activeWorkspace, focusedPaneID: focused, run, refresh: inspectorData.refresh }),
             ...createToolbarActions({ commands, activeWorkspaceID, focusedPaneID: focused, run, setInspectorVisible }),
-            ...createWorkspacesActions({ store, commands, run, notifyFailure, activateWorkspaceAndReveal, setSidebarVisible, lifecycle: workspacesLifecycle }),
+            ...workspacesActions,
             focusPane(paneID: string | null): boolean {
                 const id = activeWorkspaceID();
                 if (id === null) return false;
@@ -1648,19 +1674,42 @@ function Shell(props: AppProps): ReactElement {
                     return run('Close pane', commands.closePane({ paneID }));
                 }
                 const agents = workspaceAgentSummary(workspace);
-                if (agents.total > 0 && store.getState().settings.value.general.confirmWorkspaceDeleteWhenActive) {
-                    setCloseGate({
-                        workspaceID: workspace.id,
-                        name: workspace.name,
-                        agents,
-                        allowLast: true
-                    });
+                const general = store.getState().settings.value.general;
+                const askAgents = agents.total > 0 && general.confirmWorkspaceDeleteWhenActive;
+                const gate = (worktrees: readonly WorktreeCleanupCandidate[] | null): void => {
+                    setCloseGate({ workspaceID: workspace.id, name: workspace.name, agents, allowLast: true, askAgents, worktrees });
+                };
+                /*
+                 * graft-git.md §8.7: with `workspace-delete-worktrees = ask` and a row that could be
+                 * a linked worktree, the plan decides whether ⌘W stops to ask: a gate only when
+                 * there is something to choose (or agents to warn about). A workspace that only
+                 * works in a main checkout still closes at once, without waiting on git.
+                 */
+                if (general.workspaceDeleteWorktrees === 'ask' && mayHaveLinkedWorktrees(store.getState().daemon.state, [workspace.id])) {
+                    if (closePlanRef.current === workspace.id) return true;
+                    closePlanRef.current = workspace.id;
+                    void commands.worktreeCleanupPreview({ workspaceIDs: [workspace.id] }).then(
+                        (reply) => {
+                            closePlanRef.current = null;
+                            const candidates = parseWorktreeCleanupPreview(reply) ?? [];
+                            if (askAgents || candidates.length > 0) gate(candidates);
+                            else workspacesActions.deleteWorkspace(workspace.id, { allowLast: true, cleanup: null });
+                        },
+                        () => {
+                            closePlanRef.current = null;
+                            // No plan: never remove anything unasked, but do not strand the ⌘W.
+                            if (askAgents) gate(null);
+                            else workspacesActions.deleteWorkspace(workspace.id, { allowLast: true, cleanup: null });
+                        }
+                    );
                     return true;
                 }
-                return run(
-                    'Delete workspace',
-                    commands.deleteWorkspace({ workspace: workspace.id, force: true, allowLast: true })
-                );
+                if (askAgents) {
+                    gate(null);
+                    return true;
+                }
+                // `remove` (or nothing to ask): the setting decides inside the action.
+                return workspacesActions.deleteWorkspace(workspace.id, { allowLast: true });
             },
 
             renamePane(paneID: string, name: string): boolean {
@@ -2632,6 +2681,19 @@ function Shell(props: AppProps): ReactElement {
             scanRepos: (input) => void run('Scan for repositories', commands.scanRepos(input))
         }),
         [commands, run]
+    );
+    /** graft-git.md §8.7: the delete dialogs' worktree list, read against live settings. */
+    const worktreeCleanupSource = useMemo(
+        () =>
+            createWorktreeCleanupSource({
+                store,
+                preview: (workspaceIDs) => commands.worktreeCleanupPreview({ workspaceIDs }),
+                remember: (choice) => {
+                    settingsActions.setGeneralSetting('workspace-delete-worktrees', choice.removeWorktrees ? 'remove' : 'keep');
+                    settingsActions.setGeneralSetting('workspace-delete-branches', choice.deleteBranches ? 'true' : 'false');
+                }
+            }),
+        [store, commands, settingsActions]
     );
 
     // H13: `SettingsView.swift:13` opens the window on `.general`. Every route that does not
@@ -4106,6 +4168,7 @@ function Shell(props: AppProps): ReactElement {
                     repos: inspectorData.repos, remotes: remoteDaemonRuntimes, remoteSelection,
                     selectRemote: setRemoteSelection, bucket, reportSelection: reportWorkspaceSelection,
                     suppressDeleteConfirm: () => { settingsActions.setGeneralSetting('confirm-workspace-delete', 'false'); },
+                    worktreeCleanup: worktreeCleanupSource,
                     openSettings: section => openSettings(section === 'labels' ? 'labels' : DEFAULT_SETTINGS_TAB),
                     reportFailure: notifyFailure,
                     // app-state-core.md §5.5: the group repository sheet's Choose Folder…,
@@ -4726,14 +4789,19 @@ function Shell(props: AppProps): ReactElement {
                 <AgentDeleteGate
                     name={closeGate.name}
                     agents={closeGate.agents}
+                    askAgents={closeGate.askAgents}
+                    workspaceID={closeGate.workspaceID}
+                    worktrees={closeGate.worktrees}
+                    worktreeSource={worktreeCleanupSource}
                     onCancel={() => setCloseGate(null)}
-                    onConfirm={(suppress) => {
+                    onConfirm={(suppress, cleanup) => {
                         if (suppress) settingsActions.setGeneralSetting('confirm-workspace-delete', 'false');
                         // §WS-156: the gate was raised BY ⌘W, so the confirmation inherits ⌘W's
                         // permission to reach zero workspaces. A gate raised anywhere else does
                         // not, and goes through the ordinary sidebar delete.
                         act.deleteWorkspace(closeGate.workspaceID, {
-                            allowLast: closeGate.allowLast === true
+                            allowLast: closeGate.allowLast === true,
+                            ...(cleanup === undefined ? {} : { cleanup })
                         });
                         setCloseGate(null);
                     }}
@@ -4753,8 +4821,15 @@ function Shell(props: AppProps): ReactElement {
 interface AgentDeleteGateProps {
     readonly name: string;
     readonly agents: WorkspaceAgentSummary;
+    /** The agents warning and its "Don't ask again"; off when only worktrees raised the gate. */
+    readonly askAgents: boolean;
+    readonly workspaceID: string;
+    /** graft-git.md §8.7: the plan ⌘W already fetched; null = no worktree list. */
+    readonly worktrees: readonly WorktreeCleanupCandidate[] | null;
+    readonly worktreeSource: WorktreeCleanupSource;
     readonly onCancel: () => void;
-    readonly onConfirm: (suppress: boolean) => void;
+    /** `cleanup` as the sidebar dialog's (`chrome/types.ts` `onDeleteWorkspace`). */
+    readonly onConfirm: (suppress: boolean, cleanup?: WorktreeCleanupChoice | null) => void;
     /** Suppression is honoured on Cancel too (macOS HIG, `WorkspaceDeleteGate.swift:78`). */
     readonly onSuppressOnly: () => void;
 }
@@ -4780,6 +4855,15 @@ interface AgentDeleteGateProps {
  */
 function AgentDeleteGate(props: AgentDeleteGateProps): ReactElement {
     const [suppress, setSuppress] = useState(false);
+    /*
+     * graft-git.md §8.7: ⌘W raises this gate for worktrees as well as for agents, with the plan
+     * it already fetched; without one (an agents-only gate) the source answers per the setting.
+     */
+    const cleanup = useWorktreeCleanup(
+        props.worktreeSource,
+        { workspaceIDs: [props.workspaceID] },
+        props.worktrees ?? undefined
+    );
     useModalPresence();
     /*
      * H11's fill tone, the same recipe the sidebar's `ConfirmDialog` draws: the global reset
@@ -4793,9 +4877,9 @@ function AgentDeleteGate(props: AgentDeleteGateProps): ReactElement {
 
     const { onCancel, onSuppressOnly } = props;
     const cancel = useCallback((): void => {
-        if (suppress) onSuppressOnly();
+        if (suppress && props.askAgents) onSuppressOnly();
         onCancel();
-    }, [onCancel, onSuppressOnly, suppress]);
+    }, [onCancel, onSuppressOnly, suppress, props.askAgents]);
 
     useEffect(() => {
         const onKeyDown = (event: KeyboardEvent): void => {
@@ -4826,11 +4910,11 @@ function AgentDeleteGate(props: AgentDeleteGateProps): ReactElement {
         >
             <div
                 data-testid="agent-delete-gate"
-                data-active-agents={String(props.agents.total)}
+                data-active-agents={String(props.askAgents ? props.agents.total : 0)}
                 role="dialog"
                 aria-modal="true"
-                aria-label="Delete workspace with agents"
-                className="fixed left-1/2 top-1/3 z-50 w-[340px] -translate-x-1/2 rounded-lg p-4 text-[12px]"
+                aria-label={props.askAgents ? 'Delete workspace with agents' : 'Delete workspace'}
+                className={`fixed left-1/2 top-1/3 z-50 ${hasWorktreeList(cleanup) ? 'w-[400px]' : 'w-[340px]'} -translate-x-1/2 rounded-lg p-4 text-[12px]`}
                 style={{
                     background: chromeTokens.surfaceBackground,
                     border: `1px solid ${chromeTokens.divider}`,
@@ -4839,22 +4923,30 @@ function AgentDeleteGate(props: AgentDeleteGateProps): ReactElement {
                 }}
             >
                 <div className="mb-1 font-semibold">{`Delete “${props.name}”?`}</div>
-                <div className="mb-3 text-[11px]" style={{ color: chromeTokens.textSecondary }}>
-                    {workspaceAgentDeleteWarning(props.agents)}
-                </div>
-                <label
-                    className="mb-3 flex items-center gap-2 text-[11px]"
-                    style={{ color: chromeTokens.textSecondary }}
-                >
-                    <input
-                        type="checkbox"
-                        data-testid="agent-delete-suppress"
-                        checked={suppress}
-                        onChange={(event) => setSuppress(event.target.checked)}
-                    />
-                    Don&apos;t ask again
-                </label>
-                <div className="flex justify-end gap-2">
+                {props.askAgents ? (
+                    <div className="mb-3 text-[11px]" style={{ color: chromeTokens.textSecondary }}>
+                        {workspaceAgentDeleteWarning(props.agents)}
+                    </div>
+                ) : (
+                    <div className="mb-3" />
+                )}
+                <WorktreeCleanupList state={cleanup} />
+                {props.askAgents ? (
+                    <label
+                        className="mb-3 flex items-center gap-2 text-[11px]"
+                        style={{ color: chromeTokens.textSecondary }}
+                    >
+                        <input
+                            type="checkbox"
+                            data-testid="agent-delete-suppress"
+                            checked={suppress}
+                            onChange={(event) => setSuppress(event.target.checked)}
+                        />
+                        Don&apos;t ask again
+                    </label>
+                ) : null}
+                <div className="flex items-center justify-end gap-2">
+                    <WorktreeCleanupRemember state={cleanup} className="mr-auto" />
                     <button
                         type="button"
                         data-testid="agent-delete-cancel"
@@ -4885,7 +4977,7 @@ function AgentDeleteGate(props: AgentDeleteGateProps): ReactElement {
                             }`,
                             background: hoverFill(hoveredAction === 'delete')
                         }}
-                        onClick={() => props.onConfirm(suppress)}
+                        onClick={() => props.onConfirm(props.askAgents && suppress, cleanup.confirm())}
                     >
                         Delete
                     </button>

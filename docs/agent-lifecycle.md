@@ -1075,7 +1075,8 @@ Server-side, independent of the GUI setting:
   Swift server; a differential run must allow these deltas.
 - Success reply: `{"ok":true,"workspace_id":...,"workspace_name":...,
   "path": <a shell pane's cwd, preferred over other pane types; omitted when the
-  workspace has no panes>}` — `path` powers client-side `--prune-worktree`.
+  workspace has no panes>}`; with worktree cleanup asked for it also carries `worktrees`
+  and is sent after the git work (socket-handlers.md §6.4).
 
 ---
 

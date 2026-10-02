@@ -1711,12 +1711,21 @@ function Shell(props: AppProps): ReactElement {
              * own asymmetry (the CLI and the sidebar's Delete both refuse at one) and the only
              * way to arrive at §APP-067's "No workspace selected" state. `allowLast` says so on
              * the wire; the daemon's guard is otherwise unchanged.
+             *
+             * A workspace that is ALREADY empty (its last shell exited, or its last pane went by
+             * the header's ×) takes the same delete: there is no focused pane, but declining
+             * here answers the shell's Close row "nothing to close", and it closes the window.
+             *
+             * For the same reason, several panes and no focus (a workspace mid-delta, or one whose
+             * panes fell out of its layout) consumes the chord and closes nothing: there is no
+             * pane the user chose, and the window is never the answer while a workspace shows.
              */
             closeFocused(): boolean {
                 const workspace = activeWorkspace();
-                const paneID = focused();
-                if (workspace === null || paneID === null) return false;
+                if (workspace === null) return false;
                 if (workspace.panes.length > 1) {
+                    const paneID = focused();
+                    if (paneID === null) return true;
                     return run('Close pane', commands.closePane({ paneID }));
                 }
                 const agents = workspaceAgentSummary(workspace);

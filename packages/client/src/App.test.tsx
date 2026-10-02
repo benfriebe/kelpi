@@ -31,7 +31,9 @@ const NOW = 1_755_500_000_000;
  * A snapshot payload built by the DAEMON's own store, so the fixture is whatever the daemon
  * would actually send rather than a hand-written guess at the shape.
  */
-function snapshotState(options: { markdown?: boolean; diff?: boolean; web?: boolean } = {}): JsonObject {
+function snapshotState(
+    options: { markdown?: boolean; diff?: boolean; web?: boolean; empty?: boolean; unfocused?: boolean } = {}
+): JsonObject {
     const store = createDaemonStore(emptyDaemonState('/Users/test'));
     store.dispatch({
         type: 'create-workspace',
@@ -41,6 +43,10 @@ function snapshotState(options: { markdown?: boolean; diff?: boolean; web?: bool
         color: 'blue',
         now: NOW
     });
+    if (options.empty === true) {
+        // What a shell's `exit` (or the header's ×) leaves: the workspace with no panes at all.
+        store.dispatch({ type: 'close-pane', workspaceID: W1, paneID: PANE_A });
+    }
     if (options.markdown === true) {
         store.dispatch({
             type: 'open-markdown-pane',
@@ -70,7 +76,16 @@ function snapshotState(options: { markdown?: boolean; diff?: boolean; web?: bool
             now: NOW
         });
     }
-    return store.getState() as unknown as JsonObject;
+    const state = store.getState();
+    if (options.unfocused === true) {
+        // No reducer leaves panes with nothing focused (a close refills it), so this is written
+        // by hand: the shape a workspace has mid-delta, or with panes outside its layout.
+        return {
+            ...state,
+            workspaces: state.workspaces.map((workspace) => ({ ...workspace, focusedPaneID: null }))
+        } as unknown as JsonObject;
+    }
+    return state as unknown as JsonObject;
 }
 
 interface Harness {
@@ -85,7 +100,14 @@ interface Harness {
 }
 
 function setup(
-    options: { markdown?: boolean; diff?: boolean; web?: boolean; snapshot?: boolean } = {}
+    options: {
+        markdown?: boolean;
+        diff?: boolean;
+        web?: boolean;
+        empty?: boolean;
+        unfocused?: boolean;
+        snapshot?: boolean;
+    } = {}
 ): Harness {
     const sockets = createFakeSocketFactory();
     const store = createKelpiStore();
@@ -107,10 +129,12 @@ function setup(
     render(<App runtime={runtime} createRenderer={renderers.factory} />);
 
     if (options.snapshot !== false) {
-        const fixture: { markdown?: boolean; diff?: boolean; web?: boolean } = {};
+        const fixture: { markdown?: boolean; diff?: boolean; web?: boolean; empty?: boolean; unfocused?: boolean } = {};
         if (options.markdown === true) fixture.markdown = true;
         if (options.diff === true) fixture.diff = true;
         if (options.web === true) fixture.web = true;
+        if (options.empty === true) fixture.empty = true;
+        if (options.unfocused === true) fixture.unfocused = true;
         act(() => {
             completeHandshake(sockets.last(), { state: snapshotState(fixture) });
         });
@@ -528,6 +552,66 @@ describe('gestures and keys become wire commands', () => {
             });
         });
         expect(screen.queryByTestId('agent-delete-gate')).toBeNull();
+    });
+
+    /**
+     * A workspace whose last shell exited shows "No panes", with nothing focused. ⌘W there is
+     * still the last-pane rule: it deletes the workspace rather than declining, because a
+     * decline is what told the shell's Close row to close the WINDOW instead.
+     */
+    it('deletes an already-empty workspace on ⌘W', async () => {
+        const h = setup({ empty: true });
+
+        fireEvent.keyDown(window, { code: 'KeyW', key: 'w', metaKey: true });
+
+        await waitFor(() => {
+            expect(h.commands().at(-1)).toMatchObject({
+                command: 'delete-workspace',
+                workspace_id: W1,
+                allow_last: true
+            });
+        });
+    });
+
+    it('answers the shell’s Close request for an empty workspace, so the window stays', async () => {
+        const h = setup({ empty: true });
+        const request = (window as unknown as Record<string, unknown>)['__kelpiShellClosePane'];
+        if (typeof request !== 'function') throw new Error('the client installed no close bridge');
+
+        let handled = false;
+        act(() => {
+            handled = (request as () => boolean)();
+        });
+
+        expect(handled).toBe(true);
+        await waitFor(() => {
+            expect(h.commands().at(-1)).toMatchObject({ command: 'delete-workspace', workspace_id: W1 });
+        });
+    });
+
+    it('closes nothing, and keeps the window, with several panes and none focused', async () => {
+        const h = setup({ markdown: true, unfocused: true });
+        const request = (window as unknown as Record<string, unknown>)['__kelpiShellClosePane'];
+        if (typeof request !== 'function') throw new Error('the client installed no close bridge');
+        const closes = (): Record<string, unknown>[] =>
+            h.commands().filter((payload) => payload['command'] === 'pane-close' || payload['command'] === 'delete-workspace');
+
+        expect(h.runtime.store.getState().daemon.state.workspaces[0]?.focusedPaneID).toBeNull();
+
+        // The menu's request first: after a keystroke it would be answered by the double-close
+        // guard instead, and say nothing about this path.
+        let handled = false;
+        act(() => {
+            handled = (request as () => boolean)();
+        });
+        fireEvent.keyDown(window, { code: 'KeyW', key: 'w', metaKey: true });
+
+        expect(handled).toBe(true);
+        // Give a stray close the same turn the positive cases above wait for.
+        await act(async () => {
+            await Promise.resolve();
+        });
+        expect(closes()).toHaveLength(0);
     });
 
     it('zooms through the WS-only verb from the header button', async () => {

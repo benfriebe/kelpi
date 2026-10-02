@@ -109,7 +109,8 @@ import {
     dragCarriesFile,
     dropDecision,
     resolvedDropOutcome,
-    terminalDropPlan
+    terminalDropPlan,
+    type TerminalCell
 } from './app/open-file';
 import { createDroppedFilesResolver } from './app/dropped-files';
 import {
@@ -3935,9 +3936,12 @@ function Shell(props: AppProps): ReactElement {
     /**
      * ⌘-click a path in a terminal (CONT-122 / TERM-052).
      *
-     * The cell is computed here from the host element's box and the grid the pane is rendered
-     * at — both engines paint a uniform grid, and neither exposes a point-to-cell API. The
-     * daemon reads the token at that cell and decides what it is (`ws/desktop.ts`).
+     * The pane answers which cell was clicked from the engine's canvas and real cell size. Only
+     * a renderer that cannot (a plugin terminal) falls back to dividing the host box by the grid,
+     * which drifts toward the bottom and right edges: the box also holds the sub-cell remainder,
+     * so its rows and columns are slightly larger than the ones painted, and a click in the top
+     * part of a link on a low row landed on the row above. The daemon reads the token at the
+     * cell and decides what it is (`ws/desktop.ts`).
      */
     const onRootClickCapture = useCallback(
         (event: ReactMouseEvent<HTMLDivElement>): void => {
@@ -3948,16 +3952,21 @@ function Shell(props: AppProps): ReactElement {
             if (host === null) return;
             const paneID = host.closest('[data-pane-id]')?.getAttribute('data-pane-id') ?? null;
             if (paneID === null) return;
-            const geometry = getPaneDimensions(paneID);
-            if (geometry === null) return;
-            const rect = host.getBoundingClientRect();
-            const cell = cellFromPoint({
-                rect,
-                cols: geometry.cols,
-                rows: geometry.rows,
-                clientX: event.clientX,
-                clientY: event.clientY
-            });
+            const measured = paneHandle(paneID)?.cellAt;
+            let cell: TerminalCell | null;
+            if (measured !== undefined) {
+                cell = measured(event.clientX, event.clientY);
+            } else {
+                const geometry = getPaneDimensions(paneID);
+                if (geometry === null) return;
+                cell = cellFromPoint({
+                    rect: host.getBoundingClientRect(),
+                    cols: geometry.cols,
+                    rows: geometry.rows,
+                    clientX: event.clientX,
+                    clientY: event.clientY
+                });
+            }
             if (cell === null) return;
             event.preventDefault();
             event.stopPropagation();

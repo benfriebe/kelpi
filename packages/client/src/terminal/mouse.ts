@@ -366,6 +366,12 @@ export interface MouseReporter {
     move(event: PointerLike): boolean;
     up(event: PointerLike): boolean;
     wheel(event: WheelLike): boolean;
+    /**
+     * The zero-based cell under a pointer, measured exactly as a report would be (the engine's
+     * canvas origin and its real cell size), whatever the tracking mode. Null outside the
+     * surface or before the pane can be measured.
+     */
+    cellAt(event: PointerLike): Cell | null;
     /** Forget pressed buttons and dedupe state (pane teardown, mode off, focus loss). */
     reset(): void;
 }
@@ -510,7 +516,12 @@ export function createMouseReporter(options: MouseReporterOptions): MouseReporte
                 },
                 box.metrics
             );
-            return true;
+            // A HOVER (nothing held, so 1003 only) is reported but not consumed. With no press
+            // the engine has no selection to fight the application with, and the one thing it
+            // does with bare motion is its link hover: the underline and the pointer cursor.
+            // Consuming it left every link in a full-screen Claude Code pane (which asks for
+            // 1003) without either, while the same link in a shell pane had both.
+            return held.size > 0;
         },
         up(event): boolean {
             if (modes().mouseTracking === 'none') return false;
@@ -569,6 +580,12 @@ export function createMouseReporter(options: MouseReporterOptions): MouseReporte
             // Consumed regardless of whether a whole cell accumulated: reporting is on, so the
             // engine must not scroll its own viewport underneath the application.
             return true;
+        },
+        cellAt(event): Cell | null {
+            const box = surface(event);
+            if (box === null) return null;
+            if (positionOutOfViewport(box.x, box.y, box.metrics)) return null;
+            return positionToCell(box.x, box.y, box.metrics);
         },
         reset(): void {
             held.clear();

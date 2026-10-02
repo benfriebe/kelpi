@@ -1213,6 +1213,12 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
                 showKeyboard,
                 hideKeyboard,
                 cellHeight: () => rendererRef.current?.cellSize().height ?? 0,
+                // ⌘-click's cell, from the reporter's own surface metrics, so the cell the daemon
+                // is asked about is the cell a mouse report at the same pixel would name.
+                cellAt: (clientX, clientY) => {
+                    const cell = mouseRef.current?.cellAt({ clientX, clientY }) ?? null;
+                    return cell === null ? null : { row: cell.y, col: cell.x };
+                },
                 // `latest` is written in a LAYOUT effect (§N35 residual (b)), so this answers with
                 // the commit that gave the pane the ring rather than one commit later.
                 focusedOnScreen: () => latest.current.focused && latest.current.visible,

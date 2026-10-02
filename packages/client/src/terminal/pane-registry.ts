@@ -124,6 +124,13 @@ export interface TerminalPaneHandle {
     /** C9 - the engine's cell height in CSS px, the floor the keyboard inset is clamped at. */
     cellHeight(): number;
     /**
+     * The grid cell under a client point, for ⌘-click (CONT-122 / TERM-052), or null when the
+     * point is off the grid. Measured against the engine's canvas and real cell size, the same
+     * numbers a mouse report uses. Optional: a renderer that cannot answer leaves the app to
+     * divide the host box instead.
+     */
+    cellAt?(clientX: number, clientY: number): { readonly row: number; readonly col: number } | null;
+    /**
      * C9 - this pane is the focused one AND on screen: exactly the condition C1's bar mounted
      * itself under (`focused && visible`), now asked once for the window.
      *

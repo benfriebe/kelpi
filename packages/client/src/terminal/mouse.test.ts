@@ -270,7 +270,8 @@ describe('createMouseReporter — press, drag, release', () => {
 
     it('shift does NOT suppress bare motion in any-motion mode (Surface.zig:4582-4589)', () => {
         const h = reporter({ mouseTracking: 'any' });
-        expect(h.reporter.move({ clientX: 145, clientY: 111, shiftKey: true })).toBe(true);
+        // Reported, not consumed: a hover is also the engine's (see the 1003 hover test below).
+        expect(h.reporter.move({ clientX: 145, clientY: 111, shiftKey: true })).toBe(false);
         expect(h.written).toEqual(['\\e[<39;5;4M']); // 3 (no button) + 4 (shift) + 32 (motion)
     });
 
@@ -293,7 +294,7 @@ describe('createMouseReporter — press, drag, release', () => {
 
     it('meta does NOT suppress bare motion in any-motion mode, exactly as shift does not', () => {
         const h = reporter({ mouseTracking: 'any' });
-        expect(h.reporter.move({ clientX: 145, clientY: 111, metaKey: true })).toBe(true);
+        expect(h.reporter.move({ clientX: 145, clientY: 111, metaKey: true })).toBe(false);
         expect(h.written).toEqual(['\\e[<35;5;4M']); // 3 (no button) + 32 (motion); ⌘ has no bit
     });
 
@@ -324,8 +325,23 @@ describe('createMouseReporter — press, drag, release', () => {
         expect(drag.written).toEqual([]);
 
         const any = reporter({ mouseTracking: 'any' });
-        expect(any.reporter.move({ clientX: 145, clientY: 111 })).toBe(true);
+        expect(any.reporter.move({ clientX: 145, clientY: 111 })).toBe(false);
         expect(any.written).toEqual(['\\e[<35;5;4M']);
+    });
+
+    /**
+     * A full-screen Claude Code session asks for 1003, and consuming its hovers took the engine's
+     * link underline and pointer cursor away from every link in the pane. A hover goes to the
+     * application AND the engine; motion with a button held stays the application's alone.
+     */
+    it('reports a 1003 hover without consuming it, and still consumes a drag', () => {
+        const h = reporter({ mouseTracking: 'any' });
+        expect(h.reporter.move({ clientX: 145, clientY: 111 })).toBe(false);
+        expect(h.reporter.down({ clientX: 145, clientY: 111, button: 0 })).toBe(true);
+        expect(h.reporter.move({ clientX: 185, clientY: 131, button: 0 })).toBe(true);
+        expect(h.reporter.up({ clientX: 185, clientY: 131, button: 0 })).toBe(true);
+        expect(h.reporter.move({ clientX: 205, clientY: 131 })).toBe(false);
+        expect(h.written).toEqual(['\\e[<35;5;4M', '\\e[<0;5;4M', '\\e[<32;9;5M', '\\e[<0;9;5m', '\\e[<35;11;5M']);
     });
 
     it('ignores a release for a press it never saw', () => {
@@ -425,5 +441,25 @@ describe('createMouseReporter — mode changes mid-gesture', () => {
         h.setModes({ mouseTracking: 'none' });
         expect(h.reporter.move({ clientX: 300, clientY: 200, button: 0 })).toBe(false);
         expect(h.written).toEqual(['\\e[<0;5;4M']);
+    });
+});
+
+describe('createMouseReporter: cellAt (⌘-click, CONT-122 / TERM-052)', () => {
+    it('names the cell a report at the same pixel would, with reporting on or off', () => {
+        const on = reporter({ mouseTracking: 'any' });
+        const off = reporter({ mouseTracking: 'none' });
+        // Origin (100, 50), 10×20 cells: (145, 111) is column 4, row 3, as in the reports above.
+        expect(on.reporter.cellAt({ clientX: 145, clientY: 111 })).toEqual({ x: 4, y: 3 });
+        expect(off.reporter.cellAt({ clientX: 145, clientY: 111 })).toEqual({ x: 4, y: 3 });
+        // The top pixel row of the last row is still the last row: the cell is the engine's, so
+        // there is no drift toward the bottom edge.
+        expect(off.reporter.cellAt({ clientX: 100, clientY: 50 + 23 * 20 })).toEqual({ x: 0, y: 23 });
+        expect(on.written).toEqual([]);
+    });
+
+    it('answers null off the surface', () => {
+        const h = reporter({ mouseTracking: 'none' });
+        expect(h.reporter.cellAt({ clientX: 99, clientY: 111 })).toBeNull();
+        expect(h.reporter.cellAt({ clientX: 145, clientY: 50 + 481 })).toBeNull();
     });
 });

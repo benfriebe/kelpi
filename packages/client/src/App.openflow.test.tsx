@@ -415,13 +415,13 @@ describe('⌘-click a terminal cell (CONT-122 / TERM-052)', () => {
     const CELL = { width: 10, height: 20 };
 
     /** Stage a measurable grid on PANE_A's terminal host and wait for the pane to publish it. */
-    async function grid(): Promise<HTMLElement> {
+    async function grid(size: { width: number; height: number } = HOST): Promise<HTMLElement> {
         const host = document.querySelector<HTMLElement>(`[data-pane-id="${PANE_A}"] [data-terminal-host]`);
         if (host === null) throw new Error('the shell pane has no terminal host');
-        Object.defineProperty(host, 'clientWidth', { configurable: true, value: HOST.width });
-        Object.defineProperty(host, 'clientHeight', { configurable: true, value: HOST.height });
+        Object.defineProperty(host, 'clientWidth', { configurable: true, value: size.width });
+        Object.defineProperty(host, 'clientHeight', { configurable: true, value: size.height });
         host.getBoundingClientRect = () =>
-            ({ left: 0, top: 0, right: HOST.width, bottom: HOST.height, x: 0, y: 0, ...HOST }) as DOMRect;
+            ({ left: 0, top: 0, right: size.width, bottom: size.height, x: 0, y: 0, ...size }) as DOMRect;
         // jsdom has no ResizeObserver, so the pane listens for `resize` instead (TerminalPane).
         await act(async () => {
             window.dispatchEvent(new Event('resize'));
@@ -457,6 +457,25 @@ describe('⌘-click a terminal cell (CONT-122 / TERM-052)', () => {
             col: 40,
             row: 8
         });
+    });
+
+    /**
+     * A real pane's box is never a whole number of cells: the grid is `floor(box / cell)` and the
+     * remainder sits along the bottom and right edges. Dividing the BOX by rows and columns
+     * stretched every cell by a share of that remainder, so the error grew toward the bottom of
+     * the pane, where an agent's newest output (and its links) sits. A click in the top part of a
+     * link on a low row asked the daemon about the row above, and nothing opened until the click
+     * happened to land lower in the glyph.
+     */
+    it('measures the cell against the painted grid, not the box with its remainder', async () => {
+        const h = setup();
+        // 80 × 17 cells of 10 × 20, with 5px and 15px left over.
+        const host = await grid({ width: 805, height: 355 });
+
+        // Two pixels into the last row's top edge, one into the last column's left edge.
+        fireEvent.click(host, { metaKey: true, button: 0, clientX: 79 * CELL.width + 1, clientY: 16 * CELL.height + 2 });
+
+        expect(h.lastCommand('open-terminal-target')).toMatchObject({ col: 79, row: 16 });
     });
 
     it('opens the daemon’s URL through the system opener, and only for a ⌘-click', async () => {

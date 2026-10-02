@@ -1888,6 +1888,21 @@ describe('TerminalPane — mouse reporting', () => {
         expect(h.engineEvents).toEqual([]);
     });
 
+    it('a 1003 hover reaches the application AND the engine, for its link underline', async () => {
+        // What a full-screen Claude Code session asks for. The engine's only use of bare motion
+        // is link hover, so it sees the hover; the drag after it stays the application's.
+        const h = await mouseHarness({ mouseTracking: 'any', mouseFormat: 'sgr' });
+
+        fireEvent.mouseMove(h.engine, { clientX: 45, clientY: 61 });
+        expect(h.pty.last().directInput).toEqual([esc('[<35;5;4M')]);
+        expect(h.engineEvents).toEqual(['mousemove']);
+
+        fireEvent.mouseDown(h.engine, { clientX: 45, clientY: 61, button: 0 });
+        fireEvent.mouseMove(h.engine, { clientX: 85, clientY: 81, button: 0 });
+        fireEvent.mouseUp(h.engine, { clientX: 85, clientY: 81, button: 0 });
+        expect(h.engineEvents).toEqual(['mousemove']);
+    });
+
     it('leaves every event alone while no application asked for the mouse', async () => {
         // The default: a pane with no mouse mode selects text exactly as it always did.
         const h = await mouseHarness();

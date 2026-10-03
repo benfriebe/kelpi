@@ -28,6 +28,8 @@ describe('rich plugin contribution declarations', () => {
         expect(result.contributes.settingGroups).toEqual([group]);
         expect(result.contributes.settings['mode']).toEqual(setting);
         expect(decodePluginWhen({ 'pane.type': null, 'context.missing': null })).toEqual({ 'pane.type': null, 'context.missing': null });
+        // #324: the csv table pane is a native type a condition can name.
+        expect(decodePluginWhen({ 'pane.type': 'csv' })).toEqual({ 'pane.type': 'csv' });
     });
     it.each([
         { menus: [{ ...menu, id: 'another.plugin.menu' }] },

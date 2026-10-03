@@ -57,7 +57,7 @@ const WorkbenchContext = createContext<Workbench | null>(null);
  * an `ui.showInput({ password: true })` that no other slot has ever been able to see - so the
  * choice stays the user's, made in Settings, and `ui.selectView` refuses it.
  */
-const ROOT_SLOTS = ['sidebar.primary', 'sidebar.secondary', 'topbar', 'statusbar', 'panel.bottom', 'workspace', 'settings', 'document.markdown', 'document.scratchpad', 'document.diff', 'terminal', 'browser', 'interaction.palette', 'interaction.prompts', 'interaction.notifications', 'settings.window', 'pane.chrome', 'pane.search'] as const;
+const ROOT_SLOTS = ['sidebar.primary', 'sidebar.secondary', 'topbar', 'statusbar', 'panel.bottom', 'workspace', 'settings', 'document.markdown', 'document.scratchpad', 'document.diff', 'document.csv', 'terminal', 'browser', 'interaction.palette', 'interaction.prompts', 'interaction.notifications', 'settings.window', 'pane.chrome', 'pane.search'] as const;
 /**
  * The presented surfaces: the three interaction placements, the Settings window, every pane's
  * header band and the find bar over the pane being searched. Discoverable, never selectable by a

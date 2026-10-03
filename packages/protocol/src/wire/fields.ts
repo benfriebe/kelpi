@@ -36,6 +36,7 @@ export const WIRE_FIELD_TYPES = {
     workspace: 'string',
     scope: 'string',
     reuse: 'bool',
+    as: 'string',
     repo_path: 'string',
     target_path: 'string',
     lines: 'int',

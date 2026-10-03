@@ -58,6 +58,8 @@ export interface PaneChromeActions {
     readonly onToggleZoom?: ((paneID: string) => void) | undefined;
     readonly onToggleMarkdownEdit?: ((paneID: string) => void) | undefined;
     readonly onRefreshDiff?: ((paneID: string) => void) | undefined;
+    /** #324: a csv pane's header-row toggle. */
+    readonly onToggleCsvHeaderRow?: ((paneID: string) => void) | undefined;
     readonly onCopyDocument?: ((paneID: string) => void) | undefined;
     readonly onNewWebPane?: ((paneID: string, direction: SplitDirection) => void) | undefined;
     /** Another plugin's `pane.header` item, activated by id (ratified decision 7). */
@@ -175,6 +177,9 @@ export function createPaneChromeSurface(config: PaneChromeSurfaceConfig): PaneCh
                     return;
                 case 'refresh':
                     actions.onRefreshDiff?.(paneID);
+                    return;
+                case 'header-row':
+                    actions.onToggleCsvHeaderRow?.(paneID);
                     return;
                 case 'split-right':
                 case 'split-down':

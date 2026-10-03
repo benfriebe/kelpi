@@ -153,3 +153,52 @@ describe('public document API over the authoritative daemon buffer', () => {
         docs.release(() => true);
     });
 });
+
+describe('csv table documents API (#324)', () => {
+    function stub(reply: (method: string, args: JsonObject) => unknown = () => ({ ok: true })) {
+        const calls: { method: string; args: JsonObject }[] = [];
+        const api = createKelpiAPI(async (method, args) => { calls.push({ method, args: args as JsonObject }); return reply(method, args as JsonObject); }, () => ({ paneID: 'context-pane' }));
+        return { api, calls };
+    }
+
+    it('maps every csv call to its documents method with camelCase arguments', async () => {
+        const { api, calls } = stub();
+        await api.documents.csv.state();
+        await api.documents.csv.state('P');
+        await api.documents.csv.rows('P', { start: 10, count: 50 });
+        await api.documents.csv.rows('P', { start: 0, count: 5, columnStart: 2, columnCount: 3 });
+        await api.documents.csv.edit('P', 'i:3', [{ op: 'set-cell', row: 1, column: 0, value: 'x' }, { op: 'undo' }]);
+        await api.documents.csv.sort('P', 4, 'desc');
+        await api.documents.csv.sort('P', null);
+        await api.documents.csv.find('P', 'needle');
+        await api.documents.csv.findStep('P', 'needle', 'previous', { view: 3, column: 1 });
+        await api.documents.csv.findStep('P', 'needle', 'next');
+        await api.documents.csv.setHeaderRow('P', false);
+        await api.documents.csv.discard('P');
+        expect(calls).toEqual([
+            { method: 'documents.csv-state', args: { paneID: 'context-pane' } },
+            { method: 'documents.csv-state', args: { paneID: 'P' } },
+            { method: 'documents.csv-rows', args: { paneID: 'P', start: 10, count: 50 } },
+            { method: 'documents.csv-rows', args: { paneID: 'P', start: 0, count: 5, columnStart: 2, columnCount: 3 } },
+            { method: 'documents.csv-edit', args: { paneID: 'P', generation: 'i:3', ops: [{ op: 'set-cell', row: 1, column: 0, value: 'x' }, { op: 'undo' }] } },
+            { method: 'documents.csv-sort', args: { paneID: 'P', column: 4, direction: 'desc' } },
+            // `null` clears the sort, so it is sent rather than dropped like an absent option.
+            { method: 'documents.csv-sort', args: { paneID: 'P', column: null } },
+            { method: 'documents.csv-find', args: { paneID: 'P', query: 'needle' } },
+            { method: 'documents.csv-find-step', args: { paneID: 'P', query: 'needle', direction: 'previous', from: { view: 3, column: 1 } } },
+            { method: 'documents.csv-find-step', args: { paneID: 'P', query: 'needle', direction: 'next' } },
+            { method: 'documents.csv-header-row', args: { paneID: 'P', on: false } },
+            { method: 'documents.csv-discard', args: { paneID: 'P' } }
+        ]);
+    });
+
+    it.each(['CSV_STALE', 'CSV_GONE', 'CSV_READ_ONLY', 'CSV_BUSY', 'CSV_INVALID', 'DOCUMENT_CONFLICT'])('surfaces a %s daemon error as a KelpiError code', async code => {
+        const { api } = stub(() => { throw new Error(`${code}: the daemon said no`); });
+        await expect(api.documents.csv.edit('P', 'i:0', [{ op: 'undo' }])).rejects.toMatchObject({ name: 'KelpiError', code, method: 'documents.csv-edit', message: `${code}: the daemon said no` });
+    });
+
+    it('keeps other failures as transport errors', async () => {
+        const { api } = stub(() => { throw new Error('CSV_SOMETHING: not a known code'); });
+        await expect(api.documents.csv.rows('P', { start: 0, count: 1 })).rejects.toMatchObject({ code: 'TRANSPORT_ERROR' });
+    });
+});

@@ -80,7 +80,8 @@
  * 2. otherwise the **token** at the cell (`cellText` + `tokenAt`), with the Swift trimming
  *    rules, resolved against the pane's working directory.
  *
- * Only a `.md` file opens a markdown pane; everything else is reported back so the client can
+ * Only a `.md` file opens a markdown pane (and, #324, a `.csv`/`.tsv` file a csv pane, reply
+ * `opened: 'csv'`); everything else is reported back so the client can
  * fall through to the system opener, exactly as returning `false` did in Swift. A click that
  * was AIMED at a link and refused carries `reason: 'link-not-http'` so the client can say so;
  * a click on prose or empty screen carries no reason and stays silent, which is the difference
@@ -106,6 +107,7 @@ import {
     RESOLVE_DROPPED_FILES_ACTION,
     UPDATE_ACTION_SHELL_ACTION,
     UPDATE_USER_ACTIONS,
+    isCsvPath,
     isUpdateUserAction,
     updateSeq,
     type JsonObject
@@ -542,15 +544,18 @@ export function createDesktopChannel(options: DesktopChannelOptions): DesktopCha
         }
 
         const resolved = resolveTerminalPath(token, pane.workingDirectory, state.homeDirectory);
+        // #324: `.csv`/`.tsv` (case-insensitive, the same rule as the socket `open`) open a csv
+        // pane through the same placement path.
+        const csv = isCsvPath(resolved);
         // Case-sensitive, matching `path.hasSuffix(".md")` in `GhosttyApp.swift:280`.
-        if (!resolved.endsWith(TERMINAL_MARKDOWN_SUFFIX)) {
+        if (!csv && !resolved.endsWith(TERMINAL_MARKDOWN_SUFFIX)) {
             return { ok: true, opened: 'none', token, path: resolved };
         }
         // Deliberate improvement over the Swift path, which opened a pane for any `.md`-suffixed
         // word: a ⌘-click on prose must not leave a broken preview behind. The client says so.
         if (!exists(resolved)) return { ok: true, opened: 'missing', token, path: resolved };
         // A probe stops before the only branch that changes anything.
-        if (probe) return { ok: true, opened: 'markdown', probe: true, path: resolved, token };
+        if (probe) return { ok: true, opened: csv ? 'csv' : 'markdown', probe: true, path: resolved, token };
 
         const newPaneID = mint();
         ctx.store.dispatch({ type: 'focus-pane', workspaceID: workspace.id, paneID });
@@ -559,12 +564,13 @@ export function createDesktopChannel(options: DesktopChannelOptions): DesktopCha
             workspaceID: workspace.id,
             paneID: newPaneID,
             filePath: resolved,
-            now: now()
+            now: now(),
+            ...(csv ? { paneType: 'csv' as const } : {})
         });
         refreshSyncGroup(ctx, workspace.id);
         return {
             ok: true,
-            opened: 'markdown',
+            opened: csv ? 'csv' : 'markdown',
             path: resolved,
             token,
             pane_id: newPaneID,

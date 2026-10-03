@@ -4,6 +4,7 @@ import type { DocumentSnapshot } from '../../../plugin-sdk/documents';
 import type { KelpiRuntime } from '../state';
 import { getPluginDaemonID, pluginRequest } from './client';
 import type { ContentApi } from '../content/client';
+import { csvPaneHasModel, flushCsvPane } from '../content/csv/csv-model';
 
 export interface DocumentDraft {
     readonly text: string; readonly revision: string; readonly viewID: string;
@@ -133,7 +134,7 @@ function documentCloseTargets(runtime: KelpiRuntime, payload: JsonObject): strin
     const members = cascade ? current.daemon.state.groups.find(group => nameOrID(group.id, group.name, command['name']))?.childOrder ?? [] : null;
     const paneTarget = command['target'] ?? command['pane_id'];
     return workspaces.filter(row => (!members || members.includes(row.id)) && (workspace === undefined || nameOrID(row.id, row.name, workspace))).flatMap(row => [...row.panes, ...row.parkedPanes].filter(pane => {
-        if (!['markdown', 'scratchpad', 'diff'].includes(pane.type)) return false;
+        if (!['markdown', 'scratchpad', 'diff', 'csv'].includes(pane.type)) return false;
         return command['command'] !== 'pane-close' || nameOrID(pane.id, pane.label ?? '', paneTarget) || (paneTarget === undefined && row.id === current.ui.activeWorkspaceID && pane.id === row.focusedPaneID);
     }).map(pane => pane.id));
 }
@@ -166,4 +167,22 @@ export function registerDocumentCloseGuard(runtime: KelpiRuntime, content: Conte
     const owner = { content, onlyPaneID };
     owners.add(owner);
     return () => { owners.delete(owner); };
+}
+
+const csvGuarded = new WeakSet<KelpiRuntime>();
+/**
+ * #324: closing a csv pane (or its workspace) first commits the cell being typed in its grid and
+ * waits until every queued edit batch is answered, because the daemon refuses a grid edit for a
+ * pane that is gone. Registered once per runtime and kept until CommandClient.dispose(), like the
+ * draft protection above, so a grid that left the screen with edits still draining is waited
+ * for too.
+ */
+export function registerCsvCloseGuard(runtime: KelpiRuntime): void {
+    if (csvGuarded.has(runtime)) return;
+    csvGuarded.add(runtime);
+    runtime.commands.registerCloseGuard(payload => {
+        const ids = documentCloseTargets(runtime, payload).filter(csvPaneHasModel);
+        if (!ids.length) return;
+        return Promise.all(ids.map(flushCsvPane)).then(() => undefined);
+    });
 }

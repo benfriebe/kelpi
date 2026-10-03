@@ -64,6 +64,8 @@ const REMOTE_GAPS: readonly string[] = [
     // buttons are still unwired against the owning daemon, tracked separately from #144.
     'onToggleMarkdownEdit',
     'onRefreshDiff',
+    // #324: a csv pane's header-row toggle, the same kind of header verb as the two above.
+    'onToggleCsvHeaderRow',
     'onCopyDocument',
     'onSetFontSize',
     // Agent-status verbs: restart and the 600 ms focus-dwell clear (agent-lifecycle.md §5.8).

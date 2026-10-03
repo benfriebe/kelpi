@@ -55,6 +55,7 @@ describe('the pane chrome vocabulary', () => {
             'copy',
             'edit',
             'refresh',
+            'header-row',
             'split-right',
             'split-down',
             'new-web',

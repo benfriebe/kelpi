@@ -35,6 +35,7 @@ import {
     type DaemonVersionInfo,
     type HttpAppOptions
 } from './http.js';
+import type { CsvChannel } from '../content/csv/channel.js';
 import type { DesktopChannel } from './desktop.js';
 import type { PaneLifecycleChannel } from './panes.js';
 import type { RepoChannel } from './repos.js';
@@ -95,6 +96,8 @@ export interface WsServerOptions {
     readonly distDir?: string | undefined;
     /** M5 content panes: the `content-*` WS verbs (absent = they answer "not available"). */
     readonly content?: ContentChannel | undefined;
+    /** #324 csv panes: the `csv-*` WS verbs (absent = they answer "not available"). */
+    readonly csv?: CsvChannel | undefined;
     /**
      * M6 web panes: where the Electron shell registers as the web-pane host. Pass the same
      * service instance the `web-*` command handlers got, or the CLI and the host cannot meet.
@@ -322,6 +325,7 @@ export function createWsServer(options: WsServerOptions): WsServer {
         protocolVersion: options.version.protocol,
         plugins: options.plugins,
         content: options.content,
+        csv: options.csv,
         webPanes: options.webPanes,
         settings: options.settings,
         transport: options.transport,

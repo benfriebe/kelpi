@@ -114,6 +114,19 @@ async function authoring(api: BackendAPI): Promise<void> {
     await api.documents.edit(document.paneID, 'text');
     // @ts-expect-error Durable browser drafts belong to a document view, not a backend.
     await api.documents.stage('text', document.revision);
+    // #324: a csv table reads rows by view position and edits by logical row and column id.
+    if (document.kind === 'csv') {
+        const table = await api.documents.csv.state(document.paneID);
+        const page = await view.documents.csv.rows(table.paneID, { start: 0, count: 50 });
+        const firstColumn: number | undefined = page.columnIDs[0];
+        if (firstColumn !== undefined && page.rows[0]) await api.documents.csv.edit(table.paneID, page.generation, [{ op: 'set-cell', row: page.rows[0].row, column: firstColumn, value: 'x' }]);
+        await api.documents.csv.sort(table.paneID, null);
+        const step = await api.documents.csv.findStep(table.paneID, 'x', 'next', null);
+        const matched: number | undefined = step.match?.view;
+        void matched; void document.truncated;
+        // @ts-expect-error An edit names its op.
+        await api.documents.csv.edit(table.paneID, table.generation, [{ row: 0, column: 0, value: 'x' }]);
+    }
     await view.ui.focusPane(first.id, 'pane');
     const unsubscribe = view.onContext(environment => { if (!environment.visible) return; void environment.context.workspaceID; });
     const workbench = await view.ui.getWorkbench();

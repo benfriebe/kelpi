@@ -92,7 +92,8 @@ export const ACTION_CATALOG: readonly ActionEntry[] = [
     { action: 'toggle_status_bar', category: 'View', label: 'Toggle Status Bar' },
     { action: 'toggle_bottom_panel', category: 'View', label: 'Toggle Bottom Panel' },
 
-    { action: 'open_file', category: 'Files', label: 'Preview Markdown' },
+    // #324: ⌘O opens markdown and csv/tsv, and the shell's File menu item is "Open…" to match.
+    { action: 'open_file', category: 'Files', label: 'Open File' },
     { action: 'toggle_markdown_edit', category: 'Files', label: 'Toggle Markdown Edit' },
     { action: 'increase_markdown_font_size', category: 'Files', label: 'Increase Markdown Font Size' },
     { action: 'decrease_markdown_font_size', category: 'Files', label: 'Decrease Markdown Font Size' },

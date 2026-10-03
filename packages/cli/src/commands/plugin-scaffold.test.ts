@@ -82,7 +82,7 @@ describe('offline plugin scaffold', () => {
         expect(pkg.manifest.contributes.views[0]?.placements).toEqual({
             pane: ['pane', 'sidebar.primary', 'sidebar.secondary'],
             sidebar: ['sidebar.primary', 'sidebar.secondary'],
-            document: ['document.markdown', 'document.scratchpad', 'document.diff'],
+            document: ['document.markdown', 'document.scratchpad', 'document.diff', 'document.csv'],
             browser: ['browser'],
         }[template]);
         expect(pkg.files.map(file => file.relative)).toEqual(['README.md', 'backend.mjs', 'kelpi.plugin.json', 'ui/app.js', 'ui/index.html']);
@@ -112,6 +112,25 @@ describe('offline plugin scaffold', () => {
         h.close(); h.close();
         expect(documents.unwatch).toHaveBeenCalledExactlyOnceWith('doc-watch');
         expect(h.events.size).toBe(0);
+    });
+
+    it('shows a csv table\'s first rows through the public csv API (#324)', async () => {
+        const initial = { paneID: 'csv-pane', text: '', path: '/a.csv', kind: 'csv', mode: 'view', loaded: true, dirty: false, error: null };
+        const rows = vi.fn().mockResolvedValue({ rows: [{ cells: ['name', 'qty'] }, { cells: ['apple', '3'] }] });
+        const documents = {
+            watch: vi.fn().mockResolvedValue({ subscription: 'csv-watch', state: initial }),
+            get: vi.fn().mockResolvedValue({ ...initial, mode: 'edit', text: 'name,qty\napple,3\n' }),
+            unwatch: vi.fn().mockResolvedValue(undefined),
+            csv: { rows },
+        };
+        const h = view('document', { documents });
+        await vi.waitFor(() => expect(h.node('source').textContent).toBe('name\tqty\napple\t3'));
+        expect(rows).toHaveBeenCalledExactlyOnceWith('csv-pane', { start: 0, count: 50 });
+        // Raw-text mode carries the source like any other document.
+        await h.events.get('documents.changed')?.({ data: { subscription: 'csv-watch' } });
+        await vi.waitFor(() => expect(h.node('source').textContent).toBe('name,qty\napple,3\n'));
+        h.close();
+        expect(documents.unwatch).toHaveBeenCalledExactlyOnceWith('csv-watch');
     });
 
     it('releases a document watch that completes after its view closes', async () => {

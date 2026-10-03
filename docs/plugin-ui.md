@@ -87,7 +87,7 @@ Conditions are a conjunction of strict scalar equalities, without an expression 
 | `connection` | `idle`, `connecting`, `connected`, `reconnecting`, `closed`, `rejected` |
 | `workspace.exists`, `workspace.hasRepos` | Boolean |
 | `pane.exists`, `pane.hasAgent`, `pane.focused` | Boolean |
-| `pane.type` | `shell`, `markdown`, `scratchpad`, `diff`, `web`, `plugin`, or null |
+| `pane.type` | `shell`, `markdown`, `scratchpad`, `diff`, `csv`, `web`, `plugin`, or null |
 | `context.<key>` | The current plugin's published scalar, or null |
 
 Pane menus and headers resolve their explicit pane's owning workspace, including when that
@@ -498,6 +498,12 @@ the Pane Lab example (phase B).** A view selected for it in Settings → Plugins
 draws the header band of every visible pane of the displayed workspace. Selection is Settings-only:
 the placement appears in `ui.getWorkbench().slots` and `ui.selectView` refuses it, because a header
 presenter draws every pane's close ✕ and every other plugin's `pane.header` items.
+
+The pane kinds (`PaneChromeKind`) are `shell`, `markdown`, `scratchpad`, `diff`, `csv`, `web` and
+`plugin`; a presenter draws all seven or none. The `csv` kind ([csv pane](csv-pane.md), #324) was
+added under plugin API version 1: its trailing controls carry the raw-text toggle and a header-row
+toggle as ordinary opaque-ref controls, so a presenter that draws controls generically needs no
+change.
 
 ### The shared model
 

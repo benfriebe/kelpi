@@ -13,6 +13,9 @@ export type IconName =
     | 'document'
     | 'note'
     | 'plusminus'
+    // #324: a csv pane's type glyph, and the header-row control's two states.
+    | 'table'
+    | 'table-header'
     | 'globe'
     | 'tag'
     | 'branch'
@@ -54,6 +57,19 @@ const PATHS: Record<IconName, ReactElement> = {
             <path d="M3 3.5h3M4.5 2v3" />
             <path d="M3 8.5h6" />
             <path d="M7 3.5h2" />
+        </>
+    ),
+    table: (
+        <>
+            <rect x="1.8" y="2.2" width="8.4" height="7.6" rx="0.8" />
+            <path d="M1.8 4.8h8.4M1.8 7.3h8.4M5 2.2v7.6" />
+        </>
+    ),
+    'table-header': (
+        <>
+            <rect x="1.8" y="2.2" width="8.4" height="7.6" rx="0.8" />
+            <path d="M1.8 4.8h8.4M5 4.8v5" />
+            <path fill="currentColor" stroke="none" d="M2.4 2.8h7.2v1.9H2.4z" />
         </>
     ),
     globe: (

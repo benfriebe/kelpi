@@ -503,7 +503,7 @@ carry `"command"`.
 | `group-sort` | R/R | `name`, `by` | `descending` |
 | `layout-cycle` | F&F | `pane_id` | — |
 | `layout-select` | F&F | `pane_id`, `name` | — |
-| `open` | F&F | `path` | `pane_id`, `reuse` |
+| `open` | F&F | `path` | `pane_id`, `reuse`, `focus`, `as` |
 | `diff` | F&F | `repo_path` | `target_path`, `pane_id` |
 | `graft-start` | R/R | — | `workspace`, `repo`, `pane_id` |
 | `graft-stop` | R/R | — | `workspace`, `repo`, `pane_id` |
@@ -781,7 +781,7 @@ layout order per workspace, workspaces in state order.
 ```
 
 Reply — `panes` array; per-entry always-present keys:
-`id` (uppercase UUID), `type` (`shell|markdown|scratchpad|diff|web`), `workspace_id`,
+`id` (uppercase UUID), `type` (`shell|markdown|scratchpad|diff|csv|web`), `workspace_id`,
 `workspace_name`, `working_directory`, `status` (`idle|running|waitingForInput`),
 `is_focused` (bool), `is_active_workspace` (bool), `created_at` / `last_activity_at`
 (ISO 8601 UTC, whole seconds; `packages/core/src/codec/timestamps.ts:91`). Conditionals:
@@ -1270,7 +1270,12 @@ validation happens in the handler, silently.
 
 ### 6.6 File / diff commands (both F&F)
 
-**`open`**: open a markdown pane for `path` (required non-empty).
+**`open`**: open a document pane for `path` (required non-empty): a csv table pane when the
+path ends in `.csv` or `.tsv` (case-insensitive; issue #324, [csv-pane.md](csv-pane.md) §2),
+otherwise a markdown pane. `as` (string, optional) forces the pane type; its only valid value is
+`"markdown"` (what `kelpi md` sends, so a csv opens as markdown source), an empty string counts
+as absent, and any other value is a field-level reject (§2.2). A daemon that predates the field
+ignores it, and opens markdown for every path.
 `pane_id` optional (originating pane); `reuse` (bool, default false) = replace the
 originating pane in place (`kelpi open --here` / `kelpi md --here`); `focus` (bool, default
 false, issue #295) = take the focus. Without it the preview opens in the background beside
@@ -1279,6 +1284,7 @@ originating pane was the focused one (then the preview inherits it).
 
 ```json
 {"command":"open","path":"/Users/ben/notes/plan.md","pane_id":"1B4E…","reuse":true}
+{"command":"open","path":"/Users/ben/data/sales.csv","as":"markdown"}
 ```
 
 **`diff`** — open a git-diff pane. `repo_path` required non-empty; `target_path`
@@ -1505,6 +1511,7 @@ other key is ignored. (A known key with the wrong type poisons the whole message
 | `workspace` | string | pane-target commands, `pane-list`, `pane-sync`, `graft-*`, `pane-split`/`pane-create` (destination) |
 | `scope` | string | `pane-list` |
 | `reuse` | bool | `open` |
+| `as` | string | `open` (`"markdown"` only: force a markdown pane for a `.csv`/`.tsv` path, #324) |
 | `repo_path`, `target_path` | string | `diff` |
 | `lines` | int | `pane-capture` |
 | `scrollback` | bool | `pane-capture` |
@@ -1683,7 +1690,7 @@ saved state keep working:
     (`claude|codex`, case-insensitive, default claude), split directions
     (`horizontal|vertical`), move directions (`left|right|up|down`), zones
     (`above|below|left-of|right-of`), colors (10 names, §5.5), named keys (§5.6), pane
-    types (`shell|markdown|scratchpad|diff|web`), pane statuses
+    types (`shell|markdown|scratchpad|diff|csv|web|plugin`), pane statuses
     (`idle|running|waitingForInput`), sync actions (`on|off|toggle|status`), label ops
     (`set|add|remove|clear`), sort keys
     (`name|last-activity|last-accessed|last-modified`, plus their underscore aliases),

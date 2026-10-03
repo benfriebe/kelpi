@@ -75,7 +75,7 @@ describe('the action catalog', () => {
     });
 
     it('uses §4’s display names, including the ones that are not the raw value', () => {
-        expect(actionLabel('open_file')).toBe('Preview Markdown');
+        expect(actionLabel('open_file')).toBe('Open File');
         expect(actionLabel('create_scratchpad')).toBe('New Scratchpad');
         expect(actionLabel('toggle_sync_input')).toBe('Toggle Synchronise Input');
         expect(actionLabel('switch_to_workspace_7')).toBe('Switch to Workspace 7');

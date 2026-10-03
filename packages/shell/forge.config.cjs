@@ -183,6 +183,11 @@ module.exports = {
          * This is also what makes `app.on('open-file')` reachable at all: the handler has shipped
          * since M4 (`src/main.ts` `forwardOpen`), but with no declared type Finder never sent it
          * a file (../kelpi-docs/capabilities 06 ▸ CONT-124's "gated behind CONT-123").
+         *
+         * #324 adds CSV and TSV (the csv table pane, docs/csv-pane.md §2) on the same terms:
+         * Editor, rank Alternate, so Kelpi joins Open With without taking the default from
+         * Numbers or Excel. Their UTIs are the system's own (`public.comma-separated-values-text`,
+         * `public.tab-separated-values-text`), so there is nothing to import.
          */
         extendInfo: {
             ...USAGE_DESCRIPTIONS,
@@ -192,6 +197,12 @@ module.exports = {
                     CFBundleTypeRole: 'Editor',
                     LSHandlerRank: 'Alternate',
                     LSItemContentTypes: ['net.daringfireball.markdown']
+                },
+                {
+                    CFBundleTypeName: 'CSV Document',
+                    CFBundleTypeRole: 'Editor',
+                    LSHandlerRank: 'Alternate',
+                    LSItemContentTypes: ['public.comma-separated-values-text', 'public.tab-separated-values-text']
                 }
             ],
             UTImportedTypeDeclarations: [

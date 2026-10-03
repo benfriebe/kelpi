@@ -989,16 +989,18 @@ function forwardOpen(filePath: string, paneID: string | null = null): void {
 }
 
 /**
- * CONT-120 — "Preview Markdown…"'s native open panel.
+ * CONT-120: File ▸ Open…'s native open panel.
  *
- * Byte-for-byte the Swift panel (`AppReducer+SearchNotify.swift:83-99`): `md` only, single
- * selection, files only, and the same message. The chosen path goes back out as an ordinary
- * `open` control command, so the daemon sees one file-open route no matter who raised it.
+ * Started as the Swift panel (`AppReducer+SearchNotify.swift:83-99`: `md` only, single
+ * selection, files only). #324 widens it to the document types Kelpi opens natively, Markdown
+ * and CSV (docs/csv-pane.md §2), with Markdown and CSV filters beside the combined one. The
+ * chosen path goes back out as an ordinary `open` control command, so the daemon sees one
+ * file-open route no matter who raised it, and picks the pane type by extension.
  */
 function promptOpenFile(paneID: string | null): void {
     // Audit seam. A native `NSOpenPanel` is an OS window: CDP cannot click it and a screenshot
     // cannot see it, so `scripts/ui-audit` scripts the ANSWER and lets the rest of the round
-    // trip (client → daemon → shell → `open` → a markdown pane) run for real. The file is
+    // trip (client → daemon → shell → `open` → a markdown or csv pane) run for real. The file is
     // consumed on read, so a second ⌘O in the same run shows the real panel unless the harness
     // wrote a new answer. Off unless the env var names a path, which no shipped launch does.
     const scripted = process.env['KELPI_AUDIT_OPEN_FILE'];
@@ -1016,10 +1018,14 @@ function promptOpenFile(paneID: string | null): void {
     }
     const parent = mainWindow !== null && !mainWindow.isDestroyed() ? mainWindow : undefined;
     const options: Electron.OpenDialogOptions = {
-        title: 'Open Markdown File',
-        message: 'Choose a Markdown file to open',
+        title: 'Open File',
+        message: 'Choose a Markdown or CSV file to open',
         properties: ['openFile'],
-        filters: [{ name: 'Markdown', extensions: ['md'] }]
+        filters: [
+            { name: 'Markdown and CSV', extensions: ['md', 'markdown', 'csv', 'tsv'] },
+            { name: 'Markdown', extensions: ['md', 'markdown'] },
+            { name: 'CSV', extensions: ['csv', 'tsv'] }
+        ]
     };
     const shown = parent === undefined ? dialog.showOpenDialog(options) : dialog.showOpenDialog(parent, options);
     void shown
@@ -1605,7 +1611,7 @@ function buildMenu(): void {
             : []),
         {
             // §APP-018 / §WS-151: the shipped app's whole File group in place of the stock New
-            // Window — New Workspace (⌘N), New Group (⌘⇧G), Preview Markdown… (⌘O), New Web
+            // Window: New Workspace (⌘N), New Group (⌘⇧G), Open… (⌘O), New Web
             // Pane (⌘⇧O), Command Palette (⌘P), Switch to Workspace 1–9 (⌘1…⌘9), Select All /
             // Deselect All Workspaces. Every one relays to the client, which owns the sheet, the
             // picker, the palette and the sidebar's selection; ⌘O alone falls back to raising
@@ -2033,9 +2039,10 @@ if (!app.requestSingleInstanceLock()) {
     app.on('second-instance', (_event, argv) => {
         showWindow();
         for (const arg of argv.slice(1)) {
-            // CONT-124's filter: `open` renders whatever path it is handed AS MARKDOWN, so an
-            // unfiltered forward would turn `open -a Kelpi.app photo.png` into a pane showing PNG
-            // bytes as markdown source. `AppDelegate.swift:45-51` filtered for the same reason.
+            // CONT-124's filter: `open` renders whatever path it is handed AS MARKDOWN unless it
+            // is a csv (#324), so an unfiltered forward would turn `open -a Kelpi.app photo.png`
+            // into a pane showing PNG bytes as markdown source. `AppDelegate.swift:45-51`
+            // filtered for the same reason.
             if (!arg.startsWith('-') && isForwardableOpenPath(arg)) forwardOpen(arg);
         }
     });
@@ -2043,7 +2050,7 @@ if (!app.requestSingleInstanceLock()) {
     app.on('open-file', (event, filePath) => {
         event.preventDefault();
         if (!isForwardableOpenPath(filePath)) {
-            log(`open-file: ignoring ${filePath} (not a markdown file)`);
+            log(`open-file: ignoring ${filePath} (not a markdown or csv file)`);
             return;
         }
         forwardOpen(filePath);

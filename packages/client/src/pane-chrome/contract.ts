@@ -183,7 +183,7 @@ export function paneChromeDragRegion(
 
 // ── what a pane IS, for chrome's purposes ───────────────────────────────────────────
 
-/** The pane kinds, which are `PaneModel`'s own. A presenter draws all six or none (decision 8). */
+/** The pane kinds, which are `PaneModel`'s own. A presenter draws all seven or none (decision 8). */
 export type PaneChromeKind = PaneModel['type'];
 
 export type PaneChromeStatus = PaneModel['status'];
@@ -288,6 +288,8 @@ export const PANE_CHROME_ACTION_IDS = [
     'copy',
     'edit',
     'refresh',
+    // #324: a csv pane's header-row toggle.
+    'header-row',
     'split-right',
     'split-down',
     'new-web',

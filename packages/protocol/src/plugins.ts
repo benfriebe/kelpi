@@ -12,9 +12,10 @@ export const PLUGIN_MAX_JSON_BYTES = 256 * 1024;
  * is searching. Both are Settings-only: they appear in `ui.getWorkbench().slots` and `ui.selectView`
  * refuses them, because one draws every pane's close control and every other plugin's header items
  * and the other owns a text input and the caret with it. Adding a placement here is additive -
- * plugin API version stays 1.
+ * plugin API version stays 1. `document.csv` (#324) is one such addition: a renderer for the native
+ * csv table pane, beside the other three document kinds.
  */
-export const PLUGIN_PLACEMENTS = ['pane', 'pane.chrome', 'pane.search', 'sidebar.primary', 'sidebar.secondary', 'panel.bottom', 'topbar', 'statusbar', 'workspace', 'settings', 'document.markdown', 'document.scratchpad', 'document.diff', 'terminal', 'browser', 'interaction.palette', 'interaction.prompts', 'interaction.notifications', 'settings.window'] as const;
+export const PLUGIN_PLACEMENTS = ['pane', 'pane.chrome', 'pane.search', 'sidebar.primary', 'sidebar.secondary', 'panel.bottom', 'topbar', 'statusbar', 'workspace', 'settings', 'document.markdown', 'document.scratchpad', 'document.diff', 'document.csv', 'terminal', 'browser', 'interaction.palette', 'interaction.prompts', 'interaction.notifications', 'settings.window'] as const;
 export type PluginBuiltinPlacement = (typeof PLUGIN_PLACEMENTS)[number];
 /**
  * The three presented interaction surfaces, in one place.
@@ -358,7 +359,7 @@ export function decodePluginManifest(raw: unknown): PluginManifest {
         const slots = array(container['slots']).map((raw): PluginContainerSlot => {
             const slot = pluginObject(raw);
             const defaultView = slot['defaultView'];
-            if (defaultView !== undefined && (!isPluginID(defaultView) || (!defaultView.startsWith('kelpi.') && !foreignReference(defaultView)) || ['kelpi.shell', 'kelpi.markdown', 'kelpi.scratchpad', 'kelpi.diff', 'kelpi.web'].includes(defaultView))) throw new Error('invalid container default view');
+            if (defaultView !== undefined && (!isPluginID(defaultView) || (!defaultView.startsWith('kelpi.') && !foreignReference(defaultView)) || ['kelpi.shell', 'kelpi.markdown', 'kelpi.scratchpad', 'kelpi.diff', 'kelpi.csv', 'kelpi.web'].includes(defaultView))) throw new Error('invalid container default view');
             return { id: contributionID(slot['id']) as `${string}.${string}`, title: label(slot['title'], 'slot title'),
                 ...(defaultView === undefined ? {} : { defaultView }),
                 ...(slot['weight'] === undefined ? {} : { weight: boundedNumber(slot['weight'], 'slot weight', 0.1, 100, false) }) };

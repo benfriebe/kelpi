@@ -100,7 +100,8 @@ export function RemoteWorkspaceView(props: RemoteWorkspaceViewProps): ReactEleme
         const pane = workspace.panes.find((entry) => entry.id === paneID);
         if (pane === undefined) return null;
         if (pane.type === 'plugin' && pane.plugin) return <PluginView runtime={runtime} pluginID={pane.plugin.pluginID} viewID={pane.plugin.viewID} descriptor={pane.plugin} focused={focused} paneID={paneID} workspaceID={workspaceID} visible={state.visible} />;
-        if (isDocumentPane(pane.type) && pane.externalEditorCommand == null) return <DocumentPane runtime={runtime} workspaceID={workspaceID} paneID={paneID} kind={pane.type} focused={focused} visible={state.visible} onFocusRequest={id => runtime.focusPane(workspaceID, id)} />;
+        // #324: a csv pane routes here too; `editing` is what picks its grid or raw text.
+        if (isDocumentPane(pane.type) && pane.externalEditorCommand == null) return <DocumentPane runtime={runtime} workspaceID={workspaceID} paneID={paneID} kind={pane.type} editing={pane.isEditing} filePath={pane.filePath} focused={focused} visible={state.visible} onFocusRequest={id => runtime.focusPane(workspaceID, id)} />;
         if (pane.type === 'web') return <BrowserFeaturePane runtime={runtime} workspaceID={workspaceID} paneID={paneID} focused={focused} visible={state.visible} embedded={false} onFocusRequest={id => runtime.focusPane(workspaceID, id)} />;
         if (pane.type !== 'shell' && pane.externalEditorCommand == null) {
             return (

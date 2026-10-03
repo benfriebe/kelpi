@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 
 import {
     BROWSER_FILE_DROP_NOTICE,
+    DROP_CSV_EXTENSIONS,
     DROP_MARKDOWN_EXTENSION,
+    OPEN_PANEL_EXTENSIONS,
     SHELL_ESCAPE_CHARACTERS,
     isTypeablePath,
     pathsFromDrop,
@@ -16,6 +18,7 @@ import {
     dragCarriesFile,
     dropDecision,
     isMarkdownDropPath,
+    isOpenableDropPath,
     isPathLike,
     pathFromDrop,
     type DropData
@@ -104,10 +107,21 @@ describe('dropDecision', () => {
         });
     });
 
-    it('explains a non-markdown path rather than silently ignoring it', () => {
+    it('explains a path it cannot open rather than silently ignoring it', () => {
         const decision = dropDecision(transfer({ 'text/uri-list': 'file:///a/photo.png' }));
         expect(decision.kind).toBe('reject');
-        expect(decision.kind === 'reject' ? decision.reason : '').toContain('not a .md file');
+        expect(decision.kind === 'reject' ? decision.reason : '').toContain('not a .md, .csv or .tsv file');
+    });
+
+    it('opens a dropped .csv or .tsv path through the same verb (#324), in any case', () => {
+        // The daemon picks the pane type by extension; the drop only decides it is worth sending.
+        expect(dropDecision(transfer({ 'text/uri-list': 'file:///a/sales.csv' }))).toEqual({ kind: 'open', path: '/a/sales.csv' });
+        expect(dropDecision(transfer({ 'text/uri-list': 'file:///a/SALES.TSV' }))).toEqual({ kind: 'open', path: '/a/SALES.TSV' });
+        expect(dropDecision(transfer({ 'text/plain': '/a/export.Csv' }))).toEqual({ kind: 'open', path: '/a/export.Csv' });
+        // Only the real extensions: a name that merely contains them is refused.
+        expect(dropDecision(transfer({ 'text/uri-list': 'file:///a/csv' })).kind).toBe('reject');
+        expect(dropDecision(transfer({ 'text/uri-list': 'file:///a/data.csv.gz' })).kind).toBe('reject');
+        expect(dropDecision(transfer({ 'text/uri-list': 'file:///a/.csv' })).kind).toBe('reject');
     });
 
     it('explains a pathless File — the honest degrade for a sandboxed renderer', () => {
@@ -164,8 +178,20 @@ describe('cellFromPoint (CONT-122)', () => {
 });
 
 describe('the ⌘O panel copy', () => {
-    it('is the Swift NSOpenPanel message, byte for byte (CONT-120)', () => {
-        expect(OPEN_PANEL_MESSAGE).toBe('Choose a Markdown file to open');
+    it('is the Swift NSOpenPanel message, widened for csv as the shell’s panel is (CONT-120, #324)', () => {
+        expect(OPEN_PANEL_MESSAGE).toBe('Choose a Markdown or CSV file to open');
+        expect([...OPEN_PANEL_EXTENSIONS]).toEqual(['md', 'csv', 'tsv']);
+    });
+});
+
+describe('isOpenableDropPath (#324)', () => {
+    it('is markdown or a csv extension, case-insensitively', () => {
+        expect(DROP_CSV_EXTENSIONS).toEqual(['.csv', '.tsv']);
+        expect(isOpenableDropPath('/a/notes.md')).toBe(true);
+        expect(isOpenableDropPath('/a/table.csv')).toBe(true);
+        expect(isOpenableDropPath('/a/TABLE.TSV')).toBe(true);
+        expect(isOpenableDropPath('/a/table.xlsx')).toBe(false);
+        expect(isOpenableDropPath('/a/notes.markdown')).toBe(false);
     });
 });
 

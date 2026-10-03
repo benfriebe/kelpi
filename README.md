@@ -255,6 +255,12 @@ flowchart LR
   the daemon's VT does not reflow on resize.
 - **Content panes** beyond the shell: markdown (edit/preview), scratchpad, diff, and web panes
   (real Chromium via the shell, with console capture, screenshots, and an element picker).
+- **A CSV table editor**: `kelpi open data.csv` (or ⌘O, a drop, or Finder) opens `.csv`/`.tsv`
+  files as an editable grid: cells, rows and columns, undo, sort, find and a header-row toggle,
+  on the phone too. The daemon indexes the file instead of loading it, so very large files open
+  and scroll without waiting, saves keep every untouched row byte for byte, and an agent can read
+  and edit rows with
+  `kelpi document rows` / `csv-edit` (see [`docs/csv-pane.md`](docs/csv-pane.md)).
 - **Agent awareness**: lifecycle hooks from Claude Code and Codex CLI drive pane status, session
   ids and desktop notifications; `kelpi install-hooks` wires them and `kelpi doctor` verifies the
   whole chain.
@@ -265,7 +271,7 @@ flowchart LR
   workspace. The group header shows the repo.
 - **A native shell**: menu bar, tray, dock badge, global hotkey, native notifications,
   hidden-titlebar window with inline traffic lights, an inspector, Finder "Open With" for
-  markdown, native folder pickers (Settings ▸ Repositories), and **dropping files onto a terminal
+  markdown and CSV, native folder pickers (Settings ▸ Repositories), and **dropping files onto a terminal
   pane** to type their shell-escaped paths, so an agent receives them as a paste.
 - **Updates that keep your sessions**: signed, notarized releases from GitHub, offered in a sheet
   with the release notes. Kelpi asks before restarting, and the new version adopts the running

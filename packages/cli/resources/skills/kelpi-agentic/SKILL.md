@@ -346,7 +346,7 @@ copy it straight into `--target <uuid>` (the agent session id in
 still prefer `--json`.
 
 Each JSON entry includes: `id`, `label`, `type` (`shell` / `markdown` /
-`scratchpad` / `diff` / `web`), `title`, `workspace_id`, `workspace_name`,
+`scratchpad` / `diff` / `csv` / `web`), `title`, `workspace_id`, `workspace_name`,
 optional `group_id` and `group_name` (both absent for top-level workspaces),
 `working_directory`, `git_branch`, `status` (`idle`/`running`/
 `waitingForInput`), `agent_session_id`, `is_focused`,
@@ -586,21 +586,34 @@ and the pane lands in the caller's workspace (via `KELPI_PANE_ID`).
 #     (scheme://, host:port, localhost[:port], IPv4, or a bare dotted
 #      host with a known TLD: google.com, https://x.com, localhost:3000)
 #   .md / .markdown / .mdown / .mkd / ...   → markdown preview pane
+#   .csv / .tsv                             → editable table (csv) pane
 #   .html / .htm / .pdf / .svg / images     → web pane (file:// URL)
 #   anything else                           → usage error, no pane
 # Explicit paths (./x, /x, ~/x) and existing files stay local, so
 # `./google.com` is a file; a bare word (README) or an unknown/file-type
 # TLD (notes.txt, foo.museum) is NOT a host — use `kelpi web open` for those.
-# --here reuses the calling pane (markdown route only). Request/response
-# on the web/URL route (prints `open ok: <pane-uuid>`); fire-and-forget
-# on the markdown route. The pane opens in the background; --focus moves
+# --here reuses the calling pane (markdown and csv routes only).
+# Request/response on the web/URL route (prints `open ok: <pane-uuid>`);
+# fire-and-forget on the markdown and csv routes. The pane opens in the background; --focus moves
 # focus to it (only when the user asked for that).
 kelpi open [--here] [--focus] <path-or-url>
 
 # Always open a markdown preview pane, whatever the extension. The
 # escape hatch for forcing markdown on a file `kelpi open` would reject
-# (a .log, a .txt) or render as web (a .html you want to read as source).
+# (a .log, a .txt), render as web (a .html you want to read as source)
+# or open as a table (a .csv you want as raw text).
 kelpi md [--here] [--focus] <file>
+
+# Read and edit an open csv pane's rows without loading the file (JSON
+# out). `rows` returns the `generation` that `csv-edit` needs; rows are
+# in the pane's view order, edits address logical rows and column ids.
+# `kelpi open x.csv` prints no pane id: find it with
+# `kelpi pane list --json` (the entry whose `type` is `csv`).
+# sort and find reply only once the whole file is sorted or searched
+# (up to 10 minutes); a csv-edit batch must stay under 256 KiB.
+kelpi document rows <pane-uuid> --start 0 --count 100
+kelpi document csv-edit <pane-uuid> --generation <gen> \
+  --ops '[{"op":"set-cell","row":1,"column":0,"value":"done"}]'
 
 # Open a git diff pane for the cwd repo (or scoped to <path>). Refreshes
 # on focus and via the header refresh button.

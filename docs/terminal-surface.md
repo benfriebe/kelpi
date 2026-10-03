@@ -864,7 +864,8 @@ URI → `opened: "external", url, source: "hyperlink"`; any other scheme →
   (case-sensitive) **and the file exists** → open a markdown pane beside the source pane and
   focus the source pane first (`opened: "markdown"`); a `.md` token whose file is missing
   answers `opened: "missing"` and nothing opens (deliberate: a ⌘-click on prose must not leave
-  a broken preview behind);
+  a broken preview behind); issue #324: a `.csv`/`.tsv` token (case-insensitive, the socket
+  `open` rule) opens a csv table pane the same way (`opened: "csv"`, csv-pane.md §2);
 - anything else → `opened: "none"`, with no `reason`.
 
 **A `reason` is what the client is allowed to speak about.** `opened: "missing"`,
@@ -1682,7 +1683,8 @@ not only the engine's host element. The decision is `terminalDropPlan`
 More rules for every route:
 
 - **Every file type is typed**, `.md` included. A terminal types what is dropped on it. Only a
-  drop outside a terminal opens a markdown pane (content-panes.md §2.1, CONT-121).
+  drop outside a terminal opens a markdown (or, for `.csv`/`.tsv`, a csv) pane
+  (content-panes.md §2.1, CONT-121).
 - **Folders are typed like files.** Several items are typed in drop order, space-separated, with
   no trailing newline: the user presses Enter.
 - **A path containing a control character is never typed** (`isTypeablePath`). A newline in a
@@ -1819,9 +1821,9 @@ Wire-level socket handlers already specced elsewhere sit on top of this:
     `clipboard-write = true` and go to every attached client's own clipboard. Paste order:
     string → (no text) PNG image as a temp-PNG path on the PTY host (shell-escaped, typed
     bare) → nothing; there is no paste-confirmation dialog.
-14. Cmd-click intercepts only existing `.md` paths (after trailing-dot/punctuation/wrapper
-    trim, resolved against the pane's cwd); `http(s)` URLs are handed to the OS opener; a
-    missing `.md` file opens nothing.
+14. Cmd-click intercepts only existing `.md` paths (and, issue #324, `.csv`/`.tsv` paths,
+    opened as a csv pane) after trailing-dot/punctuation/wrapper trim, resolved against the
+    pane's cwd; `http(s)` URLs are handed to the OS opener; a missing file opens nothing.
 15. Bell is a no-op.
 16. Appearance changes are written through into the user's ghostty config (no override
     file) and re-theme live surfaces without respawning PTYs; `background` read-back is from

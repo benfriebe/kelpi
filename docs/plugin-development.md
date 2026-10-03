@@ -100,7 +100,7 @@ third-party runtime dependencies:
 | --- | --- |
 | `pane` (default) | Custom pane and optional sidebar placements with a backend workspace command. |
 | `sidebar` | A custom sidebar that can occupy either side. |
-| `document` | Read-only Markdown, Scratchpad and Diff source viewer using the native buffer. |
+| `document` | Read-only Markdown, Scratchpad, Diff and CSV viewer using the native buffer (a CSV table shows its first rows through `documents.csv.rows`). |
 | `browser` | Native page attachment, tabs and navigation with Kelpi-owned browser sessions. |
 
 While dev runs, use another terminal to open a pane template with

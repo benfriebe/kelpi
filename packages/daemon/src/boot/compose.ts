@@ -34,6 +34,8 @@ import { SYSTEM_STATS_INTERVAL_MS, WS_TRANSPORT_CHANGED_MESSAGE } from '@kelpi/p
 import { captureResumeTuple, type ResumeTuple } from '@kelpi/core/agent';
 
 import { createContentService, createContentRenderService, type ContentService } from '../content/index.js';
+import { createCsvService, type CsvService } from '../content/csv/service.js';
+import { defaultSortCacheRoot } from '../content/csv/sort.js';
 import {
     contentAppearanceOf,
     createSettingsService,
@@ -366,6 +368,8 @@ export interface Daemon {
     persistenceHealth(): PersistenceHealth;
     /** M5: markdown/diff/scratchpad content, watchers and edit buffers. */
     readonly content: ContentService;
+    /** #324: csv panes (shared documents, row-range reads, saves). */
+    readonly csv: CsvService;
     /** M8: the config-file settings authority (kelpi + ghostty), watched and write-through. */
     readonly settings: SettingsService;
     /** M6: the web-pane runtime (host RPC seam, console buffers, picker arms). */
@@ -680,8 +684,35 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
     const bundledWorktreeGit = bundledWorktreeOps(worktreeGit);
     const bundledWorktrees = (): BundledWorktreeOps | null =>
         pluginGit.providerSelected() ? null : bundledWorktreeGit;
+    /*
+     * #324: csv panes. Composed before content, whose raw-text (⌘E) hand-off calls
+     * `prepareRaw`/`afterRaw`. Sweeps orphaned external-sort spill directories at boot.
+     */
+    const csv = createCsvService({
+        store,
+        // External-sort spill files live under the user cache dir of THIS daemon's home.
+        sortCacheRoot: defaultSortCacheRoot(env, process.platform, home),
+        /*
+         * A background save that failed, or edits discarded, after the file's last pane closed:
+         * no pane is left to show it, so it goes out the way agent errors do, as a client
+         * `notification` (a desktop notification, or an in-app toast), one per file.
+         */
+        notify: (notice) => {
+            ws?.broadcast({
+                type: 'notification',
+                kind: 'agent-error',
+                paneID: notice.paneID,
+                workspaceID: notice.workspaceID,
+                title: notice.title,
+                body: notice.body,
+                dedupeKey: `kelpi-csv-${notice.realpath}`
+            });
+        },
+        ...(onError !== undefined ? { onError } : {})
+    });
     const content = createContentService({
         store,
+        csv,
         git,
         services: () => pluginHost,
         appearance: contentAppearanceOf(settings.snapshot),
@@ -1100,7 +1131,12 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         }
     };
     const ctx: PaneHandlerContext = {
-        prepareDocumentClose: paneIDs => content.prepareClose(paneIDs),
+        prepareDocumentClose: paneIDs => {
+            content.prepareClose(paneIDs);
+            // A small csv file saves synchronously and a failure refuses the close; a large one
+            // keeps saving in the background (#324).
+            for (const paneID of paneIDs) csv.prepareClose(paneID);
+        },
         store,
         pty,
         term,
@@ -1344,7 +1380,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
     });
 
     const plugins = new PluginService({
-        store, pty, term, content, webPanes,
+        store, pty, term, content, csv, webPanes,
         applicationSettings: () => pluginObject(settings.snapshot),
         cliEnvironment: () => ({
             KELPI_SOCKET: paneRouteValue() ?? '',
@@ -1714,6 +1750,12 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         } catch (error) {
             report(error, 'content flush');
         }
+        // #324: csv documents write synchronously too (any async save is aborted first).
+        try {
+            csv.flushSync();
+        } catch (error) {
+            report(error, 'csv flush');
+        }
     };
 
     /** Detach from the store and the PTYs, and dispose every service a stop does not wait on. */
@@ -1735,6 +1777,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         offPluginServices();
         settings.dispose();
         content.dispose();
+        void csv.dispose();
         // Releases the host slot (the shell sees `host-revoked`) and ends every console
         // follow stream; nothing here can block the shutdown.
         webPanes.close();
@@ -1988,6 +2031,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
                 daemonInfo: { pid: process.pid },
                 plugins,
                 content,
+                csv,
                 webPanes,
                 settings,
                 // §SET-021: `welcome.transport` — Settings ▸ Network shows what the listener
@@ -2273,6 +2317,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         persistence,
         persistenceHealth: () => persistence.health(),
         content,
+        csv,
         settings,
         webPanes,
         graft,

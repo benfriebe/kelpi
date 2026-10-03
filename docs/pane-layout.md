@@ -773,7 +773,7 @@ currentLayoutIndex ← index
 Any operation that structurally changes the tree or manually changes a ratio sets
 `currentLayoutIndex ← null`, so the next `cycleLayout` restarts from index 0. The reset
 sites (`packages/daemon/src/store/reducers/panes.ts`): splitting (both GUI split and
-CLI-injected splits/creates), closing/removing a pane, opening markdown/diff/web/scratchpad
+CLI-injected splits/creates), closing/removing a pane, opening markdown/csv/diff/web/scratchpad
 panes (they insert panes), `move-pane-adjacent` (drag-drop / `pane move --target`),
 `move-pane-direction` (directional swap), `update-split-ratio` and `resize-pane` (divider
 drag, `pane resize`), `move-pane-to-workspace` (both workspaces), parking/unparking a pane
@@ -805,7 +805,8 @@ wires it into the daemon (`packages/daemon/src/store/reducers/panes.ts`, `layout
   agents spawn panes) opens the pane in the **background**: `focusedPaneID`, `focusHistory` and
   the window's caret stay on the pane the user is typing in, and the source is not focused
   either. `kelpi pane split --focus` asks for the GUI behaviour. The same rule covers
-  `pane create`, `web open` and the markdown `open`.
+  `pane create`, `web open` and the document `open` (markdown, or a csv pane for a
+  `.csv`/`.tsv` path, issue #324).
 - `createPane` (CLI `pane create` into an empty workspace) instead sets
   `layout ← leaf(newPaneID)` semantics via the same splitting path when a source exists,
   or a plain first-pane layout when the workspace is empty.
@@ -906,7 +907,8 @@ shared pane-target resolution errors (unknown/ambiguous target, unknown workspac
 their wire/persistence string values.
 
 ```ts
-type PaneType = "shell" | "markdown" | "scratchpad" | "diff" | "web" | "plugin";
+type PaneType = "shell" | "markdown" | "scratchpad" | "diff" | "csv" | "web" | "plugin";
+// "csv": the native table pane, issue #324 (csv-pane.md).
 
 type PaneStatus = "idle" | "running" | "waitingForInput";
 // Persisted as these exact rawValue strings (note the camelCase "waitingForInput").
@@ -939,18 +941,19 @@ type AgentKind = "claude" | "codex";
 | `plugin` | PluginPaneDescriptor \| undefined | absent | yes (`pluginJSON`) | Custom pane's `pluginID`, `viewID`, `stateVersion` and JSON `state`. Preserved through moves, parking, close/reopen and restart. |
 | `unavailable` | `{ type: string; pluginJSON: string \| null }` \| undefined | absent | yes (original `type` and `pluginJSON`) | Retains unknown pane kinds or unsupported/malformed plugin descriptors verbatim while presenting an inert plugin pane. |
 | `title` | string \| null | null | **no** | Live terminal title reported by the terminal (OSC); display-only, reset on restart. |
-| `workingDirectory` | string | user home dir | yes (`workingDirectory`) | Cwd the PTY spawns in; updated on pwd-change events; for markdown/diff panes: the file's parent dir / repo path. |
+| `workingDirectory` | string | user home dir | yes (`workingDirectory`) | Cwd the PTY spawns in; updated on pwd-change events; for markdown/csv/diff panes: the file's parent dir / repo path. |
 | `gitBranch` | string \| null | null | **no** | Branch detected for `workingDirectory`; recomputed live, not stored. |
 | `status` | PaneStatus | `"idle"` | yes (`status`; written to the row but reset to `"idle"` on load by the agent-monitoring load pass (`applyLoadReset`, `packages/daemon/src/store/snapshot.ts:312-327`; `resetPaneAgentStateOnLoad`, `packages/core/src/agent/session.ts:75-83`), so a restart never restores a non-idle value: a status describes a live PTY, and a persisted `running` would falsely trip the quit dialog) | Agent lifecycle status driving badges/notifications. |
-| `filePath` | string \| null | null | yes (`filePath`) | Markdown file path, or diff scope path; null for shells. |
-| `isEditing` | boolean | false | **no** | Markdown pane view/edit mode toggle (⌘E). |
+| `filePath` | string \| null | null | yes (`filePath`) | Markdown or csv file path, or diff scope path; null for shells. |
+| `isEditing` | boolean | false | **no** | Markdown pane view/edit mode toggle (⌘E); on a csv pane, grid vs raw text (⌘E). |
+| `csvHeaderRow` | boolean | true | yes (`csvHeaderRow`; daemon-only DB migration `v23_pane_csv_header_row`) | A csv pane treats its first row as column headers (sticky, excluded from sort). Changed by `set-csv-header-row`; snapshotted on close and restored on reopen. Meaningless for other types ([csv-pane.md](csv-pane.md) §1.1). |
 | `externalEditorCommand` | string \| null | null | **no** | When set on a markdown pane in edit mode, the `$EDITOR` shell command run in an attached terminal surface instead of the built-in editor. Transient. |
 | `scratchpadContent` | string \| null | null | yes (`content` column) | In-memory text of a scratchpad pane; persisted to DB, never written to a file. |
 | `agentSessionID` | string \| null | null | yes (`agentSessionID`) | Latest Claude/Codex session id bound via lifecycle hooks; drives resume-on-restart. Cleared on load for exited sessions per the agent-monitoring subsystem's rules. |
 | `agentKind` | AgentKind \| null | null | yes (`agentKind`, nullable; DB migration `v18_pane_agent_kind`) | Last-known agent CLI seen in this pane; picks badge label and resume command. Deliberately NOT cleared when `agentSessionID` is cleared on state load. Null = never saw an agent (badge falls back to "claude"). |
 | `agentProfileName` | string \| null | null | yes (`agentProfileName`, nullable; daemon-only DB migration `v19_pane_agent_profile`, `packages/daemon/src/db/schema.ts:189-194`) | The effective profile name (`KELPI_PROFILE`) the agent session was launched under, so a resume can rebuild the same environment. Null = unknown, resume uses the workspace's current profile. A last-known value like `agentKind`: kept across the load-time session clear (`packages/core/src/agent/session.ts:75-83`), captured into resume tuples, snapshotted on close and restored on reopen (`packages/daemon/src/store/reducers/panes.ts:168, 350-353`). Declared in `packages/core/src/layout/pane.ts:64-70`. |
 | `markdownFontSize` | number | 14 (`DEFAULT_MARKDOWN_FONT_SIZE`) | **no** | Markdown preview body font size (px); ⌘= / ⌘- adjust, ⌘0 resets to 14. Per-pane, in-memory. `set-markdown-font-size` (`packages/daemon/src/store/reducers/panes.ts:744-753`) ignores non-markdown panes and markdown panes in edit mode, and stores `max(8, min(32, round(size)))`. Closing a pane snapshots the value (`panes.ts:169`) and `reopen-closed-pane` restores it alongside `agentKind`/`agentProfileName` (`panes.ts:350-353`), so it survives close → reopen even though it never reaches the DB. |
-| `parkedSourcePaneID` | UUID \| null | null | **no** | On a markdown pane opened via `kelpi open --here`: points to the parked source pane; closing this pane restores the source instead of a normal close. |
+| `parkedSourcePaneID` | UUID \| null | null | **no** | On a markdown (or csv) pane opened via `kelpi open --here`: points to the parked source pane; closing this pane restores the source instead of a normal close. |
 | `agentStartedAt` | epoch **milliseconds** \| null (`EpochMilliseconds`, JS `Date.now()`; NOT the Unix-seconds encoding of the persisted `createdAt`/`lastActivityAt`. Mixing the two silently renders a "0s" elapsed badge; `packages/core/src/layout/pane.ts:35-43`, `packages/daemon/src/store/types.ts:13-16`) | null | **no** | Wall-clock start of the current agent run, for the "claude · mm:ss" elapsed badge. Set to `now` on EVERY `agentStarted`, including a `start` that arrives while the pane is already `running` (that means the previous stop was missed, so it is treated as a fresh run and the elapsed clock restarts; `packages/core/src/agent/machine.ts:83-93`, `packages/daemon/src/handlers/app/events.ts:96-100`). The non-running → running-only rule applies to `agentStopped` with `background_tasks > 0` (`machine.ts:70`) and to the manual `setPaneStatus` override (`machine.ts:193-196`), not to `agentStarted`. Null after restart until the resumed agent re-emits a start. |
 | `backgroundTaskCount` | number | 0 | **no** | Count of Claude Code background units still in flight (from the `background_tasks` hook field). Non-zero keeps the pane `"running"` after a Stop instead of flipping to `"waitingForInput"`. Reset to 0 on the next `start`/`error`. Surfaces in `pane list --json` as `background_tasks` and in the header badge as "· N running". |
 | `createdAt` | timestamp | now | yes (`createdAt`, Unix seconds float) | Creation time. |

@@ -1,13 +1,14 @@
 # Replaceable document views
 
-Markdown, Scratchpad and Diff are registered native features. A document host keeps the
+Markdown, Scratchpad, Diff and CSV are registered native features. A document host keeps the
 native content subscription alive while its body uses a bundled feature or an isolated
 plugin view. Switching views preserves the pane ID, layout, path, mode and daemon buffer.
 The same host works locally, in embedded remote workspaces, in a directly connected browser,
 and in phone pane/layout views.
 
-[Document Lab](../examples/plugins/document-lab) demonstrates all three replacements using
-only the public browser SDK. It has no backend or access to the host DOM.
+[Document Lab](../examples/plugins/document-lab) demonstrates the Markdown, Scratchpad and Diff
+replacements using only the public browser SDK, and attaches to CSV tables with a read-only
+note. It has no backend or access to the host DOM.
 
 See the [plugin roadmap](plugin-roadmap.md) for current scope and the
 [development guide](plugin-development.md) for templates, live editing and portable packages.
@@ -24,7 +25,7 @@ node scripts/dev-instance.mjs --state out/plugin-documents-playground
 In that instance, paste the absolute path to `examples/plugins/document-lab` into Settings →
 Plugins. Open a Markdown file, a Scratchpad or a Diff, then select **Document Lab** in its renderer picker.
 Settings → Plugins → Workbench views exposes the same choices as `document.markdown`,
-`document.scratchpad` and `document.diff`.
+`document.scratchpad`, `document.diff` and `document.csv`.
 
 Each choice applies to that document type across this client's windows on the same origin
 and daemon identity. It does not rewrite individual pane records. A direct browser origin
@@ -52,7 +53,7 @@ the checkout root to apply source edits; reload only restarts the installed copy
       "id": "example.editor.document",
       "title": "Example Editor",
       "entry": "ui/index.html",
-      "placements": ["document.markdown", "document.scratchpad", "document.diff"]
+      "placements": ["document.markdown", "document.scratchpad", "document.diff", "document.csv"]
     }]
   }
 }
@@ -76,7 +77,11 @@ source buffer. Native pane descriptors remain native.
 Browser views and backend plugins share `api.documents`. CLI operations use the same native
 content service. The [standalone declarations](../packages/plugin-sdk/documents.d.ts) define
 the snapshot: `paneID`, `workspaceID`, `kind`, `mode`, `path`, `text`, `loaded`, `dirty`,
-`error`, and an opaque `revision` token. Diff `text` is the raw unified diff source.
+`error`, and an opaque `revision` token. Diff `text` is the raw unified diff source. `kind` is
+`markdown`, `scratchpad`, `diff` or `csv`; a csv table's `text` is its raw source only in
+raw-text mode (`mode: 'edit'`, ⌘E) and `''` in grid mode, and raw source over the 256 KiB
+transport cap comes back cut with `truncated: true` rather than failing (see
+[CSV tables](#csv-tables)).
 
 | Method | Behavior |
 | --- | --- |
@@ -126,6 +131,43 @@ are not a replaceable save provider or new command-hook family. Existing public 
 services, events and file/process APIs remain available to the renderer under the normal
 full-trust plugin contract.
 
+## CSV tables
+
+A csv pane ([spec](csv-pane.md)) is never edited as whole text in grid mode: its rows and
+cells go through `api.documents.csv`, which addresses rows the way the native grid does. Rows
+come back in the pane's **view** order (its sort, the header row pinned first); edits address
+**logical** rows (file order, unchanged by sorting or saving) and stable column ids, guarded by
+the document's `generation`.
+
+| Method | Daemon method | Behavior |
+| --- | --- | --- |
+| `csv.state(paneID?)` | `csv-state` | The pane's table state: `generation`, `rowCount`, `columns`, `headerRow`, `sort`, `dirty`, `readOnly`, `scanning` and more. |
+| `csv.rows(paneID, {start, count, columnStart?, columnCount?})` | `csv-rows` | At most 500 rows by 256 columns from view index `start`. Stops at 200 KiB of cell text and returns `nextStart`; cells over 64 KiB come back cut and listed in `truncated`. |
+| `csv.edit(paneID, generation, ops)` | `csv-edit` | Up to 1000 ops in order: `set-cell`, `insert-rows`, `delete-rows`, `insert-column`, `delete-column`, `undo`, `redo`. Autosave writes them. |
+| `csv.sort(paneID, column \| null, direction?)` | `csv-sort` | Sort this pane's view by a column id; `null` returns to file order. Never edits the file. |
+| `csv.find(paneID, query)` | `csv-find` | Count matching cells; resolves when complete (stops at 1,000,000). |
+| `csv.findStep(paneID, query, direction, from?)` | `csv-find-step` | The next or previous match from `{view, column}`. |
+| `csv.setHeaderRow(paneID, on)` | `csv-header-row` | Treat row 0 as headers in this pane; persisted per pane. |
+| `csv.discard(paneID)` | `csv-discard` | Drop unsaved edits and reload from disk. |
+
+```js
+const table = await api.documents.csv.state(paneID);
+const page = await api.documents.csv.rows(paneID, { start: 0, count: 50 });
+const [first] = page.columnIDs;
+await api.documents.csv.edit(paneID, page.generation, [
+    { op: 'set-cell', row: page.rows[1].row, column: first, value: 'checked' },
+]);
+```
+
+Failures reject with a `KelpiError` whose `code` is `CSV_STALE` (the generation is from another
+incarnation or too old to translate: read again and recompute), `CSV_GONE` (the row or column
+was deleted since), `CSV_READ_ONLY` (the file is read-only, or the pane is in raw-text mode),
+`CSV_BUSY` (still indexing) or `CSV_INVALID` (malformed or over a limit). An edit against a
+slightly older generation is translated forward through recent inserts and deletes rather than
+rejected. As with text documents, never retry a rejected edit blindly. Validation is the same
+shared decoder the native grid's WS verbs use, and the whole request still sits inside the
+256 KiB plugin JSON cap. `documents.watch` emits `documents.changed` for csv revisions too.
+
 ## Preserve pending input
 
 A document renderer must persist **every input** before queueing a daemon write. Browser
@@ -150,7 +192,8 @@ not a complete Markdown engine.
 Calling `documents.edit` from a view also stages its submitted text automatically. Text held
 only in an iframe's own queue cannot be recovered by Kelpi. Use `stage` before such a queue.
 Draft APIs require a Markdown/Scratchpad renderer and use its context pane; backends have no
-browser draft API.
+browser draft API. CSV row edits are not staged: each
+`csv.edit` batch is applied or rejected whole.
 
 Recovery records are scoped by daemon, browser-window session and pane. They survive a view
 failure/reload and a reload of that window. Competing windows keep separate drafts. The host
@@ -177,6 +220,23 @@ kelpi document edit PANE_ID --revision TOKEN --file ./replacement.md
 kelpi document save PANE_ID --revision TOKEN
 kelpi document refresh PANE_ID --revision TOKEN
 ```
+
+CSV tables have their own actions, which take no revision:
+
+```sh
+kelpi document csv-state PANE_ID
+kelpi document rows PANE_ID --start 0 --count 100 [--column-start 0] [--column-count 20]
+kelpi document csv-edit PANE_ID --generation GEN --ops '[{"op":"set-cell","row":1,"column":0,"value":"x"}]'
+kelpi document csv-edit PANE_ID --generation GEN --ops-file ./ops.json
+kelpi document sort PANE_ID --column 2 [--direction desc]
+kelpi document sort PANE_ID --clear
+kelpi document find PANE_ID --query needle
+kelpi document header-row PANE_ID on|off
+```
+
+`rows` and `csv-state` return the `generation` that `csv-edit` needs. `csv-edit` takes exactly
+one of `--ops` or `--ops-file` and validates the ops locally (the shared `decodeCsvEditOps`)
+before sending; `rows` refuses more than 500 rows or 256 columns, and `find` a query over 1 KiB.
 
 Use the revision returned by the preceding snapshot, not a token copied from this example.
 `edit` accepts exactly one of `--file` or `--text`. One-shot replies are JSON snapshots;

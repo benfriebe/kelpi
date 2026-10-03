@@ -675,6 +675,12 @@ describe('layout, file and graft commands', () => {
         });
         expect(ok({ command: 'open', path: '/notes/plan.md' })).toMatchObject({ reuse: false, pane_id: undefined });
         expect(rejected({ command: 'open', path: '' }).field).toBe('path');
+        // #324: `as` forces a markdown pane; it is the only valid value.
+        expect(ok({ command: 'open', path: '/data/table.csv', as: 'markdown' })).toMatchObject({ as: 'markdown' });
+        expect(ok({ command: 'open', path: '/data/table.csv' })).not.toHaveProperty('as');
+        expect(ok({ command: 'open', path: '/data/table.csv', as: '' })).not.toHaveProperty('as');
+        expect(rejected({ command: 'open', path: '/data/table.csv', as: 'csv' }).field).toBe('as');
+        expect(rejected({ command: 'open', path: '/data/table.csv', as: 'spreadsheet' }).field).toBe('as');
         expect(ok({ command: 'diff', repo_path: '/repo', target_path: '', pane_id: PANE })).toEqual({
             command: 'diff',
             repo_path: '/repo',

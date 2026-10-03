@@ -239,6 +239,15 @@ describe('isForwardableOpenPath (CONT-124)', () => {
         expect(isForwardableOpenPath('/a/notes.markdown')).toBe(true);
     });
 
+    it('accepts the csv table extensions, case-insensitively (#324)', () => {
+        expect(isForwardableOpenPath('/a/data.csv')).toBe(true);
+        expect(isForwardableOpenPath('/a/DATA.CSV')).toBe(true);
+        expect(isForwardableOpenPath('/a/report.tsv')).toBe(true);
+        expect(isForwardableOpenPath('/a/.csv')).toBe(false);
+        expect(isForwardableOpenPath('/a/data.csv.gz')).toBe(false);
+        expect(isForwardableOpenPath('/a/book.xlsx')).toBe(false);
+    });
+
     it('ignores everything else — an unfiltered forward renders bytes as markdown', () => {
         expect(isForwardableOpenPath('/a/photo.png')).toBe(false);
         expect(isForwardableOpenPath('/a/README')).toBe(false);

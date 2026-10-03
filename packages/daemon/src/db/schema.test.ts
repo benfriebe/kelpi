@@ -42,8 +42,8 @@ describe('migration ledger', () => {
             expect(MIGRATION_IDENTIFIERS).toContain(identifier);
         }
         expect(MIGRATION_IDENTIFIERS[0]).toBe('v1_initial');
-        expect(MIGRATION_IDENTIFIERS.at(-1)).toBe('v22_workspace_group_repo');
-        expect(MIGRATION_IDENTIFIERS).toHaveLength(22);
+        expect(MIGRATION_IDENTIFIERS.at(-1)).toBe('v23_pane_csv_header_row');
+        expect(MIGRATION_IDENTIFIERS).toHaveLength(23);
     });
 
     it('is a no-op on the second run', () => {
@@ -54,7 +54,7 @@ describe('migration ledger', () => {
         db.close();
     });
 
-    it('produces the post-v22 schema (§8 + the daemon-only tail)', () => {
+    it('produces the post-v23 schema (§8 + the daemon-only tail)', () => {
         const db = freshDatabase();
         migrate(db);
 
@@ -92,7 +92,8 @@ describe('migration ledger', () => {
             'agentKind',
             'agentProfileName',
             'pluginJSON',
-            'pluginParked'
+            'pluginParked',
+            'csvHeaderRow'
         ]);
         expect(columnNames(db, 'workspace_group')).toEqual([
             'id',
@@ -222,6 +223,36 @@ describe('migration ledger', () => {
         expect(db.all('SELECT "name", "repoID", "createWorktree" FROM "workspace_group"')).toEqual([
             { name: 'kept', repoID: null, createWorktree: 0 }
         ]);
+        db.close();
+    });
+
+    it('adds the csv header-row column (v23) defaulting existing panes to headers on', () => {
+        const db = freshDatabase();
+        migrate(db);
+        db.run(`DELETE FROM ${MIGRATIONS_TABLE} WHERE identifier = 'v23_pane_csv_header_row'`);
+        db.exec('ALTER TABLE "pane" DROP COLUMN "csvHeaderRow"');
+        db.run(
+            `INSERT INTO "workspace" ("id","name","color","layoutJSON","createdAt","lastAccessedAt") VALUES (?,?,?,?,?,?)`,
+            'W1',
+            'kept',
+            'blue',
+            '{"empty":{}}',
+            1,
+            1
+        );
+        db.run(
+            `INSERT INTO "pane" ("id","workspaceID","type","workingDirectory","createdAt","lastActivityAt","status") VALUES (?,?,?,?,?,?,?)`,
+            'P1',
+            'W1',
+            'csv',
+            '/tmp',
+            1,
+            1,
+            'idle'
+        );
+
+        expect(migrate(db).applied).toEqual(['v23_pane_csv_header_row']);
+        expect(db.all('SELECT "type", "csvHeaderRow" FROM "pane"')).toEqual([{ type: 'csv', csvHeaderRow: 1 }]);
         db.close();
     });
 

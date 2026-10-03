@@ -39,6 +39,8 @@ export type ChromeIconName =
     | 'document'
     | 'note'
     | 'plusminus'
+    // #324: a csv pane.
+    | 'table'
     | 'globe'
     | 'bolt'
     | 'ellipsis'
@@ -135,6 +137,12 @@ const PATHS: Record<ChromeIconName, ReactElement> = {
             <path d="M3 3.6h3M4.5 2.1v3" />
             <path d="M3 8.6h6" />
             <path d="M7 3.6h2" />
+        </>
+    ),
+    table: (
+        <>
+            <rect x="1.8" y="2.2" width="8.4" height="7.6" rx="0.8" />
+            <path d="M1.8 4.8h8.4M1.8 7.3h8.4M5 2.2v7.6" />
         </>
     ),
     globe: (
@@ -289,6 +297,8 @@ export const ICON_TOKEN_GLYPHS: Readonly<Record<string, string>> = {
     'doc.text': '≡',
     'note.text': '✎',
     plusminus: '±',
+    // #324: the palette's csv pane symbol.
+    tablecells: '▦',
     globe: '◍',
     gearshape: '⚙'
 };

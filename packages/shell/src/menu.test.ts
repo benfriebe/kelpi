@@ -574,14 +574,14 @@ describe('File menu (§APP-018 / §WS-151)', () => {
 
     it('names every File row in the line the smoke and the audit read', () => {
         expect(FILE_MENU_LOG_FRAGMENT).toBe(
-            'File ▸ New Workspace (⌘N) · New Group (⌘⇧G) · Preview Markdown… (⌘O)' +
+            'File ▸ New Workspace (⌘N) · New Group (⌘⇧G) · Open… (⌘O)' +
                 ' · New Web Pane (⌘⇧O) · Command Palette (⌘P)' +
                 ' · Switch to Workspace 1–9 (⌘1…⌘9)' +
                 ' · Select All Workspaces · Deselect All Workspaces'
         );
         // The two substrings that were being matched before this item added rows around them.
         expect(FILE_MENU_LOG_FRAGMENT).toContain('New Workspace (⌘N)');
-        expect(FILE_MENU_LOG_FRAGMENT).toContain('Preview Markdown… (⌘O)');
+        expect(FILE_MENU_LOG_FRAGMENT).toContain('Open… (⌘O)');
         expect(FILE_MENU_LOG_FRAGMENT).not.toContain('New Window');
     });
 
@@ -1021,7 +1021,7 @@ describe('the app menu’s Check for Updates… (§APP-026)', () => {
         // The three fragments `scripts/smoke.mjs` asserts have to survive verbatim.
         const line = menuLogLine({ canCheckForUpdates: false });
         expect(line).toContain('Check for Updates…');
-        expect(line).toContain('Preview Markdown… (⌘O)');
+        expect(line).toContain('Open… (⌘O)');
         expect(line).toContain('Kelpi Help (⌘?)');
         expect(line).toContain('New Workspace (⌘N)');
         expect(line).toContain('View ▸ Toggle Sidebar (⌘⇧S)');

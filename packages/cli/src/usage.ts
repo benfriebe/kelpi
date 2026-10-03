@@ -11,7 +11,7 @@ export type Writer = (text: string) => void;
 
 export const globalUsage = `Usage:
   kelpi --version
-  kelpi document get|watch|edit|save|refresh|mode [--help]
+  kelpi document get|watch|edit|save|refresh|mode|csv-state|rows|csv-edit|sort|find|header-row [--help]
   kelpi plugin init|validate|pack|dev [--help]
   kelpi plugin list|contributions|install|enable|disable|reload|remove|history|rollback|logs [--help]
   kelpi plugin open|run|settings|watch|services|service-call|service-select [--help]
@@ -49,7 +49,7 @@ export const globalUsage = `Usage:
   kelpi group sort <name-or-id> --by name|last-activity|last-accessed [--desc] [--json]
   kelpi layout cycle
   kelpi layout select <name>
-  kelpi open [--here] [--focus] <filepath>   # routes by file type: .md→markdown, .html/.pdf/images→web pane
+  kelpi open [--here] [--focus] <filepath>   # routes by file type: .md→markdown, .csv/.tsv→table, .html/.pdf/images→web pane
   kelpi md [--here] [--focus] <filepath>     # always opens a markdown preview pane
   kelpi diff [<path>]
   kelpi graft start [--workspace <name-or-uuid>] [--repo <name-or-path>]

@@ -27,7 +27,7 @@ function samplePane(): Pane {
 
 describe('pane type vocabulary', () => {
     it('uses the exact persisted raw strings', () => {
-        expect(PANE_TYPES).toEqual(['shell', 'markdown', 'scratchpad', 'diff', 'web', 'plugin']);
+        expect(PANE_TYPES).toEqual(['shell', 'markdown', 'scratchpad', 'diff', 'csv', 'web', 'plugin']);
         expect(PANE_STATUSES).toEqual(['idle', 'running', 'waitingForInput']);
     });
 });
@@ -44,6 +44,7 @@ describe('makePane defaults', () => {
         expect(pane.isEditing).toBe(false);
         expect(pane.externalEditorCommand).toBeNull();
         expect(pane.scratchpadContent).toBeNull();
+        expect(pane.csvHeaderRow).toBe(true);
         expect(pane.agentSessionID).toBeNull();
         expect(pane.agentKind).toBeNull();
         expect(pane.markdownFontSize).toBe(DEFAULT_MARKDOWN_FONT_SIZE);
@@ -91,6 +92,8 @@ describe('persisted / transient split (§13.2, §15.10)', () => {
     it('marks agentKind persisted and agentStartedAt / backgroundTaskCount transient', () => {
         expect(PANE_PERSISTED_FIELDS).toContain('agentKind');
         expect(PANE_PERSISTED_FIELDS).toContain('agentSessionID');
+        expect(PANE_PERSISTED_FIELDS).toContain('csvHeaderRow');
+        expect(PANE_PERSISTED_COLUMNS['csvHeaderRow']).toBe('csvHeaderRow');
         expect(PANE_TRANSIENT_FIELDS).toContain('agentStartedAt');
         expect(PANE_TRANSIENT_FIELDS).toContain('backgroundTaskCount');
         expect(PANE_TRANSIENT_FIELDS).toContain('title');

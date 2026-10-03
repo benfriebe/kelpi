@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { testPane } from '../grid/testing';
 
-import { paneChromeModel } from './model';
+import { paneChromeGlyph, paneChromeModel } from './model';
+import { createPaneChromeSurface } from './surface';
 
 const NOW = 1_000_000;
 
@@ -189,6 +190,71 @@ describe('paneChromeModel', () => {
             'new-web',
             'close'
         ]);
+    });
+
+    describe('a csv pane (#324)', () => {
+        const csvPane = (overrides: Parameters<typeof testPane>[1] = {}) =>
+            testPane('c', { type: 'csv', filePath: '/repo/data/sales.csv', workingDirectory: '/repo/data', ...overrides });
+
+        it('titles by file name, wears the table glyph and draws raw text and header-row controls', () => {
+            const model = paneChromeModel({ pane: csvPane(), focused: false, nowSeconds: NOW }).descriptor;
+            expect(model.title).toBe('sales.csv');
+            expect(paneChromeGlyph('csv')).toBe('table');
+            expect(model.controls.map((control) => control.key)).toEqual(['edit', 'header-row', 'split-right', 'split-down', 'new-web', 'close']);
+            expect(model.size.buttons).toBe(6);
+            const edit = model.controls.find((control) => control.key === 'edit');
+            expect(edit).toMatchObject({ label: 'Raw text (⌘E)', icon: 'pencil', enabled: true, testID: 'pane-edit-toggle-c' });
+            const header = model.controls.find((control) => control.key === 'header-row');
+            expect(header).toMatchObject({ label: 'Treat the first row as data', icon: 'table', enabled: true, testID: 'pane-header-row-c' });
+        });
+
+        it('relabels the toggle "Table" in raw mode, where the header row has nothing to toggle', () => {
+            const model = paneChromeModel({ pane: csvPane({ isEditing: true }), focused: false, nowSeconds: NOW }).descriptor;
+            expect(model.controls.find((control) => control.key === 'edit')).toMatchObject({ label: 'Table (⌘E)', icon: 'table', enabled: true });
+            expect(model.controls.find((control) => control.key === 'header-row')?.enabled).toBe(false);
+        });
+
+        it('disables raw text, with the reason as its tooltip, when the body says it is unavailable', () => {
+            const model = paneChromeModel({
+                pane: csvPane(),
+                focused: false,
+                nowSeconds: NOW,
+                csv: { rawEditable: false, rawUnavailableReason: 'Raw text (⌘E) is only available for files up to 2 MiB', headerRow: true }
+            }).descriptor;
+            expect(model.controls.find((control) => control.key === 'edit')).toMatchObject({
+                enabled: false,
+                label: 'Raw text (⌘E) is only available for files up to 2 MiB'
+            });
+        });
+
+        it('swaps the header-row label and glyph from the document state, else the pane record', () => {
+            const off = paneChromeModel({ pane: csvPane({ csvHeaderRow: false }), focused: false, nowSeconds: NOW }).descriptor;
+            expect(off.controls.find((control) => control.key === 'header-row')).toMatchObject({ label: 'Use the first row as the header', icon: 'table-header' });
+            // The document's own flag wins over the record when the body has published one.
+            const on = paneChromeModel({
+                pane: csvPane({ csvHeaderRow: false }),
+                focused: false,
+                nowSeconds: NOW,
+                csv: { rawEditable: true, rawUnavailableReason: null, headerRow: true }
+            }).descriptor;
+            expect(on.controls.find((control) => control.key === 'header-row')?.label).toBe('Treat the first row as data');
+        });
+
+        it('runs the header-row control through the surface, and refuses a disabled raw-text toggle', () => {
+            const onToggleCsvHeaderRow = vi.fn();
+            const onToggleMarkdownEdit = vi.fn();
+            const model = paneChromeModel({
+                pane: csvPane(),
+                focused: false,
+                nowSeconds: NOW,
+                csv: { rawEditable: false, rawUnavailableReason: 'too big', headerRow: true }
+            });
+            const surface = createPaneChromeSurface({ actions: () => ({ onToggleCsvHeaderRow, onToggleMarkdownEdit }), model: () => model });
+            surface.runControl('c', 'header-row');
+            surface.runControl('c', 'edit');
+            expect(onToggleCsvHeaderRow).toHaveBeenCalledWith('c');
+            expect(onToggleMarkdownEdit).not.toHaveBeenCalled();
+        });
     });
 
     /**

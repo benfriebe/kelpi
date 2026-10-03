@@ -1,7 +1,8 @@
-# Content Panes: Markdown, Diff, Scratchpad
+# Content Panes: Markdown, Diff, Scratchpad, CSV
 
 Behavioral specification of Kelpi's non-terminal "content" panes (markdown preview/edit
-panes, git-diff panes, and scratchpad panes) plus the supporting services (the
+panes, git-diff panes, scratchpad panes and, in its own spec, csv table panes) plus the
+supporting services (the
 `$VISUAL`/`$EDITOR` resolver, the per-pane file watcher, find-in-page, scroll preservation,
 and the copy pipeline). It describes Kelpi as it is: a headless daemon that owns the pane
 model, file reading, file watching, git invocation and the markdown/diff to HTML rendering,
@@ -12,8 +13,13 @@ as such, so that every attached client renders it the same way.
 The rendering and interaction details below describe the bundled content views. The
 [document replacement contract](plugin-documents.md) exposes the same native buffers through
 guarded writes and recoverable drafts, with `features/DocumentPane.tsx` selecting the bundled
-or plugin renderer. Native document types stay `markdown`, `scratchpad` or `diff`; standalone
-[custom plugin panes](plugins.md) use the separate `plugin` kind. External-editor bodies can
+or plugin renderer. Native document types are `markdown`, `scratchpad`, `diff` and `csv`;
+standalone [custom plugin panes](plugins.md) use the separate `plugin` kind.
+
+The `csv` pane (issue #324) is specified in [csv-pane.md](csv-pane.md). It shares this spec's
+pane model, placement path (§2.1), closing rules (§2.4), find bar (§3.13) and raw-text edit
+mode (§4), but none of the whole-string pipeline: its daemon indexes the file and serves rows by
+range, and its client is a virtualised grid. External-editor bodies can
 also use a [terminal replacement](plugin-terminals.md) while retaining their native PTY.
 
 Source files this spec describes (TypeScript):
@@ -29,7 +35,9 @@ Source files this spec describes (TypeScript):
 - `packages/daemon/src/git/exec.ts`, `packages/daemon/src/git/service.ts`: the git process layer and `getDiff`
 - `packages/daemon/src/graft/watcher.ts`: recursive directory watcher (used by Graft, spec'd here for completeness)
 - `packages/daemon/src/store/reducers/panes.ts`, `packages/daemon/src/store/types.ts`: the pane model, the open/close/park/reopen reducers, closed-pane snapshots
-- `packages/daemon/src/handlers/app/files.ts`: the `open` and `diff` wire commands
+- `packages/daemon/src/handlers/app/files.ts`: the `open` and `diff` wire commands (`open`
+  routes `.csv`/`.tsv` to a csv pane; see [csv-pane.md](csv-pane.md) for that pane's own
+  sources)
 - `packages/client/src/content/ContentFrame.tsx`: the sandboxed preview host, find bar, copy menu, scroll restore
 - `packages/client/src/content/bridge.ts`: the injected bridge script (copy button, links, find, chord relay, scroll) and its host-side effects
 - `packages/client/src/content/copy.ts`: the whole-document copy commands
@@ -48,7 +56,7 @@ Source files this spec describes (TypeScript):
 ### 1.1 Pane fields relevant to content panes
 
 ```ts
-type PaneType = "shell" | "markdown" | "scratchpad" | "diff" | "web" | "plugin";
+type PaneType = "shell" | "markdown" | "scratchpad" | "diff" | "csv" | "web" | "plugin";
 
 interface Pane {
   id: string;                       // UUID
@@ -59,8 +67,11 @@ interface Pane {
   title?: string;
   workingDirectory: string;         // markdown: file's parent dir; diff: repo path
   gitBranch?: string;               // detected async at open time
-  filePath?: string;                // markdown: absolute file path; diff: optional scope path
-  isEditing: boolean;               // markdown: view vs edit mode; scratchpad: always true
+  filePath?: string;                // markdown/csv: absolute file path; diff: optional scope path
+  isEditing: boolean;               // markdown: view vs edit mode; scratchpad: always true;
+                                    // csv: grid (false) vs raw text (true), csv-pane.md §6.7
+  csvHeaderRow: boolean;            // csv only: row 0 is the header row (default true,
+                                    // persisted; csv-pane.md §1.1)
   externalEditorCommand?: string;   // TRANSIENT (not persisted). Non-null on a markdown
                                     // pane in edit mode means "edit in a terminal surface
                                     // running the user's $EDITOR" instead of the built-in
@@ -86,6 +97,8 @@ Content-pane relevant columns of `PaneRecord`:
 - `content` (nullable text) — scratchpad content. This is the ONLY place scratchpad
   text lives; it is never written to any file.
 - `type` — the `PaneType` raw string.
+- `csvHeaderRow` (`BOOLEAN NOT NULL DEFAULT 1`, migration `v23_pane_csv_header_row`): a csv
+  pane's header-row choice. Meaningless for other types.
 
 Custom plugin pane descriptors use the separate `pluginJSON` column, including preservation
 of unsupported raw descriptors. Native document renderer preferences are stored separately
@@ -93,7 +106,8 @@ from those pane descriptors; see the [persistence schema](persistence.md) and
 [document state contract](plugin-documents.md).
 
 NOT persisted: `isEditing` (recomputed at load: `isEditing = (type == "scratchpad")` —
-markdown panes always restore in view mode, scratchpads always restore in edit mode),
+markdown panes always restore in view mode, csv panes in grid mode, scratchpads always restore
+in edit mode),
 `externalEditorCommand`, `markdownFontSize` (restores to default 14 on app relaunch),
 `parkedSourcePaneID`, scroll positions.
 
@@ -115,6 +129,7 @@ interface ClosedPaneSnapshot {
   agentKind?: "claude" | "codex";
   agentProfileName?: string;     // the profile the agent session was launched under
   markdownFontSize: number;      // font size DOES survive close→reopen (unlike restart)
+  csvHeaderRow: boolean;         // a csv pane's header-row choice survives close→reopen
   webState?: unknown;            // web pane sidecar; irrelevant here
 }
 ```
@@ -137,9 +152,15 @@ the close snapshot, preserving view identity and saved state when the plugin is 
 
 ### 2.1 Markdown pane — `openMarkdownFile(filePath, reusePaneID?)`
 
+A `.csv`/`.tsv` path (case-insensitive) reaches this same action from every entry point below
+with `paneType: 'csv'` and opens a csv pane instead, with the same placement, `--here` and
+focus behaviour; only `kelpi md` (wire `as: 'markdown'`) forces markdown for it
+([csv-pane.md §2](csv-pane.md)).
+
 Entry points (all converge on this one action):
 
-1. **⌘O** file picker (filtered to `.md`) and **drag-and-drop** of a `.md` file onto the
+1. **⌘O** file picker (File ▸ Open…, panel title "Open File", filters "Markdown and CSV",
+   "Markdown" and "CSV") and **drag-and-drop** of a `.md` (or `.csv`/`.tsv`) file onto the
    window, outside a terminal pane → app-level `openFileAtPath(path, fromPaneID?)`:
    - If no workspace is active yet, the `open` (or `diff`) command is dropped; the
      daemon keeps no pending-open queue (`route()` in
@@ -150,10 +171,14 @@ Entry points (all converge on this one action):
    - A `.md` dropped onto a **terminal** pane opens nothing: its path is typed into the pane
      like any other dropped file (terminal-surface.md §12.4, #288). That is what a terminal
      does, and what an agent user dropping a spec onto Claude Code expects.
-2. **Finder "Open With → Kelpi"** → same `openFileAtPath` path.
-3. **CLI**: `kelpi md [--here] [--focus] <file>` and the markdown route of
+2. **Finder "Open With → Kelpi"** → same `openFileAtPath` path. The bundle declares a
+   "Markdown Document" type and, for csv panes, a "CSV Document" type over the system UTIs
+   `public.comma-separated-values-text` and `public.tab-separated-values-text` (both Editor,
+   rank Alternate); the shell forwards only `md`, `markdown`, `csv` and `tsv`.
+3. **CLI**: `kelpi md [--here] [--focus] <file>` and the markdown (and csv) route of
    `kelpi open [--here] [--focus] <path>` send the `open` wire command
-   `{"command":"open","path":"/abs/file.md","pane_id":"<uuid or absent>","reuse":true|false,"focus":true?}`.
+   `{"command":"open","path":"/abs/file.md","pane_id":"<uuid or absent>","reuse":true|false,"focus":true?}`;
+   `kelpi md` adds `"as":"markdown"`.
    Server side: if `pane_id` resolves to a live pane, that pane's workspace is targeted, the
    calling pane is the split source, and `reusePaneID = pane_id` when `reuse` is true;
    otherwise the active workspace is targeted with no reuse. Issue #295: without `focus:true`
@@ -1478,8 +1503,9 @@ Behavior = the built-in markdown editor (4.2) with these differences:
 Header layout (all panes share one header bar; content-pane specifics):
 
 - **Type icon** (left, 10 px, secondary color): markdown `doc.text` (document),
-  scratchpad `note.text`, diff `plusminus`, web `globe`; shell panes show the colored
-  status dot instead.
+  scratchpad `note.text`, diff `plusminus`, csv a table, web `globe`; shell panes show the
+  colored status dot instead. (A csv pane's own controls are in
+  [csv-pane.md §6.8](csv-pane.md).)
 - **Label chip**: shown for any pane with a non-empty label EXCEPT markdown panes
   (their label is the filename, which would duplicate the title text).
 - **Title text** (monospace 11 px, middle-truncated): scratchpad → `Scratchpad`;

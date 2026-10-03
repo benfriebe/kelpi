@@ -173,6 +173,53 @@ describe('open', () => {
         h.send({ command: 'open', path: '/docs/readme.md' });
         expect(h.state()).toBe(before);
     });
+
+    // #324: csv files open as a csv document pane through the same placement path.
+    it('opens a .csv path as a csv pane beside the caller', () => {
+        const h = harness({ initial: seeded(1), ids: [PNEW] });
+        h.send({ command: 'open', path: '/data/sales.csv', pane_id: P1, focus: true });
+        const workspace = h.state().workspaces[0];
+        expect(workspace?.panes.map((pane) => pane.id)).toEqual([P1, PNEW]);
+        expect(workspace?.panes[1]).toMatchObject({
+            type: 'csv',
+            filePath: '/data/sales.csv',
+            label: 'sales.csv',
+            title: 'sales.csv',
+            workingDirectory: '/data',
+            csvHeaderRow: true,
+            isEditing: false
+        });
+        expect(workspace?.focusedPaneID).toBe(PNEW);
+    });
+
+    it('matches the csv extensions case-insensitively, including .tsv', () => {
+        const h = harness({ initial: seeded(1), ids: [PNEW, id('ffffffff', 2)] });
+        h.send({ command: 'open', path: '/data/EXPORT.TSV', pane_id: P1 });
+        h.send({ command: 'open', path: '/data/Report.Csv', pane_id: P1 });
+        const types = h.state().workspaces[0]?.panes.map((pane) => pane.type);
+        expect(types).toEqual(['shell', 'csv', 'csv']);
+    });
+
+    it("keeps a csv path a markdown pane when the caller sends as: 'markdown' (kelpi md)", () => {
+        const h = harness({ initial: seeded(1), ids: [PNEW] });
+        h.send({ command: 'open', path: '/data/sales.csv', pane_id: P1, as: 'markdown' });
+        expect(h.state().workspaces[0]?.panes[1]).toMatchObject({ type: 'markdown', filePath: '/data/sales.csv' });
+    });
+
+    it('does not treat a name merely containing csv as a csv file', () => {
+        const h = harness({ initial: seeded(1), ids: [PNEW] });
+        h.send({ command: 'open', path: '/data/csv-notes.md', pane_id: P1 });
+        expect(h.state().workspaces[0]?.panes[1]?.type).toBe('markdown');
+    });
+
+    it('a csv --here parks the caller like a markdown open', () => {
+        const h = harness({ initial: seeded(1), ids: [PNEW] });
+        h.send({ command: 'open', path: '/data/sales.csv', pane_id: P1, reuse: true });
+        const workspace = h.state().workspaces[0];
+        expect(workspace?.panes.map((pane) => [pane.id, pane.type])).toEqual([[PNEW, 'csv']]);
+        expect(workspace?.panes[0]?.parkedSourcePaneID).toBe(P1);
+        expect(workspace?.parkedPanes.map((pane) => pane.id)).toEqual([P1]);
+    });
 });
 
 describe('diff', () => {

@@ -24,7 +24,12 @@ export interface UseContentResult {
     readonly error: string | null;
 }
 
-export function useContent(api: ContentApi, paneID: string): UseContentResult {
+/**
+ * `paneID` null subscribes to nothing: a csv pane in GRID mode (#324) is a document pane whose
+ * host still renders this hook, but its rows come through the csv verbs and the content service
+ * must not read a possibly huge file just because the pane was mounted.
+ */
+export function useContent(api: ContentApi, paneID: string | null): UseContentResult {
     const [state, setState] = useState<ContentPaneState | null>(null);
     const [error, setError] = useState<string | null>(null);
 
@@ -32,6 +37,7 @@ export function useContent(api: ContentApi, paneID: string): UseContentResult {
         let live = true;
         setState(null);
         setError(null);
+        if (paneID === null) return;
         const subscription = api.subscribe(paneID, {
             onState: (next) => {
                 if (!live) return;

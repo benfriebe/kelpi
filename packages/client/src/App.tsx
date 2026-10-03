@@ -212,6 +212,7 @@ import {
     createContentClient,
     type FontSizeStep
 } from './content';
+import { createCsvClient, csvRawUnavailableReason, flushCsvPane } from './content/csv';
 import { PaneGrid, PaneSearchOverlay, paneDisplayTitle, type PaneModel, type RenderPane } from './grid';
 import type { PaneChromeItemDescriptor } from './pane-chrome';
 import {
@@ -1503,6 +1504,25 @@ function Shell(props: AppProps): ReactElement {
     useEffect(() => registerDocumentCloseGuard(runtime, content), [runtime, content]);
 
     /**
+     * #324: the csv panes' multiplexer, one per window like `content`. A csv pane's GRID speaks
+     * only these verbs (rows by range, edit batches, sort, find); its raw-text mode is a content
+     * pane and goes through `content` above.
+     */
+    const csv = useMemo(
+        () =>
+            createCsvClient({
+                connection: runtime.connection,
+                commands,
+                onError: (message, context) => {
+                    if (runtime.connection.status !== 'connected') return;
+                    notifyFailure(`CSV pane (${context})`, message);
+                }
+            }),
+        [runtime, commands, notifyFailure]
+    );
+    useEffect(() => () => csv.dispose(), [csv]);
+
+    /**
      * §TERM-116's timer, owned by the window rather than by the overlay: the bar is unmounted
      * and remounted as it moves between panes, and a debounce that died with it would let a
      * short needle escape the cancel. One scheduler, `store`-scoped, cancelled on unmount.
@@ -1557,7 +1577,23 @@ function Shell(props: AppProps): ReactElement {
         const focused = (): string | null => selectFocusedPaneID(store.getState());
         const toggleMarkdownEdit = (paneID: string): boolean => {
             const pane = selectPane(store.getState(), paneID);
-            if (pane === null || pane.type !== 'markdown') return false;
+            if (pane === null) return false;
+            if (pane.type === 'csv') {
+                // #324: the same ⌘E, between the grid and the file as raw text. The daemon refuses
+                // raw text over 2 MiB or for a read-only file; when the grid already knows that,
+                // the pane says why instead of sending a request that can only fail.
+                const known = csv.peek(paneID);
+                const reason = pane.isEditing || known === null ? null : csvRawUnavailableReason(known);
+                if (reason !== null) {
+                    csv.notify(paneID, reason);
+                    return true;
+                }
+                if (pane.isEditing) return runTask('Toggle raw text', content.setMode(paneID, 'view'));
+                // The grid's edits go first, the cell being typed included: once the daemon shows
+                // raw text it refuses them (CSV_READ_ONLY), so they must all be answered before.
+                return runTask('Toggle raw text', flushCsvPane(paneID).then(() => content.setMode(paneID, 'edit')));
+            }
+            if (pane.type !== 'markdown') return false;
             // CONT-090: ⌘E out of an EXTERNAL editor session ends the session (the PTY dies and
             // the pane goes back to preview) rather than toggling the built-in editor behind it.
             if (pane.externalEditorCommand !== null) {
@@ -1583,7 +1619,7 @@ function Shell(props: AppProps): ReactElement {
         const openContentFind = (paneID: string): boolean => {
             const pane = selectPane(store.getState(), paneID);
             if (pane === null) return false;
-            if (pane.type !== 'markdown' && pane.type !== 'diff' && pane.type !== 'scratchpad') return false;
+            if (pane.type !== 'markdown' && pane.type !== 'diff' && pane.type !== 'scratchpad' && pane.type !== 'csv') return false;
             if (isUsingExternalEditor(pane)) return false;
             setFindRequest((current) =>
                 current?.paneID === paneID ? { paneID, seq: current.seq + 1 } : { paneID, seq: 1 }
@@ -1837,6 +1873,17 @@ function Shell(props: AppProps): ReactElement {
             /** The diff header's refresh button (§5.2 trigger 2) — re-runs `git diff`. */
             refreshDiff(paneID: string): boolean {
                 return runTask('Refresh diff', content.refresh(paneID));
+            },
+
+            /**
+             * #324: a csv pane's header-row toggle (the header button). The grid's document state
+             * is authoritative when it is on screen; the persisted pane field answers otherwise.
+             */
+            toggleCsvHeaderRow(paneID: string): boolean {
+                const pane = selectPane(store.getState(), paneID);
+                if (pane === null || pane.type !== 'csv') return false;
+                const on = csv.peek(paneID)?.headerRow ?? pane.csvHeaderRow;
+                return runTask('Header row', csv.setHeaderRow(paneID, !on));
             },
 
             /**
@@ -2106,7 +2153,7 @@ function Shell(props: AppProps): ReactElement {
             },
 
             /**
-             * "Open in Finder" (TERM-110). A markdown/diff pane with a file path REVEALS that
+             * "Open in Finder" (TERM-110). A markdown/diff/csv pane with a file path REVEALS that
              * file inside its folder; everything else opens the pane's working directory. Only
              * the Electron shell can act on it, so the menu item is hidden in a plain browser.
              */
@@ -2114,7 +2161,7 @@ function Shell(props: AppProps): ReactElement {
                 const pane = selectPane(store.getState(), paneID);
                 if (pane === null) return false;
                 const file =
-                    (pane.type === 'markdown' || pane.type === 'diff') &&
+                    (pane.type === 'markdown' || pane.type === 'diff' || pane.type === 'csv') &&
                     pane.filePath !== null &&
                     pane.filePath !== ''
                         ? pane.filePath
@@ -2160,7 +2207,7 @@ function Shell(props: AppProps): ReactElement {
             // ── file opening (CONT-120…122, APP-020/APP-103) ─────────────────────────
 
             /**
-             * ⌘O / File ▸ Preview Markdown… (CONT-120).
+             * ⌘O / File ▸ Open… (CONT-120; #324 widened it from markdown to csv/tsv too).
              *
              * Inside the Electron shell this asks the shell for a NATIVE open panel, the long
              * way round: the shell has no preload, so the request travels client → daemon →
@@ -2194,7 +2241,7 @@ function Shell(props: AppProps): ReactElement {
                 );
             },
 
-            /** A drop that named a `.md` path (CONT-121 / APP-103). */
+            /** A drop that named a `.md` (CONT-121 / APP-103), `.csv` or `.tsv` (#324) path. */
             openDroppedPath(path: string): boolean {
                 return run('Open file', commands.openFile({ path }));
             },
@@ -2429,7 +2476,7 @@ function Shell(props: AppProps): ReactElement {
             },
 
         };
-    }, [activateWorkspaceAndReveal, commands, content, inspectorData.refresh, notifyFailure, run, runTask, runtime, store]);
+    }, [activateWorkspaceAndReveal, commands, content, csv, inspectorData.refresh, notifyFailure, run, runTask, runtime, store]);
 
     /**
      * `act` reachable from effects that must not re-subscribe when it is rebuilt (the shell's
@@ -3037,7 +3084,7 @@ function Shell(props: AppProps): ReactElement {
             move_to_line_end: ({ action }) => act.lineEdit(action),
             reopen_closed_pane: () => act.reopenClosedPane(),
             create_scratchpad: () => act.createScratchpad(),
-            // CONT-120 / APP-020. Default ⌘O, and the File menu's "Preview Markdown…" reaches
+            // CONT-120 / APP-020. Default ⌘O, and the File menu's "Open…" reaches
             // the same handler through the shell's `menu-command` relay.
             open_file: () => act.openFile(),
             toggle_sync_input: () => act.toggleSyncInput(),
@@ -4146,7 +4193,8 @@ function Shell(props: AppProps): ReactElement {
             }
             const renderDocument = (): ReactNode => isDocumentPane(pane.type) ? <DocumentPane
                 runtime={runtime} workspaceID={workspace?.id ?? ''} kind={pane.type}
-                paneID={paneID} content={content} focused={focused} visible={renderState.visible}
+                paneID={paneID} content={content} csv={csv} editing={pane.isEditing} phone={phoneActive}
+                filePath={pane.filePath} focused={focused} visible={renderState.visible}
                 background={paneFill} documentBackground={contentDocumentFill} onFocusRequest={onTerminalFocus}
                 onToggleEdit={act.toggleMarkdownEdit} findToken={findRequest?.paneID === paneID ? findRequest.seq : 0}
                 copyToken={copyRequest?.paneID === paneID ? copyRequest.seq : 0} findPalette={findPalette}
@@ -4156,6 +4204,7 @@ function Shell(props: AppProps): ReactElement {
                     return pane.plugin ? <PluginView runtime={runtime} pluginID={pane.plugin.pluginID} viewID={pane.plugin.viewID} descriptor={pane.plugin} focused={focused} paneID={paneID} workspaceID={workspace?.id} visible={renderState.visible} claimedChords={allViewChords} /> : <ContentPanePlaceholder pane={pane} />;
                 },
                 'kelpi.markdown': renderDocument,
+                'kelpi.csv': renderDocument,
                 'kelpi.diff': renderDocument,
                 'kelpi.scratchpad': renderDocument,
                 // The one pane whose body this client cannot draw: the page lives in a native view
@@ -4271,6 +4320,8 @@ function Shell(props: AppProps): ReactElement {
         [
             act,
             content,
+            csv,
+            phoneActive,
             findRequest,
             // §TERM-103: without this the frame would be frozen at the token it had when the
             // callback was last built, and the header's copy button would open nothing.
@@ -4437,6 +4488,7 @@ function Shell(props: AppProps): ReactElement {
                         onToggleZoom: act.toggleZoom,
                         onToggleMarkdownEdit: act.toggleMarkdownEdit,
                         onRefreshDiff: act.refreshDiff,
+                        onToggleCsvHeaderRow: act.toggleCsvHeaderRow,
                         onCopyDocument,
                         onSetFontSize: act.setFontSize,
                         onRestartAgent: act.restartAgent,
@@ -4711,6 +4763,7 @@ function Shell(props: AppProps): ReactElement {
                         onToggleZoom={act.toggleZoom}
                         onToggleMarkdownEdit={act.toggleMarkdownEdit}
                         onRefreshDiff={act.refreshDiff}
+                        onToggleCsvHeaderRow={act.toggleCsvHeaderRow}
                         onCopyDocument={onCopyDocument}
                         onSetFontSize={act.setFontSize}
                         onRestartAgent={act.restartAgent}

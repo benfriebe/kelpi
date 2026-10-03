@@ -313,6 +313,8 @@ describe('readLegacyDatabase — a realistic database', () => {
     it('warns about every enum fallback', () => {
         expect(warningMatching(result, 'unknown color')).toContain('not-a-color');
         expect(warningMatching(result, 'unknown type')).toContain('hologram');
+        // An unknown type decodes as an unavailable pane whose row survives, not as a shell.
+        expect(warningMatching(result, 'unknown type')).toContain('unavailable pane');
         expect(warningMatching(result, 'unknown status')).toContain('napping');
         expect(warningMatching(result, 'unknown agentKind')).toContain('gemini');
         expect(warningMatching(result, 'undecodable labelsJSON')).toContain(WS_C);

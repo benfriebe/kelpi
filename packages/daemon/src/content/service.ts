@@ -21,13 +21,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 
-import { pluginJSON, type DocumentSnapshot } from '@kelpi/protocol';
+import { CSV_LIMITS, PLUGIN_MAX_JSON_BYTES, pluginJSON, type DocumentSnapshot } from '@kelpi/protocol';
 
 import { createGitService } from '../git/index.js';
 import type { BuiltinServiceHost } from '../plugins/builtin-services.js';
 import type { DomainStore } from '../seams.js';
 import { findPaneAnywhere } from '../store/derived.js';
 import type { DaemonState, DomainAction, DomainEvent, Pane } from '../store/types.js';
+import type { CsvChannel, CsvRawTarget } from './csv/channel.js';
 import {
     DEFAULT_DIFF_FONT_SIZE,
     gitFailureText
@@ -45,10 +46,15 @@ import {
 import { CONTENT_RENDER_SERVICE, CONTENT_RENDER_VERSION, contentRenderHTML, renderContentDocument, type ContentRenderArgs } from './render-service.js';
 import { watchFile, type FileWatcher } from './watcher.js';
 
-export type ContentPaneType = 'markdown' | 'diff' | 'scratchpad';
+/**
+ * `csv` (#324) is a content pane only in raw-text mode (⌘E): the grid reads and edits through
+ * the csv document service (`./csv/`), so here a csv pane holds text only while `mode` is
+ * `edit`, and never renders HTML.
+ */
+export type ContentPaneType = 'markdown' | 'diff' | 'scratchpad' | 'csv';
 export type ContentMode = 'view' | 'edit';
 
-const CONTENT_PANE_TYPES = new Set<string>(['markdown', 'diff', 'scratchpad']);
+const CONTENT_PANE_TYPES = new Set<string>(['markdown', 'diff', 'scratchpad', 'csv']);
 
 /** URL prefix of the sibling-asset route (`./http.ts` serves it). */
 export const PANE_ASSETS_PREFIX = '/pane-assets';
@@ -114,6 +120,12 @@ export interface ContentServiceOptions {
     readonly watch?: boolean | undefined;
     /** Lazy because content is composed before the plugin supervisor. */
     readonly services?: (() => BuiltinServiceHost | undefined) | undefined;
+    /**
+     * #324: the csv document service. `setMode` hands a csv pane's file to raw-text mode through
+     * it (`prepareRaw` before, `afterRaw` after) and `document()` reads the grid's dirty flag.
+     * Absent = raw mode works on the file alone (tests, headless use).
+     */
+    readonly csv?: CsvChannel | undefined;
 }
 
 export interface ContentService {
@@ -123,7 +135,7 @@ export interface ContentService {
     /** Load (if needed) and return the pane's content state. */
     state(paneID: string): Promise<ContentPaneState>;
     subscribe(paneID: string, listener: ContentListener): Promise<ContentSubscription>;
-    /** Markdown only: view ⇄ edit (§4.1). Dispatches `set-markdown-editing`. */
+    /** Markdown and csv (raw text, #324): view ⇄ edit (§4.1). Dispatches `set-markdown-editing`. */
     setMode(paneID: string, mode: ContentMode, guard?: DocumentGuard): Promise<ContentPaneState>;
     /** Client edit → the authoritative buffer (+ debounced save). */
     setText(paneID: string, text: string, guard?: DocumentGuard): Promise<ContentPaneState>;
@@ -163,6 +175,12 @@ interface Entry {
     filePath: string | null;
     /** Diff panes: the repo (`pane.workingDirectory`). */
     repoPath: string;
+    /**
+     * #324: while a csv pane shows raw text, the csv document's real path (`prepareRaw`). Raw
+     * text is read from and saved to it, never through `filePath`, which may be a symlink that
+     * was retargeted after the grid opened the file.
+     */
+    csvRaw: CsvRawTarget | null;
     mode: ContentMode;
     /** Raw source: file text / diff text / scratchpad text. */
     content: string;
@@ -196,6 +214,32 @@ function toError(value: unknown): Error {
 
 function messageOf(value: unknown): string {
     return toError(value).message;
+}
+
+/** Room left for the envelope a plugin reply wraps a document in (`{subscription, state}`). */
+const DOCUMENT_ENVELOPE_BYTES = 256;
+
+const jsonBytes = (value: unknown): number => Buffer.byteLength(JSON.stringify(value), 'utf8');
+
+/**
+ * #324: cut a document's `text` until its JSON fits the plugin transport cap, flagging it
+ * `truncated`. Binary search on the prefix length; a cut never splits a surrogate pair.
+ */
+export function fitPluginDocument(document: DocumentSnapshot, limit = PLUGIN_MAX_JSON_BYTES - DOCUMENT_ENVELOPE_BYTES): DocumentSnapshot {
+    if (jsonBytes(document) <= limit) return document;
+    const text = document.text;
+    const fits = (length: number): boolean => jsonBytes({ ...document, text: text.slice(0, length), truncated: true }) <= limit;
+    let low = 0;
+    let high = text.length;
+    while (low < high) {
+        const middle = Math.ceil((low + high) / 2);
+        if (fits(middle)) low = middle;
+        else high = middle - 1;
+    }
+    let length = low;
+    const code = text.charCodeAt(length - 1);
+    if (length > 0 && code >= 0xd800 && code <= 0xdbff) length -= 1;
+    return { ...document, text: text.slice(0, length), truncated: true };
 }
 
 export function createContentService(options: ContentServiceOptions): ContentService {
@@ -283,7 +327,7 @@ export function createContentService(options: ContentServiceOptions): ContentSer
     const render = (entry: Entry): boolean | Promise<boolean> => {
         cancelRender(entry);
         if (disposed || entries.get(entry.paneID) !== entry) return false;
-        if (entry.type === 'scratchpad') {
+        if (entry.type === 'scratchpad' || entry.type === 'csv') {
             entry.html = null;
             return true;
         }
@@ -388,7 +432,7 @@ export function createContentService(options: ContentServiceOptions): ContentSer
     const targetOf = (entry: Entry): EditorTarget =>
         entry.type === 'scratchpad' || entry.filePath === null
             ? { kind: 'scratchpad' }
-            : { kind: 'file', path: entry.filePath };
+            : { kind: 'file', path: entry.csvRaw?.realpath ?? entry.filePath };
 
     // ── loading ─────────────────────────────────────────────────────────────
 
@@ -477,10 +521,71 @@ export function createContentService(options: ContentServiceOptions): ContentSer
         if (buffered === undefined) editor.seed(entry.paneID, targetOf(entry), entry.content);
     };
 
+    /**
+     * #324: a csv pane's text is read only in raw mode, and only a regular file up to
+     * `CSV_LIMITS.rawEditLimitBytes`: the size is checked on the open descriptor, and the read
+     * itself stops one byte past the limit, so a file that grows after the check is refused rather
+     * than read whole. `O_NONBLOCK` keeps a FIFO from hanging the open. `expected` (the hand-off's
+     * inode) must match, or the file was replaced since the grid stood down.
+     */
+    const readCsvText = async (
+        filePath: string | null,
+        expected: CsvRawTarget | null = null
+    ): Promise<{ content: string; loaded: boolean; error: string | null }> => {
+        if (filePath === null) return { content: '', loaded: false, error: 'csv pane has no file path' };
+        const tooLarge = { content: '', loaded: false, error: 'The file is too large to edit as raw text (over 2 MiB).' };
+        let handle: fs.promises.FileHandle | null = null;
+        try {
+            handle = await fs.promises.open(filePath, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
+            const stat = await handle.stat();
+            if (!stat.isFile()) return { content: '', loaded: false, error: `${filePath} is not a regular file` };
+            if (expected !== null && (stat.dev !== expected.dev || stat.ino !== expected.ino)) {
+                return { content: '', loaded: false, error: 'The file was replaced on disk while switching to raw text; try again.' };
+            }
+            if (stat.size > CSV_LIMITS.rawEditLimitBytes) return tooLarge;
+            const buffer = Buffer.allocUnsafe(CSV_LIMITS.rawEditLimitBytes + 1);
+            let got = 0;
+            while (got < buffer.length) {
+                const { bytesRead } = await handle.read(buffer, got, buffer.length - got, got);
+                if (bytesRead <= 0) break;
+                got += bytesRead;
+            }
+            if (got > CSV_LIMITS.rawEditLimitBytes) return tooLarge;
+            return { content: buffer.toString('utf8', 0, got), loaded: true, error: null };
+        } catch (cause) {
+            return { content: '', loaded: false, error: messageOf(cause) };
+        } finally {
+            await handle?.close().catch(() => undefined);
+        }
+    };
+
+    /** Grid mode holds no text (`''`, loaded); raw mode reads the file under the same guards as markdown. */
+    const loadCsv = async (entry: Entry): Promise<boolean> => {
+        cancelMarkdown(entry);
+        const generation = entry.markdownGeneration;
+        const filePath = entry.filePath;
+        const mode = entry.mode;
+        const current = (): boolean =>
+            !disposed && entries.get(entry.paneID) === entry && entry.markdownGeneration === generation &&
+            entry.filePath === filePath && entry.mode === mode && !editor.isDirty(entry.paneID);
+        if (!current()) return false;
+        if (mode !== 'edit') {
+            setSource(entry, '', true, null);
+            return true;
+        }
+        const read = await readCsvText(entry.csvRaw?.realpath ?? filePath);
+        if (!current()) return false;
+        setSource(entry, read.content, read.loaded, read.error);
+        if (read.loaded) editor.seed(entry.paneID, targetOf(entry), entry.content);
+        return true;
+    };
+
     /** A superseded disk/Git load writes nothing and must not render or announce a result. */
     const load = async (entry: Entry, pane: Pane): Promise<boolean> => {
         if (entry.type === 'markdown') {
             if (!(await loadMarkdown(entry))) return false;
+        } else if (entry.type === 'csv') {
+            if (!(await loadCsv(entry))) return false;
         } else if (entry.type === 'diff') {
             if (!(await loadDiff(entry))) return false;
         } else loadScratchpad(entry, pane);
@@ -548,6 +653,7 @@ export function createContentService(options: ContentServiceOptions): ContentSer
         if (entry.filePath !== pane.filePath) {
             cancelMarkdown(entry);
             entry.filePath = pane.filePath;
+            entry.csvRaw = null;
             changed = true;
         }
         if (entry.type === 'diff' && entry.repoPath !== pane.workingDirectory) {
@@ -607,6 +713,7 @@ export function createContentService(options: ContentServiceOptions): ContentSer
             type,
             filePath: pane.filePath,
             repoPath: pane.workingDirectory,
+            csvRaw: null,
             // §1.2: markdown restores in view mode, scratchpads are always editing.
             mode: type === 'scratchpad' || pane.isEditing ? 'edit' : 'view',
             content: '',
@@ -651,7 +758,7 @@ export function createContentService(options: ContentServiceOptions): ContentSer
         cancelRender(entry);
         // Disk reads cannot be interrupted here; their generation guard permits the new
         // scope to load immediately without waiting for the retired file read.
-        if (entry.type !== 'markdown' && entry.loading !== null) await entry.loading;
+        if (entry.type !== 'markdown' && entry.type !== 'csv' && entry.loading !== null) await entry.loading;
         if (disposed || entries.get(paneID) !== entry) return;
         const found = findPaneAnywhere(store.getState(), paneID);
         if (found === null || !CONTENT_PANE_TYPES.has(found.pane.type)) return;
@@ -781,6 +888,85 @@ export function createContentService(options: ContentServiceOptions): ContentSer
         }
     });
 
+    // ── csv raw text (#324) ─────────────────────────────────────────────────
+
+    /**
+     * The raw-text hand-off. The csv service is the single owner of the file in grid mode, so
+     * view → edit asks it to flush and stand down (`prepareRaw`, which refuses big or read-only
+     * files) BEFORE anything here changes or is dispatched; edit → view writes the text buffer,
+     * dispatches, and only then lets the grid reopen the file (`afterRaw`).
+     */
+    const setCsvMode = async (entry: Entry, mode: ContentMode): Promise<ContentPaneState> => {
+        const paneID = entry.paneID;
+        if (mode === 'edit') {
+            // The grid's pinned real path: raw text must edit the file the grid has open.
+            const target = (await options.csv?.prepareRaw(paneID)) ?? null;
+            try {
+                assertLive(entry);
+                const read = await readCsvText(target?.realpath ?? entry.filePath, target);
+                assertLive(entry);
+                if (!read.loaded) throw new Error(read.error ?? 'Could not read the file.');
+                if (entry.mode !== 'edit') {
+                    cancelMarkdown(entry);
+                    entry.csvRaw = target;
+                    setSource(entry, read.content, true, null);
+                    entry.mode = 'edit';
+                    advanceRevision(entry);
+                    editor.seed(paneID, targetOf(entry), entry.content);
+                    store.dispatch({ type: 'set-markdown-editing', workspaceID: entry.workspaceID, paneID, editing: true });
+                }
+            } catch (error) {
+                // Nothing was dispatched: give the file straight back to the grid.
+                await options.csv?.afterRaw(paneID).catch((cause: unknown) => report(cause, `csv afterRaw ${paneID}`));
+                throw error;
+            }
+            emit(entry);
+            return snapshot(entry);
+        }
+        editor.flush(paneID);
+        if (editor.isDirty(paneID)) throw new Error(entry.error ?? 'Could not save the raw text.');
+        cancelMarkdown(entry);
+        entry.mode = 'view';
+        editor.drop(paneID);
+        entry.csvRaw = null;
+        setSource(entry, '', true, null);
+        advanceRevision(entry);
+        store.dispatch({ type: 'set-markdown-editing', workspaceID: entry.workspaceID, paneID, editing: false });
+        try {
+            await options.csv?.afterRaw(paneID);
+        } finally {
+            if (!disposed && entries.get(paneID) === entry) emit(entry);
+        }
+        return snapshot(entry);
+    };
+
+    /**
+     * #324: a csv document's `text` is its raw source only in raw mode. Rows go through the
+     * `csv*` calls, and raw text that would not fit the plugin JSON cap is cut with `truncated`
+     * rather than failing the whole read.
+     */
+    const csvDocument = async (entry: Entry): Promise<DocumentSnapshot> => {
+        const raw = entry.mode === 'edit';
+        let dirty = editor.isDirty(entry.paneID);
+        let error = entry.error;
+        if (!raw && options.csv !== undefined) {
+            try {
+                const state = await options.csv.state(entry.paneID);
+                dirty = state.dirty;
+                error = state.error;
+            } catch (cause) {
+                error = messageOf(cause);
+            }
+            assertLive(entry);
+        }
+        const document: DocumentSnapshot = {
+            paneID: entry.paneID, workspaceID: entry.workspaceID, kind: 'csv', mode: entry.mode,
+            path: entry.filePath, text: raw ? entry.content : '', loaded: raw ? entry.loaded : true,
+            dirty, error, revision: documentRevision(entry)
+        };
+        return fitPluginDocument(document);
+    };
+
     // ── public API ──────────────────────────────────────────────────────────
 
     const service: ContentService = {
@@ -795,6 +981,7 @@ export function createContentService(options: ContentServiceOptions): ContentSer
         async document(paneID) {
             const entry = await ensure(paneID);
             assertLive(entry);
+            if (entry.type === 'csv') return csvDocument(entry);
             return { paneID, workspaceID: entry.workspaceID, kind: entry.type, mode: entry.mode,
                 path: entry.filePath, text: entry.content, loaded: entry.loaded, dirty: editor.isDirty(paneID),
                 error: entry.error, revision: documentRevision(entry) };
@@ -827,11 +1014,12 @@ export function createContentService(options: ContentServiceOptions): ContentSer
         async setMode(paneID, mode, guard) {
             const entry = await ensure(paneID);
             checkDocument(entry, guard);
-            if (entry.type !== 'markdown') {
+            if (entry.type !== 'markdown' && entry.type !== 'csv') {
                 throw new Error(`pane '${paneID}' is a ${entry.type} pane and has no edit mode`);
             }
             cancelMarkdown(entry);
             if (entry.mode === mode) return snapshot(entry);
+            if (entry.type === 'csv') return setCsvMode(entry, mode);
 
             if (mode === 'view') {
                 editor.flush(paneID);
@@ -868,9 +1056,11 @@ export function createContentService(options: ContentServiceOptions): ContentSer
                 checkDocument(entry, guard);
                 if (guard && !entry.loaded) throw new Error('Document has not loaded successfully.');
                 if (entry.type === 'diff') throw new Error(`pane '${paneID}' is a read-only diff pane`);
-                if (entry.type === 'markdown' && entry.mode !== 'edit') {
+                if ((entry.type === 'markdown' || entry.type === 'csv') && entry.mode !== 'edit') {
                     throw new Error(`pane '${paneID}' is not in edit mode`);
                 }
+                // #324: a raw buffer whose read failed must never be typed over and saved.
+                if (entry.type === 'csv' && !entry.loaded) throw new Error(entry.error ?? 'Document has not loaded successfully.');
                 cancelMarkdown(entry);
                 entry.content = text;
                 cancelRender(entry);
@@ -887,6 +1077,7 @@ export function createContentService(options: ContentServiceOptions): ContentSer
             return pin(paneID, async () => {
                 const entry = await ensure(paneID);
                 checkDocument(entry, guard);
+                if (entry.type === 'csv' && entry.mode !== 'edit') throw new Error(`pane '${paneID}' is not in edit mode`);
                 cancelMarkdown(entry);
                 editor.flush(paneID);
                 if (editor.isDirty(paneID)) throw new Error(entry.error ?? 'Could not save content');
@@ -912,6 +1103,12 @@ export function createContentService(options: ContentServiceOptions): ContentSer
             }
             if (entry.type === 'markdown') {
                 await reloadFromDisk(entry);
+                return snapshot(entry);
+            }
+            if (entry.type === 'csv') {
+                // The grid has its own reload (`csv-discard`); this re-reads only the raw text.
+                if (entry.mode !== 'edit') throw new Error(`pane '${paneID}' is not in edit mode`);
+                if (!editor.isDirty(paneID) && (await loadCsv(entry))) emit(entry);
                 return snapshot(entry);
             }
             return snapshot(entry);

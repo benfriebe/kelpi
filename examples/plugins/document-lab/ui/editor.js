@@ -13,6 +13,13 @@ function problem(error) {
 }
 function preview(text, kind) {
     const target = $('preview'); target.replaceChildren();
+    if (kind === 'csv') {
+        // A csv table edits by row and cell (documents.csv), never by whole text, so this
+        // text editor stays read-only for it; Kelpi's own table renderer does the editing.
+        const note = document.createElement('p'); note.className = 'note';
+        note.textContent = 'CSV tables are read-only in Document Lab. Choose the native CSV renderer to edit cells.';
+        target.append(note); return;
+    }
     if (kind === 'diff') {
         const lines = document.createElement('div'); lines.className = 'diff';
         for (const line of text.split('\n')) {
@@ -38,18 +45,18 @@ function preview(text, kind) {
 function render() {
     if (!state) return;
     const pending = inputs !== accepted || writing;
-    const editable = state.kind !== 'diff' && (state.kind === 'scratchpad' || state.mode === 'edit');
+    const editable = state.kind !== 'diff' && state.kind !== 'csv' && (state.kind === 'scratchpad' || state.mode === 'edit');
     document.body.dataset.kind = state.kind;
     document.body.dataset.pane = state.paneID;
     document.body.dataset.pending = String(pending);
-    $('title').textContent = state.path?.split('/').pop() ?? (state.kind === 'diff' ? 'Git diff' : 'Scratchpad');
+    $('title').textContent = state.path?.split('/').pop() ?? (state.kind === 'diff' ? 'Git diff' : state.kind === 'csv' ? 'CSV table' : 'Scratchpad');
     $('kind').textContent = state.kind;
     $('identity').textContent = state.paneID.slice(0, 8);
     $('mode').hidden = state.kind !== 'markdown';
     $('mode').textContent = state.mode === 'edit' ? 'Preview' : 'Edit';
     $('mode').disabled = pending || blocked;
     $('save').disabled = !editable || pending || blocked || !state.loaded;
-    $('refresh').disabled = pending || blocked || state.dirty;
+    $('refresh').disabled = pending || blocked || state.dirty || state.kind === 'csv';
     $('recovery').hidden = !blocked;
     editor.hidden = !editable; editor.readOnly = !state.loaded || blocked;
     $('preview').hidden = editable;

@@ -1,6 +1,8 @@
 /**
- * The GUI routes to a markdown pane: ⌘O, drag-and-drop, and ⌘-clicking a path in a terminal
- * (CONT-120…122, TERM-052, APP-020/APP-103).
+ * The GUI routes to a document pane: ⌘O, drag-and-drop, and ⌘-clicking a path in a terminal
+ * (CONT-120…122, TERM-052, APP-020/APP-103). A `.md` opens a markdown pane; since #324 a `.csv`
+ * or `.tsv` opens a csv pane. The client sends the same `open` verb for both and the DAEMON picks
+ * the pane type by extension, so this module only decides what is worth sending.
  *
  * Everything here is pure so the rules are testable without a window; `App.tsx` supplies the
  * DOM events and the command client.
@@ -39,13 +41,17 @@
  *    process to ask, and says so.
  */
 
+import { CSV_OPEN_EXTENSIONS, isCsvPath } from '@kelpi/protocol';
+
 /** CONT-121 / APP-103: the drop path accepts a lowercased `.md` only — NOT `.markdown`. */
 export const DROP_MARKDOWN_EXTENSION = '.md';
+/** #324: and the csv pane's two extensions (`@kelpi/protocol` `CSV_OPEN_EXTENSIONS`). */
+export const DROP_CSV_EXTENSIONS = CSV_OPEN_EXTENSIONS.map((extension) => `.${extension}`);
 
-/** ⌘O's picker filter (CONT-120): `md` alone, matching the Swift `NSOpenPanel`. */
-export const OPEN_PANEL_EXTENSIONS = ['md'] as const;
-/** The `NSOpenPanel` message string, kept byte-for-byte (CONT-120). */
-export const OPEN_PANEL_MESSAGE = 'Choose a Markdown file to open';
+/** ⌘O's picker filter (CONT-120): `md`, matching the Swift `NSOpenPanel`, plus #324's csv/tsv. */
+export const OPEN_PANEL_EXTENSIONS = ['md', 'csv', 'tsv'] as const;
+/** The open panel's message (CONT-120's string, widened by #324 as the shell's panel is). */
+export const OPEN_PANEL_MESSAGE = 'Choose a Markdown or CSV file to open';
 
 /** The subset of `DataTransfer` this module reads — so a test can hand it a literal. */
 export interface DropData {
@@ -161,6 +167,11 @@ export function isMarkdownDropPath(path: string): boolean {
     return name.slice(dot).toLowerCase() === DROP_MARKDOWN_EXTENSION;
 }
 
+/** #324: a path a window-level drop opens: markdown, or a csv/tsv the daemon opens as a grid. */
+export function isOpenableDropPath(path: string): boolean {
+    return isMarkdownDropPath(path) || isCsvPath(path);
+}
+
 /**
  * What to do with a drop. Three outcomes, all of them something the user can see:
  * open it, say why it cannot be opened, or ignore a drag that carries nothing file-shaped
@@ -169,8 +180,8 @@ export function isMarkdownDropPath(path: string): boolean {
 export function dropDecision(data: DropData): DropDecision {
     const path = pathFromDrop(data);
     if (path !== null) {
-        if (!isMarkdownDropPath(path)) {
-            return { kind: 'reject', reason: `${path} is not a .md file` };
+        if (!isOpenableDropPath(path)) {
+            return { kind: 'reject', reason: `${path} is not a .md, .csv or .tsv file` };
         }
         return { kind: 'open', path };
     }
@@ -299,7 +310,7 @@ export function terminalDropText(data: DropData): string | null {
  *
  * Every file type goes the same way, `.md` included: a terminal types what is dropped on it,
  * which is what an agent user dropping a spec onto Claude Code wants. Only a drop OUTSIDE a
- * terminal opens a markdown pane (CONT-121).
+ * terminal opens a markdown pane (CONT-121), or a csv pane for a `.csv`/`.tsv` (#324).
  */
 export type TerminalDropPlan =
     | { readonly kind: 'type'; readonly paths: readonly string[] }

@@ -119,7 +119,7 @@ Derived values used by core:
 - `pane(ws, id)` = find in `panes` then `parkedPanes`. Surface/agent lifecycle events resolve panes
   through both lanes; user commands (send/split/close and the like) deliberately search only `panes`.
 
-Pane fields core touches: `id`, `label`, `type` (`shell | markdown | scratchpad | diff | web | plugin`),
+Pane fields core touches: `id`, `label`, `type` (`shell | markdown | scratchpad | diff | csv | web | plugin`),
 `title`, `workingDirectory`, `status` (`idle | running | waitingForInput`), `agentSessionID`
 (string | null), `agentKind` (`"claude" | "codex" | null`).
 

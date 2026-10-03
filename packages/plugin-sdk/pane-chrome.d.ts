@@ -69,8 +69,8 @@
 
 export type PaneChromePlacement = 'pane.chrome';
 
-/** The pane kinds. A presenter draws all six or none: fallback is all-or-nothing. */
-export type PaneChromeKind = 'shell' | 'markdown' | 'scratchpad' | 'diff' | 'web' | 'plugin';
+/** The pane kinds. A presenter draws all seven or none: fallback is all-or-nothing. */
+export type PaneChromeKind = 'shell' | 'markdown' | 'scratchpad' | 'diff' | 'csv' | 'web' | 'plugin';
 
 export type PaneChromeStatus = 'idle' | 'running' | 'waitingForInput';
 

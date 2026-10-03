@@ -606,8 +606,8 @@ Legend:
 
 | raw value | display name | default | layer | condition |
 |---|---|---|---|---|
-| `open_file` | Preview Markdown | ⌘O | menu | opens file picker filtered to markdown |
-| `toggle_markdown_edit` | Toggle Markdown Edit | ⌘E | monitor | only when focused pane is a markdown pane; else falls through |
+| `open_file` | Preview Markdown | ⌘O | menu | opens the native file picker (File ▸ Open…, title "Open File") with "Markdown and CSV", "Markdown" and "CSV" filters; a `.csv`/`.tsv` opens a csv table pane (issue #324, csv-pane.md §2) |
+| `toggle_markdown_edit` | Toggle Markdown Edit | ⌘E | monitor | only when focused pane is a markdown pane, or a csv pane (grid vs raw text, offered up to 2 MiB; csv-pane.md §6.7); else falls through |
 | `increase_markdown_font_size` | Increase Markdown Font Size | unbound | monitor | only when focused pane is markdown AND not in edit mode; else falls through. Ships UNBOUND since #175: ⌘= / ⌘- / ⌘0 are the Terminal rows below, and those offer a focused preview this same font size first, so the preview's behaviour on the three chords is unchanged (section 7.6) |
 | `decrease_markdown_font_size` | Decrease Markdown Font Size | unbound | monitor | same condition, same note |
 | `reset_markdown_font_size` | Reset Markdown Font Size | unbound | monitor | same condition, same note |
@@ -906,7 +906,8 @@ no Electron accelerator spelling (`acceleratorForTrigger`, `packages/shell/src/h
 and either way the binding still fires through the client dispatcher, which handles menu-bar
 actions too, section 7.2):
 
-- **File-ish group (replaces "New")**: New Workspace, New Group, Preview Markdown…,
+- **File-ish group (replaces "New")**: New Workspace, New Group, Open… ("Preview Markdown…"
+  before issue #324),
   New Web Pane, Command Palette, divider, Switch to Workspace 1–9, divider,
   Select All Workspaces (no binding), Deselect All Workspaces (disabled when no
   multi-selection).

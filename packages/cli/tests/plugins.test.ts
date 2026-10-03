@@ -55,7 +55,7 @@ describe('bundled plugin CLI', () => {
     });
     it('selects offline pane, sidebar, document and browser templates and rejects unknown templates', async () => {
         const placements = { pane: ['pane', 'sidebar.primary', 'sidebar.secondary'], sidebar: ['sidebar.primary', 'sidebar.secondary'],
-            document: ['document.markdown', 'document.scratchpad', 'document.diff'], browser: ['browser'] };
+            document: ['document.markdown', 'document.scratchpad', 'document.diff', 'document.csv'], browser: ['browser'] };
         for (const [template, expected] of Object.entries(placements)) {
             const target = path.join(home, template);
             const result = await runCLI(['plugin', 'init', target, '--id', 'example.starter', '--template', template], { port: server.port, cwd: home });

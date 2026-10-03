@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { decodePluginManifest, type JsonValue, type PluginInfo } from '@kelpi/protocol';
 import type { KelpiRuntime } from '../state';
 import { contentState, createFakeContentApi } from '../content/testing';
+import { createFakeCsvApi } from '../content/csv/testing';
 import { DocumentPane } from './DocumentPane';
 import { clearDocumentDraft, getDocumentDraft, runDocumentEdit, stageDocumentDraft, type DocumentDraft } from '../plugins/document-drafts';
 
@@ -15,7 +16,12 @@ vi.mock('../plugins/client', async original => ({ ...await original<object>(),
 }));
 vi.mock('../plugins/PluginView', () => ({ PluginView: (props: { paneID: string; viewID: string; onError(message: string): void }) =>
     <div data-testid={`replacement-${props.paneID}`}><button onClick={() => props.onError('Renderer failed')}>Fail {props.paneID}</button>{props.viewID}</div> }));
-const runtime = (host: string) => ({ connection: { target: `ws://${host}/ws` } } as KelpiRuntime);
+// The connection's status listeners, so a test can drop the socket under a csv pane (#324).
+const statusListeners = new Set<(status: string) => void>();
+const runtime = (host: string) => ({
+    connection: { target: `ws://${host}/ws`, on: (_event: string, listener: (status: string) => void) => { statusListeners.add(listener); return () => { statusListeners.delete(listener); }; } },
+    commands: { registerCloseGuard: () => () => undefined }
+} as unknown as KelpiRuntime);
 const local = runtime('document-features.test'), remote = runtime('document-remote.test');
 let counter = 0;
 const ids: string[] = [];
@@ -70,6 +76,61 @@ describe('registered native document features', () => {
         plugins = plugins.map(plugin => ({ ...plugin, enabled: true, instanceID: 'two' })); view.rerender(draw());
         expect(screen.getByTestId(`replacement-${id}`)).toBeTruthy();
         view.unmount(); expect(content.listenerCount(id)).toBe(0);
+    });
+
+    it('routes a csv pane by its mode: no content subscription for the grid, the editor for raw text (#324)', async () => {
+        const id = paneID(), content = createFakeContentApi(), csv = createFakeCsvApi([['a', 'b'], ['1', '2']]);
+        const draw = (editing: boolean) => <DocumentPane runtime={local} workspaceID="workspace" paneID={id} kind="csv" content={content} csv={csv} editing={editing} />;
+        const view = render(draw(false));
+        await act(async () => { await csv.settle(); });
+        expect(content.subscribes).toEqual([]);
+        expect(csv.subscribes).toEqual([id]);
+        expect(screen.getByTestId(`csv-grid-${id}`)).toBeTruthy();
+        view.rerender(draw(true));
+        // The host and the editor each hold a view of the pane (the real client refcounts them).
+        expect(content.subscribes.length).toBeGreaterThan(0);
+        expect(new Set(content.subscribes)).toEqual(new Set([id]));
+        act(() => content.push(contentState({ paneID: id, type: 'csv', mode: 'edit', html: null, text: 'a,b\n1,2\n' })));
+        fireEvent.change(screen.getByRole('textbox'), { target: { value: 'a,b\n1,3\n' } });
+        expect(getDocumentDraft(local, id)?.text).toBe('a,b\n1,3\n');
+        // The daemon took the text (the `content-set-text` reply, not saved yet) and then went
+        // back to the grid, both in one render: it flushed and saved that buffer before it let
+        // the mode go, so the editor's draft is settled rather than left for a recovery banner.
+        act(() => {
+            content.push(contentState({ paneID: id, type: 'csv', mode: 'edit', html: null, text: 'a,b\n1,3\n', dirty: true, revision: 2 }));
+            content.push(contentState({ paneID: id, type: 'csv', mode: 'view', html: null, text: '', revision: 3 }));
+            view.rerender(draw(false));
+        });
+        expect(getDocumentDraft(local, id) ?? null).toBeNull();
+        expect(screen.queryByTestId(`document-recovery-${id}`)).toBeNull();
+    });
+
+    it('keeps a raw-text draft the daemon never had when the pane goes back to the grid, and offers recovery (#324)', async () => {
+        const id = paneID(), content = createFakeContentApi(), csv = createFakeCsvApi([['a', 'b'], ['1', '2']]);
+        const draw = (editing: boolean) => <DocumentPane runtime={local} workspaceID="workspace" paneID={id} kind="csv" content={content} csv={csv} editing={editing} />;
+        const view = render(draw(true));
+        act(() => content.push(contentState({ paneID: id, type: 'csv', mode: 'edit', html: null, text: 'a,b\n1,2\n' })));
+        fireEvent.change(screen.getByRole('textbox'), { target: { value: 'a,b\n1,3\n' } });
+        // Another client switched the pane to the grid before this text reached the daemon.
+        view.rerender(draw(false));
+        await act(async () => { await csv.settle(); });
+        expect(getDocumentDraft(local, id)?.text).toBe('a,b\n1,3\n');
+        expect(screen.getByTestId(`document-recovery-${id}`)).toBeTruthy();
+    });
+
+    it('keeps a raw-text draft when the connection dropped before the pane went back to the grid (#324)', async () => {
+        const id = paneID(), content = createFakeContentApi(), csv = createFakeCsvApi([['a', 'b'], ['1', '2']]);
+        const draw = (editing: boolean) => <DocumentPane runtime={local} workspaceID="workspace" paneID={id} kind="csv" content={content} csv={csv} editing={editing} />;
+        const view = render(draw(true));
+        act(() => content.push(contentState({ paneID: id, type: 'csv', mode: 'edit', html: null, text: 'a,b\n1,2\n' })));
+        fireEvent.change(screen.getByRole('textbox'), { target: { value: 'a,b\n1,3\n' } });
+        act(() => content.push(contentState({ paneID: id, type: 'csv', mode: 'edit', html: null, text: 'a,b\n1,3\n', dirty: true, revision: 2 })));
+        // The daemon restarted before its autosave: it comes back with the pane as a grid.
+        act(() => { for (const listener of [...statusListeners]) listener('reconnecting'); });
+        view.rerender(draw(false));
+        await act(async () => { await csv.settle(); });
+        expect(getDocumentDraft(local, id)?.text).toBe('a,b\n1,3\n');
+        expect(screen.getByTestId(`document-recovery-${id}`)).toBeTruthy();
     });
 
     it('persists native pending input before replacement and offers explicit recovery', async () => {

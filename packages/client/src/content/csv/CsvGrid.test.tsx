@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { firePointer } from '../../grid/testing';
 import { contentState, createFakeContentApi } from '../testing';
 import { csvChromeFacts } from './chrome-facts';
-import { csvColumnWidths } from './columns';
+import { csvColumnWidths, rowNumberColumnWidth } from './columns';
 import { flushCsvPane } from './csv-model';
 import { CsvPane } from './CsvPane';
 import { createFakeCsvApi, type FakeCsvApi } from './testing';
@@ -104,6 +104,15 @@ describe('the render window', () => {
         expect(m.api.rowRequests.map((request) => request.start)).toContain(5000);
         // A row sits at its own content position: the map is the identity under the cap.
         expect(screen.getByTestId('csv-row-5001').style.top).toBe(`${24 + 5000 * 24}px`);
+    });
+
+    it('sizes the row-number column for the formatted count, separators included', async () => {
+        // 1,000,000 body rows: nine characters drawn, seven digits. Sizing from the digits cut
+        // the leading digits off every row number from 1,000,000 up.
+        await mount(table(1_000_001, 1));
+        const width = Number.parseFloat(screen.getByTestId('csv-rownum-1').style.width);
+        expect(width).toBe(rowNumberColumnWidth('1,000,000'));
+        expect(width).toBeGreaterThan(Math.ceil('1000000'.length * 7.2 + 18));
     });
 
     it('caps the spacer and still reaches the end through Go to row', async () => {

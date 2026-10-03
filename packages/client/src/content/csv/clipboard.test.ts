@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { clipboardCellText, parseClipboardTable } from './clipboard';
-import { CSV_SAMPLE_CHARS, CSV_WIDTH_PANES, autoColumnWidth, cellDisplayText, columnLetter, columnOffsets, csvColumnWidths, visibleColumns } from './columns';
+import { CSV_SAMPLE_CHARS, CSV_WIDTH_PANES, autoColumnWidth, cellDisplayText, columnLetter, columnOffsets, csvColumnWidths, rowNumberColumnWidth, visibleColumns } from './columns';
 
 describe('parseClipboardTable', () => {
     it('reads a spreadsheet range: tabs between cells, line breaks between rows', () => {
@@ -102,5 +102,14 @@ describe('csvColumnWidths.growAuto', () => {
         expect(csvColumnWidths.get('kept', 0)).toBe(200);
         expect(csvColumnWidths.get('forgotten', 0)).toBeNull();
         csvColumnWidths.clear();
+    });
+});
+
+describe('rowNumberColumnWidth', () => {
+    it('fits the formatted label, measured when it can be and estimated when not', () => {
+        expect(rowNumberColumnWidth('1')).toBe(44);
+        expect(rowNumberColumnWidth('2,000,000')).toBe(Math.ceil(9 * 7.2 + 18));
+        expect(rowNumberColumnWidth('2,000,000', () => 70)).toBe(88);
+        expect(rowNumberColumnWidth('2,000,000', () => null)).toBe(rowNumberColumnWidth('2,000,000'));
     });
 });

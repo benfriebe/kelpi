@@ -66,6 +66,23 @@ export function canvasMeasure(font: string): CsvTextMeasure {
     };
 }
 
+/** The row-number column never goes narrower than this. */
+export const CSV_ROW_NUMBER_MIN_PX = 44;
+/** Its padding: 8 px on the right of the number, 10 px of air on the left, and the border. */
+const CSV_ROW_NUMBER_PADDING_PX = 18;
+
+/**
+ * The row-number column's width for the widest label it will draw, the row count as FORMATTED
+ * (`1,975,819`, separators included). Sizing from the digit count alone cut the leading digits
+ * off every number from 1,000,000 up, since the separators add two characters the count never
+ * saw.
+ */
+export function rowNumberColumnWidth(widestLabel: string, measure?: CsvTextMeasure): number {
+    const measured = measure?.(widestLabel) ?? null;
+    const text = measured ?? widestLabel.length * CSV_CHAR_PX;
+    return Math.max(CSV_ROW_NUMBER_MIN_PX, Math.ceil(text + CSV_ROW_NUMBER_PADDING_PX));
+}
+
 /** The auto width for a column whose header label and sampled values are given. */
 export function autoColumnWidth(samples: readonly string[], measure?: CsvTextMeasure): number {
     let widest = 0;

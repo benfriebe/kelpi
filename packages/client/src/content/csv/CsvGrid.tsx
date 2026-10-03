@@ -67,6 +67,7 @@ import { clipboardCellText, parseClipboardTable } from './clipboard';
 import {
     autoColumnWidth,
     canvasMeasure,
+    rowNumberColumnWidth,
     cellDisplayText,
     columnLetter,
     columnOffsets,
@@ -100,6 +101,8 @@ const STATUS_PX = 24;
 const FONT = 'ui-monospace, SFMono-Regular, Menlo, monospace';
 /** Header labels are bold, so measure everything in the wider weight. */
 const measureCell = canvasMeasure(`600 12px ${FONT}`);
+/** Row numbers are drawn in the rows' own regular 12 px. */
+const measureRowNumber = canvasMeasure(`12px ${FONT}`);
 
 export interface CsvGridProps {
     readonly paneID: string;
@@ -230,7 +233,7 @@ export function CsvGrid(props: CsvGridProps): ReactElement {
         [columns, paneID, widthsVersion]
     );
     const offsets = useMemo(() => columnOffsets(widths), [widths]);
-    const rowNumberPx = Math.max(44, Math.ceil(String(Math.max(bodyCount, 1)).length * 7.2 + 18));
+    const rowNumberPx = useMemo(() => rowNumberColumnWidth(formatCount(Math.max(bodyCount, 1)), measureRowNumber), [bodyCount]);
     const totalWidth = rowNumberPx + (offsets[offsets.length - 1] ?? 0);
 
     // ── vertical scroll mapping ────────────────────────────────────────────────────

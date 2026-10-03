@@ -19,6 +19,7 @@ import type {
     TerminalRenderer,
     TerminalRendererFactory,
     TerminalRendererOptions,
+    TerminalCellRun,
     TerminalSearchHighlight,
     TerminalSearchSpan,
     TerminalTheme
@@ -184,12 +185,14 @@ export class FakeRenderer implements TerminalRenderer {
         // and the constraint the plan names (§7's spike: a scrolled-back phone view is lost on
         // the next chunk of output).
         this.setOffset(0);
+        this.changeContent();
     }
 
     reset(): void {
         if (this.failed) return;
         this.resets += 1;
         this.screenLog.push('reset');
+        this.changeContent();
     }
 
     onEngineFailure(listener: (error: unknown) => void): () => void {
@@ -306,6 +309,7 @@ export class FakeRenderer implements TerminalRenderer {
         this.rows = rows;
         this.resizes.push({ cols, rows });
         this.screenLog.push(`resize ${String(cols)}x${String(rows)}`);
+        this.changeContent();
     }
 
     focus(): void {
@@ -377,6 +381,37 @@ export class FakeRenderer implements TerminalRenderer {
 
     revealMatch(match: TerminalMatchLocation): void {
         this.revealed.push(match);
+    }
+
+    /** #303: every link underline the pane asked for, in order (`null` clears). */
+    readonly linkUnderlines: Array<readonly TerminalCellRun[] | null> = [];
+    /** What `setLinkUnderline` answers: false plays an engine with no layer (the xterm fallback). */
+    drawsLinkUnderline = true;
+
+    setLinkUnderline(cells: readonly TerminalCellRun[] | null): boolean {
+        this.linkUnderlines.push(cells === null ? null : cells.map((cell) => ({ ...cell })));
+        return this.drawsLinkUnderline;
+    }
+
+    /**
+     * #303: what each screen row reads as, for the link hover. Tests write it directly, then
+     * `changeContent()` to play the engine applying output.
+     */
+    readonly screenRows = new Map<number, string>();
+    private readonly contentListeners = new Set<() => void>();
+
+    screenRowsKey(rows: readonly number[]): string | null {
+        return [`${String(this.cols)}x${String(this.rows)}`, ...rows.map((row) => this.screenRows.get(row) ?? '')].join('\n');
+    }
+
+    onContentChange(listener: () => void): () => void {
+        this.contentListeners.add(listener);
+        return () => this.contentListeners.delete(listener);
+    }
+
+    /** The engine applied output (or a reset or resize): what `onContentChange` reports. */
+    changeContent(): void {
+        for (const listener of [...this.contentListeners]) listener();
     }
 
     setSearchHighlight(highlight: TerminalSearchHighlight | null): void {

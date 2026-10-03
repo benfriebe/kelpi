@@ -686,7 +686,8 @@ JSON payload, daemon/client/workspace/pane context, source, and correlation ID. 
 crossing both adapters is intercepted once. Ordering is ascending priority, plugin ID, then
 hook ID. Existing handlers validate current state after before hooks finish, outside reducers
 and database transactions. Recursive invocations carry a bounded trace; a hook does not
-reenter itself. Plugin administration and ping remain outside hooks for recovery.
+reenter itself. Plugin administration and ping remain outside hooks for recovery, and so does
+`probe-terminal-target`, the terminal link hover's read-only question (#303).
 
 A before hook must explicitly return allow or refuse; refusal reaches the caller without
 performing the operation. Invalid decisions, errors, and timeouts fail the current operation

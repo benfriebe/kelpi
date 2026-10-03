@@ -706,8 +706,10 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
         return result;
     }
     private operationHooks(command: string) {
-        // Recovery and discovery must work even when a plugin has a broken policy hook.
-        if (command === 'plugin' || command === 'ping') return [];
+        // Recovery and discovery must work even when a plugin has a broken policy hook. A link
+        // probe (#303) runs on every cell the pointer crosses and changes nothing, so it is not an
+        // operation for a hook to police either.
+        if (command === 'plugin' || command === 'ping' || command === 'probe-terminal-target') return [];
         const trace = operationScope().trace;
         return [...this.installations.values()].filter(item => item.enabled && !this.changing.has(item.manifest.id) && !this.errors.has(item.manifest.id) && !this.dependencyProblem(item.manifest.id))
             .flatMap(item => (item.manifest.contributes.hooks ?? []).filter(hook => hook.commands.includes(command) || hook.commands.includes('*')).map(hook => ({ pluginID: item.manifest.id, hook })))

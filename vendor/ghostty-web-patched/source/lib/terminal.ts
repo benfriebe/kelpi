@@ -26,6 +26,7 @@ import type {
   IDisposable,
   IEvent,
   IKeyEvent,
+  ILinkUnderlineSegment,
   ITerminalAddon,
   ITerminalCore,
   ITerminalOptions,
@@ -99,6 +100,8 @@ export class Terminal implements ITerminalCore {
    * the same reason as the two above: an embedder may set it before `open()` builds a renderer.
    */
   private searchHighlight: ISearchHighlight | null = null;
+  // vendor 0.4.0-kelpi.18: the embedder's link underline (`setLinkUnderline`)
+  private linkUnderline: ILinkUnderlineSegment[] | null = null;
 
   // ── Caret-anchored IME (vendor 0.4.0-kelpi.2) ───────────────────────────────
   // The cursor cell's box in the coordinate space the absolutely-positioned textarea and
@@ -202,6 +205,7 @@ export class Terminal implements ITerminalCore {
       disableStdin: options.disableStdin ?? false,
       smoothScrollDuration: options.smoothScrollDuration ?? 100, // Default: 100ms smooth scroll
       scrollOnUserInput: options.scrollOnUserInput ?? true, // vendor 0.4.0-kelpi.11
+      linkDetection: options.linkDetection ?? true, // vendor 0.4.0-kelpi.18
     };
 
     // Wrap in Proxy to intercept runtime changes (xterm.js compatibility)
@@ -550,6 +554,8 @@ export class Terminal implements ITerminalCore {
       if (this.paintSuspended) this.renderer.setPaintSuspended(true);
       // vendor 0.4.0-kelpi.16: and a search highlight. See `setSearchHighlight`.
       if (this.searchHighlight) this.renderer.setSearchHighlight(this.searchHighlight);
+      // vendor 0.4.0-kelpi.18: and a link underline. See `setLinkUnderline`.
+      if (this.linkUnderline) this.renderer.setLinkUnderline(this.linkUnderline);
       this.renderer.setSearchHighlightListener((spans) => {
         this.searchHighlightEmitter.fire(spans.map((span) => ({ ...span })));
       });
@@ -639,14 +645,19 @@ export class Terminal implements ITerminalCore {
         }
       });
 
-      // Initialize link detection system
-      this.linkDetector = new LinkDetector(this);
+      // Initialize link detection system. vendor 0.4.0-kelpi.18: only when the embedder has not
+      // turned it off (`linkDetection: false`). With no detector the mouse handlers below do no
+      // link work at all: no hover underline, no pointer cursor, no Ctrl/Cmd-click opening.
+      // The scrollbar, which shares those handlers, is unaffected.
+      if (this.options.linkDetection) {
+        this.linkDetector = new LinkDetector(this);
 
-      // Register link providers
-      // OSC8 first (explicit hyperlinks take precedence)
-      this.linkDetector.registerProvider(new OSC8LinkProvider(this));
-      // URL regex second (fallback for plain text URLs)
-      this.linkDetector.registerProvider(new UrlRegexProvider(this));
+        // Register link providers
+        // OSC8 first (explicit hyperlinks take precedence)
+        this.linkDetector.registerProvider(new OSC8LinkProvider(this));
+        // URL regex second (fallback for plain text URLs)
+        this.linkDetector.registerProvider(new UrlRegexProvider(this));
+      }
 
       // Setup mouse event handling for links and scrollbar
       // Use capture phase to intercept scrollbar clicks before SelectionManager
@@ -1068,6 +1079,28 @@ export class Terminal implements ITerminalCore {
 
   public getSelectionPosition(): IBufferRange | undefined {
     return this.selectionManager?.getSelectionPosition();
+  }
+
+  // ==========================================================================
+  // Link underline (vendor 0.4.0-kelpi.18)
+  // ==========================================================================
+
+  /**
+   * Underline these cells as a link, in each cell's own foreground colour, until called with
+   * `null` (or an empty list).
+   *
+   * For an embedder that decides what a link is itself (Kelpi asks its daemon, so the underline
+   * matches what a click there would open) and has turned the built-in detection off with
+   * `linkDetection: false`. Rows are viewport rows as painted, so an underline set while the
+   * viewport is scrolled is on the history rows on screen. The terminal does not move it when
+   * output arrives or the viewport scrolls: the embedder sets it again, or clears it.
+   */
+  public setLinkUnderline(segments: readonly ILinkUnderlineSegment[] | null): void {
+    this.linkUnderline =
+      segments === null || segments.length === 0
+        ? null
+        : segments.map((segment) => ({ row: segment.row, col: segment.col, width: segment.width }));
+    this.renderer?.setLinkUnderline(this.linkUnderline);
   }
 
   // ==========================================================================

@@ -1224,8 +1224,11 @@ export class CommandClient {
     }
 
     /**
-     * #326: what `openTerminalTarget` WOULD do at this cell, with no side effects (a `markdown`
-     * reply only says a pane would open). A daemon older than the verb refuses it as unknown.
+     * #326 / #303: what `openTerminalTarget` WOULD do at this cell, with no side effects (a
+     * `markdown` reply only says a pane would open). The plain-click link menu asks it at the
+     * click, and the hover underline at each cell the pointer rests on, which is why the reply
+     * also carries `span` (the cells to underline) on an `external`, `markdown` or `csv` answer. A daemon
+     * older than the verb refuses it as unknown.
      */
     probeTerminalTarget(
         input: { paneID: string; row: number; col: number },

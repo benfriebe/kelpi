@@ -45,7 +45,7 @@ const repoRoot = path.resolve(here, '..', '..', '..', '..');
 const vendorRoot = path.join(repoRoot, 'vendor', 'ghostty-web-patched');
 
 /** The version the audit evidence and PROVENANCE.md were written against. */
-const EXPECTED_VERSION = '0.4.0-kelpi.17';
+const EXPECTED_VERSION = '0.4.0-kelpi.18';
 
 /** Markers of the caret-anchored IME, in the built ESM bundle the client imports. */
 const CARET_MARKERS = ['data-ime-preedit', 'data-ime-caret', 'syncImeCaret'];
@@ -126,6 +126,16 @@ const SEARCH_HIGHLIGHT_MARKERS = [
     'searchSelectedBackground',
     'getSearchHighlights'
 ];
+
+/**
+ * Markers of `-kelpi.18`'s link underline (#303).
+ *
+ * Kelpi turns the engine's own link detection off and draws the underline the daemon names. Take
+ * a future npm release wholesale and `linkDetection: false` is an option nobody reads (the blue
+ * plain-hover underline on the engine's own rules comes back) and `setLinkUnderline` is a call
+ * into nothing (no link is ever underlined).
+ */
+const LINK_UNDERLINE_MARKERS = ['setLinkUnderline', 'isLinkUnderlined', 'linkUnderlineRows', 'linkDetection'];
 
 /**
  * Markers of `-kelpi.7`'s live default colours (§N18).
@@ -396,6 +406,18 @@ describe('vendored ghostty-web engine', () => {
         const wasm = await WebAssembly.compile(new Uint8Array(fs.readFileSync(path.join(vendorRoot, 'ghostty-vt.wasm'))));
         const exported = WebAssembly.Module.exports(wasm).map((entry) => entry.name);
         expect(exported).toContain('ghostty_terminal_is_screen_row_wrapped');
+    });
+
+    it('can turn its own link detection off and draws an embedder\'s link underline (§-kelpi.18, #303)', () => {
+        const bundle = read(path.join(vendorRoot, 'dist', 'ghostty-web.js'));
+        for (const marker of LINK_UNDERLINE_MARKERS) {
+            expect(bundle).toContain(marker);
+        }
+        const terminalSource = read(path.join(vendorRoot, 'source', 'lib', 'terminal.ts'));
+        expect(terminalSource).toContain('linkDetection: options.linkDetection ?? true');
+        expect(terminalSource).toContain('if (this.options.linkDetection) {');
+        const rendererSource = read(path.join(vendorRoot, 'source', 'lib', 'renderer.ts'));
+        expect(rendererSource).toContain('this.linkUnderlineRows.forEach((row) => hyperlinkRows.add(row));');
     });
 
     it('keeps the snapshotted source in step with the bundle', () => {

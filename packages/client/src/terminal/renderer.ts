@@ -160,6 +160,26 @@ export interface TerminalSearchHighlight {
     readonly current: (TerminalMatchLocation & { readonly seq: number }) | null;
 }
 
+/**
+ * A run of cells on one viewport row (#303): where a link underline goes. The daemon's
+ * `probe-terminal-target` answers a list of these as `span`.
+ */
+export interface TerminalCellRun {
+    readonly row: number;
+    readonly col: number;
+    readonly width: number;
+}
+
+/** The screen's cells, copied out of the engine (#303, `EngineHandle.screenSnapshot`). */
+export interface ScreenSnapshot {
+    readonly cols: number;
+    readonly rows: number;
+    /** Row-major, `cols * rows`: each cell's first codepoint (0 for an empty cell). */
+    readonly codepoints: Uint32Array;
+    /** Row-major: each cell's OSC 8 link id (0 for none). */
+    readonly links: Uint32Array;
+}
+
 /** One painted run of a search highlight: a viewport row, end column inclusive. */
 export interface TerminalSearchSpan {
     readonly row: number;
@@ -389,6 +409,32 @@ export interface TerminalRenderer {
      */
     setSearchHighlight(highlight: TerminalSearchHighlight | null): void;
     /**
+     * Underline these cells as a link, or none (`null`). Issue #303: the pane asks the daemon what
+     * a ⌘-click at the hovered cell would open and hands over the cells it names, so the
+     * underline is never a promise the click would refuse. Viewport rows, 0 at the top.
+     *
+     * Returns whether this engine drew it: ghostty-web does (`0.4.0-kelpi.18`), the xterm fallback
+     * has no layer, so the pane leaves the pointer cursor off there rather than promising a
+     * link it cannot show. Transient by nature: a rebuilt engine starts with none.
+     */
+    setLinkUnderline(cells: readonly TerminalCellRun[] | null): boolean;
+    /**
+     * What these screen rows hold now, as one string to compare, or null when it cannot be read
+     * (viewport rows, 0 at the top, with the viewport at the live bottom). #303: the link hover
+     * compares it to tell output that moved a link from output that did not touch it, so it
+     * carries everything a ⌘-click's answer depends on that the engine knows: each cell's
+     * character, whether it carries an OSC 8 link, and the grid size (a resize moves every
+     * cell). Not the link's address: the engine reuses a cell's link id when a different address
+     * replaces it, so a swap under identical text is invisible here.
+     */
+    screenRowsKey(rows: readonly number[]): string | null;
+    /**
+     * Fires after the engine has APPLIED something that can move what is on screen: output
+     * (including bytes that waited behind a mount flush or a replay), a reset, a resize. Not
+     * when bytes arrive, which can be earlier. Returns an unsubscribe. #303.
+     */
+    onContentChange(listener: () => void): () => void;
+    /**
      * Fires with the spans of every frame whose search highlights differ from the frame before.
      * Returns an unsubscribe. Diagnostics: the pane mirrors it so the audit can see the layer.
      */
@@ -509,6 +555,13 @@ export interface EngineHandle {
      * the selection that shows its revealed match the search colours. A fake omits it.
      */
     setSearchHighlight?(query: { readonly needle: string; readonly caseSensitive: boolean } | null): void;
+    /** The link underline (#303). Only ghostty-web has the layer (`0.4.0-kelpi.18`). */
+    setLinkUnderline?(cells: readonly TerminalCellRun[] | null): void;
+    /**
+     * The screen as it is now, copied (#303): each cell's character and OSC 8 link id, row-major.
+     * One engine read for every row; the adapter keeps it until the engine next changes.
+     */
+    screenSnapshot?(): ScreenSnapshot | null;
     /**
      * Pin the current match against the engine's buffer as it is NOW, or drop it (`null`).
      * Returns whether it was pinned: false when the needle is not where the match says, which is
@@ -964,6 +1017,10 @@ export function engineKeyTarget(host: HTMLElement | null): HTMLElement | null {
 }
 
 class AdapterRenderer implements TerminalRenderer {
+    /** #303: told after the engine applied output, a reset or a resize (`onContentChange`). */
+    private readonly contentListeners = new Set<() => void>();
+    /** #303: the screen as last read for `screenRowsKey`, until the engine next changes. */
+    private screen: ScreenSnapshot | null | undefined = undefined;
     readonly engine: TerminalEngine;
 
     private options: ResolvedRendererOptions;
@@ -1365,6 +1422,7 @@ class AdapterRenderer implements TerminalRenderer {
          */
         this.beginHold();
         this.guard(() => terminal.resize(nextCols, nextRows), 'resize');
+        this.announceContent();
     }
 
     focus(): void {
@@ -1485,6 +1543,65 @@ class AdapterRenderer implements TerminalRenderer {
         if (this.disposed) return;
         this.searchHighlight = highlight;
         this.applySearchHighlight();
+    }
+
+    screenRowsKey(rows: readonly number[]): string | null {
+        const handle = this.handle;
+        if (handle?.screenSnapshot === undefined || this.disposed || this.poisoned) return null;
+        if (this.screen === undefined) {
+            let snapshot: ScreenSnapshot | null = null;
+            this.swallow(() => {
+                snapshot = handle.screenSnapshot?.() ?? null;
+            });
+            this.screen = snapshot;
+        }
+        const screen = this.screen;
+        if (screen === null) return null;
+        const parts = [`${String(screen.cols)}x${String(screen.rows)}`];
+        for (const row of rows) {
+            if (row < 0 || row >= screen.rows) {
+                parts.push('');
+                continue;
+            }
+            const from = row * screen.cols;
+            // Numbers, not characters: a key is only ever compared, and a stray codepoint past
+            // U+10FFFF would throw in `String.fromCodePoint`.
+            parts.push(
+                `${screen.codepoints.subarray(from, from + screen.cols).join(',')};${screen.links.subarray(from, from + screen.cols).join(',')}`
+            );
+        }
+        return parts.join('\n');
+    }
+
+    onContentChange(listener: () => void): () => void {
+        this.contentListeners.add(listener);
+        return () => this.contentListeners.delete(listener);
+    }
+
+    /** #303: the engine applied something that can move what is on screen. */
+    private announceContent(): void {
+        this.screen = undefined;
+        for (const listener of [...this.contentListeners]) {
+            // A listener's failure is its own; it must never read as the engine's.
+            try {
+                listener();
+            } catch {
+                // ignored
+            }
+        }
+    }
+
+    setLinkUnderline(cells: readonly TerminalCellRun[] | null): boolean {
+        const handle = this.handle;
+        if (handle?.setLinkUnderline === undefined || this.disposed || this.poisoned) return false;
+        // Cosmetic, like the search highlight: an underline that did not take is no reason to
+        // lose the terminal under it.
+        let drawn = false;
+        this.swallow(() => {
+            handle.setLinkUnderline?.(cells);
+            drawn = true;
+        });
+        return drawn;
     }
 
     /**
@@ -1745,6 +1862,7 @@ class AdapterRenderer implements TerminalRenderer {
         if (this.handle?.resetForReplay !== undefined) this.handle.resetForReplay();
         else terminal.write(TERMINAL_RESET_SEQUENCE);
         this.engineWritten = false;
+        this.announceContent();
     }
 
     private deliver(
@@ -1773,6 +1891,7 @@ class AdapterRenderer implements TerminalRenderer {
         } else {
             this.guard(write, 'write');
         }
+        this.announceContent();
         /**
          * §N24, this was the replay: end the hold, in the SAME synchronous turn as the write.
          *
@@ -2044,7 +2163,11 @@ export const loadGhosttyEngine: EngineLoader = async (options) => {
         scrollback: options.scrollbackBytes,
         cursorBlink: options.cursorBlink,
         allowTransparency: options.allowTransparency,
-        convertEol: false
+        convertEol: false,
+        // #303: the engine's own link detection underlined on its own rules (any scheme, half a
+        // wrapped URL, nothing for a path). The pane asks the daemon instead and hands the
+        // engine the cells to underline (`setLinkUnderline` below).
+        linkDetection: false
     });
     const engineTerminal = terminal as unknown as XtermLikeTerminal;
     return {
@@ -2137,6 +2260,28 @@ export const loadGhosttyEngine: EngineLoader = async (options) => {
         // the count it was selected in); which reply to pin, and when, is the adapter's call.
         setSearchHighlight: (query): void => {
             terminal.setSearchHighlight(query);
+        },
+        setLinkUnderline: (cells): void => {
+            terminal.setLinkUnderline(cells === null ? null : cells.map((cell) => ({ ...cell })));
+        },
+        // One viewport read for the whole screen, copied: the engine reuses its cell objects.
+        // The screen rows are the live bottom, which is the only place the hover asks.
+        screenSnapshot: (): ScreenSnapshot | null => {
+            const wasm = terminal.wasmTerm;
+            if (wasm === undefined) return null;
+            wasm.update();
+            const cells = wasm.getViewport();
+            const cols = terminal.cols;
+            const rows = terminal.rows;
+            const codepoints = new Uint32Array(cols * rows);
+            const links = new Uint32Array(cols * rows);
+            const count = Math.min(cells.length, cols * rows);
+            for (let index = 0; index < count; index++) {
+                const cell = cells[index]!;
+                codepoints[index] = cell.codepoint;
+                links[index] = cell.hyperlink_id;
+            }
+            return { cols, rows, codepoints, links };
         },
         setSearchCurrent: (match): boolean => terminal.setSearchCurrent(match),
         onSearchHighlightChange: (listener): EngineDisposable =>

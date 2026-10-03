@@ -1,11 +1,11 @@
-# ghostty-web 0.4.0-kelpi.17 (vendored)
+# ghostty-web 0.4.0-kelpi.18 (vendored)
 
 **Version labels.** These versions were tagged `-nex.N` before the Nex to Kelpi rename and were
 relabelled `-kelpi.N` on 2026-10-03 with the same numbering, so an older commit, log or audit
 record that says `0.4.0-nex.N` means the same build as `0.4.0-kelpi.N`.
 
 A build of `ghostty-web` v0.4.0 carrying two open upstream PRs — applied after a line-by-line
-review in the orchestrating session and explicit user authorization to integrate both, plus sixteen
+review in the orchestrating session and explicit user authorization to integrate both, plus seventeen
 Kelpi-authored adaptations on top of them (`-kelpi.2`: the caret-anchored IME; `-kelpi.3`: an
 `allowTransparency` that does something; `-kelpi.4`: a cursor that knows whether its surface has
 focus; `-kelpi.5`: a `write()` that survives zero bytes; `-kelpi.6`: a paint that can be suspended;
@@ -16,7 +16,8 @@ every terminal on its own WASM instance; `-kelpi.11`: output never moves a scrol
 `-kelpi.13`: an `ESC[2K`'d row forgets it was ever wrapped; `-kelpi.14`: selected conversation
 rows remain anchored when older history is trimmed; `-kelpi.15`: DOM focus preserves the embedder's pan position;
 `-kelpi.16`: a search-highlight layer, and a public `select()` that lands on the row it names;
-`-kelpi.17`: copying a selection joins soft-wrapped rows, history included).
+`-kelpi.17`: copying a selection joins soft-wrapped rows, history included; `-kelpi.18`: the
+built-in link detection can be turned off, and an embedder-drawn link underline).
 
 **`-kelpi.13` is the first adaptation that is NOT TypeScript-only.** Every version up to `-kelpi.12`
 shipped `ghostty-vt.wasm` byte-identical to the npm `ghostty-web@0.4.0` package; `-kelpi.13`
@@ -44,6 +45,40 @@ reproduces the `0.4.0` wasm BYTE-IDENTICALLY when run without the patch, is in
 | `0.4.0-kelpi.15` | terminal and selection DOM focus uses `preventScroll`, preserving the embedder's mirrored-canvas pan (#178) |
 | `0.4.0-kelpi.16` | `select`/`selectAll`/`selectLines` convert rows through `viewportRowToAbsolute`; a search-highlight layer paints every visible match of a needle and a current match in the theme's `search*` colours (#306) |
 | `0.4.0-kelpi.17` | **wasm + TypeScript**: `ghostty_terminal_is_screen_row_wrapped` reports a row's soft-wrap continuation by absolute row, history included; `getSelection()` joins soft-wrapped rows instead of putting a newline at every wrap, and keeps a wrapped row's trailing spaces; `Buffer.getLine` reports `isWrapped` for history rows (#323) |
+| `0.4.0-kelpi.18` | `linkDetection: false` turns off the built-in link hover, pointer cursor and Ctrl/Cmd-click; `setLinkUnderline(segments)` underlines the cells an embedder names, in each cell's own foreground colour (#303) |
+
+## Kelpi adaptation: an embedder-drawn link underline (`0.4.0-kelpi.18`, 2026-10-03)
+
+Issue #303. Upstream's link detection (`link-detector.ts` with `OSC8LinkProvider` and
+`UrlRegexProvider`) underlines on plain hover, in a fixed `#4A90E2`, by its own rules: any of a
+dozen schemes (`ssh:`, `mailto:`, `magnet:`, ...), one row only (the head of a soft-wrapped URL,
+never its tail), an OSC 8 link underlined but given no pointer (`getHyperlinkUri` always answers
+null, so the provider yields nothing), and never a file path. Kelpi's ⌘-click is not this
+detector: it asks the daemon, which opens only http(s) URLs, OSC 8 links and existing `.md`
+paths, refuses a URL cut off by a box border, and joins a soft-wrapped URL. So the underline
+promised links the click refused and missed links the click opened.
+
+**`linkDetection?: boolean`** (`ITerminalOptions`, default `true`, so upstream behaviour is
+unchanged unless asked). `false` builds no `LinkDetector` and registers no providers in `open()`.
+The mouse handlers stay installed because the scrollbar shares them, and each already returns
+early with no detector: no hover underline (either kind), no `cursor` writes, no click
+activation. `registerLinkProvider` throws as it always did before `open()`.
+
+**`Terminal.setLinkUnderline(segments | null)`** with `ILinkUnderlineSegment = { row, col, width }`
+(viewport rows as painted, `width` in cells). The renderer underlines exactly those cells, at the
+SGR-underline position, in the cell's own foreground colour (`strokeStyle = fillStyle` after the
+glyph, as SGR 4 is drawn; Ghostty draws a link's underline the same way), and skips a cell that
+already carries SGR underline so it gets one line. The rows of the old and the new underline are
+added to the frame's hyperlink rows, so the next frame repaints them, which is how the hovered
+link range already repaints. Set before `open()`, it is carried onto the renderer `open()`
+builds, as the search highlight is. The terminal never moves it: the embedder sets it again, or
+clears it, when output or a scroll moves the text.
+
+No optional chaining in `render()` (the paint-suspend guard rule above). TypeScript only; the
+WASM is unchanged from `-kelpi.17`. Rebuilt with `pnpm vendor:build`. Covered by
+`packages/client/src/terminal/link-underline.wasm.test.ts` (the installed bundle on the real
+WASM over a 2D context that records strokes) and the `-kelpi.18` markers in
+`vendor-engine.test.ts`.
 
 ## Kelpi adaptation: copy joins soft-wrapped rows (`0.4.0-kelpi.17`, 2026-10-03)
 

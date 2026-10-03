@@ -7,6 +7,7 @@
 
 import { describe, expect, it } from 'vitest';
 
+import { cellRuns, tokenRangeAt } from '../ws/desktop.js';
 import { createTerminalStateService } from './service.js';
 
 const PANE = 'AAAAAAAA-0000-4000-8000-000000000001';
@@ -126,6 +127,103 @@ describe('cellText', () => {
         expect(cell?.text).toBe('/tmp/dir/notes-xy.md');
         expect(cell?.text).not.toContain('STRANDED');
         expect(cell?.offset).toBe(3);
+    });
+
+    /**
+     * #303: `cellsOf` is what turns a token back into the cells a hover underline is drawn
+     * under, so each unit of the text must name the cell that shows it.
+     */
+    it('names the viewport cell of every unit of a range of the text', async () => {
+        const term = await seeded('cat docs/a.md\r\n');
+        const cell = term.cellText(PANE, 0, 8);
+        expect(cell?.cellsOf(4, 13)).toHaveLength(9);
+        expect(cell?.cellsOf(4, 5)).toEqual([{ row: 0, col: 4, width: 1 }]); // "d"
+        expect(cell?.cellsOf(12, 13)).toEqual([{ row: 0, col: 12, width: 1 }]); // the last "d"
+        expect(cell?.cellsOf(3, 3)).toEqual([]);
+    });
+
+    it('maps a soft-wrapped line onto both of its rows', async () => {
+        const term = await seeded('cat /very/long/dir/name/notes.md\r\n', 20, 6);
+        const cell = term.cellText(PANE, 1, 4);
+        // Unit 24 is the "n" of "notes.md", column 4 of the wrapped row (see the test above).
+        expect(cell?.cellsOf(19, 25)).toEqual([
+            { row: 0, col: 19, width: 1 },
+            { row: 1, col: 0, width: 1 },
+            { row: 1, col: 1, width: 1 },
+            { row: 1, col: 2, width: 1 },
+            { row: 1, col: 3, width: 1 },
+            { row: 1, col: 4, width: 1 }
+        ]);
+    });
+
+    it('puts a character after a wide one on its own cell, not one cell early', async () => {
+        // "日" covers columns 0 and 1 and reads as ONE unit, so text and cells disagree by one
+        // from there on; the mapping is what keeps the underline on the right cells.
+        const term = await seeded('日 see a.md\r\n');
+        const cell = term.cellText(PANE, 0, 7);
+        expect(cell?.text.startsWith('日 see a.md')).toBe(true);
+        expect(cell?.cellsOf(0, 2)).toEqual([
+            { row: 0, col: 0, width: 2 },
+            { row: 0, col: 2, width: 1 }
+        ]);
+        expect(cell?.cellsOf(6, 7)).toEqual([{ row: 0, col: 7, width: 1 }]); // "a"
+    });
+
+    it('reads the right half of a wide character as that character', async () => {
+        // "a日b": column 2 is the spacer of "日". Read as itself it put the offset on "b".
+        const term = await seeded('a日b\r\n');
+        expect(term.cellText(PANE, 0, 1)?.offset).toBe(1);
+        expect(term.cellText(PANE, 0, 2)?.offset).toBe(1);
+        expect(term.cellText(PANE, 0, 3)?.offset).toBe(2);
+    });
+
+    it('names rows above the screen with negative rows once the line starts in history', async () => {
+        // 10 columns x 3 rows: the 25-cell line wraps over three rows, and two more lines push
+        // its head row up into history.
+        const term = await seeded(`${'x'.repeat(25)}\r\nb\r\nc`, 10, 3);
+        const cell = term.cellText(PANE, 0, 1);
+        expect(cell?.text).toBe('x'.repeat(25));
+        expect(cell?.cellsOf(0, 1)?.[0]?.row).toBeLessThan(0);
+        expect(cell?.cellsOf(24, 25)).toEqual([{ row: 0, col: 4, width: 1 }]);
+    });
+
+    it('reads at most maxRows either side, and nothing of a line that runs past them', async () => {
+        // 10 columns: an 85-cell line is nine rows, all on screen.
+        const term = await seeded(`${'y'.repeat(85)}\r\n`, 10, 12);
+        expect(term.cellText(PANE, 4, 1)?.text).toBe('y'.repeat(85));
+        expect(term.cellText(PANE, 4, 1, { maxRows: 8 })?.text).toBe('y'.repeat(85));
+        expect(term.cellText(PANE, 4, 1, { maxRows: 3 })).toBeNull();
+        // A short line is unaffected by the bound.
+        const short = await seeded('see a.md\r\n', 10, 12);
+        expect(short.cellText(PANE, 0, 4, { maxRows: 0 })?.text).toBe('see a.md');
+    });
+
+    /**
+     * #303, the whole daemon half on the real emulator: the line, the token in it, and the
+     * cells to underline, for a URL that soft-wraps and one that follows a wide character.
+     */
+    it('turns a token back into the cells that show it, across a wrap and after a wide character', async () => {
+        const url = 'https://example.com/a/long/path';
+        const wrapped = await seeded(`see ${url} now\r\n`, 20, 6);
+        const head = wrapped.cellText(PANE, 0, 6)!;
+        const range = tokenRangeAt(head.text, head.offset)!;
+        expect(head.text.slice(range.start, range.end)).toBe(url);
+        expect(cellRuns(head.cellsOf(range.start, range.end))).toEqual([
+            { row: 0, col: 4, width: 16 },
+            { row: 1, col: 0, width: 15 }
+        ]);
+        const tail = wrapped.cellText(PANE, 1, 3)!;
+        const tailRange = tokenRangeAt(tail.text, tail.offset)!;
+        expect(cellRuns(tail.cellsOf(tailRange.start, tailRange.end))).toEqual([
+            { row: 0, col: 4, width: 16 },
+            { row: 1, col: 0, width: 15 }
+        ]);
+
+        const wide = await seeded('日本 notes.md\r\n', 20, 6);
+        const line = wide.cellText(PANE, 0, 7)!;
+        const token = tokenRangeAt(line.text, line.offset)!;
+        expect(line.text.slice(token.start, token.end)).toBe('notes.md');
+        expect(cellRuns(line.cellsOf(token.start, token.end))).toEqual([{ row: 0, col: 5, width: 8 }]);
     });
 
     it('cellTextAsync flushes pending writes first', async () => {

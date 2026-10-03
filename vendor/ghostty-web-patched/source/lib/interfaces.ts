@@ -23,6 +23,11 @@ export interface ITerminalOptions {
   smoothScrollDuration?: number; // Duration in ms for smooth scroll animation (default: 100, 0 = instant)
   scrollOnUserInput?: boolean; // vendor 0.4.0-kelpi.11: a keystroke scrolls to the bottom (default: true)
 
+  // vendor 0.4.0-kelpi.18: false turns off the built-in link detection (the hover underline, the
+  // pointer cursor and Ctrl/Cmd-click opening), for an embedder that decides what a link is
+  // itself and draws its own underline with `setLinkUnderline` (default: true)
+  linkDetection?: boolean;
+
   // Internal: Ghostty WASM instance (optional, for test isolation)
   // If not provided, uses the module-level instance from init()
   ghostty?: Ghostty;
@@ -224,4 +229,14 @@ export interface IBufferCell {
   getCodepoint(): number;
   /** Whether cell has dim/faint attribute (boolean version) */
   isDim(): boolean;
+}
+
+/**
+ * vendor 0.4.0-kelpi.18: a run of cells on one viewport row that `Terminal.setLinkUnderline`
+ * underlines. `row` 0 is the top row on screen, `width` counts cells.
+ */
+export interface ILinkUnderlineSegment {
+  row: number;
+  col: number;
+  width: number;
 }

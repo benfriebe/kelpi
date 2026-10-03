@@ -113,3 +113,59 @@ describe('hyperlinkAt (#83)', () => {
         expect(await term.hyperlinkAtAsync(PANE, 0, 4)).toBe('https://example.com/async');
     });
 });
+
+describe('hyperlinkRangeAt (#303)', () => {
+    it('answers the cells of a one-row link alongside its URI', async () => {
+        const term = await seeded(`see ${osc8('https://example.com/x', 'the docs')} now\r\n`);
+        expect(term.hyperlinkRangeAt(PANE, 0, 6)).toEqual({
+            uri: 'https://example.com/x',
+            segments: [{ row: 0, col: 4, width: 8 }]
+        });
+        expect(term.hyperlinkRangeAt(PANE, 0, 0)).toBeNull();
+    });
+
+    /**
+     * Codex's shape: one OSC 8 per row, no `id=`, so xterm gives each row's cells a different
+     * link id. The range is matched by URI, so either row answers both runs, and the border
+     * cells between them are left out.
+     */
+    it('covers both rows of a link a TUI hard-wrapped inside a box, and not the border', async () => {
+        const uri = 'https://example.com/wrapped/path/that/continues/here';
+        const term = await seeded(
+            [
+                cup(1, 1),
+                '┌───────────────┐',
+                cup(2, 1),
+                `│${osc8(uri, 'https://example.')}│`,
+                cup(3, 1),
+                `│${osc8(uri, 'com/wrapped/path')}│`,
+                cup(4, 1),
+                '└───────────────┘'
+            ].join('')
+        );
+        const expected = {
+            uri,
+            segments: [
+                { row: 1, col: 1, width: 16 },
+                { row: 2, col: 1, width: 16 }
+            ]
+        };
+        expect(term.hyperlinkRangeAt(PANE, 1, 4)).toEqual(expected);
+        expect(term.hyperlinkRangeAt(PANE, 2, 9)).toEqual(expected);
+    });
+
+    it('stops at the first row that does not carry the link', async () => {
+        const term = await seeded(
+            `${osc8('https://a.example/', 'aaaa')}\r\n${osc8('https://b.example/', 'bbbb')}\r\n`
+        );
+        expect(term.hyperlinkRangeAt(PANE, 0, 1)?.segments).toEqual([{ row: 0, col: 0, width: 4 }]);
+        expect(term.hyperlinkRangeAt(PANE, 1, 1)?.segments).toEqual([{ row: 1, col: 0, width: 4 }]);
+    });
+
+    it('hyperlinkRangeAtAsync flushes pending writes first', async () => {
+        const term = createTerminalStateService({ defaultCols: 40, defaultRows: 8 });
+        term.attach(PANE, 40, 8);
+        term.feed(PANE, `go ${osc8('https://example.com/async', 'there')}\r\n`);
+        expect((await term.hyperlinkRangeAtAsync(PANE, 0, 4))?.uri).toBe('https://example.com/async');
+    });
+});

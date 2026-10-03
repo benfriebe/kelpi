@@ -484,6 +484,26 @@ describe('⌘-click a terminal cell (CONT-122 / TERM-052)', () => {
         expect(h.lastCommand('open-terminal-target')).toMatchObject({ col: 79, row: 16 });
     });
 
+    /**
+     * #303: a plain hover asks the same daemon the same question, as `probe-terminal-target`,
+     * for the cell a ⌘-click at the same pixel would name, and opens nothing.
+     */
+    it('asks what a ⌘-click would open when the pointer moves onto a cell, without the click', async () => {
+        const h = setup();
+        const host = await grid({ width: 805, height: 355 });
+
+        // jsdom has no `PointerEvent`: a real `MouseEvent` under the pointer event's name.
+        fireEvent(host, new MouseEvent('pointermove', { bubbles: true, clientX: 79 * CELL.width + 1, clientY: 16 * CELL.height + 2 }));
+
+        expect(h.lastCommand('probe-terminal-target')).toMatchObject({
+            command: 'probe-terminal-target',
+            pane_id: PANE_A,
+            col: 79,
+            row: 16
+        });
+        expect(h.lastCommand('open-terminal-target')).toBeUndefined();
+    });
+
     it('opens the daemon’s URL through the system opener, straight away on a ⌘-click', async () => {
         const h = setup();
         const host = await grid();

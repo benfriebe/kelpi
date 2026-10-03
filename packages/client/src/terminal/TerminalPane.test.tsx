@@ -23,6 +23,7 @@ import {
     createFakeRendererFactory,
     installFakeResizeObserver,
     type FakePaneStream,
+    type FakeRenderer,
     type FakePhoneWindow
 } from './testing';
 
@@ -2269,5 +2270,193 @@ describe('TerminalPane — the renderer is out of WebAssembly address space', ()
         expect(host.dataset['terminalStatus']).toBe('live');
         expect(host.dataset['terminalFailure']).toBeUndefined();
         expect(view.container.querySelector('[data-testid="terminal-restart-ui-pane-1"]')).toBeNull();
+    });
+});
+
+// ── #303: the hover underline over a link ────────────────────────────────────────────
+//
+// The pane asks `probeLink` (the daemon, in assembly) what a ⌘-click at the hovered cell would
+// open and hands the cells it names to the renderer. These pin the wiring; when to ask is
+// `link-hover.test.ts`'s, and what the engine draws is `link-underline.wasm.test.ts`'s.
+
+describe('TerminalPane: link hover (#303)', () => {
+    const LINK = [{ row: 3, col: 2, width: 12 }];
+
+    async function hoverHarness(options: {
+        modes?: { mouseTracking?: string; mouseFormat?: string };
+        probe?: boolean;
+        drawsLinkUnderline?: boolean;
+        measure?: (element: HTMLElement) => { width: number; height: number };
+    } = {}) {
+        const pty = createFakePtyApi();
+        const renderers = createFakeRendererFactory({ cell: { width: 10, height: 20 } });
+        const asked: Array<{ paneID: string; row: number; col: number; answer: (cells: typeof LINK | null) => void }> = [];
+        const probeLink = (paneID: string, row: number, col: number) =>
+            new Promise<typeof LINK | null>((resolve) => asked.push({ paneID, row, col, answer: resolve }));
+        const original = renderers.factory;
+        const factory: typeof original = (rendererOptions) => {
+            const renderer = original(rendererOptions);
+            if (options.drawsLinkUnderline === false) (renderer as FakeRenderer).drawsLinkUnderline = false;
+            return renderer;
+        };
+        const view = render(
+            <TerminalPane
+                paneID="pane-1"
+                ptyApi={pty}
+                focused
+                visible
+                createRenderer={factory}
+                measure={options.measure ?? box(800, 480)}
+                {...(options.probe === false ? {} : { probeLink })}
+            />
+        );
+        await settle();
+        const root = view.container.querySelector('[data-pane-id="pane-1"]') as HTMLElement;
+        const host = root.querySelector('[data-terminal-host]') as HTMLElement;
+        const engine = document.createElement('div');
+        const engineEvents: string[] = [];
+        engine.addEventListener('mousemove', () => engineEvents.push('mousemove'));
+        host.appendChild(engine);
+        if (options.modes !== undefined) {
+            act(() => {
+                pty.last().modes(options.modes as Parameters<FakePaneStream['modes']>[0]);
+            });
+        }
+        // jsdom has no `PointerEvent` (and Testing Library's stand-in drops `clientX`), so the
+        // pointer move is a real `MouseEvent` under the pointer event's name, as
+        // `webpane/chrome-polish.test.tsx` does; the mouse move after it is what the reporter sees.
+        const move = (clientX: number, clientY: number, buttons = 0): void => {
+            fireEvent(engine, new MouseEvent('pointermove', { clientX, clientY, buttons, bubbles: true }));
+            fireEvent.mouseMove(engine, { clientX, clientY, buttons });
+        };
+        const answer = async (cells: typeof LINK | null): Promise<void> => {
+            await act(async () => {
+                asked.at(-1)?.answer(cells);
+                await Promise.resolve();
+            });
+        };
+        return { pty, renderer: renderers.last(), root, host, engineEvents, asked, move, answer };
+    }
+
+    it('underlines what the daemon names on a plain hover, with a pointer, and clears off it', async () => {
+        const h = await hoverHarness();
+        h.move(45, 61);
+        expect(h.asked.map(({ paneID, row, col }) => ({ paneID, row, col }))).toEqual([{ paneID: 'pane-1', row: 3, col: 4 }]);
+        await h.answer(LINK);
+        expect(h.renderer.linkUnderlines.at(-1)).toEqual(LINK);
+        expect(h.host.style.cursor).toBe('pointer');
+        expect(h.root.getAttribute('data-terminal-link-underline')).toBe('3:2+12');
+
+        // Along the link: no new question.
+        h.move(105, 61);
+        expect(h.asked).toHaveLength(1);
+
+        // Off it: cleared at once.
+        h.move(45, 201);
+        expect(h.renderer.linkUnderlines.at(-1)).toBeNull();
+        expect(h.host.style.cursor).toBe('');
+        expect(h.root.hasAttribute('data-terminal-link-underline')).toBe(false);
+    });
+
+    it('still hands a 1003 hover to the application, and to the engine, while it asks', async () => {
+        const h = await hoverHarness({ modes: { mouseTracking: 'any', mouseFormat: 'sgr' } });
+        h.move(45, 61);
+        expect(h.pty.last().directInput).toEqual([esc('[<35;5;4M')]);
+        expect(h.engineEvents).toEqual(['mousemove']);
+        expect(h.asked).toHaveLength(1);
+    });
+
+    it('asks nothing while a button is held, or while the viewport is in history', async () => {
+        const h = await hoverHarness();
+        h.move(45, 61, 1);
+        expect(h.asked).toHaveLength(0);
+        act(() => h.renderer.scrollLines(-3));
+        h.move(45, 61);
+        expect(h.asked).toHaveLength(0);
+    });
+
+    it('takes the underline down when the engine scrolls under it', async () => {
+        const h = await hoverHarness();
+        h.move(45, 61);
+        await h.answer(LINK);
+        act(() => h.renderer.scrollLines(-3));
+        expect(h.renderer.linkUnderlines.at(-1)).toBeNull();
+    });
+
+    it('takes the underline down when output rewrites its row, and not for other output', async () => {
+        const h = await hoverHarness();
+        // Live bytes wait for the attach replay (`ingest.ts`), as they do in the app.
+        act(() => h.pty.last().replay('SNAPSHOT'));
+        h.renderer.screenRows.set(3, '  https://example.com/x');
+        h.move(45, 61);
+        await h.answer(LINK);
+        const painted = h.renderer.linkUnderlines.length;
+
+        // The comparison runs a moment after output (`link-hover.ts`, `checkMs`).
+        const landed = (): Promise<void> =>
+            act(async () => {
+                await vi.advanceTimersByTimeAsync(60);
+            });
+        h.renderer.screenRows.set(9, 'spinner frame');
+        act(() => h.pty.last().output('x'));
+        await landed();
+        expect(h.renderer.linkUnderlines).toHaveLength(painted);
+        expect(h.asked).toHaveLength(1);
+
+        h.renderer.screenRows.set(3, 'something else');
+        act(() => h.pty.last().output('y'));
+        await landed();
+        expect(h.renderer.linkUnderlines.at(-1)).toBeNull();
+        expect(h.asked).toHaveLength(2);
+    });
+
+    it('takes the underline down when the grid changes under a still pointer', async () => {
+        let width = 800;
+        const h = await hoverHarness({ measure: () => ({ width, height: 480 }) });
+        act(() => vi.advanceTimersByTime(RESIZE_MAX_WAIT_MS)); // mount-time size sync
+        h.move(45, 61);
+        await h.answer(LINK);
+        expect(h.renderer.linkUnderlines.at(-1)).toEqual(LINK);
+
+        // The pane narrows (a split, a sidebar drag): the engine is resized, the pointer is not moved.
+        width = 600;
+        act(() => observers.trigger());
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(RESIZE_MAX_WAIT_MS + 60);
+        });
+        expect(h.renderer.cols).toBe(60);
+        expect(h.renderer.linkUnderlines.at(-1)).toBeNull();
+    });
+
+    it('drops the hover when the pane goes off screen', async () => {
+        const pty = createFakePtyApi();
+        const renderers = createFakeRendererFactory({ cell: { width: 10, height: 20 } });
+        const asked: Array<(cells: typeof LINK | null) => void> = [];
+        const probeLink = () => new Promise<typeof LINK | null>((resolve) => asked.push(resolve));
+        const tree = (visible: boolean): ReactElement => (
+            <TerminalPane paneID="pane-1" ptyApi={pty} focused visible={visible} createRenderer={renderers.factory} measure={box(800, 480)} probeLink={probeLink} />
+        );
+        const view = render(tree(true));
+        await settle();
+        const host = view.container.querySelector('[data-terminal-host]') as HTMLElement;
+        fireEvent(host, new MouseEvent('pointermove', { clientX: 45, clientY: 61, bubbles: true }));
+        await act(async () => {
+            asked[0]?.(LINK);
+            await Promise.resolve();
+        });
+        expect(renderers.last().linkUnderlines.at(-1)).toEqual(LINK);
+        view.rerender(tree(false));
+        expect(renderers.last().linkUnderlines.at(-1)).toBeNull();
+    });
+
+    it('asks nothing without a probe, or on an engine that cannot draw the underline', async () => {
+        const none = await hoverHarness({ probe: false });
+        none.move(45, 61);
+        expect(none.renderer.linkUnderlines).toEqual([]);
+        cleanup();
+
+        const xterm = await hoverHarness({ drawsLinkUnderline: false });
+        xterm.move(45, 61);
+        expect(xterm.asked).toHaveLength(0);
     });
 });

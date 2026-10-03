@@ -26,7 +26,8 @@ export function paneShortID(paneID: string): string {
 
 /**
  * `markdown preview NOTES.md 0002`, or `markdown preview 0002` when the pane has no file behind
- * it (a scratchpad, or a diff scoped to the whole repo).
+ * it (a scratchpad, or a diff scoped to the whole repo). A csv pane (#324) is `table sales.csv
+ * 00c5` in its grid and `csv editor sales.csv 00c5` in raw-text mode.
  */
 export function contentPaneLabel(kind: string, paneID: string, filePath?: string | null): string {
     const name = filePath === null || filePath === undefined ? '' : basename(filePath).trim();

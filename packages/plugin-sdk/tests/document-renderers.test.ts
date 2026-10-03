@@ -10,24 +10,27 @@ import { PluginService } from '../../daemon/src/plugins/service.js';
 import { harness, id, NOW, seededState, W1, W2 } from '../../daemon/src/store/testing.js';
 
 const PLUGIN = 'sample.document-renderers';
-const MD = id('eeeeeeee', 11), SCRATCH = id('eeeeeeee', 12), DIFF = id('eeeeeeee', 13);
+const MD = id('eeeeeeee', 11), SCRATCH = id('eeeeeeee', 12), DIFF = id('eeeeeeee', 13), CSV = id('eeeeeeee', 14);
 const cleanups: (() => void | Promise<void>)[] = [];
 afterEach(async () => { for (const close of cleanups.splice(0).reverse()) await close(); });
 
 async function fixture(gated = false) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-document-renderers-'));
     const file = path.join(root, 'note.md'); fs.writeFileSync(file, '# Native source\n');
+    const table = path.join(root, 'table.csv'); fs.writeFileSync(table, 'name,qty\napple,3\n');
     const state = harness(seededState());
     state.dispatch(
         { type: 'open-markdown-pane', workspaceID: W1, paneID: MD, filePath: file, now: NOW },
         { type: 'create-scratchpad', workspaceID: W1, paneID: SCRATCH, now: NOW },
-        { type: 'open-diff-pane', workspaceID: W1, paneID: DIFF, repoPath: root, now: NOW }
+        { type: 'open-diff-pane', workspaceID: W1, paneID: DIFF, repoPath: root, now: NOW },
+        // #324: a csv pane is a fourth native document type with its own placement.
+        { type: 'open-markdown-pane', workspaceID: W1, paneID: CSV, filePath: table, paneType: 'csv', now: NOW }
     );
     const content = createContentService({ store: state.store, watch: false, debounceMs: 60_000, git: { getDiff: async () => '@@ -1 +1 @@\n-before\n+after\n' } });
     const source = path.join(root, 'source'); fs.mkdirSync(path.join(source, 'ui'), { recursive: true });
     fs.writeFileSync(path.join(source, 'ui/index.html'), '<p>Document renderer</p>');
     const views = [
-        ...(['markdown', 'scratchpad', 'diff'] as const).map(kind => ({ id: `${PLUGIN}.${kind}`, title: kind, entry: 'ui/index.html', placements: [`document.${kind}`], stateVersion: 2 })),
+        ...(['markdown', 'scratchpad', 'diff', 'csv'] as const).map(kind => ({ id: `${PLUGIN}.${kind}`, title: kind, entry: 'ui/index.html', placements: [`document.${kind}`], stateVersion: 2 })),
         { id: `${PLUGIN}.all`, title: 'All documents', entry: 'ui/index.html', placements: ['document.markdown', 'document.scratchpad', 'document.diff'], stateVersion: 1 },
         { id: `${PLUGIN}.pane`, title: 'Plugin pane', entry: 'ui/index.html', placements: ['pane'], stateVersion: 1 },
         { id: `${PLUGIN}.sidebar`, title: 'Sidebar', entry: 'ui/index.html', placements: ['sidebar.primary'], stateVersion: 1 }
@@ -57,7 +60,7 @@ async function fixture(gated = false) {
 describe('native document renderer attachment', () => {
     it('requires the exact document placement and preserves ordinary plugin pane ownership', async () => {
         const h = await fixture();
-        for (const [kind, paneID] of [['markdown', MD], ['scratchpad', SCRATCH], ['diff', DIFF]] as const) {
+        for (const [kind, paneID] of [['markdown', MD], ['scratchpad', SCRATCH], ['diff', DIFF], ['csv', CSV]] as const) {
             const attached = await h.attach(paneID, kind);
             expect(attached).toMatchObject({ state: {}, stateVersion: 2, context: { paneID, workspaceID: W1, viewID: `${PLUGIN}.${kind}` } });
             expect(h.pane(paneID)).toMatchObject({ id: paneID, type: kind });
@@ -67,6 +70,9 @@ describe('native document renderer attachment', () => {
             await expect(h.attach(paneID, 'sidebar')).rejects.toThrow('does not own');
         }
         await expect(h.attach(SCRATCH, 'markdown')).rejects.toThrow('does not own');
+        // A renderer that never declared `document.csv` is not offered for a csv pane.
+        await expect(h.attach(CSV, 'markdown')).rejects.toThrow('does not own');
+        await expect(h.attach(CSV, 'all')).rejects.toThrow('does not own');
         await expect(h.attach(h.state.state().workspaces[0]!.panes[0]!.id, 'all')).rejects.toThrow('does not own');
         const opened = pluginObject(await h.host.request('open', { pluginID: PLUGIN, viewID: `${PLUGIN}.pane` }, h.client));
         const ownedPaneID = String(opened['paneID']);

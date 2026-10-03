@@ -17,6 +17,7 @@ import { createFilesService } from './files-service.js';
 import { createProcessService } from './process-service.js';
 import { PluginDocuments } from './documents.js';
 import { PluginBrowser } from './browser.js';
+import type { CsvChannel } from '../content/csv/channel.js';
 import type { ContentService } from '../content/service.js';
 import type { WebPaneService } from '../webpane/service.js';
 import { decodePluginInstallation, legacyPluginRevision, PluginRevisionData, recoverPluginRevisionChange, selectPluginRevision, type PluginInstallation } from './revisions.js';
@@ -29,6 +30,8 @@ interface Running {
 }
 export interface PluginServiceOptions {
     readonly content?: ContentService;
+    /** #324: the csv document service behind the documents API's `csv-*` methods. */
+    readonly csv?: CsvChannel | undefined;
     readonly webPanes?: WebPaneService;
     readonly directory?: string;
     readonly pty?: PtyManager;
@@ -55,18 +58,20 @@ function text(value: unknown, field: string): string {
     return value;
 }
 
+/** Native document pane types; each has a `document.<type>` placement (#324 added csv). */
+const NATIVE_DOCUMENT_TYPES: readonly string[] = ['markdown', 'scratchpad', 'diff', 'csv'];
 /** A replacement renders an existing native body; it never acquires the pane descriptor. */
 function nativeTerminalPane(pane: Pane | undefined): boolean {
-    return pane?.type === 'shell' || (pane !== undefined && ['markdown', 'scratchpad', 'diff'].includes(pane.type) && pane.externalEditorCommand != null);
+    return pane?.type === 'shell' || (pane !== undefined && NATIVE_DOCUMENT_TYPES.includes(pane.type) && pane.externalEditorCommand != null);
 }
 function nativePaneView(pane: Pane | undefined, view: PluginViewDefinition): boolean {
     if (!pane) return false;
-    const document = pane.type === 'markdown' || pane.type === 'scratchpad' || pane.type === 'diff';
+    const document = NATIVE_DOCUMENT_TYPES.includes(pane.type);
     return (document && view.placements.includes(`document.${pane.type}`)) || (nativeTerminalPane(pane) && view.placements.includes('terminal')) || (pane.type === 'web' && view.placements.includes('browser'));
 }
 /** Document panes retain terminal renderer state after their external editor closes. */
 function retainedNativePaneView(pane: Pane, view: PluginViewDefinition, previous: PluginViewDefinition | undefined): boolean {
-    const document = pane.type === 'markdown' || pane.type === 'scratchpad' || pane.type === 'diff';
+    const document = NATIVE_DOCUMENT_TYPES.includes(pane.type);
     const placements: PluginPlacement[] = document ? [`document.${pane.type}`, 'terminal']
         : pane.type === 'shell' ? ['terminal'] : pane.type === 'web' ? ['browser'] : [];
     // One saved envelope is shared by the view's native placements. Keep a declared
@@ -114,7 +119,7 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
     private readonly offStore: () => void;
 
     constructor(private readonly options: PluginServiceOptions) {
-        this.documents = new PluginDocuments(options.content, (name, data, id) => { this.emit(name, data, id); });
+        this.documents = new PluginDocuments(options.content, (name, data, id) => { this.emit(name, data, id); }, options.csv);
         this.browser = new PluginBrowser(options.store, options.webPanes, (name, data, id) => { this.emit(name, data, id); }, paneID => options.broadcast({ type: 'web-browser-changed', paneID }));
         this.temporary = options.directory === undefined;
         this.directory = options.directory ?? fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-plugins-'));

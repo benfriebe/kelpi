@@ -91,6 +91,7 @@ const ROUTES = {
     'web-tab-live': 'web',
     'scratchpad-content-changed': 'pane',
     'set-markdown-editing': 'pane',
+    'set-csv-header-row': 'pane',
     'set-markdown-font-size': 'pane',
 
     'cycle-layout': 'layout',

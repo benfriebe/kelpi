@@ -67,8 +67,9 @@ on the right; either sidebar can host either feature or a compatible plugin:
   glyph (48pt, very faint), "No workspace selected" (secondary text), and a
   "Create Workspace" button that opens the New Workspace sheet.
 - A command-palette overlay can cover the middle row (see §7).
-- Dropping a `.md` file on the window (outside a terminal) opens it as a markdown pane, the
-  same route as Finder Open With; a non-markdown drop shows an "Open file" failure toast.
+- Dropping a `.md` file on the window (outside a terminal) opens it as a markdown pane, and a
+  `.csv`/`.tsv` file as a csv table pane (issue #324, [csv-pane.md](csv-pane.md) §2), the same
+  route as Finder Open With; any other drop shows an "Open file" failure toast.
   Dropping onto a **terminal** instead types the dropped path(s), shell-escaped and
   space-separated, into that pane, for every file type (a `.md` included) and for folders. It is
   the only drop route that accepts several files or a non-markdown path (`onDrop` in
@@ -83,8 +84,11 @@ on the right; either sidebar can host either feature or a compatible plugin:
 Kelpi keeps exactly one main window. The Electron shell takes the single-instance lock at
 launch (`packages/shell/src/main.ts:1419-1441`): a second launch exits immediately after
 handing its arguments to the running shell, which raises its window and forwards any markdown
-path among them as a file-open. `open-file` events (Finder Open With) are routed into that
-same window and non-markdown paths are ignored. Closing the window is not quitting: the app
+or csv path among them as a file-open (`OPEN_FILE_EXTENSIONS`: `md`, `markdown`, `csv`, `tsv`).
+`open-file` events (Finder Open With) are routed into that same window and other paths are
+ignored. The bundle declares a "Markdown Document" type and a "CSV Document" type (system UTIs
+`public.comma-separated-values-text` and `public.tab-separated-values-text`), both Editor with
+rank Alternate, so Kelpi is offered in Open With without taking anyone's default. Closing the window is not quitting: the app
 stays in the Dock and the tray, and a Dock click re-shows the window onto the same sessions.
 The web client is naturally single-window per tab.
 
@@ -254,7 +258,7 @@ light/dark mode or terminal background.
 The ghostty config supplies `backgroundColor` + `backgroundOpacity` (user's terminal
 theme, possibly overridden in Settings ▸ Appearance). Rules:
 
-- Non-terminal pane bodies (markdown, scratchpad, diff, web) are painted with
+- Non-terminal pane bodies (markdown, scratchpad, diff, csv, web) are painted with
   `ghosttyBackgroundColor` at `ghosttyBackgroundOpacity` so they blend with the terminal
   panes.
 - If `backgroundOpacity >= 1`, the window paints an opaque `theme.windowBackground`
@@ -376,6 +380,9 @@ Default body by pane type:
 - `scratchpad` — plain-text editor bound to `pane.scratchpadContent`.
 - `diff` — rendered `git diff` HTML; takes a `refreshToken` (uint bumped by the header
   refresh button; view-local per grid, not persisted).
+- `csv`: a virtualised table grid over the daemon's row index (`CsvPane`/`CsvGrid` in
+  `packages/client/src/content/csv/`), or, in raw-text mode (⌘E, files up to 2 MiB), the
+  built-in plain-text editor; see [csv-pane.md](csv-pane.md) §6.
 - `web` — the embedded browser pane (own subsystem; the grid supplies tabs/activeTab/
   private flag/favourites and ~20 callbacks; see the web-pane spec).
 - `plugin` — an isolated plugin view with persisted plugin/view identity and versioned JSON
@@ -408,14 +415,14 @@ Left-to-right contents:
    - shell → a 10pt circle colored by status: `running` → `statusRunning`,
      `waitingForInput` → `statusWaiting`, `idle` → `textTertiary` (halved opacity when
      the pane isn't focused). Color transitions animate ~0.3s.
-   - markdown/plugin → document icon; scratchpad → note icon; diff → `±` icon; web → globe
-     icon; all secondary-colored.
+   - markdown/plugin → document icon; scratchpad → note icon; diff → `±` icon; csv → table
+     icon; web → globe icon; all secondary-colored.
 2. **Label chip** (if `pane.label` set and type ≠ markdown): small tag icon + label text
    (10pt monospace), accent-colored text on accent @ 0.12 rounded fill.
 3. **Path/title text** (11pt monospace, middle-truncated; `textPrimary` when focused,
    else `textSecondary`). Display string:
    - scratchpad → `"Scratchpad"`
-   - markdown → file basename
+   - markdown, csv → file basename
    - diff → `"diff: <basename of filePath, or of workingDirectory if no filePath>"`
    - shell/web → `pane.title ?? pane.workingDirectory`, home-abbreviated (`~/…`)
    - plugin → `pane.label ?? pane.title ?? "Plugin view"`
@@ -448,6 +455,8 @@ Left-to-right contents:
      eye icon when editing (tooltip "Preview (⌘E)").
    - diff: **refresh** (circular-arrow icon, tooltip "Refresh diff") → bumps the pane's
      refresh token, re-running `git diff`.
+   - csv: **edit toggle** relabelled "Raw text (⌘E)" / "Table (⌘E)" (disabled over the 2 MiB
+     raw limit, tooltip says why) and a **header-row toggle** (csv-pane.md §6.8).
 10. **Split right** (2×1 rect icon, tooltip "Split right (⌘D)").
 11. **Split down** (1×2 rect icon, tooltip "Split down (⌘⇧D)").
 12. **New web pane** (globe icon, tooltip "New web pane (⇧-click splits down)") — click
@@ -496,7 +505,7 @@ Move to Workspace ▸  <workspace names>       (fire-and-forget move)
 ──────────                    (only while workspace sync is active)
 Include in Sync | Exclude from Sync          (toggles this pane's membership)
 ──────────
-Open in Finder                (Electron shell only; markdown/diff w/ filePath → reveal
+Open in Finder                (Electron shell only; markdown/csv/diff w/ filePath → reveal
                                file; otherwise open workingDirectory)
 Copy Working Directory        (puts cwd on the clipboard)
 ```
@@ -1650,7 +1659,8 @@ Shell-level event plumbing, delivered to the client as daemon events:
   went blank while occluded, schedule the focused pane's 600ms status clear.
 
 Menu-bar app menus mirror the keybinding map: New Workspace (⌘N), New Group (⌘⇧G),
-Preview Markdown… (⌘O), New Web Pane (⌘⇧O), Command Palette (⌘P), workspace switch
+Open… (⌘O; "Preview Markdown…" before issue #324, whose native panel, titled "Open File",
+offers Markdown and CSV), New Web Pane (⌘⇧O), Command Palette (⌘P), workspace switch
 (⌘1…⌘9), Select/Deselect All Workspaces, Toggle Sidebar (⌘⇧S), Toggle Inspector (⌘I) —
 all shortcuts are user-rebindable, the menu reflects the current binding.
 

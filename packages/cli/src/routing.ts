@@ -22,6 +22,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
+import { CSV_OPEN_EXTENSIONS } from '@kelpi/protocol';
+
 /** Extensions that route to a markdown preview pane. */
 export const markdownOpenExtensions: ReadonlySet<string> = new Set([
     'md',
@@ -32,6 +34,13 @@ export const markdownOpenExtensions: ReadonlySet<string> = new Set([
     'mdwn',
     'markdn'
 ]);
+
+/**
+ * Extensions that route to a csv table pane (#324, docs/csv-pane.md). The CLI only decides that
+ * the file is a document; it sends the same `open` wire command as markdown and the daemon picks
+ * the pane type by extension, so the list is the protocol's, not a copy.
+ */
+export const csvOpenExtensions: ReadonlySet<string> = new Set(CSV_OPEN_EXTENSIONS);
 
 /** Extensions a web pane renders natively, opened as a `file://` URL. */
 export const webOpenExtensions: ReadonlySet<string> = new Set([

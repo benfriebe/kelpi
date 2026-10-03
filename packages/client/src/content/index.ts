@@ -14,6 +14,8 @@
  *   `MarkdownPane.tsx` / `DiffPane.tsx` / `ScratchpadPane.tsx` — the three pane bodies
  *   `bridge.ts`           — the script injected into the frame and the host side of its messages
  *   `scroll.ts`           — the per-pane-id scroll store shared by every view (§9)
+ *   `csv/`                - #324's csv pane: the virtualised grid over the csv verbs, and its
+ *                           raw-text mode through the same content verbs as markdown edit mode
  */
 
 export {

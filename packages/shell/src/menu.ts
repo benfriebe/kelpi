@@ -7,7 +7,7 @@
  *
  * What behaviour there is: the shipped app's View group is `CommandGroup(after: .sidebar)` with
  * "Toggle Sidebar" (⌘⇧S) and "Toggle Inspector" (⌘I), and its File group REPLACES the stock
- * "New Window" with New Workspace (⌘N), New Group (⌘⇧G), Preview Markdown… (⌘O), New Web Pane
+ * "New Window" with New Workspace (⌘N), New Group (⌘⇧G), Open… (⌘O), New Web Pane
  * (⌘⇧O), Command Palette (⌘P), then Switch to Workspace 1–9 (⌘1…⌘9) and Select All / Deselect
  * All Workspaces, all of them sending straight into the reducer
  * (`Nex/Commands/NexCommands.swift:8-58,61-68`). This shell has no preload and no reducer, so
@@ -266,7 +266,8 @@ export const TOGGLE_STATUS_BAR_LABEL = 'Toggle Status Bar';
 export const TOGGLE_BOTTOM_PANEL_LABEL = 'Toggle Bottom Panel';
 export const RESET_WINDOW_ARRANGEMENT_LABEL = 'Reset Window Arrangement';
 export const NEW_WORKSPACE_LABEL = 'New Workspace';
-export const OPEN_FILE_LABEL = 'Preview Markdown…';
+/** Was the Swift's "Preview Markdown…"; #324 opens csv tables from the same panel. */
+export const OPEN_FILE_LABEL = 'Open…';
 export const NEW_GROUP_LABEL = 'New Group';
 export const NEW_WEB_PANE_LABEL = 'New Web Pane';
 export const COMMAND_PALETTE_LABEL = 'Command Palette';
@@ -381,7 +382,7 @@ export function closeRouteLogLine(outcome: CloseRouteOutcome): string {
 export interface MenuRelayDeps {
     /**
      * `status.sendMenuRequest`. Returns `false` when no window is attached yet — the same
-     * contract File ▸ Preview Markdown… reads, and the reason this is not a bare `void`.
+     * contract File ▸ Open… reads, and the reason this is not a bare `void`.
      */
     readonly sendMenuRequest: (command: string) => boolean;
     /** Called when the request could not be delivered (nothing is listening). */
@@ -869,7 +870,7 @@ export const VIEW_MENU_LOG_FRAGMENT =
  * `File ▸ …`, as `main.ts` logs it.
  *
  * Prefix-stable for the same reason the View fragment is: `scripts/smoke.mjs` and the audit's
- * `mac-chrome` both match `New Workspace (⌘N)` and `Preview Markdown… (⌘O)` as substrings, so
+ * `mac-chrome` both match `New Workspace (⌘N)` and `Open… (⌘O)` as substrings, so
  * §WS-151's four extra product rows are INSERTED in the Swift's order rather than the line being
  * reshaped. The nine ⌘1…⌘9 rows are summarised as a range — nine near-identical entries would
  * bury everything else in a line whose whole job is to be read by eye.

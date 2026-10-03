@@ -270,7 +270,10 @@ export function PluginView(props: PluginViewProps): ReactElement {
                     if (data['method'] === 'ui.notify') { runtime.store.getState().pushToast({ id: `plugin-${pluginID}`, kind: 'info', title: plugin.manifest.name, body: String(args['message'] ?? ''), paneID: paneID ?? null, workspaceID: workspaceID ?? null, createdAt: Date.now() }); return null; }
                     if (data['method'] === 'documents.stage' || data['method'] === 'documents.applyDraft') {
                         const pane = runtime.store.getState().daemon.state.workspaces.flatMap(workspace => workspace.panes).find(pane => pane.id === paneID);
-                        if (!paneID || !pane || !['markdown', 'scratchpad'].includes(pane.type) || !plugin.manifest.contributes.views.some(view => view.id === viewID && view.placements.includes(`document.${pane.type}`))) throw new Error('Drafts require an editable document renderer.');
+                        // #324: a csv pane's whole text is a draftable buffer only in raw-text mode,
+                        // which is the markdown editor's contract; its grid speaks `csvEdit` instead.
+                        const draftable = pane !== undefined && (['markdown', 'scratchpad'].includes(pane.type) || (pane.type === 'csv' && pane.isEditing));
+                        if (!paneID || !pane || !draftable || !plugin.manifest.contributes.views.some(view => view.id === viewID && view.placements.includes(`document.${pane.type}`))) throw new Error('Drafts require an editable document renderer.');
                         if (typeof args['revision'] !== 'string') throw new Error('revision is required');
                         if (data['method'] === 'documents.stage') {
                             if (typeof args['text'] !== 'string') throw new Error('text is required');

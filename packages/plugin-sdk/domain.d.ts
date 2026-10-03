@@ -2,7 +2,7 @@ import type { Data, Json } from './index.js';
 
 /** Public JSON DTOs. No daemon store, React, Electron or Node types are required. */
 export type WorkspaceColor = 'red' | 'orange' | 'yellow' | 'green' | 'blue' | 'purple' | 'pink' | 'gray' | 'black' | 'white';
-export type PaneType = 'shell' | 'markdown' | 'scratchpad' | 'diff' | 'web' | 'plugin';
+export type PaneType = 'shell' | 'markdown' | 'scratchpad' | 'diff' | 'csv' | 'web' | 'plugin';
 export type PaneStatus = 'idle' | 'running' | 'waitingForInput';
 export type AgentKind = 'claude' | 'codex';
 export type SplitDirection = 'horizontal' | 'vertical';

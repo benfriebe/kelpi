@@ -12,7 +12,7 @@ export function scaffoldPlugin(directory: string, id: string, name: string, temp
     const placements = {
         pane: ['pane', 'sidebar.primary', 'sidebar.secondary'],
         sidebar: ['sidebar.primary', 'sidebar.secondary'],
-        document: ['document.markdown', 'document.scratchpad', 'document.diff'],
+        document: ['document.markdown', 'document.scratchpad', 'document.diff', 'document.csv'],
         browser: ['browser'],
     }[template];
     const manifest = {
@@ -81,13 +81,13 @@ void refresh();
     const description = {
         pane: 'A pane with optional sidebar placements and a backend workspace command.',
         sidebar: 'A workspace sidebar that can occupy either side, with a backend workspace command.',
-        document: 'A read-only native document viewer for Markdown, Scratchpad and Diff. It watches the existing daemon buffer and persists the wrapping preference. Source edits and saves stay with Kelpi.',
+        document: 'A read-only native document viewer for Markdown, Scratchpad, Diff and CSV. It watches the existing daemon buffer and persists the wrapping preference; a CSV table shows its first rows. Source edits and saves stay with Kelpi.',
         browser: 'A native browser surface with tabs and navigation. Kelpi owns the existing pages and sessions; this plugin supplies their controls.',
     }[template];
     const select = template === 'pane' ? `kelpi plugin open ${id} ${viewID}\n` : '';
     const placementInstructions = template === 'pane' || template === 'sidebar'
         ? 'Select either sidebar in Settings → Plugins → Workbench views.'
-        : `Open an existing ${template === 'document' ? 'Markdown, Scratchpad or Diff' : 'browser'} pane, then select this plugin in Settings → Plugins → Workbench views. Native replacement views attach to existing panes; they are not opened with plugin open.`;
+        : `Open an existing ${template === 'document' ? 'Markdown, Scratchpad, Diff or CSV' : 'browser'} pane, then select this plugin in Settings → Plugins → Workbench views. Native replacement views attach to existing panes; they are not opened with plugin open.`;
     write('README.md', `# ${name.replaceAll('\n', ' ')}
 
 ${description} No build required.
@@ -125,16 +125,24 @@ function documentScript(): string {
 const $ = id => document.getElementById(id);
 let subscription, stopped = false, reading = false, reread = false;
 function problem(error) { $('error').textContent = error?.message ?? error ?? ''; }
-function render(state) {
+// A CSV table has no source text outside raw mode (⌘E); show its first rows instead.
+async function source(state) {
+    if (state.kind !== 'csv' || state.mode === 'edit') return state.text;
+    const page = await api.documents.csv.rows(state.paneID, { start: 0, count: 50 });
+    return page.rows.map(row => row.cells.join('\\t')).join('\\n');
+}
+async function render(state) {
     if (stopped) return;
-    $('source').textContent = state.text;
+    const text = await source(state);
+    if (stopped) return;
+    $('source').textContent = text;
     $('status').textContent = (state.path ?? state.kind) + ' · ' + (state.loaded ? state.dirty ? 'Unsaved changes' : 'Saved' : 'Loading…');
     problem(state.error);
 }
 async function refresh() {
     reread = true; if (reading || stopped) return;
     reading = true;
-    try { while (reread && !stopped) { reread = false; render(await api.documents.get()); } }
+    try { while (reread && !stopped) { reread = false; await render(await api.documents.get()); } }
     catch (error) { if (!stopped) problem(error); }
     finally { reading = false; }
 }
@@ -162,7 +170,7 @@ async function start() {
     wrap(api.state.wrap !== false);
     const watched = await api.documents.watch(); subscription = watched.subscription;
     if (stopped) { await api.documents.unwatch(subscription); return; }
-    render(watched.state);
+    await render(watched.state);
     if (reread) void refresh();
 }
 void start().catch(error => { problem(error); throw error; });

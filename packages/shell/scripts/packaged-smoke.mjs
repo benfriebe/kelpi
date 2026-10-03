@@ -484,6 +484,15 @@ function bundlePhase() {
         /<key>UTImportedTypeDeclarations<\/key>/.test(plist) &&
             /<key>public\.filename-extension<\/key>\s*<array>\s*<string>md<\/string>\s*<string>markdown<\/string>/.test(plist)
     );
+    // #324: CSV and TSV join on the same terms, through the system's own UTIs (no import). The
+    // entry is read as its own <dict> so the check does not depend on key order.
+    const csvType = /<dict>(?:(?!<\/dict>)[\s\S])*<string>CSV Document<\/string>(?:(?!<\/dict>)[\s\S])*<\/dict>/.exec(plist)?.[0] ?? '';
+    check(
+        'the bundle declares a CSV document type over the system csv/tsv UTIs (Editor, rank Alternate)',
+        /<key>CFBundleTypeRole<\/key>\s*<string>Editor<\/string>/.test(csvType) &&
+            /<key>LSHandlerRank<\/key>\s*<string>Alternate<\/string>/.test(csvType) &&
+            /<key>LSItemContentTypes<\/key>\s*<array>\s*<string>public\.comma-separated-values-text<\/string>\s*<string>public\.tab-separated-values-text<\/string>\s*<\/array>/.test(csvType)
+    );
 }
 
 /** Fuses are flipped in the binary itself, so this reads them back out of it. */

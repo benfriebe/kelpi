@@ -357,7 +357,7 @@ function diagnosePanes(rows: readonly SqlRow[], workspaceIDs: ReadonlySet<string
 
         const type = text(row, 'type');
         if (!isEmpty(type) && !(PANE_TYPES as readonly string[]).includes(type ?? '')) {
-            out.warnings.push(`pane ${pane.id} has unknown type "${type ?? ''}"; imported as shell`);
+            out.warnings.push(`pane ${pane.id} has unknown type "${type ?? ''}"; imported as an unavailable pane (its row is kept)`);
         }
         const status = text(row, 'status');
         if (!isEmpty(status) && !(PANE_STATUSES as readonly string[]).includes(status ?? '')) {

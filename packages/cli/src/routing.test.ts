@@ -12,7 +12,10 @@ import path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+import { CSV_OPEN_EXTENSIONS } from '@kelpi/protocol';
+
 import {
+    csvOpenExtensions,
     localFileURL,
     markdownOpenExtensions,
     pathExtensionLower,
@@ -143,6 +146,22 @@ describe('routing tables', () => {
             expect(markdownOpenExtensions.has(extension)).toBe(true);
         }
         expect(markdownOpenExtensions.size).toBe(7);
+    });
+
+    it('routes csv extensions to a table pane, from the protocol list (#324)', () => {
+        expect([...csvOpenExtensions].sort()).toEqual(['csv', 'tsv']);
+        expect([...csvOpenExtensions]).toEqual([...CSV_OPEN_EXTENSIONS]);
+        expect(pathExtensionLower(path.join(CWD, 'DATA.CSV'))).toBe('csv');
+        // No extension is claimed twice: a file routes to exactly one pane type.
+        for (const extension of csvOpenExtensions) {
+            expect(markdownOpenExtensions.has(extension)).toBe(false);
+            expect(webOpenExtensions.has(extension)).toBe(false);
+        }
+    });
+
+    it('leaves csv-shaped names to the file router, not the web', () => {
+        expect(webTargetForOpenArg('data.csv', context)).toBeNull();
+        expect(webTargetForOpenArg('report.tsv', context)).toBeNull();
     });
 
     it('routes renderable file types to a web pane', () => {

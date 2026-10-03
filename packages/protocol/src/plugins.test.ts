@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { PLUGIN_BAND_HEIGHTS, PluginEventBuffer, decodePluginManifest, decodePluginPane, pluginJSON } from './plugins.js';
+import { PLUGIN_API_VERSION, PLUGIN_BAND_HEIGHTS, PLUGIN_PLACEMENTS, PluginEventBuffer, decodePluginManifest, decodePluginPane, pluginJSON } from './plugins.js';
 import { decodeWireObject } from './wire/decode.js';
 
 const manifest = { id: 'sample.board', version: '1.0.0', apiVersion: 1, trust: 'full', contributes: { views: [{ id: 'sample.board.view', title: 'Board', entry: 'ui/index.html', placements: ['pane', 'sidebar.primary'] }] } };
@@ -76,6 +76,15 @@ describe('public plugin protocol', () => {
         // The existing `settings` slot inside Plugins is a different placement and still hosts a container.
         expect(decodePluginManifest({ ...manifest, contributes: { views: [{ ...manifest.contributes.views[0], placements: ['settings'] }],
             containers: [{ id: 'sample.board.stack', title: 'Stack', placements: ['settings'], layout: 'tabs', slots: [{ id: 'sample.board.stack.main', title: 'Main' }] }] } }).contributes.containers).toHaveLength(1);
+    });
+    it('accepts a csv document renderer placement and refuses a container in it (#324, additive under API v1)', () => {
+        const placements = ['document.csv'];
+        const views = [{ ...manifest.contributes.views[0], placements }];
+        expect(PLUGIN_PLACEMENTS).toContain('document.csv');
+        expect(PLUGIN_API_VERSION).toBe(1);
+        expect(decodePluginManifest({ ...manifest, contributes: { views } }).contributes.views[0]?.placements).toEqual(placements);
+        const containers = [{ id: 'sample.board.stack', title: 'Stack', placements: ['document.csv'], layout: 'tabs', slots: [{ id: 'sample.board.stack.main', title: 'Main' }] }];
+        expect(() => decodePluginManifest({ ...manifest, contributes: { views, containers } })).toThrow(/workbench placements/);
     });
     it('accepts the pane chrome placement and refuses a container in it', () => {
         const placements = ['pane.chrome'];

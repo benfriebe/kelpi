@@ -186,9 +186,10 @@ withheld, and its README for the diagnostics and the deliberate crash and stall 
 scenario uses.
 
 [Document Lab](../examples/plugins/document-lab) replaces Markdown, Scratchpad and Diff bodies
-while preserving their native pane IDs and buffers. The [document guide](plugin-documents.md)
-covers shared SDK/CLI source APIs, guarded revisions, renderer selection and pending-input
-recovery, including remote and phone views.
+while preserving their native pane IDs and buffers (and attaches read-only to CSV tables). The
+[document guide](plugin-documents.md) covers shared SDK/CLI source APIs, guarded revisions,
+renderer selection and pending-input recovery, including remote and phone views, and the
+row-level `documents.csv` API for [CSV table panes](csv-pane.md).
 
 [Terminal Lab](../examples/plugins/terminal-lab) attaches a terminal emulator to an existing
 native process; [Browser Lab](../examples/plugins/browser-lab) replaces native browser controls
@@ -283,7 +284,7 @@ the commands registered during activation.
 
 Supported built-in placements are `pane`, `sidebar.primary`, `sidebar.secondary`, `panel.bottom`,
 `topbar`, `statusbar`, `workspace`, `settings`, `document.markdown`, `document.scratchpad`,
-`document.diff`, `terminal`, `browser`, `interaction.palette`, `interaction.prompts`,
+`document.diff`, `document.csv`, `terminal`, `browser`, `interaction.palette`, `interaction.prompts`,
 `interaction.notifications`, `settings.window`, `pane.chrome`, and `pane.search`. A view can support
 several placements or a declared custom slot. Document, terminal and browser placements accept
 isolated views, not containers. Neither do the palette, prompts, notifications, Settings presenter,
@@ -453,7 +454,8 @@ document.body.textContent = `${snapshot.state.workspaces.length} workspaces`;
 | `events.on(name, listener)` / `emit(name, data?)` | Subscribe to a named event or `*`; emit an event under this plugin's namespace. Returns an unsubscribe function. |
 | `storage.get(key)` / `storage.set(key, value)` | Persistent JSON belonging to this plugin on this daemon. |
 | `settings.get()` / `settings.set(key, value)` | Manifest defaults plus persisted overrides; changes emit `settings.changed`. Overrides outlive `kelpi plugin remove` and a later reinstall inherits them ([#198](https://github.com/benfriebe/kelpi/issues/198)). Nothing clears one: `set` only merges, and writing the manifest default back persists it as an override, so a genuinely clean install means deleting `<db>.plugins/data/<plugin-id>/settings.json`, where `<db>` is the daemon database path. [Service provider preferences](plugin-services.md) survive removal the same way but, unlike settings, do have an explicit clear. |
-| `documents.get/edit/save/setMode/refresh/watch/unwatch` | Shared native Markdown, Scratchpad and Diff source API with guarded revisions. Document views also use `stage/applyDraft` to preserve pending edits; see [document renderers](plugin-documents.md). |
+| `documents.get/edit/save/setMode/refresh/watch/unwatch` | Shared native Markdown, Scratchpad, Diff and CSV source API with guarded revisions. Document views also use `stage/applyDraft` to preserve pending edits; see [document renderers](plugin-documents.md). |
+| `documents.csv.state/rows/edit/sort/find/findStep/setHeaderRow/discard` | CSV table rows in view order and generation-guarded row/cell edits, with `CSV_*` error codes; see [CSV tables](plugin-documents.md#csv-tables). |
 | `files.read(path)` / `files.write(path, text)` | UTF-8 files on the daemon machine; reads are limited to 256 KiB. |
 | `process.exec(file, args?, {cwd?})` | Run a program on the daemon machine; argv is passed directly, without a shell. Returns stdout/stderr. |
 | `terminal.watch(paneID)` | Subscribe to an existing PTY and receive its initial base64 snapshot and geometry. `terminal.output` events identify the returned subscription. |

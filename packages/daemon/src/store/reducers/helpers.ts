@@ -195,6 +195,8 @@ export interface NewPaneOptions {
     readonly filePath?: string | null;
     readonly isEditing?: boolean;
     readonly scratchpadContent?: string | null;
+    /** #324: csv panes only; defaults to true. */
+    readonly csvHeaderRow?: boolean;
 }
 
 /** A fresh pane with spec defaults (transient fields empty). */
@@ -208,7 +210,8 @@ export function newPane(options: NewPaneOptions): Pane {
         label: options.label ?? null,
         type: options.type ?? 'shell',
         filePath: options.filePath ?? null,
-        scratchpadContent: options.scratchpadContent ?? null
+        scratchpadContent: options.scratchpadContent ?? null,
+        ...(options.csvHeaderRow === undefined ? {} : { csvHeaderRow: options.csvHeaderRow })
     });
     return {
         ...pane,

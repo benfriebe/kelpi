@@ -1823,6 +1823,104 @@ export class CommandClient {
         );
     }
 
+    // ── csv-pane verbs (#324) ──────────────────────────────────────────────────────
+    //
+    // The daemon's csv service behind `daemon/src/ws/sync.ts` `CSV_COMMANDS`
+    // (`@kelpi/protocol` `csv.ts` states every payload and reply). Like the content verbs they are
+    // WS-only and per connection: `csv-updated` is pushed only to sessions subscribed to the pane,
+    // and a dropped socket drops the subscription, so `content/csv/csv-client.ts` re-subscribes.
+    // Every row index is a LOGICAL row (file order) in `csv-edit` and a VIEW row in `csv-rows`;
+    // columns are stable ids everywhere except `column_start` / `insert-column.at`, which are
+    // display positions.
+
+    /** Start mirroring a csv pane; the reply carries `{state}` and `csv-updated` follows. */
+    csvSubscribe(input: { paneID: string }, options?: SendOptions): Promise<CommandReply> {
+        return this.raw(wirePayload('csv-subscribe', { pane_id: input.paneID }), options ?? {});
+    }
+
+    csvUnsubscribe(input: { paneID: string }, options?: SendOptions): Promise<CommandReply> {
+        return this.raw(wirePayload('csv-unsubscribe', { pane_id: input.paneID }), options ?? {});
+    }
+
+    /** Rows in the pane's view order; answers `{rows: CsvRowsReply}`. */
+    csvRows(
+        input: { paneID: string; start: number; count: number; columnStart?: number; columnCount?: number },
+        options?: SendOptions
+    ): Promise<CommandReply> {
+        return this.raw(
+            wirePayload('csv-rows', {
+                pane_id: input.paneID,
+                start: input.start,
+                count: input.count,
+                column_start: input.columnStart,
+                column_count: input.columnCount
+            }),
+            options ?? {}
+        );
+    }
+
+    /** One edit batch, computed against `generation`; answers `{state}`. */
+    csvEdit(
+        input: { paneID: string; generation: string; ops: readonly JsonObject[] },
+        options?: SendOptions
+    ): Promise<CommandReply> {
+        return this.raw(
+            wirePayload('csv-edit', {
+                pane_id: input.paneID,
+                generation: input.generation,
+                ops: input.ops as unknown as JsonValue
+            }),
+            options ?? {}
+        );
+    }
+
+    /** `column: null` clears the sort, so it is SENT as null rather than omitted. */
+    csvSort(
+        input: { paneID: string; column: number | null; direction: 'asc' | 'desc' },
+        options?: SendOptions
+    ): Promise<CommandReply> {
+        return this.raw(
+            wirePayload('csv-sort', { pane_id: input.paneID, column: input.column, direction: input.direction }),
+            options ?? {}
+        );
+    }
+
+    /** Count matches; answers `{find: CsvFindReply}` once the count is complete. */
+    csvFind(input: { paneID: string; query: string }, options?: SendOptions): Promise<CommandReply> {
+        return this.raw(wirePayload('csv-find', { pane_id: input.paneID, query: input.query }), options ?? {});
+    }
+
+    /** The next/previous match from a view position; answers `{step: CsvFindStepReply}`. */
+    csvFindStep(
+        input: {
+            paneID: string;
+            query: string;
+            direction: 'next' | 'previous';
+            from: { view: number; column: number } | null;
+        },
+        options?: SendOptions
+    ): Promise<CommandReply> {
+        return this.raw(
+            wirePayload('csv-find-step', {
+                pane_id: input.paneID,
+                query: input.query,
+                direction: input.direction,
+                from: input.from === null ? undefined : { view: input.from.view, column: input.from.column }
+            }),
+            options ?? {}
+        );
+    }
+
+    /** Persist the pane's header-row choice; answers `{state}`. */
+    csvSetHeaderRow(input: { paneID: string; on: boolean }, options?: SendOptions): Promise<CommandReply> {
+        return this.raw(wirePayload('csv-set-header-row', { pane_id: input.paneID, on: input.on }), options ?? {});
+    }
+
+    /** Drop unsaved edits and reload from disk; answers `{state}`. */
+    csvDiscard(input: { paneID: string }, options?: SendOptions): Promise<CommandReply> {
+        return this.raw(wirePayload('csv-discard', { pane_id: input.paneID }), options ?? {});
+    }
+
     // ── internals ──────────────────────────────────────────────────────────────────
 
     private settle(id: string): void {

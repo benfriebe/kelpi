@@ -81,7 +81,7 @@ export function decodePluginWhen(raw: unknown): PluginWhen {
             if (value !== null && (typeof value !== 'string' || !['idle', 'connecting', 'connected', 'reconnecting', 'closed', 'rejected'].includes(value))) throw new Error('invalid plugin connection condition');
             result[key] = value as string | null;
         } else if (key === 'pane.type') {
-            if (value !== null && (typeof value !== 'string' || !['shell', 'markdown', 'scratchpad', 'diff', 'web', 'plugin'].includes(value))) throw new Error('invalid plugin pane type condition');
+            if (value !== null && (typeof value !== 'string' || !['shell', 'markdown', 'scratchpad', 'diff', 'csv', 'web', 'plugin'].includes(value))) throw new Error('invalid plugin pane type condition');
             result[key] = value as string | null;
         } else throw new Error(`unknown plugin condition key: ${key}`);
     }

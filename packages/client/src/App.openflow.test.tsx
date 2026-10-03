@@ -127,12 +127,18 @@ describe('drag-and-drop a markdown file (CONT-121 / APP-103)', () => {
         expect(h.lastCommand('open')).toMatchObject({ command: 'open', path: '/repo/README.md', focus: true });
     });
 
+    it('opens a dropped .csv path through the same `open` verb (#324)', () => {
+        const h = setup();
+        drop(screen.getByTestId('kelpi-app'), { 'text/uri-list': 'file:///repo/sales.csv' });
+        expect(h.lastCommand('open')).toMatchObject({ command: 'open', path: '/repo/sales.csv', focus: true });
+    });
+
     it('refuses a non-markdown drop with a toast rather than silence', async () => {
         const h = setup();
         drop(screen.getByTestId('kelpi-app'), { 'text/uri-list': 'file:///repo/photo.png' });
         expect(h.lastCommand('open')).toBeUndefined();
         await waitFor(() => {
-            expect(document.body.textContent).toContain('not a .md file');
+            expect(document.body.textContent).toContain('not a .md, .csv or .tsv file');
         });
     });
 
@@ -175,7 +181,7 @@ describe('⌘O (CONT-120 / APP-020)', () => {
         const h = setup();
         const prompt = vi.spyOn(globalThis, 'prompt').mockReturnValue('  /repo/NOTES.md ');
         fireEvent.keyDown(window, { code: 'KeyO', key: 'o', metaKey: true });
-        expect(prompt).toHaveBeenCalledWith(expect.stringContaining('Choose a Markdown file to open'));
+        expect(prompt).toHaveBeenCalledWith(expect.stringContaining('Choose a Markdown or CSV file to open'));
         expect(h.lastCommand('open')).toMatchObject({ path: '/repo/NOTES.md' });
         prompt.mockRestore();
     });

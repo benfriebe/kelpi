@@ -223,15 +223,18 @@ export function parseWindowChrome(message: Record<string, unknown>): WindowChrom
 // Finder "Open With" (CONT-123 / CONT-124)
 // ---------------------------------------------------------------------------
 
-/** The extensions `AppDelegate.swift:45-51` forwards; anything else is ignored outright. */
-export const OPEN_FILE_EXTENSIONS = ['md', 'markdown'] as const;
+/**
+ * The extensions `AppDelegate.swift:45-51` forwarded (`md`, `markdown`), plus the csv table's
+ * (#324, docs/csv-pane.md §2); anything else is ignored outright.
+ */
+export const OPEN_FILE_EXTENSIONS = ['md', 'markdown', 'csv', 'tsv'] as const;
 
 /**
- * Whether a file handed to us by Finder (or on argv) should become a markdown pane.
+ * Whether a file handed to us by Finder (or on argv) should become a document pane.
  *
  * The Swift delegate filtered before forwarding, and the filter matters: `open` opens whatever
- * path it is given AS MARKDOWN, so an unfiltered forward turns `open -a Kelpi.app photo.png` into
- * a pane rendering PNG bytes as markdown source.
+ * path it is given AS MARKDOWN (a `.csv`/`.tsv` as a table), so an unfiltered forward turns
+ * `open -a Kelpi.app photo.png` into a pane rendering PNG bytes as markdown source.
  */
 export function isForwardableOpenPath(filePath: string): boolean {
     const name = filePath.split('/').pop() ?? filePath;

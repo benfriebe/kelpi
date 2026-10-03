@@ -94,6 +94,17 @@ behind it. Root layout adds no placement and no `ui.*` call: an optional manifes
 (`bandHeights`), four keybinding actions, five chrome commands and a client-to-shell `window-chrome`
 report, all additive.
 
+The native CSV table pane ([#324](https://github.com/benfriebe/kelpi/issues/324),
+[csv pane](csv-pane.md)) is a fourth native document type, and every plugin-facing part of it is
+additive under API version **1** and protocol generation **2**: the `document.csv` placement (a
+document renderer, refusing containers like the other three), the reserved native view id
+`kelpi.csv`, `csv` in `pane.type` conditions and in the SDK's `PaneType` and `PaneChromeKind`
+(pane chrome presenters now draw seven kinds), `kind: 'csv'` and an optional `truncated` flag on
+`DocumentSnapshot`, and the `documents.csv` sub-API (`state`, `rows`, `edit`, `sort`, `find`,
+`findStep`, `setHeaderRow`, `discard`) with its `CSV_*` error codes
+([plugin documents](plugin-documents.md#csv-tables)). Existing renderers keep working: a view that
+does not declare `document.csv` is never offered for a csv pane.
+
 ## Later work and open decisions
 
 | Work | Current state | Intended next result |

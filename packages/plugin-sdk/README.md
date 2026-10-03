@@ -159,7 +159,11 @@ current window cannot display that daemon's native page. See the
 Native document source is available through `api.documents.get/edit/save/setMode/refresh`
 and `watch/unwatch`. Mutations require an observed revision and reject stale writes with
 `DOCUMENT_CONFLICT`. Browser document renderers also use `stage` and `applyDraft` to preserve
-each input outside their iframe before serialized writes. See the
+each input outside their iframe before serialized writes. CSV table panes (`kind: 'csv'`,
+placement `document.csv`) are read and edited by row through `api.documents.csv`: `rows` in the
+pane's view order, `edit` by logical row and stable column id under a `generation` guard, plus
+`sort`, `find`, `findStep`, `setHeaderRow` and `discard`; failures carry `CSV_STALE`, `CSV_GONE`,
+`CSV_READ_ONLY`, `CSV_BUSY` or `CSV_INVALID`. See the
 [document contract](https://github.com/benfriebe/kelpi/blob/main/docs/plugin-documents.md), [types](documents.d.ts) and
 [Document Lab](https://github.com/benfriebe/kelpi/tree/main/examples/plugins/document-lab) for rendering, recovery and remote scope.
 

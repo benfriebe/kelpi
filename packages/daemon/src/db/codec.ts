@@ -110,6 +110,8 @@ export interface PaneRow {
     readonly webIsPrivate: number | null;
     readonly agentKind: string | null;
     readonly agentProfileName: string | null;
+    /** #324 (v23): 1 = a csv pane treats its first row as headers. Every pane row carries it. */
+    readonly csvHeaderRow: number;
 }
 
 export interface RepoRow {
@@ -383,7 +385,8 @@ export function encodePaneRow(pane: PersistedPane, workspaceID: string): PaneRow
         webActiveTabID: active === null ? null : normalizeUUIDLoose(active.id),
         webIsPrivate: isWeb ? (isPrivate ? 1 : 0) : null,
         agentKind: pane.agentKind,
-        agentProfileName: pane.agentProfileName
+        agentProfileName: pane.agentProfileName,
+        csvHeaderRow: pane.csvHeaderRow === false ? 0 : 1
     };
 }
 
@@ -628,6 +631,8 @@ export function decodePaneRow(row: SqlRow, options: DecodePaneOptions = {}): Dec
             status: decodePaneStatus(textColumn(row, 'status')),
             filePath: optionalText(row, 'filePath'),
             scratchpadContent: textColumn(row, 'content'),
+            // #324: a pre-v23 row (no column) keeps the default, headers on.
+            csvHeaderRow: boolColumn(row, 'csvHeaderRow') ?? true,
             ...web
         }
     };

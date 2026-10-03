@@ -394,6 +394,51 @@ describe('open-terminal-target (CONT-122 / TERM-052)', () => {
         });
     });
 
+    // #324: csv/tsv files open as a csv pane; the reply says `opened: 'csv'`.
+    it('opens a csv pane for an existing .csv path under the cell', async () => {
+        const f = fixture({ cell: { text: 'wrote data/sales.csv', offset: 10 } });
+        const reply = await f.channel.run('open-terminal-target', { pane_id: P0, row: 0, col: 10 });
+        expect(reply).toMatchObject({
+            ok: true,
+            opened: 'csv',
+            path: '/tmp/work/data/sales.csv',
+            token: 'data/sales.csv',
+            pane_id: NEW,
+            workspace_id: W1
+        });
+        const pane = visiblePane(workspaceByID(f.h.state(), W1)!, NEW);
+        expect(pane?.type).toBe('csv');
+        expect(pane?.filePath).toBe('/tmp/work/data/sales.csv');
+        expect(pane?.csvHeaderRow).toBe(true);
+    });
+
+    it('answers a probe on a .csv path as csv, and opens nothing (#324 + #326)', async () => {
+        const f = fixture({ cell: { text: 'wrote data/sales.csv', offset: 10 } });
+        const before = f.h.state();
+        const reply = await f.channel.run('probe-terminal-target', { pane_id: P0, row: 0, col: 10 });
+        expect(reply).toMatchObject({ ok: true, opened: 'csv', probe: true, path: '/tmp/work/data/sales.csv' });
+        expect(f.h.state()).toBe(before);
+    });
+
+    it('opens .tsv and upper-case extensions as csv panes (the socket open rule)', async () => {
+        const f = fixture({ cell: { text: 'see EXPORT.TSV.', offset: 6 } });
+        expect(await f.channel.run('open-terminal-target', { pane_id: P0, row: 0, col: 6 })).toMatchObject({
+            opened: 'csv',
+            path: '/tmp/work/EXPORT.TSV'
+        });
+        expect(visiblePane(workspaceByID(f.h.state(), W1)!, NEW)?.type).toBe('csv');
+    });
+
+    it('reports a .csv path that is not on disk instead of opening a broken pane', async () => {
+        const f = fixture({ cell: { text: 'see sales.csv', offset: 6 }, exists: false });
+        expect(await f.channel.run('open-terminal-target', { pane_id: P0, row: 0, col: 6 })).toMatchObject({
+            ok: true,
+            opened: 'missing',
+            path: '/tmp/work/sales.csv'
+        });
+        expect(visiblePane(workspaceByID(f.h.state(), W1)!, NEW)).toBeNull();
+    });
+
     /**
      * #83. The whole reason ⌘-click did nothing in a Codex pane: the address is in an OSC 8
      * attribute and the visible text is a title, so the token scan reads prose. The attribute

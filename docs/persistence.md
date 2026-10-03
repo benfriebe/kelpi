@@ -114,7 +114,7 @@ appears in some `workspace_group.childOrderJSON`; it is top-level iff it appears
 | `id`            | TEXT PK | no   |           | pane UUID |
 | `workspaceID`   | TEXT    | no   |           | FK → `workspace(id)` **ON DELETE CASCADE** |
 | `label`         | TEXT    | yes  |           | user-assigned pane label (used by CLI `--target` name resolution) |
-| `type`          | TEXT    | no   | `'shell'` | `PaneType` raw value: `shell \| markdown \| scratchpad \| diff \| web \| plugin`. Unknown nonempty values load as unavailable plugin panes and preserve their original raw type. |
+| `type`          | TEXT    | no   | `'shell'` | `PaneType` raw value: `shell \| markdown \| scratchpad \| diff \| csv \| web \| plugin`. Unknown nonempty values load as unavailable plugin panes and preserve their original raw type (which is how a pre-#324 build keeps a `csv` row). |
 | `pluginJSON` | TEXT | yes | | Versioned plugin ID, view ID, and JSON state. Invalid/future descriptors are preserved verbatim for recovery. |
 | `pluginParked` | BOOLEAN | no | `0` | Parked plugin panes survive restart; this flag has no effect on built-in pane types. |
 | `workingDirectory` | TEXT | no   |           | absolute path; new panes default to the user's home directory |
@@ -122,7 +122,7 @@ appears in some `workspace_group.childOrderJSON`; it is top-level iff it appears
 | `lastActivityAt`| DOUBLE  | no   |           | epoch seconds |
 | `agentSessionID`| TEXT    | yes  |           | last reported agent session id (Claude/Codex). Named `claudeSessionID` v4→v14, renamed in v15. Drives auto-resume on next launch (§7.3), then is cleared. |
 | `status`        | TEXT    | yes  | `'idle'`  | `PaneStatus` raw value: `idle \| running \| waitingForInput`. Unknown → `idle` on load. (Loaded but immediately reset to `idle` for all non-idle panes — see §7.2.) |
-| `filePath`      | TEXT    | yes  |           | for `markdown` panes: the previewed file; for `diff` panes: optional path scope of `git diff` |
+| `filePath`      | TEXT    | yes  |           | for `markdown` and `csv` panes: the file; for `diff` panes: optional path scope of `git diff` |
 | `content`       | TEXT    | yes  |           | scratchpad text body (scratchpad panes only; never written to a file on disk) |
 | `webURL`        | TEXT    | yes  |           | LEGACY single-tab URL for `web` panes. Written on save as a fallback for pre-v13 readers; **ignored on load whenever `webTabsJSON` decodes**. Always NULL for non-web panes and for private web panes. |
 | `webTabsJSON`   | TEXT    | yes  |           | JSON array of `WebTab` objects (§3.3). NULL/empty → blank web pane. NULL for private panes. |
@@ -130,6 +130,7 @@ appears in some `workspace_group.childOrderJSON`; it is top-level iff it appears
 | `webIsPrivate`  | BOOLEAN | yes  |           | per-pane private browsing flag. Persisted even though the pane's tabs are not, so a restored private pane comes back BLANK but still private (non-persistent cookie store). NULL → false. |
 | `agentKind`     | TEXT    | yes  |           | `AgentKind` raw value: `claude \| codex`. Last-known agent CLI for this pane; picks the resume command (`claude --resume <id>` vs `codex resume <id>`). NULL = never saw an agent (treated as `claude` where a default is needed). Deliberately NOT cleared on load (§7.3). |
 | `agentProfileName` | TEXT | yes  |           | Kelpi-only (v19, §4): the profile name the pane's agent session was launched under, so a resume rebuilds the same environment. NULL = unknown. Written and read on every save/load (`packages/daemon/src/db/codec.ts:609`); preserved (not cleared) on load like `agentKind`; cleared together with `agentSessionID` on `session-end` (§7.3). |
+| `csvHeaderRow`  | BOOLEAN | no   | 1         | Kelpi-only (v23, issue #324): a `csv` pane treats its first row as column headers ([csv-pane.md](csv-pane.md) §1). Written for every pane (1 unless a csv pane turned it off); meaningless for other types. A pre-v23 row reads as on. |
 
 ### 2.3 `repo` and `repoAssociation`
 
@@ -210,7 +211,7 @@ Kelpi keeps under the same name (`packages/daemon/src/db/schema.ts:22`):
 CREATE TABLE grdb_migrations (identifier TEXT NOT NULL PRIMARY KEY);
 ```
 
-One row per applied migration identifier (`"v1_initial"` … `"v22_workspace_group_repo"`). On
+One row per applied migration identifier (`"v1_initial"` … `"v23_pane_csv_header_row"`). On
 startup, any registered migration whose identifier is not present is run, in registration
 order, each in its own transaction together with its ledger row (`INSERT OR IGNORE`, so a
 failure can never record an unapplied step); identifiers already present are skipped
@@ -327,9 +328,9 @@ labels are trimmed, non-empty, order-preserving, deduped case-sensitively.
 ## 4. Migration history
 
 Migration identifiers are strings; each runs once, recorded in `grdb_migrations`
-(`MIGRATIONS`, `packages/daemon/src/db/schema.ts`). There are 22 in total: the 18 shared
+(`MIGRATIONS`, `packages/daemon/src/db/schema.ts`). There are 23 in total: the 18 shared
 with the legacy app plus `v19_pane_agent_profile`, `v20_plugin_panes`,
-`v21_workspace_muted` and `v22_workspace_group_repo`. From v3 onward, every
+`v21_workspace_muted`, `v22_workspace_group_repo` and `v23_pane_csv_header_row`. From v3 onward, every
 `ALTER TABLE ADD COLUMN` (and the v15 rename) is **guarded**: it first checks the live column
 list and skips if the column already exists (or, for v15, if the target name already exists /
 the source is missing). This guard exists because pre-release builds of the legacy app
@@ -363,6 +364,7 @@ migration idempotent regardless of ledger drift.
 | `v20_plugin_panes` | `pane` + `pluginJSON TEXT` and `pluginParked BOOLEAN NOT NULL DEFAULT 0`. Kelpi-only and guarded. Uses a new default database generation; see [plugin upgrades](plugins.md#database-and-protocol-upgrade). |
 | `v21_workspace_muted` | `workspace` + `muted BOOLEAN NOT NULL DEFAULT 0` (§2.1). Kelpi-only (in `DAEMON_ONLY_MIGRATIONS`) and guarded. A plain additive column, so no new database generation: an older daemon ignores it (its explicit-column INSERT leaves the default), and a downgrade simply loses the flag. |
 | `v22_workspace_group_repo` | `workspace_group` + `repoID TEXT` (nullable) and + `createWorktree BOOLEAN NOT NULL DEFAULT 0` (§2.5). Kelpi-only (in `DAEMON_ONLY_MIGRATIONS`) and guarded, each column independently. Additive, so no new database generation: an older daemon's explicit-column INSERT leaves NULL / 0, so a downgrade loses each group's repository and switch but nothing else. |
+| `v23_pane_csv_header_row` | `pane` + `csvHeaderRow BOOLEAN NOT NULL DEFAULT 1` (§2.2; issue #324, [csv-pane.md](csv-pane.md)). Kelpi-only (in `DAEMON_ONLY_MIGRATIONS`) and guarded. Additive, so no new database generation: an older daemon's explicit-column INSERT leaves the default (headers on), and it loads a `csv` pane as an unavailable placeholder that keeps its raw type, so a downgrade keeps every csv pane but resets each header-row choice to on the first time it saves. |
 
 ---
 
@@ -636,6 +638,7 @@ Per workspace: id, name, slug, color, icon, profileName, muted, labels, layout t
 (un-zoomed), focused pane id, createdAt, lastAccessedAt.
 
 Per pane: id, owning workspace, label, type, workingDirectory, filePath, scratchpad content,
+the csv header-row choice (`csvHeaderRow`),
 agentSessionID (written, but consumed-and-cleared by the next launch), agentKind,
 agentProfileName, status (written, but reset to idle on load), createdAt, lastActivityAt, web
 tabs + active tab + private flag (tabs/URLs withheld for private panes), plugin descriptor
@@ -652,7 +655,7 @@ search state (`searchingPaneID`, needle, counts), `currentLayoutIndex` (predefin
 position), `isSyncInputActive` + `syncInputExcluded` (sync-input always starts off).
 
 Pane: `title` (live terminal/web title), `gitBranch` (re-detected), `isEditing` (recomputed:
-scratchpad → true), `externalEditorCommand`, `markdownFontSize` (resets to 14),
+scratchpad → true; a csv pane comes back in grid mode), `externalEditorCommand`, `markdownFontSize` (resets to 14),
 `parkedSourcePaneID`, `agentStartedAt` (elapsed-time badge starts blank until the agent
 re-emits a start), `backgroundTaskCount` (0).
 
@@ -744,7 +747,7 @@ CREATE TABLE pane (
   id               TEXT PRIMARY KEY,
   workspaceID      TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
   label            TEXT,
-  type             TEXT NOT NULL DEFAULT 'shell',  -- shell|markdown|scratchpad|diff|web
+  type             TEXT NOT NULL DEFAULT 'shell',  -- shell|markdown|scratchpad|diff|csv|web|plugin
   workingDirectory TEXT NOT NULL,
   createdAt        DOUBLE NOT NULL,
   lastActivityAt   DOUBLE NOT NULL,
@@ -759,7 +762,8 @@ CREATE TABLE pane (
   agentKind        TEXT,                    -- claude|codex|NULL
   agentProfileName TEXT,                    -- Kelpi-only (v19); NULL = unknown
   pluginJSON       TEXT,                    -- Kelpi-only (v20); versioned plugin descriptor
-  pluginParked     BOOLEAN NOT NULL DEFAULT 0
+  pluginParked     BOOLEAN NOT NULL DEFAULT 0,
+  csvHeaderRow     BOOLEAN NOT NULL DEFAULT 1 -- Kelpi-only (v23); csv panes' header row
 );
 
 CREATE TABLE appState (

@@ -28,6 +28,8 @@ describe('declarative plugin extension contracts', () => {
         { ...container, slots: [] },
         { ...container, slots: [{ id: slot, title: 'Bad', weight: 0 }] },
         { ...container, slots: [{ id: slot, title: 'Bad', defaultView: 'kelpi.shell' }] },
+        // #324: the native csv table is a pane renderer, never a container slot default.
+        { ...container, slots: [{ id: slot, title: 'Bad', defaultView: 'kelpi.csv' }] },
         { ...container, slots: [{ id: slot, title: 'Bad', defaultView: 'sample.board.unknown' }] },
         { ...container, slots: [{ id: view.id, title: 'Duplicate' }] },
         { ...container, placements: [slot], slots: [{ id: slot, title: 'Cycle', defaultView: container.id }] }

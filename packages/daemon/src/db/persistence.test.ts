@@ -21,6 +21,7 @@ const P_SCRATCH = 'E73AB578-97F5-4E6B-94D9-E05DF697C2EB';
 const P_WEB = '2415F59F-1EC1-4118-B66D-070DF303536B';
 const P_PRIVATE = '4C4B2231-641C-493A-BA68-31639278ED15';
 const P_DIFF = '2EBAAD98-4E01-41A7-93EB-C8DD48CB13B1';
+const P_CSV = '7A3C9E21-5B4D-4F6A-8C2E-1D0F9B8A7C65';
 const R1 = '6A8188E8-9161-47B7-BE9E-3708C943551D';
 const A1 = '76A48E1B-3696-4853-8499-0122FADBABEF';
 const TAB1 = '5F0C24D9-1111-4111-8111-111111111111';
@@ -70,6 +71,7 @@ function richSnapshot(): PersistedSnapshot {
                         status: 'running',
                         filePath: null,
                         scratchpadContent: null,
+                        csvHeaderRow: true,
                         webTabs: null,
                         webActiveTabID: null,
                         webIsPrivate: false
@@ -87,6 +89,7 @@ function richSnapshot(): PersistedSnapshot {
                         status: 'idle',
                         filePath: '/Users/test/code/kelpi/PLAN.md',
                         scratchpadContent: null,
+                        csvHeaderRow: true,
                         webTabs: null,
                         webActiveTabID: null,
                         webIsPrivate: false
@@ -104,6 +107,7 @@ function richSnapshot(): PersistedSnapshot {
                         status: 'waitingForInput',
                         filePath: null,
                         scratchpadContent: '# scratch\n\nline two',
+                        csvHeaderRow: true,
                         webTabs: null,
                         webActiveTabID: null,
                         webIsPrivate: false
@@ -146,6 +150,7 @@ function richSnapshot(): PersistedSnapshot {
                         status: 'idle',
                         filePath: null,
                         scratchpadContent: null,
+                        csvHeaderRow: true,
                         webTabs: [
                             { id: TAB1, url: 'https://example.com', title: 'Example Domain' },
                             { id: TAB2, url: 'http://localhost:3000', title: '' }
@@ -166,6 +171,7 @@ function richSnapshot(): PersistedSnapshot {
                         status: 'idle',
                         filePath: null,
                         scratchpadContent: null,
+                        csvHeaderRow: true,
                         webTabs: null,
                         webActiveTabID: null,
                         webIsPrivate: true
@@ -183,6 +189,26 @@ function richSnapshot(): PersistedSnapshot {
                         status: 'idle',
                         filePath: 'packages/daemon',
                         scratchpadContent: null,
+                        csvHeaderRow: true,
+                        webTabs: null,
+                        webActiveTabID: null,
+                        webIsPrivate: false
+                    },
+                    {
+                        // #324: a csv pane whose header row was switched off survives a restart.
+                        id: P_CSV,
+                        label: 'data.csv',
+                        type: 'csv',
+                        workingDirectory: '/Users/test/data',
+                        createdAt: 1_755_400_300,
+                        lastActivityAt: 1_755_400_300,
+                        agentSessionID: null,
+                        agentKind: null,
+                        agentProfileName: null,
+                        status: 'idle',
+                        filePath: '/Users/test/data/data.csv',
+                        scratchpadContent: null,
+                        csvHeaderRow: false,
                         webTabs: null,
                         webActiveTabID: null,
                         webIsPrivate: false
@@ -290,6 +316,7 @@ describe('save → load round trip', () => {
                             isEditing: false,
                             externalEditorCommand: null,
                             scratchpadContent: null,
+                            csvHeaderRow: true,
                             agentSessionID: 'abc',
                             agentKind: 'claude',
                             agentProfileName: 'work',

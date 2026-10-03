@@ -1,13 +1,14 @@
 # Document Lab
 
-An SDK-only renderer for existing Markdown, Scratchpad and Diff panes. No backend, build,
-native imports or host DOM access is required.
+An SDK-only renderer for existing Markdown, Scratchpad and Diff panes. It also attaches to CSV
+table panes, where it only shows a read-only note: a table is edited by row and cell through
+`documents.csv`, not as whole text. No backend, build, native imports or host DOM access is required.
 
 After [preparing the source checkout](../../../docs/plugin-development.md#prepare-a-source-checkout), start
 `node scripts/dev-instance.mjs --state out/plugin-documents-playground` from the checkout
 root. In that private instance, install this directory's absolute path through Settings → Plugins, open a
 document, and choose **Document Lab** in its renderer picker. Settings exposes the same choices
-as `document.markdown`, `document.scratchpad` and `document.diff`.
+as `document.markdown`, `document.scratchpad`, `document.diff` and `document.csv`.
 
 The example reads and watches the daemon's native buffer, supports Markdown edit/preview and save,
 shows raw diff lines, and persists a wrap preference separately from source. Every input is

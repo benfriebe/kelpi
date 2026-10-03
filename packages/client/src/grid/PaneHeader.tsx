@@ -44,6 +44,7 @@ import {
 } from 'react';
 
 import { ContextMenu, type MenuItemSpec } from '../chrome/ContextMenu';
+import { useCsvChromeFacts } from '../content/csv/chrome-facts';
 import {
     createPaneChromeSurface,
     paneChromeGlyph,
@@ -592,6 +593,8 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
      * twice, or publishes one list and draws another, was the shape this replaced.
      */
     const headerExtras = props.headerExtras?.(pane.id);
+    // #324: a csv pane's body says whether ⌘E is available; nothing else subscribes.
+    const csvFacts = useCsvChromeFacts(pane.type === 'csv' ? pane.id : null);
     const model = paneChromeModel({
         pane,
         focused,
@@ -607,7 +610,8 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
         ...(props.headerCommands === undefined ? {} : { commands: props.headerCommands }),
         ...(props.headerItems === undefined ? {} : { items: props.headerItems }),
         ...(props.changes === undefined ? {} : { changes: props.changes }),
-        canCopyDocument: onCopyDocument !== undefined
+        canCopyDocument: onCopyDocument !== undefined,
+        csv: csvFacts
     });
     const chrome: PaneChromeDescriptor = model.descriptor;
     const { inline, overflow, pinned } = paneChromeRow(chrome);

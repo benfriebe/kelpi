@@ -134,7 +134,9 @@ restores the screen rather than starting blank.
 
 - **Rendering**: ghostty-web per terminal pane; DOM/CSS grid for the layout tree (ported
   `PaneLayout` algorithms, spec in `docs/pane-layout.md`); markdown/diff panes render
-  client-side from daemon-provided file content + change events.
+  client-side from daemon-provided file content + change events. CSV panes never move a whole
+  file: the daemon indexes it and serves rows by range, and the client draws a virtualised grid
+  over the rows on screen (`docs/csv-pane.md`).
 - **State**: a thin store that mirrors daemon state (snapshot + deltas). No client-side domain
   logic beyond optimistic echo; every mutation is a command to the daemon.
 - **Web panes** (embedded browser): Electron owns the native WebContentsView + CDP page surface.

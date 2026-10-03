@@ -31,6 +31,7 @@ every UI-audit assertion passed. Phone emulation is distinct from physical-devic
 
 ## Phase index
 
+- [CSV document placement and API](#csv-document-placement-and-api-2026-10-03) (#324, in progress).
 - [Merge and promote of #262, #261 and #263](#merge-and-promote-of-262-261-and-263-2026-09-24).
 - [Root layout: hidden bands, Zen Mode and band heights](#root-layout-hidden-bands-zen-mode-and-band-heights-2026-09-24).
 - [Help lists plugin commands and shortcuts](#help-lists-plugin-commands-and-shortcuts-2026-09-24).
@@ -56,6 +57,34 @@ every UI-audit assertion passed. Phone emulation is distinct from physical-devic
 - [Foundation](#initial-implementation-2026-09-08) and [extended contracts](#extensibility-follow-up-2026-09-09).
 - [Bundled sidebars](#bundled-sidebar-features-and-window-navigation-2026-09-09), [shared UI](#reactive-contributions-and-shared-window-ui-2026-09-09) and [their integrated PR checks](#pr-publication-validation-2026-09-10).
 - [Reproduction commands](#reproduce).
+
+## CSV document placement and API (2026-10-03)
+
+The plugin-facing half of the native CSV table pane ([#324](https://github.com/benfriebe/kelpi/issues/324),
+[csv pane](csv-pane.md)), on branch `issue-324-csv-editor-pane` over the contract commit `12d5609`.
+Every change is additive under plugin API version 1 ([roadmap](plugin-roadmap.md)): the
+`document.csv` placement, the reserved `kelpi.csv` view id, `csv` in `pane.type` conditions and the
+SDK's `PaneType`/`PaneChromeKind`, `kind: 'csv'` and `truncated` on `DocumentSnapshot`, and the
+`documents.csv` sub-API with its `CSV_*` error codes.
+
+**Focused checks only; this is not a battery and not a live run.** On the working tree (uncommitted,
+the daemon engine and client grid still being written in parallel):
+
+- `npx vitest run packages/cli/ packages/protocol packages/plugin-sdk`: 44 files, 793 tests passed.
+  New cases: `document.csv` decodes as a document placement and refuses a container, `kelpi.csv` is
+  refused as a container slot default, `pane.type: 'csv'` decodes; the SDK maps every
+  `documents.csv` call to its `csv-*` method with camelCase arguments (a `null` sort column is sent,
+  absent options are not) and surfaces each `CSV_*` prefix as a `KelpiError` code; a renderer
+  declaring `document.csv` attaches to a csv pane while a markdown-only or "all three" renderer is
+  refused (`document-renderers.test.ts`); the `document` scaffold template declares `document.csv`
+  and renders a csv table's first rows through `documents.csv.rows`; the CLI's `kelpi document
+  rows|csv-edit|sort|find|header-row|csv-state` payloads and twelve local refusals.
+- `node scripts/verify-plugin-sdk.mjs`: the packed SDK artifact typechecks from an external consumer.
+- `tsc -p packages/plugin-sdk` (including the new csv usage in `typecheck.ts`) passes.
+
+**Not yet run:** `plugin-document-features` and the other live scenarios, an onscreen check of a
+plugin renderer on a csv pane, and the full verification battery. Document Lab now lists
+`document.csv` and shows a read-only note there; its live behaviour on a csv pane is unverified.
 
 ## Merge and promote of #262, #261 and #263 (2026-09-24)
 

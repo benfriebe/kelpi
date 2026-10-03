@@ -53,6 +53,8 @@ export interface ClosedPaneSnapshot {
     readonly type: PaneType;
     readonly filePath: string | null;
     readonly scratchpadContent: string | null;
+    /** #324: a csv pane's header-row choice survives a close + reopen. */
+    readonly csvHeaderRow: boolean;
     readonly agentSessionID: string | null;
     readonly agentKind: AgentKind | null;
     /** The profile the recorded agent session was launched under; reopen resumes with it. */
@@ -498,6 +500,11 @@ export type DomainAction =
           readonly sourcePaneID?: string | undefined;
           /** #295: false opens the pane in the background; see `create-pane`. */
           readonly focus?: boolean | undefined;
+          /**
+           * #324: `'csv'` opens the file as a csv document pane instead (the daemon's `open`
+           * routes `.csv`/`.tsv` here unless the caller forced markdown). Same placement path.
+           */
+          readonly paneType?: 'csv' | undefined;
       }
     | {
           readonly type: 'open-diff-pane';
@@ -615,6 +622,13 @@ export type DomainAction =
            * Omitted = the built-in editor; leaving edit mode always clears it (CONT-090).
            */
           readonly externalEditorCommand?: string | undefined;
+      }
+    | {
+          /** #324: a csv pane treats its first row as headers (persisted per pane). */
+          readonly type: 'set-csv-header-row';
+          readonly workspaceID: string;
+          readonly paneID: string;
+          readonly on: boolean;
       }
     | {
           readonly type: 'set-markdown-font-size';

@@ -454,12 +454,18 @@ function decodeCommand(
         case 'open': {
             const path = fields.nonEmpty('path');
             if (path === undefined) return guard(command, 'open requires path', 'path');
+            // #324: `kelpi md` forces a markdown pane even for a `.csv`/`.tsv` path.
+            const asRaw = fields.text('as');
+            if (asRaw !== undefined && asRaw !== '' && asRaw !== 'markdown') {
+                return guard(command, "open as must be 'markdown'", 'as');
+            }
             return {
                 command,
                 path,
                 pane_id: paneId,
                 reuse: fields.flag('reuse', false),
-                focus: fields.flag('focus', false)
+                focus: fields.flag('focus', false),
+                ...(asRaw === 'markdown' ? { as: 'markdown' as const } : {})
             };
         }
         case 'diff': {

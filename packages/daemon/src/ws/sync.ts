@@ -36,6 +36,7 @@ import {
     CHOOSE_FOLDER_CAPABILITY,
     CHOOSE_FOLDER_DIALOG_ACTION,
     CHOOSE_FOLDER_TIMEOUT_MS,
+    CSV_UPDATED_MESSAGE,
     DROPPED_FILES_TIMEOUT_MS,
     MAX_DROPPED_FILES,
     RESOLVE_DROPPED_FILES_ACTION,
@@ -58,11 +59,19 @@ import {
     WS_WINDOW_CHROME_MESSAGE,
     WS_SETTINGS_CHANGED_MESSAGE,
     WS_SETTINGS_COMMANDS,
+    decodeCsvEditOps,
+    decodeCsvFindQuery,
+    decodeCsvFindStep,
+    decodeCsvRowsRequest,
+    decodeCsvSort,
     decodeWireObject,
     dispatchSequence,
     errorReply,
+    isCsvCommand,
     isWsSettingsCommand,
     parseWorkspaceColor,
+    type CsvCommand,
+    type CsvPaneState,
     type JsonObject,
     type WsClientInfo,
     type WsClientKind,
@@ -79,6 +88,7 @@ import { formatIconString, newUUID, normalizeIconEmoji, parseIconString } from '
 import { ratioAtPath } from '@kelpi/core/layout';
 
 import type { ContentMode, ContentPaneState, ContentSubscription } from '../content/index.js';
+import type { CsvChannel, CsvSubscription } from '../content/csv/channel.js';
 import { renderReleaseNotes } from '../content/markdown.js';
 import { dualFireMessage } from '../control/server.js';
 import { promoteRepo } from '../git/registry.js';
@@ -199,6 +209,8 @@ export interface SyncHubOptions {
     readonly protocolVersion?: number | undefined;
     /** M5 content panes; absent = the `content-*` verbs answer "not available". */
     readonly content?: ContentChannel | undefined;
+    /** #324 csv panes (`csv-*` verbs, docs/csv-pane.md); absent = they answer "not available". */
+    readonly csv?: CsvChannel | undefined;
     /**
      * M6 web panes. This is where the Electron shell claims the host role and where its RPC
      * replies + console/page events arrive, so it MUST be the same service instance the
@@ -1634,6 +1646,9 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
         private readonly contentSubs = new Map<string, ContentSubscription>();
         /** Bumped on every subscribe/unsubscribe so an in-flight subscribe can be voided. */
         private readonly contentEpoch = new Map<string, number>();
+        /** #324: paneID → this connection's csv subscription, with the same epoch guard. */
+        private readonly csvSubs = new Map<string, CsvSubscription>();
+        private readonly csvEpoch = new Map<string, number>();
         /** Set while THIS connection holds the web-pane host role (M6). */
         private hostRegistration: HostRegistration | null = null;
         /** paneID → unsubscribe for this connection's console streams. */
@@ -1919,6 +1934,15 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             }
             this.contentSubs.clear();
             this.contentEpoch.clear();
+            for (const subscription of this.csvSubs.values()) {
+                try {
+                    subscription.unsubscribe();
+                } catch (error) {
+                    report(error, 'csv-unsubscribe');
+                }
+            }
+            this.csvSubs.clear();
+            this.csvEpoch.clear();
             // A dropped host must free the slot (a later shell can then take over), a dropped
             // VIEWER must give back the browser views it had placed, and every console follower
             // must stop writing into a socket that is gone.
@@ -2323,6 +2347,13 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             } catch {
                 ok = false;
             }
+            // #324: csv documents flush on their own path (synchronous below the large-file
+            // threshold, a background save above it); a failure there must not cost the reply.
+            try {
+                options.csv?.flushForQuit();
+            } catch {
+                ok = false;
+            }
             this.send({ type: FLUSH_SAVES_RESULT_MESSAGE, ok, ...(id === undefined ? {} : { id }) });
         }
 
@@ -2416,7 +2447,7 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             const plugins = options.plugins;
             const name = isRecord(payload) ? text(payload['command']) : undefined;
             if (id === undefined || name === undefined || !plugins?.hasOperationHooks?.(name) || !plugins.interceptOperation) { this.commandNow(message); return; }
-            const supported = isContentCommand(name) || isWebCommand(name) || isAgentCommand(name) || isRemoteCommand(name) || isWsSettingsCommand(name) || isWsOnlyCommand(name) || isRepoCommand(name) || isGraftUiCommand(name) || isTerminalSearchCommand(name) || isPaneLifecycleCommand(name) || isDesktopCommand(name) || name === GUI_DELETE_WORKSPACE_COMMAND || name === WORKSPACE_CREATE_CANCEL_COMMAND || decodeWireObject(payload).ok;
+            const supported = isContentCommand(name) || isCsvCommand(name) || isWebCommand(name) || isAgentCommand(name) || isRemoteCommand(name) || isWsSettingsCommand(name) || isWsOnlyCommand(name) || isRepoCommand(name) || isGraftUiCommand(name) || isTerminalSearchCommand(name) || isPaneLifecycleCommand(name) || isDesktopCommand(name) || name === GUI_DELETE_WORKSPACE_COMMAND || name === WORKSPACE_CREATE_CANCEL_COMMAND || decodeWireObject(payload).ok;
             if (!supported) { this.commandNow(message); return; }
             if (this.pendingHookCommands.has(id)) { this.send({ type: 'command-reply', id, reply: failure('command id is already in use') }); return; }
             this.pendingHookCommands.add(id);
@@ -2471,6 +2502,10 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                 }
                 if (name !== undefined && isContentCommand(name)) {
                     this.contentCommand(id, name, payload);
+                    return;
+                }
+                if (name !== undefined && isCsvCommand(name)) {
+                    this.csvCommand(id, name, payload);
                     return;
                 }
                 if (name !== undefined && isWebCommand(name)) {
@@ -3079,6 +3114,125 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                     return;
                 default:
                     settle(content.save(paneID));
+                    return;
+            }
+        }
+
+        // ── csv panes (#324) ────────────────────────────────────────────────
+
+        /** Release this pane's csv subscription (if any) and return the new epoch. */
+        private dropCsvSub(paneID: string): number {
+            this.csvSubs.get(paneID)?.unsubscribe();
+            this.csvSubs.delete(paneID);
+            const epoch = (this.csvEpoch.get(paneID) ?? 0) + 1;
+            this.csvEpoch.set(paneID, epoch);
+            return epoch;
+        }
+
+        /**
+         * The `csv-*` verbs (`@kelpi/protocol` `csv.ts`, docs/csv-pane.md). Same shape as the
+         * content verbs: matched before the wire decode, answered through `command-reply` when
+         * the service settles. Every payload goes through the shared validators first, so the
+         * WS hub and the plugin documents API refuse the same things with the same words.
+         */
+        private csvCommand(id: string, command: CsvCommand, payload: Record<string, unknown>): void {
+            const csv = options.csv;
+            if (csv === undefined) {
+                this.contentReply(id, failure('csv panes are not available'));
+                return;
+            }
+            const paneID = text(payload['pane_id']);
+            if (paneID === undefined) {
+                this.contentReply(id, failure(`${command} requires pane_id`));
+                return;
+            }
+            const settle = <T>(promise: Promise<T>, key: string): void => {
+                promise.then(
+                    (value) => {
+                        this.contentReply(id, { ok: true, pane_id: paneID, [key]: value as unknown as JsonObject });
+                    },
+                    (error: unknown) => {
+                        this.contentReply(id, failure(toError(error).message));
+                    }
+                );
+            };
+            const reject = (error: string): void => {
+                this.contentReply(id, failure(error));
+            };
+
+            switch (command) {
+                case 'csv-unsubscribe':
+                    this.dropCsvSub(paneID);
+                    this.contentReply(id, { ok: true, pane_id: paneID });
+                    return;
+                case 'csv-subscribe': {
+                    // Re-subscribing replaces the old handle; a subscribe voided while the
+                    // document was opening is released and answered as cancelled.
+                    const epoch = this.dropCsvSub(paneID);
+                    csv.subscribe(paneID, (state: CsvPaneState) => {
+                        this.send({ type: CSV_UPDATED_MESSAGE, paneID, state: state as unknown as JsonObject });
+                    }).then(
+                        (subscription) => {
+                            if (this.disposed || this.csvEpoch.get(paneID) !== epoch) {
+                                subscription.unsubscribe();
+                                this.contentReply(id, failure('subscription was cancelled'));
+                                return;
+                            }
+                            this.csvSubs.set(paneID, subscription);
+                            this.contentReply(id, { ok: true, pane_id: paneID, state: subscription.state as unknown as JsonObject });
+                        },
+                        (error: unknown) => {
+                            this.contentReply(id, failure(toError(error).message));
+                        }
+                    );
+                    return;
+                }
+                case 'csv-rows': {
+                    const request = decodeCsvRowsRequest(payload);
+                    if (!request.ok) { reject(request.error); return; }
+                    settle(csv.rows(paneID, request.value), 'rows');
+                    return;
+                }
+                case 'csv-edit': {
+                    const generation = payload['generation'];
+                    if (typeof generation !== 'string' || generation.length === 0) {
+                        reject('CSV_INVALID: csv-edit requires generation');
+                        return;
+                    }
+                    const ops = decodeCsvEditOps(payload['ops']);
+                    if (!ops.ok) { reject(ops.error); return; }
+                    settle(csv.edit(paneID, generation, ops.value), 'state');
+                    return;
+                }
+                case 'csv-sort': {
+                    const sort = decodeCsvSort(payload);
+                    if (!sort.ok) { reject(sort.error); return; }
+                    settle(csv.sort(paneID, sort.value.column, sort.value.direction), 'state');
+                    return;
+                }
+                case 'csv-find': {
+                    const query = decodeCsvFindQuery(payload['query']);
+                    if (!query.ok) { reject(query.error); return; }
+                    settle(csv.find(paneID, query.value), 'find');
+                    return;
+                }
+                case 'csv-find-step': {
+                    const step = decodeCsvFindStep(payload);
+                    if (!step.ok) { reject(step.error); return; }
+                    settle(csv.findStep(paneID, step.value.query, step.value.direction, step.value.from), 'step');
+                    return;
+                }
+                case 'csv-set-header-row': {
+                    const on = payload['on'];
+                    if (typeof on !== 'boolean') {
+                        reject('CSV_INVALID: csv-set-header-row requires on');
+                        return;
+                    }
+                    settle(csv.setHeaderRow(paneID, on), 'state');
+                    return;
+                }
+                case 'csv-discard':
+                    settle(csv.discard(paneID), 'state');
                     return;
             }
         }

@@ -210,6 +210,12 @@ export const MIGRATIONS: readonly Migration[] = [
             addColumn(db, 'workspace_group', 'repoID', 'TEXT');
             addColumn(db, 'workspace_group', 'createWorktree', 'BOOLEAN NOT NULL DEFAULT 0');
         }
+    },
+    {
+        // Kelpi-only (#324): a csv pane treats its first row as column headers. Every existing
+        // pane reads back as "on", the default; the flag means nothing for other pane types.
+        identifier: 'v23_pane_csv_header_row',
+        apply: (db) => addColumn(db, 'pane', 'csvHeaderRow', 'BOOLEAN NOT NULL DEFAULT 1')
     }
 ];
 
@@ -225,7 +231,8 @@ export const DAEMON_ONLY_MIGRATIONS: readonly string[] = [
     'v19_pane_agent_profile',
     'v20_plugin_panes',
     'v21_workspace_muted',
-    'v22_workspace_group_repo'
+    'v22_workspace_group_repo',
+    'v23_pane_csv_header_row'
 ];
 
 export function ensureMigrationsTable(db: SqlDatabase): void {

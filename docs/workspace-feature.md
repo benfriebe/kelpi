@@ -1316,7 +1316,8 @@ if (snapshot.type === "web" AND snapshot.webState != null):
   // sidecar (treat as a blank tab); kept, see Compatibility rationale 5.
 setFocus(id); currentLayoutIndex = null
 
-if (snapshot.type is markdown | scratchpad | diff | web): no effects; done.
+if (snapshot.type is markdown | scratchpad | diff | csv | web): no effects; done.
+// (a csv pane comes back in grid mode with its snapshotted csvHeaderRow, issue #324)
 
 // shell: respawn and optionally resume the agent (the reopen channel in
 // packages/daemon/src/ws/panes.ts reads the snapshot BEFORE dispatching, since the

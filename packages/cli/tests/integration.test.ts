@@ -682,7 +682,7 @@ describe('open / md / diff routing', () => {
         expect(await lastRequest()).toEqual({ command: 'open', path: path.join(home, 'notes.md'), pane_id: PANE });
 
         await runCLI(['md', '--focus', 'notes.md'], { port: server.port, cwd: home });
-        expect(await lastRequest()).toEqual({ command: 'open', path: path.join(home, 'notes.md'), focus: true });
+        expect(await lastRequest()).toEqual({ command: 'open', path: path.join(home, 'notes.md'), focus: true, as: 'markdown' });
 
         await runCLI(['open', '--focus', 'example.com'], { port: server.port });
         expect(await lastRequest()).toEqual({ command: 'web-open', url: 'example.com', focus: true });
@@ -702,13 +702,30 @@ describe('open / md / diff routing', () => {
         expect(result.code).toBe(1);
         expect(result.stderr).toContain("kelpi open: don't know how to open '.zip' files");
         expect(result.stderr).toContain('Use `kelpi md <file>` to force a markdown pane');
+        expect(result.stderr).toContain('CSV (.csv, .tsv) opens a');
         expect(server.requests).toHaveLength(0);
     });
 
     it('forces markdown for any extension with `kelpi md`', async () => {
         const home = scratchHome();
         await runCLI(['md', 'notes.txt'], { port: server.port, cwd: home });
-        expect(await lastRequest()).toEqual({ command: 'open', path: path.join(home, 'notes.txt') });
+        expect(await lastRequest()).toEqual({ command: 'open', path: path.join(home, 'notes.txt'), as: 'markdown' });
+        // #324: a csv opened with `kelpi md` stays markdown source, not a table.
+        await runCLI(['md', '--here', 'data.csv'], { port: server.port, cwd: home, paneID: PANE });
+        expect(await lastRequest()).toEqual({ command: 'open', path: path.join(home, 'data.csv'), pane_id: PANE, reuse: true, as: 'markdown' });
+    });
+
+    /** #324: `.csv`/`.tsv` ride the same `open` command; the daemon picks the table pane by extension. */
+    it('routes csv and tsv files to `open`, honouring --here and --focus', async () => {
+        const home = scratchHome();
+        fs.writeFileSync(path.join(home, 'data.csv'), 'a,b\n1,2\n');
+        await runCLI(['open', '--here', '--focus', 'data.csv'], { port: server.port, cwd: home, paneID: PANE });
+        expect(await lastRequest()).toEqual({ command: 'open', path: path.join(home, 'data.csv'), pane_id: PANE, reuse: true, focus: true });
+        await runCLI(['open', 'Report.TSV'], { port: server.port, cwd: home });
+        expect(await lastRequest()).toEqual({ command: 'open', path: path.join(home, 'Report.TSV') });
+
+        const help = await runCLI(['open', '--help'], { port: server.port });
+        expect(help.stdout).toContain('.csv/.tsv → table pane');
     });
 
     it('always sends the cwd as diff\'s repo_path and resolves the target', async () => {
@@ -1033,6 +1050,109 @@ describe('web printers', () => {
             make_active: true,
             target: PANE
         });
+    });
+});
+
+/** #324: the csv document actions ride the plugin `document` action like get/edit/save. */
+describe('kelpi document csv actions', () => {
+    const sent = async (): Promise<{ method: string; args: Record<string, unknown> }> => {
+        const request = await lastRequest();
+        expect(request).toMatchObject({ command: 'plugin', action: 'document' });
+        return JSON.parse(String(request['text'])) as { method: string; args: Record<string, unknown> };
+    };
+
+    it('reads a row window with camelCase arguments and prints the result', async () => {
+        server.respond(() => ({ lines: [{ ok: true, result: { generation: 'i:0', revision: 3, start: 10, columnStart: 0, columnIDs: [0, 1], rows: [], nextStart: null } }] }));
+        const result = await runCLI(['document', 'rows', PANE, '--start', '10', '--count', '20', '--column-start', '2', '--column-count', '3'], { port: server.port });
+        expect(result.code).toBe(0);
+        expect(await sent()).toEqual({ method: 'csv-rows', args: { paneID: PANE, start: 10, count: 20, columnStart: 2, columnCount: 3 } });
+        expect(JSON.parse(result.stdout)).toMatchObject({ generation: 'i:0', nextStart: null });
+
+        await runCLI(['document', 'rows', '--start', '0', '--count', '1', PANE], { port: server.port });
+        expect(await sent()).toEqual({ method: 'csv-rows', args: { paneID: PANE, start: 0, count: 1 } });
+    });
+
+    it('sends a validated edit batch from --ops or --ops-file', async () => {
+        const home = scratchHome();
+        server.respond(() => ({ lines: [{ ok: true, result: { paneID: PANE } }] }));
+        const ops = [{ op: 'set-cell', row: 1, column: 0, value: 'x' }, { op: 'insert-rows', at: 2, count: 1 }];
+        await runCLI(['document', 'csv-edit', PANE, '--generation', 'i:4', '--ops', JSON.stringify(ops)], { port: server.port });
+        expect(await sent()).toEqual({ method: 'csv-edit', args: { paneID: PANE, generation: 'i:4', ops } });
+
+        fs.writeFileSync(path.join(home, 'ops.json'), JSON.stringify([{ op: 'undo' }]));
+        await runCLI(['document', 'csv-edit', PANE, '--generation', 'i:5', '--ops-file', 'ops.json'], { port: server.port, cwd: home });
+        expect(await sent()).toEqual({ method: 'csv-edit', args: { paneID: PANE, generation: 'i:5', ops: [{ op: 'undo' }] } });
+    });
+
+    it('sends sort, find, header-row and csv-state', async () => {
+        server.respond(() => ({ lines: [{ ok: true, result: {} }] }));
+        await runCLI(['document', 'sort', PANE, '--column', '2', '--direction', 'desc'], { port: server.port });
+        expect(await sent()).toEqual({ method: 'csv-sort', args: { paneID: PANE, column: 2, direction: 'desc' } });
+        await runCLI(['document', 'sort', PANE, '--clear'], { port: server.port });
+        expect(await sent()).toEqual({ method: 'csv-sort', args: { paneID: PANE, column: null } });
+        await runCLI(['document', 'find', PANE, '--query', 'needle'], { port: server.port });
+        expect(await sent()).toEqual({ method: 'csv-find', args: { paneID: PANE, query: 'needle' } });
+        await runCLI(['document', 'header-row', PANE, 'off'], { port: server.port });
+        expect(await sent()).toEqual({ method: 'csv-header-row', args: { paneID: PANE, on: false } });
+        await runCLI(['document', 'csv-state', PANE], { port: server.port });
+        expect(await sent()).toEqual({ method: 'csv-state', args: { paneID: PANE } });
+    });
+
+    it.each([
+        [['rows', PANE, '--count', '5'], '--start is required.'],
+        [['rows', PANE, '--start', '0', '--count', '501'], '--count is at most 500.'],
+        [['rows', PANE, '--start', '-1', '--count', '5'], '--start must be a non-negative integer.'],
+        [['csv-edit', PANE, '--ops', '[{"op":"undo"}]'], '--generation is required'],
+        [['csv-edit', PANE, '--generation', 'g', '--ops', '[]'], 'CSV_INVALID: ops is empty'],
+        [['csv-edit', PANE, '--generation', 'g', '--ops', '[{"op":"merge"}]'], 'CSV_INVALID: unknown op'],
+        [['csv-edit', PANE, '--generation', 'g', '--ops', 'not json'], '--ops must be a JSON array'],
+        [['csv-edit', PANE, '--generation', 'g', '--revision', 'r', '--ops', '[{"op":"undo"}]'], 'csv-edit is guarded by --generation'],
+        [['sort', PANE], 'Provide exactly one of --column or --clear.'],
+        [['sort', PANE, '--column', '1', '--direction', 'up'], '--direction must be asc or desc.'],
+        [['header-row', PANE, 'yes'], 'Header row must be on or off.'],
+        [['find', PANE], '--query is required.']
+    ])('refuses %j locally without sending', async (args, message) => {
+        const result = await runCLI(['document', ...args], { port: server.port });
+        expect(result.code).toBe(1);
+        expect(result.stderr).toContain(message);
+        expect(server.requests).toHaveLength(0);
+    });
+
+    it('lists the csv actions in its help', async () => {
+        const help = await runCLI(['document', '--help'], { port: server.port });
+        expect(help.stdout).toContain('rows <pane-id> --start N --count M');
+        expect(help.stdout).toContain("csv-edit <pane-id> --generation <token> (--ops '<json>' | --ops-file <path>)");
+        expect(help.stdout).toContain('wait up to 10 minutes');
+        expect(help.stdout).toContain('kelpi pane list --json');
+        const usage = await runCLI(['--help']);
+        expect(usage.stderr).toContain('kelpi document get|watch|edit|save|refresh|mode|csv-state|rows|');
+    });
+
+    it('takes a csv flag value that looks like a refused flag as the value it is', async () => {
+        server.respond(() => ({ lines: [{ ok: true, result: {} }] }));
+        const result = await runCLI(['document', 'find', PANE, '--query', '--file'], { port: server.port });
+        expect(result.code).toBe(0);
+        expect(await sent()).toEqual({ method: 'csv-find', args: { paneID: PANE, query: '--file' } });
+    });
+
+    it('refuses an --ops-file over the request cap, with a hint to split it, and one it cannot read, as such', async () => {
+        const home = scratchHome();
+        const op = { op: 'set-cell', row: 1, column: 0, value: 'x'.repeat(1000) };
+        fs.writeFileSync(path.join(home, 'big.json'), JSON.stringify(Array.from({ length: 300 }, () => op)));
+        const big = await runCLI(['document', 'csv-edit', PANE, '--generation', 'g', '--ops-file', 'big.json'], { port: server.port, cwd: home });
+        expect(big.code).toBe(1);
+        expect(big.stderr).toContain('Edit batch is over the 256 KiB a request carries; split it into several csv-edit calls.');
+
+        fs.mkdirSync(path.join(home, 'ops-dir'));
+        const unreadable = await runCLI(['document', 'csv-edit', PANE, '--generation', 'g', '--ops-file', 'ops-dir'], { port: server.port, cwd: home });
+        expect(unreadable.code).toBe(1);
+        expect(unreadable.stderr).toContain('Could not read --ops-file ops-dir');
+        expect(unreadable.stderr).not.toContain('must be a JSON array');
+
+        fs.writeFileSync(path.join(home, 'bad.json'), 'not json');
+        const bad = await runCLI(['document', 'csv-edit', PANE, '--generation', 'g', '--ops-file', 'bad.json'], { port: server.port, cwd: home });
+        expect(bad.stderr).toContain('--ops-file must be a JSON array of csv edit ops.');
+        expect(server.requests).toHaveLength(0);
     });
 });
 

@@ -633,7 +633,7 @@ async function adoptPhase() {
         // process, so the shell logs what it built and this is the check.
         const menu = await shell.waitForLine(/menu: Kelpi /, 'the application menu');
         check('the app menu offers "Check for Updates…"', menu.includes('Check for Updates…'), menu.trim());
-        check('the File menu offers "Preview Markdown…" on ⌘O', menu.includes('Preview Markdown… (⌘O)'), menu.trim());
+        check('the File menu offers "Open…" on ⌘O', menu.includes('Open… (⌘O)'), menu.trim());
         check('the Help menu offers "Kelpi Help" on ⌘?', menu.includes('Kelpi Help (⌘?)'), menu.trim());
         // §APP-028 / §SET-194: this smoke runs an UNPACKAGED shell (`electron .` against the
         // checkout), which is this port's `#if DEBUG`, so the Debug menu must be there. The

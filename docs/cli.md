@@ -809,7 +809,7 @@ kelpi pane list [--workspace <name-or-id> | --current] [--json] [--no-header]
   payload gains `"pane_id"` and `"scope":"current"`.
 - Payload: `{"command":"pane-list", workspace?, pane_id?, scope?}`.
 - Reply contract: `{ok:true, "panes":[ {...}, ... ]}` where each pane object has at least:
-  `id` (full pane UUID), `label?`, `type` (`shell|markdown|scratchpad|diff|web`),
+  `id` (full pane UUID), `label?`, `type` (`shell|markdown|scratchpad|diff|csv|web`),
   `workspace_name`, `status`, `agent_session_id?` (full UUID), `working_directory`,
   plus `agent?` (last-known agent kind), `background_tasks?`, `group_id?`/`group_name?`
   in the JSON (the table renderer only uses the columns below).
@@ -1303,6 +1303,10 @@ const markdownOpenExtensions = new Set([
   "md", "markdown", "mdown", "mkd", "mkdn", "mdwn", "markdn",
 ]);
 
+// #324: the protocol's CSV_OPEN_EXTENSIONS, not a copy. These go out as the same `open`
+// command as markdown; the daemon picks the csv pane by extension (csv-pane.md §2).
+const csvOpenExtensions = new Set(CSV_OPEN_EXTENSIONS); // "csv", "tsv"
+
 const webOpenExtensions = new Set([
   "html", "htm", "pdf", "svg", "png", "jpg", "jpeg", "gif", "webp",
 ]);
@@ -1394,7 +1398,7 @@ through the file router (which then routes it to a web pane as `file://`).
   ```
   Usage: kelpi open [--here] [--focus] <path-or-url>
   URLs & hostnames (google.com, https://…, localhost:3000) → web pane.
-  Local files route by type: .md/.markdown → markdown pane;
+  Local files route by type: .md/.markdown → markdown pane; .csv/.tsv → table pane;
   .html/.htm/.pdf/.svg and images (.png/.jpg/.gif/.webp) → web pane.
   The new pane opens in the background; --focus moves focus to it.
   ```
@@ -1408,7 +1412,10 @@ through the file router (which then routes it to a web pane as `file://`).
   `kelpi open: --here is ignored for URLs (web panes always open in a new pane)` to stderr;
   then send `web-open` (13.7) and print its ack. Request/response.
 - Else, resolve to an absolute standardized path; lowercase the path extension:
-  - in `markdownOpenExtensions`: markdown route (13.6), honoring `--here`.
+  - in `markdownOpenExtensions` or `csvOpenExtensions`: the document route (13.6),
+    honoring `--here`. The payload is identical for both; the daemon opens a csv table pane
+    for `.csv`/`.tsv` (issue #324, [csv-pane.md](csv-pane.md) §2) and a markdown pane
+    otherwise.
   - in `webOpenExtensions`: if `--here`, stderr note
     `kelpi open: --here is ignored for web files (web panes always open in a new pane)`;
     send `web-open` with the `file://` absolute URL string.
@@ -1417,8 +1424,8 @@ through the file router (which then routes it to a web pane as `file://`).
     ```
     kelpi open: don't know how to open '.<ext>' files      (or: ... open files without an extension)
            URLs & hostnames (e.g. google.com) open a web pane;
-           Markdown (.md, .markdown) opens a preview pane; .html/.htm/.pdf/.svg and
-           images (.png/.jpg/.gif/.webp) open a web pane.
+           Markdown (.md, .markdown) opens a preview pane; CSV (.csv, .tsv) opens a
+           table pane; .html/.htm/.pdf/.svg and images (.png/.jpg/.gif/.webp) open a web pane.
            Use `kelpi md <file>` to force a markdown pane, or `kelpi web open <url>`.
     ```
 
@@ -1429,6 +1436,9 @@ through the file router (which then routes it to a web pane as `file://`).
   usage, exit 1. Background by default, as `open` (13.4).
 - Always the markdown route (13.6) regardless of extension (the escape hatch for forcing
   markdown on any file). The path is standardized to absolute against cwd.
+- Issue #324: because the daemon routes `.csv`/`.tsv` to a table pane, `kelpi md` adds
+  `"as":"markdown"` to its payload so a csv still opens as markdown source. A daemon that
+  predates the field ignores it and opens markdown anyway; `kelpi open` never sends it.
 
 ### 13.6 Markdown route (shared by `md` and `open`)
 
@@ -1439,7 +1449,8 @@ Fire-and-forget payload:
 ```
 
 `reuse` present only with `--here` (reuse the calling pane instead of opening a new one);
-`focus` (`true`) present only with `--focus`. Note this path forwards `KELPI_PANE_ID` even when
+`focus` (`true`) present only with `--focus`; `as` (`"markdown"`) present only from `kelpi md`
+(13.5). `kelpi open data.csv` sends this same payload and gets a csv table pane. Note this path forwards `KELPI_PANE_ID` even when
 it is an empty string (plain `if let`, no isEmpty check).
 
 Without `focus` the preview splits beside the calling pane and the user's focus does not move.
@@ -2140,7 +2151,9 @@ Consequences (pinned by `packages/cli/src/install/merge.test.ts` and
 Fire-and-forget: `stop`, `start`, `error`, `notification`, `session-start`, `session-end`
 (the event family; command = event name), `pane-move`, `pane-move-to-workspace`,
 `workspace-move`, `workspace-profile`, `group-create`, `group-rename`, `group-delete`,
-`group-move`, `layout-cycle`, `layout-select`, `open`, `diff`.
+`group-move`, `layout-cycle`, `layout-select`, `open`, `diff`. (`open` carries `path` and the
+optional `pane_id`, `reuse`, `focus` and, from `kelpi md` only, `as: "markdown"`, which keeps a
+`.csv`/`.tsv` path from opening as a table, issue #324.)
 
 Request/response: `ping`, `pane-split`, `pane-create`, `pane-close`, `pane-name`,
 `pane-resize`, `pane-send`, `pane-send-key`, `pane-move-adjacent`, `pane-list`,
@@ -2365,4 +2378,8 @@ The exit codes are 130 and 143 respectively.
 Use the [private-instance workflow](plugin-development.md#start-a-private-instance) to test
 without replacing installed Kelpi. The [roadmap](plugin-roadmap.md) tracks overall progress,
 and the [validation guide](plugin-validation.md) lists feature-specific acceptance checks.
-Native document commands are documented in the [document guide](plugin-documents.md#cli).
+Native document commands are documented in the [document guide](plugin-documents.md#cli),
+including the csv table actions (`csv-state`, `rows`, `csv-edit`, `sort`, `find`,
+`header-row`; [csv-pane.md](csv-pane.md) §7.3). They all travel as the `plugin` command's
+`document` action. The `document` plugin template's view declares `document.markdown`,
+`document.scratchpad`, `document.diff` and `document.csv`, and shows a csv table's first rows.

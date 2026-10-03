@@ -32,6 +32,7 @@ function stateWithClosedPane(): DaemonState {
                         type: 'shell',
                         filePath: null,
                         scratchpadContent: 'secret notes',
+                        csvHeaderRow: true,
                         agentSessionID: null,
                         agentKind: null,
                         agentProfileName: null,

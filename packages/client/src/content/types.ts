@@ -12,7 +12,12 @@
  * `undefined` three components deep.
  */
 
-export type ContentPaneType = 'markdown' | 'diff' | 'scratchpad';
+/**
+ * #324: `csv` is a content pane only in RAW-TEXT mode (⌘E), where the content service serves its
+ * source like a markdown pane in edit mode; the grid speaks the csv verbs instead
+ * (`content/csv/`).
+ */
+export type ContentPaneType = 'markdown' | 'diff' | 'scratchpad' | 'csv';
 
 /** Scratchpads are always `edit`; diffs always `view` (content-panes.md §1.1). */
 export type ContentMode = 'view' | 'edit';
@@ -45,7 +50,7 @@ export interface ContentPaneState {
     readonly assetBase: string | null;
 }
 
-const CONTENT_TYPES: ReadonlySet<string> = new Set(['markdown', 'diff', 'scratchpad']);
+const CONTENT_TYPES: ReadonlySet<string> = new Set(['markdown', 'diff', 'scratchpad', 'csv']);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value);

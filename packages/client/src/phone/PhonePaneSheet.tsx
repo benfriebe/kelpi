@@ -36,6 +36,8 @@ export function paneGlyph(type: PaneModel['type']): ChromeIconName {
             return 'plusminus';
         case 'scratchpad':
             return 'note';
+        case 'csv':
+            return 'table';
         case 'web':
             return 'globe';
         default:

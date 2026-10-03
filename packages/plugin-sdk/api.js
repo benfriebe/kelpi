@@ -15,6 +15,8 @@ export class KelpiError extends Error {
 }
 
 const clean = value => Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined));
+/** Daemon error prefixes (`CODE: message`) that become a KelpiError `code` on documents calls. */
+const documentErrorCodes = ['DOCUMENT_CONFLICT', 'CSV_STALE', 'CSV_GONE', 'CSV_READ_ONLY', 'CSV_BUSY', 'CSV_INVALID'];
 // Built-in command DTOs use snake_case; the public facade uses the same camelCase/ID
 // convention as context and snapshots. Never apply this to arbitrary plugin data/settings.
 const camelKey = key => key.replace(/_([a-z]+)(?=_|$)/g, (_, word) =>
@@ -110,10 +112,23 @@ export function createKelpiAPI(transport, getContext = () => ({})) {
     const documentCall = async (method, args) => {
         try { return await call(`documents.${method}`, clean(args)); }
         catch (error) {
-            if (error.message?.startsWith('DOCUMENT_CONFLICT:')) throw new KelpiError(error.message, { code: 'DOCUMENT_CONFLICT', method: `documents.${method}`, cause: error });
+            // `DOCUMENT_CONFLICT:` and the csv table codes (#324) surface as a KelpiError code.
+            const code = documentErrorCodes.find(prefix => error.message?.startsWith(`${prefix}:`));
+            if (code !== undefined) throw new KelpiError(error.message, { code, method: `documents.${method}`, cause: error });
             throw error;
         }
     };
+    // csv tables (#324): rows in view order, edits by logical row and stable column id.
+    const csv = Object.freeze({
+        state: (paneID = getContext().paneID) => documentCall('csv-state', { paneID }),
+        rows: (paneID, request = {}) => documentCall('csv-rows', { paneID, start: request.start, count: request.count, columnStart: request.columnStart, columnCount: request.columnCount }),
+        edit: (paneID, generation, ops) => documentCall('csv-edit', { paneID, generation, ops }),
+        sort: (paneID, column, direction) => documentCall('csv-sort', { paneID, column, direction }),
+        find: (paneID, query) => documentCall('csv-find', { paneID, query }),
+        findStep: (paneID, query, direction, from) => documentCall('csv-find-step', { paneID, query, direction, from }),
+        setHeaderRow: (paneID, on) => documentCall('csv-header-row', { paneID, on }),
+        discard: paneID => documentCall('csv-discard', { paneID }),
+    });
     // Browser operations share native replies, but never rename page-owned data.
     // Attributes can contain underscores, and exec() may return any JSON object.
     const browserDTO = value => Array.isArray(value) ? value.map(browserDTO) : value !== null && typeof value === 'object'
@@ -161,6 +176,7 @@ export function createKelpiAPI(transport, getContext = () => ({})) {
             refresh: (paneID, revision) => documentCall('refresh', { paneID, revision }),
             watch: (paneID = getContext().paneID) => documentCall('watch', { paneID }),
             unwatch: async subscription => { await documentCall('unwatch', { subscription }); },
+            csv,
         }),
         browser: Object.freeze({
             get: (paneID = getContext().paneID) => browserCall('get', { paneID }),

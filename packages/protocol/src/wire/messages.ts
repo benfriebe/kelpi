@@ -396,6 +396,11 @@ export interface OpenMessage {
     reuse: boolean;
     /** #295: as on `pane-split`; absent means background. */
     focus?: boolean | undefined;
+    /**
+     * #324: `'markdown'` forces a markdown pane (`kelpi md data.csv`). Absent, the daemon picks
+     * by extension: `.csv`/`.tsv` open as a csv pane, everything else as markdown.
+     */
+    as?: 'markdown' | undefined;
 }
 
 export interface DiffMessage {

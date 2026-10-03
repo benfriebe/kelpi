@@ -102,6 +102,7 @@ export function paneDisplayTitle(pane: PaneModel, homeDirectory = ''): string {
         case 'scratchpad':
             return 'Scratchpad';
         case 'markdown':
+        case 'csv':
             return basename(pane.filePath ?? pane.workingDirectory);
         case 'diff': {
             // §L48: empty-as-unscoped, the Swift's own test (`PaneHeaderView.swift:496-502` reads
@@ -338,6 +339,18 @@ export interface PaneChromeInput {
     readonly changes?: PaneChromeChanges | null | undefined;
     /** The markdown copy control exists only where the host bound a handler for it. */
     readonly canCopyDocument?: boolean | undefined;
+    /**
+     * #324: what a csv pane's body knows about its document (`content/csv/chrome-facts.ts`), or
+     * null when no body is on screen to say - the header then reads the pane record alone.
+     */
+    readonly csv?: PaneChromeCsvFacts | null | undefined;
+}
+
+/** The csv document facts the header's `edit` and `header-row` controls read. */
+export interface PaneChromeCsvFacts {
+    readonly rawEditable: boolean;
+    readonly rawUnavailableReason: string | null;
+    readonly headerRow: boolean;
 }
 
 /**
@@ -362,6 +375,7 @@ const TYPE_GLYPHS: Record<Exclude<PaneModel['type'], 'shell'>, IconName> = {
     markdown: 'document',
     scratchpad: 'note',
     diff: 'plusminus',
+    csv: 'table',
     plugin: 'document',
     web: 'globe'
 };
@@ -393,6 +407,37 @@ function control(
 }
 
 /**
+ * #324: a csv pane's two controls. `edit` is the markdown toggle relabelled - raw text and back -
+ * and is disabled, still in the row, with the reason as its tooltip when the body says ⌘E is
+ * unavailable (a file over 2 MiB, a read-only file, a scan still running). `header-row` swaps
+ * its label and glyph the way `edit` swaps pencil and eye: it names what a press DOES.
+ */
+function csvControls(pane: PaneModel, facts: PaneChromeCsvFacts | null): PaneChromeControlDescriptor[] {
+    const editing = pane.isEditing === true;
+    const blocked = !editing && facts !== null && !facts.rawEditable;
+    const headerRow = facts?.headerRow ?? pane.csvHeaderRow ?? true;
+    return [
+        control({
+            key: 'edit',
+            kind: 'action',
+            label: editing ? 'Table (⌘E)' : blocked ? (facts?.rawUnavailableReason ?? 'Raw text is unavailable') : 'Raw text (⌘E)',
+            icon: editing ? 'table' : 'pencil',
+            testID: `pane-edit-toggle-${pane.id}`,
+            enabled: !blocked
+        }),
+        control({
+            key: 'header-row',
+            kind: 'action',
+            label: headerRow ? 'Treat the first row as data' : 'Use the first row as the header',
+            icon: headerRow ? 'table' : 'table-header',
+            testID: `pane-header-row-${pane.id}`,
+            // The grid is the only body that draws a header row; raw text has none to toggle.
+            enabled: !editing
+        })
+    ];
+}
+
+/**
  * Fold a pane into its chrome.
  *
  * The order below is `PaneHeaderView.swift:177-273`'s row order, which is also the order §S40
@@ -412,11 +457,14 @@ export function paneChromeModel(input: PaneChromeInput): PaneChromeModel {
     // can never drift from the row it is reserving for.
     const showCopy =
         pane.type === 'markdown' && pane.isEditing !== true && input.canCopyDocument === true;
+    const csv = pane.type === 'csv';
     const buttons =
         4 +
         (showCopy ? 1 : 0) +
         (pane.type === 'markdown' ? 1 : 0) +
         (pane.type === 'diff' ? 1 : 0) +
+        // #324: raw text ⇄ table, and the header-row toggle.
+        (csv ? 2 : 0) +
         commandInputs.length +
         (contributions ? 4 : 0);
 
@@ -462,6 +510,7 @@ export function paneChromeModel(input: PaneChromeInput): PaneChromeModel {
                   })
               ]
             : []),
+        ...(csv ? csvControls(pane, input.csv ?? null) : []),
         ...(pane.type === 'diff'
             ? [
                   control({

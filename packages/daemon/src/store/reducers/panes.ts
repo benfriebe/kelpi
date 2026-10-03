@@ -173,6 +173,7 @@ function snapshotForReopen(workspace: WorkspaceState, pane: Pane): WorkspaceStat
             type: pane.type,
             filePath: pane.filePath,
             scratchpadContent: pane.scratchpadContent,
+            csvHeaderRow: pane.csvHeaderRow,
             agentSessionID: pane.agentSessionID,
             agentKind: pane.agentKind,
             agentProfileName: pane.agentProfileName,
@@ -350,6 +351,7 @@ function reopenClosedPane(
         type: snapshot.type,
         filePath: snapshot.filePath,
         scratchpadContent: snapshot.scratchpadContent,
+        csvHeaderRow: snapshot.csvHeaderRow,
         isEditing: snapshot.type === 'scratchpad'
     });
     // agentSessionID is NOT restored (it only types the resume command); agentKind is, for
@@ -420,7 +422,8 @@ function openMarkdownPane(
         nowMillis: action.now,
         label: fileName,
         title: fileName,
-        type: 'markdown',
+        // #324: a csv file opens as a csv document pane through the same placement path.
+        type: action.paneType ?? 'markdown',
         filePath: action.filePath
     });
 
@@ -767,7 +770,8 @@ export function reducePaneAction(state: DaemonState, action: DomainAction): Daem
         case 'set-markdown-editing':
             return updateWorkspace(state, action.workspaceID, (workspace) => {
                 const pane = findVisiblePane(workspace, action.paneID);
-                if (pane === null || pane.type !== 'markdown') return workspace;
+                // #324: a csv pane's raw-text mode (⌘E) reuses `isEditing` too.
+                if (pane === null || (pane.type !== 'markdown' && pane.type !== 'csv')) return workspace;
                 const next = action.editing
                     ? clearSearchIfTargets(workspace, action.paneID)
                     : workspace;
@@ -781,6 +785,23 @@ export function reducePaneAction(state: DaemonState, action: DomainAction): Daem
                         ? (action.externalEditorCommand ?? target.externalEditorCommand)
                         : null
                 }));
+            });
+        case 'set-csv-header-row':
+            return updateWorkspace(state, action.workspaceID, (workspace) => {
+                const update = (pane: Pane): Pane =>
+                    pane.id === action.paneID && pane.type === 'csv' && pane.csvHeaderRow !== action.on
+                        ? { ...pane, csvHeaderRow: action.on }
+                        : pane;
+                // Visible or parked: a `--here` csv pane can be parked behind its replacement.
+                const visible = workspace.panes.some((pane) => pane.id === action.paneID);
+                if (visible) {
+                    const panes = workspace.panes.map(update);
+                    return panes.every((pane, index) => pane === workspace.panes[index]) ? workspace : { ...workspace, panes };
+                }
+                const parkedPanes = workspace.parkedPanes.map(update);
+                return parkedPanes.every((pane, index) => pane === workspace.parkedPanes[index])
+                    ? workspace
+                    : { ...workspace, parkedPanes };
             });
         case 'set-markdown-font-size':
             return updateWorkspace(state, action.workspaceID, (workspace) => {

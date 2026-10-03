@@ -212,10 +212,26 @@ describe('pane row decoding', () => {
             status: 'running',
             filePath: null,
             scratchpadContent: null,
+            csvHeaderRow: true,
             webTabs: null,
             webActiveTabID: null,
             webIsPrivate: false
         } satisfies PersistedPane);
+    });
+
+    it('decodes a csv pane and its header-row flag (#324)', () => {
+        const decoded = decodePaneRow(paneRow({ type: 'csv', filePath: '/tmp/data.csv', csvHeaderRow: 0 }));
+        expect(decoded?.pane.type).toBe('csv');
+        expect(decoded?.pane.filePath).toBe('/tmp/data.csv');
+        expect(decoded?.pane.csvHeaderRow).toBe(false);
+        expect(decoded?.pane.unavailable).toBeUndefined();
+        expect(decodePaneRow(paneRow({ type: 'csv', csvHeaderRow: 1 }))?.pane.csvHeaderRow).toBe(true);
+    });
+
+    it('defaults a pre-v23 row (no csvHeaderRow column) to headers on', () => {
+        const row: Record<string, unknown> = { ...paneRow({ type: 'csv' }) };
+        delete row['csvHeaderRow'];
+        expect(decodePaneRow(row as never)?.pane.csvHeaderRow).toBe(true);
     });
 
     it('skips rows with an unparseable pane or workspace id', () => {
@@ -509,6 +525,30 @@ describe('encoding (§5.4)', () => {
         expect(row.webTabsJSON).toBeNull();
         expect(row.webURL).toBeNull();
         expect(row.webIsPrivate).toBe(0);
+    });
+
+    it('encodes the csv header-row flag as 0/1, defaulting an absent flag to 1 (#324)', () => {
+        const pane = {
+            id: P2,
+            label: 'data.csv',
+            type: 'csv' as const,
+            workingDirectory: '/tmp',
+            createdAt: 1,
+            lastActivityAt: 1,
+            agentSessionID: null,
+            agentKind: null,
+            agentProfileName: null,
+            status: 'idle' as const,
+            filePath: '/tmp/data.csv',
+            scratchpadContent: null,
+            webTabs: null,
+            webActiveTabID: null,
+            webIsPrivate: false
+        };
+        expect(encodePaneRow({ ...pane, csvHeaderRow: false }, W1).csvHeaderRow).toBe(0);
+        expect(encodePaneRow({ ...pane, csvHeaderRow: true }, W1).csvHeaderRow).toBe(1);
+        expect(encodePaneRow(pane, W1).csvHeaderRow).toBe(1);
+        expect(encodePaneRow(pane, W1).type).toBe('csv');
     });
 
     it('encodes booleans as 0/1 and childOrder as a UUID array', () => {

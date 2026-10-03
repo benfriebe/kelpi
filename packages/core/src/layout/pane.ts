@@ -11,13 +11,14 @@ import type { PluginPaneDescriptor } from '@kelpi/protocol';
 import type { PaneID } from './types.js';
 
 /** Only `shell` panes have terminal surfaces / sync input / can be captured. */
-export type PaneType = 'shell' | 'markdown' | 'scratchpad' | 'diff' | 'web' | 'plugin';
+export type PaneType = 'shell' | 'markdown' | 'scratchpad' | 'diff' | 'csv' | 'web' | 'plugin';
 
 export const PANE_TYPES: readonly PaneType[] = [
     'shell',
     'markdown',
     'scratchpad',
     'diff',
+    'csv',
     'web',
     'plugin'
 ];
@@ -65,6 +66,11 @@ export interface Pane {
     externalEditorCommand: string | null;
     /** Persisted in the `content` column; never written to a file. */
     scratchpadContent: string | null;
+    /**
+     * Persisted (#324): a csv pane treats its first row as column headers (sticky, excluded from
+     * sort). Defaults to true; meaningless for other pane types.
+     */
+    csvHeaderRow: boolean;
     agentSessionID: string | null;
     /** Persisted; deliberately NOT cleared when agentSessionID is cleared on load. */
     agentKind: AgentKind | null;
@@ -95,6 +101,7 @@ export const PANE_PERSISTED_COLUMNS: Readonly<Record<string, string>> = {
     status: 'status',
     filePath: 'filePath',
     scratchpadContent: 'content',
+    csvHeaderRow: 'csvHeaderRow',
     agentSessionID: 'agentSessionID',
     agentKind: 'agentKind',
     agentProfileName: 'agentProfileName',
@@ -110,6 +117,7 @@ export const PANE_PERSISTED_FIELDS: readonly (keyof Pane)[] = [
     'status',
     'filePath',
     'scratchpadContent',
+    'csvHeaderRow',
     'agentSessionID',
     'agentKind',
     'agentProfileName',
@@ -139,6 +147,7 @@ export interface NewPaneFields {
     status?: PaneStatus;
     filePath?: string | null;
     scratchpadContent?: string | null;
+    csvHeaderRow?: boolean;
     agentSessionID?: string | null;
     agentKind?: AgentKind | null;
     agentProfileName?: string | null;
@@ -158,6 +167,7 @@ export function makePane(fields: NewPaneFields): Pane {
         isEditing: false,
         externalEditorCommand: null,
         scratchpadContent: fields.scratchpadContent ?? null,
+        csvHeaderRow: fields.csvHeaderRow ?? true,
         agentSessionID: fields.agentSessionID ?? null,
         agentKind: fields.agentKind ?? null,
         agentProfileName: fields.agentProfileName ?? null,

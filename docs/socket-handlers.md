@@ -708,7 +708,7 @@ Timestamps: ISO 8601 with internet date-time format.
 {"ok": true, "panes": [
   {
     "id": "5B2C…-full-uuid",
-    "type": "shell",                       // shell|markdown|scratchpad|diff|web
+    "type": "shell",                       // shell|markdown|scratchpad|diff|csv|web
     "workspace_id": "…",
     "workspace_name": "dev",
     "working_directory": "/Users/me/proj",
@@ -1323,7 +1323,12 @@ repository any group references is skipped by the auto-unlink GC (§GIT-081).
 
 ### 8.1 `open` → openFile(path, paneID?, reuse)
 
-The CLI's `kelpi open`/`kelpi md` markdown route. If `paneID` is set and some workspace's
+The CLI's `kelpi open`/`kelpi md` document route. **Pane type by extension (issue #324):** a
+`path` ending in `.csv` or `.tsv` (case-insensitive, `isCsvPath`) opens a csv table pane
+([csv-pane.md](csv-pane.md)) through the same `open-markdown-pane` action with
+`paneType: 'csv'`, so everything below (reuse, split placement, background, focus, sync-group
+refresh) applies unchanged; any other path opens a markdown pane. `as: "markdown"` (sent by
+`kelpi md`) skips the extension check and always opens markdown. If `paneID` is set and some workspace's
 `panes` contain it: open the markdown file in that workspace, reusing the caller's pane
 (converting it in place) when `reuse` is true, else opening a new markdown pane split beside
 the caller (`sourcePaneID = paneID`). Issue #295: the open is a **background** open unless the

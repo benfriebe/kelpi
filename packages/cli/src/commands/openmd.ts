@@ -1,18 +1,21 @@
 /**
  * `kelpi open`, `kelpi md`, `kelpi diff` (cli.md §13) — routing, not policy.
  *
- * `kelpi open` decides between a web pane and a markdown pane **in the CLI**, reusing wire
+ * `kelpi open` decides between a web pane and a document pane **in the CLI**, reusing wire
  * commands that already exist (`web-open` / `open`). The decision order is the contract:
  *   1. `webTargetForOpenArg` — a real URL, a `host:port`, `localhost`, an IPv4 literal or a
  *      bare dotted host with a known TLD goes to a web pane (and `--here` is ignored with a
  *      stderr note, because a web pane always opens fresh);
  *   2. otherwise route the local file by lowercased extension: markdown extensions open a
- *      preview pane (honouring `--here`), web extensions open a web pane as a `file://` URL;
+ *      preview pane and csv extensions (#324) a table pane, both through `open` (honouring
+ *      `--here`; the daemon picks the pane type by extension); web extensions open a web pane
+ *      as a `file://` URL;
  *   3. anything else is a usage error pointing at `kelpi md` / `kelpi web open`.
  *
  * `kelpi md` skips step 1 entirely — it is the escape hatch that forces a markdown pane on any
- * file. Both forward `KELPI_PANE_ID` even when it is an EMPTY string (a plain `if let` in the
- * Swift source, no `isEmpty` check), unlike everything else in the CLI.
+ * file, so it sends `as: 'markdown'` and a `.csv` opens as markdown source rather than a table.
+ * Both forward `KELPI_PANE_ID` even when it is an EMPTY string (a plain `if let` in the Swift
+ * source, no `isEmpty` check), unlike everything else in the CLI.
  */
 
 import path from 'node:path';
@@ -21,7 +24,7 @@ import { isHelpToken, popSwitch } from '../args.js';
 import { homeDirectory, rawPaneID } from '../env.js';
 import { errLine, exit, printLine } from '../io.js';
 import type { JsonObject } from '../json.js';
-import { fileURLString, markdownOpenExtensions, pathExtensionLower, webOpenExtensions, webTargetForOpenArg } from '../routing.js';
+import { csvOpenExtensions, fileURLString, markdownOpenExtensions, pathExtensionLower, webOpenExtensions, webTargetForOpenArg } from '../routing.js';
 import { sendJSON } from '../transport.js';
 import { sendWebOpen } from './web.js';
 
@@ -30,18 +33,23 @@ function routingContext(): { cwd: string; home: string } {
 }
 
 /**
- * Fire-and-forget `open`: the markdown route shared by `kelpi md` and `kelpi open`.
+ * Fire-and-forget `open`: the document route shared by `kelpi md` and `kelpi open`.
  *
- * #295: `focus` rides only with `--focus`; absent, the daemon opens the preview in the
+ * #295: `focus` rides only with `--focus`; absent, the daemon opens the pane in the
  * background beside the calling pane.
+ *
+ * #324: the daemon routes `.csv`/`.tsv` to a table pane by extension. `asMarkdown` (only
+ * `kelpi md`) adds `as: 'markdown'` so any file, a csv included, still opens as markdown. An
+ * older daemon ignores the unknown field and opens markdown anyway.
  */
-async function sendMarkdownOpen(absolutePath: string, reuse: boolean, focus: boolean): Promise<void> {
+async function sendDocumentOpen(absolutePath: string, reuse: boolean, focus: boolean, asMarkdown = false): Promise<void> {
     const payload: JsonObject = { command: 'open', path: absolutePath };
     const paneID = rawPaneID();
     // Note: forwarded even when EMPTY (Swift parity).
     if (paneID !== undefined) payload['pane_id'] = paneID;
     if (reuse) payload['reuse'] = true;
     if (focus) payload['focus'] = true;
+    if (asMarkdown) payload['as'] = 'markdown';
     await sendJSON(payload);
 }
 
@@ -58,7 +66,7 @@ export async function handleMarkdown(args: string[]): Promise<void> {
         errLine('Usage: kelpi md [--here] [--focus] <filepath>');
         exit(1);
     }
-    await sendMarkdownOpen(path.resolve(process.cwd(), filePath), reuse, focus);
+    await sendDocumentOpen(path.resolve(process.cwd(), filePath), reuse, focus, true);
 }
 
 export async function handleOpen(args: string[]): Promise<void> {
@@ -66,7 +74,7 @@ export async function handleOpen(args: string[]): Promise<void> {
     if (first !== undefined && isHelpToken(first)) {
         printLine('Usage: kelpi open [--here] [--focus] <path-or-url>');
         printLine('URLs & hostnames (google.com, https://…, localhost:3000) → web pane.');
-        printLine('Local files route by type: .md/.markdown → markdown pane;');
+        printLine('Local files route by type: .md/.markdown → markdown pane; .csv/.tsv → table pane;');
         printLine('.html/.htm/.pdf/.svg and images (.png/.jpg/.gif/.webp) → web pane.');
         printLine('The new pane opens in the background; --focus moves focus to it.');
         exit(0);
@@ -89,8 +97,8 @@ export async function handleOpen(args: string[]): Promise<void> {
     const absolutePath = path.resolve(process.cwd(), argument);
     const extension = pathExtensionLower(absolutePath);
 
-    if (markdownOpenExtensions.has(extension)) {
-        await sendMarkdownOpen(absolutePath, reuse, focus);
+    if (markdownOpenExtensions.has(extension) || csvOpenExtensions.has(extension)) {
+        await sendDocumentOpen(absolutePath, reuse, focus);
         return;
     }
     if (webOpenExtensions.has(extension)) {
@@ -101,8 +109,8 @@ export async function handleOpen(args: string[]): Promise<void> {
     const shown = extension.length === 0 ? 'files without an extension' : `'.${extension}' files`;
     errLine(`kelpi open: don't know how to open ${shown}`);
     errLine('       URLs & hostnames (e.g. google.com) open a web pane;');
-    errLine('       Markdown (.md, .markdown) opens a preview pane; .html/.htm/.pdf/.svg and');
-    errLine('       images (.png/.jpg/.gif/.webp) open a web pane.');
+    errLine('       Markdown (.md, .markdown) opens a preview pane; CSV (.csv, .tsv) opens a');
+    errLine('       table pane; .html/.htm/.pdf/.svg and images (.png/.jpg/.gif/.webp) open a web pane.');
     errLine('       Use `kelpi md <file>` to force a markdown pane, or `kelpi web open <url>`.');
     exit(1);
 }

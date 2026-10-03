@@ -7,7 +7,7 @@
  * thing: the process is alive, and focusing the pane re-attaches it and replays its screen.
  *
  * The `content` variant is the defensive one: every pane type the daemon can create now has a
- * renderer (markdown/diff/scratchpad in M5, web panes in M8), so it is only reachable if a
+ * renderer (markdown/diff/scratchpad in M5, web panes in M8, csv in #324), so it is only reachable if a
  * newer daemon invents a pane type this client has never heard of — which is exactly when an
  * honest box beats an empty one. The "renders in M5/M6" rows it used to carry are gone with the
  * milestones that made them true.
@@ -24,6 +24,7 @@ const TYPE_ICON: Readonly<Record<PaneModel['type'], IconName>> = {
     markdown: 'document',
     scratchpad: 'note',
     diff: 'plusminus',
+    csv: 'table',
     plugin: 'document',
     web: 'globe'
 };
@@ -33,6 +34,7 @@ const TYPE_LABEL: Readonly<Record<PaneModel['type'], string>> = {
     markdown: 'Markdown preview',
     scratchpad: 'Scratchpad',
     diff: 'Diff',
+    csv: 'CSV table',
     plugin: 'Plugin view',
     web: 'Web page'
 };

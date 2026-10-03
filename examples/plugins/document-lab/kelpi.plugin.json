@@ -6,7 +6,7 @@
   "trust": "full",
   "contributes": {
     "views": [
-      { "id": "example.document-lab.editor", "title": "Document Lab", "entry": "ui/index.html", "placements": ["document.markdown", "document.scratchpad", "document.diff"] }
+      { "id": "example.document-lab.editor", "title": "Document Lab", "entry": "ui/index.html", "placements": ["document.markdown", "document.scratchpad", "document.diff", "document.csv"] }
     ]
   }
 }

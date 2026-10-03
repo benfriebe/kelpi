@@ -152,7 +152,7 @@ export class SelectionManager {
 
       if (!line) continue;
 
-      // vendor 0.4.0-nex.17 (#323): does the NEXT selected row continue this one (a soft wrap)?
+      // vendor 0.4.0-kelpi.17 (#323): does the NEXT selected row continue this one (a soft wrap)?
       // Then this row is the middle of one logical line: no newline after it, and its trailing
       // blanks are content, not padding. Upstream put a '\n' after every row, so a wrapped command
       // or URL pasted back as several lines, and a space that fell in the last column was lost.
@@ -219,7 +219,7 @@ export class SelectionManager {
   }
 
   /**
-   * vendor 0.4.0-nex.17 (#323): whether absolute row `absoluteRow` is the soft-wrap continuation of
+   * vendor 0.4.0-kelpi.17 (#323): whether absolute row `absoluteRow` is the soft-wrap continuation of
    * the row above it, history included. A terminal without the export (an older WASM, a test
    * stub) answers "no", which is upstream's behaviour: a newline at every row.
    */
@@ -300,7 +300,7 @@ export class SelectionManager {
    */
   selectAll(): void {
     const dims = this.wasmTerm.getDimensions();
-    // vendor 0.4.0-nex.16: the rows on screen, in the same absolute numbering every other
+    // vendor 0.4.0-kelpi.16: the rows on screen, in the same absolute numbering every other
     // reader here uses (see `select`).
     this.selectionStart = { col: 0, absoluteRow: this.viewportRowToAbsolute(0) };
     this.selectionEnd = { col: dims.cols - 1, absoluteRow: this.viewportRowToAbsolute(dims.rows - 1) };
@@ -333,7 +333,7 @@ export class SelectionManager {
 
     // Convert viewport rows to absolute rows.
     //
-    // vendor 0.4.0-nex.16: through `viewportRowToAbsolute`, like the mouse path. Upstream stored
+    // vendor 0.4.0-kelpi.16: through `viewportRowToAbsolute`, like the mouse path. Upstream stored
     // `viewportY + row`, which `absoluteRowToViewport` paints back at
     // `row + 2 * viewportY - scrollbackLength`: right only with no scrollback (or at
     // `viewportY = scrollbackLength / 2`), and usually off screen, so nothing painted at all.
@@ -359,7 +359,7 @@ export class SelectionManager {
       [start, end] = [end, start];
     }
 
-    // Convert viewport rows to absolute rows (vendor 0.4.0-nex.16: see `select`).
+    // Convert viewport rows to absolute rows (vendor 0.4.0-kelpi.16: see `select`).
     this.selectionStart = { col: 0, absoluteRow: this.viewportRowToAbsolute(start) };
     this.selectionEnd = { col: dims.cols - 1, absoluteRow: this.viewportRowToAbsolute(end) };
     this.requestRender();
@@ -449,7 +449,7 @@ export class SelectionManager {
       this.boundDocumentMouseMoveHandler = null;
     }
 
-    // Clean up document mousedown listener (`0.4.0-nex.12`): the one that was never removed.
+    // Clean up document mousedown listener (`0.4.0-kelpi.12`): the one that was never removed.
     if (this.boundDocumentMouseDownHandler) {
       document.removeEventListener('mousedown', this.boundDocumentMouseDownHandler);
       this.boundDocumentMouseDownHandler = null;
@@ -591,7 +591,7 @@ export class SelectionManager {
     document.addEventListener('mousemove', this.boundDocumentMouseMoveHandler);
 
     // Track mousedown on document to know if a click started inside the canvas.
-    // Bound and kept (`0.4.0-nex.12`): an anonymous listener on `document` outlives the
+    // Bound and kept (`0.4.0-kelpi.12`): an anonymous listener on `document` outlives the
     // terminal, and its closure holds this manager, the Terminal, its canvas and its WASM
     // instance — one leaked engine per terminal ever opened. `dispose()` removes it.
     this.boundDocumentMouseDownHandler = (e: MouseEvent) => {

@@ -10,7 +10,7 @@
  *   1. **The engine half.** The spike (MOBILE-PLAN.md §7) says `scrollLines` / `scrollToBottom` /
  *      `getViewportY` are the engine's whole scroll API and that its PUBLIC `select()` cannot be
  *      used to select a word: it needs the word's extent, which only the engine's private lookup
- *      knows (and until `0.4.0-nex.16` it also converted a viewport row to an absolute one as
+ *      knows (and until `0.4.0-kelpi.16` it also converted a viewport row to an absolute one as
  *      `viewportY + row`, which #306 fixed and `search-highlight.wasm.test.ts` pins). Both claims
  *      are measured here against the vendored engine (its WASM loads in Node perfectly well)
  *      over the stub 2D context `KeyBar.test.tsx` established, because a fake engine cannot
@@ -147,7 +147,7 @@ describe('the scroll API against a real ghostty-web', () => {
         expect(seen).toEqual([4]);
 
         // §7's spike named the constraint: output snapped the viewport to the bottom, so a
-        // scrolled-back view was lost on the next chunk. `0.4.0-nex.11` removes it: the offset
+        // scrolled-back view was lost on the next chunk. `0.4.0-kelpi.11` removes it: the offset
         // counts lines up from the bottom, so one appended line moves it from 4 to 5 and the
         // lines on screen stay the lines on screen. The move is announced like any other.
         renderer.write('a new line of output\r\n');
@@ -170,7 +170,7 @@ describe('the scroll API against a real ghostty-web', () => {
      * on cell 0,0 - the FIRST VISIBLE ROW, which is the row a wrong viewport-to-buffer conversion
      * gives away. Scrolled back 5 lines with 93 lines of scrollback, the first visible row is
      * `line89`, and the engine's own double-click path answers `line89`. (Its public
-     * `select(0, 0, 7)` answered `line6` until `0.4.0-nex.16`; it needs the word's length either
+     * `select(0, 0, 7)` answered `line6` until `0.4.0-kelpi.16`; it needs the word's length either
      * way, which is why `selectWordAt` raises the event the engine already listens for.)
      */
     it('selects the word under the point, at the row that is actually on screen', () => {

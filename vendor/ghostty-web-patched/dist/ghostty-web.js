@@ -9,7 +9,7 @@ class Y {
     return new QA(this.exports);
   }
   /**
-   * Every terminal on its own WASM instance (`0.4.0-nex.10`).
+   * Every terminal on its own WASM instance (`0.4.0-kelpi.10`).
    *
    * The shared instance `init()` builds is kept for what is genuinely shared — key encoding —
    * and each terminal's VT storage lives in a heap no sibling can reach. Two terminals in one
@@ -29,7 +29,7 @@ class Y {
     const E = this.wasmModule;
     return E === void 0 ? this.createTerminalOnThisInstance(A, Q, g) : Y.fromModule(E).createTerminalOnThisInstance(A, Q, g);
   }
-  /** The pre-`nex.10` body: a terminal whose storage is THIS instance's heap. */
+  /** The pre-`kelpi.10` body: a terminal whose storage is THIS instance's heap. */
   createTerminalOnThisInstance(A, Q, g) {
     const E = this.wasmModule;
     return new BA(
@@ -406,7 +406,7 @@ const v = class n {
     return this.exports.ghostty_terminal_is_row_wrapped(this.handle, A) !== 0;
   }
   /**
-   * vendor 0.4.0-nex.17 (#323): whether a row ANYWHERE in the buffer is the soft-wrap continuation
+   * vendor 0.4.0-kelpi.17 (#323): whether a row ANYWHERE in the buffer is the soft-wrap continuation
    * of the row above it, addressed by absolute row (0 = oldest history row, the numbering
    * `SelectionManager` and `trackSelection` use). `isRowWrapped` only reaches the active screen, so
    * this is the one a reader that walks history (copying a selection) needs.
@@ -1006,7 +1006,7 @@ const CA = {
     this.onDataCallback(g);
   }
   /**
-   * VENDOR BRIDGE (0.4.0-nex.1): forward textarea-inserted text to the PTY exactly once.
+   * VENDOR BRIDGE (0.4.0-kelpi.1): forward textarea-inserted text to the PTY exactly once.
    * insertText only: composition text arrives via compositionend, pastes via the paste
    * listener, and control keys via the keydown encoder.
    */
@@ -1602,7 +1602,7 @@ const kA = 1, u = {
   // Using Ghostty's approach: selection bg = default fg, selection fg = default bg
   selectionBackground: "#d4d4d4",
   selectionForeground: "#1e1e1e",
-  // vendor 0.4.0-nex.16: high-contrast match colours, readable over light and dark themes alike
+  // vendor 0.4.0-kelpi.16: high-contrast match colours, readable over light and dark themes alike
   // because they carry their own foreground (Kelpi's `search-match-*` defaults).
   searchBackground: "#f2d027",
   searchForeground: "#000000",
@@ -1693,7 +1693,7 @@ class L {
       b: Number.parseInt(g[3], 10)
     };
   }
-  /** `0xRRGGBB` → components, the form `ghostty_terminal_new_with_config` takes (nex.7). */
+  /** `0xRRGGBB` → components, the form `ghostty_terminal_new_with_config` takes (kelpi.7). */
   static rgbFromInt(A) {
     if (A === null || !Number.isFinite(A))
       return null;
@@ -1724,7 +1724,7 @@ class L {
   // Canvas Sizing
   // ==========================================================================
   /**
-   * Suspend or resume PAINTING (vendor 0.4.0-nex.6 — Nex §N24).
+   * Suspend or resume PAINTING (vendor 0.4.0-kelpi.6 — Nex §N24).
    *
    * While suspended `render()` returns without touching the canvas and `resize()` carries the
    * pixels across instead of clearing to the background, so the canvas holds the LAST GOOD
@@ -1919,7 +1919,7 @@ class L {
    * screen can tell the two apart except the desktop behind the window, and the alternative —
    * every cell opaque — is the defect this exists to remove.
    *
-   * vendor 0.4.0-nex.7 adds the third clause, and it is the one that survives a THEME CHANGE:
+   * vendor 0.4.0-kelpi.7 adds the third clause, and it is the one that survives a THEME CHANGE:
    * the components above are the theme's, which `setTheme` moves, while the cell's are the
    * TERMINAL's, which nothing moves — so after a live `theme =` the two no longer meet and
    * every untouched cell was being painted in the old background again (opaquely, over the
@@ -1935,7 +1935,7 @@ class L {
     return E !== null && A === E.r && Q === E.g && g === E.b;
   }
   /**
-   * Is this the background the WASM terminal was CONSTRUCTED with (vendor 0.4.0-nex.7)?
+   * Is this the background the WASM terminal was CONSTRUCTED with (vendor 0.4.0-kelpi.7)?
    *
    * `false` for every embedder that never called `setTerminalDefaultColors` — which is what
    * keeps upstream's behaviour exactly upstream's.
@@ -1944,14 +1944,14 @@ class L {
     const E = this.terminalDefaultBackgroundRGB;
     return E !== null && A === E.r && Q === E.g && g === E.b;
   }
-  /** The foreground half of `isTerminalDefaultBackground` (vendor 0.4.0-nex.7). */
+  /** The foreground half of `isTerminalDefaultBackground` (vendor 0.4.0-kelpi.7). */
   isTerminalDefaultForeground(A, Q, g) {
     const E = this.terminalDefaultForegroundRGB;
     return E !== null && A === E.r && Q === E.g && g === E.b;
   }
   /**
    * The LIVE theme's colour for a cell colour that is one of the terminal's construction
-   * defaults, or `null` when the cell carries a colour of its own (vendor 0.4.0-nex.7).
+   * defaults, or `null` when the cell carries a colour of its own (vendor 0.4.0-kelpi.7).
    *
    * This is the paint-time palette lookup the two default slots need. A cell's `fg_r/g/b` and
    * `bg_r/g/b` are resolved RGB, frozen at whatever the terminal was configured with, so a
@@ -2060,7 +2060,7 @@ class L {
     }
   }
   /**
-   * The unfocused cursor: a hollow block outlining the cell (vendor 0.4.0-nex.4).
+   * The unfocused cursor: a hollow block outlining the cell (vendor 0.4.0-kelpi.4).
    *
    * ghostty draws this as a sprite — `font/sprite/draw/special.zig:300-323`
    * (`cursor_hollow_rect`): fill the whole cell, then punch out everything inset by
@@ -2125,7 +2125,7 @@ class L {
     ];
   }
   /**
-   * Declare the default colours the WASM terminal was CONSTRUCTED with (vendor 0.4.0-nex.7).
+   * Declare the default colours the WASM terminal was CONSTRUCTED with (vendor 0.4.0-kelpi.7).
    *
    * Both arguments are the `0xRRGGBB` integers handed to `ghostty_terminal_new_with_config` as
    * `bg_color` / `fg_color` — not the theme's, and not a copy of them: the point is precisely
@@ -2165,7 +2165,7 @@ class L {
     A && !this.cursorBlink ? (this.cursorBlink = !0, this.focused && this.startCursorBlink()) : !A && this.cursorBlink && (this.cursorBlink = !1, this.stopCursorBlink());
   }
   /**
-   * Does the surface holding this terminal have keyboard focus? (vendor 0.4.0-nex.4)
+   * Does the surface holding this terminal have keyboard focus? (vendor 0.4.0-kelpi.4)
    *
    * The port of `ghostty_surface_set_focus`. Focus changes two things and only these two:
    *
@@ -2218,7 +2218,7 @@ class L {
     this.selectionManager = A;
   }
   // ==========================================================================
-  // Search highlight (vendor 0.4.0-nex.16)
+  // Search highlight (vendor 0.4.0-kelpi.16)
   // ==========================================================================
   /** Highlight every visible occurrence of a needle, or nothing (`null`). Drops the current one. */
   setSearchHighlight(A) {
@@ -2396,7 +2396,7 @@ const m = class O {
     return I;
   }
   /**
-   * vendor 0.4.0-nex.17 (#323): whether absolute row `absoluteRow` is the soft-wrap continuation of
+   * vendor 0.4.0-kelpi.17 (#323): whether absolute row `absoluteRow` is the soft-wrap continuation of
    * the row above it, history included. A terminal without the export (an older WASM, a test
    * stub) answers "no", which is upstream's behaviour: a newline at every row.
    */
@@ -2836,7 +2836,7 @@ class KA {
       smoothScrollDuration: A.smoothScrollDuration ?? 100,
       // Default: 100ms smooth scroll
       scrollOnUserInput: A.scrollOnUserInput ?? !0
-      // vendor 0.4.0-nex.11
+      // vendor 0.4.0-kelpi.11
     };
     this.options = new Proxy(Q, {
       set: (g, E, C) => {
@@ -2988,7 +2988,7 @@ class KA {
         // it over is what makes the option mean something — see
         // `RendererOptions.allowTransparency` in `renderer.ts`.
         allowTransparency: this.options.allowTransparency,
-        // vendor 0.4.0-nex.4: a pane whose focus was set before it opened must not come up
+        // vendor 0.4.0-kelpi.4: a pane whose focus was set before it opened must not come up
         // blinking as if it had the caret. See `setFocused`.
         focused: this.surfaceFocused
       }), this.paintSuspended && this.renderer.setPaintSuspended(!0), this.searchHighlight && this.renderer.setSearchHighlight(this.searchHighlight), this.renderer.setSearchHighlightListener((C) => {
@@ -3016,7 +3016,7 @@ class KA {
           return ((I = this.wasmTerm) == null ? void 0 : I.getMode(C, !1)) ?? !1;
         },
         this.textarea
-        // vendor 0.4.0-nex.1: PR #120 composition target bridge
+        // vendor 0.4.0-kelpi.1: PR #120 composition target bridge
       ), this.selectionManager = new cA(
         this,
         this.renderer,
@@ -3134,7 +3134,7 @@ class KA {
     this.isOpen && this.element && this.element.blur();
   }
   /**
-   * Tell the terminal whether its surface has KEYBOARD FOCUS (vendor 0.4.0-nex.4).
+   * Tell the terminal whether its surface has KEYBOARD FOCUS (vendor 0.4.0-kelpi.4).
    *
    * The port of `ghostty_surface_set_focus`, and deliberately separate from `focus()`/`blur()`,
    * which move the DOM caret. An embedder with several terminals on one page has exactly one
@@ -3152,7 +3152,7 @@ class KA {
     this.surfaceFocused = A, (Q = this.renderer) == null || Q.setFocused(A);
   }
   /**
-   * Suspend or resume PAINTING (vendor 0.4.0-nex.6 — Nex §N24).
+   * Suspend or resume PAINTING (vendor 0.4.0-kelpi.6 — Nex §N24).
    *
    * Suspended, the render loop and the forced render inside `resize()` produce nothing and the
    * canvas keeps the last frame that was painted, carried across any resize that happens
@@ -3247,7 +3247,7 @@ class KA {
     return (A = this.selectionManager) == null ? void 0 : A.getSelectionPosition();
   }
   // ==========================================================================
-  // Search highlight (vendor 0.4.0-nex.16)
+  // Search highlight (vendor 0.4.0-kelpi.16)
   // ==========================================================================
   /**
    * Highlight every occurrence of `needle` in the rows on screen, in the theme's
@@ -3354,7 +3354,7 @@ class KA {
   }
   /**
    * Keep the lines on screen where they are while `grown` lines were appended below them
-   * (vendor 0.4.0-nex.11). Announced like any other move: the offset changed even though the
+   * (vendor 0.4.0-kelpi.11). Announced like any other move: the offset changed even though the
    * content did not, and a host mirroring the offset (a scrollbar, a touch scroller) must not
    * be left holding a stale one.
    */
@@ -3421,7 +3421,7 @@ class KA {
     A();
   }
   // ==========================================================================
-  // Caret-anchored IME (vendor 0.4.0-nex.2)
+  // Caret-anchored IME (vendor 0.4.0-kelpi.2)
   // ==========================================================================
   //
   // Two things have to sit on the cursor cell for CJK input to feel native, and stock

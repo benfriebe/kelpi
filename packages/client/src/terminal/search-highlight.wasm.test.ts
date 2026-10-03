@@ -7,7 +7,7 @@
  * "the match is highlighted on row 3" is a statement about the `fillRect` calls the renderer made
  * rather than about a fake's bookkeeping. Three groups:
  *
- *   1. **`select()` with scrollback.** Before `0.4.0-nex.16` it stored `viewportY + row`, which the
+ *   1. **`select()` with scrollback.** Before `0.4.0-kelpi.16` it stored `viewportY + row`, which the
  *      renderer paints back at `row + 2 * viewportY - scrollbackLength`: right on a fresh pane,
  *      off screen in any pane with history. The old `terminal/reveal.test.ts` checked the
  *      adapter's arithmetic against a fake handle and could never have seen it.
@@ -210,7 +210,7 @@ describe('select() lands on the row it names, with scrollback (#306)', () => {
             t.term.scrollToLine(5);
             expect(t.rowText(0)).toBe('line89');
             t.term.select(0, 0, 6);
-            // Before -nex.16 this answered `line6`: the stored row was `viewportY + row`.
+            // Before -kelpi.16 this answered `line6`: the stored row was `viewportY + row`.
             expect(t.term.getSelection()).toBe('line89');
             expect(t.term.getSelectionPosition()).toEqual({ start: { x: 0, y: 0 }, end: { x: 5, y: 0 } });
 

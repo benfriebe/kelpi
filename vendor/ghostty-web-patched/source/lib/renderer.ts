@@ -41,7 +41,7 @@ export interface IRenderable {
    */
   getGraphemeString?(row: number, col: number): string;
   /**
-   * vendor 0.4.0-nex.16, for the search-highlight layer: whether a SCREEN row is the soft-wrap
+   * vendor 0.4.0-kelpi.16, for the search-highlight layer: whether a SCREEN row is the soft-wrap
    * continuation of the row above it (measured: the head row of a wrapped line reads false and
    * every row after it true, xterm.js's `isWrapped`), a scrollback row's grapheme cluster, and
    * the whole screen in one read (the per-row `getLine` re-reads it every call). All optional:
@@ -133,7 +133,7 @@ export const DEFAULT_THEME: Required<ITheme> = {
   // Using Ghostty's approach: selection bg = default fg, selection fg = default bg
   selectionBackground: '#d4d4d4',
   selectionForeground: '#1e1e1e',
-  // vendor 0.4.0-nex.16: high-contrast match colours, readable over light and dark themes alike
+  // vendor 0.4.0-kelpi.16: high-contrast match colours, readable over light and dark themes alike
   // because they carry their own foreground (Kelpi's `search-match-*` defaults).
   searchBackground: '#f2d027',
   searchForeground: '#000000',
@@ -174,7 +174,7 @@ export class CanvasRenderer {
   /** `theme.background` as components, kept in step with it. See `isDefaultCellBackground`. */
   private defaultBackgroundRGB: { r: number; g: number; b: number } | null;
   /**
-   * The default colours the WASM TERMINAL was CONSTRUCTED with (vendor 0.4.0-nex.7 — Nex §N18).
+   * The default colours the WASM TERMINAL was CONSTRUCTED with (vendor 0.4.0-kelpi.7 — Nex §N18).
    *
    * Not the theme's: `ghostty_terminal_new_with_config` takes `bg_color`/`fg_color` once and
    * there is no export that moves them, so every cell the VT has not explicitly coloured reports
@@ -207,11 +207,11 @@ export class CanvasRenderer {
   private cursorStateDirty: boolean = false;
   /**
    * Paint is SUSPENDED — the canvas is a frozen frame, not a live surface (vendor
-   * 0.4.0-nex.6). See `setPaintSuspended`.
+   * 0.4.0-kelpi.6). See `setPaintSuspended`.
    */
   private paintSuspended: boolean = false;
   /**
-   * The previous frame drew the scrollbar (vendor 0.4.0-nex.8).
+   * The previous frame drew the scrollbar (vendor 0.4.0-kelpi.8).
    *
    * `renderScrollbar` clears a strip at the canvas's right edge to the default background on
    * every frame it runs — its backdrop against ghosting — and that strip overlaps the last
@@ -236,7 +236,7 @@ export class CanvasRenderer {
 
   // Selection manager (for rendering selection)
   private selectionManager?: SelectionManager;
-  // vendor 0.4.0-nex.16: every visible search match, and the current one (`search-highlight.ts`)
+  // vendor 0.4.0-kelpi.16: every visible search match, and the current one (`search-highlight.ts`)
   private searchHighlighter = new SearchHighlighter();
   private searchHighlightListener: ((spans: readonly ISearchHighlightSpan[]) => void) | null =
     null;
@@ -381,7 +381,7 @@ export class CanvasRenderer {
     };
   }
 
-  /** `0xRRGGBB` → components, the form `ghostty_terminal_new_with_config` takes (nex.7). */
+  /** `0xRRGGBB` → components, the form `ghostty_terminal_new_with_config` takes (kelpi.7). */
   private static rgbFromInt(color: number | null): { r: number; g: number; b: number } | null {
     if (color === null || !Number.isFinite(color)) return null;
     const value = color >>> 0;
@@ -415,7 +415,7 @@ export class CanvasRenderer {
   // ==========================================================================
 
   /**
-   * Suspend or resume PAINTING (vendor 0.4.0-nex.6 — Nex §N24).
+   * Suspend or resume PAINTING (vendor 0.4.0-kelpi.6 — Nex §N24).
    *
    * While suspended `render()` returns without touching the canvas and `resize()` carries the
    * pixels across instead of clearing to the background, so the canvas holds the LAST GOOD
@@ -450,7 +450,7 @@ export class CanvasRenderer {
     const cssHeight = rows * this.metrics.height;
 
     /**
-     * vendor 0.4.0-nex.6: while paint is suspended the canvas is the frozen last good frame,
+     * vendor 0.4.0-kelpi.6: while paint is suspended the canvas is the frozen last good frame,
      * and setting `canvas.width`/`height` below wipes it. Take a copy first and lay it back
      * down afterwards, so a suspended resize shows the previous content at its previous size
      * (any newly exposed area is background) rather than a blank pane.
@@ -485,7 +485,7 @@ export class CanvasRenderer {
     // Fill background after resize
     this.paintDefaultBackground(0, 0, cssWidth, cssHeight);
 
-    // …and, when suspended, put the frozen frame back on top of it (nex.6). The context is
+    // …and, when suspended, put the frozen frame back on top of it (kelpi.6). The context is
     // scaled by the DPR, so the device-pixel copy is drawn at its CSS size.
     if (frozen !== null) {
       this.ctx.drawImage(
@@ -512,7 +512,7 @@ export class CanvasRenderer {
     scrollbackProvider?: IScrollbackProvider,
     scrollbarOpacity: number = 1
   ): void {
-    // vendor 0.4.0-nex.6 (§N24): paint is suspended — produce NO frame at all. Deliberately the
+    // vendor 0.4.0-kelpi.6 (§N24): paint is suspended — produce NO frame at all. Deliberately the
     // first statement in the method, before the buffer is read, so a suspended terminal never
     // converts a single cell into a pixel. Dirty flags are left alone (`clearDirty()` below is
     // skipped with everything else), so the forced render on resume redraws from a clean slate.
@@ -532,7 +532,7 @@ export class CanvasRenderer {
       forceAll = true;
     }
 
-    // vendor 0.4.0-nex.8: the scrollbar's backdrop clears the rightmost strip of the canvas on
+    // vendor 0.4.0-kelpi.8: the scrollbar's backdrop clears the rightmost strip of the canvas on
     // every frame it is drawn (see `scrollbarWasPainted`). The first frame WITHOUT a scrollbar
     // must repaint the cells that strip erased, and no dirty flag says so — the fade-out ends
     // with the buffer idle — so the transition itself forces the full walk.
@@ -558,7 +558,7 @@ export class CanvasRenderer {
       this.lastViewportY = viewportY;
     }
 
-    // vendor 0.4.0-nex.16: the search highlights, settled BEFORE the first row of this frame is
+    // vendor 0.4.0-kelpi.16: the search highlights, settled BEFORE the first row of this frame is
     // painted (the cursor rows just below paint first). Recomputed only when a row is dirty, the
     // frame is forced (scroll, resize, screen switch) or the query moved; the rows whose
     // highlight changed are repainted below exactly as selection rows are.
@@ -780,7 +780,7 @@ export class CanvasRenderer {
     }
 
     // Render scrollbar if scrolled or scrollback exists (with opacity for fade effect).
-    // vendor 0.4.0-nex.8: the same condition `scrollbarPainted` was computed from above — the
+    // vendor 0.4.0-kelpi.8: the same condition `scrollbarPainted` was computed from above — the
     // two must not drift, or the strip-restoring forceAll fires on the wrong frame.
     if (scrollbackProvider && scrollbarOpacity > 0) {
       this.renderScrollbar(viewportY, scrollbackLength, dims.rows, scrollbarOpacity);
@@ -852,7 +852,7 @@ export class CanvasRenderer {
    * screen can tell the two apart except the desktop behind the window, and the alternative —
    * every cell opaque — is the defect this exists to remove.
    *
-   * vendor 0.4.0-nex.7 adds the third clause, and it is the one that survives a THEME CHANGE:
+   * vendor 0.4.0-kelpi.7 adds the third clause, and it is the one that survives a THEME CHANGE:
    * the components above are the theme's, which `setTheme` moves, while the cell's are the
    * TERMINAL's, which nothing moves — so after a live `theme =` the two no longer meet and
    * every untouched cell was being painted in the old background again (opaquely, over the
@@ -868,7 +868,7 @@ export class CanvasRenderer {
   }
 
   /**
-   * Is this the background the WASM terminal was CONSTRUCTED with (vendor 0.4.0-nex.7)?
+   * Is this the background the WASM terminal was CONSTRUCTED with (vendor 0.4.0-kelpi.7)?
    *
    * `false` for every embedder that never called `setTerminalDefaultColors` — which is what
    * keeps upstream's behaviour exactly upstream's.
@@ -878,7 +878,7 @@ export class CanvasRenderer {
     return base !== null && r === base.r && g === base.g && b === base.b;
   }
 
-  /** The foreground half of `isTerminalDefaultBackground` (vendor 0.4.0-nex.7). */
+  /** The foreground half of `isTerminalDefaultBackground` (vendor 0.4.0-kelpi.7). */
   private isTerminalDefaultForeground(r: number, g: number, b: number): boolean {
     const base = this.terminalDefaultForegroundRGB;
     return base !== null && r === base.r && g === base.g && b === base.b;
@@ -886,7 +886,7 @@ export class CanvasRenderer {
 
   /**
    * The LIVE theme's colour for a cell colour that is one of the terminal's construction
-   * defaults, or `null` when the cell carries a colour of its own (vendor 0.4.0-nex.7).
+   * defaults, or `null` when the cell carries a colour of its own (vendor 0.4.0-kelpi.7).
    *
    * This is the paint-time palette lookup the two default slots need. A cell's `fg_r/g/b` and
    * `bg_r/g/b` are resolved RGB, frozen at whatever the terminal was configured with, so a
@@ -926,7 +926,7 @@ export class CanvasRenderer {
       return; // Selection background replaces cell background
     }
 
-    // vendor 0.4.0-nex.16: a search match, under the selection (the user's own act wins) and over
+    // vendor 0.4.0-kelpi.16: a search match, under the selection (the user's own act wins) and over
     // whatever the application coloured the cell, as Ghostty draws it.
     const searchKind = this.searchHighlighter.kindAt(x, y);
     if (searchKind !== SEARCH_KIND_NONE) {
@@ -954,7 +954,7 @@ export class CanvasRenderer {
     // This lets the theme background (drawn earlier) show through for default cells
     const isDefaultBg = this.isDefaultCellBackground(bg_r, bg_g, bg_b);
     if (!isDefaultBg) {
-      // vendor 0.4.0-nex.7: an INVERSE cell paints its FOREGROUND here, and that slot is frozen
+      // vendor 0.4.0-kelpi.7: an INVERSE cell paints its FOREGROUND here, and that slot is frozen
       // at construction like the background is — so it goes through the live theme too, or the
       // block stays the previous theme's colour (§N18). `null` for a colour of the cell's own.
       this.ctx.fillStyle = this.liveThemeColor(bg_r, bg_g, bg_b) ?? this.rgbToCSS(bg_r, bg_g, bg_b);
@@ -990,7 +990,7 @@ export class CanvasRenderer {
     if (isSelected) {
       this.ctx.fillStyle = this.theme.selectionForeground;
     } else if (searchKind !== SEARCH_KIND_NONE) {
-      // vendor 0.4.0-nex.16: the match's own foreground, so it reads on its own background.
+      // vendor 0.4.0-kelpi.16: the match's own foreground, so it reads on its own background.
       this.ctx.fillStyle =
         searchKind === SEARCH_KIND_CURRENT
           ? this.theme.searchSelectedForeground
@@ -1008,7 +1008,7 @@ export class CanvasRenderer {
         fg_b = cell.bg_b;
       }
 
-      // vendor 0.4.0-nex.7: the glyph's colour is the terminal's DEFAULT foreground for every
+      // vendor 0.4.0-kelpi.7: the glyph's colour is the terminal's DEFAULT foreground for every
       // cell nothing coloured explicitly, and that default is frozen at construction — so text
       // already on screen kept the previous theme's foreground across a live `theme =` for the
       // same reason the cell backgrounds kept its background (§N18). One lookup, and only for
@@ -1107,7 +1107,7 @@ export class CanvasRenderer {
     const cursorX = x * this.metrics.width;
     const cursorY = y * this.metrics.height;
 
-    // vendor 0.4.0-nex.4: an UNFOCUSED surface's cursor is a hollow block, whatever style the
+    // vendor 0.4.0-kelpi.4: an UNFOCUSED surface's cursor is a hollow block, whatever style the
     // terminal asked for. `src/renderer/cursor.zig:59-60` returns `.block_hollow` before it
     // ever looks at `visual_style`, so a bar or underline cursor becomes an outline too.
     if (!this.focused) {
@@ -1143,7 +1143,7 @@ export class CanvasRenderer {
   }
 
   /**
-   * The unfocused cursor: a hollow block outlining the cell (vendor 0.4.0-nex.4).
+   * The unfocused cursor: a hollow block outlining the cell (vendor 0.4.0-kelpi.4).
    *
    * ghostty draws this as a sprite — `font/sprite/draw/special.zig:300-323`
    * (`cursor_hollow_rect`): fill the whole cell, then punch out everything inset by
@@ -1249,7 +1249,7 @@ export class CanvasRenderer {
   }
 
   /**
-   * Declare the default colours the WASM terminal was CONSTRUCTED with (vendor 0.4.0-nex.7).
+   * Declare the default colours the WASM terminal was CONSTRUCTED with (vendor 0.4.0-kelpi.7).
    *
    * Both arguments are the `0xRRGGBB` integers handed to `ghostty_terminal_new_with_config` as
    * `bg_color` / `fg_color` — not the theme's, and not a copy of them: the point is precisely
@@ -1304,7 +1304,7 @@ export class CanvasRenderer {
   }
 
   /**
-   * Does the surface holding this terminal have keyboard focus? (vendor 0.4.0-nex.4)
+   * Does the surface holding this terminal have keyboard focus? (vendor 0.4.0-kelpi.4)
    *
    * The port of `ghostty_surface_set_focus`. Focus changes two things and only these two:
    *
@@ -1403,7 +1403,7 @@ export class CanvasRenderer {
   }
 
   // ==========================================================================
-  // Search highlight (vendor 0.4.0-nex.16)
+  // Search highlight (vendor 0.4.0-kelpi.16)
   // ==========================================================================
 
   /** Highlight every visible occurrence of a needle, or nothing (`null`). Drops the current one. */

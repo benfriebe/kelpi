@@ -1,21 +1,25 @@
-# ghostty-web 0.4.0-nex.17 (vendored)
+# ghostty-web 0.4.0-kelpi.17 (vendored)
+
+**Version labels.** These versions were tagged `-nex.N` before the Nex to Kelpi rename and were
+relabelled `-kelpi.N` on 2026-10-03 with the same numbering, so an older commit, log or audit
+record that says `0.4.0-nex.N` means the same build as `0.4.0-kelpi.N`.
 
 A build of `ghostty-web` v0.4.0 carrying two open upstream PRs — applied after a line-by-line
 review in the orchestrating session and explicit user authorization to integrate both, plus sixteen
-Nex-authored adaptations on top of them (`-nex.2`: the caret-anchored IME; `-nex.3`: an
-`allowTransparency` that does something; `-nex.4`: a cursor that knows whether its surface has
-focus; `-nex.5`: a `write()` that survives zero bytes; `-nex.6`: a paint that can be suspended;
-`-nex.7`: default cells that follow a live theme; `-nex.8`: the scrollbar's backdrop strip is
-repainted when the scrollbar goes away; `-nex.9`: replays receive fresh WASM storage; `-nex.10`:
-every terminal on its own WASM instance; `-nex.11`: output never moves a scrolled viewport;
-`-nex.12`: a disposed terminal is garbage, the document listener that pinned it is removed;
-`-nex.13`: an `ESC[2K`'d row forgets it was ever wrapped; `-nex.14`: selected conversation
-rows remain anchored when older history is trimmed; `-nex.15`: DOM focus preserves the embedder's pan position;
-`-nex.16`: a search-highlight layer, and a public `select()` that lands on the row it names;
-`-nex.17`: copying a selection joins soft-wrapped rows, history included).
+Kelpi-authored adaptations on top of them (`-kelpi.2`: the caret-anchored IME; `-kelpi.3`: an
+`allowTransparency` that does something; `-kelpi.4`: a cursor that knows whether its surface has
+focus; `-kelpi.5`: a `write()` that survives zero bytes; `-kelpi.6`: a paint that can be suspended;
+`-kelpi.7`: default cells that follow a live theme; `-kelpi.8`: the scrollbar's backdrop strip is
+repainted when the scrollbar goes away; `-kelpi.9`: replays receive fresh WASM storage; `-kelpi.10`:
+every terminal on its own WASM instance; `-kelpi.11`: output never moves a scrolled viewport;
+`-kelpi.12`: a disposed terminal is garbage, the document listener that pinned it is removed;
+`-kelpi.13`: an `ESC[2K`'d row forgets it was ever wrapped; `-kelpi.14`: selected conversation
+rows remain anchored when older history is trimmed; `-kelpi.15`: DOM focus preserves the embedder's pan position;
+`-kelpi.16`: a search-highlight layer, and a public `select()` that lands on the row it names;
+`-kelpi.17`: copying a selection joins soft-wrapped rows, history included).
 
-**`-nex.13` is the first adaptation that is NOT TypeScript-only.** Every version up to `-nex.12`
-shipped `ghostty-vt.wasm` byte-identical to the npm `ghostty-web@0.4.0` package; `-nex.13`
+**`-kelpi.13` is the first adaptation that is NOT TypeScript-only.** Every version up to `-kelpi.12`
+shipped `ghostty-vt.wasm` byte-identical to the npm `ghostty-web@0.4.0` package; `-kelpi.13`
 carries a libghostty-vt patch and therefore a rebuilt wasm. The Zig diff is kept beside this file
 as `ghostty-vt-wrap-linkage.patch` so it can be reapplied, and the exact build recipe, which
 reproduces the `0.4.0` wasm BYTE-IDENTICALLY when run without the patch, is in
@@ -23,25 +27,25 @@ reproduces the `0.4.0` wasm BYTE-IDENTICALLY when run without the patch, is in
 
 | Version | What it added |
 |---|---|
-| `0.4.0-nex.1` | upstream v0.4.0 + PR #120 + PR #159 + the local adaptations they needed |
-| `0.4.0-nex.2` | the IME (hidden textarea **and** preedit) anchored to the cursor cell |
-| `0.4.0-nex.3` | `allowTransparency` HONOURED: the default background is cleared, not filled |
-| `0.4.0-nex.4` | `setFocused` — an unfocused surface draws ghostty's steady hollow cursor |
-| `0.4.0-nex.5` | `write()` returns on ZERO bytes instead of throwing `RangeError` (N1 / N23) |
-| `0.4.0-nex.6` | `setPaintSuspended` — the render loop can be stopped and the canvas frozen (N24) |
-| `0.4.0-nex.7` | `setTerminalDefaultColors` — a DEFAULT cell is painted from the LIVE theme (N18) |
-| `0.4.0-nex.8` | the frame after the scrollbar's last one repaints the strip its backdrop erased |
-| `0.4.0-nex.9` | authoritative replays use fresh WASM storage while preserving the VT wrapper |
-| `0.4.0-nex.10` | `createTerminal` instantiates the compiled module per terminal: no two VTs share a heap |
-| `0.4.0-nex.11` | output pins a scrolled viewport to its lines instead of snapping it to the bottom; a keystroke scrolls to the bottom |
-| `0.4.0-nex.12` | `SelectionManager.dispose` removes its document `mousedown` listener, so a disposed terminal (and, since `-nex.10`, its WASM instance) can be collected |
-| `0.4.0-nex.13` | **wasm patch**: `ESC[2K` breaks the row's soft-wrap linkage on BOTH sides, so a column reflow can never glue an erased row to its neighbours (#165) |
-| `0.4.0-nex.14` | **wasm + TypeScript**: native selection pins keep retained rows selected across scrollback trims; discarded endpoints clear and announce the selection (#170) |
-| `0.4.0-nex.15` | terminal and selection DOM focus uses `preventScroll`, preserving the embedder's mirrored-canvas pan (#178) |
-| `0.4.0-nex.16` | `select`/`selectAll`/`selectLines` convert rows through `viewportRowToAbsolute`; a search-highlight layer paints every visible match of a needle and a current match in the theme's `search*` colours (#306) |
-| `0.4.0-nex.17` | **wasm + TypeScript**: `ghostty_terminal_is_screen_row_wrapped` reports a row's soft-wrap continuation by absolute row, history included; `getSelection()` joins soft-wrapped rows instead of putting a newline at every wrap, and keeps a wrapped row's trailing spaces; `Buffer.getLine` reports `isWrapped` for history rows (#323) |
+| `0.4.0-kelpi.1` | upstream v0.4.0 + PR #120 + PR #159 + the local adaptations they needed |
+| `0.4.0-kelpi.2` | the IME (hidden textarea **and** preedit) anchored to the cursor cell |
+| `0.4.0-kelpi.3` | `allowTransparency` HONOURED: the default background is cleared, not filled |
+| `0.4.0-kelpi.4` | `setFocused` — an unfocused surface draws ghostty's steady hollow cursor |
+| `0.4.0-kelpi.5` | `write()` returns on ZERO bytes instead of throwing `RangeError` (N1 / N23) |
+| `0.4.0-kelpi.6` | `setPaintSuspended` — the render loop can be stopped and the canvas frozen (N24) |
+| `0.4.0-kelpi.7` | `setTerminalDefaultColors` — a DEFAULT cell is painted from the LIVE theme (N18) |
+| `0.4.0-kelpi.8` | the frame after the scrollbar's last one repaints the strip its backdrop erased |
+| `0.4.0-kelpi.9` | authoritative replays use fresh WASM storage while preserving the VT wrapper |
+| `0.4.0-kelpi.10` | `createTerminal` instantiates the compiled module per terminal: no two VTs share a heap |
+| `0.4.0-kelpi.11` | output pins a scrolled viewport to its lines instead of snapping it to the bottom; a keystroke scrolls to the bottom |
+| `0.4.0-kelpi.12` | `SelectionManager.dispose` removes its document `mousedown` listener, so a disposed terminal (and, since `-kelpi.10`, its WASM instance) can be collected |
+| `0.4.0-kelpi.13` | **wasm patch**: `ESC[2K` breaks the row's soft-wrap linkage on BOTH sides, so a column reflow can never glue an erased row to its neighbours (#165) |
+| `0.4.0-kelpi.14` | **wasm + TypeScript**: native selection pins keep retained rows selected across scrollback trims; discarded endpoints clear and announce the selection (#170) |
+| `0.4.0-kelpi.15` | terminal and selection DOM focus uses `preventScroll`, preserving the embedder's mirrored-canvas pan (#178) |
+| `0.4.0-kelpi.16` | `select`/`selectAll`/`selectLines` convert rows through `viewportRowToAbsolute`; a search-highlight layer paints every visible match of a needle and a current match in the theme's `search*` colours (#306) |
+| `0.4.0-kelpi.17` | **wasm + TypeScript**: `ghostty_terminal_is_screen_row_wrapped` reports a row's soft-wrap continuation by absolute row, history included; `getSelection()` joins soft-wrapped rows instead of putting a newline at every wrap, and keeps a wrapped row's trailing spaces; `Buffer.getLine` reports `isWrapped` for history rows (#323) |
 
-## Kelpi adaptation: copy joins soft-wrapped rows (`0.4.0-nex.17`, 2026-10-03)
+## Kelpi adaptation: copy joins soft-wrapped rows (`0.4.0-kelpi.17`, 2026-10-03)
 
 Issue #323. Drag-selecting a soft-wrapped line and copying it gave back one line per ROW:
 upstream's `SelectionManager.getSelection()` appended `'\n'` after every row but the last, with no
@@ -69,13 +73,13 @@ What changed:
   cursor back and overwrites a continuation row without erasing it leaves the flag set, so the
   rows still copy as one line.
 - `GhosttyTerminal.isScreenRowWrapped` checks the export exists, so a separately fetched wasm
-  older than `-nex.17` gives upstream's newline-per-row copy instead of throwing.
+  older than `-kelpi.17` gives upstream's newline-per-row copy instead of throwing.
 
 Rebuilt with the recipe in "`ghostty-vt.wasm`: the Zig half" with the third patch applied; the
-two-patch build was first checked to reproduce the `-nex.16` wasm byte-identically (`9269d2ad…`).
+two-patch build was first checked to reproduce the `-kelpi.16` wasm byte-identically (`9269d2ad…`).
 Then `pnpm vendor:build` rebuilt the dist on top of it.
 
-## Kelpi adaptation: search highlights, and `select()` on the right row (`0.4.0-nex.16`, 2026-10-01)
+## Kelpi adaptation: search highlights, and `select()` on the right row (`0.4.0-kelpi.16`, 2026-10-01)
 
 Issue #306: ⌘F over a terminal pane counted matches (the daemon searches its own copy of the
 buffer) and showed none of them. Kelpi's only way to show one was `Terminal.select()` on the match
@@ -141,7 +145,7 @@ an identical copy of the row; nothing else is a candidate.
 chain above the paint-suspend guard, which has to remain the method's first statement (§N24, and
 `vendor-engine.test.ts`'s pattern for it).
 
-This is TypeScript-only; the WASM is unchanged from `-nex.14`. Rebuilt with `pnpm vendor:build`
+This is TypeScript-only; the WASM is unchanged from `-kelpi.14`. Rebuilt with `pnpm vendor:build`
 (it prints the four known `Bun` / `fs/promises` errors from `lib/ghostty.ts` and exits 0).
 Regression coverage against the installed bundle and real WASM, over a 2D context that records its
 paint calls, is `packages/client/src/terminal/search-highlight.wasm.test.ts`: `select()` with
@@ -153,7 +157,7 @@ stale anchor, the current match following its row across a real page trim (and e
 is trimmed away), a match after U+0130, the change event when only the spans change, and parity
 with the daemon's own emulator and matcher over the same bytes.
 
-## Kelpi adaptation: focus preserves a panned terminal (`0.4.0-nex.15`, 2026-09-20)
+## Kelpi adaptation: focus preserves a panned terminal (`0.4.0-kelpi.15`, 2026-09-20)
 
 The client now pans a mirrored owner grid inside a positioned host, which also contains the
 engine's absolute IME textarea and preedit. Focusing that offscreen textarea with bare DOM
@@ -163,16 +167,16 @@ including canvas clicks, phone taps, parent focus redirects, delayed focus, sele
 clipboard fallback focus restoration. Focus still changes the caret and opens the phone
 keyboard; it does not change the embedder's viewport. Public terminal `focus()` retains its API.
 
-This is TypeScript-only; the `-nex.14` selection WASM/types and native patches are unchanged.
+This is TypeScript-only; the `-kelpi.14` selection WASM/types and native patches are unchanged.
 The bundles are rebuilt with `pnpm vendor:build`. The real-browser `terminal-mirrors-owner-grid`
 scenario checks IME alignment after X/Y pans and focus/selection while the terminal cursor lies
 outside the viewer, alongside the existing ownership and phone-pan checks.
 
-## Kelpi adaptation: selection follows retained history (`0.4.0-nex.14`, 2026-09-19)
+## Kelpi adaptation: selection follows retained history (`0.4.0-kelpi.14`, 2026-09-19)
 
 The original #170 remote Codex report has not been independently reproduced. Its remote copy
 dispatch gate was already fixed by #226 and is unchanged here. The residual trim hypothesis does
-reproduce against the installed `-nex.13` engine: at an 80×10 grid, write 1,100 numbered conversation
+reproduce against the installed `-kelpi.13` engine: at an 80×10 grid, write 1,100 numbered conversation
 rows, scroll up 100 rows, Shift-drag rows 2–3, then write another 100 rows. The 1,178th line causes
 the native engine to discard its oldest 589-row page. Both selected rows still exist, but the
 JavaScript absolute indices now point past the buffer and `getSelection()` returns an empty
@@ -230,9 +234,9 @@ The shipped WASM is 426,515 bytes, SHA-256
 `9269d2ad5e171d667180929979227375283e433031e563b2608a8e5fabd4ad9a`.
 The bundle rebuild resolved Vite 4.5.14, vite-plugin-dts 4.5.4 and TypeScript 5.9.3.
 
-## Nex adaptation: an erased row forgets it was wrapped (`0.4.0-nex.13`, 2026-09-11)
+## Kelpi adaptation: an erased row forgets it was wrapped (`0.4.0-kelpi.13`, 2026-09-11)
 
-**This is a WASM change.** `-nex.1` through `-nex.12` were TypeScript-only and shipped upstream's
+**This is a WASM change.** `-kelpi.1` through `-kelpi.12` were TypeScript-only and shipped upstream's
 `ghostty-vt.wasm` untouched; this one patches libghostty-vt. The Zig diff lives beside this file
 as `ghostty-vt-wrap-linkage.patch`, and the recipe that built it is the next section.
 
@@ -368,7 +372,7 @@ this can affect are ones a reflow linked up itself.
   (`packages/daemon/src/ws/streams.ts`) remains the backstop for that case.
 
 **Verification.** The repro is two scenarios driven straight at the wasm through the public
-`Ghostty` constructor (see #165 for the script). Against `-nex.12`'s wasm
+`Ghostty` constructor (see #165 for the script). Against `-kelpi.12`'s wasm
 (`d6f0326f…`), scenario A's widen produced
 
 ```
@@ -377,7 +381,7 @@ this can affect are ones a reflow linked up itself.
 ```
 
 and scenario B left an `ESC[2K`'d row blank but still reporting `isRowWrapped` true. Against
-`-nex.13`'s wasm (`7de61fbc…`) scenario A's widen is the frame as painted, one repainted row per
+`-kelpi.13`'s wasm (`7de61fbc…`) scenario A's widen is the frame as painted, one repainted row per
 screen row, and scenario B's erased row reports unwrapped and survives the widen as a blank row
 instead of being swallowed.
 
@@ -424,13 +428,13 @@ Zig, not on the shipped artifact.
   `ghostty-vt.wasm` at the root and `dist/ghostty-vt.wasm`. **The TypeScript dist had to be
   rebuilt on top of it** even though nothing in `source/` changed, for the reason in the next
   section: the bundle INLINES the wasm. `dist/ghostty-web.js` is **709.40 kB** as vite reports it
-  (was 709.08 kB at `-nex.12`, and the whole of that delta is the binary), `ghostty-web.umd.cjs`
+  (was 709.08 kB at `-kelpi.12`, and the whole of that delta is the binary), `ghostty-web.umd.cjs`
   **649.19 kB** (was 648.86 kB).
 
 ## `ghostty-vt.wasm`: the Zig half, and how to rebuild it
 
-Up to `-nex.12` this section did not need to exist: the wasm was byte-identical to the npm
-package and "there is no Zig toolchain here" was the whole story. `-nex.13` changed that, so here
+Up to `-kelpi.12` this section did not need to exist: the wasm was byte-identical to the npm
+package and "there is no Zig toolchain here" was the whole story. `-kelpi.13` changed that, so here
 is the pipeline, verified end to end. Built UNPATCHED first, it reproduces the shipped `0.4.0`
 wasm **byte-identically** (`d6f0326f…`), which is how we know the toolchain, the source pin and
 the flags are the same ones `coder/ghostty-web` published.
@@ -476,7 +480,7 @@ cd <repo> && pnpm install                          # re-materialises the file: o
 
 ### A NEW WASM IS NOT SHIPPED UNTIL THE DIST IS REBUILT ON TOP OF IT
 
-This is the trap that nearly shipped `-nex.13` as a no-op, and it is invisible to every test that
+This is the trap that nearly shipped `-kelpi.13` as a no-op, and it is invisible to every test that
 loads `ghostty-vt.wasm` off disk.
 
 `source/lib/ghostty.ts` resolves the engine with `new URL('../ghostty-vt.wasm', import.meta.url)`.
@@ -538,7 +542,7 @@ Notes for the next person:
 - The wasm is the one artifact `source/` does not carry, and it IS in git here, so a refresh can
   always diff against what is checked in.
 
-## Nex adaptation: a disposed terminal is garbage (`0.4.0-nex.12`, 2026-09-10)
+## Kelpi adaptation: a disposed terminal is garbage (`0.4.0-kelpi.12`, 2026-09-10)
 
 **The defect.** Every terminal pane in a long-running window went to *terminal renderer failed
 to start* at once, Retry included:
@@ -548,7 +552,7 @@ RangeError: WebAssembly.Instance(): Out of memory: Cannot allocate Wasm memory f
 ```
 
 V8 reserves a guard region of several GiB of address space per WASM memory and caps the total
-per process, so on the order of a hundred live memories is the ceiling. Since `-nex.10` every
+per process, so on the order of a hundred live memories is the ceiling. Since `-kelpi.10` every
 terminal instantiates its own, which is fine for the dozen the mount policy keeps alive — and
 fatal if disposed terminals are never collected. Measured in a sandbox (three workspaces of six
 panes, swapped in a loop, counted with `Runtime.queryObjects(WebAssembly.Memory.prototype)`
@@ -568,7 +572,7 @@ HTMLDocument → RegisteredEventListener → V8EventListener → closure
 `mouseup`, `mousemove` and `click` document listeners — never removed it. Upstream `0.4.0` has
 the same listener. With `document` holding the manager, and the manager holding the Terminal,
 its canvas, textarea and WASM handle, every terminal ever opened stayed reachable: a slow DOM and
-JS leak before `-nex.10`, a hard ceiling after it. Excluding document listeners from the
+JS leak before `-kelpi.10`, a hard ceiling after it. Excluding document listeners from the
 retainer graph leaves 122 of the 123 memories unreachable; the one left is `init()`'s shared
 instance, which is meant to live.
 
@@ -578,9 +582,9 @@ same callback, the same event, the same target. Re-measured on the same protocol
 tracks the mounted renderers instead of history.
 
 - **Rebuild sanity**: `dist/ghostty-web.js` is **709.08 kB** as vite reports it (was 708.77 kB
-  at `-nex.11`), built from `source/` with the documented recipe.
+  at `-kelpi.11`), built from `source/` with the documented recipe.
 
-## Nex adaptation: output never moves a scrolled viewport (`0.4.0-nex.11`, 2026-09-10)
+## Kelpi adaptation: output never moves a scrolled viewport (`0.4.0-kelpi.11`, 2026-09-10)
 
 **The defect.** Scrolling up in a long, running codex session jittered up and down and kept
 pulling back to the bottom; the only way to make it stop was to scroll all the way to the hard
@@ -614,9 +618,9 @@ top, and the WASM exposes no counter for that, so under very heavy output at the
 drifts by those lines. Far smaller than the defect, and noted so it is not mistaken for it.
 
 - **Rebuild sanity**: `dist/ghostty-web.js` is **708.77 kB** as vite reports it (was 707.85 kB
-  at `-nex.10`), built from `source/` with the documented recipe.
+  at `-kelpi.10`), built from `source/` with the documented recipe.
 
-## Nex adaptation: one WASM instance per terminal (`0.4.0-nex.10`, 2026-09-09)
+## Kelpi adaptation: one WASM instance per terminal (`0.4.0-kelpi.10`, 2026-09-09)
 
 **The defect.** Two long-running `codex` panes came up as *terminal renderer failed to start*
 after a couple of workspace swaps, Retry never brought them back, and only a reload did. Driven
@@ -636,16 +640,16 @@ bytes: the pane's 91 042-byte replay frame, captured off the socket, writes clea
 terminal at the same 90×46 grid — sixty create/write/free cycles in Node, and a brand-new
 terminal on the very heap that had just trapped, in the same page. It is the **heap**: the shared
 instance after enough siblings had been created, resized and freed around this one. That is the
-same precondition N24 documented (`-nex.6`: garbage cells after a sibling's free) — this time the
+same precondition N24 documented (`-kelpi.6`: garbage cells after a sibling's free) — this time the
 corrupted storage is read by the parser rather than the painter, and the wasm traps.
 
 Which is also why the retry budget could not help. The client's rebuild is "a fresh engine", and it
 was: a fresh `Terminal` **on the same instance**, writing the same replay into the same
-corrupted heap. Three attempts, three traps, placeholder. `-nex.9` moved each *replay reset*
+corrupted heap. Three attempts, three traps, placeholder. `-kelpi.9` moved each *replay reset*
 onto a fresh instance; the terminal a pane is BUILT on still came from `init()`'s shared one.
 
 **The fix.** `Ghostty.createTerminal` instantiates the retained compiled module per terminal
-(`createTerminalOnThisInstance` is the pre-`nex.10` body, kept for the `resetForReplay`
+(`createTerminalOnThisInstance` is the pre-`kelpi.10` body, kept for the `resetForReplay`
 closure and for a `new Ghostty(instance)` caller with no module to instantiate from). The
 shared instance stays for what is genuinely shared — the key encoder — and no two VTs share a
 heap, so nothing a sibling does can reach this terminal's storage, and a retry really is a fresh
@@ -659,7 +663,7 @@ runtime through Chromium's request interception to instantiate per terminal:
 
 | engine | swaps | traps | panes left on the placeholder |
 |---|---|---|---|
-| one shared heap (`-nex.9` behaviour) | 20 | 5 (× 3 attempts each) | 1 |
+| one shared heap (`-kelpi.9` behaviour) | 20 | 5 (× 3 attempts each) | 1 |
 | one heap per terminal | 20 | 0 (104 instances created) | 0 |
 
 Not addressed here: libghostty-vt's own defect (the wasm is still byte-identical to npm
@@ -671,7 +675,7 @@ fires — forever in a page with no frame clock, one frame in a visible window. 
   `source/` with the documented recipe (`pnpm install` + `npx vite build`, wasm copied into
   dist); the build prints the four known `Bun` / `fs/promises` errors and exits 0.
 
-## Nex adaptation: replay storage (`0.4.0-nex.9`, 2026-09-09)
+## Kelpi adaptation: replay storage (`0.4.0-kelpi.9`, 2026-09-09)
 
 Repeated pane resizes could append old service-selection output to current lines and prompts,
 including prompts printed later by Enter. The daemon's snapshot remained correct. The pinned
@@ -697,9 +701,9 @@ snapshots, including long history, repeated grow/shrink cycles, and subsequent E
 ## Base
 
 - Upstream: https://github.com/coder/ghostty-web at tag `v0.4.0`
-- `ghostty-vt.wasm`: rebuilt from source at `-nex.13` and NO LONGER byte-identical to the npm
-  `ghostty-web@0.4.0` package. Up to `-nex.12` it was (`d6f0326f…`, the patches were
-  TypeScript-only); `-nex.13` carries a libghostty-vt patch, so the binary is ours
+- `ghostty-vt.wasm`: rebuilt from source at `-kelpi.13` and NO LONGER byte-identical to the npm
+  `ghostty-web@0.4.0` package. Up to `-kelpi.12` it was (`d6f0326f…`, the patches were
+  TypeScript-only); `-kelpi.13` carries a libghostty-vt patch, so the binary is ours
   (`7de61fbc…`), and the bundle that inlines it is ours with it. The diff is `ghostty-vt-wrap-linkage.patch` beside this file and the build
   recipe, which reproduces `d6f0326f…` byte-identically when run WITHOUT that patch, is under
   "`ghostty-vt.wasm`: the Zig half, and how to rebuild it".
@@ -740,7 +744,7 @@ snapshots, including long history, repeated grow/shrink cycles, and subsequent E
   field block from newer main was not taken wholesale; only `syncedEncoderOptions` and the
   reused `TextDecoder` (plus the dedupe trio above).
 
-## Nex adaptation: caret-anchored IME (`0.4.0-nex.2`, 2026-08-21)
+## Kelpi adaptation: caret-anchored IME (`0.4.0-kelpi.2`, 2026-08-21)
 
 PR #120 made composition *arrive*; it did not put it anywhere sensible. Both of the elements a
 CJK user reads while typing were pinned to the engine **container**:
@@ -751,7 +755,7 @@ CJK user reads while typing were pinned to the engine **container**:
 - the preedit at `top:4px; right:4px` as an amber `조합중: …` chip, i.e. the user's own
   in-flight text displayed at the opposite corner from where it was going to land.
 
-`0.4.0-nex.2` moves both onto the cursor cell, xterm.js-style, in `lib/terminal.ts`:
+`0.4.0-kelpi.2` moves both onto the cursor cell, xterm.js-style, in `lib/terminal.ts`:
 
 - **`syncImeCaret(cursorX, cursorY)`** — called once per rendered frame from the render loop
   with the cursor the renderer just drew, and it returns after four number comparisons unless
@@ -786,7 +790,7 @@ Not addressed here, and still open: nothing reports a caret rect to the *OS* bey
 box (that is the browser's job and it is what the box exists for), and modifier press/release
 (TERM-030) remains unimplemented — the bundle still registers zero `keyup` listeners.
 
-## Nex adaptation: `allowTransparency`, honoured (`0.4.0-nex.3`, 2026-08-25)
+## Kelpi adaptation: `allowTransparency`, honoured (`0.4.0-kelpi.3`, 2026-08-25)
 
 `ITerminalOptions.allowTransparency` has existed since v0.4.0. It was read once, into
 `baseOptions` (`lib/terminal.ts:162`), and then never again: the renderer was constructed
@@ -798,7 +802,7 @@ That is the engine half of **N17**: a Nex sandbox seeded with `background-opacit
 showed zero bleed-through on a terminal pane. The window was created transparent, the DOM
 carried the alpha, and the canvas painted over all of it.
 
-`-nex.3` makes the option mean what it says, in `lib/renderer.ts`:
+`-kelpi.3` makes the option mean what it says, in `lib/renderer.ts`:
 
 - **`paintDefaultBackground(x, y, w, h)`** — one seam for the four places that used to write
   `fillStyle = theme.background; fillRect(…)`: `resize()`, `renderLine()`, `clear()` and the
@@ -825,7 +829,7 @@ EXPLICITLY to the exact theme background becomes translucent there rather than o
 on screen can tell those apart except the desktop behind the window, and the alternative is the
 defect this removes.
 
-## Nex adaptation: the cursor follows surface focus (`0.4.0-nex.4`, 2026-08-25)
+## Kelpi adaptation: the cursor follows surface focus (`0.4.0-kelpi.4`, 2026-08-25)
 
 Upstream ghostty-web draws ONE cursor: a filled block, blinking, in every terminal on the page,
 forever. That is fine for the single-terminal embedder it was written for and wrong for a
@@ -849,7 +853,7 @@ So an unfocused surface shows a hollow block **always** (steady, whatever the bl
 (`BaseTerminalController.syncFocusToSurfaceTree`), which is why a backgrounded ghostty window has
 no blinking cursor in it at all.
 
-`-nex.4` ports that, in `lib/renderer.ts` plus three lines of `lib/terminal.ts`:
+`-kelpi.4` ports that, in `lib/renderer.ts` plus three lines of `lib/terminal.ts`:
 
 - **`CanvasRenderer.setFocused(focused)`** — the port of the C call. Two effects and no others:
   the treatment `renderCursor` picks, and the blink TIMER, which is stopped on focus loss and
@@ -879,7 +883,7 @@ Not addressed here: ghostty's `cursor-style-blink` and `adjust-cursor-thickness`
 not parsed anywhere in this port, so the blink is whatever the embedder passes (`cursorBlink`,
 `true` in Nex) and the outline is ghostty's default 1 px.
 
-## Nex adaptation: the scrollbar strip is repainted (`0.4.0-nex.8`, 2026-08-31)
+## Kelpi adaptation: the scrollbar strip is repainted (`0.4.0-kelpi.8`, 2026-08-31)
 
 `CanvasRenderer.render()` now tracks whether the previous frame drew the scrollbar
 (`scrollbarWasPainted`), and the first frame WITHOUT one forces the full row walk. One field,
@@ -919,7 +923,7 @@ Upstream behaviour is otherwise untouched: the backdrop still paints under a vis
 (the ghosting it exists for is real), and an embedder that never shows a scrollbar never takes
 the forced walk — the field starts `false` and stays there.
 
-## Verification of `0.4.0-nex.8` (2026-08-31)
+## Verification of `0.4.0-kelpi.8` (2026-08-31)
 
 - **Unit-level, in the app repo**: `packages/client/src/terminal/vendor-engine.test.ts` pins the
   bundle markers (`scrollbarWasPainted` read AND write inside `render()`) and the snapshot's
@@ -927,11 +931,11 @@ the forced walk — the field starts `false` and stays there.
   `loadGhosttyEngine`'s `repaint()` hands the renderer `scrollbarOpacity 0` explicitly, against
   a mocked module.
 - **Rebuild sanity**: `dist/ghostty-web.js` is **704.37 kB** as vite reports it (was 704.24 kB
-  at `-nex.7`), built from `source/` with the documented recipe (`pnpm install` +
+  at `-kelpi.7`), built from `source/` with the documented recipe (`pnpm install` +
   `npx vite build`, wasm copied into dist); the build prints the four known `Bun` /
   `fs/promises` errors from `lib/ghostty.ts` and exits 0, as documented below.
 
-## Nex adaptation: default cells follow a LIVE theme (`0.4.0-nex.7`, 2026-08-26)
+## Kelpi adaptation: default cells follow a LIVE theme (`0.4.0-kelpi.7`, 2026-08-26)
 
 The renderer can now be told which two colours the WASM terminal was **constructed** with —
 `CanvasRenderer.setTerminalDefaultColors(bg, fg)` — and it resolves a cell carrying either of them
@@ -981,7 +985,7 @@ window):
   where the theme actually named the colour** — no config, or a theme naming neither, declares
   nothing.
 - `isDefaultCellBackground` gains a clause for the construction background, at **every** opacity.
-  Its two existing clauses stay: upstream's `(0,0,0)`, and `-nex.3`'s theme-background match
+  Its two existing clauses stay: upstream's `(0,0,0)`, and `-kelpi.3`'s theme-background match
   under `allowTransparency`.
 - `liveThemeColor(r,g,b)` returns `theme.background` / `theme.foreground` for a cell colour that
   is one of the two construction defaults and `null` otherwise; both `fillStyle` assignments —
@@ -1002,18 +1006,18 @@ immediately. Native Ghostty has no equivalent gap (it stores palette *indices* a
 `ghostty_app_update_config` rebuilds the surface's whole frame); closing that last part needs a
 wasm that can be told a new palette.
 
-The honest edge is `-nex.3`'s, widened by exactly one case: a cell whose background an application
+The honest edge is `-kelpi.3`'s, widened by exactly one case: a cell whose background an application
 set **explicitly** to the terminal's default background now follows a theme change instead of
 staying put. Before the change the two are the same colour, so nothing on screen can tell them
 apart until the theme moves — at which point following it is the better of the two answers.
 
-## Verification of `0.4.0-nex.7` (2026-08-26)
+## Verification of `0.4.0-kelpi.7` (2026-08-26)
 
 - **The defect and the fix, with one instrument, at both opacities.** The audit's
   `settings-live-apply` step (a sandbox daemon + shell — `mkdtemp`, `NEXD_*`, ephemeral ports —
   a fixture ghostty theme picked in the real Settings window, and a canvas histogram read off the
   engine's own canvas through CDP), run four times over the same 416 000 device pixels: the
-  **pre-fix client bundle** (a `git archive HEAD` tree with its `-nex.6` engine rebuilt from
+  **pre-fix client bundle** (a `git archive HEAD` tree with its `-kelpi.6` engine rebuilt from
   source, served into this harness via `NEX_AUDIT_CLIENT_DIR`) fails at
   **404 796 px old / 10 360 px new** opaque and **404 796 px opaque old / 10 360 cleared** at
   `0.85`; the fixed tree comes back **414 883 px of `48,25,52` with 0 px of the old background**
@@ -1034,8 +1038,8 @@ apart until the theme moves — at which point following it is the better of the
   with zero opaque pixels of the previous one), on arrival **and** after a full-screen redraw —
   the second of which used to be recorded-not-asserted precisely because this engine could not
   do it. Both fail on the pre-fix bundle and pass on this one.
-- **The paint paths this bundle shares were re-measured, not assumed.** `-nex.7` edits the two
-  methods `-nex.3` and `-nex.4` live in: §N20's `terminal-cursor-focus` comes back **4 / 37 / 0**
+- **The paint paths this bundle shares were re-measured, not assumed.** `-kelpi.7` edits the two
+  methods `-kelpi.3` and `-kelpi.4` live in: §N20's `terminal-cursor-focus` comes back **4 / 37 / 0**
   with run-W's and run-X's numbers to the assertion (unfocused **88 lit of 480**, perimeter 88,
   one frame hash over 1 200 ms; focused `480 → 0 → 480 → 480 → 0`, two hashes), and §N17's
   `window-transparency` **2 / 11 / 0** in both directions (canvas alpha **0** in every sampled
@@ -1044,7 +1048,7 @@ apart until the theme moves — at which point following it is the better of the
   `changedWhileHeld` 0, hold timeouts 0**, with §N23's nets green (0 U+FFFD, 0 missing, 0
   invented lines).
 - **Rebuild sanity**: `dist/ghostty-web.js` is **704.24 kB** as vite reports it (was 700.12 kB at
-  `-nex.6`, **+4.12 kB**), sha256
+  `-kelpi.6`, **+4.12 kB**), sha256
   `20c89a59f65e586e0e912f5854e9964d2cbf0ca132796fb25fe4e4302545bc4c`;
   `ghostty-web.umd.cjs` **646.74 kB**, sha256
   `714ab4bd0f55b3964954c58e97f08cf1cfa520c6e260ec491a54d08fb68531e6`; `index.d.ts` sha256
@@ -1052,19 +1056,19 @@ apart until the theme moves — at which point following it is the better of the
   into it); `ghostty-vt.wasm` re-copied byte-identical (`d6f0326f…`);
   `__vite-browser-external-2447137e.js` unchanged
   (`f8c456031e5001c0cda4837cd9ee3a33d79beeba120ec633ec9d990632fb2aa6`). All of
-  `-nex.2`/`-nex.3`/`-nex.4`/`-nex.5`/`-nex.6`'s markers are present in the new bundle, the
-  `render()` paint-suspension guard is still its opening statement, and the chip label `-nex.2`
+  `-kelpi.2`/`-kelpi.3`/`-kelpi.4`/`-kelpi.5`/`-kelpi.6`'s markers are present in the new bundle, the
+  `render()` paint-suspension guard is still its opening statement, and the chip label `-kelpi.2`
   removed is still absent (all asserted by `vendor-engine.test.ts`).
 - **The toolchain was proven before it was trusted, again — twice.** The documented recipe was run
-  against the *pristine* `-nex.6` source in a scratch sandbox and reproduced the shipping `-nex.6`
+  against the *pristine* `-kelpi.6` source in a scratch sandbox and reproduced the shipping `-kelpi.6`
   artifacts **to the byte** (`ghostty-web.js` `60a3063011c01af3f32f80fac4086dc84ae622974ea5c5a6efd5b6127199b8d4`,
   `ghostty-web.umd.cjs` `4bdb132b…`, `index.d.ts` `1c5042e6…`), and again from a second,
-  independently extracted `git archive HEAD` tree — same hash. The only delta in the `-nex.7`
+  independently extracted `git archive HEAD` tree — same hash. The only delta in the `-kelpi.7`
   bundle is therefore the edits above.
 - **`npx tsc --noEmit`** on the snapshot reports only the pre-existing `bun-types` entry-point
   error; nothing in `terminal.ts` or `renderer.ts`.
 
-## Nex adaptation: a paint that can be suspended (`0.4.0-nex.6`, 2026-08-25)
+## Kelpi adaptation: a paint that can be suspended (`0.4.0-kelpi.6`, 2026-08-25)
 
 The engine can now be told to stop producing frames — `Terminal.setPaintSuspended(boolean)` and
 `CanvasRenderer.setPaintSuspended(boolean)` — and the canvas keeps the last frame it painted,
@@ -1089,7 +1093,7 @@ the ends of the current ones. Measured in this tree:
   and the fix suspends painting across the entire window in which the cells can exist;
 - the cells are **written by the wasm**, not read past its output: `ghostty_render_state_get_viewport`
   returns `count === totalCells` on every one of those calls (so this is *not* the `getViewport()`
-  landmine `-nex.5` documents below — that one is real and still unreached), and zeroing the
+  landmine `-kelpi.5` documents below — that one is real and still unreached), and zeroing the
   destination buffer before the call changes nothing;
 - `ghostty_render_state_update()` reports the rows dirty and `needsFullRedraw()` is `true`, so the
   render state is doing what it is told; the garbage survives `markClean()` + a second `update()`,
@@ -1114,13 +1118,13 @@ of its own the moment the grid moves.
   the new dimensions are applied, *when suspended*. Setting `canvas.width` wipes the surface, so
   without this the freeze would be a blank pane rather than the last good frame. The default
   background is still painted first, so the newly exposed area is background in the opaque case
-  and cleared in the `allowTransparency` case (`-nex.3`'s paint, unchanged).
+  and cleared in the `allowTransparency` case (`-kelpi.3`'s paint, unchanged).
 - `Terminal.resize()` skips its own `canvas.width`/`height` re-assignment while suspended. That
   block re-sizes the canvas in CSS pixels and drops the device-pixel-ratio scaling
   `renderer.resize()` just applied; unsuspended it is harmless because the forced render notices
   the mismatch and re-sizes properly, but with the render suppressed there is nothing to notice
   it and a retina canvas would sit at half resolution for the whole suspension.
-- `Terminal.setPaintSuspended()` remembers the flag across `open()` (same shape as `-nex.4`'s
+- `Terminal.setPaintSuspended()` remembers the flag across `open()` (same shape as `-kelpi.4`'s
   `setFocused`) and forces one full render on resume.
 
 `paintSuspended` starts `false` and nothing inside the engine sets it, so an embedder that never
@@ -1134,7 +1138,7 @@ replay is precisely the window in which the engine holds a grid nobody has told 
 of. Suspending across it makes the two look like one step to the canvas. There is a timeout on
 the hold, because a pane must never be frozen by a replay that does not arrive.
 
-## Verification of `0.4.0-nex.6` (2026-08-25)
+## Verification of `0.4.0-kelpi.6` (2026-08-25)
 
 - **The defect, at frame level, end to end.** `scripts/ui-audit/resize-flash-storm.mjs`: a sandbox
   daemon (`mkdtemp`, `NEXD_*`, ephemeral non-reserved ports), a real PTY running a real zsh, the
@@ -1150,7 +1154,7 @@ the hold, because a pane must never be frozen by a replay that does not arrive.
   return is its opening statement — a suspension that fires after the first cell read is not a
   suspension.
 - **Rebuild sanity**: `dist/ghostty-web.js` is **700.12 kB** as vite reports it (was 696.60 kB at
-  `-nex.5`, +3.52 kB), sha256
+  `-kelpi.5`, +3.52 kB), sha256
   `60a3063011c01af3f32f80fac4086dc84ae622974ea5c5a6efd5b6127199b8d4`;
   `ghostty-web.umd.cjs` **645.71 kB**, sha256
   `4bdb132bcb709093c5e90512ed5cdfafe2c673006e9543e4edbea7ac80ddcf76`; `index.d.ts` sha256
@@ -1158,21 +1162,21 @@ the hold, because a pane must never be frozen by a replay that does not arrive.
   moved into it); `ghostty-vt.wasm` re-copied byte-identical (`d6f0326f…`);
   `__vite-browser-external-2447137e.js` unchanged
   (`f8c456031e5001c0cda4837cd9ee3a33d79beeba120ec633ec9d990632fb2aa6`). All of
-  `-nex.2`/`-nex.3`/`-nex.4`/`-nex.5`'s markers are present in the new bundle and the chip label
-  `-nex.2` removed is still absent (asserted by `vendor-engine.test.ts`).
+  `-kelpi.2`/`-kelpi.3`/`-kelpi.4`/`-kelpi.5`'s markers are present in the new bundle and the chip label
+  `-kelpi.2` removed is still absent (asserted by `vendor-engine.test.ts`).
 - **The toolchain was proven before it was trusted, again.** The documented recipe was run first
-  against the *pristine* `-nex.5` source in a scratch sandbox and reproduced the shipping
-  `-nex.5` artifacts **to the byte** (`ghostty-web.js` `9899a94f…`, `ghostty-web.umd.cjs`
-  `1725c3fd…`). The only delta in the `-nex.6` bundle is therefore the edits above.
+  against the *pristine* `-kelpi.5` source in a scratch sandbox and reproduced the shipping
+  `-kelpi.5` artifacts **to the byte** (`ghostty-web.js` `9899a94f…`, `ghostty-web.umd.cjs`
+  `1725c3fd…`). The only delta in the `-kelpi.6` bundle is therefore the edits above.
 - **`npx tsc --noEmit`** on the snapshot reports only the pre-existing `bun-types` entry-point
   error; nothing in `terminal.ts` or `renderer.ts`.
-- **The paint paths `-nex.6` shares a bundle with were not assumed.** `render()`'s early return
+- **The paint paths `-kelpi.6` shares a bundle with were not assumed.** `render()`'s early return
   sits above §N17's `paintDefaultBackground` and §N20's `renderHollowCursor`, and neither is
   reachable while suspended by construction; both are re-measured in the run this change ships
   with (`packages/client` transparency + cursor-focus suites, and the audit's scoped
   transparency / cursor-focus recipes).
 
-## Nex adaptation: `write()` survives zero bytes (`0.4.0-nex.5`, 2026-08-25)
+## Kelpi adaptation: `write()` survives zero bytes (`0.4.0-kelpi.5`, 2026-08-25)
 
 One line, and it closes the oldest open defect in the register (**N1**, and the `external-editor`
 `RangeError` `run-U` and `run-V` both logged).
@@ -1217,14 +1221,14 @@ the buffer regardless of the `count` the WASM call returns, so a JS/WASM grid di
 have it parse *uninitialised heap* into the cell pool — garbage codepoints, straight to the
 canvas. Every caller today goes through `getLine()`, which calls `update()` first and makes
 `count` the full grid; measured across alt-screen switches, DECCOLM and `CSI 8 t` the two never
-disagree. Left alone rather than widened into an unmeasured patch. **Re-measured for `-nex.6`
+disagree. Left alone rather than widened into an unmeasured patch. **Re-measured for `-kelpi.6`
 (2026-08-25) and still unreached**: across the widening-resize storm that reproduces N24 on
 demand, `ghostty_render_state_get_viewport` returned `count === totalCells` on every call, and
 zeroing the destination buffer before the call left the garbage untouched — so N24 is the wasm
 writing those cells, not this function reading past them. The landmine remains real and remains
 unfired.
 
-## Verification of `0.4.0-nex.5` (2026-08-25)
+## Verification of `0.4.0-kelpi.5` (2026-08-25)
 
 - **The fault, reproduced and then absent, against a real daemon.** Headless client speaking the
   real pane-stream protocol to a sandbox daemon (`mkdtemp`, `NEXD_*`, ephemeral non-reserved
@@ -1239,19 +1243,19 @@ unfired.
   screen 75/75 times — the WASM stream parser holds its decoder state across `write()` calls, as
   a streaming decoder must.
 - **Rebuild sanity**: `dist/ghostty-web.js` is **696.60 kB** as vite reports it (was 696.56 kB at
-  `-nex.4`, +0.04 kB), sha256
+  `-kelpi.4`, +0.04 kB), sha256
   `9899a94fb6279ee2b2b9ae220f2b69ba3b9ca70ca56d2216ab90b2d6ad2ab4aa`;
   `ghostty-web.umd.cjs` sha256
   `1725c3fd97434da09967047d332604562a5b27b456f656e3cf3518108d3eceec`; `index.d.ts` **unchanged**
-  from `-nex.4` (`2d4f75a1…`, no public type moved); `ghostty-vt.wasm` re-copied byte-identical
-  (`d6f0326f…`). All of `-nex.2`/`-nex.3`/`-nex.4`'s markers are present in the new bundle and the
-  chip label `-nex.2` removed is still absent (asserted by `vendor-engine.test.ts`).
+  from `-kelpi.4` (`2d4f75a1…`, no public type moved); `ghostty-vt.wasm` re-copied byte-identical
+  (`d6f0326f…`). All of `-kelpi.2`/`-kelpi.3`/`-kelpi.4`'s markers are present in the new bundle and the
+  chip label `-kelpi.2` removed is still absent (asserted by `vendor-engine.test.ts`).
 - **The toolchain was proven before it was trusted**: the same scratch-sandbox recipe, run against
-  the *pristine* `-nex.4` source (`git show HEAD:…/lib/ghostty.ts`), reproduces the shipping
-  `-nex.4` artifacts to the byte (`d96985f7…`, `03ab14cb…`, `2d4f75a1…`). The only delta in the
-  `-nex.5` bundle is therefore the four lines above.
+  the *pristine* `-kelpi.4` source (`git show HEAD:…/lib/ghostty.ts`), reproduces the shipping
+  `-kelpi.4` artifacts to the byte (`d96985f7…`, `03ab14cb…`, `2d4f75a1…`). The only delta in the
+  `-kelpi.5` bundle is therefore the four lines above.
 
-## Verification of `0.4.0-nex.4` (2026-08-25)
+## Verification of `0.4.0-kelpi.4` (2026-08-25)
 
 Sandboxed throughout, same discipline as below (`mkdtemp` root, `NEXD_*` overrides, ephemeral
 non-reserved ports, private Electron `--user-data-dir`).
@@ -1293,16 +1297,16 @@ non-reserved ports, private Electron `--user-data-dir`).
   step matters most here: it measures the textarea and preedit against the cursor CELL, and it
   still reports **off by 0×0 px** at both probes.
 - `pnpm --filter @nex/shell smoke:terminal` — **19/19**, including the `tall` / `re-attach` /
-  `re-boot` phases that were red under the concurrent window work at `-nex.3`.
+  `re-boot` phases that were red under the concurrent window work at `-kelpi.3`.
 - Client unit suite via `vitest run packages/client` — **149 files, 2195 tests**, all passing,
-  including `vendor-engine.test.ts` (extended with the `-nex.4` markers and the version bump) and
+  including `vendor-engine.test.ts` (extended with the `-kelpi.4` markers and the version bump) and
   the new `TerminalPane` / adapter cases.
 - Rebuild sanity: `dist/ghostty-web.js` is **696.56 kB** as vite reports it (was 691.93 kB at
-  `-nex.3`, +4.63 kB), sha256 `d96985f76e37733c9625ddce3215a9caf02fe185fc86a9512e407dae55d64f34`;
+  `-kelpi.3`, +4.63 kB), sha256 `d96985f76e37733c9625ddce3215a9caf02fe185fc86a9512e407dae55d64f34`;
   `ghostty-web.umd.cjs` sha256 `03ab14cb18d425b231deba7d750d4870382d85116f5fef250a39df7c4c77676d`;
   `index.d.ts` sha256 `2d4f75a1c2ca701e873c5139c107817b9ecf5861fa8d665fd28b6d7929f99b2c` (it
   exports `setFocused` on both the Terminal and the renderer);
-  `__vite-browser-external-2447137e.js` byte-identical to `-nex.3`
+  `__vite-browser-external-2447137e.js` byte-identical to `-kelpi.3`
   (`f8c456031e5001c0cda4837cd9ee3a33d79beeba120ec633ec9d990632fb2aa6`); `ghostty-vt.wasm`
   re-copied byte-identical (`sha256 d6f0326f1874ad2ce9f289e3a4a0c5f3507d4cb38d8747e4b287def470a0c60a`).
   The bundle still contains `data-ime-preedit` / `data-ime-caret` / `syncImeCaret` /
@@ -1324,7 +1328,7 @@ non-reserved ports, private Electron `--user-data-dir`).
   `03ab14cb…`, `index.d.ts` `2d4f75a1…`, `__vite-browser-external-2447137e.js` `f8c45603…`,
   `ghostty-vt.wasm` `d6f0326f…`), vite reports **696.56 kB** as documented, and the build prints
   exactly the four `Bun` / `fs/promises` errors and exits 0. The installed
-  `packages/client/node_modules/ghostty-web` is `0.4.0-nex.4` with the same `dist` hash.
+  `packages/client/node_modules/ghostty-web` is `0.4.0-kelpi.4` with the same `dist` hash.
 - **The Zig this section quotes was read, not taken on trust**: `src/renderer/cursor.zig` in the
   Swift checkout returns `.block_hollow` immediately after the `!state.cursor.visible` check and
   before both the blink check and `.fromTerminal(state.cursor.visual_style)`, exactly as
@@ -1341,7 +1345,7 @@ non-reserved ports, private Electron `--user-data-dir`).
 - Gates around it: `pnpm typecheck` clean, shell suite 578 / 578, and all five live smokes green on
   a freshly packaged bundle (39 / 71 / 46 / **19 terminal fidelity** / 61).
 
-## Verification of `0.4.0-nex.3` (2026-08-25)
+## Verification of `0.4.0-kelpi.3` (2026-08-25)
 
 Sandboxed throughout (`scripts/ui-audit/lib/stack.mjs`: `mkdtemp` root, `NEXD_*` overrides,
 ephemeral non-reserved ports, private Electron `--user-data-dir`), never the dev stack.
@@ -1373,8 +1377,8 @@ ephemeral non-reserved ports, private Electron `--user-data-dir`), never the dev
   in this change can move a window or a column count. Re-run once those land to attribute it
   properly.
 - Client unit suite via `vitest run packages/client` — **148 files, 2170 tests**, all passing,
-  including this directory's `vendor-engine.test.ts` (extended with the `-nex.3` markers).
-- Rebuild sanity: `dist/ghostty-web.js` is **691.93 kB** (was 689.55 kB at `-nex.2`'s recipe
+  including this directory's `vendor-engine.test.ts` (extended with the `-kelpi.3` markers).
+- Rebuild sanity: `dist/ghostty-web.js` is **691.93 kB** (was 689.55 kB at `-kelpi.2`'s recipe
   numbers), still contains `data-ime-preedit` / `data-ime-caret` / `syncImeCaret` and no
   `조합중`, and now also `paintDefaultBackground`. `ghostty-vt.wasm` re-copied byte-identical
   (`sha256 d6f0326f1874ad2ce9f289e3a4a0c5f3507d4cb38d8747e4b287def470a0c60a`).
@@ -1392,7 +1396,7 @@ ephemeral non-reserved ports, private Electron `--user-data-dir`), never the dev
   한글 to the PTY exactly once (one 6-byte UTF-8 input frame observed on the wire; rendered
   glyphs verified by screenshot under `cat`).
 
-## Verification of `0.4.0-nex.2` (2026-08-21)
+## Verification of `0.4.0-kelpi.2` (2026-08-21)
 
 - `pnpm --filter @nex/shell smoke:terminal` — **19/19**, unchanged (the caret sync runs on every
   frame in every one of those panes; the geometry, ruler and re-attach checks are the regression
@@ -1401,7 +1405,7 @@ ephemeral non-reserved ports, private Electron `--user-data-dir`), never the dev
   tests**, all passing.
 - Audit `--only fresh-boot,terminal-input-matrix,terminal-ime --no-build` → `docs/audit/terminal-ime-caret/`
   — **54 assertions, 0 failed, 0 step errors**, of which `terminal-ime` is 29: the 21 that
-  guarded `-nex.1` plus 8 new positional ones. The numbers that matter, all from that run's
+  guarded `-kelpi.1` plus 8 new positional ones. The numbers that matter, all from that run's
   `index.md`:
   - textarea at rest, cursor parked by `printf '\033[3;10H'`: measured `{x:294,y:86,w:8,h:15}`
     against a computed cell origin of `{x:294,y:86}` — **off by 0×0 px**, and a whole cell in
@@ -1432,7 +1436,7 @@ than trusted: it is the exact patched tree the shipping `dist/` was built from
 `node_modules`, no `.git`, no `dist` — those are reproduced, not carried.
 
 One thing that looks wrong and is not: `source/package.json` says `"version": "0.3.0"`, because
-that is what upstream's own `v0.4.0` tag says. The `-nex` version lives in this directory's
+that is what upstream's own `v0.4.0` tag says. The `-kelpi` version lives in this directory's
 `package.json` (the one the workspace override installs), not in the snapshot.
 
 ### Rebuild the JavaScript bundle
@@ -1474,28 +1478,28 @@ After verification, `pnpm --filter @kelpi/client build` builds the web client, o
 launch the whole application beside an installed Kelpi. The launcher builds app packages;
 it does not rebuild this vendor bundle.
 
-The WASM is the one thing `source/` does not carry (423,289 bytes for `-nex.13`);
+The WASM is the one thing `source/` does not carry (423,289 bytes for `-kelpi.13`);
 `vendor/ghostty-web-patched/ghostty-vt.wasm` **is** in git, which is where the staged copy comes
 from and NOT npm: `sha256 7de61fbc80d6e2a2ea74c241e22f41eca77ca2fd5a7885acd1e2789b4e49233f`.
-Since `-nex.13` it is no longer the npm package's binary. npm's is
+Since `-kelpi.13` it is no longer the npm package's binary. npm's is
 `d6f0326f1874ad2ce9f289e3a4a0c5f3507d4cb38d8747e4b287def470a0c60a` and taking it would reopen
 #165. To rebuild the wasm itself rather than copy it, see "`ghostty-vt.wasm`: the Zig half".
 
-Sanity checks on a rebuild: the recorded `-nex.13` outputs are 709.40 kB for
+Sanity checks on a rebuild: the recorded `-kelpi.13` outputs are 709.40 kB for
 `dist/ghostty-web.js` and 649.19 kB for `dist/ghostty-web.umd.cjs`. Resolved build-tool versions
 may change formatting or size; the embedded-WASM hash and vendor guards are the correctness
 checks. The tracked bundle was reproduced byte-for-byte by `pnpm vendor:build` under Node
 24.15.0 / pnpm 10.28.1, which resolved vite 4.5.14 (`ghostty-web.js`, `ghostty-web.umd.cjs`,
 `index.d.ts` and `__vite-browser-external-2447137e.js` all identical), so a rebuild that changes
 those files has changed the inputs or the toolchain and the diff deserves reading. The ESM bundle contains `data-ime-preedit`, `data-ime-caret`, `syncImeCaret`,
-`paintDefaultBackground` (`-nex.3`), `setFocused` / `renderHollowCursor` / `cursorStateDirty`
-(`-nex.4`), `if (B.length === 0)` in `write()` (`-nex.5` — the minifier keeps the guard as its
+`paintDefaultBackground` (`-kelpi.3`), `setFocused` / `renderHollowCursor` / `cursorStateDirty`
+(`-kelpi.4`), `if (B.length === 0)` in `write()` (`-kelpi.5` — the minifier keeps the guard as its
 own statement), `setPaintSuspended` / `isPaintSuspended` / `this.paintSuspended` with the
-early return as `render()`'s opening statement (`-nex.6`), `setTerminalDefaultColors` /
+early return as `render()`'s opening statement (`-kelpi.6`), `setTerminalDefaultColors` /
 `liveThemeColor` / `isTerminalDefaultBackground` / `isTerminalDefaultForeground` with **two**
-`fillStyle = this.liveThemeColor(…) ?? this.rgbToCSS(…)` sites (`-nex.7` — one per pass),
-`this.scrollbarWasPainted` read (`&&`) and written (`=`) inside `render()` (`-nex.8` — the
-scrollbar-strip restore), and no `조합중` (the chip label `-nex.2` removed). Those markers are asserted in CI by
+`fillStyle = this.liveThemeColor(…) ?? this.rgbToCSS(…)` sites (`-kelpi.7` — one per pass),
+`this.scrollbarWasPainted` read (`&&`) and written (`=`) inside `render()` (`-kelpi.8` — the
+scrollbar-strip restore), and no `조합중` (the chip label `-kelpi.2` removed). Those markers are asserted in CI by
 `packages/client/src/terminal/vendor-engine.test.ts`, which also pins the version this file
 documents — bump both together or the guard fails. `npx tsc --noEmit` on the snapshot reports only
 the pre-existing `bun-types` / `fs/promises` errors in `lib/ghostty.ts` (the tsconfig asks for
@@ -1512,7 +1516,7 @@ When upstream ships 0.5.0 (release PR #182 pending): check whether #120/#159 mer
 vendor dir and `overrides['ghostty-web']` in `pnpm-workspace.yaml`, take the npm release, and re-run the
 terminal smoke + audit input matrix + the IME audit step before trusting it.
 
-Note that **none** of the six Nex adaptations is an upstream PR. Taking a future npm release
+Note that **none** of the six Kelpi adaptations is an upstream PR. Taking a future npm release
 wholesale would:
 
 - put the preedit back in the container's corner and reopen TERM-032 / TERM-033 — so re-apply
@@ -1548,7 +1552,7 @@ wholesale would:
   cell area kept the previous theme (opaquely, so a `background-opacity < 1` pane goes solid until
   relaunch). Re-apply `setTerminalDefaultColors` on the renderer, the `isTerminalDefaultBackground`
   clause in `isDefaultCellBackground`, `liveThemeColor` at both `fillStyle` sites, and the
-  declaration in `Terminal.open()` beside `createTerminal`. Like `-nex.6` this one is invisible to
+  declaration in `Terminal.open()` beside `createTerminal`. Like `-kelpi.6` this one is invisible to
   a unit test that only runs the client — the call simply lands on nothing — which is why
   `vendor-engine.test.ts` counts the paint sites in the built bundle and the audit's
   `settings-live-apply` step asserts the theme's background is the canvas's *dominant* colour

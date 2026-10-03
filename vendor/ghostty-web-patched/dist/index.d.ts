@@ -11,7 +11,7 @@ export declare class CanvasRenderer {
     /** `theme.background` as components, kept in step with it. See `isDefaultCellBackground`. */
     private defaultBackgroundRGB;
     /**
-     * The default colours the WASM TERMINAL was CONSTRUCTED with (vendor 0.4.0-nex.7 — Nex §N18).
+     * The default colours the WASM TERMINAL was CONSTRUCTED with (vendor 0.4.0-kelpi.7 — Nex §N18).
      *
      * Not the theme's: `ghostty_terminal_new_with_config` takes `bg_color`/`fg_color` once and
      * there is no export that moves them, so every cell the VT has not explicitly coloured reports
@@ -42,11 +42,11 @@ export declare class CanvasRenderer {
     private cursorStateDirty;
     /**
      * Paint is SUSPENDED — the canvas is a frozen frame, not a live surface (vendor
-     * 0.4.0-nex.6). See `setPaintSuspended`.
+     * 0.4.0-kelpi.6). See `setPaintSuspended`.
      */
     private paintSuspended;
     /**
-     * The previous frame drew the scrollbar (vendor 0.4.0-nex.8).
+     * The previous frame drew the scrollbar (vendor 0.4.0-kelpi.8).
      *
      * `renderScrollbar` clears a strip at the canvas's right edge to the default background on
      * every frame it runs — its backdrop against ghosting — and that strip overlaps the last
@@ -86,7 +86,7 @@ export declare class CanvasRenderer {
      * background the DEFAULT one? See `isDefaultCellBackground`.
      */
     private static parseRGB;
-    /** `0xRRGGBB` → components, the form `ghostty_terminal_new_with_config` takes (nex.7). */
+    /** `0xRRGGBB` → components, the form `ghostty_terminal_new_with_config` takes (kelpi.7). */
     private static rgbFromInt;
     /**
      * Lay down the DEFAULT background over a rectangle — the one paint `allowTransparency` owns.
@@ -103,7 +103,7 @@ export declare class CanvasRenderer {
      */
     private paintDefaultBackground;
     /**
-     * Suspend or resume PAINTING (vendor 0.4.0-nex.6 — Nex §N24).
+     * Suspend or resume PAINTING (vendor 0.4.0-kelpi.6 — Nex §N24).
      *
      * While suspended `render()` returns without touching the canvas and `resize()` carries the
      * pixels across instead of clearing to the background, so the canvas holds the LAST GOOD
@@ -162,7 +162,7 @@ export declare class CanvasRenderer {
      * screen can tell the two apart except the desktop behind the window, and the alternative —
      * every cell opaque — is the defect this exists to remove.
      *
-     * vendor 0.4.0-nex.7 adds the third clause, and it is the one that survives a THEME CHANGE:
+     * vendor 0.4.0-kelpi.7 adds the third clause, and it is the one that survives a THEME CHANGE:
      * the components above are the theme's, which `setTheme` moves, while the cell's are the
      * TERMINAL's, which nothing moves — so after a live `theme =` the two no longer meet and
      * every untouched cell was being painted in the old background again (opaquely, over the
@@ -171,17 +171,17 @@ export declare class CanvasRenderer {
      */
     private isDefaultCellBackground;
     /**
-     * Is this the background the WASM terminal was CONSTRUCTED with (vendor 0.4.0-nex.7)?
+     * Is this the background the WASM terminal was CONSTRUCTED with (vendor 0.4.0-kelpi.7)?
      *
      * `false` for every embedder that never called `setTerminalDefaultColors` — which is what
      * keeps upstream's behaviour exactly upstream's.
      */
     private isTerminalDefaultBackground;
-    /** The foreground half of `isTerminalDefaultBackground` (vendor 0.4.0-nex.7). */
+    /** The foreground half of `isTerminalDefaultBackground` (vendor 0.4.0-kelpi.7). */
     private isTerminalDefaultForeground;
     /**
      * The LIVE theme's colour for a cell colour that is one of the terminal's construction
-     * defaults, or `null` when the cell carries a colour of its own (vendor 0.4.0-nex.7).
+     * defaults, or `null` when the cell carries a colour of its own (vendor 0.4.0-kelpi.7).
      *
      * This is the paint-time palette lookup the two default slots need. A cell's `fg_r/g/b` and
      * `bg_r/g/b` are resolved RGB, frozen at whatever the terminal was configured with, so a
@@ -212,7 +212,7 @@ export declare class CanvasRenderer {
      */
     private renderCursor;
     /**
-     * The unfocused cursor: a hollow block outlining the cell (vendor 0.4.0-nex.4).
+     * The unfocused cursor: a hollow block outlining the cell (vendor 0.4.0-kelpi.4).
      *
      * ghostty draws this as a sprite — `font/sprite/draw/special.zig:300-323`
      * (`cursor_hollow_rect`): fill the whole cell, then punch out everything inset by
@@ -238,7 +238,7 @@ export declare class CanvasRenderer {
      */
     setTheme(theme: ITheme): void;
     /**
-     * Declare the default colours the WASM terminal was CONSTRUCTED with (vendor 0.4.0-nex.7).
+     * Declare the default colours the WASM terminal was CONSTRUCTED with (vendor 0.4.0-kelpi.7).
      *
      * Both arguments are the `0xRRGGBB` integers handed to `ghostty_terminal_new_with_config` as
      * `bg_color` / `fg_color` — not the theme's, and not a copy of them: the point is precisely
@@ -268,7 +268,7 @@ export declare class CanvasRenderer {
      */
     setCursorBlink(enabled: boolean): void;
     /**
-     * Does the surface holding this terminal have keyboard focus? (vendor 0.4.0-nex.4)
+     * Does the surface holding this terminal have keyboard focus? (vendor 0.4.0-kelpi.4)
      *
      * The port of `ghostty_surface_set_focus`. Focus changes two things and only these two:
      *
@@ -460,7 +460,7 @@ export declare class Ghostty {
     constructor(wasmInstance: WebAssembly.Instance, wasmModule?: WebAssembly.Module | undefined);
     createKeyEncoder(): KeyEncoder;
     /**
-     * Every terminal on its own WASM instance (`0.4.0-nex.10`).
+     * Every terminal on its own WASM instance (`0.4.0-kelpi.10`).
      *
      * The shared instance `init()` builds is kept for what is genuinely shared — key encoding —
      * and each terminal's VT storage lives in a heap no sibling can reach. Two terminals in one
@@ -477,7 +477,7 @@ export declare class Ghostty {
      * the terminal is created on this instance, exactly as before.
      */
     createTerminal(cols?: number, rows?: number, config?: GhosttyTerminalConfig): GhosttyTerminal;
-    /** The pre-`nex.10` body: a terminal whose storage is THIS instance's heap. */
+    /** The pre-`kelpi.10` body: a terminal whose storage is THIS instance's heap. */
     private createTerminalOnThisInstance;
     static load(wasmPath?: string): Promise<Ghostty>;
     private static loadFromPath;
@@ -620,7 +620,7 @@ export declare class GhosttyTerminal {
     /** Check if a row in the active screen is wrapped (soft-wrapped to next line) */
     isRowWrapped(row: number): boolean;
     /**
-     * vendor 0.4.0-nex.17 (#323): whether a row ANYWHERE in the buffer is the soft-wrap continuation
+     * vendor 0.4.0-kelpi.17 (#323): whether a row ANYWHERE in the buffer is the soft-wrap continuation
      * of the row above it, addressed by absolute row (0 = oldest history row, the numbering
      * `SelectionManager` and `trackSelection` use). `isRowWrapped` only reaches the active screen, so
      * this is the one a reader that walks history (copying a selection) needs.
@@ -751,7 +751,7 @@ declare interface GhosttyWasmExports extends WebAssembly.Exports {
     ghostty_terminal_get_scrollback_line(terminal: TerminalHandle, offset: number, bufPtr: number, bufLen: number): number;
     ghostty_terminal_get_scrollback_grapheme(terminal: TerminalHandle, offset: number, col: number, bufPtr: number, bufLen: number): number;
     ghostty_terminal_is_row_wrapped(terminal: TerminalHandle, row: number): number;
-    /** vendor 0.4.0-nex.17 (#323): `is_row_wrapped` by absolute screen row, history included. */
+    /** vendor 0.4.0-kelpi.17 (#323): `is_row_wrapped` by absolute screen row, history included. */
     ghostty_terminal_is_screen_row_wrapped(terminal: TerminalHandle, row: number): number;
     ghostty_terminal_has_response(terminal: TerminalHandle): boolean;
     ghostty_terminal_read_response(terminal: TerminalHandle, bufPtr: number, bufLen: number): number;
@@ -1048,7 +1048,7 @@ export declare class InputHandler {
      */
     private handlePaste;
     /**
-     * VENDOR BRIDGE (0.4.0-nex.1): forward textarea-inserted text to the PTY exactly once.
+     * VENDOR BRIDGE (0.4.0-kelpi.1): forward textarea-inserted text to the PTY exactly once.
      * insertText only: composition text arrives via compositionend, pastes via the paste
      * listener, and control keys via the keydown encoder.
      */
@@ -1106,7 +1106,7 @@ export declare interface IRenderable {
      */
     getGraphemeString?(row: number, col: number): string;
     /**
-     * vendor 0.4.0-nex.16, for the search-highlight layer: whether a SCREEN row is the soft-wrap
+     * vendor 0.4.0-kelpi.16, for the search-highlight layer: whether a SCREEN row is the soft-wrap
      * continuation of the row above it (measured: the head row of a wrapped line reads false and
      * every row after it true, xterm.js's `isWrapped`), a scrollback row's grapheme cluster, and
      * the whole screen in one read (the per-row `getLine` re-reads it every call). All optional:
@@ -1715,7 +1715,7 @@ export declare class SelectionManager {
      */
     getSelection(): string;
     /**
-     * vendor 0.4.0-nex.17 (#323): whether absolute row `absoluteRow` is the soft-wrap continuation of
+     * vendor 0.4.0-kelpi.17 (#323): whether absolute row `absoluteRow` is the soft-wrap continuation of
      * the row above it, history included. A terminal without the export (an older WASM, a test
      * stub) answers "no", which is upstream's behaviour: a newline at every row.
      */
@@ -1848,7 +1848,7 @@ export declare class Terminal implements ITerminalCore {
     private canvas?;
     private compositionPreview?;
     /**
-     * Surface focus (vendor 0.4.0-nex.4) — see `setFocused`.
+     * Surface focus (vendor 0.4.0-kelpi.4) — see `setFocused`.
      *
      * Held on the Terminal as well as on the renderer because the renderer does not exist until
      * `open()`, and an embedder building a grid of panes sets each one's focus while they are
@@ -1857,14 +1857,14 @@ export declare class Terminal implements ITerminalCore {
      */
     private surfaceFocused;
     /**
-     * Paint suspension (vendor 0.4.0-nex.6) — see `setPaintSuspended`.
+     * Paint suspension (vendor 0.4.0-kelpi.6) — see `setPaintSuspended`.
      *
      * Held on the Terminal as well as on the renderer for the same reason `surfaceFocused` is:
      * the renderer does not exist until `open()`, and an embedder may suspend before then.
      */
     private paintSuspended;
     /**
-     * The search highlight (vendor 0.4.0-nex.16): see `setSearchHighlight`. Held here as well for
+     * The search highlight (vendor 0.4.0-kelpi.16): see `setSearchHighlight`. Held here as well for
      * the same reason as the two above: an embedder may set it before `open()` builds a renderer.
      */
     private searchHighlight;
@@ -1904,7 +1904,7 @@ export declare class Terminal implements ITerminalCore {
     }>;
     readonly onCursorMove: IEvent<void>;
     /**
-     * vendor 0.4.0-nex.16: fires after a frame whose search highlights differ from the frame
+     * vendor 0.4.0-kelpi.16: fires after a frame whose search highlights differ from the frame
      * before (a new needle, a scroll, output that moved or added a match, the bar closing), with
      * that frame's spans. See `setSearchHighlight`.
      */
@@ -2003,7 +2003,7 @@ export declare class Terminal implements ITerminalCore {
      */
     blur(): void;
     /**
-     * Tell the terminal whether its surface has KEYBOARD FOCUS (vendor 0.4.0-nex.4).
+     * Tell the terminal whether its surface has KEYBOARD FOCUS (vendor 0.4.0-kelpi.4).
      *
      * The port of `ghostty_surface_set_focus`, and deliberately separate from `focus()`/`blur()`,
      * which move the DOM caret. An embedder with several terminals on one page has exactly one
@@ -2018,7 +2018,7 @@ export declare class Terminal implements ITerminalCore {
      */
     setFocused(focused: boolean): void;
     /**
-     * Suspend or resume PAINTING (vendor 0.4.0-nex.6 — Nex §N24).
+     * Suspend or resume PAINTING (vendor 0.4.0-kelpi.6 — Nex §N24).
      *
      * Suspended, the render loop and the forced render inside `resize()` produce nothing and the
      * canvas keeps the last frame that was painted, carried across any resize that happens
@@ -2147,7 +2147,7 @@ export declare class Terminal implements ITerminalCore {
     scrollToTop(): void;
     /**
      * Keep the lines on screen where they are while `grown` lines were appended below them
-     * (vendor 0.4.0-nex.11). Announced like any other move: the offset changed even though the
+     * (vendor 0.4.0-kelpi.11). Announced like any other move: the offset changed even though the
      * content did not, and a host mirroring the offset (a scrollbar, a touch scroller) must not
      * be left holding a stale one.
      */

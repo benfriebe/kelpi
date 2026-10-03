@@ -3254,7 +3254,7 @@ function buildFlows(ctx) {
                      * The wasm is a prebuilt binary, so the fix is the other half of the
                      * problem: `TerminalRenderer.resize` suspends the engine's paint before the
                      * grid moves and resumes it once the replay has been written in
-                     * (`ghostty-web 0.4.0-nex.6`). That makes the guarantee a PIXEL one, and
+                     * (`ghostty-web 0.4.0-kelpi.6`). That makes the guarantee a PIXEL one, and
                      * this is where it is asserted: while the pane publishes
                      * `data-terminal-paint-held="true"`, the canvas must not change. A frozen
                      * frame inside the window is the accepted trade; a NEW frame inside it is
@@ -13559,10 +13559,10 @@ function buildFlows(ctx) {
                  */
                 recorder.note(
                     'MOVED, NOT SKIPPED: IME composition / marked text (TERM-024, TERM-032) now has its own step, ' +
-                        '`terminal-ime`. The engine is `ghostty-web 0.4.0-nex.2` (vendor/ghostty-web-patched), which carries ' +
+                        '`terminal-ime`. The engine is `ghostty-web 0.4.0-kelpi.2` (vendor/ghostty-web-patched), which carries ' +
                         'upstream PR #120: the composition listeners live on the hidden `<textarea>`, `handleCompositionEnd` ' +
                         'writes the committed string to the PTY and replays the pending key, and the preedit renders as ' +
-                        'marked text on the cursor cell (`-nex.2`, replacing PR #120\'s corner chip). CDP still has no ' +
+                        'marked text on the cursor cell (`-kelpi.2`, replacing PR #120\'s corner chip). CDP still has no ' +
                         'input-method channel — `Input.imeSetComposition` drives Chromium\'s own ' +
                         'IME widget, not the engine\'s — so `terminal-ime` dispatches real `CompositionEvent`s at the hidden ' +
                         '`<textarea>` the engine focuses (the element a macOS IME would target), from which they bubble to ' +
@@ -13572,9 +13572,9 @@ function buildFlows(ctx) {
                 recorder.note(
                     'FIXED IN THE ENGINE FORK, NOT HERE: the IME caret rect (TERM-033). This note used to read "not ' +
                         'implementable in this layer" — and that was right about the LAYER: the candidate window follows ' +
-                        'the focused input, and at `0.4.0-nex.1` the hidden 1×1 `<textarea>` sat at `left:0; top:0` of the ' +
+                        'the focused input, and at `0.4.0-kelpi.1` the hidden 1×1 `<textarea>` sat at `left:0; top:0` of the ' +
                         'pane container while PR #120\'s chip sat at `top:4px; right:4px`, so composition was unpositioned ' +
-                        'by construction and no port-side code could move an element it does not own. `0.4.0-nex.2` moves ' +
+                        'by construction and no port-side code could move an element it does not own. `0.4.0-kelpi.2` moves ' +
                         'it in the engine instead (`syncImeCaret`, one cached box per rendered frame): the textarea is on ' +
                         'the cursor cell and sized to it, and the preedit is marked text there. Measured in the ' +
                         '`terminal-ime` step against a cell set by a CUP escape; what is still NOT observable from here is ' +
@@ -13590,7 +13590,7 @@ function buildFlows(ctx) {
                     'MOVED, NOT MISSING (corrected by the burn-down-5 re-score): modifier press/release reporting ' +
                         '(TERM-030, the Kitty keyboard protocol) has its own step now, `terminal-kitty`. This note used to ' +
                         'end "Scored missing rather than untested, deliberately", and its measurement of the ENGINE is ' +
-                        'still exactly true — `0.4.0-nex.2` registers ONE `keydown` listener and ZERO `keyup` listeners, ' +
+                        'still exactly true — `0.4.0-kelpi.2` registers ONE `keydown` listener and ZERO `keyup` listeners, ' +
                         'and its `setKittyFlags()` still has no call site — but the conclusion drawn from it has expired: ' +
                         'the port stopped waiting for the engine and took the protocol into its own layer, the way ' +
                         '§TERM-037 took DEC mouse reporting. The daemon parses `CSI > u` / `CSI < u` / `CSI = u` off the VT ' +
@@ -13614,7 +13614,7 @@ function buildFlows(ctx) {
             /**
              * The vendored engine's input path, driven rather than read.
              *
-             * Until `ghostty-web 0.4.0-nex.1` (vendor/ghostty-web-patched, upstream v0.4.0 + PR
+             * Until `ghostty-web 0.4.0-kelpi.1` (vendor/ghostty-web-patched, upstream v0.4.0 + PR
              * #120 + PR #159) every item in this area was scored "engine-owned, unreachable":
              * `handleCompositionUpdate` was an empty function, composition listeners sat on a
              * `contenteditable` container that never had focus, and the printable/special-key
@@ -13646,7 +13646,7 @@ function buildFlows(ctx) {
              *   3. THE WIDE-CELL SELECTION FIX. PR #120 also fixes selection over a
              *      double-width glyph emitting a space for the continuation cell. 26 cells of
              *      `WSTART` + 8×漢 + `WEND` must copy as 18 characters, not 26.
-             *   4. WHERE IT ALL HAPPENS. `0.4.0-nex.2` — this repo's own change on top of the
+             *   4. WHERE IT ALL HAPPENS. `0.4.0-kelpi.2` — this repo's own change on top of the
              *      two PRs — moves the hidden textarea and the preedit onto the CURSOR CELL,
              *      replacing PR #120's chip in the container's corner. That is a claim about
              *      pixels, so it is measured in pixels: the cursor is parked on a known cell by
@@ -13807,7 +13807,7 @@ function buildFlows(ctx) {
                     chip?.text ?? '(no visible chip)'
                 );
                 // Where it lands, in numbers, because TERM-033 is about position. Until
-                // `0.4.0-nex.2` this line printed the origin of a chip styled `top:4px;
+                // `0.4.0-kelpi.2` this line printed the origin of a chip styled `top:4px;
                 // right:4px` on the container, which is why the item was open; the preedit is
                 // now marked text on the cursor cell, and the arithmetic that judges it is the
                 // caret block further down. This is the raw origin, unjudged.
@@ -13938,7 +13938,7 @@ function buildFlows(ctx) {
                 // ── TERM-032 / TERM-033: the IME is anchored to the CARET ────────────
                 //
                 // Everything above proves the composed text is RIGHT. This proves it is in the
-                // right PLACE, which is the half `0.4.0-nex.1` did not have: PR #120 pinned
+                // right PLACE, which is the half `0.4.0-kelpi.1` did not have: PR #120 pinned
                 // both the preedit chip (`top:4px; right:4px`) and the hidden textarea
                 // (`left:0; top:0`, 1×1) to the container, so the preedit — and the OS
                 // candidate window, which the browser positions from the focused editable
@@ -16465,7 +16465,7 @@ function buildFlows(ctx) {
                 await runInTerminal(page, "printf '\\033[2J\\033[3J\\033[H'", { settleMs: 600 });
 
                 recorder.note(
-                    'WHERE THE MECHANISM IS. Nothing here is the engine\'s. `ghostty-web 0.4.0-nex.2` still registers one ' +
+                    'WHERE THE MECHANISM IS. Nothing here is the engine\'s. `ghostty-web 0.4.0-kelpi.2` still registers one ' +
                         '`keydown` listener, zero `keyup` listeners, and never calls its own `setKittyFlags` — the ' +
                         'measurement `terminal-ime` records is unchanged and still true of the ENGINE. What changed is ' +
                         'that the port stopped waiting for it: the daemon parses the negotiation off the VT stream it ' +
@@ -19908,7 +19908,7 @@ function buildFlows(ctx) {
                  * old background and the two-pass renderer filled it back in over the newly
                  * cleared line, leaving the theme visible only in the margin. The note said "a
                  * future engine bump can be read off this line rather than argued about";
-                 * `0.4.0-nex.7` is that bump (the renderer resolves a DEFAULT cell through the
+                 * `0.4.0-kelpi.7` is that bump (the renderer resolves a DEFAULT cell through the
                  * live theme at paint time), so the line is now an assertion — a screen-clearing
                  * write marks every row dirty, and the whole viewport must come back in the
                  * theme's own background.
@@ -26650,7 +26650,7 @@ function buildFlows(ctx) {
                     'Scope, so the screenshot is not read as more than it is: under a transparent window the ' +
                         'desktop shows through the window fill, the grid gutters, the pane padding AND — since ' +
                         "§N17 — a terminal's own canvas, whose default background the engine now CLEARS " +
-                        '(ghostty-web 0.4.0-nex.3 honours `allowTransparency`) so the pane container’s ' +
+                        '(ghostty-web 0.4.0-kelpi.3 honours `allowTransparency`) so the pane container’s ' +
                         'rgba() is the single translucent layer, which is what libghostty did inside the surface ' +
                         'in the Swift app. What stays opaque, by construction rather than by oversight: a ' +
                         'markdown/diff document (a sandboxed srcdoc frame with an opaque origin paints over a ' +

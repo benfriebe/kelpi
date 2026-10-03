@@ -72,7 +72,7 @@ export interface TerminalTheme {
     /**
      * The search highlight (terminal-surface.md §7.7): every visible match, and the selected one.
      * ghostty's own `search-background` / `search-foreground` / `search-selected-*` roles, which
-     * ghostty-web paints from `0.4.0-nex.16`; `@xterm/xterm` has no such roles and ignores them.
+     * ghostty-web paints from `0.4.0-kelpi.16`; `@xterm/xterm` has no such roles and ignores them.
      * Kelpi fills them from the `search-match-*` config keys (§3.1).
      */
     readonly searchBackground?: string | undefined;
@@ -115,7 +115,7 @@ export interface TerminalRendererOptions {
      * §N17 — this used to default to `true` and mean nothing: `ghostty-web` accepted the option
      * and never read it, so the canvas was filled opaque whatever the pane behind it did, and a
      * `background-opacity = 0.85` terminal came out solid. The vendored engine implements it
-     * now (`RendererOptions.allowTransparency`, `0.4.0-nex.3`), which makes the DEFAULT
+     * now (`RendererOptions.allowTransparency`, `0.4.0-kelpi.3`), which makes the DEFAULT
      * load-bearing: it is `false`, the value both engines document, so an opaque config takes
      * exactly the paint path it always did. Assembly passes `backgroundOpacity < 1`.
      */
@@ -241,7 +241,7 @@ export interface TerminalRenderer {
      * Client coordinates rather than a cell, because the mapping from a pixel to a cell is the
      * ENGINE'S: ghostty-web's `pixelToCell` and `getWordAtCell` are both private, and its public
      * `select(col, row, len)` needs the word's extent, which only `getWordAtCell` knows. Until
-     * `0.4.0-nex.16` it could not have been used anyway: it converted a viewport row to an
+     * `0.4.0-kelpi.16` it could not have been used anyway: it converted a viewport row to an
      * absolute one as `viewportY + row` while its own renderer converts back as
      * `absoluteRow - scrollbackLength + viewportY`, so the two agreed only at
      * `viewportY = scrollbackLength / 2` (40x8, 100 lines of output: scrolled back 5, the first
@@ -480,14 +480,14 @@ export interface EngineHandle {
      * Report SURFACE focus, so the cursor can take ghostty's unfocused treatment (§N20).
      *
      * Optional because it is engine-specific in an asymmetric way. `ghostty-web` had no such
-     * concept at all until `0.4.0-nex.4` added `Terminal.setFocused` (every pane on the page
+     * concept at all until `0.4.0-kelpi.4` added `Terminal.setFocused` (every pane on the page
      * blinked a filled block forever, which is the defect); `@xterm/xterm` has drawn an outline
      * cursor on blur since forever, driven by its own DOM focus, so its handle omits this and
      * `focus()`/`blur()` remain the whole story there. A fake engine omits it too.
      */
     setSurfaceFocus?(focused: boolean): void;
     /**
-     * Suspend or resume PAINTING, without touching the VT (§N24 — `ghostty-web 0.4.0-nex.6`).
+     * Suspend or resume PAINTING, without touching the VT (§N24 — `ghostty-web 0.4.0-kelpi.6`).
      *
      * Optional, and only ghostty-web has it: a widening `ghostty_terminal_resize` can leave
      * cells in libghostty-vt's own storage that the VT never wrote, and the engine's render
@@ -505,7 +505,7 @@ export interface EngineHandle {
     revealMatch?(match: TerminalMatchLocation): void;
     /**
      * The search highlight (#306): the needle to highlight every visible match of, or null.
-     * ghostty-web paints them (`0.4.0-nex.16`); xterm.js has no layer and uses this only to give
+     * ghostty-web paints them (`0.4.0-kelpi.16`); xterm.js has no layer and uses this only to give
      * the selection that shows its revealed match the search colours. A fake omits it.
      */
     setSearchHighlight?(query: { readonly needle: string; readonly caseSensitive: boolean } | null): void;
@@ -976,7 +976,7 @@ class AdapterRenderer implements TerminalRenderer {
     private opened = false;
     /**
      * Has the CURRENT engine been handed any bytes? A reset on an engine that has not is a
-     * no-op and is skipped (`resetTerminal`): since ghostty-web `0.4.0-nex.10` every engine
+     * no-op and is skipped (`resetTerminal`): since ghostty-web `0.4.0-kelpi.10` every engine
      * comes up on its own fresh WASM instance, so there is no predecessor's grid to clear, and
      * the fresh-instance replay reset would otherwise instantiate a SECOND memory per mount for
      * nothing — one that lives until the next GC and counts against V8's per-process cap.
@@ -1140,7 +1140,7 @@ class AdapterRenderer implements TerminalRenderer {
          * it routinely: a pane whose shell has not printed yet snapshots to NOTHING, so its
          * attach replay is an empty frame and the first write into the fresh engine kills it
          * (61 of 181 replays in a 60-round close/adjust storm were empty). Fixed in the engine
-         * too (`0.4.0-nex.5`); kept here because this layer decides whether a pane restarts,
+         * too (`0.4.0-kelpi.5`); kept here because this layer decides whether a pane restarts,
          * and it must never restart over zero bytes.
          */
         if (data.length === 0) {
@@ -1215,7 +1215,7 @@ class AdapterRenderer implements TerminalRenderer {
              * through one shared WASM instance and a Terminal constructed moments after
              * another was disposed came up holding that one's grid — a pane REMOUNTING on a
              * workspace switch painted its snapshot over its predecessor's screen. Since
-             * `0.4.0-nex.10` every engine has its own instance, so whether the queued reset
+             * `0.4.0-kelpi.10` every engine has its own instance, so whether the queued reset
              * has anything to clear is decided where it is applied (`resetTerminal`): it runs
              * only if bytes have reached this engine, and the mount flush's first tick, which
              * writes the queue straight into the engine `open()` just built, skips it.
@@ -1448,7 +1448,7 @@ class AdapterRenderer implements TerminalRenderer {
          * Cheap and idempotent (one walk of the cell buffer), and a theme only changes when a
          * config file does.
          *
-         * §N18: until `ghostty-web 0.4.0-nex.7` this walk repainted the OLD background anyway —
+         * §N18: until `ghostty-web 0.4.0-kelpi.7` this walk repainted the OLD background anyway —
          * a cell reports the colours its WASM terminal was CONSTRUCTED with, and the engine
          * painted them literally, so the theme reached everything except the cells. The engine
          * now resolves a DEFAULT cell through its live theme at paint time, and this repaint is
@@ -2081,7 +2081,7 @@ export const loadGhosttyEngine: EngineLoader = async (options) => {
              * The CELL area used to need it too, and it did not help: the cells reported the
              * colours the WASM terminal was CONSTRUCTED with, so the render behind this clear
              * filled the old background straight back over it, row by row — §N18, fixed in the
-             * engine (`0.4.0-nex.7`: `setTerminalDefaultColors` + a paint-time lookup), not
+             * engine (`0.4.0-kelpi.7`: `setTerminalDefaultColors` + a paint-time lookup), not
              * here. This call is the margin's, and the margin's only.
              */
             renderer?.clear();
@@ -2092,11 +2092,11 @@ export const loadGhosttyEngine: EngineLoader = async (options) => {
             terminal.renderer?.remeasureFont();
         },
         // §N20 — `ghostty_surface_set_focus`'s port. Safe before `open()`: the engine keeps the
-        // flag and hands it to the renderer it builds there (`0.4.0-nex.4`).
+        // flag and hands it to the renderer it builds there (`0.4.0-kelpi.4`).
         setSurfaceFocus: (focused): void => {
             terminal.setFocused(focused);
         },
-        // §N24 — `0.4.0-nex.6`. Suspends the engine's render loop and the forced render inside
+        // §N24 — `0.4.0-kelpi.6`. Suspends the engine's render loop and the forced render inside
         // its own `resize()`, and carries the canvas pixels across the resize instead of
         // clearing them, so the pane shows its last good frame for the length of the window.
         setPaintSuspended: (suspended): void => {
@@ -2112,7 +2112,7 @@ export const loadGhosttyEngine: EngineLoader = async (options) => {
              * with scrollback — and `renderScrollbar`'s backdrop clears the rightmost ~14px of
              * every row first, cutting off the last column or two of text. The engine's own
              * render loop then passes the terminal's real opacity (0 once the fade is done),
-             * skips the scrollbar path, and — before `0.4.0-nex.8` — repainted nothing, so a
+             * skips the scrollbar path, and — before `0.4.0-kelpi.8` — repainted nothing, so a
              * theme repaint left the right edge erased until those rows were rewritten. The
              * scrollbar belongs to the terminal's fade state machine, not to this forced
              * frame; if one is legitimately showing, the very next loop frame redraws it.
@@ -2128,7 +2128,7 @@ export const loadGhosttyEngine: EngineLoader = async (options) => {
             //
             // #306: and that is all. The match is PAINTED by the highlight layer below, not
             // selected: a selection is the user's (copy, drag, its own tracking across trims),
-            // and it used to land on the wrong row anyway (`select()` before `0.4.0-nex.16`).
+            // and it used to land on the wrong row anyway (`select()` before `0.4.0-kelpi.16`).
             const scrollback = terminal.getScrollbackLength();
             const viewportY = clamp(match.linesFromBottom - Math.floor(terminal.rows / 2), 0, scrollback);
             terminal.scrollToLine(viewportY);

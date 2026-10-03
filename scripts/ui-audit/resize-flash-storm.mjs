@@ -173,7 +173,7 @@ const stats = { faults: 0, replays: 0, resyncs: 0 };
  * `GhosttyTerminal` is what `CanvasRenderer.render()` reads its cells out of, so reading it
  * per tick is exactly the frame the canvas would have carried. The DOM `Terminal` cannot be
  * used here (no canvas in node), so `setPaintSuspended` is mirrored onto the handle: the vendor
- * makes `render()` return on that same flag before touching a cell (`0.4.0-nex.6`), and the
+ * makes `render()` return on that same flag before touching a cell (`0.4.0-kelpi.6`), and the
  * ticker below honours it the same way.
  */
 function makeHandle(cols, rows) {
@@ -423,7 +423,7 @@ const tick = () => {
     if (!ticking) return;
     for (const pane of panes.values()) {
         if (pane.handle.state.freed) continue;
-        // What ghostty-web's render loop does first (`CanvasRenderer.render`, `0.4.0-nex.6`).
+        // What ghostty-web's render loop does first (`CanvasRenderer.render`, `0.4.0-kelpi.6`).
         if (pane.handle.state.suspended) {
             pane.frames.held += 1;
             continue;

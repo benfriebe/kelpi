@@ -155,7 +155,7 @@ export const TERMINAL_START_RETRY_MS = 150;
  * force the reclamation. The only way out is a restart of the UI (the daemon keeps every pane
  * and session), so the placeholder says that and offers it. Seen on 2026-09-10 across a whole
  * window at once: disposed terminals were being retained by a document listener
- * (ghostty-web `0.4.0-nex.12`), and each carried its own instance since `-nex.10`.
+ * (ghostty-web `0.4.0-kelpi.12`), and each carried its own instance since `-kelpi.10`.
  */
 export type TerminalFailure = 'wasm-address-space';
 
@@ -1193,7 +1193,7 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
              *
              * A registration rather than a callback prop, and a PULL rather than the push above,
              * so copy reads the current selection. Older engines did not announce clearing;
-             * `0.4.0-nex.14` does (#170), but a notification remains an observation rather than
+             * `0.4.0-kelpi.14` does (#170), but a notification remains an observation rather than
              * the authority for copying. `terminal/pane-registry.ts` has the full argument.
              */
             const offRegistry = registerTerminalPane(paneID, {

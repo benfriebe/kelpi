@@ -467,7 +467,7 @@ export interface GhosttyWasmExports extends WebAssembly.Exports {
     bufLen: number
   ): number; // Returns codepoint count or -1 on error
   ghostty_terminal_is_row_wrapped(terminal: TerminalHandle, row: number): number;
-  /** vendor 0.4.0-nex.17 (#323): `is_row_wrapped` by absolute screen row, history included. */
+  /** vendor 0.4.0-kelpi.17 (#323): `is_row_wrapped` by absolute screen row, history included. */
   ghostty_terminal_is_screen_row_wrapped(terminal: TerminalHandle, row: number): number;
 
   // Response API (for DSR and other terminal queries)

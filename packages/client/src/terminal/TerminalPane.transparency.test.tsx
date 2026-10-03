@@ -7,7 +7,7 @@
  * through, and the engine canvas did not: ghostty-web accepted `allowTransparency` and never
  * read it, so every default-background paint was an opaque `fillRect`.
  *
- * `0.4.0-nex.3` implements the option (`vendor/ghostty-web-patched`, `paintDefaultBackground`),
+ * `0.4.0-kelpi.3` implements the option (`vendor/ghostty-web-patched`, `paintDefaultBackground`),
  * which makes THIS the load-bearing wire: the value has to travel prop → factory → engine, and
  * it has to be `false` unless assembly says otherwise, because a terminal that clears its own
  * background over an opaque window would show the page behind it instead of the theme.

@@ -55,7 +55,7 @@
  *
  * Afterwards, run the guards that read the artifact:
  *   pnpm vitest run packages/client/src/terminal/vendor-engine.test.ts
- * They pin the version PROVENANCE.md documents and the behaviour markers of every `-nex` patch, so
+ * They pin the version PROVENANCE.md documents and the behaviour markers of every `-kelpi` patch, so
  * a rebuild that quietly dropped one fails there rather than in a terminal pane.
  */
 

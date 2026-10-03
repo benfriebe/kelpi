@@ -1,5 +1,5 @@
 /**
- * vendor 0.4.0-nex.16: the search-highlight layer.
+ * vendor 0.4.0-kelpi.16: the search-highlight layer.
  *
  * Upstream ghostty-web has no find at all, so an embedder that searches the buffer elsewhere
  * (Kelpi searches its daemon's copy of the scrollback) could only show a hit by SELECTING it:

@@ -310,6 +310,8 @@ export function buildSettingsSnapshot(
             confirmWorkspaceDeleteWhenActive: general.confirmWorkspaceDeleteWhenActive,
             // graft-git.md §8.7: read by the window's delete gestures, never by the daemon.
             workspaceDeleteWorktrees: general.workspaceDeleteWorktrees,
+            // #326: read by the window's ⌘-click, never by the daemon.
+            openLinksIn: general.openLinksIn,
             workspaceDeleteBranches: general.workspaceDeleteBranches,
             // §AGNT-117: the quit dialog's suppression, now daemon-owned like its twin. The
             // Electron shell reads it off its own status WS's `welcome.settings`, so the ⌘Q

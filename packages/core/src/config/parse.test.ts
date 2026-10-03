@@ -41,6 +41,15 @@ describe('line syntax', () => {
 });
 
 describe('parseGeneralSettings', () => {
+    it('reads open-links-in, defaulting to the browser and ignoring unknown values (#326)', () => {
+        expect(parseGeneralSettings('').openLinksIn).toBe('browser');
+        expect(parseGeneralSettings('open-links-in = kelpi').openLinksIn).toBe('kelpi');
+        expect(parseGeneralSettings('open-links-in = KELPI').openLinksIn).toBe('kelpi');
+        expect(parseGeneralSettings('open-links-in = browser').openLinksIn).toBe('browser');
+        expect(parseGeneralSettings('open-links-in = safari').openLinksIn).toBe('browser');
+        expect(parseGeneralSettings('open-links-in = kelpi\nopen-links-in = nonsense').openLinksIn).toBe('kelpi');
+    });
+
     it('returns defaults for an empty file', () => {
         expect(parseGeneralSettings('')).toEqual(DEFAULT_GENERAL_SETTINGS);
     });

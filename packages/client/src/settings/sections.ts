@@ -135,6 +135,13 @@ export const SETTINGS_GROUPS: readonly SettingsGroupDescriptor[] = Object.freeze
                 testID: 'general-network'
             },
             {
+                id: 'general-links',
+                sectionID: 'general',
+                title: 'Links',
+                hint: null,
+                testID: 'general-links'
+            },
+            {
                 id: 'general-updates',
                 sectionID: 'general',
                 title: 'Updates',
@@ -416,6 +423,11 @@ const PLACEMENT_CHOICES: readonly SettingsChoice[] = Object.freeze([
     Object.freeze({ value: 'end-of-list', label: 'End of list' })
 ]);
 
+const OPEN_LINKS_IN_CHOICES: readonly SettingsChoice[] = Object.freeze([
+    Object.freeze({ value: 'browser', label: 'Default browser' }),
+    Object.freeze({ value: 'kelpi', label: 'Kelpi web pane' })
+]);
+
 const DELETE_WORKTREE_CHOICES: readonly SettingsChoice[] = Object.freeze([
     Object.freeze({ value: 'ask', label: 'Ask' }),
     Object.freeze({ value: 'remove', label: 'Remove clean Kelpi worktrees' }),
@@ -604,6 +616,20 @@ export const SETTINGS_FIELD_DEFINITIONS: readonly SettingsFieldDefinition[] = Ob
         default: true,
         read: (settings) => settings.general.expandGroupOnWorkspaceDrop,
         encode: BOOLEAN
+    },
+    {
+        id: 'general.openLinksIn',
+        sectionID: 'general',
+        groupID: 'general-links',
+        kind: 'select',
+        label: '⌘-click on a link opens it in',
+        detail: 'Where a ⌘-click on a link in a terminal pane goes. A plain click asks which, whatever this is set to.',
+        testID: 'open-links-in',
+        target: { file: 'kelpi', key: 'open-links-in' },
+        default: 'browser',
+        choices: OPEN_LINKS_IN_CHOICES,
+        read: (settings) => settings.general.openLinksIn,
+        encode: (value) => value
     },
     {
         id: 'general.autoUpdate',

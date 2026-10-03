@@ -23,8 +23,10 @@ import { useEffect, useRef, type RefObject } from 'react';
 export function useDismissable(
     active: boolean,
     onDismiss: () => void,
-    keep: readonly RefObject<HTMLElement | null>[]
+    keep: readonly RefObject<HTMLElement | null>[],
+    options: { readonly passiveKeys?: boolean } = {}
 ): void {
+    const passiveKeys = options.passiveKeys === true;
     /*
      * The keep-list lives in a ref rather than in the dependency list: callers pass a fresh
      * array literal every render, so a dependency on it would re-subscribe both listeners on
@@ -45,6 +47,9 @@ export function useDismissable(
         };
         const onKeyDown = (event: KeyboardEvent): void => {
             if (event.key !== 'Escape') return;
+            // #326: a passive surface leaves an Escape aimed elsewhere (the terminal under a link
+            // menu) to its target; the owner closes it from its own listener instead.
+            if (passiveKeys && !inside(globalThis.document.activeElement)) return;
             event.preventDefault();
             event.stopPropagation();
             onDismiss();
@@ -56,5 +61,5 @@ export function useDismissable(
             doc.removeEventListener('mousedown', onPointerDown, true);
             doc.removeEventListener('keydown', onKeyDown, true);
         };
-    }, [active, onDismiss]);
+    }, [active, onDismiss, passiveKeys]);
 }

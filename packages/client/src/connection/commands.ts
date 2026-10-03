@@ -1224,6 +1224,20 @@ export class CommandClient {
     }
 
     /**
+     * #326: what `openTerminalTarget` WOULD do at this cell, with no side effects (a `markdown`
+     * reply only says a pane would open). A daemon older than the verb refuses it as unknown.
+     */
+    probeTerminalTarget(
+        input: { paneID: string; row: number; col: number },
+        options?: SendOptions
+    ): Promise<CommandReply> {
+        return this.raw(
+            wirePayload('probe-terminal-target', { pane_id: input.paneID, row: input.row, col: input.col }),
+            options ?? {}
+        );
+    }
+
+    /**
      * CONT-081…091 — host `$VISUAL`/`$EDITOR` on a markdown pane's file, or end that session.
      *
      * `open` gives the pane a PTY running the editor (the pane stays a markdown pane; it is

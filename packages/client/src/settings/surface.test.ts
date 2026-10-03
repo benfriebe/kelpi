@@ -501,6 +501,7 @@ describe('the snapshot', () => {
             'general-repositories',
             'general-workspaces',
             'general-network',
+            'general-links',
             'general-updates'
         ]);
         for (const field of fields) expect(groups.some((group) => group.id === field.groupID)).toBe(true);

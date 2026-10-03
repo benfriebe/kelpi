@@ -108,6 +108,7 @@ describe('the section catalog', () => {
             'general-repositories',
             'general-workspaces',
             'general-network',
+            'general-links',
             'general-updates'
         ]);
         expect(settingsGroupsInSection('workspaces').map((group) => group.testID)).toEqual([
@@ -223,6 +224,7 @@ describe('the field table', () => {
             'new-group-placement',
             'tcp-listener-toggle',
             'tcp-port',
+            'open-links-in',
             'auto-update-toggle'
         ]);
         expect(

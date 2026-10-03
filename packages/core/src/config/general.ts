@@ -39,6 +39,14 @@ export interface GeneralSettings {
      */
     readonly workspaceDeleteWorktrees: 'ask' | 'remove' | 'keep';
     /**
+     * `open-links-in` (#326), default `browser`: where a ⌘-click on a link in a terminal pane
+     * opens it. `browser` hands it to the system's default browser, as ⌘-click always has;
+     * `kelpi` opens it in a web pane beside the terminal. A CLIENT-side rule: the daemon only
+     * resolves what was clicked. A plain click's menu offers both whatever this says. Unknown
+     * values keep the default.
+     */
+    readonly openLinksIn: 'browser' | 'kelpi';
+    /**
      * `workspace-delete-branches`, default **true**: when a worktree goes with its workspace,
      * also delete its branch. Only ever a branch whose every commit another branch, a
      * remote-tracking ref or a tag also has, so it loses nothing. The delete dialog's checkbox
@@ -179,6 +187,7 @@ export const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
     globalHotkeyHideOnRepress: true,
     confirmWorkspaceDeleteWhenActive: true,
     workspaceDeleteWorktrees: 'ask',
+    openLinksIn: 'browser',
     workspaceDeleteBranches: true,
     confirmQuitWhenActive: true,
     autoUpdate: false,
@@ -248,6 +257,11 @@ export function parseGeneralSettings(contents: string): GeneralSettings {
             case 'workspace-delete-worktrees':
                 if (lowered === 'ask' || lowered === 'remove' || lowered === 'keep') {
                     settings = { ...settings, workspaceDeleteWorktrees: lowered };
+                }
+                break;
+            case 'open-links-in':
+                if (lowered === 'browser' || lowered === 'kelpi') {
+                    settings = { ...settings, openLinksIn: lowered };
                 }
                 break;
             case 'workspace-delete-branches':

@@ -888,6 +888,34 @@ as a report bypass exactly as it treats `shiftKey` (section 11), because the DEC
 no bit for ⌘ and the application would otherwise see a plain press it was never aimed at.
 Ghostty does the same. Plain clicks under reporting are unchanged.
 
+**A plain click on a link asks where to open it (#326).** A left click with no modifiers, that
+followed a press the window saw, is a single click (a second press of any button within macOS's
+default double-click interval, 500 ms, cancels it) and is not a drag (the press never travelled
+more than 4 px from where it started, even on the way back; the pane's selection cannot say, since
+the engine leaves a one-cell selection behind a click), sends `probe-terminal-target` with the
+same `pane_id`, `row`, `col`. That verb is `open-terminal-target`'s two reads with **no side
+effects**: the markdown branch reports `opened: "markdown", probe: true` and opens no pane. It is
+a separate verb rather than a flag so a daemon older than it refuses it as unknown instead of
+running the markdown branch. It is sent at the click, so a TUI that redraws in answer to the
+click cannot change what it reads; only showing the menu waits for the 500 ms. Only an `external`
+answer raises a menu at the pointer, so it offers exactly the links a ⌘-click opens and nothing a
+⌘-click refuses:
+
+- **Open in Kelpi**: `web-open` with the URL, splitting the clicked pane to the right, focused;
+- **Open in Browser**: the system opener, the ⌘-click path;
+- **Copy Link**: the URL to the clipboard.
+
+The click is observed in capture and never consumed, so a TUI under mouse reporting still gets
+its press and release. The menu is passive: the caret stays in the terminal, and a key, a wheel
+scroll or a window blur closes it (or drops a pending one) without consuming the key, so ↑ is
+still history and Escape still reaches an agent. Not on the phone layout, where a tap belongs to
+the soft keyboard. The logic is `packages/client/src/app/link-click.ts`.
+
+**Where a ⌘-click opens a link** is the `open-links-in` setting (Settings ▸ General ▸ Links):
+`browser`, the default, hands an `external` answer to the system opener as above; `kelpi` opens
+it with the same `web-open` as the menu's "Open in Kelpi". It only changes ⌘-click: the plain
+click's menu always offers both.
+
 ### 7.7 In-terminal search actions (`START_SEARCH`, `END_SEARCH`, `SEARCH_TOTAL`, `SEARCH_SELECTED`)
 
 Search runs on the daemon over the pane's server-side buffer

@@ -478,18 +478,16 @@ describe('⌘-click a terminal cell (CONT-122 / TERM-052)', () => {
         expect(h.lastCommand('open-terminal-target')).toMatchObject({ col: 79, row: 16 });
     });
 
-    it('opens the daemon’s URL through the system opener, and only for a ⌘-click', async () => {
+    it('opens the daemon’s URL through the system opener, straight away on a ⌘-click', async () => {
         const h = setup();
         const host = await grid();
         const open = vi.fn();
         vi.stubGlobal('open', open);
 
-        // A PLAIN click is the TUI's, not ours: no round-trip at all.
-        fireEvent.click(host, { button: 0, clientX: 100, clientY: 100 });
-        expect(h.lastCommand('open-terminal-target')).toBeUndefined();
-
         fireEvent.click(host, { metaKey: true, button: 0, clientX: 100, clientY: 100 });
         expect(h.lastCommand('open-terminal-target')).toBeDefined();
+        // A ⌘-click opens; it is never the plain click's side-effect-free probe (#326).
+        expect(h.lastCommand('probe-terminal-target')).toBeUndefined();
         // #83: the URL the daemon answers is handed over WHOLE. A truncated address was half
         // the user's report.
         await act(async () => {
@@ -501,6 +499,31 @@ describe('⌘-click a terminal cell (CONT-122 / TERM-052)', () => {
             '_blank',
             'noreferrer'
         );
+        vi.unstubAllGlobals();
+    });
+
+    it('opens the URL in a web pane beside the clicked pane when open-links-in = kelpi (#326)', async () => {
+        const h = setup();
+        const host = await grid();
+        const open = vi.fn();
+        vi.stubGlobal('open', open);
+        const current = h.runtime.store.getState().settings.value;
+        act(() => {
+            h.runtime.store.getState().applySettings({ ...current, general: { ...current.general, openLinksIn: 'kelpi' } });
+        });
+        fireEvent.click(host, { metaKey: true, button: 0, clientX: 100, clientY: 100 });
+        await act(async () => {
+            h.reply({ opened: 'external', url: 'https://example.com/docs' });
+            await Promise.resolve();
+        });
+        expect(open).not.toHaveBeenCalled();
+        expect(h.lastCommand('web-open')).toMatchObject({
+            url: 'https://example.com/docs',
+            pane_id: PANE_A,
+            target: PANE_A,
+            direction: 'horizontal',
+            focus: true
+        });
         vi.unstubAllGlobals();
     });
 
@@ -533,6 +556,189 @@ describe('⌘-click a terminal cell (CONT-122 / TERM-052)', () => {
         });
         expect(screen.queryByText(/nothing was opened/)).toBeNull();
         expect(screen.queryByText(/does not exist/)).toBeNull();
+    });
+});
+
+/**
+ * #326: a PLAIN click on a link asks where to open it.
+ *
+ * The click is only observed (a mouse-tracking TUI still gets it); after the double-click window
+ * the daemon is PROBED, and only an `external` answer opens the menu. The menu's three rows are
+ * the web pane, the system opener, and the clipboard.
+ */
+describe('a plain click on a terminal link (#326)', () => {
+    const HOST = { width: 800, height: 340 };
+
+    async function grid(): Promise<HTMLElement> {
+        const host = document.querySelector<HTMLElement>(`[data-pane-id="${PANE_A}"] [data-terminal-host]`);
+        if (host === null) throw new Error('the shell pane has no terminal host');
+        Object.defineProperty(host, 'clientWidth', { configurable: true, value: HOST.width });
+        Object.defineProperty(host, 'clientHeight', { configurable: true, value: HOST.height });
+        host.getBoundingClientRect = () =>
+            ({ left: 0, top: 0, right: HOST.width, bottom: HOST.height, x: 0, y: 0, ...HOST }) as DOMRect;
+        await act(async () => {
+            window.dispatchEvent(new Event('resize'));
+            await new Promise((resolve) => setTimeout(resolve, 150));
+        });
+        await waitFor(() => {
+            const cell = document
+                .querySelector(`[data-pane-id="${PANE_A}"][data-terminal-cell]`)
+                ?.getAttribute('data-terminal-cell');
+            if (cell === null || cell === undefined || cell === '') throw new Error('no cell metrics yet');
+        });
+        return host;
+    }
+
+    /** A real single click: the press the tracker measures from, then the click. */
+    function plainClick(host: HTMLElement, x = 100, y = 100, detail = 1): void {
+        fireEvent.mouseDown(host, { button: 0, clientX: x, clientY: y, detail });
+        fireEvent.click(host, { button: 0, clientX: x, clientY: y, detail });
+    }
+
+    async function probed(h: ReturnType<typeof setup>): Promise<Record<string, unknown>> {
+        let probe: Record<string, unknown> | undefined;
+        await waitFor(() => {
+            probe = h.lastCommand('probe-terminal-target');
+            expect(probe).toBeDefined();
+        });
+        return probe!;
+    }
+
+    it('probes the clicked cell, then offers Open in Kelpi, Open in Browser and Copy Link', async () => {
+        const h = setup();
+        const host = await grid();
+        plainClick(host);
+        const probe = await probed(h);
+        expect(probe).toMatchObject({ command: 'probe-terminal-target', pane_id: PANE_A, col: 10, row: 5 });
+        // Probed, never opened: the ⌘-click verb is not sent for a plain click.
+        expect(h.lastCommand('open-terminal-target')).toBeUndefined();
+        await act(async () => {
+            h.reply({ opened: 'external', url: 'https://example.com/docs' });
+            await Promise.resolve();
+        });
+        expect(await screen.findByText('example.com/docs')).toBeDefined();
+        expect(screen.getByText('Open in Kelpi')).toBeDefined();
+        expect(screen.getByText('Open in Browser')).toBeDefined();
+        expect(screen.getByText('Copy Link')).toBeDefined();
+    });
+
+    it('opens the link in a focused web pane beside the clicked pane', async () => {
+        const h = setup();
+        const host = await grid();
+        plainClick(host);
+        await probed(h);
+        await act(async () => {
+            h.reply({ opened: 'external', url: 'https://example.com/docs' });
+            await Promise.resolve();
+        });
+        fireEvent.click(await screen.findByText('Open in Kelpi'));
+        expect(h.lastCommand('web-open')).toMatchObject({
+            command: 'web-open',
+            url: 'https://example.com/docs',
+            pane_id: PANE_A,
+            target: PANE_A,
+            direction: 'horizontal',
+            focus: true
+        });
+        await waitFor(() => expect(screen.queryByText('Open in Kelpi')).toBeNull());
+    });
+
+    it('opens the link in the default browser', async () => {
+        const h = setup();
+        const host = await grid();
+        const open = vi.fn();
+        vi.stubGlobal('open', open);
+        plainClick(host);
+        await probed(h);
+        await act(async () => {
+            h.reply({ opened: 'external', url: 'https://example.com/docs' });
+            await Promise.resolve();
+        });
+        fireEvent.click(await screen.findByText('Open in Browser'));
+        expect(open).toHaveBeenCalledWith('https://example.com/docs', '_blank', 'noreferrer');
+        vi.unstubAllGlobals();
+    });
+
+    it('copies the link', async () => {
+        const h = setup();
+        const host = await grid();
+        const writeText = vi.fn(() => Promise.resolve());
+        Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+        plainClick(host);
+        await probed(h);
+        await act(async () => {
+            h.reply({ opened: 'external', url: 'https://example.com/docs' });
+            await Promise.resolve();
+        });
+        fireEvent.click(await screen.findByText('Copy Link'));
+        expect(writeText).toHaveBeenCalledWith('https://example.com/docs');
+    });
+
+    it('offers nothing for a click on prose', async () => {
+        const h = setup();
+        const host = await grid();
+        plainClick(host);
+        await probed(h);
+        await act(async () => {
+            h.reply({ opened: 'none' });
+            await Promise.resolve();
+        });
+        expect(screen.queryByText('Open in Kelpi')).toBeNull();
+    });
+
+    it('offers no menu for a double-click, which selects the word instead', async () => {
+        const h = setup();
+        const host = await grid();
+        plainClick(host, 100, 100, 1);
+        await probed(h);
+        await act(async () => {
+            h.reply({ opened: 'external', url: 'https://example.com/docs' });
+            await Promise.resolve();
+        });
+        plainClick(host, 100, 100, 2);
+        await act(async () => {
+            await new Promise((resolve) => setTimeout(resolve, 650));
+        });
+        expect(screen.queryByText('Open in Kelpi')).toBeNull();
+    });
+
+    it('sends no probe for the end of a drag', async () => {
+        const h = setup();
+        const host = await grid();
+        fireEvent.mouseDown(host, { button: 0, clientX: 100, clientY: 100, detail: 1 });
+        fireEvent.click(host, { button: 0, clientX: 180, clientY: 100, detail: 1 });
+        await act(async () => {
+            await new Promise((resolve) => setTimeout(resolve, 650));
+        });
+        expect(h.lastCommand('probe-terminal-target')).toBeUndefined();
+    });
+
+    /**
+     * The menu leaves the keyboard where it was. A key aimed at the terminal closes it and is NOT
+     * consumed: ↑ still recalls history, and Escape still reaches an agent as its interrupt.
+     */
+    it.each(['ArrowUp', 'Escape', 'a'])('closes on %s without taking the key from the terminal', async (key) => {
+        const h = setup();
+        const host = await grid();
+        plainClick(host);
+        await probed(h);
+        await act(async () => {
+            h.reply({ opened: 'external', url: 'https://example.com/docs' });
+            await Promise.resolve();
+        });
+        expect(await screen.findByText('Open in Kelpi')).toBeDefined();
+        const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+        let reached = false;
+        host.addEventListener('keydown', () => {
+            reached = true;
+        });
+        act(() => {
+            host.dispatchEvent(event);
+        });
+        expect(event.defaultPrevented).toBe(false);
+        expect(reached).toBe(true);
+        await waitFor(() => expect(screen.queryByText('Open in Kelpi')).toBeNull());
+        expect(document.activeElement?.closest('[role="menu"]') ?? null).toBeNull();
     });
 });
 

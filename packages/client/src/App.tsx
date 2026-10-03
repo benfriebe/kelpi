@@ -99,6 +99,7 @@ import { ConnectionBanner, ConnectionSplash } from './app/ConnectionScreen';
 import { ContentPanePlaceholder } from './app/ContentPanePlaceholder';
 import { restartUI } from './app/reload';
 import { copySelection, deferredClipboardWriter, pasteIntoFocusedPane } from './app/clipboard';
+import { createLinkClickTracker, linkCaption, type LinkMenuRequest } from './app/link-click';
 import { sendLineEdit } from './app/line-editing';
 import { TerminalShortcutContext, terminalWindowChords } from './app/terminal-shortcuts';
 import type { DaemonTarget, StorageLike } from './app/config';
@@ -486,6 +487,8 @@ function Shell(props: AppProps): ReactElement {
     const [terminalTheme, setTerminalTheme] = useState<TerminalTheme | undefined>(undefined);
     /** The find bar reopens when its per-pane request sequence advances. */
     const [findRequest, setFindRequest] = useState<{ paneID: string; seq: number } | null>(null);
+    /** #326: the "where to open this link" menu a plain click on a terminal link raised. */
+    const [linkMenu, setLinkMenu] = useState<LinkMenuRequest | null>(null);
     const workspacesLifecycle = useWorkspacesFeatureLifecycle();
     const { setScrollToWorkspaceID, createSheetOpen, sidebarEscapeRef } = workspacesLifecycle;
     /**
@@ -2201,7 +2204,8 @@ function Shell(props: AppProps): ReactElement {
              *
              * The daemon decides: only a `.md` file that exists becomes a pane. Anything else
              * comes back described, and a URL is handed to the OS opener — which is exactly what
-             * returning `false` to ghostty's action callback did in the Swift app.
+             * returning `false` to ghostty's action callback did in the Swift app — or, with
+             * `open-links-in = kelpi` (#326), to a web pane beside the clicked one.
              *
              * #83: a ⌘-click that was AIMED at a link and opened nothing now says so. The gate
              * is the daemon's `reason`, never "opened is none", because a ⌘-click also lands on
@@ -2219,7 +2223,13 @@ function Shell(props: AppProps): ReactElement {
                         const opened = replyText(reply, 'opened');
                         if (opened === 'external') {
                             const url = replyText(reply, 'url');
-                            if (url !== undefined) globalThis.open?.(url, '_blank', 'noreferrer');
+                            if (url === undefined) return;
+                            // #326: `open-links-in` picks where; the system browser by default.
+                            if (store.getState().settings.value.general.openLinksIn === 'kelpi') {
+                                actRef.current.openLinkInWebPane(paneID, url);
+                            } else {
+                                globalThis.open?.(url, '_blank', 'noreferrer');
+                            }
                             return;
                         }
                         if (opened === 'missing') {
@@ -2244,6 +2254,43 @@ function Shell(props: AppProps): ReactElement {
                         notifyFailure('Open path', error instanceof Error ? error.message : String(error));
                     }
                 );
+                return true;
+            },
+
+            /**
+             * #326: the link menu's three actions. "Open in Kelpi" is a web pane beside the pane
+             * the link was clicked in, focused (a gesture, #295); "Open in Browser" is exactly
+             * the ⌘-click path above; "Copy Link" writes the URL, nothing else.
+             */
+            openLinkInWebPane(paneID: string, url: string): boolean {
+                return run(
+                    'Open link',
+                    commands.raw({
+                        command: 'web-open',
+                        url,
+                        private: false,
+                        pane_id: paneID,
+                        target: paneID,
+                        direction: 'horizontal',
+                        focus: true
+                    })
+                );
+            },
+
+            openLinkInBrowser(url: string): boolean {
+                globalThis.open?.(url, '_blank', 'noreferrer');
+                return true;
+            },
+
+            copyLink(url: string): boolean {
+                const clipboard = navigator.clipboard as Clipboard | undefined;
+                if (clipboard === undefined || typeof clipboard.writeText !== 'function') {
+                    notifyFailure('Copy link', 'this window has no clipboard access');
+                    return false;
+                }
+                void clipboard.writeText(url).catch((error: unknown) => {
+                    notifyFailure('Copy link', error instanceof Error ? error.message : String(error));
+                });
                 return true;
             },
 
@@ -3943,6 +3990,60 @@ function Shell(props: AppProps): ReactElement {
     }, [onPasteCapture]);
 
     /**
+     * #326: plain clicks on terminal links. The tracker decides when a click was a single,
+     * unmodified, undragged click and asks the daemon (`probe-terminal-target`, no side effects)
+     * whether the cell is a link a ⌘-click would open; only then does the menu open. See
+     * `app/link-click.ts`.
+     */
+    const linkClicks = useMemo(
+        () =>
+            createLinkClickTracker({
+                probe: async (paneID, row, col) => {
+                    const reply = await commands.probeTerminalTarget({ paneID, row, col });
+                    if (!isOkReply(reply)) return null;
+                    return { opened: replyText(reply, 'opened'), url: replyText(reply, 'url') };
+                },
+                open: setLinkMenu
+            }),
+        [commands]
+    );
+
+    useEffect(() => {
+        // A key, a scroll or a blur means the user moved on: a pending menu is dropped, and an
+        // open one closes. The menu is passive (`passiveKeys`), so the key itself is NOT consumed
+        // and still reaches the terminal: ↑ is history, Escape is the agent's interrupt.
+        const dismiss = (event: Event): void => {
+            linkClicks.cancel();
+            const target = event.target;
+            if (event.type === 'keydown' && target instanceof Element && target.closest('[role="menu"]') !== null) return;
+            setLinkMenu(null);
+        };
+        window.addEventListener('keydown', dismiss, true);
+        window.addEventListener('wheel', dismiss, { capture: true, passive: true });
+        window.addEventListener('blur', dismiss);
+        return () => {
+            window.removeEventListener('keydown', dismiss, true);
+            window.removeEventListener('wheel', dismiss, { capture: true });
+            window.removeEventListener('blur', dismiss);
+            linkClicks.cancel();
+        };
+    }, [linkClicks]);
+
+    const onRootMouseDownCapture = useCallback(
+        (event: ReactMouseEvent<HTMLDivElement>): void => {
+            linkClicks.pointerDown(event.clientX, event.clientY, event.button);
+        },
+        [linkClicks]
+    );
+
+    const onRootMouseMoveCapture = useCallback(
+        (event: ReactMouseEvent<HTMLDivElement>): void => {
+            if ((event.buttons & 1) !== 0) linkClicks.pointerMove(event.clientX, event.clientY);
+        },
+        [linkClicks]
+    );
+
+    /**
      * ⌘-click a path in a terminal (CONT-122 / TERM-052).
      *
      * The pane answers which cell was clicked from the engine's canvas and real cell size. Only
@@ -3952,16 +4053,18 @@ function Shell(props: AppProps): ReactElement {
      * part of a link on a low row landed on the row above. The daemon reads the token at the
      * cell and decides what it is (`ws/desktop.ts`).
      */
+
     const onRootClickCapture = useCallback(
         (event: ReactMouseEvent<HTMLDivElement>): void => {
-            if (!event.metaKey || event.button !== 0) return;
+            if (event.button !== 0) return;
             const target = event.target;
             if (!(target instanceof Element)) return;
             const host = target.closest('[data-terminal-host]');
             if (host === null) return;
             const paneID = host.closest('[data-pane-id]')?.getAttribute('data-pane-id') ?? null;
             if (paneID === null) return;
-            const measured = paneHandle(paneID)?.cellAt;
+            const handle = paneHandle(paneID);
+            const measured = handle?.cellAt;
             let cell: TerminalCell | null;
             if (measured !== undefined) {
                 cell = measured(event.clientX, event.clientY);
@@ -3977,11 +4080,29 @@ function Shell(props: AppProps): ReactElement {
                 });
             }
             if (cell === null) return;
+            if (!event.metaKey) {
+                // #326: observed, never consumed: a mouse-tracking TUI still gets this click. Not
+                // on the phone layout, where a tap is the keyboard's and a split is a card.
+                if (arrangementGuards.current.phoneActive) return;
+                linkClicks.click({
+                    paneID,
+                    cell,
+                    clientX: event.clientX,
+                    clientY: event.clientY,
+                    button: event.button,
+                    detail: event.detail,
+                    metaKey: event.metaKey,
+                    ctrlKey: event.ctrlKey,
+                    altKey: event.altKey,
+                    shiftKey: event.shiftKey
+                });
+                return;
+            }
             event.preventDefault();
             event.stopPropagation();
             act.openTerminalTarget(paneID, cell.row, cell.col);
         },
-        [act, getPaneDimensions]
+        [act, getPaneDimensions, linkClicks]
     );
 
     const renderPane = useCallback<RenderPane>(
@@ -4280,6 +4401,8 @@ function Shell(props: AppProps): ReactElement {
             onDragOver={onDragOver}
             onDragLeave={onDragLeave}
             onDrop={onDrop}
+            onMouseDownCapture={onRootMouseDownCapture}
+            onMouseMoveCapture={onRootMouseMoveCapture}
             onClickCapture={onRootClickCapture}
         >
             {phoneActive ? (
@@ -4883,6 +5006,27 @@ function Shell(props: AppProps): ReactElement {
                     onSuppressOnly={() => {
                         settingsActions.setGeneralSetting('confirm-workspace-delete', 'false');
                     }}
+                />
+            )}
+
+            {linkMenu === null ? null : (
+                <ContextMenu
+                    x={linkMenu.x}
+                    y={linkMenu.y}
+                    label="Open link"
+                    passiveKeys
+                    items={[
+                        { id: 'link:caption', label: linkCaption(linkMenu.url), kind: 'caption' },
+                        {
+                            id: 'link:kelpi',
+                            label: 'Open in Kelpi',
+                            onSelect: () => act.openLinkInWebPane(linkMenu.paneID, linkMenu.url)
+                        },
+                        { id: 'link:browser', label: 'Open in Browser', onSelect: () => act.openLinkInBrowser(linkMenu.url) },
+                        { id: 'link:sep', label: '', kind: 'separator' },
+                        { id: 'link:copy', label: 'Copy Link', onSelect: () => act.copyLink(linkMenu.url) }
+                    ]}
+                    onClose={() => setLinkMenu(null)}
                 />
             )}
 

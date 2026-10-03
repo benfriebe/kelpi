@@ -848,7 +848,10 @@ async function launchPhase() {
         pass('the main process opened its status WebSocket');
         // #272: logged once the daemon has reported the `auto-update` setting (off by default), so
         // it names both halves: the build can update, and this one made no update request.
-        const autoUpdate = await app.waitForLine(/auto-update: /, 'the auto-update decision', 15_000);
+        // #332: matched on the decision words (`launchLogLine`), because other `auto-update:` lines
+        // come first, such as #291's `auto-update: running <version>`. `on` and `unavailable` are
+        // matched too, so a wrong decision fails here with its line instead of timing out.
+        const autoUpdate = await app.waitForLine(/auto-update: (off|on|unavailable)\b/, 'the auto-update decision', 15_000);
         check(
             'auto-update stayed off (no network call in the packaged default)',
             autoUpdate.includes('auto-update: off') && !app.text().includes('check failed'),

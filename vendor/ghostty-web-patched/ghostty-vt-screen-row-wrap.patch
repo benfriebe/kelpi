@@ -1,0 +1,68 @@
+diff --git a/include/ghostty/vt/terminal.h b/include/ghostty/vt/terminal.h
+index 298ad36..af1a851 100644
+--- a/include/ghostty/vt/terminal.h
++++ b/include/ghostty/vt/terminal.h
+@@ -220,6 +220,12 @@ int ghostty_terminal_get_scrollback_grapheme(
+ /** Check if a row is a continuation from previous row (soft-wrapped) */
+ bool ghostty_terminal_is_row_wrapped(GhosttyTerminal term, int y);
+ 
++/**
++ * Like ghostty_terminal_is_row_wrapped, for a row addressed by its absolute
++ * screen index (0 = oldest history row), so history rows can be asked too.
++ */
++bool ghostty_terminal_is_screen_row_wrapped(GhosttyTerminal term, int y);
++
+ /* ============================================================================
+  * Response API - for DSR and other terminal queries
+  * ========================================================================= */
+diff --git a/src/lib_vt.zig b/src/lib_vt.zig
+index 8bce7da..bfb9d66 100644
+--- a/src/lib_vt.zig
++++ b/src/lib_vt.zig
+@@ -173,6 +173,7 @@ comptime {
+         @export(&c.terminal_get_scrollback_line, .{ .name = "ghostty_terminal_get_scrollback_line" });
+         @export(&c.terminal_get_scrollback_grapheme, .{ .name = "ghostty_terminal_get_scrollback_grapheme" });
+         @export(&c.terminal_is_row_wrapped, .{ .name = "ghostty_terminal_is_row_wrapped" });
++        @export(&c.terminal_is_screen_row_wrapped, .{ .name = "ghostty_terminal_is_screen_row_wrapped" });
+ 
+         // Response API (for DSR and other queries)
+         @export(&c.terminal_has_response, .{ .name = "ghostty_terminal_has_response" });
+diff --git a/src/terminal/c/main.zig b/src/terminal/c/main.zig
+index 868e625..18767d9 100644
+--- a/src/terminal/c/main.zig
++++ b/src/terminal/c/main.zig
+@@ -86,6 +86,7 @@ pub const terminal_get_scrollback_length = terminal.getScrollbackLength;
+ pub const terminal_get_scrollback_line = terminal.getScrollbackLine;
+ pub const terminal_get_scrollback_grapheme = terminal.getScrollbackGrapheme;
+ pub const terminal_is_row_wrapped = terminal.isRowWrapped;
++pub const terminal_is_screen_row_wrapped = terminal.isScreenRowWrapped;
+ 
+ // Response API (for DSR and other queries)
+ pub const terminal_has_response = terminal.hasResponse;
+diff --git a/src/terminal/c/terminal.zig b/src/terminal/c/terminal.zig
+index 82a0457..accd6d0 100644
+--- a/src/terminal/c/terminal.zig
++++ b/src/terminal/c/terminal.zig
+@@ -947,6 +947,22 @@ pub fn isRowWrapped(ptr: ?*anyopaque, y: c_int) callconv(.c) bool {
+     return rac.row.wrap_continuation;
+ }
+ 
++/// Whether a row ANYWHERE in the buffer, history included, is the soft-wrap
++/// continuation of the row above it: `isRowWrapped` for a row addressed by its
++/// absolute screen index (0 = oldest history row, the numbering `trackSelection`
++/// and `readSelection` use), which is the only addressing that reaches history.
++///
++/// KELPI (#323): copying a selection joins soft-wrapped rows instead of putting
++/// a newline at every wrap point, and a selection can start in scrollback, where
++/// `isRowWrapped` (active area only) cannot see.
++pub fn isScreenRowWrapped(ptr: ?*anyopaque, y: c_int) callconv(.c) bool {
++    const wrapper: *const TerminalWrapper = @ptrCast(@alignCast(ptr orelse return false));
++    const pages = &wrapper.terminal.screens.active.pages;
++    if (y < 0 or y >= pages.total_rows) return false;
++    const pin = pages.pin(.{ .screen = .{ .y = @intCast(y) } }) orelse return false;
++    return pin.rowAndCell().row.wrap_continuation;
++}
++
+ // ============================================================================
+ // Response API - for DSR and other terminal queries
+ // ============================================================================

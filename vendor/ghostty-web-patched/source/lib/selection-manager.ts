@@ -152,8 +152,18 @@ export class SelectionManager {
 
       if (!line) continue;
 
+      // vendor 0.4.0-nex.17 (#323): does the NEXT selected row continue this one (a soft wrap)?
+      // Then this row is the middle of one logical line: no newline after it, and its trailing
+      // blanks are content, not padding. Upstream put a '\n' after every row, so a wrapped command
+      // or URL pasted back as several lines, and a space that fell in the last column was lost.
+      const continues = absRow < endAbsRow && this.isScreenRowWrapped(absRow + 1);
+
       // Track the last non-empty column for trimming trailing spaces
       let lastNonEmpty = -1;
+      // ...and, for a row that wraps, the last cell anything was WRITTEN to (a printed space
+      // included). Cells past it were never written, e.g. the spacer a wide character leaves in
+      // the last column when it wraps early, and are dropped rather than copied as spaces.
+      let lastWritten = -1;
 
       // Determine column range for this row
       const colStart = absRow === startAbsRow ? startCol : 0;
@@ -178,6 +188,7 @@ export class SelectionManager {
             char = String.fromCodePoint(cell.codepoint);
           }
           lineText += char;
+          lastWritten = lineText.length;
           if (char.trim()) {
             lastNonEmpty = lineText.length;
           }
@@ -191,22 +202,30 @@ export class SelectionManager {
         }
       }
 
-      // Trim trailing spaces from each line
-      if (lastNonEmpty >= 0) {
-        lineText = lineText.substring(0, lastNonEmpty);
-      } else {
-        lineText = '';
-      }
+      // Trim trailing spaces from each line, except one that wraps onto the next row: there,
+      // only the never-written tail goes.
+      const keep = continues ? lastWritten : lastNonEmpty;
+      lineText = keep >= 0 ? lineText.substring(0, keep) : '';
 
       text += lineText;
 
-      // Add newline between rows (but not after the last row)
-      if (absRow < endAbsRow) {
+      // Add newline between rows (but not after the last row, nor inside a soft-wrapped line)
+      if (absRow < endAbsRow && !continues) {
         text += '\n';
       }
     }
 
     return text;
+  }
+
+  /**
+   * vendor 0.4.0-nex.17 (#323): whether absolute row `absoluteRow` is the soft-wrap continuation of
+   * the row above it, history included. A terminal without the export (an older WASM, a test
+   * stub) answers "no", which is upstream's behaviour: a newline at every row.
+   */
+  private isScreenRowWrapped(absoluteRow: number): boolean {
+    const term = this.wasmTerm as GhosttyTerminal & { isScreenRowWrapped?: (row: number) => boolean };
+    return typeof term.isScreenRowWrapped === 'function' ? term.isScreenRowWrapped(absoluteRow) : false;
   }
 
   /**

@@ -45,7 +45,7 @@ const repoRoot = path.resolve(here, '..', '..', '..', '..');
 const vendorRoot = path.join(repoRoot, 'vendor', 'ghostty-web-patched');
 
 /** The version the audit evidence and PROVENANCE.md were written against. */
-const EXPECTED_VERSION = '0.4.0-nex.16';
+const EXPECTED_VERSION = '0.4.0-nex.17';
 
 /** Markers of the caret-anchored IME, in the built ESM bundle the client imports. */
 const CARET_MARKERS = ['data-ime-preedit', 'data-ime-caret', 'syncImeCaret'];
@@ -381,6 +381,21 @@ describe('vendored ghostty-web engine', () => {
         const selectionSource = read(path.join(vendorRoot, 'source', 'lib', 'selection-manager.ts'));
         expect(selectionSource).not.toMatch(/absoluteRow: viewportY \+/);
         expect(selectionSource.match(/absoluteRow: this\.viewportRowToAbsolute\(/g) ?? []).toHaveLength(6);
+    });
+
+    it('joins soft-wrapped rows when a selection is copied, history included (§-nex.17, #323)', async () => {
+        const bundle = read(path.join(vendorRoot, 'dist', 'ghostty-web.js'));
+        // The binding, and the call `getSelection()` makes through it.
+        expect(bundle).toContain('ghostty_terminal_is_screen_row_wrapped');
+        expect(bundle).toMatch(/\.isScreenRowWrapped\(/);
+        const selectionSource = read(path.join(vendorRoot, 'source', 'lib', 'selection-manager.ts'));
+        expect(selectionSource).toContain('const continues = absRow < endAbsRow && this.isScreenRowWrapped(absRow + 1);');
+        expect(selectionSource).toContain("if (absRow < endAbsRow && !continues) {");
+        // The WASM itself has to carry the export: a TypeScript-only rebuild would leave every
+        // copy newline-per-row and pass the marker checks above.
+        const wasm = await WebAssembly.compile(new Uint8Array(fs.readFileSync(path.join(vendorRoot, 'ghostty-vt.wasm'))));
+        const exported = WebAssembly.Module.exports(wasm).map((entry) => entry.name);
+        expect(exported).toContain('ghostty_terminal_is_screen_row_wrapped');
     });
 
     it('keeps the snapshotted source in step with the bundle', () => {

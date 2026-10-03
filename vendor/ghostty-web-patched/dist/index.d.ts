@@ -619,6 +619,13 @@ export declare class GhosttyTerminal {
     getScrollbackLine(offset: number): GhosttyCell[] | null;
     /** Check if a row in the active screen is wrapped (soft-wrapped to next line) */
     isRowWrapped(row: number): boolean;
+    /**
+     * vendor 0.4.0-nex.17 (#323): whether a row ANYWHERE in the buffer is the soft-wrap continuation
+     * of the row above it, addressed by absolute row (0 = oldest history row, the numbering
+     * `SelectionManager` and `trackSelection` use). `isRowWrapped` only reaches the active screen, so
+     * this is the one a reader that walks history (copying a selection) needs.
+     */
+    isScreenRowWrapped(absoluteRow: number): boolean;
     /** Hyperlink URI not yet exposed in simplified API */
     getHyperlinkUri(_id: number): string | null;
     /**
@@ -744,6 +751,8 @@ declare interface GhosttyWasmExports extends WebAssembly.Exports {
     ghostty_terminal_get_scrollback_line(terminal: TerminalHandle, offset: number, bufPtr: number, bufLen: number): number;
     ghostty_terminal_get_scrollback_grapheme(terminal: TerminalHandle, offset: number, col: number, bufPtr: number, bufLen: number): number;
     ghostty_terminal_is_row_wrapped(terminal: TerminalHandle, row: number): number;
+    /** vendor 0.4.0-nex.17 (#323): `is_row_wrapped` by absolute screen row, history included. */
+    ghostty_terminal_is_screen_row_wrapped(terminal: TerminalHandle, row: number): number;
     ghostty_terminal_has_response(terminal: TerminalHandle): boolean;
     ghostty_terminal_read_response(terminal: TerminalHandle, bufPtr: number, bufLen: number): number;
 }
@@ -1705,6 +1714,12 @@ export declare class SelectionManager {
      * Get the selected text as a string
      */
     getSelection(): string;
+    /**
+     * vendor 0.4.0-nex.17 (#323): whether absolute row `absoluteRow` is the soft-wrap continuation of
+     * the row above it, history included. A terminal without the export (an older WASM, a test
+     * stub) answers "no", which is upstream's behaviour: a newline at every row.
+     */
+    private isScreenRowWrapped;
     /**
      * Check if there's an active selection
      */

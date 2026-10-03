@@ -938,8 +938,9 @@ completes). A pinned row that trimmed history or a replay moves is followed by i
 current match ends: it is never painted on text that is not the needle. Return / ⇧Return scroll the
 match to the middle of the viewport. Closing the bar clears every highlight.
 
-Limits, stated: the engine knows a soft wrap only where its continuation row is on the screen
-(the WASM reports wrap linkage for screen rows only), so a needle straddling the wrap of a line
+Limits, stated: the highlight layer knows a soft wrap only where its continuation row is on the
+screen (it reads `ghostty_terminal_is_row_wrapped`; since `-nex.17` the WASM can also answer for
+history rows, which this layer does not consult yet), so a needle straddling the wrap of a line
 further back in history is counted by the daemon but not painted as an ordinary match; stepping
 to it still paints it as the selected match, after the text it covers has been checked against
 the needle. The `@xterm/xterm` fallback engine has no highlight layer and shows the selected match
@@ -1152,6 +1153,19 @@ Selection is client-side: the engine owns it, the renderer exposes `onSelectionC
 (`packages/client/src/terminal/TerminalPane.tsx:266`, `:632`). The daemon holds no selection
 state; nothing else in the system consumes selection besides the client's copy-on-select
 behaviour (section 12.1).
+
+**The text a copy gets (#323).** A selection is read row by row, and a row that the next selected
+row continues (a soft wrap: the program printed one line and the terminal ran out of columns) is
+joined to it with no newline and keeps its trailing spaces, so a wrapped command or URL copies as
+the one line it was. Rows that end in a newline the program printed are trimmed of trailing
+padding and separated by `\n`, as before. This holds in history too: the engine answers "is this
+row a wrap continuation" for any absolute row (`ghostty_terminal_is_screen_row_wrapped`, vendor
+`-nex.17`), not just for rows on the screen. Line breaks a full-screen program draws itself
+(an editor, a pager, an agent's TUI) are real cursor moves, not soft wraps, and are copied as
+breaks, as in Ghostty. The join follows the engine's wrap flag and nothing else, which is also
+Ghostty's rule (`Screen.selectionString` adds a newline only `if (!row.wrap)`): a program that moves
+the cursor back and overwrites a continuation row without erasing it leaves the flag set, so that
+row still copies joined to the one above it.
 
 ---
 

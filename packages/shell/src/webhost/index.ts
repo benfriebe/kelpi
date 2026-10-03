@@ -415,6 +415,11 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
                 // view from the URL it still holds.
                 registry.forgetTab(paneID, tabID);
                 client?.sendEvent('tab-closed', paneID, tabID, {});
+            },
+            openTab: (paneID, tabID, request) => {
+                // `tabID` is the tab that asked, for the log on the daemon's side; the new tab's
+                // id is the daemon's to mint, and it comes back as an ordinary `tab-open`.
+                client?.sendEvent('open-tab', paneID, tabID, { url: request.url, active: request.active });
             }
         }
     });

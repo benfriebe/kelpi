@@ -512,6 +512,7 @@ describe('geometry reporting', () => {
     function mount(
         props: {
             visible?: boolean;
+            coveredByModal?: boolean;
             embedded?: boolean;
             rect?: GeometryRect;
             tabs?: readonly WebPaneTab[];
@@ -532,6 +533,7 @@ describe('geometry reporting', () => {
                 commands={commands}
                 embedded={props.embedded ?? true}
                 visible={props.visible ?? true}
+                coveredByModal={props.coveredByModal}
                 focused={props.focused ?? false}
                 measure={fixedRect(props.rect ?? RECT)}
                 devicePixelRatio={2}
@@ -1102,10 +1104,53 @@ describe('geometry reporting', () => {
             });
 
             /**
-             * A pane parked by a whole-window modal (H1) is not covered by anything — it is off
-             * screen — and a photograph of it would be a picture nobody ever sees, taken on every
-             * Settings open.
+             * A whole-window modal (Settings, the update sheet, a dialog) parks every page, and
+             * used to arrive here only as `visible: false` — the same thing an off-screen pane
+             * gets — so the page left with nothing in its place. But a modal is a box in the
+             * middle of the window: the pane around it is still in view, and the owner's report
+             * was exactly that, a browser pane gone blank behind Settings until it closed. So a
+             * modal covers the pane the way a menu does, and the pane wears its own frame.
              */
+            it('wears a still frame under a whole-window modal, and parks with it', async () => {
+                const h = mount({ visible: false, coveredByModal: true });
+                // Held on screen while the frame is taken, as under a menu.
+                expect(h.sent.filter((entry) => entry.verb === 'poster')).toEqual([
+                    { verb: 'poster', args: [PANE, TAB1] }
+                ]);
+                expect(h.hidden).toEqual([]);
+                await settle();
+                expect(hiddenOnce(h.hidden)).toEqual([PANE]);
+                expect(screen.getByTestId(`web-poster-${PANE}`).getAttribute('src')).toBe(POSTER_SRC);
+                expect(screen.getByTestId(`web-page-${PANE}`).dataset['visible']).toBe('false');
+            });
+
+            it('comes back live when the modal closes', async () => {
+                const h = mount({ visible: false, coveredByModal: true });
+                await settle();
+                const placed = h.reports.length;
+                act(() => {
+                    h.view.rerender(
+                        <WebPane
+                            paneID={PANE}
+                            tabs={TABS}
+                            activeTabID={TAB1}
+                            commands={h.commands}
+                            embedded={true}
+                            visible={true}
+                            coveredByModal={false}
+                            focused={false}
+                            measure={fixedRect(RECT)}
+                            devicePixelRatio={2}
+                            onGeometry={(report) => h.reports.push(report)}
+                            onHidden={(paneID) => h.hidden.push(paneID)}
+                        />
+                    );
+                });
+                expect(h.reports.length).toBeGreaterThan(placed);
+                expect(h.reports.at(-1)).toEqual({ paneID: PANE, tabID: TAB1, rect: RINGED, visible: true, devicePixelRatio: 2 });
+                expect(screen.getByTestId(`web-page-${PANE}`).dataset['visible']).toBe('true');
+            });
+
             /**
              * The ORDER, and the lesson the `web-popup-layering` audit taught about it.
              *

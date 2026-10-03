@@ -3884,7 +3884,9 @@ function Shell(props: AppProps): ReactElement {
      * can get above it. Left in place, a live page would keep painting over the settings window
      * or the command palette, so the pane reports itself hidden for as long as the modal is open
      * and the shell parks the view off-screen (`webpane/geometry.ts` → `shell/webhost/embed.ts`).
-     * The page keeps running; only its placement is suspended.
+     * The page keeps running; only its placement is suspended. A pane that is on screen is also
+     * told `coveredByModal`, so it parks behind a still frame of its page (`webpane/poster.ts`)
+     * rather than sitting empty around the modal.
      *
      * **UI-FIDELITY H1** — this used to be only the four modals THIS component owns state for,
      * and every other app-modal surface was missing: the shell's quit dialog, the graft swap
@@ -4248,6 +4250,7 @@ function Shell(props: AppProps): ReactElement {
                             canGoForward={nav?.canGoForward ?? false}
                             focused={focused}
                             visible={renderState.visible && !modalOpen}
+                            coveredByModal={renderState.visible && modalOpen}
                             embedded={shellWindowID !== null}
                             commands={webCommands}
                             onGeometry={webGeometry.report}

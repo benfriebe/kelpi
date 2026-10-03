@@ -17815,7 +17815,7 @@ function buildFlows(ctx) {
         {
             id: 'drop-markdown',
             expect:
-                'Dropping a .md path onto the window opens it as a markdown pane; a non-.md drop is refused with a message instead of silence (CONT-121 / APP-103 / TERM-041). The OS drag itself is not simulated — the event and the DataTransfer are real, the mouse gesture that would produce them is not.',
+                'Dropping a .md path onto the window opens it as a markdown pane, and a .csv opens a table pane (#324); any other drop is refused with a message instead of silence (CONT-121 / APP-103 / TERM-041). The OS drag itself is not simulated — the event and the DataTransfer are real, the mouse gesture that would produce them is not.',
             needsEyes: true,
             async run(recorder) {
                 const dropExpr = (uri) =>
@@ -17840,13 +17840,39 @@ function buildFlows(ctx) {
                 recorder.check('the dropped .md opened a pane', created.length === 1, `${String(created.length)} new`);
                 recorder.check('and it is a markdown pane', created[0]?.type === 'markdown', created[0]?.type ?? 'none');
 
-                // A non-markdown drop must say why rather than doing nothing.
+                // #324: a dropped .csv goes through the same `open` verb and the daemon makes it a
+                // table pane. Written to the sandbox root rather than `work`, so no `ls` of the
+                // fixtures in another step sees it.
+                const csvFile = path.join(sandbox.root, 'drop-audit.csv');
+                fs.writeFileSync(csvFile, 'name,city\nAda,London\nGrace,Arlington\n');
+                try {
+                    const beforeCsv = await cli.json(['pane', 'list', '--json']);
+                    await page.eval(dropExpr(`file://${csvFile}`));
+                    await settle(async () => (await cli.json(['pane', 'list', '--json'])).length > beforeCsv.length, { ceilingMs: 6_000, intervalMs: 200 });
+                    const afterCsv = await cli.json(['pane', 'list', '--json']);
+                    const csvCreated = afterCsv.filter((pane) => !beforeCsv.some((old) => old.id === pane.id));
+                    const csvPane = csvCreated[0]?.id ?? '';
+                    const grid = `document.querySelector('[data-testid="csv-grid-${csvPane}"]')`;
+                    const shown = await settleDom(page, `(${grid}?.textContent ?? '').includes('London')`, { ceilingMs: 8_000 });
+                    await recorder.shot(page, 'dropped-csv');
+                    recorder.check('the dropped .csv opened a pane', csvCreated.length === 1, `${String(csvCreated.length)} new`);
+                    recorder.check('and it is a table pane showing the file', csvCreated[0]?.type === 'csv' && shown, `${csvCreated[0]?.type ?? 'none'}, grid shows the rows: ${String(shown)}`);
+                    if (csvPane !== '') {
+                        await cli.ok(['pane', 'close', '--target', csvPane]);
+                        await sleep(600);
+                    }
+                } finally {
+                    fs.rmSync(csvFile, { force: true });
+                }
+
+                // Any other drop must say why rather than doing nothing.
                 const beforeReject = await cli.json(['pane', 'list', '--json']);
                 await page.eval(dropExpr(`file://${path.join(work, 'alpha.txt')}`));
                 await sleep(1200);
                 await recorder.shot(page, 'refused');
+                // #335: the refusal `dropDecision` writes (`packages/client/src/app/open-file.ts`).
                 const toast = await page.eval(
-                    `(document.body.innerText ?? '').includes('not a .md file')`
+                    `(document.body.innerText ?? '').includes('is not a .md, .csv or .tsv file')`
                 );
                 const afterReject = await cli.json(['pane', 'list', '--json']);
                 recorder.check('a non-.md drop creates nothing', afterReject.length === beforeReject.length, `${String(beforeReject.length)} → ${String(afterReject.length)}`);

@@ -710,6 +710,22 @@ export class GhosttyTerminal {
     return this.exports.ghostty_terminal_is_row_wrapped(this.handle, row) !== 0;
   }
 
+  /**
+   * vendor 0.4.0-nex.17 (#323): whether a row ANYWHERE in the buffer is the soft-wrap continuation
+   * of the row above it, addressed by absolute row (0 = oldest history row, the numbering
+   * `SelectionManager` and `trackSelection` use). `isRowWrapped` only reaches the active screen, so
+   * this is the one a reader that walks history (copying a selection) needs.
+   */
+  isScreenRowWrapped(absoluteRow: number): boolean {
+    // A wasm older than the export (it is fetched separately from the bundle) answers "not
+    // wrapped", upstream's behaviour, rather than throwing out of every copy.
+    const exported = this.exports.ghostty_terminal_is_screen_row_wrapped as
+      | ((terminal: TerminalHandle, row: number) => number)
+      | undefined;
+    if (typeof exported !== 'function') return false;
+    return exported(this.handle, absoluteRow) !== 0;
+  }
+
   /** Hyperlink URI not yet exposed in simplified API */
   getHyperlinkUri(_id: number): string | null {
     return null; // TODO: Add hyperlink support

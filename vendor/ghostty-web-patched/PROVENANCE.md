@@ -1,7 +1,7 @@
-# ghostty-web 0.4.0-nex.16 (vendored)
+# ghostty-web 0.4.0-nex.17 (vendored)
 
 A build of `ghostty-web` v0.4.0 carrying two open upstream PRs — applied after a line-by-line
-review in the orchestrating session and explicit user authorization to integrate both, plus fifteen
+review in the orchestrating session and explicit user authorization to integrate both, plus sixteen
 Nex-authored adaptations on top of them (`-nex.2`: the caret-anchored IME; `-nex.3`: an
 `allowTransparency` that does something; `-nex.4`: a cursor that knows whether its surface has
 focus; `-nex.5`: a `write()` that survives zero bytes; `-nex.6`: a paint that can be suspended;
@@ -11,7 +11,8 @@ every terminal on its own WASM instance; `-nex.11`: output never moves a scrolle
 `-nex.12`: a disposed terminal is garbage, the document listener that pinned it is removed;
 `-nex.13`: an `ESC[2K`'d row forgets it was ever wrapped; `-nex.14`: selected conversation
 rows remain anchored when older history is trimmed; `-nex.15`: DOM focus preserves the embedder's pan position;
-`-nex.16`: a search-highlight layer, and a public `select()` that lands on the row it names).
+`-nex.16`: a search-highlight layer, and a public `select()` that lands on the row it names;
+`-nex.17`: copying a selection joins soft-wrapped rows, history included).
 
 **`-nex.13` is the first adaptation that is NOT TypeScript-only.** Every version up to `-nex.12`
 shipped `ghostty-vt.wasm` byte-identical to the npm `ghostty-web@0.4.0` package; `-nex.13`
@@ -38,6 +39,41 @@ reproduces the `0.4.0` wasm BYTE-IDENTICALLY when run without the patch, is in
 | `0.4.0-nex.14` | **wasm + TypeScript**: native selection pins keep retained rows selected across scrollback trims; discarded endpoints clear and announce the selection (#170) |
 | `0.4.0-nex.15` | terminal and selection DOM focus uses `preventScroll`, preserving the embedder's mirrored-canvas pan (#178) |
 | `0.4.0-nex.16` | `select`/`selectAll`/`selectLines` convert rows through `viewportRowToAbsolute`; a search-highlight layer paints every visible match of a needle and a current match in the theme's `search*` colours (#306) |
+| `0.4.0-nex.17` | **wasm + TypeScript**: `ghostty_terminal_is_screen_row_wrapped` reports a row's soft-wrap continuation by absolute row, history included; `getSelection()` joins soft-wrapped rows instead of putting a newline at every wrap, and keeps a wrapped row's trailing spaces; `Buffer.getLine` reports `isWrapped` for history rows (#323) |
+
+## Kelpi adaptation: copy joins soft-wrapped rows (`0.4.0-nex.17`, 2026-10-03)
+
+Issue #323. Drag-selecting a soft-wrapped line and copying it gave back one line per ROW:
+upstream's `SelectionManager.getSelection()` appended `'\n'` after every row but the last, with no
+wrap check, and trimmed trailing spaces from every row. So a long command or URL pasted back as
+several lines (each newline a carriage return in a terminal), and a space that fell in the last
+column of a row was lost even to a reader that joined the rows afterwards.
+
+What changed:
+
+- **wasm** (`ghostty-vt-screen-row-wrap.patch`, applied after the other two): a new export,
+  `ghostty_terminal_is_screen_row_wrapped(term, y)`, returns `row.wrap_continuation` for the row at
+  ABSOLUTE screen row `y` (`.screen` point, 0 = oldest history row). This is the numbering
+  `SelectionManager` uses and `trackSelection` / `readSelection` already speak. The existing
+  `ghostty_terminal_is_row_wrapped` is active-area only, so it cannot answer for a selection that
+  reaches into scrollback.
+- **`getSelection()`**: when the next selected row is a soft-wrap continuation of the current one,
+  no newline is appended, and the current row is trimmed only of its never-written tail (cells
+  with no codepoint, such as the spacer a wide character leaves when it wraps early) rather than
+  of every trailing space. Rows ending in a real newline are trimmed and separated exactly as
+  before. A wasm without the export (or a stub) answers "not wrapped", which is upstream's output.
+- **`Buffer.getLine`**: a history row's `isWrapped` comes from the new export instead of the
+  hard-coded `false` (the old TODO).
+- **Known limit, shared with Ghostty**: the join reads the wrap flag only, as Ghostty's own
+  `Screen.selectionString` does (`if (!row.wrap)` decides the newline). A program that moves the
+  cursor back and overwrites a continuation row without erasing it leaves the flag set, so the
+  rows still copy as one line.
+- `GhosttyTerminal.isScreenRowWrapped` checks the export exists, so a separately fetched wasm
+  older than `-nex.17` gives upstream's newline-per-row copy instead of throwing.
+
+Rebuilt with the recipe in "`ghostty-vt.wasm`: the Zig half" with the third patch applied; the
+two-patch build was first checked to reproduce the `-nex.16` wasm byte-identically (`9269d2ad…`).
+Then `pnpm vendor:build` rebuilt the dist on top of it.
 
 ## Kelpi adaptation: search highlights, and `select()` on the right row (`0.4.0-nex.16`, 2026-10-01)
 
@@ -427,6 +463,7 @@ git checkout -q FETCH_HEAD
 git apply ../patches/ghostty-wasm-api.patch        # warns about trailing whitespace; fine
 git apply <repo>/vendor/ghostty-web-patched/ghostty-vt-wrap-linkage.patch
 git apply <repo>/vendor/ghostty-web-patched/ghostty-vt-selection.patch
+git apply <repo>/vendor/ghostty-web-patched/ghostty-vt-screen-row-wrap.patch   # after the selection patch
 
 zig build lib-vt -Dtarget=wasm32-freestanding -Doptimize=ReleaseSmall   # ~20 s cold, ~3 s warm
 cp zig-out/bin/ghostty-vt.wasm <repo>/vendor/ghostty-web-patched/ghostty-vt.wasm

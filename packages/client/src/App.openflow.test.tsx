@@ -502,6 +502,31 @@ describe('⌘-click a terminal cell (CONT-122 / TERM-052)', () => {
         vi.unstubAllGlobals();
     });
 
+    it('opens the URL in a web pane beside the clicked pane when open-links-in = kelpi (#326)', async () => {
+        const h = setup();
+        const host = await grid();
+        const open = vi.fn();
+        vi.stubGlobal('open', open);
+        const current = h.runtime.store.getState().settings.value;
+        act(() => {
+            h.runtime.store.getState().applySettings({ ...current, general: { ...current.general, openLinksIn: 'kelpi' } });
+        });
+        fireEvent.click(host, { metaKey: true, button: 0, clientX: 100, clientY: 100 });
+        await act(async () => {
+            h.reply({ opened: 'external', url: 'https://example.com/docs' });
+            await Promise.resolve();
+        });
+        expect(open).not.toHaveBeenCalled();
+        expect(h.lastCommand('web-open')).toMatchObject({
+            url: 'https://example.com/docs',
+            pane_id: PANE_A,
+            target: PANE_A,
+            direction: 'horizontal',
+            focus: true
+        });
+        vi.unstubAllGlobals();
+    });
+
     /**
      * #83's silent-failure half. A link we refuse to hand the OS gets a word; a ⌘-click on prose
      * or on empty screen deliberately gets nothing, because a toast on every stray ⌘-click is

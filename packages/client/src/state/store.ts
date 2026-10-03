@@ -464,6 +464,8 @@ export function hydrateSettings(raw: unknown): WsSettingsSnapshot | null {
             // on) stand: the dialog then lists worktrees its daemon cannot remove, and each
             // delete's reply, carrying no `worktrees`, says nothing was removed.
             workspaceDeleteWorktrees: worktreeChoice(general['workspaceDeleteWorktrees'], fallbackGeneral.workspaceDeleteWorktrees),
+            // #326. An older daemon omits it, and ⌘-click keeps opening the browser.
+            openLinksIn: general['openLinksIn'] === 'kelpi' ? 'kelpi' : 'browser',
             workspaceDeleteBranches: bool(general['workspaceDeleteBranches'], fallbackGeneral.workspaceDeleteBranches),
             // §AGNT-117: the quit suppression's twin, daemon-owned since the quit gate moved.
             confirmQuitWhenActive: bool(

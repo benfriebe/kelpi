@@ -186,6 +186,7 @@ describe('the projection', () => {
             'general-repositories',
             'general-workspaces',
             'general-network',
+            'general-links',
             'general-updates'
         ]);
     });

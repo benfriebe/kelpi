@@ -42,6 +42,11 @@ export interface WsGeneralSettings {
      * asking (`remove`), or leaves every one on disk (`keep`). Read by the CLIENT.
      */
     readonly workspaceDeleteWorktrees: 'ask' | 'remove' | 'keep';
+    /**
+     * `open-links-in` (#326), default `browser`: where a ⌘-click on a terminal link opens it,
+     * the system browser or a Kelpi web pane. Read by the CLIENT.
+     */
+    readonly openLinksIn: 'browser' | 'kelpi';
     /** `workspace-delete-branches`, default true: the delete dialog's branch checkbox default. */
     readonly workspaceDeleteBranches: boolean;
     /**
@@ -414,6 +419,7 @@ export const DEFAULT_WS_SETTINGS: WsSettingsSnapshot = {
         theme: null,
         confirmWorkspaceDeleteWhenActive: true,
         workspaceDeleteWorktrees: 'ask',
+        openLinksIn: 'browser',
         workspaceDeleteBranches: true,
         confirmQuitWhenActive: true,
         autoUpdate: false,
@@ -502,6 +508,8 @@ export const WS_WRITABLE_GENERAL_KEYS = [
     // because both Settings ▸ Workspaces and the dialog's "Remember my choice" write them.
     'workspace-delete-worktrees',
     'workspace-delete-branches',
+    // #326: where a ⌘-click on a terminal link opens it. Settings ▸ General ▸ Links writes it.
+    'open-links-in',
     // The quit dialog's twin (§AGNT-117). Writable because BOTH sides now write it: the ⌘Q
     // dialog's "Don't ask again" checkbox and Settings ▸ Workspaces' toggle.
     'confirm-quit-when-active',

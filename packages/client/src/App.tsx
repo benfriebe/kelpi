@@ -2204,7 +2204,8 @@ function Shell(props: AppProps): ReactElement {
              *
              * The daemon decides: only a `.md` file that exists becomes a pane. Anything else
              * comes back described, and a URL is handed to the OS opener — which is exactly what
-             * returning `false` to ghostty's action callback did in the Swift app.
+             * returning `false` to ghostty's action callback did in the Swift app — or, with
+             * `open-links-in = kelpi` (#326), to a web pane beside the clicked one.
              *
              * #83: a ⌘-click that was AIMED at a link and opened nothing now says so. The gate
              * is the daemon's `reason`, never "opened is none", because a ⌘-click also lands on
@@ -2222,7 +2223,13 @@ function Shell(props: AppProps): ReactElement {
                         const opened = replyText(reply, 'opened');
                         if (opened === 'external') {
                             const url = replyText(reply, 'url');
-                            if (url !== undefined) globalThis.open?.(url, '_blank', 'noreferrer');
+                            if (url === undefined) return;
+                            // #326: `open-links-in` picks where; the system browser by default.
+                            if (store.getState().settings.value.general.openLinksIn === 'kelpi') {
+                                actRef.current.openLinkInWebPane(paneID, url);
+                            } else {
+                                globalThis.open?.(url, '_blank', 'noreferrer');
+                            }
                             return;
                         }
                         if (opened === 'missing') {

@@ -909,7 +909,12 @@ The click is observed in capture and never consumed, so a TUI under mouse report
 its press and release. The menu is passive: the caret stays in the terminal, and a key, a wheel
 scroll or a window blur closes it (or drops a pending one) without consuming the key, so ↑ is
 still history and Escape still reaches an agent. Not on the phone layout, where a tap belongs to
-the soft keyboard. The logic is `packages/client/src/app/link-click.ts`; ⌘-click is unchanged.
+the soft keyboard. The logic is `packages/client/src/app/link-click.ts`.
+
+**Where a ⌘-click opens a link** is the `open-links-in` setting (Settings ▸ General ▸ Links):
+`browser`, the default, hands an `external` answer to the system opener as above; `kelpi` opens
+it with the same `web-open` as the menu's "Open in Kelpi". It only changes ⌘-click: the plain
+click's menu always offers both.
 
 ### 7.7 In-terminal search actions (`START_SEARCH`, `END_SEARCH`, `SEARCH_TOTAL`, `SEARCH_SELECTED`)
 

@@ -252,6 +252,7 @@ import {
     terminalFontStack,
     terminalPaletteCssVars,
     terminalThemePreset,
+    linkSpanFromReply,
     visiblePaneIDs,
     type TerminalGeometry,
     type TerminalRendererFactory,
@@ -4152,6 +4153,21 @@ function Shell(props: AppProps): ReactElement {
         [act, getPaneDimensions, linkClicks]
     );
 
+    /**
+     * #303: what a ⌘-click at this cell would open, as the cells a hover underlines.
+     *
+     * The question `onRootClickCapture` above asks on a click, asked of the same daemon
+     * (`commands`, this window's runtime) as `probe-terminal-target`, which answers it the same
+     * way and does none of it. Only this window's own shell panes get it: a remote workspace's
+     * ⌘-click is sent here too, where its pane does not exist, so an underline there would promise
+     * a click that cannot work.
+     */
+    const probeTerminalLink = useCallback(
+        (paneID: string, row: number, col: number) =>
+            commands.probeTerminalTarget({ paneID, row, col }).then(linkSpanFromReply, () => null),
+        [commands]
+    );
+
     const renderPane = useCallback<RenderPane>(
         (paneID, _frame, focused, renderState) => {
             const pane = paneByID.get(paneID);
@@ -4310,6 +4326,8 @@ function Shell(props: AppProps): ReactElement {
                             onDimensionsChange={onDimensionsChange}
                             reveal={reveal}
                             search={search}
+                            // #303: the hover underline asks the daemon a ⌘-click here goes to.
+                            probeLink={probeTerminalLink}
                             createRenderer={createRenderer}
                         />
                     );
@@ -4346,6 +4364,7 @@ function Shell(props: AppProps): ReactElement {
             optionAsAlt,
             onTerminalFocus,
             onDimensionsChange,
+            probeTerminalLink,
             createRenderer,
             webCommands,
             webGeometry,

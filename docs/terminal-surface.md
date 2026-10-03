@@ -826,8 +826,10 @@ happens.
 
 A ⌘-click on a terminal cell is a daemon round-trip (`open-terminal-target`,
 `packages/daemon/src/ws/desktop.ts`; the client sends the clicked cell from
-`packages/client/src/App.tsx` `onRootClickCapture` → `cellFromPoint`). The client sends
-`pane_id`, `row`, `col`; the daemon makes **two reads at that cell, in this order**:
+`packages/client/src/App.tsx` `onRootClickCapture`, which asks the pane for it: the mouse
+reporter's `cellAt`, measured against the engine's canvas and real cell size, with
+`cellFromPoint` only for a renderer that cannot answer). The client sends `pane_id`, `row`,
+`col`; the daemon makes **two reads at that cell, in this order**:
 
 **1. The OSC 8 hyperlink on the cell** (`hyperlinkAt`, `packages/daemon/src/term/service.ts`).
 A TUI that emits `ESC ] 8 ; ; URI ST title ST` has stated the address outright and the cells
@@ -916,6 +918,62 @@ the soft keyboard. The logic is `packages/client/src/app/link-click.ts`.
 `browser`, the default, hands an `external` answer to the system opener as above; `kelpi` opens
 it with the same `web-open` as the menu's "Open in Kelpi". It only changes ⌘-click: the plain
 click's menu always offers both.
+
+**A hover underlines exactly what a ⌘-click there would open (#303).** A plain hover (no
+modifier) over a shell pane asks the same `probe-terminal-target` as the plain click above and
+underlines the cells the reply's `span` names, with a pointer cursor (a plain click there raises
+the link menu, a ⌘-click opens it):
+one `{ row, col, width }` run per viewport row, given only for `opened: "external"`,
+`opened: "markdown"` and `opened: "csv"` (an existing `.csv`/`.tsv` path, #324). So a URL refused
+as `link-not-http` or `link-clipped`, a missing `.md` or `.csv` path and prose get no underline; a soft-wrapped URL is underlined on every row it covers; an OSC 8
+link is underlined on every row that carries its URI (matched by URI rather than link id,
+because xterm gives each OSC 8 without an `id=` its own id and a TUI that hard-wraps a link emits
+one per row), with the box border between them left out. A probe has no side effects: no pane is
+opened and no focus moves.
+
+- **An older daemon** refuses the verb as unknown, which the client reads as "no link". Plugin
+  operation hooks do not see it, as they do not see `ping`
+  (`packages/daemon/src/plugins/service.ts`), so a hook that refuses `open-terminal-target`
+  refuses the click on a link the hover underlined.
+- **Cheap and never blocking on the daemon**, because a hover asks on every cell the pointer
+  rests on. A probe reads at most `PROBE_MAX_ROWS` (32) rows either side of the cell and answers
+  "none" for a longer line (a minified bundle is one logical line of hundreds of kilobytes); a
+  ⌘-click still reads the whole line, so on such a line neither the underline nor the plain-click
+  menu appears where a ⌘-click would still open. Its `.md` existence check is
+  `createProbeFileExists`: an asynchronous `stat` with a 250 ms deadline (late is "no"), answers
+  kept 2 s, and one `stat` per path at a time, so a path on a hung network mount can never stall
+  the event loop every pane shares (a ⌘-click's `statSync` is unchanged).
+- **The cells.** `cellText` returns `cellsOf(start, end)`, which walks only the rows the token
+  touches and names the viewport cell of every UTF-16 unit, a wide character's two cells
+  included; the right half of a wide character is read as that character, for the click too.
+  The OSC 8 span comes from `hyperlinkRangeAt`.
+- **The client** (`packages/client/src/terminal/link-hover.ts`, wired in `TerminalPane.tsx`).
+  It listens at the pane root in capture, passive, so a mode-1003 pane (Claude Code) still
+  reports every hover to the application. The cell is the reporter's `cellAt`, the same cell a
+  ⌘-click at that pixel names. One probe is out at a time, a cell on the underlined link asks
+  nothing (the hovered cell counts even where the answer trimmed it off, like a full stop after
+  a URL), and a "no link" answer stands for 2 s while its row reads the same. After output the
+  engine has APPLIED (`TerminalRenderer.onContentChange`, which also fires for a reset and a
+  resize, and for bytes held behind a mount flush or a replay), the controller compares
+  `screenRowsKey` for the hovered and underlined rows: each cell's character, whether it carries
+  an OSC 8 link, and the grid size, read in one engine pass. Unchanged, it does nothing, so an
+  agent's spinner costs nothing; changed, it takes the underline down and asks again. Not
+  visible to the key: a different OSC 8 address swapped in under identical text (the engine
+  reuses the cell's link id). Leaving the grid, a scroll, a pan of a mirrored grid and the pane
+  going off screen clear it. Nothing is asked while a button is held or while the viewport is
+  scrolled into history, where the daemon's bottom-anchored rows would name a different line from
+  the one under the pointer (#327).
+- **The engine.** ghostty-web's own link detection is off (`linkDetection: false`); it
+  underlined a plain hover in blue on its own rules (any scheme, one row, no paths). The
+  underline is `setLinkUnderline` (`0.4.0-kelpi.18`), drawn in each cell's foreground colour as
+  SGR 4 is, with a pointer cursor while it shows.
+- **Where it does not run.** A remote workspace's panes (their ⌘-click is sent to this window's
+  daemon, where the pane does not exist, so an underline would promise a click that cannot
+  work; #328), an external-editor terminal (not a shell pane), the build-time xterm fallback
+  engine (no underline layer, so no probes either), and a phone (no hover).
+- **Known gap shared with the click:** the daemon's emulator counts emoji such as `✅` as one
+  cell where the engine draws two, so after one on the same row the underline (and the click)
+  lands a cell left per emoji (#329).
 
 ### 7.7 In-terminal search actions (`START_SEARCH`, `END_SEARCH`, `SEARCH_TOTAL`, `SEARCH_SELECTED`)
 
@@ -1773,7 +1831,8 @@ Events (all paneID-keyed) are callbacks on the terminal state service and the PT
 `PtyManager.onExit(paneID, exitCode)`. Clients learn of an exit as `pane-exit {exitCode}`
 (`packages/protocol/src/ws/messages.ts:621-626`); the store action `pane-process-terminated`
 carries only the `paneID`. Focus arrives from clients as `focus-report` (section 6); cmd-click
-is the `open-terminal-target` round-trip (section 7.6); search state rides the workspace
+is the `open-terminal-target` round-trip and the hover underline its `probe-terminal-target`
+twin (section 7.6); search state rides the workspace
 deltas (section 7.7); render is the PTY stream itself (section 7.8).
 
 `focus`, `resyncVisibleSurfaces`, `setAllSurfacesOpaque` and `cellSize` are client concerns

@@ -87,6 +87,26 @@
  * a click on prose or empty screen carries no reason and stays silent, which is the difference
  * between a useful message and a toast on every stray ⌘-click.
  *
+ * ## `probe-terminal-target` (#326, #303)
+ *
+ * `open-terminal-target`'s question without the click: the same two reads and the same answer,
+ * no side effects (a `markdown` answer says `probe: true` and opens nothing), plus a `span` (one
+ * `{ row, col, width }` run of cells per viewport row) on an `external`, `markdown` or `csv` answer. The
+ * plain-click link menu (#326) offers a menu only for an `external` answer; the hover underline
+ * (#303) underlines exactly the `span`. Neither can offer what a ⌘-click would refuse.
+ *
+ * A probe reads at most `PROBE_MAX_ROWS` rows either side of the cell (a longer line answers
+ * none), and its `.md` existence check is asynchronous and bounded (`createProbeFileExists`):
+ * the hover runs it on every cell the pointer crosses.
+ *
+ * A verb of its own rather than a flag on the click's, because a daemon that predates it would
+ * ignore the flag and run the click: a hover over a `.md` path on an older remote peer would open
+ * panes. An older daemon answers an unknown verb with an error, which the client reads as "no
+ * link". Plugin operation hooks do not see it (`plugins/service.ts`), as they do not see `ping`:
+ * it runs on every cell the pointer crosses, and it does nothing a hook could police. The one
+ * place the underline and the click can then differ: a plugin hook that refuses
+ * `open-terminal-target` refuses the click on a link the hover underlined.
+ *
  * ## `markdown-external-editor` (CONT-081…091)
  *
  * `open` resolves `$VISUAL`/`$EDITOR` (`content/external-editor.ts`), records the launch command
@@ -121,6 +141,7 @@ import {
     type PaneHandlerContext
 } from '../handlers/pane/index.js';
 import { visiblePane, workspaceByID, workspaceContainingVisiblePane } from '../store/derived.js';
+import type { TerminalCellSpan } from '../term/service.js';
 import { newUUID } from '@kelpi/core/codec';
 
 export const DESKTOP_COMMANDS = [
@@ -209,6 +230,12 @@ export interface DesktopChannelOptions {
     readonly restartControl?: (() => Promise<{ socketPath: string; tcpPort?: number | undefined }>) | undefined;
     /** Existence probe; injected by tests so no real file is needed. */
     readonly fileExists?: ((target: string) => boolean) | undefined;
+    /**
+     * The same question for `probe-terminal-target` (#303), which must never block: a hover runs
+     * it on every path the pointer crosses. Defaults to `createProbeFileExists()`; when a test
+     * injects only `fileExists`, that is used for both.
+     */
+    readonly probeFileExists?: ((target: string) => Promise<boolean>) | undefined;
     readonly onError?: ((error: Error, context: string) => void) | undefined;
 }
 
@@ -274,30 +301,69 @@ const WRAPPERS: ReadonlyArray<readonly [string, string]> = [
  * scan rather than a URL regex and therefore keeps punctuation the regex would have excluded.
  */
 export function tokenAt(line: string, offset: number): string | null {
+    const range = tokenRangeAt(line, offset);
+    return range === null ? null : line.slice(range.start, range.end);
+}
+
+/**
+ * Where `tokenAt`'s token sits in `line`: `[start, end)` after the same trimming (#303), so the
+ * cells under it can be underlined on hover.
+ */
+export function tokenRangeAt(line: string, offset: number): { start: number; end: number } | null {
     if (offset < 0 || offset >= line.length) return null;
     if (TOKEN_BREAK.has(line[offset] as string)) return null;
     let start = offset;
     while (start > 0 && !TOKEN_BREAK.has(line[start - 1] as string)) start -= 1;
-    let end = offset;
-    while (end + 1 < line.length && !TOKEN_BREAK.has(line[end + 1] as string)) end += 1;
-    let token = line.slice(start, end + 1);
+    let end = offset + 1;
+    while (end < line.length && !TOKEN_BREAK.has(line[end] as string)) end += 1;
+    const token = (): string => line.slice(start, end);
 
     for (const [open, close] of WRAPPERS) {
-        while (token.startsWith(open) && token.endsWith(close) && token.length > 1) {
-            token = token.slice(1, -1);
+        while (token().startsWith(open) && token().endsWith(close) && end - start > 1) {
+            start += 1;
+            end -= 1;
         }
     }
     // Trailing dots first (the Swift rule), then prose punctuation, then dots again so
     // `see notes.md.,` lands on `notes.md`.
     for (let pass = 0; pass < 2; pass++) {
-        while (token.endsWith('.')) token = token.slice(0, -1);
-        while (token.endsWith(',') || token.endsWith(';') || token.endsWith(':')) {
-            token = token.slice(0, -1);
+        while (token().endsWith('.')) end -= 1;
+        while (token().endsWith(',') || token().endsWith(';') || token().endsWith(':')) end -= 1;
+    }
+    while (token().endsWith(')') && !token().includes('(')) end -= 1;
+    while (token().endsWith(']') && !token().includes('[')) end -= 1;
+    return end <= start ? null : { start, end };
+}
+
+/**
+ * How many rows above and below the hovered one a probe reads of a soft-wrapped line (#303).
+ * 32 each way covers any URL or path a person would hover, at any pane width, and bounds a hover
+ * over a minified bundle to a few thousand cells.
+ */
+export const PROBE_MAX_ROWS = 32;
+
+/**
+ * A token's cells as one run per viewport row (#303).
+ *
+ * `cells` names the cell of every UTF-16 unit of the token (`cellText`'s `cellsOf`), so they are
+ * grouped by row and each group becomes the run from its first cell to the end of its last
+ * character (a wide last character covers two). Rows above the viewport (a logical line that
+ * began in history) are dropped: a client paints only the screen. Undefined without cells.
+ */
+export function cellRuns(cells: readonly TerminalCellSpan[] | undefined): TerminalCellSpan[] | undefined {
+    if (cells === undefined) return undefined;
+    const runs: TerminalCellSpan[] = [];
+    for (const cell of cells) {
+        if (cell.row < 0) continue;
+        const last = runs[runs.length - 1];
+        const reach = cell.col + cell.width;
+        if (last !== undefined && last.row === cell.row) {
+            runs[runs.length - 1] = { row: last.row, col: last.col, width: Math.max(last.width, reach - last.col) };
+        } else {
+            runs.push({ row: cell.row, col: cell.col, width: cell.width });
         }
     }
-    while (token.endsWith(')') && !token.includes('(')) token = token.slice(0, -1);
-    while (token.endsWith(']') && !token.includes('[')) token = token.slice(0, -1);
-    return token === '' ? null : token;
+    return runs;
 }
 
 /**
@@ -351,6 +417,7 @@ export function looksLikeLink(token: string): boolean {
     return SCHEME_ANCHOR.test(token);
 }
 
+
 /** A token that is a real URL rather than a path — the client hands these to the OS opener. */
 export function urlFromToken(token: string): string | null {
     if (!SCHEME_ANCHOR.test(token)) return null;
@@ -360,6 +427,58 @@ export function urlFromToken(token: string): string | null {
     } catch {
         return null;
     }
+}
+
+/**
+ * Does a `.md` path exist, for a hover (#303)? Asynchronous, bounded and remembered, because a
+ * hover asks it of every path the pointer crosses and a ⌘-click's `statSync` would run it on the
+ * daemon's one event loop: a path on a hung network mount (an SMB share after the VPN dropped,
+ * a stale NFS export) blocks `stat` for as long as the mount takes to time out, and every pane's
+ * output would stop with it.
+ *
+ * - `stat` runs on libuv's thread pool, so the event loop never waits for it;
+ * - an answer later than `timeoutMs` is "no" (no underline, the safe direction), and the click
+ *   still asks for itself;
+ * - answers are kept `ttlMs`, and a question already being asked is shared, so a hung path
+ *   holds at most one pool thread however often it is hovered.
+ */
+export function createProbeFileExists(
+    options: {
+        readonly stat?: ((target: string) => Promise<{ isFile(): boolean }>) | undefined;
+        readonly timeoutMs?: number | undefined;
+        readonly ttlMs?: number | undefined;
+        readonly now?: (() => number) | undefined;
+    } = {}
+): (target: string) => Promise<boolean> {
+    const stat = options.stat ?? ((target: string) => fs.promises.stat(target));
+    const timeoutMs = options.timeoutMs ?? 250;
+    const ttlMs = options.ttlMs ?? 2_000;
+    const now = options.now ?? Date.now;
+    const known = new Map<string, { readonly exists: boolean; readonly at: number }>();
+    const asking = new Map<string, Promise<boolean>>();
+    return (target) => {
+        const answer = known.get(target);
+        if (answer !== undefined && now() - answer.at < ttlMs) return Promise.resolve(answer.exists);
+        // One `stat` per path at a time, shared; every caller still gets its own deadline.
+        let statted = asking.get(target);
+        if (statted === undefined) {
+            statted = stat(target).then(
+                (info) => info.isFile(),
+                () => false
+            );
+            void statted.then((exists) => {
+                known.set(target, { exists, at: now() });
+                asking.delete(target);
+            });
+            asking.set(target, statted);
+        }
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const late = new Promise<boolean>((resolve) => {
+            timer = setTimeout(() => resolve(false), timeoutMs);
+            timer.unref?.();
+        });
+        return Promise.race([statted, late]).finally(() => clearTimeout(timer));
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -379,6 +498,10 @@ export function createDesktopChannel(options: DesktopChannelOptions): DesktopCha
                 return false;
             }
         });
+    const fileExists = options.fileExists;
+    const probeExists =
+        options.probeFileExists ??
+        (fileExists !== undefined ? async (target: string) => fileExists(target) : createProbeFileExists());
 
     /** client → shell. The daemon has no window, so it fans out and whichever shell acts. */
     const shellAction = (payload: Record<string, unknown>): JsonObject => {
@@ -459,24 +582,19 @@ export function createDesktopChannel(options: DesktopChannelOptions): DesktopCha
         }
     };
 
-    /** CONT-122 / TERM-052: what a ⌘-click on a terminal cell resolves to. */
-    const openTerminalTarget = async (
-        payload: Record<string, unknown>,
-        options: { readonly probe?: boolean } = {}
-    ): Promise<JsonObject> => {
+    /**
+     * CONT-122 / TERM-052: what a ⌘-click on a terminal cell resolves to. With `probe` (#303,
+     * `probe-terminal-target`), what it WOULD resolve to, with the cells to underline.
+     */
+    const openTerminalTarget = async (payload: Record<string, unknown>, probe: boolean): Promise<JsonObject> => {
+        const verb = probe ? 'probe-terminal-target' : 'open-terminal-target';
         const paneID = text(payload['pane_id']);
-        if (paneID === undefined) return failure('open-terminal-target requires pane_id');
+        if (paneID === undefined) return failure(`${verb} requires pane_id`);
         const row = integer(payload['row']);
         const col = integer(payload['col']);
         if (row === undefined || col === undefined) {
-            return failure('open-terminal-target requires numeric row and col');
+            return failure(`${verb} requires numeric row and col`);
         }
-        // #326: `probe-terminal-target` asks what a ⌘-click here WOULD do, with no side effects.
-        // A plain click uses it to decide whether to offer the "where to open this link" menu, so
-        // the menu offers exactly the links a ⌘-click opens and nothing it refuses. It is its own
-        // verb, not a flag, so a daemon older than it refuses it as unknown instead of ignoring a
-        // flag and opening a markdown pane on a plain click.
-        const probe = options.probe === true;
         const state = ctx.store.getState();
         const workspace = workspaceContainingVisiblePane(state, paneID);
         if (workspace === null) return failure(`pane not found: ${paneID}`);
@@ -485,11 +603,37 @@ export function createDesktopChannel(options: DesktopChannelOptions): DesktopCha
             return failure(`pane '${paneID}' is not a terminal pane`);
         }
 
+        /*
+         * #326 / #303: `probe-terminal-target` asks what a ⌘-click here WOULD do, with no side
+         * effects. A plain click asks it to decide whether to offer the "where to open this link"
+         * menu, and a hover to decide what to underline, so both offer exactly the links a ⌘-click
+         * opens and nothing it refuses. The resolution below is the click's own, line for line;
+         * a probe stops short of the side effects (no pane opened, no focus moved) and adds
+         * `span`, the cells to underline, to the answers a click acts on: `external`, `markdown`
+         * and `csv`. It is its own verb, not a flag, so a daemon older than it refuses it as
+         * unknown instead of ignoring a flag and opening a markdown pane.
+         */
+        const withSpan = (span: readonly TerminalCellSpan[] | undefined): JsonObject =>
+            probe && span !== undefined && span.length > 0
+                ? { span: span.map((run) => ({ row: run.row, col: run.col, width: run.width })) }
+                : {};
+
+        type CellLine = {
+            text: string;
+            offset: number;
+            cellsOf?: (start: number, end: number) => readonly TerminalCellSpan[] | undefined;
+        };
+        type CellOptions = { readonly maxRows?: number };
         const reads = ctx.term as Partial<{
-            cellTextAsync(id: string, r: number, c: number): Promise<{ text: string; offset: number } | null>;
-            cellText(id: string, r: number, c: number): { text: string; offset: number } | null;
+            cellTextAsync(id: string, r: number, c: number, options?: CellOptions): Promise<CellLine | null>;
+            cellText(id: string, r: number, c: number, options?: CellOptions): CellLine | null;
             hyperlinkAtAsync(id: string, r: number, c: number): Promise<string | null>;
             hyperlinkAt(id: string, r: number, c: number): string | null;
+            hyperlinkRangeAtAsync(
+                id: string,
+                r: number,
+                c: number
+            ): Promise<{ uri: string; segments: readonly TerminalCellSpan[] } | null>;
         }>;
 
         /*
@@ -503,28 +647,43 @@ export function createDesktopChannel(options: DesktopChannelOptions): DesktopCha
          * either row of a wrapped link, with no guessing. The scan stays exactly as it was for
          * everything that is not hyperlinked, which is every shell that ever printed a path.
          */
-        const hyperlink =
-            reads.hyperlinkAtAsync !== undefined
-                ? await reads.hyperlinkAtAsync(paneID, row, col)
-                : (reads.hyperlinkAt?.(paneID, row, col) ?? null);
+        let hyperlink: string | null;
+        let hyperlinkSpan: readonly TerminalCellSpan[] | undefined;
+        if (probe && reads.hyperlinkRangeAtAsync !== undefined) {
+            const range = await reads.hyperlinkRangeAtAsync(paneID, row, col);
+            hyperlink = range?.uri ?? null;
+            hyperlinkSpan = range?.segments;
+        } else {
+            hyperlink =
+                reads.hyperlinkAtAsync !== undefined
+                    ? await reads.hyperlinkAtAsync(paneID, row, col)
+                    : (reads.hyperlinkAt?.(paneID, row, col) ?? null);
+        }
         if (hyperlink !== null) {
             const hyperlinkURL = urlFromToken(hyperlink);
             if (hyperlinkURL !== null) {
-                return { ok: true, opened: 'external', url: hyperlinkURL, source: 'hyperlink' };
+                return { ok: true, opened: 'external', url: hyperlinkURL, source: 'hyperlink', ...withSpan(hyperlinkSpan) };
             }
             // A hyperlink we will not hand to the OS (`file:`, `slack:`, a malformed URI) is
             // still a link the user clicked: say so instead of swallowing it.
             return { ok: true, opened: 'none', reason: 'link-not-http', link: hyperlink, source: 'hyperlink' };
         }
 
+        // A probe reads a bounded window of the line (`PROBE_MAX_ROWS`): a hover runs this on
+        // every cell the pointer crosses, and a minified bundle or a source map is one logical
+        // line of hundreds of kilobytes. A token that long is never underlined; a click still
+        // reads the whole line.
+        const cellOptions: CellOptions = probe ? { maxRows: PROBE_MAX_ROWS } : {};
         const cell =
             reads.cellTextAsync !== undefined
-                ? await reads.cellTextAsync(paneID, row, col)
-                : (reads.cellText?.(paneID, row, col) ?? null);
+                ? await reads.cellTextAsync(paneID, row, col, cellOptions)
+                : (reads.cellText?.(paneID, row, col, cellOptions) ?? null);
         if (cell === null) return { ok: true, opened: 'none' };
 
-        const token = tokenAt(cell.text, cell.offset);
-        if (token === null) return { ok: true, opened: 'none' };
+        const range = tokenRangeAt(cell.text, cell.offset);
+        if (range === null) return { ok: true, opened: 'none' };
+        const token = cell.text.slice(range.start, range.end);
+        const tokenSpan = probe ? cellRuns(cell.cellsOf?.(range.start, range.end)) : undefined;
 
         // A real URL is ghostty's default-opener case: report it and let the client hand it to
         // the OS, which is what returning `false` from the Swift action callback did.
@@ -535,7 +694,7 @@ export function createDesktopChannel(options: DesktopChannelOptions): DesktopCha
             if (clippedByBorder(cell.text, cell.offset)) {
                 return { ok: true, opened: 'none', reason: 'link-clipped', token, source: 'token' };
             }
-            return { ok: true, opened: 'external', url, token, source: 'token' };
+            return { ok: true, opened: 'external', url, token, source: 'token', ...withSpan(tokenSpan) };
         }
         // Aimed at a link, refused: a non-http(s) scheme. Reported, not swallowed (see
         // `looksLikeLink`); the client turns this one into a toast and nothing else into one.
@@ -553,9 +712,13 @@ export function createDesktopChannel(options: DesktopChannelOptions): DesktopCha
         }
         // Deliberate improvement over the Swift path, which opened a pane for any `.md`-suffixed
         // word: a ⌘-click on prose must not leave a broken preview behind. The client says so.
-        if (!exists(resolved)) return { ok: true, opened: 'missing', token, path: resolved };
+        // #303: a probe asks without blocking on the filesystem (`createProbeFileExists`).
+        const found = probe ? await probeExists(resolved) : exists(resolved);
+        if (!found) return { ok: true, opened: 'missing', token, path: resolved };
         // A probe stops before the only branch that changes anything.
-        if (probe) return { ok: true, opened: csv ? 'csv' : 'markdown', probe: true, path: resolved, token };
+        if (probe) {
+            return { ok: true, opened: csv ? 'csv' : 'markdown', probe: true, path: resolved, token, ...withSpan(tokenSpan) };
+        }
 
         const newPaneID = mint();
         ctx.store.dispatch({ type: 'focus-pane', workspaceID: workspace.id, paneID });
@@ -780,8 +943,8 @@ export function createDesktopChannel(options: DesktopChannelOptions): DesktopCha
         async run(command, payload) {
             if (command === 'shell-action') return shellAction(payload);
             if (command === 'restart-control-server') return restartControlServer();
-            if (command === 'open-terminal-target') return openTerminalTarget(payload);
-            if (command === 'probe-terminal-target') return openTerminalTarget(payload, { probe: true });
+            if (command === 'open-terminal-target') return openTerminalTarget(payload, false);
+            if (command === 'probe-terminal-target') return openTerminalTarget(payload, true);
             if (command === 'paste-image') return pasteImage(payload);
             if (command === 'drop-text') return dropText(payload);
             return markdownExternalEditor(payload);

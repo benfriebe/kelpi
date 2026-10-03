@@ -60,6 +60,7 @@ import {
     watchSoftKeyboardMotion
 } from './keyboard-inset';
 import { createKittyKeyboard, sanitizeKittyFlags, type KittyKeyboard } from './kitty-keyboard';
+import { createLinkHover, type LinkHover } from './link-hover';
 import { notifyTerminalPanes, registerTerminalPane, type TerminalMirrorClip } from './pane-registry';
 import {
     IDLE_PANE_MODES,
@@ -72,6 +73,7 @@ import {
     createTerminalRenderer,
     engineKeyTarget,
     resolveTerminalTheme,
+    type TerminalCellRun,
     type TerminalKeyInit,
     type TerminalMatchLocation,
     type TerminalRenderer,
@@ -404,6 +406,19 @@ export interface TerminalPaneProps {
     readonly formFactorWindow?: FormFactorWindow | undefined;
     /** C2 - how long the visual viewport must hold still; defaults to `PHONE_KEYBOARD_SETTLE_MS`. */
     readonly keyboardSettleMs?: number | undefined;
+    /**
+     * #303: what a ⌘-click at this cell would open, as the cells to underline on hover, or null.
+     *
+     * Assembly asks the daemon a ⌘-click goes to (`App.tsx`, `probe-terminal-target`), which
+     * decides exactly as it does for the click, so the underline never promises a link the click
+     * would refuse. Omitted, no hover underline: that is every site whose ⌘-click does not reach
+     * this pane's daemon (a remote workspace's panes) and every terminal that is not a shell pane
+     * (an external editor), which the daemon would refuse anyway. Read through `latest`, so a new
+     * function per render costs nothing.
+     */
+    readonly probeLink?:
+        | ((paneID: string, row: number, col: number) => Promise<readonly TerminalCellRun[] | null>)
+        | undefined;
     readonly className?: string | undefined;
 }
 
@@ -716,6 +731,8 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
      */
     const [cellHint, setCellHint] = useState('');
     const mouseRef = useRef<MouseReporter | null>(null);
+    /** #303: the hover underline over a link (`link-hover.ts`), while the pointer is over the grid. */
+    const linkHoverRef = useRef<LinkHover | null>(null);
     if (mouseRef.current === null) {
         mouseRef.current = createMouseReporter({
             modes: () => modesRef.current,
@@ -1638,6 +1655,84 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
             reporter.reset();
         };
     }, [panMirror]);
+
+    // ── #303: the hover underline over a link ────────────────────────────────────────
+    //
+    // A plain hover over a cell asks the daemon what a ⌘-click there would open (`probeLink`)
+    // and underlines exactly the cells it names, with a pointer cursor; the engine's own link
+    // detection is off (`renderer.ts`, `linkDetection: false`), because it underlined on its own
+    // rules. `link-hover.ts` decides when to ask; this effect only feeds it.
+    //
+    // At the ROOT in capture, passive, and never consuming: it observes the same motion the
+    // mouse reporter above reports to a TUI (a 1003 pane like Claude Code), without taking any of
+    // it away. The cell is the reporter's `cellAt`, so the underline is on the cell a ⌘-click at
+    // the same pixel would ask about (`App.tsx` `onRootClickCapture`).
+    //
+    // Nothing is asked while a button is held (a selection or a TUI drag), and nothing while the
+    // viewport is scrolled into history: the daemon reads rows from the live bottom, so the
+    // answer would be about a different line from the one under the pointer. Nor on an engine
+    // that cannot draw the underline (the xterm fallback), which would only cost round trips.
+    const hasLinkProbe = props.probeLink !== undefined;
+    useEffect(() => {
+        const root = rootRef.current;
+        const host = hostRef.current;
+        const renderer = rendererRef.current;
+        if (!hasLinkProbe || root === null || host === null || renderer === null || status !== 'live') return;
+        if (!renderer.setLinkUnderline(null)) return;
+        const hover = createLinkHover({
+            probe: (row, col) => latest.current.probeLink?.(paneID, row, col) ?? Promise.resolve(null),
+            snapshot: (rows) => rendererRef.current?.screenRowsKey(rows) ?? null,
+            paint: (cells) => {
+                const drawn = rendererRef.current?.setLinkUnderline(cells) === true;
+                host.style.cursor = drawn && cells !== null ? 'pointer' : '';
+                if (cells === null) root.removeAttribute('data-terminal-link-underline');
+                else root.setAttribute('data-terminal-link-underline', cells.map((run) => `${String(run.row)}:${String(run.col)}+${String(run.width)}`).join(' '));
+            }
+        });
+        linkHoverRef.current = hover;
+
+        const onMove = (event: PointerEvent): void => {
+            // A hover is a mouse's: a finger or a pen has none, only the moves a tap synthesises.
+            if (event.pointerType === 'touch' || event.pointerType === 'pen') return;
+            const current = rendererRef.current;
+            if (current === null || event.buttons !== 0 || current.scrollOffset() > 0 || !latest.current.visible) {
+                hover.hover(null);
+                return;
+            }
+            const cell = mouseRef.current?.cellAt({ clientX: event.clientX, clientY: event.clientY }) ?? null;
+            hover.hover(cell === null ? null : { row: cell.y, col: cell.x });
+        };
+        const onLeave = (): void => hover.clear();
+        root.addEventListener('pointermove', onMove, { capture: true, passive: true });
+        root.addEventListener('pointerleave', onLeave);
+        // The engine's own scroll, and a pan of a mirrored grid (which scrolls the HOST and
+        // slides the canvas under a pointer that did not move): either way the cells moved.
+        const offScroll = renderer.onScrollChange(() => hover.clear());
+        host.addEventListener('scroll', onLeave, { passive: true });
+        // Output, a replay and a resize, as the ENGINE applied them rather than as the bytes
+        // arrived (a mount flush and a replay hold bytes back). The controller compares the rows
+        // it watches, the grid size among them, and takes the underline down if they moved.
+        const offContent = renderer.onContentChange(() => hover.contentChanged());
+        return () => {
+            root.removeEventListener('pointermove', onMove, { capture: true });
+            root.removeEventListener('pointerleave', onLeave);
+            host.removeEventListener('scroll', onLeave);
+            offScroll();
+            offContent();
+            hover.dispose();
+            if (linkHoverRef.current === hover) linkHoverRef.current = null;
+            host.style.cursor = '';
+            root.removeAttribute('data-terminal-link-underline');
+        };
+        // `status`: a restart builds a FRESH engine, and the underline and the scroll subscription
+        // belong to the engine (as the touch effect's do).
+    }, [hasLinkProbe, paneID, status]);
+
+    // A pane that goes off screen (a workspace switch, a zoom) gets no pointer-leave: drop its
+    // hover then, so it neither keeps an underline nor asks about output nobody is looking at.
+    useEffect(() => {
+        if (!visible) linkHoverRef.current?.clear();
+    }, [visible]);
 
     // ── C3: a finger on the terminal (docs/MOBILE-PLAN.md §4) ───────────────────────
     //

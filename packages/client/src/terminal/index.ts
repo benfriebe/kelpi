@@ -171,6 +171,7 @@ export {
 } from './pane-registry';
 
 export { PENDING_LIVE_LIMIT_BYTES, createTerminalIngest, type IngestTarget, type TerminalIngest } from './ingest';
+export { createLinkHover, linkSpanFromReply, type LinkHover, type LinkHoverCell } from './link-hover';
 
 // §APP-014: the daemon's resolved `theme = <name>` palette, merged over the light/dark preset
 // and published as `--kelpi-term-*` for every surface that reads a terminal colour out of CSS.
@@ -252,6 +253,8 @@ export {
     type TerminalSearchHighlight,
     type TerminalSearchRole,
     type TerminalSearchSpan,
+    type TerminalCellRun,
+    type ScreenSnapshot,
     type TerminalTheme,
     type XtermLikeTerminal
 } from './renderer';

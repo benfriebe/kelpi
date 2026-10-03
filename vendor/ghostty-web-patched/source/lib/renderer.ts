@@ -10,7 +10,7 @@
  * - Dirty line optimization for 60 FPS
  */
 
-import type { ITheme } from './interfaces';
+import type { ILinkUnderlineSegment, ITheme } from './interfaces';
 import {
   SEARCH_KIND_CURRENT,
   SEARCH_KIND_NONE,
@@ -251,6 +251,11 @@ export class CanvasRenderer {
   // Link rendering state
   private hoveredHyperlinkId: number = 0;
   private previousHoveredHyperlinkId: number = 0;
+
+  // vendor 0.4.0-kelpi.18: the embedder's link underline (`setLinkUnderline`), and the rows it
+  // has left or covered since the last frame, which that frame repaints
+  private linkUnderline: readonly ILinkUnderlineSegment[] | null = null;
+  private linkUnderlineRows = new Set<number>();
 
   // Regex link hover tracking (for links without hyperlink_id)
   private hoveredLinkRange: { startX: number; startY: number; endX: number; endY: number } | null =
@@ -700,6 +705,13 @@ export class CanvasRenderer {
       this.previousHoveredLinkRange = this.hoveredLinkRange;
     }
 
+    // vendor 0.4.0-kelpi.18: rows the embedder's link underline left or now covers repaint like
+    // hovered-link rows. No optional chaining here (see the search-highlight note above).
+    if (this.linkUnderlineRows.size > 0) {
+      this.linkUnderlineRows.forEach((row) => hyperlinkRows.add(row));
+      this.linkUnderlineRows.clear();
+    }
+
     // Track if anything was actually rendered
     let anyLinesRendered = false;
 
@@ -1077,6 +1089,23 @@ export class CanvasRenderer {
         this.ctx.lineTo(cellX + cellWidth, underlineY);
         this.ctx.stroke();
       }
+    }
+
+    // vendor 0.4.0-kelpi.18: the embedder's link underline, in the glyph's own colour, which is
+    // how Ghostty draws a link (and how SGR 4 is drawn just above). A cell that is already
+    // underlined keeps its one line.
+    if (
+      this.linkUnderline !== null &&
+      (cell.flags & CellFlags.UNDERLINE) === 0 &&
+      this.isLinkUnderlined(x, y)
+    ) {
+      const underlineY = cellY + this.metrics.baseline + 2;
+      this.ctx.strokeStyle = this.ctx.fillStyle;
+      this.ctx.lineWidth = 1;
+      this.ctx.beginPath();
+      this.ctx.moveTo(cellX, underlineY);
+      this.ctx.lineTo(cellX + cellWidth, underlineY);
+      this.ctx.stroke();
     }
 
     // Draw regex link underline (for plain text URLs)
@@ -1527,6 +1556,27 @@ export class CanvasRenderer {
    */
   public setHoveredHyperlinkId(hyperlinkId: number): void {
     this.hoveredHyperlinkId = hyperlinkId;
+  }
+
+  /**
+   * vendor 0.4.0-kelpi.18: underline these viewport cells as a link (`Terminal.setLinkUnderline`),
+   * or none. The rows of the old and the new underline are repainted on the next frame.
+   */
+  public setLinkUnderline(segments: readonly ILinkUnderlineSegment[] | null): void {
+    const rows = this.linkUnderlineRows;
+    if (this.linkUnderline !== null) this.linkUnderline.forEach((segment) => rows.add(segment.row));
+    if (segments !== null) segments.forEach((segment) => rows.add(segment.row));
+    this.linkUnderline = segments;
+  }
+
+  /** vendor 0.4.0-kelpi.18: is this viewport cell under the embedder's link underline? */
+  private isLinkUnderlined(x: number, y: number): boolean {
+    const segments = this.linkUnderline;
+    if (segments === null) return false;
+    for (const segment of segments) {
+      if (segment.row === y && x >= segment.col && x < segment.col + segment.width) return true;
+    }
+    return false;
   }
 
   /**

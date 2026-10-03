@@ -12,6 +12,7 @@ import {
     MAX_SHELL_ANSWER_REQUEST_ID_LENGTH,
     MAX_PASTE_IMAGE_BYTES,
     SHELL_ACTION_EVENT,
+    cellRuns,
     clippedByBorder,
     createDesktopChannel,
     isDesktopCommand,
@@ -19,8 +20,11 @@ import {
     resolveTerminalPath,
     shellEscapePath,
     tokenAt,
-    urlFromToken
+    tokenRangeAt,
+    urlFromToken,
+    createProbeFileExists
 } from './desktop.js';
+import type { TerminalCellSpan as TerminalCellRun } from '../term/service.js';
 
 const P0 = testID('D', 100);
 const NEW = testID('E', 900);
@@ -58,9 +62,15 @@ interface Fixture {
 function fixture(
     options: {
         editor?: string | null;
-        cell?: { text: string; offset: number } | null;
+        cell?: {
+            text: string;
+            offset: number;
+            cellsOf?: (start: number, end: number) => readonly TerminalCellRun[] | undefined;
+        } | null;
         /** The OSC 8 URI the clicked cell carries (#83); absent means the pane has none. */
         hyperlink?: string | null;
+        /** The same link with its cells (#303), which only a probe asks for. */
+        hyperlinkRange?: { uri: string; segments: readonly TerminalCellRun[] } | null;
         exists?: boolean;
         restart?: boolean;
     } = {}
@@ -73,12 +83,20 @@ function fixture(
     const term = h.term as unknown as {
         cellTextAsync?: (id: string, r: number, c: number) => Promise<{ text: string; offset: number } | null>;
         hyperlinkAtAsync?: (id: string, r: number, c: number) => Promise<string | null>;
+        hyperlinkRangeAtAsync?: (
+            id: string,
+            r: number,
+            c: number
+        ) => Promise<{ uri: string; segments: readonly TerminalCellRun[] } | null>;
     };
     if (options.cell !== undefined) {
         term.cellTextAsync = async () => options.cell ?? null;
     }
     if (options.hyperlink !== undefined) {
         term.hyperlinkAtAsync = async () => options.hyperlink ?? null;
+    }
+    if (options.hyperlinkRange !== undefined) {
+        term.hyperlinkRangeAtAsync = async () => options.hyperlinkRange ?? null;
     }
     const editorCalls: string[] = [];
     const channel = createDesktopChannel({
@@ -98,7 +116,7 @@ function fixture(
 }
 
 describe('isDesktopCommand', () => {
-    it('names exactly the six verbs', () => {
+    it('names exactly the seven verbs', () => {
         expect(isDesktopCommand('shell-action')).toBe(true);
         expect(isDesktopCommand('restart-control-server')).toBe(true);
         expect(isDesktopCommand('open-terminal-target')).toBe(true);
@@ -157,6 +175,51 @@ describe('tokenAt (CONT-122 trimming)', () => {
         expect(tokenAt('─notes.md─', 2)).toBe('notes.md');
         // And the border cell itself is not a token.
         expect(tokenAt('│https://example.com/x│', 0)).toBeNull();
+    });
+});
+
+describe('tokenRangeAt (#303)', () => {
+    it('is exactly where tokenAt\'s token sits, after the same trimming', () => {
+        const lines: Array<[string, number]> = [
+            ['cat docs/notes.md', 6],
+            ['see (notes.md), then', 7],
+            ['open "a b.md" now', 7],
+            ['  │https://example.com/x│', 8],
+            ['see notes.md.,', 6],
+            ['plain', 2]
+        ];
+        for (const [line, offset] of lines) {
+            const range = tokenRangeAt(line, offset);
+            expect(range === null ? null : line.slice(range.start, range.end)).toBe(tokenAt(line, offset));
+        }
+        expect(tokenRangeAt('cat (docs/a.md) now', 7)).toEqual({ start: 5, end: 14 });
+        expect(tokenRangeAt('a  b', 1)).toBeNull();
+    });
+});
+
+describe('cellRuns (#303)', () => {
+    const cells = (row: number, from: number, count: number): TerminalCellRun[] =>
+        Array.from({ length: count }, (_, index) => ({ row, col: from + index, width: 1 }));
+
+    it('folds a token\'s cells into one run per row', () => {
+        expect(cellRuns([...cells(0, 4, 6), ...cells(1, 0, 3)])).toEqual([
+            { row: 0, col: 4, width: 6 },
+            { row: 1, col: 0, width: 3 }
+        ]);
+    });
+
+    it('covers both cells of a wide character, and drops rows above the screen', () => {
+        const line: TerminalCellRun[] = [
+            { row: -1, col: 8, width: 1 },
+            { row: -1, col: 9, width: 1 },
+            { row: 0, col: 0, width: 2 },
+            { row: 0, col: 2, width: 1 }
+        ];
+        expect(cellRuns(line)).toEqual([{ row: 0, col: 0, width: 3 }]);
+    });
+
+    it('answers undefined without cells, rather than guessing', () => {
+        expect(cellRuns(undefined)).toBeUndefined();
     });
 });
 
@@ -531,6 +594,160 @@ describe('open-terminal-target (CONT-122 / TERM-052)', () => {
         expect(
             await f.channel.run('open-terminal-target', { pane_id: NEW, row: 0, col: 0 })
         ).toMatchObject({ ok: false });
+    });
+});
+
+describe('probe-terminal-target (#303)', () => {
+    const line = (text: string, offset: number) => ({
+        text,
+        offset,
+        cellsOf: (start: number, end: number) =>
+            Array.from({ length: end - start }, (_, index) => ({ row: 2, col: start + index, width: 1 }))
+    });
+
+    /**
+     * The hover underline's promise: whatever a probe says, the click says too. Every fixture is
+     * run twice, once as a click and once as a probe, each on a fresh channel.
+     */
+    it('answers what a click would, for every kind of cell', async () => {
+        const cases: Array<Parameters<typeof fixture>[0]> = [
+            { cell: line('cat docs/notes.md', 8) },
+            { cell: line('see notes.md', 6), exists: false },
+            { cell: line('wrote data/sales.csv', 10) },
+            { cell: line('see sales.csv', 6), exists: false },
+            { cell: line('open https://example.com/x', 8) },
+            { cell: line('cargo build --release', 2) },
+            { cell: null },
+            { hyperlink: 'https://example.com/full', cell: line('see the docs now', 8) },
+            { hyperlink: 'file:///etc/passwd', cell: null },
+            { cell: line('see slack://channel now', 6) },
+            { cell: line('  │https://example.com/wrapped/pa│', 8) }
+        ];
+        const fields = ['ok', 'opened', 'reason', 'url', 'path', 'token', 'link', 'source'];
+        for (const options of cases) {
+            const offset = options?.cell?.offset ?? 2;
+            const click = await fixture(options).channel.run('open-terminal-target', { pane_id: P0, row: 2, col: offset });
+            const probe = await fixture(options).channel.run('probe-terminal-target', { pane_id: P0, row: 2, col: offset });
+            for (const field of fields) expect(probe[field], `${field} for ${JSON.stringify(options)}`).toEqual(click[field]);
+        }
+    });
+
+    it('opens nothing and moves no focus, even on a markdown path', async () => {
+        const f = fixture({ cell: line('cat docs/notes.md', 8) });
+        const before = f.h.state();
+        const reply = await f.channel.run('probe-terminal-target', { pane_id: P0, row: 2, col: 8 });
+        expect(reply).toMatchObject({ ok: true, opened: 'markdown' });
+        expect(reply['pane_id']).toBeUndefined();
+        expect(visiblePane(workspaceByID(f.h.state(), W1)!, NEW)).toBeNull();
+        expect(f.h.state()).toBe(before);
+    });
+
+    it('carries the cells of the token it would open', async () => {
+        const url = await fixture({ cell: line('open https://example.com/x now', 8) }).channel.run('probe-terminal-target', { pane_id: P0, row: 2, col: 8 });
+        expect(url).toMatchObject({ opened: 'external', span: [{ row: 2, col: 5, width: 21 }] });
+
+        const markdown = await fixture({ cell: line('cat (docs/notes.md)', 8) }).channel.run('probe-terminal-target', { pane_id: P0, row: 2, col: 8 });
+        expect(markdown).toMatchObject({ opened: 'markdown', span: [{ row: 2, col: 5, width: 13 }] });
+
+        // #324: a csv path a ⌘-click opens as a table pane is underlined the same way.
+        const csv = await fixture({ cell: line('wrote data/sales.csv', 10) }).channel.run('probe-terminal-target', {
+            pane_id: P0,
+            row: 2,
+            col: 10
+        });
+        expect(csv).toMatchObject({ opened: 'csv', span: [{ row: 2, col: 6, width: 14 }] });
+    });
+
+    it('carries the cells of the hyperlink it would open', async () => {
+        const segments = [
+            { row: 1, col: 1, width: 16 },
+            { row: 2, col: 1, width: 16 }
+        ];
+        const reply = await fixture({
+            hyperlinkRange: { uri: 'https://example.com/wrapped', segments },
+            cell: line('  │https://example.│', 8)
+        }).channel.run('probe-terminal-target', { pane_id: P0, row: 2, col: 8 });
+        expect(reply).toMatchObject({ opened: 'external', url: 'https://example.com/wrapped', source: 'hyperlink', span: segments });
+    });
+
+    it('carries no cells for anything a click would refuse or ignore', async () => {
+        const quiet: Array<Parameters<typeof fixture>[0]> = [
+            { cell: line('see notes.md', 6), exists: false },
+            { cell: line('see sales.csv', 6), exists: false },
+            { cell: line('cargo build --release', 2) },
+            { cell: line('see slack://channel now', 6) },
+            { cell: line('  │https://example.com/wrapped/pa│', 8) },
+            { hyperlinkRange: { uri: 'file:///etc/passwd', segments: [{ row: 2, col: 0, width: 6 }] }, cell: null }
+        ];
+        for (const options of quiet) {
+            const reply = await fixture(options).channel.run('probe-terminal-target', {
+                pane_id: P0,
+                row: 2,
+                col: options?.cell?.offset ?? 2
+            });
+            expect(reply['span'], JSON.stringify(options)).toBeUndefined();
+        }
+    });
+
+    it('carries no cells when the line came without them, and a click never carries any', async () => {
+        const bare = await fixture({ cell: { text: 'open https://example.com/x', offset: 8 } }).channel.run('probe-terminal-target', { pane_id: P0, row: 2, col: 8 });
+        expect(bare).toMatchObject({ opened: 'external' });
+        expect(bare['span']).toBeUndefined();
+
+        const click = await fixture({ cell: line('open https://example.com/x', 8) }).channel.run(
+            'open-terminal-target',
+            { pane_id: P0, row: 2, col: 8 }
+        );
+        expect(click['span']).toBeUndefined();
+    });
+});
+
+describe('createProbeFileExists (#303)', () => {
+    const file = { isFile: () => true };
+
+    it('answers from stat, off the event loop, and remembers the answer for a while', async () => {
+        let calls = 0;
+        let clock = 0;
+        const exists = createProbeFileExists({
+            stat: async () => {
+                calls += 1;
+                return file;
+            },
+            ttlMs: 1_000,
+            now: () => clock
+        });
+        expect(await exists('/a.md')).toBe(true);
+        expect(await exists('/a.md')).toBe(true);
+        expect(calls).toBe(1);
+        clock = 1_500;
+        expect(await exists('/a.md')).toBe(true);
+        expect(calls).toBe(2);
+    });
+
+    it('answers no for a path stat refuses, or one that is not a file', async () => {
+        const missing = createProbeFileExists({ stat: () => Promise.reject(new Error('ENOENT')) });
+        expect(await missing('/gone.md')).toBe(false);
+        const directory = createProbeFileExists({ stat: async () => ({ isFile: () => false }) });
+        expect(await directory('/dir.md')).toBe(false);
+    });
+
+    /**
+     * The case it exists for: a path on a hung network mount, whose `stat` does not come back.
+     * The hover gets "no" in bounded time, and hovering it again shares the one stuck call
+     * rather than tying up another thread.
+     */
+    it('answers no when stat hangs, and asks a hung path only once', async () => {
+        let calls = 0;
+        const exists = createProbeFileExists({
+            stat: () => {
+                calls += 1;
+                return new Promise(() => undefined);
+            },
+            timeoutMs: 10
+        });
+        expect(await exists('/Volumes/share/plan.md')).toBe(false);
+        expect(await exists('/Volumes/share/plan.md')).toBe(false);
+        expect(calls).toBe(1);
     });
 });
 

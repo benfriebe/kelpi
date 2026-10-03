@@ -68,6 +68,7 @@ export type {
   IBufferRange,
   IKeyEvent,
   IUnicodeVersionProvider,
+  ILinkUnderlineSegment,
 } from './interfaces';
 
 // Ghostty WASM components (for advanced usage)

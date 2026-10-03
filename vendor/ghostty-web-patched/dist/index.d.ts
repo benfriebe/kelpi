@@ -70,6 +70,8 @@ export declare class CanvasRenderer {
     private currentSelectionCoords;
     private hoveredHyperlinkId;
     private previousHoveredHyperlinkId;
+    private linkUnderline;
+    private linkUnderlineRows;
     private hoveredLinkRange;
     private previousHoveredLinkRange;
     constructor(canvas: HTMLCanvasElement, options?: RendererOptions);
@@ -329,6 +331,13 @@ export declare class CanvasRenderer {
      * Set the currently hovered hyperlink ID for rendering underlines
      */
     setHoveredHyperlinkId(hyperlinkId: number): void;
+    /**
+     * vendor 0.4.0-kelpi.18: underline these viewport cells as a link (`Terminal.setLinkUnderline`),
+     * or none. The rows of the old and the new underline are repainted on the next frame.
+     */
+    setLinkUnderline(segments: readonly ILinkUnderlineSegment[] | null): void;
+    /** vendor 0.4.0-kelpi.18: is this viewport cell under the embedder's link underline? */
+    private isLinkUnderlined;
     /**
      * Set the currently hovered link range for rendering underlines (for regex-detected URLs)
      * Pass null to clear the hover state
@@ -953,6 +962,16 @@ export declare interface ILinkProvider {
 }
 
 /**
+ * vendor 0.4.0-kelpi.18: a run of cells on one viewport row that `Terminal.setLinkUnderline`
+ * underlines. `row` 0 is the top row on screen, `width` counts cells.
+ */
+export declare interface ILinkUnderlineSegment {
+    row: number;
+    col: number;
+    width: number;
+}
+
+/**
  * Initialize the ghostty-web library by loading the WASM module.
  * Must be called before creating any Terminal instances.
  *
@@ -1227,6 +1246,7 @@ export declare interface ITerminalOptions {
     disableStdin?: boolean;
     smoothScrollDuration?: number;
     scrollOnUserInput?: boolean;
+    linkDetection?: boolean;
     ghostty?: Ghostty;
 }
 
@@ -1868,6 +1888,7 @@ export declare class Terminal implements ITerminalCore {
      * the same reason as the two above: an embedder may set it before `open()` builds a renderer.
      */
     private searchHighlight;
+    private linkUnderline;
     private imeCaretLeft;
     private imeCaretTop;
     private imeCaretWidth;
@@ -2076,6 +2097,17 @@ export declare class Terminal implements ITerminalCore {
      */
     getViewportY(): number;
     getSelectionPosition(): IBufferRange | undefined;
+    /**
+     * Underline these cells as a link, in each cell's own foreground colour, until called with
+     * `null` (or an empty list).
+     *
+     * For an embedder that decides what a link is itself (Kelpi asks its daemon, so the underline
+     * matches what a click there would open) and has turned the built-in detection off with
+     * `linkDetection: false`. Rows are viewport rows as painted, so an underline set while the
+     * viewport is scrolled is on the history rows on screen. The terminal does not move it when
+     * output arrives or the viewport scrolls: the embedder sets it again, or clears it.
+     */
+    setLinkUnderline(segments: readonly ILinkUnderlineSegment[] | null): void;
     /**
      * Highlight every occurrence of `needle` in the rows on screen, in the theme's
      * `searchBackground` / `searchForeground`, until called with `null`.

@@ -21,7 +21,7 @@
 
 import serializeModule from '@xterm/addon-serialize';
 import headless from '@xterm/headless';
-import type { Terminal as HeadlessTerminal } from '@xterm/headless';
+import type { IBufferCell, IBufferLine, Terminal as HeadlessTerminal } from '@xterm/headless';
 
 import type { TerminalStateService, VtModes } from '../seams.js';
 import { trackKittyKeyboard, type KittyKeyboardTracker, type KittyState } from './kitty-keyboard.js';
@@ -71,6 +71,65 @@ interface XtermCoreWithLinks {
     readonly _inputHandler?:
         | { readonly _oscLinkService?: { getLinkData(id: number): { uri?: string } | undefined } | undefined }
         | undefined;
+}
+
+/**
+ * A run of cells on one VIEWPORT row (#303): row 0 is the top of the live screen and a negative
+ * row is history above it. `cellText` names one per UTF-16 unit of its text (`width` is the
+ * character's cell count, 2 for a wide one), and `hyperlinkRangeAt` one per run of a link's cells,
+ * which is what a hover underline is drawn under.
+ */
+export interface TerminalCellSpan {
+    readonly row: number;
+    readonly col: number;
+    readonly width: number;
+}
+
+/**
+ * Which cell each UTF-16 unit of a row's text came from (#303), walking the row the way xterm 6's
+ * `translateToString` does: a wide character's spacer is never visited, an unwritten cell reads as
+ * a space, a combined cluster contributes every unit of its string. Null when the walk does not
+ * reproduce `expected` (the row's own `translateToString(false, 0, width)`), so an emulator that
+ * one day walks differently loses the underline rather than drawing it under the wrong cells.
+ */
+function rowCells(
+    line: IBufferLine,
+    width: number,
+    row: number,
+    expected: string,
+    scratch: IBufferCell
+): TerminalCellSpan[] | null {
+    const cells: TerminalCellSpan[] = [];
+    let chars = '';
+    for (let x = 0; x < width; ) {
+        const cell = line.getCell(x, scratch);
+        if (cell === undefined) return null;
+        const cellWidth = cell.getWidth();
+        const text = cell.getChars() || ' ';
+        chars += text;
+        for (let unit = 0; unit < text.length; unit++) cells.push({ row, col: x, width: Math.max(1, cellWidth) });
+        x += cellWidth || 1;
+    }
+    return chars === expected ? cells : null;
+}
+
+/**
+ * The column a click at `col` means (#303): the right half of a wide character is that
+ * character, whose cell is the one to its left. Any other column is itself.
+ */
+function wideCharStart(line: IBufferLine | undefined, col: number, scratch: IBufferCell): number {
+    if (line === undefined || col <= 0) return col;
+    return line.getCell(col, scratch)?.getWidth() === 0 ? col - 1 : col;
+}
+
+/** The OSC 8 link id on a cell of a buffer line, or 0 (#83). Private xterm reads; see `hyperlinkAt`. */
+function linkIDAt(line: IBufferLine | undefined, x: number): number {
+    if (!line) return 0;
+    // `buffer.getLine` hands back an API view; the extended attributes live on the core line it
+    // wraps, indexed by CELL column (which is what the client sends).
+    const core = (line as unknown as { _line?: XtermCoreLine })._line;
+    const urlId = core?._extendedAttrs?.[x]?.urlId;
+    return typeof urlId === 'number' ? urlId : 0;
 }
 
 /**
@@ -791,25 +850,58 @@ export class TerminalStateServiceImpl implements TerminalStateService {
      * it stays exact when a row's cells and its characters are not one-to-one (a double-width
      * CJK cell contributes one character, a combined cluster contributes several).
      *
-     * Unknown pane, out-of-range row, or an empty line → null.
+     * `cellsOf(start, end)` (#303) says which viewport cell each UTF-16 unit of `text[start, end)`
+     * sits in, so a token can be drawn back onto the grid as a hover underline. Only the rows the
+     * range touches are walked, so a long wrapped line costs its token, not the whole line. It
+     * answers undefined, rather than guessing, when a row's cells do not reproduce its text
+     * (`rowCells`). Read it before yielding: it reads the buffer as it is when called.
+     *
+     * A cell on the right half of a wide character is read as that character (#303): the
+     * offset would otherwise land after it, on the next character.
+     *
+     * `maxRows` (#303) bounds the read to that many rows above and below the clicked one, and
+     * answers null for a line that runs past them, rather than half a line: the hover probe runs
+     * on every cell the pointer crosses, over output that can be one logical line of hundreds of
+     * kilobytes (a minified bundle, a source map).
+     *
+     * Unknown pane, out-of-range row, or an empty line (or one longer than `maxRows`) → null.
      */
-    cellText(paneID: string, row: number, col: number): { text: string; offset: number } | null {
+    cellText(
+        paneID: string,
+        row: number,
+        col: number,
+        options: { readonly maxRows?: number } = {}
+    ): {
+        text: string;
+        offset: number;
+        cellsOf: (start: number, end: number) => readonly TerminalCellSpan[] | undefined;
+    } | null {
         const entry = this.panes.get(paneID);
         if (!entry) return null;
         const buffer = entry.term.buffer.active;
         const cols = entry.term.cols;
         if (!Number.isFinite(row) || !Number.isFinite(col) || row < 0 || col < 0) return null;
-        const y = Math.max(0, buffer.baseY) + Math.floor(row);
+        const top = Math.max(0, buffer.baseY);
+        const y = top + Math.floor(row);
         if (y >= buffer.length) return null;
 
+        const maxRows = options.maxRows ?? Number.POSITIVE_INFINITY;
         // Walk back to the first row of this logical line.
         let start = y;
-        while (start > 0 && buffer.getLine(start)?.isWrapped === true) start -= 1;
+        while (start > 0 && buffer.getLine(start)?.isWrapped === true) {
+            start -= 1;
+            if (y - start > maxRows) return null;
+        }
 
         let text = '';
         let offset = 0;
+        const scratch = buffer.getNullCell();
+        const clicked = wideCharStart(buffer.getLine(y), Math.floor(col), scratch);
+        /** Where each row's text starts in `text`, for `cellsOf`. */
+        const rows: Array<{ readonly y: number; readonly start: number; readonly length: number; readonly width: number }> = [];
         for (let cursor = start; cursor < buffer.length; cursor++) {
             if (cursor > start && buffer.getLine(cursor)?.isWrapped !== true) break;
+            if (cursor - y > maxRows) return null;
             const line = buffer.getLine(cursor);
             if (!line) break;
             // Full width for continued rows so the join reads as one logical line; the final
@@ -820,21 +912,39 @@ export class TerminalStateServiceImpl implements TerminalStateService {
             // Where the clicked cell lands in the join: the prefix rows, plus this row up to
             // the clicked column.
             if (cursor === y) {
-                offset = text.length + line.translateToString(false, 0, Math.min(Math.floor(col), width)).length;
+                offset = text.length + line.translateToString(false, 0, Math.min(clicked, width)).length;
             }
-            text += line.translateToString(isLast, 0, width);
+            const rowText = line.translateToString(isLast, 0, width);
+            rows.push({ y: cursor, start: text.length, length: rowText.length, width });
+            text += rowText;
         }
         if (text === '') return null;
-        return { text, offset };
+        const cellsOf = (from: number, to: number): readonly TerminalCellSpan[] | undefined => {
+            const cells: TerminalCellSpan[] = [];
+            for (const part of rows) {
+                const lo = Math.max(from, part.start);
+                const hi = Math.min(to, part.start + part.length);
+                if (lo >= hi) continue;
+                const line = buffer.getLine(part.y);
+                if (!line) return undefined;
+                // The trimmed last row is a prefix of the whole row's walk, so its cells are too.
+                const mapped = rowCells(line, part.width, part.y - top, line.translateToString(false, 0, part.width), scratch);
+                if (mapped === null) return undefined;
+                for (let unit = lo; unit < hi; unit++) cells.push(mapped[unit - part.start] as TerminalCellSpan);
+            }
+            return cells;
+        };
+        return { text, offset, cellsOf };
     }
 
     async cellTextAsync(
         paneID: string,
         row: number,
-        col: number
-    ): Promise<{ text: string; offset: number } | null> {
+        col: number,
+        options: { readonly maxRows?: number } = {}
+    ): Promise<ReturnType<TerminalStateServiceImpl['cellText']>> {
         await this.flush(paneID);
-        return this.cellText(paneID, row, col);
+        return this.cellText(paneID, row, col, options);
     }
 
     /**
@@ -863,32 +973,98 @@ export class TerminalStateServiceImpl implements TerminalStateService {
      * hyperlink answers the whole URI just as the head row does.
      */
     hyperlinkAt(paneID: string, row: number, col: number): string | null {
-        const entry = this.panes.get(paneID);
-        if (!entry) return null;
-        if (!Number.isFinite(row) || !Number.isFinite(col) || row < 0 || col < 0) return null;
-        try {
-            const buffer = entry.term.buffer.active;
-            const y = Math.max(0, buffer.baseY) + Math.floor(row);
-            if (y >= buffer.length) return null;
-            const line = buffer.getLine(y);
-            if (!line) return null;
-            // `buffer.getLine` hands back an API view; the extended attributes live on the core
-            // line it wraps, indexed by CELL column (which is what the client sends).
-            const core = (line as unknown as { _line?: XtermCoreLine })._line;
-            const urlId = core?._extendedAttrs?.[Math.floor(col)]?.urlId;
-            if (typeof urlId !== 'number' || urlId === 0) return null;
-            const links = (entry.term as unknown as { _core?: XtermCoreWithLinks })._core
-                ?._inputHandler?._oscLinkService;
-            const uri = links?.getLinkData(urlId)?.uri;
-            return typeof uri === 'string' && uri !== '' ? uri : null;
-        } catch {
-            return null;
-        }
+        return this.hyperlinkRangeAt(paneID, row, col)?.uri ?? null;
     }
 
     async hyperlinkAtAsync(paneID: string, row: number, col: number): Promise<string | null> {
         await this.flush(paneID);
         return this.hyperlinkAt(paneID, row, col);
+    }
+
+    /**
+     * `hyperlinkAt`, plus the cells the link covers on screen (#303): what a hover underline over
+     * this link is drawn under.
+     *
+     * The cells are the runs that carry this link's URI on the clicked row and on the rows above
+     * and below it, for as long as consecutive rows carry it. Matched by URI, not by link id:
+     * xterm gives every OSC 8 that names no `id=` a fresh id, and a TUI that hard-wraps a link
+     * emits one per row (Codex does), so the id changes at the row boundary while the address
+     * does not. A link wrapped inside a box is two runs with the border between them, and the
+     * border is not underlined. Bounded to the viewport, which is all a client can paint.
+     */
+    hyperlinkRangeAt(
+        paneID: string,
+        row: number,
+        col: number
+    ): { uri: string; segments: readonly TerminalCellSpan[] } | null {
+        const entry = this.panes.get(paneID);
+        if (!entry) return null;
+        if (!Number.isFinite(row) || !Number.isFinite(col) || row < 0 || col < 0) return null;
+        try {
+            const buffer = entry.term.buffer.active;
+            const top = Math.max(0, buffer.baseY);
+            const y = top + Math.floor(row);
+            if (y >= buffer.length) return null;
+            const clickedLine = buffer.getLine(y);
+            const id = linkIDAt(clickedLine, wideCharStart(clickedLine, Math.floor(col), buffer.getNullCell()));
+            if (id === 0) return null;
+            const links = (entry.term as unknown as { _core?: XtermCoreWithLinks })._core
+                ?._inputHandler?._oscLinkService;
+            const uris = new Map<number, string | null>();
+            const uriOf = (linkID: number): string | null => {
+                if (linkID === 0) return null;
+                let known = uris.get(linkID);
+                if (known === undefined) {
+                    const read = links?.getLinkData(linkID)?.uri;
+                    known = typeof read === 'string' && read !== '' ? read : null;
+                    uris.set(linkID, known);
+                }
+                return known;
+            };
+            const uri = uriOf(id);
+            if (uri === null) return null;
+
+            const cols = entry.term.cols;
+            const runsOn = (lineY: number): TerminalCellSpan[] => {
+                const runs: TerminalCellSpan[] = [];
+                const line = buffer.getLine(lineY);
+                let start = -1;
+                for (let x = 0; x <= cols; x++) {
+                    const inLink = x < cols && uriOf(linkIDAt(line, x)) === uri;
+                    if (inLink && start < 0) start = x;
+                    if (!inLink && start >= 0) {
+                        runs.push({ row: lineY - top, col: start, width: x - start });
+                        start = -1;
+                    }
+                }
+                return runs;
+            };
+            const above: TerminalCellSpan[][] = [];
+            for (let lineY = y - 1; lineY >= top; lineY--) {
+                const runs = runsOn(lineY);
+                if (runs.length === 0) break;
+                above.unshift(runs);
+            }
+            const segments = above.flat();
+            const bottom = Math.min(buffer.length, top + entry.term.rows);
+            for (let lineY = y; lineY < bottom; lineY++) {
+                const runs = runsOn(lineY);
+                if (runs.length === 0) break;
+                segments.push(...runs);
+            }
+            return { uri, segments };
+        } catch {
+            return null;
+        }
+    }
+
+    async hyperlinkRangeAtAsync(
+        paneID: string,
+        row: number,
+        col: number
+    ): Promise<{ uri: string; segments: readonly TerminalCellSpan[] } | null> {
+        await this.flush(paneID);
+        return this.hyperlinkRangeAt(paneID, row, col);
     }
 
     /**

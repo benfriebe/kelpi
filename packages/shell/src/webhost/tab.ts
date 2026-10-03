@@ -87,6 +87,7 @@ import {
 } from './nav-focus.js';
 import { createViewFocusGate, traceFocus, type ViewFocusGate, type ViewFocusGateOptions } from './view-focus.js';
 import { viewportPinAction, type ViewportPinEvent } from './viewport-pin.js';
+import { tabRequestForWindowOpen, type TabOpenRequest } from './window-open.js';
 
 /** The viewport every tab is laid out at, so captures do not depend on the holder window. */
 export const DEFAULT_VIEWPORT = { width: 1280, height: 800 } as const;
@@ -130,6 +131,12 @@ export interface TabEventSink {
     batchMarker(paneID: string, tabID: string, payload: Record<string, unknown>): void;
     /** The tab went away on its own (`window.close()`, a crashed renderer). */
     tabClosed(paneID: string, tabID: string): void;
+    /**
+     * The page asked to open a link somewhere else — a middle-click, a target=_blank — and the
+     * answer is a tab in this pane (`./window-open.ts`). The daemon owns the tab list, so this is
+     * a request it answers with `tab-open`, not a tab the host has made.
+     */
+    openTab(paneID: string, tabID: string, request: TabOpenRequest): void;
 }
 
 export interface TabFactoryOptions {
@@ -599,11 +606,18 @@ class ElectronTab implements HostTab {
             traceFocus(`raw focus event (NOT a gesture): pane ${this.paneID} tab ${this.tabID} embedded=${String(this.embedded)} loading=${String(contents.isLoading())}`);
         });
 
-        contents.setWindowOpenHandler(() => {
-            // The daemon mints tab ids, so the host cannot conjure a tab for `window.open`.
-            // Denying keeps the tab set exactly what the daemon believes it is; surfacing the
-            // request as a new tab needs a host→daemon verb that does not exist yet.
-            log(`web pane ${this.paneID}: window.open denied (no host→daemon tab request yet)`);
+        contents.setWindowOpenHandler((details) => {
+            // The daemon mints tab ids, so the host never conjures a native window or a tab of
+            // its own: the window is always denied, and a link the page asked to open somewhere
+            // else (a middle-click, a target=_blank) becomes a request for a tab in this pane
+            // (`./window-open.ts`). The daemon answers it with the ordinary `tab-open` verb.
+            const request = tabRequestForWindowOpen(details);
+            if (request === null) {
+                log(`web pane ${this.paneID}: window.open denied (${details.disposition})`);
+            } else if (!this.disposed) {
+                log(`web pane ${this.paneID}: asking for a ${request.active ? 'foreground' : 'background'} tab (${details.disposition})`);
+                this.events.openTab(this.paneID, this.tabID, request);
+            }
             return { action: 'deny' as const };
         });
 

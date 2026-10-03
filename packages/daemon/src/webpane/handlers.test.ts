@@ -442,6 +442,45 @@ describe('tabs (§5)', () => {
     });
 });
 
+describe('a page asking for a tab (`open-tab`)', () => {
+    it('adds a background tab and tells the host to build it', () => {
+        const h = webHarness({ ids: [OTHER_TAB] });
+        const host = attachFakeHost(h.service);
+        host.emit('open-tab', WEB_PANE, { url: 'https://example.com/next', active: false }, WEB_TAB);
+
+        const web = h.state().workspaces[0]?.webPanes[WEB_PANE];
+        expect(web?.tabs.map((tab) => [tab.id, tab.url])).toEqual([
+            [WEB_TAB, 'https://example.com'],
+            [OTHER_TAB, 'https://example.com/next']
+        ]);
+        // Background: the page that was middle-clicked stays the one on screen.
+        expect(web?.activeTabID).toBe(WEB_TAB);
+        expect(host.notifies.at(-1)).toEqual({
+            verb: 'tab-open',
+            args: { paneID: WEB_PANE, tabID: OTHER_TAB, url: 'https://example.com/next', makeActive: false }
+        });
+    });
+
+    it('activates the new tab when the page asked for a foreground one', () => {
+        const h = webHarness({ ids: [OTHER_TAB] });
+        attachFakeHost(h.service);
+        h.service.handleHostEvent({ event: 'open-tab', paneID: WEB_PANE, tabID: WEB_TAB, payload: { url: 'http://localhost:3000/', active: true } });
+        expect(h.state().workspaces[0]?.webPanes[WEB_PANE]?.activeTabID).toBe(OTHER_TAB);
+    });
+
+    it('ignores a non-http URL and a pane that is not a web pane', () => {
+        const h = webHarness({ ids: [OTHER_TAB] });
+        const host = attachFakeHost(h.service);
+        const before = host.notifies.length;
+        host.emit('open-tab', WEB_PANE, { url: 'file:///etc/passwd', active: true }, WEB_TAB);
+        host.emit('open-tab', WEB_PANE, { url: 'javascript:alert(1)', active: true }, WEB_TAB);
+        host.emit('open-tab', WEB_PANE, {}, WEB_TAB);
+        host.emit('open-tab', SHELL_PANE, { url: 'https://example.com/', active: true }, WEB_TAB);
+        expect(h.state().workspaces[0]?.webPanes[WEB_PANE]?.tabs).toHaveLength(1);
+        expect(host.notifies).toHaveLength(before);
+    });
+});
+
 describe('private mode (§6)', () => {
     it('is idempotent and reports whether anything changed', () => {
         const h = webHarness();

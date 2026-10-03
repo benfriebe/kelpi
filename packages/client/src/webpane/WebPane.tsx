@@ -63,8 +63,15 @@ export interface WebPaneProps {
     readonly tabs: readonly WebPaneTab[];
     readonly activeTabID: string | null;
     readonly isPrivate?: boolean | undefined;
-    /** False when the grid is not showing this pane (zoom, workspace switch). */
+    /** False when the grid is not showing this pane (zoom, workspace switch), or a modal is up. */
     readonly visible?: boolean | undefined;
+    /**
+     * The grid IS showing this pane, but a whole-window modal is over it (Settings, the update
+     * sheet, a dialog). `visible` is false for that too, because nothing in the pane may act
+     * while a modal owns the window; this says the hole is still in view around the modal, so
+     * the page parks behind a still frame of itself rather than leaving the pane empty.
+     */
+    readonly coveredByModal?: boolean | undefined;
     readonly focused?: boolean | undefined;
     /**
      * True when this client is the page inside a Kelpi shell window, so a native view will cover
@@ -355,6 +362,16 @@ function TabPill(props: TabPillProps): ReactElement {
             }}
             onPointerEnter={() => setHovered(true)}
             onPointerLeave={() => setHovered(false)}
+            // A middle-click closes the tab, as in every browser: the same close the ✕ sends.
+            // The press is cancelled too, so the button under it takes no focus.
+            onMouseDown={(event) => {
+                if (event.button === 1) event.preventDefault();
+            }}
+            onAuxClick={(event) => {
+                if (event.button !== 1) return;
+                event.preventDefault();
+                props.onClose();
+            }}
         >
             <button
                 type="button"

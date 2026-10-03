@@ -778,6 +778,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
     // talking to a registry no shell ever joined.
     const webPanes = createWebPaneService({
         store,
+        ...(options.uuid !== undefined ? { uuid: options.uuid } : {}),
         paste: (paneID, text, pasteOptions) => {
             // `kelpi web inspect --send-to`: a picked element lands in a shell pane's PTY, bare
             // unless the arm asked for `--submit` (web-pane.md §11.3).

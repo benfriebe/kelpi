@@ -267,7 +267,10 @@ export function webHarness(options: WebHarnessOptions = {}): WebHarness {
         paste: (paneID, text, pasteOptions) => {
             input.sendText(paneID, text, { bare: !pasteOptions.submit });
         },
-        ...(options.nonce !== undefined ? { nonce: options.nonce } : {})
+        ...(options.nonce !== undefined ? { nonce: options.nonce } : {}),
+        // The same pool the handlers mint from, so a page's `open-tab` is as predictable as a
+        // `web-tab-new`. Called only after `mint` below exists.
+        uuid: () => mint()
     });
 
     const minted: string[] = [];

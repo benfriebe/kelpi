@@ -56,7 +56,7 @@ export function insetHoleForFocusRing(rect: GeometryRect, ring: number = FOCUS_R
 }
 
 export type WebPageSurfaceProps = Pick<WebPaneProps,
-    'paneID' | 'tabs' | 'activeTabID' | 'visible' | 'embedded' | 'commands' |
+    'paneID' | 'tabs' | 'activeTabID' | 'visible' | 'coveredByModal' | 'embedded' | 'commands' |
     'onGeometry' | 'onHidden' | 'measure' | 'devicePixelRatio'> & {
     readonly unavailableReason?: string | undefined;
 };
@@ -66,6 +66,13 @@ export const WebPageSurface = memo(function WebPageSurface(props: WebPageSurface
     const active = tabs.find(tab => tab.id === props.activeTabID) ?? tabs[0] ?? null;
     const liveURL = active?.url ?? '';
     const visible = props.visible !== false;
+    /*
+     * A whole-window modal parks the page the way a menu does, poster and all. It used to arrive
+     * only as `visible: false`, which is also what an off-screen pane gets, so the page left with
+     * nothing in its place and the pane sat empty around the dialog until it closed.
+     */
+    const coveredByModal = props.coveredByModal === true;
+    const onScreen = visible || coveredByModal;
     const embedded = props.embedded === true;
     const measure = props.measure ?? measureElement;
     // ── geometry ────────────────────────────────────────────────────────────────────
@@ -197,8 +204,9 @@ export const WebPageSurface = memo(function WebPageSurface(props: WebPageSurface
         // about this document, and `data-visible` — what the audit and the unit tests read —
         // must state it whether or not this particular client has a native view to place.
         const rect = element === null ? null : measure(element);
-        const covered = overlayCovers(rect, overlays);
-        setCoveredByOverlay(covered);
+        const coveredBySurface = overlayCovers(rect, overlays);
+        setCoveredByOverlay(coveredBySurface);
+        const covered = coveredBySurface || coveredByModal;
         /*
          * Issue #12 — the frame is taken while the view is still on screen.
          *
@@ -213,15 +221,16 @@ export const WebPageSurface = memo(function WebPageSurface(props: WebPageSurface
          * `POSTER_IDLE` for a browser client: there is no view to photograph there, and
          * `data-visible` still has to state the same truth about the document.
          *
-         * A pane that is not `visible` is not covered by anything — it is off screen, in a hidden
-         * workspace or under a whole-window modal — so it never asks for a frame.
+         * A pane that is not on screen is not covered by anything — it is in a hidden workspace
+         * or zoomed away — so it never asks for a frame. A pane under a whole-window modal IS on
+         * screen, and is covered: the modal is the surface.
          */
         const shot = embedded
             ? poster.sync({
                   // `rect === null` is a hole that has not been laid out: `overlayCovers` reads
                   // that as covered (fail open, so the pane still parks) but there is no box to
                   // photograph, so no frame is asked for either.
-                  covered: covered && visible && rect !== null,
+                  covered: covered && onScreen && rect !== null,
                   tabID: active?.id ?? null
               })
             : POSTER_IDLE;
@@ -265,7 +274,7 @@ export const WebPageSurface = memo(function WebPageSurface(props: WebPageSurface
         // host has to reject (and it does, on `ownWindow`).
         if (!embedded) return;
         if (element === null || rect === null) return;
-        if (!visible || (covered && !shot.hold)) {
+        if (!onScreen || (covered && !shot.hold)) {
             onHidden?.(paneID);
             return;
         }
@@ -284,7 +293,7 @@ export const WebPageSurface = memo(function WebPageSurface(props: WebPageSurface
         });
         // `focused` is deliberately NOT a dependency (§N27a): nothing in the report depends on
         // it any more, so a focus change must not even re-identify this callback.
-    }, [embedded, visible, paneID, active?.id, measure, onGeometry, onHidden, dpr, overlays, poster]);
+    }, [embedded, onScreen, coveredByModal, paneID, active?.id, measure, onGeometry, onHidden, dpr, overlays, poster]);
 
     // Layout effect, and deliberately with no dependency list: the grid re-renders a pane
     // whenever anything about the layout moves, so "after every render" IS the change signal.
@@ -330,11 +339,11 @@ export const WebPageSurface = memo(function WebPageSurface(props: WebPageSurface
                 ref={pageRef}
                 data-testid={`web-page-${paneID}`}
                 // The pane's EFFECTIVE placement, so one attribute answers "is the page on
-                // screen": `visible` is the assembly's (a modal, a hidden workspace) and
-                // `pageParked` is §N26's per-pane half — the cover, less issue #12's few-frame
+                // screen": `onScreen` is the assembly's (a hidden workspace) and `pageParked` is
+                // the per-pane half — a menu's or a modal's cover, less issue #12's few-frame
                 // hold, which is the one window in which a covered pane is still genuinely
-                // placed. `data-overlay-covered` beside it is the raw geometry either way.
-                data-visible={visible && !pageParked ? 'true' : 'false'}
+                // placed. `data-overlay-covered` beside it is the raw menu geometry either way.
+                data-visible={onScreen && !pageParked ? 'true' : 'false'}
                 data-overlay-covered={coveredByOverlay ? 'true' : 'false'}
                 className="relative min-h-0 flex-1 overflow-hidden"
                 // Nothing is drawn here when embedded: the shell's native view covers this box

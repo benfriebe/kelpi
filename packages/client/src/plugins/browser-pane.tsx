@@ -26,6 +26,7 @@ export function PluginBrowserSurface(props: { readonly host: BrowserViewHost; re
         left: surface.rect.x - (origin?.x ?? 0), top: surface.rect.y - (origin?.y ?? 0), width: surface.rect.w, height: surface.rect.h,
         visibility: surface.covered ? 'hidden' : undefined }}>
         <WebPageSurface {...host} embedded={host.available} visible={host.visible !== false && surface.visible && !surface.covered}
+            coveredByModal={host.coveredByModal === true && surface.visible && !surface.covered}
             unavailableReason={host.reason} measure={() => surface.rect} />
     </div>;
 }

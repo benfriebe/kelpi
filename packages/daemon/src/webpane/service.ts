@@ -16,10 +16,12 @@
  * connected` when nobody is there.
  */
 
+import { newUUID } from '@kelpi/core/codec';
 import type { BrowserInspectionSnapshot, JsonObject } from '@kelpi/protocol';
 
 import type { DomainStore } from '../seams.js';
 import { findPaneAnywhere, workspaceByID } from '../store/derived.js';
+import { normalizeURLInput } from '../store/reducers/url.js';
 import { resolvedActiveTab } from '../store/reducers/web.js';
 import type { DaemonState, DomainAction, DomainEvent, WebPaneState } from '../store/types.js';
 import {
@@ -78,6 +80,8 @@ export interface WebPaneServiceOptions {
     readonly paste?: WebPastePort | undefined;
     readonly now?: (() => number) | undefined;
     readonly newID?: (() => string) | undefined;
+    /** Mints the id of a tab a page asked for (`open-tab`); `newUUID` by default. */
+    readonly uuid?: (() => string) | undefined;
     readonly nonce?: (() => string) | undefined;
     readonly consoleCapacity?: number | undefined;
     readonly onError?: ((error: Error, context: string) => void) | undefined;
@@ -266,6 +270,7 @@ export function createWebPaneService(options: WebPaneServiceOptions = {}): WebPa
     const findState = createWebFindState();
     const batchState = createBatchState({ onChange: paneID => inspectionChanged(paneID) });
     const newID = options.newID ?? ((): string => `${String(now())}-${Math.random().toString(16).slice(2)}`);
+    const mintTabID = options.uuid ?? ((): string => newUUID());
     const stateListeners = new Set<(paneID: string | null) => void>();
     const navStates = new Map<string, Map<string, WebNavState>>();
     const pages = new Map<string, { workspaceID: string; createdAt: number; web: WebPaneState; generation: number }>();
@@ -770,6 +775,35 @@ export function createWebPaneService(options: WebPaneServiceOptions = {}): WebPa
         );
     };
 
+    /**
+     * A page asked to open a link somewhere else (a middle-click, a target=_blank) and the host
+     * turned that into a request for a tab in the same pane (`shell/src/webhost/window-open.ts`).
+     * The daemon owns the tab list, so the tab is added exactly as `web-tab-new` adds one: the
+     * store first, then `tab-open` back to the host, which builds the view.
+     *
+     * The URL is re-checked here rather than trusted: http(s) only, the same rule the host
+     * applies, so a host that is out of date cannot hand a page a `file:` tab.
+     */
+    const openTabEvent = (event: HostEventInput): void => {
+        if (store === undefined) return;
+        const found = webPaneOf(event.paneID);
+        if (found === null) return;
+        const raw = event.payload['url'];
+        if (typeof raw !== 'string' || !/^https?:\/\//i.test(raw)) return;
+        const url = normalizeURLInput(raw);
+        const makeActive = event.payload['active'] !== false;
+        const tabID = mintTabID();
+        store.dispatch({
+            type: 'web-tab-open',
+            workspaceID: found.workspaceID,
+            paneID: event.paneID,
+            tabID,
+            url,
+            makeActive
+        });
+        host.notify('tab-open', { paneID: event.paneID, tabID, url, makeActive });
+    };
+
     return {
         host,
         console: consoleStore,
@@ -945,6 +979,9 @@ export function createWebPaneService(options: WebPaneServiceOptions = {}): WebPa
                         return;
                     case 'tab-closed':
                         tabClosedEvent(event);
+                        return;
+                    case 'open-tab':
+                        openTabEvent(event);
                         return;
                     default:
                         // Forward compatibility: a newer host may emit events we do not know.

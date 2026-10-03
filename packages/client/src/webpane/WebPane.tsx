@@ -362,6 +362,16 @@ function TabPill(props: TabPillProps): ReactElement {
             }}
             onPointerEnter={() => setHovered(true)}
             onPointerLeave={() => setHovered(false)}
+            // A middle-click closes the tab, as in every browser: the same close the ✕ sends.
+            // The press is cancelled too, so the button under it takes no focus.
+            onMouseDown={(event) => {
+                if (event.button === 1) event.preventDefault();
+            }}
+            onAuxClick={(event) => {
+                if (event.button !== 1) return;
+                event.preventDefault();
+                props.onClose();
+            }}
         >
             <button
                 type="button"

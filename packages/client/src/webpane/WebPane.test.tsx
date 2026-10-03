@@ -392,6 +392,20 @@ describe('tab strip', () => {
         ]);
     });
 
+    it('closes a tab on a middle-click, inactive or active, and ignores other aux buttons', () => {
+        const { commands, sent } = fakeCommands();
+        render(<WebPane paneID={PANE} tabs={TABS} activeTabID={TAB2} commands={commands} />);
+
+        // On the label, where the ✕ is not drawn for an inactive pill.
+        fireEvent(screen.getByTestId(`web-tab-select-${TAB1}`), new MouseEvent('auxclick', { bubbles: true, button: 1 }));
+        fireEvent(screen.getByTestId(`web-tab-${TAB2}`), new MouseEvent('auxclick', { bubbles: true, button: 1 }));
+        fireEvent(screen.getByTestId(`web-tab-${TAB2}`), new MouseEvent('auxclick', { bubbles: true, button: 2 }));
+        expect(sent).toEqual([
+            { verb: 'closeTab', args: [PANE, TAB1] },
+            { verb: 'closeTab', args: [PANE, TAB2] }
+        ]);
+    });
+
     it('hides the strip for a single tab (§16.4) and shows the empty state with none', () => {
         const { commands } = fakeCommands();
         const view = render(

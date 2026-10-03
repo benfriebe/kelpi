@@ -1,5 +1,5 @@
 /**
- * Two web-pane reports, one fixture page:
+ * Three web-pane requests, one fixture page:
  *
  *   1. "middle clicking in a browser pane should open a new tab in the browser". A middle-click
  *      on a link reaches Chromium as a `background-tab` window-open, and the shell used to deny
@@ -8,6 +8,7 @@
  *      workspace notification) the browser pane doesn't render its content, but closing the
  *      dialog brings it back". A whole-window modal parked every page with no poster, so the
  *      pane was an empty hole for as long as the modal was up.
+ *   3. "middle clicking on a tab to close the tab": the tab strip's pill, as in every browser.
  *
  * The instruments are the daemon's tab list (`kelpi web tabs --json`), the shell's placement line
  * (`view owner=main|holder`), and the poster `<img>` in the pane's hole. The middle-click is
@@ -27,6 +28,7 @@ export const covers = [
     'packages/shell/src/webhost/index.ts',
     'packages/daemon/src/webpane/service.ts',
     'packages/client/src/webpane/WebPageSurface.tsx',
+    'packages/client/src/webpane/WebPane.tsx',
     'packages/client/src/App.tsx'
 ];
 
@@ -190,6 +192,22 @@ export default async function ({ page, cli, shell, rec, d, sleep, sandbox }) {
         );
         rec.check('the pane draws the second tab in its tab strip', tabStrip);
         await rec.shot(page, 'after-middle-click');
+
+        // ── 3 · middle-click a tab in the strip closes it ─────────────────────────────────
+        if (added !== null) {
+            const pill = await page.box(`[data-testid="web-tab-${added.id}"]`);
+            await page.clickAt(pill.cx, pill.cy, { button: 'middle' });
+            let remaining = [];
+            const closed = await d.settle(
+                async () => {
+                    remaining = await tabs();
+                    return remaining.length === 1;
+                },
+                { ceilingMs: 8_000, intervalMs: 100 }
+            );
+            rec.check('a middle-click on a tab in the strip closes it', closed, JSON.stringify(remaining));
+            rec.check('and leaves the other tab', remaining[0]?.url === fixtureURL, JSON.stringify(remaining));
+        }
         for (const line of shell.lines.filter((line) => /window\.open|asking for a (fore|back)ground tab/.test(line))) rec.note(line.trim());
     } finally {
         native?.close();

@@ -102,6 +102,7 @@ describe('isDesktopCommand', () => {
         expect(isDesktopCommand('shell-action')).toBe(true);
         expect(isDesktopCommand('restart-control-server')).toBe(true);
         expect(isDesktopCommand('open-terminal-target')).toBe(true);
+        expect(isDesktopCommand('probe-terminal-target')).toBe(true);
         expect(isDesktopCommand('markdown-external-editor')).toBe(true);
         expect(isDesktopCommand('paste-image')).toBe(true);
         expect(isDesktopCommand('drop-text')).toBe(true);
@@ -336,6 +337,25 @@ describe('open-terminal-target (CONT-122 / TERM-052)', () => {
         const pane = visiblePane(workspaceByID(f.h.state(), W1)!, NEW);
         expect(pane?.type).toBe('markdown');
         expect(pane?.filePath).toBe('/tmp/work/docs/notes.md');
+    });
+
+    it('answers a probe with what a ⌘-click would do, and changes nothing (#326)', async () => {
+        const f = fixture({ cell: { text: 'cat docs/notes.md', offset: 8 } });
+        const before = f.h.state();
+        const reply = await f.channel.run('probe-terminal-target', { pane_id: P0, row: 3, col: 8 });
+        expect(reply).toMatchObject({ ok: true, opened: 'markdown', probe: true, path: '/tmp/work/docs/notes.md' });
+        expect(reply['pane_id']).toBeUndefined();
+        // No pane was opened and focus did not move: the store is the one the probe found.
+        expect(f.h.state()).toBe(before);
+        expect(visiblePane(workspaceByID(f.h.state(), W1)!, NEW)).toBeNull();
+    });
+
+    it('answers a probe on a URL exactly as a ⌘-click (#326)', async () => {
+        const f = fixture({ cell: { text: 'see https://example.com/x for more', offset: 6 } });
+        const probed = await f.channel.run('probe-terminal-target', { pane_id: P0, row: 0, col: 6 });
+        const clicked = await f.channel.run('open-terminal-target', { pane_id: P0, row: 0, col: 6 });
+        expect(probed).toMatchObject({ ok: true, opened: 'external', url: 'https://example.com/x' });
+        expect(clicked).toEqual(probed);
     });
 
     it('reports a .md path that is not on disk instead of opening a broken pane', async () => {

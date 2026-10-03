@@ -376,6 +376,14 @@ export interface ContextMenuProps {
     readonly avoid?: MenuAvoidRect | null | undefined;
     /** Test seam: where the portal mounts (defaults to `document.body`). */
     readonly container?: Element | undefined;
+    /**
+     * #326: the menu never takes a key the keyboard did not aim at it. With `autoFocus` off the
+     * caret stays where it was, and a menu raised over a terminal (the link menu) must leave the
+     * terminal its arrows, Return and Escape: no row walk and no dismissal are run for a key
+     * whose focus is outside the menu, so the owner closes the menu from its own key listener
+     * and the key still reaches the terminal. Keys work as usual once a row has focus.
+     */
+    readonly passiveKeys?: boolean | undefined;
 }
 
 const PANEL_STYLE = {
@@ -644,7 +652,8 @@ export function ContextMenu(props: ContextMenuProps): ReactElement | null {
      * one this component always had — the effect moved to `dismissable.ts` unchanged so the
      * footer's bucket popover and the title bar's layout dropdown could have it too.
      */
-    useDismissable(true, onClose, props.anchorRef ? [rootRef, props.anchorRef] : [rootRef]);
+    const passiveKeys = props.passiveKeys === true;
+    useDismissable(true, onClose, props.anchorRef ? [rootRef, props.anchorRef] : [rootRef], { passiveKeys });
 
     /*
      * H1: a menu drawn while a web pane's page is live would be sliced at the page's edge, so it
@@ -730,6 +739,11 @@ export function ContextMenu(props: ContextMenuProps): ReactElement | null {
             }
             const root = rootRef.current;
             if (root === null) return;
+            if (passiveKeys) {
+                const focusNow = globalThis.document.activeElement;
+                const panelNow = submenuRef.current;
+                if (!(focusNow instanceof Node) || (!root.contains(focusNow) && panelNow?.contains(focusNow) !== true)) return;
+            }
             // The keyboard takes over from the pointer: a switch held for a pointer crossing
             // rows must not land late on top of the walk, and a submenu the keyboard opens is
             // not aimed at from wherever the pointer last was.
@@ -791,7 +805,7 @@ export function ContextMenu(props: ContextMenuProps): ReactElement | null {
         return () => {
             doc.removeEventListener('keydown', onKeyDown, true);
         };
-    }, [submenuRef, resetAim]);
+    }, [submenuRef, resetAim, passiveKeys]);
 
     const container = props.container ?? globalThis.document?.body;
     if (container === undefined || container === null) return null;

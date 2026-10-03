@@ -125,6 +125,7 @@ export const DESKTOP_COMMANDS = [
     'shell-action',
     'restart-control-server',
     'open-terminal-target',
+    'probe-terminal-target',
     'markdown-external-editor',
     'paste-image',
     'drop-text'
@@ -457,7 +458,10 @@ export function createDesktopChannel(options: DesktopChannelOptions): DesktopCha
     };
 
     /** CONT-122 / TERM-052: what a ⌘-click on a terminal cell resolves to. */
-    const openTerminalTarget = async (payload: Record<string, unknown>): Promise<JsonObject> => {
+    const openTerminalTarget = async (
+        payload: Record<string, unknown>,
+        options: { readonly probe?: boolean } = {}
+    ): Promise<JsonObject> => {
         const paneID = text(payload['pane_id']);
         if (paneID === undefined) return failure('open-terminal-target requires pane_id');
         const row = integer(payload['row']);
@@ -465,6 +469,12 @@ export function createDesktopChannel(options: DesktopChannelOptions): DesktopCha
         if (row === undefined || col === undefined) {
             return failure('open-terminal-target requires numeric row and col');
         }
+        // #326: `probe-terminal-target` asks what a ⌘-click here WOULD do, with no side effects.
+        // A plain click uses it to decide whether to offer the "where to open this link" menu, so
+        // the menu offers exactly the links a ⌘-click opens and nothing it refuses. It is its own
+        // verb, not a flag, so a daemon older than it refuses it as unknown instead of ignoring a
+        // flag and opening a markdown pane on a plain click.
+        const probe = options.probe === true;
         const state = ctx.store.getState();
         const workspace = workspaceContainingVisiblePane(state, paneID);
         if (workspace === null) return failure(`pane not found: ${paneID}`);
@@ -539,6 +549,8 @@ export function createDesktopChannel(options: DesktopChannelOptions): DesktopCha
         // Deliberate improvement over the Swift path, which opened a pane for any `.md`-suffixed
         // word: a ⌘-click on prose must not leave a broken preview behind. The client says so.
         if (!exists(resolved)) return { ok: true, opened: 'missing', token, path: resolved };
+        // A probe stops before the only branch that changes anything.
+        if (probe) return { ok: true, opened: 'markdown', probe: true, path: resolved, token };
 
         const newPaneID = mint();
         ctx.store.dispatch({ type: 'focus-pane', workspaceID: workspace.id, paneID });
@@ -763,6 +775,7 @@ export function createDesktopChannel(options: DesktopChannelOptions): DesktopCha
             if (command === 'shell-action') return shellAction(payload);
             if (command === 'restart-control-server') return restartControlServer();
             if (command === 'open-terminal-target') return openTerminalTarget(payload);
+            if (command === 'probe-terminal-target') return openTerminalTarget(payload, { probe: true });
             if (command === 'paste-image') return pasteImage(payload);
             if (command === 'drop-text') return dropText(payload);
             return markdownExternalEditor(payload);

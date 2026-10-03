@@ -26,7 +26,7 @@
  *
  *   - EVERY zero-length replay frame threw `RangeError: offset is out of bounds` out of the
  *     engine — 61 of 181 frames in a 60-round run, because a pane whose shell has not printed
- *     yet serializes to nothing. That is N1's root cause; fixed in `0.4.0-nex.5` and in
+ *     yet serializes to nothing. That is N1's root cause; fixed in `0.4.0-kelpi.5` and in
  *     `renderer.ts`, and this harness now runs 90 rounds with 0 faults and 0 rebuilds.
  *   - The settled-resize replay carried rows WIDER than the pane (`NO_REFLOW` strands cells past
  *     the grid and `@xterm/addon-serialize` walks `line.length`), so the client rendered text the
@@ -39,7 +39,7 @@
  *     JS exactly as this note said (`ghostty_render_state_get_viewport` returns `count ===
  *     totalCells` and zeroing the destination first changes nothing, so it is written by the
  *     wasm, not read past its output). The app's answer is to suspend the engine's PAINT for the
- *     length of the resize→replay window (`renderer.ts`, `ghostty-web 0.4.0-nex.6`); the frames
+ *     length of the resize→replay window (`renderer.ts`, `ghostty-web 0.4.0-kelpi.6`); the frames
  *     are proved absent by `scripts/ui-audit/resize-flash-storm.mjs`.
  *
  *     THIS script deliberately does not take that path: it drives the engine directly rather

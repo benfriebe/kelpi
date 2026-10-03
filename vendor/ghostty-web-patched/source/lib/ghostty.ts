@@ -53,7 +53,7 @@ export class Ghostty {
   }
 
   /**
-   * Every terminal on its own WASM instance (`0.4.0-nex.10`).
+   * Every terminal on its own WASM instance (`0.4.0-kelpi.10`).
    *
    * The shared instance `init()` builds is kept for what is genuinely shared — key encoding —
    * and each terminal's VT storage lives in a heap no sibling can reach. Two terminals in one
@@ -79,7 +79,7 @@ export class Ghostty {
     return Ghostty.fromModule(module).createTerminalOnThisInstance(cols, rows, config);
   }
 
-  /** The pre-`nex.10` body: a terminal whose storage is THIS instance's heap. */
+  /** The pre-`kelpi.10` body: a terminal whose storage is THIS instance's heap. */
   private createTerminalOnThisInstance(
     cols: number,
     rows: number,
@@ -389,7 +389,7 @@ export class GhosttyTerminal {
     // A zero-length write is a no-op, and it must never reach the allocator: Zig answers a
     // zero-size allocation with its non-null sentinel address (0xFFFFFFFF, which JS reads back
     // as -1), so `Uint8Array.set(bytes, -1)` below throws `RangeError: offset is out of bounds`
-    // — the terminal is fine, but every caller sees a fatal write. Nex `-nex.5` (N1/N23): an
+    // — the terminal is fine, but every caller sees a fatal write. Kelpi `-kelpi.5` (N1/N23): an
     // empty attach replay is the common case for a pane whose shell has not printed yet, and
     // it was killing the first write into a fresh terminal.
     if (bytes.length === 0) return;
@@ -711,7 +711,7 @@ export class GhosttyTerminal {
   }
 
   /**
-   * vendor 0.4.0-nex.17 (#323): whether a row ANYWHERE in the buffer is the soft-wrap continuation
+   * vendor 0.4.0-kelpi.17 (#323): whether a row ANYWHERE in the buffer is the soft-wrap continuation
    * of the row above it, addressed by absolute row (0 = oldest history row, the numbering
    * `SelectionManager` and `trackSelection` use). `isRowWrapped` only reaches the active screen, so
    * this is the one a reader that walks history (copying a selection) needs.

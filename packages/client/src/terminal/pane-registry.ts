@@ -12,7 +12,7 @@
  * The obvious repair, wiring that prop and caching the last selection in the app, is wrong here,
  * and older engines showed why: `SelectionManager.clearSelection()` did not fire the change
  * emitter, including when mousedown started a new selection. A cached selection could survive a
- * click that visibly cleared it. `0.4.0-nex.14` announces clearing and reconciles history trims
+ * click that visibly cleared it. `0.4.0-kelpi.14` announces clearing and reconciles history trims
  * (#170), but notifications still do not replace the live answer at copy time.
  * `renderer.selection()` is already a live read
  * (`renderer.ts:170`, `§TERM-034`); this module is only the wire that lets the app reach it.

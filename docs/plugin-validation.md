@@ -1993,7 +1993,7 @@ The four review layers are `feature/plugin-sidebar-modules` → `feature/plugin-
 → `feature/plugin-ui-host` → `feature/plugin-bundled-features`. The previously tested tip is
 retained locally as `backup/plugin-ui-before-pr-20260910`.
 
-The worktree's local Ghostty package was refreshed to `0.4.0-nex.10` after checking all 32
+The worktree's local Ghostty package was refreshed to `0.4.0-kelpi.10` after checking all 32
 tracked vendor files against the existing build's source. The installed bundle matches that
 artifact, and the terminal vendor guard passes in the complete suite.
 

@@ -183,7 +183,7 @@ export class Buffer implements IBuffer {
       // So scrollbackOffset = y directly!
       const scrollbackOffset = y;
       cells = wasmTerm.getScrollbackLine(scrollbackOffset);
-      // vendor 0.4.0-nex.17 (#323): history rows know their wrap too (absolute row = y here).
+      // vendor 0.4.0-kelpi.17 (#323): history rows know their wrap too (absolute row = y here).
       isWrapped = wasmTerm.isScreenRowWrapped(y);
     } else {
       // Accessing visible screen

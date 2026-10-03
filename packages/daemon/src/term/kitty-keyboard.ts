@@ -2,7 +2,7 @@
  * Kitty keyboard protocol negotiation, read out of the byte stream the daemon already parses.
  *
  * Why this lives here rather than in a renderer, and why it looks exactly like
- * `mouse-modes.ts`: the engine will not do it. `ghostty-web 0.4.0-nex.2` registers **one**
+ * `mouse-modes.ts`: the engine will not do it. `ghostty-web 0.4.0-kelpi.2` registers **one**
  * `keydown` listener and **zero** `keyup` listeners, and its `setKittyFlags` has no call site
  * anywhere in the bundle (../kelpi-docs/capabilities/01 §TERM-030, re-measured on the vendored bundle).
  * A protocol whose whole point is press/repeat/release cannot be implemented by a layer that

@@ -173,13 +173,13 @@ export class InputHandler {
   private compositionUpdateListener: ((e: CompositionEvent) => void) | null = null;
   private compositionEndListener: ((e: CompositionEvent) => void) | null = null;
   private isComposing = false;
-  // VENDOR BRIDGE (0.4.0-nex.1): PR #120 targets a base where InputHandler knows its
+  // VENDOR BRIDGE (0.4.0-kelpi.1): PR #120 targets a base where InputHandler knows its
   // textarea; v0.4.0 does not, so the minimal member + constructor param are added here.
   private inputElement: HTMLTextAreaElement | null = null;
   private compositionJustEnded = false; // Block keydown briefly after composition ends
   private pendingKeyAfterComposition: string | null = null; // Key to output after composition
   private isDisposed = false;
-// VENDOR NOTE (0.4.0-nex.1): upstream PR #159's base carries mouse/paste/beforeinput
+// VENDOR NOTE (0.4.0-kelpi.1): upstream PR #159's base carries mouse/paste/beforeinput
   // dedupe fields absent in v0.4.0; only the two fields the encoder path needs are taken.
   // Cache of encoder option values last pushed to the WASM encoder, so
   // keystroke handling can skip the setOption WASM round-trip when nothing
@@ -188,7 +188,7 @@ export class InputHandler {
   private syncedEncoderOptions = new Map<KeyEncoderOption, boolean | number>();
   // Reused across keystrokes to avoid the TextDecoder allocation per call.
   private decoder = new TextDecoder();
-  // VENDOR BRIDGE (0.4.0-nex.1): with focus on the hidden textarea (PR #120), inserted text
+  // VENDOR BRIDGE (0.4.0-kelpi.1): with focus on the hidden textarea (PR #120), inserted text
   // (CDP Input.insertText, autocomplete, some IME finalizations) arrives as beforeinput on the
   // textarea and nothing in v0.4.0 forwards it. This is upstream main's beforeinput+dedupe
   // mechanism, minimally ported: physical keydowns record what they emitted so the echoing
@@ -281,7 +281,7 @@ export class InputHandler {
 
     this.compositionEndListener = this.handleCompositionEnd.bind(this);
 compositionTarget.addEventListener('compositionend', this.compositionEndListener);
-    // NOTE(vendor 0.4.0-nex.1): upstream PR #120's context also introduces engine mouse
+    // NOTE(vendor 0.4.0-kelpi.1): upstream PR #120's context also introduces engine mouse
     // listeners from post-0.4.0 main; deliberately NOT taken — v0.4.0 has none, and the
     // Nex client owns mouse reporting in its own capture-phase interceptor.
   }
@@ -388,7 +388,7 @@ compositionTarget.addEventListener('compositionend', this.compositionEndListener
     // (media keys, etc.) are dropped silently.
     const key = this.mapKeyCode(event.code);
     if (key === null) {
-      // VENDOR FALLBACK (0.4.0-nex.1): synthetic and virtual keyboards (CDP key events
+      // VENDOR FALLBACK (0.4.0-kelpi.1): synthetic and virtual keyboards (CDP key events
       // without `code`, some mobile IMEs) carry no mappable KeyboardEvent.code. Upstream
       // 0.4.0's printable fast path accepted these; PR #159 would drop them. Rescue plain
       // printable scalars; everything mappable keeps the encoder path.
@@ -508,7 +508,7 @@ compositionTarget.addEventListener('compositionend', this.compositionEndListener
   }
 
   /**
-   * VENDOR BRIDGE (0.4.0-nex.1): forward textarea-inserted text to the PTY exactly once.
+   * VENDOR BRIDGE (0.4.0-kelpi.1): forward textarea-inserted text to the PTY exactly once.
    * insertText only: composition text arrives via compositionend, pastes via the paste
    * listener, and control keys via the keydown encoder.
    */
@@ -561,7 +561,7 @@ compositionTarget.addEventListener('compositionend', this.compositionEndListener
 
     const data = event.data;
     if (data && data.length > 0) {
-      // NOTE(vendor 0.4.0-nex.1): upstream PR #120's base has shouldIgnoreCompositionEnd();
+      // NOTE(vendor 0.4.0-kelpi.1): upstream PR #120's base has shouldIgnoreCompositionEnd();
       // v0.4.0 does not, so that branch is omitted.
       this.onDataCallback(data);
     }
@@ -580,7 +580,7 @@ compositionTarget.addEventListener('compositionend', this.compositionEndListener
     if (this.pendingKeyAfterComposition) {
       const key = this.pendingKeyAfterComposition;
       this.pendingKeyAfterComposition = null;
-      // VENDOR HARDENING (0.4.0-nex.1): only replay single-character terminators.
+      // VENDOR HARDENING (0.4.0-kelpi.1): only replay single-character terminators.
       // A composition ended by a named key (e.g. "Enter") would otherwise write the
       // literal key name to the PTY as text.
       if (key.length === 1) {

@@ -374,7 +374,7 @@ describe('TerminalRenderer adapter', () => {
         // are superseded and go; the reset at the head of the queue is applied by
         // `resetTerminal`, which knows nothing has reached this engine yet and leaves it be.
         // (When every Terminal shared one WASM instance the RIS here was what kept a pane's
-        // snapshot off its predecessor's grid; since ghostty-web `0.4.0-nex.10` an engine comes
+        // snapshot off its predecessor's grid; since ghostty-web `0.4.0-kelpi.10` an engine comes
         // up on its own instance, and a reset on it would only build a second one.)
         const engine = stubEngine();
         const renderer = createRendererFromLoader('xterm', engine.loader);
@@ -1034,7 +1034,7 @@ describe('a poisoned engine (run-F N1)', () => {
      * throws `RangeError: offset is out of bounds`. The daemon produces exactly that input on
      * every attach to a pane whose shell has not printed yet (its snapshot serializes to the
      * empty string), which is why a freshly created pane could come up on the *terminal renderer
-     * failed to start* placeholder. Fixed in the engine (`0.4.0-nex.5`) and here, because this
+     * failed to start* placeholder. Fixed in the engine (`0.4.0-kelpi.5`) and here, because this
      * layer is the one that decides whether a pane restarts — and it must never restart over
      * zero bytes.
      */

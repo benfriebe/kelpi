@@ -17,7 +17,7 @@
  * were taken against is the artifact this workspace installs, and that the built bundle and
  * the snapshotted source it claims to come from have not drifted apart.
  *
- * From `-nex.13` the fork is no longer TypeScript-only: `ghostty-vt.wasm` carries a libghostty-vt
+ * From `-kelpi.13` the fork is no longer TypeScript-only: `ghostty-vt.wasm` carries a libghostty-vt
  * patch (§165), and a marker string cannot see inside a 413 KB binary. So this file grew two new
  * kinds of case.
  *
@@ -45,13 +45,13 @@ const repoRoot = path.resolve(here, '..', '..', '..', '..');
 const vendorRoot = path.join(repoRoot, 'vendor', 'ghostty-web-patched');
 
 /** The version the audit evidence and PROVENANCE.md were written against. */
-const EXPECTED_VERSION = '0.4.0-nex.17';
+const EXPECTED_VERSION = '0.4.0-kelpi.17';
 
 /** Markers of the caret-anchored IME, in the built ESM bundle the client imports. */
 const CARET_MARKERS = ['data-ime-preedit', 'data-ime-caret', 'syncImeCaret'];
 
 /**
- * Markers of `-nex.3`'s honoured `allowTransparency` (§N17).
+ * Markers of `-kelpi.3`'s honoured `allowTransparency` (§N17).
  *
  * The same loss the caret markers guard against, one release later: upstream's option was
  * accepted and never read, so every default-background paint was an opaque `fillRect` and a
@@ -62,7 +62,7 @@ const CARET_MARKERS = ['data-ime-preedit', 'data-ime-caret', 'syncImeCaret'];
 const TRANSPARENCY_MARKERS = ['paintDefaultBackground', 'allowTransparency'];
 
 /**
- * Markers of `-nex.4`'s focus-aware cursor (§N20).
+ * Markers of `-kelpi.4`'s focus-aware cursor (§N20).
  *
  * The third thing upstream does not have and the app cannot see the absence of in a unit test:
  * `ghostty-web` draws one cursor, filled and blinking, in every terminal on the page — so a
@@ -74,7 +74,7 @@ const TRANSPARENCY_MARKERS = ['paintDefaultBackground', 'allowTransparency'];
 const CURSOR_FOCUS_MARKERS = ['setFocused', 'renderHollowCursor', 'cursorStateDirty'];
 
 /**
- * The marker of `-nex.5`'s zero-length `write()` guard (§N1 / §N23).
+ * The marker of `-kelpi.5`'s zero-length `write()` guard (§N1 / §N23).
  *
  * `GhosttyTerminal.write()` hands `bytes.length` to the WASM allocator, and a ZERO-size request
  * comes back as Zig's non-null sentinel `0xFFFFFFFF` — `-1` off the `i32` export — so the
@@ -91,7 +91,7 @@ const CURSOR_FOCUS_MARKERS = ['setFocused', 'renderHollowCursor', 'cursorStateDi
 const EMPTY_WRITE_GUARD = /if \((\w+)\.length === 0\)\s*return;\s*const \w+ = this\.exports\.ghostty_wasm_alloc_u8_array\(\1\.length\)/;
 
 /**
- * Markers of `-nex.6`'s paint suspension (§N24).
+ * Markers of `-kelpi.6`'s paint suspension (§N24).
  *
  * The fourth adaptation, and the one whose absence is invisible until someone photographs it: a
  * widening `ghostty_terminal_resize` under heap churn leaves cells in libghostty-vt's own
@@ -112,7 +112,7 @@ const PAINT_SUSPEND_MARKERS = ['setPaintSuspended', 'isPaintSuspended', 'this.pa
 const PAINT_SUSPEND_GUARD = /render\([^)]*\)\s*\{\s*(?:var\s+\w+;\s*)?if\s*\(this\.paintSuspended\)\s*return;/;
 
 /**
- * Markers of `-nex.16`'s search-highlight layer (#306).
+ * Markers of `-kelpi.16`'s search-highlight layer (#306).
  *
  * The find bar's highlights are the engine's own paint: Kelpi hands it a needle and the selected
  * match, and the renderer finds and paints every visible occurrence. Take a future npm release
@@ -128,7 +128,7 @@ const SEARCH_HIGHLIGHT_MARKERS = [
 ];
 
 /**
- * Markers of `-nex.7`'s live default colours (§N18).
+ * Markers of `-kelpi.7`'s live default colours (§N18).
  *
  * The fifth adaptation, and the one that only shows itself the moment a user changes
  * `theme = …` with the app running: `ghostty_terminal_new_with_config` takes `bg_color` /
@@ -158,7 +158,7 @@ const LIVE_THEME_MARKERS = [
 const LIVE_THEME_PAINT_SITES = /fillStyle\s*=\s*this\.liveThemeColor\([^)]*\)\s*\?\?\s*this\.rgbToCSS\(/g;
 
 /**
- * Marker of `-nex.8`'s scrollbar-strip restore.
+ * Marker of `-kelpi.8`'s scrollbar-strip restore.
  *
  * `renderScrollbar`'s first paint is a backdrop: it clears a ~14px strip at the canvas's right
  * edge to the default background on every frame the scrollbar is drawn — over the last column
@@ -172,7 +172,7 @@ const LIVE_THEME_PAINT_SITES = /fillStyle\s*=\s*this\.liveThemeColor\([^)]*\)\s*
 const SCROLLBAR_RESTORE_MARKERS = ['scrollbarWasPainted'];
 
 /**
- * PR #120's corner chip, which `-nex.2` replaced. Its label must NOT come back.
+ * PR #120's corner chip, which `-kelpi.2` replaced. Its label must NOT come back.
  *
  * Built from code points rather than written as a literal, for the same reason the audit's
  * fixtures are: this is the operand of a `not.toContain`, and a Hangul literal that some
@@ -188,7 +188,7 @@ function read(file: string): string {
  * The shipped wasm, instantiated through the public API.
  *
  * `new Ghostty(instance, module)` is the same two-argument form the app uses (the module is what
- * `-nex.10` needs to give every terminal its own instance), and it is the form
+ * `-kelpi.10` needs to give every terminal its own instance), and it is the form
  * `renderer-replay.test.ts` already proves works under vitest. Node's `WebAssembly` is a global
  * in the jsdom environment too, so nothing here needs a browser.
  */
@@ -295,14 +295,14 @@ describe('vendored ghostty-web engine', () => {
         expect(bundle).toMatch(PAINT_SUSPEND_GUARD);
     });
 
-    it('ships the fresh-instance replay reset in both the VT and the terminal host (§-nex.9)', () => {
+    it('ships the fresh-instance replay reset in both the VT and the terminal host (§-kelpi.9)', () => {
         const bundle = read(path.join(vendorRoot, 'dist', 'ghostty-web.js'));
         expect(bundle.match(/resetForReplay\(\)/g)?.length).toBeGreaterThanOrEqual(3);
         expect(bundle).toContain('new WebAssembly.Instance');
         expect(read(path.join(vendorRoot, 'source', 'lib', 'ghostty.ts'))).toContain('this.cellPool = replacement.cellPool');
     });
 
-    it('ships every terminal on its own WASM instance, with the shared one kept for key encoding (§-nex.10)', () => {
+    it('ships every terminal on its own WASM instance, with the shared one kept for key encoding (§-kelpi.10)', () => {
         // Two terminals in one heap was the precondition for the heap-churn trap
         // (`RuntimeError: memory access out of bounds` on a long session's remount replay,
         // and every retry landing on the same corrupted heap). `createTerminal` instantiates
@@ -314,7 +314,7 @@ describe('vendored ghostty-web engine', () => {
         expect(ghosttySource).toContain('if (module === undefined) return this.createTerminalOnThisInstance(cols, rows, config);');
     });
 
-    it('ships a viewport that output cannot move, and a keystroke brings back (§-nex.11)', () => {
+    it('ships a viewport that output cannot move, and a keystroke brings back (§-kelpi.11)', () => {
         // Upstream snapped to the bottom on every write while scrolled up; against a TUI that
         // repaints its status line several times a second that is a viewport nobody can hold,
         // and with a smooth-scroll animation still heading the other way it jitters. The pin
@@ -328,10 +328,10 @@ describe('vendored ghostty-web engine', () => {
         expect(terminalSource).toContain('if (this.options.scrollOnUserInput !== false) {');
     });
 
-    it('ships a selection manager whose document listeners ALL come off on dispose (§-nex.12)', () => {
+    it('ships a selection manager whose document listeners ALL come off on dispose (§-kelpi.12)', () => {
         // The retainer behind "Cannot allocate Wasm memory for new instance": an anonymous
         // `document` mousedown listener that dispose() never removed kept every terminal ever
-        // opened reachable — and, since `-nex.10`, its own WASM instance with it. The handler is
+        // opened reachable — and, since `-kelpi.10`, its own WASM instance with it. The handler is
         // bound and removed like the other three; the bundle must carry both halves.
         const bundle = read(path.join(vendorRoot, 'dist', 'ghostty-web.js'));
         expect(bundle).toMatch(/document\.addEventListener\("mousedown",\s*this\.boundDocumentMouseDownHandler\)/);
@@ -356,7 +356,7 @@ describe('vendored ghostty-web engine', () => {
         expect(bundle).toMatch(/setTerminalDefaultColors\(\s*[A-Za-z_$]/);
     });
 
-    it('ships a bundle that repaints the strip the scrollbar backdrop erases (§-nex.8)', () => {
+    it('ships a bundle that repaints the strip the scrollbar backdrop erases (§-kelpi.8)', () => {
         const bundle = read(path.join(vendorRoot, 'dist', 'ghostty-web.js'));
         for (const marker of SCROLLBAR_RESTORE_MARKERS) {
             expect(bundle).toContain(marker);
@@ -367,7 +367,7 @@ describe('vendored ghostty-web engine', () => {
         expect(bundle).toMatch(/this\.scrollbarWasPainted\s*=[^=]/);
     });
 
-    it('ships a search highlight layer and a select() that lands on the row it names (§-nex.16, #306)', () => {
+    it('ships a search highlight layer and a select() that lands on the row it names (§-kelpi.16, #306)', () => {
         const bundle = read(path.join(vendorRoot, 'dist', 'ghostty-web.js'));
         for (const marker of SEARCH_HIGHLIGHT_MARKERS) {
             expect(bundle).toContain(marker);
@@ -383,7 +383,7 @@ describe('vendored ghostty-web engine', () => {
         expect(selectionSource.match(/absoluteRow: this\.viewportRowToAbsolute\(/g) ?? []).toHaveLength(6);
     });
 
-    it('joins soft-wrapped rows when a selection is copied, history included (§-nex.17, #323)', async () => {
+    it('joins soft-wrapped rows when a selection is copied, history included (§-kelpi.17, #323)', async () => {
         const bundle = read(path.join(vendorRoot, 'dist', 'ghostty-web.js'));
         // The binding, and the call `getSelection()` makes through it.
         expect(bundle).toContain('ghostty_terminal_is_screen_row_wrapped');
@@ -436,7 +436,7 @@ describe('vendored ghostty-web engine', () => {
         expect(rendererSource).toContain('setTerminalDefaultColors(background: number | null');
         expect(rendererSource).toContain('if (this.isTerminalDefaultBackground(r, g, b)) return true;');
         expect(rendererSource.match(/this\.liveThemeColor\(\w+_r, \w+_g, \w+_b\) \?\?/g) ?? []).toHaveLength(2);
-        // §-nex.8's half, in the renderer: the frame after the scrollbar's last one forces the
+        // §-kelpi.8's half, in the renderer: the frame after the scrollbar's last one forces the
         // full walk that repaints the strip its backdrop erased.
         expect(rendererSource).toContain('const scrollbarPainted = !!scrollbackProvider && scrollbarOpacity > 0;');
         expect(rendererSource).toContain('if (this.scrollbarWasPainted && !scrollbarPainted) {');
@@ -566,7 +566,7 @@ describe('vendored ghostty-web engine', () => {
         // inspector opening, another client taking size ownership), and the repaint is Ink's,
         // i.e. Claude Code's: `ansi-escapes`' `eraseLines(n)` is `ESC[2K` + `ESC[1A` per row and a
         // final `ESC[2K ESC[G`, then the whole frame is rewritten at the new width. Before the
-        // `-nex.13` wasm patch every one of those erased rows kept the `wrap_continuation` flag
+        // `-kelpi.13` wasm patch every one of those erased rows kept the `wrap_continuation` flag
         // the shrink's reflow had put on it, so the widen's reflow appended each row's NEW,
         // unrelated contents to the row above: the reporter's screenshot, rows of 17-cell
         // fragments separated by 9-cell blank runs (the diff frame's line-number gutter) at a

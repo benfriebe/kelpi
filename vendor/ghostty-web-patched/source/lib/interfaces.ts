@@ -21,7 +21,7 @@ export interface ITerminalOptions {
 
   // Scrolling options
   smoothScrollDuration?: number; // Duration in ms for smooth scroll animation (default: 100, 0 = instant)
-  scrollOnUserInput?: boolean; // vendor 0.4.0-nex.11: a keystroke scrolls to the bottom (default: true)
+  scrollOnUserInput?: boolean; // vendor 0.4.0-kelpi.11: a keystroke scrolls to the bottom (default: true)
 
   // Internal: Ghostty WASM instance (optional, for test isolation)
   // If not provided, uses the module-level instance from init()
@@ -36,7 +36,7 @@ export interface ITheme {
   selectionBackground?: string;
   selectionForeground?: string;
 
-  // vendor 0.4.0-nex.16: the search-highlight layer (`search-highlight.ts`). Ghostty's own
+  // vendor 0.4.0-kelpi.16: the search-highlight layer (`search-highlight.ts`). Ghostty's own
   // `search-background` / `search-foreground` and `search-selected-*` keys: every visible match,
   // and the one the embedder's counter is on.
   searchBackground?: string;

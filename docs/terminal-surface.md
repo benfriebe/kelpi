@@ -950,7 +950,7 @@ needle (the daemon's, so every attached window highlights the same one and the h
 describe the needle the counter counts; the case flag is the window's own, the one thing two
 windows can disagree about, so a window whose flag differs from the last request's paints its own
 reading of the needle), the window's case flag, and the selected match as the
-step reply stated it. The engine (ghostty-web `0.4.0-nex.16`, `lib/search-highlight.ts`) finds the
+step reply stated it. The engine (ghostty-web `0.4.0-kelpi.16`, `lib/search-highlight.ts`) finds the
 matches itself in the rows it paints, by the same rules as the daemon (wrap-joined rows, case
 folding that never changes a string's length so offsets agree, overlapping occurrences, UTF-16
 offsets into each row's text mapped back to cells), so the highlights follow scrolling, output and
@@ -967,7 +967,7 @@ current match ends: it is never painted on text that is not the needle. Return /
 match to the middle of the viewport. Closing the bar clears every highlight.
 
 Limits, stated: the highlight layer knows a soft wrap only where its continuation row is on the
-screen (it reads `ghostty_terminal_is_row_wrapped`; since `-nex.17` the WASM can also answer for
+screen (it reads `ghostty_terminal_is_row_wrapped`; since `-kelpi.17` the WASM can also answer for
 history rows, which this layer does not consult yet), so a needle straddling the wrap of a line
 further back in history is counted by the daemon but not painted as an ordinary match; stepping
 to it still paints it as the selected match, after the text it covers has been checked against
@@ -1188,7 +1188,7 @@ joined to it with no newline and keeps its trailing spaces, so a wrapped command
 the one line it was. Rows that end in a newline the program printed are trimmed of trailing
 padding and separated by `\n`, as before. This holds in history too: the engine answers "is this
 row a wrap continuation" for any absolute row (`ghostty_terminal_is_screen_row_wrapped`, vendor
-`-nex.17`), not just for rows on the screen. Line breaks a full-screen program draws itself
+`-kelpi.17`), not just for rows on the screen. Line breaks a full-screen program draws itself
 (an editor, a pager, an agent's TUI) are real cursor moves, not soft wraps, and are copied as
 breaks, as in Ghostty. The join follows the engine's wrap flag and nothing else, which is also
 Ghostty's rule (`Screen.selectionString` adds a newline only `if (!row.wrap)`): a program that moves
@@ -1522,7 +1522,7 @@ Two client-side paths write the clipboard, and until #81 only the first existed:
    **A live read, never a cached one.** The registry pulls the focused renderer's answer at
    the moment the chord is pressed, including a remote embedded workspace through its selection
    bridge (#226). Older engines did not announce `clearSelection()`, so a cached selection could
-   survive a click that visibly cleared it. Since `0.4.0-nex.14`, clearing announces the change,
+   survive a click that visibly cleared it. Since `0.4.0-kelpi.14`, clearing announces the change,
    but that notification is not the authority for copying.
 
    **It declines rather than swallows** in two cases, and a decline is the dispatcher's
@@ -1531,7 +1531,7 @@ Two client-side paths write the clipboard, and until #81 only the first existed:
    mouse reporting clears the selection on every press (section 12.1's Shift+drag note below), so
    an agent pane meets it constantly. ⌃C remains the only interrupt.
 
-**Selection across output and history trimming** (`0.4.0-nex.14`, #170). Selection endpoints
+**Selection across output and history trimming** (`0.4.0-kelpi.14`, #170). Selection endpoints
 are tracked by native buffer pins during each output write, then the copy reader and highlight
 use those pins' updated coordinates. A retained conversation row stays selected when older
 scrollback pages are discarded, including a trim hidden by net growth in the same output chunk.

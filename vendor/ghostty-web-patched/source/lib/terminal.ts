@@ -77,7 +77,7 @@ export class Terminal implements ITerminalCore {
   private compositionPreview?: HTMLDivElement;
 
   /**
-   * Surface focus (vendor 0.4.0-nex.4) — see `setFocused`.
+   * Surface focus (vendor 0.4.0-kelpi.4) — see `setFocused`.
    *
    * Held on the Terminal as well as on the renderer because the renderer does not exist until
    * `open()`, and an embedder building a grid of panes sets each one's focus while they are
@@ -87,7 +87,7 @@ export class Terminal implements ITerminalCore {
   private surfaceFocused = true;
 
   /**
-   * Paint suspension (vendor 0.4.0-nex.6) — see `setPaintSuspended`.
+   * Paint suspension (vendor 0.4.0-kelpi.6) — see `setPaintSuspended`.
    *
    * Held on the Terminal as well as on the renderer for the same reason `surfaceFocused` is:
    * the renderer does not exist until `open()`, and an embedder may suspend before then.
@@ -95,12 +95,12 @@ export class Terminal implements ITerminalCore {
   private paintSuspended = false;
 
   /**
-   * The search highlight (vendor 0.4.0-nex.16): see `setSearchHighlight`. Held here as well for
+   * The search highlight (vendor 0.4.0-kelpi.16): see `setSearchHighlight`. Held here as well for
    * the same reason as the two above: an embedder may set it before `open()` builds a renderer.
    */
   private searchHighlight: ISearchHighlight | null = null;
 
-  // ── Caret-anchored IME (vendor 0.4.0-nex.2) ───────────────────────────────
+  // ── Caret-anchored IME (vendor 0.4.0-kelpi.2) ───────────────────────────────
   // The cursor cell's box in the coordinate space the absolutely-positioned textarea and
   // preedit overlay share (their containing block == the canvas's offsetParent), so a canvas
   // that does not sit at the container's origin still anchors correctly. Cached so the render
@@ -128,7 +128,7 @@ export class Terminal implements ITerminalCore {
   private scrollEmitter = new EventEmitter<number>();
   private renderEmitter = new EventEmitter<{ start: number; end: number }>();
   private cursorMoveEmitter = new EventEmitter<void>();
-  // vendor 0.4.0-nex.16
+  // vendor 0.4.0-kelpi.16
   private searchHighlightEmitter = new EventEmitter<ISearchHighlightSpan[]>();
   // Public event accessors (xterm.js compatibility)
   public readonly onData: IEvent<string> = this.dataEmitter.event;
@@ -141,7 +141,7 @@ export class Terminal implements ITerminalCore {
   public readonly onRender: IEvent<{ start: number; end: number }> = this.renderEmitter.event;
   public readonly onCursorMove: IEvent<void> = this.cursorMoveEmitter.event;
   /**
-   * vendor 0.4.0-nex.16: fires after a frame whose search highlights differ from the frame
+   * vendor 0.4.0-kelpi.16: fires after a frame whose search highlights differ from the frame
    * before (a new needle, a scroll, output that moved or added a match, the bar closing), with
    * that frame's spans. See `setSearchHighlight`.
    */
@@ -201,7 +201,7 @@ export class Terminal implements ITerminalCore {
       convertEol: options.convertEol ?? false,
       disableStdin: options.disableStdin ?? false,
       smoothScrollDuration: options.smoothScrollDuration ?? 100, // Default: 100ms smooth scroll
-      scrollOnUserInput: options.scrollOnUserInput ?? true, // vendor 0.4.0-nex.11
+      scrollOnUserInput: options.scrollOnUserInput ?? true, // vendor 0.4.0-kelpi.11
     };
 
     // Wrap in Proxy to intercept runtime changes (xterm.js compatibility)
@@ -409,7 +409,7 @@ export class Terminal implements ITerminalCore {
       // Setting contenteditable causes IME (Korean, Chinese, Japanese) input to be
       // inserted directly into the container as text nodes, bypassing our textarea.
       // Instead, we use the hidden textarea for all keyboard/IME input.
-      // (vendor 0.4.0-nex.1: v0.4.0's beforeinput preventDefault on the parent is also
+      // (vendor 0.4.0-kelpi.1: v0.4.0's beforeinput preventDefault on the parent is also
       // dropped with it, matching upstream PR #120.)
 
       // Add accessibility attributes for screen readers and extensions
@@ -433,7 +433,7 @@ export class Terminal implements ITerminalCore {
       this.textarea.setAttribute('spellcheck', 'false');
       this.textarea.setAttribute('tabindex', '0'); // Allow focus for mobile keyboard
       this.textarea.setAttribute('aria-label', 'Terminal input');
-      this.textarea.setAttribute('data-ime-caret', ''); // vendor 0.4.0-nex.2: the caret proxy
+      this.textarea.setAttribute('data-ime-caret', ''); // vendor 0.4.0-kelpi.2: the caret proxy
       // Use clip-path to completely hide the textarea and its caret
       this.textarea.style.position = 'absolute';
       this.textarea.style.left = '0';
@@ -448,7 +448,7 @@ export class Terminal implements ITerminalCore {
       this.textarea.style.overflow = 'hidden';
       this.textarea.style.whiteSpace = 'nowrap';
       this.textarea.style.resize = 'none';
-      // vendor 0.4.0-nex.2 (caret-anchored IME): the textarea is moved onto the cursor cell
+      // vendor 0.4.0-kelpi.2 (caret-anchored IME): the textarea is moved onto the cursor cell
       // every frame (see syncImeCaret), which puts it under the mouse whenever the pointer is
       // over the caret. It must never take a hit-test off the canvas — selection drags start
       // there. Focus is routed programmatically (canvas mousedown → textarea.focus()), so
@@ -458,7 +458,7 @@ export class Terminal implements ITerminalCore {
 
       // Create the preedit overlay for IME input (Korean, Chinese, Japanese).
       //
-      // vendor 0.4.0-nex.2: PR #120 drew this as a chip pinned to `top:4px; right:4px` of the
+      // vendor 0.4.0-kelpi.2: PR #120 drew this as a chip pinned to `top:4px; right:4px` of the
       // container — the in-flight text was legible but nowhere near the caret, so a composing
       // user read their own typing at the far corner of the pane. This is now marked text at
       // the cursor cell: terminal font, cell-tall, painted over the cells it will occupy, with
@@ -500,7 +500,7 @@ export class Terminal implements ITerminalCore {
         this.setPreedit('');
       });
 
-      // Focus never owns the embedder's scroll position (vendor 0.4.0-nex.15, #178).
+      // Focus never owns the embedder's scroll position (vendor 0.4.0-kelpi.15, #178).
       // A mirrored canvas can be panned away from the terminal cursor; revealing the hidden
       // textarea here would move it back before selection resolves the pointer's cell.
       // preventScroll keeps the same caret/keyboard behavior without moving any ancestor.
@@ -541,20 +541,20 @@ export class Terminal implements ITerminalCore {
         // it over is what makes the option mean something — see
         // `RendererOptions.allowTransparency` in `renderer.ts`.
         allowTransparency: this.options.allowTransparency,
-        // vendor 0.4.0-nex.4: a pane whose focus was set before it opened must not come up
+        // vendor 0.4.0-kelpi.4: a pane whose focus was set before it opened must not come up
         // blinking as if it had the caret. See `setFocused`.
         focused: this.surfaceFocused,
       });
-      // vendor 0.4.0-nex.6: carry a suspension asked for before `open()` onto the renderer that
+      // vendor 0.4.0-kelpi.6: carry a suspension asked for before `open()` onto the renderer that
       // is only now being built. See `setPaintSuspended`.
       if (this.paintSuspended) this.renderer.setPaintSuspended(true);
-      // vendor 0.4.0-nex.16: and a search highlight. See `setSearchHighlight`.
+      // vendor 0.4.0-kelpi.16: and a search highlight. See `setSearchHighlight`.
       if (this.searchHighlight) this.renderer.setSearchHighlight(this.searchHighlight);
       this.renderer.setSearchHighlightListener((spans) => {
         this.searchHighlightEmitter.fire(spans.map((span) => ({ ...span })));
       });
       /**
-       * vendor 0.4.0-nex.7 (Nex §N18): tell the renderer which default colours the WASM terminal
+       * vendor 0.4.0-kelpi.7 (Nex §N18): tell the renderer which default colours the WASM terminal
        * a few lines above was BUILT with.
        *
        * `ghostty_terminal_new_with_config` takes `bg_color`/`fg_color` once and there is no
@@ -587,7 +587,7 @@ export class Terminal implements ITerminalCore {
           if (this.options.disableStdin) {
             return;
           }
-          // vendor 0.4.0-nex.11: a keystroke brings the current output back into view
+          // vendor 0.4.0-kelpi.11: a keystroke brings the current output back into view
           // (Ghostty's default; xterm.js's `scrollOnUserInput`). Mouse reports do not come
           // this way — the host sends those on its own path — so this is keys and paste.
           if (this.options.scrollOnUserInput !== false) {
@@ -609,7 +609,7 @@ export class Terminal implements ITerminalCore {
           // Query terminal mode state (e.g., mode 1 for application cursor mode)
           return this.wasmTerm?.getMode(mode, false) ?? false;
         },
-        this.textarea // vendor 0.4.0-nex.1: PR #120 composition target bridge
+        this.textarea // vendor 0.4.0-kelpi.1: PR #120 composition target bridge
       );
 
       // Create selection manager (pass textarea for context menu positioning)
@@ -700,7 +700,7 @@ export class Terminal implements ITerminalCore {
     // stale when a full history page is trimmed, even if the selected text survives.
     const trackedSelection = this.selectionManager?.trackSelectionForWrite();
 
-    // vendor 0.4.0-nex.11: measured only while scrolled up, so the at-bottom hot path pays
+    // vendor 0.4.0-kelpi.11: measured only while scrolled up, so the at-bottom hot path pays
     // nothing. See the pin below.
     const scrollbackBefore = this.viewportY !== 0 ? this.wasmTerm!.getScrollbackLength() : 0;
 
@@ -726,7 +726,7 @@ export class Terminal implements ITerminalCore {
     // Invalidate link cache (content changed)
     this.linkDetector?.invalidateCache();
 
-    // vendor 0.4.0-nex.11: output never moves a scrolled viewport.
+    // vendor 0.4.0-kelpi.11: output never moves a scrolled viewport.
     //
     // Upstream snapped to the bottom here on every write while scrolled up ("xterm.js
     // behavior" — it is not: xterm.js stays at the bottom only if it was already there, and
@@ -844,7 +844,7 @@ export class Terminal implements ITerminalCore {
     this.renderer!.resize(cols, rows);
 
     /**
-     * vendor 0.4.0-nex.6 (§N24): while paint is suspended, `renderer.resize()` above is the
+     * vendor 0.4.0-kelpi.6 (§N24): while paint is suspended, `renderer.resize()` above is the
      * ONLY thing allowed to touch the canvas.
      *
      * The block below re-assigns `canvas.width`/`height` in CSS pixels, which (a) wipes the
@@ -947,7 +947,7 @@ export class Terminal implements ITerminalCore {
   }
 
   /**
-   * Tell the terminal whether its surface has KEYBOARD FOCUS (vendor 0.4.0-nex.4).
+   * Tell the terminal whether its surface has KEYBOARD FOCUS (vendor 0.4.0-kelpi.4).
    *
    * The port of `ghostty_surface_set_focus`, and deliberately separate from `focus()`/`blur()`,
    * which move the DOM caret. An embedder with several terminals on one page has exactly one
@@ -966,7 +966,7 @@ export class Terminal implements ITerminalCore {
   }
 
   /**
-   * Suspend or resume PAINTING (vendor 0.4.0-nex.6 — Nex §N24).
+   * Suspend or resume PAINTING (vendor 0.4.0-kelpi.6 — Nex §N24).
    *
    * Suspended, the render loop and the forced render inside `resize()` produce nothing and the
    * canvas keeps the last frame that was painted, carried across any resize that happens
@@ -1071,7 +1071,7 @@ export class Terminal implements ITerminalCore {
   }
 
   // ==========================================================================
-  // Search highlight (vendor 0.4.0-nex.16)
+  // Search highlight (vendor 0.4.0-kelpi.16)
   // ==========================================================================
 
   /**
@@ -1227,7 +1227,7 @@ export class Terminal implements ITerminalCore {
 
   /**
    * Keep the lines on screen where they are while `grown` lines were appended below them
-   * (vendor 0.4.0-nex.11). Announced like any other move: the offset changed even though the
+   * (vendor 0.4.0-kelpi.11). Announced like any other move: the offset changed even though the
    * content did not, and a host mirroring the offset (a scrollbar, a touch scroller) must not
    * be left holding a stale one.
    */
@@ -1449,7 +1449,7 @@ export class Terminal implements ITerminalCore {
           this.cursorMoveEmitter.fire();
         }
 
-        // vendor 0.4.0-nex.2: keep the IME anchored to the caret. Driven from the render loop
+        // vendor 0.4.0-kelpi.2: keep the IME anchored to the caret. Driven from the render loop
         // rather than from onCursorMove because a cursor that moves along a ROW (typing) never
         // fires that event, and because a resize changes the cell box without moving the
         // cursor at all. Cheap: syncImeCaret returns after four number comparisons unless the
@@ -1467,7 +1467,7 @@ export class Terminal implements ITerminalCore {
   }
 
   // ==========================================================================
-  // Caret-anchored IME (vendor 0.4.0-nex.2)
+  // Caret-anchored IME (vendor 0.4.0-kelpi.2)
   // ==========================================================================
   //
   // Two things have to sit on the cursor cell for CJK input to feel native, and stock

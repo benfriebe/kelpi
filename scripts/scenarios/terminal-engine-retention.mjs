@@ -3,7 +3,7 @@
  * MOUNTED panes, not every pane ever shown.
  *
  * Why it is a scenario and not a unit test: the retainer that broke this (ghostty-web
- * `0.4.0-nex.12`, PROVENANCE.md) was a `document` listener nobody's unit test could see, and
+ * `0.4.0-kelpi.12`, PROVENANCE.md) was a `document` listener nobody's unit test could see, and
  * the ceiling it hit is V8's — on the order of a hundred WASM memories per process, after
  * which `new WebAssembly.Instance` throws `Cannot allocate Wasm memory for new instance` and
  * every pane in the window lands on the placeholder at once (2026-09-10). Only the real engine

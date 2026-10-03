@@ -2554,7 +2554,7 @@ function Shell(props: AppProps): ReactElement {
      * The comment above states the port's old limit: "the desktop shows through the window
      * fill, the grid gutters and the pane padding, but NOT through the terminal's own canvas —
      * the engine paints that with this opaque hex". That limit is gone. `ghostty-web`
-     * `0.4.0-nex.3` implements the `allowTransparency` option it always accepted and never
+     * `0.4.0-kelpi.3` implements the `allowTransparency` option it always accepted and never
      * read: with it on, the DEFAULT background is cleared rather than filled, so `paneFill`'s
      * `rgba()` is what shows in every blank cell — the composite libghostty produced inside the
      * surface in the shipped app (`PaneGridView.swift:370-378` leaves a shell pane's wrapper

@@ -3,7 +3,7 @@
  *
  * Copy reads the engine's own `getSelection()` (`TerminalRenderer.selection()`), so this runs the
  * installed `ghostty-web` bundle on its shipped WASM, opened into jsdom over a stub 2D context, and
- * asserts on the exact text a ⌘C would put on the clipboard. Before `0.4.0-nex.17` every row ended
+ * asserts on the exact text a ⌘C would put on the clipboard. Before `0.4.0-kelpi.17` every row ended
  * in `'\n'` and lost its trailing spaces, wrap or no wrap, so a wrapped command or URL pasted back
  * as several lines; the WASM had no way to say whether a HISTORY row was wrapped at all.
  */

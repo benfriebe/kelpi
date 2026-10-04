@@ -751,7 +751,14 @@ export function startShell(sandbox, { repoRoot, packaged = false, verbose = fals
     const lines = [];
     const child = spawn(binary, args, {
         cwd: packaged ? sandbox.home : shellRoot,
-        env: { ...sandbox.env, ELECTRON_DISABLE_SECURITY_WARNINGS: '1', ...extraEnv },
+        env: {
+            ...sandbox.env,
+            ELECTRON_DISABLE_SECURITY_WARNINGS: '1',
+            // #313: a packaged app ignores the sandbox's KELPID_* / KELPI_HARNESS* without this,
+            // and would attach to the developer's own daemon instead. A dev shell keeps them anyway.
+            ...(packaged ? { KELPI_SHELL_ENV_OVERRIDES: '1' } : {}),
+            ...extraEnv
+        },
         stdio: ['ignore', 'pipe', 'pipe'],
         detached: true
     });

@@ -23,6 +23,9 @@
  * link is handed to the system browser.
  */
 
+// #313: first, so nothing below reads a variable a packaged app must not take from its launcher.
+import { shellEnvReport } from './shell-env-init.js';
+import { shellEnvLogLines } from './shell-env.js';
 import {
     BrowserWindow,
     Menu,
@@ -2200,6 +2203,7 @@ if (!app.requestSingleInstanceLock()) {
      */
     const logFile = startLogFile(app.getPath('userData'));
     log(logFile === null ? 'shell log: file sink unavailable, stdout only' : `shell log file: ${logFile}`);
+    for (const line of shellEnvLogLines(shellEnvReport)) log(line);
     recordLaunchVersion();
 
     app.on('second-instance', (_event, argv) => {

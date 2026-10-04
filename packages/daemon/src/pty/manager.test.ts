@@ -251,6 +251,31 @@ describe('PtyManager registry (§1.2)', () => {
         }
     });
 
+    it("never hands a test lane's shell markers to a pane (#313), but keeps the run dir", () => {
+        const { spawner, spawned } = stubSpawner();
+        const manager = createPtyManager({ spawner });
+        const keys = ['KELPI_HARNESS_SOCKET', 'KELPI_HARNESS', 'KELPI_AUDIT_WINDOW', 'KELPID_RUN_DIR'] as const;
+        const saved = new Map(keys.map((key) => [key, process.env[key]] as const));
+        process.env['KELPI_HARNESS_SOCKET'] = '/tmp/kelpi-dev-instance-x/harness.sock';
+        process.env['KELPI_HARNESS'] = '1';
+        process.env['KELPI_AUDIT_WINDOW'] = 'hidden';
+        process.env['KELPID_RUN_DIR'] = '/tmp/kelpi-dev-instance-x/run';
+        try {
+            manager.spawn({ paneID: 'pane-a', cwd: '/tmp', env: [], cols: 80, rows: 24, shell: FALLBACK_SHELL });
+            const env = spawned[0]?.request.env ?? {};
+            expect(env['KELPI_HARNESS_SOCKET']).toBeUndefined();
+            expect(env['KELPI_HARNESS']).toBeUndefined();
+            expect(env['KELPI_AUDIT_WINDOW']).toBeUndefined();
+            // A dev instance's panes still target that instance with `kelpid` (#311).
+            expect(env['KELPID_RUN_DIR']).toBe('/tmp/kelpi-dev-instance-x/run');
+        } finally {
+            for (const [key, value] of saved) {
+                if (value === undefined) delete process.env[key];
+                else process.env[key] = value;
+            }
+        }
+    });
+
     it('lets a caller-supplied TERM win over the default', () => {
         const { spawner, spawned } = stubSpawner();
         const manager = createPtyManager({ spawner });

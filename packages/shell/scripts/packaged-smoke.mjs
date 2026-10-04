@@ -579,7 +579,10 @@ async function makeSandbox() {
         // phase must never write there. `heal` (not `prompt`) also keeps the first-launch offer
         // from opening a dialog nobody is going to click.
         KELPI_CLI_INSTALL: 'heal',
-        KELPI_CLI_LINK_PATH: cliLinkPath
+        KELPI_CLI_LINK_PATH: cliLinkPath,
+        // #313: a packaged app ignores every KELPID_* above unless told this environment is
+        // deliberate. Without it the app would find the developer's own daemon, not the sandbox's.
+        KELPI_SHELL_ENV_OVERRIDES: '1'
     };
 
     // A stale install to repair: a symlink into a bundle that is not there any more, which is

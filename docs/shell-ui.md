@@ -1792,6 +1792,22 @@ web pane <id> view owner=main bounds=753,88 525×706 (attached)
 web host dropped 1 placement(s) no client re-stated after the recover-interface; those views stay parked
 ```
 
+### What a packaged app takes from its launcher's environment (issue #313)
+
+`open -a Kelpi.app` hands the app the caller's environment, and a Kelpi pane exports the
+variables that route its programs to its own daemon. Relaunched from a dev-instance pane, the
+packaged app used to adopt the DEV daemon (an older one it would have handed off and replaced)
+and open the dev instance's test-only harness socket. So, as the very first thing the main
+process does (`packages/shell/src/shell-env-init.ts`, imported first by `main.ts`), a packaged
+app removes every launcher-scoped variable (`launcherScopedKey` in
+`packages/shell/src/shell-env.ts`): `KELPID_*`, `KELPI_SOCKET`, `KELPI_PANE_ID`, `KELPI_PROFILE`,
+`KELPI_HARNESS*` and `KELPI_AUDIT*`. The log names the ones it ignored (never their values).
+`KELPI_SHELL_ENV_OVERRIDES=1` keeps them and logs `using KELPID_RUN_DIR from the environment: …`;
+`scripts/ui-audit/lib/stack.mjs` (so `dev-instance.mjs --packaged` and the packaged audit lane)
+and `packaged-smoke.mjs` set it. A development shell (`electron .`) always keeps them. The
+daemon, for its part, no longer passes `KELPI_HARNESS*` or `KELPI_AUDIT*` on to pane programs
+(`inheritableEnvKey`, `packages/daemon/src/pty/manager.ts`).
+
 ---
 
 ## 14. Data shapes referenced by this spec

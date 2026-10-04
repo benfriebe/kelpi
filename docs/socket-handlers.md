@@ -1503,6 +1503,9 @@ read by `kelpid status` and `kelpi doctor`:
   forwarding. Absent before bind or on older daemons; absence never implies IPv4 loopback.
 - `persistence {ok, degraded, path, failed_saves, last_save_at, error?, errno?, phase?}`:
   the persistence layer's health.
+- `terminals {live, agents, running, waiting}`: panes (visible or parked) with a live PTY, how
+  many of them carry an agent session or status, and how many of those are running or waiting
+  for input. `kelpid stop` reads it to say what a stop would end before it asks (#311).
 
 ---
 
@@ -1562,7 +1565,7 @@ web-pane subsystem (see its spec): `web-open`, `web-navigate`, `web-url`, `web-b
 | graft-start | `started: [...]`, `partial_error?`, `partial_error_kind?` (failures add `error_kind`) |
 | graft-stop | `stopped: [...]`, `failed?: [...]` (`ok` false only when a stop failed; then also `error`, `error_kind`) |
 | graft-status | `sessions: [...]` |
-| ping | `version`, `build`, `pid`, `protocol`, `tcp?`, `compat?`, `pane_route?`, `http?`, `persistence?` |
+| ping | `version`, `build`, `pid`, `protocol`, `tcp?`, `compat?`, `pane_route?`, `http?`, `terminals`, `persistence?` |
 
 Fire-and-forget (no reply ever): agent lifecycle events, `pane-move` (directional),
 `pane-move-to-workspace`, `workspace-move`, `workspace-profile`, `group-create`,

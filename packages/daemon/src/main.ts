@@ -2,7 +2,8 @@
  * `kelpid` — the New Kelpi daemon entrypoint.
  *
  *   kelpid start [--foreground]   spawn (or become) the daemon
- *   kelpid stop                   ask the running daemon to shut down cleanly
+ *   kelpid stop [--force]         ask the running daemon to shut down cleanly (asks first
+ *                                 when a person is at the terminal and terminals would end)
  *   kelpid status [--json]        ping it over the control socket
  *   kelpid url                    print the URL a browser should open (token included)
  *
@@ -24,6 +25,7 @@ import { encodeQr, qrText } from '@kelpi/core/qr';
 import fs, { realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import nodePath from 'node:path';
+import { createInterface } from 'node:readline';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
@@ -42,6 +44,7 @@ import { connectTestOwner, type TestOwner } from './lifecycle/test-owner.js';
 import { expandTilde, legacyDataDir, LEGACY_DATABASE_FILENAME, legacyMacAppDatabasePath, resolveDatabasePath } from './db/index.js';
 import { isLegacyImportError, runImport, type ImportReport } from './import/index.js';
 import {
+    currentRequester,
     deleteDevice,
     isProcessAlive,
     loadDevices,
@@ -49,11 +52,13 @@ import {
     probeDaemon,
     readPidRecord,
     readToken,
+    recordLifecycleRequest,
     resolveDevicesPath,
     removeDevice,
     resolveRunPaths,
     resolveTailnetURL,
     revokeDevice,
+    RUN_DIR_ENV,
     spawnDetached,
     type DaemonProbe,
     type RunPaths,
@@ -91,8 +96,10 @@ export interface ParsedArgs {
     readonly from: string | undefined;
     /** `import --to`: the daemon database. Defaults to this environment's `KELPID_DB_PATH`. */
     readonly to: string | undefined;
-    /** `import --force`: replace a populated target (after backing it up). */
+    /** `import --force`: replace a populated target (after backing it up). `stop --force`: do not ask. */
     readonly force: boolean;
+    /** `stop --yes`: answer the stop question yes without asking it (same as `--force` there). */
+    readonly yes: boolean;
     /** `import --dry-run`: report only, write nothing. */
     readonly dryRun: boolean;
     /** `url --tailnet`: print the tailscale-serve HTTPS URL instead of the loopback one. */
@@ -109,13 +116,18 @@ export interface ParsedArgs {
     readonly deviceTarget: string | undefined;
     /** Set when parsing failed; `runKelpid` prints it and exits 2. */
     readonly error: string | undefined;
+    /** The arguments as given, for the lifecycle log (#314). */
+    readonly argv: readonly string[];
 }
 
 const USAGE = `kelpid — the Kelpi daemon
 
 Usage:
   kelpid start [--foreground]   Start the daemon (detached unless --foreground)
-  kelpid stop [--timeout <ms>]  Stop the running daemon (SIGTERM, then SIGKILL)
+  kelpid stop [--force] [--timeout <ms>]
+                                Stop the running daemon (SIGTERM, then SIGKILL). Every
+                                terminal it runs ends, so at a terminal it asks first;
+                                --force (or --yes) does not ask
   kelpid restart                Restart the daemon, keeping running terminals (terminal host)
   kelpid status [--json]        Ping the daemon and report version, pid and ports
   kelpid url [--tailnet]        Print the client URL (with the token) and nothing else
@@ -151,6 +163,9 @@ Import (one-time migration from the macOS app):
 
   Panes come back on that start, and any pane that had an agent session resumes it
   (\`claude --resume <id>\` / \`codex resume <id>\`) just as a Kelpi.app restart would.
+
+Who stopped it: \`stop\` and \`restart\` append the requesting pid, tty and pane to
+<run dir>/lifecycle.log before they signal the daemon.
 
 Open the web client (the token is required — a bare http://127.0.0.1:<port> cannot
 authenticate and the client will say so):
@@ -234,6 +249,7 @@ export function parseKelpidArgs(argv: readonly string[]): ParsedArgs {
     let from: string | undefined;
     let to: string | undefined;
     let force = false;
+    let yes = false;
     let dryRun = false;
     let tailnet = false;
     let pairName: string | undefined;
@@ -248,6 +264,10 @@ export function parseKelpidArgs(argv: readonly string[]): ParsedArgs {
         switch (arg) {
             case '--force':
                 force = true;
+                break;
+            case '--yes':
+            case '-y':
+                yes = true;
                 break;
             case '--dry-run':
                 dryRun = true;
@@ -363,6 +383,7 @@ export function parseKelpidArgs(argv: readonly string[]): ParsedArgs {
         from,
         to,
         force,
+        yes,
         dryRun,
         tailnet,
         pairName,
@@ -370,7 +391,8 @@ export function parseKelpidArgs(argv: readonly string[]): ParsedArgs {
         qrInvert,
         deviceAction,
         deviceTarget,
-        error
+        error,
+        argv: [...argv]
     };
 }
 
@@ -382,6 +404,30 @@ export interface CliIO {
     readonly waitForever?: (() => Promise<void>) | undefined;
     /** Injected for tests; production shells out to the real `tailscale`. */
     readonly tailscaleRunner?: TailscaleRunner | undefined;
+    /** Is a person at this terminal? Production: stdin and stdout are both TTYs. Absent = no. */
+    readonly interactive?: boolean | undefined;
+    /** Ask a yes/no question on stderr; true only for an explicit yes. Injected for tests. */
+    readonly confirm?: ((question: string) => Promise<boolean>) | undefined;
+}
+
+/** Read one answer from stdin. Anything but `y`/`yes` (including EOF and ^C) is a no. */
+function confirmOnTerminal(question: string): Promise<boolean> {
+    return new Promise<boolean>((resolve) => {
+        const prompt = createInterface({ input: process.stdin, output: process.stderr, terminal: true });
+        let answered = false;
+        const finish = (yes: boolean): void => {
+            if (answered) return;
+            answered = true;
+            prompt.close();
+            resolve(yes);
+        };
+        prompt.on('SIGINT', () => {
+            process.stderr.write('\n');
+            finish(false);
+        });
+        prompt.on('close', () => finish(false));
+        prompt.question(question, (answer) => finish(/^\s*y(es)?\s*$/i.test(answer)));
+    });
 }
 
 function defaultIO(): CliIO {
@@ -418,7 +464,9 @@ function defaultIO(): CliIO {
     };
     return {
         out: (line) => write(process.stdout, line),
-        err: (line) => write(process.stderr, line)
+        err: (line) => write(process.stderr, line),
+        interactive: process.stdin.isTTY === true && process.stdout.isTTY === true,
+        confirm: confirmOnTerminal
     };
 }
 
@@ -647,12 +695,87 @@ async function commandStart(io: CliIO, args: ParsedArgs, owner?: TestOwner): Pro
     return 0;
 }
 
+function plural(count: number, noun: string): string {
+    return `${String(count)} ${noun}${count === 1 ? '' : 's'}`;
+}
+
+/**
+ * Is the caller a pane of this daemon? Its injected `KELPI_SOCKET` is the route the daemon hands
+ * every pane it spawns, so a match means the stop ends the terminal it was typed in.
+ */
+function callerIsPane(env: NodeJS.ProcessEnv, probe: DaemonProbe): boolean {
+    const paneID = env['KELPI_PANE_ID']?.trim();
+    const route = env['KELPI_SOCKET']?.trim();
+    return paneID !== undefined && paneID.length > 0 && route !== undefined && route.length > 0 && route === probe.paneRoute;
+}
+
+/**
+ * What stopping this daemon ends, as one sentence, or undefined when it ends nothing (#311).
+ *
+ * A daemon that did not report its terminals (one from before the `terminals` block) is
+ * "unknown", not "none": it gets the sentence too.
+ */
+export function stopImpact(probe: DaemonProbe, pid: number, env: NodeJS.ProcessEnv, runDir: string): string | undefined {
+    const terminals = probe.terminals;
+    if (terminals !== undefined && terminals.live <= 0) return undefined;
+    const override = env[RUN_DIR_ENV]?.trim();
+    const which = `kelpid (pid ${String(pid)}${override !== undefined && override.length > 0 ? ` in ${runDir}` : ''})`;
+    let ends: string;
+    if (terminals === undefined) {
+        ends = 'every terminal it is running';
+    } else {
+        ends = plural(terminals.live, 'terminal');
+        if (terminals.agents > 0) {
+            const idle = Math.max(0, terminals.agents - terminals.running - terminals.waiting);
+            const states = [
+                ...(terminals.running > 0 ? [`${String(terminals.running)} running`] : []),
+                ...(terminals.waiting > 0 ? [`${String(terminals.waiting)} waiting`] : []),
+                ...(idle > 0 ? [`${String(idle)} idle`] : [])
+            ];
+            ends += ` (${plural(terminals.agents, 'agent session')}: ${states.join(', ')})`;
+        }
+    }
+    const own = callerIsPane(env, probe) ? ', including the terminal you are typing in' : '';
+    return `This stops ${which} and ends ${ends}${own}.`;
+}
+
+/**
+ * The guard in front of the SIGTERM (#311). A stop ends every terminal and agent the daemon runs,
+ * and on 2026-10-01 one arrived as a recalled history line in an idle pane, so a person at a
+ * terminal is asked first, with No as the answer to Return. Scripts are not asked (they would
+ * hang): they are warned on stderr and the stop goes ahead, as it always did.
+ *
+ * Returns how the stop got through (for the lifecycle log), or null when the person said no.
+ */
+async function confirmStop(io: CliIO, args: ParsedArgs, probe: DaemonProbe, pid: number, paths: RunPaths): Promise<string | null> {
+    if (args.force || args.yes) return args.yes && !args.force ? '--yes' : '--force';
+    const env = io.env ?? process.env;
+    const impact = stopImpact(probe, pid, env, paths.dir);
+    if (impact === undefined) return 'nothing running';
+    // Only a daemon that can hand its terminals over keeps them across a restart.
+    const restartHint =
+        readPidRecord(paths)?.handoff === true
+            ? 'To restart it and keep them, run `kelpi daemon restart` (or `kelpid restart`) instead.'
+            : undefined;
+    if (io.interactive !== true || io.confirm === undefined) {
+        io.err(`Warning: ${impact}`);
+        if (restartHint !== undefined) io.err(restartHint);
+        return 'not interactive';
+    }
+    io.err(impact);
+    if (restartHint !== undefined) io.err(restartHint);
+    if (await io.confirm('Stop anyway? [y/N] ')) return 'confirmed';
+    io.err('kelpid was not stopped.');
+    return null;
+}
+
 async function commandStop(io: CliIO, args: ParsedArgs): Promise<number> {
     const env = io.env ?? process.env;
     const paths = runPathsFor(env);
     const probe = await probeDaemon(paths, { timeoutMs: 500 });
     const pid = probe.pid ?? probe.record?.pid;
 
+    let how = 'not answering';
     if (!probe.alive) {
         if (pid !== undefined && isProcessAlive(pid)) {
             io.err(`kelpid (pid ${String(pid)}) is not answering on ${paths.socket}; sending SIGTERM anyway`);
@@ -665,11 +788,19 @@ async function commandStop(io: CliIO, args: ParsedArgs): Promise<number> {
         io.err(`kelpid is running on ${paths.socket} but its pid is unknown; cannot stop it`);
         return 1;
     }
+    if (probe.alive) {
+        const confirmed = await confirmStop(io, args, probe, pid, paths);
+        if (confirmed === null) return 1;
+        how = confirmed;
+    }
 
     // Asked BEFORE the SIGTERM, because after it there is nobody left to ask — and a daemon
     // that never managed to write is exactly the one whose "stopped cleanly" is a lie. This is
     // the observed P0: `kelpid stop` printed a clean stop over a database of zero bytes.
     const degraded = probe.persistence?.degraded === true;
+
+    // #314: the daemon cannot say who sent its SIGTERM, so the sender writes it down first.
+    recordLifecycleRequest(paths.dir, { verb: 'stop', targetPid: pid, how }, { requester: { ...currentRequester(env), argv: args.argv } });
 
     try {
         process.kill(pid, 'SIGTERM');
@@ -758,6 +889,7 @@ async function commandRestart(io: CliIO, args: ParsedArgs): Promise<number> {
         const stopped = await commandStop(io, args);
         return stopped === 0 ? commandStart(io, args) : stopped;
     }
+    recordLifecycleRequest(paths.dir, { verb: 'restart', targetPid: pid, how: 'handoff' }, { requester: { ...currentRequester(env), argv: args.argv } });
     writeRespawnRequest(paths);
     try {
         process.kill(pid, 'SIGUSR2');

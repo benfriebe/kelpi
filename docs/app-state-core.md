@@ -1634,7 +1634,8 @@ Only VISIBLE panes resolve (parked panes are not user-addressable).
   pid, protocol}` from the daemon's version metadata + process id, plus additive health the
   `kelpi doctor` / `kelpid status` commands read: `tcp {requested, host, bound?, error?}` when a
   TCP listener was requested (so a `tcp-port` that never bound is visible), `compat {path, error}`
-  for the legacy compatibility socket, `pane_route` for the socket route injected into panes, and
+  for the legacy compatibility socket, `pane_route` for the socket route injected into panes,
+  `terminals {live, agents, running, waiting}` for what a stop would end (#311), and
   `persistence {ok, degraded, path, failed_saves, last_save_at, error?, errno?, phase?}` so a
   daemon whose database failed to open never looks healthy.
 - Graft socket scope resolution (`resolveGraftAssociations`,

@@ -2277,6 +2277,36 @@ state keep working; each explains why the code does something that would otherwi
 
 ---
 
+## Daemon commands (#311)
+
+`kelpi daemon status|start|restart|stop` runs the `kelpid` bundled with this CLI, with the same
+arguments, environment and terminal, and exits with its code (`packages/cli/src/commands/daemon.ts`).
+The packaged app installs `kelpi` but not `kelpid`, so before this the only way to reach the
+daemon's own verbs from a terminal was `…/Resources/node …/Resources/daemon/kelpid.js <verb>`.
+
+- **Which `kelpid`:** `KELPID_ENTRY` when set, else `../daemon/kelpid.js` beside the bundle (the
+  packaged `Resources/cli/kelpi.js`), else `../../daemon/dist/kelpid.js` (a source checkout). It
+  runs under the Node running the CLI. With none of them present it exits 1 and says where it
+  looked: a CLI on another machine (`KELPI_SOCKET=tcp:…`) has no daemon process to signal.
+- **Which daemon:** `kelpid`'s own rule, the run dir from `KELPID_RUN_DIR` or the platform
+  default. A dev-instance pane carries its instance's `KELPID_RUN_DIR`, so it targets that instance.
+- **`restart`** hands running terminals to the next daemon (`docs/terminal-host.md` §10).
+- **`stop`** ends every terminal and agent. At a terminal (stdin and stdout both TTYs) it says
+  what will end, points at `restart`, and asks `Stop anyway? [y/N]`, with No as the default:
+
+  ```
+  This stops kelpid (pid 61173) and ends 42 terminals (3 agent sessions: 1 running, 2 waiting), including the terminal you are typing in.
+  To restart it and keep them, run `kelpi daemon restart` (or `kelpid restart`) instead.
+  Stop anyway? [y/N]
+  ```
+
+  `--force` or `--yes` skips the question. A script (no TTY) is not asked: it gets the same text
+  as a `Warning:` on stderr and the stop goes ahead. A daemon with no live terminals stops without
+  either. The counts come from `ping`'s `terminals` block; a daemon too old to send one is asked
+  about as if it had terminals.
+- Before signalling, `stop` and `restart` append who asked to `<run dir>/lifecycle.log` (#314):
+  `<time> stop of pid <daemon> requested by pid <pid> (ppid <ppid> <parent>, tty <tty>, pane <id>): kelpid stop [confirmed]`.
+
 ## Plugin commands
 
 Source: [plugin.ts](../packages/cli/src/commands/plugin.ts),

@@ -1457,11 +1457,14 @@ second, and honor their "Don't ask again" suppression even when Cancel is clicke
 Every termination path (menu Quit, ⌘Q, tray Quit, a signal) is intercepted at Electron's
 `before-quit` (`packages/shell/src/quit.ts:113-206`). Closing the window is not a
 termination path (the app stays in the Dock). The gate first asks the daemon to flush
-pending editor autosaves (bounded, `QUIT_FLUSH_TIMEOUT_MS` = 750ms), then, only when
+pending editor autosaves (bounded, `QUIT_FLUSH_TIMEOUT_MS` = 750ms; with the daemon down there
+is nothing to send and it is done at once), then, only when
 `confirmQuitWhenActive` is on AND at least one pane is running or waiting
 (`shouldConfirmQuit`, `packages/shell/src/settings.ts:103-108`), shows the dialog; with
 nothing active it quits without asking. The shell never stops the daemon or any session:
-quitting only closes the window.
+quitting only closes the window. The confirmed `app.quit()` always runs on a later turn
+(#315): from inside the held `before-quit` it re-entered Electron's quit, which then closed
+every window but stayed running.
 
 - Title "Quit Kelpi?".
 - Body: "N agent(s) across M workspace(s) are still active. They keep running in the

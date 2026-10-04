@@ -93,3 +93,50 @@ describe('the quit gate on the update path (#286 review)', () => {
         gate.dispose();
     });
 });
+
+describe('a quit with nothing to flush (#315)', () => {
+    beforeEach(() => {
+        electron.listeners.clear();
+        electron.app.quit.mockReset();
+    });
+
+    it('is not lost to the before-quit it was held in', async () => {
+        /*
+         * Electron's `Browser::Quit`, as far as this needs it: emit `before-quit`, run the
+         * microtasks that emission queued (Electron does, as the callback scope closes), and only
+         * then store whether the quit is on and start closing windows. A quit already on is not
+         * restarted. A quit called from inside that checkpoint runs to completion right there,
+         * which is why only the outermost call waits on it here.
+         */
+        let quitting = false;
+        let windowsClosing = false;
+        let depth = 0;
+        const browserQuit = async (): Promise<void> => {
+            if (quitting) return;
+            depth += 1;
+            const allowed = !beforeQuit();
+            if (depth === 1) for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
+            depth -= 1;
+            quitting = allowed;
+            if (allowed) windowsClosing = true;
+        };
+        electron.app.quit.mockImplementation(() => {
+            void browserQuit();
+        });
+        const gate = installQuitGate({
+            counts: () => EMPTY_COUNTS,
+            settingsPath: path.join(os.tmpdir(), `kelpi-quit-test-${String(process.pid)}.json`),
+            // The daemon is down: the status socket cannot send the flush, so it is already done.
+            flushPendingSaves: () => Promise.resolve()
+        });
+
+        electron.app.quit();
+        await vi.waitFor(() => {
+            expect(windowsClosing).toBe(true);
+        });
+        // The windows are closing AND Electron still knows it is quitting, so the last one to
+        // close ends the app instead of leaving it running with no window.
+        expect(quitting).toBe(true);
+        gate.dispose();
+    });
+});

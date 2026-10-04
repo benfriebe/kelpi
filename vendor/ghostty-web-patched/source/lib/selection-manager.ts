@@ -3,7 +3,7 @@
  *
  * Features:
  * - Mouse drag selection
- * - Double-click word selection
+ * - Double-click word selection, triple-click line selection, and drags by word or line
  * - Text extraction from terminal buffer
  * - Automatic clipboard copy
  * - Visual selection highlighting (integrated into CanvasRenderer cell rendering)
@@ -28,6 +28,17 @@ export interface SelectionCoordinates {
   endRow: number;
 }
 
+/** vendor 0.4.0-kelpi.19: what a double-click (`word`) or triple-click (`line`) selects at a time. */
+type SelectionUnit = 'word' | 'line';
+
+/** vendor 0.4.0-kelpi.19: a word's or a line's extent, in absolute buffer rows. */
+interface SelectionUnitRange {
+  startCol: number;
+  startRow: number;
+  endCol: number;
+  endRow: number;
+}
+
 // ============================================================================
 // SelectionManager Class
 // ============================================================================
@@ -44,6 +55,15 @@ export class SelectionManager {
   private selectionEnd: { col: number; absoluteRow: number } | null = null;
   private isSelecting: boolean = false;
   private mouseDownTarget: EventTarget | null = null; // Track where mousedown occurred
+
+  // vendor 0.4.0-kelpi.19: what the press of a double- or triple-click selected, in absolute rows:
+  // the word under it, or its whole line with any rows it soft-wraps onto. While it is set, a drag
+  // extends the selection by whole words or lines from it instead of by cells from the pressed
+  // cell (see `extendSelectionTo`).
+  private unitAnchor: (SelectionUnitRange & { unit: SelectionUnit }) | null = null;
+  // vendor 0.4.0-kelpi.19: that press already selected its word, so the `dblclick` the browser
+  // raises on its release must not select the word under the RELEASE point instead.
+  private pressSelectedWord: boolean = false;
 
   // Track rows that need redraw for clearing old selection
   // Using a Set prevents the overwrite bug where mousemove would clobber
@@ -63,7 +83,6 @@ export class SelectionManager {
   // Auto-scroll state for drag selection
   private autoScrollInterval: ReturnType<typeof setInterval> | null = null;
   private autoScrollDirection: number = 0; // -1 = up, 0 = none, 1 = down
-  private static readonly AUTO_SCROLL_EDGE_SIZE = 30; // pixels from edge to trigger scroll
 
   /**
    * Get current viewport Y position (how many lines scrolled into history)
@@ -261,12 +280,19 @@ export class SelectionManager {
       this.clearSelection();
       return;
     }
+    // vendor 0.4.0-kelpi.19: a word or line drag keeps its start on the anchor, and the native pins
+    // return the start they were given, so a trim mid-drag moves the anchor as far as its text.
+    const anchorShift = this.selectionStart ? coords.startRow - this.selectionStart.absoluteRow : 0;
     const changed = this.selectionStart?.col !== coords.startCol ||
       this.selectionStart?.absoluteRow !== coords.startRow ||
       this.selectionEnd?.col !== coords.endCol ||
       this.selectionEnd?.absoluteRow !== coords.endRow;
     this.selectionStart = { col: coords.startCol, absoluteRow: coords.startRow };
     this.selectionEnd = { col: coords.endCol, absoluteRow: coords.endRow };
+    if (this.unitAnchor) {
+      this.unitAnchor.startRow += anchorShift;
+      this.unitAnchor.endRow += anchorShift;
+    }
     this.markCurrentSelectionDirty();
     if (changed) this.selectionChangedEmitter.fire();
   }
@@ -288,6 +314,7 @@ export class SelectionManager {
     this.selectionStart = null;
     this.selectionEnd = null;
     this.isSelecting = false;
+    this.unitAnchor = null;
     this.stopAutoScroll();
 
     // Force redraw of previously selected lines to clear the overlay
@@ -503,8 +530,25 @@ export class SelectionManager {
 
         // Start new selection (convert to absolute coordinates)
         const absoluteRow = this.viewportRowToAbsolute(cell.row);
-        this.selectionStart = { col: cell.col, absoluteRow };
-        this.selectionEnd = { col: cell.col, absoluteRow };
+        // vendor 0.4.0-kelpi.19: the second press of a double-click selects its word NOW, and the
+        // third press of a triple-click (and any after it) its whole line; either anchors the drag
+        // that may follow. Upstream selected the word only on `dblclick`, which fires on the
+        // release, so a held double-click dragged by cells from the pressed cell (from the middle
+        // of "quick", "ick brown fox"), and it had no line selection at all.
+        const unit: SelectionUnit | null = e.detail === 2 ? 'word' : e.detail >= 3 ? 'line' : null;
+        if (unit) {
+          const range = this.getUnitAt(unit, cell.col, absoluteRow);
+          this.unitAnchor = { unit, ...range };
+          // Chromium raises `dblclick` after the second click only, never the third or later.
+          this.pressSelectedWord = unit === 'word';
+          this.selectionStart = { col: range.startCol, absoluteRow: range.startRow };
+          this.selectionEnd = { col: range.endCol, absoluteRow: range.endRow };
+        } else {
+          this.unitAnchor = null;
+          this.pressSelectedWord = false;
+          this.selectionStart = { col: cell.col, absoluteRow };
+          this.selectionEnd = { col: cell.col, absoluteRow };
+        }
         this.isSelecting = true;
       }
     });
@@ -517,11 +561,16 @@ export class SelectionManager {
 
         const cell = this.pixelToCell(e.offsetX, e.offsetY);
         const absoluteRow = this.viewportRowToAbsolute(cell.row);
-        this.selectionEnd = { col: cell.col, absoluteRow };
+        this.extendSelectionTo(cell.col, absoluteRow);
         this.requestRender();
 
-        // Check if near edges for auto-scroll
-        this.updateAutoScroll(e.offsetY, canvas.clientHeight);
+        // vendor 0.4.0-kelpi.19: the pointer is over the terminal, so the drag does not scroll.
+        // Upstream auto-scrolled inside a 30 px band at the top and bottom edges, which at a 15 px
+        // cell is two whole rows: a drag along either of them had its end yanked to the top-left
+        // (or bottom-right) cell every 50 ms and put back by the next move, so the selection
+        // jumped between rows, and stayed yanked while the pointer held still. Auto-scroll now
+        // starts only once the pointer leaves the canvas (`mouseleave` and the document listener).
+        this.stopAutoScroll();
       }
     });
 
@@ -582,7 +631,7 @@ export class SelectionManager {
 
             const cell = this.pixelToCell(offsetX, offsetY);
             const absoluteRow = this.viewportRowToAbsolute(cell.row);
-            this.selectionEnd = { col: cell.col, absoluteRow };
+            this.extendSelectionTo(cell.col, absoluteRow);
             this.requestRender();
           }
         }
@@ -602,6 +651,9 @@ export class SelectionManager {
     // CRITICAL FIX: Listen for mouseup on DOCUMENT, not just canvas
     // This catches mouseup events that happen outside the canvas (common during drag)
     this.boundMouseUpHandler = (e: MouseEvent) => {
+      // vendor 0.4.0-kelpi.19: a release off the canvas raises no `dblclick` on it to consume
+      // the flag, which would otherwise swallow the next synthesized one (a long-press).
+      if (!canvas.contains(e.target as Node)) this.pressSelectedWord = false;
       if (this.isSelecting) {
         this.isSelecting = false;
         this.stopAutoScroll();
@@ -617,11 +669,18 @@ export class SelectionManager {
 
     // Double-click - select word
     canvas.addEventListener('dblclick', (e: MouseEvent) => {
+      // vendor 0.4.0-kelpi.19: a real double-click's second press already selected the word, and
+      // any drag since has extended it. Only a `dblclick` with no such press (Kelpi's long-press
+      // raises one) selects here.
+      if (this.pressSelectedWord) {
+        this.pressSelectedWord = false;
+        return;
+      }
       const cell = this.pixelToCell(e.offsetX, e.offsetY);
-      const word = this.getWordAtCell(cell.col, cell.row);
+      const absoluteRow = this.viewportRowToAbsolute(cell.row);
+      const word = this.getWordAtCell(cell.col, absoluteRow);
 
       if (word) {
-        const absoluteRow = this.viewportRowToAbsolute(cell.row);
         this.selectionStart = { col: word.startCol, absoluteRow };
         this.selectionEnd = { col: word.endCol, absoluteRow };
         this.requestRender();
@@ -739,24 +798,6 @@ export class SelectionManager {
   }
 
   /**
-   * Update auto-scroll based on mouse Y position within canvas
-   */
-  private updateAutoScroll(offsetY: number, canvasHeight: number): void {
-    const edgeSize = SelectionManager.AUTO_SCROLL_EDGE_SIZE;
-
-    if (offsetY < edgeSize) {
-      // Near top edge - scroll up
-      this.startAutoScroll(-1);
-    } else if (offsetY > canvasHeight - edgeSize) {
-      // Near bottom edge - scroll down
-      this.startAutoScroll(1);
-    } else {
-      // In middle - stop scrolling
-      this.stopAutoScroll();
-    }
-  }
-
-  /**
    * Start auto-scrolling in the given direction
    */
   private startAutoScroll(direction: number): void {
@@ -793,14 +834,14 @@ export class SelectionManager {
           // Set to top of viewport, but only if it extends the selection
           const topAbsoluteRow = this.viewportRowToAbsolute(0);
           if (topAbsoluteRow < this.selectionEnd.absoluteRow) {
-            this.selectionEnd = { col: 0, absoluteRow: topAbsoluteRow };
+            this.extendSelectionTo(0, topAbsoluteRow);
           }
         } else {
           // Scrolling down - extend selection downward (increase absoluteRow)
           // Set to bottom of viewport, but only if it extends the selection
           const bottomAbsoluteRow = this.viewportRowToAbsolute(dims.rows - 1);
           if (bottomAbsoluteRow > this.selectionEnd.absoluteRow) {
-            this.selectionEnd = { col: dims.cols - 1, absoluteRow: bottomAbsoluteRow };
+            this.extendSelectionTo(dims.cols - 1, bottomAbsoluteRow);
           }
         }
       }
@@ -818,6 +859,52 @@ export class SelectionManager {
       this.autoScrollInterval = null;
     }
     this.autoScrollDirection = 0;
+  }
+
+  /**
+   * Move the dragged end of the selection to a cell.
+   *
+   * vendor 0.4.0-kelpi.19: a drag from a double-click moves by whole words, and from a
+   * triple-click by whole lines, as in Ghostty, Terminal.app and iTerm2. Behind the anchor it runs
+   * from the start of the word (line) under the pointer to the anchor's end; anywhere else, from
+   * the anchor's start to the end of the word (line) under the pointer. Blank space under the
+   * pointer of a word drag ends it at that cell. `selectionEnd` stays the moving end, which is
+   * what auto-scroll compares against.
+   */
+  private extendSelectionTo(col: number, absoluteRow: number): void {
+    const anchor = this.unitAnchor;
+    if (!anchor) {
+      this.selectionEnd = { col, absoluteRow };
+      return;
+    }
+    const target = this.getUnitAt(anchor.unit, col, absoluteRow);
+    const behind =
+      absoluteRow < anchor.startRow || (absoluteRow === anchor.startRow && col < anchor.startCol);
+    if (behind) {
+      this.selectionStart = { col: anchor.endCol, absoluteRow: anchor.endRow };
+      this.selectionEnd = { col: target.startCol, absoluteRow: target.startRow };
+    } else {
+      this.selectionStart = { col: anchor.startCol, absoluteRow: anchor.startRow };
+      this.selectionEnd = { col: target.endCol, absoluteRow: target.endRow };
+    }
+  }
+
+  /**
+   * vendor 0.4.0-kelpi.19: the word or the line at a cell. A word is one row (blank space is its
+   * own cell); a line is every column of its row and of the rows it soft-wraps across, so a
+   * wrapped command or URL is one line, as a copy of it is (`-kelpi.17`).
+   */
+  private getUnitAt(unit: SelectionUnit, col: number, absoluteRow: number): SelectionUnitRange {
+    if (unit === 'word') {
+      const word = this.getWordAtCell(col, absoluteRow) ?? { startCol: col, endCol: col };
+      return { startCol: word.startCol, startRow: absoluteRow, endCol: word.endCol, endRow: absoluteRow };
+    }
+    const lastRow = this.wasmTerm.getScrollbackLength() + this.wasmTerm.getDimensions().rows - 1;
+    let startRow = absoluteRow;
+    while (startRow > 0 && this.isScreenRowWrapped(startRow)) startRow--;
+    let endRow = absoluteRow;
+    while (endRow < lastRow && this.isScreenRowWrapped(endRow + 1)) endRow++;
+    return { startCol: 0, startRow, endCol: this.wasmTerm.getDimensions().cols - 1, endRow };
   }
 
   /**
@@ -880,9 +967,17 @@ export class SelectionManager {
 
   /**
    * Get word boundaries at a cell position
+   *
+   * vendor 0.4.0-kelpi.19: `absoluteRow` is a buffer row, history included. Upstream took a
+   * viewport row and read it with `getLine`, which only reaches the active screen, so with the
+   * view scrolled back a double-click measured the word on a different line than the one shown.
    */
-  private getWordAtCell(col: number, row: number): { startCol: number; endCol: number } | null {
-    const line = this.wasmTerm.getLine(row);
+  private getWordAtCell(col: number, absoluteRow: number): { startCol: number; endCol: number } | null {
+    const scrollbackLength = this.wasmTerm.getScrollbackLength();
+    const line =
+      absoluteRow < scrollbackLength
+        ? this.wasmTerm.getScrollbackLine(absoluteRow)
+        : this.wasmTerm.getLine(absoluteRow - scrollbackLength);
     if (!line) return null;
 
     // Word characters: letters, numbers, underscore, dash

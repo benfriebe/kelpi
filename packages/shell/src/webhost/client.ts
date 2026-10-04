@@ -23,6 +23,7 @@ import { WebSocket } from 'ws';
 import { type JsonObject } from '@kelpi/protocol';
 
 import type { DaemonLocation } from '../daemon.js';
+import { createFailureLog } from '../failure-log.js';
 import { shellHello } from '../hello.js';
 import { log, logError, warn } from '../log.js';
 
@@ -158,6 +159,7 @@ export function createWebHostClient(options: WebHostClientOptions): WebHostClien
     let stopped = true;
     let fatal = false;
     let attempt = 0;
+    const socketFailures = createFailureLog('web host socket error', warn);
     let reconnectTimer: NodeJS.Timeout | null = null;
 
     function wsUrl(): string {
@@ -201,6 +203,8 @@ export function createWebHostClient(options: WebHostClientOptions): WebHostClien
             case 'welcome': {
                 attempt = 0;
                 log(`web host ws connected ${wsUrl()}`);
+                const failed = socketFailures.recovered();
+                if (failed > 0) log(`web host ws: back after ${String(failed)} failed attempt(s)`);
                 const lines = readKeybindLines(parsed);
                 if (lines !== null) options.onKeybindLines?.(lines);
                 return;
@@ -316,7 +320,7 @@ export function createWebHostClient(options: WebHostClientOptions): WebHostClien
 
         next.on('error', (error: Error) => {
             if (socket !== next) return;
-            warn(`web host socket error: ${error.message}`);
+            socketFailures.failed(error.message);
         });
 
         next.on('close', (code: number) => {

@@ -79,8 +79,10 @@ import {
     DaemonUnavailableError,
     clientUrl,
     ensureDaemon,
+    findDaemon,
     type DaemonLocation
 } from './daemon.js';
+import { createDaemonWatch, type DaemonWatch } from './daemon-watch.js';
 import {
     hotkeyStatusReport,
     readGlobalHotkeySettings,
@@ -115,6 +117,13 @@ import { resolveDroppedFiles, serialized, type DroppedFilesResult } from './drop
 import { titleBarLogLine, titleBarStyleFor, trafficLightQuery, windowButtonsLogLine, windowButtonsVisible } from './titlebar.js';
 import { describeSkillRefresh, refreshBundledSkill } from './skill.js';
 import { createStatusController, type StatusController } from './status.js';
+import {
+    isStoppedPageURL,
+    stoppedPageAction,
+    stoppedPageURL,
+    type StoppedPageAction,
+    type StoppedPageState
+} from './stopped-page.js';
 import {
     LAUNCH_CHECK_DELAY_MS,
     UPDATE_FEED_ENV,
@@ -199,6 +208,21 @@ let lastWindowGround: string | null = null;
 let hotkeyHideOnRepress = true;
 let saveTimer: NodeJS.Timeout | null = null;
 let loadRetries = 0;
+/**
+ * #312: the window's current main-frame load failed. Chromium then "finishes" loading its own
+ * error page for it, and counting that as a successful load is what reset `loadRetries` on every
+ * attempt, so the cap never applied and a stopped daemon's URL was reloaded every 1.5 s forever.
+ */
+let loadFailed = false;
+/** #312: noticing that the daemon has gone, and that one is back (`./daemon-watch.ts`). */
+let daemonWatch: DaemonWatch | null = null;
+/** A Start Daemon (page or tray) is in flight; a second click waits for it. */
+let startingDaemon = false;
+/**
+ * Windows that have been on screen. A load finishing raises a window only the first time: a
+ * reload onto a daemon that came back (#312) must not pop up a window the user hid.
+ */
+const shownWindows = new WeakSet<BrowserWindow>();
 /** The launch check has been decided for this process (it runs at most once). */
 let launchUpdateDecided = false;
 /**
@@ -385,6 +409,14 @@ function applySecurityPolicy(window: BrowserWindow): void {
     const contents = window.webContents;
 
     contents.on('will-navigate', (event, target) => {
+        // #312: the daemon-stopped page's buttons are links to a host that cannot resolve. They
+        // are acted on only from that page, and never navigate anywhere.
+        const action = stoppedPageAction(target);
+        if (action !== null) {
+            event.preventDefault();
+            if (isStoppedPageURL(contents.getURL())) runStoppedPageAction(action);
+            return;
+        }
         if (isDaemonOrigin(target)) return;
         event.preventDefault();
         openExternally(target);
@@ -470,8 +502,20 @@ function applyPermissionPolicy(): void {
 const TITLE_BAR = titleBarStyleFor(process.platform);
 const initialClientLoad = harnessLoadGate(process.env);
 
+/** The daemon's token, wherever it appears in a URL or an error message, kept out of the log. */
+function redactToken(text: string): string {
+    return text.replace(/([?&]token=)[^&\s'"]+/g, '$1<token>');
+}
+
 function loadDaemonUrl(window: BrowserWindow): void {
     if (daemon === null) return;
+    // #312: a window opened or reloaded while the daemon is stopped shows the page that says so,
+    // not a load that cannot succeed.
+    const watchState = daemonWatch?.state;
+    if (watchState === 'stopped' || watchState === 'starting') {
+        showStoppedPage(window, watchState === 'stopped' ? { kind: 'stopped', runDir: daemon.paths.dir } : { kind: 'starting' });
+        return;
+    }
     if (initialClientLoad.defer(() => {
         if (!window.isDestroyed()) loadDaemonUrl(window);
     })) {
@@ -500,9 +544,97 @@ function loadDaemonUrl(window: BrowserWindow): void {
     // from the address bar). It must never reach a log file, so redact it here — which also
     // makes the log line proof that a token WAS attached.
     log(`loading ${target.replace(daemon.token, '<token>')}`);
+    loadFailed = false;
     void window.loadURL(target).catch((error: unknown) => {
-        logError(`loadURL failed for ${daemon?.url ?? '(unknown)'}`, error);
+        // Electron's message quotes the URL it was loading, token included.
+        logError(`loadURL failed for ${daemon?.url ?? '(unknown)'}: ${redactToken(error instanceof Error ? error.message : String(error))}`);
     });
+}
+
+/** #312: the daemon-stopped page (or its starting and failed versions) in the window. */
+function showStoppedPage(window: BrowserWindow, state: StoppedPageState): void {
+    if (window.isDestroyed()) return;
+    loadFailed = false;
+    log(`window: showing the daemon-${state.kind} page`);
+    void window.loadURL(stoppedPageURL(state)).catch((error: unknown) => {
+        logError('the daemon-stopped page did not load', error);
+    });
+}
+
+/** #312: a button on the stopped page. Quit goes through the quit gate like any other quit. */
+function runStoppedPageAction(action: StoppedPageAction): void {
+    log(`daemon-stopped page: ${action}`);
+    if (action === 'quit') app.quit();
+    else void startDaemonFromShell('window');
+}
+
+/**
+ * #312: Start Daemon, from the stopped page or the tray. The launch's own adopt-or-spawn, the
+ * status and web-host connections re-pointed at whatever answered, and the client back in the
+ * window. Before this the tray's Start Daemon re-pointed the sockets but never reloaded the window,
+ * and only looked like it worked because the window was still reloading the old URL in a loop.
+ */
+async function startDaemonFromShell(origin: 'window' | 'tray'): Promise<void> {
+    if (startingDaemon) return;
+    startingDaemon = true;
+    daemonWatch?.starting();
+    if (mainWindow !== null && !mainWindow.isDestroyed()) showStoppedPage(mainWindow, { kind: 'starting' });
+    try {
+        await startDaemonAndConnect();
+        daemonWatch?.healthy();
+        log(`daemon started from the ${origin}`);
+        loadRetries = 0;
+        if (mainWindow !== null && !mainWindow.isDestroyed()) loadDaemonUrl(mainWindow);
+        else showWindow();
+    } catch (error) {
+        const repair = error instanceof DaemonUnavailableError ? error.repair : '';
+        const message = error instanceof Error ? error.message : String(error);
+        logError(`daemon start failed: ${message}${repair === '' ? '' : ` - ${repair}`}`);
+        daemonWatch?.startFailed();
+        if (mainWindow !== null && !mainWindow.isDestroyed()) showStoppedPage(mainWindow, { kind: 'failed', message, repair });
+    } finally {
+        startingDaemon = false;
+    }
+}
+
+/**
+ * #312: a daemon answered after this shell's stopped answering: the same one back, a successor
+ * on a new port after `kelpid restart`, or one started from a terminal.
+ */
+function adoptDaemon(location: DaemonLocation): void {
+    const moved = daemon === null || daemon.url !== location.url || daemon.token !== location.token;
+    daemon = location;
+    // Only what is not already talking to it: a status socket that is up stays up.
+    if (moved || status?.connected !== true) status?.setLocation(location);
+    if (moved || webHost?.registered !== true) webHost?.setLocation(location);
+    const window = mainWindow;
+    if (window === null || window.isDestroyed()) return;
+    // The page reconnects its own socket when the daemon comes back where it was. It has to be
+    // reloaded when the daemon moved, or when the window is not showing the client at all.
+    if (moved || loadFailed || isStoppedPageURL(window.webContents.getURL())) {
+        loadRetries = 0;
+        loadDaemonUrl(window);
+    }
+}
+
+function watchDaemon(): DaemonWatch {
+    daemonWatch ??= createDaemonWatch({
+        find: () => findDaemon(process.env),
+        adopt: adoptDaemon,
+        stopped: (runDir) => {
+            if (mainWindow !== null && !mainWindow.isDestroyed()) showStoppedPage(mainWindow, { kind: 'stopped', runDir });
+            status?.refresh();
+        },
+        log,
+        now: () => Date.now(),
+        setTimer: (callback, ms) => {
+            const timer = setTimeout(callback, ms);
+            timer.unref?.();
+            return timer;
+        },
+        clearTimer: (timer) => clearTimeout(timer as NodeJS.Timeout)
+    });
+    return daemonWatch;
 }
 
 function createWindow(): BrowserWindow {
@@ -685,6 +817,7 @@ function createWindow(): BrowserWindow {
      * lane this is `window.show()` and nothing about a user's launch changes.
      */
     const showWindow = (): void => {
+        shownWindows.add(window);
         if (laneIsKeyless) window.showInactive();
         else window.show();
     };
@@ -794,17 +927,36 @@ function createWindow(): BrowserWindow {
         logError(`renderer console: ${details.message.split('\n', 1)[0] ?? ''}${source}`);
     });
     window.webContents.on('did-finish-load', () => {
+        const url = window.webContents.getURL();
+        if (isStoppedPageURL(url)) {
+            log('did-finish-load (the daemon-stopped page)');
+            return;
+        }
+        // #312: Chromium's own error page for a load that just failed. Not a recovery, and not a
+        // reason to raise the window either (a hidden app must not pop up once per retry).
+        if (loadFailed) return;
         loadRetries = 0;
-        log(`did-finish-load ${window.webContents.getURL()}`);
-        if (!window.isVisible()) showWindow();
+        log(`did-finish-load ${redactToken(url)}`);
+        daemonWatch?.healthy();
+        if (!window.isVisible() && !shownWindows.has(window)) showWindow();
     });
     window.webContents.on('did-fail-load', (_event, code, description, url, isMainFrame) => {
         if (!isMainFrame || code === -3 /* ERR_ABORTED: a navigation we replaced */) return;
-        logError(`did-fail-load ${url} (${String(code)} ${description})`);
-        if (loadRetries >= MAX_LOAD_RETRIES) return;
+        loadFailed = true;
+        logError(`did-fail-load ${redactToken(url)} (${String(code)} ${description})`);
+        // #312: from the first failure, ask the run dir whether there is a daemon at all. The
+        // retries below cover a blip; the watch covers a daemon that moved or stopped.
+        watchDaemon().suspect('the window could not load the daemon');
+        if (loadRetries >= MAX_LOAD_RETRIES) {
+            log(`window: stopped reloading after ${String(MAX_LOAD_RETRIES)} failed loads`);
+            return;
+        }
         loadRetries += 1;
         setTimeout(() => {
-            if (!window.isDestroyed()) loadDaemonUrl(window);
+            // A retry that comes due after the window moved on (the stopped page, or a reload onto a
+            // daemon the watch found) has nothing left to retry.
+            if (window.isDestroyed() || !loadFailed) return;
+            loadDaemonUrl(window);
         }, RELOAD_BACKOFF_MS).unref?.();
     });
 
@@ -829,6 +981,7 @@ function showWindow(): void {
         appFocus: () => app.focus({ steal: true })
     });
     mainWindow = result.window;
+    shownWindows.add(result.window);
     log(presentWindowLogLine(result));
 }
 
@@ -1717,9 +1870,7 @@ function startStatusController(): void {
                 showWindow,
                 isWindowFocused: () => BrowserWindow.getAllWindows().some((window) => window.isFocused()),
                 startDaemon: () => {
-                    void startDaemonAndConnect().catch((error: unknown) => {
-                        logError('daemon restart failed', error);
-                    });
+                    void startDaemonFromShell('tray');
                 },
                 quit: () => app.quit(),
                 // §APP-060: the tray owns the "all desktops" assignment, because the Dock's own
@@ -1870,6 +2021,20 @@ function startStatusController(): void {
                  */
                 statusDisconnected: () => {
                     if (mainWindow !== null) applyWindowButtons(mainWindow, false, 'disconnected');
+                    // #312: the daemon may have stopped, or moved to a new port.
+                    watchDaemon().suspect('the status connection dropped');
+                },
+                statusConnected: () => {
+                    daemonWatch?.healthy();
+                    // #312: the daemon came back where it was before the watch looked again; the
+                    // window may still be on the stopped page or an error page. A Start Daemon in
+                    // flight reloads the window itself.
+                    const window = mainWindow;
+                    if (startingDaemon || window === null || window.isDestroyed()) return;
+                    if (loadFailed || isStoppedPageURL(window.webContents.getURL())) {
+                        loadRetries = 0;
+                        loadDaemonUrl(window);
+                    }
                 }
             }
         });
@@ -1974,6 +2139,7 @@ async function boot(): Promise<void> {
                 },
                 onQuit: () => {
                     globalShortcut.unregisterAll();
+                    daemonWatch?.dispose();
                     status?.stop();
                     webHost?.stop();
                 }
@@ -2164,6 +2330,7 @@ if (!app.requestSingleInstanceLock()) {
             log(`auto-update: quitting with ${theUpdateFlow.view.version ?? 'an update'} downloaded; Squirrel installs it as Kelpi exits`);
         }
         globalShortcut.unregisterAll();
+        daemonWatch?.dispose();
         status?.stop();
         // Releases the host role explicitly, then destroys every browser view and the off-screen
         // holder window. The daemon keeps the panes; only the views die with the app.

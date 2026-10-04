@@ -1225,7 +1225,8 @@ left-click opens it. Menu shape (`status.ts:428-480`; rows from `trayMenuRows`,
   workspace and focus the pane.
 - Separator; "Show Kelpi"; "Show on All Desktops" (checkbox, persisted in the shell's
   window-state file, §1); "Reconnect to Daemon" (connected) or "Start Daemon" (not connected;
-  deliberately never a restart, which would kill every session); "Install CLI" (packaged
+  deliberately never a restart, which would kill every session; it runs the same start as the
+  window's daemon-stopped page, §13, and reloads the window); "Install CLI" (packaged
   builds that carry a CLI payload); separator; "Quit Kelpi" (through the quit gate, §12.1).
 
 The tooltip is "Kelpi - N waiting, M running" / "Kelpi - all clear" / "Kelpi - daemon not
@@ -1595,6 +1596,34 @@ web-pane host are started beside it. The daemon owns the socket server and the T
 Finder file-opens are forwarded as the ordinary `open` control command; cold-launch arrivals
 are parked and replayed in arrival order once the daemon connection is up, a parked file
 raises no window, and only markdown paths are forwarded (`launch.ts` `createOpenFileQueue`).
+
+### When the daemon stops (issue #312)
+
+Discovery used to run once, at launch. Now any failed connection, the status socket dropping
+or the window failing to load the daemon URL, makes the daemon *suspect*, and the shell asks
+the run dir directly (`findDaemon` in `packages/shell/src/daemon.ts`, driven by
+`packages/shell/src/daemon-watch.ts`) every 2 s:
+
+- **A daemon is serving** (the same one back, a successor on a new port after `kelpid restart`,
+  or one started from a terminal): it is adopted. The status and web-host connections are
+  re-pointed when they are not already talking to it, and the window is reloaded when the daemon
+  moved or the window is not showing the client.
+- **Nothing is listening for 8 s** (no socket file, or a refused connect): the window shows a
+  page the shell renders itself, "Kelpi's daemon has stopped", with **Start Daemon** and
+  **Quit Kelpi** (`packages/shell/src/stopped-page.ts`; a `data:` URL with no script, whose
+  buttons are links to `https://kelpi-shell.invalid/…` that `will-navigate` turns into actions).
+  The run dir is still checked every 5 s, so a daemon started from a terminal brings the window
+  back with no click. **Start Daemon** runs the launch's own adopt-or-spawn (`ensureDaemon`),
+  shows "Starting…" meanwhile and the error with its repair hint if it fails.
+- **Something holds the socket but is not serving** (a ping that timed out, or one that answered
+  before `/healthz` did): keep checking. A busy daemon is not a stopped one.
+
+The shell never starts a daemon on its own: someone who ran `kelpid stop` with the app open may
+want it to stay stopped. The window retries a failed load 5 times, 1.5 s apart, and then stops;
+Chromium's own error page finishing no longer counts as a successful load (it used to reset the
+count, so the window reloaded a dead URL every 1.5 s forever). The status and web-host sockets
+log the first failed reconnect, then every 20th with a count, then how many failed once they are
+back. Load failures are logged with the token redacted.
 
 Logging (`packages/shell/src/log.ts`, `packages/shell/src/log-file.ts`): every shell line is
 `[shell] …` on stdout **and** appended to `<userData>/logs/shell.log` (issue #77): for a

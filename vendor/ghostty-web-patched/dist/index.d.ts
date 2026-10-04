@@ -1704,6 +1704,8 @@ export declare class SelectionManager {
     private selectionEnd;
     private isSelecting;
     private mouseDownTarget;
+    private unitAnchor;
+    private pressSelectedWord;
     private dirtySelectionRows;
     private selectionChangedEmitter;
     private boundMouseUpHandler;
@@ -1713,7 +1715,6 @@ export declare class SelectionManager {
     private boundDocumentMouseDownHandler;
     private autoScrollInterval;
     private autoScrollDirection;
-    private static readonly AUTO_SCROLL_EDGE_SIZE;
     /**
      * Get current viewport Y position (how many lines scrolled into history)
      */
@@ -1818,10 +1819,6 @@ export declare class SelectionManager {
      */
     private markCurrentSelectionDirty;
     /**
-     * Update auto-scroll based on mouse Y position within canvas
-     */
-    private updateAutoScroll;
-    /**
      * Start auto-scrolling in the given direction
      */
     private startAutoScroll;
@@ -1829,6 +1826,23 @@ export declare class SelectionManager {
      * Stop auto-scrolling
      */
     private stopAutoScroll;
+    /**
+     * Move the dragged end of the selection to a cell.
+     *
+     * vendor 0.4.0-kelpi.19: a drag from a double-click moves by whole words, and from a
+     * triple-click by whole lines, as in Ghostty, Terminal.app and iTerm2. Behind the anchor it runs
+     * from the start of the word (line) under the pointer to the anchor's end; anywhere else, from
+     * the anchor's start to the end of the word (line) under the pointer. Blank space under the
+     * pointer of a word drag ends it at that cell. `selectionEnd` stays the moving end, which is
+     * what auto-scroll compares against.
+     */
+    private extendSelectionTo;
+    /**
+     * vendor 0.4.0-kelpi.19: the word or the line at a cell. A word is one row (blank space is its
+     * own cell); a line is every column of its row and of the rows it soft-wraps across, so a
+     * wrapped command or URL is one line, as a copy of it is (`-kelpi.17`).
+     */
+    private getUnitAt;
     /**
      * Convert pixel coordinates to terminal cell coordinates
      */
@@ -1840,6 +1854,10 @@ export declare class SelectionManager {
     private normalizeSelection;
     /**
      * Get word boundaries at a cell position
+     *
+     * vendor 0.4.0-kelpi.19: `absoluteRow` is a buffer row, history included. Upstream took a
+     * viewport row and read it with `getLine`, which only reaches the active screen, so with the
+     * view scrolled back a double-click measured the word on a different line than the one shown.
      */
     private getWordAtCell;
     /**

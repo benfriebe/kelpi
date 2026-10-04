@@ -1254,6 +1254,25 @@ Ghostty's rule (`Screen.selectionString` adds a newline only `if (!row.wrap)`): 
 the cursor back and overwrites a continuation row without erasing it leaves the flag set, so that
 row still copies joined to the one above it.
 
+**Double-click and drag selects words.** The second press of a double-click selects the word under
+it straight away, and a drag that follows extends the selection a whole word at a time from that
+word, as in Ghostty, Terminal.app and iTerm2: dragging forward runs from the pressed word's start to
+the end of the word under the pointer, dragging backward from the start of the word under the
+pointer to the pressed word's end. A word is a run of letters, digits, `_` and `-`; blank space
+under the pointer ends the selection at that cell. Before vendor `-kelpi.19` the word was selected
+only on the release, so a held double-click dragged cell by cell from the pressed cell (from the
+middle of "quick", "ick brown fox"). A single-click drag still runs cell by cell. With the view
+scrolled back, the word is measured on the row on screen (also `-kelpi.19`).
+
+**Triple-click selects a line.** The third press (and any after it) selects the whole line: every
+column of the pressed row and of every row it soft-wraps across, so a long command or URL the
+terminal wrapped is one line, as its copy is (#323). A drag from it extends a whole line at a time,
+forward from the pressed line's start or backward from its end. Before `-kelpi.19` a triple-click
+selected nothing. Any of these drags scrolls
+the view only once the pointer leaves the terminal above or below it; before `-kelpi.19` a band
+30 px deep inside the top and bottom edges (two rows at a 15 px cell) auto-scrolled and pulled the
+selection's end to a corner cell every 50 ms, so a drag along those rows jumped between lines.
+
 ---
 
 ## 10. Interactive keyboard input path (client-side spec)
@@ -1569,9 +1588,11 @@ daemon streams to every attached client so the engine and the daemon vt agree.
 
 Two client-side paths write the clipboard, and until #81 only the first existed:
 
-1. **Copy-on-select.** The engine copies on mouse-up and on double-click
-   (`vendor/ghostty-web-patched/source/lib/selection-manager.ts:543-547`, `:563-567`, through
-   `copyToClipboard` at `:850-889`). It writes the browser/Electron clipboard directly.
+1. **Copy-on-select.** The engine copies on mouse-up, a double-click's word or word drag
+   included, and on a `dblclick` no press already handled (the long press's)
+   (`vendor/ghostty-web-patched/source/lib/selection-manager.ts`, `boundMouseUpHandler` and the
+   `dblclick` listener, through `copyToClipboard`). It writes the browser/Electron clipboard
+   directly.
 2. **The `copy` binding** (default ⌘C, `packages/core/src/config/bindings.ts`;
    docs/config-keybindings.md section 4). The action reads the FOCUSED pane's live selection
    through `renderer.selection()` and writes it with `navigator.clipboard.writeText`

@@ -1,4 +1,4 @@
-var H = /* @__PURE__ */ ((g) => (g[g.CURSOR_KEY_APPLICATION = 0] = "CURSOR_KEY_APPLICATION", g[g.KEYPAD_KEY_APPLICATION = 1] = "KEYPAD_KEY_APPLICATION", g[g.IGNORE_KEYPAD_WITH_NUMLOCK = 2] = "IGNORE_KEYPAD_WITH_NUMLOCK", g[g.ALT_ESC_PREFIX = 3] = "ALT_ESC_PREFIX", g[g.MODIFY_OTHER_KEYS_STATE_2 = 4] = "MODIFY_OTHER_KEYS_STATE_2", g[g.KITTY_KEYBOARD_FLAGS = 5] = "KITTY_KEYBOARD_FLAGS", g))(H || {}), j = /* @__PURE__ */ ((g) => (g[g.RELEASE = 0] = "RELEASE", g[g.PRESS = 1] = "PRESS", g[g.REPEAT = 2] = "REPEAT", g))(j || {}), w = /* @__PURE__ */ ((g) => (g[g.UNIDENTIFIED = 0] = "UNIDENTIFIED", g[g.GRAVE = 1] = "GRAVE", g[g.BACKSLASH = 2] = "BACKSLASH", g[g.BRACKET_LEFT = 3] = "BRACKET_LEFT", g[g.BRACKET_RIGHT = 4] = "BRACKET_RIGHT", g[g.COMMA = 5] = "COMMA", g[g.ZERO = 6] = "ZERO", g[g.ONE = 7] = "ONE", g[g.TWO = 8] = "TWO", g[g.THREE = 9] = "THREE", g[g.FOUR = 10] = "FOUR", g[g.FIVE = 11] = "FIVE", g[g.SIX = 12] = "SIX", g[g.SEVEN = 13] = "SEVEN", g[g.EIGHT = 14] = "EIGHT", g[g.NINE = 15] = "NINE", g[g.EQUAL = 16] = "EQUAL", g[g.INTL_BACKSLASH = 17] = "INTL_BACKSLASH", g[g.INTL_RO = 18] = "INTL_RO", g[g.INTL_YEN = 19] = "INTL_YEN", g[g.A = 20] = "A", g[g.B = 21] = "B", g[g.C = 22] = "C", g[g.D = 23] = "D", g[g.E = 24] = "E", g[g.F = 25] = "F", g[g.G = 26] = "G", g[g.H = 27] = "H", g[g.I = 28] = "I", g[g.J = 29] = "J", g[g.K = 30] = "K", g[g.L = 31] = "L", g[g.M = 32] = "M", g[g.N = 33] = "N", g[g.O = 34] = "O", g[g.P = 35] = "P", g[g.Q = 36] = "Q", g[g.R = 37] = "R", g[g.S = 38] = "S", g[g.T = 39] = "T", g[g.U = 40] = "U", g[g.V = 41] = "V", g[g.W = 42] = "W", g[g.X = 43] = "X", g[g.Y = 44] = "Y", g[g.Z = 45] = "Z", g[g.MINUS = 46] = "MINUS", g[g.PERIOD = 47] = "PERIOD", g[g.QUOTE = 48] = "QUOTE", g[g.SEMICOLON = 49] = "SEMICOLON", g[g.SLASH = 50] = "SLASH", g[g.ALT_LEFT = 51] = "ALT_LEFT", g[g.ALT_RIGHT = 52] = "ALT_RIGHT", g[g.BACKSPACE = 53] = "BACKSPACE", g[g.CAPS_LOCK = 54] = "CAPS_LOCK", g[g.CONTEXT_MENU = 55] = "CONTEXT_MENU", g[g.CONTROL_LEFT = 56] = "CONTROL_LEFT", g[g.CONTROL_RIGHT = 57] = "CONTROL_RIGHT", g[g.ENTER = 58] = "ENTER", g[g.META_LEFT = 59] = "META_LEFT", g[g.META_RIGHT = 60] = "META_RIGHT", g[g.SHIFT_LEFT = 61] = "SHIFT_LEFT", g[g.SHIFT_RIGHT = 62] = "SHIFT_RIGHT", g[g.SPACE = 63] = "SPACE", g[g.TAB = 64] = "TAB", g[g.CONVERT = 65] = "CONVERT", g[g.KANA_MODE = 66] = "KANA_MODE", g[g.NON_CONVERT = 67] = "NON_CONVERT", g[g.DELETE = 68] = "DELETE", g[g.END = 69] = "END", g[g.HELP = 70] = "HELP", g[g.HOME = 71] = "HOME", g[g.INSERT = 72] = "INSERT", g[g.PAGE_DOWN = 73] = "PAGE_DOWN", g[g.PAGE_UP = 74] = "PAGE_UP", g[g.DOWN = 75] = "DOWN", g[g.LEFT = 76] = "LEFT", g[g.RIGHT = 77] = "RIGHT", g[g.UP = 78] = "UP", g[g.NUM_LOCK = 79] = "NUM_LOCK", g[g.KP_0 = 80] = "KP_0", g[g.KP_1 = 81] = "KP_1", g[g.KP_2 = 82] = "KP_2", g[g.KP_3 = 83] = "KP_3", g[g.KP_4 = 84] = "KP_4", g[g.KP_5 = 85] = "KP_5", g[g.KP_6 = 86] = "KP_6", g[g.KP_7 = 87] = "KP_7", g[g.KP_8 = 88] = "KP_8", g[g.KP_9 = 89] = "KP_9", g[g.KP_PLUS = 90] = "KP_PLUS", g[g.KP_BACKSPACE = 91] = "KP_BACKSPACE", g[g.KP_CLEAR = 92] = "KP_CLEAR", g[g.KP_CLEAR_ENTRY = 93] = "KP_CLEAR_ENTRY", g[g.KP_COMMA = 94] = "KP_COMMA", g[g.KP_PERIOD = 95] = "KP_PERIOD", g[g.KP_DIVIDE = 96] = "KP_DIVIDE", g[g.KP_ENTER = 97] = "KP_ENTER", g[g.KP_EQUAL = 98] = "KP_EQUAL", g[g.KP_MEMORY_ADD = 99] = "KP_MEMORY_ADD", g[g.KP_MEMORY_CLEAR = 100] = "KP_MEMORY_CLEAR", g[g.KP_MEMORY_RECALL = 101] = "KP_MEMORY_RECALL", g[g.KP_MEMORY_STORE = 102] = "KP_MEMORY_STORE", g[g.KP_MEMORY_SUBTRACT = 103] = "KP_MEMORY_SUBTRACT", g[g.KP_MULTIPLY = 104] = "KP_MULTIPLY", g[g.KP_PAREN_LEFT = 105] = "KP_PAREN_LEFT", g[g.KP_PAREN_RIGHT = 106] = "KP_PAREN_RIGHT", g[g.KP_MINUS = 107] = "KP_MINUS", g[g.KP_SEPARATOR = 108] = "KP_SEPARATOR", g[g.NUMPAD_UP = 109] = "NUMPAD_UP", g[g.NUMPAD_DOWN = 110] = "NUMPAD_DOWN", g[g.NUMPAD_RIGHT = 111] = "NUMPAD_RIGHT", g[g.NUMPAD_LEFT = 112] = "NUMPAD_LEFT", g[g.NUMPAD_BEGIN = 113] = "NUMPAD_BEGIN", g[g.NUMPAD_HOME = 114] = "NUMPAD_HOME", g[g.NUMPAD_END = 115] = "NUMPAD_END", g[g.NUMPAD_INSERT = 116] = "NUMPAD_INSERT", g[g.NUMPAD_DELETE = 117] = "NUMPAD_DELETE", g[g.NUMPAD_PAGE_UP = 118] = "NUMPAD_PAGE_UP", g[g.NUMPAD_PAGE_DOWN = 119] = "NUMPAD_PAGE_DOWN", g[g.ESCAPE = 120] = "ESCAPE", g[g.F1 = 121] = "F1", g[g.F2 = 122] = "F2", g[g.F3 = 123] = "F3", g[g.F4 = 124] = "F4", g[g.F5 = 125] = "F5", g[g.F6 = 126] = "F6", g[g.F7 = 127] = "F7", g[g.F8 = 128] = "F8", g[g.F9 = 129] = "F9", g[g.F10 = 130] = "F10", g[g.F11 = 131] = "F11", g[g.F12 = 132] = "F12", g[g.F13 = 133] = "F13", g[g.F14 = 134] = "F14", g[g.F15 = 135] = "F15", g[g.F16 = 136] = "F16", g[g.F17 = 137] = "F17", g[g.F18 = 138] = "F18", g[g.F19 = 139] = "F19", g[g.F20 = 140] = "F20", g[g.F21 = 141] = "F21", g[g.F22 = 142] = "F22", g[g.F23 = 143] = "F23", g[g.F24 = 144] = "F24", g[g.F25 = 145] = "F25", g[g.FN_LOCK = 146] = "FN_LOCK", g[g.PRINT_SCREEN = 147] = "PRINT_SCREEN", g[g.SCROLL_LOCK = 148] = "SCROLL_LOCK", g[g.PAUSE = 149] = "PAUSE", g[g.BROWSER_BACK = 150] = "BROWSER_BACK", g[g.BROWSER_FAVORITES = 151] = "BROWSER_FAVORITES", g[g.BROWSER_FORWARD = 152] = "BROWSER_FORWARD", g[g.BROWSER_HOME = 153] = "BROWSER_HOME", g[g.BROWSER_REFRESH = 154] = "BROWSER_REFRESH", g[g.BROWSER_SEARCH = 155] = "BROWSER_SEARCH", g[g.BROWSER_STOP = 156] = "BROWSER_STOP", g[g.EJECT = 157] = "EJECT", g[g.LAUNCH_APP_1 = 158] = "LAUNCH_APP_1", g[g.LAUNCH_APP_2 = 159] = "LAUNCH_APP_2", g[g.LAUNCH_MAIL = 160] = "LAUNCH_MAIL", g[g.MEDIA_PLAY_PAUSE = 161] = "MEDIA_PLAY_PAUSE", g[g.MEDIA_SELECT = 162] = "MEDIA_SELECT", g[g.MEDIA_STOP = 163] = "MEDIA_STOP", g[g.MEDIA_TRACK_NEXT = 164] = "MEDIA_TRACK_NEXT", g[g.MEDIA_TRACK_PREVIOUS = 165] = "MEDIA_TRACK_PREVIOUS", g[g.POWER = 166] = "POWER", g[g.SLEEP = 167] = "SLEEP", g[g.AUDIO_VOLUME_DOWN = 168] = "AUDIO_VOLUME_DOWN", g[g.AUDIO_VOLUME_MUTE = 169] = "AUDIO_VOLUME_MUTE", g[g.AUDIO_VOLUME_UP = 170] = "AUDIO_VOLUME_UP", g[g.WAKE_UP = 171] = "WAKE_UP", g[g.COPY = 172] = "COPY", g[g.CUT = 173] = "CUT", g[g.PASTE = 174] = "PASTE", g))(w || {}), l = /* @__PURE__ */ ((g) => (g[g.NONE = 0] = "NONE", g[g.SHIFT = 1] = "SHIFT", g[g.CTRL = 2] = "CTRL", g[g.ALT = 4] = "ALT", g[g.SUPER = 8] = "SUPER", g[g.CAPSLOCK = 16] = "CAPSLOCK", g[g.NUMLOCK = 32] = "NUMLOCK", g))(l || {}), f = /* @__PURE__ */ ((g) => (g[g.NONE = 0] = "NONE", g[g.PARTIAL = 1] = "PARTIAL", g[g.FULL = 2] = "FULL", g))(f || {});
+var O = /* @__PURE__ */ ((g) => (g[g.CURSOR_KEY_APPLICATION = 0] = "CURSOR_KEY_APPLICATION", g[g.KEYPAD_KEY_APPLICATION = 1] = "KEYPAD_KEY_APPLICATION", g[g.IGNORE_KEYPAD_WITH_NUMLOCK = 2] = "IGNORE_KEYPAD_WITH_NUMLOCK", g[g.ALT_ESC_PREFIX = 3] = "ALT_ESC_PREFIX", g[g.MODIFY_OTHER_KEYS_STATE_2 = 4] = "MODIFY_OTHER_KEYS_STATE_2", g[g.KITTY_KEYBOARD_FLAGS = 5] = "KITTY_KEYBOARD_FLAGS", g))(O || {}), j = /* @__PURE__ */ ((g) => (g[g.RELEASE = 0] = "RELEASE", g[g.PRESS = 1] = "PRESS", g[g.REPEAT = 2] = "REPEAT", g))(j || {}), w = /* @__PURE__ */ ((g) => (g[g.UNIDENTIFIED = 0] = "UNIDENTIFIED", g[g.GRAVE = 1] = "GRAVE", g[g.BACKSLASH = 2] = "BACKSLASH", g[g.BRACKET_LEFT = 3] = "BRACKET_LEFT", g[g.BRACKET_RIGHT = 4] = "BRACKET_RIGHT", g[g.COMMA = 5] = "COMMA", g[g.ZERO = 6] = "ZERO", g[g.ONE = 7] = "ONE", g[g.TWO = 8] = "TWO", g[g.THREE = 9] = "THREE", g[g.FOUR = 10] = "FOUR", g[g.FIVE = 11] = "FIVE", g[g.SIX = 12] = "SIX", g[g.SEVEN = 13] = "SEVEN", g[g.EIGHT = 14] = "EIGHT", g[g.NINE = 15] = "NINE", g[g.EQUAL = 16] = "EQUAL", g[g.INTL_BACKSLASH = 17] = "INTL_BACKSLASH", g[g.INTL_RO = 18] = "INTL_RO", g[g.INTL_YEN = 19] = "INTL_YEN", g[g.A = 20] = "A", g[g.B = 21] = "B", g[g.C = 22] = "C", g[g.D = 23] = "D", g[g.E = 24] = "E", g[g.F = 25] = "F", g[g.G = 26] = "G", g[g.H = 27] = "H", g[g.I = 28] = "I", g[g.J = 29] = "J", g[g.K = 30] = "K", g[g.L = 31] = "L", g[g.M = 32] = "M", g[g.N = 33] = "N", g[g.O = 34] = "O", g[g.P = 35] = "P", g[g.Q = 36] = "Q", g[g.R = 37] = "R", g[g.S = 38] = "S", g[g.T = 39] = "T", g[g.U = 40] = "U", g[g.V = 41] = "V", g[g.W = 42] = "W", g[g.X = 43] = "X", g[g.Y = 44] = "Y", g[g.Z = 45] = "Z", g[g.MINUS = 46] = "MINUS", g[g.PERIOD = 47] = "PERIOD", g[g.QUOTE = 48] = "QUOTE", g[g.SEMICOLON = 49] = "SEMICOLON", g[g.SLASH = 50] = "SLASH", g[g.ALT_LEFT = 51] = "ALT_LEFT", g[g.ALT_RIGHT = 52] = "ALT_RIGHT", g[g.BACKSPACE = 53] = "BACKSPACE", g[g.CAPS_LOCK = 54] = "CAPS_LOCK", g[g.CONTEXT_MENU = 55] = "CONTEXT_MENU", g[g.CONTROL_LEFT = 56] = "CONTROL_LEFT", g[g.CONTROL_RIGHT = 57] = "CONTROL_RIGHT", g[g.ENTER = 58] = "ENTER", g[g.META_LEFT = 59] = "META_LEFT", g[g.META_RIGHT = 60] = "META_RIGHT", g[g.SHIFT_LEFT = 61] = "SHIFT_LEFT", g[g.SHIFT_RIGHT = 62] = "SHIFT_RIGHT", g[g.SPACE = 63] = "SPACE", g[g.TAB = 64] = "TAB", g[g.CONVERT = 65] = "CONVERT", g[g.KANA_MODE = 66] = "KANA_MODE", g[g.NON_CONVERT = 67] = "NON_CONVERT", g[g.DELETE = 68] = "DELETE", g[g.END = 69] = "END", g[g.HELP = 70] = "HELP", g[g.HOME = 71] = "HOME", g[g.INSERT = 72] = "INSERT", g[g.PAGE_DOWN = 73] = "PAGE_DOWN", g[g.PAGE_UP = 74] = "PAGE_UP", g[g.DOWN = 75] = "DOWN", g[g.LEFT = 76] = "LEFT", g[g.RIGHT = 77] = "RIGHT", g[g.UP = 78] = "UP", g[g.NUM_LOCK = 79] = "NUM_LOCK", g[g.KP_0 = 80] = "KP_0", g[g.KP_1 = 81] = "KP_1", g[g.KP_2 = 82] = "KP_2", g[g.KP_3 = 83] = "KP_3", g[g.KP_4 = 84] = "KP_4", g[g.KP_5 = 85] = "KP_5", g[g.KP_6 = 86] = "KP_6", g[g.KP_7 = 87] = "KP_7", g[g.KP_8 = 88] = "KP_8", g[g.KP_9 = 89] = "KP_9", g[g.KP_PLUS = 90] = "KP_PLUS", g[g.KP_BACKSPACE = 91] = "KP_BACKSPACE", g[g.KP_CLEAR = 92] = "KP_CLEAR", g[g.KP_CLEAR_ENTRY = 93] = "KP_CLEAR_ENTRY", g[g.KP_COMMA = 94] = "KP_COMMA", g[g.KP_PERIOD = 95] = "KP_PERIOD", g[g.KP_DIVIDE = 96] = "KP_DIVIDE", g[g.KP_ENTER = 97] = "KP_ENTER", g[g.KP_EQUAL = 98] = "KP_EQUAL", g[g.KP_MEMORY_ADD = 99] = "KP_MEMORY_ADD", g[g.KP_MEMORY_CLEAR = 100] = "KP_MEMORY_CLEAR", g[g.KP_MEMORY_RECALL = 101] = "KP_MEMORY_RECALL", g[g.KP_MEMORY_STORE = 102] = "KP_MEMORY_STORE", g[g.KP_MEMORY_SUBTRACT = 103] = "KP_MEMORY_SUBTRACT", g[g.KP_MULTIPLY = 104] = "KP_MULTIPLY", g[g.KP_PAREN_LEFT = 105] = "KP_PAREN_LEFT", g[g.KP_PAREN_RIGHT = 106] = "KP_PAREN_RIGHT", g[g.KP_MINUS = 107] = "KP_MINUS", g[g.KP_SEPARATOR = 108] = "KP_SEPARATOR", g[g.NUMPAD_UP = 109] = "NUMPAD_UP", g[g.NUMPAD_DOWN = 110] = "NUMPAD_DOWN", g[g.NUMPAD_RIGHT = 111] = "NUMPAD_RIGHT", g[g.NUMPAD_LEFT = 112] = "NUMPAD_LEFT", g[g.NUMPAD_BEGIN = 113] = "NUMPAD_BEGIN", g[g.NUMPAD_HOME = 114] = "NUMPAD_HOME", g[g.NUMPAD_END = 115] = "NUMPAD_END", g[g.NUMPAD_INSERT = 116] = "NUMPAD_INSERT", g[g.NUMPAD_DELETE = 117] = "NUMPAD_DELETE", g[g.NUMPAD_PAGE_UP = 118] = "NUMPAD_PAGE_UP", g[g.NUMPAD_PAGE_DOWN = 119] = "NUMPAD_PAGE_DOWN", g[g.ESCAPE = 120] = "ESCAPE", g[g.F1 = 121] = "F1", g[g.F2 = 122] = "F2", g[g.F3 = 123] = "F3", g[g.F4 = 124] = "F4", g[g.F5 = 125] = "F5", g[g.F6 = 126] = "F6", g[g.F7 = 127] = "F7", g[g.F8 = 128] = "F8", g[g.F9 = 129] = "F9", g[g.F10 = 130] = "F10", g[g.F11 = 131] = "F11", g[g.F12 = 132] = "F12", g[g.F13 = 133] = "F13", g[g.F14 = 134] = "F14", g[g.F15 = 135] = "F15", g[g.F16 = 136] = "F16", g[g.F17 = 137] = "F17", g[g.F18 = 138] = "F18", g[g.F19 = 139] = "F19", g[g.F20 = 140] = "F20", g[g.F21 = 141] = "F21", g[g.F22 = 142] = "F22", g[g.F23 = 143] = "F23", g[g.F24 = 144] = "F24", g[g.F25 = 145] = "F25", g[g.FN_LOCK = 146] = "FN_LOCK", g[g.PRINT_SCREEN = 147] = "PRINT_SCREEN", g[g.SCROLL_LOCK = 148] = "SCROLL_LOCK", g[g.PAUSE = 149] = "PAUSE", g[g.BROWSER_BACK = 150] = "BROWSER_BACK", g[g.BROWSER_FAVORITES = 151] = "BROWSER_FAVORITES", g[g.BROWSER_FORWARD = 152] = "BROWSER_FORWARD", g[g.BROWSER_HOME = 153] = "BROWSER_HOME", g[g.BROWSER_REFRESH = 154] = "BROWSER_REFRESH", g[g.BROWSER_SEARCH = 155] = "BROWSER_SEARCH", g[g.BROWSER_STOP = 156] = "BROWSER_STOP", g[g.EJECT = 157] = "EJECT", g[g.LAUNCH_APP_1 = 158] = "LAUNCH_APP_1", g[g.LAUNCH_APP_2 = 159] = "LAUNCH_APP_2", g[g.LAUNCH_MAIL = 160] = "LAUNCH_MAIL", g[g.MEDIA_PLAY_PAUSE = 161] = "MEDIA_PLAY_PAUSE", g[g.MEDIA_SELECT = 162] = "MEDIA_SELECT", g[g.MEDIA_STOP = 163] = "MEDIA_STOP", g[g.MEDIA_TRACK_NEXT = 164] = "MEDIA_TRACK_NEXT", g[g.MEDIA_TRACK_PREVIOUS = 165] = "MEDIA_TRACK_PREVIOUS", g[g.POWER = 166] = "POWER", g[g.SLEEP = 167] = "SLEEP", g[g.AUDIO_VOLUME_DOWN = 168] = "AUDIO_VOLUME_DOWN", g[g.AUDIO_VOLUME_MUTE = 169] = "AUDIO_VOLUME_MUTE", g[g.AUDIO_VOLUME_UP = 170] = "AUDIO_VOLUME_UP", g[g.WAKE_UP = 171] = "WAKE_UP", g[g.COPY = 172] = "COPY", g[g.CUT = 173] = "CUT", g[g.PASTE = 174] = "PASTE", g))(w || {}), l = /* @__PURE__ */ ((g) => (g[g.NONE = 0] = "NONE", g[g.SHIFT = 1] = "SHIFT", g[g.CTRL = 2] = "CTRL", g[g.ALT = 4] = "ALT", g[g.SUPER = 8] = "SUPER", g[g.CAPSLOCK = 16] = "CAPSLOCK", g[g.NUMLOCK = 32] = "NUMLOCK", g))(l || {}), x = /* @__PURE__ */ ((g) => (g[g.NONE = 0] = "NONE", g[g.PARTIAL = 1] = "PARTIAL", g[g.FULL = 2] = "FULL", g))(x || {});
 const V = 80;
 var J = /* @__PURE__ */ ((g) => (g[g.BOLD = 1] = "BOLD", g[g.ITALIC = 2] = "ITALIC", g[g.UNDERLINE = 4] = "UNDERLINE", g[g.STRIKETHROUGH = 8] = "STRIKETHROUGH", g[g.INVERSE = 16] = "INVERSE", g[g.INVISIBLE = 32] = "INVISIBLE", g[g.BLINK = 64] = "BLINK", g[g.FAINT = 128] = "FAINT", g))(J || {});
 class Y {
@@ -116,7 +116,7 @@ class QA {
     new DataView(this.exports.memory.buffer).setUint8(B, typeof Q == "boolean" ? Q ? 1 : 0 : Q), this.exports.ghostty_key_encoder_setopt(this.encoder, A, B), this.exports.ghostty_wasm_free_u8(B);
   }
   setKittyFlags(A) {
-    this.setOption(H.KITTY_KEYBOARD_FLAGS, A);
+    this.setOption(O.KITTY_KEYBOARD_FLAGS, A);
   }
   encode(A) {
     const Q = this.exports.ghostty_wasm_alloc_opaque(), B = this.exports.ghostty_key_event_new(0, Q);
@@ -300,14 +300,14 @@ const v = class K {
   }
   /** For compatibility with old API */
   isDirty() {
-    return this.update() !== f.NONE;
+    return this.update() !== x.NONE;
   }
   /**
    * Check if a full redraw is needed (screen change, resize, etc.)
    * Note: This calls update() to ensure fresh state. Safe to call multiple times.
    */
   needsFullRedraw() {
-    return this.update() === f.FULL;
+    return this.update() === x.FULL;
   }
   /** Mark render state as clean after rendering */
   clearDirty() {
@@ -603,7 +603,7 @@ class W {
       hyperlink_id: 0,
       grapheme_len: 0
     };
-    this.nullCell = new T(B, 0);
+    this.nullCell = new m(B, 0);
   }
   get type() {
     return this.bufferType;
@@ -659,7 +659,7 @@ class EA {
   }
   getCell(A) {
     if (!(A < 0 || A >= this._length))
-      return A >= this.cells.length ? new T(
+      return A >= this.cells.length ? new m(
         {
           codepoint: 0,
           fg_r: 204,
@@ -674,7 +674,7 @@ class EA {
           grapheme_len: 0
         },
         A
-      ) : new T(this.cells[A], A);
+      ) : new m(this.cells[A], A);
   }
   translateToString(A = !1, Q = 0, B = this._length) {
     const E = Math.max(0, Math.min(Q, this._length)), C = Math.max(E, Math.min(B, this._length));
@@ -689,7 +689,7 @@ class EA {
     return A && (I = I.trimEnd()), I;
   }
 }
-class T {
+class m {
   constructor(A, Q) {
     this.cell = A, this.x = Q;
   }
@@ -969,7 +969,7 @@ const CA = {
       const I = A.key.codePointAt(0), D = I !== void 0 && I > 65535 ? 2 : 1;
       A.key.length === D && (E = A.key);
     }
-    this.getModeCallback && (this.syncEncoderOption(H.CURSOR_KEY_APPLICATION, this.getModeCallback(1)), this.syncEncoderOption(H.KEYPAD_KEY_APPLICATION, this.getModeCallback(66))), A.preventDefault(), A.stopPropagation();
+    this.getModeCallback && (this.syncEncoderOption(O.CURSOR_KEY_APPLICATION, this.getModeCallback(1)), this.syncEncoderOption(O.KEYPAD_KEY_APPLICATION, this.getModeCallback(66))), A.preventDefault(), A.stopPropagation();
     let C;
     try {
       const I = this.encoder.encode({
@@ -1314,7 +1314,7 @@ class oA {
   dispose() {
   }
 }
-const z = class R {
+const u = class R {
   constructor(A) {
     this.terminal = A;
   }
@@ -1367,10 +1367,10 @@ const z = class R {
   dispose() {
   }
 };
-z.URL_REGEX = /(?:https?:\/\/|mailto:|ftp:\/\/|ssh:\/\/|git:\/\/|tel:|magnet:|gemini:\/\/|gopher:\/\/|news:)[\w\-.~:\/?#@!$&*+,;=%]+/gi;
-z.TRAILING_PUNCTUATION = /[.,;!?)\]]+$/;
-let iA = z;
-const S = 0, wA = 1, d = 2, b = 64, sA = 4096;
+u.URL_REGEX = /(?:https?:\/\/|mailto:|ftp:\/\/|ssh:\/\/|git:\/\/|tel:|magnet:|gemini:\/\/|gopher:\/\/|news:)[\w\-.~:\/?#@!$&*+,;=%]+/gi;
+u.TRAILING_PUNCTUATION = /[.,;!?)\]]+$/;
+let iA = u;
+const S = 0, wA = 1, H = 2, f = 64, sA = 4096;
 function tA(g) {
   const A = g.toLowerCase();
   if (A.length === g.length)
@@ -1405,7 +1405,7 @@ function hA(g, A, Q) {
   }
   return { text: C, firstCell: I, lastCell: D };
 }
-function p(g) {
+function d(g) {
   const A = g.scrollbackLength + g.rows, Q = /* @__PURE__ */ new Map();
   return (B) => {
     if (Q.has(B))
@@ -1423,7 +1423,7 @@ function AA(g, A, Q, B, E, C) {
   const I = [];
   let D = "", o = Q;
   for (let i = A; D.length < B; i++) {
-    if (i - A > b)
+    if (i - A > f)
       return null;
     const s = g(i);
     if (s === null || o < 0 || o >= s.text.length)
@@ -1434,7 +1434,7 @@ function AA(g, A, Q, B, E, C) {
   return C(D) === E ? I : null;
 }
 function MA(g, A, Q) {
-  const B = g.scrollbackLength + g.rows - Q.linesFromBottom, E = p(g), C = $(A), I = AA(E, B, Q.col, Q.length, C(A.needle), C), D = E(B);
+  const B = g.scrollbackLength + g.rows - Q.linesFromBottom, E = d(g), C = $(A), I = AA(E, B, Q.col, Q.length, C(A.needle), C), D = E(B);
   return I === null || D === null ? null : { absoluteRow: B, offset: Q.col, length: Q.length, rowText: D.text };
 }
 function Z(g, A, Q) {
@@ -1455,7 +1455,7 @@ function Z(g, A, Q) {
   }
   return null;
 }
-function P(g, A, Q, B, E = p(g)) {
+function P(g, A, Q, B, E = d(g)) {
   const C = Q.needle;
   if (C.length === 0)
     return [];
@@ -1463,10 +1463,10 @@ function P(g, A, Q, B, E = p(g)) {
   if (i < A)
     return [];
   let s = A;
-  for (; s > 0 && A - s < b && g.wraps(s - 1); )
+  for (; s > 0 && A - s < f && g.wraps(s - 1); )
     s--;
   let t = i;
-  for (; t < o - 1 && t - i < b && g.wraps(t); )
+  for (; t < o - 1 && t - i < f && g.wraps(t); )
     t++;
   const N = [], e = (c, F, U, M, G) => {
     U > M || c < A || c > i || N.push({
@@ -1544,15 +1544,15 @@ class aA {
     if (!B && !this.stale && C === this.shape)
       return eA;
     this.stale = !1, this.shape = C;
-    const I = E(), D = p(I);
+    const I = E(), D = d(I);
     this.current !== null && (this.current = Z(D, I.scrollbackLength + I.rows, this.current));
     const o = this.query === null ? [] : P(I, Q, this.query, this.current, D), i = /* @__PURE__ */ new Map();
     for (const e of o) {
       let h = i.get(e.row);
       h === void 0 && (h = new Uint8Array(I.cols), i.set(e.row, h));
-      const a = e.current ? d : wA;
+      const a = e.current ? H : wA;
       for (let k = e.startCol; k <= e.endCol && k < I.cols; k++)
-        h[k] !== d && (h[k] = a);
+        h[k] !== H && (h[k] = a);
     }
     const s = /* @__PURE__ */ new Set();
     for (const [e, h] of i) {
@@ -1572,7 +1572,7 @@ class aA {
   peek(A, Q) {
     if (this.query === null)
       return [];
-    const B = p(A);
+    const B = d(A);
     if (this.current !== null) {
       const E = Z(B, A.scrollbackLength + A.rows, this.current);
       E !== this.current && (this.current = E, this.stale = !0);
@@ -1593,7 +1593,7 @@ function NA(g, A) {
       return !1;
   return !0;
 }
-const kA = 1, u = {
+const kA = 1, T = {
   foreground: "#d4d4d4",
   background: "#1e1e1e",
   cursor: "#ffffff",
@@ -1631,7 +1631,7 @@ class L {
     const B = A.getContext("2d", { alpha: !0 });
     if (!B)
       throw new Error("Failed to get 2D rendering context");
-    this.ctx = B, this.fontSize = Q.fontSize ?? 15, this.fontFamily = Q.fontFamily ?? "monospace", this.cursorStyle = Q.cursorStyle ?? "block", this.cursorBlink = Q.cursorBlink ?? !1, this.theme = { ...u, ...Q.theme }, this.allowTransparency = Q.allowTransparency ?? !1, this.focused = Q.focused ?? !0, this.defaultBackgroundRGB = L.parseRGB(this.theme.background), this.devicePixelRatio = Q.devicePixelRatio ?? window.devicePixelRatio ?? 1, this.palette = [
+    this.ctx = B, this.fontSize = Q.fontSize ?? 15, this.fontFamily = Q.fontFamily ?? "monospace", this.cursorStyle = Q.cursorStyle ?? "block", this.cursorBlink = Q.cursorBlink ?? !1, this.theme = { ...T, ...Q.theme }, this.allowTransparency = Q.allowTransparency ?? !1, this.focused = Q.focused ?? !0, this.defaultBackgroundRGB = L.parseRGB(this.theme.background), this.devicePixelRatio = Q.devicePixelRatio ?? window.devicePixelRatio ?? 1, this.palette = [
       this.theme.black,
       this.theme.red,
       this.theme.green,
@@ -1982,7 +1982,7 @@ class L {
     }
     const o = this.searchHighlighter.kindAt(Q, B);
     if (o !== S) {
-      this.ctx.fillStyle = o === d ? this.theme.searchSelectedBackground : this.theme.searchBackground, this.ctx.fillRect(E, C, I, this.metrics.height);
+      this.ctx.fillStyle = o === H ? this.theme.searchSelectedBackground : this.theme.searchBackground, this.ctx.fillRect(E, C, I, this.metrics.height);
       return;
     }
     let i = A.bg_r, s = A.bg_g, t = A.bg_b;
@@ -2004,7 +2004,7 @@ class L {
     if (D)
       this.ctx.fillStyle = this.theme.selectionForeground;
     else if (i !== S)
-      this.ctx.fillStyle = i === d ? this.theme.searchSelectedForeground : this.theme.searchForeground;
+      this.ctx.fillStyle = i === H ? this.theme.searchSelectedForeground : this.theme.searchForeground;
     else {
       let h = A.fg_r, a = A.fg_g, k = A.fg_b;
       A.flags & J.INVERSE && (h = A.bg_r, a = A.bg_g, k = A.bg_b), this.ctx.fillStyle = this.liveThemeColor(h, a, k) ?? this.rgbToCSS(h, a, k);
@@ -2110,7 +2110,7 @@ class L {
    * Update theme colors
    */
   setTheme(A) {
-    this.theme = { ...u, ...A }, this.defaultBackgroundRGB = L.parseRGB(this.theme.background), this.palette = [
+    this.theme = { ...T, ...A }, this.defaultBackgroundRGB = L.parseRGB(this.theme.background), this.palette = [
       this.theme.black,
       this.theme.red,
       this.theme.green,
@@ -2340,12 +2340,12 @@ class L {
     this.stopCursorBlink();
   }
 }
-const m = class O {
+const z = class b {
   // ms between scroll steps
   constructor(A, Q, B, E) {
-    this.selectionStart = null, this.selectionEnd = null, this.isSelecting = !1, this.mouseDownTarget = null, this.dirtySelectionRows = /* @__PURE__ */ new Set(), this.selectionChangedEmitter = new n(), this.boundMouseUpHandler = null, this.boundContextMenuHandler = null, this.boundClickHandler = null, this.boundDocumentMouseMoveHandler = null, this.boundDocumentMouseDownHandler = null, this.autoScrollInterval = null, this.autoScrollDirection = 0, this.terminal = A, this.renderer = Q, this.wasmTerm = B, this.textarea = E, this.attachEventListeners();
+    this.selectionStart = null, this.selectionEnd = null, this.isSelecting = !1, this.mouseDownTarget = null, this.unitAnchor = null, this.pressSelectedWord = !1, this.dirtySelectionRows = /* @__PURE__ */ new Set(), this.selectionChangedEmitter = new n(), this.boundMouseUpHandler = null, this.boundContextMenuHandler = null, this.boundClickHandler = null, this.boundDocumentMouseMoveHandler = null, this.boundDocumentMouseDownHandler = null, this.autoScrollInterval = null, this.autoScrollDirection = 0, this.terminal = A, this.renderer = Q, this.wasmTerm = B, this.textarea = E, this.attachEventListeners();
   }
-  // pixels from edge to trigger scroll
+  // -1 = up, 0 = none, 1 = down
   /**
    * Get current viewport Y position (how many lines scrolled into history)
    */
@@ -2448,14 +2448,14 @@ const m = class O {
   }
   /** Reconcile the copy reader and highlight with the same surviving native endpoints. */
   restoreSelectionAfterWrite() {
-    var B, E, C, I;
+    var E, C, I, D;
     const A = this.wasmTerm.readTrackedSelection();
     if (!A) {
       this.clearSelection();
       return;
     }
-    const Q = ((B = this.selectionStart) == null ? void 0 : B.col) !== A.startCol || ((E = this.selectionStart) == null ? void 0 : E.absoluteRow) !== A.startRow || ((C = this.selectionEnd) == null ? void 0 : C.col) !== A.endCol || ((I = this.selectionEnd) == null ? void 0 : I.absoluteRow) !== A.endRow;
-    this.selectionStart = { col: A.startCol, absoluteRow: A.startRow }, this.selectionEnd = { col: A.endCol, absoluteRow: A.endRow }, this.markCurrentSelectionDirty(), Q && this.selectionChangedEmitter.fire();
+    const Q = this.selectionStart ? A.startRow - this.selectionStart.absoluteRow : 0, B = ((E = this.selectionStart) == null ? void 0 : E.col) !== A.startCol || ((C = this.selectionStart) == null ? void 0 : C.absoluteRow) !== A.startRow || ((I = this.selectionEnd) == null ? void 0 : I.col) !== A.endCol || ((D = this.selectionEnd) == null ? void 0 : D.absoluteRow) !== A.endRow;
+    this.selectionStart = { col: A.startCol, absoluteRow: A.startRow }, this.selectionEnd = { col: A.endCol, absoluteRow: A.endRow }, this.unitAnchor && (this.unitAnchor.startRow += Q, this.unitAnchor.endRow += Q), this.markCurrentSelectionDirty(), B && this.selectionChangedEmitter.fire();
   }
   /**
    * Clear the selection
@@ -2467,7 +2467,7 @@ const m = class O {
     if (A)
       for (let Q = A.startRow; Q <= A.endRow; Q++)
         this.dirtySelectionRows.add(Q);
-    this.selectionStart = null, this.selectionEnd = null, this.isSelecting = !1, this.stopAutoScroll(), this.requestRender(), this.selectionChangedEmitter.fire();
+    this.selectionStart = null, this.selectionEnd = null, this.isSelecting = !1, this.unitAnchor = null, this.stopAutoScroll(), this.requestRender(), this.selectionChangedEmitter.fire();
   }
   /**
    * Select all text in the terminal
@@ -2565,14 +2565,19 @@ const m = class O {
         A.parentElement && A.parentElement.focus({ preventScroll: !0 });
         const B = this.pixelToCell(Q.offsetX, Q.offsetY);
         this.hasSelection() && this.clearSelection();
-        const C = this.viewportRowToAbsolute(B.row);
-        this.selectionStart = { col: B.col, absoluteRow: C }, this.selectionEnd = { col: B.col, absoluteRow: C }, this.isSelecting = !0;
+        const C = this.viewportRowToAbsolute(B.row), I = Q.detail === 2 ? "word" : Q.detail >= 3 ? "line" : null;
+        if (I) {
+          const D = this.getUnitAt(I, B.col, C);
+          this.unitAnchor = { unit: I, ...D }, this.pressSelectedWord = I === "word", this.selectionStart = { col: D.startCol, absoluteRow: D.startRow }, this.selectionEnd = { col: D.endCol, absoluteRow: D.endRow };
+        } else
+          this.unitAnchor = null, this.pressSelectedWord = !1, this.selectionStart = { col: B.col, absoluteRow: C }, this.selectionEnd = { col: B.col, absoluteRow: C };
+        this.isSelecting = !0;
       }
     }), A.addEventListener("mousemove", (Q) => {
       if (this.isSelecting) {
         this.markCurrentSelectionDirty();
         const B = this.pixelToCell(Q.offsetX, Q.offsetY), E = this.viewportRowToAbsolute(B.row);
-        this.selectionEnd = { col: B.col, absoluteRow: E }, this.requestRender(), this.updateAutoScroll(Q.offsetY, A.clientHeight);
+        this.extendSelectionTo(B.col, E), this.requestRender(), this.stopAutoScroll();
       }
     }), A.addEventListener("mouseleave", (Q) => {
       if (this.isSelecting) {
@@ -2587,22 +2592,25 @@ const m = class O {
         if ((Q.clientX < B.left || Q.clientX > B.right || Q.clientY < B.top || Q.clientY > B.bottom) && (Q.clientY < B.top ? this.startAutoScroll(-1) : Q.clientY > B.bottom ? this.startAutoScroll(1) : this.stopAutoScroll(), this.autoScrollDirection === 0)) {
           this.markCurrentSelectionDirty();
           const o = this.pixelToCell(I, D), i = this.viewportRowToAbsolute(o.row);
-          this.selectionEnd = { col: o.col, absoluteRow: i }, this.requestRender();
+          this.extendSelectionTo(o.col, i), this.requestRender();
         }
       }
     }, document.addEventListener("mousemove", this.boundDocumentMouseMoveHandler), this.boundDocumentMouseDownHandler = (Q) => {
       this.mouseDownTarget = Q.target;
     }, document.addEventListener("mousedown", this.boundDocumentMouseDownHandler), this.boundMouseUpHandler = (Q) => {
-      if (this.isSelecting) {
+      if (A.contains(Q.target) || (this.pressSelectedWord = !1), this.isSelecting) {
         this.isSelecting = !1, this.stopAutoScroll();
         const B = this.getSelection();
         B && (this.copyToClipboard(B), this.selectionChangedEmitter.fire());
       }
     }, document.addEventListener("mouseup", this.boundMouseUpHandler), A.addEventListener("dblclick", (Q) => {
-      const B = this.pixelToCell(Q.offsetX, Q.offsetY), E = this.getWordAtCell(B.col, B.row);
-      if (E) {
-        const C = this.viewportRowToAbsolute(B.row);
-        this.selectionStart = { col: E.startCol, absoluteRow: C }, this.selectionEnd = { col: E.endCol, absoluteRow: C }, this.requestRender();
+      if (this.pressSelectedWord) {
+        this.pressSelectedWord = !1;
+        return;
+      }
+      const B = this.pixelToCell(Q.offsetX, Q.offsetY), E = this.viewportRowToAbsolute(B.row), C = this.getWordAtCell(B.col, E);
+      if (C) {
+        this.selectionStart = { col: C.startCol, absoluteRow: E }, this.selectionEnd = { col: C.endCol, absoluteRow: E }, this.requestRender();
         const I = this.getSelection();
         I && (this.copyToClipboard(I), this.selectionChangedEmitter.fire());
       }
@@ -2635,13 +2643,6 @@ const m = class O {
         this.dirtySelectionRows.add(Q);
   }
   /**
-   * Update auto-scroll based on mouse Y position within canvas
-   */
-  updateAutoScroll(A, Q) {
-    const B = O.AUTO_SCROLL_EDGE_SIZE;
-    A < B ? this.startAutoScroll(-1) : A > Q - B ? this.startAutoScroll(1) : this.stopAutoScroll();
-  }
-  /**
    * Start auto-scrolling in the given direction
    */
   startAutoScroll(A) {
@@ -2650,25 +2651,63 @@ const m = class O {
         this.stopAutoScroll();
         return;
       }
-      const Q = O.AUTO_SCROLL_SPEED * this.autoScrollDirection;
+      const Q = b.AUTO_SCROLL_SPEED * this.autoScrollDirection;
       if (this.terminal.scrollLines(Q), this.selectionEnd) {
         const B = this.wasmTerm.getDimensions();
         if (this.autoScrollDirection < 0) {
           const E = this.viewportRowToAbsolute(0);
-          E < this.selectionEnd.absoluteRow && (this.selectionEnd = { col: 0, absoluteRow: E });
+          E < this.selectionEnd.absoluteRow && this.extendSelectionTo(0, E);
         } else {
           const E = this.viewportRowToAbsolute(B.rows - 1);
-          E > this.selectionEnd.absoluteRow && (this.selectionEnd = { col: B.cols - 1, absoluteRow: E });
+          E > this.selectionEnd.absoluteRow && this.extendSelectionTo(B.cols - 1, E);
         }
       }
       this.requestRender();
-    }, O.AUTO_SCROLL_INTERVAL));
+    }, b.AUTO_SCROLL_INTERVAL));
   }
   /**
    * Stop auto-scrolling
    */
   stopAutoScroll() {
     this.autoScrollInterval !== null && (clearInterval(this.autoScrollInterval), this.autoScrollInterval = null), this.autoScrollDirection = 0;
+  }
+  /**
+   * Move the dragged end of the selection to a cell.
+   *
+   * vendor 0.4.0-kelpi.19: a drag from a double-click moves by whole words, and from a
+   * triple-click by whole lines, as in Ghostty, Terminal.app and iTerm2. Behind the anchor it runs
+   * from the start of the word (line) under the pointer to the anchor's end; anywhere else, from
+   * the anchor's start to the end of the word (line) under the pointer. Blank space under the
+   * pointer of a word drag ends it at that cell. `selectionEnd` stays the moving end, which is
+   * what auto-scroll compares against.
+   */
+  extendSelectionTo(A, Q) {
+    const B = this.unitAnchor;
+    if (!B) {
+      this.selectionEnd = { col: A, absoluteRow: Q };
+      return;
+    }
+    const E = this.getUnitAt(B.unit, A, Q);
+    Q < B.startRow || Q === B.startRow && A < B.startCol ? (this.selectionStart = { col: B.endCol, absoluteRow: B.endRow }, this.selectionEnd = { col: E.startCol, absoluteRow: E.startRow }) : (this.selectionStart = { col: B.startCol, absoluteRow: B.startRow }, this.selectionEnd = { col: E.endCol, absoluteRow: E.endRow });
+  }
+  /**
+   * vendor 0.4.0-kelpi.19: the word or the line at a cell. A word is one row (blank space is its
+   * own cell); a line is every column of its row and of the rows it soft-wraps across, so a
+   * wrapped command or URL is one line, as a copy of it is (`-kelpi.17`).
+   */
+  getUnitAt(A, Q, B) {
+    if (A === "word") {
+      const D = this.getWordAtCell(Q, B) ?? { startCol: Q, endCol: Q };
+      return { startCol: D.startCol, startRow: B, endCol: D.endCol, endRow: B };
+    }
+    const E = this.wasmTerm.getScrollbackLength() + this.wasmTerm.getDimensions().rows - 1;
+    let C = B;
+    for (; C > 0 && this.isScreenRowWrapped(C); )
+      C--;
+    let I = B;
+    for (; I < E && this.isScreenRowWrapped(I + 1); )
+      I++;
+    return { startCol: 0, startRow: C, endCol: this.wasmTerm.getDimensions().cols - 1, endRow: I };
   }
   /**
    * Convert pixel coordinates to terminal cell coordinates
@@ -2695,26 +2734,30 @@ const m = class O {
   }
   /**
    * Get word boundaries at a cell position
+   *
+   * vendor 0.4.0-kelpi.19: `absoluteRow` is a buffer row, history included. Upstream took a
+   * viewport row and read it with `getLine`, which only reaches the active screen, so with the
+   * view scrolled back a double-click measured the word on a different line than the one shown.
    */
   getWordAtCell(A, Q) {
-    const B = this.wasmTerm.getLine(Q);
-    if (!B)
+    const B = this.wasmTerm.getScrollbackLength(), E = Q < B ? this.wasmTerm.getScrollbackLine(Q) : this.wasmTerm.getLine(Q - B);
+    if (!E)
       return null;
-    const E = (D) => {
-      if (!D || D.codepoint === 0)
+    const C = (o) => {
+      if (!o || o.codepoint === 0)
         return !1;
-      const o = String.fromCodePoint(D.codepoint);
-      return /[\w-]/.test(o);
+      const i = String.fromCodePoint(o.codepoint);
+      return /[\w-]/.test(i);
     };
-    if (!E(B[A]))
+    if (!C(E[A]))
       return null;
-    let C = A;
-    for (; C > 0 && E(B[C - 1]); )
-      C--;
     let I = A;
-    for (; I < B.length - 1 && E(B[I + 1]); )
-      I++;
-    return { startCol: C, endCol: I };
+    for (; I > 0 && C(E[I - 1]); )
+      I--;
+    let D = A;
+    for (; D < E.length - 1 && C(E[D + 1]); )
+      D++;
+    return { startCol: I, endCol: D };
   }
   /**
    * Copy text to clipboard
@@ -2742,10 +2785,9 @@ const m = class O {
   requestRender() {
   }
 };
-m.AUTO_SCROLL_EDGE_SIZE = 30;
-m.AUTO_SCROLL_SPEED = 3;
-m.AUTO_SCROLL_INTERVAL = 50;
-let cA = m;
+z.AUTO_SCROLL_SPEED = 3;
+z.AUTO_SCROLL_INTERVAL = 50;
+let cA = z;
 class nA {
   // 200ms fade animation
   constructor(A = {}) {
@@ -3516,7 +3558,7 @@ class nA {
       A.style.display = "none", A.textContent = "";
       return;
     }
-    const Q = this.imeCaretHeight > 0 ? this.imeCaretHeight : this.options.fontSize, B = { ...u, ...this.options.theme ?? {} }, E = Math.max(1, Math.round(Q * 0.1));
+    const Q = this.imeCaretHeight > 0 ? this.imeCaretHeight : this.options.fontSize, B = { ...T, ...this.options.theme ?? {} }, E = Math.max(1, Math.round(Q * 0.1));
     A.textContent = this.imePreeditText, A.style.font = `${this.options.fontSize}px ${this.options.fontFamily}`, A.style.lineHeight = `${Q}px`, A.style.height = `${Q}px`, A.style.color = B.foreground, A.style.backgroundColor = B.background, A.style.borderBottom = `${E}px solid ${B.foreground}`, A.style.left = `${Math.max(0, this.imeCaretLeft)}px`, A.style.top = `${Math.max(0, this.imeCaretTop)}px`, A.style.display = "block";
     const C = this.canvas;
     if (C) {
@@ -3801,12 +3843,12 @@ class KA {
     }), this._resizeObserver.observe(this._terminal.element)));
   }
 }
-let x = null;
+let p = null;
 async function yA() {
-  x || (x = await Y.load());
+  p || (p = await Y.load());
 }
 function UA() {
-  if (!x)
+  if (!p)
     throw new Error(
       `ghostty-web not initialized. Call init() before creating Terminal instances.
 Example:
@@ -3819,7 +3861,7 @@ For tests, pass a Ghostty instance directly:
   const ghostty = await Ghostty.load();
   const term = new Terminal({ ghostty });`
     );
-  return x;
+  return p;
 }
 export {
   L as CanvasRenderer,
@@ -3830,7 +3872,7 @@ export {
   BA as GhosttyTerminal,
   IA as InputHandler,
   QA as KeyEncoder,
-  H as KeyEncoderOption,
+  O as KeyEncoderOption,
   DA as LinkDetector,
   oA as OSC8LinkProvider,
   cA as SelectionManager,

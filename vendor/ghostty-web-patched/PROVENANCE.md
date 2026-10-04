@@ -1,11 +1,11 @@
-# ghostty-web 0.4.0-kelpi.18 (vendored)
+# ghostty-web 0.4.0-kelpi.19 (vendored)
 
 **Version labels.** These versions were tagged `-nex.N` before the Nex to Kelpi rename and were
 relabelled `-kelpi.N` on 2026-10-03 with the same numbering, so an older commit, log or audit
 record that says `0.4.0-nex.N` means the same build as `0.4.0-kelpi.N`.
 
 A build of `ghostty-web` v0.4.0 carrying two open upstream PRs — applied after a line-by-line
-review in the orchestrating session and explicit user authorization to integrate both, plus seventeen
+review in the orchestrating session and explicit user authorization to integrate both, plus eighteen
 Kelpi-authored adaptations on top of them (`-kelpi.2`: the caret-anchored IME; `-kelpi.3`: an
 `allowTransparency` that does something; `-kelpi.4`: a cursor that knows whether its surface has
 focus; `-kelpi.5`: a `write()` that survives zero bytes; `-kelpi.6`: a paint that can be suspended;
@@ -17,7 +17,9 @@ every terminal on its own WASM instance; `-kelpi.11`: output never moves a scrol
 rows remain anchored when older history is trimmed; `-kelpi.15`: DOM focus preserves the embedder's pan position;
 `-kelpi.16`: a search-highlight layer, and a public `select()` that lands on the row it names;
 `-kelpi.17`: copying a selection joins soft-wrapped rows, history included; `-kelpi.18`: the
-built-in link detection can be turned off, and an embedder-drawn link underline).
+built-in link detection can be turned off, and an embedder-drawn link underline; `-kelpi.19`: a
+double-click held and dragged selects whole words from the pressed word, a triple-click selects a
+line and drags by lines, and a drag scrolls only once the pointer leaves the terminal).
 
 **`-kelpi.13` is the first adaptation that is NOT TypeScript-only.** Every version up to `-kelpi.12`
 shipped `ghostty-vt.wasm` byte-identical to the npm `ghostty-web@0.4.0` package; `-kelpi.13`
@@ -46,6 +48,69 @@ reproduces the `0.4.0` wasm BYTE-IDENTICALLY when run without the patch, is in
 | `0.4.0-kelpi.16` | `select`/`selectAll`/`selectLines` convert rows through `viewportRowToAbsolute`; a search-highlight layer paints every visible match of a needle and a current match in the theme's `search*` colours (#306) |
 | `0.4.0-kelpi.17` | **wasm + TypeScript**: `ghostty_terminal_is_screen_row_wrapped` reports a row's soft-wrap continuation by absolute row, history included; `getSelection()` joins soft-wrapped rows instead of putting a newline at every wrap, and keeps a wrapped row's trailing spaces; `Buffer.getLine` reports `isWrapped` for history rows (#323) |
 | `0.4.0-kelpi.18` | `linkDetection: false` turns off the built-in link hover, pointer cursor and Ctrl/Cmd-click; `setLinkUnderline(segments)` underlines the cells an embedder names, in each cell's own foreground colour (#303) |
+| `0.4.0-kelpi.19` | a double-click selects its word on the second PRESS, and a drag from it extends by whole words from that word; a triple-click selects the whole line (soft-wrapped rows included) and a drag from it extends by whole lines; the word under a double-click is measured on the row on screen when the view is scrolled back; a drag no longer auto-scrolls while the pointer is over the terminal |
+
+## Kelpi adaptation: double- and triple-click select words and lines, and drag by them (`0.4.0-kelpi.19`, 2026-10-04)
+
+Upstream selected a word only in its `dblclick` listener, and the browser raises `dblclick` on
+the RELEASE of the second click. The second press itself was an ordinary `mousedown`, which
+started a cell selection at the pressed cell, so a double-click held and dragged ran by cells:
+pressed in the middle of "quick" in "the quick brown fox" and dragged right, it selected "ick
+brown fox". If the release then landed on a word, the `dblclick` replaced the whole drag with
+that one word. A triple-click selected nothing at all: its third press was another cell press.
+
+**The press.** The canvas `mousedown` reads `MouseEvent.detail`. On `2` it selects the word
+under the pointer at once (blank space is its own one-cell word); on `3` or more it selects the
+whole line, every column of the pressed row and of every row it soft-wraps across (`getUnitAt`
+walks the `-kelpi.17` wrap flag both ways), so a wrapped command or URL is one line, as its copy
+is. macOS keeps counting past three, and a fourth click is still a line. Either records the
+selection as `unitAnchor` with its unit. A single press clears the anchor and starts a cell
+selection as before.
+
+**The drag.** Every place that moved `selectionEnd` to the pointer (the canvas and document
+`mousemove` listeners and both auto-scroll directions) now calls `extendSelectionTo`. With no
+anchor it sets `selectionEnd`, exactly as before. With one it moves by the anchor's unit, as
+Ghostty, Terminal.app and iTerm2 do: behind the anchor, from the start of the word (line) under
+the pointer to the anchor's end; anywhere else (inside the anchor included), from the anchor's
+start to the end of the word (line) under the pointer. `selectionStart` is always one end of the
+anchor, and the native pins (`-kelpi.14`) return the start they were given, so
+`restoreSelectionAfterWrite` shifts the anchor's rows by as much as the restored start moved and a
+trim mid-drag keeps the anchor on its text. `clearSelection` drops the anchor.
+
+**The `dblclick`.** A double-click's press, which selected its word, sets `pressSelectedWord`; the `dblclick` that
+follows consumes the flag and does nothing, so the drag survives the release. Kelpi's long press
+(`renderer.ts`, `selectWordAt`) raises a `dblclick` with no press before it, which still selects
+the word. A release off the canvas raises no `dblclick` on it, so the document `mouseup` clears
+the flag there and a later long press is not swallowed. Chromium raises `dblclick` after the
+second click only (measured: five rapid clicks raise one, after the second), so a triple-click's
+press leaves the flag clear.
+
+**The word lookup.** `getWordAtCell` now takes an absolute row and reads history through
+`getScrollbackLine`. Upstream passed the VIEWPORT row to `getLine`, which reads the active
+screen, so with the view scrolled back a double-click measured the word on a different line
+from the one shown: on lines whose first words have different lengths it selected the wrong
+number of cells. The drag needs the lookup on any row, history included, which is what exposed
+it.
+
+**No auto-scroll inside the terminal.** Upstream started drag auto-scroll whenever the pointer
+was within 30 px of the canvas's top or bottom edge (`updateAutoScroll`, `AUTO_SCROLL_EDGE_SIZE`),
+and every 50 ms the scroll step pulled the selection's end to the top-left (or bottom-right) cell.
+At Kelpi's 15 px cell that band is two whole rows, and a two-line shell prompt sits on exactly such
+rows: a drag along one had its end yanked onto the row above (below) on every tick and put back on
+every move, so the selection jumped between rows and stayed yanked while the pointer held still.
+Found in a dev instance on a fresh pane, where the word drag made it obvious; a cell drag had the
+same fault. The canvas `mousemove` now stops auto-scroll instead, the band and its constant are
+gone, and auto-scroll starts only when the pointer leaves the canvas above or below it (the
+existing `mouseleave` and document `mousemove` listeners, unchanged). The cost: a pane whose canvas
+meets the edge of the screen cannot be auto-scrolled past that edge; the wheel still scrolls.
+
+No new document listeners (the `-kelpi.12` rule), and no new `absoluteRow:
+this.viewportRowToAbsolute(` sites (the `-kelpi.16` count). TypeScript only; the WASM is
+unchanged from `-kelpi.17`. Rebuilt with `pnpm vendor:build`. Covered by
+`packages/client/src/terminal/selection-word-drag.wasm.test.ts` (the installed bundle, the real
+WASM and the manager's own listeners, driven by the full double- and triple-click event sequences, on a canvas exactly the terminal's
+height; twelve of its thirteen cases fail on `-kelpi.18`, and the one that passes is the
+single-click drag that must not change) and the `-kelpi.19` markers in `vendor-engine.test.ts`.
 
 ## Kelpi adaptation: an embedder-drawn link underline (`0.4.0-kelpi.18`, 2026-10-03)
 

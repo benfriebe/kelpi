@@ -45,7 +45,7 @@ const repoRoot = path.resolve(here, '..', '..', '..', '..');
 const vendorRoot = path.join(repoRoot, 'vendor', 'ghostty-web-patched');
 
 /** The version the audit evidence and PROVENANCE.md were written against. */
-const EXPECTED_VERSION = '0.4.0-kelpi.18';
+const EXPECTED_VERSION = '0.4.0-kelpi.19';
 
 /** Markers of the caret-anchored IME, in the built ESM bundle the client imports. */
 const CARET_MARKERS = ['data-ime-preedit', 'data-ime-caret', 'syncImeCaret'];
@@ -418,6 +418,30 @@ describe('vendored ghostty-web engine', () => {
         expect(terminalSource).toContain('if (this.options.linkDetection) {');
         const rendererSource = read(path.join(vendorRoot, 'source', 'lib', 'renderer.ts'));
         expect(rendererSource).toContain('this.linkUnderlineRows.forEach((row) => hyperlinkRows.add(row));');
+    });
+
+    it('selects a double-click\'s word and a triple-click\'s line on the press, and drags by them (§-kelpi.19)', () => {
+        // Take a future npm release wholesale and the word is selected on `dblclick` again, which
+        // fires on the release: a held double-click drags by cells from the pressed cell, and a
+        // triple-click selects nothing.
+        const bundle = read(path.join(vendorRoot, 'dist', 'ghostty-web.js'));
+        expect(bundle).toMatch(/\.detail === 2 \? "word" : \w+\.detail >= 3 \? "line"/);
+        expect(bundle).toContain('extendSelectionTo');
+        expect(bundle).toContain('getUnitAt');
+        expect(bundle).toContain('pressSelectedWord');
+        const selectionSource = read(path.join(vendorRoot, 'source', 'lib', 'selection-manager.ts'));
+        expect(selectionSource).toContain("e.detail === 2 ? 'word' : e.detail >= 3 ? 'line' : null");
+        // A line is its soft-wrapped rows too, through the same wrap flag a copy joins on (§-kelpi.17).
+        expect(selectionSource).toContain('while (startRow > 0 && this.isScreenRowWrapped(startRow)) startRow--;');
+        // Every pointer move goes through the word-aware path: the two mousemove listeners and
+        // both auto-scroll directions. A bare `selectionEnd = { col: cell.col` would skip it.
+        expect(selectionSource.match(/this\.extendSelectionTo\(/g) ?? []).toHaveLength(4);
+        expect(selectionSource).not.toMatch(/this\.selectionEnd = \{ col: cell\.col, absoluteRow \};\n\s*this\.requestRender/);
+        // The word lookup reads history, not the active screen row at the viewport's index.
+        expect(selectionSource).toContain('private getWordAtCell(col: number, absoluteRow: number)');
+        // No auto-scroll band inside the canvas: it yanked a drag on the top or bottom two rows.
+        expect(selectionSource).not.toContain('AUTO_SCROLL_EDGE_SIZE');
+        expect(selectionSource).not.toContain('updateAutoScroll(');
     });
 
     it('keeps the snapshotted source in step with the bundle', () => {

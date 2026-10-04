@@ -212,6 +212,7 @@ Environment:
   KELPID_DEVICES_PATH  Paired-devices registry (default: <data dir>/devices.json)
   KELPID_CLIENT_DIR    Directory holding the built web client
   KELPID_LOG_FILE      Append the detached daemon's stdout/stderr here
+                     (Kelpi.app sets ~/Library/Application Support/Kelpi/logs/kelpid.log)
   KELPID_TERMINAL_HOST 0 = run PTYs in-process; shells then die with the daemon (default: terminal host)
   KELPID_LOGIN_SHELL   0 = start panes as plain shells, not login shells (sandboxes; default: login)
   KELPID_VERSION       Override the reported version (packaging)
@@ -400,6 +401,8 @@ export interface CliIO {
     readonly out: (line: string) => void;
     readonly err: (line: string) => void;
     readonly env?: NodeJS.ProcessEnv | undefined;
+    /** stdout is a terminal, not a log file or a pipe (#314: only a terminal gets the token). */
+    readonly stdoutIsTerminal?: boolean | undefined;
     /** Injected for tests; production waits on real signals. */
     readonly waitForever?: (() => Promise<void>) | undefined;
     /** Injected for tests; production shells out to the real `tailscale`. */
@@ -463,6 +466,7 @@ function defaultIO(): CliIO {
         }
     };
     return {
+        stdoutIsTerminal: process.stdout.isTTY === true,
         out: (line) => write(process.stdout, line),
         err: (line) => write(process.stderr, line),
         interactive: process.stdin.isTTY === true && process.stdout.isTTY === true,
@@ -1406,7 +1410,13 @@ function printInfo(io: CliIO, info: DaemonInfo): void {
     if (info.tcpPort !== undefined) io.out(`  control tcp: 127.0.0.1:${String(info.tcpPort)}`);
     io.out(`  http: ${info.url}`);
     // The one line a person actually needs: `http:` alone loads a client that cannot log in.
-    io.out(`  url: ${info.url}/?token=${encodeURIComponent(info.token)}`);
+    // Only at a terminal: a detached daemon's stdout is its log file (#314), which people attach
+    // to issues, and the token is the owner credential. `kelpid url` prints it on demand.
+    io.out(
+        io.stdoutIsTerminal === true
+            ? `  url: ${info.url}/?token=${encodeURIComponent(info.token)}`
+            : `  url: ${info.url}/?token=<not logged; \`kelpid url\` prints it>`
+    );
     io.out(
         `  db: ${info.dbPath}${info.persistence.degraded ? ` — DEGRADED: ${info.persistence.error ?? 'not saving'}` : ''}`
     );

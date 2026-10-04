@@ -1626,14 +1626,20 @@ log the first failed reconnect, then every 20th with a count, then how many fail
 back. Load failures are logged with the token redacted.
 
 Logging (`packages/shell/src/log.ts`, `packages/shell/src/log-file.ts`): every shell line is
-`[shell] …` on stdout **and** appended to `<userData>/logs/shell.log` (issue #77): for a
+`[shell] …` on stdout **and** appended to `<userData>/logs/shell.log` (issue #77), where it also
+starts with an ISO timestamp (#314; stdout is unchanged, the smokes match on it): for a
 packaged app `~/Library/Application Support/Kelpi/logs/shell.log`, and for a sandboxed one
 (the smokes, the audit harness, `dev-instance.mjs`) the `--user-data-dir` that run was given.
 The file is opened by the instance that wins the single-instance lock, closed on `will-quit`,
 and bounded at 4 MB across two generations (`shell.log`, `shell.log.1`); the live file can
 exceed the cap by the one line that crossed it. The sink never throws: a directory it cannot
 create or write leaves the shell on stdout alone, which is what it had before the file existed.
-The path is printed on stdout at startup (`shell log file: …`). `log()`, `warn()` and
+The path is printed on stdout at startup (`shell log file: …`). A daemon the shell starts writes
+its own output to `<userData>/logs/kelpid.log` unless `KELPID_LOG_FILE` says otherwise (#314;
+before, a packaged daemon's output went to /dev/null). The file is created 0600, moved to
+`kelpid.log.1` at a spawn once it passes 8 MB, and passed on in `KELPID_LOG_FILE` so a
+`kelpid restart` successor appends to it too; its startup block leaves the token out of the
+`url:` line unless it is printing to a terminal. `log()`, `warn()` and
 `logError()` are the only entry points, so this is invisible to every call site. It exists
 because the shell's `web pane <id> view owner=main|holder bounds=… (reason)` line is the only
 external evidence of where a web pane's view went, and a report from a user's machine has to be

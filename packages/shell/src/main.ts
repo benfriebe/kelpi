@@ -1853,7 +1853,9 @@ async function connectDaemon(): Promise<void> {
         appDir: app.getAppPath(),
         resourcesPath: process.resourcesPath,
         // Only a release has a version worth comparing: a dev run adopts whatever is running.
-        appVersion: app.isPackaged ? app.getVersion() : undefined
+        appVersion: app.isPackaged ? app.getVersion() : undefined,
+        // #314: beside shell.log, so one folder holds both sides of a report.
+        defaultLogFile: join(app.getPath('userData'), 'logs', 'kelpid.log')
     });
     log(`daemon ready ${daemon.url} (spawned=${String(daemon.spawned)})`);
 }

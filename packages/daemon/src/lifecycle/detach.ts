@@ -42,6 +42,24 @@ export interface DetachedProcess {
     readonly args: readonly string[];
 }
 
+/** Past this, a log file is moved to `<file>.1` before the next process appends to it (#314). */
+export const LOG_FILE_MAX_BYTES = 8 * 1024 * 1024;
+
+/**
+ * Keep a daemon log bounded across spawns: the shell now gives every daemon it starts a log file
+ * (#314), and `kelpid restart` respawns into the same one. Checked at spawn, since the daemon
+ * holds the descriptor from then on. Never throws: a log that cannot be rotated is appended to.
+ */
+export function rotateLogFile(file: string, maxBytes: number = LOG_FILE_MAX_BYTES): boolean {
+    try {
+        if (fs.statSync(file).size <= maxBytes) return false;
+        fs.renameSync(file, `${file}.1`);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
 /** Spawn `entry` in its own process group, fully detached from this process. */
 export function spawnDetached(entry: string, args: readonly string[] = [], options: SpawnDetachedOptions = {}): DetachedProcess {
     const isScript = SCRIPT_EXTENSIONS.has(path.extname(entry).toLowerCase());
@@ -51,7 +69,8 @@ export function spawnDetached(entry: string, args: readonly string[] = [], optio
     let logFd: number | undefined;
     if (options.logFile !== undefined) {
         fs.mkdirSync(path.dirname(options.logFile), { recursive: true });
-        logFd = fs.openSync(options.logFile, 'a');
+        rotateLogFile(options.logFile);
+        logFd = fs.openSync(options.logFile, 'a', 0o600);
     }
 
     const child = spawn(command, argv, {

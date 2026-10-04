@@ -177,7 +177,7 @@ describe('createFileSink', () => {
 });
 
 describe('log() through the file sink', () => {
-    it('writes the same bytes to the file that stdout gets, and nothing else has to know', () => {
+    it('writes the lines stdout gets to the file, each with its time (#314), and nothing else has to know', () => {
         const written = startLogFile(root);
         expect(written).toBe(file);
         expect(logFilePath()).toBe(file);
@@ -185,7 +185,10 @@ describe('log() through the file sink', () => {
         warn('something to look at later');
         stopLogFile();
         const contents = read(file);
-        expect(contents).toBe(stdout.join(''));
+        const stamp = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z /;
+        const lines = contents.split('\n').filter((line) => line !== '');
+        expect(lines.every((line) => stamp.test(line))).toBe(true);
+        expect(lines.map((line) => line.replace(stamp, '')).join('\n') + '\n').toBe(stdout.join(''));
         expect(contents).toContain('[shell] web pane 1234 view owner=main bounds=0,0 100×100 (attached)\n');
         expect(contents).toContain('[shell] warning: something to look at later\n');
         expect(logFilePath()).toBeNull();

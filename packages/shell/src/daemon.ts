@@ -90,6 +90,12 @@ export interface EnsureDaemonOptions {
      * (`daemonReplacement`), which is how an installed update reaches the daemon.
      */
     readonly appVersion?: string | undefined;
+    /**
+     * #314: where a daemon this shell starts writes its output when `KELPID_LOG_FILE` does not say.
+     * Without one the packaged daemon's stdout and stderr went to /dev/null, so nothing it said
+     * about a failure could be read afterwards.
+     */
+    readonly defaultLogFile?: string | undefined;
     /** Injected by tests. */
     readonly now?: (() => number) | undefined;
 }
@@ -393,8 +399,11 @@ export async function ensureDaemon(options: EnsureDaemonOptions = {}): Promise<D
         );
     }
 
-    const logFile = env[LOG_FILE_ENV]?.trim();
-    const spawnEnv = daemonSpawnEnv(env, lookup, options.appVersion);
+    const configuredLog = env[LOG_FILE_ENV]?.trim();
+    const logFile = configuredLog !== undefined && configuredLog.length > 0 ? configuredLog : options.defaultLogFile;
+    let spawnEnv = daemonSpawnEnv(env, lookup, options.appVersion);
+    // In the daemon's own env too, so the successor a `kelpid restart` spawns logs to the same file.
+    if (logFile !== undefined && logFile !== configuredLog) spawnEnv = { ...spawnEnv, [LOG_FILE_ENV]: logFile };
     if (spawnEnv[CLIENT_DIR_ENV] !== env[CLIENT_DIR_ENV]) {
         log(`daemon client dir ${String(spawnEnv[CLIENT_DIR_ENV])} (from the app bundle)`);
     }
@@ -408,7 +417,7 @@ export async function ensureDaemon(options: EnsureDaemonOptions = {}): Promise<D
         execPath: nodeBinary,
         ...(logFile !== undefined && logFile.length > 0 ? { logFile } : {})
     });
-    log(`daemon spawned pid=${String(child.pid)} entry=${entry} node=${nodeBinary}`);
+    log(`daemon spawned pid=${String(child.pid)} entry=${entry} node=${nodeBinary}${logFile === undefined ? '' : ` log=${logFile}`}`);
 
     const deadline = now() + timeoutMs;
     for (;;) {

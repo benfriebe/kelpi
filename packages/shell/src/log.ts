@@ -1,7 +1,7 @@
 /**
  * Main-process logging.
  *
- * One prefix, two sinks: `[shell] …` on stdout so `electron .` in a terminal, a packaged app's
+ * One prefix, two sinks (the file's lines also start with an ISO timestamp, #314): `[shell] …` on stdout so `electron .` in a terminal, a packaged app's
  * `Console.app` output and `scripts/smoke.mjs` all read the same lines, and (issue #77) the same
  * bytes appended to a bounded file under the app's own state directory, because a packaged app
  * launched from the Dock has no stdout anybody will ever read. `log()`, `warn()` and `logError()`
@@ -75,8 +75,10 @@ function write(stream: LogStream, chunk: string): void {
         // Dead pipe (EPIPE/EBADF): the log goes quiet, the app stays up.
     }
     // Second, and never in a way that can disturb the first: the sink swallows its own
-    // failures, so a full disk costs the file and not the line on stdout.
-    file?.write(chunk);
+    // failures, so a full disk costs the file and not the line on stdout. #314: the file's lines
+    // carry the time, because a file read days later has nothing else to order an outage by;
+    // stdout stays as it was, since the smokes match on it and a terminal has its own clock.
+    file?.write(`${new Date().toISOString()} ${chunk}`);
 }
 
 export function log(message: string): void {

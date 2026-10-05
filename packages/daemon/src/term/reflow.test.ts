@@ -52,6 +52,34 @@ describe('reflow policy — columns', () => {
         expect(service.cellText('p', 2, 0)?.text.trimEnd()).toBe('third');
     });
 
+    it('brings a line back when the pane narrows and then widens again', async () => {
+        // A maximise or a drag passes through narrow widths; the text past the narrowest one
+        // must not be lost for good (the shell repaints its prompt, nothing repaints history).
+        const service = makeService();
+        service.attach('p', 40, 10);
+        await write(service, 'p', 'drwxr-xr-x@ 18 mrowe staff 576B .git\r\nshort\r\n$ ');
+
+        service.resize('p', 16, 10);
+        expect(service.cellText('p', 0, 0)?.text.trimEnd()).toBe('drwxr-xr-x@ 18 m');
+        service.resize('p', 12, 10);
+        service.resize('p', 40, 10);
+
+        expect(service.cellText('p', 0, 0)?.text.trimEnd()).toBe('drwxr-xr-x@ 18 mrowe staff 576B .git');
+        expect(service.cellText('p', 1, 0)?.text.trimEnd()).toBe('short');
+    });
+
+    it('does not bring back the old tail of a line rewritten while narrow', async () => {
+        const service = makeService();
+        service.attach('p', 40, 10);
+        await write(service, 'p', 'prompt line that is long and stale\r\n');
+
+        service.resize('p', 10, 10);
+        await write(service, 'p', '\x1b[1;1H\x1b[2Knew prompt');
+        service.resize('p', 40, 10);
+
+        expect(service.cellText('p', 0, 0)?.text.trimEnd()).toBe('new prompt');
+    });
+
     it('keeps the rows below a full-width line where they were, shrink after shrink', async () => {
         // The storm, in miniature: 12 successive narrowings must not move `third` off row 2.
         const service = makeService();

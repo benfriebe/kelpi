@@ -217,6 +217,9 @@ interface XtermBufferLine {
     resize?: (cols: number, fillCharData: unknown) => void;
     getWidth?: (index: number) => number;
     setCell?: (index: number, cell: unknown) => void;
+    clone?: () => XtermBufferLine;
+    copyCellsFrom?: (src: XtermBufferLine, srcCol: number, destCol: number, length: number, applyInReverse: boolean) => void;
+    translateToString?: (trimRight?: boolean, startCol?: number, endCol?: number) => string;
 }
 interface XtermBuffer {
     lines?: { length: number; get: (index: number) => XtermBufferLine | undefined };
@@ -254,7 +257,24 @@ interface XtermCore {
  * that does not answer leaves the buffer exactly as it was — the pre-N23 behaviour, which is
  * degraded but not broken.
  */
-function trimStrandedCells(term: HeadlessTerminal, cols: number): void {
+/**
+ * Each trimmed line's cells as they were before its FIRST trim, so a later widen can put back
+ * what a narrower width cut off. Without it a maximise or a drag that passes through a narrow
+ * width deletes every long line's tail for good: the shell repaints its prompt and nothing
+ * repaints history.
+ */
+const strandedTails = new WeakMap<XtermBufferLine, XtermBufferLine>();
+
+/** Has `line` kept the first `cols` cells it had when `original` was stashed? */
+function unchangedSinceTrim(line: XtermBufferLine, original: XtermBufferLine, cols: number): boolean {
+    const head = original.translateToString?.(false, 0, cols);
+    // ponytail: text-only comparison, so a recolour with identical text keeps the old tail.
+    // A blank head is refused: a recycled scrollback line is blank too, and would inherit it.
+    return head !== undefined && head.trim() !== '' && line.translateToString?.(false, 0, cols) === head;
+}
+
+/** The buffers `trimStrandedCells` and `restoreStrandedCells` walk, with their fill cell. */
+function eachLine(term: HeadlessTerminal, visit: (line: XtermBufferLine, fill: unknown) => void): void {
     const core = (term as unknown as { _core?: XtermCore })._core;
     const buffers = core?._bufferService?.buffers;
     if (buffers === undefined) return;
@@ -265,15 +285,50 @@ function trimStrandedCells(term: HeadlessTerminal, cols: number): void {
         if (fill === undefined) continue;
         for (let index = 0; index < lines.length; index += 1) {
             const line = lines.get(index);
-            if (line === undefined) continue;
-            if (line.length > cols) line.resize?.(cols, fill);
-            // The cut can land inside a wide glyph; its orphaned lead half is one column of
-            // overflow, so blank it. Guarded on the exact width the trim produced, so a line
-            // the resize above could not touch is left exactly as it was.
-            if (line.length !== cols || line.getWidth?.(cols - 1) !== 2) continue;
-            line.setCell?.(cols - 1, fill);
+            if (line !== undefined) visit(line, fill);
         }
     }
+}
+
+/**
+ * The widen half of `trimStrandedCells`: give back the cells a narrower width cut, on every line
+ * nothing has rewritten since. A rewritten line drops its stash, so a prompt redrawn while narrow
+ * never grows the tail of the one it replaced.
+ */
+function restoreStrandedCells(term: HeadlessTerminal, fromCols: number, cols: number): void {
+    eachLine(term, (line, fill) => {
+        const original = strandedTails.get(line);
+        if (original === undefined) return;
+        if (!unchangedSinceTrim(line, original, fromCols)) {
+            strandedTails.delete(line);
+            return;
+        }
+        const end = Math.min(original.length, cols);
+        if (line.length < end) line.resize?.(end, fill);
+        line.copyCellsFrom?.(original, fromCols, fromCols, end - fromCols, false);
+        if (original.length <= cols) strandedTails.delete(line);
+    });
+}
+
+function trimStrandedCells(term: HeadlessTerminal, cols: number): void {
+    eachLine(term, (line, fill) => {
+        if (line.length > cols) {
+            // Stash before the first cut only: a second, narrower shrink must not replace the
+            // whole line with an already-trimmed one. A line rewritten since gets a fresh stash.
+            const stashed = strandedTails.get(line);
+            if (stashed === undefined || !unchangedSinceTrim(line, stashed, line.length)) {
+                const copy = line.clone?.();
+                if (copy !== undefined && line.translateToString?.(true, cols) !== '') strandedTails.set(line, copy);
+                else strandedTails.delete(line);
+            }
+            line.resize?.(cols, fill);
+        }
+        // The cut can land inside a wide glyph; its orphaned lead half is one column of
+        // overflow, so blank it. Guarded on the exact width the trim produced, so a line
+        // the resize above could not touch is left exactly as it was.
+        if (line.length !== cols || line.getWidth?.(cols - 1) !== 2) return;
+        line.setCell?.(cols - 1, fill);
+    });
 }
 
 export interface TerminalStateOptions {
@@ -1165,12 +1220,12 @@ export class TerminalStateServiceImpl implements TerminalStateService {
             }
         }
         if (term.cols !== cols) {
-            const shrank = cols < term.cols;
+            const fromCols = term.cols;
             term.resize(cols, term.rows);
             // A column SHRINK is the only direction that strands cells (N23). Growing widens
-            // the lines again on demand, and a line shorter than the grid is what xterm does
-            // itself.
-            if (shrank) trimStrandedCells(term, cols);
+            // the lines again on demand, and gives back what an earlier shrink cut.
+            if (cols < fromCols) trimStrandedCells(term, cols);
+            else restoreStrandedCells(term, fromCols, cols);
         }
     }
 

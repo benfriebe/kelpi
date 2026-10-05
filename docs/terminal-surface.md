@@ -628,7 +628,8 @@ ownership effect reports at once (`packages/client/src/plugins/terminal.ts`;
   stale prompt copies in the buffer, against 1 with reflow off (measured). Rows keep xterm's
   stock behaviour, applied first at the old width, so a taller viewport still pulls history
   down out of scrollback (`applyGrid`, `service.ts:706-745`); a column shrink hand-trims the
-  cells it stranded past the grid. Every buffer read (capture, search, ⌘-click) is bounded to
+  cells it stranded past the grid, keeping a copy of each line, and a later widen puts the cut
+  cells back on every line nothing has rewritten since. Every buffer read (capture, search, ⌘-click) is bounded to
   `min(cols, line.length)` for the same reason.
 
 ---

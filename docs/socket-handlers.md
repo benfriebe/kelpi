@@ -88,7 +88,7 @@ Many handlers send the success reply **before** the side effect actually execute
 `pane-move-adjacent`, the non-worktree `workspace-create`, `workspace-delete`). The ack is
 optimistic: new-entity UUIDs are minted up front and threaded into the effect so the acked
 id is guaranteed to be the real one. Handlers whose reply describes the resulting state
-(`pane-name`, `pane-resize`, `pane-sync`, `pane-sync-exclude`, `workspace-label`) apply the
+(`pane-name`, `pane-resize`, `pane-font-size`, `pane-sync`, `pane-sync-exclude`, `workspace-label`) apply the
 change first and reply from post-mutation state (`handlers/pane/lifecycle.ts:56`,
 `geometry.ts:87`, `sync.ts:87`). Async handlers (`pane-capture`, `graft-*`, worktree
 `workspace-create`) reply only after the async work resolves.
@@ -778,6 +778,22 @@ change (`set-sync-input-excluded`, `sync.ts:108`; the reducer no-ops when the pa
 in that workspace's visible panes or when the flag is unchanged), then reply with the
 sync-status shape above computed from the updated workspace, and refresh the broadcast
 group.
+
+### 4.15 `pane-font-size` → handlePaneFontSize
+
+Inputs: `paneID?`, `target?`, `workspaceFilter?`, and exactly one of `size` (integer 8-32) /
+`reset` (the decoder enforces both, wire-protocol.md §6.2).
+
+1. Resolve via `resolvePaneTarget`.
+2. If the pane does not render a terminal (not a shell, and not a markdown pane with an
+   external `$EDITOR` running) → `error("pane {uuid} is not a terminal pane")`.
+3. Dispatch `set-terminal-font-size` with `size`, or null for `reset`. The reducer clamps to
+   8-32, no-ops for a non-terminal pane or an unchanged value, and writes
+   `Pane.terminalFontSize`, which is persisted (pane-layout.md §13.2).
+4. Reply from the stored value: `font_size` is the size, or `null` after a reset.
+
+The window sends this for ⌘= / ⌘- / ⌘0 under `font-size-scope = pane` (config-keybindings.md
+§7.6), with the arithmetic already done (`handlers/pane/font-size.ts`).
 
 ---
 
@@ -1551,6 +1567,7 @@ web-pane subsystem (see its spec): `web-open`, `web-navigate`, `web-url`, `web-b
 | pane-send-key | `pane_id`, `workspace_id`, `workspace_name`, `key` (normalized), `label?` |
 | pane-capture | `pane_id`, `workspace_id`, `workspace_name`, `text`, `label?` |
 | pane-resize | `pane_id`, `workspace_id`, `workspace_name`, `split_path`, `ratio`, `target_share`, `label?` |
+| pane-font-size | `pane_id`, `workspace_id`, `workspace_name`, `font_size` (number, or `null` after a reset), `label?` |
 | pane-move-adjacent | `pane_id`, `anchor_id`, `zone`, `workspace_id`, `workspace_name`, `label?` |
 | pane-list | `panes: [...]` |
 | pane-sync / pane-sync-exclude | `workspace_id`, `workspace_name`, `active`, `synced_pane_ids`, `excluded` |

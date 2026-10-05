@@ -18,7 +18,7 @@
  * `load() === null` (without deleting the file).
  */
 
-import { decodePluginPane } from '@kelpi/protocol';
+import { decodePluginPane, PANE_FONT_SIZE_MAX, PANE_FONT_SIZE_MIN } from '@kelpi/protocol';
 import {
     decodeChildOrderJSON,
     decodeLabelsJSON,
@@ -112,6 +112,8 @@ export interface PaneRow {
     readonly agentProfileName: string | null;
     /** #324 (v23): 1 = a csv pane treats its first row as headers. Every pane row carries it. */
     readonly csvHeaderRow: number;
+    /** v24: a terminal pane's own text size; NULL = it follows the ghostty `font-size`. */
+    readonly terminalFontSize: number | null;
 }
 
 export interface RepoRow {
@@ -386,7 +388,8 @@ export function encodePaneRow(pane: PersistedPane, workspaceID: string): PaneRow
         webIsPrivate: isWeb ? (isPrivate ? 1 : 0) : null,
         agentKind: pane.agentKind,
         agentProfileName: pane.agentProfileName,
-        csvHeaderRow: pane.csvHeaderRow === false ? 0 : 1
+        csvHeaderRow: pane.csvHeaderRow === false ? 0 : 1,
+        terminalFontSize: pane.terminalFontSize ?? null
     };
 }
 
@@ -633,9 +636,17 @@ export function decodePaneRow(row: SqlRow, options: DecodePaneOptions = {}): Dec
             scratchpadContent: textColumn(row, 'content'),
             // #324: a pre-v23 row (no column) keeps the default, headers on.
             csvHeaderRow: boolColumn(row, 'csvHeaderRow') ?? true,
+            // A pre-v24 row (no column) and a NULL both mean "follows the daemon-wide size".
+            terminalFontSize: decodeTerminalFontSize(numberColumn(row, 'terminalFontSize')),
             ...web
         }
     };
+}
+
+/** Anything outside the `pane-font-size` range reads back as no size of its own. */
+function decodeTerminalFontSize(value: number | null): number | null {
+    if (value === null || !Number.isInteger(value)) return null;
+    return value >= PANE_FONT_SIZE_MIN && value <= PANE_FONT_SIZE_MAX ? value : null;
 }
 
 export function decodeRepoRow(row: SqlRow): Repo | null {

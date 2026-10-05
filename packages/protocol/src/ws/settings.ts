@@ -47,6 +47,11 @@ export interface WsGeneralSettings {
      * the system browser or a Kelpi web pane. Read by the CLIENT.
      */
     readonly openLinksIn: 'browser' | 'kelpi';
+    /**
+     * `font-size-scope`, default `pane`: what ⌘= / ⌘- / ⌘0 resize, the focused terminal pane
+     * (its own size, on the pane) or every terminal (the ghostty `font-size`). Read by the CLIENT.
+     */
+    readonly fontSizeScope: 'pane' | 'all';
     /** `workspace-delete-branches`, default true: the delete dialog's branch checkbox default. */
     readonly workspaceDeleteBranches: boolean;
     /**
@@ -420,6 +425,7 @@ export const DEFAULT_WS_SETTINGS: WsSettingsSnapshot = {
         confirmWorkspaceDeleteWhenActive: true,
         workspaceDeleteWorktrees: 'ask',
         openLinksIn: 'browser',
+        fontSizeScope: 'pane',
         workspaceDeleteBranches: true,
         confirmQuitWhenActive: true,
         autoUpdate: false,
@@ -510,6 +516,8 @@ export const WS_WRITABLE_GENERAL_KEYS = [
     'workspace-delete-branches',
     // #326: where a ⌘-click on a terminal link opens it. Settings ▸ General ▸ Links writes it.
     'open-links-in',
+    // What ⌘= / ⌘- / ⌘0 resize. Settings ▸ Appearance ▸ Terminal writes it.
+    'font-size-scope',
     // The quit dialog's twin (§AGNT-117). Writable because BOTH sides now write it: the ⌘Q
     // dialog's "Don't ask again" checkbox and Settings ▸ Workspaces' toggle.
     'confirm-quit-when-active',

@@ -32,8 +32,11 @@ const dirname = (p: string): string => {
     if (idx === 0) return '/';
     return trimmed.slice(0, idx);
 };
+import { PANE_FONT_SIZE_MAX, PANE_FONT_SIZE_MIN } from '@kelpi/protocol';
 import {
     allPaneIDs,
+    isTerminalPane,
+    isUsingExternalEditor,
     leaf,
     movingPane,
     neighborPaneID,
@@ -109,7 +112,9 @@ function splitPane(
             id: action.paneID,
             workingDirectory: source.workingDirectory,
             nowMillis: action.now,
-            label: action.label ?? null
+            label: action.label ?? null,
+            // A split starts at the size of the pane it came from, as a ghostty split does.
+            terminalFontSize: source.terminalFontSize
         });
         const next: WorkspaceState = {
             ...appendPane(unzoomed, pane),
@@ -139,7 +144,9 @@ function splitPaneAtPath(
             id: action.paneID,
             workingDirectory: action.path,
             nowMillis: action.now,
-            label: action.label ?? null
+            label: action.label ?? null,
+            // As `split-pane`: the size of the pane it came from, when that pane is there.
+            terminalFontSize: findVisiblePane(unzoomed, sourceID)?.terminalFontSize ?? null
         });
         const next: WorkspaceState = {
             ...appendPane(unzoomed, pane),
@@ -174,6 +181,7 @@ function snapshotForReopen(workspace: WorkspaceState, pane: Pane): WorkspaceStat
             filePath: pane.filePath,
             scratchpadContent: pane.scratchpadContent,
             csvHeaderRow: pane.csvHeaderRow,
+            terminalFontSize: pane.terminalFontSize,
             agentSessionID: pane.agentSessionID,
             agentKind: pane.agentKind,
             agentProfileName: pane.agentProfileName,
@@ -352,6 +360,7 @@ function reopenClosedPane(
         filePath: snapshot.filePath,
         scratchpadContent: snapshot.scratchpadContent,
         csvHeaderRow: snapshot.csvHeaderRow,
+        terminalFontSize: snapshot.terminalFontSize,
         isEditing: snapshot.type === 'scratchpad'
     });
     // agentSessionID is NOT restored (it only types the resume command); agentKind is, for
@@ -811,6 +820,21 @@ export function reducePaneAction(state: DaemonState, action: DomainAction): Daem
                 return mutateVisiblePane(workspace, action.paneID, (target) => ({
                     ...target,
                     markdownFontSize: size
+                }));
+            });
+        case 'set-terminal-font-size':
+            return updateWorkspace(state, action.workspaceID, (workspace) => {
+                const pane = findVisiblePane(workspace, action.paneID);
+                // A shell, or a markdown pane while an external `$EDITOR` runs in it: what renders a terminal.
+                if (pane === null || !(isTerminalPane(pane) || isUsingExternalEditor(pane))) return workspace;
+                const size =
+                    action.size === null
+                        ? null
+                        : Math.max(PANE_FONT_SIZE_MIN, Math.min(PANE_FONT_SIZE_MAX, Math.round(action.size)));
+                if (size === pane.terminalFontSize) return workspace;
+                return mutateVisiblePane(workspace, action.paneID, (target) => ({
+                    ...target,
+                    terminalFontSize: size
                 }));
             });
         default:

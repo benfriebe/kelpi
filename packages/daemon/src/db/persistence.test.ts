@@ -72,6 +72,7 @@ function richSnapshot(): PersistedSnapshot {
                         filePath: null,
                         scratchpadContent: null,
                         csvHeaderRow: true,
+                        terminalFontSize: 18,
                         webTabs: null,
                         webActiveTabID: null,
                         webIsPrivate: false
@@ -90,6 +91,7 @@ function richSnapshot(): PersistedSnapshot {
                         filePath: '/Users/test/code/kelpi/PLAN.md',
                         scratchpadContent: null,
                         csvHeaderRow: true,
+                        terminalFontSize: null,
                         webTabs: null,
                         webActiveTabID: null,
                         webIsPrivate: false
@@ -108,6 +110,7 @@ function richSnapshot(): PersistedSnapshot {
                         filePath: null,
                         scratchpadContent: '# scratch\n\nline two',
                         csvHeaderRow: true,
+                        terminalFontSize: null,
                         webTabs: null,
                         webActiveTabID: null,
                         webIsPrivate: false
@@ -151,6 +154,7 @@ function richSnapshot(): PersistedSnapshot {
                         filePath: null,
                         scratchpadContent: null,
                         csvHeaderRow: true,
+                        terminalFontSize: null,
                         webTabs: [
                             { id: TAB1, url: 'https://example.com', title: 'Example Domain' },
                             { id: TAB2, url: 'http://localhost:3000', title: '' }
@@ -172,6 +176,7 @@ function richSnapshot(): PersistedSnapshot {
                         filePath: null,
                         scratchpadContent: null,
                         csvHeaderRow: true,
+                        terminalFontSize: null,
                         webTabs: null,
                         webActiveTabID: null,
                         webIsPrivate: true
@@ -190,6 +195,7 @@ function richSnapshot(): PersistedSnapshot {
                         filePath: 'packages/daemon',
                         scratchpadContent: null,
                         csvHeaderRow: true,
+                        terminalFontSize: null,
                         webTabs: null,
                         webActiveTabID: null,
                         webIsPrivate: false
@@ -209,6 +215,7 @@ function richSnapshot(): PersistedSnapshot {
                         filePath: '/Users/test/data/data.csv',
                         scratchpadContent: null,
                         csvHeaderRow: false,
+                        terminalFontSize: null,
                         webTabs: null,
                         webActiveTabID: null,
                         webIsPrivate: false
@@ -317,6 +324,7 @@ describe('save → load round trip', () => {
                             externalEditorCommand: null,
                             scratchpadContent: null,
                             csvHeaderRow: true,
+                            terminalFontSize: 18,
                             agentSessionID: 'abc',
                             agentKind: 'claude',
                             agentProfileName: 'work',
@@ -346,7 +354,8 @@ describe('save → load round trip', () => {
             status: 'running',
             agentSessionID: 'abc',
             agentKind: 'claude',
-            agentProfileName: 'work'
+            agentProfileName: 'work',
+            terminalFontSize: 18
         });
         // Transient fields never reach the DB (§7.2).
         expect(loaded?.workspaces[0]?.panes[0]).not.toHaveProperty('title');

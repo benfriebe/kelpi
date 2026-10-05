@@ -286,6 +286,7 @@ describe('the handler table', () => {
                 'pane-capture',
                 'pane-close',
                 'pane-create',
+                'pane-font-size',
                 'pane-list',
                 'pane-move',
                 'pane-move-adjacent',

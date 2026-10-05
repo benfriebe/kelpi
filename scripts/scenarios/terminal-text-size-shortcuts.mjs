@@ -1,5 +1,6 @@
 /**
- * ⌘= / ⌘- / ⌘0 over a focused terminal change the DAEMON-WIDE terminal text size (#175).
+ * ⌘= / ⌘- / ⌘0 over a focused terminal change the DAEMON-WIDE terminal text size (#175) under
+ * `font-size-scope = all`.
  *
  * The report was "⌘+ and ⌘- do not change the terminal text size". The cause was that there was
  * no terminal font-size action at all: the three chords resolved to the markdown preview's own
@@ -9,6 +10,11 @@
  * stays ONE setting per daemon (the ghostty `font-size` Settings ▸ Appearance already writes)
  * and the chords become three ordinary actions that change it through the ordinary settings
  * write. config-keybindings.md §7.6.
+ *
+ * `font-size-scope` now ships as `pane` (each terminal its own size,
+ * `terminal-text-size-per-pane.mjs`), so this scenario writes `font-size-scope = all` into the
+ * sandbox's kelpi config first and puts the file back afterwards: `all` is #175's shape, kept
+ * one Settings choice away.
  *
  * Only a live window can answer this, and the instruments are chosen so that none of them can be
  * satisfied by the chord merely being consumed:
@@ -64,6 +70,8 @@ export default async function ({ page, harness, cli, sandbox, rec, d, sleep }) {
      */
     const readGhostty = () => (fs.existsSync(sandbox.ghosttyConfigPath) ? fs.readFileSync(sandbox.ghosttyConfigPath, 'utf8') : null);
     const originalGhostty = readGhostty();
+    const readKelpi = () => (fs.existsSync(sandbox.configPath) ? fs.readFileSync(sandbox.configPath, 'utf8') : null);
+    const originalKelpi = readKelpi();
     const startingWorkspaces = JSON.parse(await cli.ok(['workspace', 'list', '--json']));
     const startingWorkspace = startingWorkspaces.find((workspace) => workspace.is_active === true)?.id ?? null;
     const initialWorkspaceIDs = new Set(startingWorkspaces.map((workspace) => workspace.id));
@@ -83,7 +91,7 @@ export default async function ({ page, harness, cli, sandbox, rec, d, sleep }) {
      * first snapshot (`client/src/state/bridge.ts`), which is all this needs, so the socket is
      * opened and closed inside one call and leaves nothing attached.
      */
-    const secondClientSize = async () => {
+    const secondClientWelcome = async () => {
         const token = fs.readFileSync(path.join(sandbox.runDir, `daemon-v${PROTOCOL_VERSION}.token`), 'utf8').trim();
         const socket = new WebSocket(`${sandbox.base.replace(/^http/, 'ws')}/ws?token=${token}`);
         try {
@@ -104,7 +112,7 @@ export default async function ({ page, harness, cli, sandbox, rec, d, sleep }) {
                     const message = JSON.parse(data);
                     if (message.type !== 'welcome') return;
                     clearTimeout(timeout);
-                    resolve(message.settings?.appearance?.fontSize ?? null);
+                    resolve(message);
                 });
                 socket.addEventListener('error', (error) => { clearTimeout(timeout); reject(error); }, { once: true });
             });
@@ -112,6 +120,7 @@ export default async function ({ page, harness, cli, sandbox, rec, d, sleep }) {
             try { socket.close(); } catch { /* already gone */ }
         }
     };
+    const secondClientSize = async () => (await secondClientWelcome()).settings?.appearance?.fontSize ?? null;
     const sizeSettlesAt = async (want, ceilingMs = 8_000) =>
         await d.settle(() => configuredSize() === want, { ceilingMs, intervalMs: 60 });
 
@@ -166,6 +175,18 @@ export default async function ({ page, harness, cli, sandbox, rec, d, sleep }) {
     };
 
     try {
+        // ── font-size-scope = all ────────────────────────────────────────────────────
+        // The daemon watches its config; a cold client's `welcome` is the daemon's word that it
+        // has read the line, and the window got the same `settings-changed` broadcast with it.
+        fs.appendFileSync(sandbox.configPath, '\nfont-size-scope = all\n');
+        const scoped = await d.settle(
+            async () => (await secondClientWelcome()).settings?.general?.fontSizeScope === 'all',
+            { ceilingMs: 10_000, intervalMs: 250 }
+        );
+        rec.check('the daemon reads font-size-scope = all from its config', scoped);
+        if (!scoped) return;
+        await sleep(500);
+
         // ── a workspace of its own, with two terminals ──────────────────────────────
         const created = JSON.parse(await cli.ok(['workspace', 'create', '--name', `TextSize-${TAG}`, '--json']));
         const workspaceID = created.workspace_id ?? created.id;
@@ -408,6 +429,9 @@ export default async function ({ page, harness, cli, sandbox, rec, d, sleep }) {
         if (originalGhostty === null) fs.rmSync(sandbox.ghosttyConfigPath, { force: true });
         else fs.writeFileSync(sandbox.ghosttyConfigPath, originalGhostty);
         await d.settle(() => readGhostty() === originalGhostty, { ceilingMs: 3_000 });
+        // …and the kelpi config, so the next scenario gets the shipped `font-size-scope`.
+        if (originalKelpi === null) fs.rmSync(sandbox.configPath, { force: true });
+        else fs.writeFileSync(sandbox.configPath, originalKelpi);
         await sleep(600);
         if (await page.eval(`document.querySelector('${d.PAGE.settingsPanel}') !== null`)) {
             await page.click('[data-testid="settings-close"]').catch(() => {});

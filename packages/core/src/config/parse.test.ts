@@ -50,6 +50,15 @@ describe('parseGeneralSettings', () => {
         expect(parseGeneralSettings('open-links-in = kelpi\nopen-links-in = nonsense').openLinksIn).toBe('kelpi');
     });
 
+    it('reads font-size-scope, defaulting to the focused pane and ignoring unknown values', () => {
+        expect(parseGeneralSettings('').fontSizeScope).toBe('pane');
+        expect(parseGeneralSettings('font-size-scope = all').fontSizeScope).toBe('all');
+        expect(parseGeneralSettings('font-size-scope = ALL').fontSizeScope).toBe('all');
+        expect(parseGeneralSettings('font-size-scope = pane').fontSizeScope).toBe('pane');
+        expect(parseGeneralSettings('font-size-scope = window').fontSizeScope).toBe('pane');
+        expect(parseGeneralSettings('font-size-scope = all\nfont-size-scope = nonsense').fontSizeScope).toBe('all');
+    });
+
     it('returns defaults for an empty file', () => {
         expect(parseGeneralSettings('')).toEqual(DEFAULT_GENERAL_SETTINGS);
     });

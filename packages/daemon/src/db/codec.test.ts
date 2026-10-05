@@ -213,10 +213,22 @@ describe('pane row decoding', () => {
             filePath: null,
             scratchpadContent: null,
             csvHeaderRow: true,
+            terminalFontSize: null,
             webTabs: null,
             webActiveTabID: null,
             webIsPrivate: false
         } satisfies PersistedPane);
+    });
+
+    it("decodes a terminal pane's own text size, and reads anything out of range as none", () => {
+        expect(decodePaneRow(paneRow({ terminalFontSize: 18 }))?.pane.terminalFontSize).toBe(18);
+        expect(decodePaneRow(paneRow({ terminalFontSize: 18n }))?.pane.terminalFontSize).toBe(18);
+        expect(decodePaneRow(paneRow({ terminalFontSize: null }))?.pane.terminalFontSize).toBeNull();
+        for (const bad of [7, 33, 14.5, 'big']) {
+            expect(decodePaneRow(paneRow({ terminalFontSize: bad }))?.pane.terminalFontSize).toBeNull();
+        }
+        // A pre-v24 row has no column at all: the pane follows the daemon-wide size.
+        expect(decodePaneRow(paneRow())?.pane.terminalFontSize).toBeNull();
     });
 
     it('decodes a csv pane and its header-row flag (#324)', () => {
@@ -549,6 +561,29 @@ describe('encoding (§5.4)', () => {
         expect(encodePaneRow({ ...pane, csvHeaderRow: true }, W1).csvHeaderRow).toBe(1);
         expect(encodePaneRow(pane, W1).csvHeaderRow).toBe(1);
         expect(encodePaneRow(pane, W1).type).toBe('csv');
+    });
+
+    it("encodes a terminal pane's own text size, and its absence as NULL", () => {
+        const pane = {
+            id: P1,
+            label: null,
+            type: 'shell' as const,
+            workingDirectory: '/tmp',
+            createdAt: 1,
+            lastActivityAt: 1,
+            agentSessionID: null,
+            agentKind: null,
+            agentProfileName: null,
+            status: 'idle' as const,
+            filePath: null,
+            scratchpadContent: null,
+            webTabs: null,
+            webActiveTabID: null,
+            webIsPrivate: false
+        };
+        expect(encodePaneRow({ ...pane, terminalFontSize: 20 }, W1).terminalFontSize).toBe(20);
+        expect(encodePaneRow({ ...pane, terminalFontSize: null }, W1).terminalFontSize).toBeNull();
+        expect(encodePaneRow(pane, W1).terminalFontSize).toBeNull();
     });
 
     it('encodes booleans as 0/1 and childOrder as a UUID array', () => {

@@ -724,6 +724,7 @@ export function AppearanceTab(props: AppearanceTabProps): ReactElement {
 
                 {row('appearance.fontFamily')}
                 {row('appearance.fontSize')}
+                {row('appearance.fontSizeScope')}
                 {row('appearance.windowPaddingX')}
                 {row('appearance.windowPaddingY')}
 

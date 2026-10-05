@@ -261,6 +261,7 @@ describe('the field table', () => {
             'terminal-opacity',
             'terminal-font-family',
             'terminal-font-size',
+            'terminal-font-size-scope',
             'terminal-padding-x',
             'terminal-padding-y',
             'search-match-color',

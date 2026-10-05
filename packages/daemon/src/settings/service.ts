@@ -312,6 +312,8 @@ export function buildSettingsSnapshot(
             workspaceDeleteWorktrees: general.workspaceDeleteWorktrees,
             // #326: read by the window's ⌘-click, never by the daemon.
             openLinksIn: general.openLinksIn,
+            // Read by the window's ⌘= / ⌘- / ⌘0, never by the daemon.
+            fontSizeScope: general.fontSizeScope,
             workspaceDeleteBranches: general.workspaceDeleteBranches,
             // §AGNT-117: the quit dialog's suppression, now daemon-owned like its twin. The
             // Electron shell reads it off its own status WS's `welcome.settings`, so the ⌘Q

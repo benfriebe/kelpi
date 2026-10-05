@@ -13,6 +13,7 @@
 import type { HandlerTable } from '../../seams.js';
 import type { PaneHandlerContext } from './context.js';
 import { handlePaneCreate, handlePaneSplit } from './create.js';
+import { handlePaneFontSize } from './font-size.js';
 import {
     handlePaneMove,
     handlePaneMoveAdjacent,
@@ -33,6 +34,7 @@ export const paneHandlers: HandlerTable<PaneHandlerContext> = new Map([
     ['pane-send-key', handlePaneSendKey],
     ['pane-capture', handlePaneCapture],
     ['pane-resize', handlePaneResize],
+    ['pane-font-size', handlePaneFontSize],
     ['pane-move', handlePaneMove],
     ['pane-move-adjacent', handlePaneMoveAdjacent],
     ['pane-move-to-workspace', handlePaneMoveToWorkspace],
@@ -43,6 +45,7 @@ export const paneHandlers: HandlerTable<PaneHandlerContext> = new Map([
 
 export type { AsyncTerminalReads, PaneHandlerContext, PaneSpawnDefaults } from './context.js';
 export { handlePaneCreate, handlePaneSplit } from './create.js';
+export { handlePaneFontSize } from './font-size.js';
 export {
     handlePaneMove,
     handlePaneMoveAdjacent,

@@ -21,6 +21,7 @@ export const REPLY_COMMANDS: ReadonlySet<WireCommandName> = new Set([
     'pane-create',
     'pane-name',
     'pane-resize',
+    'pane-font-size',
     'pane-move-adjacent',
     'pane-sync',
     'pane-sync-exclude',

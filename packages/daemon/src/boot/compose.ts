@@ -630,16 +630,16 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
                 report(error, 'pane modes report');
             }
         },
-        // §TERM-030: the one place where parsing OUTPUT owes the PTY INPUT. A real terminal
-        // answers `CSI ? u` with its kitty-keyboard flags, and that answer is how an
-        // application learns the protocol exists at all. `writeDirect`, never `write`: a device
+        // §TERM-030 / #349: the one place where parsing OUTPUT owes the PTY INPUT. A real terminal
+        // answers `CSI ? u` with its kitty-keyboard flags, and that answer is how an application
+        // learns the protocol exists at all; it answers DA1 / DA2 / DSR the same way. `writeDirect`, never `write`: a device
         // reply belongs to the pane that asked, and mirroring it into every synchronise-input
         // sibling would hand each of them an answer to a question they never asked.
-        onKittyReply: (paneID, reply) => {
+        onQueryReply: (paneID, reply) => {
             try {
                 pty.writeDirect(paneID, reply);
             } catch (error) {
-                report(error, 'kitty keyboard query reply');
+                report(error, 'terminal query reply');
             }
         }
     });

@@ -223,13 +223,13 @@ describe('the terminal state service raises OSC 52 for the right pane', () => {
 describe('an OSC 52 READ is refused and nothing goes back to the PTY', () => {
     it('reports the read and never invokes the PTY-write callback', async () => {
         const seen: Osc52Request[] = [];
-        /** `onKittyReply` is the only callback in this service that writes to a PTY. */
+        /** `onQueryReply` is the only callback in this service that writes to a PTY. */
         const toPty: Uint8Array[] = [];
         const term = createTerminalStateService({
             onClipboardRequest: (_paneID, request) => {
                 seen.push(request);
             },
-            onKittyReply: (_paneID, reply) => {
+            onQueryReply: (_paneID, reply) => {
                 toPty.push(reply);
             }
         });
@@ -252,7 +252,7 @@ describe('an OSC 52 READ is refused and nothing goes back to the PTY', () => {
     it('…while a sequence that legitimately owes the PTY an answer still gets one', async () => {
         const toPty: Uint8Array[] = [];
         const term = createTerminalStateService({
-            onKittyReply: (_paneID, reply) => {
+            onQueryReply: (_paneID, reply) => {
                 toPty.push(reply);
             }
         });

@@ -1040,6 +1040,14 @@ class AdapterRenderer implements TerminalRenderer {
      */
     private engineWritten = false;
 
+    /**
+     * #349: true while PTY output is being handed to the engine. Anything the engine emits on
+     * `onData` inside that call is its own reply to a query in the output (ghostty-web answers
+     * DSR 5n / 6n), never a keystroke, and is dropped: the daemon answers every query once, for
+     * the pane (`isForwardedQueryReply`), where an engine reply would add one per open window.
+     */
+    private parsingOutput = false;
+
     private readonly dataListeners = new Set<(data: string) => void>();
     private readonly bellListeners = new Set<() => void>();
     private readonly titleListeners = new Set<(title: string) => void>();
@@ -1881,7 +1889,12 @@ class AdapterRenderer implements TerminalRenderer {
                 this.resetTerminal(terminal);
                 return;
             }
-            terminal.write(data);
+            this.parsingOutput = true;
+            try {
+                terminal.write(data);
+            } finally {
+                this.parsingOutput = false;
+            }
             this.engineWritten = true;
         };
         if (strict) {
@@ -2047,6 +2060,7 @@ class AdapterRenderer implements TerminalRenderer {
         try {
             this.engineDisposables.push(
                 terminal.onData((data) => {
+                    if (this.parsingOutput) return;
                     for (const listener of [...this.dataListeners]) listener(data);
                 })
             );

@@ -1355,7 +1355,12 @@ Kelpi's own layer on both sides of the wire:
 - **Query reply**: `CSI ? u` is answered with `CSI ? flags u` written to the PTY through
   `writeDirect` (`onKittyReply`, `packages/daemon/src/term/service.ts:279-291`,
   `packages/daemon/src/boot/compose.ts:524-535`), the one place where parsing output owes the
-  PTY input; it is never mirrored into a synchronise-input sibling.
+  PTY input; it is never mirrored into a synchronise-input sibling. The same sink carries the
+  device queries `@xterm/headless` answers itself (#349): DA1 (`CSI c`), DA2 (`CSI > c`) and DSR
+  (`CSI 5n` status, `CSI 6n` / `CSI ? 6n` cursor position), forwarded from `term.onData` through
+  the allowlist `isForwardedQueryReply` (`service.ts`), for live output only. Colour queries
+  (OSC 4 / 10 / 11) are deliberately left unanswered: the daemon's VT does not know the window's
+  theme. Without a DA1 reply, crossterm-style probes (`CSI ? u` then `CSI c`) hang at startup.
 - **Streaming**: the flags ride `VtModes.kittyKeyboardFlags` (`packages/daemon/src/seams.ts:77-96`)
   alongside DECCKM, bracketed paste and the mouse modes. `pane-modes` is sent right after
   every replay (`packages/daemon/src/ws/streams.ts:396`) and on every real transition

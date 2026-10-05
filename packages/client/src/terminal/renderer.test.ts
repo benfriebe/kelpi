@@ -469,6 +469,28 @@ describe('TerminalRenderer adapter', () => {
         renderer.dispose();
     });
 
+    // #349: the engine answers some queries itself (ghostty-web: DSR 5n / 6n) by firing `onData`
+    // from inside `write()`. The daemon is the one responder (`isForwardedQueryReply`), so a reply
+    // the engine composes while parsing PTY output must not be sent as input: with it, every
+    // window showing the pane added its own copy of the answer.
+    it('drops data the engine emits while parsing output, and forwards what it emits otherwise', async () => {
+        const engine = stubEngine();
+        const renderer = createRendererFromLoader('xterm', engine.loader);
+        const seen: string[] = [];
+        renderer.onData((data) => seen.push(data));
+        const opening = renderer.open(host());
+        engine.settle();
+        await opening;
+
+        engine.terminal.onWriteRecorded = () => engine.terminal.emitData('\x1b[1;1R');
+        renderer.write('\x1b[6n');
+        expect(seen).toEqual([]);
+
+        engine.terminal.onWriteRecorded = undefined;
+        engine.terminal.emitData('typed');
+        expect(seen).toEqual(['typed']);
+    });
+
     it('forwards engine data to listeners registered before open, and stops on unsubscribe', async () => {
         const engine = stubEngine();
         const renderer = createRendererFromLoader('xterm', engine.loader);

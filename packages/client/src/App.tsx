@@ -24,9 +24,9 @@ import { WorkspacesCreateSheetHost, bindWorkspacesFeature, useWorkspacesFeatureL
 import { createWorkspacesActions } from './features/workspaces-actions';
 import { usePluginNavigation } from './plugins/use-navigation';
 import { useRemoteWorkspaceSelection } from './app/remote-selection';
-import { createRecentSwitcher, heldModifiersFromEvent, type SwitcherState } from './app/recent-switcher';
+import { actionsDuringGesture, createRecentSwitcher, heldModifiersFromEvent } from './app/recent-switcher';
 import { commitTarget, createActivationSequence, recentWorkspaceOrder } from './app/recent-workspaces';
-import { RecentWorkspaceSwitcher } from './chrome/RecentWorkspaceSwitcher';
+import { RecentWorkspaceSwitcherHost } from './chrome/RecentWorkspaceSwitcher';
 import { PluginView } from './plugins/PluginView';
 import { WorkbenchProvider, WorkbenchSidebar, WorkbenchSlot, useWorkbenchLayout, type WorkbenchSlotID } from './plugins/Workbench';
 import { resolveSidebarViews, resolveSlot, selectWorkbenchView } from './plugins/registry';
@@ -2504,9 +2504,9 @@ function Shell(props: AppProps): ReactElement {
         note();
         return store.subscribe(note);
     }, [store]);
-    const [recentSwitcher, setRecentSwitcher] = useState<SwitcherState | null>(null);
-    const switcher = useMemo(
-        () =>
+    // `useState`, not `useMemo`: the gesture is state, and React may drop a memo. The overlay
+    // subscribes to it directly (`RecentWorkspaceSwitcherHost`), so a step does not re-render here.
+    const [switcher] = useState(() =>
             createRecentSwitcher({
                 order: () => {
                     const state = store.getState();
@@ -2523,10 +2523,8 @@ function Shell(props: AppProps): ReactElement {
                     // switcher held DOM focus and is gone, so the pane needs the caret back.
                     if (target === null) handBackPaneCaretRef.current(selectFocusedPaneID(state));
                     else actRef.current.activateWorkspace(target);
-                },
-                onChange: setRecentSwitcher
-            }),
-        [store]
+                }
+            })
     );
     /** A gesture started from a web page paints at once: the page holds the keyboard until it is parked. */
     const focusedPaneIsWeb = (): boolean => {
@@ -3325,7 +3323,10 @@ function Shell(props: AppProps): ReactElement {
         const bindings = clientKeyBindings(keybindLines);
         const dispatcher = createKeyDispatcher({
             bindings,
-            actions: () => keyActionsRef.current,
+            // While a ⌃Tab gesture is open only its own two actions run; every other binding is
+            // swallowed, as under a modal (docs/config-keybindings.md §7.8).
+            actions: () =>
+                switcher.state() === null ? keyActionsRef.current : actionsDuringGesture(keyActionsRef.current, () => true),
             // §7.2 step 1's rule, applied to the Settings window for the same reason: while a
             // modal overlay is up every keystroke belongs to IT — a ⌘D behind the sheet must not
             // split a pane, and the key recorder needs to see combos the map would have eaten.
@@ -3363,7 +3364,7 @@ function Shell(props: AppProps): ReactElement {
             webPanePriority: (trigger, event) => webPriorityRef.current(trigger, event)
         });
         return installKeyDispatcher(window, dispatcher);
-    }, [store, keybindLines, closeModalOverlay, surface]);
+    }, [store, keybindLines, closeModalOverlay, surface, switcher]);
 
     // The ⌃Tab gesture ends on the RELEASE of its modifiers, on Escape (handled here rather than
     // through the dispatcher's `onEscape`, which only sees an unmodified Escape, and ⌃ is still
@@ -5134,21 +5135,18 @@ function Shell(props: AppProps): ReactElement {
             )}
             <InteractionHost surface={surface} presenters={!phoneActive} chords={presenterChords} />
 
-            {recentSwitcher?.shown === true ? (
-                <RecentWorkspaceSwitcher
-                    // One row per ID in the snapshot, so `index` stays aligned when a workspace
-                    // closes mid-gesture; picking that row activates nothing (`commitTarget`).
-                    rows={recentSwitcher.order.map((id) => {
-                        const workspace = selectWorkspace(store.getState(), id);
-                        return workspace === null
-                            ? { id, name: 'Closed workspace', color: null }
-                            : { id, name: workspace.name, color: workspace.color };
-                    })}
-                    index={recentSwitcher.index}
-                    bucket={bucket}
-                    onPick={(id) => switcher.pick(id)}
-                />
-            ) : null}
+            <RecentWorkspaceSwitcherHost
+                switcher={switcher}
+                // One row per ID in the gesture's snapshot, so the highlight stays aligned when a
+                // workspace closes mid-gesture; picking that row activates nothing (`commitTarget`).
+                rowFor={(id) => {
+                    const workspace = selectWorkspace(store.getState(), id);
+                    return workspace === null
+                        ? { id, name: 'Closed workspace', color: null }
+                        : { id, name: workspace.name, color: workspace.color };
+                }}
+                bucket={bucket}
+            />
             {helpOpen ? (
                 <HelpOverlay
                     keymap={keymap}

@@ -1,8 +1,11 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { SWITCHER_SHOW_DELAY_MS, createRecentSwitcher } from '../app/recent-switcher';
+
 import { modalPresenceCount } from './modal-presence';
-import { RecentWorkspaceSwitcher } from './RecentWorkspaceSwitcher';
+import { RecentWorkspaceSwitcher, RecentWorkspaceSwitcherHost } from './RecentWorkspaceSwitcher';
 
 afterEach(cleanup);
 
@@ -45,5 +48,38 @@ describe('RecentWorkspaceSwitcher', () => {
     it('takes keyboard focus so the release reaches the window', () => {
         render(<RecentWorkspaceSwitcher rows={rows} index={1} onPick={() => {}} />);
         expect(document.activeElement).toBe(screen.getByTestId('recent-switcher'));
+    });
+});
+
+describe('RecentWorkspaceSwitcherHost', () => {
+    it('renders from the switcher itself, only once the gesture is shown', () => {
+        vi.useFakeTimers();
+        try {
+            const switcher = createRecentSwitcher({ order: () => ['a', 'b', 'c'], commit: () => {} });
+            const rowFor = (id: string) => rows.find((row) => row.id === id)!;
+            render(<RecentWorkspaceSwitcherHost switcher={switcher} rowFor={rowFor} />);
+            act(() => {
+                switcher.step(1, ['ctrl']);
+            });
+            expect(screen.queryByTestId('recent-switcher')).toBeNull();
+            act(() => {
+                vi.advanceTimersByTime(SWITCHER_SHOW_DELAY_MS);
+            });
+            expect(screen.getAllByTestId('recent-switcher-row').map((row) => row.getAttribute('data-selected'))).toEqual([
+                'false',
+                'true',
+                'false'
+            ]);
+            act(() => {
+                switcher.step(1, ['ctrl']);
+            });
+            expect(screen.getAllByTestId('recent-switcher-row')[2]!.getAttribute('data-selected')).toBe('true');
+            act(() => {
+                switcher.cancel();
+            });
+            expect(screen.queryByTestId('recent-switcher')).toBeNull();
+        } finally {
+            vi.useRealTimers();
+        }
     });
 });

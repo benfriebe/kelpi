@@ -346,7 +346,7 @@ interface KeyTrigger {
   modifiers: ModSet;    // set of "super" | "shift" | "alt" | "ctrl"
 }
 
-type KelpiActionId = string;  // one of the 63 raw values in section 4, or "unbind"
+type KelpiActionId = string;  // one of the 65 raw values in section 4, or "unbind"
 
 // trigger -> action dictionary. One action per trigger; an action may own
 // multiple triggers.
@@ -1358,8 +1358,13 @@ step (`WEB_IDLE_COMMIT_MS`), until the window sees a keyup of its own with the m
 down; from then on it waits for the real release. Releasing on the current workspace, or on a
 workspace closed mid-gesture, activates nothing and hands the caret back.
 
-⌃Tab is no longer delivered to terminal programs (kitty keyboard protocol apps read it).
-`keybind = ctrl+tab=unbind` and `keybind = ctrl+shift+tab=unbind` give it back.
+While a gesture is open every other bound chord is swallowed, as under a modal: nothing acts on
+the workspace behind the switcher, and nothing falls through to the pane (`actionsDuringGesture`).
+
+⌃Tab is no longer delivered to terminal programs (kitty keyboard protocol apps read it), nor to
+web pages, which lose their own ⌃Tab / ⌃⇧Tab (tab or sheet switching in a web app): the shell's
+relay takes every claimed chord from the page. `keybind = ctrl+tab=unbind` and
+`keybind = ctrl+shift+tab=unbind` give both back.
 
 ## 8. Global hotkey (system-wide)
 
@@ -1920,7 +1925,7 @@ lives now:
    state never enter a trigger, and the exact remaining modifier set is compared
    (section 3.1).
 4. **Two dispatch layers collapse into one** in the client (a browser tab has no OS menu
-   bar). All 63 actions go through a single keydown interceptor, and three behaviors of the
+   bar). All 65 actions go through a single keydown interceptor, and three behaviors of the
    original split survive: (a) shortcuts do not fire while a modal/palette/secondary
    surface has focus (the one exception is the `close_pane` chord, which closes the
    overlay, section 7.2); (b) conditional actions FALL THROUGH to the terminal when their
@@ -1981,9 +1986,9 @@ lives now:
     differing from default), reset-all, and the profiles master-detail editor with the
     locked `KELPI_PROFILE` row, `:`/`=` input stripping, reserved `default` name, and
     write-through (on blur, Enter and structural change) against the config file.
-14. **Count sanity for tests**: 64 enum cases total; 63 bindable (excludes `unbind`);
+14. **Count sanity for tests**: 66 enum cases total; 65 bindable (excludes `unbind`);
     19 ship unbound (`open_diff`, `toggle_sync_input`, the three `*_markdown_font_size`,
-    the three single-band toggles, 11 `web_*`); the default map has exactly 47 trigger
-    entries (44 distinct actions bound; focus next/prev and `increase_terminal_font_size`
-    own two triggers each). The Settings table shows 52 actions (63 minus the 11 hidden web
+    the three single-band toggles, 11 `web_*`); the default map has exactly 49 trigger
+    entries (46 distinct actions bound; focus next/prev and `increase_terminal_font_size`
+    own two triggers each). The Settings table shows 54 actions (65 minus the 11 hidden web
     actions).

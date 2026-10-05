@@ -6,7 +6,9 @@
  */
 
 import type { WorkspaceColor } from '@kelpi/daemon/store';
-import { useLayoutEffect, useRef, type ReactElement } from 'react';
+import { useLayoutEffect, useRef, useSyncExternalStore, type ReactElement } from 'react';
+
+import type { RecentSwitcher } from '../app/recent-switcher';
 
 import { useModalPresence } from './modal-presence';
 import { withAlpha, workspaceColorHex, type ChromeBucket } from './theme';
@@ -80,5 +82,28 @@ export function RecentWorkspaceSwitcher(props: RecentWorkspaceSwitcherProps): Re
                 })}
             </div>
         </div>
+    );
+}
+
+export interface RecentWorkspaceSwitcherHostProps {
+    readonly switcher: Pick<RecentSwitcher, 'state' | 'subscribe' | 'pick'>;
+    /** The row for an ID in the gesture's snapshot, including one closed since. */
+    rowFor(workspaceID: string): RecentSwitcherRow;
+    readonly bucket?: ChromeBucket | undefined;
+}
+
+/**
+ * The switcher, subscribed to the gesture directly, so a step re-renders this and not the app root.
+ */
+export function RecentWorkspaceSwitcherHost(props: RecentWorkspaceSwitcherHostProps): ReactElement | null {
+    const state = useSyncExternalStore(props.switcher.subscribe, props.switcher.state, props.switcher.state);
+    if (state === null || !state.shown) return null;
+    return (
+        <RecentWorkspaceSwitcher
+            rows={state.order.map((id) => props.rowFor(id))}
+            index={state.index}
+            bucket={props.bucket}
+            onPick={(id) => props.switcher.pick(id)}
+        />
     );
 }

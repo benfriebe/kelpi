@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
     SWITCHER_SHOW_DELAY_MS,
+    actionsDuringGesture,
     WEB_IDLE_COMMIT_MS,
     createRecentSwitcher,
     heldModifiersFromEvent,
@@ -167,3 +168,39 @@ describe('heldModifiersFromEvent', () => {
     });
 });
 
+
+describe('the switcher as an external store', () => {
+    it('notifies subscribers on every change and keeps one snapshot between changes', () => {
+        const h = harness();
+        let calls = 0;
+        const off = h.switcher.subscribe(() => {
+            calls += 1;
+        });
+        expect(h.switcher.state()).toBeNull();
+        h.switcher.step(1, ['ctrl']);
+        const first = h.switcher.state();
+        expect(h.switcher.state()).toBe(first);
+        expect(calls).toBe(1);
+        h.switcher.step(1, ['ctrl']);
+        expect(calls).toBe(2);
+        off();
+        h.switcher.cancel();
+        expect(calls).toBe(2);
+    });
+});
+
+describe('actionsDuringGesture', () => {
+    // While a gesture is open the window behaves as if a modal were up: every other bound chord
+    // is swallowed rather than acted on, and not passed through either (a ⌃D would reach the
+    // terminal as an EOF).
+    it('keeps the two recent actions and swallows every other one', () => {
+        const step = (): boolean => true;
+        const split = (): boolean => true;
+        const swallow = (): boolean => true;
+        const gated = actionsDuringGesture({ next_recent_workspace: step, split_right: split }, swallow);
+        expect(gated.next_recent_workspace).toBe(step);
+        expect(gated.split_right).toBe(swallow);
+        expect(gated.close_pane).toBe(swallow);
+        expect(gated.previous_recent_workspace).toBeUndefined();
+    });
+});

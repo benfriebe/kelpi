@@ -5,6 +5,8 @@
  * timing rules are unit-tested; `App.tsx` feeds it keydowns, keyups and window blur.
  */
 
+import { KELPI_ACTIONS, type KelpiAction } from '@kelpi/core/config';
+
 export type HeldModifier = 'ctrl' | 'alt' | 'meta';
 
 export interface ModifierSnapshot {
@@ -33,7 +35,7 @@ export const WEB_IDLE_COMMIT_MS = 400;
 export interface RecentSwitcherDeps {
     order(): readonly string[];
     commit(workspaceID: string): void;
-    onChange(state: SwitcherState | null): void;
+    onChange?(state: SwitcherState | null): void;
     setTimer?(fn: () => void, ms: number): unknown;
     clearTimer?(handle: unknown): void;
 }
@@ -46,7 +48,23 @@ export interface RecentSwitcher {
     cancel(): boolean;
     blur(): void;
     pick(workspaceID: string): void;
+    /** The current snapshot: the same object until the next change (`useSyncExternalStore`). */
     state(): SwitcherState | null;
+    subscribe(listener: () => void): () => void;
+}
+
+/** The actions that drive a gesture; every other one is swallowed while it is open. */
+export const RECENT_SWITCHER_ACTIONS: ReadonlySet<KelpiAction> = new Set(['next_recent_workspace', 'previous_recent_workspace']);
+
+/**
+ * The action registry while a gesture is open: the two recent actions as they are, every other
+ * action swallowed. As under a modal, nothing acts behind the switcher - and nothing falls
+ * through to the pane either, where a ⌃D would arrive as an EOF.
+ */
+export function actionsDuringGesture<H>(registry: Partial<Record<KelpiAction, H>>, swallow: H): Partial<Record<KelpiAction, H>> {
+    return Object.fromEntries(
+        KELPI_ACTIONS.map((action) => [action, RECENT_SWITCHER_ACTIONS.has(action) ? registry[action] : swallow])
+    ) as Partial<Record<KelpiAction, H>>;
 }
 
 /** The modifiers the gesture waits on: the trigger's own, minus Shift (which only picks direction). */
@@ -76,10 +94,14 @@ export function createRecentSwitcher(deps: RecentSwitcherDeps): RecentSwitcher {
         deps.clearTimer ?? ((handle: unknown): void => clearTimeout(handle as ReturnType<typeof setTimeout>));
     let gesture: Gesture | null = null;
     let timer: unknown = null;
+    let current: SwitcherState | null = null;
+    const listeners = new Set<() => void>();
 
-    const snapshot = (): SwitcherState | null =>
-        gesture === null ? null : { order: gesture.order, index: gesture.index, shown: gesture.shown };
-    const publish = (): void => deps.onChange(snapshot());
+    const publish = (): void => {
+        current = gesture === null ? null : { order: gesture.order, index: gesture.index, shown: gesture.shown };
+        deps.onChange?.(current);
+        for (const listener of [...listeners]) listener();
+    };
     const end = (): void => {
         if (timer !== null) clearTimer(timer);
         timer = null;
@@ -157,6 +179,12 @@ export function createRecentSwitcher(deps: RecentSwitcherDeps): RecentSwitcher {
         pick(workspaceID) {
             if (gesture !== null) commit(workspaceID);
         },
-        state: snapshot
+        state: () => current,
+        subscribe(listener) {
+            listeners.add(listener);
+            return () => {
+                listeners.delete(listener);
+            };
+        }
     };
 }

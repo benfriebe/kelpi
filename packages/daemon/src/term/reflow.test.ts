@@ -68,6 +68,20 @@ describe('reflow policy — columns', () => {
         expect(service.cellText('p', 1, 0)?.text.trimEnd()).toBe('short');
     });
 
+    it('brings a line back after widening part way and narrowing again', async () => {
+        const service = makeService();
+        service.attach('p', 40, 10);
+        await write(service, 'p', 'drwxr-xr-x@ 18 mrowe staff 576B .git\r\n');
+
+        service.resize('p', 12, 10);
+        service.resize('p', 24, 10);
+        expect(service.cellText('p', 0, 0)?.text.trimEnd()).toBe('drwxr-xr-x@ 18 mrowe sta');
+        service.resize('p', 8, 10);
+        service.resize('p', 40, 10);
+
+        expect(service.cellText('p', 0, 0)?.text.trimEnd()).toBe('drwxr-xr-x@ 18 mrowe staff 576B .git');
+    });
+
     it('does not bring back the old tail of a line rewritten while narrow', async () => {
         const service = makeService();
         service.attach('p', 40, 10);

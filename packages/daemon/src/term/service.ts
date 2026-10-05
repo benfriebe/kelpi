@@ -218,6 +218,7 @@ interface XtermBufferLine {
     getWidth?: (index: number) => number;
     setCell?: (index: number, cell: unknown) => void;
     clone?: () => XtermBufferLine;
+    cleanupMemory?: () => number;
     copyCellsFrom?: (src: XtermBufferLine, srcCol: number, destCol: number, length: number, applyInReverse: boolean) => void;
     /** `CELL_WORDS` words per cell: content (codepoint + combined flag + width), fg, bg. */
     readonly _data?: Uint32Array;
@@ -259,10 +260,10 @@ interface XtermCore {
  * degraded but not broken.
  */
 /**
- * Each trimmed line's cells as they were before its FIRST trim, so a later widen can put back
- * what a narrower width cut off. Without it a maximise or a drag that passes through a narrow
- * width deletes every long line's tail for good: the shell repaints its prompt and nothing
- * repaints history.
+ * Each trimmed line's cells as they were before its FIRST trim, up to the last one with text in
+ * it, so a later widen can put back what a narrower width cut off. Without it a maximise or a
+ * drag that passes through a narrow width deletes every long line's tail for good: the shell
+ * repaints its prompt and nothing repaints history.
  */
 const strandedTails = new WeakMap<XtermBufferLine, XtermBufferLine>();
 
@@ -270,13 +271,16 @@ const CELL_WORDS = 3;
 /** A cell's codepoint plus its combined flag: 0 or a space is a blank cell. */
 const CELL_CHAR_MASK = 0x3fffff;
 
-/** Are cells `from`..`to` of `data` all blank? */
-function blankCells(data: Uint32Array, from: number, to: number): boolean {
-    for (let cell = from; cell < to; cell += 1) {
-        const char = data[cell * CELL_WORDS]! & CELL_CHAR_MASK;
-        if (char !== 0 && char !== 32) return false;
+/** One past the last cell in `from`..`to` of `data` that is not a default-coloured blank. */
+function contentEnd(data: Uint32Array, from: number, to: number): number {
+    let end = to;
+    while (end > from) {
+        const word = (end - 1) * CELL_WORDS;
+        const char = data[word]! & CELL_CHAR_MASK;
+        if ((char !== 0 && char !== 32) || data[word + 1] !== 0 || data[word + 2] !== 0) break;
+        end -= 1;
     }
-    return true;
+    return end;
 }
 
 /**
@@ -292,7 +296,7 @@ function unchangedSinceTrim(line: XtermBufferLine, original: XtermBufferLine, co
     for (let word = cols * CELL_WORDS - 1; word >= 0; word -= 1) if (now[word] !== then[word]) return false;
     // ponytail: a combined glyph swapped for another with the same width compares equal.
     // A blank head is refused: a recycled scrollback line is blank too, and would inherit it.
-    return !blankCells(then, 0, cols);
+    return contentEnd(then, 0, cols) > 0;
 }
 
 /** The buffers `trimStrandedCells` and `restoreStrandedCells` walk, with their fill cell. */
@@ -338,11 +342,14 @@ function trimStrandedCells(term: HeadlessTerminal, cols: number): void {
             // Stash before the first cut only: a second, narrower shrink must not replace the
             // whole line with an already-trimmed one. A line rewritten since gets a fresh stash.
             // Blank tails are checked first: most lines are, and cloning them on every step of a
-            // drag is what made it slow.
+            // drag is what made it slow. The copy stops at the last cell with something in it:
+            // xterm lines are the full grid width, and the blanks past the text are most of it.
             const stashed = strandedTails.get(line);
             if (stashed === undefined || !unchangedSinceTrim(line, stashed, line.length)) {
-                const data = line._data;
-                const copy = data === undefined || blankCells(data, cols, line.length) ? undefined : line.clone?.();
+                const end = line._data === undefined ? cols : contentEnd(line._data, cols, line.length);
+                const copy = end > cols ? line.clone?.() : undefined;
+                copy?.resize?.(end, fill);
+                copy?.cleanupMemory?.();
                 if (copy !== undefined) strandedTails.set(line, copy);
                 else strandedTails.delete(line);
             }

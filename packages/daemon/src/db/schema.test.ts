@@ -42,8 +42,8 @@ describe('migration ledger', () => {
             expect(MIGRATION_IDENTIFIERS).toContain(identifier);
         }
         expect(MIGRATION_IDENTIFIERS[0]).toBe('v1_initial');
-        expect(MIGRATION_IDENTIFIERS.at(-1)).toBe('v23_pane_csv_header_row');
-        expect(MIGRATION_IDENTIFIERS).toHaveLength(23);
+        expect(MIGRATION_IDENTIFIERS.at(-1)).toBe('v24_pane_terminal_font_size');
+        expect(MIGRATION_IDENTIFIERS).toHaveLength(24);
     });
 
     it('is a no-op on the second run', () => {
@@ -54,7 +54,7 @@ describe('migration ledger', () => {
         db.close();
     });
 
-    it('produces the post-v23 schema (§8 + the daemon-only tail)', () => {
+    it('produces the post-v24 schema (§8 + the daemon-only tail)', () => {
         const db = freshDatabase();
         migrate(db);
 
@@ -93,7 +93,8 @@ describe('migration ledger', () => {
             'agentProfileName',
             'pluginJSON',
             'pluginParked',
-            'csvHeaderRow'
+            'csvHeaderRow',
+            'terminalFontSize'
         ]);
         expect(columnNames(db, 'workspace_group')).toEqual([
             'id',
@@ -229,7 +230,8 @@ describe('migration ledger', () => {
     it('adds the csv header-row column (v23) defaulting existing panes to headers on', () => {
         const db = freshDatabase();
         migrate(db);
-        db.run(`DELETE FROM ${MIGRATIONS_TABLE} WHERE identifier = 'v23_pane_csv_header_row'`);
+        db.run(`DELETE FROM ${MIGRATIONS_TABLE} WHERE identifier IN ('v23_pane_csv_header_row', 'v24_pane_terminal_font_size')`);
+        db.exec('ALTER TABLE "pane" DROP COLUMN "terminalFontSize"');
         db.exec('ALTER TABLE "pane" DROP COLUMN "csvHeaderRow"');
         db.run(
             `INSERT INTO "workspace" ("id","name","color","layoutJSON","createdAt","lastAccessedAt") VALUES (?,?,?,?,?,?)`,
@@ -251,8 +253,38 @@ describe('migration ledger', () => {
             'idle'
         );
 
-        expect(migrate(db).applied).toEqual(['v23_pane_csv_header_row']);
+        expect(migrate(db).applied).toEqual(['v23_pane_csv_header_row', 'v24_pane_terminal_font_size']);
         expect(db.all('SELECT "type", "csvHeaderRow" FROM "pane"')).toEqual([{ type: 'csv', csvHeaderRow: 1 }]);
+        db.close();
+    });
+
+    it('adds the terminal font-size column (v24) leaving existing panes on the daemon-wide size', () => {
+        const db = freshDatabase();
+        migrate(db);
+        db.run(`DELETE FROM ${MIGRATIONS_TABLE} WHERE identifier = 'v24_pane_terminal_font_size'`);
+        db.exec('ALTER TABLE "pane" DROP COLUMN "terminalFontSize"');
+        db.run(
+            `INSERT INTO "workspace" ("id","name","color","layoutJSON","createdAt","lastAccessedAt") VALUES (?,?,?,?,?,?)`,
+            'W1',
+            'kept',
+            'blue',
+            '{"empty":{}}',
+            1,
+            1
+        );
+        db.run(
+            `INSERT INTO "pane" ("id","workspaceID","type","workingDirectory","createdAt","lastActivityAt","status") VALUES (?,?,?,?,?,?,?)`,
+            'P1',
+            'W1',
+            'shell',
+            '/tmp',
+            1,
+            1,
+            'idle'
+        );
+
+        expect(migrate(db).applied).toEqual(['v24_pane_terminal_font_size']);
+        expect(db.all('SELECT "type", "terminalFontSize" FROM "pane"')).toEqual([{ type: 'shell', terminalFontSize: null }]);
         db.close();
     });
 

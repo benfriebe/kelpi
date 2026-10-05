@@ -47,6 +47,13 @@ export interface GeneralSettings {
      */
     readonly openLinksIn: 'browser' | 'kelpi';
     /**
+     * `font-size-scope`, default `pane`: what ⌘= / ⌘- / ⌘0 resize. `pane` gives the focused
+     * terminal pane its own text size, kept on the pane (config-keybindings.md §7.6); `all` steps
+     * the daemon-wide ghostty `font-size`, so every terminal follows. A CLIENT-side rule: the
+     * daemon stores whichever size the window asks for. Unknown values keep the default.
+     */
+    readonly fontSizeScope: 'pane' | 'all';
+    /**
      * `workspace-delete-branches`, default **true**: when a worktree goes with its workspace,
      * also delete its branch. Only ever a branch whose every commit another branch, a
      * remote-tracking ref or a tag also has, so it loses nothing. The delete dialog's checkbox
@@ -188,6 +195,7 @@ export const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
     confirmWorkspaceDeleteWhenActive: true,
     workspaceDeleteWorktrees: 'ask',
     openLinksIn: 'browser',
+    fontSizeScope: 'pane',
     workspaceDeleteBranches: true,
     confirmQuitWhenActive: true,
     autoUpdate: false,
@@ -262,6 +270,11 @@ export function parseGeneralSettings(contents: string): GeneralSettings {
             case 'open-links-in':
                 if (lowered === 'browser' || lowered === 'kelpi') {
                     settings = { ...settings, openLinksIn: lowered };
+                }
+                break;
+            case 'font-size-scope':
+                if (lowered === 'pane' || lowered === 'all') {
+                    settings = { ...settings, fontSizeScope: lowered };
                 }
                 break;
             case 'workspace-delete-branches':

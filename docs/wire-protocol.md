@@ -266,7 +266,7 @@ Every request carries `"command": "<verb>"`. Parsing happens in three stages:
    `pane-close`, `pane-list`, `pane-capture`, `graft-start`, `graft-stop`,
    `graft-status`, `ping`, all `web-*` commands, `pane-sync`, `pane-sync-exclude`,
    `pane-send-key`, `pane-send`, `pane-split`, `pane-create`, `pane-name`, `pane-resize`,
-   `pane-move-adjacent`.
+   `pane-font-size`, `pane-move-adjacent`.
    These are all parsed **before** the mandatory-`pane_id` guard, which is why
    `pane-send` / `pane-split` / `pane-create` / `pane-name` (and the close/capture/
    send-key/sync family) work from a plain shell with no `KELPI_PANE_ID`.
@@ -312,7 +312,7 @@ this fixed set (not by any request field):
 ```
 plugin, workspace-list, group-list,
 pane-list, pane-close, pane-capture, pane-send, pane-send-key,
-pane-split, pane-create, pane-name, pane-resize, pane-move-adjacent,
+pane-split, pane-create, pane-name, pane-resize, pane-font-size, pane-move-adjacent,
 pane-sync, pane-sync-exclude,
 workspace-create, workspace-delete, workspace-label, workspace-mute, workspace-rename,
 group-set-repo, group-reorder, group-sort,
@@ -375,7 +375,7 @@ Unknown → `{"ok":false,"error":"unknown key '<key>' (valid: <comma-joined list
 ### 5.7 Pane target resolution (`pane_id` / `target` / `workspace` triple)
 
 Used by `pane-close`, `pane-capture`, `pane-send`, `pane-send-key`, `pane-name`,
-`pane-resize`, `pane-sync-exclude`, `pane-move-adjacent` (for both `target` and
+`pane-resize`, `pane-font-size`, `pane-sync-exclude`, `pane-move-adjacent` (for both `target` and
 `anchor`), and every targeted `web-*` command. Wire shape:
 
 - `pane_id` (optional): the **caller's own** pane UUID from `KELPI_PANE_ID`. Used as the
@@ -478,6 +478,7 @@ carry `"command"`.
 | `pane-send` | R/R | `target`, `text` (non-empty) | `pane_id`, `workspace`, `bare` |
 | `pane-send-key` | R/R | `target`, `key` | `pane_id`, `workspace` |
 | `pane-resize` | R/R | one of `pane_id`/`target`; exactly one of `ratio`/`delta` | `workspace` |
+| `pane-font-size` | R/R | one of `pane_id`/`target`; exactly one of `size`/`reset` | `workspace` |
 | `pane-move` | F&F | `pane_id`, `direction` | — |
 | `pane-move-adjacent` | R/R | `target`, `anchor`, `zone` | `pane_id`, `workspace` |
 | `pane-move-to-workspace` | F&F | `pane_id`, `name` | `text` (`"true"` = create) |
@@ -727,6 +728,28 @@ same path shape `layout-select` and pane-layout §7.3 use, and `PaneResizeReply.
 (`packages/protocol/src/replies/types.ts`) is typed `string` to match (issue #49; the
 protocol serialize test pins the shape). `ratio` is the stored first-child ratio after the
 write; `target_share` is the clamped share of the addressed pane.
+
+#### `pane-font-size` (R/R)
+
+Give the resolved terminal pane a text size of its own, or drop it (config-keybindings.md
+§7.6). Guard: pane-target triple AND **exactly one** of `size` (integer, 8-32: the Appearance
+tab's Font size row's range) / `reset` (`true`) — both, neither, or a `size` out of range is
+answered `{"ok":false,"error":"pane-font-size requires exactly one of size / reset"}` (or
+`pane-font-size size must be 8-32`) and the connection is closed. The handler refuses a pane
+that does not render a terminal (`pane <id> is not a terminal pane`): a shell does, and so does
+a markdown pane while an external `$EDITOR` runs in it. The size is stored on the pane
+(`Pane.terminalFontSize`, persisted; pane-layout.md §13.2), so every viewer draws the pane at it
+and it survives a restart; `reset` stores null, and the pane follows the daemon-wide ghostty
+`font-size` again. `font_size` in the reply is what was stored (`null` after a reset). The
+window's ⌘= / ⌘- / ⌘0 send this under `font-size-scope = pane`; the window does the arithmetic,
+so the wire carries a finished size, never a step
+(`packages/daemon/src/handlers/pane/font-size.ts`).
+
+```json
+{"command":"pane-font-size","target":"coordinator","workspace":"main","size":16}
+→ {"ok":true,"pane_id":"<uuid>","workspace_id":"<uuid>","workspace_name":"main",
+   "label":"coordinator","font_size":16}
+```
 
 #### `pane-move` (F&F)
 
@@ -1553,6 +1576,8 @@ other key is ignored. (A known key with the wrong type poisons the whole message
 | `worktree`, `branch` | string | `workspace-create` |
 | `update_main` | bool | `workspace-create` |
 | `ratio`, `delta` | double | `pane-resize` |
+| `size` | int | `pane-font-size` |
+| `reset` | bool | `pane-font-size` |
 | `anchor`, `zone` | string | `pane-move-adjacent` |
 | `label_op` | string | `workspace-label` |
 | `label_values` | string[] | `workspace-label` |

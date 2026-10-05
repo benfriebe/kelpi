@@ -334,6 +334,16 @@ describe('pane commands', () => {
         expect(rejected({ command: 'pane-resize', pane_id: PANE, ratio: 0.7, delta: 0.05 }).reason).toBe('guard');
     });
 
+    it('enforces the pane-font-size size/reset XOR and the size range', () => {
+        expect(ok({ command: 'pane-font-size', pane_id: PANE, size: 18 })).toMatchObject({ size: 18, reset: false });
+        expect(ok({ command: 'pane-font-size', target: 'worker', reset: true })).toMatchObject({ size: undefined, reset: true });
+        expect(rejected({ command: 'pane-font-size', pane_id: PANE }).reason).toBe('guard');
+        expect(rejected({ command: 'pane-font-size', pane_id: PANE, size: 18, reset: true }).reason).toBe('guard');
+        expect(rejected({ command: 'pane-font-size', pane_id: PANE, size: 7 }).field).toBe('size');
+        expect(rejected({ command: 'pane-font-size', pane_id: PANE, size: 33 }).field).toBe('size');
+        expect(rejected({ command: 'pane-font-size', pane_id: PANE, size: 14.5 }).field).toBe('size');
+    });
+
     it('decodes pane-move-adjacent and drops unknown zones', () => {
         expect(
             ok({ command: 'pane-move-adjacent', target: 'logs', anchor: 'coordinator', zone: 'below', workspace: 'main' })

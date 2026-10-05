@@ -180,7 +180,7 @@ import { createFrameTick, type FrameTick } from './app/frame-tick';
 import { createFolderChooser } from './app/folder-chooser';
 import { createUpdateSheetController, type UpdateSheetState } from './app/update-sheet';
 import { UpdateSheet } from './chrome/UpdateSheet';
-import { createTextSizeStep } from './app/text-size';
+import { createPaneTextSizeStep, createTextSizeStep } from './app/text-size';
 import { focusPaneSurface, handCaretToPaneWhenReady, mayClaimPaneCaret, releaseFocusedPaneCaret } from './app/pane-focus';
 import { navigationTrustedRuntimes, useRemoteDaemons, type RemoteRuntimeFactory } from './app/remote-daemons';
 import { RemoteWorkspaceView } from './app/RemoteWorkspaceView';
@@ -246,6 +246,7 @@ import {
 import {
     PhoneKeyBar,
     createMountPolicy,
+    DEFAULT_FONT_SIZE,
     mergeTerminalPalette,
     paneHandle,
     resolveTerminalTheme,
@@ -2930,8 +2931,32 @@ function Shell(props: AppProps): ReactElement {
     );
 
     /**
-     * One behaviour, two routes (#175). `app/text-size.ts` states the two rules and why they live
-     * in a module rather than here: the chord passes the dispatcher's gates on its way in and the
+     * ⌘= / ⌘- / ⌘0 under `font-size-scope = pane`: the focused terminal pane's OWN size, kept on
+     * the pane in daemon state (`pane-font-size`) so every viewer draws it alike and it survives a
+     * restart. `app/text-size.ts` owns the arithmetic and the held-down-chord bookkeeping.
+     */
+    const paneTextSizeStep = useMemo(
+        () =>
+            createPaneTextSizeStep({
+                ownSize: (paneID) => {
+                    const pane = selectPane(store.getState(), paneID);
+                    if (pane === null || !(pane.type === 'shell' || isUsingExternalEditor(pane))) return undefined;
+                    // `?? null`: an older daemon's panes carry no such field.
+                    return pane.terminalFontSize ?? null;
+                },
+                defaultSize: () => store.getState().settings.value.appearance.fontSize ?? DEFAULT_FONT_SIZE,
+                send: (paneID, size) => {
+                    const task = commands.setPaneFontSize({ paneID, size });
+                    run('Text size', task);
+                    return task;
+                }
+            }),
+        [store, commands, run]
+    );
+
+    /**
+     * One behaviour, two routes (#175). `app/text-size.ts` states the rules and why they live in
+     * a module rather than here: the chord passes the dispatcher's gates on its way in and the
      * View menu's `menu-command` passes none of them, so the remote-workspace gate has to be
      * inside the shared function or the menu row walks past it.
      */
@@ -2940,9 +2965,14 @@ function Shell(props: AppProps): ReactElement {
             createTextSizeStep({
                 remoteWorkspaceSelected: () => remoteSelectionRef.current !== null,
                 previewStep: (step) => act.setFontSizeFocused(step),
+                scope: () => store.getState().settings.value.general.fontSizeScope,
+                paneStep: (step) => {
+                    const paneID = selectFocusedPaneID(store.getState());
+                    return paneID !== null && paneTextSizeStep(paneID, step);
+                },
                 daemonStep: stepTerminalTextSize
             }),
-        [act, stepTerminalTextSize]
+        [act, store, paneTextSizeStep, stepTerminalTextSize]
     );
     /** Read at call time by the `menu-command` listener, which is installed once. */
     const textSizeStepRef = useRef(textSizeStep);
@@ -4174,6 +4204,9 @@ function Shell(props: AppProps): ReactElement {
         (paneID, _frame, focused, renderState) => {
             const pane = paneByID.get(paneID);
             if (pane === undefined) return null;
+            // A terminal pane's own size (⌘= under `font-size-scope = pane`) over the daemon-wide
+            // one. An older daemon's panes carry no such field, which reads the same as null.
+            const terminalFontSize = pane.terminalFontSize ?? terminalFont.fontSize;
 
             // Content bodies subscribe on mount and unsubscribe on unmount, so the daemon only
             // reads and watches files somebody is actually looking at (M5).
@@ -4197,7 +4230,7 @@ function Shell(props: AppProps): ReactElement {
                         background={paneFill}
                         allowTransparency={paneTransparency}
                         {...(terminalFont.fontFamily !== null ? { fontFamily: terminalFont.fontFamily } : {})}
-                        {...(terminalFont.fontSize !== null ? { fontSize: terminalFont.fontSize } : {})}
+                        {...(terminalFontSize !== null ? { fontSize: terminalFontSize } : {})}
                         {...(terminalFont.paddingX !== null ? { paddingX: terminalFont.paddingX } : {})}
                         {...(terminalFont.paddingY !== null ? { paddingY: terminalFont.paddingY } : {})}
                         // #171: whether ⌥ composes a character or is the Alt modifier.
@@ -4320,7 +4353,7 @@ function Shell(props: AppProps): ReactElement {
                             background={paneFill}
                             allowTransparency={paneTransparency}
                             {...(terminalFont.fontFamily !== null ? { fontFamily: terminalFont.fontFamily } : {})}
-                            {...(terminalFont.fontSize !== null ? { fontSize: terminalFont.fontSize } : {})}
+                            {...(terminalFontSize !== null ? { fontSize: terminalFontSize } : {})}
                             {...(terminalFont.paddingX !== null ? { paddingX: terminalFont.paddingX } : {})}
                             {...(terminalFont.paddingY !== null ? { paddingY: terminalFont.paddingY } : {})}
                             // #171: whether ⌥ composes a character or is the Alt modifier.

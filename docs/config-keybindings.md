@@ -109,6 +109,7 @@ through `set-general-setting` (section 1.3; `WS_WRITABLE_GENERAL_KEYS`,
 | `workspace-delete-worktrees` | `ask` (default), `remove` or `keep`; any other value keeps the prior one. What deleting a workspace from a window does with its linked git worktrees: `ask` lists them in the delete dialog (and ⌘W on the last pane raises the gate when there is one to choose), `remove` takes the clean ones Kelpi made without asking, `keep` leaves every one (graft-git.md §8.7). The dialog's "Remember my choice" writes `remove` or `keep` |
 | `workspace-delete-branches` | default true; only `false` disables. Also delete a removed worktree's branch when every commit on it is on another branch, a remote-tracking ref or a tag. The dialog's branch checkbox starts from it |
 | `open-links-in` | `browser` (default) or `kelpi`; any other value keeps the prior one. Where a ⌘-click on a link in a terminal pane opens it: the system's default browser, or a web pane split to the right of the clicked pane (#326). A plain click's link menu offers both either way. Settings ▸ General ▸ Links writes it |
+| `font-size-scope` | `pane` (default) or `all`; any other value keeps the prior one. What ⌘= / ⌘- / ⌘0 resize over a terminal: the focused pane's own size (`pane`), or the daemon-wide ghostty `font-size` every terminal follows (`all`). Section 7.6. Settings ▸ Appearance ▸ Terminal writes it |
 | `confirm-quit-when-active` | default true; only `false` disables. The ⌘Q dialog; both the dialog's "Don't ask again" and Settings write it |
 | `auto-detect-repos` | default true; only `false` disables |
 | `inherit-group-on-new-workspace` | default true; only `false` disables |
@@ -652,9 +653,9 @@ fixed. ⌃C is the interrupt and is untouched.
 | `kill_line_backward` | Delete to Line Start | ⌘⌫ | monitor | writes `0x15` (⌃U) to the focused terminal pane; falls through when the focused pane has no terminal renderer |
 | `move_to_line_start` | Move to Line Start | ⌘← | monitor | writes `0x01` (⌃A); same condition |
 | `move_to_line_end` | Move to Line End | ⌘→ | monitor | writes `0x05` (⌃E); same condition |
-| `increase_terminal_font_size` | Increase Terminal Text Size | ⌘= and ⌘⇧= (one chord, two spellings; the keypad's `+` too) | monitor | steps the DAEMON-WIDE ghostty `font-size` up by the Appearance row's own step, clamped to its maximum; a focused markdown preview gets its own font size instead (section 7.6) |
-| `decrease_terminal_font_size` | Decrease Terminal Text Size | ⌘- (the keypad's `-` too) | monitor | the same, down, clamped to the minimum |
-| `reset_terminal_font_size` | Reset Terminal Text Size | ⌘0 (the keypad's `0` too) | monitor | writes the Appearance row's shipped default (13) |
+| `increase_terminal_font_size` | Increase Terminal Text Size | ⌘= and ⌘⇧= (one chord, two spellings; the keypad's `+` too) | monitor | under `font-size-scope = pane` (the default), steps the FOCUSED terminal pane's own size up one point, clamped to 32, and falls through when the focused pane is not a terminal; under `all`, steps the DAEMON-WIDE ghostty `font-size` up by the Appearance row's own step, clamped to its maximum. A focused markdown preview gets its own font size instead either way (section 7.6) |
+| `decrease_terminal_font_size` | Decrease Terminal Text Size | ⌘- (the keypad's `-` too) | monitor | the same, down, clamped to 8 |
+| `reset_terminal_font_size` | Reset Terminal Text Size | ⌘0 (the keypad's `0` too) | monitor | `pane`: drops the focused pane's own size, so it follows the Font size row again; `all`: writes the Appearance row's shipped default (13) |
 
 **Ghostty's macOS defaults, matched exactly** (#82). `ghostty-org/ghostty`,
 `src/config/Config.zig:7315-7334`, darwin branch of `Keybinds.init`, under the comment "Natural
@@ -1159,11 +1160,47 @@ chords resolved to the markdown preview's own font size, whose handler declines 
 and lets the keystroke fall through, to nothing, because ghostty-web's input handler
 `preventDefault`s every mapped chord, so the browser's own zoom never fired either.
 
-**The owner's scope decision (2026-09-15) is the shape of the fix.** Terminal text size stays
+**The owner's scope decision (2026-09-15) was the shape of the fix.** Terminal text size stayed
 ONE DAEMON-WIDE setting (the ghostty `font-size` key Settings ▸ Appearance already writes) and
-the chords become three ordinary `KelpiAction`s that change it through the ordinary settings
+the chords became three ordinary `KelpiAction`s that change it through the ordinary settings
 write. Not per pane, and not per viewer. So every session on that daemon follows, a second
 window agrees without being told, and a remote kelpi-to-kelpi session can drive it.
+
+**Per pane by default since 2026-10-05.** The Swift app gave each libghostty surface its own
+size, and the owner wanted that back as the default without losing the daemon-wide shape. So the
+kelpi config key `font-size-scope` picks which of the two sizes the chords move, and Settings ▸
+Appearance ▸ Terminal shows it as a segmented row under Font size ("⌘+ and ⌘- resize": Focused
+pane / All panes, `data-testid="terminal-font-size-scope"`):
+
+| `font-size-scope` | ⌘= / ⌘- | ⌘0 |
+|---|---|---|
+| `pane` (default) | the FOCUSED terminal pane's own size, one point up or down from whatever it is drawn at, clamped to 8-32 | drops the pane's own size; it follows the Font size row again |
+| `all` | the daemon-wide ghostty `font-size`, exactly as below | writes the row's default (13), exactly as below |
+
+- **The size is the pane's, in daemon state, not the viewer's.** `Pane.terminalFontSize`
+  (pane-layout.md §13.2) is written by `pane-font-size` (wire-protocol.md §6.2), persisted
+  (`v24_pane_terminal_font_size`), snapshotted on close and restored on reopen. Every viewer of
+  the pane draws it alike, which matters because they share one PTY whose columns follow the
+  cell, and a restart keeps it. Null means none of its own: the pane is drawn at the Font size
+  row's value and follows it when it changes.
+- **Landing back on the default stores null.** A pane zoomed in and back out follows the Font
+  size row again instead of pinning today's number. ⌘0 on a pane with no size of its own, and a
+  step at 8 or 32, are consumed with nothing sent.
+- **Only a terminal takes it.** A shell does, and so does a markdown pane while an external
+  `$EDITOR` runs in it. Any other focused pane declines and the chord falls through: under
+  `pane`, nothing ever resizes every terminal behind the person's back. A focused markdown
+  PREVIEW still takes the chords for its own size first, under either scope.
+- **Repeats compose here too.** The window keeps the size it last asked for, per pane, while any
+  earlier ask is in flight, and starts each press from that (`client/src/app/text-size.ts` ▸
+  `createPaneTextSizeStep`), for the same reason `stepField` does below. The window does the
+  arithmetic, so the wire carries a finished size, never a step.
+- **A split inherits it.** ⌘D (and `kelpi pane split`) gives the new pane the source pane's own
+  size, as a ghostty split does; a split of a pane on the default is on the default too. A new
+  workspace's first pane starts with none.
+- **An older daemon** sends no `fontSizeScope` and has no `pane-font-size`; the window reads the
+  missing key as `all`, so the chords keep resizing every terminal there.
+
+The rest of this section is the `all` path, #175's shape, unchanged.
 
 | | |
 |---|---|
@@ -1251,13 +1288,16 @@ not redesigned here. The workaround in the meantime is the one the grammar alrea
   `MENU_BAR_ACTIONS`: the derivation reads `MENU_ACCELERATOR_ACTIONS` instead, which is that set
   plus these three, so a row may display a chord the dispatch layer does not claim. Electron
   documents the flag as Linux/Windows only, so `scripts/scenarios/terminal-text-size-shortcuts.mjs`
-  measures it on a real window: it reads the accelerator off the live menu and asserts a single
-  ⌘= moved the daemon's `font-size` by exactly one step.
+  measures it on a real window under `font-size-scope = all`: it reads the accelerator off the
+  live menu and asserts a single ⌘= moved the daemon's `font-size` by exactly one step.
+  `terminal-text-size-per-pane.mjs` measures the `pane` default the same way.
 - **An embedded remote workspace** (`RemoteWorkspaceView`, a second daemon paired in Settings ▸
   Remote): they do nothing, exactly as ⌘D and ⌘W do nothing there, because the window dispatcher stands
   down while a remote workspace fills the pane area (section 1.7's rule, `hasActiveWorkspace`).
   The window's settings surface holds the PRIMARY daemon's snapshot and verbs and there is no
-  per-remote settings surface, so firing there would resize the wrong daemon's terminals. The
+  per-remote settings surface, so firing there would resize the wrong daemon's terminals. Under
+  `font-size-scope = pane` they decline there too: the remote pane's own size is its daemon's
+  state, and this window's dispatcher is standing down. The
   case the report describes, a browser or a second Kelpi attached **directly** to the remote
   daemon over a tailnet, is unaffected: that daemon is the primary runtime for that window, so
   the chord changes its daemon-wide size and every session on it follows.

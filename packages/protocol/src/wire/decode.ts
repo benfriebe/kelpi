@@ -18,6 +18,8 @@
 import { createFieldAccess, validateWireFields, type WireFieldAccess } from './fields.js';
 import {
     EXPLICIT_CHAIN_COMMANDS,
+    PANE_FONT_SIZE_MAX,
+    PANE_FONT_SIZE_MIN,
     PANE_ID_REQUIRED_COMMANDS,
     isWireCommand,
     type PaneTargetScope,
@@ -253,6 +255,19 @@ function decodeCommand(
                 return guard(command, 'pane-resize requires exactly one of ratio / delta');
             }
             return { command, ...scope(), ratio, delta };
+        }
+        case 'pane-font-size': {
+            const failure = requireTargetable();
+            if (failure) return failure;
+            const size = fields.int('size');
+            const reset = fields.flag('reset', false);
+            if ((size === undefined) === !reset) {
+                return guard(command, 'pane-font-size requires exactly one of size / reset');
+            }
+            if (size !== undefined && (size < PANE_FONT_SIZE_MIN || size > PANE_FONT_SIZE_MAX)) {
+                return guard(command, `pane-font-size size must be ${String(PANE_FONT_SIZE_MIN)}-${String(PANE_FONT_SIZE_MAX)}`, 'size');
+            }
+            return { command, ...scope(), size, reset };
         }
         case 'pane-move': {
             const direction = parseMoveDirection(fields.rawText('direction'));

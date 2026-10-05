@@ -514,6 +514,12 @@ export class CommandClient {
         return this.raw(wirePayload('pane-name', { ...scopeFields(input), name: input.name }), options ?? {});
     }
 
+    /** A terminal pane's own text size (config-keybindings.md §7.6); null drops it. */
+    setPaneFontSize(input: PaneScope & { size: number | null }, options?: SendOptions): Promise<CommandReply> {
+        const size = input.size === null ? { reset: true } : { size: input.size };
+        return this.raw(wirePayload('pane-font-size', { ...scopeFields(input), ...size }), options ?? {});
+    }
+
     /** `bare` suppresses the trailing Enter (compose with `sendKey`). */
     sendText(
         input: PaneScope & { target: string; text: string; bare?: boolean },

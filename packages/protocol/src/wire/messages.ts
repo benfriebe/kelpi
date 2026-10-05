@@ -121,6 +121,21 @@ export interface PaneResizeMessage extends PaneTargetScope {
     delta?: number | undefined;
 }
 
+/** The range `pane-font-size` accepts: the Appearance tab's terminal Font size row's own. */
+export const PANE_FONT_SIZE_MIN = 8;
+export const PANE_FONT_SIZE_MAX = 32;
+
+/**
+ * A terminal pane's own text size (⌘= / ⌘- / ⌘0 under `font-size-scope = pane`). Exactly one of
+ * `size` / `reset` is present: `size` is the pane's size in points (8-32), `reset` drops it so
+ * the pane follows the daemon-wide ghostty `font-size` again.
+ */
+export interface PaneFontSizeMessage extends PaneTargetScope {
+    command: 'pane-font-size';
+    size?: number | undefined;
+    reset: boolean;
+}
+
 export interface PaneMoveMessage {
     command: 'pane-move';
     pane_id: string;
@@ -656,6 +671,7 @@ export type WireMessage =
     | PaneSendMessage
     | PaneSendKeyMessage
     | PaneResizeMessage
+    | PaneFontSizeMessage
     | PaneMoveMessage
     | PaneMoveAdjacentMessage
     | PaneMoveToWorkspaceMessage
@@ -760,6 +776,7 @@ export const EXPLICIT_CHAIN_COMMANDS: ReadonlySet<WireCommandName> = new Set([
     'pane-create',
     'pane-name',
     'pane-resize',
+    'pane-font-size',
     'pane-move-adjacent',
     'web-open',
     'web-navigate',

@@ -1105,3 +1105,64 @@ describe('background creates (#295)', () => {
         });
     }
 });
+
+describe('set-terminal-font-size', () => {
+    const terminalFontSize = (state: DaemonState, paneID: string): number | null | undefined =>
+        ws(state).panes.find((pane) => pane.id === paneID)?.terminalFontSize;
+
+    it("gives one terminal pane its own size and leaves the others on the default", () => {
+        const h = harness(seededState());
+        h.dispatch({ type: 'split-pane', workspaceID: W1, paneID: PA, direction: 'horizontal', now: NOW });
+        h.dispatch({ type: 'set-terminal-font-size', workspaceID: W1, paneID: PA, size: 18 });
+        expect(terminalFontSize(h.state(), PA)).toBe(18);
+        expect(terminalFontSize(h.state(), P0)).toBeNull();
+
+        h.dispatch({ type: 'set-terminal-font-size', workspaceID: W1, paneID: PA, size: null });
+        expect(terminalFontSize(h.state(), PA)).toBeNull();
+    });
+
+    it('clamps to the Font size row range', () => {
+        const h = harness(seededState());
+        h.dispatch({ type: 'set-terminal-font-size', workspaceID: W1, paneID: P0, size: 99 });
+        expect(terminalFontSize(h.state(), P0)).toBe(32);
+        h.dispatch({ type: 'set-terminal-font-size', workspaceID: W1, paneID: P0, size: 2 });
+        expect(terminalFontSize(h.state(), P0)).toBe(8);
+    });
+
+    it('is a no-op for a pane that does not render a terminal', () => {
+        const h = harness(seededState());
+        h.dispatch({ type: 'create-scratchpad', workspaceID: W1, paneID: PA, now: NOW });
+        const before = h.state();
+        h.dispatch({ type: 'set-terminal-font-size', workspaceID: W1, paneID: PA, size: 18 });
+        expect(h.state()).toBe(before);
+    });
+
+    it('is inherited by a split, as a ghostty split inherits its size', () => {
+        const h = harness(seededState());
+        h.dispatch(
+            { type: 'set-terminal-font-size', workspaceID: W1, paneID: P0, size: 17 },
+            { type: 'split-pane', workspaceID: W1, paneID: PA, direction: 'horizontal', now: NOW },
+            { type: 'split-pane-at-path', workspaceID: W1, paneID: PB, path: '/tmp', now: NOW, sourcePaneID: P0 }
+        );
+        expect(terminalFontSize(h.state(), PA)).toBe(17);
+        expect(terminalFontSize(h.state(), PB)).toBe(17);
+        // …and a split of a pane on the default stays on the default.
+        h.dispatch(
+            { type: 'set-terminal-font-size', workspaceID: W1, paneID: PA, size: null },
+            { type: 'split-pane', workspaceID: W1, paneID: PC, direction: 'vertical', now: NOW, sourcePaneID: PA }
+        );
+        expect(terminalFontSize(h.state(), PC)).toBeNull();
+    });
+
+    it('survives a close and reopen', () => {
+        const h = harness(seededState());
+        h.dispatch(
+            { type: 'split-pane', workspaceID: W1, paneID: PA, direction: 'horizontal', now: NOW },
+            { type: 'set-terminal-font-size', workspaceID: W1, paneID: PA, size: 20 },
+            { type: 'close-pane', workspaceID: W1, paneID: PA }
+        );
+        expect(ws(h.state()).recentlyClosedPanes.at(-1)?.terminalFontSize).toBe(20);
+        h.dispatch({ type: 'reopen-closed-pane', workspaceID: W1, paneID: PB, now: NOW });
+        expect(terminalFontSize(h.state(), PB)).toBe(20);
+    });
+});

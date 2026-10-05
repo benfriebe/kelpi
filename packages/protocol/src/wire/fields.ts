@@ -80,6 +80,8 @@ export const WIRE_FIELD_TYPES = {
     update_main: 'bool',
     ratio: 'double',
     delta: 'double',
+    size: 'int',
+    reset: 'bool',
     anchor: 'string',
     zone: 'string',
     label_op: 'string',

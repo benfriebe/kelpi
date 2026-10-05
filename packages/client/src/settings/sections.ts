@@ -201,7 +201,7 @@ export const SETTINGS_GROUPS: readonly SettingsGroupDescriptor[] = Object.freeze
                 id: 'appearance-terminal',
                 sectionID: 'appearance',
                 title: 'Terminal',
-                hint: 'These four keys belong to ghostty and are written to its config file; every other line in it is preserved exactly.',
+                hint: 'Every row but ⌘+ and ⌘- resize belongs to ghostty and is written to its config file; every other line in it is preserved exactly.',
                 testID: 'appearance-terminal'
             },
             {
@@ -426,6 +426,11 @@ const PLACEMENT_CHOICES: readonly SettingsChoice[] = Object.freeze([
 const OPEN_LINKS_IN_CHOICES: readonly SettingsChoice[] = Object.freeze([
     Object.freeze({ value: 'browser', label: 'Default browser' }),
     Object.freeze({ value: 'kelpi', label: 'Kelpi web pane' })
+]);
+
+const FONT_SIZE_SCOPE_CHOICES: readonly SettingsChoice[] = Object.freeze([
+    Object.freeze({ value: 'pane', label: 'Focused pane' }),
+    Object.freeze({ value: 'all', label: 'All panes' })
 ]);
 
 const DELETE_WORKTREE_CHOICES: readonly SettingsChoice[] = Object.freeze([
@@ -859,7 +864,7 @@ export const SETTINGS_FIELD_DEFINITIONS: readonly SettingsFieldDefinition[] = Ob
         groupID: 'appearance-terminal',
         kind: 'slider',
         label: 'Font size',
-        detail: '',
+        detail: 'Every terminal pane without a size of its own. ⌘0 puts a resized pane back on this.',
         testID: 'terminal-font-size',
         target: { file: 'ghostty', key: 'font-size' },
         default: SETTINGS_TERMINAL_FONT_SIZE_DEFAULT,
@@ -869,6 +874,20 @@ export const SETTINGS_FIELD_DEFINITIONS: readonly SettingsFieldDefinition[] = Ob
         format: settingsPixelLabel,
         read: (settings) => settings.appearance.fontSize ?? SETTINGS_TERMINAL_FONT_SIZE_DEFAULT,
         encode: (value) => String(Math.round(value))
+    },
+    {
+        id: 'appearance.fontSizeScope',
+        sectionID: 'appearance',
+        groupID: 'appearance-terminal',
+        kind: 'segmented',
+        label: '⌘+ and ⌘- resize',
+        detail: 'Focused pane gives that pane a size of its own and leaves the rest alone. All panes changes the Font size above, so every terminal follows.',
+        testID: 'terminal-font-size-scope',
+        target: { file: 'kelpi', key: 'font-size-scope' },
+        default: 'pane',
+        choices: FONT_SIZE_SCOPE_CHOICES,
+        read: (settings) => settings.general.fontSizeScope,
+        encode: (value) => value
     },
     {
         id: 'appearance.windowPaddingX',

@@ -216,6 +216,13 @@ export const MIGRATIONS: readonly Migration[] = [
         // pane reads back as "on", the default; the flag means nothing for other pane types.
         identifier: 'v23_pane_csv_header_row',
         apply: (db) => addColumn(db, 'pane', 'csvHeaderRow', 'BOOLEAN NOT NULL DEFAULT 1')
+    },
+    {
+        // Kelpi-only: a terminal pane's own text size (⌘= / ⌘- under `font-size-scope = pane`).
+        // NULL = none of its own, which is what every existing pane reads back as: it follows the
+        // daemon-wide ghostty `font-size`, exactly as before.
+        identifier: 'v24_pane_terminal_font_size',
+        apply: (db) => addColumn(db, 'pane', 'terminalFontSize', 'INTEGER')
     }
 ];
 
@@ -232,7 +239,8 @@ export const DAEMON_ONLY_MIGRATIONS: readonly string[] = [
     'v20_plugin_panes',
     'v21_workspace_muted',
     'v22_workspace_group_repo',
-    'v23_pane_csv_header_row'
+    'v23_pane_csv_header_row',
+    'v24_pane_terminal_font_size'
 ];
 
 export function ensureMigrationsTable(db: SqlDatabase): void {

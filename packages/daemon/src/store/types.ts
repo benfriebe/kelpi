@@ -55,6 +55,8 @@ export interface ClosedPaneSnapshot {
     readonly scratchpadContent: string | null;
     /** #324: a csv pane's header-row choice survives a close + reopen. */
     readonly csvHeaderRow: boolean;
+    /** A terminal pane's own text size survives a close + reopen too; null = follows the default. */
+    readonly terminalFontSize: number | null;
     readonly agentSessionID: string | null;
     readonly agentKind: AgentKind | null;
     /** The profile the recorded agent session was launched under; reopen resumes with it. */
@@ -635,6 +637,13 @@ export type DomainAction =
           readonly workspaceID: string;
           readonly paneID: string;
           readonly size: number;
+      }
+    | {
+          /** A terminal pane's own text size (persisted per pane); null = follow the ghostty default. */
+          readonly type: 'set-terminal-font-size';
+          readonly workspaceID: string;
+          readonly paneID: string;
+          readonly size: number | null;
       }
 
     // ── layout / focus / zoom ──────────────────────────────────────────────

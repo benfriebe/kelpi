@@ -123,6 +123,9 @@ export function RemoteWorkspaceView(props: RemoteWorkspaceViewProps): ReactEleme
                 ptyApi={runtime.pty}
                 focused={focused}
                 visible={state.visible}
+                // The pane's own text size, set on its own daemon (config-keybindings.md §7.6), so
+                // this viewer draws it as every other viewer of that PTY does.
+                {...(pane.terminalFontSize != null ? { fontSize: pane.terminalFontSize } : {})}
                 // #172/#170: the same stance as `blockWindowShortcuts` above, for the other half
                 // of the keyboard. The window dispatcher stands down while a remote workspace
                 // fills the pane area (`App.tsx` reports `hasActiveWorkspace: false`), so copy,

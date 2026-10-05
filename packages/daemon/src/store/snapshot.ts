@@ -60,6 +60,8 @@ export interface PersistedPane {
     readonly scratchpadContent: string | null;
     /** #324: a csv pane's header-row choice. Absent in records written before it existed (= true). */
     readonly csvHeaderRow?: boolean;
+    /** A terminal pane's own text size. Absent in records written before it existed (= null). */
+    readonly terminalFontSize?: number | null;
     /** null for non-web panes AND for private web panes (tabs are withheld). */
     readonly webTabs: readonly WebTab[] | null;
     readonly webActiveTabID: string | null;
@@ -145,6 +147,7 @@ function persistPane(pane: Pane, sidecar: WebPaneState | undefined): PersistedPa
         filePath: pane.filePath,
         scratchpadContent: pane.scratchpadContent,
         csvHeaderRow: pane.csvHeaderRow,
+        terminalFontSize: pane.terminalFontSize,
         webTabs,
         webActiveTabID: webTabs === null ? null : (sidecar?.activeTabID ?? null),
         webIsPrivate: isPrivate
@@ -214,6 +217,7 @@ function restorePane(record: PersistedPane): Pane {
         externalEditorCommand: null,
         scratchpadContent: record.scratchpadContent,
         csvHeaderRow: record.csvHeaderRow ?? true,
+        terminalFontSize: record.terminalFontSize ?? null,
         agentSessionID: record.agentSessionID,
         agentKind: record.agentKind,
         agentProfileName: record.agentProfileName ?? null,

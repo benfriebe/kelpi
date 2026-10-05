@@ -71,6 +71,12 @@ export interface Pane {
      * sort). Defaults to true; meaningless for other pane types.
      */
     csvHeaderRow: boolean;
+    /**
+     * Persisted: a terminal pane's own text size in points, set by ⌘= / ⌘- under
+     * `font-size-scope = pane`. Null = no size of its own: the pane follows the daemon-wide
+     * ghostty `font-size`.
+     */
+    terminalFontSize: number | null;
     agentSessionID: string | null;
     /** Persisted; deliberately NOT cleared when agentSessionID is cleared on load. */
     agentKind: AgentKind | null;
@@ -102,6 +108,7 @@ export const PANE_PERSISTED_COLUMNS: Readonly<Record<string, string>> = {
     filePath: 'filePath',
     scratchpadContent: 'content',
     csvHeaderRow: 'csvHeaderRow',
+    terminalFontSize: 'terminalFontSize',
     agentSessionID: 'agentSessionID',
     agentKind: 'agentKind',
     agentProfileName: 'agentProfileName',
@@ -118,6 +125,7 @@ export const PANE_PERSISTED_FIELDS: readonly (keyof Pane)[] = [
     'filePath',
     'scratchpadContent',
     'csvHeaderRow',
+    'terminalFontSize',
     'agentSessionID',
     'agentKind',
     'agentProfileName',
@@ -148,6 +156,7 @@ export interface NewPaneFields {
     filePath?: string | null;
     scratchpadContent?: string | null;
     csvHeaderRow?: boolean;
+    terminalFontSize?: number | null;
     agentSessionID?: string | null;
     agentKind?: AgentKind | null;
     agentProfileName?: string | null;
@@ -168,6 +177,7 @@ export function makePane(fields: NewPaneFields): Pane {
         externalEditorCommand: null,
         scratchpadContent: fields.scratchpadContent ?? null,
         csvHeaderRow: fields.csvHeaderRow ?? true,
+        terminalFontSize: fields.terminalFontSize ?? null,
         agentSessionID: fields.agentSessionID ?? null,
         agentKind: fields.agentKind ?? null,
         agentProfileName: fields.agentProfileName ?? null,

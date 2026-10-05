@@ -2493,7 +2493,7 @@ function Shell(props: AppProps): ReactElement {
     const actRef = useRef(act);
     actRef.current = act;
 
-    // ⌃Tab (docs/superpowers/specs/2026-10-05-recent-workspace-switcher-design.md). The activation
+    // ⌃Tab (docs/config-keybindings.md §7.8). The activation
     // sequence breaks same-second ties in the daemon's `lastAccessedAt`. Built once per store and
     // committing through `actRef`: rebuilding it with `act` would drop a gesture in progress.
     const activationSequenceRef = useRef(createActivationSequence());

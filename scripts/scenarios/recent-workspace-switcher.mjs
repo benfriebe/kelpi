@@ -1,7 +1,7 @@
 /**
  * ⌃Tab switches workspaces in most-recently-used order: a quick tap toggles between the last two,
  * holding ⌃ shows the switcher and each Tab steps further back, Escape cancels.
- * docs/superpowers/specs/2026-10-05-recent-workspace-switcher-design.md
+ * docs/config-keybindings.md §7.8
  */
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';

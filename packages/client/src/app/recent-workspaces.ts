@@ -1,6 +1,6 @@
 /**
  * The order ⌃Tab walks: the active workspace, then every other local workspace by the daemon's
- * `lastAccessedAt`, newest first (docs/superpowers/specs/2026-10-05-recent-workspace-switcher-design.md).
+ * `lastAccessedAt`, newest first (docs/config-keybindings.md §7.8).
  */
 
 export interface RecentCandidate {

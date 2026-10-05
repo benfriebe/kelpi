@@ -1,5 +1,5 @@
 /**
- * The ⌃Tab gesture (docs/superpowers/specs/2026-10-05-recent-workspace-switcher-design.md):
+ * The ⌃Tab gesture (docs/config-keybindings.md §7.8):
  * the first press snapshots the recent order and highlights the previous workspace, each further
  * press moves the highlight, and releasing the held modifiers commits. Framework-free so the
  * timing rules are unit-tested; `App.tsx` feeds it keydowns, keyups and window blur.

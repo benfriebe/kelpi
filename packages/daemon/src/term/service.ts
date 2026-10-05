@@ -266,6 +266,11 @@ interface XtermCore {
  * repaints its prompt and nothing repaints history.
  */
 const strandedTails = new WeakMap<XtermBufferLine, XtermBufferLine>();
+/**
+ * Only the bottom lines of a buffer keep what a cut hid: a stash costs about the hidden text, so
+ * a full 10 000-line scrollback of long lines would hold ~10 MB more. Older history stays cut.
+ */
+const STRANDED_TAIL_LINES = 1000;
 
 const CELL_WORDS = 3;
 /** A cell's codepoint plus its combined flag: 0 or a space is a blank cell. */
@@ -300,7 +305,7 @@ function unchangedSinceTrim(line: XtermBufferLine, original: XtermBufferLine, co
 }
 
 /** The buffers `trimStrandedCells` and `restoreStrandedCells` walk, with their fill cell. */
-function eachLine(term: HeadlessTerminal, visit: (line: XtermBufferLine, fill: unknown) => void): void {
+function eachLine(term: HeadlessTerminal, visit: (line: XtermBufferLine, fill: unknown, recent: boolean) => void): void {
     const core = (term as unknown as { _core?: XtermCore })._core;
     const buffers = core?._bufferService?.buffers;
     if (buffers === undefined) return;
@@ -311,7 +316,7 @@ function eachLine(term: HeadlessTerminal, visit: (line: XtermBufferLine, fill: u
         if (fill === undefined) continue;
         for (let index = 0; index < lines.length; index += 1) {
             const line = lines.get(index);
-            if (line !== undefined) visit(line, fill);
+            if (line !== undefined) visit(line, fill, index >= lines.length - STRANDED_TAIL_LINES);
         }
     }
 }
@@ -337,7 +342,7 @@ function restoreStrandedCells(term: HeadlessTerminal, fromCols: number, cols: nu
 }
 
 function trimStrandedCells(term: HeadlessTerminal, cols: number): void {
-    eachLine(term, (line, fill) => {
+    eachLine(term, (line, fill, recent) => {
         if (line.length > cols) {
             // Stash before the first cut only: a second, narrower shrink must not replace the
             // whole line with an already-trimmed one. A line rewritten since gets a fresh stash.
@@ -345,7 +350,8 @@ function trimStrandedCells(term: HeadlessTerminal, cols: number): void {
             // drag is what made it slow. The copy stops at the last cell with something in it:
             // xterm lines are the full grid width, and the blanks past the text are most of it.
             const stashed = strandedTails.get(line);
-            if (stashed === undefined || !unchangedSinceTrim(line, stashed, line.length)) {
+            if (!recent) strandedTails.delete(line);
+            else if (stashed === undefined || !unchangedSinceTrim(line, stashed, line.length)) {
                 const end = line._data === undefined ? cols : contentEnd(line._data, cols, line.length);
                 const copy = end > cols ? line.clone?.() : undefined;
                 copy?.resize?.(end, fill);

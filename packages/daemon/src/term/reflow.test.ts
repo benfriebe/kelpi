@@ -82,6 +82,21 @@ describe('reflow policy — columns', () => {
         expect(service.cellText('p', 0, 0)?.text.trimEnd()).toBe('drwxr-xr-x@ 18 mrowe staff 576B .git');
     });
 
+    it('brings back only the most recent 1000 lines', async () => {
+        const service = makeService();
+        service.attach('p', 40, 10);
+        let out = '';
+        for (let i = 0; i < 1100; i += 1) out += `line ${String(i).padStart(4, '0')} xxxxxxxxxxxxxxxx end\r\n`;
+        await write(service, 'p', out);
+
+        service.resize('p', 10, 10);
+        service.resize('p', 40, 10);
+
+        const lines = service.capture('p', { scrollback: true }).split('\n').map((line) => line.trimEnd());
+        expect(lines).toContain('line 0000');
+        expect(lines).toContain('line 1099 xxxxxxxxxxxxxxxx end');
+    });
+
     it('does not bring back the old tail of a line rewritten while narrow', async () => {
         const service = makeService();
         service.attach('p', 40, 10);

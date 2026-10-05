@@ -537,7 +537,7 @@ is platform-independent and always spells what the user wrote.
 
 ## 4. KelpiAction: the complete action list
 
-63 bindable actions + the pseudo-action `unbind` (config-file only; removes a default
+65 bindable actions + the pseudo-action `unbind` (config-file only; removes a default
 trigger, never appears in UI lists). `KELPI_ACTIONS` and `MENU_BAR_ACTIONS` in
 `packages/core/src/config/actions.ts`; the handlers are the `keyActions` table in
 `packages/client/src/App.tsx`.
@@ -588,6 +588,8 @@ Legend:
 | `new_workspace` | New Workspace | ⌘N | menu |
 | `next_workspace` | Next Workspace | ⌘⌥↓ | monitor |
 | `previous_workspace` | Previous Workspace | ⌘⌥↑ | monitor |
+| `next_recent_workspace` | Next Recent Workspace | ⌃Tab | monitor (hold-and-release gesture, §7.8) |
+| `previous_recent_workspace` | Previous Recent Workspace | ⌃⇧Tab | monitor (hold-and-release gesture, §7.8) |
 | `rename_workspace` | Rename Workspace | ⌘⇧R | monitor (begins inline rename of active workspace) |
 | `new_group` | New Group | ⌘⇧G | menu (creates group with unique placeholder name "New Group"/"New Group 2"/… and enters inline rename) |
 | `switch_to_workspace_1`…`switch_to_workspace_9` | Switch to Workspace N | ⌘1…⌘9 | menu (switches by sidebar index 0–8) |
@@ -749,7 +751,7 @@ One trigger maps to at most one action. One action may own any number of trigger
 (defaults give `focus_next_pane`/`focus_previous_pane` two each, and
 `increase_terminal_font_size` two that are one chord in two spellings, section 7.6).
 
-### 5.2 The default map (47 triggers)
+### 5.2 The default map (49 triggers)
 
 Exactly the defaults listed in section 4's tables. (`super` here is the primary chord
 modifier — ⌘ on macOS, Ctrl on Windows/Linux; §3.5.)
@@ -763,6 +765,7 @@ super+w=close_pane
 super+]=focus_next_pane              alt+super+right=focus_next_pane
 super+[=focus_previous_pane          alt+super+left=focus_previous_pane
 alt+super+down=next_workspace        alt+super+up=previous_workspace
+ctrl+tab=next_recent_workspace       ctrl+shift+tab=previous_recent_workspace
 shift+super+r=rename_workspace       super+e=toggle_markdown_edit
 super+==increase_terminal_font_size  shift+super+==increase_terminal_font_size
 super+-=decrease_terminal_font_size  super+0=reset_terminal_font_size
@@ -1334,6 +1337,25 @@ and the plugin-facing contract is [plugins.md](plugins.md#hiding-bands-and-zen-m
 - Bindable and unbindable like everything else. If `toggle_zen_mode` is unbound, the strip the
   host draws while the toolbar is hidden, the View menu, the palette and Settings ▸ Plugins ▸
   Reset window arrangement still leave it.
+
+### 7.8 The recent-workspace gesture (⌃Tab)
+
+`next_recent_workspace` / `previous_recent_workspace` are the one place a binding acts on a key
+RELEASE (`packages/client/src/app/recent-switcher.ts`). The first press snapshots the local
+workspaces — active first, then by the daemon's `lastAccessedAt` (seconds; same-second ties by
+this window's own activation order, then sidebar order) — and highlights the previous one
+(`previous_…` starts on the least recent). Further presses move the highlight, wrapping. Releasing
+every non-Shift modifier of the trigger commits; Escape cancels and hands the caret back; window
+blur commits; clicking a row commits it. The switcher paints only after 150 ms, so a quick ⌃Tab
+toggles the last two workspaces with no flash. With fewer than two local workspaces the chord is
+not consumed.
+
+From a focused web page the chord arrives through the shell's relay (`webhost/keys.ts`) and the
+switcher paints at once; it registers modal presence, which parks the page and gives the window
+the keyboard, so the release is seen.
+
+⌃Tab is no longer delivered to terminal programs (kitty keyboard protocol apps read it).
+`keybind = ctrl+tab=unbind` and `keybind = ctrl+shift+tab=unbind` give it back.
 
 ## 8. Global hotkey (system-wide)
 

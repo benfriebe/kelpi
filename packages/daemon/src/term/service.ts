@@ -219,7 +219,8 @@ interface XtermBufferLine {
     setCell?: (index: number, cell: unknown) => void;
     clone?: () => XtermBufferLine;
     copyCellsFrom?: (src: XtermBufferLine, srcCol: number, destCol: number, length: number, applyInReverse: boolean) => void;
-    translateToString?: (trimRight?: boolean, startCol?: number, endCol?: number) => string;
+    /** `CELL_WORDS` words per cell: content (codepoint + combined flag + width), fg, bg. */
+    readonly _data?: Uint32Array;
 }
 interface XtermBuffer {
     lines?: { length: number; get: (index: number) => XtermBufferLine | undefined };
@@ -265,12 +266,33 @@ interface XtermCore {
  */
 const strandedTails = new WeakMap<XtermBufferLine, XtermBufferLine>();
 
-/** Has `line` kept the first `cols` cells it had when `original` was stashed? */
+const CELL_WORDS = 3;
+/** A cell's codepoint plus its combined flag: 0 or a space is a blank cell. */
+const CELL_CHAR_MASK = 0x3fffff;
+
+/** Are cells `from`..`to` of `data` all blank? */
+function blankCells(data: Uint32Array, from: number, to: number): boolean {
+    for (let cell = from; cell < to; cell += 1) {
+        const char = data[cell * CELL_WORDS]! & CELL_CHAR_MASK;
+        if (char !== 0 && char !== 32) return false;
+    }
+    return true;
+}
+
+/**
+ * Has `line` kept the first `cols` cells it had when `original` was stashed? Runs on every
+ * stashed line on every step of a drag, so it compares xterm's raw cell words: no strings.
+ */
 function unchangedSinceTrim(line: XtermBufferLine, original: XtermBufferLine, cols: number): boolean {
-    const head = original.translateToString?.(false, 0, cols);
-    // ponytail: text-only comparison, so a recolour with identical text keeps the old tail.
+    const now = line._data;
+    const then = original._data;
+    if (now === undefined || then === undefined || now.length < cols * CELL_WORDS || then.length < cols * CELL_WORDS) {
+        return false;
+    }
+    for (let word = cols * CELL_WORDS - 1; word >= 0; word -= 1) if (now[word] !== then[word]) return false;
+    // ponytail: a combined glyph swapped for another with the same width compares equal.
     // A blank head is refused: a recycled scrollback line is blank too, and would inherit it.
-    return head !== undefined && head.trim() !== '' && line.translateToString?.(false, 0, cols) === head;
+    return !blankCells(then, 0, cols);
 }
 
 /** The buffers `trimStrandedCells` and `restoreStrandedCells` walk, with their fill cell. */
@@ -315,10 +337,13 @@ function trimStrandedCells(term: HeadlessTerminal, cols: number): void {
         if (line.length > cols) {
             // Stash before the first cut only: a second, narrower shrink must not replace the
             // whole line with an already-trimmed one. A line rewritten since gets a fresh stash.
+            // Blank tails are checked first: most lines are, and cloning them on every step of a
+            // drag is what made it slow.
             const stashed = strandedTails.get(line);
             if (stashed === undefined || !unchangedSinceTrim(line, stashed, line.length)) {
-                const copy = line.clone?.();
-                if (copy !== undefined && line.translateToString?.(true, cols) !== '') strandedTails.set(line, copy);
+                const data = line._data;
+                const copy = data === undefined || blankCells(data, cols, line.length) ? undefined : line.clone?.();
+                if (copy !== undefined) strandedTails.set(line, copy);
                 else strandedTails.delete(line);
             }
             line.resize?.(cols, fill);

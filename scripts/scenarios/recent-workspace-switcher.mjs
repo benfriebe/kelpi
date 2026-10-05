@@ -82,15 +82,26 @@ export default async function ({ page, cli, sandbox, rec, d, sleep }) {
         const target = await waitForPageTarget(sandbox.debugPort, { match: (t) => t.title === 'mru-web', timeoutMs: 15_000 });
         const web = await connect(target.webSocketDebuggerUrl, { repoRoot: REPO_ROOT });
         try {
+            const webControl = (type) =>
+                web.send('Input.dispatchKeyEvent', {
+                    type,
+                    code: 'ControlLeft',
+                    key: 'Control',
+                    windowsVirtualKeyCode: 17,
+                    nativeVirtualKeyCode: 17,
+                    modifiers: type === 'keyUp' ? 0 : MOD.ctrl
+                });
             await sleep(500);
-            await web.send('Input.dispatchKeyEvent', {
-                type: 'rawKeyDown',
-                code: 'ControlLeft',
-                key: 'Control',
-                windowsVirtualKeyCode: 17,
-                nativeVirtualKeyCode: 17,
-                modifiers: MOD.ctrl
-            });
+            // A quick tap released entirely inside the page, before the switcher can park it. The
+            // page swallows the release, so the gesture ends on its idle timer (WEB_IDLE_COMMIT_MS).
+            await webControl('rawKeyDown');
+            await web.key('Tab', { modifiers: MOD.ctrl });
+            await webControl('keyUp');
+            rec.check('a quick ⌃Tab released inside a web page switches', await d.settle(async () => (await active()) === c));
+            rec.check('…and leaves no switcher behind', await d.settle(async () => (await switcherShown()) === false));
+            await visit(a);
+            await sleep(500);
+            await webControl('rawKeyDown');
             await web.key('Tab', { modifiers: MOD.ctrl });
             rec.check('⌃Tab from a web page opens the switcher at once', await d.settle(switcherShown, { ceilingMs: 2000 }));
             // The page is parked now, so the rest of the gesture is the window's: the window's own
@@ -99,11 +110,59 @@ export default async function ({ page, cli, sandbox, rec, d, sleep }) {
                 'the window takes the keyboard back from the page',
                 await d.settle(() => page.eval(`document.hasFocus() && document.activeElement?.getAttribute('data-testid') === 'recent-switcher'`), { ceilingMs: 2000 })
             );
+            // Another Tab, now in the window: its keyup arrives with ⌃ down, so the gesture knows
+            // the real release will too and must not commit on the idle timer.
+            await tab();
+            await sleep(600);
+            rec.check('holding ⌃ after the hand-off keeps the switcher open', (await switcherShown()) && (await active()) === a);
             await control('keyUp');
-            rec.check('releasing ⌃ after starting in a web page switches', await d.settle(async () => (await active()) === c));
+            rec.check('releasing ⌃ after starting in a web page switches', await d.settle(async () => (await active()) === b));
         } finally {
             web.close();
         }
+
+        // Releasing on the workspace the gesture started in (⌃⇧Tab back to row 0) is "never
+        // mind": it stays, and its pane gets the caret back from the closed switcher.
+        const home = await active();
+        await control('rawKeyDown');
+        await tab();
+        await sleep(300);
+        await tab(true);
+        await control('keyUp');
+        await sleep(300);
+        rec.check('releasing on the current workspace keeps it', (await active()) === home);
+        rec.check(
+            '…and gives its pane the caret back',
+            await d.settle(() => page.eval(`document.activeElement?.closest('[data-pane-id]') != null`), { ceilingMs: 2000 })
+        );
+
+        // ⌃ is held while the switcher is up, so a click on a row is a ⌃-click.
+        await control('rawKeyDown');
+        await tab();
+        await sleep(300);
+        const row = await page.eval(`(() => {
+            const r = document.querySelectorAll('[data-testid="recent-switcher-row"]')[2];
+            const b = r.getBoundingClientRect();
+            return { id: r.getAttribute('data-workspace-id'), x: b.x + b.width / 2, y: b.y + b.height / 2 };
+        })()`);
+        await page.clickAt(row.x, row.y, { modifiers: MOD.ctrl });
+        await control('keyUp');
+        rec.check('a ⌃-click on a row switches to it', await d.settle(async () => (await active()) === row.id));
+
+        // A workspace closed mid-gesture is not switched to, and the window keeps showing one.
+        const doomed = JSON.parse(await cli.ok(['workspace', 'create', '--name', 'MRU D', '--path', sandbox.root, '--json'])).workspace_id;
+        created.push(doomed);
+        await visit(doomed);
+        await visit(b);
+        await control('rawKeyDown');
+        await tab();
+        await sleep(300);
+        await cli.ok(['workspace', 'delete', doomed, '--force']);
+        await sleep(300);
+        await control('keyUp');
+        await sleep(300);
+        rec.check('a workspace closed mid-gesture is not switched to', (await active()) === b);
+        rec.check('…and the window still shows a workspace', await page.eval(`document.querySelector('[data-pane-id]') !== null`));
     } finally {
         for (const id of created) await cli.ok(['workspace', 'delete', id, '--force']).catch(() => {});
     }

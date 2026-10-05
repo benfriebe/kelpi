@@ -20,11 +20,18 @@ describe('RecentWorkspaceSwitcher', () => {
         expect(rendered.map((row) => row.getAttribute('data-selected'))).toEqual(['false', 'true', 'false']);
     });
 
-    it('picks a clicked row', () => {
+    // ⌃ is held for as long as the switcher is up, so every click on it is a ⌃-click, which
+    // macOS Chromium turns into a context-menu press with no `click`.
+    it('picks a row on a ⌃-press, without a click', () => {
         const onPick = vi.fn();
         render(<RecentWorkspaceSwitcher rows={rows} index={1} onPick={onPick} />);
-        fireEvent.click(screen.getAllByTestId('recent-switcher-row')[2]!);
+        fireEvent.mouseDown(screen.getAllByTestId('recent-switcher-row')[2]!, { ctrlKey: true, button: 0 });
         expect(onPick).toHaveBeenCalledWith('c');
+    });
+
+    it('keeps the context menu off the switcher', () => {
+        render(<RecentWorkspaceSwitcher rows={rows} index={1} onPick={() => {}} />);
+        expect(fireEvent.contextMenu(screen.getAllByTestId('recent-switcher-row')[0]!)).toBe(false);
     });
 
     it('counts as a modal while mounted, so a live web page is parked', () => {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { createActivationSequence, recentWorkspaceOrder } from './recent-workspaces';
+import { commitTarget, createActivationSequence, recentWorkspaceOrder } from './recent-workspaces';
 
 const none = new Map<string, number>();
 
@@ -79,5 +79,25 @@ describe('createActivationSequence', () => {
         sequence.note('a');
         expect(sequence.seq.get('b')).toBe(2);
         expect(sequence.seq.get('a')).toBe(3);
+    });
+});
+
+describe('commitTarget', () => {
+    const exists = (id: string): boolean => id !== 'gone';
+
+    it('activates another existing workspace', () => {
+        expect(commitTarget('b', 'a', exists)).toBe('b');
+    });
+
+    // Landing back on the workspace you started in is "never mind": nothing to activate, and the
+    // caller has to hand the caret back itself.
+    it('activates nothing for the active workspace', () => {
+        expect(commitTarget('a', 'a', exists)).toBeNull();
+    });
+
+    // The client sets its own active workspace before the daemon sees the request, so an unknown
+    // ID would blank the window.
+    it('activates nothing for a workspace closed mid-gesture', () => {
+        expect(commitTarget('gone', 'a', exists)).toBeNull();
     });
 });

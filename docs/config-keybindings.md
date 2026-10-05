@@ -1352,7 +1352,11 @@ not consumed.
 
 From a focused web page the chord arrives through the shell's relay (`webhost/keys.ts`) and the
 switcher paints at once; it registers modal presence, which parks the page and gives the window
-the keyboard, so the release is seen.
+the keyboard. A release that happens before that hand-off is lost (Chromium suppresses the
+page's keyups after the keydown it gave up), so such a gesture commits 400 ms after its last
+step (`WEB_IDLE_COMMIT_MS`), until the window sees a keyup of its own with the modifier still
+down; from then on it waits for the real release. Releasing on the current workspace, or on a
+workspace closed mid-gesture, activates nothing and hands the caret back.
 
 ⌃Tab is no longer delivered to terminal programs (kitty keyboard protocol apps read it).
 `keybind = ctrl+tab=unbind` and `keybind = ctrl+shift+tab=unbind` give it back.

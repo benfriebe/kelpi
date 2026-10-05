@@ -40,6 +40,16 @@ export function recentWorkspaceOrder(
 }
 
 /**
+ * What a committed gesture should activate, or null for nothing. The active workspace is the
+ * "never mind" landing (the caller hands the caret back instead), and a workspace closed
+ * mid-gesture must not be activated: the client sets its own active workspace before the
+ * daemon sees the request, so an unknown ID would leave the window showing none.
+ */
+export function commitTarget(id: string, activeID: string | null, exists: (id: string) => boolean): string | null {
+    return id === activeID || !exists(id) ? null : id;
+}
+
+/**
  * This window's own activation order. `lastAccessedAt` is whole seconds, so two switches inside
  * one second tie; the later one this window saw wins.
  */

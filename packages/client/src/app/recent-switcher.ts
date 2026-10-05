@@ -22,6 +22,14 @@ export interface SwitcherState {
 /** A press released inside this window commits without the overlay ever painting. */
 export const SWITCHER_SHOW_DELAY_MS = 150;
 
+/**
+ * A gesture started from a web page commits after this long with no further step, until the
+ * window has seen a keyup of its own. The page holds the keyboard when the chord is forwarded, and
+ * Chromium suppresses that view's keyups after a consumed keydown, so a quick ⌃ release never
+ * reaches anyone (docs/config-keybindings.md §7.8).
+ */
+export const WEB_IDLE_COMMIT_MS = 400;
+
 export interface RecentSwitcherDeps {
     order(): readonly string[];
     commit(workspaceID: string): void;
@@ -58,6 +66,8 @@ function isDown(modifier: HeldModifier, snapshot: ModifierSnapshot): boolean {
 
 interface Gesture extends SwitcherState {
     readonly held: readonly HeldModifier[];
+    /** The window has the keyboard, so the real release will arrive. */
+    readonly live: boolean;
 }
 
 export function createRecentSwitcher(deps: RecentSwitcherDeps): RecentSwitcher {
@@ -80,6 +90,13 @@ export function createRecentSwitcher(deps: RecentSwitcherDeps): RecentSwitcher {
         end();
         if (workspaceID !== undefined) deps.commit(workspaceID);
     };
+    const armIdleCommit = (): void => {
+        if (timer !== null) clearTimer(timer);
+        timer = setTimer(() => {
+            timer = null;
+            if (gesture !== null) commit(gesture.order[gesture.index]);
+        }, WEB_IDLE_COMMIT_MS);
+    };
 
     return {
         step(direction, held, options) {
@@ -92,8 +109,9 @@ export function createRecentSwitcher(deps: RecentSwitcherDeps): RecentSwitcher {
                     commit(order[index]);
                     return true;
                 }
-                gesture = { order, index, shown: showNow, held };
-                if (!showNow) {
+                gesture = { order, index, shown: showNow, held, live: !showNow };
+                if (showNow) armIdleCommit();
+                else {
                     timer = setTimer(() => {
                         timer = null;
                         if (gesture === null) return;
@@ -110,12 +128,22 @@ export function createRecentSwitcher(deps: RecentSwitcherDeps): RecentSwitcher {
                 index: (gesture.index + direction + count) % count,
                 shown: gesture.shown || showNow
             };
+            if (!gesture.live) armIdleCommit();
             publish();
             return true;
         },
         keyUp(modifiers) {
             if (gesture === null) return;
-            if (gesture.held.some((modifier) => isDown(modifier, modifiers))) return;
+            if (gesture.held.some((modifier) => isDown(modifier, modifiers))) {
+                // A keyup the WINDOW received with the gesture's modifier still down: it has the
+                // keyboard now, so stop guessing and wait for the real release.
+                if (!gesture.live) {
+                    if (timer !== null) clearTimer(timer);
+                    timer = null;
+                    gesture = { ...gesture, live: true };
+                }
+                return;
+            }
             commit(gesture.order[gesture.index]);
         },
         cancel() {

@@ -61,7 +61,13 @@ export function RecentWorkspaceSwitcher(props: RecentWorkspaceSwitcherProps): Re
                             data-selected={selected ? 'true' : 'false'}
                             className="flex w-full items-center gap-2.5 px-3 py-1.5 text-left"
                             style={{ background: selected ? withAlpha(tokens.accent, 0.2) : 'transparent' }}
-                            onClick={() => props.onPick(row.id)}
+                            // A press, not a click: ⌃ is held while this is up, and macOS turns a
+                            // ⌃-click into a context-menu press that never fires `click`.
+                            onMouseDown={(event) => {
+                                event.preventDefault();
+                                props.onPick(row.id);
+                            }}
+                            onContextMenu={(event) => event.preventDefault()}
                         >
                             <span
                                 aria-hidden

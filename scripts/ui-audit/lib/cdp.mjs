@@ -649,6 +649,8 @@ export const KEYS = {
     Enter: { key: 'Enter', keyCode: 13, text: '\r' },
     NumpadEnter: { key: 'Enter', keyCode: 13, text: '\r' },
     Tab: { key: 'Tab', keyCode: 9, text: '\t' },
+    // A held modifier on its own (the ⌃Tab gesture ends on its release); no text.
+    ControlLeft: { key: 'Control', keyCode: 17 },
     // The raw ESC byte, as the JS escape rather than a literal control character: the audit asserts
     // it arrives at the PTY (`audit.mjs` ▸ "Escape ... reaches the PTY", TERM-155), and written
     // literally it is a single invisible byte that a reformat or a careless rewrite eats in silence.

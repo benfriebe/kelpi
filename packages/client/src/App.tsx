@@ -25,7 +25,7 @@ import { createWorkspacesActions } from './features/workspaces-actions';
 import { usePluginNavigation } from './plugins/use-navigation';
 import { useRemoteWorkspaceSelection } from './app/remote-selection';
 import { createRecentSwitcher, heldModifiersFromEvent, type SwitcherState } from './app/recent-switcher';
-import { createActivationSequence, recentWorkspaceOrder } from './app/recent-workspaces';
+import { commitTarget, createActivationSequence, recentWorkspaceOrder } from './app/recent-workspaces';
 import { RecentWorkspaceSwitcher } from './chrome/RecentWorkspaceSwitcher';
 import { PluginView } from './plugins/PluginView';
 import { WorkbenchProvider, WorkbenchSidebar, WorkbenchSlot, useWorkbenchLayout, type WorkbenchSlotID } from './plugins/Workbench';
@@ -2497,6 +2497,8 @@ function Shell(props: AppProps): ReactElement {
     // sequence breaks same-second ties in the daemon's `lastAccessedAt`. Built once per store and
     // committing through `actRef`: rebuilding it with `act` would drop a gesture in progress.
     const activationSequenceRef = useRef(createActivationSequence());
+    const handBackPaneCaretRef = useRef(handBackPaneCaret);
+    handBackPaneCaretRef.current = handBackPaneCaret;
     useEffect(() => {
         const note = (): void => activationSequenceRef.current.note(selectActiveWorkspaceID(store.getState()));
         note();
@@ -2515,7 +2517,12 @@ function Shell(props: AppProps): ReactElement {
                     return recentWorkspaceOrder(candidates, selectActiveWorkspaceID(state), activationSequenceRef.current.seq);
                 },
                 commit: (id) => {
-                    actRef.current.activateWorkspace(id);
+                    const state = store.getState();
+                    const target = commitTarget(id, selectActiveWorkspaceID(state), (candidate) => selectWorkspace(state, candidate) !== null);
+                    // Nothing to activate (back where it started, or the workspace closed): the
+                    // switcher held DOM focus and is gone, so the pane needs the caret back.
+                    if (target === null) handBackPaneCaretRef.current(selectFocusedPaneID(state));
+                    else actRef.current.activateWorkspace(target);
                 },
                 onChange: setRecentSwitcher
             }),
@@ -5129,9 +5136,13 @@ function Shell(props: AppProps): ReactElement {
 
             {recentSwitcher?.shown === true ? (
                 <RecentWorkspaceSwitcher
-                    rows={recentSwitcher.order.flatMap((id) => {
+                    // One row per ID in the snapshot, so `index` stays aligned when a workspace
+                    // closes mid-gesture; picking that row activates nothing (`commitTarget`).
+                    rows={recentSwitcher.order.map((id) => {
                         const workspace = selectWorkspace(store.getState(), id);
-                        return workspace === null ? [] : [{ id, name: workspace.name, color: workspace.color }];
+                        return workspace === null
+                            ? { id, name: 'Closed workspace', color: null }
+                            : { id, name: workspace.name, color: workspace.color };
                     })}
                     index={recentSwitcher.index}
                     bucket={bucket}

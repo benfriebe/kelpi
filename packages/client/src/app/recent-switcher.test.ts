@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
     SWITCHER_SHOW_DELAY_MS,
+    WEB_IDLE_COMMIT_MS,
     createRecentSwitcher,
     heldModifiersFromEvent,
     type SwitcherState
@@ -125,9 +126,44 @@ describe('recent switcher', () => {
     });
 });
 
+// A page that holds the keyboard swallows every key event after the chord it gave up, the ⌃
+// release included (Chromium suppresses a view's keyups after a consumed keydown). Until the window
+// sees a key event of its own, a gesture started there can only end on a timeout.
+describe('a gesture started from a web page', () => {
+    it('commits after the idle window when the release never reaches the window', () => {
+        const h = harness();
+        h.switcher.step(1, ['ctrl'], { showNow: true });
+        vi.advanceTimersByTime(WEB_IDLE_COMMIT_MS - 1);
+        expect(h.commits).toEqual([]);
+        h.switcher.step(1, ['ctrl'], { showNow: true });
+        vi.advanceTimersByTime(WEB_IDLE_COMMIT_MS - 1);
+        expect(h.commits).toEqual([]);
+        vi.advanceTimersByTime(1);
+        expect(h.commits).toEqual(['c']);
+    });
+
+    it('waits for the real release once the window has seen a keyup with ⌃ still down', () => {
+        const h = harness();
+        h.switcher.step(1, ['ctrl'], { showNow: true });
+        h.switcher.keyUp(ctrlDown); // Tab's keyup, delivered to the window: it has the keyboard
+        vi.advanceTimersByTime(WEB_IDLE_COMMIT_MS * 5);
+        expect(h.commits).toEqual([]);
+        h.switcher.keyUp(up);
+        expect(h.commits).toEqual(['b']);
+    });
+
+    it('does not apply to a gesture the window started itself', () => {
+        const h = harness();
+        h.switcher.step(1, ['ctrl']);
+        vi.advanceTimersByTime(WEB_IDLE_COMMIT_MS * 5);
+        expect(h.commits).toEqual([]);
+    });
+});
+
 describe('heldModifiersFromEvent', () => {
     it('reads ⌃ ⌥ ⌘ and ignores Shift', () => {
         expect(heldModifiersFromEvent({ ctrlKey: true, altKey: false, metaKey: true })).toEqual(['ctrl', 'meta']);
         expect(heldModifiersFromEvent(up)).toEqual([]);
     });
 });
+

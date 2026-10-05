@@ -225,11 +225,13 @@ describe('the set follows the config file', () => {
             'alt+meta+ArrowLeft', // focus_previous_pane
             'alt+meta+ArrowRight', // focus_next_pane
             'alt+meta+ArrowUp', // previous_workspace
+            'ctrl+Tab', // next_recent_workspace (a page's own ⌃Tab tab switching gives way)
             'ctrl+meta+Enter', // toggle_zen_mode (a page that binds ⌃⌘↩ gives it up to Zen Mode)
             'ctrl+shift+ArrowDown', // move_pane_down
             'ctrl+shift+ArrowLeft', // move_pane_left
             'ctrl+shift+ArrowRight', // move_pane_right
             'ctrl+shift+ArrowUp', // move_pane_up
+            'ctrl+shift+Tab', // previous_recent_workspace
             'meta+ArrowLeft', // web priority: back
             'meta+ArrowRight', // web priority: forward
             'meta+BracketLeft', // focus_previous_pane (issue #229: NOT page back)
@@ -347,3 +349,4 @@ describe('the relay command', () => {
         expect(chordLabel({ code: 'KeyD', meta: true, ctrl: false, alt: false, shift: false })).toBe('⌘KeyD');
     });
 });
+

@@ -166,6 +166,36 @@ describe('chrome commands', () => {
         expect(input.value).toBe('https://example.com/next');
     });
 
+    /**
+     * jsdom does no default mouse handling, so each press is spelled out: the mousedown, the
+     * focus it gives, where it would have put the caret (or the range a drag would have
+     * made), then the mouseup.
+     */
+    it('a click into the URL bar selects the whole address; a click inside it places the caret', () => {
+        const { commands } = fakeCommands();
+        render(<WebPane paneID={PANE} tabs={TABS} activeTabID={TAB1} commands={commands} />);
+        const input = screen.getByTestId(`web-url-${PANE}`) as HTMLInputElement;
+        const length = input.value.length;
+        const press = (caret: readonly [number, number]): void => {
+            fireEvent.mouseDown(input);
+            input.focus();
+            input.setSelectionRange(caret[0], caret[1]);
+            fireEvent.mouseUp(input);
+        };
+
+        press([5, 5]);
+        expect([input.selectionStart, input.selectionEnd]).toEqual([0, length]);
+
+        // The caret is already in the field: this click is an edit, not an arrival.
+        press([5, 5]);
+        expect([input.selectionStart, input.selectionEnd]).toEqual([5, 5]);
+
+        // Leave, then come back with a drag: the dragged range stands.
+        input.blur();
+        press([2, 8]);
+        expect([input.selectionStart, input.selectionEnd]).toEqual([2, 8]);
+    });
+
     it('does not submit an empty field', () => {
         const { commands, sent } = fakeCommands();
         render(<WebPane paneID={PANE} tabs={[]} activeTabID={null} commands={commands} />);

@@ -81,6 +81,8 @@ export const ACTION_CATALOG: readonly ActionEntry[] = [
     { action: 'new_workspace', category: 'Workspaces', label: 'New Workspace' },
     { action: 'next_workspace', category: 'Workspaces', label: 'Next Workspace' },
     { action: 'previous_workspace', category: 'Workspaces', label: 'Previous Workspace' },
+    { action: 'next_recent_workspace', category: 'Workspaces', label: 'Next Recent Workspace' },
+    { action: 'previous_recent_workspace', category: 'Workspaces', label: 'Previous Recent Workspace' },
     { action: 'rename_workspace', category: 'Workspaces', label: 'Rename Workspace' },
     { action: 'new_group', category: 'Workspaces', label: 'New Group' },
     ...switchEntries(),

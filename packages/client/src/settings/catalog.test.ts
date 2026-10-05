@@ -20,8 +20,15 @@ describe('the action catalog', () => {
         expect(new Set(catalogued).size).toBe(catalogued.length);
     });
 
-    it('is the 63 actions the spec counts', () => {
-        expect(ACTION_CATALOG).toHaveLength(63);
+    it('is the 65 actions the spec counts', () => {
+        expect(ACTION_CATALOG).toHaveLength(65);
+    });
+
+    it('lists the recent-workspace switcher under Workspaces', () => {
+        expect(actionsInCategory('Workspaces')).toContain('next_recent_workspace');
+        expect(actionsInCategory('Workspaces')).toContain('previous_recent_workspace');
+        expect(actionLabel('next_recent_workspace')).toBe('Next Recent Workspace');
+        expect(actionLabel('previous_recent_workspace')).toBe('Previous Recent Workspace');
     });
 
     // The root arrangement's four, beside the two panel toggles they sit with in the View menu.
@@ -71,7 +78,7 @@ describe('the action catalog', () => {
         const visible = VISIBLE_CATEGORIES.flatMap((category) => actionsInCategory(category));
         expect(visible.filter((action) => action.startsWith('web_'))).toEqual([]);
         expect(actionsInCategory('Web Pane')).toHaveLength(11);
-        expect(visible).toHaveLength(63 - 11);
+        expect(visible).toHaveLength(65 - 11);
     });
 
     it('uses §4’s display names, including the ones that are not the raw value', () => {

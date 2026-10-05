@@ -64,7 +64,9 @@ import {
     throttleTrailing,
     type Throttled
 } from './divider';
+import { onActivationPress } from '../app/activation-click';
 import { useChromeCaret, useWindowFocused } from '../app/caret-visuals';
+import { focusPaneSurface, mayClaimPaneCaret } from '../app/pane-focus';
 import { registerGestureReset } from '../chrome/gesture-reset';
 import { useOverlayPresence } from '../chrome/modal-presence';
 import {
@@ -860,6 +862,27 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
             }, delay);
         },
         [cancelHover]
+    );
+
+    /*
+     * #339 - the click that brought a background window forward, landing on one of THIS grid's
+     * panes. `app/activation-click.ts` has already consumed the gesture, so no body or header
+     * heard it; this is the whole of what it does: the pane takes the ring and the caret, as a
+     * Ghostty split takes first responder from the same click. The caret is claimed outright
+     * rather than politely because it is the user's own click, which is what the engine's
+     * canvas `mousedown` would have done.
+     */
+    useEffect(
+        () =>
+            onActivationPress((target) => {
+                const container = containerRef.current;
+                if (container === null || !container.contains(target)) return;
+                const paneID = target.closest('[data-pane-id]')?.getAttribute('data-pane-id') ?? '';
+                if (paneID.length === 0) return;
+                latest.current.onFocusPane?.(paneID);
+                if (mayClaimPaneCaret()) focusPaneSurface(paneID);
+            }),
+        []
     );
 
     useEffect(

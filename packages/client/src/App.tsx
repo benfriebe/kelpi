@@ -181,6 +181,7 @@ import { createFolderChooser } from './app/folder-chooser';
 import { createUpdateSheetController, type UpdateSheetState } from './app/update-sheet';
 import { UpdateSheet } from './chrome/UpdateSheet';
 import { createPaneTextSizeStep, createTextSizeStep } from './app/text-size';
+import { installActivationClick } from './app/activation-click';
 import { focusPaneSurface, handCaretToPaneWhenReady, mayClaimPaneCaret, releaseFocusedPaneCaret } from './app/pane-focus';
 import { navigationTrustedRuntimes, useRemoteDaemons, type RemoteRuntimeFactory } from './app/remote-daemons';
 import { RemoteWorkspaceView } from './app/RemoteWorkspaceView';
@@ -2791,6 +2792,24 @@ function Shell(props: AppProps): ReactElement {
         });
         return off;
     }, [onTerminalFocus, runtime, shellWindowID, store]);
+
+    /**
+     * #339 - the click that brings this window forward focuses the pane it lands in, and does
+     * nothing else (`app/activation-click.ts`). The shell turns `acceptFirstMouse` on so the press
+     * reaches the page at all; `ui.appActive` is its report of whether this window was the active
+     * one, which is what says a press is the activating one. Each `PaneGrid` routes the pane.
+     */
+    useEffect(() => {
+        if (typeof window === 'undefined') return;
+        return installActivationClick({
+            target: window,
+            isActive: () => store.getState().ui.appActive,
+            onActiveChange: (listener) =>
+                store.subscribe((state, previous) => {
+                    if (state.ui.appActive !== previous.ui.appActive) listener(state.ui.appActive);
+                })
+        });
+    }, [store]);
 
     // ── settings window ─────────────────────────────────────────────────────────────
 

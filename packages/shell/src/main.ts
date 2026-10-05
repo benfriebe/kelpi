@@ -707,6 +707,18 @@ function createWindow(): BrowserWindow {
         ...(windowIsTransparent ? { transparent: true } : {}),
         backgroundColor: ground,
         /*
+         * #339 - the click that brings a background window forward reaches the page.
+         *
+         * Electron's default is false on macOS, and then Chromium's `acceptsFirstMouse:` answers NO
+         * for a normal window: AppKit spends the click on activating the window and the page never
+         * hears it. Clicking the right pane of a background Kelpi left the ring and the caret on
+         * the left one. The page does not let this click through to what it landed on; it only
+         * focuses the pane under it (`packages/client/src/app/activation-click.ts`), which is
+         * Ghostty's rule for a split. A web pane's page is its own `WebContentsView` and gets the
+         * click as an ordinary one, which moves the ring there through N29's `mouseDown` report.
+         */
+        acceptFirstMouse: true,
+        /*
          * APP-046 — the hidden title bar, at last.
          *
          * The shipped app is `.hiddenTitleBar` with its 32pt strip drawn up into the traffic-light

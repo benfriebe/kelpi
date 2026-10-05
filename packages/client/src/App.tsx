@@ -24,6 +24,9 @@ import { WorkspacesCreateSheetHost, bindWorkspacesFeature, useWorkspacesFeatureL
 import { createWorkspacesActions } from './features/workspaces-actions';
 import { usePluginNavigation } from './plugins/use-navigation';
 import { useRemoteWorkspaceSelection } from './app/remote-selection';
+import { createRecentSwitcher, heldModifiersFromEvent, type SwitcherState } from './app/recent-switcher';
+import { createActivationSequence, recentWorkspaceOrder } from './app/recent-workspaces';
+import { RecentWorkspaceSwitcher } from './chrome/RecentWorkspaceSwitcher';
 import { PluginView } from './plugins/PluginView';
 import { WorkbenchProvider, WorkbenchSidebar, WorkbenchSlot, useWorkbenchLayout, type WorkbenchSlotID } from './plugins/Workbench';
 import { resolveSidebarViews, resolveSlot, selectWorkbenchView } from './plugins/registry';
@@ -240,6 +243,8 @@ import {
     selectAgentSummary,
     selectFocusedPaneID,
     selectPane,
+    selectSidebarWorkspaceIDs,
+    selectWorkspace,
     recentlyClosedCount,
     type KelpiRuntime,
     type Toast
@@ -2488,6 +2493,41 @@ function Shell(props: AppProps): ReactElement {
     const actRef = useRef(act);
     actRef.current = act;
 
+    // ⌃Tab (docs/superpowers/specs/2026-10-05-recent-workspace-switcher-design.md). The activation
+    // sequence breaks same-second ties in the daemon's `lastAccessedAt`. Built once per store and
+    // committing through `actRef`: rebuilding it with `act` would drop a gesture in progress.
+    const activationSequenceRef = useRef(createActivationSequence());
+    useEffect(() => {
+        const note = (): void => activationSequenceRef.current.note(selectActiveWorkspaceID(store.getState()));
+        note();
+        return store.subscribe(note);
+    }, [store]);
+    const [recentSwitcher, setRecentSwitcher] = useState<SwitcherState | null>(null);
+    const switcher = useMemo(
+        () =>
+            createRecentSwitcher({
+                order: () => {
+                    const state = store.getState();
+                    const candidates = selectSidebarWorkspaceIDs(state).flatMap((id) => {
+                        const workspace = selectWorkspace(state, id);
+                        return workspace === null ? [] : [{ id, lastAccessedAt: workspace.lastAccessedAt }];
+                    });
+                    return recentWorkspaceOrder(candidates, selectActiveWorkspaceID(state), activationSequenceRef.current.seq);
+                },
+                commit: (id) => {
+                    actRef.current.activateWorkspace(id);
+                },
+                onChange: setRecentSwitcher
+            }),
+        [store]
+    );
+    /** A gesture started from a web page paints at once: the page holds the keyboard until it is parked. */
+    const focusedPaneIsWeb = (): boolean => {
+        const state = store.getState();
+        const paneID = selectFocusedPaneID(state);
+        return selectActiveWorkspace(state)?.panes.some((pane) => pane.id === paneID && pane.type === 'web') ?? false;
+    };
+
     // ── terminal mounting ───────────────────────────────────────────────────────────
 
     const policyRef = useRef(createMountPolicy());
@@ -3150,6 +3190,9 @@ function Shell(props: AppProps): ReactElement {
             new_workspace: () => act.newWorkspace(),
             next_workspace: () => act.switchRelative(1),
             previous_workspace: () => act.switchRelative(-1),
+            next_recent_workspace: ({ event }) => switcher.step(1, heldModifiersFromEvent(event), { showNow: focusedPaneIsWeb() }),
+            previous_recent_workspace: ({ event }) =>
+                switcher.step(-1, heldModifiersFromEvent(event), { showNow: focusedPaneIsWeb() }),
             // The four actions this registry used to advertise and not dispatch (index gap #6):
             // §SET-144/§APP-019, §SET-153, §SET-145/§APP-021/§WEB-154 and §CONT-133. Each has a
             // gesture elsewhere (the sidebar footer, the row menu, the header globe); these are
@@ -3314,6 +3357,28 @@ function Shell(props: AppProps): ReactElement {
         });
         return installKeyDispatcher(window, dispatcher);
     }, [store, keybindLines, closeModalOverlay, surface]);
+
+    // The ⌃Tab gesture ends on the RELEASE of its modifiers, on Escape (handled here rather than
+    // through the dispatcher's `onEscape`, which only sees an unmodified Escape, and ⌃ is still
+    // down), or on the window losing focus (a keyup while another app is frontmost never arrives).
+    useEffect(() => {
+        const onKeyDown = (event: KeyboardEvent): void => {
+            if (event.code !== 'Escape' || !switcher.cancel()) return;
+            event.preventDefault();
+            event.stopPropagation();
+            handBackPaneCaret(selectFocusedPaneID(store.getState()));
+        };
+        const onKeyUp = (event: KeyboardEvent): void => switcher.keyUp(event);
+        const onBlur = (): void => switcher.blur();
+        window.addEventListener('keydown', onKeyDown, true);
+        window.addEventListener('keyup', onKeyUp, true);
+        window.addEventListener('blur', onBlur);
+        return () => {
+            window.removeEventListener('keydown', onKeyDown, true);
+            window.removeEventListener('keyup', onKeyUp, true);
+            window.removeEventListener('blur', onBlur);
+        };
+    }, [switcher, store, handBackPaneCaret]);
 
     /**
      * ⌘, opens Settings — the platform convention, and NOT a `KelpiAction`: the Swift app reaches
@@ -5062,6 +5127,17 @@ function Shell(props: AppProps): ReactElement {
             )}
             <InteractionHost surface={surface} presenters={!phoneActive} chords={presenterChords} />
 
+            {recentSwitcher?.shown === true ? (
+                <RecentWorkspaceSwitcher
+                    rows={recentSwitcher.order.flatMap((id) => {
+                        const workspace = selectWorkspace(store.getState(), id);
+                        return workspace === null ? [] : [{ id, name: workspace.name, color: workspace.color }];
+                    })}
+                    index={recentSwitcher.index}
+                    bucket={bucket}
+                    onPick={(id) => switcher.pick(id)}
+                />
+            ) : null}
             {helpOpen ? (
                 <HelpOverlay
                     keymap={keymap}

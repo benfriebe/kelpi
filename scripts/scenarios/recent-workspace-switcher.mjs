@@ -3,7 +3,12 @@
  * holding ⌃ shows the switcher and each Tab steps further back, Escape cancels.
  * docs/superpowers/specs/2026-10-05-recent-workspace-switcher-design.md
  */
-import { MOD } from '../ui-audit/lib/cdp.mjs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import { MOD, connect, waitForPageTarget } from '../ui-audit/lib/cdp.mjs';
+
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 export const covers = [
     'packages/client/src/app/recent-switcher.ts',
@@ -70,6 +75,35 @@ export default async function ({ page, cli, sandbox, rec, d, sleep }) {
         await control('keyUp');
         await sleep(300);
         rec.check('Escape cancels the gesture', (await active()) === a && (await switcherShown()) === false);
+
+        // From a focused web page: the chord reaches the window through the shell's relay, and
+        // the switcher must take the keyboard so the ⌃ release is seen. Order now: A (active), C, B.
+        await cli.ok(['web', 'open', '--focus', 'data:text/html,<title>mru-web</title><input autofocus>']);
+        const target = await waitForPageTarget(sandbox.debugPort, { match: (t) => t.title === 'mru-web', timeoutMs: 15_000 });
+        const web = await connect(target.webSocketDebuggerUrl, { repoRoot: REPO_ROOT });
+        try {
+            await sleep(500);
+            await web.send('Input.dispatchKeyEvent', {
+                type: 'rawKeyDown',
+                code: 'ControlLeft',
+                key: 'Control',
+                windowsVirtualKeyCode: 17,
+                nativeVirtualKeyCode: 17,
+                modifiers: MOD.ctrl
+            });
+            await web.key('Tab', { modifiers: MOD.ctrl });
+            rec.check('⌃Tab from a web page opens the switcher at once', await d.settle(switcherShown, { ceilingMs: 2000 }));
+            // The page is parked now, so the rest of the gesture is the window's: the window's own
+            // document must hold the keyboard, or a real ⌃ release would go to the page.
+            rec.check(
+                'the window takes the keyboard back from the page',
+                await d.settle(() => page.eval(`document.hasFocus() && document.activeElement?.getAttribute('data-testid') === 'recent-switcher'`), { ceilingMs: 2000 })
+            );
+            await control('keyUp');
+            rec.check('releasing ⌃ after starting in a web page switches', await d.settle(async () => (await active()) === c));
+        } finally {
+            web.close();
+        }
     } finally {
         for (const id of created) await cli.ok(['workspace', 'delete', id, '--force']).catch(() => {});
     }

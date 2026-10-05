@@ -1989,12 +1989,11 @@ async function main() {
          * the two lines are inlined here for the same reason `WINDOW_PLACEMENTS` is (line 91):
          * this file deliberately does not import the scenario driver.
          *
-         * `default` is the audit's own default and the on-screen full run: that window can be
-         * key exactly as before, so nothing is emulated for it.
+         * That includes `default`, the on-screen full run: it is keyless too, so a full run never
+         * activates the app or takes the owner's keyboard (`audit-window.ts` ▸
+         * `auditWindowFocusable`), and its page needs the same emulated focus.
          */
-        if (options.window !== 'default') {
-            await page.send('Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => {});
-        }
+        await page.send('Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => {});
         await page.waitFor(`document.querySelector('${PAGE.app}') !== null`, {
             timeoutMs: 60_000,
             label: 'the app to mount'
@@ -28901,12 +28900,10 @@ function buildFlows(ctx) {
                 await nextPage.send('DOM.enable');
                 await nextPage.watchFrames();
                 // #109: focus emulation is per TARGET, and this is a new one. The relaunched
-                // shell inherits `KELPI_AUDIT_WINDOW` from the sandbox env, so its window is
-                // keyless in a lane exactly as the first one was, and its page needs the same
-                // page-level focus the bootstrap gave the first (see the bootstrap's comment).
-                if (runOptions.window !== 'default') {
-                    await nextPage.send('Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => {});
-                }
+                // shell inherits `KELPI_AUDIT` from the sandbox env, so its window is keyless
+                // exactly as the first one was, and its page needs the same page-level focus the
+                // bootstrap gave the first (see the bootstrap's comment).
+                await nextPage.send('Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => {});
                 await nextPage.waitFor(`document.querySelector('${PAGE.app}') !== null`, { timeoutMs: 60_000, label: 'the relaunched app' });
                 await sleep(4000);
                 await recorder.shot(nextPage);

@@ -68,6 +68,7 @@ import {
 } from './harness-protocol.js';
 import { setNotificationPresenter } from './notify-present.js';
 import type { NotificationPresenter } from './notify.js';
+import { focusWindowContents } from './window-present.js';
 
 export interface HarnessOptions {
     /** Release the initial navigation held for a CDP watcher (#239). */
@@ -296,7 +297,9 @@ function makeSurface(options: HarnessOptions, counters: HarnessCounters): Harnes
                 window.focus();
             } else {
                 window.showInactive();
-                window.webContents.focus();
+                // Not `webContents.focus()`: on macOS that activates the app even for a keyless
+                // window. `focusWindowContents` has the measurement.
+                focusWindowContents(window);
             }
             return window.isFocused();
         },

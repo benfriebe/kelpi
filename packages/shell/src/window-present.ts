@@ -26,6 +26,9 @@ export interface PresentableWindow {
     restore(): void;
     show(): void;
     focus(): void;
+    /** Absent in a double means "may be key", which is every user window. */
+    isFocusable?(): boolean;
+    focusOnWebView?(): void;
     readonly webContents?: PresentableWebContents | undefined;
 }
 
@@ -98,12 +101,21 @@ export function presentWindow<W extends PresentableWindow>(
  * from `ready-to-show`, after `presentWindow` has already returned, and a `focus()` taken before
  * there was anything to focus does not survive to the page. Returns false when the contents are
  * gone (a window mid-teardown), which is a no-op rather than a throw.
+ *
+ * A window that may not be key (a `focusable: false` test lane window, `./audit-window.ts` ▸
+ * `auditWindowFocusable`) gets `focusOnWebView()` instead. `webContents.focus()` on macOS asks the
+ * owner window to `Focus(true)` first, which activates the app: measured on Electron 43, a keyless
+ * window shown inactive fired `did-become-active` on every `webContents.focus()` while the app
+ * that launched the run was frontmost, and never without it. `focusOnWebView()` sets page focus
+ * only and leaves the first responder alone (`webhost/index.ts` has that measurement), which costs
+ * a keyless window nothing: AppKit never routes a key event to it, and the lane's input is CDP.
  */
 export function focusWindowContents(window: PresentableWindow): boolean {
     const contents = window.webContents;
     if (contents === undefined || contents === null) return false;
     if (contents.isDestroyed?.() === true) return false;
-    contents.focus();
+    if (window.isFocusable?.() === false && window.focusOnWebView !== undefined) window.focusOnWebView();
+    else contents.focus();
     return true;
 }
 

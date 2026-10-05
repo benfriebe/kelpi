@@ -176,4 +176,20 @@ describe('focusWindowContents', () => {
 
         expect(focusWindowContents(window)).toBe(false);
     });
+
+    it('never activates the app for a window that may not be key (a test lane window)', () => {
+        // `webContents.focus()` on macOS is `owner_window()->Focus(true)` first, which asks AppKit
+        // to activate the app. Measured on Electron 43 with a `focusable: false` window shown
+        // inactive: `did-become-active` fired 2/2 with it and 0/2 without, whenever the app that
+        // launched the run was frontmost. `focusOnWebView()` is the page-level half alone.
+        const window = { ...fakeWindow(), isFocusable: () => false, focusOnWebView: () => window.calls.push('focusOnWebView') };
+        expect(focusWindowContents(window)).toBe(true);
+        expect(window.calls).toEqual(['focusOnWebView']);
+    });
+
+    it('keeps the real handoff for a window that may be key (every user launch)', () => {
+        const window = { ...fakeWindow(), isFocusable: () => true, focusOnWebView: () => window.calls.push('focusOnWebView') };
+        expect(focusWindowContents(window)).toBe(true);
+        expect(window.calls).toEqual(['contents.focus']);
+    });
 });

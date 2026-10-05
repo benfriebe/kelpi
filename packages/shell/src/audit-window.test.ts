@@ -222,28 +222,31 @@ describe('no lane window is ever the key window (#109)', () => {
         // physical one arrives landed in the run's terminal: `echo caret-ok` typed over CDP
         // came back from `kelpi pane capture` as `echo urecaret-ok`.
         for (const placement of ['hidden', 'offscreen', 'onscreen'] as const) {
-            expect(auditWindowFocusable(placement)).toBe(false);
+            expect(auditWindowFocusable(harnessWindowPolicy(laneEnv(placement)))).toBe(false);
+            expect(auditWindowFocusable(auditWindowPolicy({ KELPI_AUDIT: '1', KELPI_AUDIT_WINDOW: placement }))).toBe(false);
         }
     });
 
-    it('leaves a user’s window, and the on-screen full audit, focusable', () => {
-        // `default` is what every user launch and the default audit run get. A visible window
-        // that could not be typed into would be a worse lie than the one this fixes.
-        expect(auditWindowFocusable('default')).toBe(true);
-        expect(auditWindowFocusable(SHIPPED_WINDOW_POLICY.placement)).toBe(true);
+    it('refuses key status for the audit’s own default window too', () => {
+        // The full audit (`verify.mjs --full`) runs at `default`: on screen, full Retina scale.
+        // Shown with `show()` it activated the app and took the owner's keyboard on every launch.
+        // Same window, same bounds, same pixels; it just never becomes key.
+        expect(auditWindowFocusable(auditWindowPolicy({ KELPI_AUDIT: '1' }))).toBe(false);
+        expect(auditWindowFocusable(auditWindowPolicy({ KELPI_AUDIT: '1', KELPI_AUDIT_WINDOW: 'default' }))).toBe(false);
     });
 
-    it('covers both gates: whichever lane opened, the placement decides', () => {
-        expect(auditWindowFocusable(harnessWindowPolicy(laneEnv('hidden')).placement)).toBe(false);
-        expect(auditWindowFocusable(auditWindowPolicy({ KELPI_AUDIT: '1', KELPI_AUDIT_WINDOW: 'onscreen' }).placement)).toBe(
-            false
-        );
-        expect(auditWindowFocusable(auditWindowPolicy({ KELPI_AUDIT: '1' }).placement)).toBe(true);
+    it('leaves a user’s window focusable, whatever stray variables are set', () => {
+        // A visible window that could not be typed into would be a worse lie than the one this
+        // fixes, so only an open lane may take key status away.
+        expect(auditWindowFocusable(SHIPPED_WINDOW_POLICY)).toBe(true);
+        expect(auditWindowFocusable(resolveWindowPolicy({}))).toBe(true);
+        expect(auditWindowFocusable(resolveWindowPolicy({ KELPI_HARNESS: '1', KELPI_AUDIT_WINDOW: 'hidden' }))).toBe(true);
+        expect(auditWindowFocusable(resolveWindowPolicy({ KELPI_HARNESS_SOCKET: '/tmp/kelpi-harness.sock' }))).toBe(true);
     });
 
     it('states the rule in the log line, so the policy is checkable from outside the process', () => {
         expect(auditWindowLogLine(harnessWindowPolicy(laneEnv('hidden')), BOUNDS, BOUNDS)).toContain('focusable=false');
-        expect(auditWindowLogLine(auditWindowPolicy({ KELPI_AUDIT: '1' }), BOUNDS, BOUNDS)).toContain('focusable=true');
+        expect(auditWindowLogLine(auditWindowPolicy({ KELPI_AUDIT: '1' }), BOUNDS, BOUNDS)).toContain('focusable=false');
     });
 });
 

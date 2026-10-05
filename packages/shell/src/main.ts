@@ -693,7 +693,7 @@ function createWindow(): BrowserWindow {
      * terminal pane: `echo caret-ok` came back as `echo urecaret-ok`) and what the lane does
      * for page-level focus instead. False only under a lane; every user launch is `true`.
      */
-    const laneIsKeyless = lane.active && !auditWindowFocusable(lane.placement);
+    const laneIsKeyless = !auditWindowFocusable(lane);
     const window = new BrowserWindow({
         ...placedBounds,
         // Set at construction, not after: `show()` is `makeKeyAndOrderFront:` and the window is

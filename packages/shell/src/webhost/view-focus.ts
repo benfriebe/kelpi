@@ -142,3 +142,25 @@ export function createViewFocusGate(options: ViewFocusGateOptions): ViewFocusGat
         }
     };
 }
+
+/**
+ * How `Tab.focusView()` hands a view the keyboard.
+ *
+ * `webContents.focus()` on macOS is the owner window's `Focus(true)` first, and that activates the
+ * app even when the window is `focusable: false` (a test lane window, `../audit-window.ts` ▸
+ * `auditWindowFocusable`). Measured on Electron 43, a keyless window holding a WebContentsView,
+ * launched while the app that launched it was frontmost: `focus()` activated the app 2/2, CDP
+ * `Page.bringToFront` on the view's own session 0/2, and the view's `document.hasFocus()` read true
+ * after both (`isFocused()` is false either way: a keyless window has no first responder to give).
+ *
+ * So a keyless window takes the CDP route. A tab whose session never attached does nothing rather
+ * than fall back to the call that activates the app. A window that may be key, which is every
+ * user launch, keeps the real call.
+ */
+export function viewKeyboardRoute(input: {
+    readonly windowMayBeKey: boolean;
+    readonly debuggerAttached: boolean;
+}): 'contents-focus' | 'cdp-bring-to-front' | 'none' {
+    if (input.windowMayBeKey) return 'contents-focus';
+    return input.debuggerAttached ? 'cdp-bring-to-front' : 'none';
+}

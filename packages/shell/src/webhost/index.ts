@@ -324,6 +324,12 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
     const hooks = createTabHooks({
         keyboardOwner,
         restoreKeyboard,
+        // A keyless test-lane window (`../audit-window.ts`) hands a view the keyboard over CDP, because
+        // `webContents.focus()` would activate the app. `./view-focus.ts` ▸ `viewKeyboardRoute`.
+        windowMayBeKey: () => {
+            const window = options.window?.() ?? null;
+            return window === null || window.isDestroyed() || window.isFocusable();
+        },
         holder: holderWindow,
         sessionFor: (paneID, isPrivate) => sessions.sessionFor(paneID, isPrivate),
         viewport,

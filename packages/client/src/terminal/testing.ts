@@ -56,6 +56,17 @@ export interface FakeRendererOptions {
      * the tests about who ends up with the caret ask for it.
      */
     readonly autoFocusOnOpen?: boolean;
+    /**
+     * Implement `onReplayApplied`, firing it on the first write after a `reset()` (which is how
+     * `ingest.replay()` hands a snapshot over). Off by default, which is the shape of a renderer
+     * that cannot say: the pane then treats `open()` as the moment the screen is whole.
+     */
+    readonly replayApplied?: boolean;
+    /**
+     * Put a canvas in the host on `open()`, the way the real engine does, laid out at this CSS
+     * size (and twice it in device pixels). The poster (`poster.ts`) copies it on unmount.
+     */
+    readonly canvas?: { readonly width: number; readonly height: number };
 }
 
 export class FakeRenderer implements TerminalRenderer {
@@ -124,6 +135,10 @@ export class FakeRenderer implements TerminalRenderer {
     private cell: CellSize;
     private settle: (() => void) | undefined;
     private fail: ((error: Error) => void) | undefined;
+    private replayArmed = false;
+    private readonly replayListeners = new Set<() => void>();
+    /** Present only with `replayApplied` (see {@link FakeRendererOptions.replayApplied}). */
+    readonly onReplayApplied?: (listener: () => void) => () => void;
 
     constructor(
         readonly options: TerminalRendererOptions | undefined,
@@ -132,6 +147,12 @@ export class FakeRenderer implements TerminalRenderer {
         readonly ordinal = 1
     ) {
         this.cell = fake.cell ?? { width: 10, height: 20 };
+        if (fake.replayApplied === true) {
+            this.onReplayApplied = (listener: () => void): (() => void) => {
+                this.replayListeners.add(listener);
+                return () => this.replayListeners.delete(listener);
+            };
+        }
         const openError = fake.openError ?? ((): Error => new RangeError('offset is out of bounds'));
         const rejectThisOne = fake.failOpen === true || this.ordinal <= (fake.failOpensBefore ?? 0);
         if (fake.deferOpen === true) {
@@ -149,6 +170,15 @@ export class FakeRenderer implements TerminalRenderer {
 
     open(element: HTMLElement): Promise<void> {
         this.opened = element;
+        const canvas = this.fake.canvas;
+        if (canvas !== undefined) {
+            const surface = element.ownerDocument.createElement('canvas');
+            surface.width = canvas.width * 2;
+            surface.height = canvas.height * 2;
+            surface.style.width = `${String(canvas.width)}px`;
+            surface.style.height = `${String(canvas.height)}px`;
+            element.appendChild(surface);
+        }
         if (this.fake.autoFocusOnOpen !== true) return this.ready;
         // The grab is the LAST thing the real `open()` does, so it happens when the engine has
         // finished coming up — not when the call is made. That ordering is the whole point: the
@@ -181,6 +211,10 @@ export class FakeRenderer implements TerminalRenderer {
         if (this.failed) return;
         this.writes.push(asText(data));
         this.screenLog.push('write');
+        if (this.replayArmed) {
+            this.replayArmed = false;
+            for (const listener of [...this.replayListeners]) listener();
+        }
         // C3: output snaps the viewport back to the live bottom, which is what both engines do
         // and the constraint the plan names (§7's spike: a scrolled-back phone view is lost on
         // the next chunk of output).
@@ -192,6 +226,7 @@ export class FakeRenderer implements TerminalRenderer {
         if (this.failed) return;
         this.resets += 1;
         this.screenLog.push('reset');
+        this.replayArmed = this.fake.replayApplied === true;
         this.changeContent();
     }
 
@@ -430,6 +465,9 @@ export class FakeRenderer implements TerminalRenderer {
 
     dispose(): void {
         this.disposed = true;
+        // The real engine takes its canvas out of the host when it goes.
+        if (this.fake.canvas !== undefined) this.opened?.querySelector('canvas')?.remove();
+        this.replayListeners.clear();
         this.dataListeners.clear();
         this.bellListeners.clear();
         this.titleListeners.clear();

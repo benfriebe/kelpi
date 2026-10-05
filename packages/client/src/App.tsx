@@ -248,6 +248,7 @@ import {
     PhoneKeyBar,
     createMountPolicy,
     DEFAULT_FONT_SIZE,
+    forgetTerminalPosters,
     mergeTerminalPalette,
     paneHandle,
     resolveTerminalTheme,
@@ -2518,6 +2519,20 @@ function Shell(props: AppProps): ReactElement {
     }, [candidateKey, focusedPaneID, mountLimit]);
 
     const mountedSet = useMemo(() => new Set(mounted), [mounted]);
+
+    /*
+     * A pane closed while on screen unmounts like any other and leaves a poster behind
+     * (`terminal/poster.ts`). Forget the posters of panes that LEAVE this daemon's state, rather
+     * than keeping only the ones in it: a remote daemon's panes are never in it, and their
+     * posters are as good as any.
+     */
+    const knownPaneIDsRef = useRef<ReadonlySet<string>>(new Set());
+    useEffect(() => {
+        const known = new Set(daemon.state.workspaces.flatMap((candidate) => candidate.panes.map((pane) => pane.id)));
+        const gone = [...knownPaneIDsRef.current].filter((paneID) => !known.has(paneID));
+        knownPaneIDsRef.current = known;
+        if (gone.length > 0) forgetTerminalPosters(gone);
+    }, [daemon.state.workspaces]);
 
     // What this client actually shows the user — the daemon uses it for notification
     // suppression and for its "app is active" answer (`ws/sync.ts` `visibilityReport`). It is

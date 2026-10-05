@@ -41,7 +41,7 @@ import {
 } from '../app/pane-focus';
 import { useChromeCaret, useWindowFocused } from '../app/caret-visuals';
 import { restartUI } from '../app/reload';
-import { defaultFormFactorWindow, useFormFactor, type FormFactorWindow } from '../chrome/form-factor';
+import { currentFormFactor, defaultFormFactorWindow, useFormFactor, type FormFactorWindow } from '../chrome/form-factor';
 import { readKeyboardViewportMode } from '../chrome/keyboard-viewport';
 import { CLIENT_MAC_LIKE } from '../chrome/keys';
 import { modalPresenceCount } from '../chrome/modal-presence';
@@ -62,6 +62,15 @@ import {
 import { createKittyKeyboard, sanitizeKittyFlags, type KittyKeyboard } from './kitty-keyboard';
 import { createLinkHover, type LinkHover } from './link-hover';
 import { notifyTerminalPanes, registerTerminalPane, type TerminalMirrorClip } from './pane-registry';
+import {
+    PHONE_TERMINAL_POSTER_BUDGET_BYTES,
+    TERMINAL_POSTER_BUDGET_BYTES,
+    captureTerminalPoster,
+    discardTerminalPoster,
+    returnTerminalPoster,
+    takeTerminalPoster,
+    type TerminalPoster
+} from './poster';
 import {
     IDLE_PANE_MODES,
     createMouseReporter,
@@ -180,6 +189,24 @@ export function isWasmAddressSpaceExhausted(error: unknown): boolean {
  * live every claim goes through the focus effect like any other.
  */
 export const ENGINE_AUTOFOCUS_WINDOW_MS = 250;
+
+/**
+ * The longest a remounted pane shows its poster (`terminal/poster.ts`) while waiting for its
+ * engine to replay the screen.
+ *
+ * A budgeted parse of a full 10 000-row snapshot is well under a second on this tree
+ * (`scripts/ui-audit/switch-freeze-storm.mjs`), so this is a defensive ceiling and not a
+ * schedule: a replay that never comes (a dropped socket, a daemon that is gone) must not leave
+ * a picture of a terminal standing in for one indefinitely.
+ */
+export const TERMINAL_POSTER_MAX_MS = 3_000;
+
+/** The poster cache's budget for this window: much smaller on a phone (`poster.ts`). */
+function posterBudget(formFactorWindow: FormFactorWindow | undefined): number {
+    return currentFormFactor(formFactorWindow ?? defaultFormFactorWindow()) === 'phone'
+        ? PHONE_TERMINAL_POSTER_BUDGET_BYTES
+        : TERMINAL_POSTER_BUDGET_BYTES;
+}
 
 /**
  * §TERM-036 — the surface's accessibility identity.
@@ -1008,6 +1035,108 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
         }, delay);
     }, [clearResizeTimer, syncGeometry]);
 
+    // ── the poster (terminal/poster.ts) ─────────────────────────────────────────────
+    //
+    // A remounted pane (a workspace switch back, a pane the mount cap evicted) used to show its
+    // bare fill until a new engine had opened and parsed the daemon's replay. It now shows the
+    // picture taken of its canvas when it unmounted, from the first frame, until that replay is
+    // on the new engine and has been drawn. Imperative rather than rendered: it has to be on
+    // screen in the commit that mounts the pane, it comes down from a stream callback, and the
+    // pane renders often enough that neither should cost a render.
+
+    /** The engine has drawn a complete screen: a replay landed on it after it opened. */
+    const screenReadyRef = useRef(false);
+    const posterRef = useRef<{
+        readonly paneID: string;
+        readonly poster: TerminalPoster;
+        readonly overlay: HTMLDivElement;
+        frame: number | null;
+        readonly timer: ReturnType<typeof setTimeout>;
+    } | null>(null);
+
+    /** Take the poster down. `keep` gives it back to the cache for the next mount. */
+    const dropPoster = useCallback((keep: boolean): void => {
+        const shown = posterRef.current;
+        if (shown === null) return;
+        posterRef.current = null;
+        clearTimeout(shown.timer);
+        if (shown.frame !== null) cancelAnimationFrame(shown.frame);
+        shown.poster.canvas.remove();
+        shown.overlay.remove();
+        hostRef.current?.style.removeProperty('opacity');
+        rootRef.current?.removeAttribute('data-terminal-poster');
+        if (keep) returnTerminalPoster(shown.paneID, shown.poster, posterBudget(latest.current.formFactorWindow));
+        else discardTerminalPoster(shown.poster);
+    }, []);
+
+    /**
+     * Take the poster down once the engine has DRAWN the replay, not merely parsed it: two
+     * frames, because the engine paints on its own `requestAnimationFrame` loop and the first
+     * frame after the parse is the one it draws in. Not while a resize's paint hold (§N24) is
+     * suspending that loop; the hold's own release calls this again.
+     */
+    const releasePosterWhenPainted = useCallback((): void => {
+        const shown = posterRef.current;
+        if (shown === null || shown.frame !== null || !screenReadyRef.current) return;
+        if (rendererRef.current?.paintHeld === true) return;
+        shown.frame = requestAnimationFrame(() => {
+            shown.frame = requestAnimationFrame(() => {
+                shown.frame = null;
+                if (posterRef.current === shown) dropPoster(false);
+            });
+        });
+    }, [dropPoster]);
+
+    /*
+     * Put the poster up on mount, and take the next one on unmount.
+     *
+     * A LAYOUT effect at both ends, and each end needs it. On mount, so the picture is in the
+     * DOM before the browser paints the commit that brought the pane in. On unmount, because a
+     * layout cleanup runs while the pane is still attached and before the engine effect's
+     * passive cleanup has disposed the engine, so its canvas is still there to be copied.
+     * Captured only when that canvas holds a COMPLETE screen: a pane switched away from before
+     * its replay landed keeps the poster it had, rather than trading it for a half-drawn one.
+     */
+    useLayoutEffect(() => {
+        const root = rootRef.current;
+        const host = hostRef.current;
+        if (root === null || host === null) return;
+        const poster = takeTerminalPoster(paneID);
+        if (poster !== null) {
+            // Exactly over the host and clipped to it: the overlay takes the root's own padding
+            // (the host sits inside it), so it follows the pane's box with nothing measured. The
+            // engine anchors its canvas at the host's top left, so a pane that changed size while
+            // it was away shows the part of the old picture that still fits.
+            const overlay = root.ownerDocument.createElement('div');
+            overlay.setAttribute('aria-hidden', 'true');
+            overlay.style.cssText =
+                'position:absolute;inset:0;padding:inherit;box-sizing:border-box;pointer-events:none;';
+            const clip = root.ownerDocument.createElement('div');
+            clip.style.cssText = 'width:100%;height:100%;overflow:hidden;';
+            poster.canvas.style.cssText = `display:block;width:${String(poster.cssWidth)}px;height:${String(poster.cssHeight)}px;`;
+            clip.appendChild(poster.canvas);
+            overlay.appendChild(clip);
+            root.appendChild(overlay);
+            // The new engine draws its history progressively underneath; with a translucent
+            // pane fill the poster's clear cells would show that through. Opacity rather than
+            // visibility, which would make the engine's textarea unfocusable.
+            host.style.opacity = '0';
+            root.setAttribute('data-terminal-poster', 'shown');
+            posterRef.current = {
+                paneID,
+                poster,
+                overlay,
+                frame: null,
+                timer: setTimeout(() => dropPoster(false), TERMINAL_POSTER_MAX_MS)
+            };
+        }
+        return () => {
+            const ready = screenReadyRef.current;
+            dropPoster(!ready);
+            if (ready) captureTerminalPoster(paneID, host, posterBudget(latest.current.formFactorWindow));
+        };
+    }, [paneID, dropPoster]);
+
     // ── engine + stream lifecycle ───────────────────────────────────────────────────
     //
     // Mount is one ordered chain, and the FONT is its first link (`fonts.ts`):
@@ -1108,6 +1237,13 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
             });
             // §N17: report what the engine was BUILT with, not what the prop says now.
             setEngineTransparent(current.allowTransparency === true);
+            // The poster stays up until THIS engine has the whole screen (see the poster block).
+            screenReadyRef.current = false;
+            const offReplay =
+                renderer.onReplayApplied?.(() => {
+                    screenReadyRef.current = true;
+                    releasePosterWhenPainted();
+                }) ?? null;
             // Measured through the renderer's own cell metrics, which before `open()` are the
             // font-derived estimate — now accurate, because the face has loaded.
             const initial = measureGeometry(host, renderer, current.measure);
@@ -1269,6 +1405,7 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
                 if (root === null) return;
                 root.setAttribute('data-terminal-paint-held', held ? 'true' : 'false');
                 root.setAttribute('data-terminal-paint-hold-timeouts', String(renderer.paintHoldTimeouts));
+                if (!held) releasePosterWhenPainted();
             };
             publishHold(false);
             const offHold = renderer.onPaintHoldChange(publishHold);
@@ -1352,6 +1489,12 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
                         return;
                     }
                     setStatus('live');
+                    // A renderer that cannot say when its replay landed: opening is the best
+                    // signal there is for taking the poster down.
+                    if (renderer.onReplayApplied === undefined) {
+                        screenReadyRef.current = true;
+                        releasePosterWhenPainted();
+                    }
                     // The engine's real metrics exist only now; a disagreement with the
                     // estimate is corrected here, before anything else can measure.
                     syncGeometry(true);
@@ -1410,6 +1553,8 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
                 offFailure();
                 offHold();
                 offSearch();
+                offReplay?.();
+                screenReadyRef.current = false;
                 stream.unsubscribe();
                 renderer.dispose();
                 rendererRef.current = null;
@@ -1452,7 +1597,21 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
         // owns the VT, so re-attaching replays the screen (this is the same path a workspace
         // eviction takes). Settings arrive on `welcome`, BEFORE the first snapshot renders a
         // pane, so connecting never costs a rebuild.
-    }, [paneID, ptyApi, clearResizeTimer, syncGeometry, publishMirror, props.fontFamily, props.fontSize]);
+    }, [
+        paneID,
+        ptyApi,
+        clearResizeTimer,
+        syncGeometry,
+        publishMirror,
+        releasePosterWhenPainted,
+        props.fontFamily,
+        props.fontSize
+    ]);
+
+    // A failed engine shows its error placeholder, and a poster must not cover it.
+    useEffect(() => {
+        if (status === 'error') dropPoster(true);
+    }, [status, dropPoster]);
 
     /**
      * #166 — size control changed hands. Both directions, and neither of them waits for a render

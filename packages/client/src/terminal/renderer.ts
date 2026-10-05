@@ -463,6 +463,18 @@ export interface TerminalRenderer {
      * while the attribute reads `true` the canvas must not change.
      */
     onPaintHoldChange(listener: (held: boolean) => void): () => void;
+    /**
+     * Fires once per replay, when its last byte has been parsed into the engine and nothing is
+     * left queued in front of the live stream: the engine now holds the WHOLE screen. Returns an
+     * unsubscribe.
+     *
+     * The pane's poster (`terminal/poster.ts`) waits on it, because "the engine opened" is not
+     * the same moment: on a workspace switch the replay usually lands a socket round trip after
+     * `open()` resolves, and a poster taken down at `open()` would show the blank canvas it
+     * exists to hide. Optional: a renderer that cannot say leaves the pane to take its poster
+     * down when the engine opens.
+     */
+    onReplayApplied?(listener: () => void): () => void;
     dispose(): void;
 }
 
@@ -1059,8 +1071,14 @@ class AdapterRenderer implements TerminalRenderer {
      * (another window stepped away and back) is never pinned at all.
      */
     private pinnedSearchSeq = 0;
-    /** Bytes of a replay still to be parsed: no current match is pinned against half a screen. */
+    /**
+     * Bytes of a replay still to be parsed: no current match is pinned against half a screen,
+     * and `onReplayApplied` does not fire against one either.
+     */
     private searchReplayLeft = 0;
+    /** A `reset()` arrived and `onReplayApplied` has not yet said its replay landed. */
+    private replayPending = false;
+    private readonly replayListeners = new Set<() => void>();
     /** Has THIS engine been handed a search? An engine that never was needs no `null`. */
     private searchOnEngine = false;
     private readonly failureListeners = new Set<(error: unknown) => void>();
@@ -1177,6 +1195,11 @@ class AdapterRenderer implements TerminalRenderer {
         return () => this.failureListeners.delete(listener);
     }
 
+    onReplayApplied(listener: () => void): () => void {
+        this.replayListeners.add(listener);
+        return () => this.replayListeners.delete(listener);
+    }
+
     open(element: HTMLElement): Promise<void> {
         if (this.openPromise !== undefined) return this.openPromise;
         this.host = element;
@@ -1244,6 +1267,8 @@ class AdapterRenderer implements TerminalRenderer {
         this.replayRemaining = null;
         // #306: the superseding replay's `reset()` states its own length.
         this.searchReplayLeft = 0;
+        // …and re-arms this, so the CAN written below does not announce the abandoned replay.
+        this.replayPending = false;
         this.cancelDrain();
         this.write(REPLAY_CANCEL_SEQUENCE);
     }
@@ -1252,6 +1277,7 @@ class AdapterRenderer implements TerminalRenderer {
         if (this.disposed || this.poisoned) return;
         // #306: a replay is arriving; a current match is pinned only once all of it is parsed.
         this.searchReplayLeft = replayLength ?? 0;
+        this.replayPending = true;
         // §N24: a reset while held is the leading edge of the replay — the write behind it is
         // the authoritative screen, and that is what ends the hold (see `write`).
         if (this.holding) {
@@ -1300,6 +1326,7 @@ class AdapterRenderer implements TerminalRenderer {
         if (this.holding && this.replayRemaining === 0) this.releaseHold();
         // #306: an empty replay is complete already (its write never reaches `deliver`).
         if (this.searchReplayLeft <= 0) this.applySearchHighlight();
+        this.announceReplayApplied();
     }
 
     onData(listener: (data: string) => void): () => void {
@@ -1578,6 +1605,26 @@ class AdapterRenderer implements TerminalRenderer {
         return () => this.contentListeners.delete(listener);
     }
 
+    /**
+     * Say the pending replay has landed, once, if it has: every byte of it parsed (`deliver`
+     * counts them down) and no mount flush still queued in front of the live stream. Called
+     * from each place one of those three facts can change - `reset()` for an empty replay,
+     * `deliver()` for the last byte, the pump for the end of the flush - and a no-op at the rest.
+     */
+    private announceReplayApplied(): void {
+        if (!this.replayPending || this.searchReplayLeft > 0 || this.draining !== null) return;
+        if (this.handle === undefined || this.disposed || this.poisoned) return;
+        this.replayPending = false;
+        for (const listener of [...this.replayListeners]) {
+            // A listener's failure is its own; it must never read as the engine's.
+            try {
+                listener();
+            } catch {
+                // ignored
+            }
+        }
+    }
+
     /** #303: the engine applied something that can move what is on screen. */
     private announceContent(): void {
         this.screen = undefined;
@@ -1670,6 +1717,7 @@ class AdapterRenderer implements TerminalRenderer {
         this.selectionListeners.clear();
         this.scrollListeners.clear();
         this.failureListeners.clear();
+        this.replayListeners.clear();
     }
 
     // ── internals ───────────────────────────────────────────────────────────────────
@@ -1911,6 +1959,7 @@ class AdapterRenderer implements TerminalRenderer {
             this.searchReplayLeft -= data.length;
             if (this.searchReplayLeft <= 0) this.applySearchHighlight();
         }
+        this.announceReplayApplied();
     }
 
     /**
@@ -1974,6 +2023,7 @@ class AdapterRenderer implements TerminalRenderer {
         this.draining = null;
         // #306: the buffer is whole now, so a current match held back can be pinned.
         this.applySearchHighlight();
+        this.announceReplayApplied();
     }
 
     /** Abandon whatever the flush had left: a supersession, a poison, a teardown. */

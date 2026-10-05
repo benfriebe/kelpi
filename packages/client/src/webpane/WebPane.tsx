@@ -503,9 +503,9 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
      *
      * **Select-all belongs to the TOKEN, never to focus itself** (`WebPaneChrome.swift:469-503`):
      * the Swift runs `makeFirstResponder` + `selectAll` only inside `if coord.lastSeenToken !=
-     * focusRequestToken`, so a ⌘L (or a blank tab's automatic focus) takes the whole address
-     * while a plain click just places the caret where it landed. Selecting on every focus meant
-     * clicking mid-URL to fix one character wiped the field.
+     * focusRequestToken`, so a ⌘L (or a blank tab's automatic focus) takes the whole address.
+     * Selecting in `onFocus` meant every focus wiped the field. A click into the field selects
+     * too, but by its own rule (`selectOnClickIn` below), not by focus.
      */
     const focusURLToken = props.focusURLToken ?? 0;
     const lastFocusToken = useRef(focusURLToken);
@@ -535,6 +535,26 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
          */
         if (embedded) void commands.blurView(paneID);
     }, [focusURLToken, embedded, commands, paneID]);
+
+    /**
+     * A click INTO the address bar selects the whole address, as Chrome's and Safari's do: the
+     * click that brings the caret in takes everything, and the next one, with the caret already
+     * there, places it where it lands, so fixing one character mid-URL is a second click away.
+     *
+     * Applied on mouseup rather than in `onFocus`: the mousedown's own caret placement lands
+     * after focus and would collapse a selection made there. And only while the selection is
+     * still collapsed, so a press-and-drag from outside keeps the range it dragged out.
+     */
+    const selectOnClickIn = useRef(false);
+    const onURLMouseDown = useCallback((event: ReactMouseEvent<HTMLInputElement>) => {
+        selectOnClickIn.current = event.button === 0 && document.activeElement !== event.currentTarget;
+    }, []);
+    const onURLMouseUp = useCallback((event: ReactMouseEvent<HTMLInputElement>) => {
+        if (!selectOnClickIn.current) return;
+        selectOnClickIn.current = false;
+        const input = event.currentTarget;
+        if (input.selectionStart === input.selectionEnd) input.select();
+    }, []);
 
     /** The pane's subtree: every chrome text field it can put a caret in is a descendant. */
     const paneRef = useRef<HTMLDivElement | null>(null);
@@ -855,11 +875,12 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
                                 style={{ color: tokens.textPrimary }}
                                 value={draft}
                                 onChange={(event) => setDraft(event.target.value)}
-                                // No `select()` here: a pointer-initiated focus leaves the caret
-                                // where the click landed (H17 / `WebPaneChrome.swift:469-503`).
-                                // The ⌘L / blank-tab token selects, in the effect above.
+                                // No `select()` here: ⌘L / a blank tab select in the token
+                                // effect, a click in on mouseup (`selectOnClickIn`).
                                 onFocus={() => setEditing(true)}
                                 onBlur={onBlur}
+                                onMouseDown={onURLMouseDown}
+                                onMouseUp={onURLMouseUp}
                             />
                             <FavouriteStar
                                 paneID={paneID}

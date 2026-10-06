@@ -187,3 +187,21 @@ export function decodeResizePayload(payload: Uint8Array): PtyResize | undefined 
         rows: ((payload[2] as number) << 8) | (payload[3] as number)
     };
 }
+
+/**
+ * The device-query replies the daemon's `@xterm/headless` sends the PTY itself (#349), so no
+ * renderer sends them too: Primary and Secondary Device Attributes (`CSI ? … c`, `CSI > … c`),
+ * device status (`CSI 0 n`) and the cursor position report (`CSI row ; col R`, and DEC's
+ * `CSI ? row ; col R`).
+ *
+ * An allowlist, not everything the emulator emits: its colour answers (OSC 4 / 10 / 11) describe
+ * xterm's default palette, not the theme the window paints, and a wrong background makes an editor
+ * choose the wrong colours. Unanswered, applications fall back; answered wrongly, they believe it.
+ *
+ * Without these, a program that probes the terminal hangs: crossterm sends `CSI ? u` then `CSI c`
+ * and treats the DA1 reply as its end-of-replies sentinel, and `CSI 6n` is how line editors and
+ * `fzf --height` find the cursor.
+ */
+export function isForwardedQueryReply(data: string): boolean {
+    return /^\x1b\[(?:[?>][\d;]*c|0n|\??\d+;\d+(?:;\d+)?R)$/.test(data);
+}

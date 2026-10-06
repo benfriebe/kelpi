@@ -23,6 +23,8 @@ import serializeModule from '@xterm/addon-serialize';
 import headless from '@xterm/headless';
 import type { IBufferCell, IBufferLine, Terminal as HeadlessTerminal } from '@xterm/headless';
 
+import { isForwardedQueryReply } from '@kelpi/protocol';
+
 import type { TerminalStateService, VtModes } from '../seams.js';
 import { trackKittyKeyboard, type KittyKeyboardTracker, type KittyState } from './kitty-keyboard.js';
 import {
@@ -274,23 +276,6 @@ function trimStrandedCells(term: HeadlessTerminal, cols: number): void {
             line.setCell?.(cols - 1, fill);
         }
     }
-}
-
-/**
- * The replies `@xterm/headless` composes that are forwarded to the PTY (#349): Primary and
- * Secondary Device Attributes (`CSI ? … c`, `CSI > … c`), device status (`CSI 0 n`) and the cursor
- * position report (`CSI row ; col R`, and DEC's `CSI ? row ; col R`).
- *
- * An allowlist, not everything the emulator emits: its colour answers (OSC 4 / 10 / 11) describe
- * xterm's default palette, not the theme the window paints, and a wrong background makes an editor
- * choose the wrong colours. Unanswered, applications fall back; answered wrongly, they believe it.
- *
- * Without these, a program that probes the terminal hangs: crossterm sends `CSI ? u` then `CSI c`
- * and treats the DA1 reply as its end-of-replies sentinel, and `CSI 6n` is how line editors and
- * `fzf --height` find the cursor.
- */
-export function isForwardedQueryReply(data: string): boolean {
-    return /^\x1b\[(?:[?>][\d;]*c|0n|\??\d+;\d+(?:;\d+)?R)$/.test(data);
 }
 
 export interface TerminalStateOptions {

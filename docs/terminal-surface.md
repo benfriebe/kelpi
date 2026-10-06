@@ -1358,7 +1358,9 @@ Kelpi's own layer on both sides of the wire:
   PTY input; it is never mirrored into a synchronise-input sibling. The same sink carries the
   device queries `@xterm/headless` answers itself (#349): DA1 (`CSI c`), DA2 (`CSI > c`) and DSR
   (`CSI 5n` status, `CSI 6n` / `CSI ? 6n` cursor position), forwarded from `term.onData` through
-  the allowlist `isForwardedQueryReply` (`service.ts`), for live output only. Colour queries
+  the allowlist `isForwardedQueryReply` (`packages/protocol/src/ws/pty.ts`), for live output
+  only. No renderer sends these too: the bundled renderer drops what its engine emits while
+  parsing output, and the plugin host drops a plugin renderer's matching response. Colour queries
   (OSC 4 / 10 / 11) are deliberately left unanswered: the daemon's VT does not know the window's
   theme. Without a DA1 reply, crossterm-style probes (`CSI ? u` then `CSI c`) hang at startup.
 - **Streaming**: the flags ride `VtModes.kittyKeyboardFlags` (`packages/daemon/src/seams.ts:77-96`)

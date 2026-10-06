@@ -125,7 +125,8 @@
  * Measured after all of the above and fixed here: a lane window was still shown with `show()`,
  * which is `makeKeyAndOrderFront:` on macOS, so an invisible zero-opacity frame was holding the
  * machine's keyboard and the owner's own typing was landing in the run's terminal. Every lane
- * placement is `focusable: false` now. `auditWindowFocusable` has the rule, the measurement and
+ * placement is `focusable: false` now, and so is the audit's `default` window, which is otherwise
+ * exactly what a user's launch builds. `auditWindowFocusable` has the rule, the measurement and
  * what the lane does instead.
  *
  * There is no Electron in here — the policy and the geometry are plain data, so both are unit
@@ -144,7 +145,8 @@ export interface AuditRect {
  * Where an audit run wants its window.
  *
  *   - `default`  — exactly what a user's launch builds, and the audit's default. **The only
- *                  placement that keeps both the measurements and the screenshots.**
+ *                  placement that keeps both the measurements and the screenshots.** Under the
+ *                  audit it is shown inactive and never becomes key; see `auditWindowFocusable`.
  *   - `hidden`   — same bounds, display and backing scale, painted at zero opacity and
  *                  click-through. Frees the screen; the screenshots come out blank. Assertion
  *                  runs only.
@@ -321,11 +323,19 @@ export function resolveWindowPolicy(env: Readonly<Record<string, string | undefi
  * `Emulation.setFocusEmulationEnabled` on, and `harness.focus()` / `harness.blur()` in the lane
  * mean "make the page believe it is focused / unfocused" rather than "make the OS window key".
  *
- * `default` keeps `true`, so the on-screen full audit and every user launch are untouched: a
- * visible window that could not be typed into would be a worse lie than the one this fixes.
+ * ## The audit's `default` too
+ *
+ * The audit's `default` placement (the full run `verify.mjs --full` starts) was left focusable at
+ * first, and so every full run took the owner's keyboard and brought the app to the front for its
+ * twenty minutes. It is keyless now as well: same bounds, same backing scale, same pixels, shown
+ * with `showInactive()`, and `audit.mjs` turns focus emulation on for it like any other placement.
+ * The rule is therefore "an open lane is keyless", not a list of placements.
+ *
+ * Only the shipped policy keeps `true`, so every user launch is untouched: a visible window that
+ * could not be typed into would be a worse lie than the one this fixes.
  */
-export function auditWindowFocusable(placement: AuditWindowPlacement): boolean {
-    return placement === 'default';
+export function auditWindowFocusable(policy: AuditWindowPolicy): boolean {
+    return !policy.active;
 }
 
 /**
@@ -410,7 +420,7 @@ export function auditWindowLogLine(policy: AuditWindowPolicy, requested: AuditRe
         // The key-window rule, stated in the run's own log: a lane window is `focusable=false`,
         // so "did the policy take?" is answerable from outside the process rather than by
         // reading this file. See `auditWindowFocusable`.
-        `focusable=${String(auditWindowFocusable(policy.placement))} ` +
+        `focusable=${String(auditWindowFocusable(policy))} ` +
         `requested=${rect(requested)} actual=${rect(actual)}`
     );
 }

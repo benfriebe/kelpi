@@ -16,7 +16,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { createViewFocusGate, isGestureInput, type ViewFocusGate } from './view-focus.js';
+import { createViewFocusGate, isGestureInput, viewKeyboardRoute, type ViewFocusGate } from './view-focus.js';
 
 function harness(): { readonly gate: ViewFocusGate; readonly reports: number[] } {
     const reports: number[] = [];
@@ -160,5 +160,25 @@ describe('the page-click gesture', () => {
             expect(createViewFocusGate.length).toBe(1);
             expect(gate).toBeDefined();
         });
+    });
+});
+
+describe('handing a view the keyboard without activating the app', () => {
+    it('uses the real focus call in a window that may be key (every user launch)', () => {
+        expect(viewKeyboardRoute({ windowMayBeKey: true, debuggerAttached: true })).toBe('contents-focus');
+        expect(viewKeyboardRoute({ windowMayBeKey: true, debuggerAttached: false })).toBe('contents-focus');
+    });
+
+    it('goes through CDP in a keyless test-lane window', () => {
+        // `webContents.focus()` on macOS focuses the OWNER window first, which activates the app
+        // even when that window is `focusable: false`. Measured on Electron 43 with a keyless window
+        // and a WebContentsView, launched while the launching app was frontmost: 1 activation per
+        // `focus()` (2/2), 0 for CDP `Page.bringToFront` (2/2), and the view's `document.hasFocus()`
+        // read true after both.
+        expect(viewKeyboardRoute({ windowMayBeKey: false, debuggerAttached: true })).toBe('cdp-bring-to-front');
+    });
+
+    it('does nothing rather than activate the app when the tab has no CDP session', () => {
+        expect(viewKeyboardRoute({ windowMayBeKey: false, debuggerAttached: false })).toBe('none');
     });
 });

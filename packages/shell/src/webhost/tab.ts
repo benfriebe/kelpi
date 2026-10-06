@@ -85,7 +85,7 @@ import {
     type KeyboardOwner,
     type NavFocusGuard
 } from './nav-focus.js';
-import { createViewFocusGate, traceFocus, type ViewFocusGate, type ViewFocusGateOptions } from './view-focus.js';
+import { createViewFocusGate, traceFocus, viewKeyboardRoute, type ViewFocusGate, type ViewFocusGateOptions } from './view-focus.js';
 import { viewportPinAction, type ViewportPinEvent } from './viewport-pin.js';
 import { tabRequestForWindowOpen, type TabOpenRequest } from './window-open.js';
 
@@ -175,6 +175,8 @@ export interface TabFactoryOptions {
     readonly keyboardOwner?: (() => KeyboardOwner) | undefined;
     /** §N30: give the keyboard back to whoever a commit displaced. */
     readonly restoreKeyboard?: ((owner: KeyboardOwner) => boolean) | undefined;
+    /** False when the shell window may not become key (a test lane window). Absent means it may. */
+    readonly windowMayBeKey?: (() => boolean) | undefined;
     readonly onError?: ((error: Error, context: string) => void) | undefined;
     readonly viewport?: { readonly width: number; readonly height: number } | undefined;
 }
@@ -280,6 +282,7 @@ class ElectronTab implements HostTab {
     /** §N30: the host's keyboard census, and how to give the keyboard back. */
     private readonly keyboardOwner: (() => KeyboardOwner) | undefined;
     private readonly restoreKeyboard: ((owner: KeyboardOwner) => boolean) | undefined;
+    private readonly windowMayBeKey: (() => boolean) | undefined;
 
     private mainFrameId: string | null = null;
     private readonly contexts = new Map<number, CdpContext>();
@@ -296,6 +299,7 @@ class ElectronTab implements HostTab {
         this.navFocus = createNavFocusGuard({ tabID: input.tabID });
         this.keyboardOwner = options.keyboardOwner;
         this.restoreKeyboard = options.restoreKeyboard;
+        this.windowMayBeKey = options.windowMayBeKey;
         this.focusGate = (options.focusGate ?? createViewFocusGate)({
             report: () => {
                 if (this.disposed || this.contents.isDestroyed()) return;
@@ -1029,7 +1033,15 @@ class ElectronTab implements HostTab {
         // event synchronously and the old gesture signal would have echoed it back as a click.
         // The gesture is the INPUT now: moving focus presses no mouse button, so the claim (and
         // the 250 ms backstop that could swallow a real click) is gone.
-        this.contents.focus();
+        const route = viewKeyboardRoute({
+            windowMayBeKey: this.windowMayBeKey?.() ?? true,
+            debuggerAttached: this.attached
+        });
+        if (route === 'contents-focus') this.contents.focus();
+        else if (route === 'cdp-bring-to-front') {
+            this.send('Page.bringToFront').catch((error: unknown) => this.report(error, 'focus-view'));
+        }
+        else log(`web pane ${this.paneID}: no CDP session, so the page view was not focused (tab ${this.tabID})`);
     }
 
     reload(hard: boolean): void {

@@ -391,6 +391,11 @@ describe('the poster refuses silently (issue #12)', () => {
 
     /** Answer the pane's `web-poster` the way a host with nothing to photograph does. */
     const refusePoster = async (h: Harness): Promise<Record<string, unknown> | undefined> => {
+        // The ask leaves one microtask after the publish that made it, behind that publish's
+        // placement (`webpane/WebPageSurface.tsx`'s `capture`).
+        await act(async () => {
+            await Promise.resolve();
+        });
         const asked = h
             .socket()
             .messages()

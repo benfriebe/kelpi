@@ -133,6 +133,16 @@ export const WebPageSurface = memo(function WebPageSurface(props: WebPageSurface
     if (posterRef.current === null) {
         posterRef.current = createPosterController({
             capture: async (tabID) => {
+                /*
+                 * Sent AFTER the publish that asked for it has sent its placement. `sync` runs
+                 * before `onGeometry` in the publish, so a pane that arrives on screen already
+                 * covered (a workspace switch under a toast) asked the host for a frame of a view
+                 * it had not placed yet; the host refused ("the view is not on screen"), and the
+                 * pane sat parked with no frame, an empty hole, until the toast went. One
+                 * microtask lets the placement leave first on the same socket, and the host
+                 * places a view synchronously, so the frame is taken of the view on screen.
+                 */
+                await Promise.resolve();
                 const { commands: live, paneID: pane } = posterDeps.current;
                 const attempt = posterAttempt(await live.poster(pane, tabID));
                 if (attempt.src === null) return attempt;

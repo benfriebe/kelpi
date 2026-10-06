@@ -1,3 +1,6 @@
+import { createRequire } from 'node:module';
+import path from 'node:path';
+
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { REPLAY_CHUNK_BYTES, createTerminalIngest } from './ingest';
@@ -12,6 +15,7 @@ import {
     createRendererFromLoader,
     estimateCellSize,
     isEngineColor,
+    leaveDaemonQueriesUnanswered,
     loadGhosttyEngine,
     resetEngineStartupGateForTests,
     resolveTerminalEngine,
@@ -467,6 +471,46 @@ describe('TerminalRenderer adapter', () => {
         renderer.resize(101, 30);
         expect(engine.terminal.resizes).toHaveLength(2);
         renderer.dispose();
+    });
+
+    // #349: the engine answers some queries itself (ghostty-web: DSR 5n / 6n) by firing `onData`
+    // from inside `write()`. The daemon is the one responder (`isForwardedQueryReply`), so a reply
+    // the engine composes while parsing PTY output must not be sent as input: with it, every
+    // window showing the pane added its own copy of the answer.
+    it('drops data the engine emits while parsing output, and forwards what it emits otherwise', async () => {
+        const engine = stubEngine();
+        const renderer = createRendererFromLoader('xterm', engine.loader);
+        const seen: string[] = [];
+        renderer.onData((data) => seen.push(data));
+        const opening = renderer.open(host());
+        engine.settle();
+        await opening;
+
+        engine.terminal.onWriteRecorded = () => engine.terminal.emitData('\x1b[1;1R');
+        renderer.write('\x1b[6n');
+        expect(seen).toEqual([]);
+
+        engine.terminal.onWriteRecorded = undefined;
+        engine.terminal.emitData('typed');
+        expect(seen).toEqual(['typed']);
+    });
+
+    // #349: xterm.js answers after `write()` returns, outside that drop, so its engine is kept from
+    // answering at the parser. A real xterm parser (`@xterm/headless`, the same core), with and without.
+    it('keeps a real xterm parser from answering the queries the daemon answers, and nothing else', async () => {
+        const require = createRequire(path.resolve('packages/daemon/package.json'));
+        const { Terminal } = require('@xterm/headless');
+        const answers = async (leave: boolean): Promise<string[]> => {
+            const terminal = new Terminal({ cols: 40, rows: 5, allowProposedApi: true });
+            if (leave) leaveDaemonQueriesUnanswered(terminal.parser);
+            const seen: string[] = [];
+            terminal.onData((data: string) => seen.push(data));
+            await new Promise<void>((resolve) => terminal.write('\x1b[c\x1b[0c\x1b[>c\x1b[5n\x1b[6n\x1b[?6n\x1b[?2026$p', resolve));
+            terminal.dispose();
+            return seen;
+        };
+        expect(await answers(false)).toEqual(['\x1b[?1;2c', '\x1b[?1;2c', '\x1b[>0;276;0c', '\x1b[0n', '\x1b[1;1R', '\x1b[?1;1R', '\x1b[?2026;2$y']);
+        expect(await answers(true)).toEqual(['\x1b[?2026;2$y']);
     });
 
     it('forwards engine data to listeners registered before open, and stops on unsubscribe', async () => {

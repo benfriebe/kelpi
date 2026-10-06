@@ -252,7 +252,7 @@ export default async function ({ page, cli, sandbox, rec, d, harness, sleep }) {
             const data = Buffer.from(response.payloadData, 'base64');
             if (data[0] === 5 && data.subarray(1, 17).toString('hex') === local.paneID.replaceAll('-', '').toLowerCase()) resizeReplay = true;
         });
-        await inside(local.paneID, `(() => { const t = terminalLab.terminal, write = t.write; globalThis.__terminalScenarioWrite = write; t.write = function(data, done) { const text = typeof data === 'string' ? data : new TextDecoder().decode(data); if (text.includes(String.fromCharCode(27) + '[6n')) { globalThis.__terminalScenarioQueryPending = true; return setTimeout(() => write.call(this, data, done), 1000); } return write.call(this, data, done); }; })()`);
+        await inside(local.paneID, `(() => { const t = terminalLab.terminal, write = t.write; globalThis.__terminalScenarioWrite = write; t.write = function(data, done) { const text = typeof data === 'string' ? data : new TextDecoder().decode(data); if (text.includes(String.fromCharCode(27) + ']11;?')) { globalThis.__terminalScenarioQueryPending = true; return setTimeout(() => write.call(this, data, done), 1000); } return write.call(this, data, done); }; })()`);
         try {
             offset = input(local).length;
             sequence = await control(local, { op: 'query', label: 'RESIZE-QUERY-COMPLETE' });
@@ -260,7 +260,7 @@ export default async function ({ page, cli, sandbox, rec, d, harness, sleep }) {
             resizeReplay = false;
             await page.send('Emulation.setDeviceMetricsOverride', { width: 850, height: 630, deviceScaleFactor: 1, mobile: false });
             const supersededBeforeResponse = await d.settle(() => resizeReplay && input(local).length === offset, { ceilingMs: 800 });
-            rec.check('a live query still receives its response after a newer resize replay supersedes it', supersededBeforeResponse && await d.settle(() => /\x1b\[[0-9]+;[0-9]+R/.test(input(local).subarray(offset).toString())) && alive(local));
+            rec.check('a live query still receives its response after a newer resize replay supersedes it', supersededBeforeResponse && await d.settle(() => /\x1b\]11;rgb:/.test(input(local).subarray(offset).toString())) && alive(local));
         } finally {
             offReplay();
             await inside(local.paneID, `terminalLab.terminal.write = globalThis.__terminalScenarioWrite; delete globalThis.__terminalScenarioWrite; true`).catch(() => {});
@@ -270,7 +270,7 @@ export default async function ({ page, cli, sandbox, rec, d, harness, sleep }) {
         const offQueuedQuery = page.on('Network.webSocketFrameReceived', ({ response }) => {
             if (response.opcode !== 2) return;
             const data = Buffer.from(response.payloadData, 'base64');
-            if (data[0] === 1 && data.subarray(17).includes(Buffer.from('\x1b[6n'))) queuedQuery = true;
+            if (data[0] === 1 && data.subarray(17).includes(Buffer.from('\x1b]11;?'))) queuedQuery = true;
             if (data[0] === 5 && queuedQuery) queuedReplay = true;
         });
         await inside(local.paneID, `(() => { const t = terminalLab.terminal, write = t.write; globalThis.__terminalScenarioWrite = write; t.write = function(data, done) { const text = typeof data === 'string' ? data : new TextDecoder().decode(data); if (text.includes('QUEUED-QUERY-BLOCKER') && !globalThis.__releaseQueuedWrite) { globalThis.__releaseQueuedWrite = () => write.call(this, data, done); return; } return write.call(this, data, done); }; })()`);
@@ -283,7 +283,7 @@ export default async function ({ page, cli, sandbox, rec, d, harness, sleep }) {
             await page.send('Emulation.setDeviceMetricsOverride', { width: 860, height: 640, deviceScaleFactor: 1, mobile: false });
             const superseded = await d.settle(() => queuedReplay && input(local).length === offset);
             await inside(local.paneID, `globalThis.__releaseQueuedWrite(); globalThis.__releaseQueuedWrite = true; true`);
-            rec.check('a queued device query survives resize replay before its renderer callback begins', superseded && await d.settle(() => /\x1b\[[0-9]+;[0-9]+R/.test(input(local).subarray(offset).toString())) && alive(local));
+            rec.check('a queued device query survives resize replay before its renderer callback begins', superseded && await d.settle(() => /\x1b\]11;rgb:/.test(input(local).subarray(offset).toString())) && alive(local));
         } finally {
             offQueuedQuery();
             await inside(local.paneID, `if (typeof globalThis.__releaseQueuedWrite === 'function') globalThis.__releaseQueuedWrite(); terminalLab.terminal.write = globalThis.__terminalScenarioWrite; delete globalThis.__terminalScenarioWrite; delete globalThis.__releaseQueuedWrite; true`).catch(() => {});
@@ -427,7 +427,7 @@ export default async function ({ page, cli, sandbox, rec, d, harness, sleep }) {
         rec.check('hidden renderer keyboard input and geometry are ignored', input(remote).length === offset && state(remote).cols > 1 && state(remote).rows > 1);
         offset = input(remote).length;
         sequence = await control(remote, { op: 'query', label: 'HIDDEN-QUERY-COMPLETE' });
-        rec.check('a hidden renderer still answers live terminal protocol queries', await completed(remote, sequence) && await d.settle(() => /\x1b\[[0-9]+;[0-9]+R/.test(input(remote).subarray(offset).toString())));
+        rec.check('a hidden renderer still answers live terminal protocol queries', await completed(remote, sequence) && await d.settle(() => /\x1b\]11;rgb:/.test(input(remote).subarray(offset).toString())));
         await diagnostics('hidden-session');
         await inside(remoteSiblingID, `void kelpi.layout.zoom('${remoteSiblingID}'); true`);
         rec.check('revealing the hidden pane preserves its original iframe identity', await check(remote.paneID, `terminalLab.presentation.visible && globalThis.__terminalScenarioIdentity === 'kept-while-hidden'`) && alive(remote));

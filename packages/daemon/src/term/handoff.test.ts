@@ -104,7 +104,7 @@ describe('terminal checkpoints', () => {
 describe('replayed output', () => {
     it('never answers a kitty query it replays, but answers live ones', async () => {
         const replies: string[] = [];
-        const terminal = service({ onKittyReply: (_pane, reply) => replies.push(new TextDecoder().decode(reply)) });
+        const terminal = service({ onQueryReply: (_pane, reply) => replies.push(new TextDecoder().decode(reply)) });
         terminal.attach('P', 40, 8);
         terminal.markReplay('P', 4, false);
         terminal.feed('P', bytes('\x1b[?u'));

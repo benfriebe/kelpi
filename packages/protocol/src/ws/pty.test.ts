@@ -7,10 +7,12 @@ import {
     encodeAckPayload,
     encodePtyFrame,
     encodeResizePayload,
+    isForwardedQueryReply,
     PTY_FRAME_HEADER_BYTES,
     PTY_FRAME_TYPES,
     uuidFromBytes,
-    uuidToBytes
+    uuidToBytes,
+    withoutForwardedQueryReplies
 } from './pty.js';
 
 const PANE = '1B4E4E5A-9F2B-4C58-8D1F-2A81D9A3E111';
@@ -113,5 +115,28 @@ describe('flow-control and resize payloads', () => {
         expect(decodeResizePayload(encodeResizePayload(0, 0))).toEqual({ cols: 0, rows: 0 });
         expect(decodeResizePayload(encodeResizePayload(70000, -3))).toEqual({ cols: 0xffff, rows: 0 });
         expect(decodeResizePayload(new Uint8Array(2))).toBeUndefined();
+    });
+});
+
+// #349: the replies the daemon sends the PTY itself, which renderers must not send again.
+describe('forwarded query replies', () => {
+    it('matches DA1, DA2, device status and both cursor reports, one whole reply at a time', () => {
+        for (const reply of ['\x1b[?1;2c', '\x1b[?62;22c', '\x1b[>0;276;0c', '\x1b[0n', '\x1b[5;10R', '\x1b[?5;10R', '\x1b[?5;10;1R']) {
+            expect(isForwardedQueryReply(reply)).toBe(true);
+        }
+        // Kitty flags, colour, mode and DECRQSS answers are not the daemon's to send.
+        for (const reply of ['\x1b[?0u', '\x1b]11;rgb:0000/0000/0000\x1b\\', '\x1b[?2026;2$y', '\x1bP1$r0m\x1b\\', '\x1b[?1;2c\x1b[0n', 'x\x1b[0n']) {
+            expect(isForwardedQueryReply(reply)).toBe(false);
+        }
+    });
+
+    it('takes every forwarded reply out of a batch and leaves the rest in order', () => {
+        const colour = '\x1b]11;rgb:0000/0000/0000\x1b\\';
+        expect(withoutForwardedQueryReplies(`\x1b[?1;2c${colour}\x1b[0n\x1b[3;4R`)).toBe(colour);
+        expect(withoutForwardedQueryReplies('\x1b[?1;2c\x1b[>0;276;0c')).toBe('');
+        expect(withoutForwardedQueryReplies(colour)).toBe(colour);
+        // Both calls in a row: a global pattern must not carry `lastIndex` from one to the next.
+        expect(withoutForwardedQueryReplies('\x1b[0n')).toBe('');
+        expect(isForwardedQueryReply('\x1b[0n')).toBe(true);
     });
 });

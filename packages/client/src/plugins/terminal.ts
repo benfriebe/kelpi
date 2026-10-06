@@ -1,3 +1,5 @@
+import { withoutForwardedQueryReplies } from '@kelpi/protocol';
+
 import type { TerminalAction, TerminalFrame, TerminalModes, TerminalPresentation } from '../../../plugin-sdk/terminal';
 import type { PtyStreamHandle } from '../connection/pty';
 import type { TerminalPtyApi } from '../terminal/TerminalPane';
@@ -63,6 +65,7 @@ function count(value: unknown, max = 65535): value is number {
 }
 function bytes(frame: TerminalFrame): number { return frame.type === 'output' || frame.type === 'replay' ? frame.data.byteLength : 0; }
 const encoder = new TextEncoder();
+const decoder = new TextDecoder();
 
 /**
  * A selected terminal view's one renderer attachment, over its existing window connection.
@@ -269,7 +272,16 @@ export function createTerminalScope(options: TerminalScopeOptions): TerminalScop
                 const payload = value['data'];
                 if (!ArrayBuffer.isView(payload) || Object.prototype.toString.call(payload) !== '[object Uint8Array]' || typeof value['direct'] !== 'boolean' ||
                     (value['response'] !== undefined && typeof value['response'] !== 'boolean')) { fail(new Error('Invalid terminal input.')); return true; }
-                write(new Uint8Array(payload.buffer, payload.byteOffset, payload.byteLength), value['direct'], response);
+                let input = new Uint8Array(payload.buffer, payload.byteOffset, payload.byteLength);
+                if (response) {
+                    // The daemon answers these itself (#349); a renderer's copy would be a second reply.
+                    // Taken out of a batch too, and whatever else the renderer answered goes through.
+                    const text = decoder.decode(input);
+                    const rest = withoutForwardedQueryReplies(text);
+                    if (rest === '') return true;
+                    if (rest !== text) input = encoder.encode(rest);
+                }
+                write(input, value['direct'], response);
             } else if (type === 'terminal-resize') {
                 if (!presentation.visible) return true;
                 if (!count(value['cols']) || !count(value['rows'])) { fail(new Error('Invalid terminal geometry.')); return true; }

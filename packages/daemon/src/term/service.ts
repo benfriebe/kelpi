@@ -23,6 +23,8 @@ import serializeModule from '@xterm/addon-serialize';
 import headless from '@xterm/headless';
 import type { IBufferCell, IBufferLine, Terminal as HeadlessTerminal } from '@xterm/headless';
 
+import { isForwardedQueryReply } from '@kelpi/protocol';
+
 import type { TerminalStateService, VtModes } from '../seams.js';
 import { trackKittyKeyboard, type KittyKeyboardTracker, type KittyState } from './kitty-keyboard.js';
 import {
@@ -518,18 +520,20 @@ export interface TerminalStateOptions {
      */
     readonly onModesChange?: ((paneID: string, modes: VtModes) => void) | undefined;
     /**
-     * Bytes this terminal owes its PTY (§TERM-030).
+     * Bytes this terminal owes its PTY (§TERM-030, #349).
      *
      * A real terminal ANSWERS `CSI ? u` with `CSI ? {flags} u` — that reply is how an
      * application discovers the kitty keyboard protocol exists and which of its enhancements
-     * this terminal supports (`kitty-keyboard.ts`). It is the only case in this service where
-     * parsing output produces input, so it is a callback rather than a PTY reference: boot owns
+     * this terminal supports (`kitty-keyboard.ts`) — and answers the device queries DA1, DA2
+     * and DSR, which `@xterm/headless` composes itself (`isForwardedQueryReply`). These are the
+     * only cases in this service where parsing output produces input, so it is a callback
+     * rather than a PTY reference: boot owns
      * the manager, and it writes the reply with `writeDirect` so a device answer is never
      * mirrored into a synchronise-input sibling.
      *
      * Fires synchronously while the chunk that asked is being parsed.
      */
-    readonly onKittyReply?: ((paneID: string, reply: Uint8Array) => void) | undefined;
+    readonly onQueryReply?: ((paneID: string, reply: Uint8Array) => void) | undefined;
 }
 
 export interface GridSize {
@@ -596,6 +600,20 @@ export function parseOsc7(data: string): string | null {
         // Keep the undecoded form: a bad escape is better than losing the report.
     }
     return candidate === '' ? null : candidate;
+}
+
+/**
+ * A cursor position report (`CSI row ; col R`, `CSI ? row ; col R`) with its column kept on the
+ * screen; any other reply unchanged (#349).
+ *
+ * xterm holds a cursor that has just written the last column one PAST it until the next character
+ * wraps (the pending wrap), and reports that: column 81 on an 80-column screen. xterm proper and
+ * Ghostty report the last column, and an application that believes 81 draws off the screen.
+ */
+function onScreenCursorReport(reply: string, cols: number): string {
+    return reply.replace(/^(\x1b\[\??\d+;)(\d+)((?:;\d+)?R)$/, (whole, head: string, col: string, tail: string) =>
+        Number(col) > cols ? `${head}${String(cols)}${tail}` : whole
+    );
 }
 
 /** xterm refuses to go below these; clamping here keeps `gridSize()` truthful. */
@@ -696,7 +714,7 @@ export class TerminalStateServiceImpl implements TerminalStateService {
         | undefined;
     private readonly onClipboardRequest: ((paneID: string, request: Osc52Request) => void) | undefined;
     private readonly onModesChange: ((paneID: string, modes: VtModes) => void) | undefined;
-    private readonly onKittyReply: ((paneID: string, reply: Uint8Array) => void) | undefined;
+    private readonly onQueryReply: ((paneID: string, reply: Uint8Array) => void) | undefined;
 
     private readonly onBackpressure: TerminalStateOptions['onBackpressure'];
     private readonly onWriteError: TerminalStateOptions['onError'];
@@ -717,7 +735,7 @@ export class TerminalStateServiceImpl implements TerminalStateService {
         this.onOscNotification = options.onOscNotification;
         this.onClipboardRequest = options.onClipboardRequest;
         this.onModesChange = options.onModesChange;
-        this.onKittyReply = options.onKittyReply;
+        this.onQueryReply = options.onQueryReply;
     }
 
     // ── lifecycle ───────────────────────────────────────────────────────────────────
@@ -1419,16 +1437,26 @@ export class TerminalStateServiceImpl implements TerminalStateService {
         // when boot supplied a sink, so a service built without one answers nothing rather than
         // pretending to be a terminal that cannot talk back.
         const kitty = trackKittyKeyboard(term, {
-            ...(this.onKittyReply === undefined
+            ...(this.onQueryReply === undefined
                 ? {}
                 : {
                       // A replayed query was asked of a daemon that is gone; answering it now
                       // would type the reply into whatever the application shows by then.
                       onReply: (reply: Uint8Array) => {
-                          if (effects.mode === 0) this.onKittyReply?.(paneID, reply);
+                          if (effects.mode === 0) this.onQueryReply?.(paneID, reply);
                       }
                   })
         });
+        // #349: the device queries xterm answers itself (`isForwardedQueryReply`). Live output only,
+        // like the kitty reply above: a replayed query was asked of a daemon that is gone. A cursor
+        // report is kept on the screen (`onScreenCursorReport`).
+        if (this.onQueryReply !== undefined) {
+            const reply = this.onQueryReply;
+            term.onData((data) => {
+                if (effects.mode !== 0 || !isForwardedQueryReply(data)) return;
+                reply(paneID, encoder.encode(onScreenCursorReport(data, term.cols)));
+            });
+        }
         const entry: PaneTerminal = {
             term,
             serializer,

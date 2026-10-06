@@ -33,7 +33,8 @@ const command = async value => {
             fs.writeFileSync(process.argv[3], value.text);
         }
         if (value.op === 'exit') { state.busy = false; save(); process.exit(0); }
-        if (value.op === 'query') process.stdout.write('\x1b[6n');
+        // A colour query: only the renderer answers it (the daemon answers DA and DSR itself, #349).
+        if (value.op === 'query') process.stdout.write('\x1b]11;?\x07');
         if (value.op === 'burst') {
             if (value.scrollback) process.stdout.write('\x1b[?1049l\x1b[H\x1b[2J');
             const line = Buffer.from('\x1b[33m0123456789 αβγ 赤 緑 🐙 café ansi continuation 012345678901234567890123456789\x1b[0m\r\n');

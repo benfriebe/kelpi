@@ -73,8 +73,10 @@ async function parserConsumer(h: ReturnType<typeof harness>) {
     disposals.push(() => parser.dispose());
     parser.onData(data => {
         const frame = h.lastFrame();
+        // The host drops a real cursor report, which the daemon sends itself (#349); renamed, it
+        // still shows which screen answered.
         h.scope.receive({ type: 'terminal-input', session: frame.session, generation: frame.generation,
-            sequence: frame.sequence, response: true, direct: true, data: encoder.encode(data) });
+            sequence: frame.sequence, response: true, direct: true, data: encoder.encode(data.replace(/^\x1b\[(\d+;\d+)R$/, 'cursor $1')) });
     });
     return async (frame: FrameMessage['frame']): Promise<void> => {
         if (frame.type === 'replay') parser.reset();
@@ -177,11 +179,31 @@ describe('selected terminal renderer transport', () => {
         expect(h.messages).toHaveLength(count);
     });
 
+    it('drops a renderer reply the daemon already sends (#349), and forwards the rest', async () => {
+        const h = harness(); h.attach();
+        h.output(PTY_FRAME_TYPES.replay, 'screen'); await h.drain();
+        h.output(PTY_FRAME_TYPES.output, '\x1b[c\x1b[6n\x1b]11;?\x07');
+        await tick();
+        const query = h.lastFrame();
+        for (const text of ['\x1b[?1;2c', '\x1b[2;3R', '\x1b]11;rgb:0000/0000/0000\x1b\\']) {
+            h.scope.receive({ type: 'terminal-input', session: query.session, generation: query.generation,
+                sequence: query.sequence, response: true, direct: true, data: encoder.encode(text) });
+        }
+        expect(h.wireFrames().filter(frame => frame?.type === PTY_FRAME_TYPES.inputDirect).map(frame => decoder.decode(frame!.payload))).toEqual(['\x1b]11;rgb:0000/0000/0000\x1b\\']);
+        // One write carrying several replies: the daemon's are taken out, the colour reply kept.
+        h.scope.receive({ type: 'terminal-input', session: query.session, generation: query.generation, sequence: query.sequence,
+            response: true, direct: true, data: encoder.encode('\x1b[?1;2c\x1b]10;rgb:ffff/ffff/ffff\x1b\\\x1b[2;3R') });
+        expect(h.wireFrames().filter(frame => frame?.type === PTY_FRAME_TYPES.inputDirect).map(frame => decoder.decode(frame!.payload)).at(-1)).toBe('\x1b]10;rgb:ffff/ffff/ffff\x1b\\');
+        // Only responses: a keystroke shaped like a cursor report (Shift+F3, `CSI 1 ; 2 R`) is still typed.
+        h.scope.receive({ type: 'terminal-input', session: query.session, data: encoder.encode('\x1b[1;2R'), direct: false });
+        expect(h.wireFrames().filter(frame => frame?.type === PTY_FRAME_TYPES.input).map(frame => decoder.decode(frame!.payload))).toEqual(['\x1b[1;2R']);
+    });
+
     it('allows hidden device replies only for the current data frame while blocking keyboard and mouse input', async () => {
         const h = harness({ focused: false, visible: false }); h.attach();
         h.output(PTY_FRAME_TYPES.replay, 'screen');
         await tick();
-        const reply = (frame: FrameMessage, text = '\x1b[0n', changes: Record<string, unknown> = {}): void => {
+        const reply = (frame: FrameMessage, text = '\x1b]11;rgb:0000/0000/0000\x1b\\', changes: Record<string, unknown> = {}): void => {
             h.scope.receive({ type: 'terminal-input', session: frame.session, data: encoder.encode(text), direct: true, response: true, generation: frame.generation, sequence: frame.sequence, ...changes });
         };
         reply(h.lastFrame()); // Presentation frames cannot create device replies.
@@ -195,15 +217,15 @@ describe('selected terminal renderer transport', () => {
         reply(replay, 'forged', { direct: false });
         expect(h.wireFrames()).toEqual([]);
         reply(replay);
-        expect(h.wireFrames().map(frame => [frame?.type, decoder.decode(frame?.payload)])).toEqual([[PTY_FRAME_TYPES.inputDirect, '\x1b[0n']]);
+        expect(h.wireFrames().map(frame => [frame?.type, decoder.decode(frame?.payload)])).toEqual([[PTY_FRAME_TYPES.inputDirect, '\x1b]11;rgb:0000/0000/0000\x1b\\']]);
         expect(h.credits()).toEqual([]);
         h.ack(); await tick();
         reply(replay, 'after callback');
         expect(h.credits()).toEqual([6]);
-        h.output(PTY_FRAME_TYPES.output, '\x1b[6n'); await tick();
+        h.output(PTY_FRAME_TYPES.output, '\x1b]11;?\x07'); await tick();
         const output = h.lastFrame(); expect(output.frame.type).toBe('output');
-        reply(output, '\x1b[2;3R');
-        expect(h.wireFrames().filter(frame => frame?.type === PTY_FRAME_TYPES.inputDirect).map(frame => decoder.decode(frame!.payload))).toEqual(['\x1b[0n', '\x1b[2;3R']);
+        reply(output, '\x1b]10;rgb:ffff/ffff/ffff\x1b\\');
+        expect(h.wireFrames().filter(frame => frame?.type === PTY_FRAME_TYPES.inputDirect).map(frame => decoder.decode(frame!.payload))).toEqual(['\x1b]11;rgb:0000/0000/0000\x1b\\', '\x1b]10;rgb:ffff/ffff/ffff\x1b\\']);
         expect(h.credits()).toEqual([6]);
         h.sockets.last().emit({ type: 'pty-resync', paneID: PANE, reason: 'flow-control-drop' });
         h.output(PTY_FRAME_TYPES.replay, 'fresh');
@@ -217,12 +239,12 @@ describe('selected terminal renderer transport', () => {
     it.each([true, false])('answers a waiting program from its exact in-flight output callback after visual supersession (visible=%s)', async visible => {
         const h = harness({ focused: visible, visible }); h.attach();
         h.output(PTY_FRAME_TYPES.replay, 'screen'); await h.drain();
-        // The application now waits for a cursor-position reply. The renderer's async
+        // The application now waits for a colour reply. The renderer's async
         // parser has this output, but has not yet consumed the query or acknowledged it.
-        h.output(PTY_FRAME_TYPES.output, '\x1b[6n'); await tick();
+        h.output(PTY_FRAME_TYPES.output, '\x1b]11;?\x07'); await tick();
         const query = h.lastFrame(); expect(query.frame.type).toBe('output');
         const response = { type: 'terminal-input', session: query.session, generation: query.generation,
-            sequence: query.sequence, response: true, direct: true, data: encoder.encode('\x1b[2;3R') };
+            sequence: query.sequence, response: true, direct: true, data: encoder.encode('\x1b]10;rgb:ffff/ffff/ffff\x1b\\') };
         let consume!: () => void;
         const callback = new Promise<void>(resolve => { consume = resolve; }).then(() => {
             h.scope.receive(response); h.ack(query);
@@ -234,7 +256,7 @@ describe('selected terminal renderer transport', () => {
         h.scope.receive({ ...response, sequence: query.sequence + 1 });
         expect(h.wireFrames().filter(frame => frame?.type === PTY_FRAME_TYPES.inputDirect)).toEqual([]);
         consume(); await callback;
-        expect(h.wireFrames().filter(frame => frame?.type === PTY_FRAME_TYPES.inputDirect).map(frame => decoder.decode(frame!.payload))).toEqual(['\x1b[2;3R']);
+        expect(h.wireFrames().filter(frame => frame?.type === PTY_FRAME_TYPES.inputDirect).map(frame => decoder.decode(frame!.payload))).toEqual(['\x1b]10;rgb:ffff/ffff/ffff\x1b\\']);
         expect(h.credits()).toEqual([6]); // Old output credit cannot consume the new replay.
         h.scope.receive(response); // Completed callback cannot answer again.
         expect(h.wireFrames().filter(frame => frame?.type === PTY_FRAME_TYPES.inputDirect)).toHaveLength(1);
@@ -254,7 +276,7 @@ describe('selected terminal renderer transport', () => {
         h.output(PTY_FRAME_TYPES.output, '\x1b[6n');
         h.output(PTY_FRAME_TYPES.replay, 'fresh');
         await h.drain(consume);
-        expect(h.wireFrames().filter(frame => frame?.type === PTY_FRAME_TYPES.inputDirect).map(frame => decoder.decode(frame!.payload))).toEqual(['\x1b[1;11R']);
+        expect(h.wireFrames().filter(frame => frame?.type === PTY_FRAME_TYPES.inputDirect).map(frame => decoder.decode(frame!.payload))).toEqual(['cursor 1;11']);
         expect(h.credits()).toEqual([6, 5]);
         expect(h.pty.stats(PANE)?.unacked).toBe(0);
         expect(h.fail).not.toHaveBeenCalled();
@@ -271,7 +293,7 @@ describe('selected terminal renderer transport', () => {
             h.output(PTY_FRAME_TYPES.replay, replay);
         }
         await h.drain(consume);
-        expect(h.wireFrames().filter(frame => frame?.type === PTY_FRAME_TYPES.inputDirect).map(frame => decoder.decode(frame!.payload))).toEqual(['\x1b[1;11R']);
+        expect(h.wireFrames().filter(frame => frame?.type === PTY_FRAME_TYPES.inputDirect).map(frame => decoder.decode(frame!.payload))).toEqual(['cursor 1;11']);
         expect(h.frames().filter(message => message.frame.type === 'replay').map(message => decoder.decode((message.frame as { data: Uint8Array }).data))).toEqual(['screen', 'fresh']);
         expect(h.credits()).toEqual([6, 5]);
         expect(h.fail).not.toHaveBeenCalled();
@@ -296,7 +318,7 @@ describe('selected terminal renderer transport', () => {
             }
             await consume(frame);
         });
-        expect(h.wireFrames().filter(frame => frame?.type === PTY_FRAME_TYPES.inputDirect).map(frame => decoder.decode(frame!.payload))).toEqual(['\x1b[3;5R', '\x1b[7;9R']);
+        expect(h.wireFrames().filter(frame => frame?.type === PTY_FRAME_TYPES.inputDirect).map(frame => decoder.decode(frame!.payload))).toEqual(['cursor 3;5', 'cursor 7;9']);
         const delivered = h.frames().map(message => message.frame);
         expect(delivered[0]?.type).toBe('presentation');
         for (const [index, frame] of delivered.entries()) if (frame.type === 'output') expect(delivered[index - 1]).toEqual({ type: 'modes', modes });
@@ -311,7 +333,7 @@ describe('selected terminal renderer transport', () => {
         const replay = h.lastFrame(); expect(replay.frame.type).toBe('replay');
         h.output(PTY_FRAME_TYPES.replay, 'fresh');
         h.scope.receive({ type: 'terminal-input', session: replay.session, generation: replay.generation,
-            sequence: replay.sequence, response: true, direct: true, data: encoder.encode('\x1b[2;3R') });
+            sequence: replay.sequence, response: true, direct: true, data: encoder.encode('\x1b]10;rgb:ffff/ffff/ffff\x1b\\') });
         expect(h.wireFrames()).toEqual([]);
         expect(h.lastFrame()).toBe(replay);
         h.ack(replay); await h.drain();
@@ -392,7 +414,7 @@ describe('selected terminal renderer transport', () => {
         const replay = new Uint8Array(TERMINAL_SCOPE_LIMITS.replayBytes);
         for (let index = 0; index < 2; index++) {
             h.output(PTY_FRAME_TYPES.replay, replay);
-            h.output(PTY_FRAME_TYPES.output, '\x1b[6n');
+            h.output(PTY_FRAME_TYPES.output, '\x1b]11;?\x07');
         }
         expect(h.fail).not.toHaveBeenCalled();
         expect(h.lastFrame()).toBe(held);

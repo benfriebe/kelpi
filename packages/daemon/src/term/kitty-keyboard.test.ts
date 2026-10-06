@@ -46,7 +46,7 @@ function flagsOf(service: TerminalStateServiceImpl, paneID: string): number {
 function makeService(): { service: TerminalStateServiceImpl; replies: string[] } {
     const replies: string[] = [];
     const service = createTerminalStateService({
-        onKittyReply: (_paneID, reply) => {
+        onQueryReply: (_paneID, reply) => {
             replies.push(decoder.decode(reply));
         }
     });
@@ -301,9 +301,11 @@ describe('TerminalStateServiceImpl — kitty keyboard negotiation', () => {
         service.attach('p', 20, 5);
         await write(service, 'p', '\x1b[>3u');
         // `CSI u` (SCORC, restore cursor) and `CSI > c` (secondary DA) share the letter and the
-        // prefix respectively; neither may move the flags or produce a reply.
+        // prefix respectively; neither may move the flags or produce a KITTY reply. `CSI > c`
+        // gets its own answer, the DA2 reply (#349, `query-replies.test.ts`), and nothing else.
         await write(service, 'p', '\x1b[u\x1b[>c\x1b[?1002h');
         expect(flagsOf(service, 'p')).toBe(3);
-        expect(replies).toEqual([]);
+        expect(replies).toHaveLength(1);
+        expect(replies[0]).toMatch(/^\x1b\[>[\d;]*c$/);
     });
 });

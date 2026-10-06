@@ -1040,6 +1040,16 @@ class AdapterRenderer implements TerminalRenderer {
      */
     private engineWritten = false;
 
+    /**
+     * #349: true while PTY output is being handed to the engine. Anything the engine emits on
+     * `onData` inside that call is its own reply to a query in the output (ghostty-web answers
+     * DSR 5n / 6n), never a keystroke, and is dropped: the daemon answers every query once, for
+     * the pane (`isForwardedQueryReply`), where an engine reply would add one per open window.
+     * xterm.js parses after `write()` returns, so its engine is kept from answering at the parser
+     * instead (`leaveDaemonQueriesUnanswered`).
+     */
+    private parsingOutput = false;
+
     private readonly dataListeners = new Set<(data: string) => void>();
     private readonly bellListeners = new Set<() => void>();
     private readonly titleListeners = new Set<(title: string) => void>();
@@ -1881,7 +1891,12 @@ class AdapterRenderer implements TerminalRenderer {
                 this.resetTerminal(terminal);
                 return;
             }
-            terminal.write(data);
+            this.parsingOutput = true;
+            try {
+                terminal.write(data);
+            } finally {
+                this.parsingOutput = false;
+            }
             this.engineWritten = true;
         };
         if (strict) {
@@ -2047,6 +2062,7 @@ class AdapterRenderer implements TerminalRenderer {
         try {
             this.engineDisposables.push(
                 terminal.onData((data) => {
+                    if (this.parsingOutput) return;
                     for (const listener of [...this.dataListeners]) listener(data);
                 })
             );
@@ -2341,6 +2357,28 @@ function clamp(value: number, low: number, high: number): number {
     return Math.max(low, Math.min(high, value));
 }
 
+/** The part of xterm.js's parser `leaveDaemonQueriesUnanswered` needs. */
+export interface CsiHandlerRegistry {
+    registerCsiHandler(id: { prefix?: string; final: string }, callback: (params: (number | number[])[]) => boolean): unknown;
+}
+
+/**
+ * #349: keep an engine that parses after `write()` returns (xterm.js) from answering the queries
+ * the daemon answers for the pane (`isForwardedQueryReply`): DA1, DA2, and DSR 5 / 6 / ? 6. A
+ * handler that returns true stops xterm's own, which is the one that would reply.
+ *
+ * The renderer's `parsingOutput` drop only sees what an engine emits INSIDE `write()`, where
+ * ghostty-web answers; xterm.js answers later, and each window would add a reply of its own. Not
+ * filtered by content on `onData` either: a modified F3 is `CSI 1 ; 2 R`, a keystroke shaped
+ * exactly like a cursor report.
+ */
+export function leaveDaemonQueriesUnanswered(parser: CsiHandlerRegistry): void {
+    parser.registerCsiHandler({ final: 'c' }, () => true);
+    parser.registerCsiHandler({ prefix: '>', final: 'c' }, () => true);
+    parser.registerCsiHandler({ final: 'n' }, (params) => params[0] === 5 || params[0] === 6);
+    parser.registerCsiHandler({ prefix: '?', final: 'n' }, (params) => params[0] === 6);
+}
+
 interface XtermRenderDimensions {
     readonly css?: { readonly cell?: { readonly width?: number; readonly height?: number } };
 }
@@ -2359,6 +2397,7 @@ export const loadXtermEngine: EngineLoader = async (options) => {
         allowTransparency: options.allowTransparency,
         convertEol: false
     });
+    leaveDaemonQueriesUnanswered(terminal.parser);
     const engineTerminal = terminal as unknown as XtermLikeTerminal;
     /**
      * #306: this engine has no highlight layer, so it shows a revealed match by SELECTING it, and

@@ -23,9 +23,8 @@
  *
  * Deliberately NOT handled, and each for a reason:
  *
- *   - `OSC 9 ; 4 ; …` (ConEmu's progress-bar extension) is still a notification here, exactly
- *     as it is in ghostty — ghostty parses OSC 9 as body-only and does not special-case 4, so
- *     a port that did would be diverging to be clever.
+ *   - `OSC 9 ; 4 ; …` (ConEmu's progress-bar extension) is dropped, as ghostty parses it as a
+ *     progress report: posting it would put "4;1;50" in a desktop notification.
  *   - a `777` payload whose first field is not `notify` is dropped: urxvt multiplexes other
  *     verbs through the same code and none of them is a notification.
  *   - an empty body is dropped. `ESC ] 9 ; BEL` is how a script clears iTerm2's badge, and a
@@ -67,6 +66,7 @@ function sanitize(value: string): string {
  */
 export function parseOscNotification(code: number, data: string): OscNotification | null {
     if (code === OSC_NOTIFY_CODE) {
+        if (/^4(;|$)/.test(data)) return null;
         const body = sanitize(data);
         return body === '' ? null : { title: null, body };
     }

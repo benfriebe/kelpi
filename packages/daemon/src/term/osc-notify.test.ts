@@ -59,6 +59,14 @@ describe('parseOscNotification', () => {
         expect(parseOscNotification(777, 'notify;Title;')).toBeNull();
     });
 
+    it('drops ConEmu progress `OSC 9 ; 4` — a progress bar, not a message', () => {
+        expect(parseOscNotification(9, '4;1;50')).toBeNull();
+        expect(parseOscNotification(9, '4;0;')).toBeNull();
+        expect(parseOscNotification(9, '4;3')).toBeNull();
+        expect(parseOscNotification(9, '4')).toBeNull();
+        expect(parseOscNotification(9, '4 files changed')).toEqual({ title: null, body: '4 files changed' });
+    });
+
     it('ignores any other OSC code', () => {
         expect(parseOscNotification(7, 'file:///tmp')).toBeNull();
         expect(parseOscNotification(2, 'a title')).toBeNull();

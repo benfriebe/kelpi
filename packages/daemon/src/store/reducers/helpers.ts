@@ -199,6 +199,8 @@ export interface NewPaneOptions {
     readonly csvHeaderRow?: boolean;
     /** A terminal pane's own text size; defaults to null (follows the ghostty default). */
     readonly terminalFontSize?: number | null;
+    /** Scratchpads only; defaults to false (a horizontal scrollbar). */
+    readonly scratchpadWrap?: boolean;
 }
 
 /** A fresh pane with spec defaults (transient fields empty). */
@@ -214,7 +216,8 @@ export function newPane(options: NewPaneOptions): Pane {
         filePath: options.filePath ?? null,
         scratchpadContent: options.scratchpadContent ?? null,
         ...(options.csvHeaderRow === undefined ? {} : { csvHeaderRow: options.csvHeaderRow }),
-        ...(options.terminalFontSize === undefined ? {} : { terminalFontSize: options.terminalFontSize })
+        ...(options.terminalFontSize === undefined ? {} : { terminalFontSize: options.terminalFontSize }),
+        ...(options.scratchpadWrap === undefined ? {} : { scratchpadWrap: options.scratchpadWrap })
     });
     return {
         ...pane,

@@ -106,6 +106,11 @@ function stubContent(): StubContent {
             calls.push(`setFontSize:${paneID}:${String(size)}`);
             if (stub.fail !== null) throw stub.fail;
             return stateFor(paneID, { fontSize: size });
+        },
+        async setWrap(paneID, on) {
+            calls.push(`setWrap:${paneID}:${String(on)}`);
+            if (stub.fail !== null) throw stub.fail;
+            return stateFor(paneID);
         }
     };
     return stub;
@@ -180,7 +185,9 @@ describe('content commands', () => {
             'diff-refresh',
             'markdown-save',
             // §3.16's preview font size: a re-render, so it rides the same async channel.
-            'content-set-font-size'
+            'content-set-font-size',
+            // A scratchpad's wrap toggle (§7).
+            'content-set-wrap'
         ]);
         for (const command of CONTENT_COMMANDS) expect(isContentCommand(command)).toBe(true);
         expect(isContentCommand('pane-list')).toBe(false);
@@ -281,7 +288,8 @@ describe('content commands', () => {
             setText: async (paneID) => stateFor(paneID),
             save: async (paneID) => stateFor(paneID),
             refresh: async (paneID) => stateFor(paneID),
-            setFontSize: async (paneID) => stateFor(paneID)
+            setFontSize: async (paneID) => stateFor(paneID),
+            setWrap: async (paneID) => stateFor(paneID)
         };
         const f = fixture(slow);
         const { session, transport } = f.connect();
@@ -321,6 +329,24 @@ describe('content commands', () => {
         expect((replyBody(transport, 't1')['state'] as ContentPaneState).text).toBe('hello');
         expect(replyBody(transport, 'd1')['ok']).toBe(true);
         expect(replyBody(transport, 's1')['ok']).toBe(true);
+    });
+
+    it('routes content-set-wrap with its flag, and refuses one without it', async () => {
+        const content = stubContent();
+        const f = fixture(content);
+        const { session, transport } = f.connect();
+
+        send(session, 'w1', { command: 'content-set-wrap', pane_id: PANE_A, wrap: true });
+        send(session, 'w2', { command: 'content-set-wrap', pane_id: PANE_A, wrap: false });
+        send(session, 'w3', { command: 'content-set-wrap', pane_id: PANE_A });
+        send(session, 'w4', { command: 'content-set-wrap', pane_id: PANE_A, wrap: 'yes' });
+        await settle();
+
+        expect(content.calls).toEqual([`setWrap:${PANE_A}:true`, `setWrap:${PANE_A}:false`]);
+        expect(replyBody(transport, 'w1')['ok']).toBe(true);
+        expect(replyBody(transport, 'w2')['ok']).toBe(true);
+        expect(replyBody(transport, 'w3')).toEqual({ ok: false, error: 'content-set-wrap requires wrap' });
+        expect(replyBody(transport, 'w4')).toEqual({ ok: false, error: 'content-set-wrap requires wrap' });
     });
 
     it('accepts an empty string as content-set-text', async () => {

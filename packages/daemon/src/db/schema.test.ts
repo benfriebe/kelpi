@@ -42,8 +42,8 @@ describe('migration ledger', () => {
             expect(MIGRATION_IDENTIFIERS).toContain(identifier);
         }
         expect(MIGRATION_IDENTIFIERS[0]).toBe('v1_initial');
-        expect(MIGRATION_IDENTIFIERS.at(-1)).toBe('v24_pane_terminal_font_size');
-        expect(MIGRATION_IDENTIFIERS).toHaveLength(24);
+        expect(MIGRATION_IDENTIFIERS.at(-1)).toBe('v25_pane_scratchpad_wrap');
+        expect(MIGRATION_IDENTIFIERS).toHaveLength(25);
     });
 
     it('is a no-op on the second run', () => {
@@ -54,7 +54,7 @@ describe('migration ledger', () => {
         db.close();
     });
 
-    it('produces the post-v24 schema (§8 + the daemon-only tail)', () => {
+    it('produces the post-v25 schema (§8 + the daemon-only tail)', () => {
         const db = freshDatabase();
         migrate(db);
 
@@ -94,7 +94,8 @@ describe('migration ledger', () => {
             'pluginJSON',
             'pluginParked',
             'csvHeaderRow',
-            'terminalFontSize'
+            'terminalFontSize',
+            'scratchpadWrap'
         ]);
         expect(columnNames(db, 'workspace_group')).toEqual([
             'id',
@@ -285,6 +286,37 @@ describe('migration ledger', () => {
 
         expect(migrate(db).applied).toEqual(['v24_pane_terminal_font_size']);
         expect(db.all('SELECT "type", "terminalFontSize" FROM "pane"')).toEqual([{ type: 'shell', terminalFontSize: null }]);
+        db.close();
+    });
+
+    it('adds the scratchpad wrap column (v25) leaving existing scratchpads unwrapped', () => {
+        const db = freshDatabase();
+        migrate(db);
+        db.run(`DELETE FROM ${MIGRATIONS_TABLE} WHERE identifier = 'v25_pane_scratchpad_wrap'`);
+        db.exec('ALTER TABLE "pane" DROP COLUMN "scratchpadWrap"');
+        db.run(
+            `INSERT INTO "workspace" ("id","name","color","layoutJSON","createdAt","lastAccessedAt") VALUES (?,?,?,?,?,?)`,
+            'W1',
+            'kept',
+            'blue',
+            '{"empty":{}}',
+            1,
+            1
+        );
+        db.run(
+            `INSERT INTO "pane" ("id","workspaceID","type","workingDirectory","createdAt","lastActivityAt","status","content") VALUES (?,?,?,?,?,?,?,?)`,
+            'P1',
+            'W1',
+            'scratchpad',
+            '/tmp',
+            1,
+            1,
+            'idle',
+            'notes'
+        );
+
+        expect(migrate(db).applied).toEqual(['v25_pane_scratchpad_wrap']);
+        expect(db.all('SELECT "type", "scratchpadWrap" FROM "pane"')).toEqual([{ type: 'scratchpad', scratchpadWrap: 0 }]);
         db.close();
     });
 

@@ -9,6 +9,9 @@
  * The client debounce (`ContentClient`, 300 ms) matters more here than for markdown: §7 notes
  * the Swift app could lose up to a second of typing to the two stacked debounces on a hard
  * kill, so the buffer is also flushed on blur and on unmount.
+ *
+ * Unlike the markdown editor it does not soft-wrap by default; the header's wrap toggle sets
+ * `Pane.scratchpadWrap`, which arrives here as `wrap`.
  */
 
 import { type ReactElement } from 'react';
@@ -34,6 +37,8 @@ export interface ScratchpadPaneProps {
     readonly findToken?: number | undefined;
     /** SET-219's user-overridable find-highlight colours; absent = the Swift defaults. */
     readonly findPalette?: Partial<FindPalette> | undefined;
+    /** The pane's wrap toggle (§7): soft-wrap to the pane, or scroll sideways (the default). */
+    readonly wrap?: boolean | undefined;
 }
 
 export function ScratchpadPane(props: ScratchpadPaneProps): ReactElement {
@@ -87,6 +92,7 @@ export function ScratchpadPane(props: ScratchpadPaneProps): ReactElement {
             onFocusRequest={props.onFocusRequest}
             scrollStore={props.scrollStore}
             showGutter
+            wrap={props.wrap === true ? 'soft' : 'off'}
             findToken={props.findToken}
             findPalette={props.findPalette}
         />

@@ -105,6 +105,24 @@ describe('scratchpad pane', () => {
         expect(h.payloads().at(0)).toMatchObject({ command: 'content-subscribe', pane_id: PANE });
     });
 
+    it('scrolls sideways by default and soft-wraps when the pane’s toggle is on', () => {
+        const h = harness();
+        const view = render(<ScratchpadPane paneID={PANE} content={h.content} />);
+        h.push('a line\n');
+        expect(area().getAttribute('wrap')).toBe('off');
+        expect(screen.queryByTestId(`content-gutter-mirror-${PANE}`)).toBeNull();
+
+        view.rerender(<ScratchpadPane paneID={PANE} content={h.content} wrap />);
+        expect(area().getAttribute('wrap')).toBe('soft');
+        // A wrapping gutter measures its rows, so the mirror mounts with the toggle.
+        expect(screen.queryByTestId(`content-gutter-mirror-${PANE}`)).not.toBeNull();
+        expect(area().value).toBe('a line\n');
+
+        view.rerender(<ScratchpadPane paneID={PANE} content={h.content} wrap={false} />);
+        expect(area().getAttribute('wrap')).toBe('off');
+        expect(screen.queryByTestId(`content-gutter-mirror-${PANE}`)).toBeNull();
+    });
+
     /**
      * Issue #106 - a workspace switch and back, with the caret arriving first.
      *

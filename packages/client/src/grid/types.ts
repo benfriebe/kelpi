@@ -37,6 +37,8 @@ export type PaneModel = Pick<
      * other pane type need not carry it; the store mirror's full `Pane` always does.
      */
     readonly csvHeaderRow?: boolean | undefined;
+    /** A scratchpad's persisted wrap toggle; optional for the same reason as `csvHeaderRow`. */
+    readonly scratchpadWrap?: boolean | undefined;
 };
 
 /** Terminal geometry for the resize badge; supplied by the terminal layer (WP3.2). */
@@ -107,6 +109,8 @@ export interface PaneActions {
     readonly onRefreshDiff?: ((paneID: string) => void) | undefined;
     /** #324: a csv pane's header-row toggle (`csv-set-header-row`). */
     readonly onToggleCsvHeaderRow?: ((paneID: string) => void) | undefined;
+    /** A scratchpad's wrap toggle (`content-set-wrap`). */
+    readonly onToggleScratchpadWrap?: ((paneID: string) => void) | undefined;
     /**
      * §TERM-103: the markdown pane's "Copy as Markdown / Copy as Rich Text" menu, opened from
      * the HEADER (where the Swift puts it) rather than only from the in-frame chip. The menu

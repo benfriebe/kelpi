@@ -34,6 +34,7 @@ function stateWithClosedPane(): DaemonState {
                         scratchpadContent: 'secret notes',
                         csvHeaderRow: true,
                         terminalFontSize: null,
+                        scratchpadWrap: false,
                         agentSessionID: null,
                         agentKind: null,
                         agentProfileName: null,

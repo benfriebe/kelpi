@@ -1896,6 +1896,13 @@ function Shell(props: AppProps): ReactElement {
                 return runTask('Header row', csv.setHeaderRow(paneID, !on));
             },
 
+            /** A scratchpad's wrap toggle (the header button, content-panes.md §7). */
+            toggleScratchpadWrap(paneID: string): boolean {
+                const pane = selectPane(store.getState(), paneID);
+                if (pane === null || pane.type !== 'scratchpad') return false;
+                return runTask('Line wrap', content.setWrap(paneID, !pane.scratchpadWrap));
+            },
+
             /**
              * §3.16 — the header's +/- buttons and ⌘= / ⌘- / ⌘0. Only a markdown pane in VIEW
              * mode has a preview font size, so anything else declines and the keystroke falls
@@ -4359,7 +4366,7 @@ function Shell(props: AppProps): ReactElement {
             const renderDocument = (): ReactNode => isDocumentPane(pane.type) ? <DocumentPane
                 runtime={runtime} workspaceID={workspace?.id ?? ''} kind={pane.type}
                 paneID={paneID} content={content} csv={csv} editing={pane.isEditing} phone={phoneActive}
-                filePath={pane.filePath} focused={focused} visible={renderState.visible}
+                filePath={pane.filePath} wrap={pane.scratchpadWrap} focused={focused} visible={renderState.visible}
                 background={paneFill} documentBackground={contentDocumentFill} onFocusRequest={onTerminalFocus}
                 onToggleEdit={act.toggleMarkdownEdit} findToken={findRequest?.paneID === paneID ? findRequest.seq : 0}
                 copyToken={copyRequest?.paneID === paneID ? copyRequest.seq : 0} findPalette={findPalette}
@@ -4658,6 +4665,7 @@ function Shell(props: AppProps): ReactElement {
                         onToggleMarkdownEdit: act.toggleMarkdownEdit,
                         onRefreshDiff: act.refreshDiff,
                         onToggleCsvHeaderRow: act.toggleCsvHeaderRow,
+                        onToggleScratchpadWrap: act.toggleScratchpadWrap,
                         onCopyDocument,
                         onSetFontSize: act.setFontSize,
                         onRestartAgent: act.restartAgent,
@@ -4933,6 +4941,7 @@ function Shell(props: AppProps): ReactElement {
                         onToggleMarkdownEdit={act.toggleMarkdownEdit}
                         onRefreshDiff={act.refreshDiff}
                         onToggleCsvHeaderRow={act.toggleCsvHeaderRow}
+                        onToggleScratchpadWrap={act.toggleScratchpadWrap}
                         onCopyDocument={onCopyDocument}
                         onSetFontSize={act.setFontSize}
                         onRestartAgent={act.restartAgent}

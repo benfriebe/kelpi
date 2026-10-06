@@ -94,6 +94,7 @@ const ROUTES = {
     'set-csv-header-row': 'pane',
     'set-markdown-font-size': 'pane',
     'set-terminal-font-size': 'pane',
+    'set-scratchpad-wrap': 'pane',
 
     'cycle-layout': 'layout',
     'select-layout': 'layout',

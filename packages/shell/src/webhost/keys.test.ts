@@ -22,7 +22,9 @@ import {
     claimedChordsForLines,
     forwardedChord,
     forwardedChordKeys,
+    holdGestureChords,
     setForwardedKeybindLines,
+    startsHeldGesture,
     type ChordInput
 } from './keys.js';
 
@@ -350,3 +352,35 @@ describe('the relay command', () => {
     });
 });
 
+// ⌃Tab ends on the ⌃ release, which a page never passes on, so forwarding it from a page also
+// hands the window the keyboard (`./index.ts`, config-keybindings.md §7.8).
+describe('the chords that start a held gesture', () => {
+    const chord = (code: string, modifiers: { ctrl?: boolean; alt?: boolean; shift?: boolean; meta?: boolean }) => ({
+        code,
+        ctrl: modifiers.ctrl === true,
+        alt: modifiers.alt === true,
+        shift: modifiers.shift === true,
+        meta: modifiers.meta === true
+    });
+
+    it('are ⌃Tab and ⌃⇧Tab by default, and no other chord the relay takes', () => {
+        const held = holdGestureChords(DEFAULT_KEYBINDINGS);
+        expect([...held].sort()).toEqual(['ctrl+Tab', 'ctrl+shift+Tab']);
+        expect(startsHeldGesture(chord('Tab', { ctrl: true }), held)).toBe(true);
+        expect(startsHeldGesture(chord('Tab', { ctrl: true, shift: true }), held)).toBe(true);
+        expect(startsHeldGesture(chord('KeyD', { meta: true }), held)).toBe(false);
+        expect(startsHeldGesture(chord('ArrowDown', { alt: true, meta: true }), held)).toBe(false);
+    });
+
+    it('follow the config: a rebound trigger moves, an unbound one stops', () => {
+        setForwardedKeybindLines(['ctrl+tab=unbind', 'alt+tab=next_recent_workspace']);
+        try {
+            expect(startsHeldGesture(chord('Tab', { ctrl: true }))).toBe(false);
+            expect(startsHeldGesture(chord('Tab', { alt: true }))).toBe(true);
+            expect(startsHeldGesture(chord('Tab', { ctrl: true, shift: true }))).toBe(true);
+        } finally {
+            setForwardedKeybindLines([]);
+        }
+        expect(startsHeldGesture(chord('Tab', { ctrl: true }))).toBe(true);
+    });
+});

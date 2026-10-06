@@ -39,6 +39,38 @@ describe('injected browser SDK', () => {
         } finally { vi.useRealTimers(); }
     });
 
+    // The host's ⌃Tab gesture ends on the ⌃ release (config-keybindings.md §7.8), and the host
+    // never sees a key this frame holds, so the keyups after a relayed chord are passed on too.
+    it('passes on the keyups after a relayed chord, up to the release of every modifier', async () => {
+        const events = new Map<string, (...args: any[]) => void>();
+        const parent = { postMessage: vi.fn() };
+        const port = { start: vi.fn(), postMessage: vi.fn(), onmessage: (_event: any): void | Promise<void> => {} };
+        const context = vm.createContext({
+            __KELPI_VIEW__: { nonce: 'keys', state: {}, stateVersion: 1, context: { daemonID: 'D' } },
+            parent, TextEncoder, setTimeout, clearTimeout, console,
+            document: { documentElement: { style: { setProperty: vi.fn() } } },
+            addEventListener: (name: string, listener: (...args: any[]) => void) => events.set(name, listener),
+            removeEventListener: (name: string) => events.delete(name),
+        });
+        const shared = fs.readFileSync(new URL('../api.js', import.meta.url), 'utf8').replace(/^export /gm, '');
+        vm.runInContext(`(()=>{${shared}\n${fs.readFileSync(new URL('../browser.js', import.meta.url), 'utf8')}})()`, context);
+        events.get('message')?.({ source: parent, data: { type: 'kelpi-plugin-connect', nonce: 'keys' }, ports: [port] });
+        await port.onmessage({ data: { type: 'context', value: { visible: true, chords: ['1/Tab'] } } });
+        const sent = (): unknown[] => port.postMessage.mock.calls.map(([message]) => message).filter(message => message.type === 'key' || message.type === 'keyup').map(message => [message.type, message.code]);
+        const key = (code: string, ctrlKey: boolean) => ({ code, key: code, ctrlKey, altKey: false, shiftKey: false, metaKey: false, preventDefault: vi.fn(), stopImmediatePropagation: vi.fn() });
+        events.get('keyup')?.(key('ControlLeft', false));
+        expect(sent()).toEqual([]);
+        events.get('keydown')?.(key('Tab', true));
+        events.get('keyup')?.(key('Tab', true));
+        events.get('keyup')?.(key('ControlLeft', false));
+        events.get('keyup')?.(key('KeyA', false));
+        expect(sent()).toEqual([['key', 'Tab'], ['keyup', 'Tab'], ['keyup', 'ControlLeft']]);
+        events.get('keydown')?.(key('Tab', true));
+        events.get('blur')?.({});
+        events.get('keyup')?.(key('ControlLeft', false));
+        expect(sent()).toHaveLength(4);
+    });
+
     it('shares the typed facade and waits for the private host channel', async () => {
         const events = new Map<string, (...args: any[]) => void>();
         const parent = { postMessage: vi.fn() };

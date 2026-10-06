@@ -1350,13 +1350,23 @@ blur commits; clicking a row commits it. The switcher paints only after 150 ms, 
 toggles the last two workspaces with no flash. With fewer than two local workspaces the chord is
 not consumed.
 
-From a focused web page the chord arrives through the shell's relay (`webhost/keys.ts`) and the
-switcher paints at once; it registers modal presence, which parks the page and gives the window
-the keyboard. A release that happens before that hand-off is lost (Chromium suppresses the
-page's keyups after the keydown it gave up), so such a gesture commits 400 ms after its last
-step (`WEB_IDLE_COMMIT_MS`), until the window sees a keyup of its own with the modifier still
-down; from then on it waits for the real release. Releasing on the current workspace, or on a
-workspace closed mid-gesture, activates nothing and hands the caret back.
+Nothing about the gesture is timed except the 150 ms before the switcher paints, so it waits
+on the release wherever it started; that needs the release to reach the window:
+
+- **A web page.** The chord arrives through the shell's relay (`webhost/keys.ts`), and the page
+  cannot pass the release on: once the browser has taken a view's keydown, Chromium suppresses
+  that view's keyups, ⌃'s included. So the relay hands the window the keyboard
+  (`holdGestureChords`, `webhost/index.ts`) while it is still handling the keydown, and the
+  release lands in the window. The relayed chord travels through the daemon and can arrive
+  after a quick tap's release, so a relayed press commits at once when the window saw the
+  release in the last 300 ms (`RELAYED_RELEASE_GRACE_MS`). When the chord falls through (fewer
+  than two workspaces) the page gets its keyboard back.
+- **A content or plugin frame** (markdown preview, diff, a plugin pane). The frame relays the
+  claimed chord's keydown as it always has, and then its keyups until ⌘ ⌃ ⌥ are all up
+  (`content/bridge.ts`, `plugin-sdk/browser.js`); the host replays them on the window.
+
+Releasing on the current workspace, or on a workspace closed mid-gesture, activates nothing and
+hands the caret back.
 
 While a gesture is open every other bound chord is swallowed, as under a modal: nothing acts on
 the workspace behind the switcher, and nothing falls through to the pane (`actionsDuringGesture`).

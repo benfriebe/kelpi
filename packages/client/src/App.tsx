@@ -157,6 +157,7 @@ import {
     type ChromeAppearance,
     type FaviconController,
     type KeyActionRegistry,
+    type KeyEventLike,
     type MenuItemSpec,
     type SidebarPhase,
 } from './chrome';
@@ -2526,11 +2527,18 @@ function Shell(props: AppProps): ReactElement {
                 }
             })
     );
-    /** A gesture started from a web page paints at once: the page holds the keyboard until it is parked. */
-    const focusedPaneIsWeb = (): boolean => {
-        const state = store.getState();
-        const paneID = selectFocusedPaneID(state);
-        return selectActiveWorkspace(state)?.panes.some((pane) => pane.id === paneID && pane.type === 'web') ?? false;
+    /**
+     * A chord pressed in a web page or a frame arrives here synthesized (`isTrusted` false), and
+     * its release follows it on its own: the shell hands a page's keyboard to the window, and a
+     * frame passes its keyups on (docs/config-keybindings.md §7.8).
+     */
+    const stepRecent = (direction: 1 | -1, event: KeyEventLike): boolean => {
+        const relayed = event.isTrusted === false;
+        const started = switcher.step(direction, heldModifiersFromEvent(event), { relayed });
+        // Nothing to switch to, and the chord falls through. A page's chord took the page's
+        // keyboard on its way here, so give it back.
+        if (!started && relayed) handBackPaneCaretRef.current(selectFocusedPaneID(store.getState()));
+        return started;
     };
 
     // ── terminal mounting ───────────────────────────────────────────────────────────
@@ -3195,9 +3203,8 @@ function Shell(props: AppProps): ReactElement {
             new_workspace: () => act.newWorkspace(),
             next_workspace: () => act.switchRelative(1),
             previous_workspace: () => act.switchRelative(-1),
-            next_recent_workspace: ({ event }) => switcher.step(1, heldModifiersFromEvent(event), { showNow: focusedPaneIsWeb() }),
-            previous_recent_workspace: ({ event }) =>
-                switcher.step(-1, heldModifiersFromEvent(event), { showNow: focusedPaneIsWeb() }),
+            next_recent_workspace: ({ event }) => stepRecent(1, event),
+            previous_recent_workspace: ({ event }) => stepRecent(-1, event),
             // The four actions this registry used to advertise and not dispatch (index gap #6):
             // §SET-144/§APP-019, §SET-153, §SET-145/§APP-021/§WEB-154 and §CONT-133. Each has a
             // gesture elsewhere (the sidebar footer, the row menu, the header globe); these are

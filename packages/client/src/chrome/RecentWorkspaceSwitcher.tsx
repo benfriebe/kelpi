@@ -1,8 +1,8 @@
 /**
  * The ⌃Tab switcher: recent workspaces, the highlighted one in the palette's selection band.
  * Keys are not handled here — the gesture lives in `app/recent-switcher.ts` and reaches this
- * through props — but it takes focus and registers modal presence: a live web page is parked
- * while it is up, which hands the keyboard (and so the ⌃ release) back to the window.
+ * through props — but it takes focus, so a key pressed while it is up reaches no pane, and it
+ * registers modal presence, so a live web page is parked rather than painted over it.
  */
 
 import type { WorkspaceColor } from '@kelpi/daemon/store';

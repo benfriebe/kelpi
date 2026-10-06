@@ -450,6 +450,11 @@ export function ContentFrame(props: ContentFrameProps): ReactElement {
                     replayFrameChord(chord, current.replayTarget);
                     return;
                 }
+                // The release after a relayed chord: what ends a ⌃Tab gesture started in here.
+                case 'key-up':
+                    if (current.claimedChords === undefined) return;
+                    replayFrameChord(message, current.replayTarget, 'keyup');
+                    return;
                 case 'find-open':
                     if (current.findEnabled === false) return;
                     openFind();

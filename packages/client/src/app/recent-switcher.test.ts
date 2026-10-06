@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+    RELAYED_RELEASE_GRACE_MS,
     SWITCHER_SHOW_DELAY_MS,
     actionsDuringGesture,
-    WEB_IDLE_COMMIT_MS,
     createRecentSwitcher,
     heldModifiersFromEvent,
     type SwitcherState
@@ -18,7 +18,8 @@ function harness(order: readonly string[] = ['a', 'b', 'c', 'd']) {
     const switcher = createRecentSwitcher({
         order: () => order,
         commit: (id) => commits.push(id),
-        onChange: (state) => states.push(state)
+        onChange: (state) => states.push(state),
+        now: () => Date.now()
     });
     return { switcher, commits, states, last: () => states.at(-1) ?? null };
 }
@@ -90,12 +91,6 @@ describe('recent switcher', () => {
         expect(h.commits).toEqual(['d']);
     });
 
-    it('showNow paints at once (a gesture started from a web page)', () => {
-        const h = harness();
-        h.switcher.step(1, ['ctrl'], { showNow: true });
-        expect(h.last()?.shown).toBe(true);
-    });
-
     it('fewer than two workspaces: not consumed, nothing happens', () => {
         const h = harness(['only']);
         expect(h.switcher.step(1, ['ctrl'])).toBe(false);
@@ -127,37 +122,63 @@ describe('recent switcher', () => {
     });
 });
 
-// A page that holds the keyboard swallows every key event after the chord it gave up, the ⌃
-// release included (Chromium suppresses a view's keyups after a consumed keydown). Until the window
-// sees a key event of its own, a gesture started there can only end on a timeout.
-describe('a gesture started from a web page', () => {
-    it('commits after the idle window when the release never reaches the window', () => {
+// A chord pressed in a web page or a frame is passed on to the window, and the release follows it
+// there: the shell hands the window the keyboard, and a frame passes its keyups on. Nothing about
+// such a gesture is timed, so holding ⌃ to look at the list never switches by itself.
+describe('a relayed gesture', () => {
+    it('stays open while ⌃ is held, however long, and commits on the release', () => {
         const h = harness();
-        h.switcher.step(1, ['ctrl'], { showNow: true });
-        vi.advanceTimersByTime(WEB_IDLE_COMMIT_MS - 1);
+        h.switcher.step(1, ['ctrl'], { relayed: true });
+        vi.advanceTimersByTime(10_000);
         expect(h.commits).toEqual([]);
-        h.switcher.step(1, ['ctrl'], { showNow: true });
-        vi.advanceTimersByTime(WEB_IDLE_COMMIT_MS - 1);
-        expect(h.commits).toEqual([]);
-        vi.advanceTimersByTime(1);
-        expect(h.commits).toEqual(['c']);
-    });
-
-    it('waits for the real release once the window has seen a keyup with ⌃ still down', () => {
-        const h = harness();
-        h.switcher.step(1, ['ctrl'], { showNow: true });
-        h.switcher.keyUp(ctrlDown); // Tab's keyup, delivered to the window: it has the keyboard
-        vi.advanceTimersByTime(WEB_IDLE_COMMIT_MS * 5);
-        expect(h.commits).toEqual([]);
+        expect(h.last()?.shown).toBe(true);
         h.switcher.keyUp(up);
         expect(h.commits).toEqual(['b']);
     });
 
-    it('does not apply to a gesture the window started itself', () => {
+    // The page's chord goes the long way (shell, daemon, window), so a quick tap's release can
+    // reach the window first.
+    it('commits at once when the window already saw the release', () => {
         const h = harness();
-        h.switcher.step(1, ['ctrl']);
-        vi.advanceTimersByTime(WEB_IDLE_COMMIT_MS * 5);
+        h.switcher.keyUp(ctrlDown); // Tab's keyup, ⌃ still down
+        h.switcher.keyUp(up); // the ⌃ release
+        vi.advanceTimersByTime(RELAYED_RELEASE_GRACE_MS);
+        expect(h.switcher.step(1, ['ctrl'], { relayed: true })).toBe(true);
+        expect(h.commits).toEqual(['b']);
+        expect(h.switcher.state()).toBeNull();
+    });
+
+    it('opens normally when the last keyup the window saw still had ⌃ down', () => {
+        const h = harness();
+        h.switcher.keyUp(ctrlDown);
+        h.switcher.step(1, ['ctrl'], { relayed: true });
         expect(h.commits).toEqual([]);
+        expect(h.switcher.state()?.index).toBe(1);
+    });
+
+    it('ignores a release older than the grace window', () => {
+        const h = harness();
+        h.switcher.keyUp(up);
+        vi.advanceTimersByTime(RELAYED_RELEASE_GRACE_MS + 1);
+        h.switcher.step(1, ['ctrl'], { relayed: true });
+        expect(h.commits).toEqual([]);
+    });
+
+    it('applies only to a relayed chord: one pressed in the window has its release still to come', () => {
+        const h = harness();
+        h.switcher.keyUp(up);
+        h.switcher.step(1, ['ctrl']);
+        expect(h.commits).toEqual([]);
+    });
+
+    it('uses a release once: the next gesture waits for its own', () => {
+        const h = harness();
+        h.switcher.keyUp(up);
+        h.switcher.step(1, ['ctrl'], { relayed: true });
+        expect(h.commits).toEqual(['b']);
+        h.switcher.step(1, ['ctrl'], { relayed: true });
+        expect(h.commits).toEqual(['b']);
+        expect(h.switcher.state()).not.toBeNull();
     });
 });
 

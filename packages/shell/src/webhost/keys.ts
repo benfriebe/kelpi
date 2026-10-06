@@ -282,6 +282,27 @@ export function claimedChords(bindings: KeyBindingMap, platform: string = proces
     return claimed;
 }
 
+/** The actions whose gesture ends on the RELEASE of the trigger's modifiers (config-keybindings.md §7.8). */
+const HOLD_GESTURE_ACTIONS: ReadonlySet<KelpiAction> = new Set<KelpiAction>(['next_recent_workspace', 'previous_recent_workspace']);
+
+/**
+ * The chords, of those this relay takes, that start a hold-and-release gesture (⌃Tab).
+ *
+ * The client needs to see their release, and a page cannot pass it on: once the browser has
+ * taken a view's keydown, Chromium suppresses that view's keyups until the next keydown, ⌃'s
+ * included. So the keyboard has to leave the page while the modifier is still down
+ * (`startsHeldGesture`, `./index.ts`).
+ */
+export function holdGestureChords(bindings: KeyBindingMap): ReadonlySet<string> {
+    const chords = new Set<string>();
+    for (const binding of bindings.values()) {
+        if (!HOLD_GESTURE_ACTIONS.has(binding.action)) continue;
+        const key = relayableChordKey(binding.trigger);
+        if (key !== null) chords.add(key);
+    }
+    return chords;
+}
+
 /**
  * `keybind` line VALUES (`"super+d=split_right"`) → the claimed set.
  *
@@ -295,10 +316,14 @@ export function claimedChords(bindings: KeyBindingMap, platform: string = proces
  * this path already delivered before the set was derived.
  */
 export function claimedChordsForLines(lines: readonly string[]): ReadonlySet<string> {
+    return claimedChords(bindingsForLines(lines));
+}
+
+function bindingsForLines(lines: readonly string[]): KeyBindingMap {
     const overrides = lines
         .map((line) => parseKeybindValue(line))
         .filter((override): override is NonNullable<typeof override> => override !== null);
-    return claimedChords(overrides.length === 0 ? DEFAULT_KEYBINDINGS : resolveKeyBindings(overrides));
+    return overrides.length === 0 ? DEFAULT_KEYBINDINGS : resolveKeyBindings(overrides);
 }
 
 /**
@@ -311,10 +336,18 @@ export function claimedChordsForLines(lines: readonly string[]): ReadonlySet<str
  * the handshake and on every `settings-changed`.
  */
 let forwarded: ReadonlySet<string> = claimedChords(DEFAULT_KEYBINDINGS);
+let holdChords: ReadonlySet<string> = holdGestureChords(DEFAULT_KEYBINDINGS);
 
 /** Apply the daemon's `keybind` lines. Called on `welcome` and on every `settings-changed`. */
 export function setForwardedKeybindLines(lines: readonly string[]): void {
-    forwarded = claimedChordsForLines(lines);
+    const bindings = bindingsForLines(lines);
+    forwarded = claimedChords(bindings);
+    holdChords = holdGestureChords(bindings);
+}
+
+/** Does this forwarded chord start a hold-and-release gesture (`holdGestureChords`)? */
+export function startsHeldGesture(chord: ForwardedChord, held: ReadonlySet<string> = holdChords): boolean {
+    return held.has(chordKey(chord.code, chord));
 }
 
 /** The live set, for diagnostics and tests. */

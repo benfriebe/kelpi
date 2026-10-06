@@ -25,12 +25,15 @@ export interface SwitcherState {
 export const SWITCHER_SHOW_DELAY_MS = 150;
 
 /**
- * A gesture started from a web page commits after this long with no further step, until the
- * window has seen a keyup of its own. The page holds the keyboard when the chord is forwarded, and
- * Chromium suppresses that view's keyups after a consumed keydown, so a quick ⌃ release never
- * reaches anyone (docs/config-keybindings.md §7.8).
+ * How recent a release the window already saw may be and still belong to a relayed chord.
+ *
+ * A chord pressed in a web page reaches the window through the shell and the daemon, while the
+ * shell hands the keyboard over at once, so a quick tap's ⌃ release can arrive BEFORE the chord
+ * it ends. A release the window saw this soon before a press made in a page can only be that
+ * press's own: until the hand-off the window had no keyboard to see one with
+ * (docs/config-keybindings.md §7.8).
  */
-export const WEB_IDLE_COMMIT_MS = 400;
+export const RELAYED_RELEASE_GRACE_MS = 300;
 
 export interface RecentSwitcherDeps {
     order(): readonly string[];
@@ -38,11 +41,17 @@ export interface RecentSwitcherDeps {
     onChange?(state: SwitcherState | null): void;
     setTimer?(fn: () => void, ms: number): unknown;
     clearTimer?(handle: unknown): void;
+    now?(): number;
+}
+
+export interface StepOptions {
+    /** The chord was pressed in a web page or a frame and passed on to the window. */
+    readonly relayed?: boolean;
 }
 
 export interface RecentSwitcher {
     /** False when there is nothing to switch to, so the chord falls through to the pane. */
-    step(direction: 1 | -1, held: readonly HeldModifier[], options?: { readonly showNow?: boolean }): boolean;
+    step(direction: 1 | -1, held: readonly HeldModifier[], options?: StepOptions): boolean;
     keyUp(modifiers: ModifierSnapshot): void;
     /** True when a gesture was open (Escape belonged to it). */
     cancel(): boolean;
@@ -84,17 +93,18 @@ function isDown(modifier: HeldModifier, snapshot: ModifierSnapshot): boolean {
 
 interface Gesture extends SwitcherState {
     readonly held: readonly HeldModifier[];
-    /** The window has the keyboard, so the real release will arrive. */
-    readonly live: boolean;
 }
 
 export function createRecentSwitcher(deps: RecentSwitcherDeps): RecentSwitcher {
     const setTimer = deps.setTimer ?? ((fn: () => void, ms: number): unknown => setTimeout(fn, ms));
     const clearTimer =
         deps.clearTimer ?? ((handle: unknown): void => clearTimeout(handle as ReturnType<typeof setTimeout>));
+    const now = deps.now ?? ((): number => Date.now());
     let gesture: Gesture | null = null;
     let timer: unknown = null;
     let current: SwitcherState | null = null;
+    /** The last keyup the window saw with no gesture open (see `RELAYED_RELEASE_GRACE_MS`). */
+    let lastKeyUp: { readonly at: number; readonly modifiers: ModifierSnapshot } | null = null;
     const listeners = new Set<() => void>();
 
     const publish = (): void => {
@@ -112,60 +122,45 @@ export function createRecentSwitcher(deps: RecentSwitcherDeps): RecentSwitcher {
         end();
         if (workspaceID !== undefined) deps.commit(workspaceID);
     };
-    const armIdleCommit = (): void => {
-        if (timer !== null) clearTimer(timer);
-        timer = setTimer(() => {
-            timer = null;
-            if (gesture !== null) commit(gesture.order[gesture.index]);
-        }, WEB_IDLE_COMMIT_MS);
-    };
+    /** A relayed chord whose release the window has already seen: the gesture is over. */
+    const alreadyReleased = (held: readonly HeldModifier[]): boolean =>
+        lastKeyUp !== null &&
+        now() - lastKeyUp.at <= RELAYED_RELEASE_GRACE_MS &&
+        !held.some((modifier) => isDown(modifier, lastKeyUp!.modifiers));
 
     return {
         step(direction, held, options) {
-            const showNow = options?.showNow === true;
             if (gesture === null) {
                 const order = deps.order();
                 if (order.length < 2) return false;
                 const index = direction === 1 ? 1 : order.length - 1;
-                if (held.length === 0) {
+                const released = options?.relayed === true && alreadyReleased(held);
+                lastKeyUp = null;
+                if (held.length === 0 || released) {
                     commit(order[index]);
                     return true;
                 }
-                gesture = { order, index, shown: showNow, held, live: !showNow };
-                if (showNow) armIdleCommit();
-                else {
-                    timer = setTimer(() => {
-                        timer = null;
-                        if (gesture === null) return;
-                        gesture = { ...gesture, shown: true };
-                        publish();
-                    }, SWITCHER_SHOW_DELAY_MS);
-                }
+                gesture = { order, index, shown: false, held };
+                timer = setTimer(() => {
+                    timer = null;
+                    if (gesture === null) return;
+                    gesture = { ...gesture, shown: true };
+                    publish();
+                }, SWITCHER_SHOW_DELAY_MS);
                 publish();
                 return true;
             }
             const count = gesture.order.length;
-            gesture = {
-                ...gesture,
-                index: (gesture.index + direction + count) % count,
-                shown: gesture.shown || showNow
-            };
-            if (!gesture.live) armIdleCommit();
+            gesture = { ...gesture, index: (gesture.index + direction + count) % count };
             publish();
             return true;
         },
         keyUp(modifiers) {
-            if (gesture === null) return;
-            if (gesture.held.some((modifier) => isDown(modifier, modifiers))) {
-                // A keyup the WINDOW received with the gesture's modifier still down: it has the
-                // keyboard now, so stop guessing and wait for the real release.
-                if (!gesture.live) {
-                    if (timer !== null) clearTimer(timer);
-                    timer = null;
-                    gesture = { ...gesture, live: true };
-                }
+            if (gesture === null) {
+                lastKeyUp = { at: now(), modifiers: { ctrlKey: modifiers.ctrlKey, altKey: modifiers.altKey, metaKey: modifiers.metaKey } };
                 return;
             }
+            if (gesture.held.some((modifier) => isDown(modifier, modifiers))) return;
             commit(gesture.order[gesture.index]);
         },
         cancel() {

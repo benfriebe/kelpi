@@ -1166,3 +1166,48 @@ describe('set-terminal-font-size', () => {
         expect(terminalFontSize(h.state(), PB)).toBe(20);
     });
 });
+
+describe('set-scratchpad-wrap', () => {
+    const scratchpadWrap = (state: DaemonState, paneID: string): boolean | undefined =>
+        ws(state).panes.find((pane) => pane.id === paneID)?.scratchpadWrap;
+
+    it('turns one scratchpad’s wrap on and off, starting from off', () => {
+        const h = harness(seededState());
+        h.dispatch(
+            { type: 'create-scratchpad', workspaceID: W1, paneID: PA, now: NOW },
+            { type: 'create-scratchpad', workspaceID: W1, paneID: PB, now: NOW }
+        );
+        expect(scratchpadWrap(h.state(), PA)).toBe(false);
+
+        h.dispatch({ type: 'set-scratchpad-wrap', workspaceID: W1, paneID: PA, on: true });
+        expect(scratchpadWrap(h.state(), PA)).toBe(true);
+        expect(scratchpadWrap(h.state(), PB)).toBe(false);
+
+        h.dispatch({ type: 'set-scratchpad-wrap', workspaceID: W1, paneID: PA, on: false });
+        expect(scratchpadWrap(h.state(), PA)).toBe(false);
+    });
+
+    it('is a no-op for a pane that is not a scratchpad, and for no change', () => {
+        const h = harness(seededState());
+        const before = h.state();
+        h.dispatch({ type: 'set-scratchpad-wrap', workspaceID: W1, paneID: P0, on: true });
+        expect(h.state()).toBe(before);
+
+        h.dispatch({ type: 'create-scratchpad', workspaceID: W1, paneID: PA, now: NOW });
+        const created = h.state();
+        h.dispatch({ type: 'set-scratchpad-wrap', workspaceID: W1, paneID: PA, on: false });
+        expect(h.state()).toBe(created);
+    });
+
+    it('survives a close and reopen', () => {
+        const h = harness(seededState());
+        h.dispatch(
+            { type: 'create-scratchpad', workspaceID: W1, paneID: PA, now: NOW },
+            { type: 'set-scratchpad-wrap', workspaceID: W1, paneID: PA, on: true },
+            { type: 'close-pane', workspaceID: W1, paneID: PA }
+        );
+        expect(ws(h.state()).recentlyClosedPanes.at(-1)?.scratchpadWrap).toBe(true);
+        h.dispatch({ type: 'reopen-closed-pane', workspaceID: W1, paneID: PB, now: NOW });
+        expect(scratchpadWrap(h.state(), PB)).toBe(true);
+    });
+});

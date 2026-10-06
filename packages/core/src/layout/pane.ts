@@ -77,6 +77,11 @@ export interface Pane {
      * ghostty `font-size`.
      */
     terminalFontSize: number | null;
+    /**
+     * Persisted: a scratchpad soft-wraps its lines to the pane instead of scrolling sideways (the
+     * header's wrap toggle). Defaults to false; meaningless for other pane types.
+     */
+    scratchpadWrap: boolean;
     agentSessionID: string | null;
     /** Persisted; deliberately NOT cleared when agentSessionID is cleared on load. */
     agentKind: AgentKind | null;
@@ -109,6 +114,7 @@ export const PANE_PERSISTED_COLUMNS: Readonly<Record<string, string>> = {
     scratchpadContent: 'content',
     csvHeaderRow: 'csvHeaderRow',
     terminalFontSize: 'terminalFontSize',
+    scratchpadWrap: 'scratchpadWrap',
     agentSessionID: 'agentSessionID',
     agentKind: 'agentKind',
     agentProfileName: 'agentProfileName',
@@ -126,6 +132,7 @@ export const PANE_PERSISTED_FIELDS: readonly (keyof Pane)[] = [
     'scratchpadContent',
     'csvHeaderRow',
     'terminalFontSize',
+    'scratchpadWrap',
     'agentSessionID',
     'agentKind',
     'agentProfileName',
@@ -157,6 +164,7 @@ export interface NewPaneFields {
     scratchpadContent?: string | null;
     csvHeaderRow?: boolean;
     terminalFontSize?: number | null;
+    scratchpadWrap?: boolean;
     agentSessionID?: string | null;
     agentKind?: AgentKind | null;
     agentProfileName?: string | null;
@@ -178,6 +186,7 @@ export function makePane(fields: NewPaneFields): Pane {
         scratchpadContent: fields.scratchpadContent ?? null,
         csvHeaderRow: fields.csvHeaderRow ?? true,
         terminalFontSize: fields.terminalFontSize ?? null,
+        scratchpadWrap: fields.scratchpadWrap ?? false,
         agentSessionID: fields.agentSessionID ?? null,
         agentKind: fields.agentKind ?? null,
         agentProfileName: fields.agentProfileName ?? null,

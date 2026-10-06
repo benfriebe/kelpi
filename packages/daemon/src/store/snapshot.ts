@@ -62,6 +62,8 @@ export interface PersistedPane {
     readonly csvHeaderRow?: boolean;
     /** A terminal pane's own text size. Absent in records written before it existed (= null). */
     readonly terminalFontSize?: number | null;
+    /** A scratchpad's wrap toggle. Absent in records written before it existed (= false). */
+    readonly scratchpadWrap?: boolean;
     /** null for non-web panes AND for private web panes (tabs are withheld). */
     readonly webTabs: readonly WebTab[] | null;
     readonly webActiveTabID: string | null;
@@ -148,6 +150,7 @@ function persistPane(pane: Pane, sidecar: WebPaneState | undefined): PersistedPa
         scratchpadContent: pane.scratchpadContent,
         csvHeaderRow: pane.csvHeaderRow,
         terminalFontSize: pane.terminalFontSize,
+        scratchpadWrap: pane.scratchpadWrap,
         webTabs,
         webActiveTabID: webTabs === null ? null : (sidecar?.activeTabID ?? null),
         webIsPrivate: isPrivate
@@ -218,6 +221,7 @@ function restorePane(record: PersistedPane): Pane {
         scratchpadContent: record.scratchpadContent,
         csvHeaderRow: record.csvHeaderRow ?? true,
         terminalFontSize: record.terminalFontSize ?? null,
+        scratchpadWrap: record.scratchpadWrap ?? false,
         agentSessionID: record.agentSessionID,
         agentKind: record.agentKind,
         agentProfileName: record.agentProfileName ?? null,

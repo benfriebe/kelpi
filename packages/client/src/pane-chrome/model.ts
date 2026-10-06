@@ -438,6 +438,21 @@ function csvControls(pane: PaneModel, facts: PaneChromeCsvFacts | null): PaneChr
 }
 
 /**
+ * A scratchpad's wrap toggle. Like `header-row` it names what a press DOES, label and glyph both:
+ * a scratchpad that scrolls sideways offers to wrap, and a wrapping one offers to stop.
+ */
+function scratchpadWrapControl(pane: PaneModel): PaneChromeControlDescriptor {
+    const wrapping = pane.scratchpadWrap === true;
+    return control({
+        key: 'wrap',
+        kind: 'action',
+        label: wrapping ? 'Stop wrapping lines' : 'Wrap lines',
+        icon: wrapping ? 'no-wrap' : 'wrap',
+        testID: `pane-wrap-${pane.id}`
+    });
+}
+
+/**
  * Fold a pane into its chrome.
  *
  * The order below is `PaneHeaderView.swift:177-273`'s row order, which is also the order §S40
@@ -465,6 +480,7 @@ export function paneChromeModel(input: PaneChromeInput): PaneChromeModel {
         (pane.type === 'diff' ? 1 : 0) +
         // #324: raw text ⇄ table, and the header-row toggle.
         (csv ? 2 : 0) +
+        (pane.type === 'scratchpad' ? 1 : 0) +
         commandInputs.length +
         (contributions ? 4 : 0);
 
@@ -511,6 +527,7 @@ export function paneChromeModel(input: PaneChromeInput): PaneChromeModel {
               ]
             : []),
         ...(csv ? csvControls(pane, input.csv ?? null) : []),
+        ...(pane.type === 'scratchpad' ? [scratchpadWrapControl(pane)] : []),
         ...(pane.type === 'diff'
             ? [
                   control({

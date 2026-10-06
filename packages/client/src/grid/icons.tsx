@@ -16,6 +16,9 @@ export type IconName =
     // #324: a csv pane's type glyph, and the header-row control's two states.
     | 'table'
     | 'table-header'
+    // A scratchpad's wrap toggle, named for what a press does: wrap, or run lines off the edge.
+    | 'wrap'
+    | 'no-wrap'
     | 'globe'
     | 'tag'
     | 'branch'
@@ -70,6 +73,22 @@ const PATHS: Record<IconName, ReactElement> = {
             <rect x="1.8" y="2.2" width="8.4" height="7.6" rx="0.8" />
             <path d="M1.8 4.8h8.4M5 4.8v5" />
             <path fill="currentColor" stroke="none" d="M2.4 2.8h7.2v1.9H2.4z" />
+        </>
+    ),
+    wrap: (
+        <>
+            <path d="M1.5 2.8h9" />
+            <path d="M1.5 6h7a1.7 1.7 0 0 1 0 3.4H6" />
+            <path d="m7.2 8.2-1.2 1.2 1.2 1.2" />
+            <path d="M1.5 9.4h2.5" />
+        </>
+    ),
+    'no-wrap': (
+        <>
+            <path d="M1.5 2.8h9" />
+            <path d="M1.5 6h8.6" />
+            <path d="m9 4.6 1.4 1.4L9 7.4" />
+            <path d="M1.5 9.2h4" />
         </>
     ),
     globe: (

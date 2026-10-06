@@ -214,10 +214,17 @@ describe('pane row decoding', () => {
             scratchpadContent: null,
             csvHeaderRow: true,
             terminalFontSize: null,
+            scratchpadWrap: false,
             webTabs: null,
             webActiveTabID: null,
             webIsPrivate: false
         } satisfies PersistedPane);
+    });
+
+    it("decodes a scratchpad's wrap toggle, and a pre-v25 row as no wrap", () => {
+        expect(decodePaneRow(paneRow({ type: 'scratchpad', scratchpadWrap: 1 }))?.pane.scratchpadWrap).toBe(true);
+        expect(decodePaneRow(paneRow({ type: 'scratchpad', scratchpadWrap: 0 }))?.pane.scratchpadWrap).toBe(false);
+        expect(decodePaneRow(paneRow({ type: 'scratchpad' }))?.pane.scratchpadWrap).toBe(false);
     });
 
     it("decodes a terminal pane's own text size, and reads anything out of range as none", () => {
@@ -584,6 +591,29 @@ describe('encoding (§5.4)', () => {
         expect(encodePaneRow({ ...pane, terminalFontSize: 20 }, W1).terminalFontSize).toBe(20);
         expect(encodePaneRow({ ...pane, terminalFontSize: null }, W1).terminalFontSize).toBeNull();
         expect(encodePaneRow(pane, W1).terminalFontSize).toBeNull();
+    });
+
+    it("encodes a scratchpad's wrap toggle as 0/1, and its absence as 0", () => {
+        const pane = {
+            id: P1,
+            label: null,
+            type: 'scratchpad' as const,
+            workingDirectory: '/tmp',
+            createdAt: 1,
+            lastActivityAt: 1,
+            agentSessionID: null,
+            agentKind: null,
+            agentProfileName: null,
+            status: 'idle' as const,
+            filePath: null,
+            scratchpadContent: 'notes',
+            webTabs: null,
+            webActiveTabID: null,
+            webIsPrivate: false
+        };
+        expect(encodePaneRow({ ...pane, scratchpadWrap: true }, W1).scratchpadWrap).toBe(1);
+        expect(encodePaneRow({ ...pane, scratchpadWrap: false }, W1).scratchpadWrap).toBe(0);
+        expect(encodePaneRow(pane, W1).scratchpadWrap).toBe(0);
     });
 
     it('encodes booleans as 0/1 and childOrder as a UUID array', () => {

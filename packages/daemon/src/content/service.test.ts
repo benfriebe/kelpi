@@ -265,6 +265,30 @@ describe('markdown panes', () => {
     });
 });
 
+describe('scratchpad wrap', () => {
+    it('sets the pane field the clients read, and leaves the text alone', async () => {
+        const f = fixture({ watch: false });
+        openScratchpad(f);
+        await f.service.setText(SCRATCH, 'a long line');
+
+        const state = await f.service.setWrap(SCRATCH, true);
+        expect(state.text).toBe('a long line');
+        expect(visiblePane(workspaceByID(f.store.state(), W1)!, SCRATCH)?.scratchpadWrap).toBe(true);
+
+        await f.service.setWrap(SCRATCH, false);
+        expect(visiblePane(workspaceByID(f.store.state(), W1)!, SCRATCH)?.scratchpadWrap).toBe(false);
+        f.dispose();
+    });
+
+    it('refuses a content pane that is not a scratchpad', async () => {
+        const f = fixture({ watch: false });
+        openMarkdown(f);
+        await expect(f.service.setWrap(MD, true)).rejects.toThrow(`pane '${MD}' is not a scratchpad`);
+        expect(visiblePane(workspaceByID(f.store.state(), W1)!, MD)?.scratchpadWrap).toBe(false);
+        f.dispose();
+    });
+});
+
 // ---------------------------------------------------------------------------
 // Edit mode + buffers
 // ---------------------------------------------------------------------------

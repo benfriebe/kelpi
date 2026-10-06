@@ -223,6 +223,12 @@ export const MIGRATIONS: readonly Migration[] = [
         // daemon-wide ghostty `font-size`, exactly as before.
         identifier: 'v24_pane_terminal_font_size',
         apply: (db) => addColumn(db, 'pane', 'terminalFontSize', 'INTEGER')
+    },
+    {
+        // Kelpi-only: a scratchpad soft-wraps its lines (the header's wrap toggle). Every existing
+        // pane reads back as "off", which is how every scratchpad drew before the toggle existed.
+        identifier: 'v25_pane_scratchpad_wrap',
+        apply: (db) => addColumn(db, 'pane', 'scratchpadWrap', 'BOOLEAN NOT NULL DEFAULT 0')
     }
 ];
 
@@ -240,7 +246,8 @@ export const DAEMON_ONLY_MIGRATIONS: readonly string[] = [
     'v21_workspace_muted',
     'v22_workspace_group_repo',
     'v23_pane_csv_header_row',
-    'v24_pane_terminal_font_size'
+    'v24_pane_terminal_font_size',
+    'v25_pane_scratchpad_wrap'
 ];
 
 export function ensureMigrationsTable(db: SqlDatabase): void {

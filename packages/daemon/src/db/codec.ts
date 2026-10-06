@@ -114,6 +114,8 @@ export interface PaneRow {
     readonly csvHeaderRow: number;
     /** v24: a terminal pane's own text size; NULL = it follows the ghostty `font-size`. */
     readonly terminalFontSize: number | null;
+    /** v25: 1 = a scratchpad soft-wraps its lines. Every pane row carries it. */
+    readonly scratchpadWrap: number;
 }
 
 export interface RepoRow {
@@ -389,7 +391,8 @@ export function encodePaneRow(pane: PersistedPane, workspaceID: string): PaneRow
         agentKind: pane.agentKind,
         agentProfileName: pane.agentProfileName,
         csvHeaderRow: pane.csvHeaderRow === false ? 0 : 1,
-        terminalFontSize: pane.terminalFontSize ?? null
+        terminalFontSize: pane.terminalFontSize ?? null,
+        scratchpadWrap: pane.scratchpadWrap === true ? 1 : 0
     };
 }
 
@@ -638,6 +641,8 @@ export function decodePaneRow(row: SqlRow, options: DecodePaneOptions = {}): Dec
             csvHeaderRow: boolColumn(row, 'csvHeaderRow') ?? true,
             // A pre-v24 row (no column) and a NULL both mean "follows the daemon-wide size".
             terminalFontSize: decodeTerminalFontSize(numberColumn(row, 'terminalFontSize')),
+            // A pre-v25 row (no column) keeps the default: no wrap, a horizontal scrollbar.
+            scratchpadWrap: boolColumn(row, 'scratchpadWrap') ?? false,
             ...web
         }
     };

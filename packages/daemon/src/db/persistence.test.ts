@@ -73,6 +73,7 @@ function richSnapshot(): PersistedSnapshot {
                         scratchpadContent: null,
                         csvHeaderRow: true,
                         terminalFontSize: 18,
+                        scratchpadWrap: false,
                         webTabs: null,
                         webActiveTabID: null,
                         webIsPrivate: false
@@ -92,6 +93,7 @@ function richSnapshot(): PersistedSnapshot {
                         scratchpadContent: null,
                         csvHeaderRow: true,
                         terminalFontSize: null,
+                        scratchpadWrap: false,
                         webTabs: null,
                         webActiveTabID: null,
                         webIsPrivate: false
@@ -111,6 +113,7 @@ function richSnapshot(): PersistedSnapshot {
                         scratchpadContent: '# scratch\n\nline two',
                         csvHeaderRow: true,
                         terminalFontSize: null,
+                        scratchpadWrap: true,
                         webTabs: null,
                         webActiveTabID: null,
                         webIsPrivate: false
@@ -155,6 +158,7 @@ function richSnapshot(): PersistedSnapshot {
                         scratchpadContent: null,
                         csvHeaderRow: true,
                         terminalFontSize: null,
+                        scratchpadWrap: false,
                         webTabs: [
                             { id: TAB1, url: 'https://example.com', title: 'Example Domain' },
                             { id: TAB2, url: 'http://localhost:3000', title: '' }
@@ -177,6 +181,7 @@ function richSnapshot(): PersistedSnapshot {
                         scratchpadContent: null,
                         csvHeaderRow: true,
                         terminalFontSize: null,
+                        scratchpadWrap: false,
                         webTabs: null,
                         webActiveTabID: null,
                         webIsPrivate: true
@@ -196,6 +201,7 @@ function richSnapshot(): PersistedSnapshot {
                         scratchpadContent: null,
                         csvHeaderRow: true,
                         terminalFontSize: null,
+                        scratchpadWrap: false,
                         webTabs: null,
                         webActiveTabID: null,
                         webIsPrivate: false
@@ -216,6 +222,7 @@ function richSnapshot(): PersistedSnapshot {
                         scratchpadContent: null,
                         csvHeaderRow: false,
                         terminalFontSize: null,
+                        scratchpadWrap: false,
                         webTabs: null,
                         webActiveTabID: null,
                         webIsPrivate: false
@@ -325,6 +332,7 @@ describe('save → load round trip', () => {
                             scratchpadContent: null,
                             csvHeaderRow: true,
                             terminalFontSize: 18,
+                            scratchpadWrap: false,
                             agentSessionID: 'abc',
                             agentKind: 'claude',
                             agentProfileName: 'work',

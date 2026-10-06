@@ -1348,6 +1348,7 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
                             onToggleMarkdownEdit={props.onToggleMarkdownEdit}
                             onRefreshDiff={props.onRefreshDiff}
                             onToggleCsvHeaderRow={props.onToggleCsvHeaderRow}
+                            onToggleScratchpadWrap={props.onToggleScratchpadWrap}
                             onCopyDocument={props.onCopyDocument}
                             onSetFontSize={props.onSetFontSize}
                             onRestartAgent={props.onRestartAgent}

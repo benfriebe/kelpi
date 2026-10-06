@@ -132,6 +132,7 @@ appears in some `workspace_group.childOrderJSON`; it is top-level iff it appears
 | `agentProfileName` | TEXT | yes  |           | Kelpi-only (v19, §4): the profile name the pane's agent session was launched under, so a resume rebuilds the same environment. NULL = unknown. Written and read on every save/load (`packages/daemon/src/db/codec.ts:609`); preserved (not cleared) on load like `agentKind`; cleared together with `agentSessionID` on `session-end` (§7.3). |
 | `csvHeaderRow`  | BOOLEAN | no   | 1         | Kelpi-only (v23, issue #324): a `csv` pane treats its first row as column headers ([csv-pane.md](csv-pane.md) §1). Written for every pane (1 unless a csv pane turned it off); meaningless for other types. A pre-v23 row reads as on. |
 | `terminalFontSize` | INTEGER | yes |        | Kelpi-only (v24): a terminal pane's own text size in points (⌘= / ⌘- under `font-size-scope = pane`, [config-keybindings.md](config-keybindings.md) §7.6). NULL = none of its own; the pane follows the ghostty `font-size`. A pre-v24 row, or a value outside 8-32, reads as NULL. |
+| `scratchpadWrap` | BOOLEAN | no | 0 | Kelpi-only (v25): a `scratchpad` pane soft-wraps its lines ([content-panes.md](content-panes.md) §7). Written for every pane (0 unless a scratchpad turned it on); meaningless for other types. A pre-v25 row reads as off. |
 
 ### 2.3 `repo` and `repoAssociation`
 
@@ -368,6 +369,7 @@ migration idempotent regardless of ledger drift.
 | `v22_workspace_group_repo` | `workspace_group` + `repoID TEXT` (nullable) and + `createWorktree BOOLEAN NOT NULL DEFAULT 0` (§2.5). Kelpi-only (in `DAEMON_ONLY_MIGRATIONS`) and guarded, each column independently. Additive, so no new database generation: an older daemon's explicit-column INSERT leaves NULL / 0, so a downgrade loses each group's repository and switch but nothing else. |
 | `v23_pane_csv_header_row` | `pane` + `csvHeaderRow BOOLEAN NOT NULL DEFAULT 1` (§2.2; issue #324, [csv-pane.md](csv-pane.md)). Kelpi-only (in `DAEMON_ONLY_MIGRATIONS`) and guarded. Additive, so no new database generation: an older daemon's explicit-column INSERT leaves the default (headers on), and it loads a `csv` pane as an unavailable placeholder that keeps its raw type, so a downgrade keeps every csv pane but resets each header-row choice to on the first time it saves. |
 | `v24_pane_terminal_font_size` | `pane` + `terminalFontSize INTEGER` (nullable, §2.2). Kelpi-only (in `DAEMON_ONLY_MIGRATIONS`) and guarded. Additive, so no new database generation: every existing pane reads back NULL and keeps following the ghostty `font-size`; an older daemon's explicit-column INSERT leaves NULL, so a downgrade drops each pane's own size the first time it saves. |
+| `v25_pane_scratchpad_wrap` | `pane` + `scratchpadWrap BOOLEAN NOT NULL DEFAULT 0` (§2.2). Kelpi-only (in `DAEMON_ONLY_MIGRATIONS`) and guarded. Additive, so no new database generation: every existing scratchpad reads back unwrapped, as it drew before; an older daemon's explicit-column INSERT leaves the default, so a downgrade turns each scratchpad's wrap off the first time it saves. |
 
 ---
 
@@ -642,6 +644,7 @@ Per workspace: id, name, slug, color, icon, profileName, muted, labels, layout t
 
 Per pane: id, owning workspace, label, type, workingDirectory, filePath, scratchpad content,
 the csv header-row choice (`csvHeaderRow`), a terminal pane's own text size (`terminalFontSize`),
+a scratchpad's wrap toggle (`scratchpadWrap`),
 agentSessionID (written, but consumed-and-cleared by the next launch), agentKind,
 agentProfileName, status (written, but reset to idle on load), createdAt, lastActivityAt, web
 tabs + active tab + private flag (tabs/URLs withheld for private panes), plugin descriptor
@@ -767,7 +770,8 @@ CREATE TABLE pane (
   pluginJSON       TEXT,                    -- Kelpi-only (v20); versioned plugin descriptor
   pluginParked     BOOLEAN NOT NULL DEFAULT 0,
   csvHeaderRow     BOOLEAN NOT NULL DEFAULT 1, -- Kelpi-only (v23); csv panes' header row
-  terminalFontSize INTEGER                  -- Kelpi-only (v24); NULL = follows ghostty font-size
+  terminalFontSize INTEGER,                 -- Kelpi-only (v24); NULL = follows ghostty font-size
+  scratchpadWrap   BOOLEAN NOT NULL DEFAULT 0 -- Kelpi-only (v25); scratchpads' wrap toggle
 );
 
 CREATE TABLE appState (

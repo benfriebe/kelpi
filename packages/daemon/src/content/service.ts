@@ -149,6 +149,11 @@ export interface ContentService {
      * unchanged snapshot rather than an error, exactly as the keybinding path behaves.
      */
     setFontSize(paneID: string, size: number): Promise<ContentPaneState>;
+    /**
+     * A scratchpad's wrap toggle (§7): persisted on the pane, which every client reads from the
+     * workspace sync, so the reply's snapshot is the usual one rather than a carrier for it.
+     */
+    setWrap(paneID: string, on: boolean): Promise<ContentPaneState>;
     /** Sibling-asset resolution for `/pane-assets/<paneID>/<relpath>`; null = 404. */
     assetPath(paneID: string, relativePath: string): string | null;
     /** Re-render every live entry against a new ghostty background (§3.8 theme change). */
@@ -1126,6 +1131,13 @@ export function createContentService(options: ContentServiceOptions): ContentSer
             // Native rendering is synchronous. A selected external renderer must finish the
             // new font-size generation before this command replies with its document.
             await awaitRendering(entry);
+            return snapshot(entry);
+        },
+
+        async setWrap(paneID, on) {
+            const entry = await ensure(paneID);
+            if (entry.type !== 'scratchpad') throw new Error(`pane '${paneID}' is not a scratchpad`);
+            store.dispatch({ type: 'set-scratchpad-wrap', workspaceID: entry.workspaceID, paneID, on });
             return snapshot(entry);
         },
 

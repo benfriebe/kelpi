@@ -14,6 +14,8 @@ export interface DocumentFeatureProps extends MarkdownPaneProps {
     readonly editing?: boolean | undefined;
     readonly phone?: boolean | undefined;
     readonly filePath?: string | null | undefined;
+    /** A scratchpad's persisted wrap toggle (`Pane.scratchpadWrap`); absent = no wrap. */
+    readonly wrap?: boolean | undefined;
 }
 
 /** Per-pane bindings share one content owner across native and external renderers. */

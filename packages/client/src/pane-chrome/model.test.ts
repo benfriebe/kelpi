@@ -257,6 +257,43 @@ describe('paneChromeModel', () => {
         });
     });
 
+    describe('a scratchpad pane', () => {
+        const scratchpad = (overrides: Parameters<typeof testPane>[1] = {}) =>
+            testPane('s', { type: 'scratchpad', isEditing: true, ...overrides });
+
+        it('draws a wrap toggle that offers to wrap, from a record that does not', () => {
+            const model = paneChromeModel({ pane: scratchpad(), focused: false, nowSeconds: NOW }).descriptor;
+            expect(model.controls.map((control) => control.key)).toEqual(['wrap', 'split-right', 'split-down', 'new-web', 'close']);
+            expect(model.size.buttons).toBe(5);
+            expect(model.controls.find((control) => control.key === 'wrap')).toMatchObject({
+                label: 'Wrap lines',
+                icon: 'wrap',
+                enabled: true,
+                testID: 'pane-wrap-s'
+            });
+        });
+
+        it('swaps the label and glyph once the scratchpad wraps', () => {
+            const model = paneChromeModel({ pane: scratchpad({ scratchpadWrap: true }), focused: false, nowSeconds: NOW }).descriptor;
+            expect(model.controls.find((control) => control.key === 'wrap')).toMatchObject({ label: 'Stop wrapping lines', icon: 'no-wrap' });
+        });
+
+        it('runs the wrap toggle through the surface', () => {
+            const onToggleScratchpadWrap = vi.fn();
+            const model = paneChromeModel({ pane: scratchpad(), focused: false, nowSeconds: NOW });
+            const surface = createPaneChromeSurface({ actions: () => ({ onToggleScratchpadWrap }), model: () => model });
+            surface.runControl('s', 'wrap');
+            expect(onToggleScratchpadWrap).toHaveBeenCalledWith('s');
+        });
+
+        it('draws no wrap toggle on any other pane', () => {
+            for (const type of ['shell', 'markdown', 'diff', 'csv', 'web'] as const) {
+                const model = paneChromeModel({ pane: testPane('o', { type }), focused: false, nowSeconds: NOW }).descriptor;
+                expect(model.controls.some((control) => control.key === 'wrap')).toBe(false);
+            }
+        });
+    });
+
     /**
      * One source, so presence and count cannot disagree. They used to come from two: the box was
      * drawn when the host's rendered node was truthy and the count was `items.length`, which is a

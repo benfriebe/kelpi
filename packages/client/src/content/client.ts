@@ -79,6 +79,8 @@ export interface ContentApi {
      * still owns the clamp and the "markdown, not editing" guard.
      */
     setFontSize(paneID: string, step: FontSizeStep): Promise<void>;
+    /** A scratchpad's wrap toggle (§7); the daemon keeps it on the pane, not in the content state. */
+    setWrap(paneID: string, on: boolean): Promise<void>;
     /** The last state seen for a pane; null when nothing is (or was) subscribed. */
     peek(paneID: string): ContentPaneState | null;
 }
@@ -289,6 +291,10 @@ export function createContentClient(options: ContentClientOptions): ContentClien
             const size = nextFontSize(current, step);
             if (size === current) return Promise.resolve();
             return settle(paneID, commands.setContentFontSize({ paneID, size }), 'content-set-font-size');
+        },
+
+        setWrap(paneID, on) {
+            return settle(paneID, commands.setContentWrap({ paneID, wrap: on }), 'content-set-wrap');
         },
 
         peek(paneID) {

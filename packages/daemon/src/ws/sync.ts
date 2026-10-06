@@ -922,6 +922,7 @@ export function handleWsOnlyCommand(
  *   diff-refresh         `pane_id`          → `{ok, pane_id, state}` (re-runs git)
  *   markdown-save        `pane_id`          → `{ok, pane_id, state}` (flush the debounce)
  *   content-set-font-size `pane_id`, `size` → `{ok, pane_id, state}` (§3.16, re-render only)
+ *   content-set-wrap     `pane_id`, `wrap`  → `{ok, pane_id, state}` (a scratchpad's wrap toggle, §7)
  *
  * `content-updated` (`{type, paneID, state}`) goes ONLY to sessions subscribed to that pane.
  */
@@ -932,7 +933,8 @@ export const CONTENT_COMMANDS = [
     'content-set-text',
     'diff-refresh',
     'markdown-save',
-    'content-set-font-size'
+    'content-set-font-size',
+    'content-set-wrap'
 ] as const;
 export type ContentCommand = (typeof CONTENT_COMMANDS)[number];
 
@@ -954,6 +956,7 @@ export interface ContentChannel {
     save(paneID: string): Promise<ContentPaneState>;
     refresh(paneID: string): Promise<ContentPaneState>;
     setFontSize(paneID: string, size: number): Promise<ContentPaneState>;
+    setWrap(paneID: string, on: boolean): Promise<ContentPaneState>;
     /**
      * §AGNT-114's step 1, moved to the side that owns the buffers.
      *
@@ -3107,6 +3110,15 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                         return;
                     }
                     settle(content.setFontSize(paneID, size));
+                    return;
+                }
+                case 'content-set-wrap': {
+                    const wrap = payload['wrap'];
+                    if (typeof wrap !== 'boolean') {
+                        this.contentReply(id, failure('content-set-wrap requires wrap'));
+                        return;
+                    }
+                    settle(content.setWrap(paneID, wrap));
                     return;
                 }
                 case 'diff-refresh':

@@ -57,6 +57,8 @@ export interface ClosedPaneSnapshot {
     readonly csvHeaderRow: boolean;
     /** A terminal pane's own text size survives a close + reopen too; null = follows the default. */
     readonly terminalFontSize: number | null;
+    /** A scratchpad's wrap toggle survives a close + reopen as well. */
+    readonly scratchpadWrap: boolean;
     readonly agentSessionID: string | null;
     readonly agentKind: AgentKind | null;
     /** The profile the recorded agent session was launched under; reopen resumes with it. */
@@ -644,6 +646,13 @@ export type DomainAction =
           readonly workspaceID: string;
           readonly paneID: string;
           readonly size: number | null;
+      }
+    | {
+          /** A scratchpad soft-wraps its lines (persisted per pane); false = a horizontal scrollbar. */
+          readonly type: 'set-scratchpad-wrap';
+          readonly workspaceID: string;
+          readonly paneID: string;
+          readonly on: boolean;
       }
 
     // ── layout / focus / zoom ──────────────────────────────────────────────

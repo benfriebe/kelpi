@@ -263,9 +263,9 @@ export function PlainTextEditor(props: PlainTextEditorProps): ReactElement {
     /**
      * §M60 — a wrapping editor needs MEASURED per-line heights; a `wrap="off"` one does not.
      *
-     * The scratchpad keeps the cheap fixed-pitch path exactly as it was (`CONT-070`'s ledgered
-     * `wrap="off"`): no mirror node, no measurement, no cache. Only the markdown editor, which
-     * M29 turned into a soft-wrapping one, pays for the mirror.
+     * A scratchpad keeps the cheap fixed-pitch path by default (`CONT-070`'s ledgered
+     * `wrap="off"`): no mirror node, no measurement, no cache. Only a soft-wrapping editor (the
+     * markdown one since M29, or a scratchpad whose wrap toggle is on) pays for the mirror.
      */
     const wrapping = showGutter && props.wrap === 'soft';
     /**
@@ -355,7 +355,7 @@ export function PlainTextEditor(props: PlainTextEditorProps): ReactElement {
     const [lineWindow, setWindow] = useState<LineWindow | null>(null);
     /**
      * §M60: with measured heights the window resolves rows → line through the prefix sums; with
-     * `wrap="off"` (the scratchpad) it stays the fixed-pitch arithmetic it has always been. The
+     * `wrap="off"` (a scratchpad, by default) it stays the fixed-pitch arithmetic it has always been. The
      * length check guards the one frame where a keystroke has changed the buffer but the layout
      * effect has not re-measured it yet.
      */

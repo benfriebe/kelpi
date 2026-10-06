@@ -77,6 +77,8 @@ interface Pane {
                                     // running the user's $EDITOR" instead of the built-in
                                     // editor.
   scratchpadContent?: string;       // scratchpad text; persisted to DB, never to disk
+  scratchpadWrap: boolean;          // scratchpad only: soft-wrap lines to the pane (default
+                                    // false = horizontal scrollbar; persisted, §7)
   markdownFontSize: number;         // px, default 14; per-pane, IN-MEMORY only for live
                                     // panes but captured into closed-pane snapshots
   parkedSourcePaneID?: string;      // TRANSIENT. Set on a markdown/diff pane opened via
@@ -99,6 +101,8 @@ Content-pane relevant columns of `PaneRecord`:
 - `type` — the `PaneType` raw string.
 - `csvHeaderRow` (`BOOLEAN NOT NULL DEFAULT 1`, migration `v23_pane_csv_header_row`): a csv
   pane's header-row choice. Meaningless for other types.
+- `scratchpadWrap` (`BOOLEAN NOT NULL DEFAULT 0`, migration `v25_pane_scratchpad_wrap`): a
+  scratchpad's wrap toggle (§7). Meaningless for other types.
 
 Custom plugin pane descriptors use the separate `pluginJSON` column, including preservation
 of unsupported raw descriptors. Native document renderer preferences are stored separately
@@ -130,6 +134,7 @@ interface ClosedPaneSnapshot {
   agentProfileName?: string;     // the profile the agent session was launched under
   markdownFontSize: number;      // font size DOES survive close→reopen (unlike restart)
   csvHeaderRow: boolean;         // a csv pane's header-row choice survives close→reopen
+  scratchpadWrap: boolean;       // so does a scratchpad's wrap toggle
   webState?: unknown;            // web pane sidecar; irrelevant here
 }
 ```
@@ -1010,7 +1015,8 @@ with:
 - **Tab** (unmodified) inserts a `\t` at the caret rather than moving focus; ⇧Tab and
   any modified Tab are left to the browser as navigation. `tab-size` is 4.
 - **Wrapping**: the markdown editor soft-wraps to the pane (`wrap="soft"`); the
-  scratchpad editor does not (`wrap="off"`, a horizontal scrollbar instead, see §7).
+  scratchpad editor does not by default (`wrap="off"`, a horizontal scrollbar instead), and
+  its header's wrap toggle switches it to `wrap="soft"` (see §7).
 - **Metrics**: an 8 px inset on every side and a fixed 16 px row height, shared with the
   gutter so the numbers and the rows never drift.
 - **Line-number gutter**: right-aligned line numbers (1-based), 11 px monospace,
@@ -1491,9 +1497,16 @@ Behavior = the built-in markdown editor (4.2) with these differences:
   branch.
 - Same line-number gutter, scroll-fraction persistence, undo, transparent
   background over the ghostty-colored pane fill, luminance-based text color. Like the
-  markdown editor, ⌘F opens the editor's find bar (§4.4). Unlike the markdown editor it
-  does not soft-wrap:
-  the scratchpad textarea keeps `wrap="off"` and scrolls horizontally.
+  markdown editor, ⌘F opens the editor's find bar (§4.4).
+- **Wrapping is per scratchpad.** By default the textarea keeps `wrap="off"` and scrolls
+  horizontally. The header's wrap toggle (§8) flips `pane.scratchpadWrap`, and the editor
+  then soft-wraps to the pane exactly as the markdown editor does, gutter numbers included
+  (§4.2, measured per line). The client sends `content-set-wrap {pane_id, wrap}`; the
+  content service refuses any pane that is not a scratchpad and dispatches
+  `set-scratchpad-wrap`. The flag lives on the pane in daemon state, so every window,
+  browser and remote viewer draws the scratchpad the same way, and it survives a restart
+  (`pane.scratchpadWrap`, §1.2) and a close + ⌘⇧T reopen (§1.3). Phone pane mode has no
+  pane header, so a phone shows the scratchpad's current choice but cannot change it.
 - Close/reopen: content rides the closed-pane snapshot, so ⌘⇧T restores the text.
 
 ---
@@ -1518,6 +1531,9 @@ Header layout (all panes share one header bar; content-pane specifics):
   tooltip "Copy whole file") → menu with "Copy as Markdown" / "Copy as Rich Text";
   edit/preview toggle button (pencil in view mode with tooltip "Edit (⌘E)"; eye in
   edit mode with tooltip "Preview (⌘E)"). The copy button is hidden while editing.
+- **Scratchpad-only button**: wrap toggle. Like the csv header-row control it names what a
+  press does: `Wrap lines` (wrap glyph) while the scratchpad scrolls sideways, `Stop
+  wrapping lines` (no-wrap glyph) while it wraps. Sends `content-set-wrap` (§7).
 - **Diff-only button**: refresh (`arrow.clockwise`, tooltip "Refresh diff") → sends
   `content.refresh(paneID)` (5.2).
 - **Markdown-only body control**: a "$EDITOR" chip (aria-label "Open in $EDITOR") is

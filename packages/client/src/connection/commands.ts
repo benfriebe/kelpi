@@ -1832,6 +1832,11 @@ export class CommandClient {
         );
     }
 
+    /** A scratchpad's wrap toggle (content-panes.md §7), persisted on the pane. */
+    setContentWrap(input: { paneID: string; wrap: boolean }, options?: SendOptions): Promise<CommandReply> {
+        return this.raw(wirePayload('content-set-wrap', { pane_id: input.paneID, wrap: input.wrap }), options ?? {});
+    }
+
     // ── csv-pane verbs (#324) ──────────────────────────────────────────────────────
     //
     // The daemon's csv service behind `daemon/src/ws/sync.ts` `CSV_COMMANDS`

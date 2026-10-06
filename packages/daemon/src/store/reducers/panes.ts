@@ -182,6 +182,7 @@ function snapshotForReopen(workspace: WorkspaceState, pane: Pane): WorkspaceStat
             scratchpadContent: pane.scratchpadContent,
             csvHeaderRow: pane.csvHeaderRow,
             terminalFontSize: pane.terminalFontSize,
+            scratchpadWrap: pane.scratchpadWrap,
             agentSessionID: pane.agentSessionID,
             agentKind: pane.agentKind,
             agentProfileName: pane.agentProfileName,
@@ -361,6 +362,7 @@ function reopenClosedPane(
         scratchpadContent: snapshot.scratchpadContent,
         csvHeaderRow: snapshot.csvHeaderRow,
         terminalFontSize: snapshot.terminalFontSize,
+        scratchpadWrap: snapshot.scratchpadWrap,
         isEditing: snapshot.type === 'scratchpad'
     });
     // agentSessionID is NOT restored (it only types the resume command); agentKind is, for
@@ -835,6 +837,15 @@ export function reducePaneAction(state: DaemonState, action: DomainAction): Daem
                 return mutateVisiblePane(workspace, action.paneID, (target) => ({
                     ...target,
                     terminalFontSize: size
+                }));
+            });
+        case 'set-scratchpad-wrap':
+            return updateWorkspace(state, action.workspaceID, (workspace) => {
+                const pane = findVisiblePane(workspace, action.paneID);
+                if (pane === null || pane.type !== 'scratchpad' || pane.scratchpadWrap === action.on) return workspace;
+                return mutateVisiblePane(workspace, action.paneID, (target) => ({
+                    ...target,
+                    scratchpadWrap: action.on
                 }));
             });
         default:

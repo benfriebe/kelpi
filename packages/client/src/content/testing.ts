@@ -24,6 +24,11 @@ export interface SentFontSize {
     readonly step: FontSizeStep;
 }
 
+export interface SentWrap {
+    readonly paneID: string;
+    readonly on: boolean;
+}
+
 export interface FakeContentApi extends ContentApi {
     /** Pane ids in subscribe order (one entry per `subscribe` call). */
     readonly subscribes: string[];
@@ -34,6 +39,7 @@ export interface FakeContentApi extends ContentApi {
     readonly saves: string[];
     readonly flushes: string[];
     readonly fontSizes: SentFontSize[];
+    readonly wraps: SentWrap[];
     listenerCount(paneID: string): number;
     /** Deliver a state snapshot to a pane's listeners. */
     push(state: ContentPaneState): void;
@@ -51,6 +57,7 @@ export function createFakeContentApi(): FakeContentApi {
     const saves: string[] = [];
     const flushes: string[] = [];
     const fontSizes: SentFontSize[] = [];
+    const wraps: SentWrap[] = [];
     const states = new Map<string, ContentPaneState>();
 
     return {
@@ -62,6 +69,7 @@ export function createFakeContentApi(): FakeContentApi {
         saves,
         flushes,
         fontSizes,
+        wraps,
 
         subscribe(paneID: string, listener: ContentListener): ContentSubscription {
             subscribes.push(paneID);
@@ -103,6 +111,11 @@ export function createFakeContentApi(): FakeContentApi {
 
         setFontSize(paneID: string, step: FontSizeStep): Promise<void> {
             fontSizes.push({ paneID, step });
+            return Promise.resolve();
+        },
+
+        setWrap(paneID: string, on: boolean): Promise<void> {
+            wraps.push({ paneID, on });
             return Promise.resolve();
         },
 

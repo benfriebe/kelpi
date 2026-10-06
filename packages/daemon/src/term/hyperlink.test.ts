@@ -2,9 +2,10 @@
  * `hyperlinkAt`: the OSC 8 read behind ⌘-clicking a link in a TUI pane (#83).
  *
  * **This test is the contract with `@xterm/headless`, and that is its whole job.** The read it
- * covers goes through two private fields (`line._extendedAttrs[x].urlId` and
- * `core._inputHandler._oscLinkService`) because the emulator parses OSC 8 and exposes it to
- * nobody; the implementation answers `null` on any shape it does not recognise, which is right
+ * covers goes through two private shapes (the loaded cell's `hasExtendedAttrs()` and
+ * `extended.urlId`, and `core._inputHandler._oscLinkService`) because the emulator parses OSC 8
+ * and exposes it to nobody; the implementation answers `null` on any shape it does not
+ * recognise, which is right
  * for a live daemon and catastrophic for a silent regression. So every case below drives a REAL
  * OSC 8 escape sequence through the REAL emulator and reads the URI back out. An xterm upgrade
  * that moves either field turns this file red instead of turning ⌘-click quietly dead again.
@@ -160,6 +161,40 @@ describe('hyperlinkRangeAt (#303)', () => {
         );
         expect(term.hyperlinkRangeAt(PANE, 0, 1)?.segments).toEqual([{ row: 0, col: 0, width: 4 }]);
         expect(term.hyperlinkRangeAt(PANE, 1, 1)?.segments).toEqual([{ row: 1, col: 0, width: 4 }]);
+    });
+
+    /**
+     * Claude Code's /login, reproduced without Claude: the dialog prints the sign-in URL as one
+     * OSC 8 link that autowraps over several rows, then erases those rows (EL) and prints the
+     * transcript over them in plain text. xterm keeps the old link id in the line's map after
+     * the cells are rewritten, so the transcript was underlined as the sign-in link and a
+     * ⌘-click on it opened that URL.
+     */
+    it('forgets a link a TUI erased and drew plain text over', async () => {
+        const uri = 'https://example.com/oauth/authorize?code=true&client_id=abc';
+        const term = await seeded(`${osc8(uri, uri)}\r\n`, 20, 8);
+        expect(term.hyperlinkRangeAt(PANE, 1, 5)?.segments).toHaveLength(3); // the premise
+
+        term.feed(PANE, `${cup(1, 1)}${ESC}[2K> /login\r\n${ESC}[2K  Login successful\r\n${ESC}[2K`);
+        await term.flush(PANE);
+
+        expect(term.cellText(PANE, 1, 4)?.text).toContain('Login successful');
+        for (const [row, col] of [[0, 3], [1, 4], [1, 19], [2, 0], [2, 10]] as const) {
+            expect(term.hyperlinkAt(PANE, row, col)).toBeNull();
+            expect(term.hyperlinkRangeAt(PANE, row, col)).toBeNull();
+        }
+    });
+
+    it('underlines only the cells of a link that plain text did not overwrite', async () => {
+        const term = await seeded(`see ${osc8('https://example.com/x', 'the docs')} now\r\n`);
+        term.feed(PANE, `${cup(1, 5)}XXXX`);
+        await term.flush(PANE);
+
+        expect(term.hyperlinkAt(PANE, 0, 5)).toBeNull();
+        expect(term.hyperlinkRangeAt(PANE, 0, 9)).toEqual({
+            uri: 'https://example.com/x',
+            segments: [{ row: 0, col: 8, width: 4 }]
+        });
     });
 
     it('hyperlinkRangeAtAsync flushes pending writes first', async () => {

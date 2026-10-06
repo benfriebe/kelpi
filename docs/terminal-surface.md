@@ -949,7 +949,11 @@ opened and no focus moves.
 - **The cells.** `cellText` returns `cellsOf(start, end)`, which walks only the rows the token
   touches and names the viewport cell of every UTF-16 unit, a wide character's two cells
   included; the right half of a wide character is read as that character, for the click too.
-  The OSC 8 span comes from `hyperlinkRangeAt`.
+  The OSC 8 span comes from `hyperlinkRangeAt`. Both OSC 8 reads take a cell's link only
+  while the cell's own attributes still say it has one (`linkIDAt`): xterm never deletes a
+  link id from a row when the cell is erased or overwritten, so text a TUI printed over a link
+  (Claude Code's transcript over its /login URL) was underlined as that link, and a ⌘-click on
+  it opened the old address.
 - **The client** (`packages/client/src/terminal/link-hover.ts`, wired in `TerminalPane.tsx`).
   It listens at the pane root in capture, passive, so a mode-1003 pane (Claude Code) still
   reports every hover to the application. The cell is the reporter's `cellAt`, the same cell a

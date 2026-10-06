@@ -838,6 +838,15 @@ describe('geometry reporting', () => {
             });
         };
 
+        /**
+         * The ask leaves one microtask after the publish that made it, so the placement that
+         * publish sends goes first (`WebPageSurface`'s `capture`). A bare microtask, not `act`:
+         * the frame must not have landed yet when the "still placed" half is asserted.
+         */
+        const asked = async (): Promise<void> => {
+            await Promise.resolve();
+        };
+
         it('parks the view — the page reports itself hidden while the surface is up', async () => {
             const h = mount();
             expect(h.reports).toHaveLength(1);
@@ -922,6 +931,7 @@ describe('geometry reporting', () => {
                 const h = mount();
                 const placed = h.hidden.length;
                 open({ x: 100, y: 100, w: 200, h: 200 });
+                await asked();
 
                 // Still placed: for these few frames the surface is drawn UNDER a live page and
                 // is simply not visible yet. That is the trade — a menu that finishes appearing
@@ -1157,6 +1167,7 @@ describe('geometry reporting', () => {
              */
             it('wears a still frame under a whole-window modal, and parks with it', async () => {
                 const h = mount({ visible: false, coveredByModal: true });
+                await asked();
                 // Held on screen while the frame is taken, as under a menu.
                 expect(h.sent.filter((entry) => entry.verb === 'poster')).toEqual([
                     { verb: 'poster', args: [PANE, TAB1] }
@@ -1235,6 +1246,7 @@ describe('geometry reporting', () => {
                 // First cover: the ask goes out in the publish that discovered the surface, and
                 // NOTHING has been handed back yet — the view is still on screen for the capture.
                 const first = open({ x: 100, y: 100, w: 200, h: 200 });
+                await asked();
                 expect(order.filter((step) => step === 'poster')).toHaveLength(1);
                 expect(order).not.toContain('hidden');
                 await settle();
@@ -1250,6 +1262,52 @@ describe('geometry reporting', () => {
                 open({ x: 100, y: 100, w: 200, h: 200 });
                 expect(order).toContain('hidden');
                 expect(order).not.toContain('poster');
+                view.unmount();
+            });
+
+            /**
+             * The owner's report: delete a worktree workspace, click the workspace with the web
+             * pane while the "Removed worktree" toast is still up, and the pane is an empty gray
+             * hole until the toast goes. That pane arrives ALREADY covered, so its first publish
+             * both places the view and asks for a frame of it, and the ask used to leave first:
+             * the host refused a frame of a view it had not placed ("the view is not on screen"),
+             * and the pane parked with nothing for the rest of the toast's life.
+             */
+            it('places a pane that arrives under a surface BEFORE asking for its frame', async () => {
+                open({ x: 100, y: 100, w: 200, h: 200 });
+                const order: string[] = [];
+                const { commands } = fakeCommands();
+                const traced: WebPaneCommands = {
+                    ...commands,
+                    poster: (paneID: string, tabID: string) => {
+                        order.push('poster');
+                        return commands.poster(paneID, tabID);
+                    }
+                };
+                const view = render(
+                    <WebPane
+                        paneID={PANE}
+                        tabs={TABS}
+                        activeTabID={TAB1}
+                        commands={traced}
+                        embedded={true}
+                        visible={true}
+                        measure={fixedRect(RECT)}
+                        devicePixelRatio={2}
+                        onGeometry={(report) => order.push(report.visible ? 'placed' : 'unplaced')}
+                        onHidden={() => order.push('hidden')}
+                    />
+                );
+                await asked();
+                // The publish re-runs as its own state settles (the reporter upstream dedupes the
+                // repeat), so the pin is the ORDER: placed first, then one ask, nothing parked yet.
+                expect(order.filter((step) => step === 'poster')).toHaveLength(1);
+                expect(order.indexOf('placed')).toBe(0);
+                expect(order.indexOf('placed')).toBeLessThan(order.indexOf('poster'));
+                expect(order).not.toContain('hidden');
+                await settle();
+                expect(screen.getByTestId(`web-poster-${PANE}`).getAttribute('src')).toBe(POSTER_SRC);
+                expect(order).toContain('hidden');
                 view.unmount();
             });
 

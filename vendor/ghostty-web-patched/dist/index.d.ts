@@ -398,6 +398,15 @@ declare enum DirtyState {
     FULL = 2
 }
 
+/**
+ * vendor 0.4.0-kelpi.20: the Powerline separators (U+E0B0–U+E0B7) drawn as geometry that fills
+ * the cell exactly, as Ghostty's sprite font and xterm.js's `customGlyphs` do. Through the font
+ * they come from whichever fallback has them (usually the bundled Nerd Font) at THAT font's
+ * metrics, and overshoot a cell sized to the user's font. Paints in the context's current
+ * `fillStyle`; returns false for any other code point, which then takes the font path.
+ */
+export declare function drawPowerlineGlyph(ctx: CanvasRenderingContext2D, codepoint: number, x: number, y: number, w: number, h: number): boolean;
+
 export declare class EventEmitter<T> {
     private listeners;
     fire(arg: T): void;

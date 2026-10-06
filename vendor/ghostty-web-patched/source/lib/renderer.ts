@@ -157,6 +157,47 @@ export const DEFAULT_THEME: Required<ITheme> = {
   brightWhite: '#ffffff',
 };
 
+/**
+ * vendor 0.4.0-kelpi.20: the Powerline separators (U+E0B0–U+E0B7) drawn as geometry that fills
+ * the cell exactly, as Ghostty's sprite font and xterm.js's `customGlyphs` do. Through the font
+ * they come from whichever fallback has them (usually the bundled Nerd Font) at THAT font's
+ * metrics, and overshoot a cell sized to the user's font. Paints in the context's current
+ * `fillStyle`; returns false for any other code point, which then takes the font path.
+ */
+export function drawPowerlineGlyph(
+  ctx: CanvasRenderingContext2D,
+  codepoint: number,
+  x: number,
+  y: number,
+  w: number,
+  h: number
+): boolean {
+  if (codepoint < 0xe0b0 || codepoint > 0xe0b7) return false;
+  const left = codepoint === 0xe0b2 || codepoint === 0xe0b3 || codepoint === 0xe0b6 || codepoint === 0xe0b7;
+  const round = codepoint >= 0xe0b4;
+  const thin = (codepoint & 1) === 1;
+  // The flat side sits on the cell's left edge for a right-pointing shape and on its right edge
+  // for a left-pointing one; the point (or the curve's apex) touches the opposite edge.
+  const flat = left ? x + w : x;
+  const tip = left ? x : x + w;
+  ctx.beginPath();
+  if (round) {
+    ctx.ellipse(flat, y + h / 2, w, h / 2, 0, -Math.PI / 2, Math.PI / 2, left);
+  } else {
+    ctx.moveTo(flat, y);
+    ctx.lineTo(tip, y + h / 2);
+    ctx.lineTo(flat, y + h);
+  }
+  if (thin) {
+    ctx.strokeStyle = ctx.fillStyle;
+    ctx.lineWidth = Math.max(1, Math.round(h / 16));
+    ctx.stroke();
+  } else {
+    ctx.fill();
+  }
+  return true;
+}
+
 // ============================================================================
 // CanvasRenderer Class
 // ============================================================================
@@ -1039,7 +1080,13 @@ export class CanvasRenderer {
 
     // Get the character to render - use grapheme lookup for complex scripts
     let char: string;
-    if (cell.grapheme_len > 0 && this.currentBuffer?.getGraphemeString) {
+    if (
+      cell.grapheme_len === 0 &&
+      drawPowerlineGlyph(this.ctx, cell.codepoint, cellX, cellY, cellWidth, this.metrics.height)
+    ) {
+      // vendor 0.4.0-kelpi.20: drawn as a cell-exact shape; nothing for the font to draw.
+      char = '';
+    } else if (cell.grapheme_len > 0 && this.currentBuffer?.getGraphemeString) {
       // Cell has additional codepoints - get full grapheme cluster
       char = this.currentBuffer.getGraphemeString(y, x);
     } else {

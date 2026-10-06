@@ -66,8 +66,9 @@ type TerminalReflowPolicy = NonNullable<NonNullable<ConstructorParameters<typeof
  * Every field is optional: the reader treats a missing one as "no hyperlink", never as an error.
  * See `hyperlinkAt` for why the private path is taken at all.
  */
-interface XtermCoreLine {
-    readonly _extendedAttrs?: Record<number, { readonly urlId?: number } | undefined> | undefined;
+interface XtermCoreCell {
+    hasExtendedAttrs?(): number;
+    readonly extended?: { readonly urlId?: number } | undefined;
 }
 interface XtermCoreWithLinks {
     readonly _inputHandler?:
@@ -124,13 +125,22 @@ function wideCharStart(line: IBufferLine | undefined, col: number, scratch: IBuf
     return line.getCell(col, scratch)?.getWidth() === 0 ? col - 1 : col;
 }
 
-/** The OSC 8 link id on a cell of a buffer line, or 0 (#83). Private xterm reads; see `hyperlinkAt`. */
-function linkIDAt(line: IBufferLine | undefined, x: number): number {
-    if (!line) return 0;
-    // `buffer.getLine` hands back an API view; the extended attributes live on the core line it
-    // wraps, indexed by CELL column (which is what the client sends).
-    const core = (line as unknown as { _line?: XtermCoreLine })._line;
-    const urlId = core?._extendedAttrs?.[x]?.urlId;
+/**
+ * The OSC 8 link id on a cell of a buffer line, or 0 (#83). Private xterm reads; see `hyperlinkAt`.
+ *
+ * Read through the loaded cell, as xterm's own renderer reads it, and never straight off the
+ * line's `_extendedAttrs` map: xterm writes an entry there when a cell is written WITH extended
+ * attributes and never deletes it, so a cell a TUI has since erased and redrawn in plain text
+ * keeps the old link's id. Only the cell's own `hasExtendedAttrs()` flag says the entry is
+ * current. Reading the map directly underlined Claude Code's transcript as the /login link it
+ * had drawn over, and a ⌘-click on that text opened the sign-in URL.
+ */
+function linkIDAt(line: IBufferLine | undefined, x: number, scratch: IBufferCell): number {
+    // `getCell` loads the core cell into `scratch`, a `CellData`; `extended` is only reloaded
+    // when the flag is set, so it can hold a previous cell's value and is read behind the flag.
+    const cell = line?.getCell(x, scratch) as XtermCoreCell | undefined;
+    if ((cell?.hasExtendedAttrs?.() ?? 0) === 0) return 0;
+    const urlId = cell?.extended?.urlId;
     return typeof urlId === 'number' ? urlId : 0;
 }
 
@@ -1186,7 +1196,8 @@ export class TerminalStateServiceImpl implements TerminalStateService {
             const y = top + Math.floor(row);
             if (y >= buffer.length) return null;
             const clickedLine = buffer.getLine(y);
-            const id = linkIDAt(clickedLine, wideCharStart(clickedLine, Math.floor(col), buffer.getNullCell()));
+            const scratch = buffer.getNullCell();
+            const id = linkIDAt(clickedLine, wideCharStart(clickedLine, Math.floor(col), scratch), scratch);
             if (id === 0) return null;
             const links = (entry.term as unknown as { _core?: XtermCoreWithLinks })._core
                 ?._inputHandler?._oscLinkService;
@@ -1210,7 +1221,7 @@ export class TerminalStateServiceImpl implements TerminalStateService {
                 const line = buffer.getLine(lineY);
                 let start = -1;
                 for (let x = 0; x <= cols; x++) {
-                    const inLink = x < cols && uriOf(linkIDAt(line, x)) === uri;
+                    const inLink = x < cols && uriOf(linkIDAt(line, x, scratch)) === uri;
                     if (inLink && start < 0) start = x;
                     if (!inLink && start >= 0) {
                         runs.push({ row: lineY - top, col: start, width: x - start });

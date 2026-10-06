@@ -69,6 +69,8 @@ export const DEFAULT_KEYBIND_LINES: readonly string[] = [
     'alt+super+left=focus_previous_pane',
     'alt+super+down=next_workspace',
     'alt+super+up=previous_workspace',
+    'ctrl+tab=next_recent_workspace',
+    'ctrl+shift+tab=previous_recent_workspace',
     'shift+super+r=rename_workspace',
     'super+e=toggle_markdown_edit',
     /*

@@ -553,6 +553,7 @@
     addEventListener('pointerdown', () => { if (port && live.visible !== false) send({ type: 'focus', pointer: true }); }, true);
     addEventListener('focusin', () => { if (port && live.visible !== false) send({ type: 'focus' }); browserSession?.updateTextFocus(); });
     addEventListener('focusout', () => { void Promise.resolve().then(() => browserSession?.updateTextFocus()); });
+    let relayingKeyUps = false;
     addEventListener('keydown', event => {
         const modifiers = (event.shiftKey ? 4 : 0) | (event.ctrlKey ? 1 : 0) | (event.altKey ? 2 : 0) | (event.metaKey ? 8 : 0);
         if (!port || live.visible === false || event.isComposing || !(live.chords ?? []).includes(`${modifiers}/${event.code}`)) return;
@@ -570,7 +571,16 @@
                 ((key.shiftKey ? 4 : 0) | (key.ctrlKey ? 1 : 0) | (key.altKey ? 2 : 0) | (key.metaKey ? 8 : 0));
         })) return;
         event.preventDefault(); event.stopImmediatePropagation();
+        relayingKeyUps = true;
         send({ type: 'key', key: event.key, code: event.code, ctrlKey: event.ctrlKey, altKey: event.altKey, shiftKey: event.shiftKey, metaKey: event.metaKey });
     }, true);
+    // The keyups after a relayed chord, until ⌘ ⌃ ⌥ are all up: the host's ⌃Tab gesture ends on
+    // the ⌃ release, and the host never sees a key this frame holds (config-keybindings.md §7.8).
+    addEventListener('keyup', event => {
+        if (!relayingKeyUps || !port) return;
+        if (!event.ctrlKey && !event.altKey && !event.metaKey) relayingKeyUps = false;
+        send({ type: 'keyup', key: event.key, code: event.code, ctrlKey: event.ctrlKey, altKey: event.altKey, shiftKey: event.shiftKey, metaKey: event.metaKey });
+    }, true);
+    addEventListener('blur', () => { relayingKeyUps = false; });
     parent.postMessage({ type: 'kelpi-plugin-ready', nonce: config.nonce }, '*');
 })();

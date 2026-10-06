@@ -227,6 +227,14 @@ export function PluginView(props: PluginViewProps): ReactElement {
                     if (browserScope && latest.current.onBrowserKey?.(key)) return;
                     ownerWindow.dispatchEvent(key); return;
                 }
+                // The keyups after a relayed chord: the ⌃ release is what ends a ⌃Tab gesture
+                // started in this frame (config-keybindings.md §7.8).
+                if (data['type'] === 'keyup') {
+                    if (latest.current.visible === false) return;
+                    if (typeof data['key'] !== 'string' || typeof data['code'] !== 'string') return;
+                    ownerWindow.dispatchEvent(new KeyboardEvent('keyup', { key: data['key'], code: data['code'], ctrlKey: data['ctrlKey'] === true, altKey: data['altKey'] === true, shiftKey: data['shiftKey'] === true, metaKey: data['metaKey'] === true, bubbles: true, cancelable: true }));
+                    return;
+                }
                 if (data['type'] !== 'call' || typeof data['id'] !== 'string' || typeof data['method'] !== 'string') return;
                 const id = data['id'];
                 const respond = (result: unknown, error?: string): void => { if (!disposed && !failed) channel.port1.postMessage({ type: 'reply', id, result, ...(error ? { error } : {}) }); };

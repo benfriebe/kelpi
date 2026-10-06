@@ -46,7 +46,7 @@ import type { DaemonLocation } from '../daemon.js';
 import { log, logError, warn } from '../log.js';
 import { clampInspectPayload, screenshotFileName } from './caps.js';
 import { createWebHostClient, type WebHostClient } from './client.js';
-import { chordCommand, setForwardedKeybindLines } from './keys.js';
+import { chordCommand, chordLabel, setForwardedKeybindLines, startsHeldGesture } from './keys.js';
 import { parkKeyboardDecision, releaseBeforeHide } from './park-keyboard.js';
 import { SCREENSHOT_WRITE_ERROR, createVerbDispatcher } from './dispatch.js';
 import { createEmbedController, type EmbedController } from './embed.js';
@@ -340,6 +340,14 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
             // that just gave the chord up. It would bounce straight back. The daemon's
             // `menu-request` relay reaches the page in this window directly, and is the same
             // channel the native menu bar already uses.
+            //
+            // ⌃Tab ends on the ⌃ RELEASE, which the page will never pass on (`holdGestureChords`).
+            // Handing the window the keyboard here, while this keydown is still being handled,
+            // is what puts that release in the window, whenever it comes.
+            if (startsHeldGesture(chord)) {
+                const handed = restoreKeyboard({ kind: 'client' });
+                if (!handed) warn(`web pane: ${chordLabel(chord)} could not hand the keyboard to the window; its release will not be seen`);
+            }
             client?.sendWindowCommand(chordCommand(chord));
         },
         /*

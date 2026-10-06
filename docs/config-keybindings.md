@@ -346,7 +346,7 @@ interface KeyTrigger {
   modifiers: ModSet;    // set of "super" | "shift" | "alt" | "ctrl"
 }
 
-type KelpiActionId = string;  // one of the 63 raw values in section 4, or "unbind"
+type KelpiActionId = string;  // one of the 65 raw values in section 4, or "unbind"
 
 // trigger -> action dictionary. One action per trigger; an action may own
 // multiple triggers.
@@ -537,7 +537,7 @@ is platform-independent and always spells what the user wrote.
 
 ## 4. KelpiAction: the complete action list
 
-63 bindable actions + the pseudo-action `unbind` (config-file only; removes a default
+65 bindable actions + the pseudo-action `unbind` (config-file only; removes a default
 trigger, never appears in UI lists). `KELPI_ACTIONS` and `MENU_BAR_ACTIONS` in
 `packages/core/src/config/actions.ts`; the handlers are the `keyActions` table in
 `packages/client/src/App.tsx`.
@@ -588,6 +588,8 @@ Legend:
 | `new_workspace` | New Workspace | ⌘N | menu |
 | `next_workspace` | Next Workspace | ⌘⌥↓ | monitor |
 | `previous_workspace` | Previous Workspace | ⌘⌥↑ | monitor |
+| `next_recent_workspace` | Next Recent Workspace | ⌃Tab | monitor (hold-and-release gesture, §7.8) |
+| `previous_recent_workspace` | Previous Recent Workspace | ⌃⇧Tab | monitor (hold-and-release gesture, §7.8) |
 | `rename_workspace` | Rename Workspace | ⌘⇧R | monitor (begins inline rename of active workspace) |
 | `new_group` | New Group | ⌘⇧G | menu (creates group with unique placeholder name "New Group"/"New Group 2"/… and enters inline rename) |
 | `switch_to_workspace_1`…`switch_to_workspace_9` | Switch to Workspace N | ⌘1…⌘9 | menu (switches by sidebar index 0–8) |
@@ -749,7 +751,7 @@ One trigger maps to at most one action. One action may own any number of trigger
 (defaults give `focus_next_pane`/`focus_previous_pane` two each, and
 `increase_terminal_font_size` two that are one chord in two spellings, section 7.6).
 
-### 5.2 The default map (47 triggers)
+### 5.2 The default map (49 triggers)
 
 Exactly the defaults listed in section 4's tables. (`super` here is the primary chord
 modifier — ⌘ on macOS, Ctrl on Windows/Linux; §3.5.)
@@ -763,6 +765,7 @@ super+w=close_pane
 super+]=focus_next_pane              alt+super+right=focus_next_pane
 super+[=focus_previous_pane          alt+super+left=focus_previous_pane
 alt+super+down=next_workspace        alt+super+up=previous_workspace
+ctrl+tab=next_recent_workspace       ctrl+shift+tab=previous_recent_workspace
 shift+super+r=rename_workspace       super+e=toggle_markdown_edit
 super+==increase_terminal_font_size  shift+super+==increase_terminal_font_size
 super+-=decrease_terminal_font_size  super+0=reset_terminal_font_size
@@ -1335,6 +1338,44 @@ and the plugin-facing contract is [plugins.md](plugins.md#hiding-bands-and-zen-m
   host draws while the toolbar is hidden, the View menu, the palette and Settings ▸ Plugins ▸
   Reset window arrangement still leave it.
 
+### 7.8 The recent-workspace gesture (⌃Tab)
+
+`next_recent_workspace` / `previous_recent_workspace` are the one place a binding acts on a key
+RELEASE (`packages/client/src/app/recent-switcher.ts`). The first press snapshots the local
+workspaces — active first, then by the daemon's `lastAccessedAt` (seconds; same-second ties by
+this window's own activation order, then sidebar order) — and highlights the previous one
+(`previous_…` starts on the least recent). Further presses move the highlight, wrapping. Releasing
+every non-Shift modifier of the trigger commits; Escape cancels and hands the caret back; window
+blur commits; clicking a row commits it. The switcher paints only after 150 ms, so a quick ⌃Tab
+toggles the last two workspaces with no flash. With fewer than two local workspaces the chord is
+not consumed.
+
+Nothing about the gesture is timed except the 150 ms before the switcher paints, so it waits
+on the release wherever it started; that needs the release to reach the window:
+
+- **A web page.** The chord arrives through the shell's relay (`webhost/keys.ts`), and the page
+  cannot pass the release on: once the browser has taken a view's keydown, Chromium suppresses
+  that view's keyups, ⌃'s included. So the relay hands the window the keyboard
+  (`holdGestureChords`, `webhost/index.ts`) while it is still handling the keydown, and the
+  release lands in the window. The relayed chord travels through the daemon and can arrive
+  after a quick tap's release, so a relayed press commits at once when the window saw the
+  release in the last 300 ms (`RELAYED_RELEASE_GRACE_MS`). When the chord falls through (fewer
+  than two workspaces) the page gets its keyboard back.
+- **A content or plugin frame** (markdown preview, diff, a plugin pane). The frame relays the
+  claimed chord's keydown as it always has, and then its keyups until ⌘ ⌃ ⌥ are all up
+  (`content/bridge.ts`, `plugin-sdk/browser.js`); the host replays them on the window.
+
+Releasing on the current workspace, or on a workspace closed mid-gesture, activates nothing and
+hands the caret back.
+
+While a gesture is open every other bound chord is swallowed, as under a modal: nothing acts on
+the workspace behind the switcher, and nothing falls through to the pane (`actionsDuringGesture`).
+
+⌃Tab is no longer delivered to terminal programs (kitty keyboard protocol apps read it), nor to
+web pages, which lose their own ⌃Tab / ⌃⇧Tab (tab or sheet switching in a web app): the shell's
+relay takes every claimed chord from the page. `keybind = ctrl+tab=unbind` and
+`keybind = ctrl+shift+tab=unbind` give both back.
+
 ## 8. Global hotkey (system-wide)
 
 A single app-wide hotkey that summons Kelpi from any application. Implemented in the
@@ -1894,7 +1935,7 @@ lives now:
    state never enter a trigger, and the exact remaining modifier set is compared
    (section 3.1).
 4. **Two dispatch layers collapse into one** in the client (a browser tab has no OS menu
-   bar). All 63 actions go through a single keydown interceptor, and three behaviors of the
+   bar). All 65 actions go through a single keydown interceptor, and three behaviors of the
    original split survive: (a) shortcuts do not fire while a modal/palette/secondary
    surface has focus (the one exception is the `close_pane` chord, which closes the
    overlay, section 7.2); (b) conditional actions FALL THROUGH to the terminal when their
@@ -1955,9 +1996,9 @@ lives now:
     differing from default), reset-all, and the profiles master-detail editor with the
     locked `KELPI_PROFILE` row, `:`/`=` input stripping, reserved `default` name, and
     write-through (on blur, Enter and structural change) against the config file.
-14. **Count sanity for tests**: 64 enum cases total; 63 bindable (excludes `unbind`);
+14. **Count sanity for tests**: 66 enum cases total; 65 bindable (excludes `unbind`);
     19 ship unbound (`open_diff`, `toggle_sync_input`, the three `*_markdown_font_size`,
-    the three single-band toggles, 11 `web_*`); the default map has exactly 47 trigger
-    entries (44 distinct actions bound; focus next/prev and `increase_terminal_font_size`
-    own two triggers each). The Settings table shows 52 actions (63 minus the 11 hidden web
+    the three single-band toggles, 11 `web_*`); the default map has exactly 49 trigger
+    entries (46 distinct actions bound; focus next/prev and `increase_terminal_font_size`
+    own two triggers each). The Settings table shows 54 actions (65 minus the 11 hidden web
     actions).

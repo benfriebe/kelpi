@@ -1,7 +1,7 @@
 /**
  * The Settings action catalog (config-keybindings.md §4, §13.1).
  *
- * The 63 bindable actions, their display names, and the categories the Keybindings table
+ * The 65 bindable actions, their display names, and the categories the Keybindings table
  * renders as sections — in the fixed order §13.1 names: `Pane Management, Navigation,
  * Workspaces, View, Files, Search, Clipboard, Terminal`. The eleven `web_*` actions are catalogued too but marked
  * hidden: §4 says they are NOT rendered in the Settings table (their delivery mechanism is the
@@ -81,6 +81,8 @@ export const ACTION_CATALOG: readonly ActionEntry[] = [
     { action: 'new_workspace', category: 'Workspaces', label: 'New Workspace' },
     { action: 'next_workspace', category: 'Workspaces', label: 'Next Workspace' },
     { action: 'previous_workspace', category: 'Workspaces', label: 'Previous Workspace' },
+    { action: 'next_recent_workspace', category: 'Workspaces', label: 'Next Recent Workspace' },
+    { action: 'previous_recent_workspace', category: 'Workspaces', label: 'Previous Recent Workspace' },
     { action: 'rename_workspace', category: 'Workspaces', label: 'Rename Workspace' },
     { action: 'new_group', category: 'Workspaces', label: 'New Group' },
     ...switchEntries(),

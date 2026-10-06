@@ -135,6 +135,11 @@ export type ContentBridgeMessage =
     | { readonly kind: 'focus' }
     /** H9: a chord the app claims, pressed inside the frame. The host replays it. */
     | ({ readonly kind: 'key' } & ContentChordEvent)
+    /**
+     * A keyup after a relayed chord, until ⌘ ⌃ ⌥ are all up: the ⌃Tab gesture ends on the
+     * release, which the host never sees while the frame holds the keyboard (§7.8).
+     */
+    | ({ readonly kind: 'key-up' } & ContentChordEvent)
     | { readonly kind: 'scroll'; readonly top: number; readonly fraction: number }
     | { readonly kind: 'copy'; readonly text: string }
     | { readonly kind: 'link'; readonly href: string }
@@ -219,12 +224,13 @@ export function parseBridgeMessage(data: unknown, paneID: string): ContentBridge
             const href = data['href'];
             return typeof href === 'string' && href.length > 0 ? { kind: 'link', href } : null;
         }
-        case 'key': {
+        case 'key':
+        case 'key-up': {
             const code = data['code'];
             if (typeof code !== 'string' || code.length === 0) return null;
             const key = data['key'];
             return {
-                kind: 'key',
+                kind: data['kind'],
                 code,
                 key: typeof key === 'string' ? key : '',
                 ctrlKey: data['ctrlKey'] === true,
@@ -367,13 +373,17 @@ export function chordSeedObject(chords: readonly string[]): Record<string, true>
  * dispatcher's `isEditableTarget(event.target)` test sees the window, not a text field, so a
  * relayed ⌘D splits rather than being swallowed as "the user is typing".
  */
-export function replayFrameChord(chord: ContentChordEvent, target?: EventTarget | undefined): boolean {
+export function replayFrameChord(
+    chord: ContentChordEvent,
+    target?: EventTarget | undefined,
+    type: 'keydown' | 'keyup' = 'keydown'
+): boolean {
     const view = target ?? (globalThis as { window?: EventTarget }).window;
     if (view === undefined) return false;
     const Ctor = (globalThis as { KeyboardEvent?: typeof KeyboardEvent }).KeyboardEvent;
     if (Ctor === undefined) return false;
     view.dispatchEvent(
-        new Ctor('keydown', {
+        new Ctor(type, {
             code: chord.code,
             key: chord.key,
             ctrlKey: chord.ctrlKey,
@@ -586,6 +596,18 @@ export function contentBridgeScript(
   // been re-injected relays from its first keystroke rather than from its first answered
   // handshake — the window in which a ⌘W would otherwise reach the native menu.
   var claimedChords = ${seed};
+  var relayingKeyUps = false;
+  var keyMessage = function (kind, event) {
+    return {
+      kind: kind,
+      code: event.code,
+      key: event.key,
+      ctrlKey: !!event.ctrlKey,
+      altKey: !!event.altKey,
+      shiftKey: !!event.shiftKey,
+      metaKey: !!event.metaKey
+    };
+  };
   var chordKey = function (event) {
     var bits = 0;
     if (event.ctrlKey) bits += 1;
@@ -612,16 +634,19 @@ export function contentBridgeScript(
     // Every key carries a '/', so no chord can collide with an Object.prototype member.
     if (!claimedChords[chordKey(event)]) return;
     event.preventDefault();
-    post({
-      kind: 'key',
-      code: event.code,
-      key: event.key,
-      ctrlKey: !!event.ctrlKey,
-      altKey: !!event.altKey,
-      shiftKey: !!event.shiftKey,
-      metaKey: !!event.metaKey
-    });
+    relayingKeyUps = true;
+    post(keyMessage('key', event));
   }, true);
+  // The keyups after a relayed chord, until ⌘ ⌃ ⌥ are all up (config-keybindings.md §7.8): the
+  // ⌃Tab gesture ends on the ⌃ release, and the host never sees a key this frame holds.
+  window.addEventListener('keyup', function (event) {
+    if (!relayingKeyUps) return;
+    if (!event.ctrlKey && !event.altKey && !event.metaKey) relayingKeyUps = false;
+    post(keyMessage('key-up', event));
+  }, true);
+  window.addEventListener('blur', function () {
+    relayingKeyUps = false;
+  });
 
   // §3.14 — the two copy commands are also reachable from the preview's context menu; the
   // host owns the menu because the frame has no chrome of its own to draw one in.

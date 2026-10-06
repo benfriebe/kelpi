@@ -22,9 +22,9 @@ const trigger = (config: string) => {
 };
 
 describe('the action table', () => {
-    it('has the 63 bindable actions and the 20 menu-bar ones', () => {
-        expect(KELPI_ACTIONS).toHaveLength(63);
-        expect(new Set(KELPI_ACTIONS).size).toBe(63);
+    it('has the 65 bindable actions and the 20 menu-bar ones', () => {
+        expect(KELPI_ACTIONS).toHaveLength(65);
+        expect(new Set(KELPI_ACTIONS).size).toBe(65);
         // #175's three text-size actions are NOT among them, deliberately: the menu-bar set is
         // the one that still fires while a chrome text field has the caret.
         expect(MENU_BAR_ACTIONS.size).toBe(20);
@@ -35,8 +35,13 @@ describe('the action table', () => {
 });
 
 describe('the default map', () => {
-    it('ships 47 triggers', () => {
-        expect(DEFAULT_KEYBINDINGS.size).toBe(47);
+    it('ships 49 triggers', () => {
+        expect(DEFAULT_KEYBINDINGS.size).toBe(49);
+    });
+
+    it('binds ⌃Tab and ⌃⇧Tab to the recent-workspace switcher', () => {
+        expect(actionForTrigger(DEFAULT_KEYBINDINGS, trigger('ctrl+tab'))).toBe('next_recent_workspace');
+        expect(actionForTrigger(DEFAULT_KEYBINDINGS, trigger('ctrl+shift+tab'))).toBe('previous_recent_workspace');
     });
 
     // The window arrangement: Zen Mode on ⌃⌘↩ (pane zoom's ⇧⌘↩ one modifier over), the three

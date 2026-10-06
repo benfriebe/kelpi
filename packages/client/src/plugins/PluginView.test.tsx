@@ -63,7 +63,9 @@ describe('isolated plugin view host', () => {
                 : { ok: true, result: null });
         const focus = vi.spyOn(runtime, 'focusPane').mockImplementation(() => {});
         const key = vi.fn();
+        const keyUp = vi.fn();
         window.addEventListener('keydown', key);
+        window.addEventListener('keyup', keyUp);
         let child: MessagePort | undefined;
         try {
             const props = { runtime, pluginID: manifest.id, viewID: manifest.contributes.views[0]!.id, paneID: 'pane', workspaceID: 'workspace', claimedChords: ['8/KeyD'] };
@@ -79,22 +81,27 @@ describe('isolated plugin view host', () => {
             const relay = async (id: string): Promise<void> => {
                 child!.postMessage({ type: 'focus' });
                 child!.postMessage({ type: 'key', key: 'd', code: 'KeyD', metaKey: true });
-                // The reply is a FIFO barrier: the host has processed both earlier relays.
+                // The release after it (config-keybindings.md §7.8: what ends a ⌃Tab gesture).
+                child!.postMessage({ type: 'keyup', key: 'Meta', code: 'MetaLeft', metaKey: false });
+                // The reply is a FIFO barrier: the host has processed every earlier relay.
                 child!.postMessage({ type: 'call', id, method: 'ui.notify', args: { message: 'barrier' } });
                 await waitFor(() => expect(received.some(message => message.type === 'reply' && message.id === id)).toBe(true));
             };
             await relay('hidden');
             expect(focus).not.toHaveBeenCalled();
             expect(key).not.toHaveBeenCalled();
+            expect(keyUp).not.toHaveBeenCalled();
             expect(received.some(message => message.type === 'context' && JSON.stringify(message.value).includes('"chords":[]'))).toBe(true);
             view.rerender(<PluginView {...props} visible />);
             await relay('visible');
             expect(focus).toHaveBeenCalledWith('workspace', 'pane');
             expect(key).toHaveBeenCalledOnce();
+            expect(keyUp).toHaveBeenCalledOnce();
+            expect(keyUp.mock.calls[0]![0]).toMatchObject({ type: 'keyup', code: 'MetaLeft', metaKey: false });
             child.postMessage({ type: 'call', id: 'no-workbench', method: 'ui.getWorkbench', args: {} });
             await waitFor(() => expect(received.find(message => message.id === 'no-workbench')?.error).toContain('unavailable for this daemon'));
             view.unmount();
-        } finally { child?.close(); window.removeEventListener('keydown', key); runtime.dispose(); }
+        } finally { child?.close(); window.removeEventListener('keydown', key); window.removeEventListener('keyup', keyUp); runtime.dispose(); }
     });
     /**
      * A press inside a plugin frame never reaches the host document, so the SDK marks the focus it

@@ -1,6 +1,6 @@
 /**
  * The bindable action list.
- * Spec: docs/config-keybindings.md §4 (63 actions + the `unbind` pseudo-action).
+ * Spec: docs/config-keybindings.md §4 (65 actions + the `unbind` pseudo-action).
  * Raw values are the config-file vocabulary and must not change.
  */
 
@@ -27,6 +27,10 @@ export const KELPI_ACTIONS = [
     'new_workspace',
     'next_workspace',
     'previous_workspace',
+    // ⌃Tab: hold to step back through workspaces in most-recently-used order, release to switch
+    // (docs/config-keybindings.md §7.8). Monitor-only: a menu accelerator cannot see the release.
+    'next_recent_workspace',
+    'previous_recent_workspace',
     'rename_workspace',
     'new_group',
     'switch_to_workspace_1',

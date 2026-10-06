@@ -24,6 +24,9 @@ import { WorkspacesCreateSheetHost, bindWorkspacesFeature, useWorkspacesFeatureL
 import { createWorkspacesActions } from './features/workspaces-actions';
 import { usePluginNavigation } from './plugins/use-navigation';
 import { useRemoteWorkspaceSelection } from './app/remote-selection';
+import { actionsDuringGesture, createRecentSwitcher, heldModifiersFromEvent } from './app/recent-switcher';
+import { commitTarget, createActivationSequence, recentWorkspaceOrder } from './app/recent-workspaces';
+import { RecentWorkspaceSwitcherHost } from './chrome/RecentWorkspaceSwitcher';
 import { PluginView } from './plugins/PluginView';
 import { WorkbenchProvider, WorkbenchSidebar, WorkbenchSlot, useWorkbenchLayout, type WorkbenchSlotID } from './plugins/Workbench';
 import { resolveSidebarViews, resolveSlot, selectWorkbenchView } from './plugins/registry';
@@ -154,6 +157,7 @@ import {
     type ChromeAppearance,
     type FaviconController,
     type KeyActionRegistry,
+    type KeyEventLike,
     type MenuItemSpec,
     type SidebarPhase,
 } from './chrome';
@@ -240,6 +244,8 @@ import {
     selectAgentSummary,
     selectFocusedPaneID,
     selectPane,
+    selectSidebarWorkspaceIDs,
+    selectWorkspace,
     recentlyClosedCount,
     type KelpiRuntime,
     type Toast
@@ -2488,6 +2494,53 @@ function Shell(props: AppProps): ReactElement {
     const actRef = useRef(act);
     actRef.current = act;
 
+    // ⌃Tab (docs/config-keybindings.md §7.8). The activation
+    // sequence breaks same-second ties in the daemon's `lastAccessedAt`. Built once per store and
+    // committing through `actRef`: rebuilding it with `act` would drop a gesture in progress.
+    const activationSequenceRef = useRef(createActivationSequence());
+    const handBackPaneCaretRef = useRef(handBackPaneCaret);
+    handBackPaneCaretRef.current = handBackPaneCaret;
+    useEffect(() => {
+        const note = (): void => activationSequenceRef.current.note(selectActiveWorkspaceID(store.getState()));
+        note();
+        return store.subscribe(note);
+    }, [store]);
+    // `useState`, not `useMemo`: the gesture is state, and React may drop a memo. The overlay
+    // subscribes to it directly (`RecentWorkspaceSwitcherHost`), so a step does not re-render here.
+    const [switcher] = useState(() =>
+            createRecentSwitcher({
+                order: () => {
+                    const state = store.getState();
+                    const candidates = selectSidebarWorkspaceIDs(state).flatMap((id) => {
+                        const workspace = selectWorkspace(state, id);
+                        return workspace === null ? [] : [{ id, lastAccessedAt: workspace.lastAccessedAt }];
+                    });
+                    return recentWorkspaceOrder(candidates, selectActiveWorkspaceID(state), activationSequenceRef.current.seq);
+                },
+                commit: (id) => {
+                    const state = store.getState();
+                    const target = commitTarget(id, selectActiveWorkspaceID(state), (candidate) => selectWorkspace(state, candidate) !== null);
+                    // Nothing to activate (back where it started, or the workspace closed): the
+                    // switcher held DOM focus and is gone, so the pane needs the caret back.
+                    if (target === null) handBackPaneCaretRef.current(selectFocusedPaneID(state));
+                    else actRef.current.activateWorkspace(target);
+                }
+            })
+    );
+    /**
+     * A chord pressed in a web page or a frame arrives here synthesized (`isTrusted` false), and
+     * its release follows it on its own: the shell hands a page's keyboard to the window, and a
+     * frame passes its keyups on (docs/config-keybindings.md §7.8).
+     */
+    const stepRecent = (direction: 1 | -1, event: KeyEventLike): boolean => {
+        const relayed = event.isTrusted === false;
+        const started = switcher.step(direction, heldModifiersFromEvent(event), { relayed });
+        // Nothing to switch to, and the chord falls through. A page's chord took the page's
+        // keyboard on its way here, so give it back.
+        if (!started && relayed) handBackPaneCaretRef.current(selectFocusedPaneID(store.getState()));
+        return started;
+    };
+
     // ── terminal mounting ───────────────────────────────────────────────────────────
 
     const policyRef = useRef(createMountPolicy());
@@ -3150,6 +3203,8 @@ function Shell(props: AppProps): ReactElement {
             new_workspace: () => act.newWorkspace(),
             next_workspace: () => act.switchRelative(1),
             previous_workspace: () => act.switchRelative(-1),
+            next_recent_workspace: ({ event }) => stepRecent(1, event),
+            previous_recent_workspace: ({ event }) => stepRecent(-1, event),
             // The four actions this registry used to advertise and not dispatch (index gap #6):
             // §SET-144/§APP-019, §SET-153, §SET-145/§APP-021/§WEB-154 and §CONT-133. Each has a
             // gesture elsewhere (the sidebar footer, the row menu, the header globe); these are
@@ -3275,7 +3330,10 @@ function Shell(props: AppProps): ReactElement {
         const bindings = clientKeyBindings(keybindLines);
         const dispatcher = createKeyDispatcher({
             bindings,
-            actions: () => keyActionsRef.current,
+            // While a ⌃Tab gesture is open only its own two actions run; every other binding is
+            // swallowed, as under a modal (docs/config-keybindings.md §7.8).
+            actions: () =>
+                switcher.state() === null ? keyActionsRef.current : actionsDuringGesture(keyActionsRef.current, () => true),
             // §7.2 step 1's rule, applied to the Settings window for the same reason: while a
             // modal overlay is up every keystroke belongs to IT — a ⌘D behind the sheet must not
             // split a pane, and the key recorder needs to see combos the map would have eaten.
@@ -3313,7 +3371,29 @@ function Shell(props: AppProps): ReactElement {
             webPanePriority: (trigger, event) => webPriorityRef.current(trigger, event)
         });
         return installKeyDispatcher(window, dispatcher);
-    }, [store, keybindLines, closeModalOverlay, surface]);
+    }, [store, keybindLines, closeModalOverlay, surface, switcher]);
+
+    // The ⌃Tab gesture ends on the RELEASE of its modifiers, on Escape (handled here rather than
+    // through the dispatcher's `onEscape`, which only sees an unmodified Escape, and ⌃ is still
+    // down), or on the window losing focus (a keyup while another app is frontmost never arrives).
+    useEffect(() => {
+        const onKeyDown = (event: KeyboardEvent): void => {
+            if (event.code !== 'Escape' || !switcher.cancel()) return;
+            event.preventDefault();
+            event.stopPropagation();
+            handBackPaneCaret(selectFocusedPaneID(store.getState()));
+        };
+        const onKeyUp = (event: KeyboardEvent): void => switcher.keyUp(event);
+        const onBlur = (): void => switcher.blur();
+        window.addEventListener('keydown', onKeyDown, true);
+        window.addEventListener('keyup', onKeyUp, true);
+        window.addEventListener('blur', onBlur);
+        return () => {
+            window.removeEventListener('keydown', onKeyDown, true);
+            window.removeEventListener('keyup', onKeyUp, true);
+            window.removeEventListener('blur', onBlur);
+        };
+    }, [switcher, store, handBackPaneCaret]);
 
     /**
      * ⌘, opens Settings — the platform convention, and NOT a `KelpiAction`: the Swift app reaches
@@ -5062,6 +5142,18 @@ function Shell(props: AppProps): ReactElement {
             )}
             <InteractionHost surface={surface} presenters={!phoneActive} chords={presenterChords} />
 
+            <RecentWorkspaceSwitcherHost
+                switcher={switcher}
+                // One row per ID in the gesture's snapshot, so the highlight stays aligned when a
+                // workspace closes mid-gesture; picking that row activates nothing (`commitTarget`).
+                rowFor={(id) => {
+                    const workspace = selectWorkspace(store.getState(), id);
+                    return workspace === null
+                        ? { id, name: 'Closed workspace', color: null }
+                        : { id, name: workspace.name, color: workspace.color };
+                }}
+                bucket={bucket}
+            />
             {helpOpen ? (
                 <HelpOverlay
                     keymap={keymap}

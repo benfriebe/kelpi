@@ -103,6 +103,8 @@ export interface KeyEventLike {
     readonly shiftKey: boolean;
     readonly repeat?: boolean;
     readonly target?: unknown;
+    /** False for a chord a web page or frame passed on to the window (it is re-dispatched here). */
+    readonly isTrusted?: boolean;
     preventDefault?(): void;
     stopPropagation?(): void;
 }

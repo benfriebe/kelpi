@@ -111,6 +111,10 @@ function press(init: KeyboardEventInit & { code: string }): KeyboardEvent {
     return event;
 }
 
+function release(init: KeyboardEventInit & { code: string }): void {
+    document.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, cancelable: true, ...init }));
+}
+
 /** Deliver a host → frame message the way the host's `postMessage` would. */
 function toFrame(message: Record<string, unknown>): void {
     window.dispatchEvent(new MessageEvent('message', { source: window, data: { source: CONTENT_HOST_SOURCE, ...message } }));
@@ -200,6 +204,35 @@ describe('the injected script', () => {
         expect(stale.defaultPrevented).toBe(false);
     });
 
+    // The ⌃Tab gesture ends on the ⌃ release (config-keybindings.md §7.8), and the host never
+    // sees a key the frame holds.
+    it('passes on the keyups after a relayed chord, up to the release of every modifier', async () => {
+        toFrame({ kind: 'chords', chords: ['1/Tab'] });
+        await settle();
+        press({ code: 'Tab', key: 'Tab', ctrlKey: true });
+        release({ code: 'Tab', key: 'Tab', ctrlKey: true });
+        release({ code: 'ControlLeft', key: 'Control' });
+        release({ code: 'KeyA', key: 'a' });
+        await settle();
+        expect(posted.map((message) => [message.kind, message.code])).toEqual([
+            ['key', 'Tab'],
+            ['key-up', 'Tab'],
+            ['key-up', 'ControlLeft']
+        ]);
+    });
+
+    it('passes on no keyup without a relayed chord, nor after the frame lost focus', async () => {
+        window.dispatchEvent(new Event('blur'));
+        release({ code: 'ControlLeft', key: 'Control' });
+        toFrame({ kind: 'chords', chords: ['1/Tab'] });
+        await settle();
+        press({ code: 'Tab', key: 'Tab', ctrlKey: true });
+        window.dispatchEvent(new Event('blur'));
+        release({ code: 'ControlLeft', key: 'Control' });
+        await settle();
+        expect(posted.map((message) => message.kind)).toEqual(['key']);
+    });
+
     it('cannot be fooled by an Object.prototype member', async () => {
         toFrame({ kind: 'chords', chords: [] });
         await settle();
@@ -243,6 +276,33 @@ describe('the host replay', () => {
 
         expect(split).toHaveBeenCalledTimes(1);
         off();
+    });
+
+    it('replays a released modifier as a keyup on the window', () => {
+        const seen: KeyboardEvent[] = [];
+        const listener = (event: Event): void => {
+            seen.push(event as KeyboardEvent);
+        };
+        window.addEventListener('keyup', listener, true);
+        render(<ContentFrame paneID={PANE} title="markdown preview" html={BARE_DOCUMENT} claimedChords={['1/Tab']} />);
+        window.dispatchEvent(
+            new MessageEvent('message', {
+                data: {
+                    source: CONTENT_BRIDGE_SOURCE,
+                    paneID: PANE,
+                    kind: 'key-up',
+                    code: 'ControlLeft',
+                    key: 'Control',
+                    metaKey: false,
+                    ctrlKey: false,
+                    altKey: false,
+                    shiftKey: false
+                }
+            })
+        );
+        window.removeEventListener('keyup', listener, true);
+        expect(seen).toHaveLength(1);
+        expect(seen[0]).toMatchObject({ type: 'keyup', code: 'ControlLeft', ctrlKey: false, isTrusted: false });
     });
 
     it('replays a chord the dispatcher cannot mistake for chrome text', () => {

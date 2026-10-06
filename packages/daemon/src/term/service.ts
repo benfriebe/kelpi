@@ -232,6 +232,161 @@ interface XtermCore {
 }
 
 /**
+ * Each trimmed line's cells as they were before its FIRST trim, up to the last one with text in
+ * it, so a later widen can put back what a narrower width cut off. Without it a maximise or a
+ * drag that passes through a narrow width deletes every long line's tail for good: the shell
+ * repaints its prompt and nothing repaints history.
+ *
+ * A stash lasts exactly until something writes its line (`watchForWrites`). Comparing the line's
+ * cells with the stash cannot stand in for that: `clear; ls -la` at 12 columns starts every new
+ * line with the same `drwxr-xr-x@ ` the old one had, and the widen would splice the old line's
+ * tail onto the new one.
+ */
+const strandedTails = new WeakMap<XtermBufferLine, XtermBufferLine>();
+/**
+ * Only the bottom lines of a buffer keep what a cut hid: a stash costs about the hidden text, so
+ * a full 10 000-line scrollback of long lines would hold ~10 MB more. Older history stays cut.
+ */
+const STRANDED_TAIL_LINES = 1000;
+
+const CELL_WORDS = 3;
+/** A cell's codepoint plus its combined flag: 0 or a space is a blank cell. */
+const CELL_CHAR_MASK = 0x3fffff;
+
+/** One past the last cell in `from`..`to` of `data` that is not a default-coloured blank. */
+function contentEnd(data: Uint32Array, from: number, to: number): number {
+    let end = to;
+    while (end > from) {
+        const word = (end - 1) * CELL_WORDS;
+        const char = data[word]! & CELL_CHAR_MASK;
+        if ((char !== 0 && char !== 32) || data[word + 1] !== 0 || data[word + 2] !== 0) break;
+        end -= 1;
+    }
+    return end;
+}
+
+/**
+ * xterm's `BufferLine` methods that write cells. Every write to a line object goes through one of
+ * them on the line itself: the parser's, `insertCells` / `deleteCells` / `replaceCells` (which
+ * call `setCell`), and `copyFrom` on a scrollback line recycled for new output
+ * (`CircularList.recycle`). Every other change replaces the line object, which takes its stash out
+ * of every walk. `resize` is watched but is not a write: xterm calls it on every line to pad a
+ * widen, and padding or cutting never changes a cell that stays.
+ */
+const CELL_WRITERS = ['set', 'setCell', 'setCellFromCodepoint', 'addCodepointToCell', 'fill', 'copyFrom', 'copyCellsFrom'] as const;
+const WATCHED = [...CELL_WRITERS, 'resize'] as const;
+type WatchedName = (typeof WATCHED)[number];
+type LineMethod = (this: XtermBufferLine, ...args: unknown[]) => unknown;
+
+/** True while the trim, the restore or a `resize` changes a line: none of those is a write. */
+let notWriting = false;
+
+function notAWrite<T>(change: () => T): T {
+    const was = notWriting;
+    notWriting = true;
+    try {
+        return change();
+    } finally {
+        notWriting = was;
+    }
+}
+
+/** The class's own method, which a watched line shadows with a tripwire. */
+function prototypeMethod(line: XtermBufferLine, name: WatchedName): LineMethod | undefined {
+    const method = (Object.getPrototypeOf(line) as Partial<Record<WatchedName, unknown>> | null)?.[name];
+    return typeof method === 'function' ? (method as LineMethod) : undefined;
+}
+
+const tripwires: readonly (readonly [WatchedName, LineMethod])[] = [
+    ...CELL_WRITERS.map(
+        (name) =>
+            [
+                name,
+                function (this: XtermBufferLine, ...args: unknown[]): unknown {
+                    if (!notWriting) forgetStrandedTail(this);
+                    return prototypeMethod(this, name)?.apply(this, args);
+                }
+            ] as const
+    ),
+    [
+        'resize',
+        function (this: XtermBufferLine, ...args: unknown[]): unknown {
+            return notAWrite(() => prototypeMethod(this, 'resize')?.apply(this, args));
+        }
+    ]
+];
+
+/**
+ * Make the first write to `line` drop its stash. Only stashed lines carry the tripwires, and only
+ * until that write, so ordinary output never meets one. False, with nothing changed, when the line
+ * is not the shape this expects (private API, see the trim): that line then keeps no stash.
+ */
+function watchForWrites(line: XtermBufferLine): boolean {
+    if (WATCHED.some((name) => prototypeMethod(line, name) === undefined)) return false;
+    const methods = line as unknown as Record<WatchedName, LineMethod | undefined>;
+    for (const [name, tripwire] of tripwires) methods[name] = tripwire;
+    return true;
+}
+
+/** Drop `line`'s stash and disarm its tripwires. */
+function forgetStrandedTail(line: XtermBufferLine): void {
+    if (!strandedTails.delete(line)) return;
+    // The class's methods go back on as own properties rather than being deleted: a `delete`
+    // sends the object into V8's slow dictionary mode, and a line object lives as long as its
+    // buffer, recycled for new output.
+    const methods = line as unknown as Record<WatchedName, LineMethod | undefined>;
+    for (const name of WATCHED) methods[name] = prototypeMethod(line, name);
+}
+
+/**
+ * A cut can land inside a wide glyph; its orphaned lead half is one column of overflow, so blank
+ * it (READ-4). Guarded on the exact width the cut produced, so a line the cut could not touch is
+ * left exactly as it was.
+ */
+function blankHalfGlyph(line: XtermBufferLine, cols: number, fill: unknown): void {
+    if (line.length !== cols || line.getWidth?.(cols - 1) !== 2) return;
+    line.setCell?.(cols - 1, fill);
+}
+
+/** The buffers `trimStrandedCells` and `restoreStrandedCells` walk, with their fill cell. */
+function eachLine(term: HeadlessTerminal, visit: (line: XtermBufferLine, fill: unknown, recent: boolean) => void): void {
+    const core = (term as unknown as { _core?: XtermCore })._core;
+    const buffers = core?._bufferService?.buffers;
+    if (buffers === undefined) return;
+    for (const buffer of [buffers.normal, buffers.alt]) {
+        const lines = buffer?.lines;
+        if (buffer === undefined || lines === undefined) continue;
+        const fill = buffer.getNullCell?.();
+        if (fill === undefined) continue;
+        for (let index = 0; index < lines.length; index += 1) {
+            const line = lines.get(index);
+            if (line !== undefined) visit(line, fill, index >= lines.length - STRANDED_TAIL_LINES);
+        }
+    }
+}
+
+/**
+ * The widen half of `trimStrandedCells`: give back the cells a narrower width cut, on every line
+ * that still has its stash, which is every line nothing has written since. The copy starts one
+ * cell before the old edge, because the trim blanks that cell when the cut splits a wide glyph
+ * (`blankHalfGlyph`); every cell before it is the original's already.
+ */
+function restoreStrandedCells(term: HeadlessTerminal, fromCols: number, cols: number): void {
+    notAWrite(() =>
+        eachLine(term, (line, fill) => {
+            const original = strandedTails.get(line);
+            if (original === undefined) return;
+            const from = fromCols - 1;
+            const end = Math.min(original.length, cols);
+            if (line.length < end) line.resize?.(end, fill);
+            line.copyCellsFrom?.(original, from, from, end - from, false);
+            if (original.length <= cols) forgetStrandedTail(line);
+            else blankHalfGlyph(line, cols, fill);
+        })
+    );
+}
+
+/**
  * The post-shrink per-line trim `NO_REFLOW` takes away, done by hand (N23).
  *
  * xterm's `Buffer.resize` ends with "trim the end of the line off if cols shrunk" — a
@@ -259,114 +414,28 @@ interface XtermCore {
  * that does not answer leaves the buffer exactly as it was — the pre-N23 behaviour, which is
  * degraded but not broken.
  */
-/**
- * Each trimmed line's cells as they were before its FIRST trim, up to the last one with text in
- * it, so a later widen can put back what a narrower width cut off. Without it a maximise or a
- * drag that passes through a narrow width deletes every long line's tail for good: the shell
- * repaints its prompt and nothing repaints history.
- */
-const strandedTails = new WeakMap<XtermBufferLine, XtermBufferLine>();
-/**
- * Only the bottom lines of a buffer keep what a cut hid: a stash costs about the hidden text, so
- * a full 10 000-line scrollback of long lines would hold ~10 MB more. Older history stays cut.
- */
-const STRANDED_TAIL_LINES = 1000;
-
-const CELL_WORDS = 3;
-/** A cell's codepoint plus its combined flag: 0 or a space is a blank cell. */
-const CELL_CHAR_MASK = 0x3fffff;
-
-/** One past the last cell in `from`..`to` of `data` that is not a default-coloured blank. */
-function contentEnd(data: Uint32Array, from: number, to: number): number {
-    let end = to;
-    while (end > from) {
-        const word = (end - 1) * CELL_WORDS;
-        const char = data[word]! & CELL_CHAR_MASK;
-        if ((char !== 0 && char !== 32) || data[word + 1] !== 0 || data[word + 2] !== 0) break;
-        end -= 1;
-    }
-    return end;
-}
-
-/**
- * Has `line` kept the first `cols` cells it had when `original` was stashed? Runs on every
- * stashed line on every step of a drag, so it compares xterm's raw cell words: no strings.
- */
-function unchangedSinceTrim(line: XtermBufferLine, original: XtermBufferLine, cols: number): boolean {
-    const now = line._data;
-    const then = original._data;
-    if (now === undefined || then === undefined || now.length < cols * CELL_WORDS || then.length < cols * CELL_WORDS) {
-        return false;
-    }
-    for (let word = cols * CELL_WORDS - 1; word >= 0; word -= 1) if (now[word] !== then[word]) return false;
-    // ponytail: a combined glyph swapped for another with the same width compares equal.
-    // A blank head is refused: a recycled scrollback line is blank too, and would inherit it.
-    return contentEnd(then, 0, cols) > 0;
-}
-
-/** The buffers `trimStrandedCells` and `restoreStrandedCells` walk, with their fill cell. */
-function eachLine(term: HeadlessTerminal, visit: (line: XtermBufferLine, fill: unknown, recent: boolean) => void): void {
-    const core = (term as unknown as { _core?: XtermCore })._core;
-    const buffers = core?._bufferService?.buffers;
-    if (buffers === undefined) return;
-    for (const buffer of [buffers.normal, buffers.alt]) {
-        const lines = buffer?.lines;
-        if (buffer === undefined || lines === undefined) continue;
-        const fill = buffer.getNullCell?.();
-        if (fill === undefined) continue;
-        for (let index = 0; index < lines.length; index += 1) {
-            const line = lines.get(index);
-            if (line !== undefined) visit(line, fill, index >= lines.length - STRANDED_TAIL_LINES);
-        }
-    }
-}
-
-/**
- * The widen half of `trimStrandedCells`: give back the cells a narrower width cut, on every line
- * nothing has rewritten since. A rewritten line drops its stash, so a prompt redrawn while narrow
- * never grows the tail of the one it replaced.
- */
-function restoreStrandedCells(term: HeadlessTerminal, fromCols: number, cols: number): void {
-    eachLine(term, (line, fill) => {
-        const original = strandedTails.get(line);
-        if (original === undefined) return;
-        if (!unchangedSinceTrim(line, original, fromCols)) {
-            strandedTails.delete(line);
-            return;
-        }
-        const end = Math.min(original.length, cols);
-        if (line.length < end) line.resize?.(end, fill);
-        line.copyCellsFrom?.(original, fromCols, fromCols, end - fromCols, false);
-        if (original.length <= cols) strandedTails.delete(line);
-    });
-}
-
 function trimStrandedCells(term: HeadlessTerminal, cols: number): void {
-    eachLine(term, (line, fill, recent) => {
-        if (line.length > cols) {
-            // Stash before the first cut only: a second, narrower shrink must not replace the
-            // whole line with an already-trimmed one. A line rewritten since gets a fresh stash.
-            // Blank tails are checked first: most lines are, and cloning them on every step of a
-            // drag is what made it slow. The copy stops at the last cell with something in it:
-            // xterm lines are the full grid width, and the blanks past the text are most of it.
-            const stashed = strandedTails.get(line);
-            if (!recent) strandedTails.delete(line);
-            else if (stashed === undefined || !unchangedSinceTrim(line, stashed, line.length)) {
-                const end = line._data === undefined ? cols : contentEnd(line._data, cols, line.length);
-                const copy = end > cols ? line.clone?.() : undefined;
-                copy?.resize?.(end, fill);
-                copy?.cleanupMemory?.();
-                if (copy !== undefined) strandedTails.set(line, copy);
-                else strandedTails.delete(line);
+    notAWrite(() =>
+        eachLine(term, (line, fill, recent) => {
+            if (line.length > cols) {
+                // Stash before the first cut only: a stash that is still here means nothing has
+                // written the line since, so a second, narrower shrink keeps it. Blank tails are
+                // checked first: most lines are, and cloning them on every step of a drag is what
+                // made it slow. The copy stops at the last cell with something in it: xterm lines
+                // are the full grid width, and the blanks past the text are most of it.
+                if (!recent) forgetStrandedTail(line);
+                else if (!strandedTails.has(line)) {
+                    const end = line._data === undefined ? cols : contentEnd(line._data, cols, line.length);
+                    const copy = end > cols ? line.clone?.() : undefined;
+                    copy?.resize?.(end, fill);
+                    copy?.cleanupMemory?.();
+                    if (copy !== undefined && watchForWrites(line)) strandedTails.set(line, copy);
+                }
+                line.resize?.(cols, fill);
             }
-            line.resize?.(cols, fill);
-        }
-        // The cut can land inside a wide glyph; its orphaned lead half is one column of
-        // overflow, so blank it. Guarded on the exact width the trim produced, so a line
-        // the resize above could not touch is left exactly as it was.
-        if (line.length !== cols || line.getWidth?.(cols - 1) !== 2) return;
-        line.setCell?.(cols - 1, fill);
-    });
+            blankHalfGlyph(line, cols, fill);
+        })
+    );
 }
 
 export interface TerminalStateOptions {

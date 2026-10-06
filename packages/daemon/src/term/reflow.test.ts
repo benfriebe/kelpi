@@ -109,6 +109,52 @@ describe('reflow policy — columns', () => {
         expect(service.cellText('p', 0, 0)?.text.trimEnd()).toBe('new prompt');
     });
 
+    it('does not bring back the old tail of a line rewritten with the same start while narrow', async () => {
+        // `clear; ls -la` at 12 columns: every new line starts `drwxr-xr-x@ ` like the old one did,
+        // so no comparison of the visible cells can tell it was rewritten.
+        const service = makeService();
+        service.attach('p', 40, 10);
+        await write(service, 'p', 'drwxr-xr-x@ 18 mrowe staff 576B .git\r\n$ ');
+
+        service.resize('p', 12, 10);
+        await write(service, 'p', '\x1b[H\x1b[2J\x1b[3Jdrwxr-xr-x@ 4 ben staff 128B src\r\n$ ');
+        service.resize('p', 40, 10);
+
+        const screen = service.capture('p', { scrollback: true });
+        expect(screen).not.toContain('mrowe');
+        expect(screen.replace(/\s+/gu, '')).toContain('drwxr-xr-x@4benstaff128Bsrc');
+    });
+
+    it('does not bring back the old tail of a scrollback line recycled while narrow', async () => {
+        // A full scrollback reuses its oldest line for the next new one (`CircularList.recycle`).
+        const service = new TerminalStateServiceImpl({ scrollback: 2 });
+        services.push(service);
+        service.attach('p', 40, 3);
+        await write(service, 'p', 'drwxr-xr-x@ 18 mrowe staff 576B .git\r\n'.repeat(5));
+
+        service.resize('p', 12, 3);
+        await write(service, 'p', 'drwxr-xr-x@ \r\n'.repeat(5));
+        service.resize('p', 40, 3);
+
+        expect(service.capture('p', { scrollback: true })).not.toContain('mrowe');
+    });
+
+    it('brings back a wide glyph the cut split in half', async () => {
+        // The trim blanks a wide glyph's lead cell when the cut lands between its two cells
+        // (READ-4); the widen must put the lead back, not just the spacer after it.
+        const service = makeService();
+        service.attach('p', 80, 8);
+        await write(service, 'p', `x${'日'.repeat(30)}\r\n$ `);
+
+        service.resize('p', 22, 8);
+        service.resize('p', 36, 8);
+        // Part way: the new edge splits the 18th glyph, so it is blanked again.
+        expect(service.cellText('p', 0, 0)?.text.trimEnd()).toBe(`x${'日'.repeat(17)}`);
+        service.resize('p', 80, 8);
+
+        expect(service.cellText('p', 0, 0)?.text.trimEnd()).toBe(`x${'日'.repeat(30)}`);
+    });
+
     it('keeps the rows below a full-width line where they were, shrink after shrink', async () => {
         // The storm, in miniature: 12 successive narrowings must not move `third` off row 2.
         const service = makeService();

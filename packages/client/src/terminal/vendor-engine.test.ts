@@ -37,7 +37,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { Ghostty, type GhosttyTerminal } from 'ghostty-web';
+import { drawPowerlineGlyph, Ghostty, type GhosttyTerminal } from 'ghostty-web';
 import { describe, expect, it } from 'vitest';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -45,7 +45,7 @@ const repoRoot = path.resolve(here, '..', '..', '..', '..');
 const vendorRoot = path.join(repoRoot, 'vendor', 'ghostty-web-patched');
 
 /** The version the audit evidence and PROVENANCE.md were written against. */
-const EXPECTED_VERSION = '0.4.0-kelpi.19';
+const EXPECTED_VERSION = '0.4.0-kelpi.20';
 
 /** Markers of the caret-anchored IME, in the built ESM bundle the client imports. */
 const CARET_MARKERS = ['data-ime-preedit', 'data-ime-caret', 'syncImeCaret'];
@@ -442,6 +442,44 @@ describe('vendored ghostty-web engine', () => {
         // No auto-scroll band inside the canvas: it yanked a drag on the top or bottom two rows.
         expect(selectionSource).not.toContain('AUTO_SCROLL_EDGE_SIZE');
         expect(selectionSource).not.toContain('updateAutoScroll(');
+    });
+
+    it('draws the Powerline separators as cell-exact shapes, not font glyphs (§-kelpi.20)', () => {
+        // Take a future npm release wholesale and U+E0B0… go back through `fillText`, at the
+        // fallback Nerd Font's metrics, overshooting a cell sized to a font without them.
+        const calls: string[] = [];
+        const ctx = new Proxy({ fillStyle: '#0000ff' } as Record<string, unknown>, {
+            get: (target, key) =>
+                key in target ? target[key as string] : (...args: number[]) => calls.push(`${String(key)}(${args.join(',')})`),
+            set: (target, key, value) => ((target[key as string] = value), true)
+        }) as unknown as CanvasRenderingContext2D;
+        const draw = (codepoint: number) => {
+            calls.length = 0;
+            return drawPowerlineGlyph(ctx, codepoint, 10, 20, 8, 16);
+        };
+
+        // A solid right triangle: flat side on the cell's left edge, tip at the right edge's middle.
+        expect(draw(0xe0b0)).toBe(true);
+        expect(calls).toEqual(['beginPath()', 'moveTo(10,20)', 'lineTo(18,28)', 'lineTo(10,36)', 'fill()']);
+        // The left one mirrors it.
+        expect(draw(0xe0b2)).toBe(true);
+        expect(calls).toEqual(['beginPath()', 'moveTo(18,20)', 'lineTo(10,28)', 'lineTo(18,36)', 'fill()']);
+        // A thin chevron is the same path stroked, in the cell's foreground.
+        expect(draw(0xe0b1)).toBe(true);
+        expect(calls.at(-1)).toBe('stroke()');
+        expect(ctx.strokeStyle).toBe('#0000ff');
+        // Half-circles span the whole cell: centred on the flat edge, radius the cell's width and half its height.
+        expect(draw(0xe0b4)).toBe(true);
+        expect(calls).toEqual(['beginPath()', `ellipse(10,28,8,8,0,${String(-Math.PI / 2)},${String(Math.PI / 2)},false)`, 'fill()']);
+        expect(draw(0xe0b7)).toBe(true);
+        expect(calls).toEqual(['beginPath()', `ellipse(18,28,8,8,0,${String(-Math.PI / 2)},${String(Math.PI / 2)},true)`, 'stroke()']);
+        // Everything else, the Nerd Font's other icons included, stays on the font path.
+        for (const codepoint of [0x41, 0xe0af, 0xe0b8, 0x2500]) {
+            expect(draw(codepoint)).toBe(false);
+            expect(calls).toEqual([]);
+        }
+        const rendererSource = read(path.join(vendorRoot, 'source', 'lib', 'renderer.ts'));
+        expect(rendererSource).toContain('drawPowerlineGlyph(this.ctx, cell.codepoint, cellX, cellY, cellWidth, this.metrics.height)');
     });
 
     it('keeps the snapshotted source in step with the bundle', () => {

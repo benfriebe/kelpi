@@ -1,11 +1,11 @@
-# ghostty-web 0.4.0-kelpi.19 (vendored)
+# ghostty-web 0.4.0-kelpi.20 (vendored)
 
 **Version labels.** These versions were tagged `-nex.N` before the Nex to Kelpi rename and were
 relabelled `-kelpi.N` on 2026-10-03 with the same numbering, so an older commit, log or audit
 record that says `0.4.0-nex.N` means the same build as `0.4.0-kelpi.N`.
 
 A build of `ghostty-web` v0.4.0 carrying two open upstream PRs — applied after a line-by-line
-review in the orchestrating session and explicit user authorization to integrate both, plus eighteen
+review in the orchestrating session and explicit user authorization to integrate both, plus nineteen
 Kelpi-authored adaptations on top of them (`-kelpi.2`: the caret-anchored IME; `-kelpi.3`: an
 `allowTransparency` that does something; `-kelpi.4`: a cursor that knows whether its surface has
 focus; `-kelpi.5`: a `write()` that survives zero bytes; `-kelpi.6`: a paint that can be suspended;
@@ -19,7 +19,8 @@ rows remain anchored when older history is trimmed; `-kelpi.15`: DOM focus prese
 `-kelpi.17`: copying a selection joins soft-wrapped rows, history included; `-kelpi.18`: the
 built-in link detection can be turned off, and an embedder-drawn link underline; `-kelpi.19`: a
 double-click held and dragged selects whole words from the pressed word, a triple-click selects a
-line and drags by lines, and a drag scrolls only once the pointer leaves the terminal).
+line and drags by lines, and a drag scrolls only once the pointer leaves the terminal; `-kelpi.20`: the Powerline separators are
+drawn as cell-exact shapes instead of font glyphs).
 
 **`-kelpi.13` is the first adaptation that is NOT TypeScript-only.** Every version up to `-kelpi.12`
 shipped `ghostty-vt.wasm` byte-identical to the npm `ghostty-web@0.4.0` package; `-kelpi.13`
@@ -49,6 +50,22 @@ reproduces the `0.4.0` wasm BYTE-IDENTICALLY when run without the patch, is in
 | `0.4.0-kelpi.17` | **wasm + TypeScript**: `ghostty_terminal_is_screen_row_wrapped` reports a row's soft-wrap continuation by absolute row, history included; `getSelection()` joins soft-wrapped rows instead of putting a newline at every wrap, and keeps a wrapped row's trailing spaces; `Buffer.getLine` reports `isWrapped` for history rows (#323) |
 | `0.4.0-kelpi.18` | `linkDetection: false` turns off the built-in link hover, pointer cursor and Ctrl/Cmd-click; `setLinkUnderline(segments)` underlines the cells an embedder names, in each cell's own foreground colour (#303) |
 | `0.4.0-kelpi.19` | a double-click selects its word on the second PRESS, and a drag from it extends by whole words from that word; a triple-click selects the whole line (soft-wrapped rows included) and a drag from it extends by whole lines; the word under a double-click is measured on the row on screen when the view is scrolled back; a drag no longer auto-scrolls while the pointer is over the terminal |
+| `0.4.0-kelpi.20` | U+E0B0–U+E0B7 (Powerline triangles, chevrons and half-circles) are drawn as geometry filling the cell, not through the font |
+
+## Kelpi adaptation: Powerline separators drawn as cell-exact shapes (`0.4.0-kelpi.20`, 2026-10-06)
+
+Upstream drew every cell with `fillText`. When the user's font has no Powerline glyphs (Atkinson
+Hyperlegible Mono, for one), U+E0B0 and friends come from the next font in Kelpi's stack, the
+bundled JetBrainsMono Nerd Font, at that font's metrics, while the cell background is sized to
+the user's font. A starship or p10k prompt's separators then overshoot the coloured cell above and
+below, so stacked prompts show a sawtooth and a left half-circle paints over the cell beside it.
+
+`drawPowerlineGlyph` (exported) draws U+E0B0/E0B2 as solid right/left triangles, U+E0B1/E0B3 as
+thin chevrons, U+E0B4/E0B6 as solid half-ellipses and U+E0B5/E0B7 as their outlines, each spanning
+exactly the cell's width and height in the cell's foreground colour, as Ghostty's sprite font and
+xterm.js's `customGlyphs` do. `renderCellText` calls it for single-code-point cells before the
+font path; it returns `false` for anything else, which is drawn as before. The rest of the Nerd
+Font range (and box drawing) still goes through the font.
 
 ## Kelpi adaptation: double- and triple-click select words and lines, and drag by them (`0.4.0-kelpi.19`, 2026-10-04)
 

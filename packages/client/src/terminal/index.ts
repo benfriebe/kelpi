@@ -209,6 +209,17 @@ export {
 } from './mount-policy';
 
 export {
+    PHONE_TERMINAL_POSTER_BUDGET_BYTES,
+    TERMINAL_POSTER_BUDGET_BYTES,
+    captureTerminalPoster,
+    discardTerminalPoster,
+    forgetTerminalPosters,
+    returnTerminalPoster,
+    takeTerminalPoster,
+    type TerminalPoster
+} from './poster';
+
+export {
     DEFAULT_FONT_FAMILY,
     DEFAULT_FONT_SIZE,
     DEFAULT_SCROLLBACK_BYTES,

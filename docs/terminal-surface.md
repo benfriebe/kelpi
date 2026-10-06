@@ -450,6 +450,15 @@ because no client is watching, section 4.1).
   "used" means focused or newly appeared. Eviction disposes the engine and detaches the PTY
   stream; re-mounting re-attaches and the daemon replays the snapshot, so the pane comes back
   with its screen intact.
+- **Posters** (`packages/client/src/terminal/poster.ts`): a terminal pane that unmounts with a
+  complete screen leaves a copy of its canvas behind, and when it mounts again (a workspace switch
+  back, a pane the cap evicted) the copy stands over the host from the mounting commit until the
+  new engine has parsed its whole replay (`TerminalRenderer.onReplayApplied`) and drawn a frame of
+  it, or `TERMINAL_POSTER_MAX_MS` (3 s) passes. Without it every switch showed each incoming
+  pane's bare fill until its engine caught up. The cache is LRU under a byte budget (128 MB, 32 MB
+  on a phone, where iOS caps a page's canvas memory), holds copies rather than the engines' own
+  canvases (those keep the engine's listeners and so its WASM memory), and forgets a pane when
+  it leaves the daemon's state.
 - **Chunked replays** (`packages/client/src/terminal/ingest.ts`): a replay is applied in
   `REPLAY_CHUNK_BYTES` (64 KiB) writes under an `REPLAY_TICK_BUDGET_MS` (8 ms) budget per task,
   so a multi-megabyte snapshot cannot wedge the main thread and stall the flow-control acks.

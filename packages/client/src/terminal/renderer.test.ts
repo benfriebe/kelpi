@@ -1378,3 +1378,108 @@ describe('ghostty loader (mocked module)', () => {
         }
     });
 });
+
+describe('onReplayApplied: the engine holds the whole screen (terminal/poster.ts)', () => {
+    function manualIngest(renderer: ReturnType<typeof createRendererFromLoader>, chunkBytes: number) {
+        const pending = new Set<() => void>();
+        const ingest = createTerminalIngest(renderer, {
+            chunkBytes,
+            tickBudgetMs: 0,
+            schedule: (run) => {
+                pending.add(run);
+                return () => pending.delete(run);
+            }
+        });
+        const drain = (): void => {
+            while (pending.size > 0) {
+                const next = [...pending][0]!;
+                pending.delete(next);
+                next();
+            }
+        };
+        return { ingest, pending, drain };
+    }
+
+    async function live(): Promise<{ engine: StubEngine; renderer: ReturnType<typeof createRendererFromLoader> }> {
+        const engine = stubEngine();
+        const renderer = createRendererFromLoader('ghostty', engine.loader);
+        const opening = renderer.open(host());
+        engine.settle();
+        await opening;
+        return { engine, renderer };
+    }
+
+    it('fires once, after the LAST chunk of a replay is parsed, and not for live bytes after it', async () => {
+        const { engine, renderer } = await live();
+        const applied = vi.fn();
+        renderer.onReplayApplied?.(applied);
+        const { ingest, pending, drain } = manualIngest(renderer, 3);
+
+        ingest.replay('snapshot');
+        expect(engine.terminal.writes).toEqual(['sna']);
+        expect(applied).not.toHaveBeenCalled();
+        expect(pending.size).toBe(1);
+        drain();
+        expect(engine.terminal.writes).toEqual(['sna', 'psh', 'ot']);
+        expect(applied).toHaveBeenCalledTimes(1);
+
+        ingest.live('more output');
+        expect(applied).toHaveBeenCalledTimes(1);
+        renderer.dispose();
+    });
+
+    it('fires at once for an empty replay: a shell that has printed nothing is a whole screen', async () => {
+        const { renderer } = await live();
+        const applied = vi.fn();
+        renderer.onReplayApplied?.(applied);
+        createTerminalIngest(renderer).replay(new Uint8Array(0));
+        expect(applied).toHaveBeenCalledTimes(1);
+        renderer.dispose();
+    });
+
+    it('waits for the mount flush when the replay beat the engine', async () => {
+        const engine = stubEngine();
+        const renderer = createRendererFromLoader('ghostty', engine.loader);
+        const applied = vi.fn();
+        renderer.onReplayApplied?.(applied);
+        const opening = renderer.open(host());
+        createTerminalIngest(renderer).replay('snapshot');
+        expect(applied).not.toHaveBeenCalled();
+
+        engine.settle();
+        await opening;
+        expect(engine.terminal.writes).toEqual(['snapshot']);
+        expect(applied).toHaveBeenCalledTimes(1);
+        renderer.dispose();
+    });
+
+    it('does not fire for a replay a newer one superseded, nor for the CAN that aborts it', async () => {
+        const { engine, renderer } = await live();
+        const applied = vi.fn();
+        renderer.onReplayApplied?.(applied);
+        const { ingest, drain } = manualIngest(renderer, 1);
+
+        ingest.replay('ab');
+        expect(engine.terminal.writes).toEqual(['a']);
+        ingest.replay('new');
+        expect(engine.terminal.writes).toContain('\x18');
+        expect(applied).not.toHaveBeenCalled();
+        drain();
+        expect(engine.terminal.writes.slice(-3)).toEqual(['n', 'e', 'w']);
+        expect(applied).toHaveBeenCalledTimes(1);
+        renderer.dispose();
+    });
+
+    it('fires again for the next replay (a reconnect re-seed), and never after dispose', async () => {
+        const { renderer } = await live();
+        const applied = vi.fn();
+        renderer.onReplayApplied?.(applied);
+        const ingest = createTerminalIngest(renderer);
+        ingest.replay('one');
+        ingest.replay('two');
+        expect(applied).toHaveBeenCalledTimes(2);
+        renderer.dispose();
+        ingest.replay('three');
+        expect(applied).toHaveBeenCalledTimes(2);
+    });
+});

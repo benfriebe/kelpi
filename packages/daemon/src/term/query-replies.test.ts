@@ -5,7 +5,7 @@
  * An application that probes the terminal at startup (crossterm's keyboard-enhancement check sends
  * `CSI ? u` then `CSI c`, and waits for the DA1 reply as its end-of-replies sentinel) hangs when
  * the answer never comes. `@xterm/headless` already composes these replies; the service forwards
- * an allowlist of them, and nothing else (`isForwardedQueryReply` in `service.ts`).
+ * an allowlist of them, and nothing else (`isForwardedQueryReply` in `@kelpi/protocol`).
  */
 
 import { describe, expect, it } from 'vitest';
@@ -61,6 +61,17 @@ describe('device query replies', () => {
         const { service, replies } = makeService();
         await write(service, 'ab\r\ncdef\x1b[6n');
         expect(replies).toEqual(['\x1b[2;5R']);
+        service.disposeAll();
+    });
+
+    // xterm's pending wrap puts the cursor one past the last column; a real terminal reports the
+    // last column, and an application told 41 on a 40-column screen draws off it.
+    it('keeps the cursor report on the screen after a line that exactly fills it', async () => {
+        const { service, replies } = makeService();
+        await write(service, `${'x'.repeat(40)}\x1b[6n\x1b[?6n`);
+        expect(replies).toEqual(['\x1b[1;40R', '\x1b[?1;40R']);
+        await write(service, '\r\nab\x1b[?6n');
+        expect(replies[2]).toBe('\x1b[?2;3R');
         service.disposeAll();
     });
 

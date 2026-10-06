@@ -114,7 +114,8 @@ export interface TerminalSession {
      * a replay/output frame: the host binds the reply to that frame and permits it while
      * hidden. An in-flight output callback may still answer its application's query after
      * visual supersession, without granting stale output credit. Superseded replay replies
-     * are ignored; responses after the callback completes throw.
+     * are ignored; responses after the callback completes throw. The daemon answers DA1, DA2 and
+     * DSR 5 / 6 / ?6 for the pane itself, so the host drops a renderer's copy of those replies.
      * Never mark keyboard, paste or mouse input as a response. At most 128 KiB per call.
      */
     writeDirect(data: string | Uint8Array, options?: { readonly response?: boolean }): void;

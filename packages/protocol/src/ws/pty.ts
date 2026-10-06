@@ -188,6 +188,10 @@ export function decodeResizePayload(payload: Uint8Array): PtyResize | undefined 
     };
 }
 
+const QUERY_REPLY = String.raw`\x1b\[(?:[?>][\d;]*c|0n|\??\d+;\d+(?:;\d+)?R)`;
+const FORWARDED_QUERY_REPLY = new RegExp(`^${QUERY_REPLY}$`);
+const FORWARDED_QUERY_REPLIES = new RegExp(QUERY_REPLY, 'g');
+
 /**
  * The device-query replies the daemon's `@xterm/headless` sends the PTY itself (#349), so no
  * renderer sends them too: Primary and Secondary Device Attributes (`CSI ? … c`, `CSI > … c`),
@@ -203,5 +207,13 @@ export function decodeResizePayload(payload: Uint8Array): PtyResize | undefined 
  * `fzf --height` find the cursor.
  */
 export function isForwardedQueryReply(data: string): boolean {
-    return /^\x1b\[(?:[?>][\d;]*c|0n|\??\d+;\d+(?:;\d+)?R)$/.test(data);
+    return FORWARDED_QUERY_REPLY.test(data);
+}
+
+/**
+ * `data` with every forwarded query reply taken out (`isForwardedQueryReply`), for a renderer that
+ * hands several replies over in one write: the rest, a colour answer say, still has to go through.
+ */
+export function withoutForwardedQueryReplies(data: string): string {
+    return data.replace(FORWARDED_QUERY_REPLIES, '');
 }

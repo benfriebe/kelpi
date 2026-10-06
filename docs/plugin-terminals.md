@@ -124,8 +124,11 @@ bracketed paste and keyboard encoding. Mouse reports and key releases must use t
 path so coordinates and releases are never copied to input-sync siblings. Dimensions must
 be integers from 1 through 65535; cell height must be finite, positive and at most 512.
 
-Ordinary input is ignored while hidden. A parser's DA/DSR reply can still reach its process:
-mark it as `response: true` while consuming a replay/output callback. The SDK and host bind
+Ordinary input is ignored while hidden. A parser's reply to a query can still reach its process:
+mark it as `response: true` while consuming a replay/output callback. Device attributes and
+status (DA1, DA2, DSR 5 / 6 and `CSI ? 6 n`) are the exception: the daemon answers those for the
+pane itself (#349), so the host drops a renderer's copy, from a batch of replies too, and passes
+the rest on. The SDK and host bind
 that reply to the exact callback's delivery generation and sequence. A still-running output
 callback may answer its application's query after a newer replay arrives: snapshots do not
 reproduce those queries, and its acknowledgement still grants no credit for the newer data.

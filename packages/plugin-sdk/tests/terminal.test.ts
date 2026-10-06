@@ -422,16 +422,18 @@ describe('browser terminal renderer sessions', () => {
             scope.update({ focused: false, visible: false, ownsSize: true });
             session.write('hidden'); session.resize(140, 40);
             expect(native.write).toHaveBeenCalledOnce(); expect(native.resize).toHaveBeenCalledOnce();
+            // A colour query: the host drops a renderer's DA / DSR reply, which the daemon sends itself (#349).
+            const colour = '\x1b]11;rgb:0000/0000/0000\x1b\\';
             respondToHiddenQuery = () => {
                 session.write('hidden keyboard');
                 session.writeDirect('\x1b[<0;1;1M');
-                session.writeDirect('\x1b[2;3R', { response: true });
+                session.writeDirect(colour, { response: true });
             };
-            subscription.onData(new Uint8Array([27, 91, 54, 110]));
-            await vi.waitFor(() => expect(native.ack.mock.calls.map(([bytes]) => bytes)).toEqual([3, 1, 4]));
+            subscription.onData(new TextEncoder().encode('\x1b]11;?\x07'));
+            await vi.waitFor(() => expect(native.ack.mock.calls.map(([bytes]) => bytes)).toEqual([3, 1, 7]));
             expect(native.write).toHaveBeenCalledOnce();
-            expect(native.writeDirect.mock.calls.map(([data]) => new TextDecoder().decode(data))).toEqual(['\x1b[0n', '\x1b[2;3R']);
-            expect(() => session.writeDirect('\x1b[2;3R', { response: true })).toThrow('active replay or output callback');
+            expect(native.writeDirect.mock.calls.map(([data]) => new TextDecoder().decode(data))).toEqual(['\x1b[0n', colour]);
+            expect(() => session.writeDirect(colour, { response: true })).toThrow('active replay or output callback');
             session.dispose();
             expect(scope.attached).toBe(false); expect(native.unsubscribe).toHaveBeenCalledOnce(); expect(failed).not.toHaveBeenCalled();
         } finally { scope.dispose(); h.pagehide(); held.resolve(); }

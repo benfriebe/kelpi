@@ -190,6 +190,13 @@ describe('selected terminal renderer transport', () => {
                 sequence: query.sequence, response: true, direct: true, data: encoder.encode(text) });
         }
         expect(h.wireFrames().filter(frame => frame?.type === PTY_FRAME_TYPES.inputDirect).map(frame => decoder.decode(frame!.payload))).toEqual(['\x1b]11;rgb:0000/0000/0000\x1b\\']);
+        // One write carrying several replies: the daemon's are taken out, the colour reply kept.
+        h.scope.receive({ type: 'terminal-input', session: query.session, generation: query.generation, sequence: query.sequence,
+            response: true, direct: true, data: encoder.encode('\x1b[?1;2c\x1b]10;rgb:ffff/ffff/ffff\x1b\\\x1b[2;3R') });
+        expect(h.wireFrames().filter(frame => frame?.type === PTY_FRAME_TYPES.inputDirect).map(frame => decoder.decode(frame!.payload)).at(-1)).toBe('\x1b]10;rgb:ffff/ffff/ffff\x1b\\');
+        // Only responses: a keystroke shaped like a cursor report (Shift+F3, `CSI 1 ; 2 R`) is still typed.
+        h.scope.receive({ type: 'terminal-input', session: query.session, data: encoder.encode('\x1b[1;2R'), direct: false });
+        expect(h.wireFrames().filter(frame => frame?.type === PTY_FRAME_TYPES.input).map(frame => decoder.decode(frame!.payload))).toEqual(['\x1b[1;2R']);
     });
 
     it('allows hidden device replies only for the current data frame while blocking keyboard and mouse input', async () => {

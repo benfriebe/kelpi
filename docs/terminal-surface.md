@@ -1359,8 +1359,11 @@ Kelpi's own layer on both sides of the wire:
   device queries `@xterm/headless` answers itself (#349): DA1 (`CSI c`), DA2 (`CSI > c`) and DSR
   (`CSI 5n` status, `CSI 6n` / `CSI ? 6n` cursor position), forwarded from `term.onData` through
   the allowlist `isForwardedQueryReply` (`packages/protocol/src/ws/pty.ts`), for live output
-  only. No renderer sends these too: the bundled renderer drops what its engine emits while
-  parsing output, and the plugin host drops a plugin renderer's matching response. Colour queries
+  only, with a cursor report's column kept on the screen (xterm's pending wrap would report one
+  past the last). No renderer sends these too: the bundled renderer drops what its engine emits
+  while parsing output (ghostty-web answers inside `write()`; the xterm.js fallback, which answers
+  later, is kept from answering at its parser by `leaveDaemonQueriesUnanswered`), and the plugin
+  host takes a plugin renderer's matching responses out of what it sends. Colour queries
   (OSC 4 / 10 / 11) are deliberately left unanswered: the daemon's VT does not know the window's
   theme. Without a DA1 reply, crossterm-style probes (`CSI ? u` then `CSI c`) hang at startup.
 - **Streaming**: the flags ride `VtModes.kittyKeyboardFlags` (`packages/daemon/src/seams.ts:77-96`)

@@ -789,7 +789,7 @@ the daemon's workspace reducer.
 ### 7.4 Desktop notification (OSC 9 / OSC 777)
 
 → `createOscNotificationSink` (`packages/daemon/src/handlers/app/osc-notifications.ts:41-63`,
-parsed by `packages/daemon/src/term/osc-notify.ts:53-86`):
+parsed by `packages/daemon/src/term/osc-notify.ts:56-111`):
 - **Suppressed** iff some attached client whose document is visible has the pane's workspace
   as its active workspace AND that pane as its focused pane (AND, when that client reported a
   visibility set, the pane is in it) AND at least one attached client's document is visible
@@ -803,9 +803,13 @@ parsed by `packages/daemon/src/term/osc-notify.ts:53-86`):
   dedupeKey}` to every client:
   - body from the OSC payload; title from OSC 777, else (OSC 9 carries none) the pane's
     title, else the workspace name. Both fields have C0/DEL controls stripped and are capped
-    at 512 characters (`OSC_NOTIFY_MAX_LENGTH`, truncated rather than dropped); an empty body,
-    or an OSC 777 whose verb is not `notify`, raises nothing. `lastActivityAt` is not bumped:
-    a notification is a message *about* the pane, not activity in it.
+    at 512 characters (`OSC_NOTIFY_MAX_LENGTH`, truncated rather than dropped). An empty body,
+    an OSC 777 whose verb is not `notify`, or an OSC 9 that ghostty parses as one of ConEmu's
+    commands (`CONEMU_COMMAND`: the `9;4` progress bar, the `9;9` working directory and the
+    rest) raises nothing; one that only starts like a command (`9;4`, `9;4;5`) still notifies,
+    as it does in ghostty, and a message starting `5` or `12` is swallowed, as it is there.
+    `lastActivityAt` is not bumped: a notification is a message *about* the pane, not activity
+    in it.
   - `dedupeKey` `"kelpi-<paneID>"` → posting again for the same pane **replaces** the previous
     notification (dedup per pane)
   - two action buttons: **Open** (also the default click action) and **Dismiss**

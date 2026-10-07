@@ -444,6 +444,10 @@ export function hydrateSettings(raw: unknown): WsSettingsSnapshot | null {
         value === 'ask' || value === 'remove' || value === 'keep' ? value : fallback;
     const nullableNum = (value: unknown): number | null =>
         typeof value === 'number' && Number.isFinite(value) ? value : null;
+    const nonBlankText = (value: unknown, fallback: string): string =>
+        typeof value === 'string' && value.trim() !== '' ? value : fallback;
+    const agentChoice = (value: unknown, fallback: 'none' | 'claude' | 'codex'): 'none' | 'claude' | 'codex' =>
+        value === 'none' || value === 'claude' || value === 'codex' ? value : fallback;
 
     return {
         keybindLines: array(raw['keybindLines']).filter((line): line is string => typeof line === 'string'),
@@ -543,7 +547,15 @@ export function hydrateSettings(raw: unknown): WsSettingsSnapshot | null {
             copyOnSelect: bool(general['copyOnSelect'], fallbackGeneral.copyOnSelect),
             // Middle-click paste, additive in the same way: an older daemon sends nothing and the
             // shipped default (ON) stands.
-            middleClickPaste: bool(general['middleClickPaste'], fallbackGeneral.middleClickPaste)
+            middleClickPaste: bool(general['middleClickPaste'], fallbackGeneral.middleClickPaste),
+            // wire-protocol.md §6.3's agent start. Additive like the rest: a daemon that predates
+            // them sends nothing and the shipped defaults stand. A blank command is the default,
+            // as the daemon's own parse says. (A daemon that predates them also cannot start an
+            // agent, which the create reply's missing `start_agent` echo tells a caller.)
+            agentClaudeCommand: nonBlankText(general['agentClaudeCommand'], fallbackGeneral.agentClaudeCommand),
+            agentCodexCommand: nonBlankText(general['agentCodexCommand'], fallbackGeneral.agentCodexCommand),
+            newWorkspaceAgent: agentChoice(general['newWorkspaceAgent'], fallbackGeneral.newWorkspaceAgent),
+            newWorkspaceSendPrompt: bool(general['newWorkspaceSendPrompt'], fallbackGeneral.newWorkspaceSendPrompt)
         },
         // Chrome styling + status-bar settings. A daemon that predates the field sends nothing
         // and the shipped palette / gauge set stands — the same additive rule the rest of this

@@ -28,7 +28,11 @@ const SETTINGS: WsSettingsSnapshot = {
         focusFollowsMouse: true,
         focusFollowsMouseDelay: 250,
         theme: 'Nord',
-        confirmWorkspaceDeleteWhenActive: true
+        confirmWorkspaceDeleteWhenActive: true,
+        agentClaudeCommand: 'claude --model opus',
+        agentCodexCommand: '~/bin/codex-wrapper',
+        newWorkspaceAgent: 'codex',
+        newWorkspaceSendPrompt: true
     },
     appearance: {
         backgroundColor: '#ffffff',
@@ -79,6 +83,29 @@ describe('hydrateSettings', () => {
         expect(hydrateSettings({ general: {} })?.general.copyOnSelect).toBe(true);
         expect(hydrateSettings({ general: {} })?.general.middleClickPaste).toBe(true);
         expect(hydrateSettings({ general: {} })?.general.linksReuseWebPane).toBe(true);
+        // The agent-start settings (wire-protocol.md §6.3), absent the way an older daemon sends
+        // them: the shipped defaults stand, and no agent is preselected.
+        expect(hydrateSettings({ general: {} })?.general).toMatchObject({
+            agentClaudeCommand: 'claude',
+            agentCodexCommand: 'codex',
+            newWorkspaceAgent: 'none',
+            newWorkspaceSendPrompt: false
+        });
+        expect(
+            hydrateSettings({
+                general: {
+                    agentClaudeCommand: '  ',
+                    agentCodexCommand: 7,
+                    newWorkspaceAgent: 'gemini',
+                    newWorkspaceSendPrompt: 'true'
+                }
+            })?.general
+        ).toMatchObject({
+            agentClaudeCommand: 'claude',
+            agentCodexCommand: 'codex',
+            newWorkspaceAgent: 'none',
+            newWorkspaceSendPrompt: false
+        });
         expect(hydrated?.appearance.backgroundColor).toBe(DEFAULT_WS_SETTINGS.appearance.backgroundColor);
         expect(hydrated?.appearance.backgroundOpacity).toBe(1);
         expect(hydrated?.appearance.fontSize).toBeNull();

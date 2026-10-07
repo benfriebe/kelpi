@@ -45,6 +45,7 @@ interface ReplyHandle {                          // packages/daemon/src/seams.ts
   progress?(payload: object): void;   // #294, WS only: an interim frame to THIS requester
   readonly signal?: AbortSignal;      // #294, WS only: aborted by `workspace-create-cancel`
   uncancellable?(): void;             // #294, WS only: a later cancel answers cancelled:false
+  readonly originClientID?: string;   // WS only: the session a later `agent-launch` frame goes to
 }
 ```
 

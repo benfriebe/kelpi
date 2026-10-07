@@ -12,6 +12,9 @@ import {
     RESOLVE_CLIPBOARD_FILES_ACTION,
     RESOLVE_CLIPBOARD_FILES_CAPABILITY,
     RESOLVE_DROPPED_FILES_CAPABILITY,
+    WS_AGENT_LAUNCH_MESSAGE,
+    WS_AGENT_LAUNCH_OUTCOMES,
+    WS_AGENT_LAUNCH_REASONS,
     WS_CHOOSE_FOLDER_ANSWER_MESSAGE,
     WS_CHOOSE_FOLDER_RESULT_MESSAGE,
     WS_DELTA_KINDS,
@@ -23,6 +26,7 @@ import {
     WS_PROTOCOL_VERSION,
     WS_REJECTION_CODES,
     WS_REJECTION_REASONS,
+    type WsAgentLaunchMessage,
     type WsClientMessage,
     type WsDeltaEvent,
     type WsRejectedMessage,
@@ -149,6 +153,44 @@ describe('client-sync protocol envelope', () => {
             protocolVersion: WS_PROTOCOL_VERSION
         };
         expect(older.reason).toBeUndefined();
+    });
+});
+
+describe('agent-launch (wire-protocol.md §6.3)', () => {
+    it('pins the outcome and reason vocabularies the client and CLI branch on', () => {
+        expect(WS_AGENT_LAUNCH_MESSAGE).toBe('agent-launch');
+        expect([...WS_AGENT_LAUNCH_OUTCOMES]).toEqual(['launched', 'sent', 'prefilled', 'fallback', 'failed']);
+        expect([...WS_AGENT_LAUNCH_REASONS]).toEqual([
+            'timeout',
+            'pane-exited',
+            'agent-exited',
+            'user-typed',
+            'no-bracketed-paste',
+            'unsupported-shell',
+            'predicate-error',
+            'daemon-stopping'
+        ]);
+    });
+
+    it('round-trips a success and a broadcast fallback that carries the prompt', () => {
+        const frames: WsAgentLaunchMessage[] = [
+            { type: 'agent-launch', workspaceID: 'W', paneID: 'A', agent: 'claude', outcome: 'prefilled' },
+            {
+                type: 'agent-launch',
+                workspaceID: 'W',
+                paneID: 'A',
+                agent: 'codex',
+                outcome: 'fallback',
+                reason: 'timeout',
+                prompt: 'Work on ENG-123',
+                promptFile: '/Users/ben/Library/Application Support/kelpid/prompts/0f9c.txt',
+                broadcast: true
+            }
+        ];
+        for (const frame of frames) {
+            const server: WsServerMessage = frame;
+            expect(JSON.parse(JSON.stringify(server))).toEqual(frame);
+        }
     });
 });
 

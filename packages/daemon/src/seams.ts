@@ -41,6 +41,14 @@ export interface ReplyHandle {
    * cancel can arrive.
    */
   uncancellable?(): void;
+  /**
+   * The WS client session that should hear what becomes of this request AFTER its reply: today
+   * the `agent-launch` frame of a `workspace-create` that asked for `start_agent`
+   * (wire-protocol.md §6.3), which can arrive seconds after the handle has closed. The requesting
+   * session, or for a plugin view's request the session of the window hosting that view. Absent
+   * on the control socket, which has no session to route to (such outcomes are broadcast).
+   */
+  readonly originClientID?: string | undefined;
 }
 
 /** Dispatch decoded wire messages. reply is null for fire-and-forget commands. */

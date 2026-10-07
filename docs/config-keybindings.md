@@ -95,13 +95,13 @@ Per-key parse rules:
 | `global-hotkey` | value `none`, `unbind`, or empty → cleared (null). Otherwise parsed as a trigger string (section 3.2); unparseable values are silently ignored (stays null/prior) |
 | `global-hotkey-hide-on-repress` | `false` (lowercased) → `false`; ANY other value (incl. garbage) → `true` |
 
-Additive keys (`parseGeneralSettings`, `packages/core/src/config/general.ts:10-142` and
-`packages/core/src/config/general.ts:177-261`; `parseChromeSettings`,
+Additive keys (`parseGeneralSettings`, `packages/core/src/config/general.ts:11-208` and
+`packages/core/src/config/general.ts:252-372`; `parseChromeSettings`,
 `packages/core/src/config/chrome.ts`). These have no pre-port equivalent in the file: the
 pre-port app kept them in macOS UserDefaults, which a multi-client daemon has no equivalent
 of, so they live in this file so every attached client agrees. Every one of them is writable
 through `set-general-setting` (section 1.3; `WS_WRITABLE_GENERAL_KEYS`,
-`packages/protocol/src/ws/settings.ts:474-528`):
+`packages/protocol/src/ws/settings.ts:528-600`):
 
 | key | rule |
 |---|---|
@@ -120,6 +120,9 @@ through `set-general-setting` (section 1.3; `WS_WRITABLE_GENERAL_KEYS`,
 | `clipboard-write` | default false; only the literal `true` enables (the OSC 52 write gate; there is no `clipboard-read` twin, reads are refused outright) |
 | `macos-option-as-alt` | default false; only the literal `true` enables. Ghostty's key of the same name, at ghostty's own default: `false` leaves ⌥ to the macOS layout (⌥⇧- types an em dash), `true` reports it as the Alt modifier. Section 7.5; client-side, macOS-only, `true`/`false` only (no `left` / `right`) |
 | `worktree-base-path` | stored verbatim, case preserved; a blank value means the shipped default `~/kelpi/worktrees/<repo>` rather than the filesystem root |
+| `agent-claude-command`, `agent-codex-command` | defaults `claude` / `codex`; stored as written (trimmed, case preserved, an `=` inside kept), and a blank value means the default. The shell text the DAEMON types into a new workspace's first pane to start that agent (wire-protocol.md §6.3 `start_agent`), so an alias, a wrapper script or extra flags all work (`env FOO=1 claude --model opus`). Read when the launch line is typed, so an edit applies to the next create. A client never sends a command, only the agent kind. Resume and restart still type their own `claude --resume <id>` / `codex resume <id>` (agent-lifecycle.md §6.1, §6.4); these keys do not reach them yet |
+| `new-workspace-agent` | `none` (default), `claude` or `codex` (lowercased); any other value keeps the prior one. The agent the New Workspace sheet preselects. Client-side: a create starts an agent only when its request names one, so `kelpi workspace create` starts nothing without `--agent`, and the phone shell's create (which has no agent row) ignores it |
+| `new-workspace-send-prompt` | default false; only the literal `true` enables. Whether the sheet's "Send immediately" starts checked: the prompt goes on the launch line and is submitted at once, rather than being pasted into the agent's input for the user to edit and submit |
 | `new-workspace-placement`, `new-group-placement` | `end-of-list` (default) or `near-selection` (lowercased); anything else ignored |
 | chrome and status-bar family | `chrome-appearance`, `chrome-colors`, `sidebar-color-intensity`, `sidebar-avatar-fill`, `sidebar-avatar-stroke`, `sidebar-group-fill`, `sidebar-group-stroke`, `show-system-stats`, `system-stats`, `show-system-stat-graphs`, `sparkline-style`, `sparkline-color`, `sparkline-width`, `search-match-color`, `search-match-text-color`, `search-match-current-color`, `search-match-current-text-color` (parse rules and defaults in `packages/core/src/config/chrome.ts`; shell-ui.md §2, §8.1) |
 
@@ -160,12 +163,16 @@ Used when the user changes a general setting in the Settings UI (WS verb
    the resulting snapshot (the daemon trusts the file, not what it just wrote). An IO
    failure is a `SettingsError` (`could not write …`) returned to the caller as an error
    reply, which the Settings UI surfaces; it is not swallowed
-   (`packages/daemon/src/settings/service.ts:436-457`).
+   (`packages/daemon/src/settings/service.ts:485-505`).
 
 Settings written through this path (`WS_WRITABLE_GENERAL_KEYS`,
-`packages/protocol/src/ws/settings.ts:474-528`): `focus-follows-mouse`,
+`packages/protocol/src/ws/settings.ts:528-600`): `focus-follows-mouse`,
 `focus-follows-mouse-delay`, `tcp-port`, `global-hotkey` (value = trigger config string, or
-`none` when cleared), `global-hotkey-hide-on-repress`, and every additive key of section 1.2.
+`none` when cleared), `global-hotkey-hide-on-repress`, and every additive key of section 1.2,
+the four agent keys included (Settings ▸ General ▸ Agents). The daemon refuses a value with a line
+break or any other control character (`requireSingleLine`), which is what keeps
+`agent-claude-command` / `agent-codex-command` to the one line the daemon types; writing them
+grants nothing new, since any client that can write settings can already type into any pane.
 Note `theme` is NEVER written to this file by Kelpi: the config `theme` key is a read-only
 input (section 11); the terminal theme picked in Settings ▸ Appearance is written to
 `~/.config/ghostty/config` instead (`set-ghostty-setting`).

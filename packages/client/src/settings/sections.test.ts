@@ -107,6 +107,7 @@ describe('the section catalog', () => {
             'general-worktrees',
             'general-repositories',
             'general-workspaces',
+            'general-agents',
             'general-network',
             'general-links',
             'general-updates'
@@ -222,6 +223,10 @@ describe('the field table', () => {
             'inherit-group-toggle',
             'new-workspace-placement',
             'new-group-placement',
+            'new-workspace-agent-default',
+            'new-workspace-send-prompt-toggle',
+            'agent-claude-command',
+            'agent-codex-command',
             'tcp-listener-toggle',
             'tcp-port',
             'open-links-in',

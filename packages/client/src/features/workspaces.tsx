@@ -70,6 +70,11 @@ export function useWorkspacesFeatureModel(state: KelpiState) {
             confirmDeleteWhenActive: state.settings.value.general.confirmWorkspaceDeleteWhenActive,
             inheritGroupID: !state.settings.value.general.inheritGroupOnNewWorkspace || workspace === null
                 ? null : selectGroupForWorkspace(state, workspace.id)?.id ?? null,
+            // shell-ui.md §10.1's Agent row: the two client-side defaults it opens on, and whether
+            // this daemon can start an agent at all (`SettingsSlice.agentStart`, plan R8).
+            defaultAgent: state.settings.value.general.newWorkspaceAgent,
+            defaultSendPrompt: state.settings.value.general.newWorkspaceSendPrompt,
+            canStartAgent: state.settings.agentStart,
             workspaceAgentSummary: (workspaceID: string) => {
                 const target = state.daemon.state.workspaces.find(candidate => candidate.id === workspaceID);
                 return target === undefined ? { running: 0, waiting: 0, inactive: 0, total: 0 } : workspaceAgentSummary(target);
@@ -181,6 +186,9 @@ export function WorkspacesFeatureView(props: WorkspacesFeatureViewProps): ReactE
         onCreateGroup={actions.createGroup}
         profiles={model.profiles}
         inheritGroupID={model.inheritGroupID}
+        defaultAgent={model.defaultAgent}
+        defaultSendPrompt={model.defaultSendPrompt}
+        canStartAgent={model.canStartAgent}
         scrollToWorkspaceID={lifecycle.scrollToWorkspaceID}
         scrollToGroupID={lifecycle.scrollToGroupID}
         highlightWorkspaceID={lifecycle.highlightWorkspaceID}
@@ -280,6 +288,10 @@ function WorkspacesCreateSheet(props: WorkspacesCreateSheetProps): ReactElement 
         {...(form.kind === 'group' ? { defaultName: defaultGroupName(groups.map(group => group.name)) } : {})}
         onPrefetchRepo={props.actions.prefetchWorktreeRepo}
         onCancelCreate={props.actions.cancelWorkspaceCreate}
+        // shell-ui.md §10.1: the same Agent row the sidebar's own sheet opens on.
+        defaultAgent={model.defaultAgent}
+        defaultSendPrompt={model.defaultSendPrompt}
+        canStartAgent={model.canStartAgent}
         onCancel={() => { setForm(null); }}
         onSubmit={async draft => {
             if (form.kind === 'group') {
@@ -292,7 +304,8 @@ function WorkspacesCreateSheet(props: WorkspacesCreateSheetProps): ReactElement 
                 ...(draft.color === null ? {} : { color: draft.color }),
                 profile: draft.profile,
                 repoPaths: draft.repoPaths,
-                ...(draft.muted ? { muted: true } : {})
+                ...(draft.muted ? { muted: true } : {}),
+                ...(draft.agent === null ? {} : { agent: draft.agent })
             });
             // §WS-079: a failed worktree create keeps the SHEET open, with the message inline.
             if (typeof result === 'string') return result;

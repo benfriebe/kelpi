@@ -54,7 +54,7 @@ import {
     type WorktreeCleanupSource,
     type WorktreeCleanupTarget
 } from './WorktreeCleanupList';
-import { NewEntrySheet } from './NewWorkspaceSheet';
+import { NewEntrySheet, type NewWorkspaceAgentChoice } from './NewWorkspaceSheet';
 import {
     ChromeIcon,
     CURATED_EMOJI,
@@ -1910,6 +1910,15 @@ export interface SidebarProps extends SidebarCallbacks {
      * Assembly resolves it because the setting and the active workspace both live there.
      */
     readonly inheritGroupID?: string | null | undefined;
+    /**
+     * shell-ui.md §10.1's Agent row: `new-workspace-agent` and `new-workspace-send-prompt`, the
+     * two client-side defaults the sheet opens on, and whether this daemon can start an agent at
+     * all (false hides the row). Assembly reads all three off the settings slice; absent, the row
+     * is offered and opens on None, unticked.
+     */
+    readonly defaultAgent?: NewWorkspaceAgentChoice | undefined;
+    readonly defaultSendPrompt?: boolean | undefined;
+    readonly canStartAgent?: boolean | undefined;
     /**
      * Agent panes a workspace would close (`workspaceAgentSummary` — visible AND parked
      * panes). It turns the delete confirmation into `WorkspaceDeleteGate`'s alert: the count in
@@ -5488,6 +5497,9 @@ export function Sidebar(props: SidebarProps): ReactElement {
                         : { workspaceCount: newForm.workspaceIDs.length })}
                     {...(props.onPrefetchWorktreeRepo === undefined ? {} : { onPrefetchRepo: props.onPrefetchWorktreeRepo })}
                     {...(props.onCancelWorkspaceCreate === undefined ? {} : { onCancelCreate: props.onCancelWorkspaceCreate })}
+                    {...(props.defaultAgent === undefined ? {} : { defaultAgent: props.defaultAgent })}
+                    {...(props.defaultSendPrompt === undefined ? {} : { defaultSendPrompt: props.defaultSendPrompt })}
+                    {...(props.canStartAgent === undefined ? {} : { canStartAgent: props.canStartAgent })}
                     onCancel={() => {
                         setNewForm(null);
                     }}
@@ -5530,7 +5542,9 @@ export function Sidebar(props: SidebarProps): ReactElement {
                                 profile: draft.profile,
                                 repoPaths: draft.repoPaths,
                                 ...(draft.muted ? { muted: true } : {}),
-                                ...(parentID === undefined ? {} : { parentID })
+                                ...(parentID === undefined ? {} : { parentID }),
+                                // shell-ui.md §10.1: only an agent actually chosen travels.
+                                ...(draft.agent === null ? {} : { agent: draft.agent })
                             }
                         );
                         // §WS-079: a failed worktree create keeps the SHEET open, with the

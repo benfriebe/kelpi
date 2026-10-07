@@ -19,8 +19,10 @@
  *
  *   - **Field order is the Swift's `Field` enum** (`NewWorkspaceSheet.swift:10-23`): name, colour,
  *     group, profile, each repo's remove button, Add Repository, the worktree toggle and its three
- *     controls, Cancel, Create. Kelpi adds one stop the Swift never had, Mute Notifications, right
- *     after profile (agent-lifecycle §7.6). Tab is driven by hand for the reason the Swift drives its own
+ *     controls, Cancel, Create. Kelpi adds stops the Swift never had: Mute Notifications, right
+ *     after profile (agent-lifecycle §7.6), and the Agent row (shell-ui.md §10.1), right after the
+ *     worktree section and before Cancel: the Agent picker, then, once an agent is chosen, its
+ *     Prompt box and Send immediately. Tab is driven by hand for the reason the Swift drives its own
  *     (#64): the colour row is ONE stop with ←/→ moving inside it, and a disabled Create is
  *     skipped rather than landed on — AppKit refuses first responder to a disabled button, so
  *     including it would strand the loop.
@@ -46,6 +48,9 @@
  *     button, and Return from anywhere in the sheet. M9 restored both — the port's Create was an
  *     outline identical in weight to Cancel, and Return only submitted from the name field,
  *     because that is what a browser's implicit form submission happens to give you.
+ *     One stated exception, the Agent row's Prompt box: it is the sheet's one multi-line field,
+ *     so Return there types a newline and ⌘Return (Ctrl+Return off a Mac) submits. A Return that
+ *     ends an IME composition belongs to the IME and submits nothing, in any field.
  *
  * One divergence, stated. An EMPTY registry gets the Repositories heading plus one line saying
  * where repositories come from, where the Swift renders the section not at all; see the section's
@@ -74,11 +79,13 @@ import { WorktreeCreateProgressPanel, type WorktreeCreatePhase } from './Worktre
 import { withAlpha, workspaceColorHex, type ChromeBucket } from './theme';
 import { tokens } from './tokens';
 import {
+    AGENT_DISPLAY_NAMES,
     DEFAULT_PROFILE_NAME,
     WORKSPACE_COLORS,
     type ChromeGroup,
     type ChromeRepo,
     type NewGroupRepo,
+    type WorkspaceAgentRequest,
     type WorkspaceWorktreeRequest,
     type WorktreeCreateProgress
 } from './types';
@@ -108,7 +115,23 @@ export interface NewEntryDraft {
      * registry is another daemon's.
      */
     readonly groupRepo: NewGroupRepo | null;
+    /**
+     * shell-ui.md §10.1's Agent row: the agent to start in the new workspace's first pane, with
+     * its prompt. Null = "None", and always null from the group sheet (which has no such row) and
+     * from a sheet whose daemon cannot start agents (`canStartAgent: false`).
+     */
+    readonly agent: WorkspaceAgentRequest | null;
 }
+
+/** The Agent picker's value: "None" or an agent kind. `new-workspace-agent`'s vocabulary. */
+export type NewWorkspaceAgentChoice = 'none' | WorkspaceAgentRequest['kind'];
+
+/** The Agent picker's rows, in order. The labels are the products' own names. */
+const AGENT_CHOICES: readonly { readonly value: NewWorkspaceAgentChoice; readonly label: string }[] = [
+    { value: 'none', label: 'None' },
+    { value: 'claude', label: AGENT_DISPLAY_NAMES.claude },
+    { value: 'codex', label: AGENT_DISPLAY_NAMES.codex }
+];
 
 export interface NewEntrySheetProps {
     readonly kind: 'workspace' | 'group';
@@ -159,6 +182,20 @@ export interface NewEntrySheetProps {
      * cancel, and Cancel closes the sheet as it always did (the create finishes on its own).
      */
     readonly onCancelCreate?: ((requestID: string) => void) | undefined;
+    /**
+     * `new-workspace-agent` (config-keybindings.md §1.2): the agent the Agent row opens on, read
+     * once per opening. Absent = None. Workspace sheet only.
+     */
+    readonly defaultAgent?: NewWorkspaceAgentChoice | undefined;
+    /** `new-workspace-send-prompt`: whether "Send immediately" opens ticked. Absent = unticked. */
+    readonly defaultSendPrompt?: boolean | undefined;
+    /**
+     * False when the daemon cannot start agents: its settings snapshot predates
+     * `new-workspace-agent` (`SettingsSlice.agentStart`), so it would drop `start_agent` and
+     * create a plain workspace. The Agent row is then not drawn at all, rather than offered and
+     * silently ignored. Absent = offered, which is every fixture that predates the row.
+     */
+    readonly canStartAgent?: boolean | undefined;
     readonly onSubmit: (draft: NewEntryDraft) => Promise<string | null>;
     readonly onCancel: () => void;
 }
@@ -315,6 +352,19 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
     const [groupRepoFolder, setGroupRepoFolder] = useState<string | null>(null);
     const browsingFolder = useRef(false);
     const [groupCreateWorktree, setGroupCreateWorktree] = useState(false);
+    /*
+     * shell-ui.md §10.1's Agent row. It opens on the two client-side defaults
+     * (`new-workspace-agent`, `new-workspace-send-prompt`), read ONCE: a settings broadcast while
+     * the sheet is up must not flip a choice the user may already have made. The prompt is kept
+     * when the picker goes back to None and forward again, so a mis-click does not cost the text.
+     */
+    const [agent, setAgent] = useState<NewWorkspaceAgentChoice>(props.defaultAgent ?? 'none');
+    const [agentPrompt, setAgentPrompt] = useState('');
+    const [agentSend, setAgentSend] = useState(props.defaultSendPrompt ?? false);
+    /** The row exists on the workspace sheet only, and only over a daemon that can start agents. */
+    const agentRow = isWorkspace && props.canStartAgent !== false;
+    const agentOn = agentRow && agent !== 'none';
+    const agentLabel = AGENT_CHOICES.find((choice) => choice.value === agent)?.label ?? 'the agent';
 
     const defaults = isWorkspace ? groupSheetDefaults(groupID, groups, repos) : initialDefaults.current;
     const defaultsKey = `${defaults.repoIDs.join(',')}|${String(defaults.worktree)}`;
@@ -533,7 +583,10 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
             ...(worktreeOn && repo !== null
                 ? { worktree: { repoID: repo.id, name: worktreeName, branch, updateMain, ...worktreeHooks } }
                 : {}),
-            groupRepo: groupRepoChoice
+            groupRepo: groupRepoChoice,
+            // The prompt goes as typed: the daemon is the one place it is normalized
+            // (wire-protocol.md §6.3), so the sheet neither trims it nor strips anything.
+            agent: agentOn ? { kind: agent, prompt: agentPrompt, send: agentSend } : null
         });
         inFlight.current = false;
         setBusy(false);
@@ -584,6 +637,11 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
                 order.push('worktree-toggle');
                 if (worktreeOn) order.push('worktree-name', 'worktree-branch', 'update-main');
             }
+            // shell-ui.md §10.1: the Agent row is the last thing before Cancel, as it is drawn.
+            if (agentRow) {
+                order.push('agent');
+                if (agentOn) order.push('agent-prompt', 'agent-send');
+            }
         } else if (groupRepoRow) {
             order.push('group-repo');
             if (props.onBrowseForFolder !== undefined) order.push('group-repo-browse');
@@ -608,6 +666,20 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
          * twice (the in-flight ref would refuse the second, but a guard is not a design).
          */
         if (event.key === 'Enter') {
+            /*
+             * The Return that commits an IME composition (a kana candidate, a pinyin word) is the
+             * IME's keystroke, not a request to create the workspace. `isComposing` says so in
+             * Chromium and Firefox; WebKit reports that keydown with `isComposing` already false
+             * but `keyCode` 229, the "the IME has this key" code, so both are read.
+             */
+            if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+            /*
+             * The one stated exception to "Return submits": the Agent row's Prompt box is the
+             * sheet's only multi-line field, so a bare Return there types a newline (the
+             * textarea's own default, which `preventDefault` below would have eaten) and
+             * ⌘Return / Ctrl+Return is the way to submit from it.
+             */
+            if (event.target === stops.current.get('agent-prompt') && !event.metaKey && !event.ctrlKey) return;
             event.preventDefault();
             void submit();
             return;
@@ -1267,6 +1339,107 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
                             >
                                 <div className="truncate">{preview.path}</div>
                                 <div>{preview.branchLine}</div>
+                            </div>
+                        </div>
+                    ) : null}
+
+                    {/*
+                     * shell-ui.md §10.1's Agent row (Kelpi addition): start Claude Code or Codex
+                     * in the new workspace's first pane (wire-protocol.md §6.3 `start_agent`).
+                     * The picker is the Profile row's shape; the prompt and the send box appear
+                     * only once an agent is chosen, indented under it as the worktree fields are
+                     * under their toggle. Inside the fieldset, so a running worktree create
+                     * disables it with everything else.
+                     */}
+                    {agentRow ? (
+                        <label className="flex items-center gap-2">
+                            <span className="shrink-0 text-[11px]" style={{ color: tokens.textSecondary }}>
+                                Agent
+                            </span>
+                            <select
+                                ref={(element) => {
+                                    registerStop('agent', element);
+                                }}
+                                aria-label="Agent"
+                                data-testid="new-workspace-agent"
+                                /* L21: content-sized, trailing - see the Group picker above. */
+                                className="ml-auto min-w-0 rounded border bg-transparent px-1 py-[3px] text-[11px]"
+                                style={{ borderColor: tokens.divider, color: tokens.textPrimary }}
+                                value={agent}
+                                onChange={(event) => {
+                                    const next = AGENT_CHOICES.find((choice) => choice.value === event.target.value);
+                                    if (next !== undefined) setAgent(next.value);
+                                }}
+                            >
+                                {AGENT_CHOICES.map((choice) => (
+                                    <option key={choice.value} value={choice.value} style={{ color: '#000' }}>
+                                        {choice.label}
+                                    </option>
+                                ))}
+                            </select>
+                        </label>
+                    ) : null}
+
+                    {agentOn ? (
+                        <div className="flex flex-col gap-1.5 pl-4" data-testid="new-workspace-agent-options">
+                            {/* L17's caption-above-field shape, as the worktree fields use. */}
+                            <label className="flex flex-col gap-1">
+                                <span className="text-[10px]" style={{ color: tokens.textSecondary }}>
+                                    Prompt
+                                </span>
+                                <textarea
+                                    ref={(element) => {
+                                        registerStop('agent-prompt', element);
+                                    }}
+                                    aria-label="Prompt"
+                                    data-testid="new-workspace-agent-prompt"
+                                    /*
+                                     * Four rows to start, and the user may drag it taller (never
+                                     * wider: the sheet's width is fixed). Return types a newline
+                                     * here; ⌘Return submits (`onFormKeyDown`).
+                                     */
+                                    rows={4}
+                                    placeholder={`Optional: what to ask ${agentLabel}`}
+                                    className="w-full rounded border bg-transparent px-2 py-1 text-[11px] outline-none"
+                                    style={{
+                                        borderColor: tokens.divider,
+                                        color: tokens.textPrimary,
+                                        resize: 'vertical',
+                                        ...SELECTABLE_TEXT_STYLE
+                                    }}
+                                    value={agentPrompt}
+                                    onChange={(event) => {
+                                        setAgentPrompt(event.target.value);
+                                    }}
+                                />
+                            </label>
+                            <label
+                                className="flex cursor-pointer items-center gap-1.5 text-[11px]"
+                                style={{ color: tokens.textSecondary }}
+                            >
+                                <input
+                                    ref={(element) => {
+                                        registerStop('agent-send', element);
+                                    }}
+                                    type="checkbox"
+                                    data-testid="new-workspace-agent-send"
+                                    checked={agentSend}
+                                    onChange={(event) => {
+                                        setAgentSend(event.target.checked);
+                                    }}
+                                />
+                                Send immediately
+                            </label>
+                            {/* What the box decides, since "not sent" alone does not say where
+                                the prompt goes instead. Not a focus stop. */}
+                            <div
+                                data-testid="new-workspace-agent-hint"
+                                className="text-[10px]"
+                                style={{ color: tokens.textTertiary }}
+                            >
+                                {agentSend
+                                    ? `${agentLabel} starts with the prompt and runs it at once.`
+                                    : `The prompt is pasted into ${agentLabel}'s input for you to edit and send.`}
                             </div>
                         </div>
                     ) : null}

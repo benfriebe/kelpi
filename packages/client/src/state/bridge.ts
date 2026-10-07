@@ -21,6 +21,7 @@ import { forgetStoredToken, type StorageLike } from '../app/config';
 import { CommandClient, KelpiConnection, PtyClient, type KelpiConnectionOptions } from '../connection';
 import { readShellWindowID } from '../webpane/shell-window';
 import { activationAppliesHere, parseShellActivation } from './activation';
+import { createAgentLaunchHandler, type AgentLaunchHandlerOptions } from './agent-launch';
 import { createClipboardWriteHandler, type ClipboardWriteHandlerOptions } from './clipboard';
 import { createNotificationManager, type NotificationManager } from './notifications';
 import { useKelpiStore, type KelpiStoreApi } from './store';
@@ -57,6 +58,12 @@ export interface StoreBridgeOptions {
      * — and supplied by tests, which have neither.
      */
     readonly clipboard?: Omit<ClipboardWriteHandlerOptions, 'shellWindowID'> | undefined;
+    /**
+     * wire-protocol.md §6.3's `agent-launch`: the seams `./agent-launch.ts` takes for the
+     * undelivered-prompt toast (the clipboard writer, the clock). Omitted in production, where
+     * the writer is `navigator.clipboard.writeText`; supplied by tests.
+     */
+    readonly agentLaunch?: Omit<AgentLaunchHandlerOptions, 'store'> | undefined;
 }
 
 /** Subscribe the store to a connection. Returns the unsubscribe. */
@@ -65,6 +72,7 @@ export function connectStore(options: StoreBridgeOptions): () => void {
     const shellWindowID = options.shellWindowID === undefined ? readShellWindowID() : options.shellWindowID;
     // §TERM-046. Built once, because the shell-vs-browser decision is fixed for this page's life.
     const clipboardWrite = createClipboardWriteHandler({ ...(options.clipboard ?? {}), shellWindowID });
+    const agentLaunch = createAgentLaunchHandler({ ...(options.agentLaunch ?? {}), store });
     const offs: (() => void)[] = [];
 
     offs.push(
@@ -174,6 +182,17 @@ export function connectStore(options: StoreBridgeOptions): () => void {
     );
 
     offs.push(
+        /*
+         * wire-protocol.md §6.3: `agent-launch`, what became of a create that asked the daemon to
+         * start an agent. Beside `clipboard-write` because it is the same kind of message (a
+         * fire-and-forget frame that may end on the clipboard) and the same rule holds: the store
+         * gets a toast, never the prompt as state. Success outcomes draw nothing; a prompt that
+         * was not delivered becomes a sticky toast that offers it back (`./agent-launch.ts`).
+         */
+        connection.on('message', agentLaunch)
+    );
+
+    offs.push(
         // `system-stats` (APP-078): the daemon's 2 s sampler, subscribed here for exactly the
         // reason above — a fire-and-forget broadcast with no ordering relationship to the
         // snapshot/delta stream, and the socket layer has no business knowing about gauges.
@@ -279,6 +298,8 @@ export interface KelpiRuntimeOptions extends KelpiConnectionOptions {
     readonly shellWindowID?: string | null | undefined;
     /** §TERM-046: see `StoreBridgeOptions.clipboard`. */
     readonly clipboard?: StoreBridgeOptions['clipboard'];
+    /** wire-protocol.md §6.3: see `StoreBridgeOptions.agentLaunch`. */
+    readonly agentLaunch?: StoreBridgeOptions['agentLaunch'];
 }
 
 export interface KelpiRuntime {
@@ -333,7 +354,8 @@ export function createKelpiRuntime(options: KelpiRuntimeOptions = {}): KelpiRunt
         ...(options.onAttention !== undefined ? { onAttention: options.onAttention } : {}),
         ...(options.tokenStorage !== undefined ? { tokenStorage: options.tokenStorage } : {}),
         ...(options.shellWindowID !== undefined ? { shellWindowID: options.shellWindowID } : {}),
-        ...(options.clipboard !== undefined ? { clipboard: options.clipboard } : {})
+        ...(options.clipboard !== undefined ? { clipboard: options.clipboard } : {}),
+        ...(options.agentLaunch !== undefined ? { agentLaunch: options.agentLaunch } : {})
     });
 
     const visiblePanesFor = (workspaceID: string): readonly string[] => {

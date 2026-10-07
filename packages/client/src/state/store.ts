@@ -189,6 +189,14 @@ export interface Toast {
     readonly paneID: string | null;
     readonly workspaceID: string | null;
     readonly createdAt: number;
+    /**
+     * Text a click on the toast puts on the clipboard, before it dismisses (`state/agent-launch.ts`:
+     * a prompt the daemon could not deliver to a new workspace's agent). The click is what makes
+     * the write possible where the page cannot write on its own (a phone, an unfocused window):
+     * it is a user gesture. Absent = a click only dismisses, as every other toast's does. Never
+     * logged and never mirrored anywhere else.
+     */
+    readonly copyText?: string | undefined;
 }
 
 export interface FocusEcho {
@@ -228,6 +236,27 @@ export interface SettingsSlice {
     readonly loaded: boolean;
     /** The last `hotkey-status` the daemon relayed from a shell (§SET-200/§SET-201). */
     readonly hotkeyStatus: HotkeyStatus | null;
+    /**
+     * Can this daemon start an agent in a new workspace (wire-protocol.md §6.3 `start_agent`)?
+     *
+     * Read off the RAW payload, because `value` cannot answer it: `hydrateSettings` fills a
+     * missing `newWorkspaceAgent` with the shipped `none`, so an older daemon's snapshot and a
+     * current one with nothing configured hydrate to the same value. The field's presence is the
+     * tell: the daemon that sends it is the one that understands `start_agent`. False until a
+     * payload says otherwise (a daemon that sends no settings at all is older still), and the New
+     * Workspace sheet draws no Agent row while it is false (plan R8).
+     */
+    readonly agentStart: boolean;
+}
+
+/**
+ * Does a settings payload come from a daemon that can start agents? See `SettingsSlice.agentStart`:
+ * the `newWorkspaceAgent` field is present, as a string, exactly when it does.
+ */
+export function settingsOfferAgentStart(raw: unknown): boolean {
+    if (!isRecord(raw)) return false;
+    const general = raw['general'];
+    return isRecord(general) && typeof general['newWorkspaceAgent'] === 'string';
 }
 
 /**
@@ -350,7 +379,7 @@ function initialDaemonSlice(): DaemonSlice {
 }
 
 function initialSettingsSlice(): SettingsSlice {
-    return { value: DEFAULT_WS_SETTINGS, loaded: false, hotkeyStatus: null };
+    return { value: DEFAULT_WS_SETTINGS, loaded: false, hotkeyStatus: null, agentStart: false };
 }
 
 function textOrNull(value: unknown): string | null {
@@ -755,12 +784,14 @@ export function kelpiStateCreator(set: SetState, get: GetState): KelpiState {
             const value = hydrateSettings(raw);
             if (value === null) return;
             const settings = get().settings;
+            // Read before hydration can hide it: see `SettingsSlice.agentStart`.
+            const agentStart = settingsOfferAgentStart(raw);
             // Identity stability matters: every consumer of this slice is a memo dependency,
             // and a fresh object per broadcast would rebuild the key dispatcher for nothing.
-            if (settings.loaded && sameSettings(settings.value, value)) return;
+            if (settings.loaded && settings.agentStart === agentStart && sameSettings(settings.value, value)) return;
             // The hotkey report is carried over: it comes from the shell on its own schedule
             // and has nothing to do with a config-file change (§SET-200).
-            set({ settings: { value, loaded: true, hotkeyStatus: settings.hotkeyStatus } });
+            set({ settings: { value, loaded: true, hotkeyStatus: settings.hotkeyStatus, agentStart } });
         },
 
         applyHotkeyStatus(raw) {

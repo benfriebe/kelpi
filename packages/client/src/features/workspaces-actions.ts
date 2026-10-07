@@ -1,12 +1,19 @@
 /** Workspaces feature commands. Retained callbacks resolve the current mirror on invocation. */
 import type { WorkspaceColor } from '@kelpi/daemon/store';
 import type { Dispatch, SetStateAction } from 'react';
-import { DEFAULT_PROFILE_NAME, defaultGroupName, type GroupRepoChange, type NewGroupRepo, type WorkspaceWorktreeRequest } from '../chrome';
+import {
+    DEFAULT_PROFILE_NAME,
+    defaultGroupName,
+    type GroupRepoChange,
+    type NewGroupRepo,
+    type WorkspaceAgentRequest,
+    type WorkspaceWorktreeRequest
+} from '../chrome';
 import { parseWorktreeProgress } from '../chrome/worktree';
 import type { WorktreeCleanupChoice } from '../chrome/WorktreeCleanupList';
 import { targetWorkspaceIDs, worktreeCleanupToasts, type WorktreeCleanupToast } from '../app/worktree-cleanup';
 import { isOkReply, replyError, replyText, type CommandClient, type CommandReply } from '../connection';
-import { selectActiveWorkspace, selectVisibleWorkspaceIDs, type KelpiStoreApi } from '../state';
+import { reportAgentStartUnsupported, selectActiveWorkspace, selectVisibleWorkspaceIDs, type KelpiStoreApi } from '../state';
 import type { WorkspacesFeatureLifecycle } from './workspaces';
 
 export interface WorkspacesActionHost {
@@ -31,6 +38,30 @@ let worktreeToastSequence = 0;
  * caller that asked has passed its answer).
  */
 export type WorkspaceDeleteCleanup = WorktreeCleanupChoice | null | undefined;
+
+/**
+ * The New Workspace sheet's Agent row on the wire (wire-protocol.md §6.3): `start_agent` with the
+ * kind, `agent_prompt` with the prompt as typed, `send_prompt` only when it is true.
+ *
+ * Nothing at all without an agent, and nothing for a kind other than the two the daemon knows:
+ * the request type already rules out "none", and this is the runtime half of that rule, since the
+ * daemon refuses `agent_prompt` / `send_prompt` that arrive without `start_agent` and an unknown
+ * `start_agent` outright, either of which would fail the whole create. A blank prompt is not sent
+ * (the daemon would read it as no prompt anyway), so the reply's `prompt_file` is never one the
+ * user did not ask for.
+ */
+export function agentCreateFields(
+    agent: WorkspaceAgentRequest | undefined
+): { startAgent?: 'claude' | 'codex'; agentPrompt?: string; sendPrompt?: boolean } {
+    if (agent === undefined) return {};
+    const kind: string = agent.kind;
+    if (kind !== 'claude' && kind !== 'codex') return {};
+    return {
+        startAgent: kind,
+        ...(agent.prompt.trim() === '' ? {} : { agentPrompt: agent.prompt }),
+        ...(agent.send ? { sendPrompt: true } : {})
+    };
+}
 
 export function createWorkspacesActions(host: WorkspacesActionHost) {
     const { store, commands, run, notifyFailure, activateWorkspaceAndReveal, setSidebarVisible } = host;
@@ -203,9 +234,23 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
             }
         );
 
+    /**
+     * Plan R8: a create that asked for an agent, answered WITHOUT the `start_agent` echo, came
+     * from a daemon that predates agent starts. It dropped the field and made a plain workspace,
+     * so the user is told, and offered the prompt they wrote, rather than left waiting for an
+     * agent that will never appear. (The sheet hides its Agent row over such a daemon, so this is
+     * the backstop for a daemon replaced under an open sheet, or a settings snapshot that lied.)
+     */
+    const checkAgentEcho = (reply: CommandReply, agent: WorkspaceAgentRequest | undefined): void => {
+        if (agent === undefined || agentCreateFields(agent).startAgent === undefined) return;
+        if (replyText(reply, 'start_agent') !== undefined) return;
+        reportAgentStartUnsupported(store, agent, replyText(reply, 'workspace_id') ?? null);
+    };
+
     const runCreateWorkspace = (
         promise: Promise<CommandReply>,
-        repoPaths: readonly string[] = []
+        repoPaths: readonly string[] = [],
+        agent?: WorkspaceAgentRequest | undefined
     ): true => {
         void promise.then(
             (reply) => {
@@ -213,6 +258,7 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
                     notifyFailure('New workspace', replyError(reply));
                     return;
                 }
+                checkAgentEcho(reply, agent);
                 const created = replyText(reply, 'workspace_id');
                 if (created !== undefined) {
                     activateWorkspaceAndReveal(created);
@@ -298,6 +344,11 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
                 groupDefaults?: boolean | undefined;
                 /** §2.9: nest the new workspace under this one. */
                 parentID?: string | undefined;
+                /**
+                 * shell-ui.md §10.1's Agent row. The phone's sheet builds its own create
+                 * (`phone/new-workspace.ts`) and has no Agent row.
+                 */
+                agent?: WorkspaceAgentRequest | undefined;
             } = {}
         ): boolean {
             const trimmed = name.trim();
@@ -322,9 +373,13 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
                     ...(options.muted === true ? { muted: true } : {}),
                     // app-state-core.md §5.5: the sheet's repos ARE the user's choice.
                     ...(options.groupDefaults === false ? { groupDefaults: false } : {}),
-                    ...(options.parentID === undefined ? {} : { parent: options.parentID })
+                    ...(options.parentID === undefined ? {} : { parent: options.parentID }),
+                    // A plain multi-repo create opens its first pane at home (issue #38, above),
+                    // and the agent starts there: the pane it spawns is the pane it gets.
+                    ...agentCreateFields(options.agent)
                 }),
-                repoPaths
+                repoPaths,
+                options.agent
             );
         },
 
@@ -580,6 +635,8 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
                 groupDefaults?: boolean | undefined;
                 /** §2.9: nest the new workspace under this one. */
                 parentID?: string | undefined;
+                /** shell-ui.md §10.1's Agent row: the agent starts in the worktree's first pane. */
+                agent?: WorkspaceAgentRequest | undefined;
             } = {}
         ): Promise<string | null> {
             const onProgress = worktree.onProgress;
@@ -600,7 +657,8 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
                     updateMain: worktree.updateMain,
                     ...(extras.groupDefaults === false ? { groupDefaults: false } : {}),
                     ...(extras.parentID === undefined ? {} : { parent: extras.parentID }),
-                    ...(worktree.requestID !== undefined ? { requestID: worktree.requestID } : {})
+                    ...(worktree.requestID !== undefined ? { requestID: worktree.requestID } : {}),
+                    ...agentCreateFields(extras.agent)
                 };
                 const reply = await (onProgress === undefined
                     ? commands.createWorkspace(input)
@@ -612,6 +670,7 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
                           }
                       }));
                 if (!isOkReply(reply)) return replyError(reply);
+                checkAgentEcho(reply, extras.agent);
                 const created = replyText(reply, 'workspace_id');
                 if (created !== undefined) activateWorkspaceAndReveal(created);
                 return null;

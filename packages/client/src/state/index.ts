@@ -10,6 +10,8 @@
  *                        `shell-activation` plus the document's own visibility
  *   `clipboard.ts`     — §TERM-046's client end: a daemon `clipboard-write` (an OSC 52 the
  *                        `clipboard-write` setting allowed) onto THIS machine's clipboard
+ *   `agent-launch.ts`  - wire-protocol.md §6.3's `agent-launch`: a prompt the daemon could not
+ *                        deliver to a new workspace's agent, offered back as a copy toast
  */
 
 export {
@@ -19,6 +21,20 @@ export {
     parseShellActivation,
     type ShellActivationReport
 } from './activation';
+
+export {
+    AGENT_START_UNSUPPORTED_TOAST_ID,
+    PROMPT_EXCERPT_CHARS,
+    activateToast,
+    agentLaunchProblem,
+    agentLaunchToastID,
+    createAgentLaunchHandler,
+    parseAgentLaunch,
+    promptExcerpt,
+    reportAgentStartUnsupported,
+    type AgentLaunchHandlerOptions,
+    type AgentLaunchReport
+} from './agent-launch';
 
 export {
     CLIPBOARD_WRITE_MESSAGE,

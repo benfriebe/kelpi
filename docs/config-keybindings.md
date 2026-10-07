@@ -121,7 +121,7 @@ through `set-general-setting` (section 1.3; `WS_WRITABLE_GENERAL_KEYS`,
 | `macos-option-as-alt` | default false; only the literal `true` enables. Ghostty's key of the same name, at ghostty's own default: `false` leaves ⌥ to the macOS layout (⌥⇧- types an em dash), `true` reports it as the Alt modifier. Section 7.5; client-side, macOS-only, `true`/`false` only (no `left` / `right`) |
 | `worktree-base-path` | stored verbatim, case preserved; a blank value means the shipped default `~/kelpi/worktrees/<repo>` rather than the filesystem root |
 | `agent-claude-command`, `agent-codex-command` | defaults `claude` / `codex`; stored as written (trimmed, case preserved, an `=` inside kept), and a blank value means the default. The shell text the DAEMON types into a new workspace's first pane to start that agent (wire-protocol.md §6.3 `start_agent`), so an alias, a wrapper script or extra flags all work (`env FOO=1 claude --model opus`). Read when the launch line is typed, so an edit applies to the next create. A client never sends a command, only the agent kind. Resume and restart still type their own `claude --resume <id>` / `codex resume <id>` (agent-lifecycle.md §6.1, §6.4); these keys do not reach them yet |
-| `new-workspace-agent` | `none` (default), `claude` or `codex` (lowercased); any other value keeps the prior one. The agent the New Workspace sheet preselects. Client-side: a create starts an agent only when its request names one, so `kelpi workspace create` starts nothing without `--agent`, and the phone shell's create (which has no agent row) ignores it |
+| `new-workspace-agent` | `none` (default), `claude` or `codex` (lowercased); any other value keeps the prior one. The agent the New Workspace sheet preselects. Client-side: a create starts an agent only when its request names one, so `kelpi workspace create` starts nothing without `--agent`, and the phone shell's New workspace sheet (which has no agent row) ignores it |
 | `new-workspace-send-prompt` | default false; only the literal `true` enables. Whether the sheet's "Send immediately" starts checked: the prompt goes on the launch line and is submitted at once, rather than being pasted into the agent's input for the user to edit and submit |
 | `new-workspace-placement`, `new-group-placement` | `end-of-list` (default) or `near-selection` (lowercased); anything else ignored |
 | chrome and status-bar family | `chrome-appearance`, `chrome-colors`, `sidebar-color-intensity`, `sidebar-avatar-fill`, `sidebar-avatar-stroke`, `sidebar-group-fill`, `sidebar-group-stroke`, `show-system-stats`, `system-stats`, `show-system-stat-graphs`, `sparkline-style`, `sparkline-color`, `sparkline-width`, `search-match-color`, `search-match-text-color`, `search-match-current-color`, `search-match-current-text-color` (parse rules and defaults in `packages/core/src/config/chrome.ts`; shell-ui.md §2, §8.1) |
@@ -1859,6 +1859,12 @@ registries instead); nothing persists to a per-app preferences store.
    - *Workspaces*: "Inherit group when creating a new workspace" toggle; "New workspace
      placement" picker (Next to selection / End of list); "New group placement" picker
      (same options).
+   - *Agents*: "Agent for new workspaces" picker (None / Claude Code / Codex;
+     `new-workspace-agent`), "Send the prompt immediately" toggle (`new-workspace-send-prompt`),
+     and "Claude Code command" / "Codex command" text fields (`agent-claude-command` /
+     `agent-codex-command`; blank writes the default). The first two are what the New Workspace
+     sheet's Agent row opens on (shell-ui.md §10.1); the commands are what the daemon types to
+     start each agent (wire-protocol.md §6.3).
    - *Network*: TCP listener toggle + port (section 12).
    - The Panes rows (focus-follows-mouse), the "Expand group when a workspace is dropped
      into it" toggle and both confirmation toggles live on the Workspaces tab (item 8); a

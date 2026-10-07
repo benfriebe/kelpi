@@ -306,6 +306,48 @@ describe('store bridge', () => {
         completeHandshake(h.sockets.last());
         expect(h.store.getState().ui.connection).toBe('reconnecting');
     });
+
+    /*
+     * wire-protocol.md §6.3: `agent-launch` is subscribed here, beside `clipboard-write`. The
+     * frame is synthetic (the daemon half lands separately); what is pinned is the wiring: an
+     * undelivered prompt reaches the store as a copy toast, auto-copied only for a frame meant for
+     * THIS window, and a success reaches nothing.
+     */
+    it('turns an undelivered agent prompt into a copy toast, and a successful launch into nothing', async () => {
+        const store = createKelpiStore();
+        const sockets = createFakeSocketFactory();
+        const connection = new KelpiConnection({
+            url: 'ws://daemon.test/ws',
+            token: 't',
+            socketFactory: sockets.factory,
+            heartbeatIntervalMs: 0
+        });
+        const writeText = vi.fn(async (_text: string) => {});
+        const dispose = connectStore({ store, connection, tokenStorage: null, agentLaunch: { writeText } });
+        connection.connect();
+        completeHandshake(sockets.last(), { state: snapshotState() as never });
+        const launch = { type: 'agent-launch', workspaceID: W1, paneID: P1, agent: 'claude' };
+
+        sockets.last().emit({ ...launch, outcome: 'prefilled' } as never);
+        expect(store.getState().ui.toasts).toEqual([]);
+
+        sockets.last().emit({ ...launch, outcome: 'fallback', reason: 'timeout', prompt: 'ship it', broadcast: true } as never);
+        await Promise.resolve();
+        expect(writeText).not.toHaveBeenCalled();
+        expect(store.getState().ui.toasts.map((toast) => [toast.id, toast.copyText])).toEqual([
+            [`agent-launch-${P1}`, 'ship it']
+        ]);
+
+        sockets.last().emit({ ...launch, paneID: P2, outcome: 'failed', reason: 'pane-exited', prompt: 'mine' } as never);
+        expect(writeText).toHaveBeenCalledExactlyOnceWith('mine');
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(store.getState().ui.toasts.find((toast) => toast.id === `agent-launch-${P2}`)?.title).toBe(
+            'Claude Code not started: prompt copied to the clipboard'
+        );
+        dispose();
+        connection.close();
+    });
 });
 
 describe('kelpi runtime', () => {

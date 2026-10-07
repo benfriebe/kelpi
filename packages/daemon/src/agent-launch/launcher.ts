@@ -11,11 +11,13 @@
  *      force a spawn the gate is holding for the client's geometry, `pty/spawn-gate.ts`). Then
  *      the launch line is typed at the first sign the shell is at its prompt
  *      (`agentShellReadySignal`): for a zsh running Kelpi's shell integration, the integration's
- *      `precmd` report (OSC 7, `shellReported`) with bracketed paste on, since 2004 alone comes
- *      ~0.5 s early under an instant prompt; for zsh without it and fish, bracketed paste turning
- *      on; for any OTHER shell, bracketed paste (bash 5.1+) or `shellSettleMs` with no output
- *      since the LAST output. zsh and fish never take the quiet path: their startup prints and
- *      goes quiet before the prompt is up. `shellReadyCapMs` after the first output is the
+ *      `precmd` report (OSC 7, `shellReported`) and then zle's own `CSI ? 2004 h` (a fresh
+ *      DECSET, counted by the parser, even when an instant prompt latched 2004 on ~0.5 s early;
+ *      `shellPasteEdgeMs` after the report at the latest); for zsh without it and fish,
+ *      bracketed paste turning on; for any OTHER shell, bracketed paste (bash 5.1+) or
+ *      `shellSettleMs` with no output since the LAST output. zsh and fish never take the quiet
+ *      path: their startup prints and goes quiet before the prompt is up. `shellReadyCapMs`
+ *      after the first output is the
  *      backstop, and there the line is typed only if a fresh foreground check finds the SHELL in
  *      charge of the terminal; anything else in front (`tmux attach`, an `ssh-add` passphrase
  *      prompt run by an rc file) is `failed` (`timeout`) with nothing typed. With no prompt the
@@ -128,6 +130,8 @@ export interface AgentLauncherTerminal {
     alternateScreen(paneID: string): boolean;
     /** DECRST 2004s parsed so far (`TerminalStateServiceImpl.bracketedPasteResets`). */
     bracketedPasteResets(paneID: string): number;
+    /** DECSET 2004s parsed so far, repeats included (`TerminalStateServiceImpl.bracketedPasteSets`). */
+    bracketedPasteSets(paneID: string): number;
     capture(paneID: string, opts: { scrollback: boolean }): string;
     /** Resolves once every byte fed so far has been parsed. */
     flush(paneID: string): Promise<void>;
@@ -146,6 +150,20 @@ export interface AgentLauncherTerminal {
  * shell is the foreground group then too, so the line is typed and the builtin reads it.
  */
 export const AGENT_FIRST_OUTPUT_TIMEOUT_MS = 30_000;
+
+/**
+ * Under Kelpi's zsh integration, how long after the integration's first `precmd` report the
+ * launcher waits for zle's own `CSI ? 2004 h` before it types on the report alone.
+ *
+ * The report says the rc files are done, but zle starts reading 1-3 ms LATER, and until it
+ * does the terminal is still in cooked mode with echo on: a line typed in that gap is echoed raw
+ * above the prompt (`^[[200~codex "$(command cat '…') "^[[201~`, 6 of 19 instant-prompt panes,
+ * 2026-10-07), though the shell still runs it. zle writes `CSI ? 2004 h` as it starts, even when
+ * an instant prompt latched the mode on long before, so the launcher waits for that DECSET
+ * (`bracketedPasteSets` past its value at the report). A zsh that never writes it (a widget set
+ * that turns 2004 on differently) is held only this long, not until the cap.
+ */
+export const AGENT_SHELL_PASTE_EDGE_MS = 250;
 
 /**
  * While waiting for the agent, the wait is re-run this often even when nothing happens, so the
@@ -179,6 +197,8 @@ export const AGENT_DIALOG_POLL_MS = 1_000;
 export interface AgentLaunchTimings {
     readonly shellSettleMs: number;
     readonly shellReadyCapMs: number;
+    /** `AGENT_SHELL_PASTE_EDGE_MS`. */
+    readonly shellPasteEdgeMs: number;
     readonly firstOutputTimeoutMs: number;
     readonly readyTimeoutMs: number;
     /** `AGENT_READY_MAX_WAIT_MS`: the whole wait from the line, trust-dialog pauses included. */
@@ -191,6 +211,7 @@ export interface AgentLaunchTimings {
 export const DEFAULT_AGENT_LAUNCH_TIMINGS: AgentLaunchTimings = {
     shellSettleMs: AGENT_SHELL_SETTLE_MS,
     shellReadyCapMs: AGENT_SHELL_READY_CAP_MS,
+    shellPasteEdgeMs: AGENT_SHELL_PASTE_EDGE_MS,
     firstOutputTimeoutMs: AGENT_FIRST_OUTPUT_TIMEOUT_MS,
     readyTimeoutMs: AGENT_READY_TIMEOUT_MS,
     readyMaxWaitMs: AGENT_READY_MAX_WAIT_MS,
@@ -320,6 +341,10 @@ interface PendingLaunch {
     shellCheckQueued: boolean;
     /** awaiting-shell: the shell has sent an OSC 7 since the launch began (`shellReported`). */
     shellReported: boolean;
+    /** awaiting-shell: `bracketedPasteSets` when the first report was parsed; null before it. */
+    pasteSetsAtReport: number | null;
+    /** awaiting-shell: `shellPasteEdgeMs` has passed since the first report without zle's DECSET. */
+    pasteEdgeWaitOver: boolean;
     /** awaiting-shell: the cap's foreground check is out; nothing else may start another. */
     capCheckPending: boolean;
     /** Since the line was typed (awaiting-agent); since the start (awaiting-shell). */
@@ -356,6 +381,7 @@ interface PendingLaunch {
         firstOutput?: NodeJS.Timeout | undefined;
         cap?: NodeJS.Timeout | undefined;
         settle?: NodeJS.Timeout | undefined;
+        pasteEdge?: NodeJS.Timeout | undefined;
         recheck?: NodeJS.Timeout | undefined;
         timeout?: NodeJS.Timeout | undefined;
         maxWait?: NodeJS.Timeout | undefined;
@@ -559,8 +585,7 @@ export function createAgentLauncher(options: AgentLauncherOptions): AgentLaunche
      * zsh / fish / bash 5.1+: the line editor turned bracketed paste on, so it is reading. For a
      * zsh under Kelpi's integration that is not enough on its own: an instant prompt (p10k) turns
      * 2004 on while `.zshrc` still has half a second to run, and only the integration's `precmd`
-     * report says the real prompt is next. Both arrive, in either order, and whichever is second
-     * types the line.
+     * report says the real prompt is next (`zshLineEditorStarted`).
      */
     const checkShellReady = (launch: PendingLaunch): void => {
         if (launch.done || launch.phase !== 'awaiting-shell') return;
@@ -568,8 +593,27 @@ export function createAgentLauncher(options: AgentLauncherOptions): AgentLaunche
         if (!launch.modes.bracketedPaste) return;
         // A mode cannot change without output, whichever of the two callbacks came first.
         noteFirstOutput(launch);
-        if (launch.shellSignal === 'shell-integration' && !launch.shellReported) return;
+        if (launch.shellSignal === 'shell-integration' && !zshLineEditorStarted(launch)) return;
         typeLaunchLine(launch);
+    };
+
+    /**
+     * Under the integration: the first `precmd` report has arrived (the rc files are done) AND,
+     * after it, zle has written its own `CSI ? 2004 h` (it is reading now, not in 1-3 ms), or
+     * `shellPasteEdgeMs` has passed without one. The DECSET is counted by the parser, so one
+     * that finds the mode already on (an instant prompt latched it) still counts, and one that
+     * came before the report (the instant prompt's own) does not.
+     */
+    const zshLineEditorStarted = (launch: PendingLaunch): boolean => {
+        if (!launch.shellReported || launch.pasteSetsAtReport === null) return false;
+        if (launch.pasteEdgeWaitOver) return true;
+        let sets = launch.pasteSetsAtReport;
+        try {
+            sets = term.bracketedPasteSets(launch.paneID);
+        } catch (error) {
+            report(error, `agent launch modes ${launch.paneID}`);
+        }
+        return sets > launch.pasteSetsAtReport;
     };
 
     /**
@@ -607,6 +651,7 @@ export function createAgentLauncher(options: AgentLauncherOptions): AgentLaunche
         if (launch.done || launch.phase !== 'awaiting-shell') return;
         clearTimer(launch, 'cap');
         clearTimer(launch, 'settle');
+        clearTimer(launch, 'pasteEdge');
         clearTimer(launch, 'firstOutput');
         if (!paneAlive(launch)) {
             finish(launch, 'failed', 'pane-exited');
@@ -964,6 +1009,8 @@ export function createAgentLauncher(options: AgentLauncherOptions): AgentLaunche
                 firstOutputAt: null,
                 shellCheckQueued: false,
                 shellReported: false,
+                pasteSetsAtReport: null,
+                pasteEdgeWaitOver: false,
                 capCheckPending: false,
                 lastOutputAt: null,
                 modes: { bracketedPaste: false, alternateScreen: false },
@@ -1023,9 +1070,28 @@ export function createAgentLauncher(options: AgentLauncherOptions): AgentLaunche
         shellReported(paneID) {
             const launch = pending.get(paneID);
             if (launch === undefined || launch.done || launch.phase !== 'awaiting-shell') return;
-            launch.shellReported = true;
             // A report is output, whichever of it and the data callback is heard first.
             noteFirstOutput(launch);
+            if (!launch.shellReported) {
+                launch.shellReported = true;
+                // Called while the parser is AT the report, so this counts the DECSETs before it
+                // (an instant prompt's) and none after it (zle's, which is what to wait for).
+                try {
+                    launch.pasteSetsAtReport = term.bracketedPasteSets(paneID);
+                } catch (error) {
+                    report(error, `agent launch modes ${paneID}`);
+                    launch.pasteSetsAtReport = 0;
+                }
+                if (launch.shellSignal === 'shell-integration') {
+                    launch.timers.pasteEdge = unrefTimer(
+                        setTimeout(() => {
+                            launch.timers.pasteEdge = undefined;
+                            launch.pasteEdgeWaitOver = true;
+                            checkShellReady(launch);
+                        }, timings.shellPasteEdgeMs)
+                    );
+                }
+            }
             checkShellReady(launch);
         },
         inputWritten(paneID, data) {

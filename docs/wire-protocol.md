@@ -1292,7 +1292,8 @@ the text stays at hand when a prefill falls back with no window attached to show
 The reply never waits for the agent (a plain create still answers before its first pane even
 spawns). The daemon types the launch line once the pane's shell is at its prompt (for zsh under
 Kelpi's shell integration, the integration's first OSC 7 report, which it sends from `precmd`
-right before the first real prompt, with bracketed paste on; bracketed paste on, for any other
+right before the first real prompt, followed by zle's own `CSI ? 2004 h` as it starts reading,
+or 250 ms after the report without one; bracketed paste on, for any other
 zsh and fish; bracketed paste or 2 s without output, for any other shell; never before the pane
 has printed anything). 10 s after the pane's first output with no such sign it types the line
 only if the shell is the terminal's foreground process group, and otherwise gives up (`failed`,

@@ -717,16 +717,26 @@ daemon started it with its zsh integration (`shellGetsIntegration`,
 `packages/daemon/src/pty/shell-integration.ts`), and waits for
 `agentShellReadySignal(shell, integrated)`:
 
-- **zsh under Kelpi's integration**: an OSC 7 report AND bracketed paste (DEC 2004) on, in
-  either order. The integration reports from `precmd`, which runs right before the first real
-  prompt, after every rc file; zle turns 2004 on just after it. 2004 alone is not enough here:
+- **zsh under Kelpi's integration**: the integration's first OSC 7 report, THEN a fresh
+  `CSI ? 2004 h` (DECSET bracketed paste) written after it, with 2004 on. The integration reports
+  from `precmd`, which runs right before the first real prompt, after every rc file; zle writes
+  `CSI ? 2004 h` 1-3 ms later, as it starts reading. 2004 alone is not enough here:
   Powerlevel10k's instant prompt turns it on ~25 ms into startup while `.zshrc` still has ~480 ms
   to run (measured 2026-10-07), and a line typed then lands in whatever the rc file does next (it
   reached the shell in that run only because p10k buffers input; an rc file that reads the
-  terminal after the instant prompt would eat it). The integration's `chpwd` report stays quiet
-  until the first `precmd`, so a `cd` in an rc file is not an early report, and the 2004 half
-  guards against any other OSC 7 writer an rc file sources. Reports reach the launcher from the
-  terminal state's OSC 7 parser (`onDirectoryChange` in `packages/daemon/src/boot/compose.ts`,
+  terminal after the instant prompt would eat it). Nor is the report with 2004 merely ON: the
+  instant prompt has latched it, so that holds the moment the report lands, while the terminal is
+  still in cooked mode with echo on until zle starts, and a line typed in that gap is echoed raw
+  above the prompt (`^[[200~codex "$(command cat '…') "^[[201~`, 6 of 19 instant-prompt panes in
+  a 2026-10-07 run; the command still ran). So the launcher waits for zle's own DECSET: the parser
+  counts every `CSI ? 2004 h`, a repeat of a mode already on included
+  (`TerminalStateServiceImpl.bracketedPasteSets`, which `onModesChange` cannot report since no mode
+  changes), the launcher reads the count while the parser is AT the report, and the line goes once
+  it has grown. A zsh that never writes that DECSET is held `AGENT_SHELL_PASTE_EDGE_MS` after the
+  report, not until the cap. The integration's `chpwd` report stays quiet until the first
+  `precmd`, so a `cd` in an rc file is not an early report, and the 2004 half guards against any
+  other OSC 7 writer an rc file sources. Reports reach the launcher from the terminal state's OSC 7
+  parser (`onDirectoryChange` in `packages/daemon/src/boot/compose.ts`,
   `AgentLauncher.shellReported`).
 - **zsh without it** (`KELPID_SHELL_INTEGRATION=0`, a `:memory:` daemon, a failed install), and
   **fish**: bracketed paste turning on, which their line editors do as they start reading. Only
@@ -898,6 +908,7 @@ both agents anyway, so the budget is paused while one is on screen (up to
 | constant | value | meaning |
 |---|---|---|
 | `AGENT_SHELL_SETTLE_MS` | 2 s | quiet spell that means "at the prompt" for a shell without 2004 (core) |
+| `AGENT_SHELL_PASTE_EDGE_MS` | 250 ms | under the zsh integration, how long after its first report the launcher waits for zle's `CSI ? 2004 h` before typing on the report alone (daemon) |
 | `AGENT_SHELL_READY_CAP_MS` | 10 s | after the first output with no signal, the line is typed if the shell has the terminal, else `failed` (`timeout`) (core) |
 | `AGENT_FIRST_OUTPUT_TIMEOUT_MS` | 30 s | a pane silent this long after the create is `failed` (`timeout`) (daemon) |
 | `AGENT_READY_TIMEOUT_MS` | 10 s | the prefill budget from the line, paused during a trust dialog; the slowest measured launch was 0.92 s (core) |

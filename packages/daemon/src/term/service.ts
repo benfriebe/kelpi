@@ -780,6 +780,8 @@ interface PaneTerminal {
     readonly effects: { mode: ReplayMode };
     /** DECRST 2004 sequences parsed so far (`bracketedPasteResets`). */
     readonly pasteResets: { count: number };
+    /** DECSET 2004 sequences parsed so far, repeats of an ON mode included (`bracketedPasteSets`). */
+    readonly pasteSets: { count: number };
     /** Bytes still to be fed as replay (`markReplay`), and in which mode. */
     replayBudget: number;
     replayBudgetMode: ReplayMode;
@@ -1573,6 +1575,18 @@ export class TerminalStateServiceImpl implements TerminalStateService {
     }
 
     /**
+     * How many times the pane's programs have switched bracketed paste ON (DECSET 2004) since its
+     * terminal state was created, counted by the parser, INCLUDING a DECSET that finds the mode
+     * already on. That repeat changes no mode, so `onModesChange` never reports it, yet it is
+     * what tells the agent launcher that zsh's line editor has started: zle writes
+     * `CSI ? 2004 h` as it begins reading, even when Powerlevel10k's instant prompt turned 2004
+     * on long before (agent-lifecycle.md §6.5.1). 0 for an unknown pane.
+     */
+    bracketedPasteSets(paneID: string): number {
+        return this.panes.get(paneID)?.pasteSets.count ?? 0;
+    }
+
+    /**
      * Every occurrence of `needle` in the pane's buffer (`./search.ts`). Unknown pane → `[]`,
      * which is the same answer as "no matches" on purpose: a pane that closed mid-search is a
      * search with nothing to find, not an error the overlay has to render.
@@ -1749,10 +1763,18 @@ export class TerminalStateServiceImpl implements TerminalStateService {
         // pair that lands in one write is invisible to anything that compares `modes()` between
         // writes. `false` = xterm still applies the mode itself.
         const pasteResets = { count: 0 };
+        const namesPaste = (params: (number | number[])[]): boolean =>
+            params.some((param) => param === 2004 || (Array.isArray(param) && param.includes(2004)));
         term.parser.registerCsiHandler({ prefix: '?', final: 'l' }, (params) => {
-            if (params.some((param) => param === 2004 || (Array.isArray(param) && param.includes(2004)))) {
-                pasteResets.count += 1;
-            }
+            if (namesPaste(params)) pasteResets.count += 1;
+            return false;
+        });
+        // And every DECSET 2004 (`bracketedPasteSets`), a repeat of an ON mode included: zle's
+        // own `CSI ? 2004 h` as it starts reading is the edge the launcher waits for under an
+        // instant prompt that latched the mode on earlier. `false` again.
+        const pasteSets = { count: 0 };
+        term.parser.registerCsiHandler({ prefix: '?', final: 'h' }, (params) => {
+            if (namesPaste(params)) pasteSets.count += 1;
             return false;
         });
         // §TERM-030. Registered unconditionally for the same reason as the mouse format —
@@ -1802,7 +1824,8 @@ export class TerminalStateServiceImpl implements TerminalStateService {
             replayBudgetMode: 1,
             revision: ++this.highestRevision,
             quietWaiters: new Set(),
-            pasteResets
+            pasteResets,
+            pasteSets
         };
         entry.lastModes = readModes(entry);
         return entry;

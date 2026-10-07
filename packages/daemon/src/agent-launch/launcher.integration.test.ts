@@ -83,6 +83,8 @@ interface Rig {
     readonly frames: WsAgentLaunchMessage[];
     /** Everything the launcher itself typed. */
     readonly typed: { text: string; bare: boolean }[];
+    /** `bracketedPasteSets` at the moment of each of those writes. */
+    readonly pasteSetsWhenTyped: number[];
     readonly spawns: PtySpawnRequest[];
     readonly pty: KelpiPtyManager;
     readonly record: string;
@@ -174,6 +176,7 @@ describe('agent launch in a real PTY', () => {
 
         const frames: WsAgentLaunchMessage[] = [];
         const typed: { text: string; bare: boolean }[] = [];
+        const pasteSetsWhenTyped: number[] = [];
         let launcher: AgentLauncher | undefined;
         const term = createTerminalStateService({
             onModesChange: (paneID) => {
@@ -198,6 +201,7 @@ describe('agent launch in a real PTY', () => {
             input: {
                 sendText(paneID, text, opts) {
                     typed.push({ text, bare: opts.bare });
+                    pasteSetsWhenTyped.push(term.bracketedPasteSets(paneID));
                     input.sendText(paneID, text, opts);
                 }
             },
@@ -230,6 +234,7 @@ describe('agent launch in a real PTY', () => {
             launcher: started,
             frames,
             typed,
+            pasteSetsWhenTyped,
             spawns,
             pty,
             record,
@@ -314,6 +319,42 @@ describe('agent launch in a real PTY', () => {
         expect(readable(join(r.root, 'eaten'))).toBe(false);
         await waitFor(() => r.received().some((chunk) => chunk.text.includes('\u001b[201~')));
         expect(r.received().map((chunk) => chunk.text).join('')).toBe(PASTE);
+    });
+
+    /**
+     * The gap between the integration's `precmd` report and zle starting. An instant prompt has
+     * latched 2004 on, so "reported and 2004 on" holds the moment the report lands, yet the
+     * terminal stays in cooked mode, echoing, until zle starts: a line typed then is echoed raw
+     * above the prompt (`^[[200~…^[[201~`). Here a slower `precmd` hook after the integration's
+     * widens that gap to 100 ms; the line must wait for zle's own `CSI ? 2004 h`. The "agent" is a
+     * command that prints a marker and stays on the normal screen, where an echo would show.
+     */
+    it("zsh under Kelpi's integration: waits for zle's DECSET after the report, though 2004 is already on", { timeout: 30_000 }, async () => {
+        const r = rig({
+            shell: ZSH,
+            integration: true,
+            prompt: null,
+            command: 'print -r -- KELPI""_LAUNCHED',
+            timings: { shellSettleMs: LONG, shellReadyCapMs: LONG },
+            zshrc: () =>
+                [
+                    "print -rn -- $'\\e[?2004h'",
+                    '_kelpi_test_slow_precmd() { sleep 0.1 }',
+                    'precmd_functions+=(_kelpi_test_slow_precmd)',
+                    "PROMPT='%% '",
+                    ''
+                ].join('\n')
+        });
+        r.start();
+        const frame = await r.frame();
+        expect(frame).toMatchObject({ outcome: 'launched', paneID: P1 });
+        // The rc file's DECSET, then zle's: the line went after the second.
+        expect(r.pasteSetsWhenTyped[0]).toBeGreaterThanOrEqual(2);
+        await waitFor(() => r.screen().includes('KELPI_LAUNCHED'));
+        await delay(200);
+        // zle read it as a paste and ran it; nothing was echoed by a terminal still in cooked mode.
+        expect(r.screen()).toContain('% print -r -- KELPI""_LAUNCHED');
+        expect(r.screen()).not.toContain('[200~');
     });
 
     it('bash 3.2: types after the quiet spell (it never turns on 2004), then prefills', { timeout: 30_000 }, async () => {

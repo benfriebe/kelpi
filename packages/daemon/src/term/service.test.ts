@@ -235,6 +235,23 @@ describe('TerminalStateServiceImpl — modes', () => {
         expect(service.bracketedPasteResets('gone')).toBe(0);
     });
 
+    it('counts every DECSET 2004 as it is parsed, a repeat of a mode already on included', async () => {
+        const service = makeService();
+        service.attach('p', 20, 5);
+        expect(service.bracketedPasteSets('p')).toBe(0);
+        // An instant prompt latches it on...
+        await write(service, 'p', '\x1b[?2004h');
+        expect(service.bracketedPasteSets('p')).toBe(1);
+        // ...and zle, starting later, writes it again: no mode changes, the count does.
+        await write(service, 'p', '\x1b]7;file:///tmp\x07\x1b[?1h\x1b[?2004h% ');
+        expect(service.modes('p').bracketedPaste).toBe(true);
+        expect(service.bracketedPasteSets('p')).toBe(2);
+        // Among other modes in one sequence; other sets and the resets do not count.
+        await write(service, 'p', '\x1b[?1;2004h\x1b[?1049h\x1b[?2004l');
+        expect(service.bracketedPasteSets('p')).toBe(3);
+        expect(service.bracketedPasteSets('gone')).toBe(0);
+    });
+
     it('reports idle modes for unknown panes', () => {
         const service = makeService();
         expect(service.modes('gone')).toEqual({

@@ -111,14 +111,18 @@ export function shellSupportsSendMode(shellPath: string): boolean {
  *
  *   - `shell-integration`: zsh started with Kelpi's own shell integration (the daemon's
  *     `pty/shell-integration.ts`, which installs a `precmd` hook that reports the directory with
- *     OSC 7). The signal is an OSC 7 report AND bracketed paste on, both: `precmd` runs right
- *     before the first REAL prompt, after every rc file has finished, and zle turns 2004 on just
- *     after it. 2004 alone is not enough under Powerlevel10k's instant prompt, which turns it on
- *     ~25 ms into startup while `.zshrc` still has ~480 ms to run (measured 2026-10-07), so a
- *     line typed then reaches the shell only because p10k happens to buffer input, and an rc file
- *     that reads the terminal after the instant prompt would eat it. The integration keeps its
- *     `chpwd` report quiet until the first `precmd` has run, so a `cd` in an rc file is not an
- *     early report; the 2004 half covers any OTHER OSC 7 writer an rc file sources.
+ *     OSC 7). The signal is an OSC 7 report and then a fresh `CSI ? 2004 h` written after it,
+ *     with 2004 on: `precmd` runs right before the first REAL prompt, after every rc file has
+ *     finished, and zle writes that DECSET 1-3 ms later as it starts reading. 2004 alone is not
+ *     enough under Powerlevel10k's instant prompt, which turns it on ~25 ms into startup while
+ *     `.zshrc` still has ~480 ms to run (measured 2026-10-07), so a line typed then reaches the
+ *     shell only because p10k happens to buffer input, and an rc file that reads the terminal
+ *     after the instant prompt would eat it. Nor is the report with 2004 merely ON (latched by
+ *     the instant prompt): until zle starts the terminal is cooked and echoes, so a line typed in
+ *     that gap shows raw above the prompt. The daemon counts DECSETs to see zle's, and bounds the
+ *     wait for it. The integration keeps its `chpwd` report quiet until the first `precmd` has
+ *     run, so a `cd` in an rc file is not an early report; the 2004 half covers any OTHER OSC 7
+ *     writer an rc file sources.
  *   - `bracketed-paste`: zsh without the integration (turned off, or a pane the daemon could not
  *     give it to) and fish turn bracketed paste (DEC 2004) on as their line editor starts, so
  *     that is the signal and the ONLY one. Their startup often prints and then goes quiet before

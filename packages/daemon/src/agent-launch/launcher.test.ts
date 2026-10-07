@@ -34,6 +34,7 @@ import {
     AGENT_FIRST_OUTPUT_TIMEOUT_MS,
     AGENT_FOREGROUND_POLL_MS,
     AGENT_FOREGROUND_REUSE_MS,
+    AGENT_SHELL_PASTE_EDGE_MS,
     createAgentLaunchDelivery,
     createAgentLauncher,
     isTypedInput,
@@ -82,6 +83,11 @@ interface Fixture {
     screen(text: string, paneID?: string): void;
     /** The shell sent an OSC 7, as the terminal state reports it (`shellReported`). */
     report(paneID?: string): void;
+    /**
+     * zle starting: a `CSI ? 2004 h` that finds 2004 already on (no mode callback, since nothing
+     * changed), in a chunk of output with the prompt.
+     */
+    zleStarts(paneID?: string): void;
     start(request?: Partial<AgentLaunchRequest>, options?: { paneID?: string; workspaceID?: string; origin?: string }): void;
     bindSession(sessionID: string, paneID?: string): void;
     endSession(sessionID: string, paneID?: string): void;
@@ -127,9 +133,12 @@ function fixture(
     const modes = new Map<string, { bracketedPaste: boolean; alternateScreen: boolean }>();
     /** DECRST 2004s "parsed", per pane: every on-to-off below counts one. */
     const resets = new Map<string, number>();
+    /** DECSET 2004s "parsed", per pane: every set to ON below counts one, a repeat included. */
+    const sets = new Map<string, number>();
     const setModes = (paneID: string, next: Partial<{ bracketedPaste: boolean; alternateScreen: boolean }>): void => {
         const current = modesOf(paneID);
         if (current.bracketedPaste && next.bracketedPaste === false) resets.set(paneID, (resets.get(paneID) ?? 0) + 1);
+        if (next.bracketedPaste === true) sets.set(paneID, (sets.get(paneID) ?? 0) + 1);
         modes.set(paneID, { ...current, ...next });
     };
     const screens = new Map<string, string>();
@@ -159,7 +168,7 @@ function fixture(
         foregroundCalls: 0,
         captures: 0,
         shell: options.shell ?? '/bin/zsh'
-    } as Omit<Fixture, 'launcher' | 'output' | 'exit' | 'modes' | 'silentModes' | 'screen' | 'report' | 'start' | 'bindSession' | 'endSession'> &
+    } as Omit<Fixture, 'launcher' | 'output' | 'exit' | 'modes' | 'silentModes' | 'screen' | 'report' | 'zleStarts' | 'start' | 'bindSession' | 'endSession'> &
         Partial<Fixture>;
 
     const launcher = createAgentLauncher({
@@ -184,6 +193,7 @@ function fixture(
             modes: (paneID): VtModes => ({ applicationCursorKeys: false, bracketedPaste: modesOf(paneID).bracketedPaste }),
             alternateScreen: (paneID) => modesOf(paneID).alternateScreen,
             bracketedPasteResets: (paneID) => resets.get(paneID) ?? 0,
+            bracketedPasteSets: (paneID) => sets.get(paneID) ?? 0,
             capture: (paneID) => {
                 f.captures += 1;
                 return screens.get(paneID) ?? '';
@@ -230,6 +240,13 @@ function fixture(
         },
         report(paneID = P1) {
             launcher.shellReported(paneID);
+        },
+        zleStarts(paneID = P1) {
+            const wasOn = modesOf(paneID).bracketedPaste;
+            setModes(paneID, { bracketedPaste: true });
+            if (!wasOn) launcher.modesChanged(paneID);
+            const bytes = Buffer.from('\u001b[?1h\u001b[?2004h% ', 'utf8');
+            for (const listener of [...dataListeners]) listener(paneID, bytes);
         },
         start(overrides: Partial<AgentLaunchRequest> = {}, startOptions: { paneID?: string; workspaceID?: string; origin?: string } = {}) {
             launcher.start({
@@ -475,6 +492,7 @@ describe('typing the launch line', () => {
                 modes: (): VtModes => ({ applicationCursorKeys: false, bracketedPaste: paste }),
                 alternateScreen: () => false,
                 bracketedPasteResets: () => 0,
+                bracketedPasteSets: () => 0,
                 capture: () => '',
                 flush: () => Promise.resolve()
             },
@@ -507,16 +525,36 @@ describe('typing the launch line', () => {
     });
 
     describe("under Kelpi's zsh integration (a precmd report, not 2004 alone)", () => {
-        it('an instant prompt turning 2004 on early does not type the line; the first report does', async () => {
+        it('an instant prompt turning 2004 on early does not type the line, nor does the report alone; zle does', async () => {
             const f = fixture({ shell: '/bin/zsh', integrated: true });
             f.start();
             f.output('[p10k instant prompt]');
             f.modes({ bracketedPaste: true });
             await advance(480);
             expect(f.typed).toEqual([]);
-            // .zshrc is done: precmd reports the directory just before the first real prompt.
+            // .zshrc is done: precmd reports the directory just before the first real prompt...
             f.report();
+            await advance(2);
+            // ...but the terminal is still cooked, echoing, until zle starts 1-3 ms later.
+            expect(f.typed).toEqual([]);
+            f.zleStarts();
             await advance();
+            expect(f.typed.map((entry) => entry.text)).toEqual(['claude']);
+            expect(outcomes(f)).toEqual(['launched']);
+        });
+
+        it('a DECSET from before the report is not the edge, and no edge at all waits only AGENT_SHELL_PASTE_EDGE_MS', async () => {
+            const f = fixture({ shell: '/bin/zsh', integrated: true });
+            f.start();
+            f.output('[p10k instant prompt]');
+            // Two instant-prompt DECSETs, both before the report: neither is zle's.
+            f.modes({ bracketedPaste: true });
+            f.modes({ bracketedPaste: true });
+            f.report();
+            f.output('more of the prompt');
+            await advance(AGENT_SHELL_PASTE_EDGE_MS - 1);
+            expect(f.typed).toEqual([]);
+            await advance(1);
             expect(f.typed.map((entry) => entry.text)).toEqual(['claude']);
             expect(outcomes(f)).toEqual(['launched']);
         });
@@ -528,7 +566,8 @@ describe('typing the launch line', () => {
             f.report();
             await advance(100);
             expect(f.typed).toEqual([]);
-            f.modes({ bracketedPaste: true });
+            // zle turns 2004 on from off: a mode change and the DECSET in one.
+            f.zleStarts();
             await advance();
             expect(f.typed.map((entry) => entry.text)).toEqual(['claude']);
         });

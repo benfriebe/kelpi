@@ -227,6 +227,8 @@ export interface HarnessOptions {
     /** Pane ids handed out by the handlers, in order. Defaults to `N1, N2, …`. */
     readonly minted?: readonly string[];
     readonly now?: number;
+    /** The live-directory seam a split consults; absent = splits copy the stored directory. */
+    readonly liveWorkingDirectory?: PaneHandlerContext['liveWorkingDirectory'];
 }
 
 export interface Harness {
@@ -273,7 +275,8 @@ export function harness(options: HarnessOptions = {}): Harness {
         clock: () => options.now ?? NOW,
         mintPaneID: mint,
         profiles: () => [],
-        spawn: { helpersDir: '/opt/kelpi/helpers', inheritedPath: '/usr/bin', cols: 80, rows: 24 }
+        spawn: { helpersDir: '/opt/kelpi/helpers', inheritedPath: '/usr/bin', cols: 80, rows: 24 },
+        ...(options.liveWorkingDirectory !== undefined ? { liveWorkingDirectory: options.liveWorkingDirectory } : {})
     };
 
     const dispatch = (msg: WireMessage, reply: ReplyHandle | null): void => {

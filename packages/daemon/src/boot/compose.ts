@@ -101,9 +101,14 @@ import {
     createPaneSpawnGate,
     createPtyManager,
     createTerminalInput,
+    chooseSplitDirectory,
+    createProcessCwdReader,
     FALLBACK_SHELL,
+    installShellIntegration,
+    SHELL_INTEGRATION_ENV,
     withSpawnGate,
-    type KelpiPtyManager
+    type KelpiPtyManager,
+    type ShellIntegration
 } from '../pty/index.js';
 import { nodePtySpawner } from '../pty/spawner.js';
 import { createEditorResolver, type EditorResolver } from '../content/external-editor.js';
@@ -520,9 +525,23 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
      * `start()`, queued until then, and in-process if no host can be started (§5, §8).
      */
     const hostSlot = options.terminalHost !== undefined ? new HostSpawnerSlot(FALLBACK_SHELL) : undefined;
+    /**
+     * The zsh integration that reports a pane's directory (`pty/shell-integration.ts`), written
+     * beside the database. A `:memory:` daemon has no data directory to put it in and spawns
+     * without it, as does a daemon told `KELPID_SHELL_INTEGRATION=0` or one that cannot write.
+     */
+    let shellIntegration: ShellIntegration | undefined;
+    if (dbPath !== ':memory:' && env[SHELL_INTEGRATION_ENV]?.trim() !== '0') {
+        try {
+            shellIntegration = installShellIntegration(join(dirname(dbPath), 'shell-integration'));
+        } catch (error) {
+            report(error, 'shell integration');
+        }
+    }
     const rawPty = createPtyManager({
         ...(hostSlot !== undefined ? { spawner: hostSlot.spawner } : {}),
         loginShell: env[LOGIN_SHELL_ENV]?.trim() !== '0',
+        shellIntegration,
         onError: (paneID, error) => report(error, `pty ${paneID}`)
     });
     // What each pane was last rendered at, so a shell is BORN at that size instead of at
@@ -1131,6 +1150,20 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
             spawnGate.flush(paneID);
         }
     };
+    /**
+     * Where a split of a shell pane opens (`pty/process-cwd.ts`): its shell's own cwd, asked of
+     * the OS, because the stored directory only follows a shell that sends OSC 7. The stored
+     * path is kept when both name the same directory, so a logical path survives.
+     */
+    const readProcessCwd = createProcessCwdReader();
+    const liveWorkingDirectory = async (paneID: string): Promise<string | null> => {
+        const workspace = workspaceContainingVisiblePane(store.getState(), paneID);
+        const pane = workspace === null ? null : visiblePane(workspace, paneID);
+        if (pane === null || pane.type !== 'shell') return null;
+        const pid = pty.pid(paneID);
+        if (pid === undefined) return null;
+        return chooseSplitDirectory(pane.workingDirectory, await readProcessCwd(pid));
+    };
     const ctx: PaneHandlerContext = {
         prepareDocumentClose: paneIDs => {
             content.prepareClose(paneIDs);
@@ -1166,6 +1199,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         // It lands in the daemon log, where every other spawn-path diagnostic goes.
         onLog: (message) => log(message),
         spawn: spawnDefaults,
+        liveWorkingDirectory,
         ...(options.now !== undefined ? { clock: options.now } : {}),
         ...(options.uuid !== undefined ? { mintPaneID: options.uuid, mintWorkspaceID: options.uuid } : {})
     };

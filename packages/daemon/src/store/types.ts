@@ -405,6 +405,11 @@ export type DomainAction =
           readonly direction: SplitDirection;
           readonly now: number;
           readonly sourcePaneID?: string | undefined;
+          /**
+           * Where the source's shell really is, when the handler could ask the OS
+           * (`liveWorkingDirectory`). Absent = inherit the source's stored directory.
+           */
+          readonly workingDirectory?: string | undefined;
           readonly label?: string | null | undefined;
           /** #295: false opens the pane in the background; see `create-pane`. */
           readonly focus?: boolean | undefined;

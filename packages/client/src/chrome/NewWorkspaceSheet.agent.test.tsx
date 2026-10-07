@@ -248,6 +248,22 @@ describe('Return (M9) and the Prompt box (plan R12)', () => {
         await vi.waitFor(() => expect(fromSelect).toHaveLength(1));
     });
 
+    it('an Escape that cancels an IME composition leaves the sheet, and the prompt in it, alone', () => {
+        const onCancel = vi.fn();
+        render(
+            <NewEntrySheet kind="workspace" onCancel={onCancel} onSubmit={async () => null} defaultAgent="claude" />
+        );
+        fireEvent.change(promptBox(), { target: { value: '日本語の' } });
+        // The capture-phase handler is on the window: both spellings of the IME's own Escape.
+        expect(fireEvent.keyDown(promptBox(), { key: 'Escape', isComposing: true })).toBe(true);
+        expect(fireEvent.keyDown(window, { key: 'Escape', keyCode: 229 })).toBe(true);
+        expect(onCancel).not.toHaveBeenCalled();
+        expect(promptBox().value).toBe('日本語の');
+        // An ordinary Escape still cancels.
+        fireEvent.keyDown(window, { key: 'Escape' });
+        expect(onCancel).toHaveBeenCalledTimes(1);
+    });
+
     it('a Return that ends an IME composition submits nothing, in the Prompt box or the name field', async () => {
         const drafts = mountBare({ defaultAgent: 'claude' });
         const name = screen.getByLabelText('New workspace name');

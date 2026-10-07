@@ -364,6 +364,34 @@ export interface KelpiState extends KelpiActions {
 
 export const MAX_TOASTS = 5;
 
+/**
+ * The stack after `pushed` was added to the end of `toasts`: at most `MAX_TOASTS`, the OLDEST
+ * going first, with two exceptions that may leave it longer.
+ *
+ *   - **A toast holding `copyText` is never evicted.** It is a prompt the daemon could not deliver
+ *     to a new workspace's agent (`./agent-launch.ts`), sticky because it is the user's only easy
+ *     way back to text they wrote; five ordinary notifications arriving after it must not take it
+ *     away. It leaves when the user clicks or dismisses it.
+ *   - **The toast just pushed is never evicted**, or a stack full of undelivered prompts would
+ *     swallow every later notification unseen; the next push evicts it in turn.
+ *
+ * So the stack can only outgrow the cap by its undelivered prompts, plus one.
+ */
+function capToasts(toasts: readonly Toast[]): Toast[] {
+    const kept = [...toasts];
+    let excess = kept.length - MAX_TOASTS;
+    let index = 0;
+    while (excess > 0 && index < kept.length - 1) {
+        if (kept[index]?.copyText === undefined) {
+            kept.splice(index, 1);
+            excess -= 1;
+        } else {
+            index += 1;
+        }
+    }
+    return kept;
+}
+
 function initialDaemonSlice(): DaemonSlice {
     return {
         state: emptyDaemonState(),
@@ -925,9 +953,15 @@ export function kelpiStateCreator(set: SetState, get: GetState): KelpiState {
         pushToast(toast) {
             const ui = get().ui;
             // Replace-by-id: the daemon's `kelpi-<paneID>` dedupe identity applies to the in-app
-            // fallback exactly as it does to a Web Notification's `tag`.
-            const kept = ui.toasts.filter((existing) => existing.id !== toast.id);
-            const toasts = [...kept, toast].slice(-MAX_TOASTS);
+            // fallback exactly as it does to a Web Notification's `tag`. A replacement takes the
+            // place of the toast it replaces, so a toast that only changes its words (an
+            // undelivered prompt's "click to copy it" becoming "copied") does not jump to the end
+            // of the stack, nor look newer than it is to the eviction below.
+            const at = ui.toasts.findIndex((existing) => existing.id === toast.id);
+            const toasts =
+                at < 0
+                    ? capToasts([...ui.toasts, toast])
+                    : ui.toasts.flatMap((existing, index) => (index === at ? [toast] : existing.id === toast.id ? [] : [existing]));
             set({ ui: { ...ui, toasts } });
         },
 

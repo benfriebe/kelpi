@@ -24,6 +24,14 @@
  *     frame went to EVERY window (the create came from the CLI, or its window has gone), and N
  *     windows each writing the same clipboard is N writers for one value, so none of them does:
  *     each offers the copy on a click instead.
+ *   - **And only soon after the create.** A launch can end long after the user pressed Create
+ *     (a trust dialog holds it for up to `AGENT_READY_MAX_WAIT_MS`, ten minutes), and by then
+ *     the clipboard holds whatever they copied since. So the window notes when it SENT each
+ *     create that asked for an agent (`noteAgentCreateSent`, by the workspace id its reply
+ *     named), and copies by itself only within `AGENT_LAUNCH_AUTO_COPY_MS` of that; a frame
+ *     later than that, or for a create this window has no note of, offers the click instead.
+ *     Never for `daemon-stopping`: that frame comes from a daemon going away, often because the
+ *     app is quitting or updating, not from anything the user is waiting on.
  *   - **The title says which.** "...: copied to the clipboard" once the write has landed; "...:
  *     click to copy it" until then, and for good if the browser refused (a phone, an unfocused
  *     window) or the frame was a broadcast. The click is a user gesture, which is what a browser
@@ -54,6 +62,47 @@ import type { KelpiStoreApi, Toast } from './store';
 
 /** How much of an undelivered prompt a toast shows when it cannot offer a copy. */
 export const PROMPT_EXCERPT_CHARS = 240;
+
+/**
+ * How long after the window sent a create the outcome of its agent launch may still write the
+ * clipboard by itself. A minute covers every launch that is not held by a trust dialog (the
+ * daemon gives up on those after 10 s, or 30 s for a shell that never prints).
+ */
+export const AGENT_LAUNCH_AUTO_COPY_MS = 60_000;
+
+/**
+ * The creates this window sent that asked for an agent, per store (one store per daemon
+ * connection): workspace id → when the create was SENT. Written by the create path once its
+ * reply names the workspace (`noteAgentCreateSent`), read and forgotten by the frame for it. Kept
+ * beside the handler rather than in the store, because nothing renders it.
+ */
+const sentAgentCreates = new WeakMap<KelpiStoreApi, Map<string, number>>();
+
+/**
+ * The create this window sent at `sentAt` made `workspaceID` and asked it to start an agent: its
+ * `agent-launch` frame may auto-copy until `AGENT_LAUNCH_AUTO_COPY_MS` after `sentAt`.
+ */
+export function noteAgentCreateSent(store: KelpiStoreApi, workspaceID: string, sentAt: number): void {
+    let creates = sentAgentCreates.get(store);
+    if (creates === undefined) {
+        creates = new Map();
+        sentAgentCreates.set(store, creates);
+    }
+    // A note past its window can no longer allow anything: drop it rather than keep it forever.
+    for (const [id, at] of creates) {
+        if (sentAt - at > AGENT_LAUNCH_AUTO_COPY_MS) creates.delete(id);
+    }
+    creates.set(workspaceID, sentAt);
+}
+
+/** When this window sent the create for `workspaceID`, forgetting it (one frame per launch). */
+function takeAgentCreateSentAt(store: KelpiStoreApi, workspaceID: string): number | null {
+    const creates = sentAgentCreates.get(store);
+    const sentAt = creates?.get(workspaceID);
+    if (creates === undefined || sentAt === undefined) return null;
+    creates.delete(workspaceID);
+    return sentAt;
+}
 
 /** The toast id for one launch: a second frame for the same pane replaces, never stacks. */
 export function agentLaunchToastID(paneID: string): string {
@@ -130,6 +179,10 @@ export function agentLaunchProblem(report: Pick<AgentLaunchReport, 'agent' | 'ou
                 return `${name} was not started: Send immediately needs the pane's shell to be zsh, bash, sh, dash, ksh or fish.`;
             case 'daemon-stopping':
                 return `The Kelpi daemon stopped before ${inner} could be started.`;
+            case 'user-typed':
+                return `${name} was not started: something was typed into the pane before Kelpi could type the command that starts it.`;
+            case 'timeout':
+                return `${name} was not started: the pane's shell never showed a prompt Kelpi could type the command at.`;
             default:
                 return `${name} was not started.`;
         }
@@ -137,6 +190,8 @@ export function agentLaunchProblem(report: Pick<AgentLaunchReport, 'agent' | 'ou
     switch (report.reason) {
         case 'timeout':
             return `${name} started, but was not ready for the prompt in time.`;
+        case 'no-session-start':
+            return `${name} started, but Kelpi never heard from its SessionStart hook, so it could not tell when ${inner} was ready for the prompt. Run \`kelpi install-hooks\` to install the hooks.`;
         case 'pane-exited':
             return `${name} started, but the pane closed before the prompt could be pasted.`;
         case 'agent-exited':
@@ -272,9 +327,12 @@ export interface AgentLaunchHandlerOptions {
 export function createAgentLaunchHandler(
     options: AgentLaunchHandlerOptions
 ): (message: Record<string, unknown>) => AgentLaunchReport | null {
+    const now = options.now ?? Date.now;
     return (message) => {
         const report = parseAgentLaunch(message);
         if (report === null) return null;
+        // Read (and forgotten) for every outcome: this is the launch's one frame.
+        const sentAt = takeAgentCreateSentAt(options.store, report.workspaceID);
         // Success needs nobody's attention: the agent is in the pane, with its prompt if any.
         if (report.outcome !== 'fallback' && report.outcome !== 'failed') return report;
         const failed = report.outcome === 'failed';
@@ -294,13 +352,23 @@ export function createAgentLaunchHandler(
                 kind: 'agent-error'
             },
             {
-                autoCopy: !report.broadcast,
+                autoCopy: autoCopy(report, sentAt, now()),
                 writeText: options.writeText === undefined ? pageClipboardWriter() : options.writeText,
-                now: options.now
+                now
             }
         );
         return report;
     };
+}
+
+/**
+ * May this frame write the clipboard without a click? Only in the window that asked (not a
+ * broadcast), only within `AGENT_LAUNCH_AUTO_COPY_MS` of that window sending the create, and
+ * never for a daemon that is stopping (see the module comment).
+ */
+function autoCopy(report: AgentLaunchReport, sentAt: number | null, now: number): boolean {
+    if (report.broadcast || report.reason === 'daemon-stopping' || sentAt === null) return false;
+    return now - sentAt <= AGENT_LAUNCH_AUTO_COPY_MS;
 }
 
 /**
@@ -327,6 +395,42 @@ export function reportAgentStartUnsupported(
             promptFile: null,
             workspaceID,
             kind: 'info'
+        },
+        { autoCopy: true, writeText }
+    );
+}
+
+/** The toast id for a create that failed outright; one id, so a second failure replaces it. */
+export const AGENT_CREATE_FAILED_TOAST_ID = 'agent-create-failed';
+
+/**
+ * The create itself failed (its reply was an error, or it never came back), and it had asked
+ * for an agent with a prompt. A plain create closes the New Workspace sheet before its reply
+ * arrives, so the prompt the user wrote is gone from the screen: offer it back, auto-copied,
+ * since this IS the window that asked and the reply has only just arrived. Says why in the
+ * daemon's own words. Nothing at all for a request without a prompt: the failure toast the
+ * caller raises already says everything.
+ */
+export function offerPromptOfFailedCreate(
+    store: KelpiStoreApi,
+    request: { readonly kind: AgentKind; readonly prompt: string },
+    error: string,
+    writeText: ClipboardWriter | null = pageClipboardWriter()
+): Toast | null {
+    if (request.prompt.trim() === '') return null;
+    const name = AGENT_DISPLAY_NAMES[request.kind];
+    return offerUndeliveredPrompt(
+        store,
+        {
+            id: AGENT_CREATE_FAILED_TOAST_ID,
+            headline: 'Workspace not created',
+            headlineNamesPrompt: false,
+            problem: `${error.replace(/\.?$/, '.')} ${name} was not started.`,
+            advice: 'Create the workspace again and paste it in.',
+            prompt: request.prompt,
+            promptFile: null,
+            workspaceID: null,
+            kind: 'agent-error'
         },
         { autoCopy: true, writeText }
     );

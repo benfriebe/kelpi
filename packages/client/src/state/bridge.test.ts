@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { TOKEN_STORAGE_KEY, type StorageLike } from '../app/config';
 import { KelpiConnection, completeHandshake, createFakeSocketFactory } from '../connection';
+import { noteAgentCreateSent } from './agent-launch';
 import { connectStore, createKelpiRuntime, isTokenRejection } from './bridge';
 import { createNotificationManager, type NotificationApi } from './notifications';
 import { createKelpiStore, type KelpiStoreApi } from './store';
@@ -338,6 +339,9 @@ describe('store bridge', () => {
             [`agent-launch-${P1}`, 'ship it']
         ]);
 
+        // This window's own create, answered a moment ago (the create path notes it): its frame
+        // auto-copies.
+        noteAgentCreateSent(store, W1, Date.now());
         sockets.last().emit({ ...launch, paneID: P2, outcome: 'failed', reason: 'pane-exited', prompt: 'mine' } as never);
         expect(writeText).toHaveBeenCalledExactlyOnceWith('mine');
         await Promise.resolve();

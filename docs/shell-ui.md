@@ -1380,15 +1380,34 @@ Fields, top to bottom:
    a launch that worked (`launched`, `sent`, `prefilled`) shows nothing. A `fallback` (the agent
    started, the prompt was not pasted) or a `failed` (no agent started) raises a sticky toast,
    one per pane (`agent-launch-<paneID>`), whose body names the reason in plain words and which
-   holds the prompt. In the window that sent the create, the prompt is also copied to the
-   clipboard at once; a frame broadcast to every window (a CLI create, or a window since closed)
-   copies nothing on its own. The title says which: "Prompt not delivered to Claude Code: copied
+   holds the prompt. In the window that sent the create, and only within a minute of it sending
+   the create (`AGENT_LAUNCH_AUTO_COPY_MS`; the window notes when it sent each create that asked
+   for an agent, by the workspace id the reply names), the prompt is also copied to the clipboard
+   at once. A frame broadcast to every window (a CLI create, or a window since closed), one that
+   arrives later than that (a trust dialog can hold a launch for up to ten minutes, and by then
+   the clipboard holds whatever the user copied since), and any `daemon-stopping` frame copy
+   nothing on their own. The title says which: "Prompt not delivered to Claude Code: copied
    to the clipboard", or "...: click to copy it" when the copy was not made or was refused (a
    phone, an unfocused window). Clicking the toast copies the prompt (the click is the user
    gesture a browser asks for) and dismisses it; if even that write is refused, the toast stays,
-   shows the prompt's opening and no longer offers a copy. A page with no clipboard API at all
+   shows the prompt's opening and no longer offers a copy. In the Electron shell the click lands
+   on the corner layer (§4.2's toast-over-a-web-page requirement), which relays it to the page as
+   the toast's `dismiss`: only a `copy` mark crosses to the layer, never the prompt, and the page
+   makes the write itself once the layer has handed the keyboard back, without a gesture of its
+   own (so the browser may refuse it, as above, when a web page rather than Kelpi held the
+   keyboard). A page with no clipboard API at all
    (plain HTTP off localhost) shows the prompt's first 240 characters and the path of the
-   daemon's copy instead.
+   daemon's copy instead. A toast that holds a prompt is never pushed out by the toast stack's
+   cap of five (`MAX_TOASTS`, `capToasts` in `packages/client/src/state/store.ts`: the oldest
+   ordinary toast goes instead, and the newest is always shown), and a toast that is replaced
+   (its title turning from "click to copy it" to "copied") keeps its place in the stack.
+   **A create that fails** (Kelpi addition): a plain create closes the sheet when it is sent, so
+   when its reply is a failure (or never comes) a prompt typed into the Prompt box is no longer
+   on screen. If there was one, the failure is reported by a sticky toast, "Workspace not
+   created: prompt copied to the clipboard" (or "...: click to copy the prompt"), whose body is
+   the daemon's error and which holds the prompt the same way (`offerPromptOfFailedCreate`), in
+   place of the usual timed failure toast. A worktree create keeps the sheet open on a failure,
+   prompt and all.
 9. **Progress** (Kelpi addition, issue #294; `WorktreeCreateProgress.tsx`), a worktree create
    only: from the moment Create is pressed, a compact bordered panel under the fields with a
    headline ("Creating the workspace…", "Cancelling…", "Cancelled", "The workspace was not
@@ -1432,7 +1451,10 @@ is the only stop (and takes focus).
 Return submits from anywhere in the sheet, not only from a text field, with one exception: in
 the Prompt text area Return inserts a newline, and ⌘Return (Ctrl+Return off a Mac) submits. A
 Return that ends an IME composition (`isComposing`, or WebKit's keyCode 229) submits nothing in
-any field (`onFormKeyDown`, `packages/client/src/chrome/NewWorkspaceSheet.tsx:648-688`).
+any field (`onFormKeyDown`, `packages/client/src/chrome/NewWorkspaceSheet.tsx`). Likewise an
+Escape that cancels an IME composition (the same two tests) is left to the input method: the
+sheet's capture-phase Escape handler ignores it, so it cannot close the sheet and discard what was
+typed.
 
 ### 10.2 Rename Workspace (300 wide)
 

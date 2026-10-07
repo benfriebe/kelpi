@@ -415,10 +415,18 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
      *
      * Capture phase on the window, the way `QuitConfirmDialog` takes it: a pane's own key
      * handling (or the terminal engine's) must never be able to swallow the way out of a modal.
+     *
+     * Except an Escape that belongs to an input method: while a composition is open (Japanese,
+     * Chinese, Korean input, or macOS's accent menu), Escape cancels the COMPOSITION, and taking
+     * it here would close the sheet and throw away everything typed in it, the Prompt box
+     * included. It is left alone entirely (not even `preventDefault`), so the IME gets it. Both
+     * spellings the Return handler below reads: `isComposing`, and WebKit's keyCode 229 for the
+     * keystroke that ends a composition.
      */
     useEffect(() => {
         const onKeyDown = (event: KeyboardEvent): void => {
             if (event.key !== 'Escape') return;
+            if (event.isComposing || event.keyCode === 229) return;
             event.preventDefault();
             event.stopPropagation();
             if (pickerOpenRef.current) {

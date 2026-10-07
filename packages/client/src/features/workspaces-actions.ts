@@ -13,7 +13,14 @@ import { parseWorktreeProgress } from '../chrome/worktree';
 import type { WorktreeCleanupChoice } from '../chrome/WorktreeCleanupList';
 import { targetWorkspaceIDs, worktreeCleanupToasts, type WorktreeCleanupToast } from '../app/worktree-cleanup';
 import { isOkReply, replyError, replyText, type CommandClient, type CommandReply } from '../connection';
-import { reportAgentStartUnsupported, selectActiveWorkspace, selectVisibleWorkspaceIDs, type KelpiStoreApi } from '../state';
+import {
+    noteAgentCreateSent,
+    offerPromptOfFailedCreate,
+    reportAgentStartUnsupported,
+    selectActiveWorkspace,
+    selectVisibleWorkspaceIDs,
+    type KelpiStoreApi
+} from '../state';
 import type { WorkspacesFeatureLifecycle } from './workspaces';
 
 export interface WorkspacesActionHost {
@@ -241,10 +248,31 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
      * agent that will never appear. (The sheet hides its Agent row over such a daemon, so this is
      * the backstop for a daemon replaced under an open sheet, or a settings snapshot that lied.)
      */
-    const checkAgentEcho = (reply: CommandReply, agent: WorkspaceAgentRequest | undefined): void => {
+    const checkAgentEcho = (reply: CommandReply, agent: WorkspaceAgentRequest | undefined, sentAt: number): void => {
         if (agent === undefined || agentCreateFields(agent).startAgent === undefined) return;
-        if (replyText(reply, 'start_agent') !== undefined) return;
-        reportAgentStartUnsupported(store, agent, replyText(reply, 'workspace_id') ?? null);
+        const workspaceID = replyText(reply, 'workspace_id') ?? null;
+        if (replyText(reply, 'start_agent') !== undefined) {
+            // The launch's own frame comes later; it may copy an undelivered prompt by itself only
+            // for a while after the create was SENT (`AGENT_LAUNCH_AUTO_COPY_MS`, state/agent-launch.ts).
+            if (workspaceID !== null) noteAgentCreateSent(store, workspaceID, sentAt);
+            return;
+        }
+        reportAgentStartUnsupported(store, agent, workspaceID);
+    };
+
+    /**
+     * A plain create that failed. shell-ui.md §10.1: its sheet closed when it was SENT, so a
+     * prompt the user wrote for its agent is no longer on screen anywhere. With one, the failure
+     * is told by the toast that offers the prompt back (`offerPromptOfFailedCreate`: sticky, with
+     * the daemon's error in it) in place of the usual timed failure toast; without one, as every
+     * failed command is. (A worktree create keeps its sheet open on a failure, prompt and all.)
+     */
+    const createFailed = (agent: WorkspaceAgentRequest | undefined, error: string): void => {
+        if (agent !== undefined && agentCreateFields(agent).agentPrompt !== undefined) {
+            offerPromptOfFailedCreate(store, agent, error);
+            return;
+        }
+        notifyFailure('New workspace', error);
     };
 
     const runCreateWorkspace = (
@@ -252,13 +280,14 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
         repoPaths: readonly string[] = [],
         agent?: WorkspaceAgentRequest | undefined
     ): true => {
+        const sentAt = Date.now();
         void promise.then(
             (reply) => {
                 if (!isOkReply(reply)) {
-                    notifyFailure('New workspace', replyError(reply));
+                    createFailed(agent, replyError(reply));
                     return;
                 }
-                checkAgentEcho(reply, agent);
+                checkAgentEcho(reply, agent, sentAt);
                 const created = replyText(reply, 'workspace_id');
                 if (created !== undefined) {
                     activateWorkspaceAndReveal(created);
@@ -284,7 +313,7 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
                 }
             },
             (error: unknown) => {
-                notifyFailure('New workspace', error instanceof Error ? error.message : String(error));
+                createFailed(agent, error instanceof Error ? error.message : String(error));
             }
         );
         return true;
@@ -640,6 +669,7 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
             } = {}
         ): Promise<string | null> {
             const onProgress = worktree.onProgress;
+            const sentAt = Date.now();
             try {
                 const input = {
                     ...(name.trim().length > 0 ? { name: name.trim() } : {}),
@@ -670,7 +700,7 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
                           }
                       }));
                 if (!isOkReply(reply)) return replyError(reply);
-                checkAgentEcho(reply, extras.agent);
+                checkAgentEcho(reply, extras.agent, sentAt);
                 const created = replyText(reply, 'workspace_id');
                 if (created !== undefined) activateWorkspaceAndReveal(created);
                 return null;

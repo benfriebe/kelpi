@@ -23,12 +23,16 @@ export {
 } from './activation';
 
 export {
+    AGENT_CREATE_FAILED_TOAST_ID,
+    AGENT_LAUNCH_AUTO_COPY_MS,
     AGENT_START_UNSUPPORTED_TOAST_ID,
     PROMPT_EXCERPT_CHARS,
     activateToast,
     agentLaunchProblem,
     agentLaunchToastID,
     createAgentLaunchHandler,
+    noteAgentCreateSent,
+    offerPromptOfFailedCreate,
     parseAgentLaunch,
     promptExcerpt,
     reportAgentStartUnsupported,

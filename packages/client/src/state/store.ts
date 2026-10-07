@@ -20,7 +20,7 @@
  */
 
 import { pullRequestsFrom } from '@kelpi/core/git';
-import { applyDomainEvents, type DaemonState, type DomainEvent } from '@kelpi/daemon/store';
+import { applyDomainEvents, parseWorkspaceTicket, type DaemonState, type DomainEvent } from '@kelpi/daemon/store';
 import {
     DEFAULT_WS_CHROME_SETTINGS,
     DEFAULT_WS_SETTINGS,
@@ -65,7 +65,8 @@ function array(value: unknown): unknown[] {
 /**
  * The undo stack never crosses the wire; only its size does (`recentlyClosedCount`). `muted` and
  * `status` are normalized so a mirror of an older daemon, which never sends them, still holds a
- * boolean and a status.
+ * boolean and a status, and `ticket` the same way: absent (an older daemon) or unreadable is null,
+ * never undefined.
  */
 function hydrateWorkspace(raw: unknown): unknown {
     if (!isRecord(raw)) return raw;
@@ -78,6 +79,7 @@ function hydrateWorkspace(raw: unknown): unknown {
         ...raw,
         muted: raw['muted'] === true,
         status: status === 'running' || status === 'waitingForInput' ? status : 'idle',
+        ticket: parseWorkspaceTicket(raw['ticket']),
         childOrder,
         childrenCollapsed: raw['childrenCollapsed'] === true,
         // A daemon older than PR status (workspace-feature.md §11) sends no list: none to draw.

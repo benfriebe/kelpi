@@ -1,6 +1,6 @@
 /**
  * The bindable action list.
- * Spec: docs/config-keybindings.md §4 (66 actions + the `unbind` pseudo-action).
+ * Spec: docs/config-keybindings.md §4 (67 actions + the `unbind` pseudo-action).
  * Raw values are the config-file vocabulary and must not change.
  */
 
@@ -25,6 +25,9 @@ export const KELPI_ACTIONS = [
     'command_palette',
     // Workspaces
     'new_workspace',
+    // ⌘⌥N: the New Workspace sheet with its ticket picker open (docs/integrations.md). Monitor
+    // only for now; a File menu row is a follow-up, and ⇧⌘N is already New Scratchpad.
+    'new_workspace_from_ticket',
     'next_workspace',
     'previous_workspace',
     // ⌃Tab: hold to step back through workspaces in most-recently-used order, release to switch

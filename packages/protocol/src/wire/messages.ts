@@ -336,6 +336,21 @@ export interface WorkspaceCreateMessage {
      * without `start_agent` is an error.
      */
     send_prompt: boolean;
+    /**
+     * Start from a ticket (§6.3, docs/integrations.md): a GitHub issue or pull request URL, or
+     * `owner/name#n`. Raw: neither trimmed nor parsed here (an empty string is absent, §2.2); the handler parses it
+     * with `@kelpi/core/tickets`' `parseTicketRef` and refuses a bad one (`bad-ref`) before any
+     * effect, then resolves it with the daemon's GitHub credential.
+     */
+    ticket?: string | undefined;
+    /**
+     * Apply the ticket's defaults (name, repository, worktree, branch, checkout, update main and,
+     * with `start_agent` but no `agent_prompt`, the rendered prompt) to whatever the request
+     * leaves unsaid. Defaults to true, like `group_defaults`: the CLI leaves it on, and the New
+     * Workspace sheet sends false because it has already shown the defaults and sends the user's
+     * final choice.
+     */
+    ticket_defaults: boolean;
 }
 
 /**

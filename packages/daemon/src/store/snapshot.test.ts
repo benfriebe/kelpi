@@ -91,6 +91,26 @@ describe('toSnapshot', () => {
         });
     });
 
+    it('persists the ticket a workspace was created from, and restores a record without one as none', () => {
+        const ticket = {
+            provider: 'github',
+            kind: 'issue',
+            repo: 'acme/api',
+            number: 7,
+            key: '#7',
+            url: 'https://github.com/acme/api/issues/7',
+            title: 'Crash'
+        } as const;
+        const h = harness();
+        h.dispatch({ type: 'create-workspace', id: W1, paneID: P0, name: '#7 Crash', now: NOW, ticket });
+        expect(toSnapshot(h.state()).workspaces[0]?.ticket).toEqual(ticket);
+        expect(workspaceByID(reload(h.state()), W1)?.ticket).toEqual(ticket);
+        // A record from the legacy importer has no ticket field at all.
+        const { ticket: _dropped, ...legacy } = toSnapshot(h.state()).workspaces[0] ?? { ticket: null };
+        const restored = fromSnapshot({ ...toSnapshot(h.state()), workspaces: [legacy as never] }, { homeDirectory: HOME });
+        expect(workspaceByID(restored, W1)?.ticket).toBeNull();
+    });
+
     it('persists the un-zoomed tree', () => {
         const h = harness(seededState());
         h.dispatch(

@@ -8,6 +8,7 @@
  */
 
 import type { AgentKind, GraftStatus, PaneStatus, PaneType, WorkspaceColor } from '../wire/vocab.js';
+import type { IntegrationErrorCode, TicketKind, TicketProvider, WorkspaceCheckoutMode } from '../ws/integrations.js';
 
 export interface ReplyFailure {
     readonly ok: false;
@@ -224,6 +225,61 @@ export interface WorkspaceCreateReply extends ReplySuccess {
      * prints it so the text is at hand if a prefill falls back with no window to show it.
      */
     readonly prompt_file?: string;
+    /**
+     * The ticket the workspace was created from, echoed whenever the request carried `ticket`
+     * (wire-protocol.md §6.3). A daemon that predates it drops the request field and creates a
+     * plain workspace, so a caller that sent `ticket` and finds no echo knows the workspace WAS
+     * created, from nothing (`kelpi workspace create --from` then says so and exits 1).
+     */
+    readonly ticket?: WorkspaceCreateTicket;
+    /** What the create did with git; present exactly when `ticket` is. */
+    readonly checkout?: WorkspaceCheckoutMode;
+    /**
+     * The ticket file Kelpi wrote into the checkout (`<checkout>/.kelpi/ticket-<number>.md`,
+     * absolute). Absent when none was written; `ticket_file_error` then says why.
+     */
+    readonly ticket_file?: string;
+    /**
+     * Why no ticket file was written (the checkout tracks `.kelpi`, `.kelpi` is a symlink, the
+     * write failed, …). The create still succeeded, and the daemon's own prompt then names only
+     * the ticket's URL: an agent is never pointed at a file Kelpi did not write.
+     */
+    readonly ticket_file_error?: string;
+    /**
+     * Things the user should know that did not stop the create: a pull request's head that could
+     * not be fast-forwarded onto the local branch (force-pushed), a fork that no longer exists, …
+     */
+    readonly warnings?: readonly string[];
+}
+
+/**
+ * `reply.ticket` (§6.3): the same seven fields the workspace keeps (`WorkspaceState.ticket`), so a
+ * caller reads one shape whether it asked the reply or the mirror.
+ */
+export interface WorkspaceCreateTicket {
+    readonly provider: TicketProvider;
+    readonly kind: TicketKind;
+    /** `owner/name`. */
+    readonly repo: string;
+    /** Null only for a provider whose tickets have no number (none yet). */
+    readonly number: number | null;
+    /** `#418`. */
+    readonly key: string;
+    readonly url: string;
+    readonly title: string;
+}
+
+/**
+ * A `workspace-create` refusal. A create that named a `ticket` and failed because of it also
+ * carries `ticket_error` (one of `INTEGRATION_ERROR_CODES`, docs/integrations.md) and that code's
+ * extras, so the CLI and the sheet can say "connect GitHub", "authorize SSO" or "try again in N s"
+ * rather than only print the message.
+ */
+export interface WorkspaceCreateFailure extends ReplyFailure {
+    readonly ticket_error?: IntegrationErrorCode;
+    readonly retry_after_s?: number;
+    readonly sso_url?: string;
+    readonly settings_url?: string;
 }
 
 export interface WorkspaceDeleteReply extends ReplySuccess {
@@ -600,6 +656,7 @@ export interface PermissionRequestReply extends ReplySuccess {
 export type WireReply =
     | ReplyFailure
     | WorkspaceDeleteFailure
+    | WorkspaceCreateFailure
     | PaneMutationReply
     | PaneSendReply
     | PaneSendKeyReply

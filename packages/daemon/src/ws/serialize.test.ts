@@ -47,6 +47,26 @@ function stateWithClosedPane(): DaemonState {
     };
 }
 
+describe('a workspace created from a ticket', () => {
+    it('sends the ticket verbatim in the snapshot and in workspace-upserted', () => {
+        const ticket = {
+            provider: 'github',
+            kind: 'pr',
+            repo: 'acme/api',
+            number: 418,
+            key: '#418',
+            url: 'https://github.com/acme/api/pull/418',
+            title: 'Retry login on 401'
+        } as const;
+        const workspace = makeWorkspaceState({ id: W1, name: '#418', slug: 'x', color: 'blue', createdAt: 1, ticket });
+        expect(serializeWorkspace(workspace)['ticket']).toEqual(ticket);
+        const { panes: _panes, parkedPanes: _parked, layout: _layout, zoomedPaneID: _zoom, savedLayout: _saved, currentLayoutIndex: _index, focusedPaneID: _focus, focusHistory: _history, isSyncInputActive: _sync, syncInputExcluded: _excluded, ...envelope } = workspace;
+        const event = serializeDomainEvent({ kind: 'workspace-upserted', id: W1, workspace: envelope });
+        expect((event['workspace'] as Record<string, unknown>)['ticket']).toEqual(ticket);
+        expect(serializeWorkspace(makeWorkspaceState({ id: W1, name: 'plain', slug: 'p', color: 'blue', createdAt: 1 }))['ticket']).toBeNull();
+    });
+});
+
 describe('serializeState', () => {
     it('drops the daemon host home directory', () => {
         const serialized = serializeState(seededState());

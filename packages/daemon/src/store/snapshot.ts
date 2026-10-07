@@ -31,7 +31,8 @@ import type {
     RepoAssociation,
     WebPaneState,
     WorkspaceGroup,
-    WorkspaceState
+    WorkspaceState,
+    WorkspaceTicket
 } from './types.js';
 
 /** Bumped only when the snapshot shape itself changes (independent of DB migrations). */
@@ -83,6 +84,11 @@ export interface PersistedWorkspace {
      * snapshot built by the legacy importer carries none; absent restores as idle.
      */
     readonly status?: PaneStatus | undefined;
+    /**
+     * `workspace.ticketJSON` (v28). Optional because a snapshot built by the legacy importer (a
+     * Swift `nex.db` never had the column) carries none; absent restores as no ticket.
+     */
+    readonly ticket?: WorkspaceTicket | null | undefined;
     /** The un-zoomed tree (a zoomed workspace persists `savedLayout`). */
     readonly layout: PaneLayout;
     readonly focusedPaneID: string | null;
@@ -178,6 +184,7 @@ function persistWorkspace(workspace: WorkspaceState): PersistedWorkspace {
         profileName: workspace.profileName,
         muted: workspace.muted,
         status: workspace.status,
+        ticket: workspace.ticket,
         layout: workspace.savedLayout ?? workspace.layout,
         focusedPaneID: workspace.focusedPaneID,
         createdAt: workspace.createdAt,
@@ -354,6 +361,7 @@ export function fromSnapshot(
             profileName: record.profileName,
             muted: record.muted === true,
             status: record.status ?? 'idle',
+            ticket: record.ticket ?? null,
             panes,
             parkedPanes: (record.panes ?? []).filter(pane => pane.parked).map(restorePane),
             layout: record.layout,

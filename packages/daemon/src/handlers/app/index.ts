@@ -48,15 +48,28 @@ export function createAppHandlers(options: AppHandlerOptions = {}): AppHandlerTa
     ]);
 }
 
-export { fail, handlerTable, ok, resolveAppDeps } from './context.js';
+export {
+    fail,
+    handlerTable,
+    INERT_TICKET_SERVICE,
+    integrationFailure,
+    ok,
+    resolveAppDeps,
+    ticketCreateFailure,
+    TicketServiceError
+} from './context.js';
 export type {
     AppContext,
     AppDeps,
     AppHandler,
     AppHandlerOptions,
     AppHandlerTable,
+    ExistingTicketWorkspace,
     PermissionDecisionCall,
+    ResolvedPullRequest,
+    ResolvedTicket,
     SpawnPaneRequest,
+    TicketService,
     WorktreeCreateRun,
     WorktreeCreator
 } from './context.js';

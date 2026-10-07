@@ -79,6 +79,7 @@ export const ACTION_CATALOG: readonly ActionEntry[] = [
     { action: 'command_palette', category: 'Navigation', label: 'Command Palette' },
 
     { action: 'new_workspace', category: 'Workspaces', label: 'New Workspace' },
+    { action: 'new_workspace_from_ticket', category: 'Workspaces', label: 'New Workspace from Ticket' },
     { action: 'next_workspace', category: 'Workspaces', label: 'Next Workspace' },
     { action: 'previous_workspace', category: 'Workspaces', label: 'Previous Workspace' },
     { action: 'next_recent_workspace', category: 'Workspaces', label: 'Next Recent Workspace' },

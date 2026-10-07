@@ -20,8 +20,8 @@ describe('the action catalog', () => {
         expect(new Set(catalogued).size).toBe(catalogued.length);
     });
 
-    it('is the 66 actions the spec counts', () => {
-        expect(ACTION_CATALOG).toHaveLength(66);
+    it('is the 67 actions the spec counts', () => {
+        expect(ACTION_CATALOG).toHaveLength(67);
     });
 
     it('lists the recent-workspace switcher under Workspaces', () => {
@@ -79,7 +79,7 @@ describe('the action catalog', () => {
         const visible = VISIBLE_CATEGORIES.flatMap((category) => actionsInCategory(category));
         expect(visible.filter((action) => action.startsWith('web_'))).toEqual([]);
         expect(actionsInCategory('Web Pane')).toHaveLength(11);
-        expect(visible).toHaveLength(66 - 11);
+        expect(visible).toHaveLength(67 - 11);
     });
 
     it('uses §4’s display names, including the ones that are not the raw value', () => {

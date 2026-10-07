@@ -67,7 +67,7 @@ import type {
     Repo,
     RepoAssociation
 } from '../store/index.js';
-import { PERSISTED_SNAPSHOT_VERSION } from '../store/index.js';
+import { decodeWorkspaceTicketJSON, encodeWorkspaceTicketJSON, PERSISTED_SNAPSHOT_VERSION } from '../store/index.js';
 import type { SqlRow } from './adapter.js';
 
 // ---------------------------------------------------------------------------
@@ -93,6 +93,8 @@ export interface WorkspaceRow {
     readonly childrenCollapsed: number;
     /** agent-lifecycle §5.10: the pane status vocabulary, set by hand on the workspace. */
     readonly status: string;
+    /** v28: the ticket the workspace was created from, as JSON; NULL = none (§2.1). */
+    readonly ticketJSON: string | null;
 }
 
 export interface PaneRow {
@@ -361,7 +363,8 @@ export function encodeWorkspaceRow(workspace: PersistedWorkspace, sortOrder: num
                 ? null
                 : encodeChildOrderJSON(workspace.childOrder),
         childrenCollapsed: workspace.childrenCollapsed === true ? 1 : 0,
-        status: workspace.status ?? 'idle'
+        status: workspace.status ?? 'idle',
+        ticketJSON: encodeWorkspaceTicketJSON(workspace.ticket)
     };
 }
 
@@ -567,6 +570,8 @@ export function decodeWorkspaceRow(row: SqlRow): DecodedWorkspaceScalars | null 
             // A hand-written "default" row means the same thing as NULL (§2.1).
             profileName: normalizedAssignment(optionalText(row, 'profileName')),
             muted: boolColumn(row, 'muted') ?? false,
+            // A pre-v28 row has no column, and a row that does not parse is no ticket (§9.5).
+            ticket: decodeWorkspaceTicketJSON(textColumn(row, 'ticketJSON')),
             layout: decodePaneLayoutJSON(textColumn(row, 'layoutJSON')),
             focusedPaneID: parseUUID(textColumn(row, 'focusedPaneID')),
             createdAt: timestampColumn(row, 'createdAt'),

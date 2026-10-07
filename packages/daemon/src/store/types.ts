@@ -29,7 +29,7 @@ import type {
     PredefinedLayoutKind,
     SplitDirection
 } from '@kelpi/core/layout';
-import type { WorkspaceColor } from '@kelpi/protocol';
+import type { TicketKind, TicketProvider, WorkspaceColor } from '@kelpi/protocol';
 
 export type { AgentKind, Direction, DropZone, IconRef, Pane, PaneLayout, PaneStatus, PaneType };
 export type { PredefinedLayoutKind, SidebarID, SplitDirection, WebTab, WorkspaceColor };
@@ -124,6 +124,31 @@ export interface LabelPreset {
     readonly textColor: LabelColor | null;
 }
 
+/**
+ * The ticket a workspace was created from (docs/integrations.md; `workspace-create`'s `ticket`,
+ * wire-protocol.md §6.3): enough to name it and link to it, never its body. Persisted as one JSON
+ * column (`workspace.ticketJSON`, migration v28) and mirrored to clients verbatim, where the
+ * Inspector links it and `ticket-resolve` finds the workspaces a ticket is already open in.
+ * Every string was cleaned when the workspace was created (`@kelpi/core/tickets`); reading one
+ * back goes through `parseWorkspaceTicket`, which drops a record it cannot trust whole.
+ * Set by `create-workspace` only; nothing edits it afterwards.
+ */
+export interface WorkspaceTicket {
+    /** `linear` is reserved: a stored ticket names its provider, so a later daemon's row reads back. */
+    readonly provider: TicketProvider;
+    readonly kind: TicketKind;
+    /** `owner/name` for GitHub. */
+    readonly repo: string;
+    /** Null only for a provider whose tickets have no number (none yet). */
+    readonly number: number | null;
+    /** `#418`. */
+    readonly key: string;
+    /** The ticket's page (`https://…`). */
+    readonly url: string;
+    /** As it was when the workspace was created; not kept in step with the ticket. */
+    readonly title: string;
+}
+
 /** Per-workspace state (§1.9). Fields flagged TRANSIENT never reach `PersistedSnapshot`. */
 export interface WorkspaceState {
     readonly id: string;
@@ -141,6 +166,8 @@ export interface WorkspaceState {
      * to reset it for. Only a visit clears it, and only `waitingForInput`.
      */
     readonly status: PaneStatus;
+    /** The ticket it was created from, or null (`WorkspaceTicket`). */
+    readonly ticket: WorkspaceTicket | null;
     /** Visible panes, append order. */
     readonly panes: readonly Pane[];
     /** TRANSIENT: off-layout panes whose PTYs stay alive (`kelpi open --here` sources). */
@@ -284,6 +311,8 @@ export type DomainAction =
            * dispatcher has always meant; only the wire handler passes false.
            */
           readonly focus?: boolean | undefined;
+          /** The ticket it is created from (`workspace-create`'s `ticket`); absent = none. */
+          readonly ticket?: WorkspaceTicket | null | undefined;
       }
     | { readonly type: 'delete-workspace'; readonly id: string }
     | { readonly type: 'delete-workspaces'; readonly ids: readonly string[] }
@@ -939,6 +968,7 @@ export interface NewWorkspaceFields {
     readonly profileName?: string | null | undefined;
     readonly muted?: boolean | undefined;
     readonly status?: PaneStatus | undefined;
+    readonly ticket?: WorkspaceTicket | null | undefined;
     readonly labels?: readonly string[] | undefined;
     readonly panes?: readonly Pane[] | undefined;
     readonly layout?: PaneLayout | undefined;
@@ -961,6 +991,7 @@ export function makeWorkspaceState(fields: NewWorkspaceFields): WorkspaceState {
         profileName: fields.profileName ?? null,
         muted: fields.muted ?? false,
         status: fields.status ?? 'idle',
+        ticket: fields.ticket ?? null,
         panes: fields.panes ?? [],
         parkedPanes: [],
         layout: fields.layout ?? { kind: 'empty' },

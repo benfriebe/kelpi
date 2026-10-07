@@ -151,6 +151,7 @@ function createWorkspace(
         profileName: normalizedAssignment(action.profileName ?? null),
         muted: action.muted ?? false,
         icon: action.icon ?? null,
+        ticket: action.ticket ?? null,
         labels: action.labels ?? [],
         panes: [pane],
         layout: leaf(pane.id),

@@ -3442,6 +3442,9 @@ function Shell(props: AppProps): ReactElement {
             toggle_status_bar: () => windowArrangement.toggleBand('statusbar'),
             toggle_bottom_panel: () => windowArrangement.toggleBand('panel.bottom'),
             new_workspace: () => act.newWorkspace(),
+            // ⌘⌥N (docs/integrations.md). Until the sheet has its ticket picker this opens the
+            // same sheet ⌘N does, rather than being a chord that does nothing.
+            new_workspace_from_ticket: () => act.newWorkspace(),
             next_workspace: () => act.switchRelative(1),
             previous_workspace: () => act.switchRelative(-1),
             next_recent_workspace: ({ event }) => stepRecent(1, event),

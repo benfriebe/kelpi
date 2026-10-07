@@ -161,6 +161,26 @@ describe('workspace creation', () => {
         expect(h.state()).toBe(before);
     });
 
+    it('keeps the ticket a workspace is created from, and none otherwise', () => {
+        const ticket = {
+            provider: 'github',
+            kind: 'pr',
+            repo: 'acme/api',
+            number: 418,
+            key: '#418',
+            url: 'https://github.com/acme/api/pull/418',
+            title: 'Retry login on 401'
+        } as const;
+        const h = harness();
+        h.dispatch(create(W1, 'alpha'), create(W2, '#418 Retry login on 401', { ticket }), create(W3, 'gamma', { ticket: null }));
+        expect(workspaceByID(h.state(), W1)?.ticket).toBeNull();
+        expect(workspaceByID(h.state(), W2)?.ticket).toEqual(ticket);
+        expect(workspaceByID(h.state(), W3)?.ticket).toBeNull();
+        // A rename leaves the link alone: the ticket is where the workspace came from.
+        h.dispatch({ type: 'rename-workspace', id: W2, name: 'login work' });
+        expect(workspaceByID(h.state(), W2)?.ticket).toEqual(ticket);
+    });
+
     it('places near the previously active workspace when asked', () => {
         const h = harness(seeded());
         h.dispatch({ type: 'set-active-workspace', id: W1, now: NOW });

@@ -78,6 +78,7 @@ const STEP_STATUSES: readonly WorktreeCreateStepStatus[] = ['pending', 'running'
 
 /** What each step is called in the sheet's checklist (graft-git.md §8.5.1). */
 export const WORKTREE_STEP_LABELS: Readonly<Record<WorktreeCreateStepID, string>> = {
+    ticket: 'Look up the ticket',
     'resolve-default-branch': 'Find the default branch',
     fetch: 'Fetch the latest main',
     'worktree-add': 'Create the worktree',

@@ -78,6 +78,7 @@ export {
 export type {
     WorktreeProgressSnapshot,
     WorktreeStepID,
+    WorktreeStepPlan,
     WorktreeStepSink,
     WorktreeStepState,
     WorktreeStepStatus,

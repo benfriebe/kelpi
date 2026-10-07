@@ -18,6 +18,7 @@
 import { homedir } from 'node:os';
 import { statSync } from 'node:fs';
 import type { PtyManager, PtySpawnOptions } from '../seams.js';
+import { applyShellIntegration, type ShellIntegration } from './shell-integration.js';
 import { nodePtySpawner } from './spawner.js';
 import type { PtyProcessHandle, PtySpawner } from './types.js';
 
@@ -59,6 +60,11 @@ export interface PtyManagerOptions {
      * shell's `path_helper` would put system `PATH` entries ahead of their helper directory.
      */
     readonly loginShell?: boolean | undefined;
+    /**
+     * Where an interactive zsh is pointed so it reports its directory (`shell-integration.ts`).
+     * Absent = no injection, which is also what every other shell gets.
+     */
+    readonly shellIntegration?: ShellIntegration | undefined;
 }
 
 /** Widened seam: everything `PtyManager` promises plus read-only introspection. */
@@ -174,6 +180,7 @@ class PtyManagerImpl implements KelpiPtyManager {
     private readonly isDirectory: ((path: string) => boolean) | undefined;
     private readonly onError: ((paneID: string, error: unknown) => void) | undefined;
     private readonly shellArgs: readonly string[];
+    private readonly shellIntegration: ShellIntegration | undefined;
 
     constructor(options: PtyManagerOptions = {}) {
         this.spawner = options.spawner ?? nodePtySpawner;
@@ -184,6 +191,7 @@ class PtyManagerImpl implements KelpiPtyManager {
         this.isDirectory = options.isDirectory;
         this.onError = options.onError;
         this.shellArgs = options.loginShell === false ? [] : LOGIN_SHELL_ARGS;
+        this.shellIntegration = options.shellIntegration;
     }
 
     // -- lifecycle ---------------------------------------------------------
@@ -205,7 +213,11 @@ class PtyManagerImpl implements KelpiPtyManager {
         // as libghostty runs `ghostty_surface_config_s.command`. Empty/whitespace is ignored so
         // a blank field can never turn an interactive pane into `sh -c ''` (an instant exit).
         const command = opts.command?.trim();
-        const args = command === undefined || command === '' ? [...this.shellArgs] : ['-c', command];
+        const interactive = command === undefined || command === '';
+        const args = interactive ? [...this.shellArgs] : ['-c', command];
+        if (interactive && this.shellIntegration !== undefined) {
+            applyShellIntegration(file, env, this.shellIntegration);
+        }
 
         let proc: PtyProcessHandle;
         try {

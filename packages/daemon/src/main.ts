@@ -215,6 +215,9 @@ Environment:
                      (Kelpi.app sets ~/Library/Application Support/Kelpi/logs/kelpid.log)
   KELPID_TERMINAL_HOST 0 = run PTYs in-process; shells then die with the daemon (default: terminal host)
   KELPID_LOGIN_SHELL   0 = start panes as plain shells, not login shells (sandboxes; default: login)
+  KELPID_SHELL_INTEGRATION
+                     0 = do not inject the zsh integration that reports a pane's
+                     directory (OSC 7); splits then open where the pane started
   KELPID_VERSION       Override the reported version (packaging)
   KELPID_BUILD         Override the reported build (packaging)
   KELPID_ENTRY         Executable/script re-spawned by \`kelpid start\` when detaching

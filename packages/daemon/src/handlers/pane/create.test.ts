@@ -286,3 +286,98 @@ describe('pane-create', () => {
         });
     });
 });
+
+describe("a split opens where the source's shell really is", () => {
+    /** A lookup the test answers by hand, so it can look at the state while the split waits. */
+    function deferredLookup() {
+        const asked: string[] = [];
+        let settle: { resolve: (value: string | null) => void; reject: (error: Error) => void } | undefined;
+        const lookup = (paneID: string): Promise<string | null> => {
+            asked.push(paneID);
+            return new Promise((resolve, reject) => {
+                settle = { resolve, reject };
+            });
+        };
+        return {
+            asked,
+            lookup,
+            answer: async (value: string | null) => {
+                settle?.resolve(value);
+                await new Promise((resolve) => setImmediate(resolve));
+            },
+            fail: async () => {
+                settle?.reject(new Error('lsof timed out'));
+                await new Promise((resolve) => setImmediate(resolve));
+            }
+        };
+    }
+
+    function seededWith(lookup: (paneID: string) => Promise<string | null>) {
+        const h = harness({ minted: [NEW], liveWorkingDirectory: lookup });
+        seedWorkspace(h, { id: W1, name: 'dev', paneID: P1, path: '/repo' });
+        return h;
+    }
+
+    it('waits for the answer, then acks a pane that already exists there', async () => {
+        const live = deferredLookup();
+        const h = seededWith(live.lookup);
+        const reply = h.run({ command: 'pane-split', pane_id: P1 });
+
+        expect(live.asked).toEqual([P1]);
+        expect(reply.payloads).toEqual([]);
+        expect(h.workspace(W1).panes.map((pane) => pane.id)).toEqual([P1]);
+
+        await live.answer('/repo/packages/daemon');
+        expect(reply.only()).toEqual({ ok: true, pane_id: NEW, workspace_id: W1, workspace_name: 'dev' });
+        expect(h.workspace(W1).panes[1]?.workingDirectory).toBe('/repo/packages/daemon');
+        expect(h.pty.spawns[0]?.cwd).toBe('/repo/packages/daemon');
+        // Only the new pane: the source keeps what it had.
+        expect(h.workspace(W1).panes[0]?.workingDirectory).toBe('/repo');
+    });
+
+    it('inherits the stored directory when the OS has no answer or the lookup fails', async () => {
+        for (const settle of ['none', 'fail'] as const) {
+            const live = deferredLookup();
+            const h = seededWith(live.lookup);
+            const reply = h.run({ command: 'pane-split', pane_id: P1 });
+            if (settle === 'none') await live.answer(null);
+            else await live.fail();
+            expect(reply.only()).toMatchObject({ ok: true, pane_id: NEW });
+            expect(h.workspace(W1).panes[1]?.workingDirectory).toBe('/repo');
+        }
+    });
+
+    it('never asks for a split given --path, and answers it at once', () => {
+        const lookup = vi.fn(() => Promise.resolve('/elsewhere'));
+        const h = seededWith(lookup);
+        const reply = h.run({ command: 'pane-split', pane_id: P1, path: '/tmp/work' });
+
+        expect(lookup).not.toHaveBeenCalled();
+        expect(reply.only()).toMatchObject({ ok: true, pane_id: NEW });
+        expect(h.workspace(W1).panes[1]?.workingDirectory).toBe('/tmp/work');
+    });
+
+    it('routes again after the wait: a source closed meanwhile is an error, not a split', async () => {
+        const live = deferredLookup();
+        const h = seededWith(live.lookup);
+        seedSplit(h, { workspaceID: W1, sourcePaneID: P1, paneID: P2 });
+        const reply = h.run({ command: 'pane-split', pane_id: P1 });
+
+        h.store.dispatch({ type: 'close-pane', workspaceID: W1, paneID: P1 });
+        await live.answer('/repo/sub');
+
+        expect(reply.only()).toMatchObject({ ok: false });
+        expect(h.workspace(W1).panes.map((pane) => pane.id)).toEqual([P2]);
+        expect(h.pty.spawns).toEqual([]);
+    });
+
+    it('applies to pane-create too, which splits the source beside it', async () => {
+        const live = deferredLookup();
+        const h = seededWith(live.lookup);
+        const reply = h.run({ command: 'pane-create', pane_id: P1 });
+
+        await live.answer('/repo/sub');
+        expect(reply.only()).toMatchObject({ ok: true, pane_id: NEW });
+        expect(h.workspace(W1).panes[1]?.workingDirectory).toBe('/repo/sub');
+    });
+});

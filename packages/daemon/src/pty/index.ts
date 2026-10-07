@@ -47,5 +47,20 @@ export type {
     PaneSpawnGateOptions
 } from './spawn-gate.js';
 
+export {
+    PROCESS_CWD_TIMEOUT_MS,
+    chooseSplitDirectory,
+    createProcessCwdReader
+} from './process-cwd.js';
+export type { ProcessCwdReader, ProcessCwdReaderOptions, SplitDirectoryFs } from './process-cwd.js';
+
+export {
+    SHELL_INTEGRATION_ENV,
+    ZSH_ZDOTDIR_ENV,
+    applyShellIntegration,
+    installShellIntegration
+} from './shell-integration.js';
+export type { ShellIntegration } from './shell-integration.js';
+
 export { loadNodePty, nodePtySpawner } from './spawner.js';
 export type { PtyProcessHandle, PtySpawnRequest, PtySpawner } from './types.js';

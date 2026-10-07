@@ -280,4 +280,30 @@ describe('kelpid end to end', () => {
         const reply = await request(paths.socketPath, { command: 'graft-status' });
         expect(reply).toEqual({ ok: true, sessions: [] });
     }, 30_000);
+
+    it("splits a shell that never reported its cd where the shell is, not where it started", async () => {
+        const paths = scratch();
+        await boot(paths);
+        const deep = path.join(paths.home, 'deep dir');
+        fs.mkdirSync(deep);
+
+        await request(paths.socketPath, { command: 'workspace-create', name: 'splits' });
+        const listPanes = async (): Promise<Reply[]> =>
+            (await request(paths.socketPath, { command: 'pane-list', workspace: 'splits' }))['panes'] as Reply[];
+        const sourceID = (await listPanes())[0]?.['id'] as string;
+
+        // /bin/sh sends no OSC 7, so the stored directory stays where the pane started.
+        await request(paths.socketPath, { command: 'pane-send', target: sourceID, text: `cd '${deep}' && echo CD-$((40+2))` });
+        await eventually(
+            () => request(paths.socketPath, { command: 'pane-capture', target: sourceID, scrollback: true }),
+            (reply) => /^CD-42$/m.test(String(reply['text']))
+        );
+        expect((await listPanes())[0]?.['working_directory']).toBe(paths.home);
+
+        const split = await request(paths.socketPath, { command: 'pane-split', target: sourceID });
+        expect(split['ok']).toBe(true);
+        const child = (await listPanes()).find((pane) => pane['id'] === split['pane_id']);
+        // The OS answers with the physical path (/private/tmp on macOS).
+        expect(fs.realpathSync(String(child?.['working_directory']))).toBe(fs.realpathSync(deep));
+    }, 30_000);
 });

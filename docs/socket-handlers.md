@@ -389,11 +389,21 @@ else:
 Then (defensive re-lookup): if the workspace vanished, `error("workspace not found")`.
 
 Side effects & reply:
+0. **Without `path`, ask where the source's shell is first.** A split inherits its source's
+   directory, and the stored `workingDirectory` only moves on OSC 7, which a shell without an
+   integration never sends. So the handler asks the OS for the source shell's cwd
+   (`liveWorkingDirectory`, `packages/daemon/src/pty/process-cwd.ts`: `/proc/<pid>/cwd` on
+   Linux, `lsof -a -p <pid> -d cwd -Fn` on macOS, at most 1 s). The stored directory is kept
+   when it resolves to the same place (it is the logical path), and when the source is not a
+   shell pane, has no live process, or the OS does not answer. After the wait the message is
+   routed again: a source or workspace gone in the meantime replies with that error, and a
+   source that changed inherits its own stored directory. Steps 1 to 4 then run back to back.
+   With `path`, nothing is asked and nothing waits.
 1. Mint `newID` (fresh UUID) up front.
 2. Only when `focus` is true: set focus to the resolved source pane, so the focus history
    reads source then new pane and closing the new pane hands focus back to where it came
    from. A background split skips this step.
-3. **Reply immediately** (before the pane exists):
+3. **Reply** (before the pane exists, but in the same tick as the dispatch below):
 
 ```json
 {"ok": true, "pane_id": "<newID>", "workspace_id": "<ws uuid>", "workspace_name": "dev", "label": "worker-1"}
@@ -403,7 +413,8 @@ Side effects & reply:
 
 4. Dispatch the split of `source`: with `path` → split-at-path with the new pane's cwd set to
    `path` (and `sourcePaneID = source`, so it no longer depends on the focused pane);
-   without → a plain split inheriting `source`'s cwd. Both carry `direction ?? horizontal`,
+   without → a plain split inheriting `source`'s cwd (step 0's answer when there was one).
+   Both carry `direction ?? horizontal`,
    `label = name`, `focus`, and the pre-minted `newID` so the created pane really gets the
    acked id. The reducer focuses the new pane only when `focus` is true.
 
@@ -416,9 +427,10 @@ three-way routing as `pane-split`, except the
 outside-caller error string is
 `"pane create requires --target or --workspace when called from outside a Kelpi pane"`.
 
-After the defensive workspace check:
+After the defensive workspace check, and after §4.1's step 0 when the create will split a
+source without `path` (an empty workspace asks nothing):
 
-1. Mint `newID`; **reply immediately** with the same payload shape as `pane-split`.
+1. Mint `newID`; **reply** with the same payload shape as `pane-split`.
 2. `source = resolvedSource ?? ws.focusedPaneID ?? ws.panes.first?.id`.
 3. If `source == null` (**empty workspace**): dispatch create-first-pane carrying `newID`,
    `label = name`, `workingDirectory = path` — this is the route a split-only handler
@@ -426,7 +438,8 @@ After the defensive workspace check:
    workspace takes its focus whatever `focus` says: there is no focused pane to keep.
 4. Otherwise (populated workspace): focus `source` only when `focus` is true; with `path` →
    split-at-path of `source` (default horizontal) with `label`/`newID`; without → plain
-   horizontal split of `source` with `label`/`newID`. Background as in §4.1.
+   horizontal split of `source` with `label`/`newID`, in step 0's directory when there was
+   one. Background as in §4.1.
 
 ### 4.3 `pane-close` → handlePaneClose
 

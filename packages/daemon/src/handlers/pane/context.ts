@@ -115,4 +115,12 @@ export interface PaneHandlerContext
      */
     readonly onLog?: ((message: string) => void) | undefined;
     readonly spawn?: PaneSpawnDefaults | undefined;
+    /**
+     * The directory a split of this pane should open in, asked of its live shell
+     * (`pty/process-cwd.ts`): the stored `workingDirectory` only moves on OSC 7, which a shell
+     * without an integration never sends. Null = no better answer than the stored one (not a
+     * shell pane, no live process, the OS would not say). Unset, as in every handler test, a
+     * split copies the stored directory without waiting.
+     */
+    readonly liveWorkingDirectory?: ((paneID: string) => Promise<string | null>) | undefined;
 }

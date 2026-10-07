@@ -14,9 +14,14 @@
  * agent in one pane spawning workers must not pull the keyboard out of the pane the user is
  * typing in, so a background create never dispatches `focus-pane` and names its source on the
  * split instead. The window's own gestures and `kelpi pane split --focus` send `focus: true`.
+ *
+ * A split that inherits its source's directory first asks the source's shell where it really
+ * is (`routeThenRun`), because the stored directory only moves on OSC 7. That lookup is the one
+ * wait on these paths and it comes before the mint, so the ack still names a pane that exists.
  */
 
 import { resolveWorkspaceStrict } from '@kelpi/core/resolve';
+import type { PaneCreateMessage, PaneSplitMessage } from '@kelpi/protocol';
 
 import type { CommandHandler, ReplyHandle } from '../../seams.js';
 import { resolveStateOf, workspaceByID, type SplitDirection, type WorkspaceState } from '../../store/index.js';
@@ -42,6 +47,13 @@ interface CreationRoute {
 
 type RouteResult = { readonly ok: true; readonly route: CreationRoute } | { readonly ok: false; readonly error: string };
 
+interface CreationFields {
+    readonly pane_id?: string | undefined;
+    readonly target?: string | undefined;
+    readonly workspace?: string | undefined;
+    readonly path?: string | undefined;
+}
+
 /**
  * §4.1 routing precedence, identical for both verbs:
  *
@@ -50,11 +62,7 @@ type RouteResult = { readonly ok: true; readonly route: CreationRoute } | { read
  *   Otherwise `--target`/`KELPI_PANE_ID` go through `resolvePaneTarget` (which scopes a label
  *   by `--workspace`). With none of the three the caller is outside Kelpi and gets a usage error.
  */
-function routeCreation(
-    ctx: PaneHandlerContext,
-    fields: { pane_id?: string | undefined; target?: string | undefined; workspace?: string | undefined },
-    verb: CreationVerb
-): RouteResult {
+function routeCreation(ctx: PaneHandlerContext, fields: CreationFields, verb: CreationVerb): RouteResult {
     const state = ctx.store.getState();
     const filter = fields.workspace;
 
@@ -89,6 +97,50 @@ function routeCreation(
     };
 }
 
+/**
+ * Route, and when the split will inherit its source's directory, find out where the source's
+ * shell really is first (`ctx.liveWorkingDirectory`). `run` gets the route and that directory
+ * (undefined = inherit the stored one).
+ *
+ * Only an inheriting split waits: `--path` names its own directory, and with no seam (every
+ * handler test) or no source there is nothing to ask. After the wait the message is routed
+ * again, so a pane or workspace that went away in the meantime is an error rather than a split
+ * of something gone, and a source that changed (focus moved) inherits its own stored directory.
+ */
+function routeThenRun(
+    ctx: PaneHandlerContext,
+    fields: CreationFields,
+    verb: CreationVerb,
+    reply: ReplyHandle | null,
+    run: (route: CreationRoute, inheritedDirectory: string | undefined) => void
+): void {
+    const routed = routeCreation(ctx, fields, verb);
+    if (!routed.ok) {
+        sendError(reply, routed.error);
+        return;
+    }
+    const asked = routed.route.sourcePaneID;
+    const lookup = ctx.liveWorkingDirectory;
+    if (fields.path !== undefined || asked === null || lookup === undefined) {
+        run(routed.route, undefined);
+        return;
+    }
+    void lookup(asked)
+        .catch(() => null)
+        .then((directory) => {
+            const again = routeCreation(ctx, fields, verb);
+            if (!again.ok) {
+                sendError(reply, again.error);
+                return;
+            }
+            const inherited = again.route.sourcePaneID === asked ? directory ?? undefined : undefined;
+            run(again.route, inherited);
+        })
+        .catch((error: unknown) => {
+            sendError(reply, error instanceof Error ? error.message : String(error));
+        });
+}
+
 /** The shared ack: the pre-minted id, the destination workspace, and `--name` when given. */
 function ackCreation(
     reply: ReplyHandle | null,
@@ -120,7 +172,10 @@ function focusSourceIfFocusing(
     ctx.store.dispatch({ type: 'focus-pane', workspaceID, paneID: sourcePaneID });
 }
 
-/** The split both verbs end in: at `path` when given, else inheriting the source's directory. */
+/**
+ * The split both verbs end in: at `path` when given, else in the source's live directory when
+ * one was found, else inheriting the source's stored directory.
+ */
 function dispatchSplit(
     ctx: PaneHandlerContext,
     split: {
@@ -129,28 +184,36 @@ function dispatchSplit(
         readonly sourcePaneID: string;
         readonly direction: SplitDirection;
         readonly path: string | undefined;
+        readonly inheritedDirectory: string | undefined;
         readonly label: string | null;
         readonly now: number;
         readonly focus: boolean;
     }
 ): void {
-    const { path, ...common } = split;
+    const { path, inheritedDirectory, ...common } = split;
     if (path !== undefined) {
         ctx.store.dispatch({ type: 'split-pane-at-path', ...common, path });
     } else {
-        ctx.store.dispatch({ type: 'split-pane', ...common });
+        ctx.store.dispatch({ type: 'split-pane', ...common, workingDirectory: inheritedDirectory });
     }
 }
 
 export const handlePaneSplit: CommandHandler<PaneHandlerContext> = (msg, ctx, reply) => {
     if (msg.command !== 'pane-split') return;
-    const routed = routeCreation(ctx, msg, 'split');
-    if (!routed.ok) {
-        sendError(reply, routed.error);
-        return;
-    }
-    const { workspace } = routed.route;
-    const sourcePaneID = routed.route.sourcePaneID;
+    routeThenRun(ctx, msg, 'split', reply, (route, inheritedDirectory) => {
+        splitRouted(msg, ctx, reply, route, inheritedDirectory);
+    });
+};
+
+function splitRouted(
+    msg: PaneSplitMessage,
+    ctx: PaneHandlerContext,
+    reply: ReplyHandle | null,
+    route: CreationRoute,
+    inheritedDirectory: string | undefined
+): void {
+    const { workspace } = route;
+    const sourcePaneID = route.sourcePaneID;
     /* c8 ignore next 5 -- unreachable: every `split` route either resolves a source or errors */
     if (sourcePaneID === null) {
         sendError(reply, 'workspace not found');
@@ -170,6 +233,7 @@ export const handlePaneSplit: CommandHandler<PaneHandlerContext> = (msg, ctx, re
         sourcePaneID,
         direction,
         path: msg.path,
+        inheritedDirectory,
         label: msg.name ?? null,
         now,
         focus
@@ -177,23 +241,29 @@ export const handlePaneSplit: CommandHandler<PaneHandlerContext> = (msg, ctx, re
 
     spawnPaneIfShell(ctx, workspace.id, newPaneID);
     refreshSyncGroup(ctx, workspace.id);
-};
+}
 
 export const handlePaneCreate: CommandHandler<PaneHandlerContext> = (msg, ctx, reply) => {
     if (msg.command !== 'pane-create') return;
-    const routed = routeCreation(ctx, msg, 'create');
-    if (!routed.ok) {
-        sendError(reply, routed.error);
-        return;
-    }
-    const { workspace } = routed.route;
+    routeThenRun(ctx, msg, 'create', reply, (route, inheritedDirectory) => {
+        createRouted(msg, ctx, reply, route, inheritedDirectory);
+    });
+};
+
+function createRouted(
+    msg: PaneCreateMessage,
+    ctx: PaneHandlerContext,
+    reply: ReplyHandle | null,
+    route: CreationRoute,
+    inheritedDirectory: string | undefined
+): void {
+    const { workspace } = route;
 
     const newPaneID = mintPaneID(ctx);
     const now = nowMillis(ctx);
     ackCreation(reply, newPaneID, workspace, msg.name);
 
-    const sourcePaneID =
-        routed.route.sourcePaneID ?? workspace.focusedPaneID ?? workspace.panes[0]?.id ?? null;
+    const sourcePaneID = route.sourcePaneID ?? workspace.focusedPaneID ?? workspace.panes[0]?.id ?? null;
 
     if (sourcePaneID === null) {
         // EMPTY workspace: the create-first-pane route, carrying the acked id plus `--name`
@@ -218,6 +288,7 @@ export const handlePaneCreate: CommandHandler<PaneHandlerContext> = (msg, ctx, r
             sourcePaneID,
             direction: 'horizontal',
             path: msg.path,
+            inheritedDirectory,
             label: msg.name ?? null,
             now,
             focus
@@ -226,4 +297,4 @@ export const handlePaneCreate: CommandHandler<PaneHandlerContext> = (msg, ctx, r
 
     spawnPaneIfShell(ctx, workspace.id, newPaneID);
     refreshSyncGroup(ctx, workspace.id);
-};
+}

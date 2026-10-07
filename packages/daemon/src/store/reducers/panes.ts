@@ -110,7 +110,7 @@ function splitPane(
         if (source === null) return workspace; // parked panes are not eligible
         const pane = newPane({
             id: action.paneID,
-            workingDirectory: source.workingDirectory,
+            workingDirectory: action.workingDirectory ?? source.workingDirectory,
             nowMillis: action.now,
             label: action.label ?? null,
             // A split starts at the size of the pane it came from, as a ghostty split does.

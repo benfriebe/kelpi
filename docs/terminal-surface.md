@@ -191,6 +191,21 @@ with an **ordered** list built as follows (`mergedEnvVars`,
   neither the daemon nor the pane/profile provides `LC_ALL`, `LC_CTYPE`, or `LANG`, the pane
   gets `LC_CTYPE=UTF-8`; this keeps Unicode prompt widths correct for daemons launched without
   a locale (such as from Finder) while preserving every explicit locale choice.
+- **zsh integration** (`applyShellIntegration`, `packages/daemon/src/pty/shell-integration.ts`):
+  an interactive zsh (the resolved shell's basename is `zsh` and there is no `command`) gets
+  `ZDOTDIR=<data dir>/shell-integration/zsh`, applied after the overlay. Whatever `ZDOTDIR` the
+  inherited env or the profile set travels in `KELPI_ZSH_ZDOTDIR` (absent when there was none).
+  zsh reads the daemon's `.zshenv` from there first; it restores `ZDOTDIR` (or unsets it),
+  sources the user's own `.zshenv`, and in an interactive shell adds the `precmd` / `chpwd`
+  hooks that report the directory (section 7.2). zsh then reads `.zprofile`, `.zshrc` and
+  `.zlogin` from the user's `ZDOTDIR` as usual. The daemon writes the file at boot
+  (`installShellIntegration`, rewritten only when its content changed); a `:memory:` daemon,
+  a failed write and `KELPID_SHELL_INTEGRATION=0` all spawn without it. Other shells get
+  nothing yet. A nested zsh, including `exec zsh`, reads the restored `ZDOTDIR` and so runs
+  without the integration (Ghostty and Kitty behave the same way).
+- `PWD` is the pane's resolved cwd: node-pty sets it on every spawn. This is what keeps a
+  shell on the logical path it was given (`/var/folders/…`) instead of `getcwd()`'s physical
+  one, which its first OSC 7 would otherwise store.
 - Injection is **spawn-time only**. Live PTYs keep their birth env; changing a workspace's
   profile affects only later spawns.
 
@@ -737,6 +752,15 @@ OSC 0 and OSC 2 to the one `onTitleChange` hook, `service.ts:777`):
 - (title shows in pane header chrome; `lastActivityAt` drives workspace sorting/`last_activity_at` in `workspace list`)
 
 ### 7.2 Working-directory change (`PWD`, from OSC 7 via shell integration)
+
+The producer is the shell. Stock zsh and bash report nothing to a terminal they do not
+recognise, so the daemon injects its own zsh integration (section 2.1): at every prompt and
+on every `cd`, it writes `ESC ] 7 ; file://$HOST<percent-encoded $PWD> BEL`. It stays quiet in
+a subshell and when stdout is not the terminal. Any other shell, and zsh under
+`KELPID_SHELL_INTEGRATION=0` or after `exec zsh`, keeps its spawn directory in the store
+unless something in it emits OSC 7. A split does not rely on the store alone: it asks the OS
+where the source's shell is and opens there (socket-handlers.md §4.1, step 0), keeping the
+stored path when both name the same directory.
 
 → `pane-directory-changed` (`packages/daemon/src/store/reducers/agent.ts:84-94`, dispatched
 by `onPaneDirectory`, `compose.ts:1047-1065`; an unchanged directory is dropped):

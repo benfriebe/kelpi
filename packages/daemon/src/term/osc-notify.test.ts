@@ -59,12 +59,51 @@ describe('parseOscNotification', () => {
         expect(parseOscNotification(777, 'notify;Title;')).toBeNull();
     });
 
-    it('drops ConEmu progress `OSC 9 ; 4` — a progress bar, not a message', () => {
-        expect(parseOscNotification(9, '4;1;50')).toBeNull();
-        expect(parseOscNotification(9, '4;0;')).toBeNull();
-        expect(parseOscNotification(9, '4;3')).toBeNull();
-        expect(parseOscNotification(9, '4')).toBeNull();
-        expect(parseOscNotification(9, '4 files changed')).toEqual({ title: null, body: '4 files changed' });
+    it('drops ConEmu progress `OSC 9 ; 4`, a progress bar and not a message', () => {
+        for (const data of ['4;1;50', '4;1;900', '4;0;', '4;0;;', '4;2', '4;3', '4;4;100']) {
+            expect(parseOscNotification(9, data), data).toBeNull();
+        }
+    });
+
+    /** One payload per verb ghostty's `osc9.zig` parses as ConEmu rather than as a message. */
+    it("drops ConEmu's other OSC 9 commands, as ghostty does", () => {
+        const commands = [
+            '1;420', // 9;1 sleep
+            '1;',
+            '2;hello world', // 9;2 message box
+            '3;foo bar', // 9;3 tab title
+            '3;', // ...and its reset
+            '5', // 9;5 wait for input
+            '5;foo',
+            '6;a', // 9;6 GUI macro
+            '7;', // 9;7 run process
+            '8;ab', // 9;8 print an env var
+            '9;/Users/me/src', // 9;9 working directory (oh-my-posh `pwd: osc99`)
+            '10', // 9;10 xterm emulation
+            '10;3',
+            '11;ab', // 9;11 comment
+            '12', // 9;12 mark prompt start
+            '12;abc'
+        ];
+        for (const data of commands) {
+            expect(parseOscNotification(9, data), data).toBeNull();
+        }
+    });
+
+    /** ghostty's own "-> desktop notification" cases, plus messages that open with a digit. */
+    it('still notifies for a payload that only starts like a ConEmu command, as ghostty does', () => {
+        const messages = [
+            '1', '1a', '2', '2a', '3', '3a', '4', '4;', '4;5', '4;5a', '6', '7', '8', '9',
+            '10;', '10;4', '10;abc', '11', '4 files changed', '13 warnings'
+        ];
+        for (const data of messages) {
+            expect(parseOscNotification(9, data), data).toEqual({ title: null, body: data });
+        }
+    });
+
+    it('swallows a message that starts `5` or `12`, because ghostty does too', () => {
+        expect(parseOscNotification(9, '5 tests failed')).toBeNull();
+        expect(parseOscNotification(9, '12 files changed')).toBeNull();
     });
 
     it('ignores any other OSC code', () => {
@@ -164,6 +203,23 @@ describe('the terminal state service raises OSC notifications for the right pane
         term.feed(PANE, `${ESC}]9;\u0007`);
         await term.flush(PANE);
         expect(seen).toEqual([]);
+        term.disposeAll();
+    });
+
+    it('neither fires nor prints for a ConEmu progress report', async () => {
+        const seen: OscNotification[] = [];
+        const term = createTerminalStateService({
+            onOscNotification: (_paneID, notification) => {
+                seen.push(notification);
+            }
+        });
+        term.attach(PANE, 80, 24);
+        term.feed(PANE, `before${ESC}]9;4;1;50\u0007${ESC}]9;4;0;\u0007after`);
+        await term.flush(PANE);
+        expect(seen).toEqual([]);
+        const text = await term.captureAsync(PANE, { scrollback: false });
+        expect(text).toContain('beforeafter');
+        expect(text).not.toContain('4;1;50');
         term.disposeAll();
     });
 });

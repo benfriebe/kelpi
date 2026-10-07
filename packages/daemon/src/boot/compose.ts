@@ -117,6 +117,7 @@ import {
     FALLBACK_SHELL,
     installShellIntegration,
     SHELL_INTEGRATION_ENV,
+    shellGetsIntegration,
     withInputObserver,
     withSpawnGate,
     type KelpiPtyManager,
@@ -659,6 +660,12 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
      * `settings`, which is built below.
      */
     let onAgentLaunchModes: (paneID: string) => void = () => {};
+    /**
+     * Every OSC 7 a pane's shell sends, for the same launcher: under Kelpi's zsh integration the
+     * first one comes from `precmd`, right before the first real prompt, which is when the
+     * launch line can go (agent-lifecycle.md §6.5.1). Deferred like `onAgentLaunchModes`.
+     */
+    let onAgentLaunchShellReport: (paneID: string) => void = () => {};
     const term = createTerminalStateService({
         onBackpressure: (paneID, paused) => {
             if (paused) pty.pauseOutput(paneID);
@@ -670,6 +677,11 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
                 onPaneDirectory(paneID, directory);
             } catch (error) {
                 report(error, 'pane directory report');
+            }
+            try {
+                onAgentLaunchShellReport(paneID);
+            } catch (error) {
+                report(error, 'agent launch shell report');
             }
         },
         // §TERM-147's OTHER writer: OSC 0 / OSC 2. The pwd half (OSC 7, above) landed first; a
@@ -764,6 +776,9 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         input: createTerminalInput({ pty: gatedPty, modes: (paneID) => term.modes(paneID) }),
         term,
         shellOf: (paneID) => rawPty.shell(paneID),
+        // The manager injects the integration into every interactive zsh it spawns while the
+        // daemon has one, and a workspace's first pane is always interactive.
+        shellIntegrated: (paneID) => shellIntegration !== undefined && shellGetsIntegration(rawPty.shell(paneID) ?? ''),
         foregroundIsShell: (paneID) => {
             const pid = rawPty.pid(paneID);
             return pid === undefined
@@ -792,6 +807,9 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
     };
     onAgentLaunchModes = (paneID) => {
         agentLauncher.modesChanged(paneID);
+    };
+    onAgentLaunchShellReport = (paneID) => {
+        agentLauncher.shellReported(paneID);
     };
     let pluginHost: PluginService | undefined;
     const pluginGit = createPluginGitService(createGitService(), () => pluginHost);

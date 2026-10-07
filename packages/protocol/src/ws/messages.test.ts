@@ -162,6 +162,7 @@ describe('agent-launch (wire-protocol.md §6.3)', () => {
         expect([...WS_AGENT_LAUNCH_OUTCOMES]).toEqual(['launched', 'sent', 'prefilled', 'fallback', 'failed']);
         expect([...WS_AGENT_LAUNCH_REASONS]).toEqual([
             'timeout',
+            'no-session-start',
             'pane-exited',
             'agent-exited',
             'user-typed',

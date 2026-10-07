@@ -197,7 +197,7 @@ with an **ordered** list built as follows (`mergedEnvVars`,
   inherited env or the profile set travels in `KELPI_ZSH_ZDOTDIR` (absent when there was none).
   zsh reads the daemon's `.zshenv` from there first; it restores `ZDOTDIR` (or unsets it),
   sources the user's own `.zshenv`, and in an interactive shell adds the `precmd` / `chpwd`
-  hooks that report the directory (section 7.2). zsh then reads `.zprofile`, `.zshrc` and
+  hooks that report the directory (section 7.2; `chpwd` stays quiet until the first `precmd`). zsh then reads `.zprofile`, `.zshrc` and
   `.zlogin` from the user's `ZDOTDIR` as usual. The daemon writes the file at boot
   (`installShellIntegration`, rewritten only when its content changed); a `:memory:` daemon,
   a failed write and `KELPID_SHELL_INTEGRATION=0` all spawn without it. Other shells get
@@ -755,8 +755,12 @@ OSC 0 and OSC 2 to the one `onTitleChange` hook, `service.ts:777`):
 
 The producer is the shell. Stock zsh and bash report nothing to a terminal they do not
 recognise, so the daemon injects its own zsh integration (section 2.1): at every prompt and
-on every `cd`, it writes `ESC ] 7 ; file://$HOST<percent-encoded $PWD> BEL`. It stays quiet in
-a subshell and when stdout is not the terminal. Any other shell, and zsh under
+on every `cd` after the first prompt, it writes `ESC ] 7 ; file://$HOST<percent-encoded $PWD>
+BEL`. It stays quiet in a subshell and when stdout is not the terminal, and a `cd` made before
+the first prompt (by `.zprofile` or `.zshrc`) is not reported on its own: the first prompt
+reports wherever the rc files left the shell. So the first report a pane's zsh sends is the one
+right before its first real prompt, which the agent launcher waits for (agent-lifecycle.md
+§6.5.1). Any other shell, and zsh under
 `KELPID_SHELL_INTEGRATION=0` or after `exec zsh`, keeps its spawn directory in the store
 unless something in it emits OSC 7. A split does not rely on the store alone: it asks the OS
 where the source's shell is and opens there (socket-handlers.md §4.1, step 0), keeping the

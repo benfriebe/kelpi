@@ -11,8 +11,9 @@
  *
  * Hermetic by construction: every shell gets a minimal environment built from scratch (no
  * inherited `KELPI_*` / `KELPID_*`, so nothing in a pane can reach a live Kelpi daemon this suite
- * may be running under; an empty `ZDOTDIR` and `HOME`, so no user rc file runs), and nothing
- * touches the network.
+ * may be running under; an empty `ZDOTDIR` and `HOME`, so no user rc file runs unless a test
+ * writes one), and nothing touches the network. A test that runs Kelpi's zsh integration installs
+ * it into its own scratch directory and passes on only the `ZDOTDIR` the manager points at it.
  */
 
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -26,6 +27,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { createForegroundReader } from '../pty/foreground.js';
 import { createTerminalInput } from '../pty/input.js';
 import { createPtyManager, type KelpiPtyManager } from '../pty/manager.js';
+import { installShellIntegration } from '../pty/shell-integration.js';
 import { createPaneSpawnGate, withSpawnGate } from '../pty/spawn-gate.js';
 import { nodePtySpawner } from '../pty/spawner.js';
 import type { PtySpawnRequest } from '../pty/types.js';
@@ -123,13 +125,20 @@ describe('agent launch in a real PTY', () => {
         timings: Partial<AgentLaunchTimings>;
         gate?: boolean;
         readiness?: AgentReadiness;
-    }): Rig & { start(): void; reportGeometry(cols: number, rows: number): void } {
+        /** Run zsh under Kelpi's shell integration, reporting OSC 7 to the launcher. */
+        integration?: boolean;
+        /** A `.zshrc` for the shell to read (from HOME under the integration, else ZDOTDIR). */
+        zshrc?: (root: string) => string;
+    }): Rig & { start(): void; reportGeometry(cols: number, rows: number): void; root: string } {
         const root = mkdtempSync(join(tmpdir(), 'kelpi-agent-launch-'));
         dirs.push(root);
         const home = join(root, 'home');
         const zdotdir = join(root, 'zdotdir');
         mkdirSync(home);
         mkdirSync(zdotdir);
+        if (options.zshrc !== undefined) {
+            writeFileSync(join(options.integration === true ? home : zdotdir, '.zshrc'), options.zshrc(root));
+        }
         const script = join(root, 'fake-agent.mjs');
         const record = join(root, 'received.log');
         writeFileSync(script, FAKE_AGENT);
@@ -138,13 +147,16 @@ describe('agent launch in a real PTY', () => {
         // A minimal environment built from nothing: no inherited KELPI_* / KELPID_*, no user rc.
         const raw = createPtyManager({
             loginShell: false,
+            ...(options.integration === true ? { shellIntegration: installShellIntegration(join(root, 'integration')) } : {}),
             spawner: (request) => {
                 spawns.push(request);
                 return nodePtySpawner({
                     ...request,
                     env: {
                         HOME: home,
-                        ZDOTDIR: zdotdir,
+                        // Under the integration, the directory the manager pointed zsh at: its
+                        // .zshenv unsets ZDOTDIR (no carrier is passed), so HOME's rc files run.
+                        ZDOTDIR: options.integration === true ? (request.env['ZDOTDIR'] ?? zdotdir) : zdotdir,
                         PATH: '/usr/bin:/bin:/usr/sbin:/sbin',
                         TERM: request.env['TERM'] ?? 'xterm-256color',
                         LANG: 'en_US.UTF-8',
@@ -166,6 +178,9 @@ describe('agent launch in a real PTY', () => {
         const term = createTerminalStateService({
             onModesChange: (paneID) => {
                 launcher?.modesChanged(paneID);
+            },
+            onDirectoryChange: (paneID) => {
+                launcher?.shellReported(paneID);
             }
         });
         pty.onData((paneID, data) => {
@@ -188,6 +203,7 @@ describe('agent launch in a real PTY', () => {
             },
             term,
             shellOf: (paneID) => pty.shell(paneID),
+            shellIntegrated: () => options.integration === true,
             foregroundIsShell: (paneID) => {
                 const pid = pty.pid(paneID);
                 return pid === undefined ? Promise.reject(new Error('no process')) : readForeground(pid);
@@ -210,6 +226,7 @@ describe('agent launch in a real PTY', () => {
         };
 
         return {
+            root,
             launcher: started,
             frames,
             typed,
@@ -268,6 +285,35 @@ describe('agent launch in a real PTY', () => {
         // Whole, framed, and NOT submitted: nothing follows the closing bracket.
         expect(received).toBe(PASTE);
         expect(r.received().every((chunk) => chunk.phase === 'composer')).toBe(true);
+    });
+
+    /**
+     * Powerlevel10k's instant prompt, reduced to what matters: `.zshrc` turns bracketed paste on
+     * at once, keeps running for a second, and then reads the terminal (as an rc file may after
+     * an instant prompt: a `read -q` update prompt, a tool asking for a passphrase). A launch line
+     * typed on that early 2004 lands in the rc file's `read`, which writes it to `eaten`. Under
+     * Kelpi's integration the line waits for the integration's precmd report, after `.zshrc`.
+     */
+    it("zsh under Kelpi's integration: an rc file that turns 2004 on early does not get the line", { timeout: 30_000 }, async () => {
+        const r = rig({
+            shell: ZSH,
+            integration: true,
+            timings: { shellSettleMs: LONG, shellReadyCapMs: LONG },
+            zshrc: (root) =>
+                [
+                    "print -rn -- $'\\e[?2004h'",
+                    'sleep 1',
+                    `if read -t 0.3 -r early; then print -r -- "$early" > ${shellSingleQuote(join(root, 'eaten'))}; fi`,
+                    "PROMPT='%% '",
+                    ''
+                ].join('\n')
+        });
+        r.start();
+        const frame = await r.frame();
+        expect(frame).toMatchObject({ outcome: 'prefilled', paneID: P1 });
+        expect(readable(join(r.root, 'eaten'))).toBe(false);
+        await waitFor(() => r.received().some((chunk) => chunk.text.includes('\u001b[201~')));
+        expect(r.received().map((chunk) => chunk.text).join('')).toBe(PASTE);
     });
 
     it('bash 3.2: types after the quiet spell (it never turns on 2004), then prefills', { timeout: 30_000 }, async () => {

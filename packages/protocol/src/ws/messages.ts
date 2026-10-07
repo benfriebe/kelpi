@@ -839,8 +839,12 @@ export type WsAgentLaunchOutcome = (typeof WS_AGENT_LAUNCH_OUTCOMES)[number];
  * Why a launch ended in `fallback` or `failed`:
  *
  *   - `timeout`: the agent did not become ready in time (`AGENT_READY_TIMEOUT_MS`, paused while
- *     a trust dialog is on screen); as `failed`, the pane printed nothing for 30 s after the
- *     create, so the launch line was never typed;
+ *     a trust dialog is on screen, and `AGENT_READY_MAX_WAIT_MS` in all, pauses included); as
+ *     `failed`, either the pane printed nothing for 30 s after the create, or 10 s after its first
+ *     output something other than the shell had the terminal, so the launch line was never typed;
+ *   - `no-session-start`: Claude Code had the terminal for the whole budget but its SessionStart
+ *     hook never reached Kelpi, the one signal Claude's readiness waits for (hooks not installed:
+ *     `kelpi install-hooks`); codex's readiness is read off the screen and never says this;
  *   - `pane-exited`: the pane exited or was closed first (`failed` when that was before the
  *     launch line was typed, `fallback` after);
  *   - `agent-exited`: the agent quit, or never got going, and the shell has the pane again;
@@ -856,6 +860,7 @@ export type WsAgentLaunchOutcome = (typeof WS_AGENT_LAUNCH_OUTCOMES)[number];
  */
 export const WS_AGENT_LAUNCH_REASONS = [
     'timeout',
+    'no-session-start',
     'pane-exited',
     'agent-exited',
     'user-typed',

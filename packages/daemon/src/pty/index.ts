@@ -71,7 +71,8 @@ export {
     SHELL_INTEGRATION_ENV,
     ZSH_ZDOTDIR_ENV,
     applyShellIntegration,
-    installShellIntegration
+    installShellIntegration,
+    shellGetsIntegration
 } from './shell-integration.js';
 export type { ShellIntegration } from './shell-integration.js';
 

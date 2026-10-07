@@ -32,15 +32,19 @@ describe('withInputObserver', () => {
         return { inner, pty, procs };
     }
 
-    it('reports every write into a pane before it lands, once, for the pane typed into', () => {
+    it('reports every write into a pane before it lands, once per pane it lands in', () => {
         const order: string[] = [];
         const { pty, procs } = setup((paneID, data) => order.push(`saw ${paneID} ${String(data)}`));
+        pty.write('a', 'p');
         pty.setSyncGroup('ws', new Set(['a', 'b']));
         pty.write('a', 'k');
         pty.writeDirect('b', 'x');
-        expect(order).toEqual(['saw a k', 'saw b x']);
+        // Unsynced, one pane; synced, the pane typed into and the sibling it is mirrored to (a
+        // keystroke mirrored into a pane a launch is waiting on is input into that pane); a
+        // direct write is never mirrored.
+        expect(order).toEqual(['saw a p', 'saw a k', 'saw b k', 'saw b x']);
         // The mirrored keystroke still reaches the sibling: mirroring is the inner manager's.
-        expect(procs[0]?.writes).toEqual(['k']);
+        expect(procs[0]?.writes).toEqual(['p', 'k']);
         expect(procs[1]?.writes).toEqual(['k', 'x']);
     });
 

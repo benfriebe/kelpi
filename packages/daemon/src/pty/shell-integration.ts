@@ -20,6 +20,13 @@
  * a bundle that was replaced (it only reads the file once, at startup, anyway).
  *
  * Only zsh, the macOS default, for now. bash and fish need different injections.
+ *
+ * A second reader: the agent launcher (docs/agent-lifecycle.md §6.5.1) takes the integration's
+ * FIRST report as "the rc files are done, the real prompt is next", because `precmd` runs right
+ * before the first prompt and after `.zshrc`, where bracketed paste can come on half a second
+ * early (Powerlevel10k's instant prompt). For that to hold, the `chpwd` report stays quiet until
+ * the first `precmd` has run: a `cd` in `.zprofile` or `.zshrc` would otherwise report early. No
+ * directory is lost by it, since that first `precmd` reports wherever the rc files left the shell.
  */
 
 import fs from 'node:fs';
@@ -41,9 +48,11 @@ export interface ShellIntegration {
  *
  * Every builtin is quoted so a user alias defined by their `.zshenv` cannot shadow it.
  *
- * The report runs at every prompt and on every `cd`: `precmd` catches a directory a command
- * changed, and `chpwd` catches the ones no prompt follows (`cd x && server`, a zle widget that
- * `cd`s and redraws). It stays quiet in a subshell, whose `cd` is not the shell's, and when
+ * The report runs at every prompt and on every `cd` after the first prompt: `precmd` catches a
+ * directory a command changed, and `chpwd` catches the ones no prompt follows (`cd x && server`,
+ * a zle widget that `cd`s and redraws). `chpwd` is quiet until the first `precmd` has run, so
+ * the first report the shell sends is the one right before its first real prompt (the agent
+ * launcher's signal, above). It stays quiet in a subshell, whose `cd` is not the shell's, and when
  * stdout is not the terminal, where the bytes would land in a file or a capture instead.
  *
  * The path is percent-encoded byte by byte (`no_multibyte`), because the daemon decodes it as
@@ -77,9 +86,18 @@ fi
             'builtin' 'local' url_path="\${PWD//(#b)([^A-Za-z0-9\\/._~-])/%\${(l:2::0:)$(( [##16] #match ))}}"
             'builtin' 'print' -rn -- $'\\e]7;file://'"$HOST$url_path"$'\\a'
         }
+        _kelpi_precmd_pwd() {
+            'builtin' 'typeset' -g _kelpi_prompted=1
+            _kelpi_report_pwd
+        }
+        # Quiet until the first prompt, which reports wherever the rc files left the shell.
+        _kelpi_chpwd_pwd() {
+            [[ -n "\${_kelpi_prompted-}" ]] || 'builtin' 'return' 0
+            _kelpi_report_pwd
+        }
         'builtin' 'autoload' -Uz -- add-zsh-hook
-        add-zsh-hook precmd _kelpi_report_pwd
-        add-zsh-hook chpwd _kelpi_report_pwd
+        add-zsh-hook precmd _kelpi_precmd_pwd
+        add-zsh-hook chpwd _kelpi_chpwd_pwd
     fi
 }
 `;
@@ -99,12 +117,17 @@ export function installShellIntegration(root: string): ShellIntegration {
  * Point an interactive zsh at the integration. Mutates `env`, which is the spawn's own copy.
  * Any other shell, and zsh hosting a command (`-c`), is left alone.
  */
+/** Does a pane running `shellPath` get the integration? zsh, by program name, is all it covers. */
+export function shellGetsIntegration(shellPath: string): boolean {
+    return path.basename(shellPath) === 'zsh';
+}
+
 export function applyShellIntegration(
     shellPath: string,
     env: Record<string, string>,
     integration: ShellIntegration
 ): void {
-    if (path.basename(shellPath) !== 'zsh') return;
+    if (!shellGetsIntegration(shellPath)) return;
     const original = env['ZDOTDIR'];
     delete env[ZSH_ZDOTDIR_ENV];
     // A daemon started from a shell whose `.zshenv` never ran (zsh -f) can carry our own

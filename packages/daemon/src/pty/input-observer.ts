@@ -16,8 +16,14 @@
  *
  * The observer is told the pane and the bytes, and is called BEFORE the write, so it has heard
  * about the input by the time the bytes can have any effect. A throwing observer is the
- * observer's problem: the write still happens. Sync-group mirroring happens inside the inner
- * manager, so a mirrored keystroke is reported once, for the pane it was typed into.
+ * observer's problem: the write still happens.
+ *
+ * Sync-group mirroring (terminal-panes.md §8.2) happens inside the inner manager, where this
+ * wrapper cannot see it, so `write` reports the bytes once for the pane they were typed into AND
+ * once for every pane the inner manager will mirror them to (`syncTargetIDs`, asked before the
+ * write, which is the set the write uses). A keystroke mirrored into a pane the launcher is
+ * about to type into lands in that pane's input exactly as a keystroke typed there would, so it
+ * must cost the launch the same way. `writeDirect` never mirrors, so it reports one pane.
  *
  * Every other method is a plain delegation, written out (as in `withSpawnGate`) so a method added
  * to `KelpiPtyManager` later fails to compile here instead of quietly bypassing the wrapper.
@@ -44,6 +50,7 @@ export function withInputObserver(pty: KelpiPtyManager, observe: PaneInputObserv
         },
         write(paneID: string, data: Uint8Array | string): void {
             notify(paneID, data);
+            for (const target of pty.syncTargetIDs(paneID)) notify(target, data);
             pty.write(paneID, data);
         },
         writeDirect(paneID: string, data: Uint8Array | string): void {

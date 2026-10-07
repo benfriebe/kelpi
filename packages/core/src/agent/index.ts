@@ -40,6 +40,7 @@ export type { NotificationContext, NotificationDecision } from './notifications.
 // rules, the timings and the readiness seam the daemon's launcher calls.
 export {
     AGENT_PROMPT_MAX_BYTES,
+    AGENT_READY_MAX_WAIT_MS,
     AGENT_READY_STABLE_MS,
     AGENT_READY_TIMEOUT_MS,
     AGENT_SHELL_READY_CAP_MS,

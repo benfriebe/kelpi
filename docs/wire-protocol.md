@@ -1264,7 +1264,10 @@ workspace, group, repo registration or git work happens on a refusal):
    `{"ok":false,"error":"agent_prompt and send_prompt need start_agent"}`;
 3. the prompt is normalized once, for both modes (`normalizeAgentPrompt`,
    `packages/core/src/agent/launch.ts`): CRLF and lone CR become LF; C0 controls other than TAB
-   and LF, and DEL, are dropped (so no escape sequence survives); a NUL →
+   and LF, and DEL, are dropped (so no escape sequence survives); trailing whitespace, newlines
+   included, is dropped (send mode's command substitution would drop trailing newlines anyway,
+   and a prefill that kept them would deliver different text: Claude Code shows a paste ending in
+   a newline as a pasted-lines chip, the same text as an argument inline); a NUL →
    `{"ok":false,"error":"agent_prompt may not contain a NUL character"}`; more than 100000 UTF-8
    bytes after normalization → `{"ok":false,"error":"agent_prompt is too long (<n> bytes; the
    limit is 100000)"}`. A prompt that is empty or whitespace-only after normalization is no
@@ -1287,10 +1290,14 @@ the text stays at hand when a prefill falls back with no window attached to show
 ```
 
 The reply never waits for the agent (a plain create still answers before its first pane even
-spawns). The daemon types the launch line once the pane's shell is at its prompt (bracketed
-paste on, for zsh and fish; bracketed paste or 2 s without output, for any other shell; 10 s
-after the pane's first output at the latest; never before the pane has printed anything), and
-what became of the request arrives later, as
+spawns). The daemon types the launch line once the pane's shell is at its prompt (for zsh under
+Kelpi's shell integration, the integration's first OSC 7 report, which it sends from `precmd`
+right before the first real prompt, with bracketed paste on; bracketed paste on, for any other
+zsh and fish; bracketed paste or 2 s without output, for any other shell; never before the pane
+has printed anything). 10 s after the pane's first output with no such sign it types the line
+only if the shell is the terminal's foreground process group, and otherwise gives up (`failed`,
+`timeout`) rather than type into whatever program has the terminal (agent-lifecycle.md §6.5.1).
+What became of the request arrives later, as
 ONE `agent-launch` frame on the WS sync socket (never on the control socket;
 `WsAgentLaunchMessage`, `packages/protocol/src/ws/messages.ts`):
 `{"type":"agent-launch","workspaceID","paneID","agent","outcome","reason"?,"prompt"?,"promptFile"?,"broadcast"?}`.
@@ -1298,29 +1305,39 @@ ONE `agent-launch` frame on the WS sync socket (never on the control socket;
 | `outcome` | meaning |
 |---|---|
 | `launched` | the launch line was typed; there was no prompt |
-| `sent` | send mode: the launch line carried the prompt, `<command>[ --] "$(command cat '<prompt file>')"` (`--` when the prompt starts with `-`) |
+| `sent` | send mode: the launch line carried the prompt, `<command>[ --] "$(command cat '<prompt file>') "` (`--` when the prompt starts with `-`; the space inside the quotes means the argument never equals a bare word, so a prompt such as `logout` or `update` is text, never the agent's subcommand of that name, and the agent gets the prompt with one trailing space) |
 | `prefilled` | the prompt was pasted, bracketed and unsubmitted, into the ready agent's input |
 | `fallback` | the agent was launched but the prompt was NOT delivered |
 | `failed` | the launch line was never typed, so no agent started |
 
-`reason` is present exactly on `fallback` and `failed`: `timeout` (the agent was not ready
-within 10 s of the launch line, a clock that is paused while a trust dialog is on screen; or, as
-`failed`, the pane printed nothing for 30 s after the create, so the line was never typed),
-`pane-exited` (the pane exited or was closed), `agent-exited` (the agent quit or never got going,
-and the shell has the terminal again), `user-typed` (someone typed into the pane: before the
-launch line, `failed`, since the line would have been appended to their input; after it,
-`fallback`), `no-bracketed-paste` (the agent never asked for framed pastes), `unsupported-shell`
-(send mode in a shell other than zsh, bash, sh, dash, ksh or fish: `failed`, nothing typed),
-`predicate-error` (the readiness check threw) or `daemon-stopping` (the daemon stopped or handed
-off while the launch was pending). `prompt` (the normalized text) and `promptFile` ride on
-`fallback` and `failed` whenever there was a prompt. A prefill is never typed into a shell: the
-daemon pastes only once the agent reports ready (agent-lifecycle.md §6.5) and only while the
-shell is not the terminal's foreground process. Nothing is retried, and Enter is never sent.
+`reason` is present exactly on `fallback` and `failed`:
+
+| `reason` | meaning |
+|---|---|
+| `timeout` | `fallback`: the agent was not ready within 10 s of the launch line, a clock that is paused while a trust dialog is on screen, or 10 minutes after the line in all, pauses included. `failed`: the pane printed nothing for 30 s after the create, or 10 s after its first output something other than the shell had the terminal, so the line was never typed |
+| `no-session-start` | `fallback`: Claude Code had the terminal for the whole 10 s but its SessionStart hook never reached Kelpi (hooks not installed, `kelpi install-hooks`), and that hook is how Claude's readiness is known; codex's readiness is read off the screen, so codex never gets this |
+| `pane-exited` | the pane exited or was closed |
+| `agent-exited` | the agent quit or never got going, and the shell has the terminal again |
+| `user-typed` | someone typed into the pane (a keystroke mirrored into it by sync input included): before the launch line, `failed`, since the line would have been appended to their input; after it, `fallback` |
+| `no-bracketed-paste` | the agent never asked for framed pastes |
+| `unsupported-shell` | send mode in a shell other than zsh, bash, sh, dash, ksh or fish: `failed`, nothing typed |
+| `predicate-error` | the readiness check threw, or the foreground check could not answer right before the paste |
+| `daemon-stopping` | the daemon stopped or handed off while the launch was pending |
+
+A client must treat a reason it does not know as the generic case. `prompt` (the normalized
+text) and `promptFile` ride on `fallback` and `failed` whenever there was a prompt. A prefill is
+never typed into a shell: the daemon pastes only once the agent reports ready
+(agent-lifecycle.md §6.5) and only while the shell is not the terminal's foreground process.
+Nothing is retried. The only Enter the daemon sends is the one that runs the launch line in the
+shell; the prefill is one bracketed paste with no Enter, so it is never submitted, and nothing
+is written to the pane while a trust dialog is on screen.
 
 The frame goes to the WS session that sent the create (for a create made by a plugin view, the
 session of the window hosting it). When there is none (a control-socket create, i.e. the CLI) or
-it has gone, `fallback` and `failed` are sent to EVERY client with `"broadcast":true` (a window
-copies `prompt` to the clipboard only for a frame without it), and a success is not sent at all.
+it has gone, `fallback` and `failed` are sent to EVERY client with `"broadcast":true`, and a
+success is not sent at all. A window copies `prompt` to the clipboard by itself only for a frame
+without `broadcast`, only within a minute of it sending the create, and never for
+`daemon-stopping`; otherwise it offers the copy on a click (shell-ui.md §10.1).
 The plugin SDK's `createWorkspace` does not forward these three fields yet. A client that
 predates the frame ignores the unknown type.
 

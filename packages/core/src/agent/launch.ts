@@ -54,11 +54,24 @@ export function shellSingleQuote(value: string): string {
  * Send mode's launch line: the agent command with the prompt as its argument, read back from the
  * daemon-written prompt file at the moment the shell runs the line.
  *
- * `"$(command cat '<file>')"` rather than the prompt itself, because the prompt is arbitrary text
+ * `"$(command cat '<file>') "` rather than the prompt itself, because the prompt is arbitrary text
  * that the shell would otherwise parse, and a file keeps a 100 KB prompt off the terminal's input
  * line. `command` bypasses a user's `cat` alias or function (`alias cat=bat` is common). The
- * substitution drops trailing newlines, which nothing misses. `--` ends the agent's own options
- * when the prompt starts with `-`, so a prompt such as `--help me` is text, not a flag.
+ * substitution drops trailing newlines, which `normalizeAgentPrompt` has already removed.
+ *
+ * Two guards keep the argument from being read as anything but text, whatever the agent's
+ * argument parser:
+ *
+ *   - **The space after the substitution, inside the quotes.** The argument always ends in a
+ *     space, so it can never EQUAL a bare word. Without it a prompt that reads `logout`, `update`,
+ *     `review` or `a` is the agent's subcommand of that name (`codex logout`, `claude update`,
+ *     `codex a`, which is `apply`), because parsers match subcommands by exact name, and a prefix
+ *     matcher (clap's `infer_subcommands`) cannot match one either, since no subcommand name ends
+ *     in a space. `--` alone would not do: it ends options, and whether a parser still matches a
+ *     subcommand after it is the parser's own business. The agent receives the prompt with one
+ *     trailing space, which a model never notices and which adds no line.
+ *   - **`--` when the prompt starts with `-`**, so a prompt such as `--help me` is text, not a
+ *     flag (the trailing space does not help there: `--help me ` still starts with a dash).
  *
  * A blank prompt (the caller should not send one) yields the bare launch command, never a line
  * that reads a file nobody wrote.
@@ -66,7 +79,7 @@ export function shellSingleQuote(value: string): string {
 export function sendModeCommandLine(launch: string, file: string, prompt: string): string {
     if (prompt.trim() === '') return launch;
     const separator = prompt.startsWith('-') ? ' --' : '';
-    return `${launch}${separator} "$(command cat ${shellSingleQuote(file)})"`;
+    return `${launch}${separator} "$(command cat ${shellSingleQuote(file)}) "`;
 }
 
 // ── shells ──────────────────────────────────────────────────────────────────────────
@@ -96,22 +109,38 @@ export function shellSupportsSendMode(shellPath: string): boolean {
 /**
  * How the launcher knows the shell is at its prompt, ready for the launch line:
  *
- *   - `bracketed-paste`: zsh and fish turn bracketed paste (DEC 2004) on as their line editor
- *     starts, so that is the signal and the ONLY one. Their startup often prints and then goes
- *     quiet before the prompt is up (p10k's instant prompt, nvm, conda), so a quiet spell proves
- *     nothing there.
+ *   - `shell-integration`: zsh started with Kelpi's own shell integration (the daemon's
+ *     `pty/shell-integration.ts`, which installs a `precmd` hook that reports the directory with
+ *     OSC 7). The signal is an OSC 7 report AND bracketed paste on, both: `precmd` runs right
+ *     before the first REAL prompt, after every rc file has finished, and zle turns 2004 on just
+ *     after it. 2004 alone is not enough under Powerlevel10k's instant prompt, which turns it on
+ *     ~25 ms into startup while `.zshrc` still has ~480 ms to run (measured 2026-10-07), so a
+ *     line typed then reaches the shell only because p10k happens to buffer input, and an rc file
+ *     that reads the terminal after the instant prompt would eat it. The integration keeps its
+ *     `chpwd` report quiet until the first `precmd` has run, so a `cd` in an rc file is not an
+ *     early report; the 2004 half covers any OTHER OSC 7 writer an rc file sources.
+ *   - `bracketed-paste`: zsh without the integration (turned off, or a pane the daemon could not
+ *     give it to) and fish turn bracketed paste (DEC 2004) on as their line editor starts, so
+ *     that is the signal and the ONLY one. Their startup often prints and then goes quiet before
+ *     the prompt is up (p10k's instant prompt, nvm, conda), so a quiet spell proves nothing there.
  *   - `bracketed-paste-or-quiet`: every other shell. bash 5.1+ also turns 2004 on, but bash 3.2
  *     (macOS's `/bin/bash`), sh, dash and ksh never do, so `AGENT_SHELL_SETTLE_MS` with no output
  *     since the LAST output counts too.
  *
- * Either way `AGENT_SHELL_READY_CAP_MS` after the pane's first output is the backstop (a zsh with
- * `zle_bracketed_paste` unset never signals at all).
+ * Whichever, `AGENT_SHELL_READY_CAP_MS` after the pane's first output is the backstop (a zsh with
+ * `zle_bracketed_paste` unset never signals at all, nor does an rc file that empties
+ * `precmd_functions`), and the launcher types there only if the shell has the terminal.
  */
-export type AgentShellReadySignal = 'bracketed-paste' | 'bracketed-paste-or-quiet';
+export type AgentShellReadySignal = 'shell-integration' | 'bracketed-paste' | 'bracketed-paste-or-quiet';
 
-export function agentShellReadySignal(shellPath: string): AgentShellReadySignal {
+/**
+ * The signal for a pane running `shellPath`. `shellIntegration` says the daemon started that
+ * shell with its integration; it only changes the answer for zsh, the one shell it covers.
+ */
+export function agentShellReadySignal(shellPath: string, shellIntegration = false): AgentShellReadySignal {
     const name = shellBasename(shellPath);
-    return name === 'zsh' || name === 'fish' ? 'bracketed-paste' : 'bracketed-paste-or-quiet';
+    if (name === 'zsh') return shellIntegration ? 'shell-integration' : 'bracketed-paste';
+    return name === 'fish' ? 'bracketed-paste' : 'bracketed-paste-or-quiet';
 }
 
 // ── timings ─────────────────────────────────────────────────────────────────────────
@@ -119,7 +148,11 @@ export function agentShellReadySignal(shellPath: string): AgentShellReadySignal 
 /** Quiet spell that counts as "the shell is at its prompt" for a shell without 2004. */
 export const AGENT_SHELL_SETTLE_MS = RESUME_SETTLE_DELAY_MS;
 
-/** Type the launch line this long after the pane's first output, whatever the shell said. */
+/**
+ * This long after the pane's first output the shell has had every chance to signal; the launcher
+ * types the line then if the shell has the terminal, and gives up (`failed`, `timeout`) if
+ * something else does (a `tmux attach` or an `ssh-add` passphrase prompt in an rc file).
+ */
 export const AGENT_SHELL_READY_CAP_MS = 10_000;
 
 /**
@@ -129,6 +162,16 @@ export const AGENT_SHELL_READY_CAP_MS = 10_000;
  * applies once they have), and it never runs before the line is typed.
  */
 export const AGENT_READY_TIMEOUT_MS = 10_000;
+
+/**
+ * The longest a prefill waits in all, from the launch line, PAUSES INCLUDED: a trust dialog
+ * nobody answers (the user walked away, or the window that asked has closed) does not hold the
+ * launch, its prompt and its pane's listeners forever. Then `fallback` (`timeout`), like the
+ * budget running out. A window that hears of it this late no longer copies the prompt by itself
+ * (the client's own auto-copy window is far shorter), so the clipboard is not overwritten long
+ * after the user has moved on.
+ */
+export const AGENT_READY_MAX_WAIT_MS = 10 * 60 * 1000;
 
 /** Every stability window in `defaultAgentReadiness`. */
 export const AGENT_READY_STABLE_MS = 300;
@@ -173,15 +216,20 @@ function utf8Length(text: string): number {
  *   3. the remaining C0 controls except TAB and LF, and DEL, are dropped. ESC is among them, so
  *      a prompt can neither close a bracketed paste early nor smuggle a sequence into the pane
  *      (and the daemon's paste filter drops the same set, so prefill loses nothing more);
- *   4. more than `AGENT_PROMPT_MAX_BYTES` refuses the request;
- *   5. what is left being blank means "no prompt": the agent is launched and nothing else.
+ *   4. trailing whitespace, newlines included, is dropped. Send mode's `$(cat …)` drops trailing
+ *      newlines whatever happens, and a prefill that kept them would deliver different text:
+ *      Claude Code shows a paste that ends in a newline as a `[Pasted text #1 +N lines]` chip
+ *      where the same text arriving as an argument is shown inline (a `--prompt-file` that ends
+ *      with the newline every editor writes did exactly that, 2026-10-07);
+ *   5. more than `AGENT_PROMPT_MAX_BYTES` refuses the request;
+ *   6. what is left being blank means "no prompt": the agent is launched and nothing else.
  *
- * Text is otherwise untouched. A prompt that starts with `/` is a Claude Code slash command, which
- * is the caller's business.
+ * Text is otherwise untouched, leading whitespace included. A prompt that starts with `/` is a
+ * Claude Code slash command, which is the caller's business.
  */
 export function normalizeAgentPrompt(raw: string): AgentPromptNormalization {
     if (raw.includes('\u0000')) return { ok: false, error: 'agent_prompt may not contain a NUL character' };
-    const normalized = raw.replace(/\r\n?/g, '\n').replace(PROMPT_CONTROL_PATTERN, '');
+    const normalized = raw.replace(/\r\n?/g, '\n').replace(PROMPT_CONTROL_PATTERN, '').trimEnd();
     const bytes = utf8Length(normalized);
     if (bytes > AGENT_PROMPT_MAX_BYTES) {
         return {

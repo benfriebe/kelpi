@@ -1132,8 +1132,10 @@ kelpi workspace create ... --agent claude|codex [--prompt "..." | --prompt-file 
   relative to the CLI's cwd, decoded as UTF-8, `-` meaning stdin to EOF (a file named `-` is
   `./-`). Unreadable => `kelpi workspace create: cannot read --prompt-file '<path>': <reason>`
   (stdin: `cannot read the prompt from stdin: <reason>`), exit 1, nothing sent. The text is
-  shipped raw: normalizing and the 100000-byte limit are the daemon's (wire-protocol.md §6.3),
-  and its refusal is the usual `ok:false` line.
+  shipped raw: normalizing (which also drops trailing whitespace, such as the newline an editor
+  saves at the end of a file, so a prefill and `--send` deliver the same text) and the
+  100000-byte limit are the daemon's (wire-protocol.md §6.3), and its refusal is the usual
+  `ok:false` line.
 - Payload: `{"command":"workspace-create", name?, path?, color?, group?, profile?}` (`path`
   made absolute against the CLI's cwd; `~` is left for the daemon), plus
   `muted: true` only when `--muted` was passed (§10.7), `icon: "emoji:<emoji>"` only when

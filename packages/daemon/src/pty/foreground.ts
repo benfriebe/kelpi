@@ -11,9 +11,19 @@
  *
  * Read the way `./process-cwd.ts` reads a cwd: `/proc/<pid>/stat` on Linux, `ps` elsewhere
  * (`tpgid` is the controlling terminal's foreground group, `pgid` the shell's own), bounded by a
- * timeout, with concurrent asks for the same pid sharing one lookup and no cache (the answer
- * changes the moment the agent starts or exits). A lookup that cannot answer REJECTS: the caller
- * treats "unknown" as "the shell may have the terminal", never as permission to paste.
+ * timeout, and never cached (the answer changes the moment the agent starts or exits). A lookup
+ * that cannot answer REJECTS: the caller treats "unknown" as "the shell may have the terminal",
+ * never as permission to paste.
+ *
+ * **Batched, and always fresh.** Every ask made in one turn of the event loop waits for the end
+ * of that turn (`setImmediate`) and is then answered by ONE sample: a single
+ * `ps -o pid=,tpgid=,pgid= -p a,b,c` for every pid asked about (two asks for the same pid share
+ * it), or on Linux one `/proc` read per pid, which costs no process. Several pending launches
+ * re-evaluating on the same event (a store change reaches all of them) therefore cost one `ps`,
+ * not one each. An ask never joins a sample that had already been sent when it was made: it goes
+ * into the next batch. So every answer was read from the OS AFTER the question was asked, which
+ * is what the launcher's check immediately before a paste relies on (agent-lifecycle.md §6.5,
+ * "The hard rule").
  */
 
 import { execFile } from 'node:child_process';
@@ -44,35 +54,91 @@ function isForeground(tpgid: number, pgid: number, pid: number): boolean {
     return tpgid === pgid;
 }
 
+interface Waiter {
+    readonly resolve: (shell: boolean) => void;
+    readonly reject: (error: Error) => void;
+}
+
+function toError(value: unknown): Error {
+    return value instanceof Error ? value : new Error(String(value));
+}
+
+function settle(waiters: readonly Waiter[], answer: () => boolean): void {
+    let shell: boolean;
+    try {
+        shell = answer();
+    } catch (error) {
+        for (const waiter of waiters) waiter.reject(toError(error));
+        return;
+    }
+    for (const waiter of waiters) waiter.resolve(shell);
+}
+
 export function createForegroundReader(options: ForegroundReaderOptions = {}): ForegroundReader {
     const timeoutMs = options.timeoutMs ?? FOREGROUND_CHECK_TIMEOUT_MS;
     const platform = options.platform ?? process.platform;
     const runPs = options.runPs ?? execPs;
     const readProcStat = options.readProcStat ?? ((path: string) => readFile(path, 'utf8'));
-    const inflight = new Map<number, Promise<boolean>>();
+    /** Asks not yet sent to the OS, by pid. Replaced (not cleared) when a batch is sent. */
+    let queued = new Map<number, Waiter[]>();
+    let scheduled = false;
 
-    const resolve = async (pid: number): Promise<boolean> => {
+    const readLinux = (pid: number, waiters: readonly Waiter[]): void => {
+        // Through a resolved promise, so a reader that throws rejects instead of escaping.
+        Promise.resolve(`/proc/${String(pid)}/stat`).then(readProcStat).then(
+            (stat) => {
+                // `pid (comm) state ppid pgrp session tty_nr tpgid …`; comm may hold spaces and
+                // parentheses, so the fields are counted from the LAST `)`.
+                const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+                settle(waiters, () => isForeground(Number(fields[5]), Number(fields[2]), pid));
+            },
+            (error: unknown) => {
+                for (const waiter of waiters) waiter.reject(toError(error));
+            }
+        );
+    };
+
+    const send = (batch: ReadonlyMap<number, readonly Waiter[]>): void => {
         if (platform === 'linux') {
-            // `pid (comm) state ppid pgrp session tty_nr tpgid …`; comm may hold spaces and
-            // parentheses, so the fields are counted from the LAST `)`.
-            const stat = await readProcStat(`/proc/${String(pid)}/stat`);
-            const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
-            return isForeground(Number(fields[5]), Number(fields[2]), pid);
+            for (const [pid, waiters] of batch) readLinux(pid, waiters);
+            return;
         }
-        const stdout = await runPs(['-o', 'tpgid=,pgid=', '-p', String(pid)], timeoutMs);
-        const [tpgid, pgid] = stdout.trim().split(/\s+/).map(Number);
-        return isForeground(tpgid ?? Number.NaN, pgid ?? Number.NaN, pid);
+        const pids = [...batch.keys()];
+        // `ps` prints a row for each pid that exists, in its own order, and fails only when none
+        // does; a pid with no row is one that cannot be answered for.
+        const args = ['-o', 'pid=,tpgid=,pgid=', '-p', pids.map(String).join(',')];
+        Promise.resolve(args).then((asked) => runPs(asked, timeoutMs)).then(
+            (stdout) => {
+                const rows = new Map<number, readonly [number, number]>();
+                for (const line of stdout.split('\n')) {
+                    const [pid, tpgid, pgid] = line.trim().split(/\s+/).map(Number);
+                    if (pid !== undefined && Number.isInteger(pid)) rows.set(pid, [tpgid ?? Number.NaN, pgid ?? Number.NaN]);
+                }
+                for (const [pid, waiters] of batch) {
+                    const row = rows.get(pid);
+                    settle(waiters, () => isForeground(row?.[0] ?? Number.NaN, row?.[1] ?? Number.NaN, pid));
+                }
+            },
+            (error: unknown) => {
+                for (const waiters of batch.values()) for (const waiter of waiters) waiter.reject(toError(error));
+            }
+        );
     };
 
-    return (pid) => {
-        const pending = inflight.get(pid);
-        if (pending !== undefined) return pending;
-        const lookup = resolve(pid).finally(() => {
-            inflight.delete(pid);
+    return (pid) =>
+        new Promise<boolean>((resolve, reject) => {
+            const waiters = queued.get(pid);
+            if (waiters === undefined) queued.set(pid, [{ resolve, reject }]);
+            else waiters.push({ resolve, reject });
+            if (scheduled) return;
+            scheduled = true;
+            setImmediate(() => {
+                scheduled = false;
+                const batch = queued;
+                queued = new Map();
+                send(batch);
+            });
         });
-        inflight.set(pid, lookup);
-        return lookup;
-    };
 }
 
 const PS = '/bin/ps';

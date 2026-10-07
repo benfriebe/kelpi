@@ -9,18 +9,25 @@
  *
  *   1. **awaiting-shell**: nothing is typed before the pane has produced output (a write would
  *      force a spawn the gate is holding for the client's geometry, `pty/spawn-gate.ts`). Then
- *      the launch line is typed at the first of: bracketed paste turning on (the shell's line
- *      editor is reading; zsh and fish, bash 5.1+); for any OTHER shell, `shellSettleMs` with no
- *      output since the LAST output; `shellReadyCapMs` after the first output. zsh and fish never
- *      take the quiet path (`agentShellReadySignal`): their startup prints and goes quiet before
- *      the prompt is up. With no prompt the launch is `launched`; in send mode the prompt rides
- *      the line and the launch is `sent`. Send mode in a shell whose syntax the line is not
- *      (`shellSupportsSendMode`) is `failed` (`unsupported-shell`) with nothing typed.
+ *      the launch line is typed at the first sign the shell is at its prompt
+ *      (`agentShellReadySignal`): for a zsh running Kelpi's shell integration, the integration's
+ *      `precmd` report (OSC 7, `shellReported`) with bracketed paste on, since 2004 alone comes
+ *      ~0.5 s early under an instant prompt; for zsh without it and fish, bracketed paste turning
+ *      on; for any OTHER shell, bracketed paste (bash 5.1+) or `shellSettleMs` with no output
+ *      since the LAST output. zsh and fish never take the quiet path: their startup prints and
+ *      goes quiet before the prompt is up. `shellReadyCapMs` after the first output is the
+ *      backstop, and there the line is typed only if a fresh foreground check finds the SHELL in
+ *      charge of the terminal; anything else in front (`tmux attach`, an `ssh-add` passphrase
+ *      prompt run by an rc file) is `failed` (`timeout`) with nothing typed. With no prompt the
+ *      launch is `launched`; in send mode the prompt rides the line and the launch is `sent`.
+ *      Send mode in a shell whose syntax the line is not (`shellSupportsSendMode`) is `failed`
+ *      (`unsupported-shell`) with nothing typed.
  *   2. **awaiting-agent** (prefill only): every output chunk (once the terminal state has parsed
  *      it), mode change, session binding, keystroke and requested recheck asks the readiness
  *      predicate (`AgentReadiness`, default `defaultAgentReadiness`). Ready → one more,
  *      FRESH foreground check, and only if the shell does not have the terminal is the prompt
- *      pasted, bracketed and without Enter (`prefilled`). Anything else ends in `fallback`.
+ *      pasted, bracketed and without Enter (`prefilled`). Anything else ends in `fallback`,
+ *      including `readyMaxWaitMs` passing with the budget still held by a trust dialog.
  *
  * Exactly one `agent-launch` frame per launch (`deliver`), never a second: a finished launch is
  * forgotten, and after `abandonAll` (the daemon is stopping or handing off) the launcher is inert.
@@ -32,6 +39,7 @@
  */
 
 import {
+    AGENT_READY_MAX_WAIT_MS,
     AGENT_READY_TIMEOUT_MS,
     AGENT_SHELL_READY_CAP_MS,
     AGENT_SHELL_SETTLE_MS,
@@ -95,6 +103,12 @@ export interface AgentLauncher {
     start(launch: AgentLaunchStart): void;
     /** The pane's VT modes changed (`onModesChange`, after the chunk that changed them parsed). */
     modesChanged(paneID: string): void;
+    /**
+     * The pane's shell reported its directory (OSC 7, parsed by the terminal state). Kelpi's zsh
+     * integration does it from `precmd`, right before each prompt, so for a pane running it the
+     * first report is "the rc files are done" (`agentShellReadySignal`'s `shell-integration`).
+     */
+    shellReported(paneID: string): void;
     /** Bytes are about to be written INTO the pane by someone other than this launcher. */
     inputWritten(paneID: string, data: Uint8Array | string): void;
     /**
@@ -121,27 +135,40 @@ export interface AgentLauncherTerminal {
 
 /**
  * A pane that has printed nothing this long after its create gets `failed` (`timeout`): a shell
- * that has said nothing is not one this launcher knows to be at a prompt, and typing blind is
- * the one thing it never does. Long, because a spawn can wait for geometry (2 s) and a heavy
- * shell startup can print nothing for several seconds before its prompt.
+ * that has said nothing is not one this launcher knows to be at a prompt. Long, because a spawn
+ * can wait for geometry (2 s) and a heavy shell startup can print nothing for several seconds
+ * before its prompt.
+ *
+ * The launch line is never typed into a pane that has said nothing, and never by the clock alone:
+ * the one path that does not wait for the shell's own signal, `AGENT_SHELL_READY_CAP_MS`, types
+ * only once a fresh foreground check finds the shell in charge of the terminal. What that check
+ * cannot see is a shell BUILTIN reading the terminal (an rc file's `read -q "?Update now?"`): the
+ * shell is the foreground group then too, so the line is typed and the builtin reads it.
  */
 export const AGENT_FIRST_OUTPUT_TIMEOUT_MS = 30_000;
 
 /**
- * While waiting for the agent, a foreground answer this young is reused rather than asked again
- * (an agent's startup is a burst of output chunks, each of which would otherwise run `ps`). The
- * check immediately before a paste is ALWAYS fresh.
+ * While waiting for the agent, the wait is re-run this often even when nothing happens, so the
+ * foreground answer it judges by is never older than this (plus one lookup). Needed in every
+ * state: an answer can be taken while a short-lived child holds the terminal (zsh forks before it
+ * finds a command does not exist), or just before an agent exits, and the shell's prompt that
+ * follows may be the last output the pane produces.
+ *
+ * 250 ms rather than less because each poll that needs a fresh answer is a `ps` on macOS: four a
+ * second per waiting launch, and launches that ask in the same turn share one (`pty/foreground.ts`
+ * batches them). Nothing waits on the poll to paste: readiness is asked again on every output
+ * chunk, mode change and session event, and the check before a paste is always fresh.
  */
-export const AGENT_FOREGROUND_REUSE_MS = 50;
+export const AGENT_FOREGROUND_POLL_MS = 250;
 
 /**
- * While waiting for the agent, the wait is re-run this often even when nothing happens, so the
- * foreground answer it judges by is never older than this. Needed in every state: an answer can
- * be taken while a short-lived child holds the terminal (zsh forks before it finds a command does
- * not exist), or just before an agent exits, and the shell's prompt that follows may be the last
- * output the pane produces.
+ * While waiting for the agent, a foreground answer younger than this is reused rather than asked
+ * again: an agent's startup is a burst of output chunks, each of which would otherwise run `ps`.
+ * The same as the poll, so the chunks between two polls share the answer the earlier poll took and
+ * a poll always asks afresh (its answer is a poll old by then). The check immediately before a
+ * paste, and the one at `AGENT_SHELL_READY_CAP_MS`, are ALWAYS fresh.
  */
-export const AGENT_FOREGROUND_POLL_MS = 100;
+export const AGENT_FOREGROUND_REUSE_MS = AGENT_FOREGROUND_POLL_MS;
 
 /**
  * The same, while the budget is paused at a trust dialog: a human may take minutes, and the one
@@ -154,6 +181,8 @@ export interface AgentLaunchTimings {
     readonly shellReadyCapMs: number;
     readonly firstOutputTimeoutMs: number;
     readonly readyTimeoutMs: number;
+    /** `AGENT_READY_MAX_WAIT_MS`: the whole wait from the line, trust-dialog pauses included. */
+    readonly readyMaxWaitMs: number;
     readonly foregroundReuseMs: number;
     readonly foregroundPollMs: number;
     readonly dialogPollMs: number;
@@ -164,6 +193,7 @@ export const DEFAULT_AGENT_LAUNCH_TIMINGS: AgentLaunchTimings = {
     shellReadyCapMs: AGENT_SHELL_READY_CAP_MS,
     firstOutputTimeoutMs: AGENT_FIRST_OUTPUT_TIMEOUT_MS,
     readyTimeoutMs: AGENT_READY_TIMEOUT_MS,
+    readyMaxWaitMs: AGENT_READY_MAX_WAIT_MS,
     foregroundReuseMs: AGENT_FOREGROUND_REUSE_MS,
     foregroundPollMs: AGENT_FOREGROUND_POLL_MS,
     dialogPollMs: AGENT_DIALOG_POLL_MS
@@ -185,6 +215,11 @@ export interface AgentLauncherOptions {
     readonly term: AgentLauncherTerminal;
     /** The shell the pane's PTY runs (`KelpiPtyManager.shell`); undefined = unknown. */
     readonly shellOf: (paneID: string) => string | undefined;
+    /**
+     * The pane's shell was started with Kelpi's shell integration (`pty/shell-integration.ts`),
+     * so its `precmd` reports arrive as `shellReported`. Absent = never (no integration).
+     */
+    readonly shellIntegrated?: ((paneID: string) => boolean) | undefined;
     /**
      * Whether the pane's shell is the terminal's foreground process group (`pty/foreground.ts`).
      * Rejects when it cannot tell, which never counts as "the agent has the terminal".
@@ -283,6 +318,10 @@ interface PendingLaunch {
     firstOutputAt: number | null;
     /** awaiting-shell: a flush is queued before the next 2004 check. */
     shellCheckQueued: boolean;
+    /** awaiting-shell: the shell has sent an OSC 7 since the launch began (`shellReported`). */
+    shellReported: boolean;
+    /** awaiting-shell: the cap's foreground check is out; nothing else may start another. */
+    capCheckPending: boolean;
     /** Since the line was typed (awaiting-agent); since the start (awaiting-shell). */
     lastOutputAt: number | null;
     modes: AgentLaunchModes;
@@ -319,6 +358,7 @@ interface PendingLaunch {
         settle?: NodeJS.Timeout | undefined;
         recheck?: NodeJS.Timeout | undefined;
         timeout?: NodeJS.Timeout | undefined;
+        maxWait?: NodeJS.Timeout | undefined;
     };
     evaluating: boolean;
     dirty: boolean;
@@ -493,25 +533,73 @@ export function createAgentLauncher(options: AgentLauncherOptions): AgentLaunche
 
     // ── phase 1: awaiting the shell ─────────────────────────────────────────────────
 
+    const shellIntegrated = (paneID: string): boolean => {
+        try {
+            return options.shellIntegrated?.(paneID) ?? false;
+        } catch (error) {
+            report(error, `agent launch shell integration ${paneID}`);
+            return false;
+        }
+    };
+
     const noteFirstOutput = (launch: PendingLaunch): void => {
         if (launch.firstOutputAt !== null) return;
         launch.firstOutputAt = clock();
         clearTimer(launch, 'firstOutput');
-        launch.shellSignal = agentShellReadySignal(options.shellOf(launch.paneID) ?? '');
+        launch.shellSignal = agentShellReadySignal(options.shellOf(launch.paneID) ?? '', shellIntegrated(launch.paneID));
         launch.timers.cap = unrefTimer(
             setTimeout(() => {
-                typeLaunchLine(launch);
+                launch.timers.cap = undefined;
+                void typeAtCap(launch);
             }, timings.shellReadyCapMs)
         );
     };
 
-    /** zsh / fish / bash 5.1+: the line editor turned bracketed paste on, so it is reading. */
+    /**
+     * zsh / fish / bash 5.1+: the line editor turned bracketed paste on, so it is reading. For a
+     * zsh under Kelpi's integration that is not enough on its own: an instant prompt (p10k) turns
+     * 2004 on while `.zshrc` still has half a second to run, and only the integration's `precmd`
+     * report says the real prompt is next. Both arrive, in either order, and whichever is second
+     * types the line.
+     */
     const checkShellReady = (launch: PendingLaunch): void => {
         if (launch.done || launch.phase !== 'awaiting-shell') return;
         observeModes(launch);
         if (!launch.modes.bracketedPaste) return;
         // A mode cannot change without output, whichever of the two callbacks came first.
         noteFirstOutput(launch);
+        if (launch.shellSignal === 'shell-integration' && !launch.shellReported) return;
+        typeLaunchLine(launch);
+    };
+
+    /**
+     * `shellReadyCapMs` after the first output, with no signal from the shell: type the line only
+     * if the SHELL has the terminal, asked fresh. Something else in front (an rc file that ran
+     * `tmux attach`, `ssh-add`, a login menu) would take the line as its own input, so that is
+     * `failed` (`timeout`) with nothing typed, as is a check that cannot answer: typing on a
+     * guess is the one thing this path must not do. A shell builtin reading the terminal cannot
+     * be told apart from a prompt this way (`AGENT_FIRST_OUTPUT_TIMEOUT_MS`).
+     */
+    const typeAtCap = async (launch: PendingLaunch): Promise<void> => {
+        if (launch.done || launch.phase !== 'awaiting-shell' || launch.capCheckPending) return;
+        launch.capCheckPending = true;
+        let foreground: ForegroundAnswer;
+        try {
+            foreground = await askForeground(launch, true);
+        } finally {
+            launch.capCheckPending = false;
+        }
+        // The shell may have signalled, someone may have typed, or the pane gone, meanwhile.
+        if (launch.done || launch.phase !== 'awaiting-shell') return;
+        if (foreground.shell !== true) {
+            log(
+                `agent launch: pane ${launch.paneID} gave no sign of a prompt in ${String(timings.shellReadyCapMs)} ms and ` +
+                    (foreground.shell === false ? 'another program has the terminal' : 'its foreground could not be read') +
+                    '; not typing the launch line'
+            );
+            finish(launch, 'failed', 'timeout');
+            return;
+        }
         typeLaunchLine(launch);
     };
 
@@ -553,11 +641,23 @@ export function createAgentLauncher(options: AgentLauncherOptions): AgentLaunche
             finish(launch, 'sent');
             return;
         }
-        // Prefill: everything readiness reads is measured from here.
+        // Prefill: everything readiness reads is measured from here, including the foreground:
+        // an answer the cap took before the line is not one about the agent.
         const now = clock();
         launch.phase = 'awaiting-agent';
         launch.launchedAt = now;
         launch.lastOutputAt = null;
+        launch.foreground = null;
+        launch.lastKnownForeground = null;
+        launch.timers.maxWait = unrefTimer(
+            setTimeout(() => {
+                launch.timers.maxWait = undefined;
+                if (launch.done) return;
+                // The budget alone would have ended this unless a trust dialog held it.
+                log(`agent launch: pane ${launch.paneID} still not ready after ${String(timings.readyMaxWaitMs)} ms in all; giving up`);
+                finish(launch, 'fallback', 'timeout');
+            }, timings.readyMaxWaitMs)
+        );
         launch.sessionIDAtLaunch = findPaneAnywhere(store.getState(), launch.paneID)?.pane.agentSessionID ?? null;
         launch.sessionID = launch.sessionIDAtLaunch;
         log(`agent launch: pane ${launch.paneID} (${kind}) typed the launch line in ${shellBasename(shell) || 'an unknown shell'}; waiting to prefill`);
@@ -588,16 +688,19 @@ export function createAgentLauncher(options: AgentLauncherOptions): AgentLaunche
     /**
      * Why the wait ran out. `no-bracketed-paste` only from here (the contract): the agent was in
      * the foreground and never asked for framed pastes, or said ready with them off.
-     * `agent-exited` when the shell had the terminal the last time anyone asked (the agent quit,
-     * or never got going); otherwise `timeout`.
+     * `no-session-start` when the agent was in the foreground and the predicate was still waiting
+     * for its SessionStart: Claude Code is running, but its hook never reached Kelpi (not
+     * installed), and nothing else can tell when it is ready. `agent-exited` when the shell had
+     * the terminal the last time anyone asked (the agent quit, or never got going); otherwise
+     * `timeout`.
      */
     const timeoutReason = (launch: PendingLaunch): WsAgentLaunchReason => {
         if (launch.readyButUnframed) return 'no-bracketed-paste';
         const last = launch.lastAnswer;
         const shell = launch.lastKnownForeground?.shell;
-        if (last !== null && !last.ready && last.abandon === undefined && last.waiting === 'bracketed-paste' && shell === false) {
-            return 'no-bracketed-paste';
-        }
+        const waiting = last !== null && !last.ready && last.abandon === undefined ? last.waiting : null;
+        if (waiting === 'bracketed-paste' && shell === false) return 'no-bracketed-paste';
+        if (waiting === 'session' && shell === false) return 'no-session-start';
         return shell === true ? 'agent-exited' : 'timeout';
     };
 
@@ -860,6 +963,8 @@ export function createAgentLauncher(options: AgentLauncherOptions): AgentLaunche
                 shellSignal: null,
                 firstOutputAt: null,
                 shellCheckQueued: false,
+                shellReported: false,
+                capCheckPending: false,
                 lastOutputAt: null,
                 modes: { bracketedPaste: false, alternateScreen: false },
                 modeChangedAt: { bracketedPaste: null, alternateScreen: null },
@@ -915,6 +1020,14 @@ export function createAgentLauncher(options: AgentLauncherOptions): AgentLaunche
             if (launch.phase === 'awaiting-shell') checkShellReady(launch);
             else scheduleEvaluate(launch);
         },
+        shellReported(paneID) {
+            const launch = pending.get(paneID);
+            if (launch === undefined || launch.done || launch.phase !== 'awaiting-shell') return;
+            launch.shellReported = true;
+            // A report is output, whichever of it and the data callback is heard first.
+            noteFirstOutput(launch);
+            checkShellReady(launch);
+        },
         inputWritten(paneID, data) {
             if (writing) return;
             const launch = pending.get(paneID);
@@ -949,6 +1062,7 @@ export const INERT_AGENT_LAUNCHER: AgentLauncher = {
     discardPromptFile() {},
     start() {},
     modesChanged() {},
+    shellReported() {},
     inputWritten() {},
     abandonAll() {},
     pending: 0

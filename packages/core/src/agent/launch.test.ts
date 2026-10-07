@@ -6,6 +6,7 @@ import { afterAll, describe, expect, it } from 'vitest';
 
 import {
     AGENT_PROMPT_MAX_BYTES,
+    AGENT_READY_MAX_WAIT_MS,
     AGENT_READY_STABLE_MS,
     AGENT_READY_TIMEOUT_MS,
     AGENT_SHELL_READY_CAP_MS,
@@ -117,16 +118,17 @@ describe('shellSingleQuote', () => {
 describe('sendModeCommandLine', () => {
     it('reads the prompt back from its file, with -- only for a prompt that looks like a flag', () => {
         const file = '/Users/ben/Library/Application Support/kelpid/prompts/0f9c.txt';
+        // The space before the closing quote is part of the argument: it can never equal a word.
         expect(sendModeCommandLine('claude', file, 'Fix ENG-123')).toBe(
-            `claude "$(command cat '/Users/ben/Library/Application Support/kelpid/prompts/0f9c.txt')"`
+            `claude "$(command cat '/Users/ben/Library/Application Support/kelpid/prompts/0f9c.txt') "`
         );
         expect(sendModeCommandLine('codex', file, '--help me')).toBe(
-            `codex -- "$(command cat '/Users/ben/Library/Application Support/kelpid/prompts/0f9c.txt')"`
+            `codex -- "$(command cat '/Users/ben/Library/Application Support/kelpid/prompts/0f9c.txt') "`
         );
         // Only the FIRST character decides: `cat` keeps leading whitespace, so " -x" is no flag.
         expect(sendModeCommandLine('codex', file, ' -x')).not.toContain(' -- ');
         expect(sendModeCommandLine('claude --model opus', "/tmp/it's.txt", 'go')).toBe(
-            `claude --model opus "$(command cat '/tmp/it'\\''s.txt')"`
+            `claude --model opus "$(command cat '/tmp/it'\\''s.txt') "`
         );
     });
 
@@ -139,7 +141,7 @@ describe('sendModeCommandLine', () => {
      * The whole contract at once, against real shells: an "agent" that prints each argument it
      * got, a prompt file in a directory whose name needs quoting, and a prompt full of shell
      * syntax. The agent must receive the prompt as ONE argument, verbatim except for the trailing
-     * newlines command substitution drops, and the `--` must reach it.
+     * newlines command substitution drops, plus the one trailing space, and the `--` must reach it.
      */
     const PROMPT = "-Work on ENG-123: \"quotes\" 'single' $HOME `whoami` $(date)\n\tline two @src/index.ts\n\n";
     const promptFile = join(scratch, 'prompt.txt');
@@ -150,7 +152,28 @@ describe('sendModeCommandLine', () => {
         'hands %s the prompt as one argument',
         (_name, shell) => {
             const line = sendModeCommandLine(AGENT, promptFile, PROMPT);
-            expect(runIn(shell, line)).toBe(`[--][${PROMPT.replace(/\n+$/, '')}]`);
+            expect(runIn(shell, line)).toBe(`[--][${PROMPT.replace(/\n+$/, '')} ]`);
+        }
+    );
+
+    /**
+     * A prompt that IS an agent subcommand's name (`codex logout`, `codex review`, `codex a` for
+     * apply, `claude update`, `purge`, `rm`, `stop`) must reach the agent as text, never as that
+     * subcommand. Parsers match a subcommand by exact name, so the argument must never equal one:
+     * the fake agent here prints its argv, and every word arrives with its trailing space.
+     */
+    const SUBCOMMANDS = ['logout', 'review', 'a', 'update', 'purge', 'rm', 'stop', 'mcp', '-h', '--version'];
+
+    it.each(SHELLS.map((shell) => [basename(shell[0]), shell] as const))(
+        'never hands %s a prompt that equals a subcommand name',
+        (_name, shell) => {
+            for (const word of SUBCOMMANDS) {
+                const file = join(scratch, `word-${word}.txt`);
+                // As the daemon writes it: normalized, so no trailing newline.
+                writeFileSync(file, word);
+                const expected = word.startsWith('-') ? `[--][${word} ]` : `[${word} ]`;
+                expect(runIn(shell, sendModeCommandLine(AGENT, file, word))).toBe(expected);
+            }
         }
     );
 });
@@ -185,6 +208,15 @@ describe('shells', () => {
         expect(agentShellReadySignal('/bin/sh')).toBe('bracketed-paste-or-quiet');
         expect(agentShellReadySignal('/opt/homebrew/bin/nu')).toBe('bracketed-paste-or-quiet');
     });
+
+    it("waits for Kelpi's shell integration report from a zsh that runs it, and only from zsh", () => {
+        expect(agentShellReadySignal('/bin/zsh', true)).toBe('shell-integration');
+        expect(agentShellReadySignal('-zsh', true)).toBe('shell-integration');
+        expect(agentShellReadySignal('/bin/zsh', false)).toBe('bracketed-paste');
+        // The integration covers zsh alone: the flag cannot change another shell's signal.
+        expect(agentShellReadySignal('/opt/homebrew/bin/fish', true)).toBe('bracketed-paste');
+        expect(agentShellReadySignal('/bin/bash', true)).toBe('bracketed-paste-or-quiet');
+    });
 });
 
 describe('timings', () => {
@@ -192,6 +224,7 @@ describe('timings', () => {
         expect(AGENT_SHELL_SETTLE_MS).toBe(RESUME_SETTLE_DELAY_MS);
         expect(AGENT_SHELL_READY_CAP_MS).toBe(10_000);
         expect(AGENT_READY_TIMEOUT_MS).toBe(10_000);
+        expect(AGENT_READY_MAX_WAIT_MS).toBe(600_000);
         expect(AGENT_READY_STABLE_MS).toBe(300);
         expect(AGENT_PROMPT_MAX_BYTES).toBe(100_000);
         expect(PROMPT_FILE_TTL_MS).toBe(86_400_000);
@@ -210,11 +243,25 @@ describe('normalizeAgentPrompt', () => {
         });
     });
 
-    it('leaves everything else alone: whitespace at the ends, unicode, a leading slash', () => {
-        expect(normalizeAgentPrompt('  /review ENG-1 ✓ 日本 🦊  \n')).toEqual({
+    it('leaves everything else alone: leading whitespace, unicode, a leading slash', () => {
+        expect(normalizeAgentPrompt('  /review ENG-1 ✓ 日本 🦊')).toEqual({
             ok: true,
-            prompt: '  /review ENG-1 ✓ 日本 🦊  \n'
+            prompt: '  /review ENG-1 ✓ 日本 🦊'
         });
+    });
+
+    it('drops trailing whitespace and newlines, so send mode and a prefill deliver the same text', () => {
+        // A `--prompt-file` as an editor saves it: send mode's `$(cat …)` would drop the newline,
+        // and a prefill that kept it would show the text as a pasted-lines chip instead of inline.
+        expect(normalizeAgentPrompt('line one\nline two\nline three\n')).toEqual({
+            ok: true,
+            prompt: 'line one\nline two\nline three'
+        });
+        expect(normalizeAgentPrompt('  /review ENG-1 ✓  \r\n\t \n\n')).toEqual({ ok: true, prompt: '  /review ENG-1 ✓' });
+        // Whitespace INSIDE the text is the user's.
+        expect(normalizeAgentPrompt('a\n\n\tb')).toEqual({ ok: true, prompt: 'a\n\n\tb' });
+        // A control character at the end goes first, so what it hid is trimmed too.
+        expect(normalizeAgentPrompt('done \u0007\n')).toEqual({ ok: true, prompt: 'done' });
     });
 
     it('refuses a NUL rather than dropping it', () => {
@@ -236,8 +283,10 @@ describe('normalizeAgentPrompt', () => {
         // Four bytes per astral character, however JS counts it.
         expect(normalizeAgentPrompt('🦊'.repeat(AGENT_PROMPT_MAX_BYTES / 4))).toMatchObject({ ok: true });
         expect(normalizeAgentPrompt(`${'🦊'.repeat(AGENT_PROMPT_MAX_BYTES / 4)}a`)).toMatchObject({ ok: false });
-        // CRLF shrinks to LF before measuring.
-        expect(normalizeAgentPrompt('\r\n'.repeat(AGENT_PROMPT_MAX_BYTES))).toMatchObject({ ok: true });
+        // CRLF shrinks to LF before measuring (150,000 bytes as sent, 99,999 as delivered).
+        expect(normalizeAgentPrompt('a\r\n'.repeat(AGENT_PROMPT_MAX_BYTES / 2))).toMatchObject({ ok: true });
+        // Trailing whitespace is gone before measuring, too.
+        expect(normalizeAgentPrompt(`${'a'.repeat(AGENT_PROMPT_MAX_BYTES)}\n\n  `)).toMatchObject({ ok: true });
     });
 
     it('reports a blank prompt as no prompt at all', () => {

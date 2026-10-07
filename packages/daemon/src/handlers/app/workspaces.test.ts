@@ -1215,6 +1215,7 @@ function recordingLauncher(options: { failWrite?: string } = {}): RecordingLaunc
             starts.push(launch);
         },
         modesChanged() {},
+        shellReported() {},
         inputWritten() {},
         abandonAll() {},
         pending: 0

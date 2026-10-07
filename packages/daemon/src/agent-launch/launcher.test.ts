@@ -14,6 +14,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
+    AGENT_READY_MAX_WAIT_MS,
     AGENT_READY_STABLE_MS,
     AGENT_READY_TIMEOUT_MS,
     AGENT_SHELL_READY_CAP_MS,
@@ -32,6 +33,7 @@ import { createStore, emptyDaemonState, type KelpiStore } from '../store/index.j
 import {
     AGENT_FIRST_OUTPUT_TIMEOUT_MS,
     AGENT_FOREGROUND_POLL_MS,
+    AGENT_FOREGROUND_REUSE_MS,
     createAgentLaunchDelivery,
     createAgentLauncher,
     isTypedInput,
@@ -78,6 +80,8 @@ interface Fixture {
     /** Set the parsed modes WITHOUT the callback (a daemon that never wired it). */
     silentModes(next: Partial<{ bracketedPaste: boolean; alternateScreen: boolean }>, paneID?: string): void;
     screen(text: string, paneID?: string): void;
+    /** The shell sent an OSC 7, as the terminal state reports it (`shellReported`). */
+    report(paneID?: string): void;
     start(request?: Partial<AgentLaunchRequest>, options?: { paneID?: string; workspaceID?: string; origin?: string }): void;
     bindSession(sessionID: string, paneID?: string): void;
     endSession(sessionID: string, paneID?: string): void;
@@ -107,6 +111,8 @@ function fixture(
         commands?: Partial<Record<AgentKind, string>>;
         /** Per call (1-based), instead of `f.foreground`. */
         foregroundAt?: (call: number) => Foreground;
+        /** The pane's zsh runs Kelpi's shell integration. */
+        integrated?: boolean;
     } = {}
 ): Fixture {
     const store = createStore(emptyDaemonState(HOME));
@@ -153,7 +159,7 @@ function fixture(
         foregroundCalls: 0,
         captures: 0,
         shell: options.shell ?? '/bin/zsh'
-    } as Omit<Fixture, 'launcher' | 'output' | 'exit' | 'modes' | 'silentModes' | 'screen' | 'start' | 'bindSession' | 'endSession'> &
+    } as Omit<Fixture, 'launcher' | 'output' | 'exit' | 'modes' | 'silentModes' | 'screen' | 'report' | 'start' | 'bindSession' | 'endSession'> &
         Partial<Fixture>;
 
     const launcher = createAgentLauncher({
@@ -185,6 +191,7 @@ function fixture(
             flush: () => Promise.resolve()
         },
         shellOf: () => f.shell,
+        ...(options.integrated !== undefined ? { shellIntegrated: () => options.integrated === true } : {}),
         foregroundIsShell: async () => {
             f.foregroundCalls += 1;
             const answer = options.foregroundAt?.(f.foregroundCalls) ?? f.foreground;
@@ -220,6 +227,9 @@ function fixture(
         },
         screen(text: string, paneID = P1) {
             screens.set(paneID, text);
+        },
+        report(paneID = P1) {
+            launcher.shellReported(paneID);
         },
         start(overrides: Partial<AgentLaunchRequest> = {}, startOptions: { paneID?: string; workspaceID?: string; origin?: string } = {}) {
             launcher.start({
@@ -411,6 +421,153 @@ describe('typing the launch line', () => {
         }
         await advance(1_000);
         expect(f.typed.map((entry) => entry.text)).toEqual(['claude']);
+        // Asked fresh, once, at the cap.
+        expect(f.foregroundCalls).toBe(1);
+    });
+
+    it('at the cap, types nothing when another program has the terminal (an rc file ran tmux, ssh-add)', async () => {
+        const f = fixture({ shell: '/bin/zsh' });
+        f.start(withPrompt('Fix it'));
+        f.output('Enter passphrase for key: ');
+        f.foreground = 'agent';
+        await advance(AGENT_SHELL_READY_CAP_MS);
+        expect(f.typed).toEqual([]);
+        expect(f.frames.map((frame) => frame.message)).toEqual([
+            expect.objectContaining({ outcome: 'failed', reason: 'timeout', prompt: 'Fix it', promptFile: PROMPT_FILE })
+        ]);
+        expect(f.logs.some((line) => line.includes('another program has the terminal'))).toBe(true);
+
+        // A check that cannot answer is no licence to type either.
+        const g = fixture({ shell: '/bin/zsh' });
+        g.start();
+        g.output('% ');
+        g.foreground = 'error';
+        await advance(AGENT_SHELL_READY_CAP_MS);
+        expect(g.typed).toEqual([]);
+        expect(outcomes(g)).toEqual(['failed:timeout']);
+    });
+
+    it('types once when the shell signals while the cap is still asking about the foreground', async () => {
+        const typed: string[] = [];
+        const frames: string[] = [];
+        let paste = false;
+        let asked = 0;
+        let release: (shell: boolean) => void = () => {};
+        let emit: (paneID: string, data: Uint8Array) => void = () => {};
+        const store = createStore(emptyDaemonState(HOME));
+        store.dispatch({ type: 'create-workspace', id: W1, paneID: P1, name: 'dev', color: 'blue', now: 0 });
+        const launcher = createAgentLauncher({
+            store,
+            pty: {
+                has: () => true,
+                onData(cb) {
+                    emit = cb;
+                    return () => {};
+                },
+                onExit: () => () => {}
+            },
+            input: {
+                sendText(_paneID, text) {
+                    typed.push(text);
+                }
+            },
+            term: {
+                modes: (): VtModes => ({ applicationCursorKeys: false, bracketedPaste: paste }),
+                alternateScreen: () => false,
+                bracketedPasteResets: () => 0,
+                capture: () => '',
+                flush: () => Promise.resolve()
+            },
+            shellOf: () => '/bin/zsh',
+            foregroundIsShell: () => {
+                asked += 1;
+                return new Promise((resolve) => {
+                    release = resolve;
+                });
+            },
+            commandFor: (kind) => kind,
+            deliver: (message) => {
+                frames.push(`${message.outcome}${message.reason !== undefined ? `:${message.reason}` : ''}`);
+            },
+            promptFiles: fakePromptFiles()
+        });
+        launcher.start({ paneID: P1, workspaceID: W1, request: request() });
+        emit(P1, Buffer.from('starting'));
+        await advance(AGENT_SHELL_READY_CAP_MS);
+        // The cap is asking the OS; before it answers, zle turns 2004 on and the line goes.
+        expect(asked).toBe(1);
+        expect(typed).toEqual([]);
+        paste = true;
+        launcher.modesChanged(P1);
+        expect(typed).toEqual(['claude']);
+        release(true);
+        await advance();
+        expect(typed).toEqual(['claude']);
+        expect(frames).toEqual(['launched']);
+    });
+
+    describe("under Kelpi's zsh integration (a precmd report, not 2004 alone)", () => {
+        it('an instant prompt turning 2004 on early does not type the line; the first report does', async () => {
+            const f = fixture({ shell: '/bin/zsh', integrated: true });
+            f.start();
+            f.output('[p10k instant prompt]');
+            f.modes({ bracketedPaste: true });
+            await advance(480);
+            expect(f.typed).toEqual([]);
+            // .zshrc is done: precmd reports the directory just before the first real prompt.
+            f.report();
+            await advance();
+            expect(f.typed.map((entry) => entry.text)).toEqual(['claude']);
+            expect(outcomes(f)).toEqual(['launched']);
+        });
+
+        it('a report before 2004 waits for zle (no instant prompt: precmd, then the line editor)', async () => {
+            const f = fixture({ shell: '/bin/zsh', integrated: true });
+            f.start();
+            f.output('Last login: today\n');
+            f.report();
+            await advance(100);
+            expect(f.typed).toEqual([]);
+            f.modes({ bracketedPaste: true });
+            await advance();
+            expect(f.typed.map((entry) => entry.text)).toEqual(['claude']);
+        });
+
+        it('falls back to the cap (shell in front) when no report ever comes', async () => {
+            const f = fixture({ shell: '/bin/zsh', integrated: true });
+            f.start();
+            f.output('% ');
+            f.modes({ bracketedPaste: true });
+            await advance(AGENT_SHELL_READY_CAP_MS - 1);
+            expect(f.typed).toEqual([]);
+            await advance(1);
+            expect(f.typed.map((entry) => entry.text)).toEqual(['claude']);
+        });
+
+        it('only zsh: fish, bash and a zsh without it keep their own signals, and ignore reports', async () => {
+            const zsh = fixture({ shell: '/bin/zsh', integrated: false });
+            zsh.start();
+            zsh.output('% ');
+            zsh.modes({ bracketedPaste: true });
+            await advance();
+            expect(zsh.typed.map((entry) => entry.text)).toEqual(['claude']);
+
+            const fish = fixture({ shell: '/opt/homebrew/bin/fish', integrated: true });
+            fish.start();
+            fish.output('Welcome to fish');
+            fish.modes({ bracketedPaste: true });
+            await advance();
+            expect(fish.typed.map((entry) => entry.text)).toEqual(['claude']);
+
+            const bash = fixture({ shell: '/bin/bash', integrated: true });
+            bash.start();
+            bash.output('bash-3.2$ ');
+            bash.report();
+            await advance(AGENT_SHELL_SETTLE_MS - 1);
+            expect(bash.typed).toEqual([]);
+            await advance(1);
+            expect(bash.typed.map((entry) => entry.text)).toEqual(['claude']);
+        });
     });
 });
 
@@ -423,7 +580,7 @@ describe('send mode', () => {
         const f = fixture({ commands: { claude: 'claude' } });
         f.start(withPrompt('Fix ENG-1', { send: true }));
         await shellAtPrompt(f);
-        expect(f.typed).toEqual([{ paneID: P1, text: `claude "$(command cat '${PROMPT_FILE}')"`, bare: false }]);
+        expect(f.typed).toEqual([{ paneID: P1, text: `claude "$(command cat '${PROMPT_FILE}') "`, bare: false }]);
         expect(f.frames.map((frame) => frame.message)).toEqual([
             { type: 'agent-launch', workspaceID: W1, paneID: P1, agent: 'claude', outcome: 'sent' }
         ]);
@@ -433,7 +590,7 @@ describe('send mode', () => {
         const f = fixture();
         f.start(withPrompt('--help me', { send: true, kind: 'codex' }));
         await shellAtPrompt(f);
-        expect(f.typed[0]?.text).toBe(`codex -- "$(command cat '${PROMPT_FILE}')"`);
+        expect(f.typed[0]?.text).toBe(`codex -- "$(command cat '${PROMPT_FILE}') "`);
     });
 
     it('refuses send mode in a shell whose syntax the line is not: failed, nothing typed', async () => {
@@ -662,6 +819,25 @@ describe('prefill', () => {
         expect(seen.at(-1)).toBe(true);
     });
 
+    it('shares one foreground answer between the chunks of a burst, and a poll always asks afresh', async () => {
+        const f = fixture({ readiness: () => ({ ready: false, waiting: 'composer' }) });
+        f.start(withPrompt('Fix it', { kind: 'codex' }));
+        await launchAndRun(f, { bracketedPaste: true });
+        const before = f.foregroundCalls;
+        // An agent drawing its start-up: twenty chunks inside one reuse window, one `ps`.
+        for (let i = 0; i < 20; i += 1) {
+            f.output(`frame ${String(i)}`);
+            await advance(5);
+        }
+        expect(AGENT_FOREGROUND_REUSE_MS).toBeGreaterThanOrEqual(AGENT_FOREGROUND_POLL_MS);
+        expect(f.foregroundCalls - before).toBeLessThanOrEqual(1);
+        // Then quiet: one fresh ask per poll, no more.
+        const quiet = f.foregroundCalls;
+        await advance(AGENT_FOREGROUND_POLL_MS * 4);
+        expect(f.foregroundCalls - quiet).toBeGreaterThanOrEqual(3);
+        expect(f.foregroundCalls - quiet).toBeLessThanOrEqual(4);
+    });
+
     it('R1: even a predicate that says ready never gets a paste into a shell in the foreground', async () => {
         const f = fixture({ readiness: () => ({ ready: true }) });
         f.start(withPrompt('rm -rf ~', { kind: 'codex' }));
@@ -736,10 +912,12 @@ describe('prefill', () => {
 describe('the ready timeout', () => {
     it('falls back (timeout) with the prompt when the agent never becomes ready', async () => {
         const f = fixture();
-        f.start(withPrompt('Fix it'), { origin: 'client-1' });
+        f.start(withPrompt('Fix it', { kind: 'codex' }), { origin: 'client-1' });
         await shellAtPrompt(f);
         const launchedAt = Date.now();
         await agentRunning(f);
+        // Up and full-screen, but its composer never appears.
+        f.modes({ bracketedPaste: true, alternateScreen: true });
         f.output('logging in…');
         await advance(launchedAt + AGENT_READY_TIMEOUT_MS - 1 - Date.now());
         expect(f.frames).toEqual([]);
@@ -750,7 +928,7 @@ describe('the ready timeout', () => {
                     type: 'agent-launch',
                     workspaceID: W1,
                     paneID: P1,
-                    agent: 'claude',
+                    agent: 'codex',
                     outcome: 'fallback',
                     reason: 'timeout',
                     prompt: 'Fix it',
@@ -774,7 +952,8 @@ describe('the ready timeout', () => {
         await advance(launchedAt + AGENT_READY_TIMEOUT_MS - 1 - Date.now());
         expect(f.frames).toEqual([]);
         await advance(1);
-        expect(outcomes(f)).toEqual(['fallback:timeout']);
+        // Claude in front, still waiting for SessionStart: the reason says why (below).
+        expect(outcomes(f)).toEqual(['fallback:no-session-start']);
     });
 
     it('is paused while a trust dialog is up, and the rest of the budget applies afterwards', async () => {
@@ -795,7 +974,49 @@ describe('the ready timeout', () => {
         await advance(AGENT_READY_TIMEOUT_MS - used - 1);
         expect(f.frames).toEqual([]);
         await advance(1);
-        expect(outcomes(f)).toEqual(['fallback:timeout']);
+        // Accepted, yet no SessionStart ever came: Claude is running without Kelpi's hooks.
+        expect(outcomes(f)).toEqual(['fallback:no-session-start']);
+    });
+
+    it('gives up after AGENT_READY_MAX_WAIT_MS in all, however long a trust dialog has held the budget', async () => {
+        const f = fixture();
+        f.start(withPrompt('Fix it'));
+        await shellAtPrompt(f);
+        const launchedAt = Date.now();
+        await agentRunning(f);
+        // Nobody answers the dialog: the budget stays paused for good.
+        f.screen(`Quick safety check: ${CLAUDE_TRUST_DIALOG_TEXT}?\n❯ No, exit`);
+        f.modes({ bracketedPaste: true });
+        await advance(launchedAt + AGENT_READY_MAX_WAIT_MS - 1 - Date.now());
+        expect(f.frames).toEqual([]);
+        await advance(1);
+        expect(f.frames.map((frame) => frame.message)).toEqual([
+            expect.objectContaining({ outcome: 'fallback', reason: 'timeout', prompt: 'Fix it', promptFile: PROMPT_FILE })
+        ]);
+        expect(f.typed).toHaveLength(1);
+        expect(f.launcher.pending).toBe(0);
+        expect(f.listeners).toEqual({ data: 0, exit: 0 });
+    });
+
+    it('says no-session-start when Claude Code had the terminal and its SessionStart never came', async () => {
+        const f = fixture();
+        f.start(withPrompt('Fix it'));
+        await shellAtPrompt(f);
+        await agentRunning(f);
+        // Claude draws its input box and waits: everything but the hook Kelpi needs.
+        f.modes({ bracketedPaste: true, alternateScreen: true });
+        f.output('> ');
+        await advance(AGENT_READY_TIMEOUT_MS);
+        expect(f.typed).toHaveLength(1);
+        expect(outcomes(f)).toEqual(['fallback:no-session-start']);
+
+        // The same wait with the SHELL in front is the agent having gone, not missing hooks.
+        const g = fixture({ shell: '/bin/bash' });
+        g.start(withPrompt('Fix it'));
+        g.output('bash-3.2$ ');
+        await advance(AGENT_SHELL_SETTLE_MS);
+        await advance(AGENT_READY_TIMEOUT_MS);
+        expect(outcomes(g)).toEqual(['fallback:agent-exited']);
     });
 
     it('a trust dialog accepted in time ends in a prefill', async () => {

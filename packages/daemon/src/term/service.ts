@@ -778,6 +778,8 @@ interface PaneTerminal {
     outputPaused: boolean;
     /** The replay mode of the write xterm is parsing right now; the parser hooks read it. */
     readonly effects: { mode: ReplayMode };
+    /** DECRST 2004 sequences parsed so far (`bracketedPasteResets`). */
+    readonly pasteResets: { count: number };
     /** Bytes still to be fed as replay (`markReplay`), and in which mode. */
     replayBudget: number;
     replayBudgetMode: ReplayMode;
@@ -1549,6 +1551,28 @@ export class TerminalStateServiceImpl implements TerminalStateService {
     }
 
     /**
+     * The pane is on the alternate screen (DEC 1049 / 1047 / 47): a full-screen program has it.
+     * Not a `VtModes` member, because nothing a client renders depends on it and adding it there
+     * would make every switch a `modes` broadcast; the agent launcher (agent-lifecycle.md §6.5)
+     * reads it here instead, after `flush`, beside `modes()`. False for an unknown pane.
+     */
+    alternateScreen(paneID: string): boolean {
+        const entry = this.panes.get(paneID);
+        return entry !== undefined && entry.term.buffer.active.type === 'alternate';
+    }
+
+    /**
+     * How many times the pane's programs have switched bracketed paste OFF (DECRST 2004) since
+     * its terminal state was created, counted by the parser. A line editor switches it off as it
+     * runs a line, so the agent launcher compares this with its value when it typed the launch
+     * line to learn that the shell has run it, even when the off and the next on arrived in one
+     * write (agent-lifecycle.md §6.5). 0 for an unknown pane.
+     */
+    bracketedPasteResets(paneID: string): number {
+        return this.panes.get(paneID)?.pasteResets.count ?? 0;
+    }
+
+    /**
      * Every occurrence of `needle` in the pane's buffer (`./search.ts`). Unknown pane → `[]`,
      * which is the same answer as "no matches" on purpose: a pane that closed mid-search is a
      * search with nothing to find, not an error the overlay has to render.
@@ -1721,6 +1745,16 @@ export class TerminalStateServiceImpl implements TerminalStateService {
         // Registered unconditionally: `modes()` is a synchronous read for every caller, and a
         // pane that starts life without a mode listener can still be attached to later.
         const mouseFormat = trackMouseFormat(term);
+        // Every DECRST 2004, counted as it is PARSED (`bracketedPasteResets`): an off-then-on
+        // pair that lands in one write is invisible to anything that compares `modes()` between
+        // writes. `false` = xterm still applies the mode itself.
+        const pasteResets = { count: 0 };
+        term.parser.registerCsiHandler({ prefix: '?', final: 'l' }, (params) => {
+            if (params.some((param) => param === 2004 || (Array.isArray(param) && param.includes(2004)))) {
+                pasteResets.count += 1;
+            }
+            return false;
+        });
         // §TERM-030. Registered unconditionally for the same reason as the mouse format —
         // `modes()` is a synchronous read for every caller — but the query REPLY is only wired
         // when boot supplied a sink, so a service built without one answers nothing rather than
@@ -1767,7 +1801,8 @@ export class TerminalStateServiceImpl implements TerminalStateService {
             replayBudget: 0,
             replayBudgetMode: 1,
             revision: ++this.highestRevision,
-            quietWaiters: new Set()
+            quietWaiters: new Set(),
+            pasteResets
         };
         entry.lastModes = readModes(entry);
         return entry;

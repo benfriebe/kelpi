@@ -839,12 +839,14 @@ export type WsAgentLaunchOutcome = (typeof WS_AGENT_LAUNCH_OUTCOMES)[number];
  * Why a launch ended in `fallback` or `failed`:
  *
  *   - `timeout`: the agent did not become ready in time (`AGENT_READY_TIMEOUT_MS`, paused while
- *     a trust dialog is on screen);
+ *     a trust dialog is on screen); as `failed`, the pane printed nothing for 30 s after the
+ *     create, so the launch line was never typed;
  *   - `pane-exited`: the pane exited or was closed first (`failed` when that was before the
  *     launch line was typed, `fallback` after);
  *   - `agent-exited`: the agent quit, or never got going, and the shell has the pane again;
- *   - `user-typed`: someone typed into the pane after the launch line, and a paste would have
- *     interleaved with them;
+ *   - `user-typed`: someone typed into the pane: after the launch line a paste would have
+ *     interleaved with them (`fallback`); before it, the line would have been appended to their
+ *     input (`failed`);
  *   - `no-bracketed-paste`: the agent never turned bracketed paste on, and an unframed paste
  *     would submit at its first newline;
  *   - `unsupported-shell`: send mode needs a shell that runs `"$(command cat '<file>')"`

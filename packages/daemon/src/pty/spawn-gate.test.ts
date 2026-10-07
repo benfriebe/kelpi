@@ -256,6 +256,9 @@ class FakePtyManager implements KelpiPtyManager {
     pid(): number | undefined {
         return undefined;
     }
+    shell(): string | undefined {
+        return undefined;
+    }
     count(): number {
         return this.live.size;
     }

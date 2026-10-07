@@ -9,7 +9,8 @@ working.
 
 Scope: hook wiring (Claude Code + Codex CLI), the `kelpi event` CLI command, the wire
 protocol for agent lifecycle messages, the per-pane agent state machine, session-id
-binding/clearing/resume, elapsed-time badges and header UI, the status bar (footer
+binding/clearing/resume, starting an agent in a new workspace (§6.5), elapsed-time badges
+and header UI, the status bar (footer
 counts + menu-bar popover), desktop notifications, dock badge / attention bounce,
 quit and workspace-delete confirmation gates, and the system stats footer gauges.
 
@@ -681,6 +682,227 @@ wrapped as `commands.restartPaneAgent` on the client
   agent sitting between Split Down and Close is a mis-click nobody asked for;
   `packages/client/src/grid/PaneHeader.tsx:1000-1006`). The verb stays reachable for any
   client or a later context-menu item.
+
+### 6.5 Launch on create (`workspace-create` `start_agent`)
+
+A `workspace-create` can ask for an agent in the new workspace's first pane (`start_agent`,
+`agent_prompt`, `send_prompt`; wire contract in wire-protocol.md §6.3). The create handler checks
+the fields and writes the prompt to a file before anything is created (socket-handlers.md §6.2,
+"Starting an agent"), then hands the first pane to the daemon's **launcher**
+(`packages/daemon/src/agent-launch/launcher.ts`) the moment that pane's PTY spawn has been asked
+for. The launcher types the launch line once the shell is at its prompt and, for a prefill, pastes
+the prompt once the agent is ready for it. The rules it applies are pure functions in
+`packages/core/src/agent/launch.ts` (what to type, which shell signal to wait for, the readiness
+predicate); the launcher owns the clock, the PTY, the terminal state and the store.
+
+Nothing here is persisted. One launch per pane, held in memory from the create until its outcome,
+which is reported as exactly one `agent-launch` frame (or none, if the daemon crashes first).
+
+#### 6.5.1 State machine
+
+```
+start ──► awaiting-shell ──(line typed)──┬──► launched          no prompt
+            │                            ├──► sent              send mode
+            │                            └──► awaiting-agent ──┬──► prefilled
+            │                                                  └──► fallback(reason)
+            └──► failed(reason)          (the line was never typed)
+```
+
+**awaiting-shell.** Nothing is written into the pane before it has produced output: a write
+would force a spawn the spawn gate is holding for the client's geometry
+(`packages/daemon/src/pty/spawn-gate.ts`), so the shell would be born at 80x24. Once the pane has
+printed, the launcher reads which shell it is running (`KelpiPtyManager.shell`, the program the
+manager spawned, so a profile's `SHELL` and the `/bin/sh` fallback both count) and waits for
+`agentShellReadySignal(shell)`:
+
+- **zsh, fish**: bracketed paste (DEC 2004) turning on, which their line editors do as they start
+  reading. Only that: their startup often prints and pauses before the prompt (p10k's instant
+  prompt, nvm, conda), so a quiet spell proves nothing.
+- **every other shell**: 2004 turning on (bash 5.1+), or `AGENT_SHELL_SETTLE_MS` with no output
+  since the LAST output (bash 3.2, sh, dash, ksh never turn 2004 on).
+- **either**: `AGENT_SHELL_READY_CAP_MS` after the first output, whatever the shell said.
+
+2004 is read from the terminal state after the chunk that set it has been parsed (the
+`onModesChange` fan-out in `packages/daemon/src/boot/compose.ts`, and a check after `flush` on
+every output chunk). Ends early with `failed`:
+
+| reason | when |
+|---|---|
+| `timeout` | the pane printed nothing for `AGENT_FIRST_OUTPUT_TIMEOUT_MS` after the create: a shell that has said nothing is not one the launcher knows to be at a prompt |
+| `user-typed` | someone typed into the pane first; the launch line would be appended to their input |
+| `pane-exited` | the pane exited or was closed (see "A pane that goes away" below) |
+| `unsupported-shell` | send mode in a shell outside `SEND_MODE_SHELLS` (zsh, bash, sh, dash, ksh, fish); a plain launch or a prefill types no shell syntax and works in any shell |
+| `daemon-stopping` | the daemon stopped or handed off |
+
+**Typing the line.** Immediately before it, the launcher checks the pane is still in the store
+AND `pty.has(pane)`. The command is `agentLaunchCommand(kind, agent-<kind>-command)` read from
+Settings at that moment, so an edit governs a launch already waiting. Send mode types
+`sendModeCommandLine(command, promptFile, prompt)`, i.e. `<command>[ --] "$(command cat
+'<prompt file>')"`. It goes through `TerminalInput.sendText(pane, line, { bare: false })` (framed
+as a paste if the shell has 2004 on, then Enter as its own keystroke, never mirrored to sync
+siblings) on the PTY manager that does NOT report input (so the launcher's own keystrokes are not
+"someone typing"). With no prompt the outcome is `launched`; in send mode, `sent`.
+
+**awaiting-agent** (prefill only). `launchedAt` is the moment the line was typed, and the
+`AGENT_READY_TIMEOUT_MS` budget runs from there. The readiness predicate (`AgentReadiness`,
+default `defaultAgentReadiness`; injectable, so a test or a later agent version can replace it) is
+asked again on every output chunk (after the terminal state has parsed it, so the screen it reads
+is current), every mode change, every change to the pane's agent session in the store, every
+keystroke, every `recheckInMs` it asks for, and in any case every `AGENT_FOREGROUND_POLL_MS`
+(`AGENT_DIALOG_POLL_MS` while paused at a trust dialog): a foreground answer can be taken while a
+short-lived child holds the terminal (zsh forks before it finds that a command does not exist), and
+the shell's prompt after it may be the last output the pane ever produces. Its answer:
+
+- `ready`: the hard rule below, then the paste;
+- `abandon`: `fallback` with that reason (`user-typed`, `agent-exited`);
+- `waiting`: keep waiting. `waiting: 'stable'` sets `holdingSince` on the first such answer and any
+  other answer clears it; `trustDialog` pauses the budget, any other answer resumes it.
+
+A predicate that throws is `fallback` (`predicate-error`).
+
+**The hard rule (R1).** A prompt is never pasted into a shell. Immediately before the paste the
+launcher asks the OS again, FRESH, whether the shell is the terminal's foreground process group
+(`packages/daemon/src/pty/foreground.ts`: `ps -o tpgid=,pgid=` on macOS, `/proc/<pid>/stat` on
+Linux, against the pane's shell pid, bounded to `FOREGROUND_CHECK_TIMEOUT_MS`). The shell in front
+is `fallback` (`agent-exited`), a check that cannot answer is `fallback` (`predicate-error`), and
+then the pane must still be there (`pane-exited`), nobody may have typed (`user-typed`), and
+bracketed paste must be ON: the paste is `sendText(pane, prompt, { bare: true })`, one framed
+paste with no Enter, so nothing in it can submit. A ready answer while 2004 is off pastes nothing
+and keeps waiting; the timeout then says `no-bracketed-paste`. Success is `prefilled`.
+
+**The shell coming back.** When the agent never starts (command not found), crashes, or is quit
+at its trust dialog, the shell returns to its prompt and turns 2004 back on. The launcher notices
+at once rather than at the end of the budget: a line editor turns 2004 off as it runs a line
+(counted by the parser, `TerminalStateServiceImpl.bracketedPasteResets`, so an off and an on that
+arrive in one write still count) and on only to read the next one, while an agent can only turn it
+on while it holds the terminal. So once 2004 has been seen back on after such an off, a foreground
+check that started after that and finds the shell in charge is `fallback` (`agent-exited`). A shell
+without 2004 (bash 3.2) waits for the timeout.
+
+**The timeout.** `fallback` with `no-bracketed-paste` when the agent had the terminal and never
+asked for framed pastes (the last answer was `waiting: 'bracketed-paste'` with the agent in front,
+or a ready answer found 2004 off); `agent-exited` when the last foreground answer that was an
+answer found the shell in charge; otherwise `timeout`.
+
+**A pane that goes away (R7).** A pane closed while the spawn gate holds it never exits (the gate
+drops the spawn), so the store is the witness: while anything is pending, every store change
+checks the pane still exists (either lane); gone is `pane-exited`, as is a PTY exit. `failed`
+before the line was typed, `fallback` after.
+
+#### 6.5.2 Signals the launcher produces
+
+What `AgentReadinessSignals` carries, and where each value comes from:
+
+| signal | source |
+|---|---|
+| `modes.bracketedPaste` | `TerminalStateService.modes(pane)`, after `flush` |
+| `modes.alternateScreen` | `TerminalStateServiceImpl.alternateScreen(pane)`: the emulator's active buffer is the alternate one (`VtModes` has no such flag, and adding one would make every switch a client broadcast) |
+| `modeChangedAt` | the launcher's clock when it first saw each mode take its current value; null when it has not changed since the launch began |
+| `sessionBound`, `sessionBoundAt` | the pane's `agentSessionID` in the store: bound when it is set to an id other than the one the pane had when the line was typed; `sessionBoundAt` is when the launcher first saw that, and is kept after an unbind (which the default predicate reads as `agent-exited`) |
+| `foregroundIsShell` | the OS check above; an answer up to `AGENT_FOREGROUND_REUSE_MS` old is reused while waiting (an agent's start-up is a burst of chunks), never for the check before a paste; a check that fails counts as true |
+| `userInputSinceLaunch` | any input written into the pane since the line, other than the launcher's own and other than reports a terminal sends on its own (below) |
+| `lastOutputAt` | the pane's last output since the line was typed |
+| `holdingSince` | the launcher's memory of the predicate's stability window (above) |
+| `screenText()` | `capture(pane, { scrollback: false })`, taken lazily, at most once per evaluation |
+
+**Typed input.** Boot wraps the PTY manager it hands out (`withInputObserver`,
+`packages/daemon/src/pty/input-observer.ts`), so every input path (a client's keystrokes and
+mouse reports, `pane send` / `send-key`, a dropped file, a web-inspector paste, plugin terminals)
+reports to the launcher before the bytes are written. The terminal's own query replies and the
+launcher's writes use the inner manager and are never reported. Input that consists only of
+reports a terminal sends by itself does not count (`isTypedInput`): focus in/out, mouse reports
+(SGR, X10, urxvt), device, cursor and kitty-flag replies, OSC and DCS answers, kitty key-release
+events. Agents turn mouse tracking and focus events on as they start, and a mouse moving over the
+new pane must not cost the user their prefill.
+
+#### 6.5.3 The shipped readiness rules
+
+`defaultAgentReadiness`, from a 43-run measurement of Claude Code 2.1.292 and codex 0.160.1
+(each rule's evidence is restated in `launch.ts`). For both agents, in order: input since the
+launch line abandons (`user-typed`); a session that bound and then unbound abandons
+(`agent-exited`); the shell in the foreground waits.
+
+- **Claude Code** waits for SessionStart (it arrives only after the trust dialog is accepted, and
+  2004 is OFF at that instant), then is ready the first moment 2004 and the alternate screen are
+  both on, or, for a renderer that never takes the alternate screen, once 2004 has held for
+  `AGENT_READY_STABLE_MS` since SessionStart. The first 2004-on after launch is never the signal:
+  Claude turns it on during its trust dialog and during an undrawn phase, and a paste then is lost.
+  Without hooks installed (§2.1) no SessionStart arrives, so a Claude prefill always falls back.
+- **codex** never fires SessionStart before its first model turn, so it is read off the screen:
+  2004 on, the alternate screen on, the composer glyph drawn and no trust dialog, all held for
+  `AGENT_READY_STABLE_MS`.
+
+Version-sensitive strings, kept as named constants so a reworded release is a one-line change:
+
+| constant | text | version |
+|---|---|---|
+| `CLAUDE_TRUST_DIALOG_TEXT` | `Is this a project you created or one you trust` | Claude Code 2.1.292 |
+| `CODEX_TRUST_DIALOG_TEXT` | `Trust this folder?` | codex 0.160.1 |
+| `CODEX_COMPOSER_GLYPH` | `›` (U+203A), not followed by a numbered option | codex 0.160.1 |
+
+A trust dialog is shown only for the first worktree of a repository the agent has never trusted
+(worktrees inherit the main repository's trust). Claude's defaults to "No, exit", so the launcher
+never sends Enter, and pastes during a dialog are dropped by both agents: the budget is paused
+while one is on screen.
+
+#### 6.5.4 Timings
+
+| constant | value | meaning |
+|---|---|---|
+| `AGENT_SHELL_SETTLE_MS` | 2 s | quiet spell that means "at the prompt" for a shell without 2004 (core) |
+| `AGENT_SHELL_READY_CAP_MS` | 10 s | after the first output, the line is typed whatever the shell said (core) |
+| `AGENT_FIRST_OUTPUT_TIMEOUT_MS` | 30 s | a pane silent this long after the create is `failed` (`timeout`) (daemon) |
+| `AGENT_READY_TIMEOUT_MS` | 10 s | the prefill budget from the line, paused during a trust dialog; the slowest measured launch was 0.92 s (core) |
+| `AGENT_READY_STABLE_MS` | 300 ms | every stability window in the shipped rules (core) |
+| `AGENT_FOREGROUND_POLL_MS` | 100 ms | the wait is re-run at least this often (daemon) |
+| `AGENT_DIALOG_POLL_MS` | 1 s | the same while paused at a trust dialog (daemon) |
+| `AGENT_FOREGROUND_REUSE_MS` | 50 ms | a foreground answer this young is reused while waiting (daemon) |
+| `FOREGROUND_CHECK_TIMEOUT_MS` | 1 s | bound on one OS foreground check (daemon) |
+| `PROMPT_FILE_TTL_MS` | 24 h | prompt file sweep age (core) |
+
+#### 6.5.5 Prompt files
+
+`packages/daemon/src/agent-launch/prompt-files.ts`. A non-blank normalized prompt is written, in
+both modes, before anything is created, to `<database directory>/prompts/<uuid>.txt` (a
+`:memory:` daemon makes a private `mkdtemp` directory on its first write). The directory is made
+0700 and forced back to 0700 on every write, and refused when it is not a real directory owned by
+this user (`lstat`, so a planted symlink is refused, not followed); each file is created 0600 with
+`wx`, so an existing name fails rather than being followed. A create that then fails removes its
+file. Files are swept at `PROMPT_FILE_TTL_MS` at boot and on every write; the sweep reads entries
+with `lstat` and deletes only regular files named `<uuid>.txt`, never following a link and never
+touching anything else. A finished launch leaves its file for the sweep: a send-mode line re-run
+from shell history still finds its prompt that day, and a fallback's `promptFile` stays readable.
+Logs name the file, never the prompt.
+
+#### 6.5.6 Who hears the outcome
+
+The frame goes to the WS session that sent the create: `ReplyHandle.originClientID`, which
+`WsReplyHandle` sets to the requesting session, or for a plugin view's request (run on an internal
+session) to the window session hosting the view; the plugin-hook wrapper in
+`packages/daemon/src/boot/dispatch.ts` passes it through. `SyncHub.sendToClient` delivers it when
+that session is still open and past its hello. Otherwise (a control-socket create, i.e. the CLI,
+or a window that has gone), `fallback` and `failed` are broadcast to every client with
+`broadcast: true` (`createAgentLaunchDelivery`), and a success is not sent at all.
+
+#### 6.5.7 Stop, handoff and restart
+
+The launcher is in memory only. `stop()` calls `abandonAll('daemon-stopping')` first, before any
+PTY is killed and while the WS server can still carry frames; `handoff()` calls it before the WS
+server closes. Every pending launch is reported then (`failed` before its line was typed,
+`fallback` after, both with the prompt), and the launcher goes inert: the exits the stop causes
+send no second frame, and a create that lands after it reports `failed` (`daemon-stopping`) at
+once. The successor daemon knows nothing of it: a line never typed is never typed, an agent
+already launched keeps running without its prefill, and the prompt files stay for the sweep. A
+daemon that crashes reports nothing.
+
+#### 6.5.8 Limits
+
+- A command that `exec`s the agent (`exec claude`) replaces the shell, so the shell's own process
+  group holds the terminal and a prefill always falls back (`agent-exited`); send mode and a plain
+  launch are unaffected.
+- Resume and restart (§6.1, §6.4) still type their own `claude --resume` / `codex resume`, not
+  the configured commands.
+- The plugin SDK's `createWorkspace` does not forward the three request fields.
 
 ---
 

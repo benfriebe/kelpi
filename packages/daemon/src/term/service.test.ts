@@ -208,6 +208,33 @@ describe('TerminalStateServiceImpl — modes', () => {
         });
     });
 
+    /** The agent launcher's two extra reads (agent-lifecycle.md §6.5). */
+    it('reports the alternate screen, which VtModes does not carry', async () => {
+        const service = makeService();
+        service.attach('p', 20, 5);
+        expect(service.alternateScreen('p')).toBe(false);
+        await write(service, 'p', '\x1b[?1049h');
+        expect(service.alternateScreen('p')).toBe(true);
+        await write(service, 'p', '\x1b[?1049l');
+        expect(service.alternateScreen('p')).toBe(false);
+        expect(service.alternateScreen('gone')).toBe(false);
+    });
+
+    it('counts every DECRST 2004 as it is parsed, even an off and an on in one write', async () => {
+        const service = makeService();
+        service.attach('p', 20, 5);
+        await write(service, 'p', '\x1b[?2004h');
+        expect(service.bracketedPasteResets('p')).toBe(0);
+        // A shell running a line and coming back to its prompt, in a single chunk.
+        await write(service, 'p', '\x1b[?2004l\r\nzsh: command not found: claude\r\n% \x1b[?2004h');
+        expect(service.modes('p').bracketedPaste).toBe(true);
+        expect(service.bracketedPasteResets('p')).toBe(1);
+        // Among other modes in one sequence; other resets do not count.
+        await write(service, 'p', '\x1b[?1;2004l\x1b[?1049l\x1b[?25l');
+        expect(service.bracketedPasteResets('p')).toBe(2);
+        expect(service.bracketedPasteResets('gone')).toBe(0);
+    });
+
     it('reports idle modes for unknown panes', () => {
         const service = makeService();
         expect(service.modes('gone')).toEqual({

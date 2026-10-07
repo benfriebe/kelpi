@@ -1252,7 +1252,10 @@ is text for the agent, and `send_prompt` (bool, default false) chooses how it is
 `true` puts it on the launch line, so the agent submits it at once ("send"); `false` pastes it,
 unsubmitted, into the agent's input once the agent is ready for it ("prefill"). The decoder keeps
 `start_agent` as the raw string (it never goes through §5.1's fallback to `claude`), so the
-handler can refuse a typo. The handler checks, in this order and BEFORE any effect (no
+handler can refuse a typo. The agent starts the same way on every branch (plain, group,
+repository, worktree, nested) and whether the create is focused or in the background (`focus`
+absent): the first pane spawns either way. The handler checks, in this order, after the
+request's `icon` and `parent` checks (which make nothing either) and BEFORE any effect (no
 workspace, group, repo registration or git work happens on a refusal):
 
 1. `start_agent` other than `claude`/`codex` → `{"ok":false,"error":"unknown agent '<value>'
@@ -1286,7 +1289,8 @@ the text stays at hand when a prefill falls back with no window attached to show
 The reply never waits for the agent (a plain create still answers before its first pane even
 spawns). The daemon types the launch line once the pane's shell is at its prompt (bracketed
 paste on, for zsh and fish; bracketed paste or 2 s without output, for any other shell; 10 s
-after the pane's first output at the latest), and what became of the request arrives later, as
+after the pane's first output at the latest; never before the pane has printed anything), and
+what became of the request arrives later, as
 ONE `agent-launch` frame on the WS sync socket (never on the control socket;
 `WsAgentLaunchMessage`, `packages/protocol/src/ws/messages.ts`):
 `{"type":"agent-launch","workspaceID","paneID","agent","outcome","reason"?,"prompt"?,"promptFile"?,"broadcast"?}`.
@@ -1300,10 +1304,12 @@ ONE `agent-launch` frame on the WS sync socket (never on the control socket;
 | `failed` | the launch line was never typed, so no agent started |
 
 `reason` is present exactly on `fallback` and `failed`: `timeout` (the agent was not ready
-within 10 s of the launch line, a clock that is paused while a trust dialog is on screen),
+within 10 s of the launch line, a clock that is paused while a trust dialog is on screen; or, as
+`failed`, the pane printed nothing for 30 s after the create, so the line was never typed),
 `pane-exited` (the pane exited or was closed), `agent-exited` (the agent quit or never got going,
-and the shell has the terminal again), `user-typed` (someone typed into the pane after the
-launch line), `no-bracketed-paste` (the agent never asked for framed pastes), `unsupported-shell`
+and the shell has the terminal again), `user-typed` (someone typed into the pane: before the
+launch line, `failed`, since the line would have been appended to their input; after it,
+`fallback`), `no-bracketed-paste` (the agent never asked for framed pastes), `unsupported-shell`
 (send mode in a shell other than zsh, bash, sh, dash, ksh or fish: `failed`, nothing typed),
 `predicate-error` (the readiness check threw) or `daemon-stopping` (the daemon stopped or handed
 off while the launch was pending). `prompt` (the normalized text) and `promptFile` ride on

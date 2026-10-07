@@ -31,7 +31,15 @@ import { dirname, join } from 'node:path';
 
 import { newUUID } from '@kelpi/core/codec';
 import { SYSTEM_STATS_INTERVAL_MS, WS_TRANSPORT_CHANGED_MESSAGE } from '@kelpi/protocol';
-import { captureResumeTuple, type ResumeTuple } from '@kelpi/core/agent';
+import { agentLaunchCommand, captureResumeTuple, type ResumeTuple } from '@kelpi/core/agent';
+
+import {
+    PROMPTS_DIRECTORY_NAME,
+    createAgentLaunchDelivery,
+    createAgentLauncher,
+    createPromptFileStore,
+    type AgentLauncher
+} from '../agent-launch/index.js';
 
 import { createContentService, createContentRenderService, createImageWatchService, type ContentService } from '../content/index.js';
 import { createCsvService, type CsvService } from '../content/csv/service.js';
@@ -103,11 +111,13 @@ import {
     createPtyManager,
     createTerminalInput,
     chooseSplitDirectory,
+    createForegroundReader,
     createProcessCwdReader,
     createShellForegroundProbe,
     FALLBACK_SHELL,
     installShellIntegration,
     SHELL_INTEGRATION_ENV,
+    withInputObserver,
     withSpawnGate,
     type KelpiPtyManager,
     type ShellIntegration
@@ -116,6 +126,7 @@ import { nodePtySpawner } from '../pty/spawner.js';
 import { createEditorResolver, type EditorResolver } from '../content/external-editor.js';
 import {
     WS_OLD_TERMINAL_HOSTS_MESSAGE,
+    type JsonObject,
     type WireMessage,
     type WsOldTerminalHost,
     type WsOldTerminalHostsMessage
@@ -610,7 +621,18 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
      * the GATED manager, so a keystroke, a `pane send` or a pane close resolves a pending spawn
      * without any caller knowing the gate is there (`withSpawnGate`).
      */
-    const pty = withSpawnGate(rawPty, spawnGate);
+    const gatedPty = withSpawnGate(rawPty, spawnGate);
+    /** Assigned once the agent launcher exists (below `settings`). */
+    let onPaneInput: (paneID: string, data: Uint8Array | string) => void = () => {};
+    /**
+     * …and through one more wrapper that tells the agent launcher whenever anyone writes into a
+     * pane (`pty/input-observer.ts`), so a prefill never interleaves with someone typing
+     * (agent-lifecycle.md §6.5). Two writers stay on `gatedPty`, because neither is a person
+     * typing: the terminal's own query replies (`onQueryReply` below) and the launcher itself.
+     */
+    const pty = withInputObserver(gatedPty, (paneID, data) => {
+        onPaneInput(paneID, data);
+    });
     /** Assigned once the store and the settings exist (just below `term`). */
     let onPaneDirectory: (paneID: string, directory: string) => void = () => {};
     /**
@@ -631,6 +653,12 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
      * `settings`, the routing reads `store` and the broadcast needs `ws`.
      */
     let onPaneClipboardRequest: (paneID: string, request: Osc52Request) => void = () => {};
+    /**
+     * Mode changes the agent launcher waits on (2004 turning on is "the shell is at its prompt",
+     * and readiness re-reads the modes). Deferred like the four above: the launcher needs
+     * `settings`, which is built below.
+     */
+    let onAgentLaunchModes: (paneID: string) => void = () => {};
     const term = createTerminalStateService({
         onBackpressure: (paneID, paused) => {
             if (paused) pty.pauseOutput(paneID);
@@ -684,6 +712,11 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
             } catch (error) {
                 report(error, 'pane modes report');
             }
+            try {
+                onAgentLaunchModes(paneID);
+            } catch (error) {
+                report(error, 'agent launch modes');
+            }
         },
         // §TERM-030 / #349: the one place where parsing OUTPUT owes the PTY INPUT. A real terminal
         // answers `CSI ? u` with its kitty-keyboard flags, and that answer is how an application
@@ -692,7 +725,8 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         // sibling would hand each of them an answer to a question they never asked.
         onQueryReply: (paneID, reply) => {
             try {
-                pty.writeDirect(paneID, reply);
+                // The un-observed manager: the emulator answering a query is not input anyone typed.
+                gatedPty.writeDirect(paneID, reply);
             } catch (error) {
                 report(error, 'terminal query reply');
             }
@@ -710,6 +744,55 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         ...(options.configPath !== undefined ? { configPath: options.configPath } : {}),
         ...(onError !== undefined ? { onError } : {})
     });
+    /*
+     * `workspace-create`'s `start_agent` (wire-protocol.md §6.3, agent-lifecycle.md §6.5). Prompt
+     * files live beside the database (a `:memory:` daemon makes a private temporary directory on
+     * its first one) and are swept a day old, here at boot and on every write. The launcher
+     * types through the UN-observed manager, so its own keystrokes never read as a user typing;
+     * the command it types is read from Settings each time, so an edit governs the next create.
+     * Its frames go to the window that asked, else (fallback / failed only) to every window.
+     */
+    const promptFiles = createPromptFileStore({
+        directory: dbPath === ':memory:' ? null : join(dirname(dbPath), PROMPTS_DIRECTORY_NAME),
+        onError: (error, context) => report(error, context)
+    });
+    promptFiles.sweep();
+    const readForeground = createForegroundReader();
+    const agentLauncher: AgentLauncher = createAgentLauncher({
+        store,
+        pty: gatedPty,
+        input: createTerminalInput({ pty: gatedPty, modes: (paneID) => term.modes(paneID) }),
+        term,
+        shellOf: (paneID) => rawPty.shell(paneID),
+        foregroundIsShell: (paneID) => {
+            const pid = rawPty.pid(paneID);
+            return pid === undefined
+                ? Promise.reject(new Error(`pane ${paneID} has no shell process`))
+                : readForeground(pid);
+        },
+        commandFor: (kind) =>
+            agentLaunchCommand(
+                kind,
+                kind === 'claude'
+                    ? settings.snapshot.general.agentClaudeCommand
+                    : settings.snapshot.general.agentCodexCommand
+            ),
+        deliver: createAgentLaunchDelivery({
+            sendToClient: (clientID, message) => ws?.sync.sendToClient(clientID, message as unknown as JsonObject) ?? false,
+            broadcast: (message) => {
+                ws?.broadcast(message as unknown as Record<string, unknown>);
+            }
+        }),
+        promptFiles,
+        log,
+        onError: (error, context) => report(error, context)
+    });
+    onPaneInput = (paneID, data) => {
+        agentLauncher.inputWritten(paneID, data);
+    };
+    onAgentLaunchModes = (paneID) => {
+        agentLauncher.modesChanged(paneID);
+    };
     let pluginHost: PluginService | undefined;
     const pluginGit = createPluginGitService(createGitService(), () => pluginHost);
     const git: GitService = pluginGit.git;
@@ -1523,6 +1606,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         // focused. Nothing attached ⇒ false ⇒ headless still notifies (§7 port note 2).
         isAppActive: () => ws?.presence().anyVisible ?? false,
         isPaneFocused: (paneID, workspaceID) => ws?.isPaneAttended(workspaceID, paneID) ?? false,
+        agentLauncher,
         // SET-008 / SET-013: read through the settings service on every command, so changing
         // the worktree base path or the placement picker in Settings takes effect on the next
         // `workspace create` without rebuilding the handler table (`resolveAppDeps` turns
@@ -2305,6 +2389,9 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
 
     const stop = async (): Promise<void> => {
         if (stopped !== undefined) return stopped;
+        // First, while the WS server can still carry them: every launch still waiting reports
+        // (with its prompt), and nothing the kill below does to a pane sends a second frame.
+        agentLauncher.abandonAll('daemon-stopping');
         flushEditors();
         stopping = true;
         running = false;
@@ -2373,6 +2460,10 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
             // successor would adopt its fresh shells and never type their resumes, or find the
             // old host it was shutting down. Every step of it is bounded on its own.
             await restarting?.catch(() => undefined);
+            // Before the WS server closes: a launch still waiting reports now, with its prompt.
+            // The successor knows nothing of it, so an untyped line is never typed and an agent
+            // already launched keeps running without its prefill (agent-lifecycle.md §6.5).
+            agentLauncher.abandonAll('daemon-stopping');
             // The run-dir socket stays bound until the state is flushed, so no successor can
             // start (and load a database this daemon has not finished writing) mid-handoff; it
             // refuses commands meanwhile. The pane route closes now: a hook fired from a

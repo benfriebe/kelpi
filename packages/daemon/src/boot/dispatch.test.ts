@@ -118,4 +118,35 @@ describe('createDispatcher', () => {
         dispatch({ command: 'ping' }, reply);
         expect(reply.payloads).toEqual([{ ok: true }]);
     });
+
+    it('hands a hooked command the same request: progress, cancel and the origin session pass through', async () => {
+        const seen: ReplyHandle[] = [];
+        const signal = new AbortController().signal;
+        const dispatch = createDispatcher<Ctx>({
+            ctx: { seen: [] },
+            tables: [
+                table([
+                    [
+                        'workspace-create',
+                        (_msg, _ctx, reply) => {
+                            if (reply !== null) seen.push(reply);
+                            reply?.send({ ok: true });
+                            reply?.close();
+                        }
+                    ]
+                ])
+            ],
+            operations: { hasOperationHooks: () => true, interceptOperation: (_payload, _context, _source, run) => run() }
+        });
+        const reply = Object.assign(stubReply(), { progress: vi.fn(), signal, originClientID: 'client-7' });
+        dispatch({ command: 'workspace-create', send_prompt: false, muted: false, group_defaults: true }, reply);
+        await Promise.resolve();
+        expect(seen).toHaveLength(1);
+        // A plugin hook in front of the create must not cost its `agent-launch` frame its window.
+        expect(seen[0]?.originClientID).toBe('client-7');
+        expect(seen[0]?.signal).toBe(signal);
+        seen[0]?.progress?.({ step: 1 });
+        expect(reply.progress).toHaveBeenCalledWith({ step: 1 });
+        expect(reply.payloads).toEqual([{ ok: true }]);
+    });
 });

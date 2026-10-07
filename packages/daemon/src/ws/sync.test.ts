@@ -487,6 +487,77 @@ describe('commands', () => {
     });
 });
 
+describe('the session a request came from (wire-protocol.md §6.3 agent-launch routing)', () => {
+    const frame = { type: 'agent-launch', workspaceID: W1, paneID: PANE_A, agent: 'claude', outcome: 'launched' };
+
+    it('marks a WS request with the session that sent it', () => {
+        const f = fixture();
+        const { session } = f.connect();
+        session.handleMessage(hello());
+        session.handleMessage(
+            JSON.stringify({ type: 'command', id: 'c1', payload: { command: 'workspace-create', name: 'x', start_agent: 'claude' } })
+        );
+        expect(f.calls[0]?.reply?.originClientID).toBe(session.clientID);
+    });
+
+    it("marks a plugin view's request with the window session hosting the view", async () => {
+        const origins: (string | undefined)[] = [];
+        const hub = createSyncHub({
+            store: storeHarness(seededState(W1, PANE_A)).store,
+            dispatcher: (_message, reply) => {
+                origins.push(reply?.originClientID);
+                reply?.send({ ok: true });
+                reply?.close();
+            },
+            daemon: DAEMON
+        });
+        try {
+            const window = hub.createSession(recordingTransport());
+            window.handleMessage(hello());
+            const run = (clientID?: string) =>
+                hub.executeCommand(
+                    { command: 'workspace-create', start_agent: 'codex' },
+                    { daemonID: 'D', ...(clientID !== undefined ? { clientID } : {}) },
+                    new AbortController().signal
+                );
+            await run(window.clientID);
+            // No window behind the view: the internal session's own id, which nothing can reach,
+            // so the outcome falls back to a broadcast.
+            await run();
+            expect(origins[0]).toBe(window.clientID);
+            expect(origins[1]).not.toBe(window.clientID);
+            expect(hub.sendToClient(origins[1] ?? '', frame)).toBe(false);
+        } finally {
+            hub.close();
+        }
+    });
+
+    it('sendToClient reaches exactly one ready session, and says false once it cannot', () => {
+        const f = fixture();
+        const a = f.connect();
+        const b = f.connect();
+        a.session.handleMessage(hello());
+        b.session.handleMessage(hello());
+        expect(f.hub.sendToClient(a.session.clientID, frame)).toBe(true);
+        expect(a.transport.ofType('agent-launch')).toEqual([frame]);
+        expect(b.transport.ofType('agent-launch')).toEqual([]);
+        expect(f.hub.sendToClient('no-such-client', frame)).toBe(false);
+
+        // Before its hello, a session takes no frames.
+        const c = f.connect();
+        expect(f.hub.sendToClient(c.session.clientID, frame)).toBe(false);
+        expect(c.transport.ofType('agent-launch')).toEqual([]);
+
+        // Once closed, it is gone.
+        a.session.close();
+        expect(f.hub.sendToClient(a.session.clientID, frame)).toBe(false);
+        expect(a.transport.ofType('agent-launch')).toHaveLength(1);
+
+        f.hub.close();
+        expect(f.hub.sendToClient(b.session.clientID, frame)).toBe(false);
+    });
+});
+
 describe('WS-only commands', () => {
     /** Sends one WS-only command and returns its reply object. */
     function send(f: Fixture, payload: Record<string, unknown>): Record<string, unknown> {

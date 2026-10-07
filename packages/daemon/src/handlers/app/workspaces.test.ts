@@ -10,6 +10,7 @@ import {
     type WorktreeAddHooks,
     type WorktreeAddRequest
 } from '../../git/index.js';
+import type { AgentLaunchStart, AgentLauncher } from '../../agent-launch/index.js';
 import type { ReplyHandle } from '../../seams.js';
 import type { WorktreeCreateRun, WorktreeCreator } from './context.js';
 import { stubGitService } from '../../git/testing.js';
@@ -1181,6 +1182,273 @@ describe('workspace-create (group default repository)', () => {
         expect(reply).toMatchObject({ ok: true, group: 'team' });
         expect(reply).not.toHaveProperty('repo_path');
         expect(h.state().workspaces[0]?.repoAssociations).toEqual([]);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// workspace-create: start_agent (§6.2 "Starting an agent", wire-protocol.md §6.3)
+// ---------------------------------------------------------------------------
+
+interface RecordingLauncher extends AgentLauncher {
+    readonly written: string[];
+    readonly discarded: string[];
+    readonly starts: AgentLaunchStart[];
+}
+
+function recordingLauncher(options: { failWrite?: string } = {}): RecordingLauncher {
+    const written: string[] = [];
+    const discarded: string[] = [];
+    const starts: AgentLaunchStart[] = [];
+    return {
+        written,
+        discarded,
+        starts,
+        preparePromptFile(prompt) {
+            if (options.failWrite !== undefined) throw new Error(options.failWrite);
+            written.push(prompt);
+            return `/data/prompts/${String(written.length).padStart(8, '0')}-0000-4000-8000-000000000000.txt`;
+        },
+        discardPromptFile(path) {
+            discarded.push(path);
+        },
+        start(launch) {
+            starts.push(launch);
+        },
+        modesChanged() {},
+        inputWritten() {},
+        abandonAll() {},
+        pending: 0
+    };
+}
+
+const FILE_1 = '/data/prompts/00000001-0000-4000-8000-000000000000.txt';
+
+describe('workspace-create (start_agent)', () => {
+    it('top level: echoes start_agent and prompt_file, replies first, then hands the first pane over', () => {
+        const launcher = recordingLauncher();
+        const h = harness({ ids: [W1, P1], agentLauncher: launcher, originClientID: 'client-7' });
+        const reply = h.reply({
+            command: 'workspace-create',
+            name: 'ENG-1',
+            start_agent: 'Claude',
+            agent_prompt: 'Fix\r\nthe login\u001b[31m timeout'
+        });
+        expect(reply).toEqual({
+            ok: true,
+            workspace_id: W1,
+            workspace_name: 'ENG-1',
+            muted: false,
+            start_agent: 'claude',
+            prompt_file: FILE_1
+        });
+        // Reply-before-effect is unchanged: nothing existed when the ack went out.
+        expect(h.replies[0]?.states[0]?.workspaces).toHaveLength(0);
+        // Normalized once, here: CRLF to LF, the escape dropped.
+        expect(launcher.written).toEqual(['Fix\nthe login[31m timeout']);
+        expect(launcher.starts).toEqual([
+            {
+                paneID: P1,
+                workspaceID: W1,
+                request: { kind: 'claude', prompt: 'Fix\nthe login[31m timeout', send: false, promptFile: FILE_1 },
+                originClientID: 'client-7'
+            }
+        ]);
+        expect(h.spawned.map((spawn) => spawn.paneID)).toEqual([P1]);
+        expect(launcher.discarded).toEqual([]);
+    });
+
+    it('group branch: the launch gets the first pane, and the reply still names the group', () => {
+        const launcher = recordingLauncher();
+        const h = harness({ ids: [W1, G1, P1], agentLauncher: launcher });
+        const reply = h.reply({ command: 'workspace-create', name: 'dev', group: 'team', start_agent: 'codex', send_prompt: true, agent_prompt: 'Go' });
+        expect(reply).toMatchObject({ ok: true, group: 'team', start_agent: 'codex', prompt_file: FILE_1 });
+        expect(launcher.starts).toEqual([
+            {
+                paneID: P1,
+                workspaceID: W1,
+                request: { kind: 'codex', prompt: 'Go', send: true, promptFile: FILE_1 },
+                originClientID: undefined
+            }
+        ]);
+    });
+
+    it('worktree branch: starts the agent in the worktree pane after git, and echoes beside the worktree fields', async () => {
+        const launcher = recordingLauncher();
+        const h = harness({
+            ids: [id('bbbbbbbb', 9), W1],
+            agentLauncher: launcher,
+            git: stubGit({ worktreeAdd: async () => {} })
+        });
+        h.send({ command: 'workspace-create', name: 'f', worktree: 'f', repo: '/code/kelpi', start_agent: 'claude' });
+        expect(launcher.starts).toEqual([]);
+        await flush();
+        expect(h.replies[0]?.payloads[0]).toMatchObject({ ok: true, workspace_id: W1, branch: 'f', start_agent: 'claude' });
+        expect(h.replies[0]?.payloads[0]).not.toHaveProperty('prompt_file');
+        // The pane the create actually spawned, whatever id it was minted under.
+        const first = h.state().workspaces[0]?.panes[0]?.id;
+        expect(h.spawned.map((spawn) => spawn.paneID)).toEqual([first]);
+        expect(launcher.starts.map((start) => [start.paneID, start.workspaceID, start.request.prompt])).toEqual([[first, W1, null]]);
+    });
+
+    it('repository branch: starts the agent once the repo has resolved', async () => {
+        const launcher = recordingLauncher();
+        const h = harness({
+            ids: [W1],
+            agentLauncher: launcher,
+            git: stubGit({
+                resolveRepoRoot: async () => ({ worktreeRoot: '/code/app', parentRepoRoot: '/code/app' }),
+                getCurrentBranch: async () => 'main'
+            })
+        });
+        h.send({ command: 'workspace-create', name: 'n', repo: '/code/app', start_agent: 'codex', agent_prompt: 'Hi' });
+        await flush();
+        expect(h.replies[0]?.payloads[0]).toMatchObject({ ok: true, repo_path: '/code/app', start_agent: 'codex', prompt_file: FILE_1 });
+        const first = h.state().workspaces[0]?.panes[0]?.id;
+        expect(h.spawned.map((spawn) => spawn.paneID)).toEqual([first]);
+        expect(launcher.starts.map((start) => [start.paneID, start.workspaceID])).toEqual([[first, W1]]);
+    });
+
+    it('nested and in the background: starts the agent in the child\'s first pane, revealing nothing', () => {
+        const launcher = recordingLauncher();
+        const h = harness({ ids: [W1, P1, W2, P2], agentLauncher: launcher });
+        h.reply({ command: 'workspace-create', name: 'orchestrator' });
+        const reply = h.reply({ command: 'workspace-create', name: 'worker', parent: 'orchestrator', start_agent: 'codex', agent_prompt: 'Go' });
+        expect(reply).toMatchObject({ ok: true, workspace_id: W2, parent_id: W1, parent_name: 'orchestrator', start_agent: 'codex', prompt_file: FILE_1 });
+        expect(launcher.starts.map((start) => [start.paneID, start.workspaceID])).toEqual([[P2, W2]]);
+        expect(h.broadcasts.filter((message) => message['type'] === 'reveal-pane')).toEqual([]);
+    });
+
+    it('a refused icon or parent writes no prompt file: those checks come first', () => {
+        const launcher = recordingLauncher();
+        const h = harness({ agentLauncher: launcher });
+        expect(h.reply({ command: 'workspace-create', icon: 'emoji:ab', start_agent: 'claude', agent_prompt: 'Go' })).toMatchObject({ ok: false });
+        expect(h.reply({ command: 'workspace-create', parent: 'nobody', start_agent: 'claude', agent_prompt: 'Go' })).toMatchObject({ ok: false });
+        expect(launcher.written).toEqual([]);
+        expect(launcher.starts).toEqual([]);
+    });
+
+    it('a blank prompt is no prompt: no file, no prompt_file, the agent is only started', () => {
+        const launcher = recordingLauncher();
+        const h = harness({ ids: [W1, P1], agentLauncher: launcher });
+        const reply = h.reply({ command: 'workspace-create', start_agent: 'claude', agent_prompt: ' \r\n\t ' });
+        expect(reply).toMatchObject({ ok: true, start_agent: 'claude' });
+        expect(reply).not.toHaveProperty('prompt_file');
+        expect(launcher.written).toEqual([]);
+        expect(launcher.starts[0]?.request).toEqual({ kind: 'claude', prompt: null, send: false, promptFile: null });
+    });
+
+    it('a create without start_agent is untouched: no echo, no launcher', () => {
+        const launcher = recordingLauncher();
+        const h = harness({ ids: [W1, P1], agentLauncher: launcher });
+        expect(h.reply({ command: 'workspace-create', name: 'dev' })).toEqual({ ok: true, workspace_id: W1, workspace_name: 'dev', muted: false });
+        expect(launcher.starts).toEqual([]);
+    });
+
+    describe('refusals happen before ANY effect, in the contract order', () => {
+        const refused: [string, Record<string, unknown>, string][] = [
+            ['an unknown agent, before anything else', { start_agent: 'gemini', agent_prompt: 'a\u0000b', group: 'new' }, "unknown agent 'gemini' (expected claude or codex)"],
+            ['a prompt without an agent', { agent_prompt: 'hello' }, 'agent_prompt and send_prompt need start_agent'],
+            ['an EMPTY prompt without an agent', { agent_prompt: '' }, 'agent_prompt and send_prompt need start_agent'],
+            ['send_prompt without an agent', { send_prompt: true }, 'agent_prompt and send_prompt need start_agent'],
+            ['a NUL in the prompt', { start_agent: 'claude', agent_prompt: 'a\u0000b' }, 'agent_prompt may not contain a NUL character'],
+            ['a prompt over the limit', { start_agent: 'claude', agent_prompt: 'é'.repeat(50_001) }, 'agent_prompt is too long (100002 bytes; the limit is 100000)']
+        ];
+
+        it.each(refused)('%s', (_label, fields, error) => {
+            const launcher = recordingLauncher();
+            const h = harness({ agentLauncher: launcher });
+            const before = h.state();
+            expect(h.reply({ command: 'workspace-create', name: 'x', ...fields })).toEqual({ ok: false, error });
+            expect(h.state()).toBe(before);
+            expect(h.minted).toEqual([]);
+            expect(launcher.written).toEqual([]);
+            expect(launcher.starts).toEqual([]);
+        });
+
+        it('a prompt file that cannot be written refuses the create, with the reason', () => {
+            const launcher = recordingLauncher({ failWrite: "EACCES: permission denied, open '/data/prompts/x.txt'" });
+            const h = harness({ agentLauncher: launcher });
+            const before = h.state();
+            expect(h.reply({ command: 'workspace-create', start_agent: 'claude', agent_prompt: 'hi' })).toEqual({
+                ok: false,
+                error: "could not write the prompt file: EACCES: permission denied, open '/data/prompts/x.txt'"
+            });
+            expect(h.state()).toBe(before);
+            expect(h.minted).toEqual([]);
+        });
+
+        it('the default (inert) launcher has nowhere to write a prompt', () => {
+            const h = harness();
+            expect(h.reply({ command: 'workspace-create', start_agent: 'claude', agent_prompt: 'hi' })).toEqual({
+                ok: false,
+                error: 'could not write the prompt file: agent launch is not available'
+            });
+            expect(h.state().workspaces).toHaveLength(0);
+        });
+
+        it('worktree branch: refused before the group check, the name check and any git', async () => {
+            const worktreeAdd = vi.fn(async () => {});
+            const resolveRepoRoot = vi.fn(async () => null);
+            const launcher = recordingLauncher();
+            const h = harness({ agentLauncher: launcher, git: stubGit({ worktreeAdd, resolveRepoRoot }) });
+            const before = h.state();
+            h.send({ command: 'workspace-create', worktree: '///', group: 'nope', repo: '/code/kelpi', start_agent: 'gpt' });
+            await flush();
+            expect(h.replies[0]?.payloads).toEqual([{ ok: false, error: "unknown agent 'gpt' (expected claude or codex)" }]);
+            expect(worktreeAdd).not.toHaveBeenCalled();
+            expect(resolveRepoRoot).not.toHaveBeenCalled();
+            expect(h.state()).toBe(before);
+            expect(h.minted).toEqual([]);
+        });
+    });
+
+    describe('a create that fails after the prompt file was written removes it', () => {
+        it('an ambiguous group', () => {
+            const launcher = recordingLauncher();
+            const h = harness({ initial: seeded(1), agentLauncher: launcher });
+            h.dispatch(
+                { type: 'create-group', id: G1, name: 'team', now: NOW },
+                { type: 'create-group', id: id('cccccccc', 2), name: 'team', now: NOW }
+            );
+            const reply = h.reply({ command: 'workspace-create', group: 'team', start_agent: 'claude', agent_prompt: 'hi' });
+            expect(reply).toMatchObject({ ok: false });
+            expect(reply).not.toHaveProperty('start_agent');
+            expect(launcher.discarded).toEqual([FILE_1]);
+            expect(launcher.starts).toEqual([]);
+        });
+
+        it('git failing on the worktree branch', async () => {
+            const launcher = recordingLauncher();
+            const h = harness({
+                agentLauncher: launcher,
+                git: stubGit({
+                    worktreeAdd: async () => {
+                        throw new GitCommandError({
+                            command: 'git worktree add',
+                            exitCode: 128,
+                            stderr: 'fatal: invalid reference: main',
+                            cwd: '/code/kelpi'
+                        });
+                    }
+                })
+            });
+            h.send({ command: 'workspace-create', worktree: 'f', repo: '/code/kelpi', start_agent: 'claude', agent_prompt: 'hi' });
+            await flush();
+            expect(h.replies[0]?.payloads[0]).toMatchObject({ ok: false });
+            expect(launcher.discarded).toEqual([FILE_1]);
+            expect(launcher.starts).toEqual([]);
+            expect(h.state().workspaces).toHaveLength(0);
+        });
+
+        it('a repo path that is not a repository', async () => {
+            const launcher = recordingLauncher();
+            const h = harness({ agentLauncher: launcher, git: stubGit({ resolveRepoRoot: async () => null }) });
+            h.send({ command: 'workspace-create', repo: '/tmp/plain', start_agent: 'codex', agent_prompt: 'hi', send_prompt: true });
+            await flush();
+            expect(h.replies[0]?.payloads[0]).toEqual({ ok: false, error: '/tmp/plain is not inside a git repository' });
+            expect(launcher.discarded).toEqual([FILE_1]);
+            expect(launcher.starts).toEqual([]);
+        });
     });
 });
 

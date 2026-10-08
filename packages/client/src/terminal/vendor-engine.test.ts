@@ -45,7 +45,7 @@ const repoRoot = path.resolve(here, '..', '..', '..', '..');
 const vendorRoot = path.join(repoRoot, 'vendor', 'ghostty-web-patched');
 
 /** The version the audit evidence and PROVENANCE.md were written against. */
-const EXPECTED_VERSION = '0.4.0-kelpi.19';
+const EXPECTED_VERSION = '0.4.0-kelpi.20';
 
 /** Markers of the caret-anchored IME, in the built ESM bundle the client imports. */
 const CARET_MARKERS = ['data-ime-preedit', 'data-ime-caret', 'syncImeCaret'];
@@ -442,6 +442,17 @@ describe('vendored ghostty-web engine', () => {
         // No auto-scroll band inside the canvas: it yanked a drag on the top or bottom two rows.
         expect(selectionSource).not.toContain('AUTO_SCROLL_EDGE_SIZE');
         expect(selectionSource).not.toContain('updateAutoScroll(');
+    });
+
+    it('draws rows at the whole-line floor of a fractional scroll offset (§-kelpi.20)', () => {
+        // Take a future npm release wholesale and a trackpad scroll leaves one row unpainted: the
+        // row walk tests `y < viewportY` on the raw offset and indexes with its floor, so the row
+        // where the live screen starts keeps its previous frame and a neighbouring line shows twice.
+        const bundle = read(path.join(vendorRoot, 'dist', 'ghostty-web.js'));
+        expect(bundle).toMatch(/const (\w+) = (\w+);\s*\2 = Math\.max\(0, Math\.floor\(\2\)\), this\.currentBuffer = /);
+        const rendererSource = read(path.join(vendorRoot, 'source', 'lib', 'renderer.ts'));
+        expect(rendererSource).toContain('viewportY = Math.max(0, Math.floor(viewportY));');
+        expect(rendererSource).toContain('this.renderScrollbar(scrollbarViewportY, ');
     });
 
     it('keeps the snapshotted source in step with the bundle', () => {

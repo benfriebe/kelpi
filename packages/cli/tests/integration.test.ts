@@ -1790,3 +1790,195 @@ describe('workspace rename', () => {
         expect(server.requests).toHaveLength(0);
     });
 });
+
+describe('workspace icon', () => {
+    const iconReply = (request: Record<string, unknown>): ServerReply => ({
+        lines: [{ ok: true, workspace_id: PANE, workspace_name: 'chef', icon: request['icon'] ?? null, old_icon: 'emoji:🧪' }]
+    });
+    const unchangedReply = (request: Record<string, unknown>): ServerReply => ({
+        lines: [{ ok: true, workspace_id: PANE, workspace_name: 'chef', icon: request['icon'] ?? null, old_icon: request['icon'] ?? null }]
+    });
+
+    it('sends the emoji with its prefix, waits for the reply and prints the icon', async () => {
+        server.respond(iconReply);
+        const result = await runCLI(['workspace', 'icon', 'chef', '👩‍🍳'], { port: server.port });
+        expect(result.code).toBe(0);
+        expect(result.stdout).toBe('chef: icon set to 👩‍🍳\n');
+        expect(result.stderr).toBe('');
+        expect(await lastRequest()).toEqual({ command: 'workspace-icon', name: 'chef', icon: 'emoji:👩‍🍳' });
+    });
+
+    it('trims the emoji and passes an id through untouched', async () => {
+        server.respond(iconReply);
+        const result = await runCLI(['workspace', 'icon', PANE, ' 🇦🇺 '], { port: server.port });
+        expect(result.code).toBe(0);
+        expect(await lastRequest()).toEqual({ command: 'workspace-icon', name: PANE, icon: 'emoji:🇦🇺' });
+    });
+
+    it('sends no icon for --clear and says it cleared', async () => {
+        server.respond(iconReply);
+        const result = await runCLI(['workspace', 'icon', '--clear', 'chef'], { port: server.port });
+        expect(result.code).toBe(0);
+        expect(result.stdout).toBe('chef: icon cleared\n');
+        expect(await lastRequest()).toEqual({ command: 'workspace-icon', name: 'chef' });
+    });
+
+    it('prints the full reply including ok under --json', async () => {
+        server.respond(iconReply);
+        const result = await runCLI(['workspace', 'icon', 'chef', '🔥', '--json'], { port: server.port });
+        expect(result.code).toBe(0);
+        expect(JSON.parse(result.stdout)).toEqual({
+            ok: true,
+            workspace_id: PANE,
+            workspace_name: 'chef',
+            icon: 'emoji:🔥',
+            old_icon: 'emoji:🧪'
+        });
+    });
+
+    it('says when the icon was already set, from old_icon', async () => {
+        server.respond(unchangedReply);
+        const same = await runCLI(['workspace', 'icon', 'chef', '👩‍🍳'], { port: server.port });
+        expect(same.code).toBe(0);
+        expect(same.stdout).toBe('chef: icon is already 👩‍🍳\n');
+        const none = await runCLI(['workspace', 'icon', 'chef', '--clear'], { port: server.port });
+        expect(none.code).toBe(0);
+        expect(none.stdout).toBe('chef: already has no icon\n');
+    });
+
+    it('reads a reply without old_icon as a change', async () => {
+        server.respond((request) => ({ lines: [{ ok: true, workspace_id: PANE, workspace_name: 'chef', icon: request['icon'] ?? null }] }));
+        const result = await runCLI(['workspace', 'icon', 'chef', '👩‍🍳'], { port: server.port });
+        expect(result.stdout).toBe('chef: icon set to 👩‍🍳\n');
+    });
+
+    it('asks for the bare emoji when given a prefixed one', async () => {
+        for (const [prefixed, prefix] of [['emoji:🔥', 'emoji:'], ['system:star', 'system:']] as const) {
+            const result = await runCLI(['workspace', 'icon', 'chef', prefixed], { port: server.port });
+            expect(result.code).toBe(1);
+            expect(result.stderr).toBe(`kelpi workspace icon: give the bare emoji, without the ${prefix} prefix\n`);
+        }
+        expect(server.requests).toHaveLength(0);
+    });
+
+    it('refuses what is not one emoji before sending', async () => {
+        for (const bad of ['abc', '🔥🔥', 'a']) {
+            const result = await runCLI(['workspace', 'icon', 'chef', bad], { port: server.port });
+            expect(result.code).toBe(1);
+            expect(result.stdout).toBe('');
+            expect(result.stderr).toBe(`kelpi workspace icon: '${bad}' is not a usable icon: give one emoji or symbol\n`);
+        }
+        for (const blank of ['', '   ']) {
+            const result = await runCLI(['workspace', 'icon', 'chef', blank], { port: server.port });
+            expect(result.code).toBe(1);
+            expect(result.stderr).toBe('kelpi workspace icon: the icon cannot be empty\n');
+        }
+        // One grapheme, but far longer than any emoji: refused without echoing it.
+        const chain = Array.from({ length: 200 }, () => '🔥').join('\u200d');
+        const long = await runCLI(['workspace', 'icon', 'chef', chain], { port: server.port });
+        expect(long.code).toBe(1);
+        expect(long.stderr).toBe('kelpi workspace icon: the icon is too long: give one emoji or symbol\n');
+        expect(server.requests).toHaveLength(0);
+    });
+
+    it('exits 1 with the daemon error for a missing or ambiguous workspace', async () => {
+        server.respond(() => ({ lines: [{ ok: false, error: 'workspace not found: ghost' }] }));
+        const missing = await runCLI(['workspace', 'icon', 'ghost', '🔥'], { port: server.port });
+        expect(missing.code).toBe(1);
+        expect(missing.stderr).toBe('kelpi workspace icon: workspace not found: ghost\n');
+
+        server.respond(() => ({ lines: [{ ok: false, error: 'workspace name is ambiguous: dup (use the id)' }] }));
+        const ambiguous = await runCLI(['workspace', 'icon', 'dup', '🔥'], { port: server.port });
+        expect(ambiguous.code).toBe(1);
+        expect(ambiguous.stderr).toBe('kelpi workspace icon: workspace name is ambiguous: dup (use the id)\n');
+    });
+
+    it('prints usage and exits 1 for missing arguments, options and strays', async () => {
+        const none = await runCLI(['workspace', 'icon'], { port: server.port });
+        expect(none.code).toBe(1);
+        expect(none.stderr).toContain('kelpi workspace icon <name-or-id> (<emoji> | --clear) [--json]');
+
+        const one = await runCLI(['workspace', 'icon', 'chef'], { port: server.port });
+        expect(one.code).toBe(1);
+        expect(one.stderr).toContain('kelpi workspace icon <name-or-id> (<emoji> | --clear) [--json]');
+
+        const option = await runCLI(['workspace', 'icon', 'chef', '--force'], { port: server.port });
+        expect(option.code).toBe(1);
+        expect(option.stderr).toContain('kelpi workspace icon: unknown option --force');
+
+        const both = await runCLI(['workspace', 'icon', 'chef', '🔥', '--clear'], { port: server.port });
+        expect(both.code).toBe(1);
+        expect(both.stderr).toBe("kelpi workspace icon: can't take both an emoji and --clear\n");
+
+        // Beside --clear, a word that is not an emoji is a stray argument, not "both"; so is the
+        // workspace given after an emoji that took its place.
+        for (const [argv, extra] of [
+            [['chef', '--clear', 'now'], 'now'],
+            [['🔥', 'chef', '--clear'], 'chef']
+        ] as const) {
+            const result = await runCLI(['workspace', 'icon', ...argv], { port: server.port });
+            expect(result.code).toBe(1);
+            expect(result.stderr).toContain(`kelpi workspace icon: unexpected argument '${extra}'`);
+            expect(result.stderr).toContain('--clear takes only the workspace');
+            expect(result.stderr).not.toContain("can't take both");
+        }
+
+        const stray = await runCLI(['workspace', 'icon', 'chef', '🔥', '🔥'], { port: server.port });
+        expect(stray.code).toBe(1);
+        expect(stray.stderr).toContain("unexpected argument '🔥'");
+        expect(stray.stderr).toContain('an icon is one emoji');
+        expect(server.requests).toHaveLength(0);
+    });
+
+    it('fails loudly against a daemon too old to know the verb', async () => {
+        server.respond(() => ({ silent: true }));
+        const result = await runCLI(['workspace', 'icon', 'chef', '🔥'], { port: server.port });
+        expect(result.code).toBe(1);
+        expect(result.stderr).toContain('kelpi workspace icon: no response from Kelpi (upgrade required?)');
+    });
+
+    it('is listed in workspace --help and has its own --help', async () => {
+        const group = await runCLI(['workspace', '--help'], { port: server.port });
+        expect(group.stdout).toContain('list|create|move|delete|profile|label|mute|rename|icon');
+        expect(group.stdout).toMatch(/^ {2}icon {6}Set or clear a workspace's sidebar icon\.$/m);
+
+        const own = await runCLI(['workspace', 'icon', '--help'], { port: server.port });
+        expect(own.code).toBe(0);
+        expect(own.stdout).toContain('kelpi workspace icon <name-or-id> (<emoji> | --clear) [--json]');
+
+        const unknown = await runCLI(['workspace', 'retitle'], { port: server.port });
+        expect(unknown.stderr).toContain('Valid actions: list, create, move, delete, profile, label, mute, rename, icon');
+    });
+});
+
+describe('workspace create --icon', () => {
+    it('sends the prefixed icon and accepts a reply that echoes it', async () => {
+        server.respond((request) => ({
+            lines: [{ ok: true, workspace_id: PANE, workspace_name: 'lab', muted: false, icon: request['icon'] }]
+        }));
+        const result = await runCLI(['workspace', 'create', '--name', 'lab', '--icon', '🧪'], { port: server.port });
+        expect(result.code).toBe(0);
+        expect(result.stdout).toBe(`created workspace lab (${PANE})\n`);
+        expect(await lastRequest()).toMatchObject({ command: 'workspace-create', name: 'lab', icon: 'emoji:🧪' });
+    });
+
+    it('refuses a bad icon before sending', async () => {
+        const result = await runCLI(['workspace', 'create', '--icon', 'abc'], { port: server.port });
+        expect(result.code).toBe(1);
+        expect(result.stderr).toBe("kelpi workspace create: 'abc' is not a usable icon: give one emoji or symbol\n");
+        expect(server.requests).toHaveLength(0);
+    });
+
+    it('fails --icon loudly when the daemon did not apply it (an older daemon ignores the field)', async () => {
+        server.respond(() => ({ lines: [{ ok: true, workspace_id: PANE, workspace_name: 'lab', muted: false }] }));
+        const plain = await runCLI(['workspace', 'create', '--name', 'lab', '--icon', '🧪'], { port: server.port });
+        expect(plain.code).toBe(1);
+        expect(plain.stdout).toBe('');
+        expect(plain.stderr).toBe(
+            `kelpi workspace create: the daemon did not apply --icon; restart it on this build (workspace lab (${PANE}) was created without an icon)\n`
+        );
+        const json = await runCLI(['workspace', 'create', '--name', 'lab', '--icon', '🧪', '--json'], { port: server.port });
+        expect(json.code).toBe(1);
+        expect(JSON.parse(json.stdout)).toMatchObject({ ok: true, workspace_id: PANE });
+    });
+});

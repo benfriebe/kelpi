@@ -84,7 +84,7 @@ import {
     type WsTransportStatus
 } from '@kelpi/protocol';
 
-import { formatIconString, newUUID, normalizeIconEmoji, parseIconString } from '@kelpi/core/codec';
+import { formatIconString, iconRefusal, newUUID, parseIconString } from '@kelpi/core/codec';
 import { ratioAtPath } from '@kelpi/core/layout';
 
 import type { ContentMode, ContentPaneState, ContentSubscription } from '../content/index.js';
@@ -376,7 +376,9 @@ function parseClientInfo(value: unknown): WsClientInfo {
  *   rename-workspace     `workspace_id`, `name`          → rename-workspace (the CLI's own
  *                        spelling, `workspace-rename`, came later with #266: a name-or-id
  *                        verb in `WIRE_COMMANDS`; the GUI keeps this id-addressed one)
- *   set-workspace-icon   `workspace_id`, `icon`          → set-workspace-icon
+ *   set-workspace-icon   `workspace_id`, `icon`          → set-workspace-icon (the CLI's own
+ *                        spelling, `workspace-icon`, came later: a name-or-id verb in
+ *                        `WIRE_COMMANDS`; the GUI keeps this id-addressed one)
  *   set-group-icon       `group_id`, `icon`              → set-group-icon
  *   set-group-color      `group_id`, `color?`            → set-group-color
  *   move-workspaces      `workspace_ids`, `group_id?`, `index?` → move-workspaces-to-group
@@ -560,9 +562,8 @@ export function handleWsOnlyCommand(
         // would otherwise store `emoji:a` and every client would render a letter that cannot
         // be told from the avatar it replaced. A refusal leaves the icon untouched, which is
         // the reducer's "clears the prompt without changing the icon".
-        if (icon !== null && icon.kind === 'emoji' && normalizeIconEmoji(icon.grapheme) !== icon.grapheme) {
-            return failure(`'${icon.grapheme}' is not a usable icon: give one emoji or symbol`);
-        }
+        const refusal = icon === null ? null : iconRefusal(icon);
+        if (refusal !== null) return failure(refusal);
         store.dispatch(
             workspaceScoped
                 ? { type: 'set-workspace-icon', id, icon }

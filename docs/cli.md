@@ -397,7 +397,8 @@ silent fallthrough is dangerous for verbs whose no-target default is "the callin
 Commands wired to `rejectLeftoverArgs`: `pane split`, `pane create`, `pane resize`,
 `pane move` (adjacent form), `pane list`, `pane capture`, `workspace list`,
 `workspace create`, `workspace label`, `workspace mute`, `workspace rename` (hint `quote a
-new name that contains spaces`), `group reorder`, `group sort`, `install-hooks` (hint `this
+new name that contains spaces`), `workspace icon` (hint `an icon is one emoji`),
+`group reorder`, `group sort`, `install-hooks` (hint `this
 command takes options only`). Several other
 commands implement equivalent bespoke checks (`pane close`, `pane name`, `pane send-key`,
 `pane sync`, `workspace profile`, `workspace delete`, `group list`, `doctor`); commands
@@ -902,7 +903,7 @@ the caller's workspace via `KELPI_PANE_ID`; `--workspace` overrides.
 
 Dispatcher: missing action => group usage to stderr, exit 1; `--help|-h|help` => group
 usage to stdout, exit 0; unknown action => `Unknown workspace action: <x>` +
-`Valid actions: list, create, move, delete, profile, label, mute, rename`, exit 1.
+`Valid actions: list, create, move, delete, profile, label, mute, rename, icon`, exit 1.
 
 ### 10.1 `kelpi workspace list`
 
@@ -915,7 +916,8 @@ kelpi workspace list [--group <name-or-id>] [--json] [--no-header]
 - Reply: `{ok:true, "workspaces":[...]}` in sidebar order (members of collapsed groups
   included). Each entry (server contract): `id`, `name`, `color`, `pane_count`,
   `is_active`, `created_at`, `last_accessed_at`, `labels` (always present, possibly `[]`),
-  `muted` (always present; §10.7), optional `last_activity_at`, optional
+  `muted` (always present; §10.7), optional `icon` (§10.9; absent for the letter avatar),
+  optional `last_activity_at`, optional
   `agent_session_id`, optional
   `group_id`/`group_name` (both absent for top-level), optional `repos` (the repo
   associations: `repo_id`, `repo_name?`, `repo_path?`, `worktree_path`, `branch?`; absent
@@ -937,16 +939,21 @@ kelpi workspace list [--group <name-or-id>] [--json] [--no-header]
 
 ```
 kelpi workspace create [--name "..."] [--path /dir] [--color blue] [--group <name>]
-                     [--profile <name>] [--repo <path> | --no-repo] [--muted] [--json]
+                     [--profile <name>] [--repo <path> | --no-repo] [--muted] [--icon <emoji>]
+                     [--json]
 kelpi workspace create --worktree <name> [--branch <name>] [--repo <path>]
-                     [--update-main | --no-update-main] [--group <existing>] [--muted] [--json]
+                     [--update-main | --no-update-main] [--group <existing>] [--muted]
+                     [--icon <emoji>] [--json]
 ```
 
 - Help to stdout, exit 0. Leftovers rejected. `--update-main` with `--no-update-main`, or
-  `--repo` with `--no-repo`, => an error line, exit 1, nothing sent.
+  `--repo` with `--no-repo`, => an error line, exit 1, nothing sent. An `--icon` that is not
+  one emoji => the §10.9 error (`kelpi workspace create: '<x>' is not a usable icon: give one
+  emoji or symbol`), exit 1, nothing sent.
 - Payload: `{"command":"workspace-create", name?, path?, color?, group?, profile?}` (`path`
   made absolute against the CLI's cwd; `~` is left for the daemon), plus
-  `muted: true` only when `--muted` was passed (§10.7), `repo` whenever `--repo` was passed
+  `muted: true` only when `--muted` was passed (§10.7), `icon: "emoji:<emoji>"` only when
+  `--icon` was passed (§10.9), `repo` whenever `--repo` was passed
   (made absolute the same way), and
   `group_defaults: false` for `--no-repo` (ignore the group's repository for this one).
   When `--worktree` is given, additionally: `worktree`, `branch?`, `update_main: true` for
@@ -964,6 +971,10 @@ kelpi workspace create --worktree <name> [--branch <name>] [--repo <path>]
   stderr gets `kelpi workspace create: the daemon did not apply --muted; restart it on this
   build (workspace <name> (<id>) was created unmuted)` and the exit code is 1; `--json` still
   prints the reply first.
+- `--icon` confirmation, the same way: when the reply does not carry the `icon` that was sent,
+  `kelpi workspace create: the daemon did not apply --icon; restart it on this build
+  (workspace <name> (<id>) was created without an icon)`, exit 1; `--json` still prints the
+  reply first.
 - Default output variants (from reply fields; name falls back to the `--name` argument or
   `"Workspace"`, id to `?`):
   - worktree: `created workspace <name> (<id>)[ in group <g>] with worktree <path> on branch <branch>[ off the latest main]`
@@ -976,12 +987,14 @@ present (then the group must already exist; unknown/ambiguous => `ok:false`, avo
 orphaned group on worktree-add failure). Ambiguous `--group` name => `ok:false`
 "...ambiguous...". `--profile` assigns a workspace profile at creation. `--muted` creates the
 workspace muted from its first frame, so a conductor can spawn children that never notify
-(it composes with `--worktree`, `--group` and `--profile`). Worktree path is
+(it composes with `--worktree`, `--group` and `--profile`). `--icon` likewise gives the
+workspace its sidebar icon from its first frame, and a refused icon creates nothing. Worktree path is
 `resolvedWorktreeBasePath/<sanitized-name>`; `--branch` defaults to the worktree name;
 `--update-main` fetches the default branch (only that branch, no tags) and branches off
 `origin/<default>`; the default branch is the local `origin/HEAD` when it is set, else asked of
 the remote (`git ls-remote --symref`), else `main`. A fetch the New Workspace sheet prefetched
-under a minute ago is reused, so the CLI create skips it (graft-git.md §8.5.1). Every success reply carries `muted`; the worktree reply adds
+under a minute ago is reused, so the CLI create skips it (graft-git.md §8.5.1). Every success reply carries `muted`, and
+`icon` when one was set; the worktree reply adds
 `worktree_path`, `branch`, `update_main` and `repo_path`.
 
 Group defaults (app-state-core.md §5.5): in a group with a repository (`kelpi group set-repo`,
@@ -1171,6 +1184,49 @@ character limit, and another workspace's name is allowed (after which that name 
 Renaming to the current name succeeds and writes nothing. The slug is recomputed, the change
 persists and it syncs to every attached client. Reply `{ok, workspace_id, workspace_name,
 old_name}`, where `workspace_name` is the new name.
+
+### 10.9 `kelpi workspace icon`
+
+```
+kelpi workspace icon <name-or-id> (<emoji> | --clear) [--json]
+```
+
+The sidebar's Change Icon / Reset to Letter for the terminal, so a script or an agent can mark
+the workspaces it makes. The GUI and the plugin SDK's `workspaces.setIcon` set the same icon
+through the WebSocket-only `set-workspace-icon`.
+
+- Help to stdout, exit 0. A missing `<name-or-id>`, or neither `<emoji>` nor `--clear` =>
+  usage to stderr, exit 1.
+- A dash-prefixed positional => `kelpi workspace icon: unknown option <x>` + usage, exit 1. An
+  emoji together with `--clear` => `kelpi workspace icon: can't take both an emoji and --clear`,
+  exit 1; any other word beside `--clear` => `kelpi workspace icon: unexpected argument '<x>'`
+  with the hint `--clear takes only the workspace`, exit 1. A third positional =>
+  `kelpi workspace icon: unexpected argument '<x>'` with the hint `an icon is one emoji`, exit 1.
+- The icon is the bare emoji, trimmed, and must pass the daemon's own check (`iconRefusal`):
+  exactly one grapheme of at most 16 code points that passes the sidebar emoji sheet's
+  heuristic. A ZWJ sequence (`👩‍🍳`), a flag or a skin tone is one icon; letters, two emoji and
+  text are not. Empty => `kelpi workspace icon: the icon cannot be empty`; one grapheme past 16
+  code points => `kelpi workspace icon: the icon is too long: give one emoji or symbol`;
+  anything else refused => `kelpi workspace icon: '<x>' is not a usable icon: give one emoji or
+  symbol`; all exit 1, before anything is sent. A literal `emoji:…` or `system:…` value =>
+  `kelpi workspace icon: give the bare emoji, without the <prefix>: prefix`, exit 1: the CLI
+  adds the `emoji:` prefix itself and sets no SF Symbol.
+- Payload: `{"command":"workspace-icon","name":<name-or-id>,"icon":"emoji:<emoji>"}`, with no
+  `icon` for `--clear`.
+- Request/response. `--json`: full reply **including `ok`**, compact sorted.
+- Default: `<workspace_name>: icon set to <emoji>`, or `<workspace_name>: icon cleared`; when
+  the reply's `old_icon` equals `icon` (nothing changed), `<workspace_name>: icon is already
+  <emoji>`, or `<workspace_name>: already has no icon`.
+- Against a daemon that predates the verb: `no response from Kelpi (upgrade required?)`,
+  exit 1 (§6.1).
+
+Server contract: `<name-or-id>` resolves strictly, with `workspace rename`'s errors (`workspace
+not found: <name>`, `workspace name is ambiguous: <name> (use the id)`), both exit 1. The
+daemon validates the icon again, the way the GUI's `set-workspace-icon` does. Setting the icon
+the workspace already has succeeds and writes nothing. The change persists and syncs to every
+attached client. Reply `{ok, workspace_id, workspace_name, icon, old_icon}`, `icon` being
+`"emoji:<emoji>"`, or `null` once cleared, and `old_icon` the icon before, in the same
+spelling. Group icons stay a sidebar gesture.
 
 ---
 
@@ -2158,9 +2214,9 @@ optional `pane_id`, `reuse`, `focus` and, from `kelpi md` only, `as: "markdown"`
 Request/response: `ping`, `pane-split`, `pane-create`, `pane-close`, `pane-name`,
 `pane-resize`, `pane-send`, `pane-send-key`, `pane-move-adjacent`, `pane-list`,
 `pane-capture`, `pane-sync`, `pane-sync-exclude`, `workspace-list`, `workspace-create`,
-`workspace-delete`, `workspace-label`, `workspace-mute`, `workspace-rename`, `group-list`,
-`group-set-repo`, `group-reorder`, `group-sort`, `graft-start`, `graft-stop`,
-`graft-status`, and the web family: `web-open`, `web-navigate`, `web-url`, `web-back`,
+`workspace-delete`, `workspace-label`, `workspace-mute`, `workspace-rename`,
+`workspace-icon`, `group-list`, `group-set-repo`, `group-reorder`, `group-sort`,
+`graft-start`, `graft-stop`, `graft-status`, and the web family: `web-open`, `web-navigate`, `web-url`, `web-back`,
 `web-forward`, `web-reload`, `web-capture`, `web-tabs`, `web-tab-new`, `web-tab-close`,
 `web-tab-select`, `web-console` (streaming with `follow:true`), `web-inspect`,
 `web-inspect-result`, `web-private`, `web-cookies-list`, `web-cookies-clear`,

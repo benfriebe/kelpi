@@ -20,11 +20,16 @@
 
 import { execFile, spawn } from 'node:child_process';
 import fs from 'node:fs';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { WS_PROTOCOL_VERSION } from '@kelpi/protocol';
+import { WebSocket } from 'ws';
+
 import { createDaemon, type Daemon, type DaemonInfo } from '../../src/boot/index.js';
+import { readToken } from '../../src/lifecycle/index.js';
 
 /** The shipped Swift CLI. Absent on a machine without Kelpi installed → the suites skip. */
 export const KELPI_CLI = process.env['KELPI_COMPAT_CLI'] ?? '/Applications/Nex.app/Contents/Helpers/nex';
@@ -228,6 +233,88 @@ export async function eventually<T>(
     return last;
 }
 
+// ── talking to the daemon without a CLI ─────────────────────────────────────────────────
+
+/** A decoded control reply or WebSocket message. */
+export type Message = Record<string, unknown>;
+
+/** The events of a WebSocket `delta` message; none for any other message. */
+export function deltaEvents(message: Message): Message[] {
+    if (message['type'] !== 'delta' || !Array.isArray(message['events'])) return [];
+    return message['events'] as Message[];
+}
+
+/** One control line over TCP, one reply line back: what the CLI does, minus the CLI. */
+export function rawRequest(port: number, message: Message): Promise<Message> {
+    return new Promise<Message>((resolve, reject) => {
+        const socket = net.connect({ host: '127.0.0.1', port });
+        let pending = '';
+        const timer = setTimeout(() => {
+            socket.destroy();
+            reject(new Error('timed out waiting for a reply'));
+        }, 10_000);
+        socket.on('connect', () => socket.write(`${JSON.stringify(message)}\n`));
+        socket.setEncoding('utf8');
+        socket.on('data', (chunk: string) => {
+            pending += chunk;
+            const index = pending.indexOf('\n');
+            if (index < 0) return;
+            clearTimeout(timer);
+            socket.destroy();
+            resolve(JSON.parse(pending.slice(0, index)) as Message);
+        });
+        socket.on('error', (error) => {
+            clearTimeout(timer);
+            reject(error);
+        });
+    });
+}
+
+export interface WindowSession {
+    waitFor(predicate: (message: Message) => boolean): Promise<Message>;
+    close(): void;
+}
+
+/** A WebSocket session with the owner's token, past `welcome`, the way a window attaches. */
+export async function connectWindow(kelpi: CompatDaemon): Promise<WindowSession> {
+    const token = readToken(kelpi.daemon.paths) ?? '';
+    const socket = new WebSocket(`ws://127.0.0.1:${String(kelpi.info.httpPort)}/ws?token=${token}`);
+    const seen: Message[] = [];
+    const waiters: { predicate: (message: Message) => boolean; resolve: (message: Message) => void }[] = [];
+    socket.on('message', (data) => {
+        const message = JSON.parse(String(data)) as Message;
+        seen.push(message);
+        for (const waiter of [...waiters]) {
+            if (!waiter.predicate(message)) continue;
+            waiters.splice(waiters.indexOf(waiter), 1);
+            waiter.resolve(message);
+        }
+    });
+    const waitFor = (predicate: (message: Message) => boolean): Promise<Message> =>
+        new Promise<Message>((resolve, reject) => {
+            const hit = seen.find(predicate);
+            if (hit !== undefined) {
+                resolve(hit);
+                return;
+            }
+            const timer = setTimeout(() => reject(new Error('timed out waiting for a WebSocket message')), 10_000);
+            waiters.push({
+                predicate,
+                resolve: (message) => {
+                    clearTimeout(timer);
+                    resolve(message);
+                }
+            });
+        });
+    await new Promise<void>((resolve, reject) => {
+        socket.once('open', () => resolve());
+        socket.once('error', reject);
+    });
+    socket.send(JSON.stringify({ type: 'hello', protocolVersion: WS_PROTOCOL_VERSION, token }));
+    await waitFor((message) => message['type'] === 'snapshot');
+    return { waitFor, close: () => socket.close() };
+}
+
 // ── shapes the CLI's `--json` output is asserted against ────────────────────────────────
 
 export interface PaneListEntryJSON {
@@ -261,6 +348,7 @@ export interface WorkspaceListEntryJSON {
     readonly created_at: string;
     readonly last_accessed_at: string;
     readonly labels: readonly string[];
+    readonly icon?: string;
     readonly last_activity_at?: string;
     readonly agent_session_id?: string;
     readonly group_id?: string;

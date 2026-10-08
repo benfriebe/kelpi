@@ -287,7 +287,9 @@ export interface SidebarCallbacks {
     /**
      * "Change Icon" (§5.6). `icon` is the flat DB spelling (`"emoji:🔥"` / `"system:star"`);
      * `null` is "Reset to Letter". The client passes an SF Symbol token straight back through,
-     * so a legacy value survives even when this client draws it as the generic glyph.
+     * so a legacy value survives even when this client draws it as the generic glyph. It
+     * commits through the WS-only, id-addressed `set-workspace-icon`; `workspace-icon` is the
+     * CLI's name-or-id control verb for the same change.
      */
     readonly onSetWorkspaceIcon?: ((workspaceID: string, icon: string | null) => void) | undefined;
     readonly onSetGroupIcon?: ((groupID: string, icon: string | null) => void) | undefined;

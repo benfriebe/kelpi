@@ -33,14 +33,15 @@ export const globalUsage = `Usage:
   kelpi pane sync include --target <name-or-uuid> [--workspace <name-or-uuid>]
   kelpi pane id
   kelpi workspace list [--json] [--no-header]
-  kelpi workspace create [--name "..."] [--path /dir] [--color blue] [--group <name>] [--profile <name>] [--muted] [--json]
-  kelpi workspace create --worktree <name> [--branch <name>] [--repo <path>] [--update-main] [--group <existing>] [--muted]
+  kelpi workspace create [--name "..."] [--path /dir] [--color blue] [--group <name>] [--profile <name>] [--muted] [--icon <emoji>] [--json]
+  kelpi workspace create --worktree <name> [--branch <name>] [--repo <path>] [--update-main] [--group <existing>] [--muted] [--icon <emoji>]
   kelpi workspace move <name-or-id> (--group <name> | --top-level) [--index N]
   kelpi workspace delete <name-or-id> [<name-or-id> ...] [--force|-y] [--prune-worktree [--delete-branch]] [--json]
   kelpi workspace profile <name-or-id> (<profile> | --clear)
   kelpi workspace label <name-or-id> (--set v | --add v | --remove v | --clear) [--json]
   kelpi workspace mute <name-or-id> [--off | --toggle] [--json]
   kelpi workspace rename <name-or-id> <new-name> [--json]
+  kelpi workspace icon <name-or-id> (<emoji> | --clear) [--json]
   kelpi group list [--json] [--no-header]
   kelpi group create <name> [--color blue]
   kelpi group rename <name-or-id> <new-name>
@@ -337,7 +338,7 @@ when --workspace is not supplied.
 `;
 
 export const workspaceUsage = `Usage:
-  kelpi workspace list|create|move|delete|profile|label|mute|rename [...]
+  kelpi workspace list|create|move|delete|profile|label|mute|rename|icon [...]
 
 Subcommands:
   list      List every workspace (grouped + top-level).
@@ -348,6 +349,7 @@ Subcommands:
   label     Set/add/remove/clear a workspace's labels.
   mute      Mute or unmute a workspace's notifications.
   rename    Rename a workspace.
+  icon      Set or clear a workspace's sidebar icon.
 
 Run \`kelpi workspace <subcommand> --help\` for subcommand-specific usage.
 
@@ -358,7 +360,8 @@ export const workspaceListUsage = `Usage:
 
 Lists workspaces as a table, or a JSON array with --json. Each entry
 carries id, name, group, color, pane count, created_at, last_accessed_at,
-last_activity_at, labels, muted, and the agent session id (when present).
+last_activity_at, labels, muted, and the icon and agent session id (when
+present).
 
 Options:
   --group <name-or-id>  Only list workspaces in this group.
@@ -373,9 +376,10 @@ Exit codes: 0 on success, non-zero on failure.
 export const workspaceCreateUsage = `Usage:
   kelpi workspace create [--name "..."] [--path /dir] [--color blue] \\
                        [--group <name>] [--profile <name>] [--repo <path> | --no-repo] \\
-                       [--muted] [--json]
+                       [--muted] [--icon <emoji>] [--json]
   kelpi workspace create --worktree <name> [--branch <name>] [--repo <path>] \\
-                       [--update-main | --no-update-main] [--group <existing>] [--muted] [--json]
+                       [--update-main | --no-update-main] [--group <existing>] [--muted] \\
+                       [--icon <emoji>] [--json]
 
 Creates a new workspace and returns its id.
 
@@ -400,6 +404,8 @@ Options:
                      default in a group whose worktree switch is on).
   --no-update-main   Branch off the current HEAD even in such a group.
   --muted            Create the workspace with its notifications muted.
+  --icon <emoji>     Give the workspace this sidebar icon (one emoji or symbol)
+                     instead of its first letter.
   --json             Print the structured reply (incl. the new workspace id).
   -h, --help         Show this help.
 
@@ -518,6 +524,26 @@ Options:
 
 Exit codes: 0 on success, non-zero on failure (unknown/ambiguous
 workspace, empty new name).
+
+`;
+
+export const workspaceIconUsage = `Usage:
+  kelpi workspace icon <name-or-id> (<emoji> | --clear) [--json]
+
+Sets a workspace's sidebar icon, like the sidebar's Change Icon. The icon
+is one emoji or symbol; a ZWJ sequence, flag or skin tone counts as one.
+--clear goes back to the workspace's first letter. Setting the icon it
+already has succeeds and changes nothing. The icon syncs to every
+attached client.
+
+Options:
+  --clear        Remove the icon instead.
+  --json         Print the structured reply (workspace_id, workspace_name,
+                 icon, old_icon).
+  -h, --help     Show this help.
+
+Exit codes: 0 on success, non-zero on failure (unknown/ambiguous
+workspace, not one emoji, an emoji together with --clear).
 
 `;
 

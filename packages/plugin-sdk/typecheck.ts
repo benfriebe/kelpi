@@ -27,6 +27,8 @@ async function authoring(api: BackendAPI): Promise<void> {
     const muted: boolean = (await api.workspaces.setMuted(first.id, !first.muted)).muted;
     await api.workspaces.setMuted(first.id);
     await api.workspaces.create({ name: 'child', muted });
+    const chef = await api.workspaces.create({ name: 'chef', icon: 'emoji:👩‍🍳' });
+    await api.workspaces.setIcon(first.id, chef.icon ?? first.icon ?? null);
     const associations: RepositoryAssociation[] = await api.git.status(first.id);
     await api.panes.create({ workspaceID: first.id, name: associations[0]?.repoName });
     // #295: the helpers focus by default; `focus: false` opens the pane in the background.

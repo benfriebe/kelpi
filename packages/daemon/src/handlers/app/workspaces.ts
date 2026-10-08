@@ -5,7 +5,8 @@
  * request/response; `workspace-move` / `workspace-profile` are fire-and-forget (guards still
  * run, failures are silently dropped — §1 legacy path).
  * `workspace-mute` is request/response too, so a toggle can report the state it produced, and
- * so is `workspace-rename`, so a rename that did not resolve is an error rather than silence.
+ * so is `workspace-rename`, so a rename that did not resolve is an error rather than silence,
+ * and so is `workspace-icon`, for the same reason.
  *
  * Ordering rules that are contract:
  *   - list order = sidebar order INCLUDING collapsed group members, deduped, with any
@@ -23,7 +24,13 @@
 import path from 'node:path';
 
 import { describeAgentSummary } from '@kelpi/core/agent';
-import { workspaceSidebarID } from '@kelpi/core/codec';
+import {
+    formatIconString,
+    iconRefusal,
+    parseIconString,
+    workspaceSidebarID,
+    type IconRef
+} from '@kelpi/core/codec';
 import {
     groupsMatchingName,
     isUUIDToken,
@@ -119,6 +126,7 @@ function workspaceEntry(state: DaemonState, workspace: WorkspaceState): Workspac
         last_accessed_at: wireTimestamp(workspace.lastAccessedAt),
         labels: [...workspace.labels],
         muted: workspace.muted,
+        icon: workspace.icon === null ? null : formatIconString(workspace.icon),
         ...(lastActivity !== undefined ? { last_activity_at: wireTimestamp(lastActivity) } : {}),
         ...(session !== undefined && session !== null ? { agent_session_id: session } : {}),
         ...(group !== undefined ? { group } : {}),
@@ -200,6 +208,8 @@ interface CreateInput {
     readonly profile: string | undefined;
     /** Set on the create itself, so the first pane never raises an attention signal. */
     readonly muted: boolean;
+    /** Set on the create itself, so the workspace has its icon from its first frame. */
+    readonly icon: IconRef | null;
     readonly groupID: string | undefined;
     readonly workspaceID: string;
     readonly repoAssociations: readonly RepoAssociation[] | undefined;
@@ -220,6 +230,7 @@ function dispatchCreate(ctx: AppContext, deps: AppDeps, input: CreateInput): voi
         ...(input.groupID !== undefined ? { groupID: input.groupID } : {}),
         ...(input.profile !== undefined ? { profileName: input.profile } : {}),
         ...(input.muted ? { muted: true } : {}),
+        ...(input.icon !== null ? { icon: input.icon } : {}),
         ...(input.repoAssociations !== undefined ? { repoAssociations: input.repoAssociations } : {})
     });
     deps.scrollTarget(workspaceSidebarID(input.workspaceID));
@@ -262,6 +273,7 @@ function unknownWorktreeGroupError(name: string): string {
 function handleWorktreeCreate(
     msg: WorkspaceCreateMessage,
     worktreeName: string,
+    icon: IconRef | null,
     ctx: AppContext,
     reply: ReplyHandle | null,
     deps: AppDeps
@@ -420,6 +432,7 @@ function handleWorktreeCreate(
                 color: msg.color,
                 profile: msg.profile,
                 muted: msg.muted === true,
+                icon,
                 groupID,
                 workspaceID,
                 repoAssociations: [
@@ -445,6 +458,7 @@ function handleWorktreeCreate(
                 repo_path: repoPath,
                 // Echoed so `--muted` is confirmed: a daemon that predates it drops the field.
                 muted: created?.muted ?? false,
+                ...iconEcho(created?.icon ?? null),
                 ...(groupName !== undefined ? { group: groupName } : {})
             });
         })
@@ -474,6 +488,7 @@ function handleWorktreeCreate(
 function handleCreateWithRepo(
     msg: WorkspaceCreateMessage,
     source: { readonly path: string } | { readonly repo: Repo },
+    icon: IconRef | null,
     ctx: AppContext,
     reply: ReplyHandle | null,
     deps: AppDeps
@@ -513,6 +528,7 @@ function handleCreateWithRepo(
                 color: msg.color,
                 profile: msg.profile,
                 muted: msg.muted === true,
+                icon,
                 groupID,
                 workspaceID,
                 repoAssociations: [association]
@@ -522,6 +538,8 @@ function handleCreateWithRepo(
                 workspace_id: uuidOut(workspaceID),
                 workspace_name: created?.name ?? workspaceName,
                 muted: created?.muted ?? msg.muted === true,
+                // What the store holds, never the request, so `--icon` is confirmed only when applied.
+                ...iconEcho(created?.icon ?? null),
                 repo_path: resolution.repo.path,
                 ...(trimmedGroup !== '' ? { group: trimmedGroup } : {})
             });
@@ -537,9 +555,18 @@ function handleWorkspaceCreate(
     reply: ReplyHandle | null,
     deps: AppDeps
 ): void {
+    // Refused before any branch runs, so a bad icon never leaves a workspace, a group or a
+    // worktree behind.
+    const requested = requestedIcon(msg.icon);
+    if ('error' in requested) {
+        fail(reply, requested.error);
+        return;
+    }
+    const icon = requested.icon;
+
     const worktreeName = msg.worktree;
     if (worktreeName !== undefined && worktreeName !== '') {
-        handleWorktreeCreate(msg, worktreeName, ctx, reply, deps);
+        handleWorktreeCreate(msg, worktreeName, icon, ctx, reply, deps);
         return;
     }
 
@@ -561,7 +588,7 @@ function handleWorkspaceCreate(
             fail(reply, ambiguousGroupError(trimmedGroup));
             return;
         }
-        handleCreateWithRepo(msg, source, ctx, reply, deps);
+        handleCreateWithRepo(msg, source, icon, ctx, reply, deps);
         return;
     }
 
@@ -569,13 +596,19 @@ function handleWorkspaceCreate(
 
     // (b) Top-level branch: reply first, then create.
     if (trimmedGroup === '') {
-        ok(reply, { workspace_id: uuidOut(workspaceID), workspace_name: workspaceName, muted: msg.muted === true });
+        ok(reply, {
+            workspace_id: uuidOut(workspaceID),
+            workspace_name: workspaceName,
+            muted: msg.muted === true,
+            ...iconEcho(icon)
+        });
         dispatchCreate(ctx, deps, {
             name: workspaceName,
             workingDirectory: msg.path,
             color: msg.color,
             profile: msg.profile,
             muted: msg.muted === true,
+            icon,
             groupID: undefined,
             workspaceID,
             repoAssociations: undefined
@@ -604,6 +637,7 @@ function handleWorkspaceCreate(
         workspace_id: uuidOut(workspaceID),
         workspace_name: workspaceName,
         muted: msg.muted === true,
+        ...iconEcho(icon),
         group: trimmedGroup
     });
     dispatchCreate(ctx, deps, {
@@ -612,10 +646,30 @@ function handleWorkspaceCreate(
         color: msg.color,
         profile: msg.profile,
         muted: msg.muted === true,
+        icon,
         groupID,
         workspaceID,
         repoAssociations: undefined
     });
+}
+
+/**
+ * The `icon` a `workspace-create` / `workspace-icon` request carries, as the icon to store. Absent
+ * is the letter avatar. A string is the flat DB spelling and must parse and pass `iconRefusal`,
+ * the check the GUI's `set-workspace-icon` makes; unlike that verb, a string that does not parse
+ * is refused rather than read as "clear", since a script that typed one meant to set something.
+ */
+function requestedIcon(raw: string | undefined): { readonly icon: IconRef | null } | { readonly error: string } {
+    if (raw === undefined) return { icon: null };
+    const icon = parseIconString(raw);
+    if (icon === null) return { error: `'${raw}' is not an icon: give emoji:<emoji> or system:<symbol>` };
+    const refusal = iconRefusal(icon);
+    return refusal === null ? { icon } : { error: refusal };
+}
+
+/** A create reply's `icon`: echoed only when one was set, so `--icon` can be confirmed. */
+function iconEcho(icon: IconRef | null): { readonly icon?: string } {
+    return icon === null ? {} : { icon: formatIconString(icon) };
 }
 
 /**
@@ -1099,6 +1153,45 @@ function handleWorkspaceRename(
 }
 
 // ---------------------------------------------------------------------------
+// workspace-icon (§6.9)
+// ---------------------------------------------------------------------------
+
+/**
+ * The sidebar's "Change Icon" (and "Reset to Letter"), for the CLI. The icon is validated the
+ * way the GUI's WS-only `set-workspace-icon` validates it (`iconRefusal`), so either spelling
+ * stores the same things; an absent `icon` clears it. Setting the icon the workspace already has
+ * is a successful no-op, like `workspace-rename`'s same name.
+ */
+function handleWorkspaceIcon(
+    nameOrID: string,
+    rawIcon: string | undefined,
+    ctx: AppContext,
+    reply: ReplyHandle | null,
+    deps: AppDeps
+): void {
+    const state = ctx.store.getState();
+    const scope = resolveStateOf(state);
+    const resolved = resolveWorkspaceStrict(scope, nameOrID);
+    const workspace = resolved === null ? null : workspaceByID(state, resolved.id);
+    if (workspace === null) {
+        fail(reply, unresolvedWorkspaceError(scope, nameOrID));
+        return;
+    }
+    const requested = requestedIcon(rawIcon);
+    if ('error' in requested) {
+        fail(reply, requested.error);
+        return;
+    }
+    const next = requested.icon === null ? null : formatIconString(requested.icon);
+    const current = workspace.icon === null ? null : formatIconString(workspace.icon);
+    if (next !== current) {
+        ctx.store.dispatch({ type: 'set-workspace-icon', id: workspace.id, icon: requested.icon });
+        deps.persist();
+    }
+    ok(reply, { workspace_id: uuidOut(workspace.id), workspace_name: workspace.name, icon: next, old_icon: current });
+}
+
+// ---------------------------------------------------------------------------
 // Table
 // ---------------------------------------------------------------------------
 
@@ -1128,6 +1221,9 @@ export function workspaceHandlerEntries(deps: AppDeps): readonly (readonly [stri
         }),
         forCommand('workspace-rename', (msg, ctx, reply) => {
             handleWorkspaceRename(msg.name, msg.new_name, ctx, reply, deps);
+        }),
+        forCommand('workspace-icon', (msg, ctx, reply) => {
+            handleWorkspaceIcon(msg.name, msg.icon, ctx, reply, deps);
         })
     ];
 }

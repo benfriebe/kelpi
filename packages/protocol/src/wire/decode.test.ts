@@ -436,9 +436,16 @@ describe('workspace and group commands', () => {
             update_main: undefined,
             repo: undefined,
             muted: false,
+            icon: undefined,
             group_defaults: true
         });
         expect(ok({ command: 'workspace-create', muted: true })).toMatchObject({ muted: true });
+        // Verbatim, for the handler to validate (workspace-icon's rule).
+        expect(ok({ command: 'workspace-create', icon: 'emoji:👩‍🍳' })).toMatchObject({ icon: 'emoji:👩‍🍳' });
+        expect(rejected({ command: 'workspace-create', icon: 7 })).toMatchObject({
+            reason: 'field-type',
+            field: 'icon'
+        });
         expect(rejected({ command: 'workspace-create', muted: 'true' })).toMatchObject({
             reason: 'field-type',
             field: 'muted'
@@ -512,6 +519,7 @@ describe('workspace and group commands', () => {
             'workspace-label',
             'workspace-mute',
             'workspace-rename',
+            'workspace-icon',
             'group-create',
             'group-rename',
             'group-delete',
@@ -590,6 +598,29 @@ describe('workspace and group commands', () => {
         expect(rejected({ command: 'workspace-rename', name: 'feat-x', new_name: 7 })).toMatchObject({
             reason: 'field-type',
             field: 'new_name'
+        });
+    });
+
+    it('decodes workspace-icon from a plain shell, keeping icon verbatim for the handler', () => {
+        // Explicit chain: no pane_id needed, so an agent outside a pane can set an icon.
+        expect(ok({ command: 'workspace-icon', name: 'feat-x', icon: 'emoji:👩‍🍳' })).toEqual({
+            command: 'workspace-icon',
+            name: 'feat-x',
+            icon: 'emoji:👩‍🍳'
+        });
+        // Validation is the handler's job, so the reply can say why; '' is not "clear".
+        expect(ok({ command: 'workspace-icon', name: 'feat-x', icon: '' })).toMatchObject({ icon: '' });
+        expect(ok({ command: 'workspace-icon', name: 'feat-x', icon: 'abc' })).toMatchObject({ icon: 'abc' });
+        // Absent and null both read as "clear".
+        expect(ok({ command: 'workspace-icon', name: 'feat-x' })).toEqual({
+            command: 'workspace-icon',
+            name: 'feat-x',
+            icon: undefined
+        });
+        expect(ok({ command: 'workspace-icon', name: 'feat-x', icon: null })).toMatchObject({ icon: undefined });
+        expect(rejected({ command: 'workspace-icon', name: 'feat-x', icon: true })).toMatchObject({
+            reason: 'field-type',
+            field: 'icon'
         });
     });
 

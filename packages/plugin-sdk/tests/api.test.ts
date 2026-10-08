@@ -91,6 +91,20 @@ describe('public SDK over Kelpi command handlers', () => {
         expect(await api.workspaces.create({ name: 'Plain' })).toMatchObject({ muted: false });
         expect(sent.at(-1)).not.toHaveProperty('muted');
     });
+    it('creates a workspace with its icon and lists it, leaving it unsaid unless asked', async () => {
+        const { api, app, sent } = host();
+        const created = await api.workspaces.create({ name: 'Chef', icon: 'emoji:👩‍🍳' });
+        expect(created).toMatchObject({ workspaceName: 'Chef', icon: 'emoji:👩‍🍳' });
+        expect(sent.at(-1)).toMatchObject({ command: 'workspace-create', icon: 'emoji:👩‍🍳' });
+        expect(app.state().workspaces.find(workspace => workspace.id === created.workspaceID)?.icon).toEqual({ kind: 'emoji', grapheme: '👩‍🍳' });
+        const listed = await api.workspaces.list();
+        expect(listed.find(workspace => workspace.id === created.workspaceID)?.icon).toBe('emoji:👩‍🍳');
+        expect(listed.find(workspace => workspace.id === W1)).not.toHaveProperty('icon');
+        await expect(api.workspaces.create({ name: 'Bad', icon: 'emoji:a' })).rejects.toThrow('not a usable icon');
+
+        expect(await api.workspaces.create({ name: 'Plain' })).not.toHaveProperty('icon');
+        expect(sent.at(-1)).not.toHaveProperty('icon');
+    });
     it('creates and splits panes, resizes a real split, and applies zoom/layout changes', async () => {
         const { api, app } = host();
         const second = await api.panes.create({ workspaceID: W1, name: 'second' });

@@ -64,6 +64,14 @@ describe('workspace-list', () => {
         ]);
     });
 
+    it('reports the icon in the flat spelling, and elides it for the letter avatar', () => {
+        const h = harness({ initial: seeded(2) });
+        h.dispatch({ type: 'set-workspace-icon', id: W2, icon: { kind: 'emoji', grapheme: '👩‍🍳' } });
+        const entries = h.reply({ command: 'workspace-list' })['workspaces'] as Record<string, unknown>[];
+        expect(entries[0]).not.toHaveProperty('icon');
+        expect(entries[1]?.['icon']).toBe('emoji:👩‍🍳');
+    });
+
     it('walks the sidebar order and includes members of a COLLAPSED group', () => {
         const h = harness({ initial: seeded(3) });
         h.dispatch(
@@ -222,6 +230,48 @@ describe('workspace-create (top level)', () => {
         expect(h2.state().workspaces[0]?.muted).toBe(false);
     });
 
+    it('creates the workspace with its icon from its first frame when asked', () => {
+        const h = harness({ ids: [W1, P1] });
+        const upserted: unknown[] = [];
+        h.store.subscribe((batch) => {
+            for (const event of batch) {
+                if (event.kind === 'workspace-upserted') upserted.push(event.workspace.icon);
+            }
+        });
+        // Echoed, like `muted`, so `--icon` can tell an older daemon ignored it.
+        expect(h.reply({ command: 'workspace-create', name: 'chef', icon: 'emoji:👩‍🍳' })).toEqual({
+            ok: true,
+            workspace_id: W1,
+            workspace_name: 'chef',
+            muted: false,
+            icon: 'emoji:👩‍🍳'
+        });
+        expect(h.state().workspaces[0]?.icon).toEqual({ kind: 'emoji', grapheme: '👩‍🍳' });
+        expect(upserted.length).toBeGreaterThan(0);
+        expect(upserted.every((icon) => (icon as { grapheme?: string } | null)?.grapheme === '👩‍🍳')).toBe(true);
+
+        // No icon asked for: none stored, and the reply is what it always was.
+        const h2 = harness({ ids: [W2, P2] });
+        expect(h2.reply({ command: 'workspace-create', name: 'plain' })).not.toHaveProperty('icon');
+        expect(h2.state().workspaces[0]?.icon).toBeNull();
+    });
+
+    it('refuses an unusable icon before creating anything', () => {
+        for (const icon of ['', 'abc', '🔥', 'emoji:a', 'emoji:🔥🔥', `emoji:🔥${'\u0301'.repeat(1000)}`]) {
+            const h = harness({ ids: [W1, G1, P1] });
+            const reply = h.reply({ command: 'workspace-create', name: 'x', group: 'team', icon });
+            expect(reply['ok']).toBe(false);
+            expect(h.state().workspaces).toEqual([]);
+            expect(h.state().groups).toEqual([]);
+            expect(h.persists).toEqual([]);
+        }
+        const h = harness({ ids: [W1, P1] });
+        expect(h.reply({ command: 'workspace-create', icon: 'emoji:a' })).toEqual({
+            ok: false,
+            error: "'a' is not a usable icon: give one emoji or symbol"
+        });
+    });
+
     it('reveals the new workspace to every attached client', () => {
         // run-B L3: the port's active workspace is per client, so the reducer marking the new
         // workspace last-active only moved what `kelpi workspace list` calls ACTIVE — a
@@ -263,6 +313,14 @@ describe('workspace-create (group)', () => {
         const h = harness({ ids: [W1, G1, P1] });
         expect(h.reply({ command: 'workspace-create', name: 'dev', group: 'team', muted: true })['muted']).toBe(true);
         expect(h.state().workspaces[0]?.muted).toBe(true);
+    });
+
+    it('carries the icon into the group branch', () => {
+        const h = harness({ ids: [W1, G1, P1] });
+        expect(h.reply({ command: 'workspace-create', name: 'dev', group: 'team', icon: 'emoji:🇦🇺' })['icon']).toBe(
+            'emoji:🇦🇺'
+        );
+        expect(h.state().workspaces[0]?.icon).toEqual({ kind: 'emoji', grapheme: '🇦🇺' });
     });
 
     it('reuses an existing group', () => {
@@ -353,6 +411,20 @@ describe('workspace-create (worktree)', () => {
         await flush();
         expect(h.replies[0]?.payloads[0]).toMatchObject({ ok: true, workspace_id: W1, muted: true });
         expect(h.state().workspaces[0]?.muted).toBe(true);
+    });
+
+    it('creates a worktree workspace with its icon, and refuses a bad one before any git work', async () => {
+        const worktreeAdd = vi.fn(async () => {});
+        const h = harness({ ids: [id('bbbbbbbb', 9), W1, P1, id('eeeeeeee', 1)], git: stubGit({ worktreeAdd }) });
+        h.send({ ...worktreeRequest, icon: 'emoji:🧪' });
+        await flush();
+        expect(h.replies[0]?.payloads[0]).toMatchObject({ ok: true, workspace_id: W1, icon: 'emoji:🧪' });
+        expect(h.state().workspaces[0]?.icon).toEqual({ kind: 'emoji', grapheme: '🧪' });
+
+        const refused = harness({ git: stubGit({ worktreeAdd }) });
+        expect(refused.reply({ ...worktreeRequest, icon: 'emoji:ab' })['ok']).toBe(false);
+        expect(worktreeAdd).toHaveBeenCalledTimes(1);
+        expect(refused.state().workspaces).toEqual([]);
     });
 
     /**
@@ -957,6 +1029,19 @@ describe('workspace-create (group default repository)', () => {
         ]);
     });
 
+    it('carries --icon through a create with a repository, echoing it', async () => {
+        const h = harness({
+            git: stubGit({
+                resolveRepoRoot: async () => ({ worktreeRoot: '/code/new', parentRepoRoot: '/code/new' }),
+                getCurrentBranch: async () => 'main'
+            })
+        });
+        h.send({ command: 'workspace-create', name: 'n', repo: '/code/new', icon: 'emoji:👩‍🍳' });
+        await flush();
+        expect(h.replies[0]?.payloads[0]).toMatchObject({ ok: true, repo_path: '/code/new', icon: 'emoji:👩‍🍳' });
+        expect(h.state().workspaces[0]?.icon).toEqual({ kind: 'emoji', grapheme: '👩‍🍳' });
+    });
+
     it('refuses a repo that is not a repository and creates nothing', async () => {
         const h = harness({ git: stubGit({ resolveRepoRoot: async () => null }) });
         h.send({ command: 'workspace-create', name: 'n', group: 'fresh', repo: '/tmp/plain' });
@@ -1557,5 +1642,143 @@ describe('workspace-rename', () => {
         });
         h.reply({ command: 'workspace-rename', name: 'w1', new_name: 'live' });
         expect(upserted).toEqual(['live']);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// workspace-icon
+// ---------------------------------------------------------------------------
+
+describe('workspace-icon', () => {
+    it('sets the icon by name, replying with the id, the name and the icon, and persisting', () => {
+        const h = harness({ initial: seeded(2) });
+        expect(h.reply({ command: 'workspace-icon', name: 'w1', icon: 'emoji:🔥' })).toEqual({
+            ok: true,
+            workspace_id: W1,
+            workspace_name: 'w1',
+            icon: 'emoji:🔥',
+            old_icon: null
+        });
+        expect(h.state().workspaces.map((workspace) => workspace.icon)).toEqual([
+            { kind: 'emoji', grapheme: '🔥' },
+            null
+        ]);
+        expect(h.persists.length).toBeGreaterThan(0);
+    });
+
+    it('sets by id, in either case, and takes a ZWJ sequence as one icon', () => {
+        const h = harness({ initial: seeded(2) });
+        expect(h.reply({ command: 'workspace-icon', name: W2.toLowerCase(), icon: 'emoji:👩‍🍳' })).toMatchObject({
+            ok: true,
+            workspace_id: W2,
+            icon: 'emoji:👩‍🍳'
+        });
+        expect(h.state().workspaces[1]?.icon).toEqual({ kind: 'emoji', grapheme: '👩‍🍳' });
+    });
+
+    it('clears the icon when it is absent or null', () => {
+        const h = harness({ initial: seeded(1) });
+        h.reply({ command: 'workspace-icon', name: 'w1', icon: 'emoji:🔥' });
+        expect(h.reply({ command: 'workspace-icon', name: 'w1' })).toEqual({
+            ok: true,
+            workspace_id: W1,
+            workspace_name: 'w1',
+            icon: null,
+            old_icon: 'emoji:🔥'
+        });
+        expect(h.state().workspaces[0]?.icon).toBeNull();
+        h.reply({ command: 'workspace-icon', name: 'w1', icon: 'emoji:🔥' });
+        expect(h.reply({ command: 'workspace-icon', name: 'w1', icon: null })['icon']).toBeNull();
+        expect(h.state().workspaces[0]?.icon).toBeNull();
+    });
+
+    it('treats the icon it already has as a successful no-op', () => {
+        const h = harness({ initial: seeded(1) });
+        h.reply({ command: 'workspace-icon', name: 'w1', icon: 'emoji:🔥' });
+        const before = h.state();
+        const persisted = h.persists.length;
+        expect(h.reply({ command: 'workspace-icon', name: 'w1', icon: 'emoji:🔥' })).toMatchObject({
+            ok: true,
+            icon: 'emoji:🔥',
+            old_icon: 'emoji:🔥'
+        });
+        // Clearing an icon that is already clear is the same no-op.
+        h.reply({ command: 'workspace-icon', name: 'w1' });
+        expect(h.reply({ command: 'workspace-icon', name: 'w1' })).toMatchObject({ icon: null, old_icon: null });
+        expect(h.state().workspaces[0]?.icon).toBeNull();
+        expect(h.persists.length).toBe(persisted + 1);
+        expect(before.workspaces[0]?.icon).toEqual({ kind: 'emoji', grapheme: '🔥' });
+    });
+
+    it('refuses what is not one usable icon, without mutating or persisting', () => {
+        const h = harness({ initial: seeded(1) });
+        const before = h.state();
+        expect(h.reply({ command: 'workspace-icon', name: 'w1', icon: 'abc' })).toEqual({
+            ok: false,
+            error: "'abc' is not an icon: give emoji:<emoji> or system:<symbol>"
+        });
+        // An empty string is not "clear": a script that sent one meant to set something.
+        expect(h.reply({ command: 'workspace-icon', name: 'w1', icon: '' })['ok']).toBe(false);
+        expect(h.reply({ command: 'workspace-icon', name: 'w1', icon: 'emoji:' })['ok']).toBe(false);
+        expect(h.reply({ command: 'workspace-icon', name: 'w1', icon: 'emoji:a' })).toEqual({
+            ok: false,
+            error: "'a' is not a usable icon: give one emoji or symbol"
+        });
+        expect(h.reply({ command: 'workspace-icon', name: 'w1', icon: 'emoji:🔥🔥' })).toEqual({
+            ok: false,
+            error: "'🔥🔥' is not a usable icon: give one emoji or symbol"
+        });
+        // One grapheme, but thousands of characters: refused, and not echoed back.
+        const chain = Array.from({ length: 2000 }, () => '🔥').join('\u200d');
+        expect(h.reply({ command: 'workspace-icon', name: 'w1', icon: `emoji:${chain}` })).toEqual({
+            ok: false,
+            error: 'the icon is too long: give one emoji or symbol'
+        });
+        expect(h.reply({ command: 'workspace-icon', name: 'w1', icon: `system:${'a'.repeat(129)}` })).toEqual({
+            ok: false,
+            error: 'the symbol name is too long: at most 128 characters'
+        });
+        expect(h.state()).toBe(before);
+        expect(h.persists).toEqual([]);
+    });
+
+    it('takes a system symbol as the opaque token the WS-only verb takes', () => {
+        const h = harness({ initial: seeded(1) });
+        expect(h.reply({ command: 'workspace-icon', name: 'w1', icon: 'system:star.fill' })['icon']).toBe(
+            'system:star.fill'
+        );
+        expect(h.state().workspaces[0]?.icon).toEqual({ kind: 'system', name: 'star.fill' });
+    });
+
+    it('distinguishes a missing workspace from an ambiguous name, mutating nothing', () => {
+        const h = harness({ initial: seeded(2) });
+        h.dispatch({ type: 'rename-workspace', id: W2, name: 'w1' });
+        const before = h.state();
+        expect(h.reply({ command: 'workspace-icon', name: 'ghost', icon: 'emoji:🔥' })).toEqual({
+            ok: false,
+            error: 'workspace not found: ghost'
+        });
+        expect(h.reply({ command: 'workspace-icon', name: 'w1', icon: 'emoji:🔥' })).toEqual({
+            ok: false,
+            error: 'workspace name is ambiguous: w1 (use the id)'
+        });
+        expect(h.reply({ command: 'workspace-icon', name: W3, icon: 'emoji:🔥' })).toEqual({
+            ok: false,
+            error: `workspace not found: ${W3}`
+        });
+        expect(h.state()).toBe(before);
+        expect(h.persists).toEqual([]);
+    });
+
+    it('streams the icon to subscribers as a workspace upsert', () => {
+        const h = harness({ initial: seeded(1) });
+        const icons: unknown[] = [];
+        h.store.subscribe((batch) => {
+            for (const event of batch) {
+                if (event.kind === 'workspace-upserted') icons.push(event.workspace.icon);
+            }
+        });
+        h.reply({ command: 'workspace-icon', name: 'w1', icon: 'emoji:🔥' });
+        expect(icons).toEqual([{ kind: 'emoji', grapheme: '🔥' }]);
     });
 });

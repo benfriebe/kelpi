@@ -124,6 +124,8 @@ export interface WorkspaceListEntry {
     /** Always present, possibly empty. */
     readonly labels: readonly string[];
     readonly muted: boolean;
+    /** The sidebar icon in the flat DB spelling (`"emoji:🔥"`); absent for the letter avatar. */
+    readonly icon?: string;
     /** Max across the workspace's panes; absent when it has no panes. */
     readonly last_activity_at?: string;
     /** The first pane carrying one. */
@@ -156,6 +158,8 @@ export interface WorkspaceCreateReply extends ReplySuccess {
     readonly workspace_name: string;
     /** The state the workspace was created in; lets `--muted` confirm it was applied. */
     readonly muted: boolean;
+    /** The icon it was created with; absent when none was asked for. Confirms `--icon`. */
+    readonly icon?: string;
     /** Echoed group name when the workspace was placed in a group. */
     readonly group?: string;
     /** Worktree flow only. */
@@ -203,6 +207,15 @@ export interface WorkspaceRenameReply extends ReplySuccess {
     readonly workspace_name: string;
     /** The name it had before; equal to `workspace_name` when the rename changed nothing. */
     readonly old_name: string;
+}
+
+export interface WorkspaceIconReply extends ReplySuccess {
+    readonly workspace_id: string;
+    readonly workspace_name: string;
+    /** The icon the workspace has now, in the flat DB spelling; `null` = the letter avatar. */
+    readonly icon: string | null;
+    /** The icon it had before, so the CLI can say a same-icon request changed nothing. */
+    readonly old_icon: string | null;
 }
 
 // ── group replies ───────────────────────────────────────────────────────────────────
@@ -505,6 +518,7 @@ export type WireReply =
     | WorkspaceLabelReply
     | WorkspaceMuteReply
     | WorkspaceRenameReply
+    | WorkspaceIconReply
     | GroupListReply
     | GroupOrderReply
     | GraftStartReply

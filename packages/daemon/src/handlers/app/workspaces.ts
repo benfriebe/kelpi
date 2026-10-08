@@ -1187,7 +1187,7 @@ function handleWorkspaceIcon(
         ctx.store.dispatch({ type: 'set-workspace-icon', id: workspace.id, icon: requested.icon });
         deps.persist();
     }
-    ok(reply, { workspace_id: uuidOut(workspace.id), workspace_name: workspace.name, icon: next });
+    ok(reply, { workspace_id: uuidOut(workspace.id), workspace_name: workspace.name, icon: next, old_icon: current });
 }
 
 // ---------------------------------------------------------------------------

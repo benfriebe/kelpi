@@ -214,6 +214,8 @@ export interface WorkspaceIconReply extends ReplySuccess {
     readonly workspace_name: string;
     /** The icon the workspace has now, in the flat DB spelling; `null` = the letter avatar. */
     readonly icon: string | null;
+    /** The icon it had before, so the CLI can say a same-icon request changed nothing. */
+    readonly old_icon: string | null;
 }
 
 // ── group replies ───────────────────────────────────────────────────────────────────

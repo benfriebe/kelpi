@@ -1643,7 +1643,8 @@ describe('workspace-icon', () => {
             ok: true,
             workspace_id: W1,
             workspace_name: 'w1',
-            icon: 'emoji:🔥'
+            icon: 'emoji:🔥',
+            old_icon: null
         });
         expect(h.state().workspaces.map((workspace) => workspace.icon)).toEqual([
             { kind: 'emoji', grapheme: '🔥' },
@@ -1669,7 +1670,8 @@ describe('workspace-icon', () => {
             ok: true,
             workspace_id: W1,
             workspace_name: 'w1',
-            icon: null
+            icon: null,
+            old_icon: 'emoji:🔥'
         });
         expect(h.state().workspaces[0]?.icon).toBeNull();
         h.reply({ command: 'workspace-icon', name: 'w1', icon: 'emoji:🔥' });
@@ -1684,11 +1686,12 @@ describe('workspace-icon', () => {
         const persisted = h.persists.length;
         expect(h.reply({ command: 'workspace-icon', name: 'w1', icon: 'emoji:🔥' })).toMatchObject({
             ok: true,
-            icon: 'emoji:🔥'
+            icon: 'emoji:🔥',
+            old_icon: 'emoji:🔥'
         });
         // Clearing an icon that is already clear is the same no-op.
         h.reply({ command: 'workspace-icon', name: 'w1' });
-        h.reply({ command: 'workspace-icon', name: 'w1' });
+        expect(h.reply({ command: 'workspace-icon', name: 'w1' })).toMatchObject({ icon: null, old_icon: null });
         expect(h.state().workspaces[0]?.icon).toBeNull();
         expect(h.persists.length).toBe(persisted + 1);
         expect(before.workspaces[0]?.icon).toEqual({ kind: 'emoji', grapheme: '🔥' });

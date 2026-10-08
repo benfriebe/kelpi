@@ -629,6 +629,10 @@ function wireIcon(value: string, command: string): string {
         errLine(`${command}: the icon cannot be empty`);
         exit(1);
     }
+    if (/^(emoji|system):/.test(trimmed)) {
+        errLine(`${command}: give the bare emoji, without the ${trimmed.slice(0, trimmed.indexOf(':') + 1)} prefix`);
+        exit(1);
+    }
     // `normalizeIconEmoji` keeps the FIRST grapheme, so two emoji come back as one: equality is
     // what refuses them, as it is daemon-side.
     if (normalizeIconEmoji(trimmed) !== trimmed) {
@@ -664,7 +668,7 @@ async function handleWorkspaceIcon(args: string[]): Promise<void> {
         exit(1);
     }
     if (clear && args.length > 0 && !(args[0] ?? '').startsWith('-')) {
-        errLine("workspace icon can't take both an emoji and --clear");
+        errLine("kelpi workspace icon: can't take both an emoji and --clear");
         exit(1);
     }
     rejectLeftoverArgs(args, 'kelpi workspace icon', {
@@ -683,10 +687,13 @@ async function handleWorkspaceIcon(args: string[]): Promise<void> {
     }
     const workspaceName = asString(reply['workspace_name']) ?? nameOrID;
     const current = asString(reply['icon']);
+    // `old_icon` tells a same-icon no-op from a change, as `old_name` does for rename. A reply
+    // without the key (it is always present, `null` included) cannot say, so it reads as a change.
+    const unchanged = 'old_icon' in reply && (asString(reply['old_icon']) ?? null) === (current ?? null);
     if (current === undefined) {
-        printLine(`${workspaceName}: icon cleared`);
+        printLine(unchanged ? `${workspaceName}: already has no icon` : `${workspaceName}: icon cleared`);
         return;
     }
     const shown = current.startsWith('emoji:') ? current.slice('emoji:'.length) : current;
-    printLine(`${workspaceName}: icon set to ${shown}`);
+    printLine(unchanged ? `${workspaceName}: icon is already ${shown}` : `${workspaceName}: icon set to ${shown}`);
 }

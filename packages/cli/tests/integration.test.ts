@@ -1793,7 +1793,10 @@ describe('workspace rename', () => {
 
 describe('workspace icon', () => {
     const iconReply = (request: Record<string, unknown>): ServerReply => ({
-        lines: [{ ok: true, workspace_id: PANE, workspace_name: 'chef', icon: request['icon'] ?? null }]
+        lines: [{ ok: true, workspace_id: PANE, workspace_name: 'chef', icon: request['icon'] ?? null, old_icon: 'emoji:🧪' }]
+    });
+    const unchangedReply = (request: Record<string, unknown>): ServerReply => ({
+        lines: [{ ok: true, workspace_id: PANE, workspace_name: 'chef', icon: request['icon'] ?? null, old_icon: request['icon'] ?? null }]
     });
 
     it('sends the emoji with its prefix, waits for the reply and prints the icon', async () => {
@@ -1824,11 +1827,42 @@ describe('workspace icon', () => {
         server.respond(iconReply);
         const result = await runCLI(['workspace', 'icon', 'chef', '🔥', '--json'], { port: server.port });
         expect(result.code).toBe(0);
-        expect(JSON.parse(result.stdout)).toEqual({ ok: true, workspace_id: PANE, workspace_name: 'chef', icon: 'emoji:🔥' });
+        expect(JSON.parse(result.stdout)).toEqual({
+            ok: true,
+            workspace_id: PANE,
+            workspace_name: 'chef',
+            icon: 'emoji:🔥',
+            old_icon: 'emoji:🧪'
+        });
+    });
+
+    it('says when the icon was already set, from old_icon', async () => {
+        server.respond(unchangedReply);
+        const same = await runCLI(['workspace', 'icon', 'chef', '👩‍🍳'], { port: server.port });
+        expect(same.code).toBe(0);
+        expect(same.stdout).toBe('chef: icon is already 👩‍🍳\n');
+        const none = await runCLI(['workspace', 'icon', 'chef', '--clear'], { port: server.port });
+        expect(none.code).toBe(0);
+        expect(none.stdout).toBe('chef: already has no icon\n');
+    });
+
+    it('reads a reply without old_icon as a change', async () => {
+        server.respond((request) => ({ lines: [{ ok: true, workspace_id: PANE, workspace_name: 'chef', icon: request['icon'] ?? null }] }));
+        const result = await runCLI(['workspace', 'icon', 'chef', '👩‍🍳'], { port: server.port });
+        expect(result.stdout).toBe('chef: icon set to 👩‍🍳\n');
+    });
+
+    it('asks for the bare emoji when given a prefixed one', async () => {
+        for (const [prefixed, prefix] of [['emoji:🔥', 'emoji:'], ['system:star', 'system:']] as const) {
+            const result = await runCLI(['workspace', 'icon', 'chef', prefixed], { port: server.port });
+            expect(result.code).toBe(1);
+            expect(result.stderr).toBe(`kelpi workspace icon: give the bare emoji, without the ${prefix} prefix\n`);
+        }
+        expect(server.requests).toHaveLength(0);
     });
 
     it('refuses what is not one emoji before sending', async () => {
-        for (const bad of ['abc', '🔥🔥', 'a', 'emoji:🔥', 'system:star']) {
+        for (const bad of ['abc', '🔥🔥', 'a']) {
             const result = await runCLI(['workspace', 'icon', 'chef', bad], { port: server.port });
             expect(result.code).toBe(1);
             expect(result.stdout).toBe('');
@@ -1869,7 +1903,7 @@ describe('workspace icon', () => {
 
         const both = await runCLI(['workspace', 'icon', 'chef', '🔥', '--clear'], { port: server.port });
         expect(both.code).toBe(1);
-        expect(both.stderr).toBe("workspace icon can't take both an emoji and --clear\n");
+        expect(both.stderr).toBe("kelpi workspace icon: can't take both an emoji and --clear\n");
 
         const stray = await runCLI(['workspace', 'icon', 'chef', '🔥', '🔥'], { port: server.port });
         expect(stray.code).toBe(1);

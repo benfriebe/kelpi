@@ -504,7 +504,7 @@ kelpi workspace rename <name-or-id> <new-name> [--json]
 # what they are for, so the user can tell them apart at a glance. The icon
 # is ONE emoji, given bare (a ZWJ sequence like 👩‍🍳 or a flag counts as
 # one); --clear goes back to the first letter. Prefer the id, as for
-# rename. Prints `<name>: icon set to <emoji>` / `<name>: icon cleared`;
+# rename. Prints `<name>: icon set to <emoji>` / `<name>: icon cleared` (or `icon is already <emoji>` when nothing changed);
 # --json gives {ok,workspace_id,workspace_name,icon}. Exits non-zero, with
 # the reason on stderr, for a missing or ambiguous workspace or an icon
 # that is not one emoji.

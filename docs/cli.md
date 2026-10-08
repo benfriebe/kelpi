@@ -1191,13 +1191,13 @@ kelpi workspace icon <name-or-id> (<emoji> | --clear) [--json]
 ```
 
 The sidebar's Change Icon / Reset to Letter for the terminal, so a script or an agent can mark
-the workspaces it makes. Until now only the GUI (and the plugin SDK's `workspaces.setIcon`)
-could set one.
+the workspaces it makes. The GUI and the plugin SDK's `workspaces.setIcon` set the same icon
+through the WebSocket-only `set-workspace-icon`.
 
 - Help to stdout, exit 0. A missing `<name-or-id>`, or neither `<emoji>` nor `--clear` =>
   usage to stderr, exit 1.
 - A dash-prefixed positional => `kelpi workspace icon: unknown option <x>` + usage, exit 1. An
-  emoji together with `--clear` => `workspace icon can't take both an emoji and --clear`,
+  emoji together with `--clear` => `kelpi workspace icon: can't take both an emoji and --clear`,
   exit 1. A third positional => `kelpi workspace icon: unexpected argument '<x>'` with the hint
   `an icon is one emoji`, exit 1.
 - The icon is the bare emoji, trimmed, and must be exactly one grapheme that passes the same
@@ -1205,12 +1205,15 @@ could set one.
   a flag or a skin tone is one icon; letters, two emoji and text are not. Empty =>
   `kelpi workspace icon: the icon cannot be empty`; anything else refused =>
   `kelpi workspace icon: '<x>' is not a usable icon: give one emoji or symbol`; both exit 1,
-  before anything is sent. A literal `emoji:…` or `system:…` value is refused the same way:
-  the CLI adds the `emoji:` prefix itself and sets no SF Symbol.
+  before anything is sent. A literal `emoji:…` or `system:…` value =>
+  `kelpi workspace icon: give the bare emoji, without the <prefix>: prefix`, exit 1: the CLI
+  adds the `emoji:` prefix itself and sets no SF Symbol.
 - Payload: `{"command":"workspace-icon","name":<name-or-id>,"icon":"emoji:<emoji>"}`, with no
   `icon` for `--clear`.
 - Request/response. `--json`: full reply **including `ok`**, compact sorted.
-- Default: `<workspace_name>: icon set to <emoji>`, or `<workspace_name>: icon cleared`.
+- Default: `<workspace_name>: icon set to <emoji>`, or `<workspace_name>: icon cleared`; when
+  the reply's `old_icon` equals `icon` (nothing changed), `<workspace_name>: icon is already
+  <emoji>`, or `<workspace_name>: already has no icon`.
 - Against a daemon that predates the verb: `no response from Kelpi (upgrade required?)`,
   exit 1 (§6.1).
 
@@ -1218,8 +1221,8 @@ Server contract: `<name-or-id>` resolves strictly, with `workspace rename`'s err
 not found: <name>`, `workspace name is ambiguous: <name> (use the id)`), both exit 1. The
 daemon validates the icon again, the way the GUI's `set-workspace-icon` does. Setting the icon
 the workspace already has succeeds and writes nothing. The change persists and syncs to every
-attached client. Reply `{ok, workspace_id, workspace_name, icon}`, `icon` being
-`"emoji:<emoji>"`, or `null` once cleared. Group icons stay a sidebar gesture.
+attached client. Reply `{ok, workspace_id, workspace_name, icon, old_icon}`, `icon` being
+`"emoji:<emoji>"`, or `null` once cleared, and `old_icon` the icon before, in the same spelling. Group icons stay a sidebar gesture.
 
 ---
 

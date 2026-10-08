@@ -539,7 +539,7 @@ attached client.
 Options:
   --clear        Remove the icon instead.
   --json         Print the structured reply (workspace_id, workspace_name,
-                 icon).
+                 icon, old_icon).
   -h, --help     Show this help.
 
 Exit codes: 0 on success, non-zero on failure (unknown/ambiguous

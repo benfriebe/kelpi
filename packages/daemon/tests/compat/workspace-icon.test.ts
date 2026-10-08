@@ -24,6 +24,7 @@ interface IconReply {
     readonly workspace_id: string;
     readonly workspace_name: string;
     readonly icon: string | null;
+    readonly old_icon: string | null;
 }
 
 interface CreateReply {
@@ -66,7 +67,7 @@ describe('compat: kelpi workspace icon (this CLI)', () => {
         expect(created.icon).toBeUndefined();
 
         const byName = await kelpi.json<IconReply>(['workspace', 'icon', 'chef', '👩‍🍳', '--json']);
-        expect(byName).toEqual({ ok: true, workspace_id: created.workspace_id, workspace_name: 'chef', icon: 'emoji:👩‍🍳' });
+        expect(byName).toEqual({ ok: true, workspace_id: created.workspace_id, workspace_name: 'chef', icon: 'emoji:👩‍🍳', old_icon: null });
         expect(await icons()).toEqual([undefined, 'emoji:👩‍🍳']);
 
         const byID = await kelpi.run(['workspace', 'icon', created.workspace_id, '🇦🇺']);
@@ -76,6 +77,7 @@ describe('compat: kelpi workspace icon (this CLI)', () => {
         // The same icon again: success, nothing changes.
         const same = await kelpi.run(['workspace', 'icon', 'chef', '🇦🇺']);
         expect(same.code).toBe(0);
+        expect(same.stdout).toBe('chef: icon is already 🇦🇺\n');
         expect(await icons()).toEqual([undefined, 'emoji:🇦🇺']);
 
         const cleared = await kelpi.run(['workspace', 'icon', 'chef', '--clear']);
@@ -108,11 +110,14 @@ describe('compat: kelpi workspace icon (this CLI)', () => {
         expect(ambiguous.code).toBe(1);
         expect(ambiguous.stderr).toBe('kelpi workspace icon: workspace name is ambiguous: dup (use the id)\n');
 
-        for (const bad of ['abc', '🔥🔥', 'emoji:🔥']) {
+        for (const bad of ['abc', '🔥🔥']) {
             const result = await kelpi.run(['workspace', 'icon', 'Default', bad]);
             expect(result.code).toBe(1);
             expect(result.stderr).toBe(`kelpi workspace icon: '${bad}' is not a usable icon: give one emoji or symbol\n`);
         }
+        const prefixed = await kelpi.run(['workspace', 'icon', 'Default', 'emoji:🔥']);
+        expect(prefixed.code).toBe(1);
+        expect(prefixed.stderr).toBe('kelpi workspace icon: give the bare emoji, without the emoji: prefix\n');
         expect(await icons()).toEqual([undefined, undefined, undefined]);
     }, 60_000);
 

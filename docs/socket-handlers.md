@@ -1622,7 +1622,7 @@ web-pane subsystem (see its spec): `web-open`, `web-navigate`, `web-url`, `web-b
 | workspace-label | `workspace_id`, `workspace_name`, `labels` |
 | workspace-mute | `workspace_id`, `workspace_name`, `muted` |
 | workspace-rename | `workspace_id`, `workspace_name` (the new name), `old_name` |
-| workspace-icon | `workspace_id`, `workspace_name`, `icon` (`null` when cleared) |
+| workspace-icon | `workspace_id`, `workspace_name`, `icon` (`null` when cleared), `old_icon` |
 | group-list | `groups: [...]` |
 | group-reorder / group-sort | `group_id`, `group_name`, `order` |
 | graft-start | `started: [...]`, `partial_error?`, `partial_error_kind?` (failures add `error_kind`) |

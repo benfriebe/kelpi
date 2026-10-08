@@ -1176,13 +1176,13 @@ Change Icon / Reset to Letter, validated the way the GUI's WS-only `set-workspac
 passes the emoji heuristic, so a ZWJ sequence (`👩‍🍳`), a flag or a skin tone is one icon and
 `emoji:a` or `emoji:🔥🔥` is refused; a `system:` name is an opaque token. The icon reaches every
 attached client through the ordinary store delta. Setting the icon the workspace already has
-succeeds without writing anything.
+succeeds without writing anything; the reply's `old_icon` (the icon before) then equals `icon`.
 
 ```json
 {"command":"workspace-icon","name":"feat-x","icon":"emoji:👩‍🍳"}
-→ {"ok":true,"workspace_id":"<uuid>","workspace_name":"feat-x","icon":"emoji:👩‍🍳"}
+→ {"ok":true,"workspace_id":"<uuid>","workspace_name":"feat-x","icon":"emoji:👩‍🍳","old_icon":null}
 {"command":"workspace-icon","name":"feat-x"}
-→ {"ok":true,"workspace_id":"<uuid>","workspace_name":"feat-x","icon":null}
+→ {"ok":true,"workspace_id":"<uuid>","workspace_name":"feat-x","icon":null,"old_icon":"emoji:👩‍🍳"}
 ```
 
 Refusals: `workspace not found: <name>` and `workspace name is ambiguous: <name> (use the

@@ -222,6 +222,11 @@ export interface WorkspaceCreateMessage {
     /** Create the workspace already muted (agent-lifecycle §7.6). */
     muted?: boolean | undefined;
     /**
+     * Create the workspace with this icon, in `workspace-icon`'s spelling and with its
+     * validation; absent = the letter avatar.
+     */
+    icon?: string | undefined;
+    /**
      * §5.5: apply the group's default repository (and its worktree switch) to what the request
      * leaves unsaid. Defaults to true. The New Workspace sheet sends false: it has already shown
      * the group's defaults and the user's final choice is in the request, including "no repo".
@@ -322,6 +327,21 @@ export interface WorkspaceRenameMessage {
     name: string;
     /** Required non-empty on the wire; the handler trims it and refuses whitespace only. */
     new_name: string;
+}
+
+/**
+ * The CLI's spelling of the sidebar's "Change Icon". The GUI keeps its WS-only
+ * `set-workspace-icon`, which addresses the workspace by id; this one takes a name-or-id like
+ * every other `workspace-*` verb, so it resolves (and refuses) the way they do.
+ */
+export interface WorkspaceIconMessage {
+    command: 'workspace-icon';
+    name: string;
+    /**
+     * The flat DB spelling (`"emoji:🔥"` / `"system:star"`), kept verbatim for the handler,
+     * which validates it; absent (or `null`) clears the icon back to the letter avatar.
+     */
+    icon?: string | undefined;
 }
 
 // ── 6.4 Group commands ──────────────────────────────────────────────────────────────
@@ -687,6 +707,7 @@ export type WireMessage =
     | WorkspaceLabelMessage
     | WorkspaceMuteMessage
     | WorkspaceRenameMessage
+    | WorkspaceIconMessage
     | GroupListMessage
     | GroupCreateMessage
     | GroupRenameMessage
@@ -751,6 +772,7 @@ export const EXPLICIT_CHAIN_COMMANDS: ReadonlySet<WireCommandName> = new Set([
     'workspace-label',
     'workspace-mute',
     'workspace-rename',
+    'workspace-icon',
     'group-list',
     'group-create',
     'group-rename',

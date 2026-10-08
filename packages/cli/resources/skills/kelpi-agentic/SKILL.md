@@ -480,7 +480,9 @@ to these verbs with `--agent codex`. `pane list --json` then reports an
 #                       won't create one, to avoid orphaning it on failure)
 # The reply adds `worktree_path` + `branch`; the create runs with a longer
 # read timeout so a slow `git fetch` isn't a spurious failure.
-kelpi workspace create [--name "..."] [--path /dir] [--color blue|green|red|yellow|purple|orange|pink|gray] [--group <name>] [--profile <name>] [--worktree <name> [--branch <name>] [--repo <path>] [--update-main]] [--json]
+# --icon <emoji> gives the new workspace a sidebar icon from the start (one
+# emoji; see `workspace icon` below).
+kelpi workspace create [--name "..."] [--path /dir] [--color blue|green|red|yellow|purple|orange|pink|gray] [--group <name>] [--profile <name>] [--icon <emoji>] [--worktree <name> [--branch <name>] [--repo <path>] [--update-main]] [--json]
 
 # Assign or clear a workspace's profile (fire-and-forget). Applies to the
 # KELPIT pane spawned in the workspace; existing panes keep their env.
@@ -496,6 +498,17 @@ kelpi workspace profile <name-or-id> (<profile> | --clear)
 # {ok,workspace_id,workspace_name,old_name}. Exits non-zero, with the
 # reason on stderr, for a missing or ambiguous workspace or an empty name.
 kelpi workspace rename <name-or-id> <new-name> [--json]
+
+# Set or clear a workspace's sidebar icon (request/response), the same as
+# the sidebar's Change Icon. Give the workspaces you make an icon that says
+# what they are for, so the user can tell them apart at a glance. The icon
+# is ONE emoji, given bare (a ZWJ sequence like 👩‍🍳 or a flag counts as
+# one); --clear goes back to the first letter. Prefer the id, as for
+# rename. Prints `<name>: icon set to <emoji>` / `<name>: icon cleared`;
+# --json gives {ok,workspace_id,workspace_name,icon}. Exits non-zero, with
+# the reason on stderr, for a missing or ambiguous workspace or an icon
+# that is not one emoji.
+kelpi workspace icon <name-or-id> (<emoji> | --clear) [--json]
 
 # Delete one or more workspaces by name-or-id (request/response). Deletes
 # outright — no CLI prompt — closing any remaining panes. Refuses to

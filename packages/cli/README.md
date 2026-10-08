@@ -84,7 +84,7 @@ Everything in `cli.md` is implemented: `event` (all six, hook payload parsing on
 `background_tasks` terminal-status-exclusion counting, sub-agent filtering), `pane`
 (split/create/close/name/send/send-key/capture/resize/list/sync/id, both `move` forms,
 `move-to-workspace`), `workspace` (list/create incl. `--worktree`/delete incl.
-`--prune-worktree`/move/profile/label/mute/rename), `group`
+`--prune-worktree`/move/profile/label/mute/rename/icon), `group`
 (list/create/rename/delete/reorder/sort/set-repo),
 `layout`, `open`/`md`/`diff` routing, the whole `web` family, `graft`, `ping` (through
 `doctor`) and `doctor`. The parsing primitives are ported bug-for-bug: flags anywhere in argv,
@@ -103,9 +103,9 @@ How this is measured, and what "parity" is worth:
   KELPI_COMPAT_CLI="$PWD/packages/cli/dist/kelpi.js" npx vitest run packages/daemon/tests/compat
   ```
 
-  A verb the shipped binary never had (`workspace rename`, #266) cannot be checked against
-  it, so `workspace-rename.test.ts` bundles this CLI into a private file and drives that,
-  whatever `KELPI_COMPAT_CLI` says.
+  A verb the shipped binary never had (`workspace rename`, #266, and `workspace icon`) cannot
+  be checked against it, so `workspace-rename.test.ts` and `workspace-icon.test.ts` bundle
+  this CLI into a private file and drive that, whatever `KELPI_COMPAT_CLI` says.
 
 - **A differential run** over ~114 parse-level invocations (usage errors, scope guards, bad
   values, transport failures against a dead port) found no divergence in exit code, stdout or

@@ -77,6 +77,7 @@ export interface WorkspaceListEntryInput {
     readonly last_accessed_at: string;
     readonly labels: readonly string[];
     readonly muted: boolean;
+    readonly icon?: string | null | undefined;
     readonly last_activity_at?: string | undefined;
     readonly agent_session_id?: string | undefined;
     readonly group?: GroupRef | undefined;
@@ -97,6 +98,8 @@ export function buildWorkspaceListEntry(input: WorkspaceListEntryInput): Workspa
         last_accessed_at: input.last_accessed_at,
         labels: input.labels,
         muted: input.muted,
+        // Elided for the letter avatar, so an entry for a workspace with no icon is unchanged.
+        ...(input.icon !== undefined && input.icon !== null ? { icon: input.icon } : {}),
         ...(lastActivity ? { last_activity_at: lastActivity.value } : {}),
         ...(session ? { agent_session_id: session.value } : {}),
         ...(input.group !== undefined ? { group_id: input.group.id, group_name: input.group.name } : {}),

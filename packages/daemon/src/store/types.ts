@@ -230,6 +230,7 @@ export type DomainAction =
           readonly groupID?: string | undefined;
           readonly profileName?: string | null | undefined;
           readonly muted?: boolean | undefined;
+          readonly icon?: IconRef | null | undefined;
           readonly labels?: readonly string[] | undefined;
           readonly placement?: NewWorkspacePlacement | undefined;
           readonly repoAssociations?: readonly RepoAssociation[] | undefined;

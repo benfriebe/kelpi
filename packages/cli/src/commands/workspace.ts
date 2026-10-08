@@ -3,7 +3,8 @@
  *
  * Three shapes of output live here and scripts depend on all three staying distinct:
  *   - `list` unwraps the array;
- *   - `create`, `label`, `mute` and `rename` print the FULL reply including `ok` under `--json`;
+ *   - `create`, `label`, `mute`, `rename` and `icon` print the FULL reply including `ok` under
+ *     `--json`;
  *   - `delete` prints a bespoke per-id record array, and exits 1 when any DELETE failed
  *     (a failed *prune* is a warning, never an exit code: the workspace is gone either way).
  *
@@ -16,6 +17,8 @@
  */
 
 import path from 'node:path';
+
+import { normalizeIconEmoji } from '@kelpi/core/codec';
 
 import {
     absoluteUserPath,
@@ -36,6 +39,7 @@ import { sendJSON } from '../transport.js';
 import {
     workspaceCreateUsage,
     workspaceDeleteUsage,
+    workspaceIconUsage,
     workspaceLabelUsage,
     workspaceListUsage,
     workspaceMoveUsage,
@@ -73,9 +77,11 @@ export async function handleWorkspace(args: string[]): Promise<void> {
             return handleWorkspaceMute(args);
         case 'rename':
             return handleWorkspaceRename(args);
+        case 'icon':
+            return handleWorkspaceIcon(args);
         default:
             errLine(`Unknown workspace action: ${action}`);
-            errLine('Valid actions: list, create, move, delete, profile, label, mute, rename');
+            errLine('Valid actions: list, create, move, delete, profile, label, mute, rename, icon');
             exit(1);
     }
 }
@@ -118,8 +124,10 @@ async function handleWorkspaceCreate(args: string[]): Promise<void> {
     const updateMain = popSwitch('--update-main', args);
     const noUpdateMain = popSwitch('--no-update-main', args);
     const muted = popSwitch('--muted', args);
+    const iconFlag = parseFlag('--icon', args);
     const asJSON = popSwitch('--json', args);
     rejectLeftoverArgs(args, 'kelpi workspace create', { usage: (write) => write(workspaceCreateUsage) });
+    const icon = iconFlag === null ? null : wireIcon(iconFlag, 'kelpi workspace create');
     if (updateMain && noUpdateMain) {
         errLine("workspace create can't take both --update-main and --no-update-main");
         exit(1);
@@ -138,6 +146,7 @@ async function handleWorkspaceCreate(args: string[]): Promise<void> {
     if (group !== null) payload['group'] = group;
     if (profile !== null) payload['profile'] = profile;
     if (muted) payload['muted'] = true;
+    if (icon !== null) payload['icon'] = icon;
     // app-state-core.md §5.5: an explicit repo is associated even without --worktree, and
     // --no-repo is the one-off opt-out from the group's default repository.
     // Made absolute here: a relative path means the shell's cwd, not the daemon's.
@@ -179,6 +188,15 @@ async function handleWorkspaceCreate(args: string[]): Promise<void> {
         errLine(
             `kelpi workspace create: the daemon did not apply --muted; restart it on this build ` +
                 `(workspace ${workspaceName} (${workspaceID}) was created unmuted)`
+        );
+        exit(1);
+    }
+    // The same for `icon`: an older daemon ignores the key and leaves the first letter.
+    if (icon !== null && asString(reply['icon']) !== icon) {
+        if (asJSON) printLine(stableStringify(reply));
+        errLine(
+            `kelpi workspace create: the daemon did not apply --icon; restart it on this build ` +
+                `(workspace ${workspaceName} (${workspaceID}) was created without an icon)`
         );
         exit(1);
     }
@@ -597,4 +615,78 @@ async function handleWorkspaceRename(args: string[]): Promise<void> {
             ? `workspace ${workspaceName} (${workspaceID}) already has that name`
             : `renamed workspace ${oldName} to ${workspaceName} (${workspaceID})`
     );
+}
+
+/**
+ * The wire spelling of an icon typed on the command line: `emoji:<grapheme>`, after the check the
+ * daemon (and the GUI's emoji sheet) makes, so a typo exits 1 here with the argument named. The
+ * CLI takes the bare emoji only; a literal `emoji:🔥` or `system:star` is refused like any other
+ * text, since nothing a script needs is missing without them.
+ */
+function wireIcon(value: string, command: string): string {
+    const trimmed = value.trim();
+    if (trimmed === '') {
+        errLine(`${command}: the icon cannot be empty`);
+        exit(1);
+    }
+    // `normalizeIconEmoji` keeps the FIRST grapheme, so two emoji come back as one: equality is
+    // what refuses them, as it is daemon-side.
+    if (normalizeIconEmoji(trimmed) !== trimmed) {
+        errLine(`${command}: '${trimmed}' is not a usable icon: give one emoji or symbol`);
+        exit(1);
+    }
+    return `emoji:${trimmed}`;
+}
+
+/**
+ * `kelpi workspace icon` (cli.md §10.9): the sidebar's Change Icon / Reset to Letter, for agents.
+ * Request/response like `workspace rename`, so a name that does not resolve exits 1 with the
+ * daemon's reason.
+ */
+async function handleWorkspaceIcon(args: string[]): Promise<void> {
+    if (hasHelpFlag(args)) {
+        writeOut(workspaceIconUsage);
+        exit(0);
+    }
+    const clear = popSwitch('--clear', args);
+    const asJSON = popSwitch('--json', args);
+    const nameOrID = args.shift();
+    const emoji = clear ? undefined : args.shift();
+    for (const positional of [nameOrID, emoji]) {
+        if (positional !== undefined && positional.trim().startsWith('-')) {
+            errLine(`kelpi workspace icon: unknown option ${positional}`);
+            writeErr(workspaceIconUsage);
+            exit(1);
+        }
+    }
+    if (nameOrID === undefined || (!clear && emoji === undefined)) {
+        writeErr(workspaceIconUsage);
+        exit(1);
+    }
+    if (clear && args.length > 0 && !(args[0] ?? '').startsWith('-')) {
+        errLine("workspace icon can't take both an emoji and --clear");
+        exit(1);
+    }
+    rejectLeftoverArgs(args, 'kelpi workspace icon', {
+        usage: (write) => write(workspaceIconUsage),
+        positionalHint: 'an icon is one emoji'
+    });
+    const icon = emoji === undefined ? null : wireIcon(emoji, 'kelpi workspace icon');
+
+    // An absent `icon` is the daemon's "clear".
+    const payload: JsonObject = { command: 'workspace-icon', name: nameOrID };
+    if (icon !== null) payload['icon'] = icon;
+    const reply = await decodeReply(payload, 'kelpi workspace icon');
+    if (asJSON) {
+        printLine(stableStringify(reply));
+        return;
+    }
+    const workspaceName = asString(reply['workspace_name']) ?? nameOrID;
+    const current = asString(reply['icon']);
+    if (current === undefined) {
+        printLine(`${workspaceName}: icon cleared`);
+        return;
+    }
+    const shown = current.startsWith('emoji:') ? current.slice('emoji:'.length) : current;
+    printLine(`${workspaceName}: icon set to ${shown}`);
 }

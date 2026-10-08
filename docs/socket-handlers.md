@@ -108,7 +108,7 @@ rules. This asymmetry is load-bearing for CLI compatibility. Both live in
 Used by: `pane list --workspace`, `pane sync --workspace`, `resolvePaneTarget`'s
 `--workspace` scope, `pane split/create --workspace`, `workspace-move`, `workspace-delete`,
 `workspace-profile`, `workspace-label`, `workspace-mute`, `workspace-rename`,
-`workspace-list --group` (via `resolveGroup`).
+`workspace-icon`, `workspace-list --group` (via `resolveGroup`).
 
 ```
 resolveWorkspace(nameOrID):
@@ -123,8 +123,9 @@ resolveWorkspace(nameOrID):
 - A UUID string that matches no workspace id falls through to the name match (so a
   workspace literally named a UUID is still reachable).
 - Ambiguous names (2+ workspaces with the same exact name) return `null`. Callers that
-  want to distinguish "ambiguous" from "missing" must re-check themselves (`workspace-delete`
-  and `workspace-rename` do, through one shared helper, so their messages match; see §6.4).
+  want to distinguish "ambiguous" from "missing" must re-check themselves (`workspace-delete`,
+  `workspace-rename` and `workspace-icon` do, through one shared helper, so their messages
+  match; see §6.4).
 
 ### 2.2 `resolveGroup(nameOrID)` — identical contract for groups
 
@@ -872,6 +873,7 @@ Entry shape (timestamps plain ISO 8601):
     "labels": ["wip", "client-x"],                        // always present, possibly []
     "muted": false,                                       // always present (§6.7)
     // optional:
+    "icon": "emoji:🔥",                                   // absent for the letter avatar (§6.9)
     "last_activity_at": "2026-08-18T02:05:00Z",           // max of the panes' lastActivityAt; absent with no panes
     "agent_session_id": "…",                              // the FIRST pane carrying one
     "group_id": "…", "group_name": "Client X",            // absent for top-level workspaces
@@ -892,6 +894,10 @@ false), `groupDefaults` (bool, default true; app-state-core.md §5.5). `workspac
 muted workspace is muted from its first frame and its first pane never notifies (§6.7), and
 all three success replies echo `muted`, the state the workspace was created in, so a caller
 can tell a daemon that predates the field (it drops it and creates the workspace unmuted).
+`icon?` is the same: validated first, by the rule `workspace-icon` uses (§6.9), so a refused
+icon fails the create before any branch runs (no workspace, group or worktree is made); then
+carried on the `create-workspace` action, so the workspace has it from its first frame; and
+echoed as `icon` in every success reply, but only when one was set.
 
 Four branches, checked in this order ((d) is checked before (b) and (c)):
 
@@ -1223,6 +1229,32 @@ the same reducer action.
 
 The rename reaches attached windows the ordinary way, as a `workspace-upserted` event in the
 next store delta; nothing here broadcasts.
+
+### 6.9 `workspace-icon` → handleWorkspaceIcon
+
+Inputs: `nameOrID`, `icon?` (the flat DB spelling, `"emoji:<grapheme>"` or
+`"system:<symbol>"`, kept verbatim by the decoder, empty string included). Request/response,
+like `workspace-rename`, and for the same reason: an agent needs to know the name resolved.
+The GUI's Change Icon stays on its WS-only `set-workspace-icon` (id-addressed,
+`packages/daemon/src/ws/sync.ts`), and so does the plugin SDK's `workspaces.setIcon`; all three
+end in the same reducer action. This makes a workspace's icon settable from the CLI; a group's
+icon is still not (§7.2).
+
+1. Strict `resolveWorkspace`, else the §6.4 pair, as in §6.8.
+2. Absent `icon` ⇒ clear. Otherwise `parseIconString`; a string that does not parse ⇒
+   `error("'{icon}' is not an icon: give emoji:<emoji> or system:<symbol>")` (unlike the WS-only
+   verb, which reads it as "clear"). Then `iconRefusal`, the WS-only verb's own check: an `emoji:`
+   payload must be exactly one grapheme passing the §WS-073 heuristic, else
+   `error("'{grapheme}' is not a usable icon: give one emoji or symbol")`.
+3. If the icon differs from the current one, dispatch `set-workspace-icon(id, icon)` and
+   persist. The same icon is a successful no-op that writes nothing.
+4. Reply, `icon` being the icon it has now, `null` for the letter avatar:
+
+```json
+{"ok": true, "workspace_id": "…", "workspace_name": "feat-x", "icon": "emoji:👩‍🍳"}
+```
+
+The icon reaches attached windows as a `workspace-upserted` event in the next store delta.
 
 ---
 
@@ -1585,11 +1617,12 @@ web-pane subsystem (see its spec): `web-open`, `web-navigate`, `web-url`, `web-b
 | pane-list | `panes: [...]` |
 | pane-sync / pane-sync-exclude | `workspace_id`, `workspace_name`, `active`, `synced_pane_ids`, `excluded` |
 | workspace-list | `workspaces: [...]` |
-| workspace-create | `workspace_id`, `workspace_name`, `muted`, `group?` (+ `worktree_path`, `branch` on the worktree path) |
+| workspace-create | `workspace_id`, `workspace_name`, `muted`, `icon?`, `group?` (+ `worktree_path`, `branch` on the worktree path) |
 | workspace-delete | `workspace_id`, `workspace_name`, `path?` (failure may add `active_agents`, `running`, `waiting`, `inactive`) |
 | workspace-label | `workspace_id`, `workspace_name`, `labels` |
 | workspace-mute | `workspace_id`, `workspace_name`, `muted` |
 | workspace-rename | `workspace_id`, `workspace_name` (the new name), `old_name` |
+| workspace-icon | `workspace_id`, `workspace_name`, `icon` (`null` when cleared) |
 | group-list | `groups: [...]` |
 | group-reorder / group-sort | `group_id`, `group_name`, `order` |
 | graft-start | `started: [...]`, `partial_error?`, `partial_error_kind?` (failures add `error_kind`) |

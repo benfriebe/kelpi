@@ -341,6 +341,7 @@ function decodeCommand(
                 update_main: fields.bool('update_main'),
                 repo: fields.text('repo'),
                 muted: fields.flag('muted', false),
+                icon: fields.rawText('icon'),
                 group_defaults: fields.flag('group_defaults', true)
             };
         case 'workspace-move': {
@@ -390,6 +391,13 @@ function decodeCommand(
             const newName = fields.nonEmpty('new_name');
             if (newName === undefined) return guard(command, 'workspace-rename requires new_name', 'new_name');
             return { command, name, new_name: newName };
+        }
+        case 'workspace-icon': {
+            const name = fields.nonEmpty('name');
+            if (name === undefined) return guard(command, 'workspace-icon requires name', 'name');
+            // Verbatim, empty string included: the handler refuses what is not an icon, so the
+            // reply can say why, where absent (or null) is the explicit "clear".
+            return { command, name, icon: fields.rawText('icon') };
         }
 
         // ── 6.4 group commands ───────────────────────────────────────────────────────

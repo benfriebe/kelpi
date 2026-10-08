@@ -75,6 +75,7 @@ export const WIRE_FIELD_TYPES = {
     action: 'string',
     excluded: 'bool',
     muted: 'bool',
+    icon: 'string',
     worktree: 'string',
     branch: 'string',
     update_main: 'bool',

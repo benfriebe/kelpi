@@ -260,9 +260,9 @@ Every request carries `"command": "<verb>"`. Parsing happens in three stages:
 1. **Explicit command chain** — each of the following commands is matched by name and has
    its own field guards (documented per command in §6): `workspace-create`,
    `workspace-list`, `workspace-move`, `workspace-delete`, `workspace-profile`,
-   `workspace-label`, `workspace-mute`, `workspace-rename`, `group-list`, `group-create`,
-   `group-rename`, `group-delete`, `group-move`, `group-set-repo`, `group-reorder`,
-   `group-sort`, `open`, `diff`,
+   `workspace-label`, `workspace-mute`, `workspace-rename`, `workspace-icon`, `group-list`,
+   `group-create`, `group-rename`, `group-delete`, `group-move`, `group-set-repo`,
+   `group-reorder`, `group-sort`, `open`, `diff`,
    `pane-close`, `pane-list`, `pane-capture`, `graft-start`, `graft-stop`,
    `graft-status`, `ping`, all `web-*` commands, `pane-sync`, `pane-sync-exclude`,
    `pane-send-key`, `pane-send`, `pane-split`, `pane-create`, `pane-name`, `pane-resize`,
@@ -315,6 +315,7 @@ pane-list, pane-close, pane-capture, pane-send, pane-send-key,
 pane-split, pane-create, pane-name, pane-resize, pane-font-size, pane-move-adjacent,
 pane-sync, pane-sync-exclude,
 workspace-create, workspace-delete, workspace-label, workspace-mute, workspace-rename,
+workspace-icon,
 group-set-repo, group-reorder, group-sort,
 graft-start, graft-stop, graft-status,
 ping,
@@ -487,13 +488,14 @@ carry `"command"`.
 | `pane-sync` | R/R | `action` | `pane_id`, `workspace` |
 | `pane-sync-exclude` | R/R | `target`, `excluded` | `pane_id`, `workspace` |
 | `workspace-list` | R/R | — | `group` |
-| `workspace-create` | R/R | — | `name`, `path`, `color`, `group`, `profile`, `worktree`, `branch`, `update_main`, `repo`, `muted`, `group_defaults` |
+| `workspace-create` | R/R | — | `name`, `path`, `color`, `group`, `profile`, `worktree`, `branch`, `update_main`, `repo`, `muted`, `icon`, `group_defaults` |
 | `workspace-move` | F&F | `name` | `group`, `index` |
 | `workspace-delete` | R/R | `name` | `force`, `worktree_paths`, `force_worktree_paths`, `prune_worktrees`, `delete_branches`, `batch_ids` |
 | `workspace-profile` | F&F | `name` | `profile` |
 | `workspace-label` | R/R | `name`, `label_op` | `label_values` |
 | `workspace-mute` | R/R | `name` | `muted` |
 | `workspace-rename` | R/R | `name`, `new_name` | - |
+| `workspace-icon` | R/R | `name` | `icon` |
 | `group-list` | R/R | — | — |
 | `group-create` | F&F | `name` | `color` |
 | `group-rename` | F&F | `name`, `new_name` | — |
@@ -905,7 +907,8 @@ workspaces appended.
 
 Always-present per entry: `id`, `name`, `color`, `pane_count`, `is_active`,
 `created_at`, `last_accessed_at`, `labels` (array, possibly empty), `muted` (bool; see
-`workspace-mute`). Conditionals:
+`workspace-mute`). Conditionals: `icon` (the flat DB spelling, `"emoji:🔥"` /
+`"system:star"`; absent for the letter avatar),
 `last_activity_at` (max across panes; absent when no panes), `agent_session_id`
 (first pane carrying one), `group_id`/`group_name` (absent for top-level), `repos` (the
 workspace's repo associations in stored order, each `{"repo_id", "repo_name", "repo_path",
@@ -922,7 +925,10 @@ workspace already muted, so its first pane never raises an attention signal (see
 `workspace-mute`). Every success reply carries `muted`, the state the workspace was created
 in, so a caller that asked for `muted` can tell a daemon that predates it (which drops the
 unknown field and creates the workspace unmuted); `kelpi workspace create --muted` then exits
-non-zero. Worktree flow (all empty strings normalized to
+non-zero. `icon` creates the workspace with that sidebar icon, spelled and validated as for
+`workspace-icon`; one that is refused fails the whole create before anything is made (no
+workspace, group or worktree). A success reply carries `icon` only when one was set, so
+`kelpi workspace create --icon` can tell a daemon that predates it in the same way. Worktree flow (all empty strings normalized to
 absent): `worktree` = worktree/folder name to create, `branch` (defaults to the
 worktree name), `update_main` (bool: fetch and branch off `origin/<default>`; absent means
 the group's `createWorktree` switch when the workspace goes into a group that has one on,
@@ -1159,6 +1165,36 @@ and what the workspace is called now. The GUI does not use it: the sidebar keeps
 Against a daemon that predates the verb, the line names an unknown command and is dropped
 without a reply (§2.1), which the CLI reports as "no response from Kelpi (upgrade required?)"
 with exit 1.
+
+#### `workspace-icon` (R/R)
+
+`name` (required non-empty) = workspace name-or-id (§5.8, strict); `icon` = the sidebar icon
+in the flat spelling the DB stores, `"emoji:<grapheme>"` (or `"system:<symbol>"`), and absent
+or `null` clears it back to the workspace's first letter. The CLI's spelling of the sidebar's
+Change Icon / Reset to Letter, validated the way the GUI's WS-only `set-workspace-icon` is
+(`iconRefusal` in `@kelpi/core/codec`): an `emoji:` payload must be exactly one grapheme that
+passes the emoji heuristic, so a ZWJ sequence (`👩‍🍳`), a flag or a skin tone is one icon and
+`emoji:a` or `emoji:🔥🔥` is refused; a `system:` name is an opaque token. The icon reaches every
+attached client through the ordinary store delta. Setting the icon the workspace already has
+succeeds without writing anything.
+
+```json
+{"command":"workspace-icon","name":"feat-x","icon":"emoji:👩‍🍳"}
+→ {"ok":true,"workspace_id":"<uuid>","workspace_name":"feat-x","icon":"emoji:👩‍🍳"}
+{"command":"workspace-icon","name":"feat-x"}
+→ {"ok":true,"workspace_id":"<uuid>","workspace_name":"feat-x","icon":null}
+```
+
+Refusals: `workspace not found: <name>` and `workspace name is ambiguous: <name> (use the
+id)` (as for `workspace-rename`), `'<x>' is not an icon: give emoji:<emoji> or
+system:<symbol>` for a string that is not in the flat spelling (the empty string included:
+unlike the WS-only verb, which reads anything unparseable as "clear", a script that sent a
+string meant to set something), and `'<grapheme>' is not a usable icon: give one emoji or
+symbol` for an `emoji:` payload the heuristic refuses.
+
+Group icons have no such verb: they stay a sidebar gesture (socket-handlers.md §7.2). Against a
+daemon that predates the verb, the CLI reports "no response from Kelpi (upgrade required?)" with
+exit 1, as for `workspace-rename`.
 
 ---
 
@@ -1573,6 +1609,7 @@ other key is ignored. (A known key with the wrong type poisons the whole message
 | `action` | string | `pane-sync` |
 | `excluded` | bool | `pane-sync-exclude` |
 | `muted` | bool | `workspace-create`, `workspace-mute` |
+| `icon` | string | `workspace-create`, `workspace-icon` |
 | `worktree`, `branch` | string | `workspace-create` |
 | `update_main` | bool | `workspace-create` |
 | `ratio`, `delta` | double | `pane-resize` |

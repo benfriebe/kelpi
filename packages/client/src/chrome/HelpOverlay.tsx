@@ -56,7 +56,8 @@ export const HELP_MOUSE_ENTRIES: readonly HelpMouseEntry[] = [
         gesture: 'Shift+drag',
         description: 'select text even while an app owns the mouse (vim, Claude Code, less)'
     },
-    { gesture: '⌘-click', description: 'open the path or URL under the pointer' }
+    { gesture: '⌘-click', description: 'open the path or URL under the pointer' },
+    { gesture: 'Middle-click', description: 'paste the text you last selected (Shift+middle-click while an app owns the mouse)' }
 ];
 
 /**

@@ -45,7 +45,7 @@ const repoRoot = path.resolve(here, '..', '..', '..', '..');
 const vendorRoot = path.join(repoRoot, 'vendor', 'ghostty-web-patched');
 
 /** The version the audit evidence and PROVENANCE.md were written against. */
-const EXPECTED_VERSION = '0.4.0-kelpi.20';
+const EXPECTED_VERSION = '0.4.0-kelpi.21';
 
 /** Markers of the caret-anchored IME, in the built ESM bundle the client imports. */
 const CARET_MARKERS = ['data-ime-preedit', 'data-ime-caret', 'syncImeCaret'];
@@ -453,6 +453,18 @@ describe('vendored ghostty-web engine', () => {
         const rendererSource = read(path.join(vendorRoot, 'source', 'lib', 'renderer.ts'));
         expect(rendererSource).toContain('viewportY = Math.max(0, Math.floor(viewportY));');
         expect(rendererSource).toContain('this.renderScrollbar(scrollbarViewportY, ');
+    });
+
+    it('lets the embedder turn copy-on-select off, at both copy sites (§-kelpi.21)', () => {
+        // Take a future npm release wholesale and `copy-on-select = false` is silently ignored:
+        // every release of a drag and every double-click writes the clipboard again.
+        const bundle = read(path.join(vendorRoot, 'dist', 'ghostty-web.js'));
+        expect(bundle).toContain('copyOnSelect: A.copyOnSelect ?? !0');
+        expect(bundle.match(/this\.terminal\.options\.copyOnSelect && this\.copyToClipboard\(/g) ?? []).toHaveLength(2);
+        const selectionSource = read(path.join(vendorRoot, 'source', 'lib', 'selection-manager.ts'));
+        // Every copy the manager makes by itself is gated; a bare call would bypass the setting.
+        expect(selectionSource.match(/this\.copyToClipboard\(/g) ?? []).toHaveLength(2);
+        expect(selectionSource.match(/if \(this\.terminal\.options\.copyOnSelect\) this\.copyToClipboard\(text\);/g) ?? []).toHaveLength(2);
     });
 
     it('keeps the snapshotted source in step with the bundle', () => {

@@ -116,6 +116,30 @@ describe('parseGeneralSettings', () => {
         ).toBe(false);
     });
 
+    /**
+     * Ghostty's key of this name defaults on, and so does Kelpi, so it parses like the lenient
+     * default-true flags: only the literal `false` turns it off. Ghostty's third value,
+     * `clipboard`, means the system clipboard too, which is the only one a browser has, so a line
+     * copied from a ghostty config keeps it on.
+     */
+    it('ships copy-on-select ON and turns it off only for the literal "false"', () => {
+        expect(parseGeneralSettings('').copyOnSelect).toBe(true);
+        expect(parseGeneralSettings('copy-on-select = false').copyOnSelect).toBe(false);
+        expect(parseGeneralSettings('copy-on-select = FALSE').copyOnSelect).toBe(false);
+        expect(parseGeneralSettings('copy-on-select = true').copyOnSelect).toBe(true);
+        expect(parseGeneralSettings('copy-on-select = clipboard').copyOnSelect).toBe(true);
+        expect(parseGeneralSettings('copy-on-select = false\ncopy-on-select = true').copyOnSelect).toBe(true);
+    });
+
+    /** Ghostty's middle-click always pastes, so Kelpi ships it on and only `false` turns it off. */
+    it('ships middle-click-paste ON and turns it off only for the literal "false"', () => {
+        expect(parseGeneralSettings('').middleClickPaste).toBe(true);
+        expect(parseGeneralSettings('middle-click-paste = false').middleClickPaste).toBe(false);
+        expect(parseGeneralSettings('middle-click-paste = False').middleClickPaste).toBe(false);
+        expect(parseGeneralSettings('middle-click-paste = no').middleClickPaste).toBe(true);
+        expect(parseGeneralSettings('middle-click-paste = false\nmiddle-click-paste = true').middleClickPaste).toBe(true);
+    });
+
     it('clamps the delay at 0 and ignores non-integers', () => {
         expect(parseGeneralSettings('focus-follows-mouse-delay = -20').focusFollowsMouseDelay).toBe(0);
         expect(parseGeneralSettings('focus-follows-mouse-delay = abc').focusFollowsMouseDelay).toBe(

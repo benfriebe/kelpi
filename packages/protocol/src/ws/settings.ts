@@ -143,6 +143,20 @@ export interface WsGeneralSettings {
      * Alt, so ⌥b / ⌥f / ⌥d stay readline's meta-word chords and nothing composes.
      */
     readonly macosOptionAsAlt: boolean;
+    /**
+     * `copy-on-select`, default **true**: does selecting text in a terminal pane copy it?
+     *
+     * A CLIENT-side rule like `macosOptionAsAlt`: the vendored engine reads it at every copy
+     * (`copyOnSelect`, ghostty-web `0.4.0-kelpi.21`), and the daemon only round-trips it. Off, a
+     * selection is highlighted and nothing more, and ⌘C copies it. Settings ▸ Workspaces renders it.
+     */
+    readonly copyOnSelect: boolean;
+    /**
+     * `middle-click-paste`, default **true**: does a middle-click in a terminal pane paste the last
+     * terminal selection (the clipboard when there is none)? Client-side like `copyOnSelect`: the
+     * pane handles the click and the daemon only round-trips the value for Settings ▸ Workspaces.
+     */
+    readonly middleClickPaste: boolean;
 }
 
 /**
@@ -439,7 +453,9 @@ export const DEFAULT_WS_SETTINGS: WsSettingsSnapshot = {
         inheritGroupOnNewWorkspace: true,
         expandGroupOnWorkspaceDrop: true,
         clipboardWrite: false,
-        macosOptionAsAlt: false
+        macosOptionAsAlt: false,
+        copyOnSelect: true,
+        middleClickPaste: true
     },
     appearance: {
         backgroundColor: DEFAULT_SETTINGS_BACKGROUND,
@@ -564,7 +580,12 @@ export const WS_WRITABLE_GENERAL_KEYS = [
     // for `clipboard-write` directly above: the same spelling, the same default, but a KELPI key,
     // because the daemon is not a ghostty config implementation (it parses seven ghostty keys and
     // says so) and the value is enforced in the client rather than by ghostty.
-    'macos-option-as-alt'
+    'macos-option-as-alt',
+    // Copy-on-select, the third ghostty spelling here and for the same reason: the client's
+    // engine enforces it, the daemon only stores it.
+    'copy-on-select',
+    // Its partner, and a Kelpi key outright: ghostty has no switch for middle-click paste.
+    'middle-click-paste'
 ] as const;
 export type WsWritableGeneralKey = (typeof WS_WRITABLE_GENERAL_KEYS)[number];
 

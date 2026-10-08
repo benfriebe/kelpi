@@ -134,6 +134,7 @@ class StubEngine {
     cell: CellSize | undefined;
     /** §N20 — every surface-focus report the handle received, in order. */
     readonly surfaceFocuses: boolean[] = [];
+    readonly copyOnSelects: boolean[] = [];
     /** §N24 — every paint-suspension report the handle received, in order. */
     readonly paintSuspensions: boolean[] = [];
     /** §N24 — build a handle WITHOUT `setPaintSuspended` (the `@xterm/xterm` / fake shape). */
@@ -171,6 +172,9 @@ class StubEngine {
             },
             setSurfaceFocus: (focused: boolean): void => {
                 this.surfaceFocuses.push(focused);
+            },
+            setCopyOnSelect: (enabled: boolean): void => {
+                this.copyOnSelects.push(enabled);
             }
         };
         if (!this.supportsPaintSuspension) return handle;
@@ -357,6 +361,27 @@ describe('TerminalRenderer adapter', () => {
 
         renderer.setSurfaceFocus(true);
         expect(engine.surfaceFocuses).toEqual([false, true]);
+        renderer.dispose();
+    });
+
+    /**
+     * `copy-on-select`, the same shape: every engine is built with it on, so a pane that turned
+     * it off before its engine came up must not have its first selection copied.
+     */
+    it('applies a copy-on-select setting made before the engine finished loading', async () => {
+        const engine = stubEngine();
+        const renderer = createRendererFromLoader('ghostty', engine.loader);
+
+        const opening = renderer.open(host());
+        renderer.setCopyOnSelect(false);
+        expect(engine.copyOnSelects).toEqual([]);
+
+        engine.settle();
+        await opening;
+        expect(engine.copyOnSelects).toEqual([false]);
+
+        renderer.setCopyOnSelect(true);
+        expect(engine.copyOnSelects).toEqual([false, true]);
         renderer.dispose();
     });
 

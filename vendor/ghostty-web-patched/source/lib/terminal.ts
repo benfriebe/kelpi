@@ -206,6 +206,7 @@ export class Terminal implements ITerminalCore {
       smoothScrollDuration: options.smoothScrollDuration ?? 100, // Default: 100ms smooth scroll
       scrollOnUserInput: options.scrollOnUserInput ?? true, // vendor 0.4.0-kelpi.11
       linkDetection: options.linkDetection ?? true, // vendor 0.4.0-kelpi.18
+      copyOnSelect: options.copyOnSelect ?? true, // vendor 0.4.0-kelpi.21
     };
 
     // Wrap in Proxy to intercept runtime changes (xterm.js compatibility)
@@ -244,6 +245,11 @@ export class Terminal implements ITerminalCore {
     switch (key) {
       case 'disableStdin':
         // Input handler already checks this.options.disableStdin dynamically
+        // No action needed
+        break;
+
+      case 'copyOnSelect':
+        // vendor 0.4.0-kelpi.21: SelectionManager reads this.options.copyOnSelect at every copy
         // No action needed
         break;
 

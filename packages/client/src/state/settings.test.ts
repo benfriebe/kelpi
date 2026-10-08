@@ -74,6 +74,10 @@ describe('hydrateSettings', () => {
         // and an omitted field does the same (`hydrateSettings({general: {}})` below).
         expect(hydrated?.general.macosOptionAsAlt).toBe(DEFAULT_WS_SETTINGS.general.macosOptionAsAlt);
         expect(hydrateSettings({ general: {} })?.general.macosOptionAsAlt).toBe(false);
+        // A daemon that predates copy-on-select sends nothing, and a pane keeps copying on select
+        // as it did before the key existed.
+        expect(hydrateSettings({ general: {} })?.general.copyOnSelect).toBe(true);
+        expect(hydrateSettings({ general: {} })?.general.middleClickPaste).toBe(true);
         expect(hydrated?.appearance.backgroundColor).toBe(DEFAULT_WS_SETTINGS.appearance.backgroundColor);
         expect(hydrated?.appearance.backgroundOpacity).toBe(1);
         expect(hydrated?.appearance.fontSize).toBeNull();

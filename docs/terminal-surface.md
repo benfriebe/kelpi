@@ -1647,6 +1647,17 @@ Two client-side paths write the clipboard, and until #81 only the first existed:
    (`vendor/ghostty-web-patched/source/lib/selection-manager.ts`, `boundMouseUpHandler` and the
    `dblclick` listener, through `copyToClipboard`). It writes the browser/Electron clipboard
    directly.
+
+   **It can be turned off**: kelpi config key `copy-on-select` (default `true`; only the literal
+   `false` disables; Settings ▸ Workspaces ▸ Panes ▸ "Copy on select"). Off, the engine still
+   makes, highlights and announces the selection but never writes the clipboard by itself
+   (vendor `copyOnSelect`, `0.4.0-kelpi.21`), so path 2 below is the only desktop copy and the
+   phone's long-press Copy pill is unaffected. The pane reads the setting off the store of the
+   runtime that feeds it (`features/TerminalFeaturePane.tsx`), so a remote workspace's panes
+   follow that daemon's config, as its hover-focus does. The renderer is told before its engine
+   opens and the engine reads the option at every copy, so a toggle governs the next selection.
+   Ghostty's `clipboard` value means `true` here: ghostty's `true` prefers a selection clipboard
+   that middle-click pastes from, and a browser has none.
 2. **The `copy` binding** (default ⌘C, `packages/core/src/config/bindings.ts`;
    docs/config-keybindings.md section 4). The action reads the FOCUSED pane's live selection
    through `renderer.selection()` and writes it with `navigator.clipboard.writeText`
@@ -1761,7 +1772,32 @@ with nothing anywhere to explain it.
 Kelpi never shows a paste-confirmation dialog: the daemon's paste filter (section 9.1) does
 the unsafe-paste protection instead.
 
-No selection clipboard is exposed to programs (OSC 52 `p`/`s` are ignored, section 12.1).
+**Middle-click paste** (`middle-click-paste`, default `true`; only the literal `false` disables;
+Settings ▸ Workspaces ▸ Panes ▸ "Middle-click paste"). A middle press in a terminal pane pastes the
+text last selected in any Kelpi terminal, X11's PRIMARY by another name. It comes from the
+client's **selection buffer** (`packages/client/src/terminal/selection-buffer.ts`), not the system
+clipboard, so with `copy-on-select` off a selection can be middle-clicked somewhere without
+replacing what ⌘C copied. With nothing selected yet, it pastes the clipboard exactly as ⌘V reads it
+(text, else a PNG). Either way the text goes over the pane's own connection through `drop-text`
+(`app/terminal-shortcuts.tsx` ▸ `pasteSelectionIntoOwner`), so the paste filter, bracketed paste
+and the sync-input mirror apply as they do to ⌘V, and a remote host's pane is pasted on that host.
+
+- **What feeds the buffer**: a pane records its selection whenever the selected TEXT changes to
+  something non-empty (a drag, a double- or triple-click, a long press). The engine also
+  re-announces a selection whose rows moved under output; that is not a new selection and does
+  not make an older one the newest. A clear is not recorded, so the buffer keeps the last text.
+  Nothing is recorded while the setting is off.
+- **Across windows**: every Kelpi window is a page on one origin, so a `BroadcastChannel` shares
+  the buffer between them and reaches nothing else (a web pane is its own origin; a plugin view is
+  a `sandbox="allow-scripts"` iframe with an opaque origin). A window hears while it has a terminal
+  mounted. A window opened after the last selection starts empty and falls back to the clipboard.
+- **Mouse reporting**: a press an application asked for is reported to it, middle included
+  (section 11). Shift is the bypass, as it is for a drag: Shift+middle-click pastes.
+- **Where**: `TerminalPane.tsx`'s capture-phase `mousedown`, the same listener that routes reports,
+  so a press is either the application's or a paste, never both. The engine never sees it.
+
+No selection clipboard is exposed to programs (OSC 52 `p`/`s` are ignored, section 12.1); the
+selection buffer above is the client's own and nothing in a pane can read it.
 
 ### 12.3 Shell escaping
 

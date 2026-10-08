@@ -17,6 +17,7 @@ import { PhoneKeyBar } from './PhoneKeyBar';
 import { restartUI } from '../app/reload';
 import { registerModal } from '../chrome/modal-presence';
 import { paneHandle } from './pane-registry';
+import { lastSelection, recordSelection, resetSelectionBufferForTests } from './selection-buffer';
 import {
     createFakePhoneWindow,
     createFakePtyApi,
@@ -651,6 +652,42 @@ describe('TerminalPane — input and focus', () => {
         // A pane parked off-screen (another workspace) is nobody's focused surface.
         view.rerender(<TerminalPane {...props} focused visible={false} />);
         expect(renderer.surfaceFocuses.at(-1)).toBe(false);
+    });
+
+    /**
+     * `copy-on-select`. The renderer is told before its engine opens, so the first selection a
+     * user makes in a pane whose setting is off is already kept off the clipboard, and a Settings
+     * toggle reaches a pane that is already live. Omitted means on.
+     */
+    it('tells the renderer whether a selection copies itself, from creation on', async () => {
+        const renderers = createFakeRendererFactory();
+        const pty = createFakePtyApi();
+        const props = {
+            paneID: 'pane-1',
+            ptyApi: pty,
+            focused: true,
+            visible: true,
+            createRenderer: renderers.factory,
+            measure: box(800, 480)
+        };
+
+        const view = render(<TerminalPane {...props} copyOnSelect={false} />);
+        await settle();
+        const renderer = renderers.last();
+        expect(renderer.copyOnSelects[0]).toBe(false);
+        expect(renderer.copyOnSelects.at(-1)).toBe(false);
+
+        view.rerender(<TerminalPane {...props} copyOnSelect />);
+        expect(renderer.copyOnSelects.at(-1)).toBe(true);
+
+        view.rerender(<TerminalPane {...props} />);
+        expect(renderer.copyOnSelects.at(-1)).toBe(true);
+
+        const fresh = render(<TerminalPane {...props} paneID="pane-2" />);
+        await settle();
+        expect(renderers.last().copyOnSelects.length).toBeGreaterThan(0);
+        expect(renderers.last().copyOnSelects.every((enabled) => enabled)).toBe(true);
+        fresh.unmount();
     });
 
     /**
@@ -1823,7 +1860,7 @@ const esc = (rest: string): string => `\u001B${rest}`;
 /** Mount a pane with 10×20 cells, plus a stand-in for the engine's own canvas listener. */
 async function mouseHarness(
     modes: { mouseTracking?: string; mouseFormat?: string } = {},
-    options: { focused?: boolean; formFactorWindow?: FakePhoneWindow } = {}
+    options: { focused?: boolean; formFactorWindow?: FakePhoneWindow; onMiddleClickPaste?: () => void } = {}
 ): Promise<{
     pty: ReturnType<typeof createFakePtyApi>;
     renderers: ReturnType<typeof createFakeRendererFactory>;
@@ -1843,6 +1880,7 @@ async function mouseHarness(
             createRenderer={renderers.factory}
             measure={box(800, 480)}
             formFactorWindow={options.formFactorWindow}
+            onMiddleClickPaste={options.onMiddleClickPaste}
         />
     );
     await settle();
@@ -1863,6 +1901,68 @@ async function mouseHarness(
     }
     return { pty, renderers, root, host, engine, engineEvents };
 }
+
+describe('TerminalPane - middle-click paste', () => {
+    afterEach(() => resetSelectionBufferForTests());
+
+    it('pastes on a middle press, which the engine never sees, and leaves other buttons alone', async () => {
+        const paste = vi.fn();
+        const h = await mouseHarness({}, { onMiddleClickPaste: paste });
+
+        fireEvent.mouseDown(h.engine, { clientX: 45, clientY: 61, button: 1 });
+        expect(paste).toHaveBeenCalledTimes(1);
+        expect(h.engineEvents).toEqual([]);
+
+        fireEvent.mouseDown(h.engine, { clientX: 45, clientY: 61, button: 0 });
+        fireEvent.mouseDown(h.engine, { clientX: 45, clientY: 61, button: 2 });
+        expect(paste).toHaveBeenCalledTimes(1);
+        expect(h.engineEvents).toEqual(['mousedown', 'mousedown']);
+    });
+
+    it('does nothing with a middle press when the setting is off, as before it existed', async () => {
+        const h = await mouseHarness();
+        fireEvent.mouseDown(h.engine, { clientX: 45, clientY: 61, button: 1 });
+        expect(h.engineEvents).toEqual(['mousedown']);
+        expect(h.pty.last().input).toEqual([]);
+    });
+
+    it('sends the press to an application that asked for the mouse, unless Shift is held', async () => {
+        const paste = vi.fn();
+        const h = await mouseHarness({ mouseTracking: 'vt200', mouseFormat: 'sgr' }, { onMiddleClickPaste: paste });
+
+        fireEvent.mouseDown(h.engine, { clientX: 45, clientY: 61, button: 1 });
+        fireEvent.mouseUp(h.engine, { clientX: 45, clientY: 61, button: 1 });
+        expect(h.pty.last().directInput).toEqual([esc('[<1;5;4M'), esc('[<1;5;4m')]);
+        expect(paste).not.toHaveBeenCalled();
+
+        fireEvent.mouseDown(h.engine, { clientX: 45, clientY: 61, button: 1, shiftKey: true });
+        fireEvent.mouseUp(h.engine, { clientX: 45, clientY: 61, button: 1, shiftKey: true });
+        expect(paste).toHaveBeenCalledTimes(1);
+        expect(h.pty.last().directInput).toHaveLength(2);
+    });
+
+    it("feeds the buffer a selection when its text changes, and only while the setting is on", async () => {
+        const h = await mouseHarness({}, { onMiddleClickPaste: vi.fn() });
+        const renderer = h.renderers.last();
+        act(() => renderer.emitSelection('first'));
+        expect(lastSelection()).toBe('first');
+
+        // Another window (or pane) selects something newer…
+        recordSelection('newer');
+        // …and output moving this pane's rows re-announces the same text: still not the newest.
+        act(() => renderer.emitSelection('first'));
+        expect(lastSelection()).toBe('newer');
+        // A clear, then the same word selected again, IS a new selection.
+        act(() => renderer.emitSelection(''));
+        act(() => renderer.emitSelection('first'));
+        expect(lastSelection()).toBe('first');
+
+        resetSelectionBufferForTests();
+        const off = await mouseHarness();
+        act(() => off.renderers.last().emitSelection('private'));
+        expect(lastSelection()).toBeNull();
+    });
+});
 
 describe('TerminalPane — mouse reporting', () => {
     it('reports a press → drag → release as SGR bytes on the pane stream', async () => {

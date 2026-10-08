@@ -2602,7 +2602,7 @@ const z = class b {
       if (A.contains(Q.target) || (this.pressSelectedWord = !1), this.isSelecting) {
         this.isSelecting = !1, this.stopAutoScroll();
         const B = this.getSelection();
-        B && (this.copyToClipboard(B), this.selectionChangedEmitter.fire());
+        B && (this.terminal.options.copyOnSelect && this.copyToClipboard(B), this.selectionChangedEmitter.fire());
       }
     }, document.addEventListener("mouseup", this.boundMouseUpHandler), A.addEventListener("dblclick", (Q) => {
       if (this.pressSelectedWord) {
@@ -2613,7 +2613,7 @@ const z = class b {
       if (C) {
         this.selectionStart = { col: C.startCol, absoluteRow: E }, this.selectionEnd = { col: C.endCol, absoluteRow: E }, this.requestRender();
         const I = this.getSelection();
-        I && (this.copyToClipboard(I), this.selectionChangedEmitter.fire());
+        I && (this.terminal.options.copyOnSelect && this.copyToClipboard(I), this.selectionChangedEmitter.fire());
       }
     }), this.boundContextMenuHandler = (Q) => {
       if (this.renderer.getCanvas().getBoundingClientRect(), this.textarea.style.position = "fixed", this.textarea.style.left = `${Q.clientX}px`, this.textarea.style.top = `${Q.clientY}px`, this.textarea.style.width = "1px", this.textarea.style.height = "1px", this.textarea.style.zIndex = "1000", this.textarea.style.opacity = "0", this.textarea.style.pointerEvents = "auto", this.hasSelection()) {
@@ -2903,8 +2903,10 @@ class nA {
       // Default: 100ms smooth scroll
       scrollOnUserInput: A.scrollOnUserInput ?? !0,
       // vendor 0.4.0-kelpi.11
-      linkDetection: A.linkDetection ?? !0
+      linkDetection: A.linkDetection ?? !0,
       // vendor 0.4.0-kelpi.18
+      copyOnSelect: A.copyOnSelect ?? !0
+      // vendor 0.4.0-kelpi.21
     };
     this.options = new Proxy(Q, {
       set: (B, E, C) => {
@@ -2924,6 +2926,8 @@ class nA {
     if (Q !== B)
       switch (A) {
         case "disableStdin":
+          break;
+        case "copyOnSelect":
           break;
         case "cursorBlink":
         case "cursorStyle":

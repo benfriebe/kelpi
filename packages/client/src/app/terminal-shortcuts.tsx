@@ -1,4 +1,4 @@
-import { createContext, useContext } from 'react';
+import { createContext, useCallback, useContext, useEffect, useRef } from 'react';
 import { MENU_BAR_ACTIONS, actionForTrigger, keyTriggerKey, type KeyBindingMap, type KeyTrigger, type KelpiAction } from '@kelpi/core/config';
 import { clientKeyBindings, triggerFromEvent, type KeyEventLike } from '../chrome/keys';
 import { modalPresenceCount } from '../chrome/modal-presence';
@@ -6,6 +6,7 @@ import { chordKeysForTrigger } from '../content/bridge';
 import { isOkReply, replyError } from '../connection';
 import type { KelpiRuntime } from '../state';
 import { paneHandle } from '../terminal/pane-registry';
+import { lastSelection } from '../terminal/selection-buffer';
 import { copySelection, deferredClipboardWriter } from './clipboard';
 import { LINE_EDIT_BYTES } from './line-editing';
 
@@ -68,6 +69,39 @@ async function pasteIntoOwner(runtime: KelpiRuntime, paneID: string, clipboard: 
     if (!isOkReply(reply)) throw new Error(replyError(reply));
 }
 
+/** A failed paste or copy, as the host's error surface or this pane's toast. */
+function reportFailure(runtime: KelpiRuntime, paneID: string, host: TerminalShortcutHost, title: string, error: unknown): void {
+    const message = error instanceof Error ? error.message : String(error);
+    if (host.onError) host.onError(title, message);
+    else runtime.store.getState().pushToast({ id: `terminal-${paneID}`, kind: 'info', title, body: message, paneID, workspaceID: null, createdAt: Date.now() });
+}
+
+/**
+ * Middle-click paste (terminal-surface.md section 12.2): the last terminal selection from the
+ * selection buffer, else the clipboard exactly as ⌘V reads it. Either goes over the pane's OWN
+ * connection, through the daemon's paste pipeline (`drop-text`), so bracketed paste, the paste
+ * filter and the sync-input mirror apply as they do to ⌘V, and a remote host's pane is pasted
+ * on that host.
+ */
+export async function pasteSelectionIntoOwner(runtime: KelpiRuntime, paneID: string, clipboard: Clipboard | undefined): Promise<void> {
+    const text = lastSelection();
+    if (text === null) return pasteIntoOwner(runtime, paneID, clipboard);
+    if (!isTerminal(ownedPane(runtime, paneID))) return;
+    const reply = await runtime.commands.dropText({ paneID, text });
+    if (!isOkReply(reply)) throw new Error(replyError(reply));
+}
+
+/** The pane's middle-click paste, stable across renders so a memoised pane is not re-rendered. */
+export function useMiddleClickPaste(runtime: KelpiRuntime, paneID: string): () => void {
+    const host = useContext(TerminalShortcutContext) ?? DEFAULT_HOST;
+    const hostRef = useRef(host);
+    useEffect(() => { hostRef.current = host; });
+    return useCallback(() => {
+        void pasteSelectionIntoOwner(runtime, paneID, navigator.clipboard)
+            .catch(error => reportFailure(runtime, paneID, hostRef.current, 'Paste', error));
+    }, [runtime, paneID]);
+}
+
 /**
  * True only while `handle.dispatchKey` is handing a key back to the engine (the empty-selection
  * Ctrl+C branch below), which is the one thing here that raises a DOM event of its own.
@@ -104,11 +138,7 @@ export function dispatchTerminalEditingShortcut(event: KeyEventLike, options: {
     const handle = paneHandle(paneID);
     const original = ownedPane(runtime, paneID);
     if (!handle || !isTerminal(original)) return true;
-    const report = (title: string, error: unknown): void => {
-        const message = error instanceof Error ? error.message : String(error);
-        if (host.onError) host.onError(title, message);
-        else runtime.store.getState().pushToast({ id: `terminal-${paneID}`, kind: 'info', title, body: message, paneID, workspaceID: null, createdAt: Date.now() });
-    };
+    const report = (title: string, error: unknown): void => reportFailure(runtime, paneID, host, title, error);
     const clipboard = options.clipboard ?? navigator.clipboard;
     if (action === 'copy') {
         const interruptKey = event.code === 'KeyC' && event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey

@@ -91,6 +91,7 @@ import {
     type TerminalSearchSpan,
     type TerminalTheme
 } from './renderer';
+import { attachSelectionBuffer, recordSelection } from './selection-buffer';
 import { clearTouchScrollOffset, createTouchScroll, publishTouchScrollOffset } from './touch-scroll';
 
 /** Coalescing window for interactive resizes (terminal-surface.md §5, §15.4). */
@@ -421,6 +422,22 @@ export interface TerminalPaneProps {
      * sites pass nothing and take the default, exactly as they do for the font and padding.
      */
     readonly macosOptionAsAlt?: boolean | undefined;
+    /**
+     * `copy-on-select`, the user's setting: omitted means **true**, the shipped default and what
+     * every pane did before the setting existed. False keeps a selection off the clipboard until
+     * the `copy` binding (⌘C) or the phone's Copy pill copies it; neither of those reads this.
+     * `TerminalFeaturePane` passes it off the store of the runtime that feeds the pane, so a
+     * remote workspace's pane follows its own daemon's config.
+     */
+    readonly copyOnSelect?: boolean | undefined;
+    /**
+     * `middle-click-paste`: present means a middle press in this pane pastes, and the pane feeds
+     * its selections to the selection buffer that paste reads (`terminal/selection-buffer.ts`).
+     * Omitted means neither. The press goes to an application that has asked for the mouse
+     * instead, unless Shift is held, the same bypass a drag has. The pane only reports the press:
+     * `TerminalFeaturePane` does the paste, over the connection that owns the pane.
+     */
+    readonly onMiddleClickPaste?: (() => void) | undefined;
     /** Body measurement seam; defaults to `clientWidth`/`clientHeight`. */
     readonly measure?: ((element: HTMLElement) => { width: number; height: number }) | undefined;
     /**
@@ -1248,6 +1265,9 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
             // font-derived estimate — now accurate, because the face has loaded.
             const initial = measureGeometry(host, renderer, current.measure);
             if (initial !== null) renderer.resize(initial.cols, initial.rows);
+            // A retry builds a fresh renderer, which starts with copy-on-select on; the effect
+            // below only runs when the setting changes.
+            renderer.setCopyOnSelect(current.copyOnSelect ?? true);
             rendererRef.current = renderer;
             setStatus('loading');
             setFailure(null);
@@ -1338,8 +1358,15 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
             // browser to hand it to, so what it buys is observability — and the invariant it
             // observes is §TERM-037's: while an application is being sent mouse reports the
             // engine must make NO selection, and the two can now be told apart.
+            // Middle-click paste's buffer takes a selection when its TEXT changes. The engine also
+            // re-announces a selection whose rows moved under output, and that must not make an
+            // older selection here the newest one in every window.
+            let announced = '';
             const offSelection = renderer.onSelectionChange((selection) => {
                 setSelectionLength(selection.length);
+                if (selection === announced) return;
+                announced = selection;
+                if (latest.current.onMiddleClickPaste !== undefined) recordSelection(selection);
             });
             /**
              * #81: publish this pane's live selection read for the app's `copy` action.
@@ -1711,7 +1738,8 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
     //
     // Nothing is intercepted while no application has asked for the mouse: with tracking
     // `none` every handler returns immediately and selection, link-clicks and the engine's own
-    // wheel-scrolls behave exactly as they did.
+    // wheel-scrolls behave exactly as they did. The one press taken either way is a middle one
+    // the application is not sent, which is middle-click paste when that is on.
     useEffect(() => {
         const host = hostRef.current;
         if (host === null || typeof window === 'undefined') return;
@@ -1726,8 +1754,16 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
             event.target instanceof Node && host.contains(event.target);
 
         const onDown = (event: MouseEvent): void => {
-            if (!reporter.active || !inside(event)) return;
-            if (!reporter.down(event)) return;
+            if (!inside(event)) return;
+            if (!reporter.active || !reporter.down(event)) {
+                // Not the application's press: a middle one is a paste, when the setting is on.
+                const paste = latest.current.onMiddleClickPaste;
+                if (event.button === 1 && paste !== undefined) {
+                    consume(event);
+                    paste();
+                }
+                return;
+            }
             consume(event);
             // Ghostty's rule (`Surface.zig:3850-3852`): once the application is being sent the
             // gesture, a selection left over from before it asked for the mouse must go — it
@@ -2623,6 +2659,17 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
         // a FRESH engine (which defaults to focused), and it has to be told again.
         rendererRef.current?.setSurfaceFocus(surfaceFocused);
     }, [surfaceFocused, status]);
+
+    // ── middle-click paste: hear other windows' selections while this pane is mounted ──
+    useEffect(() => attachSelectionBuffer(), []);
+
+    // ── copy-on-select ──────────────────────────────────────────────────────────────
+    // A renderer is told at creation, and remembers it for every engine it builds, so this only
+    // has to run when the setting changes.
+    const copyOnSelect = props.copyOnSelect ?? true;
+    useEffect(() => {
+        rendererRef.current?.setCopyOnSelect(copyOnSelect);
+    }, [copyOnSelect]);
 
     // ── theme ───────────────────────────────────────────────────────────────────────
     useEffect(() => {

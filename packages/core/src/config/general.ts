@@ -180,6 +180,35 @@ export interface GeneralSettings {
      * literal `true` turns it on.
      */
     readonly macosOptionAsAlt: boolean;
+    /**
+     * `copy-on-select` (terminal-surface.md §12.1), default **true**: does selecting text in a
+     * terminal pane put it on the clipboard straight away? A drag's release, a double-click's word
+     * and a triple-click's line all count. Off, the selection is only highlighted, and the `copy`
+     * binding (⌘C) or the phone's Copy pill is what copies it.
+     *
+     * Ghostty's key of the same name. Its values are `true`, `false` and `clipboard`, where `true`
+     * prefers a selection clipboard (X11's PRIMARY, a private pasteboard on macOS) that middle-click
+     * pastes from. A browser has no selection clipboard, so a selection has only ever gone to the
+     * system clipboard here: `true` and `clipboard` mean the same thing, which is what Kelpi has
+     * always done.
+     *
+     * Read by the CLIENT (the vendored engine's `copyOnSelect` option, `0.4.0-kelpi.21`); the
+     * daemon only round-trips it. Lenient like the default-true flags above: only the literal
+     * `false` turns it off, so a ghostty `clipboard` line copied into this file keeps it on.
+     */
+    readonly copyOnSelect: boolean;
+    /**
+     * `middle-click-paste` (terminal-surface.md §12.2), default **true**: does a middle-click in a
+     * terminal pane paste? What it pastes is the text last selected in any Kelpi terminal (the
+     * client's selection buffer, X11's PRIMARY by another name), whether or not `copy-on-select`
+     * put it on the clipboard; with nothing selected yet, the clipboard. An application that has
+     * asked for the mouse gets the click instead, and Shift+middle-click pastes there.
+     *
+     * A Kelpi key: ghostty has none, because its middle-click always pastes. Read by the CLIENT;
+     * the daemon only round-trips it. Lenient like the default-true flags above: only the literal
+     * `false` turns it off.
+     */
+    readonly middleClickPaste: boolean;
 }
 
 /** `SettingsFeature.State.worktreeBasePath`'s shipped default. */
@@ -206,7 +235,9 @@ export const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
     inheritGroupOnNewWorkspace: true,
     expandGroupOnWorkspaceDrop: true,
     clipboardWrite: false,
-    macosOptionAsAlt: false
+    macosOptionAsAlt: false,
+    copyOnSelect: true,
+    middleClickPaste: true
 };
 
 const INTEGER = /^[+-]?\d+$/;
@@ -319,6 +350,12 @@ export function parseGeneralSettings(contents: string): GeneralSettings {
                 // as `clipboard-write` above rather than the lenient default-true one: only the
                 // literal `true` hands ⌥ to the encoder as a modifier.
                 settings = { ...settings, macosOptionAsAlt: lowered === 'true' };
+                break;
+            case 'copy-on-select':
+                settings = { ...settings, copyOnSelect: lowered !== 'false' };
+                break;
+            case 'middle-click-paste':
+                settings = { ...settings, middleClickPaste: lowered !== 'false' };
                 break;
             default:
                 break;

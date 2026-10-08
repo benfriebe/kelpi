@@ -436,6 +436,28 @@ describe('createSettingsService (write-through)', () => {
         expect(f.read() ?? '').toContain('macos-option-as-alt = false');
     });
 
+    /** Copy-on-select is client-side too: the pane's engine reads it, the daemon round-trips it. */
+    it('round-trips copy-on-select, which is on until the file says otherwise', () => {
+        const f = fixture({ config: PRESERVED });
+        expect(f.service.snapshot.general.copyOnSelect).toBe(true);
+
+        expect(f.service.setGeneralSetting('copy-on-select', 'false').general.copyOnSelect).toBe(false);
+        expect(f.read() ?? '').toContain('copy-on-select = false');
+        expect(f.read() ?? '').toContain('keybind = super+d=split_down');
+
+        expect(f.service.setGeneralSetting('copy-on-select', 'true').general.copyOnSelect).toBe(true);
+        expect(f.read() ?? '').toContain('copy-on-select = true');
+    });
+
+    it('round-trips middle-click-paste, which is on until the file says otherwise', () => {
+        const f = fixture({ config: PRESERVED });
+        expect(f.service.snapshot.general.middleClickPaste).toBe(true);
+        expect(f.service.setGeneralSetting('middle-click-paste', 'false').general.middleClickPaste).toBe(false);
+        expect(f.read() ?? '').toContain('middle-click-paste = false');
+        expect(f.read() ?? '').toContain('keybind = super+d=split_down');
+        expect(f.service.setGeneralSetting('middle-click-paste', 'true').general.middleClickPaste).toBe(true);
+    });
+
     it('creates the config file (and its directory) when there is none', () => {
         const root = tmpRoot();
         const configPath = path.join(root, 'nested', 'deeper', 'config');

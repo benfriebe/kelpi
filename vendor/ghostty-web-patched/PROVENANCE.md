@@ -1,11 +1,11 @@
-# ghostty-web 0.4.0-kelpi.19 (vendored)
+# ghostty-web 0.4.0-kelpi.20 (vendored)
 
 **Version labels.** These versions were tagged `-nex.N` before the Nex to Kelpi rename and were
 relabelled `-kelpi.N` on 2026-10-03 with the same numbering, so an older commit, log or audit
 record that says `0.4.0-nex.N` means the same build as `0.4.0-kelpi.N`.
 
 A build of `ghostty-web` v0.4.0 carrying two open upstream PRs — applied after a line-by-line
-review in the orchestrating session and explicit user authorization to integrate both, plus eighteen
+review in the orchestrating session and explicit user authorization to integrate both, plus nineteen
 Kelpi-authored adaptations on top of them (`-kelpi.2`: the caret-anchored IME; `-kelpi.3`: an
 `allowTransparency` that does something; `-kelpi.4`: a cursor that knows whether its surface has
 focus; `-kelpi.5`: a `write()` that survives zero bytes; `-kelpi.6`: a paint that can be suspended;
@@ -19,7 +19,8 @@ rows remain anchored when older history is trimmed; `-kelpi.15`: DOM focus prese
 `-kelpi.17`: copying a selection joins soft-wrapped rows, history included; `-kelpi.18`: the
 built-in link detection can be turned off, and an embedder-drawn link underline; `-kelpi.19`: a
 double-click held and dragged selects whole words from the pressed word, a triple-click selects a
-line and drags by lines, and a drag scrolls only once the pointer leaves the terminal).
+line and drags by lines, and a drag scrolls only once the pointer leaves the terminal; `-kelpi.20`: a
+view scrolled to a fractional offset paints every row, so no line shows twice).
 
 **`-kelpi.13` is the first adaptation that is NOT TypeScript-only.** Every version up to `-kelpi.12`
 shipped `ghostty-vt.wasm` byte-identical to the npm `ghostty-web@0.4.0` package; `-kelpi.13`
@@ -49,6 +50,50 @@ reproduces the `0.4.0` wasm BYTE-IDENTICALLY when run without the patch, is in
 | `0.4.0-kelpi.17` | **wasm + TypeScript**: `ghostty_terminal_is_screen_row_wrapped` reports a row's soft-wrap continuation by absolute row, history included; `getSelection()` joins soft-wrapped rows instead of putting a newline at every wrap, and keeps a wrapped row's trailing spaces; `Buffer.getLine` reports `isWrapped` for history rows (#323) |
 | `0.4.0-kelpi.18` | `linkDetection: false` turns off the built-in link hover, pointer cursor and Ctrl/Cmd-click; `setLinkUnderline(segments)` underlines the cells an embedder names, in each cell's own foreground colour (#303) |
 | `0.4.0-kelpi.19` | a double-click selects its word on the second PRESS, and a drag from it extends by whole words from that word; a triple-click selects the whole line (soft-wrapped rows included) and a drag from it extends by whole lines; the word under a double-click is measured on the row on screen when the view is scrolled back; a drag no longer auto-scrolls while the pointer is over the terminal |
+| `0.4.0-kelpi.20` | the renderer maps rows through `Math.floor(viewportY)` like the selection, link hit-testing and search already did: a pixel-mode wheel left the offset fractional and the row where the live screen starts unpainted, so a neighbouring line showed twice |
+
+## Kelpi adaptation: a fractionally scrolled view paints every row (`0.4.0-kelpi.20`, 2026-10-08)
+
+**The defect.** Users reported an agent's output lines drawn several times in a pane, around
+scrolling. Upstream's smooth scrolling (`c941889`, still on `main`) keeps `viewportY` fractional:
+`handleWheel` converts a `DOM_DELTA_PIXEL` delta (every trackpad, and a mouse on macOS) to
+`deltaY / lineHeight` lines with no rounding, and the offset rests wherever the deltas add up to.
+Every other consumer maps a viewport row through `Math.floor(viewportY)` (the selection's
+`getViewportY`, link hit-testing, the `-kelpi.16` search rows), and so did the renderer's index,
+but its row walks chose between history and the live screen with `y < viewportY` on the RAW
+offset. On the row `y = floor(viewportY)` the two disagree: the walk asks history for line
+`scrollbackLength - floor(viewportY) + y = scrollbackLength`, one past its end, gets `null`, and
+paints nothing. With `viewportY > 0` every other row is redrawn on every frame, so that one row
+keeps whatever the previous frame left there. It is the row where the live screen's first line
+belongs, so that line was never shown and, after a scroll of about a line, the row still held its
+neighbour: the same line twice, following the boundary between history and the live screen as the
+view moved (measured: at rest at 3.4 lines up, rows 3 and 4 both showed `line52` and `line51` was
+missing). The hyperlink-hover row walk had the same comparison.
+
+Claude Code's default (inline) renderer and codex both run on the main screen, where the wheel
+scrolls this viewport, so this is what an agent pane showed. Claude Code's opt-in fullscreen
+renderer (`"tui": "fullscreen"`) turns on mouse reporting in the alternate screen, so its wheel
+goes to Claude and never moves `viewportY`.
+
+**The fix.** `render()` floors the offset once, straight after the paint-suspend guard (which
+must stay first, §N24), and every row walk, the cursor gate and the "scrolled" test use the whole
+line: rows `y < floor(viewportY)` from history, the rest from the live screen starting at its row
+0. The raw value is kept for `renderScrollbar`, so the thumb can still move smoothly. The forced
+repaint on a viewport change now fires when the WHOLE-line offset changes, which is the only
+change that alters a row. An offset under one line therefore draws exactly the bottom, cursor
+included, as it reads.
+
+**Not changed.** `viewportY` itself stays fractional, because that is how a slow trackpad
+accumulates: rounding it would swallow every sub-line delta. The `-kelpi.11` pin still treats any
+non-zero offset as scrolled, so a scroll that comes to rest under one line above the bottom shows
+the bottom but stops following new output until a keystroke or a scroll to the bottom; that
+predates this change and is left for its own fix.
+
+TypeScript only; the WASM is unchanged from `-kelpi.17`. Rebuilt with `pnpm vendor:build`.
+Covered by `packages/client/src/terminal/scroll-stale-row.wasm.test.ts` (the installed bundle, the
+real WASM and the engine's own wheel listener with pixel deltas, over a context that records the
+text each row last painted; all three cases fail on `-kelpi.19`) and the `-kelpi.20` markers in
+`vendor-engine.test.ts`.
 
 ## Kelpi adaptation: double- and triple-click select words and lines, and drag by them (`0.4.0-kelpi.19`, 2026-10-04)
 

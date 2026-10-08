@@ -523,6 +523,18 @@ export class CanvasRenderer {
     // skipped with everything else), so the forced render on resume redraws from a clean slate.
     if (this.paintSuspended) return;
 
+    // vendor 0.4.0-kelpi.20: rows are drawn at WHOLE-line offsets. A pixel-mode wheel (every
+    // trackpad, and a mouse on macOS) leaves `viewportY` fractional, mid-animation and at rest,
+    // and the row walks below decided "history or screen" with `y < viewportY` but indexed with
+    // `Math.floor(viewportY)`. On the row `y = floor(viewportY)` the two disagreed: it asked
+    // history for the line one past its end, got none, and skipped the row, so the canvas kept
+    // that row's previous frame. That row is where the live screen's first line belongs, so a
+    // scrolled pane showed a neighbouring line twice and never showed that one. The selection,
+    // link hit-testing and search already map rows through the floor; the renderer now does too.
+    // The raw offset still places the scrollbar thumb, which may move smoothly.
+    const scrollbarViewportY = viewportY;
+    viewportY = Math.max(0, Math.floor(viewportY));
+
     // Store buffer reference for grapheme lookups in renderCell
     this.currentBuffer = buffer;
 
@@ -795,7 +807,7 @@ export class CanvasRenderer {
     // vendor 0.4.0-kelpi.8: the same condition `scrollbarPainted` was computed from above — the
     // two must not drift, or the strip-restoring forceAll fires on the wrong frame.
     if (scrollbackProvider && scrollbarOpacity > 0) {
-      this.renderScrollbar(viewportY, scrollbackLength, dims.rows, scrollbarOpacity);
+      this.renderScrollbar(scrollbarViewportY, scrollbackLength, dims.rows, scrollbarOpacity);
     }
 
     // Update last cursor position

@@ -1248,10 +1248,11 @@ icon is still not (§7.2).
    `error("'{grapheme}' is not a usable icon: give one emoji or symbol")`.
 3. If the icon differs from the current one, dispatch `set-workspace-icon(id, icon)` and
    persist. The same icon is a successful no-op that writes nothing.
-4. Reply, `icon` being the icon it has now, `null` for the letter avatar:
+4. Reply, `icon` being the icon it has now, `null` for the letter avatar, and `old_icon` the
+   icon before:
 
 ```json
-{"ok": true, "workspace_id": "…", "workspace_name": "feat-x", "icon": "emoji:👩‍🍳"}
+{"ok": true, "workspace_id": "…", "workspace_name": "feat-x", "icon": "emoji:👩‍🍳", "old_icon": null}
 ```
 
 The icon reaches attached windows as a `workspace-upserted` event in the next store delta.

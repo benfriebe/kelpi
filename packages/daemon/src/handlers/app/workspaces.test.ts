@@ -1029,6 +1029,19 @@ describe('workspace-create (group default repository)', () => {
         ]);
     });
 
+    it('carries --icon through a create with a repository, echoing it', async () => {
+        const h = harness({
+            git: stubGit({
+                resolveRepoRoot: async () => ({ worktreeRoot: '/code/new', parentRepoRoot: '/code/new' }),
+                getCurrentBranch: async () => 'main'
+            })
+        });
+        h.send({ command: 'workspace-create', name: 'n', repo: '/code/new', icon: 'emoji:👩‍🍳' });
+        await flush();
+        expect(h.replies[0]?.payloads[0]).toMatchObject({ ok: true, repo_path: '/code/new', icon: 'emoji:👩‍🍳' });
+        expect(h.state().workspaces[0]?.icon).toEqual({ kind: 'emoji', grapheme: '👩‍🍳' });
+    });
+
     it('refuses a repo that is not a repository and creates nothing', async () => {
         const h = harness({ git: stubGit({ resolveRepoRoot: async () => null }) });
         h.send({ command: 'workspace-create', name: 'n', group: 'fresh', repo: '/tmp/plain' });

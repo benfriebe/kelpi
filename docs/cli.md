@@ -973,7 +973,8 @@ kelpi workspace create --worktree <name> [--branch <name>] [--repo <path>]
   prints the reply first.
 - `--icon` confirmation, the same way: when the reply does not carry the `icon` that was sent,
   `kelpi workspace create: the daemon did not apply --icon; restart it on this build
-  (workspace <name> (<id>) was created without an icon)`, exit 1.
+  (workspace <name> (<id>) was created without an icon)`, exit 1; `--json` still prints the
+  reply first.
 - Default output variants (from reply fields; name falls back to the `--name` argument or
   `"Workspace"`, id to `?`):
   - worktree: `created workspace <name> (<id>)[ in group <g>] with worktree <path> on branch <branch>[ off the latest main]`
@@ -1222,7 +1223,8 @@ not found: <name>`, `workspace name is ambiguous: <name> (use the id)`), both ex
 daemon validates the icon again, the way the GUI's `set-workspace-icon` does. Setting the icon
 the workspace already has succeeds and writes nothing. The change persists and syncs to every
 attached client. Reply `{ok, workspace_id, workspace_name, icon, old_icon}`, `icon` being
-`"emoji:<emoji>"`, or `null` once cleared, and `old_icon` the icon before, in the same spelling. Group icons stay a sidebar gesture.
+`"emoji:<emoji>"`, or `null` once cleared, and `old_icon` the icon before, in the same
+spelling. Group icons stay a sidebar gesture.
 
 ---
 

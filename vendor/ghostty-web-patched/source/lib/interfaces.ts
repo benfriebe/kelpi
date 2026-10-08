@@ -28,6 +28,12 @@ export interface ITerminalOptions {
   // itself and draws its own underline with `setLinkUnderline` (default: true)
   linkDetection?: boolean;
 
+  // vendor 0.4.0-kelpi.21: false stops a selection from writing the clipboard on its own (the
+  // release of a drag, a double- or triple-click). The selection is still made, highlighted and
+  // announced, so the embedder's own copy can read it. Read at every copy, so it can be changed
+  // at runtime through `terminal.options` (default: true)
+  copyOnSelect?: boolean;
+
   // Internal: Ghostty WASM instance (optional, for test isolation)
   // If not provided, uses the module-level instance from init()
   ghostty?: Ghostty;

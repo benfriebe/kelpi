@@ -114,6 +114,8 @@ through `set-general-setting` (section 1.3; `WS_WRITABLE_GENERAL_KEYS`,
 | `auto-detect-repos` | default true; only `false` disables |
 | `inherit-group-on-new-workspace` | default true; only `false` disables |
 | `expand-group-on-workspace-drop` | default true; only `false` disables |
+| `copy-on-select` | default true; only the literal `false` disables. Ghostty's key of the same name: selecting text in a terminal pane (a drag, a double-click's word, a triple-click's line) copies it on release. `false` leaves the selection highlighted for ⌘C (`copy`) to copy. Ghostty's `clipboard` value reads as `true`: a browser has no selection clipboard, so a selection has only ever gone to the system clipboard. Client-side; terminal-surface.md section 12.1. Settings ▸ Workspaces ▸ Panes writes it |
+| `middle-click-paste` | default true; only the literal `false` disables. A middle-click in a terminal pane pastes the text last selected in any Kelpi terminal (whether or not `copy-on-select` copied it), or the clipboard when nothing has been selected yet. An application with mouse reporting on gets the click instead; Shift+middle-click pastes there. A Kelpi key (ghostty's middle-click always pastes). Client-side; terminal-surface.md section 12.2. Settings ▸ Workspaces ▸ Panes writes it |
 | `clipboard-write` | default false; only the literal `true` enables (the OSC 52 write gate; there is no `clipboard-read` twin, reads are refused outright) |
 | `macos-option-as-alt` | default false; only the literal `true` enables. Ghostty's key of the same name, at ghostty's own default: `false` leaves ⌥ to the macOS layout (⌥⇧- types an em dash), `true` reports it as the Alt modifier. Section 7.5; client-side, macOS-only, `true`/`false` only (no `left` / `right`) |
 | `worktree-base-path` | stored verbatim, case preserved; a blank value means the shipped default `~/kelpi/worktrees/<repo>` rather than the filesystem root |
@@ -1820,7 +1822,8 @@ registries instead); nothing persists to a per-app preferences store.
    dropped into it", "Confirm before quitting with active agents" (the ⌘Q dialog; a
    browser client has no ⌘Q and the row says so); a *Panes* section: focus-follows-mouse
    toggle + 0–500/25 delay slider, shown only while the toggle is on (section 10); the
-   `clipboard-write` toggle (OSC 52; the row states that clipboard reads are refused
+   "Copy on select" toggle (`copy-on-select`, default on); the "Middle-click paste" toggle
+   (`middle-click-paste`, default on); the `clipboard-write` toggle (OSC 52; the row states that clipboard reads are refused
    regardless); and the "Option as Alt" toggle (`macos-option-as-alt`, section 7.5, default
    off, whose caption states what each value costs because neither is the safe one). Values
    are read straight off the daemon snapshot with no optimistic local state, so two windows

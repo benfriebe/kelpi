@@ -700,6 +700,34 @@ export const SETTINGS_FIELD_DEFINITIONS: readonly SettingsFieldDefinition[] = Ob
         encode: (value) => String(Math.trunc(value))
     },
     {
+        id: 'workspaces.copyOnSelect',
+        sectionID: 'workspaces',
+        groupID: 'panes-section',
+        kind: 'toggle',
+        label: 'Copy on select',
+        detail: 'Selecting text in a terminal pane copies it as soon as you let go, a double-click\'s word and a triple-click\'s line included. Off, the selection is only highlighted until you copy it with ⌘C.',
+        testID: 'copy-on-select-toggle',
+        rowTestID: 'copy-on-select-row',
+        target: { file: 'kelpi', key: 'copy-on-select' },
+        default: true,
+        read: (settings) => settings.general.copyOnSelect,
+        encode: BOOLEAN
+    },
+    {
+        id: 'workspaces.middleClickPaste',
+        sectionID: 'workspaces',
+        groupID: 'panes-section',
+        kind: 'toggle',
+        label: 'Middle-click paste',
+        detail: 'A middle-click in a terminal pane pastes the text you last selected in any Kelpi terminal, whether or not it was copied, or the clipboard if you have not selected anything yet. An app using the mouse (vim, tmux) gets the click instead; Shift+middle-click pastes there.',
+        testID: 'middle-click-paste-toggle',
+        rowTestID: 'middle-click-paste-row',
+        target: { file: 'kelpi', key: 'middle-click-paste' },
+        default: true,
+        read: (settings) => settings.general.middleClickPaste,
+        encode: BOOLEAN
+    },
+    {
         id: 'workspaces.clipboardWrite',
         sectionID: 'workspaces',
         groupID: 'panes-section',

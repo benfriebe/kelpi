@@ -9,7 +9,7 @@ import { resolveSlot, slotViews } from '../plugins/registry';
 import { tokens } from '../chrome/tokens';
 import { bindTerminalFeature } from './terminals';
 import { TERMINAL_FEATURE } from './definitions';
-import { useTerminalShortcuts } from '../app/terminal-shortcuts';
+import { useMiddleClickPaste, useTerminalShortcuts } from '../app/terminal-shortcuts';
 
 export interface TerminalFeaturePaneProps extends TerminalPaneProps {
     readonly runtime: KelpiRuntime;
@@ -63,6 +63,15 @@ export function TerminalFeaturePane(props: TerminalFeaturePaneProps): ReactEleme
         const client = state.daemon.clientID;
         return owner === null || client === null || owner === client;
     });
+    /*
+     * `copy-on-select`, off the same store for the same reason: the config that describes a
+     * remote host's pane is the one that rode THAT daemon's handshake, as hover-focus is in
+     * `RemoteWorkspaceView`. A daemon that predates the key hydrates to the default (on).
+     */
+    const copyOnSelect = useStore(runtime.store, (state) => state.settings.value.general.copyOnSelect);
+    // `middle-click-paste`, off the same store, and the paste goes over the same connection.
+    const middleClickPasteOn = useStore(runtime.store, (state) => state.settings.value.general.middleClickPaste);
+    const middleClickPaste = useMiddleClickPaste(runtime, paneID);
     const shortcuts = useTerminalShortcuts(runtime, paneID, props.visible, props.claimedChords);
     const layout = useWorkbenchLayout(runtime);
     const selected = resolveSlot(layout.views, 'terminal', layout.selections.terminal);
@@ -77,7 +86,12 @@ export function TerminalFeaturePane(props: TerminalFeaturePaneProps): ReactEleme
     // thing the bundled one is: the bridge forwards it as `presentation.ownsSize` and states
     // each replay's grid on the frame (`plugins/terminal-pane.ts`, `plugins/terminal.ts`), so a
     // plugin renderer can mirror an owner's grid exactly as the bundled engine does.
-    const paneProps: TerminalPaneProps = { ...props, ownsSize };
+    const paneProps: TerminalPaneProps = {
+        ...props,
+        ownsSize,
+        copyOnSelect,
+        onMiddleClickPaste: middleClickPasteOn ? middleClickPaste : undefined
+    };
     return <div data-terminal-pane={paneID} data-terminal-renderer={replacement ? viewID : TERMINAL_FEATURE.id} className="flex h-full min-h-0 flex-col">
         {choices.length > 1 || failed ? <div className="flex shrink-0 items-center gap-2 border-b px-2 py-1 text-[11px]" style={{ borderColor: tokens.divider }}>
             <label>Terminal renderer <select aria-label="Terminal renderer" value={viewID} onChange={event => layout.select('terminal', event.target.value)}>

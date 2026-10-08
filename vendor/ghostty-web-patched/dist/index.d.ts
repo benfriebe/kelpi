@@ -1247,6 +1247,7 @@ export declare interface ITerminalOptions {
     smoothScrollDuration?: number;
     scrollOnUserInput?: boolean;
     linkDetection?: boolean;
+    copyOnSelect?: boolean;
     ghostty?: Ghostty;
 }
 

@@ -15,7 +15,7 @@ vi.mock('../plugins/client', () => ({
 }));
 vi.mock('../terminal/TerminalPane', () => ({ TerminalPane: (props: TerminalPaneProps) => {
     useEffect(() => { mounted(props.paneID, 'native'); return () => { released(props.paneID, 'native'); }; }, [props.paneID]);
-    return <div data-testid={`native-${props.paneID}`} data-visible={props.visible} data-focused={props.focused} data-owns={props.ownsSize !== false} />;
+    return <div data-testid={`native-${props.paneID}`} data-visible={props.visible} data-focused={props.focused} data-owns={props.ownsSize !== false} data-copy-on-select={props.copyOnSelect !== false} data-middle-click-paste={props.onMiddleClickPaste !== undefined} />;
 } }));
 vi.mock('../plugins/PluginView', () => ({ PluginView: (props: { paneID: string; viewID: string; terminal: TerminalPaneProps; onError(message: string): void }) => {
     useEffect(() => { mounted(props.paneID, props.viewID); return () => { released(props.paneID, props.viewID); }; }, [props.paneID, props.viewID]);
@@ -23,13 +23,15 @@ vi.mock('../plugins/PluginView', () => ({ PluginView: (props: { paneID: string; 
         onClick={() => props.onError(rendererError)}>{props.viewID}</button>;
 } }));
 /**
- * A store with just the one slice `TerminalFeaturePane` reads: who owns PTY sizing (#166).
+ * A store with just the slices `TerminalFeaturePane` reads: who owns PTY sizing (#166), and
+ * `copy-on-select`.
  *
  * `null` is "unknown, or nobody", which is the answer that makes a pane behave exactly as it did
  * before #166 — the right default for a file about renderer SELECTION, which is not about sizing.
  */
-const sizeControlStore = (sizeControlOwnerID: string | null = null, clientID: string | null = null): KelpiRuntime['store'] => {
-    const state = { daemon: { sizeControlOwnerID, clientID } };
+const sizeControlStore = (sizeControlOwnerID: string | null = null, clientID: string | null = null, copyOnSelect = true): KelpiRuntime['store'] => {
+    // Copy-on-select and middle-click paste ride together here: off for one is off for both.
+    const state = { daemon: { sizeControlOwnerID, clientID }, settings: { value: { general: { copyOnSelect, middleClickPaste: copyOnSelect } } } };
     return {
         getState: () => state,
         getInitialState: () => state,
@@ -37,8 +39,8 @@ const sizeControlStore = (sizeControlOwnerID: string | null = null, clientID: st
         subscribe: () => () => undefined
     } as unknown as KelpiRuntime['store'];
 };
-const runtime = (host: string, owner: string | null = null, client: string | null = null) =>
-    ({ connection: { target: `ws://${host}/ws` }, store: sizeControlStore(owner, client) } as KelpiRuntime);
+const runtime = (host: string, owner: string | null = null, client: string | null = null, copyOnSelect = true) =>
+    ({ connection: { target: `ws://${host}/ws` }, store: sizeControlStore(owner, client, copyOnSelect) } as KelpiRuntime);
 const local = runtime('terminal.test'), remote = runtime('remote-terminal.test');
 const props = { runtime: local, workspaceID: 'W', paneID: 'P', ptyApi: { subscribe: vi.fn() }, focused: true, visible: true };
 beforeEach(() => {
@@ -111,5 +113,15 @@ describe('replaceable terminal feature', () => {
         await waitFor(() => expect(screen.getByTestId('plugin-P').dataset.owns).toBe('true'));
         fireEvent.change(screen.getAllByLabelText('Terminal renderer')[1]!, { target: { value: 'sample.terminal.body' } });
         await waitFor(() => expect(screen.getByTestId('plugin-R').dataset.owns).toBe('false'));
+    });
+
+    it('answers copy-on-select and middle-click paste from each runtime own store', () => {
+        // A remote host's pane follows THAT daemon's config, as its hover-focus does.
+        const copyOff = runtime('copy-off-terminal.test', null, null, false);
+        render(<><TerminalFeaturePane {...props} /><TerminalFeaturePane {...props} runtime={copyOff} paneID="R" /></>);
+        expect(screen.getByTestId('native-P').dataset.copyOnSelect).toBe('true');
+        expect(screen.getByTestId('native-R').dataset.copyOnSelect).toBe('false');
+        expect(screen.getByTestId('native-P').dataset.middleClickPaste).toBe('true');
+        expect(screen.getByTestId('native-R').dataset.middleClickPaste).toBe('false');
     });
 });

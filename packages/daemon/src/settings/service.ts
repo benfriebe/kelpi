@@ -345,7 +345,11 @@ export function buildSettingsSnapshot(
             clipboardWrite: general.clipboardWrite,
             // #171: the ⌥ rule. The one general key on this snapshot the daemon never enforces
             // itself: the pane's kitty encoder is the only reader, and it lives in the client.
-            macosOptionAsAlt: general.macosOptionAsAlt
+            macosOptionAsAlt: general.macosOptionAsAlt,
+            // Copy-on-select: client-side too. The pane's engine reads it at every copy.
+            copyOnSelect: general.copyOnSelect,
+            // …and middle-click paste, which the pane handles itself.
+            middleClickPaste: general.middleClickPaste
         },
         appearance: {
             // §APP-014: the theme's own background when the config names none — the "resolved

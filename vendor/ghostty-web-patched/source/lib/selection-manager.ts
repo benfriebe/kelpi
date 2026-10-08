@@ -660,7 +660,9 @@ export class SelectionManager {
 
         const text = this.getSelection();
         if (text) {
-          this.copyToClipboard(text);
+          // vendor 0.4.0-kelpi.21: `copyOnSelect: false` keeps the selection off the clipboard.
+          // It is still made and announced, so the embedder's own copy can read it.
+          if (this.terminal.options.copyOnSelect) this.copyToClipboard(text);
           this.selectionChangedEmitter.fire();
         }
       }
@@ -687,7 +689,7 @@ export class SelectionManager {
 
         const text = this.getSelection();
         if (text) {
-          this.copyToClipboard(text);
+          if (this.terminal.options.copyOnSelect) this.copyToClipboard(text); // vendor 0.4.0-kelpi.21
           this.selectionChangedEmitter.fire();
         }
       }

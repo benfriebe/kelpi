@@ -100,6 +100,8 @@ export class FakeRenderer implements TerminalRenderer {
      * background pane that never had it) are different stories about the same final cursor.
      */
     readonly surfaceFocuses: boolean[] = [];
+    /** Every `setCopyOnSelect`, in order; the last one is the live state. */
+    readonly copyOnSelects: boolean[] = [];
     repaints = 0;
     /** Every `revealMatch` the search overlay asked for, in order. */
     readonly revealed: TerminalMatchLocation[] = [];
@@ -377,6 +379,10 @@ export class FakeRenderer implements TerminalRenderer {
     /** §N20 — every surface-focus report, in order; the last one is the live state. */
     setSurfaceFocus(focused: boolean): void {
         this.surfaceFocuses.push(focused);
+    }
+
+    setCopyOnSelect(enabled: boolean): void {
+        this.copyOnSelects.push(enabled);
     }
 
     setTheme(theme: TerminalTheme): void {

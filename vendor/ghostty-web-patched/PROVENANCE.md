@@ -1,11 +1,11 @@
-# ghostty-web 0.4.0-kelpi.20 (vendored)
+# ghostty-web 0.4.0-kelpi.21 (vendored)
 
 **Version labels.** These versions were tagged `-nex.N` before the Nex to Kelpi rename and were
 relabelled `-kelpi.N` on 2026-10-03 with the same numbering, so an older commit, log or audit
 record that says `0.4.0-nex.N` means the same build as `0.4.0-kelpi.N`.
 
 A build of `ghostty-web` v0.4.0 carrying two open upstream PRs — applied after a line-by-line
-review in the orchestrating session and explicit user authorization to integrate both, plus nineteen
+review in the orchestrating session and explicit user authorization to integrate both, plus twenty
 Kelpi-authored adaptations on top of them (`-kelpi.2`: the caret-anchored IME; `-kelpi.3`: an
 `allowTransparency` that does something; `-kelpi.4`: a cursor that knows whether its surface has
 focus; `-kelpi.5`: a `write()` that survives zero bytes; `-kelpi.6`: a paint that can be suspended;
@@ -20,7 +20,8 @@ rows remain anchored when older history is trimmed; `-kelpi.15`: DOM focus prese
 built-in link detection can be turned off, and an embedder-drawn link underline; `-kelpi.19`: a
 double-click held and dragged selects whole words from the pressed word, a triple-click selects a
 line and drags by lines, and a drag scrolls only once the pointer leaves the terminal; `-kelpi.20`: a
-view scrolled to a fractional offset paints every row, so no line shows twice).
+view scrolled to a fractional offset paints every row, so no line shows twice; `-kelpi.21`:
+copy-on-select can be turned off).
 
 **`-kelpi.13` is the first adaptation that is NOT TypeScript-only.** Every version up to `-kelpi.12`
 shipped `ghostty-vt.wasm` byte-identical to the npm `ghostty-web@0.4.0` package; `-kelpi.13`
@@ -51,6 +52,28 @@ reproduces the `0.4.0` wasm BYTE-IDENTICALLY when run without the patch, is in
 | `0.4.0-kelpi.18` | `linkDetection: false` turns off the built-in link hover, pointer cursor and Ctrl/Cmd-click; `setLinkUnderline(segments)` underlines the cells an embedder names, in each cell's own foreground colour (#303) |
 | `0.4.0-kelpi.19` | a double-click selects its word on the second PRESS, and a drag from it extends by whole words from that word; a triple-click selects the whole line (soft-wrapped rows included) and a drag from it extends by whole lines; the word under a double-click is measured on the row on screen when the view is scrolled back; a drag no longer auto-scrolls while the pointer is over the terminal |
 | `0.4.0-kelpi.20` | the renderer maps rows through `Math.floor(viewportY)` like the selection, link hit-testing and search already did: a pixel-mode wheel left the offset fractional and the row where the live screen starts unpainted, so a neighbouring line showed twice |
+| `0.4.0-kelpi.21` | `copyOnSelect: false` keeps a selection off the clipboard: a drag's release and a `dblclick` still select and announce, but do not copy; read at every copy, so it can be changed at runtime |
+
+## Kelpi adaptation: copy-on-select can be turned off (`0.4.0-kelpi.21`, 2026-10-08)
+
+Upstream copies every selection the moment it is made: the document `mouseup` that ends a drag
+(a double- or triple-click's included) and the `dblclick` listener both call `copyToClipboard`,
+with no way for an embedder to say no. Kelpi's `copy-on-select` setting needs one.
+
+**`copyOnSelect?: boolean`** (`ITerminalOptions`, default `true`, so upstream behaviour is
+unchanged unless asked). `false` skips the `copyToClipboard` call at both sites and nothing
+else: the selection is still made, highlighted and announced through `onSelectionChange`, so
+the embedder's own copy (Kelpi's ⌘C reads `getSelection()`) and a long-press Copy pill still
+have it. Those are the only two `copyToClipboard` calls the manager makes. The option is read
+from `terminal.options` at the moment of the copy, so a runtime change (`terminal.options
+.copyOnSelect = false`) governs the next release; `handleOptionChange` has a no-op case for it,
+as for `disableStdin`.
+
+No new listeners. TypeScript only; the WASM is unchanged from `-kelpi.17`. Rebuilt with
+`pnpm vendor:build`. Covered by `packages/client/src/terminal/copy-on-select.wasm.test.ts` (the
+installed bundle, the real WASM and the manager's own listeners: a drag, a double-click and a
+bare `dblclick` with the option off, and a runtime toggle) and the `-kelpi.21` markers in
+`vendor-engine.test.ts`.
 
 ## Kelpi adaptation: a fractionally scrolled view paints every row (`0.4.0-kelpi.20`, 2026-10-08)
 

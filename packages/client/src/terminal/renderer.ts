@@ -367,6 +367,15 @@ export interface TerminalRenderer {
      */
     setSurfaceFocus(focused: boolean): void;
     /**
+     * `copy-on-select`: may a selection the user makes write the clipboard by itself?
+     *
+     * True (the default) is what the engine always did: a drag's release, a double-click's word
+     * and a triple-click's line go straight to the clipboard. False leaves the selection
+     * highlighted and readable through `selection()`, which is what ⌘C copies. Remembered and
+     * handed to every engine this renderer builds, so it can be set before the first one opens.
+     */
+    setCopyOnSelect(enabled: boolean): void;
+    /**
      * Set attributes on the engine's hidden text input (C2, `terminal/keyboard-inset.ts`).
      *
      * The engine owns that `<textarea>` - it creates it inside the host in `open()` and destroys
@@ -544,6 +553,11 @@ export interface EngineHandle {
      * `focus()`/`blur()` remain the whole story there. A fake engine omits it too.
      */
     setSurfaceFocus?(focused: boolean): void;
+    /**
+     * `copy-on-select`. Only ghostty-web copies a selection by itself (`copyOnSelect`,
+     * `0.4.0-kelpi.21`); `@xterm/xterm` never does, so its handle omits this, as a fake does.
+     */
+    setCopyOnSelect?(enabled: boolean): void;
     /**
      * Suspend or resume PAINTING, without touching the VT (§N24 — `ghostty-web 0.4.0-kelpi.6`).
      *
@@ -1123,6 +1137,8 @@ class AdapterRenderer implements TerminalRenderer {
      * report looks the way upstream always did rather than flashing an outline for a frame.
      */
     private wantSurfaceFocus = true;
+    /** `copy-on-select`, as last asked; on until the pane says otherwise, as the engine is. */
+    private wantCopyOnSelect = true;
     private requestedCols: number;
     private requestedRows: number;
     private readonly faults: EngineFaultHook | undefined;
@@ -1498,6 +1514,12 @@ class AdapterRenderer implements TerminalRenderer {
         this.wantSurfaceFocus = focused;
         if (this.disposed || this.poisoned) return;
         this.swallow(() => this.handle?.setSurfaceFocus?.(focused));
+    }
+
+    setCopyOnSelect(enabled: boolean): void {
+        this.wantCopyOnSelect = enabled;
+        if (this.disposed || this.poisoned) return;
+        this.swallow(() => this.handle?.setCopyOnSelect?.(enabled));
     }
 
     /** C2 - see the interface. Merges into what is already asked for; `null` removes. */
@@ -2179,6 +2201,9 @@ class AdapterRenderer implements TerminalRenderer {
             // so a pane that was told it is unfocused BEFORE its engine finished loading (every
             // pane in a restored grid but one) would otherwise open blinking.
             handle.setSurfaceFocus?.(this.wantSurfaceFocus);
+            // Copy-on-select: every engine is built with it on, so one the pane turned off before
+            // it opened (or before a restart rebuilt it) is told again.
+            handle.setCopyOnSelect?.(this.wantCopyOnSelect);
             // #306: and a search that is already open, so a pane that mounts or is rebuilt
             // mid-search comes up highlighted rather than waiting for the next keystroke. A new
             // engine has pinned nothing; its current match waits for the replay (see `deliver`).
@@ -2284,6 +2309,11 @@ export const loadGhosttyEngine: EngineLoader = async (options) => {
         // flag and hands it to the renderer it builds there (`0.4.0-kelpi.4`).
         setSurfaceFocus: (focused): void => {
             terminal.setFocused(focused);
+        },
+        // Copy-on-select (`0.4.0-kelpi.21`). The engine reads the option at every copy, so a
+        // Settings toggle governs the very next release.
+        setCopyOnSelect: (enabled): void => {
+            terminal.options.copyOnSelect = enabled;
         },
         // §N24 — `0.4.0-kelpi.6`. Suspends the engine's render loop and the forced render inside
         // its own `resize()`, and carries the canvas pixels across the resize instead of

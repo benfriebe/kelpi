@@ -10,7 +10,8 @@ import { completeHandshake, createFakeSocketFactory } from '../connection/testin
 import { TerminalFeaturePane } from '../features/TerminalFeaturePane';
 import { registerTerminalPane, type TerminalPaneHandle } from '../terminal/pane-registry';
 import { createFakePtyApi, createFakeRendererFactory, installFakeResizeObserver } from '../terminal/testing';
-import { dispatchTerminalEditingShortcut, terminalShortcutChords, terminalWindowChords, TerminalShortcutContext, type TerminalShortcutHost } from './terminal-shortcuts';
+import { recordSelection, resetSelectionBufferForTests } from '../terminal/selection-buffer';
+import { dispatchTerminalEditingShortcut, pasteSelectionIntoOwner, terminalShortcutChords, terminalWindowChords, TerminalShortcutContext, type TerminalShortcutHost } from './terminal-shortcuts';
 
 const disposals: (() => void)[] = [];
 afterEach(() => { for (const dispose of disposals.splice(0).reverse()) dispose(); vi.restoreAllMocks(); });
@@ -33,6 +34,34 @@ function fixture() {
 const event = (code: string, metaKey = true) => ({ code, metaKey, ctrlKey: !metaKey, altKey: false, shiftKey: false });
 const host = (): TerminalShortcutHost => ({ bindings: clientKeyBindings([], true), onError: vi.fn() });
 const clipboard = () => ({ readText: vi.fn(async () => 'clipboard text'), writeText: vi.fn(async () => {}), read: vi.fn(async () => []) });
+
+describe('middle-click paste over the owning daemon', () => {
+    afterEach(() => resetSelectionBufferForTests());
+
+    it('pastes the last terminal selection without reading the clipboard', async () => {
+        const primary = fixture(), remote = fixture(), c = clipboard();
+        recordSelection('selected in another pane');
+        await pasteSelectionIntoOwner(remote.runtime, remote.paneID, c as unknown as Clipboard);
+        expect(remote.dropText).toHaveBeenCalledExactlyOnceWith({ paneID: remote.paneID, text: 'selected in another pane' });
+        expect(primary.dropText).not.toHaveBeenCalled();
+        expect(c.readText).not.toHaveBeenCalled();
+    });
+
+    it('falls back to the clipboard, exactly as ⌘V reads it, when nothing has been selected', async () => {
+        const remote = fixture(), c = clipboard();
+        await pasteSelectionIntoOwner(remote.runtime, remote.paneID, c as unknown as Clipboard);
+        expect(remote.dropText).toHaveBeenCalledExactlyOnceWith({ paneID: remote.paneID, text: 'clipboard text' });
+    });
+
+    it("types nothing into a pane its runtime does not own, and reports the daemon's refusal", async () => {
+        const primary = fixture(), remote = fixture();
+        recordSelection('text');
+        await pasteSelectionIntoOwner(primary.runtime, remote.paneID, undefined);
+        expect(primary.dropText).not.toHaveBeenCalled();
+        remote.dropText.mockResolvedValue({ ok: false, error: 'remote rejected paste' });
+        await expect(pasteSelectionIntoOwner(remote.runtime, remote.paneID, undefined)).rejects.toThrow('remote rejected paste');
+    });
+});
 
 describe('terminal editing shortcuts across daemon owners', () => {
     it('returns empty-selection Ctrl+C to the original non-Mac renderer after its live reply', async () => {

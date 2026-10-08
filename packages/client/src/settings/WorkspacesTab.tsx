@@ -18,6 +18,11 @@
  *     its own status socket. A browser client has no ⌘Q, which is why the row says so.
  *   - **Focus follows mouse** + its delay — §10, already read by the pane grid. The slider range
  *     is §10's 0–500 in steps of 25, and it only appears while the toggle is on.
+ *   - **Copy on select**, `copy-on-select` (ghostty's key, at ghostty's default of on): a selection
+ *     in a terminal pane goes to the clipboard on release. Off, it stays highlighted for ⌘C. The
+ *     caption names ⌘C because that is the copy left once this is off.
+ *   - **Middle-click paste**, `middle-click-paste` (a Kelpi key; ghostty's middle-click always
+ *     pastes): pastes the last terminal selection, the clipboard when there is none. On by default.
  *   - **Let programs write the clipboard** — `clipboard-write`, §TERM-046's OSC 52 gate. The one
  *     control on this tab that is a SECURITY posture rather than a preference: it ships OFF,
  *     which is stricter than the shipped app (ghostty's own `clipboard-write` defaults to

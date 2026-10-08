@@ -239,6 +239,8 @@ describe('the field table', () => {
             'confirm-quit-toggle',
             'focus-follows-mouse-toggle',
             'focus-delay-slider',
+            'copy-on-select-toggle',
+            'middle-click-paste-toggle',
             'clipboard-write-toggle',
             'macos-option-as-alt-toggle'
         ]);

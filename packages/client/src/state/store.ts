@@ -516,7 +516,13 @@ export function hydrateSettings(raw: unknown): WsSettingsSnapshot | null {
             // #171's ⌥ rule, additive in the same way: a daemon that predates the field sends
             // nothing and the shipped default (OFF, so ⌥ composes) stands, which is the answer
             // ghostty gives and the one a pane on an older daemon should give too.
-            macosOptionAsAlt: bool(general['macosOptionAsAlt'], fallbackGeneral.macosOptionAsAlt)
+            macosOptionAsAlt: bool(general['macosOptionAsAlt'], fallbackGeneral.macosOptionAsAlt),
+            // Copy-on-select: a daemon that predates the field sends nothing, and the shipped
+            // default (ON) is what every pane did before the setting existed.
+            copyOnSelect: bool(general['copyOnSelect'], fallbackGeneral.copyOnSelect),
+            // Middle-click paste, additive in the same way: an older daemon sends nothing and the
+            // shipped default (ON) stands.
+            middleClickPaste: bool(general['middleClickPaste'], fallbackGeneral.middleClickPaste)
         },
         // Chrome styling + status-bar settings. A daemon that predates the field sends nothing
         // and the shipped palette / gauge set stands — the same additive rule the rest of this

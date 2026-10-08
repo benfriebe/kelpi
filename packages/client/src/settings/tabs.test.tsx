@@ -281,6 +281,37 @@ describe('Settings ▸ Workspaces', () => {
         expect(row).toContain('types nothing');
     });
 
+    it('ships copy-on-select ON, writes it as a general setting, and says what ⌘C is for', () => {
+        const bound = actions();
+        const view = render(
+            <WorkspacesTab settings={snapshot()} actions={bound} paths={DEFAULT_SETTINGS_PATHS} />
+        );
+        const toggle = screen.getByTestId('copy-on-select-toggle') as HTMLInputElement;
+        expect(toggle.checked).toBe(true);
+        fireEvent.click(toggle);
+        expect(bound.general).toEqual([{ key: 'copy-on-select', value: 'false' }]);
+        expect((screen.getByTestId('copy-on-select-toggle') as HTMLInputElement).checked).toBe(true);
+        view.rerender(
+            <WorkspacesTab
+                settings={snapshot({ general: { ...DEFAULT_WS_SETTINGS.general, copyOnSelect: false } })}
+                actions={bound}
+                paths={DEFAULT_SETTINGS_PATHS}
+            />
+        );
+        expect((screen.getByTestId('copy-on-select-toggle') as HTMLInputElement).checked).toBe(false);
+        expect(screen.getByTestId('copy-on-select-row').textContent ?? '').toContain('⌘C');
+    });
+
+    it('ships middle-click paste ON and writes it as a general setting', () => {
+        const bound = actions();
+        render(<WorkspacesTab settings={snapshot()} actions={bound} paths={DEFAULT_SETTINGS_PATHS} />);
+        const toggle = screen.getByTestId('middle-click-paste-toggle') as HTMLInputElement;
+        expect(toggle.checked).toBe(true);
+        fireEvent.click(toggle);
+        expect(bound.general).toEqual([{ key: 'middle-click-paste', value: 'false' }]);
+        expect(screen.getByTestId('middle-click-paste-row').textContent ?? '').toContain('Shift+middle-click');
+    });
+
     it('reflects the daemon’s value rather than a local echo', () => {
         const bound = actions();
         const view = render(

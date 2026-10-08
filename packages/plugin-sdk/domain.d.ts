@@ -25,6 +25,8 @@ export interface WorkspaceInfo {
     createdAt: string; lastAccessedAt: string; labels: string[];
     /** Muted: the workspace's agents raise no desktop notification, sound or dock bounce. */
     muted: boolean;
+    /** The sidebar icon in `setIcon`'s spelling (`"emoji:🔥"`); absent for the letter avatar. */
+    icon?: string;
     lastActivityAt?: string; agentSessionID?: string; groupID?: string; groupName?: string;
 }
 export interface GroupInfo { id: string; name: string; color?: WorkspaceColor; workspaces: { id: string; name: string }[] }
@@ -42,6 +44,8 @@ export interface WorkspaceCreateOptions {
     worktree?: string; branch?: string; updateMain?: boolean; repo?: string;
     /** Create the workspace already muted, so its first agent never notifies. */
     muted?: boolean;
+    /** Create the workspace with this sidebar icon, in `setIcon`'s spelling (`"emoji:🔥"`). */
+    icon?: string;
 }
 export interface WorkspaceCreated extends WorkspaceIdentity {
     group?: string; worktreePath?: string; branch?: string;
@@ -51,6 +55,8 @@ export interface WorkspaceCreated extends WorkspaceIdentity {
     updateMain?: boolean;
     /** The state the workspace was created in, so a `muted: true` request can be confirmed. */
     muted: boolean;
+    /** The icon it was created with; absent when none was asked for. */
+    icon?: string;
 }
 export interface WorkspaceMoveOptions { groupID?: string; index?: number }
 export interface WorkspacesAPI {

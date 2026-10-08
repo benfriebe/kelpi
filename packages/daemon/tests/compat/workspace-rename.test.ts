@@ -8,16 +8,21 @@
  */
 
 import fs from 'node:fs';
-import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 
-import { WS_PROTOCOL_VERSION } from '@kelpi/protocol';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { WebSocket } from 'ws';
 
-import { readToken } from '../../src/lifecycle/index.js';
-import { bundleKelpiCLI, startCompatDaemon, type CompatDaemon, type WorkspaceListEntryJSON } from './harness.js';
+import {
+    bundleKelpiCLI,
+    connectWindow,
+    deltaEvents,
+    rawRequest,
+    startCompatDaemon,
+    type CompatDaemon,
+    type Message,
+    type WorkspaceListEntryJSON
+} from './harness.js';
 
 interface RenameReply {
     readonly ok: boolean;
@@ -29,8 +34,6 @@ interface RenameReply {
 interface CreateReply {
     readonly workspace_id: string;
 }
-
-type Message = Record<string, unknown>;
 
 let bundleDir: string;
 let cli: string;
@@ -135,79 +138,3 @@ describe('compat: kelpi workspace rename (this CLI)', () => {
         }
     }, 60_000);
 });
-
-function deltaEvents(message: Message): Message[] {
-    if (message['type'] !== 'delta' || !Array.isArray(message['events'])) return [];
-    return message['events'] as Message[];
-}
-
-/** One control line over TCP, one reply line back: what the CLI does, minus the CLI. */
-function rawRequest(port: number, message: Message): Promise<Message> {
-    return new Promise<Message>((resolve, reject) => {
-        const socket = net.connect({ host: '127.0.0.1', port });
-        let pending = '';
-        const timer = setTimeout(() => {
-            socket.destroy();
-            reject(new Error('timed out waiting for a reply'));
-        }, 10_000);
-        socket.on('connect', () => socket.write(`${JSON.stringify(message)}\n`));
-        socket.setEncoding('utf8');
-        socket.on('data', (chunk: string) => {
-            pending += chunk;
-            const index = pending.indexOf('\n');
-            if (index < 0) return;
-            clearTimeout(timer);
-            socket.destroy();
-            resolve(JSON.parse(pending.slice(0, index)) as Message);
-        });
-        socket.on('error', (error) => {
-            clearTimeout(timer);
-            reject(error);
-        });
-    });
-}
-
-interface WindowSession {
-    waitFor(predicate: (message: Message) => boolean): Promise<Message>;
-    close(): void;
-}
-
-/** A WebSocket session with the owner's token, past `welcome`, the way a window attaches. */
-async function connectWindow(kelpi: CompatDaemon): Promise<WindowSession> {
-    const token = readToken(kelpi.daemon.paths) ?? '';
-    const socket = new WebSocket(`ws://127.0.0.1:${String(kelpi.info.httpPort)}/ws?token=${token}`);
-    const seen: Message[] = [];
-    const waiters: { predicate: (message: Message) => boolean; resolve: (message: Message) => void }[] = [];
-    socket.on('message', (data) => {
-        const message = JSON.parse(String(data)) as Message;
-        seen.push(message);
-        for (const waiter of [...waiters]) {
-            if (!waiter.predicate(message)) continue;
-            waiters.splice(waiters.indexOf(waiter), 1);
-            waiter.resolve(message);
-        }
-    });
-    const waitFor = (predicate: (message: Message) => boolean): Promise<Message> =>
-        new Promise<Message>((resolve, reject) => {
-            const hit = seen.find(predicate);
-            if (hit !== undefined) {
-                resolve(hit);
-                return;
-            }
-            const timer = setTimeout(() => reject(new Error('timed out waiting for a WebSocket message')), 10_000);
-            waiters.push({
-                predicate,
-                resolve: (message) => {
-                    clearTimeout(timer);
-                    resolve(message);
-                }
-            });
-        });
-    await new Promise<void>((resolve, reject) => {
-        socket.once('open', () => resolve());
-        socket.once('error', reject);
-    });
-    socket.send(JSON.stringify({ type: 'hello', protocolVersion: WS_PROTOCOL_VERSION, token }));
-    await waitFor((message) => message['type'] === 'snapshot');
-    return { waitFor, close: () => socket.close() };
-}

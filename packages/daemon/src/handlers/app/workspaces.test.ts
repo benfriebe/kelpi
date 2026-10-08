@@ -257,7 +257,7 @@ describe('workspace-create (top level)', () => {
     });
 
     it('refuses an unusable icon before creating anything', () => {
-        for (const icon of ['', 'abc', '🔥', 'emoji:a', 'emoji:🔥🔥']) {
+        for (const icon of ['', 'abc', '🔥', 'emoji:a', 'emoji:🔥🔥', `emoji:🔥${'\u0301'.repeat(1000)}`]) {
             const h = harness({ ids: [W1, G1, P1] });
             const reply = h.reply({ command: 'workspace-create', name: 'x', group: 'team', icon });
             expect(reply['ok']).toBe(false);
@@ -1727,6 +1727,16 @@ describe('workspace-icon', () => {
         expect(h.reply({ command: 'workspace-icon', name: 'w1', icon: 'emoji:🔥🔥' })).toEqual({
             ok: false,
             error: "'🔥🔥' is not a usable icon: give one emoji or symbol"
+        });
+        // One grapheme, but thousands of characters: refused, and not echoed back.
+        const chain = Array.from({ length: 2000 }, () => '🔥').join('\u200d');
+        expect(h.reply({ command: 'workspace-icon', name: 'w1', icon: `emoji:${chain}` })).toEqual({
+            ok: false,
+            error: 'the icon is too long: give one emoji or symbol'
+        });
+        expect(h.reply({ command: 'workspace-icon', name: 'w1', icon: `system:${'a'.repeat(129)}` })).toEqual({
+            ok: false,
+            error: 'the symbol name is too long: at most 128 characters'
         });
         expect(h.state()).toBe(before);
         expect(h.persists).toEqual([]);

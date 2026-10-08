@@ -1172,9 +1172,10 @@ with exit 1.
 in the flat spelling the DB stores, `"emoji:<grapheme>"` (or `"system:<symbol>"`), and absent
 or `null` clears it back to the workspace's first letter. The CLI's spelling of the sidebar's
 Change Icon / Reset to Letter, validated the way the GUI's WS-only `set-workspace-icon` is
-(`iconRefusal` in `@kelpi/core/codec`): an `emoji:` payload must be exactly one grapheme that
-passes the emoji heuristic, so a ZWJ sequence (`👩‍🍳`), a flag or a skin tone is one icon and
-`emoji:a` or `emoji:🔥🔥` is refused; a `system:` name is an opaque token. The icon reaches every
+(`iconRefusal` in `@kelpi/core/codec`): an `emoji:` payload must be exactly one grapheme of at
+most 16 code points that passes the emoji heuristic, so a ZWJ sequence (`👩‍🍳`), a flag or a skin
+tone is one icon and `emoji:a` or `emoji:🔥🔥` is refused; a `system:` name is an opaque token of
+at most 128 characters. The icon reaches every
 attached client through the ordinary store delta. Setting the icon the workspace already has
 succeeds without writing anything; the reply's `old_icon` (the icon before) then equals `icon`.
 
@@ -1189,8 +1190,10 @@ Refusals: `workspace not found: <name>` and `workspace name is ambiguous: <name>
 id)` (as for `workspace-rename`), `'<x>' is not an icon: give emoji:<emoji> or
 system:<symbol>` for a string that is not in the flat spelling (the empty string included:
 unlike the WS-only verb, which reads anything unparseable as "clear", a script that sent a
-string meant to set something), and `'<grapheme>' is not a usable icon: give one emoji or
-symbol` for an `emoji:` payload the heuristic refuses.
+string meant to set something), `'<grapheme>' is not a usable icon: give one emoji or
+symbol` for an `emoji:` payload the heuristic refuses, `the icon is too long: give one emoji or
+symbol` for one grapheme of more than 16 code points (not echoed back), and `the symbol name is
+too long: at most 128 characters`.
 
 Group icons have no such verb: they stay a sidebar gesture (socket-handlers.md §7.2). Against a
 daemon that predates the verb, the CLI reports "no response from Kelpi (upgrade required?)" with

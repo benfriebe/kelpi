@@ -538,7 +538,8 @@ function handleCreateWithRepo(
                 workspace_id: uuidOut(workspaceID),
                 workspace_name: created?.name ?? workspaceName,
                 muted: created?.muted ?? msg.muted === true,
-                ...iconEcho(created?.icon ?? icon),
+                // What the store holds, never the request, so `--icon` is confirmed only when applied.
+                ...iconEcho(created?.icon ?? null),
                 repo_path: resolution.repo.path,
                 ...(trimmedGroup !== '' ? { group: trimmedGroup } : {})
             });

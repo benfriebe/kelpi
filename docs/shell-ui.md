@@ -1379,7 +1379,8 @@ an icon; Cancel / **Set Icon** (disabled unless the grapheme passes the emoji-is
 validation, `normalizeIconEmoji`, `packages/client/src/chrome/icons.tsx:374`). Validation accepts: emoji-presentation base scalars; explicit
 U+FE0F on an emoji-capable base (❤️, keycaps); bare non-ASCII `Emoji=Yes` scalars (✂, ©);
 non-ASCII symbol-category glyphs (⛙ ♞ → ⌘). It rejects letters, digits, punctuation,
-whitespace, ASCII, and lone modifiers.
+whitespace, ASCII, lone modifiers, and a cluster of more than 16 code points (the longest real
+emoji has 10; a ZWJ chain or a pile of combining marks is still one cluster).
 
 ### 10.6 Create Worktree (320 wide, inspector flow)
 
@@ -1924,8 +1925,10 @@ Group/workspace icon management has daemon verbs (`set-workspace-icon` /
 `set-group-icon`, `packages/daemon/src/ws/sync.ts:329-367`; the daemon re-runs
 `normalizeIconEmoji` on the wire), and label presets and chrome theme settings live in the
 daemon settings store (`packages/protocol/src/ws/settings.ts`), so every attached client
-agrees. Per CLAUDE.md, icon management stays off the CLI wire protocol; the client reaches it
-through the WebSocket verbs only.
+agrees. The client reaches icons through those id-addressed WebSocket verbs only. The CLI has
+its own name-or-id control verb for a workspace's icon, `workspace-icon`, plus
+`workspace-create`'s `icon` (wire-protocol.md, cli.md §10.9); both run the same check
+(`iconRefusal`). Group icons have no control verb and stay a sidebar gesture.
 
 **Live-apply drag model.** Sidebar drags mutate the order state *during* the drag
 (live-apply), which as real dispatches would be dozens of

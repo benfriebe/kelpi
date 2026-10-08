@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { firstGrapheme, isGraphemeEmoji, normalizeIconEmoji } from './emoji.js';
+import { firstGrapheme, isGraphemeEmoji, MAX_ICON_EMOJI_SCALARS, normalizeIconEmoji } from './emoji.js';
 
 /**
  * The accept / reject table is `Character.isGraphemeEmoji`'s own doc comment
@@ -74,5 +74,19 @@ describe('normalizeIconEmoji', () => {
         expect(normalizeIconEmoji('hello')).toBeNull();
         expect(normalizeIconEmoji('7')).toBeNull();
         expect(normalizeIconEmoji('   ')).toBeNull();
+    });
+
+    it('refuses one cluster longer than any emoji, however it segments', () => {
+        // The longest RGI emoji (a kiss with two skin tones) is 10 scalars and still passes.
+        expect(normalizeIconEmoji('👩🏻‍❤️‍💋‍👨🏼')).toBe('👩🏻‍❤️‍💋‍👨🏼');
+        // A ZWJ chain and a pile of combining marks are each ONE grapheme, so only the cap stops them.
+        const chain = Array.from({ length: 2000 }, () => '🔥').join('\u200d');
+        expect(firstGrapheme(chain)).toBe(chain);
+        expect(normalizeIconEmoji(chain)).toBeNull();
+        expect(normalizeIconEmoji(`🔥${'\u0301'.repeat(1000)}`)).toBeNull();
+        // The cap is on scalars: 16 pass, 17 do not.
+        const marks = (count: number): string => `🔥${'\u0301'.repeat(count - 1)}`;
+        expect(normalizeIconEmoji(marks(MAX_ICON_EMOJI_SCALARS))).toBe(marks(MAX_ICON_EMOJI_SCALARS));
+        expect(normalizeIconEmoji(marks(MAX_ICON_EMOJI_SCALARS + 1))).toBeNull();
     });
 });

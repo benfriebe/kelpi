@@ -235,7 +235,7 @@ export function createKelpiAPI(transport, getContext = () => ({})) {
             create: (options = {}) => run('workspace-create', clean({
                 name: options.name, path: options.path, color: options.color, group: options.groupID,
                 profile: options.profile, worktree: options.worktree, branch: options.branch,
-                update_main: options.updateMain, repo: options.repo, muted: options.muted,
+                update_main: options.updateMain, repo: options.repo, muted: options.muted, icon: options.icon,
             })),
             rename: (workspaceID, name) => run('rename-workspace', { workspace_id: workspaceID, name }),
             remove: (workspaceID, options = {}) => run('workspace-delete', { name: workspaceID, force: options.force ?? false }),

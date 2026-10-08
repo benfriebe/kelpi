@@ -36,6 +36,14 @@ const EMOJI = /\p{Emoji}/u;
 /** General categories So / Sm / Sc. Sk is excluded on purpose (see the header). */
 const SYMBOL = /[\p{So}\p{Sm}\p{Sc}]/u;
 
+/**
+ * The most scalars one icon may carry. The longest RGI emoji, a kiss with two skin tones
+ * (`👩🏻‍❤️‍💋‍👨🏼`), has 10. A grapheme cluster itself has no limit: emoji chained with U+200D, or one
+ * emoji under a pile of combining marks, still segment as ONE cluster, so without this cap a
+ * single "icon" could be thousands of characters long.
+ */
+export const MAX_ICON_EMOJI_SCALARS = 16;
+
 /** U+FE0F, the emoji variation selector the palette appends to text-presentation bases. */
 const VARIATION_SELECTOR_16 = '️';
 
@@ -81,11 +89,12 @@ export function firstGrapheme(value: string): string | null {
 
 /**
  * Trim, take the FIRST grapheme cluster (`GroupCustomEmojiSheet`'s truncation, §WS-072), and
- * return it only when it passes the heuristic. `null` means "not an icon" — the field stays
- * invalid client-side and the verb is refused daemon-side.
+ * return it only when it passes the heuristic and is at most `MAX_ICON_EMOJI_SCALARS` long.
+ * `null` means "not an icon": the field stays invalid client-side and the verb is refused
+ * daemon-side.
  */
 export function normalizeIconEmoji(value: string): string | null {
     const first = firstGrapheme(value.trim());
-    if (first === null) return null;
+    if (first === null || [...first].length > MAX_ICON_EMOJI_SCALARS) return null;
     return isGraphemeEmoji(first) ? first : null;
 }

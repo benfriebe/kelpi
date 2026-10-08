@@ -1244,8 +1244,11 @@ icon is still not (§7.2).
 2. Absent `icon` ⇒ clear. Otherwise `parseIconString`; a string that does not parse ⇒
    `error("'{icon}' is not an icon: give emoji:<emoji> or system:<symbol>")` (unlike the WS-only
    verb, which reads it as "clear"). Then `iconRefusal`, the WS-only verb's own check: an `emoji:`
-   payload must be exactly one grapheme passing the §WS-073 heuristic, else
-   `error("'{grapheme}' is not a usable icon: give one emoji or symbol")`.
+   payload must be exactly one grapheme of at most 16 code points passing the §WS-073
+   heuristic, else `error("'{grapheme}' is not a usable icon: give one emoji or symbol")`, or
+   `error("the icon is too long: give one emoji or symbol")` past 16 code points (not echoed);
+   a `system:` name over 128 characters ⇒
+   `error("the symbol name is too long: at most 128 characters")`.
 3. If the icon differs from the current one, dispatch `set-workspace-icon(id, icon)` and
    persist. The same icon is a successful no-op that writes nothing.
 4. Reply, `icon` being the icon it has now, `null` for the letter avatar, and `old_icon` the

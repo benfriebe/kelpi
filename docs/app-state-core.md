@@ -216,7 +216,7 @@ Storage encoding (a TEXT column / string field): `"system:<name>"` or `"emoji:<g
 Parsing an unknown prefix or an empty payload yields `null` (degrade to the fallback glyph).
 
 Symbol names are opaque tokens end to end: the daemon stores and forwards the `system:*` string
-untouched, and the client maps the curated set it offers in "Change Icon > Symbol" to glyphs
+untouched (an icon verb refuses only a name over 128 characters), and the client maps the curated set it offers in "Change Icon > Symbol" to glyphs
 (`ICON_TOKEN_GLYPHS` in `packages/client/src/chrome/icons.tsx`), falling back to a generic glyph
 for a name it does not know. A `system:*` value written by the legacy macOS app therefore
 round-trips losslessly through a client that never draws it.
@@ -1730,7 +1730,8 @@ departs from the legacy macOS app:
 
 11. **Emoji validation is server-checked.** The one-grapheme emoji rule (1.6) is enforced in the
     daemon's `set-workspace-icon` / `set-group-icon` verbs, not just the input UI
-    (`packages/core/src/codec/emoji.ts`). JS `Intl.Segmenter` gives grapheme clusters; Unicode
+    (`packages/core/src/codec/emoji.ts`), and caps that grapheme at 16 code points, since one
+    cluster (a ZWJ chain, a pile of combining marks) has no length limit of its own. JS `Intl.Segmenter` gives grapheme clusters; Unicode
     property escapes (`\p{Emoji_Presentation}`, `\p{Emoji}`, `\p{So}\p{Sm}\p{Sc}`) cover the
     four acceptance rules.
 

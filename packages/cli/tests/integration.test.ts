@@ -1873,6 +1873,11 @@ describe('workspace icon', () => {
             expect(result.code).toBe(1);
             expect(result.stderr).toBe('kelpi workspace icon: the icon cannot be empty\n');
         }
+        // One grapheme, but far longer than any emoji: refused without echoing it.
+        const chain = Array.from({ length: 200 }, () => '🔥').join('\u200d');
+        const long = await runCLI(['workspace', 'icon', 'chef', chain], { port: server.port });
+        expect(long.code).toBe(1);
+        expect(long.stderr).toBe('kelpi workspace icon: the icon is too long: give one emoji or symbol\n');
         expect(server.requests).toHaveLength(0);
     });
 
@@ -1904,6 +1909,19 @@ describe('workspace icon', () => {
         const both = await runCLI(['workspace', 'icon', 'chef', '🔥', '--clear'], { port: server.port });
         expect(both.code).toBe(1);
         expect(both.stderr).toBe("kelpi workspace icon: can't take both an emoji and --clear\n");
+
+        // Beside --clear, a word that is not an emoji is a stray argument, not "both"; so is the
+        // workspace given after an emoji that took its place.
+        for (const [argv, extra] of [
+            [['chef', '--clear', 'now'], 'now'],
+            [['🔥', 'chef', '--clear'], 'chef']
+        ] as const) {
+            const result = await runCLI(['workspace', 'icon', ...argv], { port: server.port });
+            expect(result.code).toBe(1);
+            expect(result.stderr).toContain(`kelpi workspace icon: unexpected argument '${extra}'`);
+            expect(result.stderr).toContain('--clear takes only the workspace');
+            expect(result.stderr).not.toContain("can't take both");
+        }
 
         const stray = await runCLI(['workspace', 'icon', 'chef', '🔥', '🔥'], { port: server.port });
         expect(stray.code).toBe(1);

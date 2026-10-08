@@ -141,6 +141,12 @@ describe('icon verbs', () => {
             expect(reply['ok'], bad).toBe(false);
             expect(String(reply['error'])).toContain('not a usable icon');
         }
+        // One grapheme of any length is still refused past the cap, a ZWJ chain included.
+        const chain = `emoji:${Array.from({ length: 2000 }, () => '🔥').join('\u200d')}`;
+        expect(ask(session, transport, { command: 'set-workspace-icon', workspace_id: W1, icon: chain })).toEqual({
+            ok: false,
+            error: 'the icon is too long: give one emoji or symbol'
+        });
         // Untouched by every refusal.
         expect(f.store.state().workspaces[0]?.icon).toEqual({ kind: 'emoji', grapheme: '🔥' });
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { formatIconString, iconRefusal, parseIconString } from './icon.js';
+import { formatIconString, iconRefusal, MAX_ICON_SYMBOL_LENGTH, parseIconString } from './icon.js';
 
 describe('icon strings', () => {
     it('parses both prefixes', () => {
@@ -48,7 +48,20 @@ describe('iconRefusal', () => {
         expect(iconRefusal({ kind: 'emoji', grapheme: ' 🔥' })).not.toBeNull();
     });
 
-    it('never refuses a system symbol, which is an opaque token', () => {
+    it('refuses one grapheme longer than any emoji without echoing it back', () => {
+        const chain = Array.from({ length: 2000 }, () => '🔥').join('\u200d');
+        expect(iconRefusal({ kind: 'emoji', grapheme: chain })).toBe('the icon is too long: give one emoji or symbol');
+        expect(iconRefusal({ kind: 'emoji', grapheme: `🔥${'\u0301'.repeat(1000)}` })).toBe(
+            'the icon is too long: give one emoji or symbol'
+        );
+        expect(iconRefusal({ kind: 'emoji', grapheme: '👩🏻‍❤️‍💋‍👨🏼' })).toBeNull();
+    });
+
+    it('treats a system symbol as an opaque token, refused only when over-long', () => {
         expect(iconRefusal({ kind: 'system', name: 'star.fill' })).toBeNull();
+        expect(iconRefusal({ kind: 'system', name: 'a'.repeat(MAX_ICON_SYMBOL_LENGTH) })).toBeNull();
+        expect(iconRefusal({ kind: 'system', name: 'a'.repeat(MAX_ICON_SYMBOL_LENGTH + 1) })).toBe(
+            'the symbol name is too long: at most 128 characters'
+        );
     });
 });

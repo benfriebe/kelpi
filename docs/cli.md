@@ -1199,14 +1199,16 @@ through the WebSocket-only `set-workspace-icon`.
   usage to stderr, exit 1.
 - A dash-prefixed positional => `kelpi workspace icon: unknown option <x>` + usage, exit 1. An
   emoji together with `--clear` => `kelpi workspace icon: can't take both an emoji and --clear`,
-  exit 1. A third positional => `kelpi workspace icon: unexpected argument '<x>'` with the hint
-  `an icon is one emoji`, exit 1.
-- The icon is the bare emoji, trimmed, and must be exactly one grapheme that passes the same
-  emoji heuristic as the sidebar's emoji sheet (`normalizeIconEmoji`): a ZWJ sequence (`👩‍🍳`),
-  a flag or a skin tone is one icon; letters, two emoji and text are not. Empty =>
-  `kelpi workspace icon: the icon cannot be empty`; anything else refused =>
-  `kelpi workspace icon: '<x>' is not a usable icon: give one emoji or symbol`; both exit 1,
-  before anything is sent. A literal `emoji:…` or `system:…` value =>
+  exit 1; any other word beside `--clear` => `kelpi workspace icon: unexpected argument '<x>'`
+  with the hint `--clear takes only the workspace`, exit 1. A third positional =>
+  `kelpi workspace icon: unexpected argument '<x>'` with the hint `an icon is one emoji`, exit 1.
+- The icon is the bare emoji, trimmed, and must pass the daemon's own check (`iconRefusal`):
+  exactly one grapheme of at most 16 code points that passes the sidebar emoji sheet's
+  heuristic. A ZWJ sequence (`👩‍🍳`), a flag or a skin tone is one icon; letters, two emoji and
+  text are not. Empty => `kelpi workspace icon: the icon cannot be empty`; one grapheme past 16
+  code points => `kelpi workspace icon: the icon is too long: give one emoji or symbol`;
+  anything else refused => `kelpi workspace icon: '<x>' is not a usable icon: give one emoji or
+  symbol`; all exit 1, before anything is sent. A literal `emoji:…` or `system:…` value =>
   `kelpi workspace icon: give the bare emoji, without the <prefix>: prefix`, exit 1: the CLI
   adds the `emoji:` prefix itself and sets no SF Symbol.
 - Payload: `{"command":"workspace-icon","name":<name-or-id>,"icon":"emoji:<emoji>"}`, with no

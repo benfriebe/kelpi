@@ -96,6 +96,11 @@ events, marked `muted: true`, so a conductor plugin can watch its muted children
 honour `muted` and never echo it through `ui.showNotification` or `ui.notify`: that would undo the
 owner's mute.
 
+A workspace's sidebar icon uses the flat spelling `"emoji:🔥"`:
+`api.workspaces.setIcon(workspaceID, icon)` sets it (`null` goes back to the letter),
+`api.workspaces.create({ icon: 'emoji:🧪' })` creates a workspace with one, and `icon` is on every
+`api.workspaces.list()` entry that has one.
+
 `api.settings` belongs to the current plugin. `api.appSettings` reads/writes the daemon's
 application settings, including appearance, profiles and native keybindings. The general
 settings writer accepts only documented writable keys. Filesystem reveal acknowledges a

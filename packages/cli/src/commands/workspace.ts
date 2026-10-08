@@ -18,7 +18,7 @@
 
 import path from 'node:path';
 
-import { normalizeIconEmoji } from '@kelpi/core/codec';
+import { iconRefusal } from '@kelpi/core/codec';
 
 import {
     absoluteUserPath,
@@ -618,10 +618,10 @@ async function handleWorkspaceRename(args: string[]): Promise<void> {
 }
 
 /**
- * The wire spelling of an icon typed on the command line: `emoji:<grapheme>`, after the check the
- * daemon (and the GUI's emoji sheet) makes, so a typo exits 1 here with the argument named. The
- * CLI takes the bare emoji only; a literal `emoji:🔥` or `system:star` is refused like any other
- * text, since nothing a script needs is missing without them.
+ * The wire spelling of an icon typed on the command line: `emoji:<grapheme>`, after the daemon's
+ * own check (`iconRefusal`), so a typo exits 1 here with the argument named and the same words the
+ * daemon would use. The CLI takes the bare emoji only; a literal `emoji:🔥` or `system:star` is
+ * refused like any other text, since nothing a script needs is missing without them.
  */
 function wireIcon(value: string, command: string): string {
     const trimmed = value.trim();
@@ -633,10 +633,9 @@ function wireIcon(value: string, command: string): string {
         errLine(`${command}: give the bare emoji, without the ${trimmed.slice(0, trimmed.indexOf(':') + 1)} prefix`);
         exit(1);
     }
-    // `normalizeIconEmoji` keeps the FIRST grapheme, so two emoji come back as one: equality is
-    // what refuses them, as it is daemon-side.
-    if (normalizeIconEmoji(trimmed) !== trimmed) {
-        errLine(`${command}: '${trimmed}' is not a usable icon: give one emoji or symbol`);
+    const refusal = iconRefusal({ kind: 'emoji', grapheme: trimmed });
+    if (refusal !== null) {
+        errLine(`${command}: ${refusal}`);
         exit(1);
     }
     return `emoji:${trimmed}`;
@@ -667,13 +666,16 @@ async function handleWorkspaceIcon(args: string[]): Promise<void> {
         writeErr(workspaceIconUsage);
         exit(1);
     }
-    if (clear && args.length > 0 && !(args[0] ?? '').startsWith('-')) {
+    // Only an emoji makes it "both"; any other word beside --clear is a stray argument, and is
+    // reported as one below.
+    const extra = args[0];
+    if (clear && extra !== undefined && iconRefusal({ kind: 'emoji', grapheme: extra.trim() }) === null) {
         errLine("kelpi workspace icon: can't take both an emoji and --clear");
         exit(1);
     }
     rejectLeftoverArgs(args, 'kelpi workspace icon', {
         usage: (write) => write(workspaceIconUsage),
-        positionalHint: 'an icon is one emoji'
+        positionalHint: clear ? '--clear takes only the workspace' : 'an icon is one emoji'
     });
     const icon = emoji === undefined ? null : wireIcon(emoji, 'kelpi workspace icon');
 

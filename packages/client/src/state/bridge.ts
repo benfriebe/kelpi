@@ -300,8 +300,11 @@ export function createKelpiRuntime(options: KelpiRuntimeOptions = {}): KelpiRunt
     const commands = new CommandClient(connection);
     const pty = new PtyClient(connection);
 
+    // Inside the Electron shell, the shell posts the native notification (`shell/status.ts`)
+    // for the same broadcast; a Web Notification here would be a second copy of it.
+    const inShell = (options.shellWindowID === undefined ? readShellWindowID() : options.shellWindowID) !== null;
     const notifications =
-        options.notifications === null
+        options.notifications === null || (options.notifications === undefined && inShell)
             ? null
             : (options.notifications ??
               createNotificationManager({

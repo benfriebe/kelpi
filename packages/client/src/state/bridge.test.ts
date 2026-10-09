@@ -352,6 +352,20 @@ describe('kelpi runtime', () => {
         ]);
     });
 
+    it('leaves notifications to the Electron shell inside its window, so each one posts once', () => {
+        const runtime = (shellWindowID: string | null) =>
+            createKelpiRuntime({
+                url: 'ws://daemon.test/ws',
+                token: 't',
+                socketFactory: createFakeSocketFactory().factory,
+                store: createKelpiStore(),
+                shellWindowID
+            });
+
+        expect(runtime('window-1').notifications).toBeNull();
+        expect(runtime(null).notifications).not.toBeNull();
+    });
+
     /**
      * agent-lifecycle.md §7.5 removal: the daemon never retracts a notification, so THIS
      * client's focus report is what withdraws it, unconditionally and before any dwell. The

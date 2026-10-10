@@ -29,7 +29,7 @@
     "@xterm/headless": "^6.0.0",
     "hono": "^4.13.3",
     "markdown-it": "^15.0.0",
-    "node-pty": "^1.1.0",
+    "node-pty": "1.2.0-beta.15",
     "ws": "^8.21.3",
     "yaml": "^2.9.0"
   },

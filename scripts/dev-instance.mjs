@@ -28,7 +28,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { nonExecutableSpawnHelpers, spawnHelperRemedy } from './node-pty-exec-bit.mjs';
 import { killSandboxHosts } from './ui-audit/lib/stack.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -108,14 +107,6 @@ const clientDistDir = path.join(repoRoot, 'packages', 'client', 'dist');
 
 // ── build ───────────────────────────────────────────────────────────────────────────
 
-// Cheapest failure first: one stat, before a minute of builds and before a window opens.
-try {
-    assertPtyCanSpawn();
-} catch (error) {
-    console.error(`[dev-instance] ${error instanceof Error ? error.message : String(error)}`);
-    process.exit(1);
-}
-
 if (!noBuild) {
     console.log('[dev-instance] building the tree (skip with --no-build)…');
     await buildAll(repoRoot, { log: (line) => console.log(`[dev-instance] ${line}`) });
@@ -171,20 +162,6 @@ async function assertServingTheClient(base, distDir) {
             ].join('\n')
         );
     }
-}
-
-/**
- * Assert PTYs can actually spawn, before the window opens (#36).
- *
- * A dev instance with a non-executable `spawn-helper` comes up looking perfectly healthy and then
- * kills every terminal pane the instant it is created: `kelpi pane create` reports success, the
- * pane shows up in `pane list` once, and it is gone on the next poll, with nothing logged. The
- * root postinstall repairs the bit on any normal `pnpm install`, so this only fires after an
- * install run with --ignore-scripts. It is one stat call and it turns that silence into a line.
- */
-function assertPtyCanSpawn() {
-    const broken = nonExecutableSpawnHelpers(repoRoot);
-    if (broken.length > 0) throw new Error(spawnHelperRemedy(broken));
 }
 
 // ── boot ────────────────────────────────────────────────────────────────────────────

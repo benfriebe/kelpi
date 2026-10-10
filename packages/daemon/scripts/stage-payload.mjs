@@ -20,7 +20,7 @@
  *           ├─ lib/                                 the JS half
  *           └─ prebuilds/<platform>-<arch>/         pty.node + spawn-helper (the native half)
  *
- * ## Why exactly that layout (the resolution chain, verified against node-pty 1.1.0)
+ * ## Why exactly that layout (the resolution chain, verified against node-pty 1.2.0-beta.15)
  *
  * 1. `dist/kelpid.js` is an ES module whose banner builds `require` from
  *    `createRequire(import.meta.url)`; `src/pty/spawner.ts` calls `require('node-pty')` lazily
@@ -35,9 +35,9 @@
  *    `path.resolve(__dirname, native.dir + '/spawn-helper')` →
  *    `<pkg>/prebuilds/darwin-arm64/spawn-helper`, which must stay **executable**.
  *
- * Only the target platform+arch prebuild is staged: the published package carries four
- * (darwin-arm64, darwin-x64, win32-arm64, win32-x64) plus C++ sources and vendored deps, ~62 MB
- * in total, of which ~130 KB is actually loaded at runtime.
+ * Only the target platform+arch prebuild is staged: the published package carries six (darwin,
+ * linux and win32, each arm64 and x64) plus C++ sources and Windows' conpty, ~26 MB in total, of
+ * which ~140 KB is actually loaded at runtime.
  *
  * ## Why a package.json rides along
  *

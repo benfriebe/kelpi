@@ -82,9 +82,8 @@ export function prepareHostRuntime(options: PrepareHostRuntimeOptions): HostRunt
 }
 
 /**
- * node-pty ships `spawn-helper` without its execute bit on some installs
- * (`scripts/node-pty-exec-bit.mjs`); a copy must have it or every spawn fails with
- * `posix_spawnp failed`.
+ * A copy must keep `spawn-helper` executable or every spawn fails. node-pty 1.1.0 published it
+ * without the bit (#36), so the copy sets it rather than trusting whatever it was copied from.
  */
 function restoreExecBits(dir: string): void {
     const visit = (current: string): void => {

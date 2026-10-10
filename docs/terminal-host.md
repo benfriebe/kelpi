@@ -257,6 +257,11 @@ version; running old and new hosts side by side, with old terminals routed to th
 the upgrade path if that ever becomes worth it. The blob carries its own version; a daemon that
 cannot read a blob treats the terminal as `gap: true`.
 
+Nothing else retires a host short of a full stop (§10) or its own exit once it is idle (§9). An
+update or a restart that keeps `H` hands every terminal to the host that is already running, and
+that host keeps the code it started with, node-pty included. A fix in the host or in node-pty (#370)
+therefore reaches a machine only after one `kelpi daemon stop` (or `kelpid stop`) and a fresh start.
+
 ## 12. Tests
 
 - `host/protocol.test.ts`, `retention.test.ts`, `runtime.test.ts`: framing, offsets, pins and
@@ -264,6 +269,8 @@ cannot read a blob treats the terminal as `gap: true`.
 - `host/host.test.ts`: real PTYs across a handoff (the gap delivered exactly once), a vanished
   daemon's tail replayed with a gap, shutdown, fallback shells, auth, supersede and waiting
   successors, host loss, idle and socket-removed exits, forgetting.
+- `host/pty-release.test.ts`: an ended terminal gives back its `/dev/ptmx` and kqueue, whether its
+  pane closed or its shell exited (#370; node-pty 1.1.0 kept one of each per terminal).
 - `term/handoff.test.ts`: checkpoint round trips (alternate screen, scroll region, hidden cursor,
   modes), stepping back over CSI, OSC and UTF-8, replay suppression.
 - `boot/terminal-host.test.ts`: a daemon with a real host (shells are the host's children; a full

@@ -51,7 +51,8 @@ Kelpi.app ──spawns──▶ kelpid ──spawns, detached──▶ terminal 
   attaching first could take the host from a live daemon. It adopts a host that already answers.
 - Run-dir files: `host-v<H>.sock`, `.token` (0600) and `.pid` (a JSON record with the pid, start
   time, protocol, version and the runtime directory). The names are short on purpose: sandbox run
-  dirs sit near macOS's 104-byte socket-path limit. `H` is the host protocol version (1).
+  dirs sit near macOS's 104-byte socket-path limit. `H` is the host generation (2; §11), so an
+  older host that is still draining keeps its own files beside the current one's.
 - The host is launched from `/` (it outlives worktrees) with a minimal environment: every spawn
   carries its own fully resolved env. It logs to `<run dir>/terminal-host.log`.
 - The host is `dist/terminal-host.js`, bundled beside `kelpid.js` with the same node-pty. A
@@ -210,12 +211,15 @@ surviving pane takes those 5 s before it gives up.
   runs any new terminal in-process; it never reconnects (two daemons would otherwise ping-pong).
 - **Spawn failure.** The host tries the fallback shell; if that fails the handle exits with -1, as
   the manager always reported a failed spawn. The first failure is reported through `onError`.
-- **Other host versions.** A daemon ends any live host of another protocol (SIGTERM, which makes it
-  hang up its terminals) before restoring panes, and an in-process daemon ends any host at all, so
-  no pane ever runs two shells. A host is only ever signalled after its socket answers: a pid
-  record left by a host that died hard may name an unrelated process by now.
-- **`kelpid stop` that has to SIGKILL** the daemon also ends its host, since a stop means every
-  shell ends and a SIGKILL'd daemon cannot say so itself.
+- **Other host versions.** A host of an older generation the daemon can still speak to is drained
+  (§11). Any other live host of another generation is ended (SIGTERM, which makes it hang up its
+  terminals) before restoring panes, and an in-process daemon ends any host at all, so no pane
+  ever runs two shells. A host is only ever signalled after its socket answers: a pid record left
+  by a host that died hard may name an unrelated process by now.
+- **A draining host dies.** Its panes are respawned on the current host and resumed, as when the
+  current host dies, without a relaunch.
+- **`kelpid stop` that has to SIGKILL** the daemon also ends its hosts, a draining one included,
+  since a stop means every shell ends and a SIGKILL'd daemon cannot say so itself.
 
 **Not carried across a restart** (as before the host): parked shell panes and markdown panes in
 external-editor mode are not persisted, so the successor finds no pane for their terminals and
@@ -248,19 +252,73 @@ ends them. OSC 8 hyperlinks in content from before the handoff are not in the sn
   (and waits up to 30 s), SIGTERM to older ones, then relaunches the app, whose daemon adopts.
   The first promote INTO a host build restarts the old way; every one after keeps terminals.
 - **The app updater (#272)** will use SIGUSR2 the same way.
+- **`kelpid restart-old-terminals`** (or `kelpi daemon restart-old-terminals`, the app's notice,
+  the `restart-old-terminals` verb): restarts the terminals on a draining host on the current one
+  and lets the old host exit (§11). The daemon and every other terminal keep running.
 
 ## 11. Versioning
 
-`H` names the socket, so a daemon only attaches to a host of its own protocol and ends others
-(§8). Changing `H` therefore ends the shells of the old host once, on the first boot of the new
-version; running old and new hosts side by side, with old terminals routed to the old host, is
-the upgrade path if that ever becomes worth it. The blob carries its own version; a daemon that
-cannot read a blob treats the terminal as `gap: true`.
+`H` is the host generation. It names the socket, and it is bumped whenever a running host has to
+be replaced: a wire change, a fix in the host's own code, or a new node-pty. A host keeps the code
+it started with, node-pty included, for as long as it runs, and since the app never stops the
+daemon (an update hands off, §6), that is usually until the Mac restarts. Before #372 a daemon
+adopted any host of its own `H`, so a fix in the host or in node-pty (#370's pty leak) reached a
+machine only after a full stop.
 
-Nothing else retires a host short of a full stop (§10) or its own exit once it is idle (§9). An
-update or a restart that keeps `H` hands every terminal to the host that is already running, and
-that host keeps the code it started with, node-pty included. A fix in the host or in node-pty (#370)
-therefore reaches a machine only after one `kelpi daemon stop` (or `kelpid stop`) and a fresh start.
+**Bumping it.** `HOST_NODE_PTY_VERSION` sits beside `HOST_PROTOCOL_VERSION`, and
+`host/host-generation.test.ts` fails when the daemon's node-pty moves without it. A bump adds the
+old generation to `DRAINABLE_HOST_PROTOCOLS` with the reason it is retired, as the app and
+`kelpid status` say it ("can leak one of the pseudo-terminals every app on the Mac shares…"),
+unless the wire format changed too: a generation the daemon cannot speak to is ended, and its
+shells with it, as before.
+
+**Draining.** In `start()`, after the current host is connected and adopted, the daemon attaches to
+every live host of a drainable generation, saying hello as that generation (its own token, the
+same wait for a handoff in progress), and adopts that host's terminals the same way (§7). A pane
+with a terminal on both keeps the current host's. A pane whose terminal exited while no daemon ran
+is closed only once neither host has it running. From then on:
+
+- every new terminal starts on the current host; nothing is spawned on a draining one;
+- a handoff holds, checkpoints and detaches every host, and the successor drains the old one again;
+  a full stop ends them all;
+- when a draining host's last terminal ends (or it had none left at boot) the daemon shuts it
+  down. It exits, and everything it leaked goes with it.
+
+**Restarting old terminals.** The other way out, for when the old host should go now
+(`restart-old-terminals`). For every pane on a draining host, in this order:
+
+1. read where its shell really is (`lsof`, all panes at once), since the stored directory only
+   follows a shell that sends OSC 7 and shells older than #361 never did, and store it on the
+   pane;
+2. capture its resume tuple, and mute its agent hook events until the resume is typed, so the
+   dying agent's `session-end` cannot clear the session id;
+3. `pty.forget` it (the hang-up must not close the pane) and reset its live agent status, keeping
+   the session id, so a crash before the resume still resumes on the next boot;
+4. shut the old host down and wait until the process has exited, SIGKILL after 3 s: on a machine
+   that has run out of ptys the new shells only get one once the old host is gone;
+5. spawn a fresh shell for exactly those panes, parked ones included, in the directory from step
+   1, then type the resumes (`claude --resume <id>`, `codex resume <id>`), as a boot restore does.
+
+One restart runs at a time (a second request joins it). A handoff waits for it to finish, however
+long: cut short, the successor would adopt the fresh shells and never type their resumes. A stop
+waits for it too, so the old host it took out of the draining list is ended; the panes and their
+session ids are saved, and the next daemon gives them fresh shells and resumes. It is refused
+while new terminals run in-process (no current host could start), since moving the old shells
+there would trade shells that survive an update for ones that do not, and refused to a paired
+device, since it ends shells in every workspace. Anything other than the shell and its agent (a
+dev server, an ssh session) stops, and an agent mid-turn is interrupted; the app's notice says so
+before anyone clicks.
+
+**Telling the user.** The daemon broadcasts `old-terminal-hosts` (`{pid, protocol, version,
+reason, startedAt, paneIDs, agents, busyAgents}` per host) whenever the list or a count changes,
+and replays it after each snapshot, empty included. The app shows a card in the toast corner with
+**Restart terminals** and **Later**; Later hides it for that host in that window and the drain
+carries on, and the palette's **Restart Old Terminals…** brings it back. A host is remembered by
+pid and start time, so a pid reused by a later host does not hide its card. `ping` carries the same
+under `terminal_hosts`, so `kelpid status` lists both hosts.
+
+The blob carries its own version; a daemon that cannot read a blob treats the terminal as
+`gap: true`.
 
 ## 12. Tests
 
@@ -271,12 +329,22 @@ therefore reaches a machine only after one `kelpi daemon stop` (or `kelpid stop`
   successors, host loss, idle and socket-removed exits, forgetting.
 - `host/pty-release.test.ts`: an ended terminal gives back its `/dev/ptmx` and kqueue, whether its
   pane closed or its shell exited (#370; node-pty 1.1.0 kept one of each per terminal).
+- `host/host-generation.test.ts`: node-pty cannot move without the generation (#372).
 - `term/handoff.test.ts`: checkpoint round trips (alternate screen, scroll region, hidden cursor,
   modes), stepping back over CSI, OSC and UTF-8, replay suppression.
 - `boot/terminal-host.test.ts`: a daemon with a real host (shells are the host's children; a full
   stop ends both; no host falls back to in-process; a SIGKILLed host's pane respawns without
   closing), and end to end, a shell handed to a second daemon keeps its pid, screen, gap output
-  once and agent state, gets no typed resume, and a full-screen program's modes survive.
+  once and agent state, gets no typed resume, and a full-screen program's modes survive. With an
+  older host (a bundle built as generation 1, `buildHostBundle({ protocol })`): its shells are
+  drained across two handoffs while new ones start on the current host, and it exits when they
+  end; a restart brings a pane back on the current host in its live directory with its agent
+  resumed (a stub `claude` on the pane's PATH shows the resume ran once, and where); a handoff
+  arriving mid-restart waits for it, and two restarts are one; with no current host the old
+  shells stay put; an older host with nothing left is retired at boot; one that dies has its
+  panes respawned; a generation the daemon cannot speak to is still ended.
+- `main-restart-old.test.ts`: `kelpid restart-old-terminals` asks first and says what restarts,
+  and `kelpid status` lists both hosts.
 - `scripts/scenarios/terminal-survives-daemon-restart.mjs`: the same through a real window and CLI
   (it declares `export const terminalHost = true`; every other sandbox keeps the host off, since a
   harness restart there is a real crash by contract).

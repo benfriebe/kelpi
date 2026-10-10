@@ -75,7 +75,7 @@ import { renderRegisteredView } from './plugins/renderers';
 
 import { canonicalTriggerForPlatform, parseKeyTrigger, type KelpiAction } from '@kelpi/core/config';
 import { isUsingExternalEditor, wireEdgeForDropZone, type DropZone, type SplitDirection } from '@kelpi/core/layout';
-import { CHOOSE_FOLDER_DIALOG_ACTION, RESOLVE_DROPPED_FILES_ACTION, UPDATE_ACTION_SHELL_ACTION, type JsonObject } from '@kelpi/protocol';
+import { CHOOSE_FOLDER_DIALOG_ACTION, RESOLVE_DROPPED_FILES_ACTION, UPDATE_ACTION_SHELL_ACTION, type JsonObject, type WsOldTerminalHost } from '@kelpi/protocol';
 import {
     workspaceAgentSummary,
     layoutPaneOrder,
@@ -184,6 +184,7 @@ import { createFrameTick, type FrameTick } from './app/frame-tick';
 import { createFolderChooser } from './app/folder-chooser';
 import { createUpdateSheetController, type UpdateSheetState } from './app/update-sheet';
 import { UpdateSheet } from './chrome/UpdateSheet';
+import { OldTerminalHostNotice, oldHostKey, readLaterOldHosts, writeLaterOldHosts } from './chrome/OldTerminalHostNotice';
 import { createPaneTextSizeStep, createTextSizeStep } from './app/text-size';
 import { installActivationClick } from './app/activation-click';
 import { focusPaneSurface, handCaretToPaneWhenReady, mayClaimPaneCaret, releaseFocusedPaneCaret } from './app/pane-focus';
@@ -500,6 +501,14 @@ function Shell(props: AppProps): ReactElement {
     const [findRequest, setFindRequest] = useState<{ paneID: string; seq: number } | null>(null);
     /** #326: the "where to open this link" menu a plain click on a terminal link raised. */
     const [linkMenu, setLinkMenu] = useState<LinkMenuRequest | null>(null);
+    /** #372: old terminal hosts this viewer said "Later" to (`oldHostKey`), and a restart in flight. */
+    const [laterOldHosts, setLaterOldHosts] = useState<readonly string[]>(readLaterOldHosts);
+    /**
+     * The hosts the card showed when Restart was clicked, held until the reply: the daemon drops
+     * them from its list as the restart begins, and the card would vanish with nothing to say
+     * for the seconds the restart takes.
+     */
+    const [restartingOldHosts, setRestartingOldHosts] = useState<readonly WsOldTerminalHost[] | null>(null);
     const workspacesLifecycle = useWorkspacesFeatureLifecycle();
     const { setScrollToWorkspaceID, createSheetOpen, sidebarEscapeRef } = workspacesLifecycle;
     /**
@@ -1072,6 +1081,46 @@ function Shell(props: AppProps): ReactElement {
     /** §TERM-116's scheduler is built once, before `notifyFailure` can be closed over. */
     const notifyFailureRef = useRef(notifyFailure);
     notifyFailureRef.current = notifyFailure;
+
+    // ── #372: terminals still on an older terminal host ──────────────────────────────
+
+    const oldTerminalHosts = daemon.oldTerminalHosts;
+    const shownOldTerminalHosts =
+        restartingOldHosts ?? oldTerminalHosts.filter((host) => !laterOldHosts.includes(oldHostKey(host)));
+    const restartOldTerminals = useCallback((): void => {
+        setRestartingOldHosts(oldTerminalHosts.filter((host) => !laterOldHosts.includes(oldHostKey(host))));
+        void commands
+            .restartOldTerminals()
+            .then(
+                (reply) => {
+                    if (!isOkReply(reply)) {
+                        notifyFailure('Restart old terminals', replyError(reply));
+                        return;
+                    }
+                    const panes = replyNumber(reply, 'panes') ?? 0;
+                    const resumed = replyNumber(reply, 'resumed') ?? 0;
+                    notifyFailure(
+                        'Terminals restarted',
+                        `${String(panes)} on the current terminal host` +
+                            (resumed > 0 ? `, ${String(resumed)} agent session${resumed === 1 ? '' : 's'} resumed` : '') +
+                            '. The old one has exited.'
+                    );
+                },
+                (error: unknown) => {
+                    notifyFailure('Restart old terminals', error instanceof Error ? error.message : String(error));
+                }
+            )
+            .finally(() => setRestartingOldHosts(null));
+    }, [commands, notifyFailure, oldTerminalHosts, laterOldHosts]);
+    const laterOldTerminals = useCallback((): void => {
+        const keys = [...new Set([...laterOldHosts, ...oldTerminalHosts.map(oldHostKey)])];
+        setLaterOldHosts(keys);
+        writeLaterOldHosts(keys);
+    }, [laterOldHosts, oldTerminalHosts]);
+    const showOldTerminalHosts = useCallback((): void => {
+        setLaterOldHosts([]);
+        writeLaterOldHosts([]);
+    }, []);
 
     /** Fire a command and surface a failure as a toast; never throw into an event handler. */
     const run = useCallback(
@@ -3701,6 +3750,8 @@ function Shell(props: AppProps): ReactElement {
         actions: act,
         shortcut: hint,
         openSettings,
+        // #372: the palette row that brings the old-terminal-host notice back after "Later".
+        showOldTerminalHosts,
         // Desktop only: the phone shell draws no root band, so there is nothing to arrange.
         arrangement: phoneActive ? null : {
             current: () => workbench.arrangement,
@@ -5273,7 +5324,20 @@ function Shell(props: AppProps): ReactElement {
                 />
             )}
 
-            <ToastStack toasts={ui.toasts} onDismiss={(id) => store.getState().dismissToast(id)} />
+            <ToastStack
+                toasts={ui.toasts}
+                onDismiss={(id) => store.getState().dismissToast(id)}
+                notice={
+                    shownOldTerminalHosts.length === 0 ? null : (
+                        <OldTerminalHostNotice
+                            hosts={shownOldTerminalHosts}
+                            restarting={restartingOldHosts !== null}
+                            onRestart={restartOldTerminals}
+                            onLater={laterOldTerminals}
+                        />
+                    )
+                }
+            />
         </div>
         </WorkbenchProvider>
         </TerminalShortcutContext.Provider>
@@ -5510,10 +5574,12 @@ function NoWorkspaceSelected({ onCreate }: { readonly onCreate: () => void }): R
 interface ToastStackProps {
     readonly toasts: readonly Toast[];
     readonly onDismiss: (id: string) => void;
+    /** A standing notice at the bottom of the stack (#372's old terminal host), or null. */
+    readonly notice?: ReactElement | null;
 }
 
 /** The in-app fallback for a notification the browser would not (or could not) show. */
-function ToastStack({ toasts, onDismiss }: ToastStackProps): ReactElement | null {
+function ToastStack({ toasts, onDismiss, notice = null }: ToastStackProps): ReactElement | null {
     const root = useRef<HTMLDivElement | null>(null);
     /*
      * H1 — a toast is DOM and a web pane's page is a native view drawn over it, so an unparked
@@ -5531,8 +5597,8 @@ function ToastStack({ toasts, onDismiss }: ToastStackProps): ReactElement | null
      * its rect for the same reason (`interaction/BundledPrompts.tsx`'s `Notifications`), and an
      * unmeasured rect still parks every pane, so H1's guarantee above is unchanged.
      */
-    useOverlayPresence(root, toasts.length > 0);
-    if (toasts.length === 0) return null;
+    useOverlayPresence(root, toasts.length > 0 || notice !== null);
+    if (toasts.length === 0 && notice === null) return null;
     return (
         <div ref={root} data-testid="toast-stack" className="absolute bottom-8 right-3 z-40 flex flex-col gap-2">
             {toasts.map((toast) => (
@@ -5562,6 +5628,7 @@ function ToastStack({ toasts, onDismiss }: ToastStackProps): ReactElement | null
                     </span>
                 </button>
             ))}
+            {notice}
         </div>
     );
 }

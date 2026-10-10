@@ -42,6 +42,8 @@ export interface ConnectTerminalHostOptions {
     readonly socketPath: string;
     readonly token: string;
     readonly mode?: HelloMode;
+    /** The generation to say hello as: a host refuses any but its own (§11). Defaults to ours. */
+    readonly protocol?: number;
     readonly timeoutMs?: number;
     /** A spawn fell back to its fallback shell, or failed outright. */
     readonly onSpawnProblem?: (key: string, message: string) => void;
@@ -158,6 +160,7 @@ export class TerminalHostClient {
     private readonly attachWaiters = new Map<string, Waiter<AttachResult>>();
     private holdWaiter: Waiter<void> | undefined;
     private lostListeners: ((tids: string[], reason: LostReason) => void)[] = [];
+    private emptyListeners: (() => void)[] = [];
     private closedOnPurpose = false;
     private superseded = false;
     private closed = false;
@@ -259,10 +262,12 @@ export class TerminalHostClient {
 
     /**
      * The daemon has no pane for this terminal: the host hangs it up if it still runs and drops
-     * it. Also how an exit recorded while no daemon was attached is acknowledged.
+     * it. Also how an exit recorded while no daemon was attached is acknowledged. The handle goes
+     * too, so the exit the host may still send for it is ignored.
      */
     forget(tid: string): void {
         this.sendJson(FrameType.forget, { tid });
+        this.drop(tid);
     }
 
     /** Hand every terminal to the next daemon and disconnect. */
@@ -296,6 +301,18 @@ export class TerminalHostClient {
 
     handle(tid: string): HostPtyHandle | undefined {
         return this.handles.get(tid);
+    }
+
+    /** Terminals on this connection that have not exited. */
+    liveCount(): number {
+        let count = 0;
+        for (const handle of this.handles.values()) if (!handle.exited) count += 1;
+        return count;
+    }
+
+    /** The last live terminal on this connection exited or was forgotten (a draining host, §11). */
+    onEmpty(listener: () => void): void {
+        this.emptyListeners.push(listener);
     }
 
     /** @internal */
@@ -377,6 +394,7 @@ export class TerminalHostClient {
                 this.options.onSpawnProblem?.(handle.key, String(body['message'] ?? 'spawn failed'));
                 this.handles.delete(handle.tid);
                 handle.exit(-1, undefined);
+                this.notifyIfEmpty();
                 return;
             }
             case FrameType.exit: {
@@ -392,6 +410,7 @@ export class TerminalHostClient {
                     waiter.reject(new Error('the terminal is gone'));
                 }
                 handle.exit(exit.code, exit.signal ?? undefined);
+                this.notifyIfEmpty();
                 return;
             }
             case FrameType.held: {
@@ -409,6 +428,15 @@ export class TerminalHostClient {
             default:
                 return;
         }
+    }
+
+    private drop(tid: string): void {
+        if (this.handles.delete(tid)) this.notifyIfEmpty();
+    }
+
+    private notifyIfEmpty(): void {
+        if (this.closed || this.liveCount() > 0) return;
+        for (const listener of this.emptyListeners) listener();
     }
 
     private onClose(): void {
@@ -457,7 +485,7 @@ export function connectTerminalHost(options: ConnectTerminalHostOptions): Promis
         socket.once('connect', () => {
             socket.write(
                 encodeJson(FrameType.hello, {
-                    protocol: HOST_PROTOCOL_VERSION,
+                    protocol: options.protocol ?? HOST_PROTOCOL_VERSION,
                     token: options.token,
                     mode: options.mode ?? 'attach'
                 })

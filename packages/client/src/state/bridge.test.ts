@@ -135,6 +135,20 @@ describe('store bridge', () => {
         expect(h.store.getState().daemon.sizeControlOwnerID).toBeNull();
     });
 
+    it('tracks older terminal hosts, and an empty list clears them (#372)', () => {
+        const h = harness();
+        h.connection.connect();
+        completeHandshake(h.sockets.last(), { clientID: 'client-1', state: snapshotState() as never });
+        expect(h.store.getState().daemon.oldTerminalHosts).toEqual([]);
+
+        const host = { pid: 111, protocol: 1, version: '0.2.15', reason: 'can leak', startedAt: null, paneIDs: ['pane-one'], agents: 0, busyAgents: 0 };
+        h.sockets.last().emit({ type: 'old-terminal-hosts', hosts: [host] });
+        expect(h.store.getState().daemon.oldTerminalHosts).toEqual([host]);
+
+        h.sockets.last().emit({ type: 'old-terminal-hosts', hosts: [] });
+        expect(h.store.getState().daemon.oldTerminalHosts).toEqual([]);
+    });
+
     it('renders daemon notifications through the manager', () => {
         const h = harness();
         h.connection.connect();

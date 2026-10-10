@@ -1,6 +1,6 @@
 /**
- * `kelpi daemon status|start|restart|stop` (#311): the daemon's own verbs, under the name that is
- * on PATH.
+ * `kelpi daemon status|start|restart|stop|restart-old-terminals` (#311, #372): the daemon's own
+ * verbs, under the name that is on PATH.
  *
  * The packaged app installs `kelpi`, not `kelpid`, so the only way to restart the daemon from a
  * terminal used to be typing `…/Resources/node …/Resources/daemon/kelpid.js restart` in full.
@@ -23,7 +23,7 @@ import { env } from '../env.js';
 import { errLine, exit, writeErr, writeOut } from '../io.js';
 import { daemonUsage } from '../usage.js';
 
-const VERBS = new Set(['status', 'start', 'restart', 'stop']);
+const VERBS = new Set(['status', 'start', 'restart', 'stop', 'restart-old-terminals']);
 
 /**
  * Where `kelpid.js` is, given this CLI's own file:

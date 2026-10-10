@@ -514,6 +514,8 @@ function decodeCommand(
         // ── 6.8 ping ─────────────────────────────────────────────────────────────────
         case 'ping':
             return { command };
+        case 'restart-old-terminals':
+            return { command };
 
         // ── 6.9 web pane commands ────────────────────────────────────────────────────
         case 'web-open': {

@@ -2,7 +2,7 @@
 // seams; the boot module composes them. Widening a seam is fine (add members), changing a
 // signature needs orchestrator sign-off because another agent may already be coding to it.
 
-import type { WireMessage } from '@kelpi/protocol';
+import type { WireMessage, WsOldTerminalHost } from '@kelpi/protocol';
 
 import type { MouseFormat, MouseTrackingMode } from './term/mouse-modes.js';
 
@@ -200,6 +200,22 @@ export interface PersistenceHealth {
   readonly lastSaveAt: number | null;
 }
 
+/** #372: the terminal hosts a daemon runs its PTYs in, as `ping` reports them. */
+export interface TerminalHostsReport {
+  /** Where new terminals start; null when they run in-process. */
+  readonly current: { readonly pid: number; readonly protocol: number; readonly version: string } | null;
+  /** Older hosts still draining (`docs/terminal-host.md` §11). */
+  readonly old: readonly WsOldTerminalHost[];
+}
+
+/** What `restart-old-terminals` did (#372). */
+export interface RestartOldTerminalsOutcome {
+  /** Panes that got a fresh shell on the current host. */
+  readonly panes: number;
+  /** Of those, panes a resume command was typed into. */
+  readonly resumed: number;
+}
+
 // ---------------------------------------------------------------------------
 // Command handlers (socket-handlers.md)
 // ---------------------------------------------------------------------------
@@ -221,6 +237,10 @@ export interface HandlerContext<State, Action, Event> {
    * boot always supplies it, and `ping` reports "unknown" rather than "fine" without it.
    */
   readonly persistenceHealth?: (() => PersistenceHealth) | undefined;
+  /** #372: the terminal hosts, for `ping`. Absent: PTYs run in-process, nothing to report. */
+  readonly terminalHosts?: (() => TerminalHostsReport) | undefined;
+  /** #372: `restart-old-terminals`. Absent: there is no terminal host, so nothing is old. */
+  readonly restartOldTerminals?: (() => Promise<RestartOldTerminalsOutcome>) | undefined;
   /** The kernel-reported primary HTTP bind, read live after the listener starts. */
   readonly httpEndpoint?: (() => { readonly host: string; readonly port: number } | undefined) | undefined;
   /**

@@ -96,6 +96,29 @@ export async function verifiedHostPid(paths: RunPaths): Promise<number | undefin
     return pid !== undefined && (await hostAnswers(paths.socket)) ? pid : undefined;
 }
 
+/** The generations this run dir has a host record for (`host-v<H>.pid`), whether or not it runs. */
+export function recordedHostProtocols(runDir: string): number[] {
+    let names: string[];
+    try {
+        names = fs.readdirSync(runDir);
+    } catch {
+        return [];
+    }
+    const protocols: number[] = [];
+    for (const name of names) {
+        const match = /^host-v(\d+)\.pid$/.exec(name);
+        if (match !== null) protocols.push(Number(match[1]));
+    }
+    return protocols.sort((a, b) => a - b);
+}
+
+/** Wait up to `timeoutMs` for `pid` to be gone; true when it is. */
+export async function waitForExit(pid: number, timeoutMs: number): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (isProcessAlive(pid) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
+    return !isProcessAlive(pid);
+}
+
 /** SIGTERM a host (it hangs up its terminals first) and wait up to `timeoutMs` for it to go. */
 export async function endHost(pid: number, timeoutMs = 3000): Promise<void> {
     try {
@@ -103,8 +126,7 @@ export async function endHost(pid: number, timeoutMs = 3000): Promise<void> {
     } catch {
         return;
     }
-    const deadline = Date.now() + timeoutMs;
-    while (isProcessAlive(pid) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
+    await waitForExit(pid, timeoutMs);
 }
 
 export interface EnsureTerminalHostOptions {
@@ -175,9 +197,12 @@ export async function ensureTerminalHost(options: EnsureTerminalHostOptions): Pr
     throw new Error(`the terminal host did not start: ${lastError instanceof Error ? lastError.message : String(lastError)}`);
 }
 
-/** Just what Node and node-pty need to run; shells get their env from each spawn request. */
+/**
+ * Just what Node and node-pty need to run; shells get their env from each spawn request. Plus the
+ * version the app stamped on the daemon, which the host reports as its own.
+ */
 export function minimalHostEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-    const keep = ['HOME', 'USER', 'LOGNAME', 'TMPDIR', 'PATH', 'LANG', 'LC_ALL', 'LC_CTYPE', 'KELPID_TERMINAL_HOST_LOG'];
+    const keep = ['HOME', 'USER', 'LOGNAME', 'TMPDIR', 'PATH', 'LANG', 'LC_ALL', 'LC_CTYPE', 'KELPID_TERMINAL_HOST_LOG', 'KELPID_VERSION'];
     const out: NodeJS.ProcessEnv = {};
     for (const key of keep) if (env[key] !== undefined) out[key] = env[key];
     return out;

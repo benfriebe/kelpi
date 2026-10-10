@@ -51,6 +51,8 @@ export interface ControlPingProbe {
     readonly http?: ControlPingHttp | undefined;
     /** What a stop would end (#311). Undefined = an older daemon that did not say. */
     readonly terminals?: ControlPingTerminals | undefined;
+    /** Its terminal hosts (#372). Undefined = in-process PTYs, or an older daemon. */
+    readonly terminalHosts?: ControlPingTerminalHosts | undefined;
     /** Why the probe concluded "not alive" (`ENOENT`, `ECONNREFUSED`, `timeout`, …). */
     readonly reason?: string | undefined;
 }
@@ -96,6 +98,65 @@ export function readTerminalCounts(reply: Record<string, unknown>): ControlPingT
         running: readNumber(source, 'running') ?? 0,
         waiting: readNumber(source, 'waiting') ?? 0
     };
+}
+
+/** An older terminal host still draining, from `ping`'s `terminal_hosts.old` (#372). */
+export interface ControlPingOldHost {
+    readonly pid: number;
+    readonly protocol: number;
+    readonly version: string;
+    readonly reason: string;
+    readonly startedAt: string | null;
+    readonly paneIDs: readonly string[];
+    readonly agents: number;
+    readonly busyAgents: number;
+}
+
+export interface ControlPingTerminalHosts {
+    readonly current: { readonly pid: number; readonly protocol: number; readonly version: string } | null;
+    readonly old: readonly ControlPingOldHost[];
+}
+
+/** Decode `ping`'s additive `terminal_hosts` block; undefined when absent or malformed. */
+export function readTerminalHosts(reply: Record<string, unknown>): ControlPingTerminalHosts | undefined {
+    const raw = reply['terminal_hosts'];
+    if (!isObject(raw)) return undefined;
+    const current = isObject(raw['current']) ? raw['current'] : null;
+    const currentPid = current === null ? undefined : readNumber(current, 'pid');
+    const old: ControlPingOldHost[] = [];
+    for (const entry of Array.isArray(raw['old']) ? (raw['old'] as unknown[]) : []) {
+        if (!isObject(entry)) continue;
+        const pid = readNumber(entry, 'pid');
+        if (pid === undefined) continue;
+        const paneIDs = Array.isArray(entry['pane_ids'])
+            ? (entry['pane_ids'] as unknown[]).filter((id): id is string => typeof id === 'string')
+            : [];
+        old.push({
+            pid,
+            protocol: readNumber(entry, 'protocol') ?? 0,
+            version: readString(entry, 'version') ?? 'unknown',
+            reason: readString(entry, 'reason') ?? '',
+            startedAt: readString(entry, 'started_at') ?? null,
+            paneIDs,
+            agents: readNumber(entry, 'agents') ?? 0,
+            busyAgents: readNumber(entry, 'busy_agents') ?? 0
+        });
+    }
+    return {
+        current:
+            current === null || currentPid === undefined
+                ? null
+                : {
+                      pid: currentPid,
+                      protocol: readNumber(current, 'protocol') ?? 0,
+                      version: readString(current, 'version') ?? 'unknown'
+                  },
+        old
+    };
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /**
@@ -246,6 +307,7 @@ export function probeControlPing(target: ControlProbeTarget, options: ControlPro
                 const paneRoute = readString(reply, 'pane_route');
                 const http = reply['ok'] === true ? readHttpEndpoint(reply) : undefined;
                 const terminals = readTerminalCounts(reply);
+                const terminalHosts = readTerminalHosts(reply);
                 finish({
                     alive: true,
                     reply,
@@ -257,7 +319,8 @@ export function probeControlPing(target: ControlProbeTarget, options: ControlPro
                     ...(compat !== undefined ? { compat } : {}),
                     ...(paneRoute !== undefined ? { paneRoute } : {}),
                     ...(http !== undefined ? { http } : {}),
-                    ...(terminals !== undefined ? { terminals } : {})
+                    ...(terminals !== undefined ? { terminals } : {}),
+                    ...(terminalHosts !== undefined ? { terminalHosts } : {})
                 });
                 return;
             }
@@ -272,5 +335,48 @@ export function probeControlPing(target: ControlProbeTarget, options: ControlPro
             // speaking this protocol (or it is mid-shutdown) — treat the socket as stale.
             finish({ alive: false, reason: 'closed-without-reply' });
         });
+    });
+}
+
+/**
+ * Send one command to a daemon's control socket and read its one-line reply. Resolves undefined
+ * when nothing answers in time or the reply is not a JSON object; the caller says what that means.
+ */
+export function requestControl(
+    target: ControlProbeTarget,
+    payload: Record<string, unknown>,
+    options: ControlProbeOptions = {}
+): Promise<Record<string, unknown> | undefined> {
+    const timeoutMs = options.timeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS;
+    return new Promise((resolve) => {
+        const socket =
+            'socketPath' in target
+                ? net.connect({ path: target.socketPath })
+                : net.connect({ port: target.port, host: target.host ?? '127.0.0.1' });
+        const buffer = createLineBuffer();
+        let settled = false;
+        const finish = (reply: Record<string, unknown> | undefined): void => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            socket.destroy();
+            resolve(reply);
+        };
+        const timer = setTimeout(() => finish(undefined), timeoutMs);
+        timer.unref?.();
+        socket.on('connect', () => socket.write(`${JSON.stringify(payload)}\n`));
+        socket.on('data', (chunk: Buffer) => {
+            for (const line of buffer.push(chunk)) {
+                try {
+                    const parsed: unknown = JSON.parse(line);
+                    finish(isObject(parsed) ? parsed : undefined);
+                } catch {
+                    finish(undefined);
+                }
+                return;
+            }
+        });
+        socket.on('error', () => finish(undefined));
+        socket.on('close', () => finish(undefined));
     });
 }

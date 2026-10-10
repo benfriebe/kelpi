@@ -41,6 +41,12 @@ describe('terminalCounts', () => {
         expect(counts).toEqual({ live: 4, agents: 3, running: 1, waiting: 1 });
     });
 
+    it('restart-old-terminals has nothing to restart without a terminal host (#372)', () => {
+        const h = harness({ initial: seeded(1) });
+        expect(h.reply({ command: 'restart-old-terminals' })).toEqual({ ok: true, panes: 0, resumed: 0 });
+        expect(h.reply({ command: 'ping' })).not.toHaveProperty('terminal_hosts');
+    });
+
     it('is in every ping reply', () => {
         const h = harness({ initial: seeded(2) });
         h.ctx.pty.spawn({ paneID: id('dddddddd', 1), cwd: '/', cols: 80, rows: 24, env: [] });

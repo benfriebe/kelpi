@@ -13,8 +13,29 @@
  * here is one a future daemon must still be able to speak (§11).
  */
 
-/** Names the run-dir socket (`terminal-host-v<N>.sock`); bump only with a migration (§11). */
-export const HOST_PROTOCOL_VERSION = 1;
+/**
+ * The host generation (§11). It names the run-dir socket (`host-v<N>.sock`), and it is bumped
+ * whenever a running host has to be replaced: a wire change, a fix in the host's own code, or a
+ * new node-pty. A daemon drains a host of a generation in `DRAINABLE_HOST_PROTOCOLS` and ends
+ * any other one that is not its own.
+ */
+export const HOST_PROTOCOL_VERSION = 2;
+
+/**
+ * The node-pty this generation runs. `host-generation.test.ts` fails when the daemon's
+ * dependency moves without it: a node-pty fix only reaches a running host through a new
+ * generation (#370).
+ */
+export const HOST_NODE_PTY_VERSION = '1.2.0-beta.15';
+
+/**
+ * Older generations whose wire format this daemon still speaks, each with why it is being
+ * retired, as the app and `kelpi daemon status` say it. A host of one of these keeps the
+ * terminals it already has and gets no new ones, and exits when its last one ends (§11).
+ */
+export const DRAINABLE_HOST_PROTOCOLS: ReadonlyMap<number, string> = new Map([
+    [1, 'can leak one of the pseudo-terminals every app on the Mac shares, one for each terminal it opens']
+]);
 
 /** Largest payload either side accepts. Output is chunked far below this. */
 export const MAX_FRAME_BYTES = 16 * 1024 * 1024;

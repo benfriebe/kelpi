@@ -39,6 +39,8 @@ export function applyAgentEvent(
     ctx: AppContext,
     deps: AppDeps
 ): void {
+    // #372: the pane's agent is being restarted on a new terminal host; this is the old one dying.
+    if (deps.agentEventsMuted(paneID)) return;
     const state = ctx.store.getState();
     const location = findPaneAnywhere(state, paneID);
     if (location === null) return;

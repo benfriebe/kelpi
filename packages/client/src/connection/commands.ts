@@ -186,6 +186,8 @@ export interface SendOptions {
 export const DEFAULT_COMMAND_TIMEOUT_MS = 15_000;
 /** A worktree create shells out to `git fetch`; a slow network is not a failure. */
 export const WORKTREE_COMMAND_TIMEOUT_MS = 120_000;
+/** Ending an old terminal host and typing its agents' resumes takes seconds, not milliseconds. */
+export const RESTART_OLD_TERMINALS_TIMEOUT_MS = 60_000;
 /**
  * A delete that removes worktrees replies after git has deleted every file in them, and a
  * checkout with a `node_modules` is a lot of files (graft-git.md §8.7).
@@ -1208,6 +1210,15 @@ export class CommandClient {
      */
     restartControlServer(options?: SendOptions): Promise<CommandReply> {
         return this.raw(wirePayload('restart-control-server', {}), options ?? {});
+    }
+
+    /**
+     * #372: restart every terminal still on an older terminal host on the current one, resuming
+     * their agents. Replies `{ panes, resumed }` once the old host has exited and the resumes are
+     * typed, which takes a few seconds, hence the longer deadline.
+     */
+    restartOldTerminals(options?: SendOptions): Promise<CommandReply> {
+        return this.raw(wirePayload('restart-old-terminals', {}), { timeoutMs: RESTART_OLD_TERMINALS_TIMEOUT_MS, ...options });
     }
 
     /**

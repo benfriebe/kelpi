@@ -36,10 +36,10 @@ import {
     resolveDaemonVersion,
     type DaemonInfo
 } from './boot/index.js';
-import { resolveControlEndpoints } from './control/index.js';
+import { requestControl, resolveControlEndpoints, type ControlPingOldHost } from './control/index.js';
 import type { TerminalHostLaunch } from './boot/compose.js';
 import { HOST_BUNDLE_NAME } from './host/runtime.js';
-import { endHost, resolveHostPaths, verifiedHostPid } from './host/launch.js';
+import { endHost, recordedHostProtocols, resolveHostPaths, verifiedHostPid } from './host/launch.js';
 import { connectTestOwner, type TestOwner } from './lifecycle/test-owner.js';
 import { expandTilde, legacyDataDir, LEGACY_DATABASE_FILENAME, legacyMacAppDatabasePath, resolveDatabasePath } from './db/index.js';
 import { isLegacyImportError, runImport, type ImportReport } from './import/index.js';
@@ -79,6 +79,7 @@ export type KelpidCommand =
     | 'start'
     | 'stop'
     | 'restart'
+    | 'restart-old-terminals'
     | 'status'
     | 'url'
     | 'pair'
@@ -129,6 +130,10 @@ Usage:
                                 terminal it runs ends, so at a terminal it asks first;
                                 --force (or --yes) does not ask
   kelpid restart                Restart the daemon, keeping running terminals (terminal host)
+  kelpid restart-old-terminals [--force]
+                                Restart the terminals still on an older terminal host on
+                                the current one, resuming their agents, so the old host
+                                exits. At a terminal it asks first; --force does not ask
   kelpid status [--json]        Ping the daemon and report version, pid and ports
   kelpid url [--tailnet]        Print the client URL (with the token) and nothing else
   kelpid pair --name <who> [--tailnet] [--qr [--qr-invert]]
@@ -365,6 +370,7 @@ export function parseKelpidArgs(argv: readonly string[]): ParsedArgs {
                     arg === 'start' ||
                     arg === 'stop' ||
                     arg === 'restart' ||
+                    arg === 'restart-old-terminals' ||
                     arg === 'status' ||
                     arg === 'url' ||
                     arg === 'pair' ||
@@ -841,13 +847,85 @@ async function commandStop(io: CliIO, args: ParsedArgs): Promise<number> {
         // It exited between the check and the signal — that is the outcome we wanted.
     }
     io.err(`kelpid (pid ${String(pid)}) did not exit within ${String(timeoutMs)}ms; sent SIGKILL`);
-    // A SIGKILL'd daemon cannot shut its terminal host down, and a stop means every shell ends.
-    const hostPid = await verifiedHostPid(resolveHostPaths(paths.dir));
-    if (hostPid !== undefined) {
+    // A SIGKILL'd daemon cannot shut its terminal hosts down, and a stop means every shell ends:
+    // a draining older host's too (#372).
+    for (const protocol of recordedHostProtocols(paths.dir)) {
+        const hostPid = await verifiedHostPid(resolveHostPaths(paths.dir, protocol));
+        if (hostPid === undefined) continue;
         await endHost(hostPid);
         io.err(`ended its terminal host (pid ${String(hostPid)}) and the shells it held`);
     }
     return 1;
+}
+
+/**
+ * What `restart-old-terminals` does, as one sentence (#372). The terminal it is typed in may be
+ * one of them: it then ends with the rest, and this command with it.
+ */
+export function restartOldImpact(hosts: readonly ControlPingOldHost[], env: NodeJS.ProcessEnv): string {
+    const panes = hosts.flatMap((host) => host.paneIDs);
+    const agents = hosts.reduce((total, host) => total + host.agents, 0);
+    const busy = hosts.reduce((total, host) => total + host.busyAgents, 0);
+    const own = env['KELPI_PANE_ID']?.trim().toUpperCase();
+    const here = own !== undefined && panes.some((paneID) => paneID.toUpperCase() === own);
+    return (
+        `This restarts ${plural(panes.length, 'terminal')} still on an older terminal host on the current one. ` +
+        `Each shell starts again in its folder` +
+        (agents > 0 ? ` and ${plural(agents, 'Claude or Codex session')} ${agents === 1 ? 'resumes' : 'resume'}` : '') +
+        (busy > 0 ? ` (${String(busy)} working right now: the turn in progress is interrupted)` : '') +
+        '. Anything else running in them stops' +
+        (here ? ', including in the terminal you are typing in, which ends this command too.' : '.')
+    );
+}
+
+/**
+ * `kelpid restart-old-terminals` (#372): restart every terminal still on an older terminal host
+ * on the current one, resuming their agents, so the old host exits and frees what it holds. It
+ * asks first at a terminal, as `stop` does (#311), and a script gets the warning on stderr.
+ */
+async function commandRestartOldTerminals(io: CliIO, args: ParsedArgs): Promise<number> {
+    const env = io.env ?? process.env;
+    const paths = runPathsFor(env);
+    const probe = await probeDaemon(paths, { timeoutMs: 1000 });
+    if (!probe.alive) {
+        io.out('kelpid is not running');
+        return 1;
+    }
+    const old = probe.terminalHosts?.old ?? [];
+    if (old.length === 0) {
+        io.out('No terminals are running on an older terminal host.');
+        return 0;
+    }
+    const impact = restartOldImpact(old, env);
+    if (!args.force && !args.yes) {
+        if (io.interactive !== true || io.confirm === undefined) {
+            io.err(`Warning: ${impact}`);
+        } else {
+            io.err(impact);
+            if (!(await io.confirm('Restart them? [y/N] '))) {
+                io.err('Nothing was restarted.');
+                return 1;
+            }
+        }
+    }
+    // Shutting the old host down and the resume's settle take a few seconds.
+    const reply = await requestControl({ socketPath: paths.socket }, { command: 'restart-old-terminals' }, { timeoutMs: 60_000 });
+    if (reply === undefined) {
+        io.err('kelpid did not answer. `kelpi daemon status` shows whether the old terminal host is still there.');
+        return 1;
+    }
+    if (reply['ok'] !== true) {
+        io.err(`kelpid could not restart them: ${typeof reply['error'] === 'string' ? reply['error'] : 'unknown error'}`);
+        return 1;
+    }
+    const panes = typeof reply['panes'] === 'number' ? reply['panes'] : 0;
+    const resumed = typeof reply['resumed'] === 'number' ? reply['resumed'] : 0;
+    io.out(
+        `Restarted ${plural(panes, 'terminal')} on the current terminal host` +
+            (resumed > 0 ? ` and resumed ${plural(resumed, 'agent session')}` : '') +
+            '. The old terminal host has exited.'
+    );
+    return 0;
 }
 
 /** How long `kelpid restart` waits for the old daemon to hand off (a restore in progress, then checkpoints). */
@@ -983,6 +1061,23 @@ async function commandStatus(io: CliIO, args: ParsedArgs): Promise<number> {
                         : { path: probe.compat.path, error: probe.compat.error },
                 // The KELPI_SOCKET value panes carry; null = the daemon did not report one.
                 pane_route: probe.paneRoute ?? null,
+                // #372: null = in-process PTYs, or a daemon that did not report its hosts.
+                terminal_hosts:
+                    probe.terminalHosts === undefined
+                        ? null
+                        : {
+                              current: probe.terminalHosts.current,
+                              old: probe.terminalHosts.old.map((host) => ({
+                                  pid: host.pid,
+                                  protocol: host.protocol,
+                                  version: host.version,
+                                  reason: host.reason,
+                                  started_at: host.startedAt,
+                                  pane_ids: host.paneIDs,
+                                  agents: host.agents,
+                                  busy_agents: host.busyAgents
+                              }))
+                          },
                 ...(probe.alive ? {} : { reason: probe.reason ?? 'not running' })
             })
         );
@@ -1024,6 +1119,24 @@ async function commandStatus(io: CliIO, args: ParsedArgs): Promise<number> {
     const url = runDirClientURL(env, paths);
     if (url !== undefined) io.out(`  url: ${url}`);
     io.out(`  run dir: ${paths.dir}`);
+    const hosts = probe.terminalHosts;
+    if (hosts !== undefined) {
+        io.out(
+            hosts.current === null
+                ? '  terminal host: none, terminals run in-process and end with the daemon'
+                : `  terminal host: pid ${String(hosts.current.pid)} (${hosts.current.version}, generation ${String(hosts.current.protocol)})`
+        );
+        for (const host of hosts.old) {
+            // Its start rather than its version: a host from before #372 reports a `-dev` one.
+            io.out(
+                `  old terminal host: pid ${String(host.pid)} (generation ${String(host.protocol)}` +
+                    `${host.startedAt === null ? '' : `, started ${host.startedAt}`}), ` +
+                    `${plural(host.paneIDs.length, 'terminal')}${host.agents > 0 ? `, ${plural(host.agents, 'agent session')}` : ''}`
+            );
+            io.out(`    It ${host.reason}. It exits when its last terminal does.`);
+            io.out('    To restart them on the current host now: kelpi daemon restart-old-terminals');
+        }
+    }
     io.out(
         `  persistence: ${health === undefined ? 'unknown (daemon did not report)' : health.degraded ? `DEGRADED — ${health.path ?? 'unknown path'}` : `ok (${health.path ?? 'unknown path'})`}`
     );
@@ -1447,6 +1560,8 @@ export async function runKelpid(argv: readonly string[], io: CliIO = defaultIO()
             return commandStop(io, args);
         case 'restart':
             return commandRestart(io, args);
+        case 'restart-old-terminals':
+            return commandRestartOldTerminals(io, args);
         case 'status':
             return commandStatus(io, args);
         case 'url':

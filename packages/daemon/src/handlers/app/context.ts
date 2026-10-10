@@ -152,6 +152,12 @@ export interface AppHandlerOptions {
      * daemon-canonical focus (`lastActiveWorkspaceID` + the workspace's `focusedPaneID`).
      */
     readonly isPaneFocused?: ((paneID: string, workspaceID: string) => boolean) | undefined;
+    /**
+     * #372: agent hook events for this pane are dropped. True while its terminal is being
+     * restarted on a new host, so the dying agent's `session-end` cannot clear the session the
+     * restart is about to resume. Defaults to never.
+     */
+    readonly agentEventsMuted?: ((paneID: string) => boolean) | undefined;
     /** Default columns/rows for a PTY spawned without a client-reported size. */
     readonly defaultCols?: number | undefined;
     readonly defaultRows?: number | undefined;
@@ -176,6 +182,7 @@ export interface AppDeps {
     readonly scrollTarget: (target: SidebarID) => void;
     readonly isAppActive: () => boolean;
     readonly isPaneFocused: ((paneID: string, workspaceID: string) => boolean) | null;
+    readonly agentEventsMuted: (paneID: string) => boolean;
 }
 
 const noop = (): void => {};
@@ -240,7 +247,8 @@ export function resolveAppDeps(options: AppHandlerOptions = {}): AppDeps {
             }),
         scrollTarget: options.scrollTarget ?? noop,
         isAppActive: options.isAppActive ?? (() => false),
-        isPaneFocused: options.isPaneFocused ?? null
+        isPaneFocused: options.isPaneFocused ?? null,
+        agentEventsMuted: options.agentEventsMuted ?? (() => false)
     };
 }
 

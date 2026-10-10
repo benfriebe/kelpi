@@ -301,4 +301,26 @@ describe('palette feature source', () => {
         const phone = createPaletteFeatureSource({ ...h.host, arrangement: null });
         expect(phone.snapshot().items.filter((entry) => entry.id.startsWith('cmd:zen') || entry.id.includes('arrangement'))).toEqual([]);
     });
+
+    it('offers the old-terminal-host notice back only while one drains (#372)', async () => {
+        const h = fixture();
+        const show = vi.fn();
+        const source = createPaletteFeatureSource({ ...h.host, showOldTerminalHosts: show });
+        const row = () => source.snapshot().items.find((entry) => entry.id === 'cmd:old-terminal-hosts');
+        expect(row()).toBeUndefined();
+
+        const changed = vi.fn();
+        const off = source.subscribe(changed);
+        h.store.getState().setOldTerminalHosts([{ pid: 111, protocol: 1, version: '0.2.15', reason: 'can leak', startedAt: null, paneIDs: ['pane-one'], agents: 0, busyAgents: 0 }]);
+        expect(changed).toHaveBeenCalled();
+        expect(row()?.title).toBe('Restart Old Terminals…');
+        await source.execute('cmd:old-terminal-hosts', {});
+        expect(show).toHaveBeenCalledTimes(1);
+
+        // A window that draws no notice has no row to offer.
+        expect(h.source.snapshot().items.find((entry) => entry.id === 'cmd:old-terminal-hosts')).toBeUndefined();
+        h.store.getState().setOldTerminalHosts([]);
+        expect(row()).toBeUndefined();
+        off();
+    });
 });

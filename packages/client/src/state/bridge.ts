@@ -107,6 +107,17 @@ export function connectStore(options: StoreBridgeOptions): () => void {
     );
 
     offs.push(
+        // #372: `old-terminal-hosts` — terminals still on an older terminal host. A standing
+        // condition like `size-control`: broadcast on every change and replayed after each
+        // snapshot, an empty list included, so a host that retired while we were away clears.
+        connection.on('message', (message) => {
+            if (message['type'] !== 'old-terminal-hosts') return;
+            const hosts = message['hosts'];
+            store.getState().setOldTerminalHosts(Array.isArray(hosts) ? (hosts as never) : []);
+        })
+    );
+
+    offs.push(
         // §AGNT-005's live re-bind: the daemon moved (or dropped) a listener while we were
         // attached. Its own message rather than a field on `settings-changed` because the two
         // say different things — the file's request vs what the listener actually did — and

@@ -8,6 +8,7 @@ import { isProcessAlive } from '../lifecycle/rundir.js';
 import { nodePtySpawner } from '../pty/spawner.js';
 import type { PtyProcessHandle, PtySpawner, PtySpawnRequest } from '../pty/types.js';
 import { connectTerminalHost, type HostPtyHandle, type TerminalHostClient } from './client.js';
+import { HOST_PROTOCOL_VERSION } from './protocol.js';
 import { TerminalHostServer, type TerminalHostServerOptions } from './server.js';
 
 const TOKEN = 'a'.repeat(64);
@@ -309,11 +310,14 @@ describe('terminal host: protocol behaviour', () => {
         await expect(connectTerminalHost({ socketPath: host.socketPath, token: 'b'.repeat(64) })).rejects.toThrow(
             /bad token/
         );
+        await expect(
+            connectTerminalHost({ socketPath: host.socketPath, token: TOKEN, protocol: HOST_PROTOCOL_VERSION - 1 })
+        ).rejects.toThrow(/protocol/);
         const attached = await connect(host);
         const lost: string[] = [];
         attached.onLost((_tids, reason) => lost.push(reason));
         const probe = await connect(host, 'probe');
-        expect(probe.welcome.protocol).toBe(1);
+        expect(probe.welcome.protocol).toBe(HOST_PROTOCOL_VERSION);
         await sleep(50);
         expect(lost).toEqual([]);
     });
@@ -401,5 +405,33 @@ describe('terminal host: protocol behaviour', () => {
         await sleep(30);
         const probe = await connect(host, 'probe');
         expect(probe.welcome.terminals).toEqual([]);
+    });
+
+    it('counts live terminals and says once when the last one exits or is forgotten', async () => {
+        const fake = fakeSpawner();
+        const host = await startHost({ spawner: fake.spawner });
+        const client = await connect(host);
+        let empties = 0;
+        client.onEmpty(() => {
+            empties += 1;
+        });
+        const exiting = spawnOn(client, request('/bin/sh', [], 'PANE-A'));
+        const forgotten = spawnOn(client, request('/bin/sh', [], 'PANE-B'));
+        await sleep(50);
+        expect(client.liveCount()).toBe(2);
+
+        const exited = collect(exiting).exited;
+        fake.terminals[0]!.kill();
+        await exited;
+        expect(client.liveCount()).toBe(1);
+        expect(empties).toBe(0);
+
+        client.forget(forgotten.tid);
+        expect(client.handle(forgotten.tid)).toBeUndefined();
+        expect(client.liveCount()).toBe(0);
+        expect(empties).toBe(1);
+        // The host hangs the forgotten terminal up and may still report its exit: nothing fires twice.
+        await sleep(50);
+        expect(empties).toBe(1);
     });
 });

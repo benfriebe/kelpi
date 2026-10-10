@@ -79,6 +79,7 @@ export const globalUsage = `Usage:
   kelpi doctor [--json]                                   # IPC health check
   kelpi daemon restart|status|start                      # restart keeps running terminals and agents
   kelpi daemon stop [--force]                            # ends every terminal and agent; asks first
+  kelpi daemon restart-old-terminals [--force]           # moves terminals off an older terminal host
   kelpi install-hooks [--claude-dir <dir>] [--codex-dir <dir>] [--link] [--dry-run] [--json]
 
 `;
@@ -89,6 +90,10 @@ export const daemonUsage = `Usage:
   kelpi daemon restart           Restart the daemon. Running terminals and agents are kept
   kelpi daemon stop [--force]    Stop the daemon. Every terminal and agent in it ends, so
                                  at a terminal it asks first; --force does not ask
+  kelpi daemon restart-old-terminals [--force]
+                                 Restart the terminals still on an older terminal host
+                                 (status shows one) on the current host, resuming their
+                                 agents, so the old host exits. Asks first at a terminal
 
 Runs the kelpid bundled with this kelpi, so it works on the daemon's own machine.
 To pick up a new daemon build, or to get a stuck one going again, use restart.

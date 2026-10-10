@@ -14,7 +14,7 @@ import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { DAEMON_VERSION } from '../boot/version.js';
+import { resolveDaemonVersion } from '../boot/version.js';
 import { readToken } from '../lifecycle/rundir.js';
 import { nodePtySpawner } from '../pty/spawner.js';
 import { clearHostPidRecord, resolveHostPaths, writeHostPidRecord } from './launch.js';
@@ -75,13 +75,16 @@ export async function runTerminalHost(argv: readonly string[] = process.argv.sli
     }
 
     const runtimeDir = path.dirname(fileURLToPath(import.meta.url));
+    // The app stamps its version on the daemon (`KELPID_VERSION`), and the daemon passes it on: the
+    // compiled-in constant is main's next `-dev` version, which every released host reported (#372).
+    const version = resolveDaemonVersion(process.env).version;
     const lease = leaseRuntime(runtimeDir);
     let exiting = false;
     const server = new TerminalHostServer({
         socketPath: paths.socket,
         token,
         spawner: nodePtySpawner,
-        hostVersion: DAEMON_VERSION,
+        hostVersion: version,
         log,
         onExit: (reason) => {
             if (exiting) return;
@@ -104,7 +107,7 @@ export async function runTerminalHost(argv: readonly string[] = process.argv.sli
         pid: process.pid,
         protocol: HOST_PROTOCOL_VERSION,
         startedAt: new Date().toISOString(),
-        version: DAEMON_VERSION,
+        version,
         runtimeDir
     });
     log(`listening on ${paths.socket}`);

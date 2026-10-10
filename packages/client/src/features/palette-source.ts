@@ -77,6 +77,11 @@ export interface PaletteFeatureHost {
      * there is nothing to arrange: the phone shell draws no root band.
      */
     readonly arrangement?: PaletteArrangementHost | null | undefined;
+    /**
+     * #372: bring back the notice for terminals still on an older terminal host, after "Later".
+     * Its row shows only while one drains; absent = this window draws no notice.
+     */
+    readonly showOldTerminalHosts?: (() => void) | undefined;
 }
 
 export interface PaletteArrangementHost {
@@ -209,6 +214,17 @@ export function createPaletteFeatureSource(ref: PaletteFeatureHostRef): PaletteF
                         commandEntry('cmd:mute-workspace', 'rectangle.stack', 'Mute Workspace Notifications',
                             'no banners, sound or bounce from this workspace’s agents', undefined, () => act.setWorkspaceMuted(active.id, true))
                     ];
+        const oldHosts = host.runtime.store.getState().daemon.oldTerminalHosts;
+        const showOldHosts = host.showOldTerminalHosts;
+        const oldHostEntries: PaletteEntry[] =
+            oldHosts.length === 0 || showOldHosts === undefined
+                ? []
+                : [
+                      commandEntry('cmd:old-terminal-hosts', 'terminal', 'Restart Old Terminals…',
+                          'terminals still on an older terminal host, which exits when they do', undefined, () => {
+                              showOldHosts();
+                          })
+                  ];
         return [
             ...host.plugins.menu('palette').map((menu): PaletteEntry => ({
                 item: {
@@ -252,6 +268,7 @@ export function createPaletteFeatureSource(ref: PaletteFeatureHostRef): PaletteF
             commandEntry('cmd:new-workspace', 'rectangle.stack', 'New Workspace', 'create an empty workspace',
                 hint('new_workspace'), () => act.newWorkspace()),
             ...muteEntries,
+            ...oldHostEntries,
             ...arrangementEntries(host.arrangement, hint),
             // ⌘, is not a bindable action (assembly dispatches it from its own listener), so the hint
             // is literal rather than a lookup that would answer `undefined` forever.
@@ -278,7 +295,13 @@ export function createPaletteFeatureSource(ref: PaletteFeatureHostRef): PaletteF
             if (host === null) return () => {};
             const key = (): readonly unknown[] => {
                 const state = host.runtime.store.getState();
-                return [state.daemon.state.workspaces, state.daemon.hasSnapshot, state.ui.activeWorkspaceID, state.ui.connection];
+                return [
+                    state.daemon.state.workspaces,
+                    state.daemon.hasSnapshot,
+                    state.ui.activeWorkspaceID,
+                    state.ui.connection,
+                    state.daemon.oldTerminalHosts
+                ];
             };
             let last = key();
             const offMirror = host.runtime.store.subscribe(() => {

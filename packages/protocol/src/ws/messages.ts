@@ -983,6 +983,43 @@ export interface WsSizeControlMessage {
     readonly ownerClientID: string | null;
 }
 
+/**
+ * #372: one terminal host of an older generation that the daemon is draining
+ * (`docs/terminal-host.md` §11). It keeps the terminals it already had, gets no new ones, and
+ * exits when the last one ends; until then the app offers to restart those terminals on the
+ * current host.
+ */
+export interface WsOldTerminalHost {
+    readonly pid: number;
+    readonly protocol: number;
+    /**
+     * The version it reports. A host from before #372 reports the version compiled into it (main's
+     * next `-dev` one), not the release that started it, so this is not for display.
+     */
+    readonly version: string;
+    /** Why its generation is retired, as a clause: "can leak ...". */
+    readonly reason: string;
+    readonly startedAt: string | null;
+    /** The panes, visible or parked, whose shell still runs on it. */
+    readonly paneIDs: readonly string[];
+    /** Of those, panes with a Claude or Codex session a restart resumes. */
+    readonly agents: number;
+    /** Of those, agents working or waiting for input right now: a restart interrupts them. */
+    readonly busyAgents: number;
+}
+
+/**
+ * #372: every older terminal host still draining. Broadcast whenever the list or its counts
+ * change, and replayed after each snapshot, since a draining host is a standing condition. An
+ * empty list clears the notice.
+ */
+export interface WsOldTerminalHostsMessage {
+    readonly type: 'old-terminal-hosts';
+    readonly hosts: readonly WsOldTerminalHost[];
+}
+
+export const WS_OLD_TERMINAL_HOSTS_MESSAGE = 'old-terminal-hosts';
+
 export type WsServerMessage =
     | WsWelcomeMessage
     | WsRejectedMessage
@@ -991,6 +1028,7 @@ export type WsServerMessage =
     | WsCommandReplyMessage
     | WsCommandProgressMessage
     | WsSizeControlMessage
+    | WsOldTerminalHostsMessage
     | WsNotificationMessage
     | WsClipboardWriteMessage
     | WsPaneExitMessage

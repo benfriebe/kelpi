@@ -6,12 +6,16 @@
  * with the same esbuild options as `scripts/bundle.mjs`, into a directory inside this package's
  * `node_modules/.cache` so `require('node-pty')` resolves exactly as it does beside the real
  * bundle. Removed when the process exits.
+ *
+ * `protocol` builds a host of another generation (`HOST_PROTOCOL_VERSION` rewritten), which is
+ * how a test stands up the older host a daemon has to drain (§11).
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { HOST_PROTOCOL_VERSION } from './protocol.js';
 import { HOST_BUNDLE_NAME } from './runtime.js';
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -24,13 +28,16 @@ const __filename = __kelpidFileURLToPath(import.meta.url);
 const __dirname = __kelpidDirname(__filename);
 `;
 
-let built: Promise<string> | undefined;
+const built = new Map<number, Promise<string>>();
 
 /** The directory holding a freshly built `terminal-host.js` (a `TerminalHostLaunch.daemonDir`). */
-export function buildHostBundle(): Promise<string> {
-    built ??= (async () => {
+export function buildHostBundle(options: { readonly protocol?: number } = {}): Promise<string> {
+    const protocol = options.protocol ?? HOST_PROTOCOL_VERSION;
+    const existing = built.get(protocol);
+    if (existing !== undefined) return existing;
+    const building = (async () => {
         const esbuild = await import('esbuild');
-        const dir = path.join(packageRoot, 'node_modules', '.cache', `kelpi-host-test-${process.pid}`);
+        const dir = path.join(packageRoot, 'node_modules', '.cache', `kelpi-host-test-${process.pid}-v${String(protocol)}`);
         fs.rmSync(dir, { recursive: true, force: true });
         fs.mkdirSync(dir, { recursive: true });
         await esbuild.build({
@@ -42,11 +49,31 @@ export function buildHostBundle(): Promise<string> {
             target: 'node24',
             external: ['node-pty'],
             banner: { js: banner },
+            plugins: protocol === HOST_PROTOCOL_VERSION ? [] : [generation(protocol)],
             logLevel: 'silent'
         });
         fs.writeFileSync(path.join(dir, 'package.json'), '{"type":"module"}\n');
         process.once('exit', () => fs.rmSync(dir, { recursive: true, force: true }));
         return dir;
     })();
-    return built;
+    built.set(protocol, building);
+    return building;
+}
+
+/** An esbuild plugin that compiles `protocol.ts` as generation `protocol`. */
+function generation(protocol: number): import('esbuild').Plugin {
+    const declaration = /export const HOST_PROTOCOL_VERSION = \d+;/;
+    return {
+        name: 'host-generation',
+        setup(build) {
+            build.onLoad({ filter: /[\\/]host[\\/]protocol\.ts$/ }, (args) => {
+                const source = fs.readFileSync(args.path, 'utf8');
+                if (!declaration.test(source)) throw new Error(`no HOST_PROTOCOL_VERSION declaration in ${args.path}`);
+                return {
+                    contents: source.replace(declaration, `export const HOST_PROTOCOL_VERSION = ${String(protocol)};`),
+                    loader: 'ts'
+                };
+            });
+        }
+    };
 }

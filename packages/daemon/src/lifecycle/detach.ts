@@ -20,6 +20,7 @@ import {
     type ControlPingPersistence,
     type ControlPingProbe,
     type ControlPingTcp,
+    type ControlPingTerminalHosts,
     type ControlPingTerminals
 } from '../control/probe.js';
 import { isProcessAlive, readPidRecord, type PidRecord, type RunPaths } from './rundir.js';
@@ -124,6 +125,8 @@ export interface DaemonProbe {
     readonly http?: ControlPingHttp | undefined;
     /** Live terminals and agent sessions (#311). Undefined = the daemon did not say. */
     readonly terminals?: ControlPingTerminals | undefined;
+    /** The terminal hosts, current and draining (#372). Undefined = the daemon did not say. */
+    readonly terminalHosts?: ControlPingTerminalHosts | undefined;
     readonly reason?: string | undefined;
 }
 
@@ -151,6 +154,7 @@ export async function probeDaemon(paths: RunPaths, options: DaemonProbeOptions =
         ...(ping.paneRoute !== undefined ? { paneRoute: ping.paneRoute } : {}),
         ...(ping.http !== undefined ? { http: ping.http } : {}),
         ...(ping.terminals !== undefined ? { terminals: ping.terminals } : {}),
+        ...(ping.terminalHosts !== undefined ? { terminalHosts: ping.terminalHosts } : {}),
         ...(ping.reason !== undefined ? { reason: ping.reason } : {})
     };
 }

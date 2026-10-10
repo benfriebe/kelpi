@@ -287,6 +287,22 @@ describe('session-start / session-end', () => {
         expect(h.persistsNow.length).toBe(persistsBefore + 2);
     });
 
+    it('drops every event for a pane whose agent is being restarted (#372)', () => {
+        let muted = false;
+        const h = harness({ initial: seeded(1), agentEventsMuted: (paneID) => muted && paneID === P1 });
+        h.send({ command: 'session-start', pane_id: P1, session_id: 'live' });
+
+        // The dying agent's hooks: none of them may clear the session the restart resumes.
+        muted = true;
+        h.send({ command: 'session-end', pane_id: P1, session_id: 'live' });
+        h.send({ command: 'start', pane_id: P1 });
+        expect(paneOf(h, P1)).toMatchObject({ agentSessionID: 'live', status: 'idle' });
+
+        muted = false;
+        h.send({ command: 'session-end', pane_id: P1, session_id: 'live' });
+        expect(paneOf(h, P1)?.agentSessionID).toBeNull();
+    });
+
     it('binds the session through the dual-fire on a bare stop', () => {
         const h = harness({ initial: seeded(1) });
         h.send({ command: 'stop', pane_id: P1, session_id: 'dual-1', agent: 'codex' });

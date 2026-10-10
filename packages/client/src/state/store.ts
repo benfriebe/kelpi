@@ -29,6 +29,7 @@ import {
     ZERO_SYSTEM_STATS,
     type WsChromeSettings,
     type WsNotificationKind,
+    type WsOldTerminalHost,
     type WsSettingsSnapshot,
     type WsSystemStats,
     type WsTerminalThemeResolution,
@@ -162,6 +163,11 @@ export interface DaemonSlice {
      * knowable fact.
      */
     readonly transport: WsTransportStatus | null;
+    /**
+     * #372: older terminal hosts the daemon is draining (`old-terminal-hosts`). Non-empty means
+     * some terminals still run on one, and the notice offers to restart them on the current host.
+     */
+    readonly oldTerminalHosts: readonly WsOldTerminalHost[];
 }
 
 export interface Toast {
@@ -282,6 +288,8 @@ export interface KelpiActions {
     ): void;
     /** `size-control` broadcast (terminal-surface.md §5.1): who owns pane sizing now. */
     setSizeControlOwner(ownerClientID: string | null): void;
+    /** `old-terminal-hosts` broadcast (#372). */
+    setOldTerminalHosts(hosts: readonly WsOldTerminalHost[]): void;
 
     setConnectionStatus(status: ConnectionStatus, error?: string | null): void;
     setActiveWorkspace(workspaceID: string | null): void;
@@ -326,7 +334,8 @@ function initialDaemonSlice(): DaemonSlice {
         clientID: null,
         info: null,
         sizeControlOwnerID: null,
-        transport: null
+        transport: null,
+        oldTerminalHosts: []
     };
 }
 
@@ -795,6 +804,12 @@ export function kelpiStateCreator(set: SetState, get: GetState): KelpiState {
             const daemon = get().daemon;
             if (daemon.sizeControlOwnerID === ownerClientID) return;
             set({ daemon: { ...daemon, sizeControlOwnerID: ownerClientID } });
+        },
+
+        setOldTerminalHosts(hosts) {
+            const daemon = get().daemon;
+            if (daemon.oldTerminalHosts.length === 0 && hosts.length === 0) return;
+            set({ daemon: { ...daemon, oldTerminalHosts: hosts } });
         },
 
         setConnectionStatus(status, error) {

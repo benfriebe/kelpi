@@ -471,6 +471,14 @@ export interface PingMessage {
     command: 'ping';
 }
 
+/**
+ * #372: restart every terminal still on an older terminal host on the current one, resuming
+ * their agents, so the old host can exit. Replies `{ panes, resumed }`.
+ */
+export interface RestartOldTerminalsMessage {
+    command: 'restart-old-terminals';
+}
+
 // ── 6.9 Web pane commands ───────────────────────────────────────────────────────────
 
 export interface WebOpenMessage {
@@ -724,6 +732,7 @@ export type WireMessage =
     | GraftStopMessage
     | GraftStatusMessage
     | PingMessage
+    | RestartOldTerminalsMessage
     | WebOpenMessage
     | WebNavigateMessage
     | WebUrlMessage
@@ -790,6 +799,7 @@ export const EXPLICIT_CHAIN_COMMANDS: ReadonlySet<WireCommandName> = new Set([
     'graft-stop',
     'graft-status',
     'ping',
+    'restart-old-terminals',
     'pane-sync',
     'pane-sync-exclude',
     'pane-send-key',

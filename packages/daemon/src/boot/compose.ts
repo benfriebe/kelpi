@@ -25,7 +25,6 @@ import { pluginObject } from '@kelpi/protocol';
  *   - shutdown: flush the debounced save, then kill PTYs (bounded), then close listeners.
  */
 
-import { readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -89,6 +88,7 @@ import {
     createDeviceValidator,
     ensureRunDir,
     ensureToken,
+    readToken,
     resolveDevicesPath,
     resolveRunPaths,
     writePidRecord,
@@ -112,12 +112,25 @@ import {
 } from '../pty/index.js';
 import { nodePtySpawner } from '../pty/spawner.js';
 import { createEditorResolver, type EditorResolver } from '../content/external-editor.js';
-import type { WireMessage } from '@kelpi/protocol';
-import type { ControlDispatchItem, ControlDispatcher, PersistenceHealth, ReplyHandle, TerminalInput } from '../seams.js';
+import {
+    WS_OLD_TERMINAL_HOSTS_MESSAGE,
+    type WireMessage,
+    type WsOldTerminalHost,
+    type WsOldTerminalHostsMessage
+} from '@kelpi/protocol';
+import type {
+    ControlDispatchItem,
+    ControlDispatcher,
+    PersistenceHealth,
+    ReplyHandle,
+    RestartOldTerminalsOutcome,
+    TerminalInput
+} from '../seams.js';
 import {
     applyLoadReset,
     createStore,
     emptyDaemonState,
+    findPaneAnywhere,
     fromSnapshot,
     nextRandomColor,
     toSnapshot,
@@ -166,9 +179,18 @@ import { createDispatcher } from './dispatch.js';
 import { runLabelPresetMigration } from './labels.js';
 import { readPortFile, readRoutePortFile, writePortFile, writeRoutePortFile } from './port.js';
 import { spawnRestoredPanes, typeResumeCommands, type RestoreDeps, type ResumeDeps, type ResumeOutcome } from './resume.js';
-import type { LostReason, TerminalHostClient } from '../host/client.js';
-import { endHost, ensureTerminalHost, readHostPidRecord, resolveHostPaths, verifiedHostPid } from '../host/launch.js';
-import { HOST_PROTOCOL_VERSION } from '../host/protocol.js';
+import { connectTerminalHost, type LostReason, type TerminalHostClient } from '../host/client.js';
+import {
+    endHost,
+    ensureTerminalHost,
+    readHostPidRecord,
+    recordedHostProtocols,
+    resolveHostPaths,
+    verifiedHostPid,
+    waitForExit
+} from '../host/launch.js';
+import { DRAINABLE_HOST_PROTOCOLS, HOST_PROTOCOL_VERSION } from '../host/protocol.js';
+import { HANDOFF_WAIT_MS } from '../host/server.js';
 import type { RestoredAgentState } from '../store/types.js';
 import { prepareHostRuntime } from '../host/runtime.js';
 import { HostSpawnerSlot, hostHandleOf } from '../host/slot.js';
@@ -363,6 +385,10 @@ export interface Daemon {
     handoff(): Promise<'handed-off' | 'stopped'>;
     /** Resolves when the resume pipeline finished (and saves were un-gated). */
     readonly restored: Promise<ResumeOutcome>;
+    /** #372: hosts of an older generation still draining (`docs/terminal-host.md` §11). */
+    oldTerminalHosts(): readonly WsOldTerminalHost[];
+    /** #372: restart every terminal on a draining host on the current one, resuming its agent. */
+    restartOldTerminals(): Promise<RestartOldTerminalsOutcome>;
     readonly info: DaemonInfo | undefined;
     readonly store: KelpiStore;
     readonly pty: KelpiPtyManager;
@@ -1182,6 +1208,23 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         // `ping` reports this: a daemon that cannot save must never answer a health check as if
         // it could.
         persistenceHealth: () => persistence.health(),
+        // #372: `ping` reports the hosts, and `restart-old-terminals` empties the old ones.
+        ...(hostSlot !== undefined
+            ? {
+                  terminalHosts: () => ({
+                      current:
+                          hostClient === undefined || hostClient.isClosed
+                              ? null
+                              : {
+                                    pid: hostClient.welcome.pid,
+                                    protocol: hostClient.welcome.protocol,
+                                    version: hostClient.welcome.hostVersion
+                                },
+                      old: oldTerminalHosts()
+                  }),
+                  restartOldTerminals: () => restartOldTerminals()
+              }
+            : {}),
         httpEndpoint: () => ws?.addresses[0],
         // §SET-021: `ping` reports this too — a `tcp-port` that never bound is otherwise a log
         // line nobody reads, and every `NEX_SOCKET=tcp:…` client just times out. `compat` and
@@ -1388,6 +1431,8 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         webPanes,
         persist,
         persistNow,
+        // A restart of old terminals (#372): the dying agent's hooks must not touch the pane.
+        agentEventsMuted: (paneID) => mutedAgentPanes.has(paneID),
         spawnPane: (request) => {
             spawnPaneIfShell(ctx, request.workspaceID, request.paneID);
         },
@@ -1546,22 +1591,28 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
     let hostClient: TerminalHostClient | undefined;
 
     /**
-     * End hosts this daemon must not share its panes with: one of another host protocol (it
-     * cannot be attached, and its shells would run beside the respawned ones, §11), or, for an
-     * in-process daemon, any host at all. SIGTERM makes a host hang up its terminals first.
+     * Hosts of an older generation this daemon still speaks to (`docs/terminal-host.md` §11). Each
+     * keeps the terminals it already had and gets no new ones. It is shut down when its last one
+     * ends, or when the user restarts its terminals on the current host (`restartOldTerminals`).
+     */
+    interface DrainingHost {
+        readonly client: TerminalHostClient;
+        readonly protocol: number;
+        readonly paths: RunPaths;
+        readonly startedAt: string | null;
+    }
+    const draining: DrainingHost[] = [];
+    const isDrainable = (protocol: number): boolean =>
+        protocol < HOST_PROTOCOL_VERSION && DRAINABLE_HOST_PROTOCOLS.has(protocol);
+
+    /**
+     * End hosts this daemon must not share its panes with: one of a generation it neither runs nor
+     * drains (it cannot be attached, and its shells would run beside the respawned ones, §11), or,
+     * for an in-process daemon, any host at all. SIGTERM makes a host hang up its terminals first.
      */
     const endStrayHosts = async (): Promise<void> => {
-        let names: string[];
-        try {
-            names = readdirSync(paths.dir);
-        } catch {
-            return;
-        }
-        for (const name of names) {
-            const match = /^host-v(\d+)\.pid$/.exec(name);
-            if (match === null) continue;
-            const protocol = Number(match[1]);
-            if (hostSlot !== undefined && protocol === HOST_PROTOCOL_VERSION) continue;
+        for (const protocol of recordedHostProtocols(paths.dir)) {
+            if (hostSlot !== undefined && (protocol === HOST_PROTOCOL_VERSION || isDrainable(protocol))) continue;
             // Only a host really listening on its socket: a stale record's pid may be anyone's.
             const pid = await verifiedHostPid(resolveHostPaths(paths.dir, protocol));
             if (pid === undefined) continue;
@@ -1610,6 +1661,42 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         hostSlot?.bind(client);
     };
 
+    /**
+     * Attach to every live host of a drainable generation, saying hello as that generation (§11).
+     * One that will not take this daemon is ended instead; its panes then get fresh shells and
+     * their resumes, like any pane with no terminal to adopt.
+     */
+    const connectDrainingHosts = async (): Promise<DrainingHost[]> => {
+        if (hostSlot === undefined) return [];
+        const found: DrainingHost[] = [];
+        for (const protocol of recordedHostProtocols(paths.dir)) {
+            if (!isDrainable(protocol)) continue;
+            const oldPaths = resolveHostPaths(paths.dir, protocol);
+            const pid = await verifiedHostPid(oldPaths);
+            if (pid === undefined) continue;
+            try {
+                // Its own token: writing a new one would lock this daemon out of it.
+                const token = readToken(oldPaths);
+                if (token === undefined) throw new Error(`no token at ${oldPaths.token}`);
+                const client = await connectTerminalHost({
+                    socketPath: oldPaths.socket,
+                    token,
+                    protocol,
+                    mode: 'attach',
+                    // As for the current host: it may still be finishing the last daemon's handoff.
+                    timeoutMs: HANDOFF_WAIT_MS + 2000,
+                    onSpawnProblem: (key, message) => report(new Error(message), `pty ${key}`)
+                });
+                found.push({ client, protocol, paths: oldPaths, startedAt: readHostPidRecord(oldPaths)?.startedAt ?? null });
+            } catch (error) {
+                report(error, `terminal host v${String(protocol)}`);
+                log(`ending terminal host v${String(protocol)} (pid ${String(pid)}): it would not take this daemon`);
+                await endHost(pid);
+            }
+        }
+        return found;
+    };
+
     /** Panes whose shells the host kept across the restart: no spawn, no typed resume (§7). */
     const adopted = new Set<string>();
 
@@ -1618,9 +1705,11 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
      * terminal per pane wins; exited ones, duplicates and terminals with no pane are ended. Each
      * adopted pane gets its saved screen back, then the output produced since, exactly once.
      * Without a clean checkpoint (the last daemon crashed) it gets the host's retained tail and
-     * a repaint nudge instead.
+     * a repaint nudge instead. Returns the panes whose only terminal here EXITED while no daemon
+     * was attached: the caller closes them once every host has been read (§11), since a
+     * draining host may still have one of them running.
      */
-    const adoptTerminals = async (client: TerminalHostClient): Promise<void> => {
+    const adoptTerminals = async (client: TerminalHostClient): Promise<Set<string>> => {
         const shellPanes = new Set<string>();
         for (const workspace of store.getState().workspaces) {
             for (const pane of workspace.panes) if (pane.type === 'shell') shellPanes.add(pane.id);
@@ -1637,11 +1726,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
             if (previous !== undefined) client.forget(previous.tid);
             chosen.set(terminal.key, terminal);
         }
-        // A shell that exited during the handoff (after `hold`) closes its pane, as it would
-        // have if the daemon had seen it: respawning it would resurrect what the user ended.
-        for (const paneID of exitedKeys) {
-            if (!chosen.has(paneID)) store.dispatch({ type: 'pane-process-terminated', paneID });
-        }
+        let count = 0;
         // One at a time: a crash's replays are up to a few MiB each.
         for (const [paneID, terminal] of chosen) {
             if (pty.has(paneID)) {
@@ -1669,6 +1754,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
                 term.markReplay(paneID, attached.until - attached.from, saved === null);
                 pty.adopt(paneID, handle);
                 adopted.add(paneID);
+                count += 1;
                 const before = loaded.agentBefore.get(paneID);
                 if (before !== undefined) store.dispatch({ type: 'pane-agent-state-restored', paneID, agent: before });
                 if (saved === null) nudgeRepaint(paneID, attached.cols, attached.rows);
@@ -1677,7 +1763,9 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
                 client.forget(terminal.tid);
             }
         }
-        if (adopted.size > 0) log(`adopted ${String(adopted.size)} running terminal(s) from the terminal host`);
+        const from = client.welcome.protocol === HOST_PROTOCOL_VERSION ? 'the terminal host' : `terminal host v${String(client.welcome.protocol)}`;
+        if (count > 0) log(`adopted ${String(count)} running terminal(s) from ${from}`);
+        return new Set([...exitedKeys].filter((paneID) => !chosen.has(paneID)));
     };
 
     /**
@@ -1688,6 +1776,86 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
     const nudgeRepaint = (paneID: string, cols: number, rows: number): void => {
         rawPty.resize(paneID, cols > 2 ? cols - 1 : cols + 1, rows);
         setTimeout(() => rawPty.resize(paneID, cols, rows), 150).unref();
+    };
+
+    /** Panes, visible or parked, whose terminal lives on `client`. */
+    const panesOn = (client: TerminalHostClient): string[] =>
+        rawPty.paneIDs().filter((paneID) => {
+            const handle = hostHandleOf(rawPty.processHandle(paneID));
+            return handle !== undefined && client.handle(handle.tid) === handle;
+        });
+
+    /** Resume tuples for `paneIDs`, from what the store knows now. */
+    const captureTuples = (paneIDs: readonly string[]): ResumeTuple[] => {
+        const state = store.getState();
+        const tuples: ResumeTuple[] = [];
+        for (const paneID of paneIDs) {
+            const pane = findPaneAnywhere(state, paneID)?.pane;
+            if (pane === undefined || pane.type !== 'shell') continue;
+            const tuple = captureResumeTuple(pane.id, pane);
+            if (tuple !== null) tuples.push(tuple);
+        }
+        return tuples;
+    };
+
+    /**
+     * Let go of panes whose terminals are gone or about to be, without the exits that would close
+     * them. A pane hosting a command (a markdown pane in `$EDITOR`) is not respawned: its process
+     * is gone, so it takes the ordinary exit path back to its preview.
+     */
+    const forgetShells = (paneIDs: readonly string[]): void => {
+        for (const paneID of paneIDs) {
+            pty.forget(paneID);
+            term.dispose(paneID);
+            const pane = findPaneAnywhere(store.getState(), paneID)?.pane;
+            if (pane !== undefined && pane.type !== 'shell') store.dispatch({ type: 'pane-process-terminated', paneID });
+        }
+    };
+
+    /** An agent status describes a process that is gone. The session id stays, for the resume. */
+    const resetAgentStatus = (paneIDs: readonly string[]): void => {
+        const state = store.getState();
+        for (const paneID of paneIDs) {
+            const pane = findPaneAnywhere(state, paneID)?.pane;
+            if (pane === undefined) continue;
+            if (pane.status === 'idle' && pane.agentStartedAt === null && pane.backgroundTaskCount === 0) continue;
+            const agent: RestoredAgentState = {
+                status: 'idle',
+                agentSessionID: pane.agentSessionID,
+                agentStartedAt: null,
+                backgroundTaskCount: 0
+            };
+            store.dispatch({ type: 'pane-agent-state-restored', paneID, agent });
+        }
+    };
+
+    /**
+     * A fresh shell for exactly `paneIDs` (visible or parked, and nothing else that happens to have
+     * no PTY), each in `directories`' entry or its last known directory, then the resumes.
+     */
+    const respawnShells = async (
+        paneIDs: readonly string[],
+        tuples: readonly ResumeTuple[],
+        directories: ReadonlyMap<string, string> = new Map()
+    ): Promise<RestartOldTerminalsOutcome> => {
+        const wanted = new Set(paneIDs);
+        const state = store.getState();
+        const only: DaemonState = {
+            ...state,
+            workspaces: state.workspaces.map((workspace) => ({
+                ...workspace,
+                // A parked shell (behind `kelpi open --here`) too: it comes back when unparked.
+                panes: [...workspace.panes, ...workspace.parkedPanes]
+                    .filter((pane) => wanted.has(pane.id))
+                    .map((pane) => {
+                        const directory = directories.get(pane.id);
+                        return directory === undefined ? pane : { ...pane, workingDirectory: directory };
+                    })
+            }))
+        };
+        const spawned = spawnRestoredPanes(only, restoreDeps(), tuples);
+        const { resumed } = await typeResumeCommands(tuples, resumeDeps());
+        return { panes: spawned.length, resumed: resumed.length };
     };
 
     /**
@@ -1707,17 +1875,11 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         }
         // Only the panes whose terminals lived on the lost connection. A spawn still queued in
         // the slot (a pane created a moment ago) binds to the next host by itself.
-        const affected = rawPty.paneIDs().filter((paneID) => {
-            const handle = hostHandleOf(rawPty.processHandle(paneID));
-            return handle !== undefined && lost.handle(handle.tid) === handle;
-        });
-        for (const paneID of affected) {
-            pty.forget(paneID);
-            term.dispose(paneID);
-            // A pane hosting a command (a markdown pane in `$EDITOR`) is not respawned: its
-            // process is gone, so it takes the ordinary exit path back to its preview.
-            if (paneType(paneID) !== 'shell') store.dispatch({ type: 'pane-process-terminated', paneID });
-        }
+        const affected = panesOn(lost);
+        // Before the first await: a dying agent's `session-end` would clear what it resumes.
+        const tuples = captureTuples(affected);
+        forgetShells(affected);
+        resetAgentStatus(affected);
         // A host that is alive but dropped us cannot be trusted with the respawned panes.
         const stale = await verifiedHostPid(hostPaths);
         if (stale !== undefined) await endHost(stale, 2000);
@@ -1728,17 +1890,195 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         const next = await connectHost();
         if (next !== undefined) bindHost(next);
         if (stopping) return;
-        const state = store.getState();
-        const tuples: ResumeTuple[] = [];
-        for (const workspace of state.workspaces) {
-            for (const pane of workspace.panes) {
-                if (!affected.includes(pane.id)) continue;
-                const tuple = captureResumeTuple(pane.id, pane);
-                if (tuple !== null) tuples.push(tuple);
-            }
+        try {
+            await respawnShells(affected, tuples);
+        } catch (error) {
+            report(error, 'resume after host loss');
         }
-        spawnRestoredPanes(state, restoreDeps(), tuples);
-        void typeResumeCommands(tuples, resumeDeps()).catch((error: unknown) => report(error, 'resume after host loss'));
+    };
+
+    // ── older terminal hosts (§11) ──────────────────────────────────────────
+
+    /** What the app's notice and `kelpi daemon status` say about each draining host. */
+    const oldTerminalHosts = (): WsOldTerminalHost[] => {
+        const state = store.getState();
+        return draining.map((entry) => {
+            const paneIDs = panesOn(entry.client);
+            let agents = 0;
+            let busyAgents = 0;
+            for (const paneID of paneIDs) {
+                const pane = findPaneAnywhere(state, paneID)?.pane;
+                if (pane === undefined) continue;
+                if (pane.agentSessionID !== null) agents += 1;
+                if (pane.status !== 'idle') busyAgents += 1;
+            }
+            return {
+                pid: entry.client.welcome.pid,
+                protocol: entry.protocol,
+                version: entry.client.welcome.hostVersion,
+                reason: DRAINABLE_HOST_PROTOCOLS.get(entry.protocol) ?? '',
+                startedAt: entry.startedAt,
+                paneIDs,
+                agents,
+                busyAgents
+            };
+        });
+    };
+    const oldTerminalHostsEvent = (): WsOldTerminalHostsMessage => ({
+        type: WS_OLD_TERMINAL_HOSTS_MESSAGE,
+        hosts: oldTerminalHosts()
+    });
+    /** Broadcast the list whenever it, or a count in it, changes. */
+    let announcedOldHosts = '[]';
+    const announceOldHosts = (): void => {
+        const event = oldTerminalHostsEvent();
+        const key = JSON.stringify(event.hosts);
+        if (key === announcedOldHosts) return;
+        announcedOldHosts = key;
+        ws?.broadcast({ ...event });
+    };
+    // A pane closing or an agent changing state moves the counts.
+    const offOldHosts = store.subscribe(() => {
+        if (draining.length > 0 || announcedOldHosts !== '[]') announceOldHosts();
+    });
+
+    const beginDraining = (entry: DrainingHost): void => {
+        draining.push(entry);
+        entry.client.onLost((_tids, reason) => {
+            void onDrainingHostLost(entry, reason);
+        });
+        entry.client.onEmpty(() => {
+            void retireDrainingHost(entry, 'its last terminal ended');
+        });
+        const { pid, hostVersion } = entry.client.welcome;
+        log(
+            `draining terminal host v${String(entry.protocol)} (pid ${String(pid)}, ${hostVersion}): ` +
+                `its ${String(entry.client.liveCount())} terminal(s) stay on it, new ones start on the current host`
+        );
+        if (entry.client.isClosed) void onDrainingHostLost(entry, 'crash');
+        else if (entry.client.liveCount() === 0) void retireDrainingHost(entry, 'it had no terminals left');
+    };
+
+    /** Shut a draining host down and wait until it has exited: what it leaked is free only then. */
+    const endDrainingHost = async (entry: DrainingHost, why: string): Promise<void> => {
+        const { pid } = entry.client.welcome;
+        log(`retiring terminal host v${String(entry.protocol)} (pid ${String(pid)}): ${why}`);
+        try {
+            await entry.client.shutdown();
+        } catch (error) {
+            report(error, 'terminal host retire');
+        }
+        // `shutdown` returns once the connection closes. The host exits a moment later, after
+        // hanging up its shells (SIGKILL after 500 ms); one that does not is killed.
+        if (await waitForExit(pid, 3000)) return;
+        try {
+            process.kill(pid, 'SIGKILL');
+        } catch {
+            return;
+        }
+        await waitForExit(pid, 1000);
+    };
+
+    const retireDrainingHost = async (entry: DrainingHost, why: string): Promise<void> => {
+        // Already retired or being restarted, or part of a stop or handoff, which see to it.
+        if (!draining.includes(entry) || stopping) return;
+        draining.splice(draining.indexOf(entry), 1);
+        announceOldHosts();
+        await endDrainingHost(entry, why);
+    };
+
+    /** A draining host died, or another daemon took it: its panes restart on the current host. */
+    const onDrainingHostLost = async (entry: DrainingHost, reason: LostReason): Promise<void> => {
+        if (!draining.includes(entry)) return;
+        draining.splice(draining.indexOf(entry), 1);
+        announceOldHosts();
+        if (stopping) return;
+        const label = `terminal host v${String(entry.protocol)}`;
+        if (reason === 'superseded') {
+            log(`WARNING: another daemon took over ${label}; its terminals are no longer this daemon's`);
+            return;
+        }
+        const affected = panesOn(entry.client);
+        const tuples = captureTuples(affected);
+        forgetShells(affected);
+        resetAgentStatus(affected);
+        const stale = await verifiedHostPid(entry.paths);
+        if (stale !== undefined) await endHost(stale, 2000);
+        log(`WARNING: ${label} went away and took ${String(affected.length)} shell(s) with it; respawning those panes`);
+        if (stopping) return;
+        try {
+            await respawnShells(affected, tuples);
+        } catch (error) {
+            report(error, `resume after losing ${label}`);
+        }
+    };
+
+    /** Agent hook events for these panes are dropped: their agent is being restarted (§11). */
+    const mutedAgentPanes = new Set<string>();
+    let restarting: Promise<RestartOldTerminalsOutcome> | undefined;
+
+    /**
+     * Restart every terminal on a draining host on the current one, then let the old host go
+     * (§11). The order is what brings each pane back as it was:
+     *  1. where each shell really is, asked of the OS while it still runs (the stored directory
+     *     only follows a shell that sends OSC 7, and shells older than #361 never did);
+     *  2. each agent's session, captured before anything dies, with its hook events muted until
+     *     the resume is typed, so the dying agent's `session-end` cannot clear it;
+     *  3. the panes let go of their terminals, so the hang-ups do not close them;
+     *  4. each old host shut down and waited for: on a machine that has run out of ptys, the
+     *     new shells only get one once the old host has exited;
+     *  5. a fresh shell per pane, then the resumes.
+     */
+    const restartDraining = async (): Promise<RestartOldTerminalsOutcome> => {
+        if (stopping) throw new Error('the daemon is stopping');
+        if (draining.length === 0) return { panes: 0, resumed: 0 };
+        // In-process PTYs (no current host could start) die at the next update: moving the old
+        // host's shells there would trade surviving shells for ones that do not.
+        if (hostClient === undefined || hostClient.isClosed) {
+            throw new Error('there is no current terminal host to restart them on; they keep running on the old one');
+        }
+        const hosts = draining.splice(0);
+        announceOldHosts();
+        const affected = hosts.flatMap((entry) => panesOn(entry.client));
+        const directories = new Map<string, string>();
+        await Promise.all(
+            affected.map(async (paneID) => {
+                const pane = findPaneAnywhere(store.getState(), paneID)?.pane;
+                const pid = pty.pid(paneID);
+                if (pane === undefined || pid === undefined) return;
+                directories.set(paneID, await chooseSplitDirectory(pane.workingDirectory, await readProcessCwd(pid)));
+            })
+        );
+        const tuples = captureTuples(affected);
+        for (const paneID of affected) mutedAgentPanes.add(paneID);
+        try {
+            // The pane says where it is now too, so a later respawn starts there as well.
+            for (const [paneID, directory] of directories) {
+                if (findPaneAnywhere(store.getState(), paneID)?.pane.workingDirectory === directory) continue;
+                store.dispatch({ type: 'pane-directory-changed', paneID, directory, now: (options.now ?? Date.now)() });
+            }
+            forgetShells(affected);
+            resetAgentStatus(affected);
+            for (const entry of hosts) await endDrainingHost(entry, 'its terminals restart on the current host');
+            // A stop meanwhile: the panes and their session ids are saved, and the next daemon
+            // gives them fresh shells and their resumes. A handoff waits for this instead.
+            if (stopping) throw new Error('the daemon stopped first; the terminals come back when it starts again');
+            log(`restarting ${String(affected.length)} terminal(s) from the old terminal host on the current one`);
+            return await respawnShells(affected, tuples, directories);
+        } finally {
+            for (const paneID of affected) mutedAgentPanes.delete(paneID);
+            announceOldHosts();
+        }
+    };
+
+    /** One restart at a time: a second click, or the CLI meanwhile, joins the one running. */
+    const restartOldTerminals = (): Promise<RestartOldTerminalsOutcome> => {
+        if (restarting !== undefined) return restarting;
+        const run = restartDraining().finally(() => {
+            if (restarting === run) restarting = undefined;
+        });
+        restarting = run;
+        return run;
     };
 
     /** The resume tuples for panes that get a fresh shell (every pane not adopted, §7). */
@@ -1800,6 +2140,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         // already-settled promise is a no-op, so a completed restore keeps its outcome).
         settleRestore({ spawned: [], resumed: [], skipped: [], settled: false });
         unsubscribe();
+        offOldHosts();
         offData();
         offExit();
         offSettings();
@@ -1888,6 +2229,9 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         stopping = true;
         running = false;
         stopped = (async () => {
+            // A restart of old terminals took its hosts out of `draining`; it ends them itself
+            // and then gives up, seeing `stopping`. Waited for, so no old host outlives the stop.
+            await restarting?.catch(() => undefined);
             disposeServices();
             await disposeGraftAndPlugins();
             flushState();
@@ -1896,10 +2240,12 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
             // would be born a moment later) and the pane would outlive the process.
             spawnGate.close();
             await pty.killAll();
-            // A full stop ends the host too; its terminals were just killed.
-            const host = hostClient;
+            // A full stop ends the hosts too, a draining one included; their terminals were just killed.
+            const hosts = [hostClient, ...draining.map((entry) => entry.client)];
             hostClient = undefined;
-            if (host !== undefined && !host.isClosed) {
+            draining.length = 0;
+            for (const host of hosts) {
+                if (host === undefined || host.isClosed) continue;
                 try {
                     await host.shutdown();
                 } catch (error) {
@@ -1927,18 +2273,26 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
      *     offset its emulator has parsed (stepped back over an unfinished sequence), and detach.
      */
     const handoff = async (): Promise<'handed-off' | 'stopped'> => {
-        const host = hostClient;
+        // The current host and any draining one: the successor adopts from all of them (§11).
+        const attachedHosts = (): TerminalHostClient[] =>
+            [hostClient, ...draining.map((entry) => entry.client)].filter(
+                (client): client is TerminalHostClient => client !== undefined && !client.isClosed
+            );
         if (stopped !== undefined) {
             await stopped;
             return 'stopped';
         }
-        if (host === undefined || host.isClosed || !running) {
+        if (attachedHosts().length === 0 || !running) {
             await stop();
             return 'stopped';
         }
         flushEditors();
         stopped = (async () => {
             await Promise.race([restored, new Promise((resolve) => setTimeout(resolve, HANDOFF_RESTORE_WAIT_MS))]);
+            // So does a restart of old terminals, to the end, however long: cut short, the
+            // successor would adopt its fresh shells and never type their resumes, or find the
+            // old host it was shutting down. Every step of it is bounded on its own.
+            await restarting?.catch(() => undefined);
             // The run-dir socket stays bound until the state is flushed, so no successor can
             // start (and load a database this daemon has not finished writing) mid-handoff; it
             // refuses commands meanwhile. The pane route closes now: a hook fired from a
@@ -1947,11 +2301,16 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
             controlGate = 'refuse';
             await runControl?.stopTCP();
             await Promise.all([compatControl?.stop() ?? Promise.resolve(), ws?.stop() ?? Promise.resolve()]);
-            try {
-                await host.hold();
-            } catch (error) {
-                report(error, 'terminal handoff: hold');
-            }
+            const hosts = attachedHosts();
+            await Promise.all(
+                hosts.map(async (host) => {
+                    try {
+                        await host.hold();
+                    } catch (error) {
+                        report(error, 'terminal handoff: hold');
+                    }
+                })
+            );
             // Edits made while the restore finished or the hold was pending still get saved.
             flushEditors();
             stopping = true;
@@ -1962,6 +2321,8 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
             for (const paneID of rawPty.paneIDs()) {
                 const handle = hostHandleOf(rawPty.processHandle(paneID));
                 if (handle === undefined || handle.exited) continue;
+                const host = hosts.find((candidate) => candidate.handle(handle.tid) === handle);
+                if (host === undefined) continue;
                 try {
                     const checkpoint = await term.checkpointAsync(paneID);
                     if (checkpoint === null) continue;
@@ -1972,12 +2333,15 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
                     report(error, `terminal handoff: checkpoint ${paneID}`);
                 }
             }
-            try {
-                await host.detach();
-            } catch (error) {
-                report(error, 'terminal handoff: detach');
+            for (const host of hosts) {
+                try {
+                    await host.detach();
+                } catch (error) {
+                    report(error, 'terminal handoff: detach');
+                }
             }
             hostClient = undefined;
+            draining.length = 0;
             await disposeGraftAndPlugins();
             flushState();
             // Only now does the run dir become free for a successor.
@@ -2106,6 +2470,8 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
                 }),
                 // …and its graft toggle / swap prompt / orphan banner verbs.
                 graftUi: graftCommands,
+                // #372: a draining terminal host is a standing condition, replayed on attach.
+                oldTerminalHosts: oldTerminalHostsEvent,
                 // `/pane-assets/…` — sibling files of an open markdown file, so relative
                 // `<img src>` resolves (content-panes.md port note 4). Gated by the derived
                 // asset credential (owner or live paired device), because `--tailnet` makes
@@ -2188,11 +2554,24 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         try {
             await endStrayHosts();
             const host = await connectHost();
-            if (host !== undefined) {
-                await adoptTerminals(host);
-                // Unless it was lost (or superseded) meanwhile, which already moved the slot on.
-                if (host === hostClient && !host.isClosed) hostSlot?.bind(host);
+            const old = await connectDrainingHosts();
+            // The current host first: a pane with a terminal on both keeps that one, and the
+            // old duplicate is ended.
+            const exited = new Set<string>();
+            if (host !== undefined) for (const paneID of await adoptTerminals(host)) exited.add(paneID);
+            for (const entry of old) {
+                for (const paneID of await adoptTerminals(entry.client)) exited.add(paneID);
+                beginDraining(entry);
             }
+            // A shell that exited during the handoff (after `hold`) closes its pane, as it would
+            // have if the daemon had seen it: respawning it would resurrect what the user ended.
+            // Not while another host still has that pane running.
+            for (const paneID of exited) {
+                if (!pty.has(paneID)) store.dispatch({ type: 'pane-process-terminated', paneID });
+            }
+            // Unless it was lost (or superseded) meanwhile, which already moved the slot on.
+            if (host !== undefined && host === hostClient && !host.isClosed) hostSlot?.bind(host);
+            announceOldHosts();
         } finally {
             openControl();
         }
@@ -2342,6 +2721,8 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         stop,
         handoff,
         restored,
+        oldTerminalHosts,
+        restartOldTerminals,
         get info() {
             return info;
         },

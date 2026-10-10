@@ -264,7 +264,7 @@ Every request carries `"command": "<verb>"`. Parsing happens in three stages:
    `group-create`, `group-rename`, `group-delete`, `group-move`, `group-set-repo`,
    `group-reorder`, `group-sort`, `open`, `diff`,
    `pane-close`, `pane-list`, `pane-capture`, `graft-start`, `graft-stop`,
-   `graft-status`, `ping`, all `web-*` commands, `pane-sync`, `pane-sync-exclude`,
+   `graft-status`, `ping`, `restart-old-terminals`, all `web-*` commands, `pane-sync`, `pane-sync-exclude`,
    `pane-send-key`, `pane-send`, `pane-split`, `pane-create`, `pane-name`, `pane-resize`,
    `pane-font-size`, `pane-move-adjacent`.
    These are all parsed **before** the mandatory-`pane_id` guard, which is why
@@ -318,7 +318,7 @@ workspace-create, workspace-delete, workspace-label, workspace-mute, workspace-r
 workspace-icon,
 group-set-repo, group-reorder, group-sort,
 graft-start, graft-stop, graft-status,
-ping,
+ping, restart-old-terminals,
 web-open, web-navigate, web-url, web-back, web-forward, web-reload, web-capture,
 web-tabs, web-tab-new, web-tab-close, web-tab-select,
 web-console, web-inspect, web-inspect-result,
@@ -512,6 +512,7 @@ carry `"command"`.
 | `graft-stop` | R/R | — | `workspace`, `repo`, `pane_id` |
 | `graft-status` | R/R | — | — |
 | `ping` | R/R | — | — |
+| `restart-old-terminals` | R/R | — | — |
 | `plugin` | R/R | — | `action`, `text` (JSON object encoded as a string; see [plugins](plugins.md)) |
 | `web-open` | R/R | `url` (non-empty) | `pane_id`, `private`, `target`, `direction` |
 | `web-navigate` | R/R | pane-target*; `url` (non-empty) | — |
@@ -1446,6 +1447,27 @@ ignores unless it understands them (`packages/daemon/src/handlers/app/ping.ts:33
 - `terminals` `{live, agents, running, waiting}`: live terminals (panes with a PTY) and the agent
   sessions among them. `kelpid stop` reads it to say what a stop ends (#311); an older daemon
   omits it, which a reader treats as unknown, never as none.
+- `terminal_hosts` `{current, old}` (#372): `current` is `{pid, protocol, version}` of the
+  terminal host new terminals start on, or null when they run in-process; `old` lists hosts of
+  an older generation still draining (`docs/terminal-host.md` §11), each
+  `{pid, protocol, version, reason, started_at, pane_ids, agents, busy_agents}`. Absent from a
+  daemon composed without a terminal host, and from older daemons.
+
+### 6.8.1 `restart-old-terminals` (R/R)
+
+Restart every terminal still on an older terminal host on the current one, then let that host
+exit (#372, `docs/terminal-host.md` §11). Each pane gets a fresh shell in the directory its old
+shell was in, and its Claude or Codex session is resumed as after a restart. No parameters.
+
+```json
+{"command":"restart-old-terminals"}
+→ {"ok":true,"panes":3,"resumed":1}
+```
+
+`panes` counts the panes that got a fresh shell and `resumed` the resume commands typed. With
+nothing draining, or no terminal host at all, it is `{"ok":true,"panes":0,"resumed":0}`. It
+replies after the old host has exited and the resumes are typed, a few seconds; a second request
+meanwhile joins the first. A daemon that is stopping answers `{"ok":false,"error":…}`.
 
 `kelpid status` and the daemon's own startup probe parse these blocks
 (`packages/daemon/src/control/probe.ts:20-108`).

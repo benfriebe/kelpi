@@ -42,7 +42,7 @@ import type { RepoChannel } from './repos.js';
 import type { GraftChannel } from './graft.js';
 import { createTerminalSearchChannel, type TerminalSearchBackend } from './search.js';
 import { createPaneStreamHub, type PaneStreamHub } from './streams.js';
-import type { WsTransportStatus } from '@kelpi/protocol';
+import type { WsOldTerminalHostsMessage, WsTransportStatus } from '@kelpi/protocol';
 
 import { type RemoteChannel } from './remote.js';
 import {
@@ -111,6 +111,12 @@ export interface WsServerOptions {
     readonly repos?: RepoChannel | undefined;
     /** The inspector's graft toggle + orphan banner verbs (`ws/graft.ts`). */
     readonly graftUi?: GraftChannel | undefined;
+    /**
+     * #372: the older terminal hosts still draining (`docs/terminal-host.md` §11), replayed to
+     * each client after its snapshot (an empty list included, so a client that was away while
+     * the host retired drops its notice). Absent = this daemon never drains anything.
+     */
+    readonly oldTerminalHosts?: (() => WsOldTerminalHostsMessage) | undefined;
     /**
      * Reopen-closed-pane / create-scratchpad / reveal-path (`ws/panes.ts`). Those three need a
      * `PaneHandlerContext` (a PTY to spawn, a `TerminalInput` to type the resume command into),
@@ -333,6 +339,7 @@ export function createWsServer(options: WsServerOptions): WsServer {
         remote: options.remote,
         repos: options.repos,
         graftUi: options.graftUi,
+        oldTerminalHosts: options.oldTerminalHosts,
         panes: options.panes,
         desktop: options.desktop,
         // Terminal search reads the SAME `@xterm/headless` buffer the PTY streams and

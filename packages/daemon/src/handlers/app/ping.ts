@@ -14,10 +14,16 @@
  * `terminals` is additive too (#311). `kelpid stop` reads it to say what a stop would end before
  * it sends the signal: a recalled `kelpid stop` once ended 42 terminals and three agents with no
  * question asked.
+ *
+ * So is `terminal_hosts` (#372): the host new terminals start on, and any older one still
+ * draining, which `kelpid status` prints and `kelpid restart-old-terminals` asks about.
+ *
+ * `restart-old-terminals` lives here too: it is the verb that `terminal_hosts` points at.
  */
 
+import type { TerminalHostsReport } from '../../seams.js';
 import { forCommand } from './common.js';
-import { ok, type AppContext, type AppHandler } from './context.js';
+import { fail, ok, type AppContext, type AppHandler } from './context.js';
 
 /** Live terminals and the agent sessions in them, as `ping` reports them (#311). */
 export interface TerminalCounts {
@@ -47,6 +53,23 @@ export function terminalCounts(ctx: Pick<AppContext, 'store' | 'pty'>): Terminal
     return { live, agents, running, waiting };
 }
 
+/** `ping`'s `terminal_hosts`, in the wire's snake_case. */
+export function terminalHostsBody(report: TerminalHostsReport): Record<string, unknown> {
+    return {
+        current: report.current,
+        old: report.old.map((host) => ({
+            pid: host.pid,
+            protocol: host.protocol,
+            version: host.version,
+            reason: host.reason,
+            started_at: host.startedAt,
+            pane_ids: host.paneIDs,
+            agents: host.agents,
+            busy_agents: host.busyAgents
+        }))
+    };
+}
+
 export function pingHandlerEntries(): readonly (readonly [string, AppHandler])[] {
     return [
         forCommand('ping', (_msg, ctx, reply) => {
@@ -63,6 +86,7 @@ export function pingHandlerEntries(): readonly (readonly [string, AppHandler])[]
             // socket or a pane's injected KELPI_SOCKET, is where a doctor learns why.
             const compat = transport?.compat ?? null;
             const paneRoute = transport?.paneRoute ?? null;
+            const hosts = ctx.terminalHosts?.();
             ok(reply, {
                 version: ctx.version.version,
                 build: ctx.version.build,
@@ -82,6 +106,7 @@ export function pingHandlerEntries(): readonly (readonly [string, AppHandler])[]
                 ...(compat === null ? {} : { compat: { path: compat.path, error: compat.error } }),
                 ...(paneRoute === null ? {} : { pane_route: paneRoute }),
                 terminals: terminalCounts(ctx),
+                ...(hosts === undefined ? {} : { terminal_hosts: terminalHostsBody(hosts) }),
                 ...(health === undefined
                     ? {}
                     : {
@@ -97,6 +122,17 @@ export function pingHandlerEntries(): readonly (readonly [string, AppHandler])[]
                           }
                       })
             });
+        }),
+        forCommand('restart-old-terminals', (_msg, ctx, reply) => {
+            const restart = ctx.restartOldTerminals;
+            if (restart === undefined) {
+                ok(reply, { panes: 0, resumed: 0 });
+                return;
+            }
+            restart().then(
+                (outcome) => ok(reply, { panes: outcome.panes, resumed: outcome.resumed }),
+                (error: unknown) => fail(reply, error instanceof Error ? error.message : String(error))
+            );
         })
     ];
 }

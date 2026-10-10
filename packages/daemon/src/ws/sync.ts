@@ -1,4 +1,4 @@
-import { pluginObject, type PluginContext } from '@kelpi/protocol';
+import { pluginObject, type PluginContext, type WsOldTerminalHostsMessage } from '@kelpi/protocol';
 import type { PluginChannel } from '../plugins/service.js';
 /**
  * The state-sync half of the client socket (WP2.7).
@@ -234,6 +234,12 @@ export interface SyncHubOptions {
      * graft engine.
      */
     readonly graftUi?: GraftChannel | undefined;
+    /**
+     * #372: the older terminal hosts still draining (`docs/terminal-host.md` §11), replayed to
+     * each client after its snapshot (an empty list included, so a client that was away while
+     * the host retired drops its notice). Absent = this daemon never drains anything.
+     */
+    readonly oldTerminalHosts?: (() => WsOldTerminalHostsMessage) | undefined;
     /**
      * Terminal scrollback search (`ws/search.ts`) — the daemon side of ⌘F over a shell pane.
      * Absent = `terminal-search` answers "terminal search is not available".
@@ -2143,6 +2149,11 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             // window the terminals follow. This client's own first attach supersedes it.
             if (sizeOwnerID !== null) this.send({ type: 'size-control', ownerClientID: sizeOwnerID });
 
+            // #372: so is an older terminal host still draining; the notice offers its restart.
+            // Sent empty too, so a client that reconnects after the host retired drops its notice.
+            const oldHosts = options.oldTerminalHosts?.();
+            if (oldHosts !== undefined) this.send(oldHosts as unknown as JsonObject);
+
             // Sugar for the Electron shell: claiming the host role in the handshake saves a
             // round-trip and removes the window where the daemon has a client but no host.
             if (this.client?.capabilities?.includes(WEB_HOST_CAPABILITY) === true) {
@@ -2581,6 +2592,13 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             }
 
             const decoded = decodeWireObject(payload);
+
+            // #372: `restart-old-terminals` ends every shell on an older terminal host, in every
+            // workspace, so a paired device may not start one (the `remoteCommand` rule).
+            if (decoded.ok && isRecord(payload) && payload['command'] === 'restart-old-terminals' && this.pairedDevice) {
+                this.send({ type: 'command-reply', id, reply: failure('restart-old-terminals is owner-only') });
+                return;
+            }
 
             // #294: a WS `workspace-create` may name itself so it can be cancelled. Checked
             // before dispatch: a malformed or reused id is refused rather than silently made

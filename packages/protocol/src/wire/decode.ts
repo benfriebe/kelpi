@@ -150,6 +150,11 @@ function decodeCommand(
         paneId === undefined && fields.text('target') === undefined
             ? guard(command, `${command} requires pane_id or target`, 'target')
             : undefined;
+    /**
+     * #375: the GUI marks a navigation the user made (`gesture`). Emitted only when true, so the
+     * decoded shape of every CLI call, which never sends it, is unchanged.
+     */
+    const gesture = (): { gesture?: true } => (fields.flag('gesture', false) ? { gesture: true } : {});
     const requireSelector = (): string | WireRejection => {
         const selector = fields.text('selector');
         return selector ?? guard(command, `${command} requires a non-empty selector`, 'selector');
@@ -531,7 +536,8 @@ function decodeCommand(
                 pane_id: paneId,
                 target: fields.text('target'),
                 direction: parseSplitDirection(fields.text('direction')),
-                focus: fields.flag('focus', false)
+                focus: fields.flag('focus', false),
+                ...gesture()
             };
         }
         case 'web-navigate': {
@@ -539,11 +545,21 @@ function decodeCommand(
             if (failure) return failure;
             const url = fields.nonEmpty('url');
             if (url === undefined) return guard(command, 'web-navigate requires a non-empty url', 'url');
-            return { command, ...scope(), url };
+            return {
+                command,
+                ...scope(),
+                url,
+                ...gesture(),
+                ...(fields.flag('typed', false) ? { typed: true as const } : {})
+            };
+        }
+        case 'web-back':
+        case 'web-forward': {
+            const failure = requireTargetable();
+            if (failure) return failure;
+            return { command, ...scope(), ...gesture() } as WireMessage;
         }
         case 'web-url':
-        case 'web-back':
-        case 'web-forward':
         case 'web-tabs':
         case 'web-cookies-list': {
             const failure = requireTargetable();
@@ -553,7 +569,7 @@ function decodeCommand(
         case 'web-reload': {
             const failure = requireTargetable();
             if (failure) return failure;
-            return { command, ...scope(), hard: fields.flag('hard', false) };
+            return { command, ...scope(), hard: fields.flag('hard', false), ...gesture() };
         }
         case 'web-capture': {
             const failure = requireTargetable();
@@ -567,7 +583,8 @@ function decodeCommand(
                 command,
                 ...scope(),
                 url: fields.rawText('url') ?? '',
-                make_active: fields.flag('make_active', true)
+                make_active: fields.flag('make_active', true),
+                ...gesture()
             };
         }
         case 'web-tab-close':

@@ -79,7 +79,9 @@ describe('replaceable browser feature', () => {
         await waitFor(() => expect(screen.getByTestId(`native-${P}`).dataset.embedded).toBe('true'));
         choose(); expect(screen.getByTestId(`plugin-${P}`).dataset.embedded).toBe('true');
         expect(released).toHaveBeenCalledWith(P,'native');
-        expect(shown.get(P)?.tabs[0]?.id).toBe(T); expect(h.raw).not.toHaveBeenCalled();
+        expect(shown.get(P)?.tabs[0]?.id).toBe(T);
+        // Nothing but the bundled URL bar's prefill read (#375), which changes no tab or session.
+        expect(h.raw.mock.calls.filter(([payload]) => payload.command !== 'web-history-typed-list')).toEqual([]);
         view.unmount(); render(draw(h));
         await waitFor(() => expect(screen.getByTestId(`plugin-${P}`).dataset.embedded).toBe('true'));
         choose('kelpi.web'); expect(screen.getByTestId(`native-${P}`)).toBeDefined();
@@ -205,5 +207,23 @@ describe('replaceable browser feature', () => {
         choose(); fireEvent.keyDown(screen.getByTestId(`plugin-${P}`),{key:'l',code:'KeyL',metaKey:true});
         expect(nativeKey).not.toHaveBeenCalled();
         await act(async () => {});
+    });
+
+    it('reads its own daemon prefill list, and a newer broadcast beats a slow seed read (#375)', async () => {
+        const h = make(), seed = pending<Record<string, unknown>>();
+        const github = { url: 'https://github.com/', title: 'GitHub', kind: 'origin' };
+        const gitlab = { url: 'https://gitlab.com/', title: 'GitLab', kind: 'origin' };
+        h.raw.mockImplementation((payload: { command: string }) =>
+            payload.command === 'web-history-typed-list' ? seed.promise : Promise.resolve({ ok: true }));
+        render(draw(h));
+        await waitFor(() => expect(h.raw).toHaveBeenCalledWith({ command: 'web-history-typed-list' }));
+        expect(shown.get(P)?.historyTyped).toEqual([]);
+        act(() => h.emit('message', { type: 'web-history-typed', entries: [gitlab] }));
+        expect(shown.get(P)?.historyTyped).toEqual([gitlab]);
+        await act(async () => seed.resolve({ ok: true, entries: [github] }));
+        expect(shown.get(P)?.historyTyped).toEqual([gitlab]);
+        // A replacement chrome has its own address bar, so the list is not kept for it.
+        choose();
+        expect(shown.get(P)?.historyTyped).toEqual([]);
     });
 });

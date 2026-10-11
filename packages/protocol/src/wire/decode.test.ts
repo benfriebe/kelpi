@@ -765,6 +765,24 @@ describe('web pane commands', () => {
         expect(rejected({ command: 'web-navigate', url: 'https://x.test' }).reason).toBe('guard');
     });
 
+    it('carries the GUI gesture and typed marks only when they are true (#375)', () => {
+        const navigate = { command: 'web-navigate', pane_id: PANE, url: 'https://x.test' };
+        // The CLI's shape is untouched: no key at all, not `gesture: false`.
+        expect(ok(navigate)).not.toHaveProperty('gesture');
+        expect(ok(navigate)).not.toHaveProperty('typed');
+        expect(ok({ ...navigate, gesture: false, typed: false })).not.toHaveProperty('gesture');
+        expect(ok({ ...navigate, gesture: true, typed: true })).toMatchObject({ gesture: true, typed: true });
+        for (const command of ['web-back', 'web-forward', 'web-reload', 'web-tab-new']) {
+            expect(ok({ command, pane_id: PANE })).not.toHaveProperty('gesture');
+            expect(ok({ command, pane_id: PANE, gesture: true })).toMatchObject({ command, gesture: true });
+        }
+        expect(ok({ command: 'web-open', url: 'https://x.test', gesture: true })).toMatchObject({ gesture: true });
+        // `typed` means nothing outside `web-navigate`.
+        expect(ok({ command: 'web-back', pane_id: PANE, typed: true })).not.toHaveProperty('typed');
+        // A wrong-typed known key poisons the message, as for every other field (§7).
+        expect(rejected({ ...navigate, gesture: 'yes' }).reason).not.toBe('guard');
+    });
+
     it('applies web defaults', () => {
         expect(ok({ command: 'web-reload', pane_id: PANE })).toMatchObject({ hard: false });
         expect(ok({ command: 'web-capture', pane_id: PANE })).toMatchObject({ mode: 'meta' });

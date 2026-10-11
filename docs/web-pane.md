@@ -3,7 +3,7 @@
 This document specifies the web pane as Kelpi implements it today. Where the behaviour lives (TypeScript):
 
 - `packages/daemon/src/webpane/handlers.ts`: all `kelpi web *` socket handlers; `packages/daemon/src/ws/web-ui.ts` and `packages/daemon/src/ws/sync.ts`: the GUI-only WS verbs (batch inspect lifecycle, find, zoom, stop, dev tools, favourites, cookie writes, console subscriptions)
-- `packages/daemon/src/webpane/*`: `service.ts` (the host RPC seam and event routing), `console.ts` + `ring.ts` (console buffer), `inspect.ts` (arm, queue, sanitiser, paste format), `batch.ts` (element pickup sessions), `find.ts` (needle memory), `favourites.ts`, `resolve.ts` (pane/tab resolution), `host.ts` (host registry, timeouts)
+- `packages/daemon/src/webpane/*`: `service.ts` (the host RPC seam and event routing), `console.ts` + `ring.ts` (console buffer), `inspect.ts` (arm, queue, sanitiser, paste format), `batch.ts` (element pickup sessions), `find.ts` (needle memory), `favourites.ts`, `history.ts` (browsing history, §14a), `resolve.ts` (pane/tab resolution), `host.ts` (host registry, timeouts)
 - `packages/daemon/src/store/reducers/web.ts`, `reducers/panes.ts`, `reducers/url.ts`: per-workspace web state (tabs, navigation, URL/title mirroring, open/close, URL normalization)
 - `packages/protocol/src/wire/decode.ts`: wire parsing for the `web-*` command family
 - `packages/cli/src/commands/web.ts`, `packages/cli/src/routing.ts`: the `kelpi web` / `kelpi open` CLI surface
@@ -23,7 +23,8 @@ Three layers of state:
 2. **Daemon runtime state** (`WebPaneService`, `packages/daemon/src/webpane/service.ts:140-149`; never persisted):
    - the per-pane console ring buffer and its follow subscribers (`console.ts`), shared by `kelpi web console --follow` and the WS `web-console-subscribe` stream (§9.3);
    - the inspector arm `{tabID, nonce, sendTo, submit}` (`inspect.ts:67-75`): `submit` ("append Enter after pasting the inspect payload", set by `kelpi web inspect --submit`) is a field of the arm rather than a separate map;
-   - the inspect-result queue (cap 32), the batch-inspect session (`batch.ts`), the remembered find needle (`find.ts`), and the host RPC registry (`host.ts`).
+   - the inspect-result queue (cap 32), the batch-inspect session (`batch.ts`), the remembered find needle (`find.ts`), and the host RPC registry (`host.ts`);
+   - per tab, who drove it last and what it last showed, for the browsing history (§14a). The history itself is persisted, in its own file.
    The URL-bar focus request (⌘L, blank-pane open) is client-side state, not daemon state: a per-pane request token (`packages/client/src/App.tsx:924`) whose bump tells the pane's chrome to focus + select-all the URL bar, and a diff of the on-screen blank web panes against the last snapshot for fresh opens (`packages/client/src/webpane/hooks.ts:179-217`).
 3. **Host runtime** (Electron shell, `packages/shell/src/webhost/registry.ts`): the actual browser views, one `WebContentsView` + CDP session per tab, all sharing the pane's cookie/storage store, keyed by pane UUID then tab UUID. The daemon announces every web pane to the host as soon as the host registers (`service.ts:334-345`) or the pane is created (`service.ts:366-373`), and the host builds one view per tab immediately, not lazily (`registry.ts:111-131`); a re-announced pane is reconciled in place so live pages survive. Views survive UI rebuilds and workspace switches and are destroyed only when the pane closes (or when private mode flips). "The view isn't built yet" therefore means "no host is attached": wire reads fall back to state (`web-url`), cookie reads answer empty, and everything that needs a live page fails with `no web pane host connected` (§8.7).
 
@@ -471,11 +472,11 @@ Requests below omit the scope fields (`pane_id`/`target`/`workspace`) for brevit
 
 | Command | Request extras | Reply extras / behavior |
 |---|---|---|
-| `web-open` | `url` (required non-empty), `private?`, `target?` + `direction?` (GUI anchor, §3.3) | §3.3. Reply sent before the pane exists. |
-| `web-navigate` | `url` (required) | `{tab_id, url:<normalized>}`; navigates active tab. Reply is sent once the host acks the navigate (still before the load finishes, `handlers.ts:232-256`); the normalized URL is written to state first. |
+| `web-open` | `url` (required non-empty), `private?`, `target?` + `direction?` (GUI anchor, §3.3), `focus?`, `gesture?` (§14a) | §3.3. Reply sent before the pane exists. |
+| `web-navigate` | `url` (required), `gesture?`, `typed?` (§14a) | `{tab_id, url:<normalized>}`; navigates active tab. Reply is sent once the host acks the navigate (still before the load finishes, `handlers.ts:232-256`); the normalized URL is written to state first. |
 | `web-url` | — | `{tab_id, url, title}`: live values read from the host; falls back to state's active-tab url/title when no host is attached or the host answers `ok:false` (`handlers.ts:259-288`). |
-| `web-back` / `web-forward` | — | `{}` ack (optimistic; a no-op when history can't move still acks ok). |
-| `web-reload` | `hard?` | `{}` ack. **Exception (§5.2, issue #76):** when the active tab's `live` is `false` the daemon does not forward a `reload` RPC at all: the host has no view to reload and would answer `web pane has no live tab`. It calls `rebuildPane` and replies `{tab_id, rebuilt:true}` straight away. Never rate-limited: only the AUTOMATIC rebuild is. |
+| `web-back` / `web-forward` | `gesture?` (§14a) | `{}` ack (optimistic; a no-op when history can't move still acks ok). |
+| `web-reload` | `hard?`, `gesture?` (§14a) | `{}` ack. **Exception (§5.2, issue #76):** when the active tab's `live` is `false` the daemon does not forward a `reload` RPC at all: the host has no view to reload and would answer `web pane has no live tab`. It calls `rebuildPane` and replies `{tab_id, rebuilt:true}` straight away. Never rate-limited: only the AUTOMATIC rebuild is. |
 | `web-capture` | `mode` (default `meta`) | §8.4. Unknown mode → `unknown capture mode 'x' (allowed: meta, text, screenshot, dom, all)`. |
 | `web-tabs` / `web-tab-new` / `web-tab-close` / `web-tab-select` | §5.1 | §5.1 |
 | `web-console` | `since?`, `level?`, `clear?`, `follow?` | §9 |
@@ -787,6 +788,44 @@ Domain matching everywhere uses `canonicalDomain` = strip one leading `.`.
 
 ---
 
+## 14a. Browsing history (issue #375)
+
+The pages the **user** navigated to, kept so the URL bar can prefill an address and suggest pages while it is typed into (§16.2). Nothing an agent drives is ever recorded.
+
+### 14a.1 Which navigations are recorded
+
+Every tab has a driver, held in `WebPaneService` (never persisted): `user`, `agent`, or `none`. A page state is a visit only while the tab's driver is `user`, the pane is not private, and the page's address CHANGED (a reload, or `did-finish-load` repeating the commit, is not a visit) or the URL bar's submit committed (typing the address already showing counts). A same-document change (no `status`: `pushState`, `replaceState`, a fragment) also needs a press since the tab's last recorded visit (a click, a key, or a chrome navigation): Firefox's flooding rule, which keeps a map rewriting its URL as it pans, or a page canonicalising its own address, out of the history. A tab's trail made by a page event (after a daemon restart) starts at the address the tab already shows, so that page re-reporting itself is not a change.
+
+- **`user`**: a GUI command carrying `gesture: true` (`web-navigate`, `web-back`, `web-forward`, `web-reload`, `web-tab-new`, `web-open`), or a press inside the page: a click (`view-focus`) or a key (`user-input`, HOST_PROTOCOL.md). No agent verb synthesises input into a page (the actuator is an injected script, `web-exec` is page JS, nothing calls `sendInputEvent` or CDP `Input.*`), so a press is a person.
+- **`agent`**: the same verbs without `gesture` (the CLI never sends it), the page-moving actuator verbs (`web-click`, `web-type`, `web-select`, `web-key`, `web-hover`, `web-scroll`), `web-exec`, and every plugin browser call that can move a page (`tabs.open`, `navigate`, `back`, `forward`, `reload`, `exec`). Read-only verbs (`web-url`, `web-capture`, `web-q-*`, `web-wait`, `web-console`, `web-tabs`) leave the driver alone.
+- **`none`**: a tab nobody has driven since it was built or rebuilt. Every rebuild the daemon causes resets the pane's tabs to `none`: a host registering (`syncHost` replays every pane), `rebuildPane` (§5.2), and a private flip or pane replacement (`trackPages`). Each reloads its stored URL, and neither that reload nor wherever it redirects (an expired session landing on a login page) is the user going anywhere. A restored pane starts `none` for the same reason.
+- A page's popup (`open-tab`: a middle-click, a `target=_blank`) inherits the driver of the tab that opened it.
+- Plugins cannot claim to be the user: a plugin-sourced WS command has `gesture` and `typed` stripped before decode, and every `web-history-*` verb is refused to it, and the plugin browser API marks the tab the agent's. A plugin-replaced browser chrome's own navigations are therefore not recorded. (A browser chord relayed from a plugin view, such as Back or Reload, runs the window's own command and carries `gesture`, like the same chord pressed anywhere else.)
+
+So a link the user clicks in a page an agent loaded is recorded (the click makes the tab theirs), but the agent's page is not. Known edge: a click in the page while an agent's own `web-navigate` is still in flight hands that page to the user.
+
+**Typed.** `typed: true` (URL bar submit, a picked suggestion) marks the tab's next committed document as typed. Only a commit answers it (the page state carrying `status`, i.e. `did-navigate`), or a same-document change to exactly the address submitted (a typed `…/page#section` on that page commits nothing), so the previous page finishing its load cannot take it. It is cleared by any other driver mark, by the tab's `nav-state loading:false` after a load started (the load failed: a failed load sends no page state), and after `TYPED_COMMIT_WINDOW_MS` (60 s). A typed bare address (`wiki.corp.example/x`) opens at the scheme, and `www.`, history remembers for its host (`rememberedAddress`), so a prefilled `http://` site is not reopened as `https://`; a typed `www.` stands. Only for the URL bar: a CLI address is normalised the ordinary way (§4.1).
+
+**Skipped.** Schemes other than `http`, `https`, `file`; URLs over 2,000 characters; the `user:pass@` part (stripped); any URL whose query, or query-shaped fragment, carries a credential parameter (`code`, `token`, `access_token`, `id_token`, `password`, `secret`, `signature`, `X-Amz-Signature` and the like: an OAuth callback, an implicit-flow fragment, a magic link, a presigned URL). A 4xx/5xx document (`status` ≥ 400) is stored but never suggested, until a later successful load of the same URL.
+
+### 14a.2 Storage and ranking
+
+`web-history.db`, a SQLite file beside the daemon database (in memory for a `:memory:` daemon; an unopenable file is reported and replaced by memory so the daemon still boots). Not a table in the main database (that file is cleared and reinserted on every save and shares the legacy migration ledger), and not JSON like favourites (it is written on every navigation and grows).
+
+- `urls(url UNIQUE, match_url, title, title_match, host, origin, visit_count, typed_count, last_visit, frecency, hidden)` and `visits(url_id, time, source)`, `source` = `typed` | `link`.
+- `match_url` is the address lowercased with the scheme, a leading `www.` and trailing slashes dropped; variants sharing it are one suggestion and one removal.
+- Frecency (Firefox's current algorithm): the last 10 visits, weighted typed 100 / link 50, each decayed with a 30-day half-life, averaged and multiplied by `visit_count`; stored as the day the score will have decayed to 1, so one column orders every row with no daily recompute.
+- Visits older than 90 days expire (at open, then at most daily as visits are recorded); counts and frecency drop with them; a URL with no visits left is deleted; a 10,000-URL cap prunes the lowest frecency.
+
+### 14a.3 Prefill set and suggestions (WS only, pane-less like favourites)
+
+- **Prefill set** (`web-history-typed-list` → `{ok, entries:[{url, title, kind}]}`, and the `web-history-typed` broadcast whenever it changes): every origin (`https://host/`, one per host folding http/https and `www.`) with at least one typed visit, plus every full URL typed at least twice (Chrome's rule), non-hidden, best first, capped at 500. The client prefills from it with no round trip.
+- **Suggestions** (`web-history-query {text, limit?}` → `{ok, text, entries:[{url, title}]}`, limit 8 by default, 20 at most): every whitespace-separated word (a typed scheme or `www.` ignored) must appear in `match_url` or the title, case-insensitive; word-boundary matches first, then matches anywhere, each by frecency; hidden rows excluded. The reply echoes `text` so a client can drop one that arrives after the field moved on.
+- `web-history-remove {url, site?}` → `{ok, removed}` forgets the URL, every variant and every visit (Shift+Delete in the dropdown); with `site: true`, every page on the URL's host (Shift+Delete on a prefilled site, since one typed page is enough to prefill it). `web-history-clear` → `{ok}` forgets everything (Settings → Web), then checkpoints the write-ahead log and vacuums (`secure_delete` is on), so a clear leaves nothing on disk. Neither acknowledges a deletion its database did not make: a failed one answers `ok:false`.
+- History belongs to the daemon, so every window and every paired device shares it, like favourites.
+
+---
+
 ## 15. Persistence & pane close/reopen
 
 ### 15.1 Database
@@ -835,9 +874,21 @@ Narrow panes (owner-directed, `WebPane.tsx:228-295`): the row measures itself an
 The bar shows `displayedURL` (live engine URL, filtered: empty/`about:blank` updates are ignored so a failed load keeps showing what the user tried). Reconciliation rules (`packages/client/src/webpane/WebPane.tsx:457-489`):
 
 - Track `lastWritten` = what the client last wrote into the field. When the underlying URL changes: if the field is focused AND its content differs from `lastWritten` (user mid-edit), do NOT overwrite, stash as `pending` and apply it when editing ends (blur), so an abandoned draft doesn't stick around. Otherwise overwrite immediately (tab switches update the bar even while focused-but-untouched; mere focus via ⌘L/click is not "editing").
-- Enter submits the raw field text → navigate (normalization happens downstream); any pending URL is discarded (the navigation will surface the canonical URL).
+- Enter submits the raw field text → navigate (normalization happens downstream); any pending URL is discarded (the navigation will surface the canonical URL). The submit carries `gesture: true` and `typed: true` (§14a); so does picking a suggestion.
 - ⌘L (focus token bump): focus the field and select all.
 - Placeholder "Enter URL"; monospaced 11pt.
+
+**Prefill (#375).** The field shows `draft + completion`, the completion selected, so the next keystroke replaces it and Backspace removes it. `completion` is its own state, never part of `draft`, so the reconciliation above still reads only the user's typing; every write of `draft` from outside (a URL landing, a blur) drops it. Rules (`packages/client/src/webpane/history.ts`):
+
+- Computed only for an `insertText` input with the caret at the end and no IME composition: a delete, a paste or a composition clears it.
+- Candidates: the daemon's prefill set (§14a.3, the `web-history-typed` broadcast plus a seed read, which each `BrowserFeaturePane` takes from its own runtime so remote and phone windows have it too), then the site of every favourite it does not already name. No round trip per keystroke.
+- Sites first: until the typed text reaches a `/` after the host only origins complete (`gi` → `github.com/`); after it only full URLs do, one path segment at a time (fill up to the next `/`). A case-insensitive prefix match on the address without its scheme and `www.`; a typed scheme must be the candidate's own. The user's capitalisation stands. An address typed exactly (or a site typed to its last character) fills nothing, even when a longer candidate ranks higher: all of `amazon.com` never opens `amazon.com.au`.
+- Shift+Delete (or Shift+Backspace) with no row highlighted acts on the prefill: a prefilled site is forgotten whole (`web-history-remove {site:true}`), a prefilled address alone; a favourite's site is only dropped.
+- Accepted by → or End, a click that leaves a caret, and Return (which opens the field, prefill included). Escape and blur drop it.
+
+**Suggestions (#375).** While the user is typing an address (`HistorySuggestions.tsx`), a list hangs under the field: up to 8 rows, matching favourites first (at most 3), then `web-history-query` rows, one per page (scheme / `www.` / trailing-slash variants folded), minus the row equal to what the field is prefilling. One query per keystroke; a reply whose echoed `text` no longer matches the field is dropped. ↑/↓ move the highlight (hover only tints a row, so a list opening under a resting pointer never changes what Return does); Return opens the highlighted row; Escape closes the list until the next keystroke; Shift+Delete or Shift+Backspace (a Mac keyboard has no forward Delete) on a highlighted history row removes it and every visit (`web-history-remove`), and history rows show a ✕ on hover. Favourites are never removed from here. Rows act on `mousedown` with the default prevented, so the field keeps the caret. The list covers the native page, so it registers with `useOverlayPresence` and the pane shows its poster (§16.1, `poster.ts`) while it is up; it stays registered for the whole typed edit, as an invisible one-row box when nothing matches, so the page is photographed once per edit rather than on every appearance.
+
+**Settings → Web** has a Browsing history section: "Clear browsing history…" (with an inline confirm) sends `web-history-clear` and says "Browsing history cleared." only once the daemon answers `ok` ("Could not clear the browsing history." otherwise; the daemon never acknowledges a removal or a clear its database did not make), and the copy says that only pages the user navigates to are kept and that history is shared by every window and paired device.
 
 ### 16.3 Load progress strip
 

@@ -55,6 +55,12 @@ import {
 } from './favourites.js';
 import { createWebFindState, type WebFindAction, type WebFindState } from './find.js';
 import {
+    createWebHistoryStore,
+    type PrefillEntry,
+    type WebHistoryStore,
+    type WebHistoryStoreOptions
+} from './history.js';
+import {
     createInspectState,
     formatForPaste,
     sanitizeInspectPayload,
@@ -95,6 +101,12 @@ export interface WebPaneServiceOptions {
     /** The favourites list changed (a star toggle, a rename, a reorder). */
     readonly onFavouritesChanged?: ((favourites: readonly Favourite[]) => void) | undefined;
     /**
+     * #375: where `web-history.db` lives (`./history.ts`). Absent = in memory, like favourites.
+     */
+    readonly history?: Pick<WebHistoryStoreOptions, 'path' | 'openDatabase'> | undefined;
+    /** #375: the URL bar's prefill set changed: the sync hub fans it out to every client. */
+    readonly onHistoryPrefillChanged?: ((entries: readonly PrefillEntry[]) => void) | undefined;
+    /**
      * WEB-032/WEB-033/WEB-034: a tab's live loading + history state, per tab.
      *
      * Ephemeral by nature — it is the browser's opinion at this instant, not persisted state and
@@ -122,6 +134,16 @@ export interface WebViewFocus {
     /** The shell window whose host reported it; null when that host declared no window. */
     readonly windowID: string | null;
 }
+
+/** #375: who last drove a tab. `none` is a tab nobody has driven since it was (re)built. */
+export type TabDriver = 'user' | 'agent' | 'none';
+
+/**
+ * #375: how long the URL bar's submit waits for its document to commit. A load that fails sends
+ * no page state at all, and the `nav-state` that closes it clears the mark sooner; this is the
+ * backstop, so a typed address that never loaded cannot be credited to a later click.
+ */
+export const TYPED_COMMIT_WINDOW_MS = 60_000;
 
 /** One tab's live loading + history state (WEB-032/WEB-033). */
 export interface WebNavState {
@@ -151,6 +173,21 @@ export interface WebPaneService {
     readonly batch: BatchState;
     /** The saved-URL list behind the URL bar's star (WEB-037…WEB-046). */
     readonly favourites: FavouritesStore;
+    /** #375: the pages the user navigated to, behind the URL bar's prefill and suggestions. */
+    readonly history: WebHistoryStore;
+    /**
+     * #375: who last drove this tab. Only a tab the USER drives records history.
+     *
+     * `user` comes from a GUI gesture (`gesture: true` on the wire) or a press inside the page;
+     * `agent` from every other command that can move the page (the CLI, a plugin). `typed` marks
+     * the URL bar's submit, which the tab's next committed document is recorded as.
+     */
+    markDriver(
+        paneID: string,
+        tabID: string,
+        driver: TabDriver,
+        options?: { readonly typed?: boolean; readonly url?: string }
+    ): void;
     /** True when a host is attached (handlers use it to answer `no web pane host connected`). */
     readonly hasHost: boolean;
     /** Last host navigation report for a current tab, available immediately on attach. */
@@ -260,6 +297,32 @@ function paneStateArgs(paneID: string, web: WebPaneState): JsonObject {
     };
 }
 
+/**
+ * #375: what the daemon knows about one tab for history's sake.
+ *
+ * `lastURL` is the last address the page reported, whoever drove it: a visit is a CHANGE of it
+ * (a reload, or `did-finish-load` repeating the commit, is not), and it cannot be read from the
+ * store because `web-navigate` writes its URL there before the page has gone anywhere.
+ */
+interface TabTrail {
+    driver: TabDriver;
+    /** When the URL bar's submit asked for this tab's next document; null when nothing waits. */
+    typedAt: number | null;
+    /** A load has started since the submit, so a load that ENDS without a commit failed. */
+    typedSawLoading: boolean;
+    /** The address submitted, so a typed jump within the page (`#section`) answers the mark. */
+    typedURL: string | null;
+    /**
+     * The user pressed something (or navigated from the chrome) since the last recorded visit.
+     * A same-document change is recorded only after one: Firefox's flooding rule, which keeps a
+     * map rewriting its URL as it pans, or any page's own `replaceState`, out of the history.
+     */
+    pressed: boolean;
+    lastURL: string | null;
+    /** The address the last visit was recorded under, so a late title can follow it. */
+    recordedURL: string | null;
+}
+
 export function createWebPaneService(options: WebPaneServiceOptions = {}): WebPaneService {
     const now = options.now ?? ((): number => Date.now());
     const store = options.store;
@@ -317,6 +380,65 @@ export function createWebPaneService(options: WebPaneServiceOptions = {}): WebPa
         onChange: favourites => { options.onFavouritesChanged?.(favourites); stateChanged(null); }
     });
 
+    const historyStore = createWebHistoryStore({
+        ...(options.history?.path === undefined ? {} : { path: options.history.path }),
+        ...(options.history?.openDatabase === undefined ? {} : { openDatabase: options.history.openDatabase }),
+        now,
+        ...(options.onError !== undefined ? { onError: options.onError } : {}),
+        ...(options.onHistoryPrefillChanged !== undefined ? { onPrefillChanged: options.onHistoryPrefillChanged } : {})
+    });
+
+    /** #375: per pane, per tab. Only tabs of real web panes get one, so it cannot grow unbounded. */
+    const trails = new Map<string, Map<string, TabTrail>>();
+
+    /**
+     * The tab's trail, made on first use. `seed` starts it at the address the tab already shows:
+     * a trail made by a page event (after a daemon restart, say) must not take that page's next
+     * report of its own address as the user going somewhere. A trail made by a navigation the
+     * daemon is about to send starts empty, so the page it lands on is a change.
+     */
+    const trailOf = (paneID: string, tabID: string, seed = false): TabTrail | null => {
+        if (tabID === '') return null;
+        const found = webPaneOf(paneID);
+        const tab = found?.web.tabs.find((candidate) => candidate.id === tabID);
+        if (found === null || tab === undefined) return null;
+        let tabs = trails.get(paneID);
+        if (tabs === undefined) {
+            tabs = new Map();
+            trails.set(paneID, tabs);
+        }
+        let trail = tabs.get(tabID);
+        if (trail === undefined) {
+            trail = {
+                driver: 'none',
+                typedAt: null,
+                typedSawLoading: false,
+                typedURL: null,
+                pressed: false,
+                lastURL: seed && tab.url !== '' ? tab.url : null,
+                recordedURL: null
+            };
+            tabs.set(tabID, trail);
+        }
+        return trail;
+    };
+
+    /**
+     * #375: the daemon is about to make the host rebuild this pane's views (a new host, a dead
+     * renderer, a private flip), and every tab will load its stored URL again. That reload is not
+     * the user going anywhere, and neither is wherever it redirects (an expired session landing on
+     * a login page), so the tab belongs to nobody until somebody drives it.
+     */
+    const resetTrails = (paneID: string): void => {
+        for (const trail of trails.get(paneID)?.values() ?? []) {
+            trail.driver = 'none';
+            trail.typedAt = null;
+            trail.typedURL = null;
+            trail.pressed = false;
+            trail.recordedURL = null;
+        }
+    };
+
     /** Web panes the host has been told about, so a re-render does not re-announce them. */
     const announced = new Set<string>();
 
@@ -358,12 +480,13 @@ export function createWebPaneService(options: WebPaneServiceOptions = {}): WebPa
             for (const tab of web.tabs) if (!tabIDs.has(tab.id)) tabIDs.set(tab.id, ++nextPageGeneration);
             for (const tabID of tabIDs.keys()) if (!web.tabs.some(tab => tab.id === tabID)) tabIDs.delete(tabID);
             tabGenerations.set(pane.id, tabIDs);
-            if (replaced) { navStates.delete(pane.id); findRequests.delete(pane.id); inspectState.disarm(pane.id); }
+            if (replaced) { navStates.delete(pane.id); findRequests.delete(pane.id); inspectState.disarm(pane.id); resetTrails(pane.id); }
             else for (const id of navStates.get(pane.id)?.keys() ?? []) if (!web.tabs.some(tab => tab.id === id)) navStates.get(pane.id)?.delete(id);
+            for (const tabID of trails.get(pane.id)?.keys() ?? []) if (!web.tabs.some(tab => tab.id === tabID)) trails.get(pane.id)?.delete(tabID);
             stateChanged(pane.id);
         }
         for (const paneID of pages.keys()) if (!live.has(paneID)) {
-            pages.delete(paneID); tabGenerations.delete(paneID); navStates.delete(paneID); findRequests.delete(paneID); inspectionRevisions.delete(paneID); stateChanged(paneID);
+            pages.delete(paneID); tabGenerations.delete(paneID); navStates.delete(paneID); findRequests.delete(paneID); inspectionRevisions.delete(paneID); trails.delete(paneID); stateChanged(paneID);
             // Workspace deletion emits workspace-removed, not a pane-removed event for
             // each child. Reconcile against final ownership so every removal closes its
             // native views, while moving a page to another workspace keeps them alive.
@@ -433,6 +556,8 @@ export function createWebPaneService(options: WebPaneServiceOptions = {}): WebPa
     const syncHost = (): void => {
         if (store === undefined) return;
         announced.clear();
+        // #375: every tab is about to reload where it was; none of that is the user's doing.
+        for (const paneID of trails.keys()) resetTrails(paneID);
         for (const workspace of store.getState().workspaces) {
             for (const pane of workspace.panes) {
                 if (pane.type !== 'web') continue;
@@ -489,6 +614,7 @@ export function createWebPaneService(options: WebPaneServiceOptions = {}): WebPa
         if (page) pages.set(paneID, { ...page, generation: ++nextPageGeneration });
         navStates.delete(paneID); findRequests.delete(paneID);
         inspectState.disarm(paneID);
+        resetTrails(paneID);
         rebuiltAt.set(paneID, now());
         for (const tab of found.web.tabs) {
             if (tab.live !== false) continue;
@@ -541,11 +667,71 @@ export function createWebPaneService(options: WebPaneServiceOptions = {}): WebPa
         });
     };
 
+    /**
+     * #375: is this page state a visit, and if so record it.
+     *
+     * A visit is the page's address CHANGING in a tab the user drives, outside a private pane, or
+     * the URL bar's submit committing (typing the address that is already showing counts). The
+     * typed mark is answered only by a committed document, the one page state that carries an
+     * HTTP status (`did-navigate`): the old page finishing its load, or a same-document hop
+     * on it, must not take a mark meant for the address the user just typed.
+     */
+    const historyPageState = (paneID: string, tabID: string, url: unknown, title: unknown, status: unknown): void => {
+        const trail = trailOf(paneID, tabID);
+        if (trail === null) return;
+        if (typeof url === 'string' && url !== '' && url !== 'about:blank') {
+            const changed = url !== trail.lastURL;
+            trail.lastURL = url;
+            const code = typeof status === 'number' ? status : null;
+            // The submit is answered by the next committed document, or by a jump within the page
+            // to exactly the address submitted (`…/page#section` typed on that page commits none).
+            const answersTyped = trail.typedAt !== null && (code !== null || url === trail.typedURL);
+            const typed = answersTyped && trail.typedAt !== null && now() - trail.typedAt <= TYPED_COMMIT_WINDOW_MS;
+            if (answersTyped) {
+                trail.typedAt = null;
+                trail.typedURL = null;
+            }
+            const isPrivate = webPaneOf(paneID)?.web.isPrivate ?? true;
+            // A same-document change needs a press since the last visit (the flooding rule above).
+            const flood = code === null && !typed && !trail.pressed;
+            if (trail.driver !== 'user' || isPrivate || (!changed && !typed) || flood) {
+                if (changed) trail.recordedURL = null;
+                return;
+            }
+            trail.pressed = false;
+            const recorded = historyStore.recordVisit({
+                url,
+                ...(typeof title === 'string' ? { title } : {}),
+                source: typed ? 'typed' : 'link',
+                // Electron reports -1 for a load that is not HTTP (`file:`), which is no status.
+                ...(code !== null && code > 0 ? { status: code } : {})
+            });
+            trail.recordedURL = recorded ? url : null;
+            return;
+        }
+        // A late title follows its visit only while the visit's conditions still hold: the tab may
+        // have gone private, or been taken by an agent, since the address was recorded.
+        if (typeof title !== 'string' || trail.recordedURL === null || trail.recordedURL !== trail.lastURL) return;
+        if (trail.driver !== 'user' || (webPaneOf(paneID)?.web.isPrivate ?? true)) return;
+        historyStore.updateTitle(trail.recordedURL, title);
+    };
+
+    /** #375: the user pressed something inside this tab's page, so the tab is theirs again. */
+    const userDroveTab = (paneID: string, tabID: string | undefined): void => {
+        if (tabID === undefined) return;
+        const trail = trailOf(paneID, tabID, true);
+        if (trail === null) return;
+        trail.driver = 'user';
+        trail.pressed = true;
+    };
+
     const pageStateEvent = (event: HostEventInput): void => {
         if (event.tabID === undefined) return;
         const tabID = event.tabID;
         const url = event.payload['url'];
         const title = event.payload['title'];
+        // #375: before the store takes the new address, so a fresh trail starts at the old one.
+        trailOf(event.paneID, tabID, true);
         if (store !== undefined) {
             const found = webPaneOf(event.paneID);
             if (found !== null) {
@@ -559,6 +745,7 @@ export function createWebPaneService(options: WebPaneServiceOptions = {}): WebPa
                 });
             }
         }
+        historyPageState(event.paneID, tabID, url, title, event.payload['status']);
         // A URL change means a completed navigation: the document (and the find script's state)
         // is new, so a still-open find re-marks itself, and the batch's badges are re-pushed
         // against the new DOM. Both are no-ops when nothing is open (WEB-065, WEB-137).
@@ -591,6 +778,12 @@ export function createWebPaneService(options: WebPaneServiceOptions = {}): WebPa
         }
         options.onNavStateChanged?.(state);
         if (currentTab) stateChanged(event.paneID);
+        // #375: a load that started after the URL bar's submit and ended without committing a
+        // document failed, so the typed mark must not wait for some later page to claim it.
+        const trail = trails.get(event.paneID)?.get(event.tabID);
+        if (trail === undefined || trail.typedAt === null) return;
+        if (state.loading) trail.typedSawLoading = true;
+        else if (trail.typedSawLoading) trail.typedAt = null;
     };
 
     /**
@@ -602,6 +795,8 @@ export function createWebPaneService(options: WebPaneServiceOptions = {}): WebPa
     const viewFocusEvent = (event: HostEventInput): void => {
         const found = webPaneOf(event.paneID);
         if (found === null) return;
+        // #375: a press inside the page is the user's (no agent verb synthesises input).
+        userDroveTab(event.paneID, event.tabID);
         options.onViewFocused?.({
             paneID: event.paneID,
             workspaceID: found.workspaceID,
@@ -802,6 +997,11 @@ export function createWebPaneService(options: WebPaneServiceOptions = {}): WebPa
             makeActive
         });
         host.notify('tab-open', { paneID: event.paneID, tabID, url, makeActive });
+        // #375: a page's popup (a middle-click, a target=_blank) is driven by whoever drove the
+        // page that opened it.
+        const opener = event.tabID === undefined ? undefined : trails.get(event.paneID)?.get(event.tabID);
+        const trail = trailOf(event.paneID, tabID);
+        if (trail !== null && opener !== undefined) trail.driver = opener.driver;
     };
 
     return {
@@ -811,6 +1011,7 @@ export function createWebPaneService(options: WebPaneServiceOptions = {}): WebPa
         find: findState,
         batch: batchState,
         favourites: favouritesStore,
+        history: historyStore,
         get hasHost() {
             return host.hasHost;
         },
@@ -851,6 +1052,19 @@ export function createWebPaneService(options: WebPaneServiceOptions = {}): WebPa
             if (targetChanged || !latest) return { ok: false, error: 'browser find target changed', tab_id: tabID };
             // The tab rides back so a stale count (WEB-063) is recognisable as stale.
             return { ...envelope, tab_id: tabID };
+        },
+
+        markDriver(paneID, tabID, driver, markOptions = {}) {
+            const trail = trailOf(paneID, tabID);
+            if (trail === null) return;
+            trail.driver = driver;
+            // Any other mark, by anyone, ends a typed wait: it was for the submit just made.
+            const typed = driver === 'user' && markOptions.typed === true;
+            trail.typedAt = typed ? now() : null;
+            trail.typedURL = typed ? (markOptions.url ?? null) : null;
+            trail.typedSawLoading = false;
+            // Navigating from the chrome is a press of its own: what it leads to may be recorded.
+            trail.pressed = driver === 'user';
         },
 
         forgetTab(paneID, tabID) {
@@ -971,6 +1185,10 @@ export function createWebPaneService(options: WebPaneServiceOptions = {}): WebPa
                     case 'view-focus':
                         viewFocusEvent(event);
                         return;
+                    case 'user-input':
+                        // #375: a key press inside the page (a click arrives as `view-focus`).
+                        userDroveTab(event.paneID, event.tabID);
+                        return;
                     case 'inspect':
                         inspectEvent(event);
                         return;
@@ -1016,7 +1234,8 @@ export function createWebPaneService(options: WebPaneServiceOptions = {}): WebPa
             unsubscribe();
             host.close();
             consoleStore.close();
-            stateListeners.clear(); navStates.clear(); pages.clear(); tabGenerations.clear(); findRequests.clear(); inspectionRevisions.clear();
+            stateListeners.clear(); navStates.clear(); pages.clear(); tabGenerations.clear(); findRequests.clear(); inspectionRevisions.clear(); trails.clear();
+            historyStore.close();
         }
     };
 }

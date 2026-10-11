@@ -384,7 +384,8 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
             pageState: (paneID, tabID, payload) => {
                 client?.sendEvent('page-state', paneID, tabID, {
                     ...(payload.url === undefined ? {} : { url: payload.url }),
-                    ...(payload.title === undefined ? {} : { title: payload.title })
+                    ...(payload.title === undefined ? {} : { title: payload.title }),
+                    ...(payload.status === undefined ? {} : { status: payload.status })
                 });
             },
             navState: (paneID, tabID, payload) => {
@@ -405,6 +406,13 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
              */
             viewFocus: (paneID, tabID) => {
                 client?.sendEvent('view-focus', paneID, tabID, {});
+            },
+            /**
+             * #375: a key press in the page. Only the daemon's history listens: it is what makes a
+             * tab the user's again after an agent drove it (a click arrives as `view-focus`).
+             */
+            userInput: (paneID, tabID) => {
+                client?.sendEvent('user-input', paneID, tabID, {});
             },
             inspect: (paneID, tabID, payload) => {
                 // Clamped, not reshaped: the nonce and the `cancelled` flag travel untouched (the

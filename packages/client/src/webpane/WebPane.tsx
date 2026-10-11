@@ -27,6 +27,8 @@ import {
     useMemo,
     useRef,
     useState,
+    type ChangeEvent,
+    type KeyboardEvent as ReactKeyboardEvent,
     type MouseEvent as ReactMouseEvent,
     type ReactElement
 } from 'react';
@@ -37,6 +39,16 @@ import type { WebPaneCommands } from './commands';
 import { BookmarksMenu, FavouriteStar } from './FavouritesMenu';
 import type { GeometryRect, GeometryReport } from './geometry';
 import { Glyph, GLYPH_STROKE_MEDIUM, GLYPH_STROKE_SEMIBOLD, type GlyphName } from './glyphs';
+import {
+    inlineCompletionMatch,
+    mergeSuggestions,
+    parseHistoryRows,
+    prefillCandidates,
+    suggestionKey,
+    type WebHistoryEntry,
+    type WebHistorySuggestion
+} from './history';
+import { HistorySuggestions } from './HistorySuggestions';
 import { WebPageSurface } from './WebPageSurface';
 export { insetHoleForFocusRing } from './WebPageSurface';
 import { chromeTextIsFocused, releaseWebChromeCaret, WEB_CHROME_TEXT_ATTRIBUTE } from './priority';
@@ -104,6 +116,11 @@ export interface WebPaneProps {
     readonly favourites?: readonly WebFavourite[] | undefined;
     /** "Manage favourites…" — opens Settings on the Web tab (WEB-038). */
     readonly onManageFavourites?: (() => void) | undefined;
+    /**
+     * #375: the addresses the URL bar may prefill, best first (the daemon's `web-history-typed`
+     * list). Absent = no prefill from history; favourite sites still complete.
+     */
+    readonly historyTyped?: readonly WebHistoryEntry[] | undefined;
 
     // ── WEB-032/WEB-033: the active tab's live browser state ─────────────────
     /** The active tab is loading: the progress strip runs and the reload glyph becomes a stop. */
@@ -152,6 +169,9 @@ function hostOf(url: string): string {
 }
 
 const EMPTY_FAVOURITES: readonly WebFavourite[] = [];
+const EMPTY_HISTORY: readonly WebHistoryEntry[] = [];
+const EMPTY_HISTORY_ROWS: readonly { readonly url: string; readonly title: string }[] = [];
+const EMPTY_SUGGESTIONS: readonly WebHistorySuggestion[] = [];
 const EMPTY_DESTINATIONS: readonly BatchDestination[] = [];
 
 // ── chrome glyphs ───────────────────────────────────────────────────────────────────
@@ -426,6 +446,29 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
     const lastWritten = useRef(liveURL);
     const pending = useRef<string | null>(null);
 
+    /*
+     * #375: the prefill, and the suggestion list.
+     *
+     * `completion` is the selected tail drawn after the draft, and it is deliberately NOT part of
+     * `draft`: §16.2's reconciliation compares `draft` with `lastWritten` to decide whether the
+     * user is mid-edit, and a prefill is not the user's typing. Every write of `draft` from
+     * outside (a URL landing, a blur) drops it, and only three gestures make it the user's: a
+     * caret key that moves past it (→, End), a click that leaves a caret, and Return.
+     */
+    const [completion, setCompletion] = useState('');
+    /** The user has typed into the bar this edit; the list (and the page's park) follow it. */
+    const [typing, setTyping] = useState(false);
+    /** Escape closed the list; the next keystroke reopens it. */
+    const [listDismissed, setListDismissed] = useState(false);
+    const [historyRows, setHistoryRows] = useState<readonly { readonly url: string; readonly title: string }[]>(
+        EMPTY_HISTORY_ROWS
+    );
+    const [highlight, setHighlight] = useState(-1);
+    /** An IME composition is in progress: nothing is prefilled until it commits. */
+    const composing = useRef(false);
+    /** The prefill candidate `completion` came from, for Shift+Delete on the prefill. */
+    const completionEntry = useRef<WebHistoryEntry | null>(null);
+
     useEffect(() => {
         if (editing && draft !== lastWritten.current) {
             // Mid-edit: park it. Applied on blur, so an abandoned draft does not stick around.
@@ -435,23 +478,49 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
         pending.current = null;
         lastWritten.current = liveURL;
         setDraft(liveURL);
+        setCompletion('');
     }, [liveURL, editing, draft]);
+
+    /** The edit is over: no prefill, no list, nothing highlighted. */
+    const endEdit = useCallback(() => {
+        setCompletion('');
+        setTyping(false);
+        setListDismissed(false);
+        setHighlight(-1);
+        setHistoryRows(EMPTY_HISTORY_ROWS);
+    }, []);
 
     const onBlur = useCallback(() => {
         setEditing(false);
+        endEdit();
         const parked = pending.current;
         pending.current = null;
         if (parked === null) return;
         lastWritten.current = parked;
         setDraft(parked);
-    }, []);
+    }, [endEdit]);
 
-    const submit = useCallback(() => {
-        const value = draft.trim();
-        if (value.length === 0) return;
-        // Raw text: normalization is the daemon's (§4.1), the same code path the CLI uses.
-        void commands.navigate(paneID, value);
+    const candidates = useMemo(
+        () => prefillCandidates(props.historyTyped ?? EMPTY_HISTORY, favourites),
+        [props.historyTyped, favourites]
+    );
+    /** The list is up for the whole typed edit, rows or not (`./HistorySuggestions.tsx`). */
+    const listActive = editing && typing && !listDismissed && draft.trim() !== '';
+    const suggestions = useMemo(
+        () =>
+            listActive
+                ? mergeSuggestions({ text: draft.trim(), history: historyRows, favourites, prefilled: draft + completion })
+                : EMPTY_SUGGESTIONS,
+        [listActive, draft, completion, historyRows, favourites]
+    );
+    const highlighted = highlight >= 0 && highlight < suggestions.length ? highlight : -1;
+
+    const navigateTo = useCallback((value: string) => {
+        // Raw text: normalization is the daemon's (§4.1), the same code path the CLI uses. Typed,
+        // for the history (#375): the address came from this bar, typed or picked.
+        void commands.navigate(paneID, value, { typed: true });
         pending.current = null;
+        endEdit();
         /*
          * Return ENDS the edit, and the caret goes to the page - what every browser does, and
          * what the claim effect below cannot do for us.
@@ -480,7 +549,15 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
         // Not for a browser client: it has no native view to hand anything to, and its
         // placeholder card is not somewhere a caret can live.
         if (embedded && tabID !== null) void commands.focusView(paneID, tabID);
-    }, [commands, draft, paneID, active, embedded]);
+    }, [commands, paneID, active, embedded, endEdit]);
+
+    const submit = useCallback(() => {
+        // A highlighted suggestion is what Return opens; otherwise the field, prefill included.
+        const picked = highlighted >= 0 ? suggestions[highlighted] : undefined;
+        const value = picked !== undefined ? picked.url : (draft + completion).trim();
+        if (value.length === 0) return;
+        navigateTo(value);
+    }, [highlighted, suggestions, draft, completion, navigateTo]);
 
     // ── find, storage panel, ⌘L ─────────────────────────────────────────────────────
 
@@ -549,12 +626,145 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
     const onURLMouseDown = useCallback((event: ReactMouseEvent<HTMLInputElement>) => {
         selectOnClickIn.current = event.button === 0 && document.activeElement !== event.currentTarget;
     }, []);
-    const onURLMouseUp = useCallback((event: ReactMouseEvent<HTMLInputElement>) => {
-        if (!selectOnClickIn.current) return;
-        selectOnClickIn.current = false;
-        const input = event.currentTarget;
-        if (input.selectionStart === input.selectionEnd) input.select();
-    }, []);
+    // #375: the prefill becomes the user's text, and the caret moves on past it.
+    const acceptCompletion = useCallback(() => {
+        if (completion === '') return;
+        setDraft(draft + completion);
+        setCompletion('');
+    }, [draft, completion]);
+
+    const onURLMouseUp = useCallback(
+        (event: ReactMouseEvent<HTMLInputElement>) => {
+            const input = event.currentTarget;
+            if (!selectOnClickIn.current) {
+                // A click inside the field that leaves a caret, not a range, takes the prefill.
+                if (input.selectionStart === input.selectionEnd) acceptCompletion();
+                return;
+            }
+            selectOnClickIn.current = false;
+            if (input.selectionStart === input.selectionEnd) input.select();
+        },
+        [acceptCompletion]
+    );
+
+    // ── #375: prefill and suggestions ───────────────────────────────────────────────
+
+    /** Keep the prefill selected, so the next keystroke replaces it and Backspace removes it. */
+    useLayoutEffect(() => {
+        if (completion === '') return;
+        const input = urlRef.current;
+        if (input === null || input.ownerDocument.activeElement !== input) return;
+        input.setSelectionRange(draft.length, draft.length + completion.length);
+    }, [draft, completion]);
+
+    /**
+     * The list's rows: one query per draft while the list is up. The daemon echoes the text it
+     * answered, and an answer for text the field has moved past is dropped rather than shown.
+     */
+    const latestQuery = useRef('');
+    useEffect(() => {
+        const text = draft.trim();
+        latestQuery.current = listActive ? text : '';
+        if (!listActive) return undefined;
+        let cancelled = false;
+        void commands
+            .historyQuery(text)
+            .then((reply) => {
+                if (cancelled || reply['ok'] !== true || reply['text'] !== latestQuery.current) return;
+                setHistoryRows(parseHistoryRows(reply['entries']));
+            })
+            // A query lost to a disconnect just leaves the last rows up; the next keystroke asks again.
+            .catch(() => undefined);
+        return () => {
+            cancelled = true;
+        };
+    }, [draft, listActive, commands]);
+
+    const onURLChange = useCallback(
+        (event: ChangeEvent<HTMLInputElement>) => {
+            const input = event.currentTarget;
+            const value = input.value;
+            const native = event.nativeEvent as { inputType?: unknown; isComposing?: unknown };
+            setDraft(value);
+            setTyping(true);
+            setListDismissed(false);
+            setHighlight(-1);
+            /*
+             * Only a typed character earns a prefill, with the caret at the end. A delete must not
+             * put back what was just deleted (Backspace over a prefill removes it, and only it), a
+             * paste is a whole address already, and an IME composition is not text yet. Chrome and
+             * Firefox draw the same lines.
+             */
+            const typedAtEnd =
+                native.inputType === 'insertText' &&
+                native.isComposing !== true &&
+                !composing.current &&
+                input.selectionStart === value.length &&
+                input.selectionEnd === value.length;
+            const match = typedAtEnd ? inlineCompletionMatch(value, candidates) : null;
+            completionEntry.current = match?.entry ?? null;
+            setCompletion(match?.text ?? '');
+        },
+        [candidates]
+    );
+
+    const removeSuggestion = useCallback(
+        (row: WebHistorySuggestion) => {
+            if (row.favourite) return;
+            void commands.historyRemove(row.url);
+            const key = suggestionKey(row.url);
+            setHistoryRows((current) => current.filter((entry) => suggestionKey(entry.url) !== key));
+        },
+        [commands]
+    );
+
+    const onURLKeyDown = useCallback(
+        (event: ReactKeyboardEvent<HTMLInputElement>) => {
+            if (event.nativeEvent.isComposing) return;
+            const key = event.key;
+            if ((key === 'ArrowRight' || key === 'End') && !event.shiftKey) {
+                acceptCompletion();
+                return;
+            }
+            if (key === 'Escape') {
+                if (completion === '' && !listActive) return;
+                event.preventDefault();
+                setCompletion('');
+                setListDismissed(true);
+                setHighlight(-1);
+                return;
+            }
+            /*
+             * Shift+Delete with nothing highlighted acts on the prefill itself (Chrome's rule), so a
+             * mistyped site can be forgotten: one typed page is enough to prefill a whole site, so
+             * removing it forgets the site. A favourite's site is not history; it is only dropped.
+             */
+            if ((key === 'Delete' || key === 'Backspace') && event.shiftKey && highlighted < 0 && completion !== '') {
+                const entry = completionEntry.current;
+                event.preventDefault();
+                setCompletion('');
+                if (entry !== null && entry.favourite !== true) {
+                    void commands.historyRemove(entry.url, entry.kind === 'origin' ? { site: true } : {});
+                }
+                return;
+            }
+            if (!listActive || suggestions.length === 0) return;
+            if (key === 'ArrowDown' || key === 'ArrowUp') {
+                event.preventDefault();
+                const from = highlighted;
+                setHighlight(key === 'ArrowDown' ? Math.min(suggestions.length - 1, from + 1) : Math.max(-1, from - 1));
+                return;
+            }
+            // Shift+Delete, and Shift+Backspace for a Mac keyboard with no forward Delete key.
+            if ((key === 'Delete' || key === 'Backspace') && event.shiftKey && highlighted >= 0) {
+                const row = suggestions[highlighted];
+                if (row === undefined || row.favourite) return;
+                event.preventDefault();
+                removeSuggestion(row);
+            }
+        },
+        [acceptCompletion, completion, listActive, suggestions, highlighted, removeSuggestion, commands]
+    );
 
     /** The pane's subtree: every chrome text field it can put a caret in is a descendant. */
     const paneRef = useRef<HTMLDivElement | null>(null);
@@ -835,7 +1045,8 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
                         }
                     />
                     <form
-                        className="min-w-0 flex-1"
+                        // `relative`: the suggestion list hangs from the field (#375).
+                        className="relative min-w-0 flex-1"
                         // §S43 (owner-directed): the address's floor, and the release under it.
                         // See `webChromeFit`.
                         style={{ minWidth: chromeFit.urlMinWidth }}
@@ -873,8 +1084,21 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
                                 {...{ [WEB_CHROME_TEXT_ATTRIBUTE]: 'true' }}
                                 className="min-w-0 flex-1 bg-transparent px-2 py-[3px] font-mono text-[11px] outline-none"
                                 style={{ color: tokens.textPrimary }}
-                                value={draft}
-                                onChange={(event) => setDraft(event.target.value)}
+                                aria-autocomplete="both"
+                                aria-activedescendant={
+                                    highlighted >= 0 ? `web-history-row-${paneID}-${String(highlighted)}` : undefined
+                                }
+                                // #375: the prefill is drawn after the draft, selected.
+                                value={draft + completion}
+                                onChange={onURLChange}
+                                onKeyDown={onURLKeyDown}
+                                onCompositionStart={() => {
+                                    composing.current = true;
+                                    setCompletion('');
+                                }}
+                                onCompositionEnd={() => {
+                                    composing.current = false;
+                                }}
                                 // No `select()` here: ⌘L / a blank tab select in the token
                                 // effect, a click in on mouseup (`selectOnClickIn`).
                                 onFocus={() => setEditing(true)}
@@ -890,6 +1114,14 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
                                 onToggle={(url, title) => void commands.favouriteToggle(url, title)}
                             />
                         </div>
+                        <HistorySuggestions
+                            paneID={paneID}
+                            active={listActive}
+                            rows={suggestions}
+                            highlight={highlighted}
+                            onPick={(row) => navigateTo(row.url)}
+                            onRemove={removeSuggestion}
+                        />
                     </form>
                     {/*
                      * L63 — bookmarks is a TOOLBAR BUTTON, outside the address field.

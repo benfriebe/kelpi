@@ -227,6 +227,8 @@ export class PluginBrowser {
             paneFields(['url', 'makeActive']);
             const url = normalizeURLInput(text(args['url'] ?? '', 'url', 8192, true)), makeActive = bool(args['makeActive'], 'makeActive', true), tabID = randomUUID().toUpperCase();
             this.store.dispatch({ type: 'web-tab-open', workspaceID: target.workspaceID, paneID, tabID, url, makeActive });
+            // #375: a plugin is never the user, so nothing it opens enters the browsing history.
+            service.markDriver(paneID, tabID, 'agent');
             service.notify('tab-open', { paneID, tabID, url, makeActive });
             return ok({ tab_id: tabID, url, active: makeActive });
         }
@@ -265,6 +267,9 @@ export class PluginBrowser {
                 : method === 'exec' ? ['script'] : method === 'find' ? ['action', 'needle'] : method === 'zoom' ? ['direction'] : [])]);
             if (method === 'find' || method === 'zoom') text(args['tabID'], 'tabID', 200);
             const selected = tab(), tabID = selected.id;
+            // #375: the verbs that can move the page make the tab the plugin's (an agent's), so
+            // nothing it leads to is recorded, even in a tab the user was browsing.
+            if (['navigate', 'back', 'forward', 'reload', 'exec'].includes(method)) service.markDriver(paneID, tabID, 'agent');
             if (method === 'navigate') {
                 const url = normalizeURLInput(text(args['url'], 'url', 8192, true));
                 if (!service.hasHost) return host('navigate', { paneID, tabID, url }, tabID);

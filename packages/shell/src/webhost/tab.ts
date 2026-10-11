@@ -85,7 +85,14 @@ import {
     type KeyboardOwner,
     type NavFocusGuard
 } from './nav-focus.js';
-import { createViewFocusGate, traceFocus, viewKeyboardRoute, type ViewFocusGate, type ViewFocusGateOptions } from './view-focus.js';
+import {
+    createViewFocusGate,
+    isKeyPressInput,
+    traceFocus,
+    viewKeyboardRoute,
+    type ViewFocusGate,
+    type ViewFocusGateOptions
+} from './view-focus.js';
 import { viewportPinAction, type ViewportPinEvent } from './viewport-pin.js';
 import { tabRequestForWindowOpen, type TabOpenRequest } from './window-open.js';
 
@@ -98,7 +105,11 @@ const REQUEST_CACHE_LIMIT = 512;
 /** Host → daemon events this tab produces (`host-event` payloads, HOST_PROTOCOL §4). */
 export interface TabEventSink {
     console(paneID: string, tabID: string, payload: ConsoleLinePayload): void;
-    pageState(paneID: string, tabID: string, payload: { url?: string; title?: string }): void;
+    /**
+     * `status` is the committed document's HTTP code, on `did-navigate` only (-1 when the load
+     * was not HTTP). It marks the commit, and lets history keep error pages out (#375).
+     */
+    pageState(paneID: string, tabID: string, payload: { url?: string; title?: string; status?: number }): void;
     /**
      * WEB-032/WEB-033: the tab's live loading + history state.
      *
@@ -123,6 +134,8 @@ export interface TabEventSink {
      * fires `focus` twice) — are filtered out before this fires (`./view-focus.ts`).
      */
     viewFocus(paneID: string, tabID: string): void;
+    /** #375: the user pressed a key in this tab's page, so the tab is theirs for history. */
+    userInput(paneID: string, tabID: string): void;
     inspect(paneID: string, tabID: string, payload: Record<string, unknown>): void;
     /**
      * §7.3: a batch badge was clicked, a popover comment was typed, or its Done/Remove was
@@ -601,6 +614,11 @@ class ElectronTab implements HostTab {
                 traceFocus(`raw input event: pane ${this.paneID} tab ${this.tabID} type=${String(type)} embedded=${String(this.embedded)}`);
             }
             this.focusGate.inputEvent({ type, embedded: this.embedded });
+            // #375: a key press in an on-screen page is the user driving this tab. Not throttled:
+            // a dropped press could be exactly the one that followed an agent's action. A held
+            // key's repeats are the same press, already reported.
+            const repeat = (input as { isAutoRepeat?: boolean } | undefined)?.isAutoRepeat === true;
+            if (this.embedded && isKeyPressInput(type) && !repeat) this.events.userInput(this.paneID, this.tabID);
         });
 
         contents.on('focus', () => {
@@ -662,7 +680,7 @@ class ElectronTab implements HostTab {
                     `viewFocused=${String(contents.isFocused())} keyboard=${describeKeyboardOwner(owner)}`
             );
         });
-        contents.on('did-navigate', (_event, url) => {
+        contents.on('did-navigate', (_event, url, httpResponseCode) => {
             // §N29 used to cancel a held focus event here, because a commit takes the keyboard
             // ~1-3 ms before this fires. The gesture is the INPUT now and a commit presses no
             // mouse button, so there is nothing left to cancel.
@@ -683,7 +701,7 @@ class ElectronTab implements HostTab {
             // daemon ignores placeholder URLs (§4.4) but would still take the empty title with it,
             // blanking a restored tab's header for the moment before the real load lands.
             if (url === '' || url === 'about:blank') return;
-            this.events.pageState(this.paneID, this.tabID, { url, title: contents.getTitle() });
+            this.events.pageState(this.paneID, this.tabID, { url, title: contents.getTitle(), status: httpResponseCode });
         });
         contents.on('did-navigate-in-page', (_event, url, isMainFrame) => {
             if (!isMainFrame) return;

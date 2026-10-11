@@ -162,8 +162,10 @@ import {
     resolveClientDistDir,
     WEB_BATCH_MESSAGE,
     WEB_FAVOURITES_MESSAGE,
+    WEB_HISTORY_TYPED_MESSAGE,
     WEB_NAV_STATE_MESSAGE,
     WEB_VIEW_FOCUS_MESSAGE,
+    serializePrefill,
     type GraftChannel,
     type RepoChannel,
     type WsServer
@@ -438,6 +440,11 @@ function parsePortEnv(raw: string | undefined): number | undefined {
 /** §14: `favourites.json` sits beside the database, so it follows every sandbox override. */
 function favouritesPath(databasePath: string): string {
     return join(dirname(databasePath), 'favourites.json');
+}
+
+/** #375: `web-history.db` sits beside the database for the same reason. */
+function historyPath(databasePath: string): string {
+    return join(dirname(databasePath), 'web-history.db');
 }
 
 function initialState(
@@ -833,6 +840,9 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         // (tests, the packaged smoke) keeps them inside its own dir and an in-memory daemon
         // keeps them in memory. See `webpane/favourites.ts` for why not the app-state row.
         ...(dbPath === ':memory:' ? {} : { favourites: { path: favouritesPath(dbPath) } }),
+        // #375: browsing history, in its own SQLite file beside the database (`webpane/history.ts`
+        // says why not a table in it); an in-memory daemon keeps it in memory.
+        ...(dbPath === ':memory:' ? {} : { history: { path: historyPath(dbPath) } }),
         // Both surfaces are daemon state that no `DomainEvent` describes, so they reach clients
         // as their own broadcasts rather than through the delta stream.
         onBatchChanged: (paneID, session) => {
@@ -860,6 +870,10 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
                 type: WEB_FAVOURITES_MESSAGE,
                 favourites: favourites.map(serializeFavourite)
             });
+        },
+        // #375: the URL bar's prefill set, so every window completes from the same addresses.
+        onHistoryPrefillChanged: (entries) => {
+            ws?.broadcast({ type: WEB_HISTORY_TYPED_MESSAGE, entries: serializePrefill(entries) });
         },
         /**
          * §N29: the user clicked into a web pane's PAGE. A native view's click reaches Chromium

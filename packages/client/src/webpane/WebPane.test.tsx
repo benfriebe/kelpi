@@ -56,9 +56,12 @@ const POSTER_REPLY: CommandReply = {
 };
 
 function fakeCommands(
-    options: { poster?: CommandReply } = {}
-): { commands: WebPaneCommands; sent: Recorded[] } {
+    options: { poster?: CommandReply; history?: (text: string) => CommandReply } = {}
+): { commands: WebPaneCommands; sent: Recorded[]; queries: string[] } {
     const sent: Recorded[] = [];
+    // #375: the suggestion list asks on every keystroke, so its queries are kept apart from the
+    // gestures `sent` records.
+    const queries: string[] = [];
     const record =
         (verb: string, reply: CommandReply = { ok: true }) =>
         (...args: unknown[]): Promise<CommandReply> => {
@@ -67,8 +70,14 @@ function fakeCommands(
         };
     return {
         sent,
+        queries,
         commands: {
             navigate: record('navigate'),
+            historyQuery: (text: string): Promise<CommandReply> => {
+                queries.push(text);
+                return Promise.resolve(options.history?.(text) ?? { ok: true, text, entries: [] });
+            },
+            historyRemove: record('historyRemove'),
             back: record('back'),
             forward: record('forward'),
             reload: record('reload'),
@@ -136,7 +145,8 @@ describe('chrome commands', () => {
         fireEvent.change(input, { target: { value: 'example.org' } });
         fireEvent.submit(input);
 
-        expect(sent).toEqual([{ verb: 'navigate', args: [PANE, 'example.org'] }]);
+        // Typed (#375): the address came from the bar, which is what the prefill learns from.
+        expect(sent).toEqual([{ verb: 'navigate', args: [PANE, 'example.org', { typed: true }] }]);
     });
 
     it('parks an incoming URL while the user is mid-edit, and applies it on blur (§16.2)', () => {

@@ -73,9 +73,21 @@ export interface WebCookieWrite {
     readonly expires?: number | undefined;
 }
 
+/**
+ * #375: how a navigation came about, for the daemon's history.
+ *
+ * Every navigation this module sends is a person's gesture, and says so with `gesture: true`:
+ * the daemon records only what a person navigated to, and a command without the flag (the CLI,
+ * an agent, a plugin) leaves no trace. `typed` adds that the address came from the URL bar, typed
+ * or picked from its suggestions, which is what the bar's prefill learns from.
+ */
+export interface WebNavigateOptions {
+    readonly typed?: boolean | undefined;
+}
+
 export interface WebPaneCommands {
     /** URL bar submit. The daemon normalizes the raw text (§4.1), so send it verbatim. */
-    navigate(paneID: string, url: string): Promise<CommandReply>;
+    navigate(paneID: string, url: string, options?: WebNavigateOptions): Promise<CommandReply>;
     back(paneID: string): Promise<CommandReply>;
     forward(paneID: string): Promise<CommandReply>;
     reload(paneID: string, hard?: boolean): Promise<CommandReply>;
@@ -168,17 +180,40 @@ export interface WebPaneCommands {
     favouriteRemove(id: string): Promise<CommandReply>;
     favouriteRename(id: string, title: string): Promise<CommandReply>;
     favouriteMove(from: number, to: number): Promise<CommandReply>;
+
+    // ── history (#375) ──────────────────────────────────────────────────────
+    /** The URL bar's suggestions. The reply echoes `text`, so a stale answer can be dropped. */
+    historyQuery(text: string, limit?: number): Promise<CommandReply>;
+    /**
+     * Shift+Delete on a suggestion: the URL and every visit to it. `site` forgets every page on
+     * the URL's host, for Shift+Delete on a prefilled site.
+     */
+    historyRemove(url: string, options?: { readonly site?: boolean }): Promise<CommandReply>;
+    /** Settings ▸ Web's "Clear browsing history". */
+    historyClear(): Promise<CommandReply>;
+    /** The prefill list's seed read; `web-history-typed` broadcasts keep it current. */
+    historyTypedList(): Promise<CommandReply>;
 }
+
+/** Suggestions the dropdown asks for; the daemon caps the limit too. */
+export const HISTORY_QUERY_LIMIT = 8;
 
 export function createWebPaneCommands(sender: WebCommandSender): WebPaneCommands {
     return {
-        navigate: (paneID, url) => sender.raw({ command: 'web-navigate', pane_id: paneID, url }),
-        back: (paneID) => sender.raw({ command: 'web-back', pane_id: paneID }),
-        forward: (paneID) => sender.raw({ command: 'web-forward', pane_id: paneID }),
+        navigate: (paneID, url, options = {}) =>
+            sender.raw({
+                command: 'web-navigate',
+                pane_id: paneID,
+                url,
+                gesture: true,
+                ...(options.typed === true ? { typed: true } : {})
+            }),
+        back: (paneID) => sender.raw({ command: 'web-back', pane_id: paneID, gesture: true }),
+        forward: (paneID) => sender.raw({ command: 'web-forward', pane_id: paneID, gesture: true }),
         reload: (paneID, hard = false) =>
-            sender.raw({ command: 'web-reload', pane_id: paneID, ...(hard ? { hard: true } : {}) }),
+            sender.raw({ command: 'web-reload', pane_id: paneID, gesture: true, ...(hard ? { hard: true } : {}) }),
         newTab: (paneID, url = '') =>
-            sender.raw({ command: 'web-tab-new', pane_id: paneID, url, make_active: true }),
+            sender.raw({ command: 'web-tab-new', pane_id: paneID, url, make_active: true, gesture: true }),
         selectTab: (paneID, tabRef) =>
             sender.raw({ command: 'web-tab-select', pane_id: paneID, tab: tabRef }),
         closeTab: (paneID, tabRef) => sender.raw({ command: 'web-tab-close', pane_id: paneID, tab: tabRef }),
@@ -308,6 +343,12 @@ export function createWebPaneCommands(sender: WebCommandSender): WebPaneCommands
             sender.raw({ command: 'web-favourite-toggle', url, title }),
         favouriteRemove: (id) => sender.raw({ command: 'web-favourite-remove', id }),
         favouriteRename: (id, title) => sender.raw({ command: 'web-favourite-rename', id, title }),
-        favouriteMove: (from, to) => sender.raw({ command: 'web-favourite-move', from, to })
+        favouriteMove: (from, to) => sender.raw({ command: 'web-favourite-move', from, to }),
+
+        historyQuery: (text, limit = HISTORY_QUERY_LIMIT) => sender.raw({ command: 'web-history-query', text, limit }),
+        historyRemove: (url, options = {}) =>
+            sender.raw({ command: 'web-history-remove', url, ...(options.site === true ? { site: true } : {}) }),
+        historyClear: () => sender.raw({ command: 'web-history-clear' }),
+        historyTypedList: () => sender.raw({ command: 'web-history-typed-list' })
     };
 }

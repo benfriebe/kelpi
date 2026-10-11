@@ -83,6 +83,7 @@ export {
     WEB_CONSOLE_LINE_MESSAGE,
     WEB_FAVOURITES_MESSAGE,
     WEB_GEOMETRY_REPORT_MESSAGE,
+    WEB_HISTORY_TYPED_MESSAGE,
     WEB_HOST_CAPABILITY,
     WEB_NAV_STATE_MESSAGE,
     WEB_VIEW_FOCUS_MESSAGE,
@@ -118,6 +119,7 @@ export {
     type WsOnlyCommandOptions,
     type WsSettingsCommand
 } from './sync.js';
+export { serializePrefill } from './web-ui.js';
 
 export { createAgentChannel, type AgentChannelOptions } from './agents.js';
 export {

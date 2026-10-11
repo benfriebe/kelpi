@@ -2161,7 +2161,9 @@ function Shell(props: AppProps): ReactElement {
                         target: paneID,
                         direction,
                         // #295: the wire default is a background open; this one is a gesture.
-                        focus: true
+                        focus: true,
+                        // #375: and a person's, so what this pane goes on to load is history.
+                        gesture: true
                     })
                 );
             },
@@ -2183,7 +2185,8 @@ function Shell(props: AppProps): ReactElement {
                         url: 'about:blank',
                         private: false,
                         pane_id: paneID,
-                        focus: true
+                        focus: true,
+                        gesture: true
                     })
                 );
             },
@@ -2385,7 +2388,8 @@ function Shell(props: AppProps): ReactElement {
                         pane_id: paneID,
                         target: paneID,
                         direction: 'horizontal',
-                        focus: true
+                        focus: true,
+                        gesture: true
                     })
                 );
             },
@@ -5179,7 +5183,9 @@ function Shell(props: AppProps): ReactElement {
                     actions: {
                         renameFavourite: (id, title) => void webCommands.favouriteRename(id, title),
                         removeFavourite: (id) => void webCommands.favouriteRemove(id),
-                        moveFavourite: (from, to) => void webCommands.favouriteMove(from, to)
+                        moveFavourite: (from, to) => void webCommands.favouriteMove(from, to),
+                        // #375: "cleared" only once the daemon says so.
+                        clearHistory: () => webCommands.historyClear().then(isOkReply, () => false)
                     }
                 }}
                 /* Settings ▸ Remote: the pair/devices/tailnet flow (daemon ws/remote.ts). */

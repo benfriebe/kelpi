@@ -500,11 +500,23 @@ export interface WebOpenMessage {
     direction?: SplitDirection | undefined;
     /** #295: as on `pane-split`; absent means background. */
     focus?: boolean | undefined;
+    /**
+     * #375: the GUI sent this for the user's own gesture. Only then can the page it loads go into
+     * the browsing history; the CLI never sends it, so nothing an agent loads is recorded.
+     */
+    gesture?: true | undefined;
 }
 
 export interface WebNavigateMessage extends PaneTargetScope {
     command: 'web-navigate';
     url: string;
+    /**
+     * #375: the GUI sent this for the user's own gesture. Only then can the page it loads go into
+     * the browsing history; the CLI never sends it, so nothing an agent loads is recorded.
+     */
+    gesture?: true | undefined;
+    /** #375: the URL bar's submit or a picked suggestion, which history ranks as typed. */
+    typed?: true | undefined;
 }
 
 export interface WebUrlMessage extends PaneTargetScope {
@@ -513,15 +525,21 @@ export interface WebUrlMessage extends PaneTargetScope {
 
 export interface WebBackMessage extends PaneTargetScope {
     command: 'web-back';
+    /** #375: as on `web-navigate`. */
+    gesture?: true | undefined;
 }
 
 export interface WebForwardMessage extends PaneTargetScope {
     command: 'web-forward';
+    /** #375: as on `web-navigate`. */
+    gesture?: true | undefined;
 }
 
 export interface WebReloadMessage extends PaneTargetScope {
     command: 'web-reload';
     hard: boolean;
+    /** #375: as on `web-navigate`. */
+    gesture?: true | undefined;
 }
 
 export interface WebCaptureMessage extends PaneTargetScope {
@@ -539,6 +557,8 @@ export interface WebTabNewMessage extends PaneTargetScope {
     /** Empty string = blank tab. */
     url: string;
     make_active: boolean;
+    /** #375: as on `web-navigate`. */
+    gesture?: true | undefined;
 }
 
 export interface WebTabCloseMessage extends PaneTargetScope {

@@ -12,11 +12,15 @@
  *   - reorder is a move, not a swap: the row travels to the new index and everything between it
  *     and there shifts by one (SET-100). Drag is the Swift gesture; here it is drag **plus**
  *     ↑/↓ buttons, because a drag with no keyboard equivalent is unreachable for some users.
+ *
+ * #375 adds the browsing history's one control: clear it. The history itself is never listed
+ * here; the URL bar is where it is used, and Shift+Delete on a suggestion removes one page.
  */
 
 import { useState, type ReactElement, type ReactNode } from 'react';
 
 import { tokens } from '../grid/tokens';
+import { FAILURE_COLOR } from './GlobalHotkeySection';
 import { truncateMiddle, type WebFavourite } from '../webpane';
 import { StarGlyph } from './glyphs';
 import {
@@ -63,6 +67,12 @@ export interface WebTabActions {
     renameFavourite(id: string, title: string): void;
     removeFavourite(id: string): void;
     moveFavourite(from: number, to: number): void;
+    /**
+     * #375: forget every page the web panes have recorded. Absent = no history section, for a
+     * client with no daemon to ask (the button would be a promise nothing keeps). Resolves true
+     * only once the daemon says the history is gone, so "cleared" is never said early.
+     */
+    clearHistory?(): Promise<boolean>;
 }
 
 export interface WebTabProps {
@@ -88,6 +98,9 @@ export function WebTab(props: WebTabProps): ReactElement {
     /** The row being edited and its draft; committing clears it. */
     const [draft, setDraft] = useState<{ id: string; value: string } | null>(null);
     const [dragging, setDragging] = useState<number | null>(null);
+    /** #375: clearing is asked twice (it cannot be undone), and then said once. */
+    const [historyStep, setHistoryStep] = useState<'idle' | 'confirm' | 'clearing' | 'cleared' | 'failed'>('idle');
+    const clearHistory = actions.clearHistory?.bind(actions);
 
     const commit = (favourite: WebFavourite): void => {
         if (draft === null || draft.id !== favourite.id) return;
@@ -230,6 +243,71 @@ export function WebTab(props: WebTabProps): ReactElement {
                     </div>
                 )}
             </SettingsSection>
+
+            {clearHistory === undefined ? null : (
+                <SettingsSection
+                    plain
+                    title="Browsing history"
+                    hint="Pages you open in a web pane, which the URL bar prefills and suggests. Pages an agent or the CLI opens are never recorded, and nor are private panes. History is kept with the daemon, so every window and every paired device shares it."
+                    testID="settings-web-history"
+                >
+                    <div className="flex items-center gap-2 px-2">
+                        {historyStep === 'confirm' ? (
+                            <>
+                                <span className="text-[11px]" style={{ color: tokens.textSecondary }}>
+                                    Clear all browsing history? This cannot be undone.
+                                </span>
+                                <SettingsButton
+                                    testID="settings-web-history-confirm"
+                                    tone="danger"
+                                    onClick={() => {
+                                        setHistoryStep('clearing');
+                                        void clearHistory().then(
+                                            (cleared) => setHistoryStep(cleared ? 'cleared' : 'failed'),
+                                            () => setHistoryStep('failed')
+                                        );
+                                    }}
+                                >
+                                    Clear
+                                </SettingsButton>
+                                <SettingsButton testID="settings-web-history-cancel" onClick={() => setHistoryStep('idle')}>
+                                    Cancel
+                                </SettingsButton>
+                            </>
+                        ) : (
+                            <>
+                                <SettingsButton
+                                    testID="settings-web-history-clear"
+                                    tone="danger"
+                                    onClick={() => setHistoryStep('confirm')}
+                                >
+                                    Clear browsing history…
+                                </SettingsButton>
+                                {historyStep !== 'cleared' ? null : (
+                                    <span
+                                        role="status"
+                                        data-testid="settings-web-history-cleared"
+                                        className="text-[11px]"
+                                        style={{ color: tokens.textSecondary }}
+                                    >
+                                        Browsing history cleared.
+                                    </span>
+                                )}
+                                {historyStep !== 'failed' ? null : (
+                                    <span
+                                        role="alert"
+                                        data-testid="settings-web-history-failed"
+                                        className="text-[11px]"
+                                        style={{ color: FAILURE_COLOR }}
+                                    >
+                                        Could not clear the browsing history.
+                                    </span>
+                                )}
+                            </>
+                        )}
+                    </div>
+                </SettingsSection>
+            )}
 
             <SettingsFooterNote>
                 Favourites live with the daemon, beside its database (by default{' '}

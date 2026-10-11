@@ -42,6 +42,19 @@ export {
 } from './favourites.js';
 
 export {
+    createWebHistoryStore,
+    historyMatchForm,
+    sanitizeHistoryURL,
+    HISTORY_QUERY_DEFAULT_LIMIT,
+    HISTORY_QUERY_MAX_LIMIT,
+    type HistoryEntry,
+    type HistorySource,
+    type PrefillEntry,
+    type WebHistoryStore,
+    type WebHistoryStoreOptions
+} from './history.js';
+
+export {
     FIND_ACTIONS,
     createWebFindState,
     findCountsOf,

@@ -176,6 +176,25 @@ export function webHandlerEntries(deps: AppDeps): readonly (readonly [string, Ap
         );
     };
 
+    /**
+     * #375: whose navigation this is. The GUI marks the user's own gestures (`gesture: true`);
+     * everything else that moves a page, the CLI above all, is an agent's, and nothing an agent
+     * drives enters the browsing history.
+     */
+    const driverOf = (msg: { readonly gesture?: true | undefined }): 'user' | 'agent' =>
+        msg.gesture === true ? 'user' : 'agent';
+
+    /**
+     * #375: an automation verb that can move the page (a click follows a link, a key submits a
+     * form), so the active tab is the agent's from here on. Read-only verbs (`web-q-*`,
+     * `web-wait`) share `actuate` and must not call this.
+     */
+    const agentDrives = (msg: ScopeFields, ctx: AppContext): void => {
+        const resolution = resolveWebPane(ctx.store.getState(), msg);
+        if (!resolution.ok || resolution.target.activeTab === null) return;
+        service.markDriver(resolution.target.paneID, resolution.target.activeTab.id, 'agent');
+    };
+
     return [
         // ── open ────────────────────────────────────────────────────────────
         forCommand('web-open', (msg, ctx, reply) => {
@@ -237,6 +256,7 @@ export function webHandlerEntries(deps: AppDeps): readonly (readonly [string, Ap
                 // `target` names one (Swift parity, above); it just does not take the focus.
                 focus: msg.focus === true
             });
+            service.markDriver(paneID, tabID, driverOf(msg));
             // The pane itself is daemon state; the host learns about it through the store
             // subscription in `./service.ts` (and on its next registration).
             persist();
@@ -250,7 +270,10 @@ export function webHandlerEntries(deps: AppDeps): readonly (readonly [string, Ap
                 fail(reply, NO_HOST_ERROR);
                 return;
             }
-            const url = normalizeURLInput(msg.url);
+            // #375: an address typed into the URL bar keeps the scheme (and `www.`) history has for
+            // its host, so a prefilled `http://` site is not reopened as `https://`.
+            const typed = msg.gesture === true && msg.typed === true;
+            const url = normalizeURLInput(typed ? service.history.rememberedAddress(msg.url) : msg.url);
             const tabID = target.activeTab?.id ?? '';
             // §4.2: the normalized URL is written optimistically, so a save right now (or a
             // host that reconnects later) carries the intent.
@@ -260,6 +283,7 @@ export function webHandlerEntries(deps: AppDeps): readonly (readonly [string, Ap
                 paneID: target.paneID,
                 url
             });
+            service.markDriver(target.paneID, tabID, driverOf(msg), { typed, url });
             persist();
             forward(
                 reply,
@@ -304,6 +328,7 @@ export function webHandlerEntries(deps: AppDeps): readonly (readonly [string, Ap
             const target = resolveScope(ctx, msg, reply, { requireActiveTab: true });
             if (target === null) return;
             const tabID = target.activeTab?.id ?? '';
+            service.markDriver(target.paneID, tabID, driverOf(msg));
             forward(reply, target, 'back', { paneID: target.paneID, tabID }, { tab_id: tabID });
         }),
 
@@ -311,6 +336,7 @@ export function webHandlerEntries(deps: AppDeps): readonly (readonly [string, Ap
             const target = resolveScope(ctx, msg, reply, { requireActiveTab: true });
             if (target === null) return;
             const tabID = target.activeTab?.id ?? '';
+            service.markDriver(target.paneID, tabID, driverOf(msg));
             forward(reply, target, 'forward', { paneID: target.paneID, tabID }, { tab_id: tabID });
         }),
 
@@ -328,6 +354,9 @@ export function webHandlerEntries(deps: AppDeps): readonly (readonly [string, Ap
              * The client's "This page stopped responding" card routes its Reload button through
              * here, so the card's one action and `kelpi web reload` are the same code path.
              */
+            // #375: a reload is never a visit (the address does not change), but an agent's
+            // reload still makes the tab the agent's. A rebuild resets it to nobody's anyway.
+            service.markDriver(target.paneID, tabID, driverOf(msg));
             if (target.activeTab?.live === false && service.rebuildPane(target.paneID)) {
                 ok(reply, { ...baseFields(target), tab_id: tabID, rebuilt: true });
                 return;
@@ -419,6 +448,7 @@ export function webHandlerEntries(deps: AppDeps): readonly (readonly [string, Ap
                 url: msg.url,
                 makeActive: msg.make_active
             });
+            service.markDriver(target.paneID, tabID, driverOf(msg));
             service.notify('tab-open', {
                 paneID: target.paneID,
                 tabID,
@@ -673,6 +703,7 @@ export function webHandlerEntries(deps: AppDeps): readonly (readonly [string, Ap
 
         // ── actuator (§7.4 methods, one host verb) ──────────────────────────
         forCommand('web-click', (msg, ctx, reply) => {
+            agentDrives(msg, ctx);
             const options: JsonObject = {
                 double: msg.double,
                 right: msg.right,
@@ -684,6 +715,7 @@ export function webHandlerEntries(deps: AppDeps): readonly (readonly [string, Ap
         }),
 
         forCommand('web-type', (msg, ctx, reply) => {
+            agentDrives(msg, ctx);
             // §8.2: `replace` is only shipped when false (the JS default is true).
             const options: JsonObject = { submit: msg.submit, ...(msg.replace ? {} : { replace: false }) };
             actuate(msg, ctx, reply, 'type', [msg.selector, msg.text, options]);
@@ -723,19 +755,23 @@ export function webHandlerEntries(deps: AppDeps): readonly (readonly [string, Ap
         }),
 
         forCommand('web-select', (msg, ctx, reply) => {
+            agentDrives(msg, ctx);
             actuate(msg, ctx, reply, 'select', [msg.selector, msg.value_or_label]);
         }),
 
         forCommand('web-scroll', (msg, ctx, reply) => {
+            agentDrives(msg, ctx);
             const options: JsonObject = { block: msg.block, behavior: msg.behavior };
             actuate(msg, ctx, reply, 'scroll', [msg.selector, options]);
         }),
 
         forCommand('web-hover', (msg, ctx, reply) => {
+            agentDrives(msg, ctx);
             actuate(msg, ctx, reply, 'hover', [msg.selector]);
         }),
 
         forCommand('web-key', (msg, ctx, reply) => {
+            agentDrives(msg, ctx);
             const options: JsonObject = msg.selector === undefined ? {} : { selector: msg.selector };
             actuate(msg, ctx, reply, 'key', [msg.key, options]);
         }),
@@ -744,6 +780,8 @@ export function webHandlerEntries(deps: AppDeps): readonly (readonly [string, Ap
             const target = resolveScope(ctx, msg, reply, { requireActiveTab: true });
             if (target === null) return;
             const tabID = target.activeTab?.id ?? '';
+            // #375: a script can navigate as easily as a click can.
+            service.markDriver(target.paneID, tabID, 'agent');
             forward(
                 reply,
                 target,

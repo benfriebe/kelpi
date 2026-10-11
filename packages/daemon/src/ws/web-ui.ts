@@ -19,7 +19,13 @@ import type { JsonObject } from '@kelpi/protocol';
 import { findPaneAnywhere, workspaceByID } from '../store/derived.js';
 import type { DomainStore } from '../seams.js';
 import type { DaemonState, DomainAction, DomainEvent } from '../store/types.js';
-import { isFindAction, serializeBatchSession, serializeFavourite } from '../webpane/index.js';
+import {
+    HISTORY_QUERY_DEFAULT_LIMIT,
+    isFindAction,
+    serializeBatchSession,
+    serializeFavourite,
+    type PrefillEntry
+} from '../webpane/index.js';
 import type { WebPaneChannel } from './sync.js';
 
 type WebStore = DomainStore<DaemonState, DomainAction, DomainEvent>;
@@ -35,6 +41,15 @@ export const FAVOURITE_COMMANDS: ReadonlySet<string> = new Set([
 
 /** Broadcast type for the favourites list (every client's URL-bar star + bookmarks menu). */
 export const WEB_FAVOURITES_MESSAGE = 'web-favourites';
+/** #375: web verbs that address the user's browsing history rather than one pane. */
+export const HISTORY_COMMANDS: ReadonlySet<string> = new Set([
+    'web-history-query',
+    'web-history-remove',
+    'web-history-clear',
+    'web-history-typed-list'
+]);
+/** #375: broadcast type for the URL bar's prefill set (every client's inline completion). */
+export const WEB_HISTORY_TYPED_MESSAGE = 'web-history-typed';
 /** Broadcast type for one pane's batch session (the panel's rows, its focus, its destination). */
 export const WEB_BATCH_MESSAGE = 'web-batch';
 /**
@@ -125,6 +140,48 @@ export function favouritesCommand(
             favourites.move(from, to);
             return favouritesReply(channel);
         }
+    }
+}
+
+// ── #375 browsing history ───────────────────────────────────────────────────────
+
+export function serializePrefill(entries: readonly PrefillEntry[]): JsonObject[] {
+    return entries.map((entry) => ({ url: entry.url, title: entry.title, kind: entry.kind }));
+}
+
+/**
+ * The URL bar's history verbs. Queries answer with the text they were asked for, so a client can
+ * drop a reply that arrives after the field has moved on.
+ */
+export function historyCommand(channel: WebPaneChannel, command: string, payload: Record<string, unknown>): JsonObject {
+    const history = channel.history;
+    switch (command) {
+        case 'web-history-query': {
+            const query = typeof payload['text'] === 'string' ? payload['text'] : '';
+            const limit = integer(payload['limit']) ?? HISTORY_QUERY_DEFAULT_LIMIT;
+            const entries = history.query(query, limit).map((entry) => ({ url: entry.url, title: entry.title }));
+            return { ok: true, text: query, entries };
+        }
+        case 'web-history-remove': {
+            const url = text(payload['url']);
+            if (url === undefined) return failure('web-history-remove requires url');
+            try {
+                // `site: true`: Shift+Delete on a prefilled site forgets all of it (`removeSite`).
+                return { ok: true, removed: payload['site'] === true ? history.removeSite(url) : history.remove(url) };
+            } catch {
+                // Never `ok`: the page is still in the history the user asked to forget it from.
+                return failure('could not remove the page from the browsing history');
+            }
+        }
+        case 'web-history-clear':
+            try {
+                history.clear();
+            } catch {
+                return failure('could not clear the browsing history');
+            }
+            return { ok: true };
+        default:
+            return { ok: true, entries: serializePrefill(history.prefill()) };
     }
 }
 

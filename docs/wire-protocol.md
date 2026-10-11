@@ -514,15 +514,15 @@ carry `"command"`.
 | `ping` | R/R | — | — |
 | `restart-old-terminals` | R/R | — | — |
 | `plugin` | R/R | — | `action`, `text` (JSON object encoded as a string; see [plugins](plugins.md)) |
-| `web-open` | R/R | `url` (non-empty) | `pane_id`, `private`, `target`, `direction` |
-| `web-navigate` | R/R | pane-target*; `url` (non-empty) | — |
+| `web-open` | R/R | `url` (non-empty) | `pane_id`, `private`, `target`, `direction`, `focus`, `gesture` |
+| `web-navigate` | R/R | pane-target*; `url` (non-empty) | `gesture`, `typed` |
 | `web-url` | R/R | pane-target* | — |
-| `web-back` | R/R | pane-target* | — |
-| `web-forward` | R/R | pane-target* | — |
-| `web-reload` | R/R | pane-target* | `hard` |
+| `web-back` | R/R | pane-target* | `gesture` |
+| `web-forward` | R/R | pane-target* | `gesture` |
+| `web-reload` | R/R | pane-target* | `hard`, `gesture` |
 | `web-capture` | R/R | pane-target* | `mode` |
 | `web-tabs` | R/R | pane-target* | — |
-| `web-tab-new` | R/R | pane-target* | `url`, `make_active` |
+| `web-tab-new` | R/R | pane-target* | `url`, `make_active`, `gesture` |
 | `web-tab-close` | R/R | pane-target*; `tab` | — |
 | `web-tab-select` | R/R | pane-target*; `tab` | — |
 | `web-console` | R/R | pane-target* | `since`, `level`, `clear`, `follow` |
@@ -1650,6 +1650,8 @@ other key is ignored. (A known key with the wrong type poisons the whole message
 | `repo_id` | string | `group-set-repo` |
 | `group_defaults` | bool | `workspace-create` |
 | `focus` | bool | `pane-split`, `pane-create`, `open`, `web-open`, `pane-move`, `pane-move-adjacent` (absent = background, #295) |
+| `gesture` | bool | `web-open`, `web-navigate`, `web-back`, `web-forward`, `web-reload`, `web-tab-new` (the GUI's mark for a navigation the user made; only those pages enter the browsing history, #375; the CLI never sends it) |
+| `typed` | bool | `web-navigate` (the URL bar's submit or a picked suggestion, ranked as typed in the browsing history, #375) |
 
 ---
 

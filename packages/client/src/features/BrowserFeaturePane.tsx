@@ -10,6 +10,7 @@ import { tokens } from '../chrome/tokens';
 import { useBrowserShortcuts } from '../app/browser-shortcuts';
 import { isOkReply } from '../connection';
 import { createWebPaneCommands, type WebPaneCommands } from '../webpane/commands';
+import { parseHistoryEntries, parseHistoryTypedMessage, type WebHistoryEntry } from '../webpane/history';
 import { replyBatch } from '../webpane/hooks';
 import { readShellWindowID } from '../webpane/shell-window';
 import { batchDestinations, parseBatchMessage, type WebBatchSession } from '../webpane/state';
@@ -112,6 +113,50 @@ function useBrowserBatch(runtime: KelpiRuntime, paneID: string, commands: WebPan
     return enabled && current?.runtime === runtime && current.paneID === paneID && current.commands === commands ? current.value : null;
 }
 
+const NO_HISTORY: readonly WebHistoryEntry[] = [];
+
+/**
+ * #375: the addresses the URL bar may prefill, from THIS pane's daemon.
+ *
+ * Owned here rather than by the primary window's `useWebPaneUI`, because a remote or phone
+ * workspace renders this pane against a different runtime and the primary window's state is not
+ * its daemon's. Same shape as `useBrowserBatch`: a newer broadcast supersedes an in-flight seed
+ * read, so a slow reply can never put back a list the daemon has already replaced.
+ */
+function useBrowserHistoryTyped(runtime: KelpiRuntime, commands: WebPaneCommands, enabled: boolean): readonly WebHistoryEntry[] {
+    const [current, setCurrent] = useState<{
+        runtime: KelpiRuntime; commands: WebPaneCommands; value: readonly WebHistoryEntry[];
+    } | null>(null);
+    useEffect(() => {
+        if (!enabled) { setCurrent(null); return; }
+        let stopped = false, generation = 0;
+        const publish = (value: readonly WebHistoryEntry[]): void => {
+            if (!stopped) setCurrent({ runtime, commands, value });
+        };
+        const refresh = (): void => {
+            const requested = ++generation;
+            if (!runtime.connection.isConnected) return;
+            void commands.historyTypedList().then(reply => {
+                if (!stopped && requested === generation && runtime.connection.isConnected && isOkReply(reply)) {
+                    publish(parseHistoryEntries(reply['entries']));
+                }
+            }).catch(() => {});
+        };
+        const offMessage = runtime.connection.on('message', message => {
+            const entries = parseHistoryTypedMessage(message);
+            if (entries === null) return;
+            generation++; publish(entries);
+        });
+        const offStatus = runtime.connection.on('status', status => {
+            if (status === 'connected') refresh();
+            else { generation++; publish(NO_HISTORY); }
+        });
+        refresh();
+        return () => { stopped = true; generation++; offMessage(); offStatus(); };
+    }, [runtime, commands, enabled]);
+    return enabled && current?.runtime === runtime && current.commands === commands ? current.value : NO_HISTORY;
+}
+
 /** A plugin replaces browser chrome; the selected native host retains every page and session. */
 export function BrowserFeaturePane(props: BrowserFeaturePaneProps): ReactElement {
     const { runtime, paneID, workspaceID } = props;
@@ -129,6 +174,16 @@ export function BrowserFeaturePane(props: BrowserFeaturePaneProps): ReactElement
     const showFind = useCallback((): void => setFindToken(value => value + 1), []);
     const shortcuts = useBrowserShortcuts({ runtime, paneID, commands, visible: props.visible !== false,
         claimedChords: props.claimedChords, focusAddress, showFind });
+    const layout = useWorkbenchLayout(runtime);
+    const selected = resolveSlot(layout.views, 'browser', layout.selections.browser);
+    const viewID = selected?.id ?? BROWSER_FEATURE.id;
+    const plugin = getCurrentPlugins(runtime).find(item => item.manifest.id === selected?.pluginID);
+    const generation = `${viewID}:${plugin?.revision ?? ''}:${plugin?.instanceID ?? ''}`;
+    const [failure, setFailure] = useState<{ generation: string; message: string } | null>(null);
+    const failed = failure?.generation === generation ? failure : null;
+    const replacement = selected?.pluginID && !failed;
+    // A replacement chrome draws its own address bar; only the bundled one prefills.
+    const historyTyped = useBrowserHistoryTyped(runtime, commands, props.historyTyped === undefined && !replacement);
     const tabs = props.tabs ?? web?.tabs ?? state?.tabs ?? [];
     const activeTabID = props.activeTabID !== undefined ? props.activeTabID : web?.activeTabID ?? state?.activeTabID ?? null;
     const active = state?.tabs.find(tab => tab.id === activeTabID) ?? state?.tabs[0];
@@ -147,16 +202,9 @@ export function BrowserFeaturePane(props: BrowserFeaturePaneProps): ReactElement
         batch: props.batch === undefined ? batch : props.batch,
         batchDestinations: destinations,
         favourites: props.favourites ?? state?.favourites.map(item => ({ ...item, created_at: item.createdAt })) ?? [],
+        historyTyped: props.historyTyped ?? historyTyped,
         findToken: (props.findToken ?? 0) + localFindToken, focusURLToken: (props.focusURLToken ?? 0) + localURLToken,
         onFocusRequest: props.onFocusRequest ?? (id => runtime.focusPane(workspaceID, id)) };
-    const layout = useWorkbenchLayout(runtime);
-    const selected = resolveSlot(layout.views, 'browser', layout.selections.browser);
-    const viewID = selected?.id ?? BROWSER_FEATURE.id;
-    const plugin = getCurrentPlugins(runtime).find(item => item.manifest.id === selected?.pluginID);
-    const generation = `${viewID}:${plugin?.revision ?? ''}:${plugin?.instanceID ?? ''}`;
-    const [failure, setFailure] = useState<{ generation: string; message: string } | null>(null);
-    const failed = failure?.generation === generation ? failure : null;
-    const replacement = selected?.pluginID && !failed;
     const choices = slotViews(layout.views, 'browser').filter(view => !view.container);
     return <div data-browser-pane={paneID} data-browser-renderer={replacement ? viewID : BROWSER_FEATURE.id} className="flex h-full min-h-0 flex-col">
         {choices.length > 1 || failed ? <div className="flex shrink-0 items-center gap-2 border-b px-2 py-1 text-[11px]" style={{ borderColor: tokens.divider }}>

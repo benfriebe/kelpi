@@ -54,9 +54,9 @@ describe('browser shortcuts in replaceable chrome', () => {
         }
         expect(remote.focusAddress).toHaveBeenCalledOnce(); expect(remote.showFind).toHaveBeenCalledOnce();
         expect(remote.raw.mock.calls.map(([payload]) => payload)).toEqual([
-            { command: 'web-reload', pane_id: remote.paneID },
-            { command: 'web-back', pane_id: remote.paneID }, { command: 'web-forward', pane_id: remote.paneID },
-            { command: 'web-tab-new', pane_id: remote.paneID, url: '', make_active: true },
+            { command: 'web-reload', pane_id: remote.paneID, gesture: true },
+            { command: 'web-back', pane_id: remote.paneID, gesture: true }, { command: 'web-forward', pane_id: remote.paneID, gesture: true },
+            { command: 'web-tab-new', pane_id: remote.paneID, url: '', make_active: true, gesture: true },
             { command: 'web-tab-close', pane_id: remote.paneID, tab: remote.tabs[1] },
             { command: 'web-tab-select', pane_id: remote.paneID, tab: remote.tabs[0] },
             { command: 'web-tab-select', pane_id: remote.paneID, tab: remote.tabs[0] },
@@ -92,7 +92,7 @@ describe('browser shortcuts in replaceable chrome', () => {
         const remote = fixture(1), h = host(['super+shift+j=web_back', 'super+shift+l=web_focus_url_bar', 'super+shift+w=web_tab_close', 'super+shift+f=toggle_search']);
         const options = { ...remote.options, host: h };
         for (const code of ['KeyJ', 'KeyL', 'KeyW', 'KeyF']) expect(dispatchBrowserShortcut(key(code, { shiftKey: true }), options)).toBe(true);
-        expect(remote.raw).toHaveBeenCalledExactlyOnceWith({ command: 'web-back', pane_id: remote.paneID });
+        expect(remote.raw).toHaveBeenCalledExactlyOnceWith({ command: 'web-back', pane_id: remote.paneID, gesture: true });
         expect(remote.focusAddress).toHaveBeenCalledOnce(); expect(remote.showFind).toHaveBeenCalledOnce();
         expect(remote.closePane).toHaveBeenCalledExactlyOnceWith({ paneID: remote.paneID });
     });
@@ -106,7 +106,7 @@ describe('browser shortcuts in replaceable chrome', () => {
         }
         expect(remote.raw).not.toHaveBeenCalled();
         expect(dispatchBrowserShortcut(key('KeyR'), { ...remote.options, host: host() })).toBe(true);
-        expect(remote.raw).toHaveBeenCalledExactlyOnceWith({ command: 'web-reload', pane_id: remote.paneID });
+        expect(remote.raw).toHaveBeenCalledExactlyOnceWith({ command: 'web-reload', pane_id: remote.paneID, gesture: true });
     });
 
     it('declines unrelated window/HTML editing chords and consumes blocked, hidden or stale owner actions', () => {

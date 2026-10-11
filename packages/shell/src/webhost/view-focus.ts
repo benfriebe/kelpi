@@ -106,6 +106,21 @@ export function isGestureInput(type: string | undefined | null): boolean {
     return type !== undefined && type !== null && GESTURE_INPUT_TYPES.has(type);
 }
 
+/**
+ * #375: the Electron `InputEvent.type` values that are the user pressing a KEY in the page.
+ *
+ * Not a focus gesture (typing moves no ring, above), but it is how a tab becomes the user's
+ * for history: a form submitted with Enter, a link followed from the keyboard. No agent verb
+ * synthesises input into a page (the actuator is an injected script), so any of these is a
+ * person. `char` and `keyUp` repeat the same press and are left out.
+ */
+const KEY_PRESS_INPUT_TYPES: ReadonlySet<string> = new Set(['rawKeyDown', 'keyDown']);
+
+/** Is this input event the user pressing a key in the page? */
+export function isKeyPressInput(type: string | undefined | null): boolean {
+    return type !== undefined && type !== null && KEY_PRESS_INPUT_TYPES.has(type);
+}
+
 export interface ViewFocusGateOptions {
     /** Called when an input is judged to be the user taking this pane. */
     readonly report: () => void;

@@ -16,7 +16,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { createViewFocusGate, isGestureInput, viewKeyboardRoute, type ViewFocusGate } from './view-focus.js';
+import { createViewFocusGate, isGestureInput, isKeyPressInput, viewKeyboardRoute, type ViewFocusGate } from './view-focus.js';
 
 function harness(): { readonly gate: ViewFocusGate; readonly reports: number[] } {
     const reports: number[] = [];
@@ -180,5 +180,19 @@ describe('handing a view the keyboard without activating the app', () => {
 
     it('does nothing rather than activate the app when the tab has no CDP session', () => {
         expect(viewKeyboardRoute({ windowMayBeKey: false, debuggerAttached: false })).toBe('none');
+    });
+});
+
+describe('the key press that makes a tab the user\'s for history (#375)', () => {
+    it('is the key going DOWN, once per press', () => {
+        expect(ALL_INPUT_TYPES.filter((type) => isKeyPressInput(type))).toEqual(['rawKeyDown', 'keyDown']);
+        expect(isKeyPressInput(undefined)).toBe(false);
+        expect(isKeyPressInput(null)).toBe(false);
+    });
+
+    it('is not a focus gesture: typing still moves no ring', () => {
+        const h = harness();
+        for (const type of ['rawKeyDown', 'keyDown']) h.gate.inputEvent({ type, embedded: true });
+        expect(h.reports).toHaveLength(0);
     });
 });

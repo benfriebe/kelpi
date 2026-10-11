@@ -197,3 +197,59 @@ describe('SET-098 row presentation', () => {
         expect(screen.getByTestId('settings-favourite-url-f1').textContent).toBe('https://alpha.test/');
     });
 });
+
+describe('browsing history (#375)', () => {
+    function withHistory(answer: () => Promise<boolean> = () => Promise.resolve(true)): { cleared: number } {
+        const log = { cleared: 0 };
+        const actions: WebTabActions = {
+            renameFavourite: () => {},
+            removeFavourite: () => {},
+            moveFavourite: () => {},
+            clearHistory: () => {
+                log.cleared += 1;
+                return answer();
+            }
+        };
+        render(<WebTab favourites={LIST} actions={actions} />);
+        return log;
+    }
+
+    it('clears only after it is asked twice, and says so once the daemon has', async () => {
+        let settle: (cleared: boolean) => void = () => {};
+        const log = withHistory(() => new Promise((resolve) => (settle = resolve)));
+        fireEvent.click(screen.getByTestId('settings-web-history-clear'));
+        expect(log.cleared).toBe(0);
+        fireEvent.click(screen.getByTestId('settings-web-history-confirm'));
+        expect(log.cleared).toBe(1);
+        // Not before the daemon answers: a disconnected daemon has cleared nothing.
+        expect(screen.queryByTestId('settings-web-history-cleared')).toBeNull();
+        settle(true);
+        expect((await screen.findByTestId('settings-web-history-cleared')).textContent).toBe('Browsing history cleared.');
+    });
+
+    it('says so when the daemon could not clear it', async () => {
+        withHistory(() => Promise.resolve(false));
+        fireEvent.click(screen.getByTestId('settings-web-history-clear'));
+        fireEvent.click(screen.getByTestId('settings-web-history-confirm'));
+        expect((await screen.findByTestId('settings-web-history-failed')).textContent).toBe('Could not clear the browsing history.');
+        expect(screen.queryByTestId('settings-web-history-cleared')).toBeNull();
+    });
+
+    it('Cancel backs out without clearing', () => {
+        const log = withHistory();
+        fireEvent.click(screen.getByTestId('settings-web-history-clear'));
+        fireEvent.click(screen.getByTestId('settings-web-history-cancel'));
+        expect(log.cleared).toBe(0);
+        expect(screen.getByTestId('settings-web-history-clear')).toBeDefined();
+    });
+
+    it('says the history is shared by every window and paired device', () => {
+        withHistory();
+        expect(screen.getByTestId('settings-web-history').textContent).toContain('every window and every paired device');
+    });
+
+    it('has no history section when there is no daemon to clear it', () => {
+        setup();
+        expect(screen.queryByTestId('settings-web-history')).toBeNull();
+    });
+});

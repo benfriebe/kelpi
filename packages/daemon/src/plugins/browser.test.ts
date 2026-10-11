@@ -70,6 +70,22 @@ describe('native browser plugin contracts', () => {
         expect(await pending).toMatchObject({ ok: true, tab_id: WEB_TAB });
     });
 
+    it('records nothing a plugin moves a page to, even in a tab the user was browsing (#375)', async () => {
+        const h = harness(), host = attachFakeHost(h.service);
+        const record = vi.spyOn(h.service.history, 'recordVisit');
+        for (const [method, args] of [['navigate', { url: 'https://plugin.test/' }], ['back', {}], ['forward', {}], ['reload', {}],
+            ['exec', { script: 'location.href = "/next"' }]] as const) {
+            host.emit('view-focus', WEB_PANE, {}, WEB_TAB);
+            const pending = h.call(method, { tabID: WEB_TAB, ...args });
+            host.emit('page-state', WEB_PANE, { url: `https://plugin.test/${method}`, status: 200 }, WEB_TAB);
+            host.answer({ ok: true });
+            await pending;
+        }
+        const opened = String(pluginObject(await h.call('tabs.open', { url: 'https://plugin-tab.test/' }))['tab_id']);
+        host.emit('page-state', WEB_PANE, { url: 'https://plugin-tab.test/', status: 200 }, opened);
+        expect(record).not.toHaveBeenCalled();
+    });
+
     it('a slow captured-tab read survives ordinary active-tab switches and unrelated tab closes', async () => {
         const h = harness(), host = attachFakeHost(h.service);
         const second = String(pluginObject(await h.call('tabs.open', { url: 'https://other.example' }))['tab_id']);

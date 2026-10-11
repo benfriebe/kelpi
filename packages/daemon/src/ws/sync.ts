@@ -119,11 +119,14 @@ import { isRemoteCommand, type RemoteChannel, type RemoteCommand } from './remot
 import { handleRepoCommand, isOwnerOnlyRepoCommand, isRepoCommand, type RepoChannel, type RepoCommand } from './repos.js';
 import {
     FAVOURITE_COMMANDS,
+    HISTORY_COMMANDS,
     WEB_BATCH_MESSAGE,
     WEB_FAVOURITES_MESSAGE,
+    WEB_HISTORY_TYPED_MESSAGE,
     WEB_NAV_STATE_MESSAGE,
     WEB_VIEW_FOCUS_MESSAGE,
     favouritesCommand,
+    historyCommand,
     webPaneGuiCommand
 } from './web-ui.js';
 import {
@@ -1061,7 +1064,16 @@ export type WebPaneChannel = Pick<
     | 'sendBatch'
     | 'cancelBatch'
     | 'favourites'
+    // #375: the URL bar's prefill set and suggestions. GUI-only like favourites, and refused to
+    // plugins: nothing an agent can reach may read the user's browsing.
+    | 'history'
 >;
+
+/** #375: a plugin's command, with the marks only the user's own gestures may carry removed. */
+function withoutUserMarks(payload: Record<string, unknown>): Record<string, unknown> {
+    const { gesture: _gesture, typed: _typed, ...rest } = payload;
+    return rest;
+}
 
 /**
  * `web-devtools` joins the console pair for the same reason they are here: it is a GUI gesture
@@ -1107,7 +1119,12 @@ export const WEB_COMMANDS = [
     'web-favourite-toggle',
     'web-favourite-remove',
     'web-favourite-rename',
-    'web-favourite-move'
+    'web-favourite-move',
+    // #375 browsing history. Pane-less like favourites.
+    'web-history-query',
+    'web-history-remove',
+    'web-history-clear',
+    'web-history-typed-list'
 ] as const;
 export type WebCommand = (typeof WEB_COMMANDS)[number];
 
@@ -1122,11 +1139,14 @@ export function isWebCommand(command: string): command is WebCommand {
  */
 export {
     FAVOURITE_COMMANDS,
+    HISTORY_COMMANDS,
     WEB_BATCH_MESSAGE,
     WEB_FAVOURITES_MESSAGE,
+    WEB_HISTORY_TYPED_MESSAGE,
     WEB_NAV_STATE_MESSAGE,
     WEB_VIEW_FOCUS_MESSAGE,
     favouritesCommand,
+    historyCommand,
     webPaneGuiCommand
 };
 
@@ -2591,7 +2611,13 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                 }
             }
 
-            const decoded = decodeWireObject(payload);
+            // #375: `gesture` and `typed` say "the user did this", which a plugin never is. They are
+            // dropped rather than refused so a plugin's navigation still runs, as an agent's.
+            const decoded = decodeWireObject(
+                this.commandSource === 'plugin' && isRecord(payload) && ('gesture' in payload || 'typed' in payload)
+                    ? withoutUserMarks(payload)
+                    : payload
+            );
 
             // #372: `restart-old-terminals` ends every shell on an older terminal host, in every
             // workspace, so a paired device may not start one (the `remoteCommand` rule).
@@ -3285,6 +3311,15 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             const settle = (reply: JsonObject): void => {
                 this.send({ type: 'command-reply', id, reply });
             };
+
+            // #375: history is pane-less too, and the user's alone: a plugin (an agent's reach into
+            // the daemon) can neither read it nor clear it.
+            if (HISTORY_COMMANDS.has(command)) {
+                settle(this.commandSource === 'plugin'
+                    ? failure('browsing history is not available to plugins')
+                    : historyCommand(channel, command, payload));
+                return;
+            }
 
             // §14 favourites are a global list, not a pane's: matched before the pane guard.
             if (FAVOURITE_COMMANDS.has(command)) {

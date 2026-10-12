@@ -578,6 +578,15 @@ dock bounce.
 {"command":"stop","pane_id":"1B4E…","background_tasks":2,"session_id":"abc-123"}
 ```
 
+Optional on `stop` (#387): `last_assistant_message` (string, the text of the agent's final
+reply, capped by the CLI at 64 KiB of UTF-8 cut on a code point boundary),
+`last_assistant_message_truncated` (bool, sent only as `true` when the CLI cut the text;
+ignored without a message) and `transcript_path` (string). Empty strings read as absent.
+
+```json
+{"command":"stop","pane_id":"1B4E…","session_id":"abc-123","last_assistant_message":"Done.","transcript_path":"/Users/me/.claude/projects/-work-app/abc-123.jsonl"}
+```
+
 **`error`** — agent error. `message` defaults to `"Unknown error"`.
 
 ```json
@@ -591,6 +600,16 @@ dock bounce.
 {"command":"notification","pane_id":"1B4E…","title":"Claude","body":"Needs approval","background_tasks":1}
 ```
 
+Optional on `notification` (#387): `notification_type` (string, Claude's
+`permission_prompt`, `idle_prompt`, `elicitation_dialog`, …), `transcript_path` (string) and
+`tool_name` (string, the tool a Codex PermissionRequest asks about; sent only with
+`agent:"codex"`). Empty strings read as absent.
+
+```json
+{"command":"notification","pane_id":"1B4E…","title":"Claude Code","body":"Claude needs your permission to use Bash","notification_type":"permission_prompt","transcript_path":"/Users/me/.claude/projects/-work-app/abc-123.jsonl"}
+{"command":"notification","pane_id":"1B4E…","title":"Codex","body":"Approval requested: Bash","agent":"codex","tool_name":"Bash"}
+```
+
 **`session-start`** — bind an agent session id to the pane. `session_id` required
 non-empty; `agent` optional (§5.1); `profile` optional (the CLI's effective
 `KELPI_PROFILE`, empty treated as absent — recorded so a resume can rebuild the
@@ -600,6 +619,14 @@ value).
 ```json
 {"command":"session-start","pane_id":"1B4E…","session_id":"3f2a…","agent":"claude","profile":"work"}
 ```
+
+Optional on `session-start` (#387): `transcript_path` (string, empty treated as absent).
+
+The #387 hook fields are forwarded by `kelpi event` only when the hook's stdin carries them
+(agent-lifecycle.md §3). `notification_type` and `last_assistant_message` are Claude-only:
+they come from Claude Code's documented hook payloads, and a Codex payload is forwarded the
+same way only if it carries the same keys. `transcript_path` is common to both agents'
+payloads; `tool_name` is forwarded only from Codex.
 
 **`session-end`** — the session ended; the app clears the pane's tracked session id
 (and the profile recorded beside it, agent-lifecycle.md §5.6) **only if it still
@@ -1611,6 +1638,11 @@ other key is ignored. (A known key with the wrong type poisons the whole message
 | `session_id` | string | `session-start`, `session-end`, dual-fire on any |
 | `background_tasks` | int | `stop`, `notification` |
 | `agent` | string | `start`, `session-start` (+ dual-fire) |
+| `notification_type` | string | `notification` (#387, Claude-only) |
+| `last_assistant_message` | string | `stop` (#387, Claude-only, at most 64 KiB of UTF-8) |
+| `last_assistant_message_truncated` | bool | `stop` (#387, `true` only when the CLI cut the message) |
+| `transcript_path` | string | `notification`, `stop`, `session-start` (#387) |
+| `tool_name` | string | `notification` (#387, Codex PermissionRequest) |
 | `direction` | string | `pane-split`, `pane-move`, `web-open` (GUI split anchor) |
 | `path` | string | `pane-split`, `pane-create`, `workspace-create`, `open` |
 | `name` | string | `pane-split`/`pane-create` (label), `pane-name` (new label), `workspace-*` (name-or-id or new name), `group-*` (name-or-id), `layout-select` (layout name), `pane-move-to-workspace` (dest ws), `web-cookies-delete` (cookie name) |
@@ -1852,3 +1884,19 @@ saved state keep working:
     they assume a user's click; plugin code that runs without a gesture (a backend reacting to
     events or timers) must pass `focus: false`. A raw plugin `command` follows the wire
     default.
+
+18. **Agent hook fields are additive (issue #387).** `notification` gains `notification_type`,
+    `transcript_path` and `tool_name`; `stop` gains `last_assistant_message`,
+    `last_assistant_message_truncated` and `transcript_path`; `session-start` gains
+    `transcript_path` (§6.1). All are optional and decoded only when present, so a line
+    without them decodes to exactly the message it always did. Compatibility, in each
+    direction:
+    - **Old CLI, new daemon:** the hook never sends the keys, the decoder leaves them off the
+      message, and the daemon behaves as before (decoder tests in
+      `packages/protocol/src/wire/decode.test.ts`).
+    - **New CLI, old daemon:** the keys are unknown to that daemon's decoder and ignored
+      (§2.2), so the event is handled exactly as an older CLI's.
+    - **Same version:** the CLI sends each key only when the hook's stdin carried it as a
+      non-empty string, so a manual `kelpi event stop` stays wire-identical. The largest
+      line is bounded by the CLI's 64 KiB cap on `last_assistant_message`: even escaped
+      six-fold as JSON, far below the 64 MB line limit (§2.1).

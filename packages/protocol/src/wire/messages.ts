@@ -33,6 +33,15 @@ export interface AgentStopMessage {
     command: 'stop';
     pane_id: string;
     background_tasks: number;
+    /**
+     * #387: the text of the agent's final reply (Claude's Stop `last_assistant_message`),
+     * non-empty, capped by the CLI at 64 KiB of UTF-8. Optional: absent from older CLIs.
+     */
+    last_assistant_message?: string | undefined;
+    /** #387: present (and `true`) only when the CLI cut `last_assistant_message` to its cap. */
+    last_assistant_message_truncated?: true | undefined;
+    /** #387: the hook's `transcript_path`, non-empty. Optional: absent from older CLIs. */
+    transcript_path?: string | undefined;
 }
 
 export interface AgentErrorMessage {
@@ -47,6 +56,15 @@ export interface AgentNotificationMessage {
     title: string;
     body: string;
     background_tasks: number;
+    /**
+     * #387: Claude's Notification `notification_type` (`permission_prompt`, `idle_prompt`,
+     * `elicitation_dialog`, ...), non-empty. Optional: absent from older CLIs.
+     */
+    notification_type?: string | undefined;
+    /** #387: the hook's `transcript_path`, non-empty. Optional: absent from older CLIs. */
+    transcript_path?: string | undefined;
+    /** #387: the tool a Codex PermissionRequest asks about, non-empty. Optional. */
+    tool_name?: string | undefined;
 }
 
 export interface SessionStartMessage {
@@ -60,6 +78,8 @@ export interface SessionStartMessage {
      * absent from older CLIs.
      */
     profile?: string | undefined;
+    /** #387: the hook's `transcript_path`, non-empty. Optional: absent from older CLIs. */
+    transcript_path?: string | undefined;
 }
 
 export interface SessionEndMessage {

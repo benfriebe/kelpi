@@ -236,6 +236,118 @@ describe('agent lifecycle events', () => {
     });
 });
 
+/**
+ * #387: optional hook fields on `notification`, `stop` and `session-start`. An older CLI never
+ * sends them, so its lines must decode to exactly the shapes above (no key, not even an
+ * undefined one); a newer CLI's lines reach an older daemon as unknown keys, which §2.2 ignores.
+ * Empty strings read as absent; a wrong-typed value poisons the line like any known key (§2.2).
+ */
+describe('agent hook fields (#387)', () => {
+    const TRANSCRIPT = '/home/user/.claude/projects/-work-app/abc.jsonl';
+
+    it('decodes an older CLI line with no new keys exactly as before', () => {
+        for (const message of [
+            ok({ command: 'stop', pane_id: PANE, background_tasks: 1 }),
+            ok({ command: 'notification', pane_id: PANE, title: 'Claude Code', body: 'hi' }),
+            ok({ command: 'session-start', pane_id: PANE, session_id: 'abc' })
+        ]) {
+            expect(Object.keys(message)).not.toContain('notification_type');
+            expect(Object.keys(message)).not.toContain('last_assistant_message');
+            expect(Object.keys(message)).not.toContain('last_assistant_message_truncated');
+            expect(Object.keys(message)).not.toContain('transcript_path');
+            expect(Object.keys(message)).not.toContain('tool_name');
+        }
+        expect(ok({ command: 'stop', pane_id: PANE })).toStrictEqual({
+            command: 'stop',
+            pane_id: PANE_UPPER,
+            background_tasks: 0
+        });
+    });
+
+    it('decodes the new fields on stop, notification and session-start', () => {
+        expect(
+            ok({
+                command: 'stop',
+                pane_id: PANE,
+                last_assistant_message: 'Done.',
+                last_assistant_message_truncated: true,
+                transcript_path: TRANSCRIPT
+            })
+        ).toStrictEqual({
+            command: 'stop',
+            pane_id: PANE_UPPER,
+            background_tasks: 0,
+            last_assistant_message: 'Done.',
+            last_assistant_message_truncated: true,
+            transcript_path: TRANSCRIPT
+        });
+        expect(
+            ok({
+                command: 'notification',
+                pane_id: PANE,
+                title: 'Claude Code',
+                body: 'Claude needs your permission to use Bash',
+                notification_type: 'permission_prompt',
+                transcript_path: TRANSCRIPT
+            })
+        ).toStrictEqual({
+            command: 'notification',
+            pane_id: PANE_UPPER,
+            title: 'Claude Code',
+            body: 'Claude needs your permission to use Bash',
+            background_tasks: 0,
+            notification_type: 'permission_prompt',
+            transcript_path: TRANSCRIPT
+        });
+        expect(
+            ok({ command: 'notification', pane_id: PANE, agent: 'codex', title: 'Codex', tool_name: 'Bash' })
+        ).toMatchObject({ tool_name: 'Bash' });
+        expect(
+            ok({ command: 'session-start', pane_id: PANE, session_id: 'abc', transcript_path: TRANSCRIPT })
+        ).toMatchObject({ transcript_path: TRANSCRIPT });
+    });
+
+    it('drops empty strings, a false truncated flag, and a flag without a message', () => {
+        const stop = ok({
+            command: 'stop',
+            pane_id: PANE,
+            last_assistant_message: '',
+            last_assistant_message_truncated: true,
+            transcript_path: ''
+        });
+        expect(stop).toStrictEqual({ command: 'stop', pane_id: PANE_UPPER, background_tasks: 0 });
+        expect(
+            ok({ command: 'stop', pane_id: PANE, last_assistant_message: 'x', last_assistant_message_truncated: false })
+        ).not.toHaveProperty('last_assistant_message_truncated');
+        const notification = ok({ command: 'notification', pane_id: PANE, notification_type: '', tool_name: '' });
+        expect(notification).not.toHaveProperty('notification_type');
+        expect(notification).not.toHaveProperty('tool_name');
+        expect(ok({ command: 'session-start', pane_id: PANE, session_id: 'abc', transcript_path: '' })).not.toHaveProperty(
+            'transcript_path'
+        );
+    });
+
+    it('reads null as absent and drops a wrong-typed value with its line', () => {
+        expect(ok({ command: 'stop', pane_id: PANE, last_assistant_message: null })).not.toHaveProperty(
+            'last_assistant_message'
+        );
+        expect(rejected({ command: 'notification', pane_id: PANE, notification_type: 1 })).toMatchObject({
+            reason: 'field-type',
+            field: 'notification_type'
+        });
+        expect(rejected({ command: 'stop', pane_id: PANE, last_assistant_message: ['x'] }).field).toBe(
+            'last_assistant_message'
+        );
+        expect(
+            rejected({ command: 'stop', pane_id: PANE, last_assistant_message: 'x', last_assistant_message_truncated: 'true' })
+                .field
+        ).toBe('last_assistant_message_truncated');
+        expect(rejected({ command: 'session-start', pane_id: PANE, session_id: 'abc', transcript_path: 7 }).field).toBe(
+            'transcript_path'
+        );
+    });
+});
+
 describe('pane commands', () => {
     it('accepts workspace alone for split/create but not for close/name/capture', () => {
         expect(ok({ command: 'pane-split', workspace: 'beta' })).toMatchObject({ workspace: 'beta' });

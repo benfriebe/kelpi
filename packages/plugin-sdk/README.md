@@ -86,6 +86,23 @@ return arrays and mutation helpers unwrap the successful reply. Snapshots retain
 state shape, including epoch/sequence. `agents.reportStart` reports lifecycle state; launching
 arbitrary programs remains an explicit terminal or process operation.
 
+To type into a terminal only if it still shows what you read, read it with its revision and pass
+that back as `ifRevision` on `terminal.send` or `terminal.sendKey`. `terminal.read` resolves to
+`{ text, revision, cursor, altScreen, settled? }`; `settleMs` first waits until the pane has had
+that long without output (capped at 10 s, `settled: false` when the cap came first). If the screen
+changed in between, nothing is typed and the call rejects with `KelpiError` code `SCREEN_CHANGED`,
+whose `details.revision` is the current revision. The revision counts the output the daemon has
+fed the pane, and resizes; it starts again at 0 when the daemon restarts.
+
+```ts
+const screen = await api.terminal.read(pane.paneID, { settleMs: 300 });
+if (screen.text.includes('Continue? [y/N]')) {
+    await api.terminal.send(pane.paneID, 'y', { ifRevision: screen.revision }).catch(error => {
+        if (error.code !== 'SCREEN_CHANGED') throw error; // otherwise read again and decide afresh
+    });
+}
+```
+
 A workspace can be muted so its agents raise no desktop notification, sound or dock bounce:
 `api.workspaces.create({ muted: true })`, `api.workspaces.setMuted(workspaceID, muted?)` (omit
 `muted` to toggle; it resolves with the resulting state) and `muted` on every
@@ -129,6 +146,8 @@ Typed command helpers reject failures with `KelpiError` (`code`, `method`, `deta
 context)` remains compatible with the CLI/UI wire protocol and returns `{ok:false}` replies
 unchanged. Fire-and-forget operations such as layout selection and group rename resolve when
 dispatch is acknowledged; their existing daemon no-op semantics still apply.
+A refusal whose reply carries its own string `code` (such as `SCREEN_CHANGED`, or `PLUGIN_VETO`
+from a command hook) rejects with that code instead of `COMMAND_FAILED`, with the same `details`.
 
 ## Terminal renderers
 

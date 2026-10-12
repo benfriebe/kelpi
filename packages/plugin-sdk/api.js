@@ -43,8 +43,9 @@ export function createKelpiAPI(transport, getContext = () => ({})) {
         if (!reply || typeof reply !== 'object' || typeof reply.ok !== 'boolean') {
             throw new KelpiError(`Invalid reply to ${name}`, { code: 'INVALID_REPLY', method: name, details: reply });
         }
+        // A refusal that names itself (`SCREEN_CHANGED`, `PLUGIN_VETO`) keeps that code.
         if (!reply.ok) throw new KelpiError(reply.error ?? `${name} failed`, {
-            code: 'COMMAND_FAILED', method: name, details: reply,
+            code: typeof reply.code === 'string' ? reply.code : 'COMMAND_FAILED', method: name, details: reply,
         });
         return reply;
     };
@@ -279,8 +280,13 @@ export function createKelpiAPI(transport, getContext = () => ({})) {
         terminal: Object.freeze({
             watch: paneID => call('terminal.watch', { paneID }),
             unwatch: async subscription => { await call('terminal.unwatch', { subscription }); },
-            send: (pane, text, options = {}) => run('pane-send', { ...target(pane), text, bare: options.bare ?? false }),
-            sendKey: (pane, key) => run('pane-send-key', { ...target(pane), key }),
+            send: (pane, text, options = {}) => run('pane-send', { ...target(pane), text, bare: options.bare ?? false, if_revision: options.ifRevision }),
+            sendKey: (pane, key, options = {}) => run('pane-send-key', { ...target(pane), key, if_revision: options.ifRevision }),
+            // #390: the screen with its revision, cursor and alt-screen flag; `settled` only with `settleMs`.
+            read: async (pane, options = {}) => {
+                const { text, revision, cursor, altScreen, settled } = await run('pane-capture', { ...target(pane), lines: options.lines, scrollback: options.scrollback ?? false, settle_ms: options.settleMs });
+                return clean({ text, revision, cursor, altScreen, settled });
+            },
             capture: async (pane, options = {}) => (await run('pane-capture', { ...target(pane), lines: options.lines, scrollback: options.scrollback ?? false })).text,
             sync: (workspaceID, action = 'status') => run('pane-sync', { workspace: workspaceID, action }),
             excludeFromSync: (pane, excluded) => run('pane-sync-exclude', { ...target(pane), excluded }),

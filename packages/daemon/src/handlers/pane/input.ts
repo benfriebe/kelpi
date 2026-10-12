@@ -5,11 +5,17 @@
  * pane id even if the write races a close. `send-key` validates the key name BEFORE resolving,
  * so an unknown key never touches a pane, and answers with a structured error rather than
  * dropping the message. `capture` is the one pane command with an async read.
+ *
+ * Screen revision (#390): `capture` reports the pane's revision with the text it read, and a
+ * `send` / `send-key` carrying `if_revision` writes only while the revision is still that one.
+ * The comparison and the write share one synchronous turn, and the capture flushed before
+ * reading text and revision together, so any byte fed after the capture's read refuses the send.
  */
 
 import { parseNamedKey, unknownNamedKeyError } from '@kelpi/protocol';
 
 import type { CommandHandler, ReplyHandle } from '../../seams.js';
+import type { ScreenCursor } from '../../term/service.js';
 import type { PaneHandlerContext } from './context.js';
 import {
     labelField,
@@ -28,12 +34,18 @@ export const handlePaneSend: CommandHandler<PaneHandlerContext> = (msg, ctx, rep
         return;
     }
     const { paneID, pane, workspace } = resolution;
+    const guard = checkRevision(ctx, paneID, msg.if_revision);
+    if (!guard.ok) {
+        sendError(reply, 'screen changed', { code: 'SCREEN_CHANGED', revision: guard.revision });
+        return;
+    }
 
     sendOK(reply, {
         pane_id: paneID,
         workspace_id: workspace.id,
         workspace_name: workspace.name,
         bare: msg.bare,
+        ...guard.ack,
         ...labelField(pane.label)
     });
 
@@ -57,17 +69,38 @@ export const handlePaneSendKey: CommandHandler<PaneHandlerContext> = (msg, ctx, 
         return;
     }
     const { paneID, pane, workspace } = resolution;
+    const guard = checkRevision(ctx, paneID, msg.if_revision);
+    if (!guard.ok) {
+        sendError(reply, 'screen changed', { code: 'SCREEN_CHANGED', revision: guard.revision });
+        return;
+    }
 
     sendOK(reply, {
         pane_id: paneID,
         workspace_id: workspace.id,
         workspace_name: workspace.name,
         key: named,
+        ...guard.ack,
         ...labelField(pane.label)
     });
 
     ctx.input.sendNamedKey(paneID, named);
 };
+
+type RevisionGuard =
+    | { readonly ok: true; readonly ack: { revision?: number } }
+    | { readonly ok: false; readonly revision: number };
+
+/**
+ * `if_revision` against the pane's revision right now. Absent passes with nothing to add to the
+ * ack, so an unguarded send replies exactly as it always has; a match adds `revision`, which is
+ * how a caller tells a daemon that checked from one that ignored the field.
+ */
+function checkRevision(ctx: PaneHandlerContext, paneID: string, expected: number | undefined): RevisionGuard {
+    if (expected === undefined) return { ok: true, ack: {} };
+    const revision = ctx.term.revision?.(paneID) ?? 0;
+    return revision === expected ? { ok: true, ack: { revision } } : { ok: false, revision };
+}
 
 export const handlePaneCapture: CommandHandler<PaneHandlerContext> = (msg, ctx, reply) => {
     if (msg.command !== 'pane-capture') return;
@@ -77,6 +110,11 @@ export const handlePaneCapture: CommandHandler<PaneHandlerContext> = (msg, ctx, 
     // 1. `lines` guard runs before resolution (raw socket clients can send anything).
     if (msg.lines !== undefined && msg.lines <= 0) {
         sendError(reply, `lines must be a positive integer (got ${msg.lines})`);
+        return;
+    }
+    // ...and so does `settle_ms` (#390). Above the cap is not an error: the service clamps it.
+    if (msg.settle_ms !== undefined && msg.settle_ms <= 0) {
+        sendError(reply, `settle_ms must be a positive integer (got ${msg.settle_ms})`);
         return;
     }
     // 2–3. Resolve, then the defensive pane lookup.
@@ -103,7 +141,8 @@ export const handlePaneCapture: CommandHandler<PaneHandlerContext> = (msg, ctx, 
         workspaceName: workspace.name,
         label: pane.label,
         scrollback: msg.scrollback,
-        lines: msg.lines
+        lines: msg.lines,
+        settleMs: msg.settle_ms
     });
 };
 
@@ -114,12 +153,13 @@ interface CaptureRequest {
     readonly label: string | null;
     readonly scrollback: boolean;
     readonly lines: number | undefined;
+    readonly settleMs: number | undefined;
 }
 
 /**
- * The async half: flush the pane's pending VT writes, read the viewport (or the whole buffer
- * with `--scrollback`), then tail it. A pane that vanished mid-read is the one race §4.7 names
- * explicitly.
+ * The async half: wait for the pane to settle when asked, flush the pane's pending VT writes,
+ * read the viewport (or the whole buffer with `--scrollback`) with its revision and cursor, then
+ * tail it. A pane that vanished mid-read is the one race §4.7 names explicitly.
  */
 async function readCapture(
     ctx: PaneHandlerContext,
@@ -127,12 +167,28 @@ async function readCapture(
     request: CaptureRequest
 ): Promise<void> {
     const { term } = ctx;
+    const opts = { scrollback: request.scrollback };
+    let settled: boolean | undefined;
     let text: string;
+    let revision: number;
+    let cursor: ScreenCursor | null;
     try {
-        text =
-            typeof term.captureAsync === 'function'
-                ? await term.captureAsync(request.paneID, { scrollback: request.scrollback })
-                : term.capture(request.paneID, { scrollback: request.scrollback });
+        if (request.settleMs !== undefined) {
+            settled = term.settle === undefined ? true : await term.settle(request.paneID, request.settleMs);
+        }
+        if (typeof term.flush === 'function') {
+            // Flush, then read everything in this one turn: no byte can be fed between the text
+            // and the revision that describes it.
+            await term.flush(request.paneID);
+            text = term.capture(request.paneID, opts);
+        } else {
+            text =
+                typeof term.captureAsync === 'function'
+                    ? await term.captureAsync(request.paneID, opts)
+                    : term.capture(request.paneID, opts);
+        }
+        revision = term.revision?.(request.paneID) ?? 0;
+        cursor = term.screenCursor?.(request.paneID) ?? null;
     } catch (error) {
         // A read that throws is either the surface-died race (§4.7's named error) or an
         // emulator fault; either way the client must get a line, or it waits for an EOF that
@@ -157,6 +213,10 @@ async function readCapture(
         workspace_id: request.workspaceID,
         workspace_name: request.workspaceName,
         text: tailed,
+        revision,
+        cursor: { row: cursor?.row ?? 0, col: cursor?.col ?? 0 },
+        alt_screen: cursor?.alternate ?? false,
+        ...(settled === undefined ? {} : { settled }),
         ...labelField(request.label)
     });
 }

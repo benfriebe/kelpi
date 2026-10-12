@@ -26,6 +26,7 @@ export {
     type ScreenClearOutcome
 } from './clear-screen.js';
 export {
+    CAPTURE_SETTLE_CAP_MS,
     createTerminalStateService,
     DEFAULT_COLS,
     DEFAULT_ROWS,

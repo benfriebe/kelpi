@@ -390,6 +390,45 @@ describe('pane commands', () => {
         );
     });
 
+    it('decodes #390 settle_ms and if_revision as ints, and leaves them out when not sent', () => {
+        expect(ok({ command: 'pane-capture', target: 'worker', settle_ms: 500 })).toMatchObject({ settle_ms: 500 });
+        expect(ok({ command: 'pane-send', target: 'worker', text: 'y', if_revision: 0 })).toMatchObject({ if_revision: 0 });
+        expect(ok({ command: 'pane-send-key', target: 'worker', key: 'enter', if_revision: 42 })).toMatchObject({
+            if_revision: 42
+        });
+        // Wrong-typed is the usual field-type rejection; the handler judges the value (settle_ms <= 0).
+        expect(rejected({ command: 'pane-capture', target: 'worker', settle_ms: 1.5 }).field).toBe('settle_ms');
+        expect(rejected({ command: 'pane-capture', target: 'worker', settle_ms: '500' }).field).toBe('settle_ms');
+        expect(rejected({ command: 'pane-send', target: 'worker', text: 'y', if_revision: '3' }).field).toBe('if_revision');
+        expect(ok({ command: 'pane-capture', target: 'worker', settle_ms: -1 })).toMatchObject({ settle_ms: -1 });
+        expect(ok({ command: 'pane-capture', target: 'worker', settle_ms: null })).not.toHaveProperty('settle_ms');
+
+        // Absent: exactly the message these requests decoded to before.
+        expect(ok({ command: 'pane-capture', target: 'worker', lines: 5 })).toStrictEqual({
+            command: 'pane-capture',
+            pane_id: undefined,
+            target: 'worker',
+            workspace: undefined,
+            lines: 5,
+            scrollback: false
+        });
+        expect(ok({ command: 'pane-send', pane_id: PANE, target: 'worker', text: 'ls' })).toStrictEqual({
+            command: 'pane-send',
+            pane_id: PANE_UPPER,
+            target: 'worker',
+            workspace: undefined,
+            text: 'ls',
+            bare: false
+        });
+        expect(ok({ command: 'pane-send-key', target: 'worker', key: 'enter' })).toStrictEqual({
+            command: 'pane-send-key',
+            pane_id: undefined,
+            target: 'worker',
+            workspace: undefined,
+            key: 'enter'
+        });
+    });
+
     it('decodes pane-capture and pane-list options', () => {
         expect(ok({ command: 'pane-capture', target: 'worker', workspace: 'beta', lines: 50, scrollback: true })).toEqual(
             {

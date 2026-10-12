@@ -1683,6 +1683,8 @@ other key is ignored. (A known key with the wrong type poisons the whole message
 | `focus` | bool | `pane-split`, `pane-create`, `open`, `web-open`, `pane-move`, `pane-move-adjacent` (absent = background, #295) |
 | `gesture` | bool | `web-open`, `web-navigate`, `web-back`, `web-forward`, `web-reload`, `web-tab-new` (the GUI's mark for a navigation the user made; only those pages enter the browsing history, #375; the CLI never sends it) |
 | `typed` | bool | `web-navigate` (the URL bar's submit or a picked suggestion, ranked as typed in the browsing history, #375) |
+| `settle_ms` | int | `pane-capture` (wait for that much quiet before reading, capped at 10000, #390) |
+| `if_revision` | int | `pane-send`, `pane-send-key` (refuse with `SCREEN_CHANGED` unless the screen revision still matches, #390) |
 
 ---
 

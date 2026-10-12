@@ -100,7 +100,9 @@ export const WIRE_FIELD_TYPES = {
     delete_branches: 'bool',
     batch_ids: 'string[]',
     gesture: 'bool',
-    typed: 'bool'
+    typed: 'bool',
+    settle_ms: 'int',
+    if_revision: 'int'
 } as const satisfies Record<string, WireFieldKind>;
 
 export type WireFieldName = keyof typeof WIRE_FIELD_TYPES;

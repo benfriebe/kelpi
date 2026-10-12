@@ -14,7 +14,8 @@
  *    deterministic ids and timestamps. Production leaves them unset.
  *  - `term`: the seam plus the optional async reads the real `TerminalStateService`
  *    implementation adds (`captureAsync` flushes pending writes first, which is what
- *    `pane capture` wants: bytes written moments ago must be visible).
+ *    `pane capture` wants: bytes written moments ago must be visible; `revision`,
+ *    `screenCursor` and `settle` back its screen revision, cursor and settle wait, #390).
  *
  * Everything else (PTY data → terminal feed, persistence, notification fan-out) is boot's
  * composition; handlers only call seam methods.
@@ -24,6 +25,7 @@ import type { Profile } from '@kelpi/core/config';
 
 import type { HandlerContext, TerminalStateService } from '../../seams.js';
 import type { ScreenClearer } from '../../term/clear-screen.js';
+import type { ScreenCursor } from '../../term/service.js';
 import type { DaemonState, DomainAction, DomainEvent } from '../../store/index.js';
 
 /** Additive reads `TerminalStateServiceImpl` provides on top of the seam. */
@@ -32,6 +34,20 @@ export interface AsyncTerminalReads {
     captureAsync(paneID: string, opts: { scrollback: boolean }): Promise<string>;
     /** True when the pane still has terminal state (capture-race detection). */
     has(paneID: string): boolean;
+    /** Await every write queued so far; `pane-capture` then reads text, cursor and revision at once. */
+    flush?(paneID: string): Promise<void>;
+    /**
+     * The pane's screen revision (#390), read by `pane-capture` and compared by a guarded
+     * `pane-send` / `pane-send-key`. Absent reads as 0.
+     */
+    revision?(paneID: string): number;
+    /** Active screen and cursor, as of everything parsed so far. Absent reads as main screen, 0,0. */
+    screenCursor?(paneID: string): ScreenCursor | null;
+    /**
+     * Resolve once the pane has had no output for `quietMs` (`true`), or at the service's cap
+     * (`false`). Absent resolves `true` at once.
+     */
+    settle?(paneID: string, quietMs: number): Promise<boolean>;
 }
 
 /** Process-level defaults every PTY spawn inherits (terminal-surface.md §2). */

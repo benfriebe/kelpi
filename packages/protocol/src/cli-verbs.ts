@@ -27,3 +27,14 @@ export const BUILTIN_CLI_VERBS: readonly string[] = [
 export function isBuiltinCliVerb(name: string): boolean {
     return BUILTIN_CLI_VERBS.includes(name);
 }
+
+/**
+ * A plugin `contributes.cli` verb name: one lowercase word, the rule the manifest decoder applies.
+ * The CLI screens a word with it before asking the daemon, so a word no plugin could ever declare
+ * (empty, a flag, uppercase, spaced, too long) is unknown without a round trip.
+ */
+export const CLI_VERB_NAME_PATTERN = /^[a-z][a-z0-9-]*$/;
+
+export function isCliVerbName(name: string): boolean {
+    return CLI_VERB_NAME_PATTERN.test(name) && name.length <= 32;
+}

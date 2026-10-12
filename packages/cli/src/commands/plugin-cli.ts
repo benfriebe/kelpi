@@ -8,25 +8,30 @@
  * `{ text?, json?, exitCode?, stderr? }`. `kelpi --help` lists the verbs through `cli-list`.
  *
  * What stays exactly as it was before plugin verbs existed:
- *   - a word starting with `-` is never sent (`kelpi --bogus` is a typo, not a verb);
+ *   - a word no plugin could declare (`isCliVerbName` fails: empty, uppercase, spaced, too long,
+ *     or starting with `-`, so `kelpi --bogus` is a typo, not a verb) is never sent;
  *   - a word no plugin declares prints `Unknown command: <x>` then the usage block, exit 1, so
  *     the first stderr line is still the one harnesses read a misspelled invocation from.
  *
  * Running a verb keeps the pane-route retry (transport.ts `ROUTE_RETRY_WINDOW_MS`) like any
  * built-in command, so a verb run in a pane while the daemon restarts waits for it to come back.
  * Only the `cli-list` request behind `kelpi --help` skips it: with no daemon up, help in a pane
- * answers at once instead of after five seconds.
+ * answers at once instead of after five seconds, and its whole lookup, connect included, is
+ * bounded to 2 s of wall clock (`deadlineMs`), so a peer that stalls or trickles bytes cannot
+ * hold help open.
  */
 
-import { env, originPaneID, setEnv } from '../env.js';
+import { isCliVerbName } from '@kelpi/protocol';
+
+import { env, homeDirectory, originPaneID, setEnv } from '../env.js';
 import { errLine, exit, printLine, writeErr, writeOut } from '../io.js';
 import { asBool, asInt, asObjectArray, asString, parseJsonObject, type JsonObject, type JsonValue } from '../json.js';
-import { sendJSONAndReadReply } from '../transport.js';
+import { printTransportFailure, sendJSONAndReadReply, takeLastTransportFailure, type ReadOptions } from '../transport.js';
 import { globalUsage, pluginVerbsUsage, type PluginVerbListing } from '../usage.js';
 
 /** The same read timeout as `kelpi plugin run`: the verb runs a plugin command. */
 const VERB_TIMEOUT_SECONDS = 35;
-/** `kelpi --help` prints its usage first; the plugin block is dropped past this. */
+/** `kelpi --help` prints its usage first; the plugin block is dropped past this, wall clock. */
 const HELP_TIMEOUT_SECONDS = 2;
 
 /** What a daemon from before plugin verbs answers to the `cli` action: it reads a plugin ID. */
@@ -51,8 +56,8 @@ export function splitJsonSwitch(args: readonly string[]): { argv: string[]; json
     return { argv: [...kept, ...args.slice(head.length)], json: kept.length !== head.length };
 }
 
-function pluginRequest(action: string, input: JsonObject, timeoutSeconds: number): Promise<string | null> {
-    return sendJSONAndReadReply({ command: 'plugin', action, text: JSON.stringify(input) }, { timeoutSeconds });
+function pluginRequest(action: string, input: JsonObject, options: ReadOptions): Promise<string | null> {
+    return sendJSONAndReadReply({ command: 'plugin', action, text: JSON.stringify(input) }, options);
 }
 
 /** `request` with the pane-route retry off, unless `KELPI_ROUTE_RETRY_MS` is set explicitly. */
@@ -70,6 +75,19 @@ function objectOf(value: JsonValue | undefined): JsonObject | undefined {
     return typeof value === 'object' && value !== null && !Array.isArray(value) ? value : undefined;
 }
 
+/**
+ * The caller's directory. `process.cwd()` throws once the shell's directory is removed (as a
+ * deleted workspace's worktree is), so fall back to a non-empty `PWD`, then the home directory.
+ */
+function callerDirectory(): string {
+    try {
+        return process.cwd();
+    } catch {
+        const pwd = env()['PWD'];
+        return pwd !== undefined && pwd.length > 0 ? pwd : homeDirectory();
+    }
+}
+
 function withNewline(text: string): string {
     return text.endsWith('\n') ? text : `${text}\n`;
 }
@@ -83,15 +101,25 @@ function exitCodeOf(value: JsonValue | undefined): number {
 
 /** `kelpi <verb> [argv...]` for a word that is not a built-in. Always exits. */
 export async function handlePluginVerb(verb: string, args: readonly string[]): Promise<never> {
-    if (verb.startsWith('-')) unknownCommand(verb);
+    if (!isCliVerbName(verb)) unknownCommand(verb);
     const label = `kelpi ${verb}`;
     const { argv, json } = splitJsonSwitch(args);
-    const input: JsonObject = { verb, argv, cwd: process.cwd(), isTTY: process.stdout.isTTY === true, json };
+    const input: JsonObject = { verb, argv, cwd: callerDirectory(), isTTY: process.stdout.isTTY === true, json };
     const paneID = originPaneID();
     if (paneID !== undefined) input['paneID'] = paneID;
 
-    const data = await pluginRequest('cli', input, VERB_TIMEOUT_SECONDS);
+    const data = await pluginRequest('cli', input, { timeoutSeconds: VERB_TIMEOUT_SECONDS });
     if (data === null) {
+        // Connected, then the socket failed before a byte came back: the verb may have run.
+        if (takeLastTransportFailure()?.kind === 'emptyReply') {
+            errLine(`${label}: no response from Kelpi`);
+            exit(1);
+        }
+        // The harness guard refused the default socket: the same route error a built-in prints.
+        if (takeLastTransportFailure()?.kind === 'requiredSocketUnmet') {
+            printTransportFailure(label);
+            exit(1);
+        }
         unknownCommand(verb, 'Plugin verbs need a running Kelpi daemon, and none could be reached (`kelpi doctor` checks the connection).');
     }
     if (data.length === 0) {
@@ -105,7 +133,7 @@ export async function handlePluginVerb(verb: string, args: readonly string[]): P
     }
     if (asBool(reply['ok']) === false) {
         const error = asString(reply['error']) ?? 'unknown error';
-        if (error.startsWith('unknown kelpi verb')) unknownCommand(verb);
+        if (error === `unknown kelpi verb: ${verb}`) unknownCommand(verb);
         if (error === PRE_VERB_DAEMON_ERROR) {
             unknownCommand(verb, 'The running Kelpi daemon predates plugin verbs; `kelpi daemon restart` starts the current one.');
         }
@@ -127,7 +155,9 @@ export async function handlePluginVerb(verb: string, args: readonly string[]): P
  * show: no plugin verbs, no daemon, a daemon too old to answer, or no answer within 2 s.
  */
 export async function pluginVerbsHelp(): Promise<string> {
-    const data = await withoutRouteRetry(() => pluginRequest('cli-list', {}, HELP_TIMEOUT_SECONDS));
+    const data = await withoutRouteRetry(() =>
+        pluginRequest('cli-list', {}, { timeoutSeconds: HELP_TIMEOUT_SECONDS, deadlineMs: HELP_TIMEOUT_SECONDS * 1000 })
+    );
     const reply = data === null ? null : parseJsonObject(data);
     if (reply === null || reply['ok'] !== true) return '';
     const verbs = asObjectArray(objectOf(reply['result'])?.['verbs']).flatMap((entry): PluginVerbListing[] => {

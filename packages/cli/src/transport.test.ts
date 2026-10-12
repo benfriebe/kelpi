@@ -8,8 +8,9 @@
  */
 
 import net from 'node:net';
+import os from 'node:os';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { setEnv } from './env.js';
 import { resetIO, setIO } from './io.js';
@@ -25,6 +26,7 @@ import {
 } from './transport.js';
 
 afterEach(() => {
+    vi.restoreAllMocks();
     resetIO();
     setLastTransportFailure(null);
     setEnv(process.env);
@@ -122,6 +124,60 @@ describe('KELPI_REQUIRE_SOCKET (the sandbox-harness guard)', () => {
         await listening;
         await new Promise<void>((resolve) => successor.close(() => resolve()));
         expect(reply).toContain('"ok":true');
+    });
+});
+
+describe('the deadlineMs read option (a wall-clock bound)', () => {
+    it('destroys the socket and returns what arrived when a peer trickles bytes past it', async () => {
+        // One byte every 100 ms restarts the 5 s inactivity timeout forever; only the deadline ends it.
+        let closedAfterMs = -1;
+        const server = net.createServer((socket) => {
+            const accepted = Date.now();
+            const drip = setInterval(() => socket.write('.'), 100);
+            socket.on('error', () => undefined);
+            socket.on('close', () => {
+                clearInterval(drip);
+                closedAfterMs = Date.now() - accepted;
+            });
+        });
+        await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+        setTransport({ kind: 'tcp', host: '127.0.0.1', port: (server.address() as net.AddressInfo).port });
+        setEnv({});
+        const started = Date.now();
+        const reply = await sendJSONAndReadReply({ command: 'ping' }, { timeoutSeconds: 5, deadlineMs: 400 });
+        const elapsed = Date.now() - started;
+        await vi.waitFor(() => expect(closedAfterMs).toBeGreaterThanOrEqual(0));
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+        expect(elapsed).toBeGreaterThanOrEqual(350);
+        expect(elapsed).toBeLessThan(2000);
+        expect(closedAfterMs).toBeLessThan(2000);
+        expect(reply).toMatch(/^\.+$/);
+        expect(takeLastTransportFailure()).toBeNull();
+    });
+
+    it('destroys a connect that never completes and reports it as a timed-out connect', async () => {
+        // A socket that never connects stands in for a blackholed route, which a test cannot make portably.
+        const stalled = new net.Socket();
+        vi.spyOn(net, 'createConnection').mockReturnValue(stalled);
+        setTransport({ kind: 'tcp', host: '127.0.0.1', port: 9 });
+        setEnv({});
+        const started = Date.now();
+        const reply = await sendJSONAndReadReply({ command: 'ping' }, { timeoutSeconds: 5, deadlineMs: 200 });
+        expect(Date.now() - started).toBeLessThan(2000);
+        expect(reply).toBeNull();
+        expect(stalled.destroyed).toBe(true);
+        expect(takeLastTransportFailure()).toMatchObject({ kind: 'tcpConnectFailed', host: '127.0.0.1', port: 9, errno: os.constants.errno.ETIMEDOUT });
+    });
+
+    it('also ends a pane-route retry at the deadline', async () => {
+        const routed = { KELPI_PANE_ID: 'AAAAAAAA-0000-4000-8000-000000000001', KELPI_ROUTE_RETRY_MS: '5000' };
+        setEnv(routed);
+        setTransport({ kind: 'tcp', host: '127.0.0.1', port: 1 });
+        const started = Date.now();
+        const reply = await sendJSONAndReadReply({ command: 'ping' }, { deadlineMs: 300 });
+        expect(Date.now() - started).toBeLessThan(2000);
+        expect(reply).toBeNull();
+        expect(takeLastTransportFailure()?.kind).toBe('tcpConnectFailed');
     });
 });
 

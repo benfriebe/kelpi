@@ -818,10 +818,13 @@ export interface PluginVerbListing {
  * The `Plugin commands:` block `kelpi --help` appends after `globalUsage`: one `# <plugin name>`
  * line per plugin, then one `  kelpi <name>  <summary>` line per verb, summaries aligned across
  * the block and `(disabled)` after the name of a verb whose plugin is off. Empty when there are
- * no plugin verbs, so the help output is exactly `globalUsage` then.
+ * no plugin verbs, so the help output is exactly `globalUsage` then. Control characters (C0, DEL,
+ * C1) are dropped from plugin names and summaries, so a stray newline or escape cannot break or
+ * recolour the block.
  */
 export function pluginVerbsUsage(verbs: readonly PluginVerbListing[]): string {
     if (verbs.length === 0) return '';
+    const printable = (text: string): string => text.replace(/[\u0000-\u001f\u007f-\u009f]/g, '');
     const sorted = [...verbs].sort(
         (a, b) =>
             a.pluginName.localeCompare(b.pluginName) || a.pluginID.localeCompare(b.pluginID) || a.name.localeCompare(b.name)
@@ -833,9 +836,9 @@ export function pluginVerbsUsage(verbs: readonly PluginVerbListing[]): string {
     for (const verb of sorted) {
         if (verb.pluginID !== plugin) {
             plugin = verb.pluginID;
-            lines.push(`  # ${verb.pluginName}`);
+            lines.push(`  # ${printable(verb.pluginName)}`);
         }
-        lines.push(`  ${label(verb).padEnd(width)}  ${verb.summary}`);
+        lines.push(`  ${label(verb).padEnd(width)}  ${printable(verb.summary)}`);
     }
     return `${lines.join('\n')}\n\n`;
 }

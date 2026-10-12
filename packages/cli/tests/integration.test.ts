@@ -95,7 +95,8 @@ describe('dispatcher', () => {
     });
 
     it('names an unknown command before the usage block', async () => {
-        const result = await runCLI(['frobnicate'], { env: { KELPI_REQUIRE_SOCKET: '1' } });
+        // A dead port, not the default socket: with no daemon the word cannot be a plugin verb.
+        const result = await runCLI(['frobnicate'], { port: await deadPort() });
         expect(result.code).toBe(1);
         expect(result.stderr.startsWith('Unknown command: frobnicate\n')).toBe(true);
     });
@@ -1124,7 +1125,7 @@ describe('kelpi document csv actions', () => {
         expect(help.stdout).toContain("csv-edit <pane-id> --generation <token> (--ops '<json>' | --ops-file <path>)");
         expect(help.stdout).toContain('wait up to 10 minutes');
         expect(help.stdout).toContain('kelpi pane list --json');
-        const usage = await runCLI(['--help']);
+        const usage = await runCLI(['--help'], { env: { KELPI_REQUIRE_SOCKET: '1' } });
         expect(usage.stderr).toContain('kelpi document get|watch|edit|save|refresh|mode|csv-state|rows|');
     });
 

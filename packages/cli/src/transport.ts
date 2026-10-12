@@ -220,17 +220,18 @@ function routeRetryWindowMs(): number {
     return Number.isFinite(parsed) && parsed >= 0 ? parsed : ROUTE_RETRY_WINDOW_MS;
 }
 
-async function connect(): Promise<ConnectOutcome> {
-    const deadline = Date.now() + routeRetryWindowMs();
+/** `deadlineAt` (epoch ms) is a wall-clock bound on the whole connect, retries included. */
+async function connect(deadlineAt?: number): Promise<ConnectOutcome> {
+    const deadline = Math.min(Date.now() + routeRetryWindowMs(), deadlineAt ?? Number.POSITIVE_INFINITY);
     for (;;) {
-        const outcome = await connectOnce();
+        const outcome = await connectOnce(deadlineAt);
         const refused = outcome.failure?.kind === 'tcpConnectFailed' && outcome.failure.errno === errnoNumber('ECONNREFUSED');
         if (!refused || Date.now() >= deadline) return outcome;
         await new Promise((resolve) => setTimeout(resolve, ROUTE_RETRY_STEP_MS));
     }
 }
 
-async function connectOnce(): Promise<ConnectOutcome> {
+async function connectOnce(deadlineAt?: number): Promise<ConnectOutcome> {
     // The harness guard, enforced at the single choke point every command dials through:
     // under `KELPI_REQUIRE_SOCKET` a unix transport is always the silent fallback having
     // fired (KELPI_SOCKET cannot name a unix path), and dialing it would address whatever
@@ -243,12 +244,21 @@ async function connectOnce(): Promise<ConnectOutcome> {
             transport.kind === 'unix'
                 ? net.createConnection({ path: transport.path })
                 : net.createConnection({ host: transport.host, port: transport.port, family: 4 });
+        let stall: NodeJS.Timeout | undefined;
         const onError = (error: NodeJS.ErrnoException): void => {
+            clearTimeout(stall);
             socket.destroy();
             resolve({ failure: classifyConnectError(error) });
         };
+        // A connect still pending at the deadline (a blackholed route) fails as a timed-out one.
+        if (deadlineAt !== undefined) {
+            stall = setTimeout(() => {
+                onError(Object.assign(new Error('connect timed out'), { code: 'ETIMEDOUT', syscall: 'connect' }));
+            }, Math.max(0, deadlineAt - Date.now()));
+        }
         socket.once('error', onError);
         socket.once('connect', () => {
+            clearTimeout(stall);
             socket.removeListener('error', onError);
             resolve({ socket });
         });
@@ -295,6 +305,14 @@ export async function sendJSON(payload: JsonObject, commandLabel = 'kelpi'): Pro
 export interface ReadOptions {
     /** Seconds; defaults to `KELPI_REPLY_TIMEOUT` or 5. */
     readonly timeoutSeconds?: number | undefined;
+    /**
+     * A wall-clock bound on the whole call, connect included, in milliseconds. The inactivity
+     * timeout restarts on every chunk, so a peer trickling bytes can outlast it; this cannot be
+     * outlasted. When it passes the socket is destroyed (nothing keeps the process alive) and the
+     * call returns as the inactivity timeout does: what arrived so far, or `null` with a
+     * timed-out connect failure when it never connected. Unset: no bound.
+     */
+    readonly deadlineMs?: number | undefined;
 }
 
 /**
@@ -305,7 +323,8 @@ export interface ReadOptions {
  */
 export async function sendJSONAndReadReply(payload: JsonObject, options: ReadOptions = {}): Promise<string | null> {
     lastTransportFailure = null;
-    const outcome = await connect();
+    const deadlineAt = options.deadlineMs === undefined ? undefined : Date.now() + options.deadlineMs;
+    const outcome = await connect(deadlineAt);
     if (outcome.socket === undefined) {
         lastTransportFailure = outcome.failure ?? null;
         return null;
@@ -317,13 +336,20 @@ export async function sendJSONAndReadReply(payload: JsonObject, options: ReadOpt
     const reply = await new Promise<string | null>((resolve) => {
         const chunks: Buffer[] = [];
         let settled = false;
+        let deadline: NodeJS.Timeout | undefined;
         const finish = (value: string | null): void => {
             if (settled) return;
             settled = true;
+            clearTimeout(deadline);
             socket.destroy();
             resolve(value);
         };
         const accumulated = (): string => Buffer.concat(chunks).toString('utf8');
+        if (deadlineAt !== undefined) {
+            deadline = setTimeout(() => {
+                finish(accumulated());
+            }, Math.max(0, deadlineAt - Date.now()));
+        }
 
         // `setTimeout` is inactivity-based, exactly like SO_RCVTIMEO: it restarts on every
         // chunk, and firing yields whatever arrived so far (Swift's EAGAIN branch).

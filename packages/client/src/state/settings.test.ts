@@ -78,6 +78,7 @@ describe('hydrateSettings', () => {
         // as it did before the key existed.
         expect(hydrateSettings({ general: {} })?.general.copyOnSelect).toBe(true);
         expect(hydrateSettings({ general: {} })?.general.middleClickPaste).toBe(true);
+        expect(hydrateSettings({ general: {} })?.general.linksReuseWebPane).toBe(true);
         expect(hydrated?.appearance.backgroundColor).toBe(DEFAULT_WS_SETTINGS.appearance.backgroundColor);
         expect(hydrated?.appearance.backgroundOpacity).toBe(1);
         expect(hydrated?.appearance.fontSize).toBeNull();

@@ -944,7 +944,10 @@ click cannot change what it reads; only showing the menu waits for the 500 ms. O
 answer raises a menu at the pointer, so it offers exactly the links a ⌘-click opens and nothing a
 ⌘-click refuses:
 
-- **Open in Kelpi**: `web-open` with the URL, splitting the clicked pane to the right, focused;
+- **Open in Kelpi**: `web-open` with the URL and `reuse`, so it opens as a new tab of the web pane
+  the workspace already has (the one used most recently, never a private one), shown and focused;
+  with no web pane, or with `links-reuse-web-pane = false` (Settings ▸ General ▸ Links), it splits
+  the clicked pane to the right instead, focused;
 - **Open in Browser**: the system opener, the ⌘-click path;
 - **Copy Link**: the URL to the clipboard.
 

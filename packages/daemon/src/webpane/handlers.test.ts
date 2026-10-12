@@ -290,6 +290,104 @@ describe('web-open (§3.3)', () => {
             expect(h.state().workspaces[0]?.focusedPaneID).toBe(String(reply['pane_id']));
         });
     });
+
+    /**
+     * A link clicked in a terminal opens as a new tab of the web pane the workspace already has
+     * (`reuse`), rather than splitting off one pane per link.
+     */
+    describe('reuse (a terminal link)', () => {
+        const linkOpen = {
+            command: 'web-open',
+            url: 'b.test',
+            pane_id: SHELL_PANE,
+            target: SHELL_PANE,
+            direction: 'horizontal',
+            focus: true,
+            reuse: true
+        };
+
+        it('adds an active tab to the existing web pane and focuses it, splitting nothing', () => {
+            const h = webHarness({ ids: [OTHER_TAB] });
+            const host = attachFakeHost(h.service);
+            h.store.dispatch({ type: 'focus-pane', workspaceID: WORKSPACE, paneID: SHELL_PANE });
+            const reply = h.reply(linkOpen);
+            expect(reply).toEqual({
+                ok: true,
+                pane_id: WEB_PANE,
+                tab_id: OTHER_TAB,
+                url: 'https://b.test',
+                private: false,
+                workspace_id: WORKSPACE
+            });
+            const workspace = h.state().workspaces[0];
+            expect(workspace?.panes).toHaveLength(2);
+            expect(workspace?.webPanes[WEB_PANE]).toEqual({
+                tabs: [
+                    { id: WEB_TAB, url: 'https://example.com', title: '' },
+                    { id: OTHER_TAB, url: 'https://b.test', title: '' }
+                ],
+                activeTabID: OTHER_TAB,
+                isPrivate: false
+            });
+            expect(workspace?.focusedPaneID).toBe(WEB_PANE);
+            expect(host.notifies.at(-1)).toEqual({
+                verb: 'tab-open',
+                args: { paneID: WEB_PANE, tabID: OTHER_TAB, url: 'https://b.test', makeActive: true }
+            });
+        });
+
+        it('unzooms a terminal zoomed over the web pane, so the tab can be seen', () => {
+            const h = webHarness({ ids: [OTHER_TAB] });
+            h.store.dispatch({ type: 'focus-pane', workspaceID: WORKSPACE, paneID: SHELL_PANE });
+            h.store.dispatch({ type: 'toggle-zoom', workspaceID: WORKSPACE });
+            expect(h.state().workspaces[0]?.zoomedPaneID).toBe(SHELL_PANE);
+            h.reply(linkOpen);
+            const workspace = h.state().workspaces[0];
+            expect(workspace?.zoomedPaneID).toBeNull();
+            expect(workspace?.focusedPaneID).toBe(WEB_PANE);
+        });
+
+        it('prefers the web pane used most recently when there are several', () => {
+            const second = id('bbbbbbbb', 5);
+            const h = webHarness({ ids: [OTHER_TAB] });
+            h.store.dispatch({
+                type: 'open-web-pane',
+                workspaceID: WORKSPACE,
+                paneID: second,
+                tabID: id('bbbbbbbb', 6),
+                url: 'https://c.test',
+                now: 0,
+                focus: true
+            });
+            h.store.dispatch({ type: 'focus-pane', workspaceID: WORKSPACE, paneID: SHELL_PANE });
+            expect(h.reply(linkOpen)).toMatchObject({ pane_id: second, tab_id: OTHER_TAB });
+            expect(h.state().workspaces[0]?.webPanes[WEB_PANE]?.tabs).toHaveLength(1);
+        });
+
+        it('never opens into a private web pane', () => {
+            const h = webHarness({ withWebPane: false });
+            const privatePane = h.reply({ command: 'web-open', url: 'a.test', pane_id: SHELL_PANE, private: true });
+            const reply = h.reply(linkOpen);
+            expect(reply['pane_id']).not.toBe(privatePane['pane_id']);
+            expect(h.state().workspaces[0]?.panes).toHaveLength(3);
+        });
+
+        it('splits a new pane as before when the workspace has no web pane', () => {
+            const h = webHarness({ withWebPane: false });
+            const reply = h.reply(linkOpen);
+            const workspace = h.state().workspaces[0];
+            expect(workspace?.panes.map((pane) => pane.type)).toEqual(['shell', 'web']);
+            expect(workspace?.focusedPaneID).toBe(String(reply['pane_id']));
+        });
+
+        it('without reuse, a web pane in the workspace still gets a new pane split off', () => {
+            const h = webHarness();
+            const { reuse: _reuse, ...plain } = linkOpen;
+            const reply = h.reply(plain);
+            expect(reply['pane_id']).not.toBe(WEB_PANE);
+            expect(h.state().workspaces[0]?.panes).toHaveLength(3);
+        });
+    });
 });
 
 describe('tabs (§5)', () => {

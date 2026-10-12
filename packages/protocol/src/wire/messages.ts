@@ -505,6 +505,12 @@ export interface WebOpenMessage {
      * the browsing history; the CLI never sends it, so nothing an agent loads is recorded.
      */
     gesture?: true | undefined;
+    /**
+     * A link clicked in a terminal opens as a new tab of a web pane the workspace already has,
+     * rather than splitting off another pane. Ignored for a private open, and when the workspace
+     * has no (non-private) web pane, which is when a pane is split as usual.
+     */
+    reuse?: true | undefined;
 }
 
 export interface WebNavigateMessage extends PaneTargetScope {

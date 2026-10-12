@@ -47,6 +47,14 @@ export interface GeneralSettings {
      */
     readonly openLinksIn: 'browser' | 'kelpi';
     /**
+     * `links-reuse-web-pane`, default **true**: a terminal link opened in Kelpi (the link menu's
+     * "Open in Kelpi", or a ⌘-click with `open-links-in = kelpi`) joins the web pane the workspace
+     * already has as a new tab, and that pane is shown. Off, every link splits a web pane of its
+     * own beside the terminal. Read by the CLIENT; the daemon only round-trips it. Lenient like
+     * the default-true flags below: only the literal `false` turns it off.
+     */
+    readonly linksReuseWebPane: boolean;
+    /**
      * `font-size-scope`, default `pane`: what ⌘= / ⌘- / ⌘0 resize. `pane` gives the focused
      * terminal pane its own text size, kept on the pane (config-keybindings.md §7.6); `all` steps
      * the daemon-wide ghostty `font-size`, so every terminal follows. A CLIENT-side rule: the
@@ -224,6 +232,7 @@ export const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
     confirmWorkspaceDeleteWhenActive: true,
     workspaceDeleteWorktrees: 'ask',
     openLinksIn: 'browser',
+    linksReuseWebPane: true,
     fontSizeScope: 'pane',
     workspaceDeleteBranches: true,
     confirmQuitWhenActive: true,
@@ -302,6 +311,9 @@ export function parseGeneralSettings(contents: string): GeneralSettings {
                 if (lowered === 'browser' || lowered === 'kelpi') {
                     settings = { ...settings, openLinksIn: lowered };
                 }
+                break;
+            case 'links-reuse-web-pane':
+                settings = { ...settings, linksReuseWebPane: lowered !== 'false' };
                 break;
             case 'font-size-scope':
                 if (lowered === 'pane' || lowered === 'all') {

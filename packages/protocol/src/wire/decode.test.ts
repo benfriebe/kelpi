@@ -783,6 +783,13 @@ describe('web pane commands', () => {
         expect(rejected({ ...navigate, gesture: 'yes' }).reason).not.toBe('guard');
     });
 
+    it("carries web-open's reuse only when it is true (a terminal link)", () => {
+        const open = { command: 'web-open', url: 'https://x.test' };
+        expect(ok(open)).not.toHaveProperty('reuse');
+        expect(ok({ ...open, reuse: false })).not.toHaveProperty('reuse');
+        expect(ok({ ...open, reuse: true })).toMatchObject({ reuse: true });
+    });
+
     it('applies web defaults', () => {
         expect(ok({ command: 'web-reload', pane_id: PANE })).toMatchObject({ hard: false });
         expect(ok({ command: 'web-capture', pane_id: PANE })).toMatchObject({ mode: 'meta' });

@@ -475,6 +475,8 @@ export function hydrateSettings(raw: unknown): WsSettingsSnapshot | null {
             workspaceDeleteWorktrees: worktreeChoice(general['workspaceDeleteWorktrees'], fallbackGeneral.workspaceDeleteWorktrees),
             // #326. An older daemon omits it, and ⌘-click keeps opening the browser.
             openLinksIn: general['openLinksIn'] === 'kelpi' ? 'kelpi' : 'browser',
+            // An older daemon omits it, and ignores the `reuse` it would gate anyway.
+            linksReuseWebPane: bool(general['linksReuseWebPane'], fallbackGeneral.linksReuseWebPane),
             // An older daemon omits it and has no `pane-font-size` either, so ⌘= keeps
             // resizing every terminal there, as it always has.
             fontSizeScope: general['fontSizeScope'] === 'pane' ? 'pane' : 'all',

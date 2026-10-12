@@ -637,6 +637,20 @@ export const SETTINGS_FIELD_DEFINITIONS: readonly SettingsFieldDefinition[] = Ob
         encode: (value) => value
     },
     {
+        id: 'general.linksReuseWebPane',
+        sectionID: 'general',
+        groupID: 'general-links',
+        kind: 'toggle',
+        label: 'Open links as a tab in the existing web pane',
+        detail: 'A link opened in Kelpi becomes a new tab of the web pane the workspace already has, and that pane is shown. Off, every link opens a web pane of its own beside the terminal.',
+        testID: 'links-reuse-web-pane-toggle',
+        rowTestID: 'links-reuse-web-pane-row',
+        target: { file: 'kelpi', key: 'links-reuse-web-pane' },
+        default: true,
+        read: (settings) => settings.general.linksReuseWebPane,
+        encode: BOOLEAN
+    },
+    {
         id: 'general.autoUpdate',
         sectionID: 'general',
         groupID: 'general-updates',

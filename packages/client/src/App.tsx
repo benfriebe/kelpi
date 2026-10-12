@@ -2374,9 +2374,10 @@ function Shell(props: AppProps): ReactElement {
             },
 
             /**
-             * #326: the link menu's three actions. "Open in Kelpi" is a web pane beside the pane
-             * the link was clicked in, focused (a gesture, #295); "Open in Browser" is exactly
-             * the ⌘-click path above; "Copy Link" writes the URL, nothing else.
+             * #326: the link menu's three actions. "Open in Kelpi" is a new tab of the web pane
+             * the workspace already has (`reuse`, unless `links-reuse-web-pane` is off), else a
+             * web pane beside the pane the link was clicked in; either way it is shown and focused (a gesture, #295). "Open in Browser"
+             * is exactly the ⌘-click path above; "Copy Link" writes the URL, nothing else.
              */
             openLinkInWebPane(paneID: string, url: string): boolean {
                 return run(
@@ -2389,7 +2390,8 @@ function Shell(props: AppProps): ReactElement {
                         target: paneID,
                         direction: 'horizontal',
                         focus: true,
-                        gesture: true
+                        gesture: true,
+                        ...(store.getState().settings.value.general.linksReuseWebPane ? { reuse: true } : {})
                     })
                 );
             },

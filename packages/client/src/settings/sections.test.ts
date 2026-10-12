@@ -225,6 +225,7 @@ describe('the field table', () => {
             'tcp-listener-toggle',
             'tcp-port',
             'open-links-in',
+            'links-reuse-web-pane-toggle',
             'auto-update-toggle'
         ]);
         expect(

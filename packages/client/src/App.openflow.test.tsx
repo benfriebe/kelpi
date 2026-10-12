@@ -548,8 +548,30 @@ describe('⌘-click a terminal cell (CONT-122 / TERM-052)', () => {
             pane_id: PANE_A,
             target: PANE_A,
             direction: 'horizontal',
-            focus: true
+            focus: true,
+            reuse: true
         });
+        vi.unstubAllGlobals();
+    });
+
+    it('splits a web pane of its own for every link when links-reuse-web-pane is off', async () => {
+        const h = setup();
+        const host = await grid();
+        vi.stubGlobal('open', vi.fn());
+        const current = h.runtime.store.getState().settings.value;
+        act(() => {
+            h.runtime.store.getState().applySettings({
+                ...current,
+                general: { ...current.general, openLinksIn: 'kelpi', linksReuseWebPane: false }
+            });
+        });
+        fireEvent.click(host, { metaKey: true, button: 0, clientX: 100, clientY: 100 });
+        await act(async () => {
+            h.reply({ opened: 'external', url: 'https://example.com/docs' });
+            await Promise.resolve();
+        });
+        expect(h.lastCommand('web-open')).toMatchObject({ url: 'https://example.com/docs', focus: true });
+        expect(h.lastCommand('web-open')).not.toHaveProperty('reuse');
         vi.unstubAllGlobals();
     });
 

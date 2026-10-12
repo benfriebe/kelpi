@@ -29,7 +29,7 @@ import {
     workspaceByID,
     workspaceContainingVisiblePane
 } from '../store/index.js';
-import type { DaemonState } from '../store/index.js';
+import type { DaemonState, WorkspaceState } from '../store/index.js';
 import type { ReplyHandle } from '../seams.js';
 import { NO_HOST_ERROR } from './host.js';
 import { serializeInspectResult } from './inspect.js';
@@ -110,6 +110,24 @@ function routeWorkspace(state: DaemonState, paneID: string | undefined): string 
     const active = state.lastActiveWorkspaceID;
     if (active === null || workspaceByID(state, active) === null) return null;
     return active;
+}
+
+/**
+ * The web pane a reusing `web-open` adds its tab to: the visible, non-private web pane the user
+ * was in most recently (the focused pane, then back through the focus history), else the first
+ * one in the workspace. Null when the workspace has none, and the open splits a new pane.
+ */
+function reusableWebPane(workspace: WorkspaceState): string | null {
+    const reusable = (paneID: string | null): paneID is string =>
+        paneID !== null &&
+        visiblePane(workspace, paneID)?.type === 'web' &&
+        workspace.webPanes[paneID]?.isPrivate === false;
+    const recent = [workspace.focusedPaneID, ...[...workspace.focusHistory].reverse()];
+    return (
+        recent.find(reusable) ??
+        workspace.panes.map((pane) => pane.id).find(reusable) ??
+        null
+    );
 }
 
 export interface WebHandlerDeps {
@@ -221,8 +239,6 @@ export function webHandlerEntries(deps: AppDeps): readonly (readonly [string, Ap
                 visiblePane(workspace, msg.target) !== null
                     ? msg.target
                     : undefined;
-            const paneID = uuid();
-            const tabID = uuid();
             /*
              * Issue #50 (web-02), §3.1/§3.2: the GUI's New Web Pane (globe, context menu, ⌘⇧O)
              * is a BLANK open, but the wire requires a non-empty url (§8.2), so the client
@@ -234,6 +250,51 @@ export function webHandlerEntries(deps: AppDeps): readonly (readonly [string, Ap
              * means the same thing, and the reply echoes the blank the pane was given.
              */
             const url = msg.url === 'about:blank' ? '' : msg.url;
+            /*
+             * A link clicked in a terminal (`reuse`) joins the web pane the workspace already has
+             * as a new, active tab, the way `web-tab-new` adds one, rather than splitting off a
+             * pane per link. With `focus` the pane is shown too: a zoom on some other pane is
+             * undone, since the tab would otherwise open where nobody can see it.
+             */
+            const reuseID =
+                msg.reuse === true && !msg.private && workspace !== null
+                    ? reusableWebPane(workspace)
+                    : null;
+            if (reuseID !== null && workspace !== null) {
+                const reusedTabID = uuid();
+                ok(reply, {
+                    pane_id: uuidOut(reuseID),
+                    tab_id: uuidOut(reusedTabID),
+                    url: normalizeURLInput(url),
+                    private: false,
+                    workspace_id: uuidOut(workspaceID)
+                });
+                ctx.store.dispatch({
+                    type: 'web-tab-open',
+                    workspaceID,
+                    paneID: reuseID,
+                    tabID: reusedTabID,
+                    url,
+                    makeActive: true
+                });
+                service.markDriver(reuseID, reusedTabID, driverOf(msg));
+                service.notify('tab-open', {
+                    paneID: reuseID,
+                    tabID: reusedTabID,
+                    url: normalizeURLInput(url),
+                    makeActive: true
+                });
+                if (msg.focus === true) {
+                    if (workspace.zoomedPaneID !== null && workspace.zoomedPaneID !== reuseID) {
+                        ctx.store.dispatch({ type: 'toggle-zoom', workspaceID });
+                    }
+                    ctx.store.dispatch({ type: 'focus-pane', workspaceID, paneID: reuseID });
+                }
+                persist();
+                return;
+            }
+            const paneID = uuid();
+            const tabID = uuid();
             // §3.3: the reply goes out BEFORE the pane exists, carrying the real ids.
             ok(reply, {
                 pane_id: uuidOut(paneID),

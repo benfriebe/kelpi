@@ -449,6 +449,14 @@ describe('createSettingsService (write-through)', () => {
         expect(f.read() ?? '').toContain('copy-on-select = true');
     });
 
+    it('round-trips links-reuse-web-pane, which is on until the file says otherwise', () => {
+        const f = fixture({ config: PRESERVED });
+        expect(f.service.snapshot.general.linksReuseWebPane).toBe(true);
+        expect(f.service.setGeneralSetting('links-reuse-web-pane', 'false').general.linksReuseWebPane).toBe(false);
+        expect(f.read() ?? '').toContain('links-reuse-web-pane = false');
+        expect(f.service.setGeneralSetting('links-reuse-web-pane', 'true').general.linksReuseWebPane).toBe(true);
+    });
+
     it('round-trips middle-click-paste, which is on until the file says otherwise', () => {
         const f = fixture({ config: PRESERVED });
         expect(f.service.snapshot.general.middleClickPaste).toBe(true);

@@ -312,6 +312,8 @@ export function buildSettingsSnapshot(
             workspaceDeleteWorktrees: general.workspaceDeleteWorktrees,
             // #326: read by the window's ⌘-click, never by the daemon.
             openLinksIn: general.openLinksIn,
+            // Read by the window's link opening, never by the daemon.
+            linksReuseWebPane: general.linksReuseWebPane,
             // Read by the window's ⌘= / ⌘- / ⌘0, never by the daemon.
             fontSizeScope: general.fontSizeScope,
             workspaceDeleteBranches: general.workspaceDeleteBranches,

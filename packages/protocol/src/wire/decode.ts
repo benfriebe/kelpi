@@ -537,7 +537,8 @@ function decodeCommand(
                 target: fields.text('target'),
                 direction: parseSplitDirection(fields.text('direction')),
                 focus: fields.flag('focus', false),
-                ...gesture()
+                ...gesture(),
+                ...(fields.flag('reuse', false) ? { reuse: true as const } : {})
             };
         }
         case 'web-navigate': {

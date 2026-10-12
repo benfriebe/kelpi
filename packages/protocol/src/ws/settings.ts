@@ -48,6 +48,12 @@ export interface WsGeneralSettings {
      */
     readonly openLinksIn: 'browser' | 'kelpi';
     /**
+     * `links-reuse-web-pane`, default **true**: a terminal link opened in Kelpi becomes a new tab of
+     * the workspace's web pane rather than a pane of its own. Read by the CLIENT, which sends it as
+     * `web-open`'s `reuse`.
+     */
+    readonly linksReuseWebPane: boolean;
+    /**
      * `font-size-scope`, default `pane`: what ⌘= / ⌘- / ⌘0 resize, the focused terminal pane
      * (its own size, on the pane) or every terminal (the ghostty `font-size`). Read by the CLIENT.
      */
@@ -439,6 +445,7 @@ export const DEFAULT_WS_SETTINGS: WsSettingsSnapshot = {
         confirmWorkspaceDeleteWhenActive: true,
         workspaceDeleteWorktrees: 'ask',
         openLinksIn: 'browser',
+        linksReuseWebPane: true,
         fontSizeScope: 'pane',
         workspaceDeleteBranches: true,
         confirmQuitWhenActive: true,
@@ -532,6 +539,8 @@ export const WS_WRITABLE_GENERAL_KEYS = [
     'workspace-delete-branches',
     // #326: where a ⌘-click on a terminal link opens it. Settings ▸ General ▸ Links writes it.
     'open-links-in',
+    // Whether a link opened in Kelpi joins the workspace's web pane as a tab. Same group.
+    'links-reuse-web-pane',
     // What ⌘= / ⌘- / ⌘0 resize. Settings ▸ Appearance ▸ Terminal writes it.
     'font-size-scope',
     // The quit dialog's twin (§AGNT-117). Writable because BOTH sides now write it: the ⌘Q

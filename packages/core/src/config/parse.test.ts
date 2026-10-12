@@ -131,6 +131,13 @@ describe('parseGeneralSettings', () => {
         expect(parseGeneralSettings('copy-on-select = false\ncopy-on-select = true').copyOnSelect).toBe(true);
     });
 
+    it('ships links-reuse-web-pane ON and turns it off only for the literal "false"', () => {
+        expect(parseGeneralSettings('').linksReuseWebPane).toBe(true);
+        expect(parseGeneralSettings('links-reuse-web-pane = false').linksReuseWebPane).toBe(false);
+        expect(parseGeneralSettings('links-reuse-web-pane = no').linksReuseWebPane).toBe(true);
+        expect(parseGeneralSettings('links-reuse-web-pane = false\nlinks-reuse-web-pane = true').linksReuseWebPane).toBe(true);
+    });
+
     /** Ghostty's middle-click always pastes, so Kelpi ships it on and only `false` turns it off. */
     it('ships middle-click-paste ON and turns it off only for the literal "false"', () => {
         expect(parseGeneralSettings('').middleClickPaste).toBe(true);

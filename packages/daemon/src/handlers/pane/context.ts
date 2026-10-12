@@ -14,7 +14,7 @@
  *    deterministic ids and timestamps. Production leaves them unset.
  *  - `term`: the seam plus the optional async reads the real `TerminalStateService`
  *    implementation adds (`captureAsync` flushes pending writes first, which is what
- *    `pane capture` wants: bytes written moments ago must be visible; `revision`,
+ *    `pane capture` wants: bytes written moments ago must be visible; `readScreen`, `revision`,
  *    `screenCursor` and `settle` back its screen revision, cursor and settle wait, #390).
  *
  * Everything else (PTY data → terminal feed, persistence, notification fan-out) is boot's
@@ -25,7 +25,7 @@ import type { Profile } from '@kelpi/core/config';
 
 import type { HandlerContext, TerminalStateService } from '../../seams.js';
 import type { ScreenClearer } from '../../term/clear-screen.js';
-import type { ScreenCursor } from '../../term/service.js';
+import type { ScreenCursor, ScreenRead } from '../../term/service.js';
 import type { DaemonState, DomainAction, DomainEvent } from '../../store/index.js';
 
 /** Additive reads `TerminalStateServiceImpl` provides on top of the seam. */
@@ -36,6 +36,11 @@ export interface AsyncTerminalReads {
     has(paneID: string): boolean;
     /** Await every write queued so far; `pane-capture` then reads text, cursor and revision at once. */
     flush?(paneID: string): Promise<void>;
+    /**
+     * Flush and read text, revision and cursor in the same turn as the flush's last check (#390),
+     * so the revision counts exactly the bytes the text shows. What `pane-capture` prefers.
+     */
+    readScreen?(paneID: string, opts: { scrollback: boolean }): Promise<ScreenRead>;
     /**
      * The pane's screen revision (#390), read by `pane-capture` and compared by a guarded
      * `pane-send` / `pane-send-key`. Absent reads as 0.

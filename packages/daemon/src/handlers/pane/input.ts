@@ -157,9 +157,10 @@ interface CaptureRequest {
 }
 
 /**
- * The async half: wait for the pane to settle when asked, flush the pane's pending VT writes,
- * read the viewport (or the whole buffer with `--scrollback`) with its revision and cursor, then
- * tail it. A pane that vanished mid-read is the one race §4.7 names explicitly.
+ * The async half: wait for the pane to settle when asked, flush the pane's pending VT writes and
+ * read the viewport (or the whole buffer with `--scrollback`) with its revision and cursor in the
+ * same turn (`readScreen`), then tail it. A pane that vanished mid-read is the one race §4.7
+ * names explicitly.
  */
 async function readCapture(
     ctx: PaneHandlerContext,
@@ -176,19 +177,25 @@ async function readCapture(
         if (request.settleMs !== undefined) {
             settled = term.settle === undefined ? true : await term.settle(request.paneID, request.settleMs);
         }
-        if (typeof term.flush === 'function') {
-            // Flush, then read everything in this one turn: no byte can be fed between the text
-            // and the revision that describes it.
-            await term.flush(request.paneID);
-            text = term.capture(request.paneID, opts);
+        if (typeof term.readScreen === 'function') {
+            // The flush's last "queue empty" check and the read share one turn: a byte fed after
+            // the flush cannot be counted in the revision without being in the text.
+            ({ text, revision, cursor } = await term.readScreen(request.paneID, opts));
         } else {
-            text =
-                typeof term.captureAsync === 'function'
-                    ? await term.captureAsync(request.paneID, opts)
-                    : term.capture(request.paneID, opts);
+            // Seams without `readScreen`: a feed in the hop after the flush can still be counted
+            // and not shown, which only the real service's `readScreen` closes.
+            if (typeof term.flush === 'function') {
+                await term.flush(request.paneID);
+                text = term.capture(request.paneID, opts);
+            } else {
+                text =
+                    typeof term.captureAsync === 'function'
+                        ? await term.captureAsync(request.paneID, opts)
+                        : term.capture(request.paneID, opts);
+            }
+            revision = term.revision?.(request.paneID) ?? 0;
+            cursor = term.screenCursor?.(request.paneID) ?? null;
         }
-        revision = term.revision?.(request.paneID) ?? 0;
-        cursor = term.screenCursor?.(request.paneID) ?? null;
     } catch (error) {
         // A read that throws is either the surface-died race (§4.7's named error) or an
         // emulator fault; either way the client must get a line, or it waits for an EOF that

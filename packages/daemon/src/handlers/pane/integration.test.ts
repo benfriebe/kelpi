@@ -157,6 +157,46 @@ describe('screen revision over the real terminal seams (#390)', () => {
         ]);
     });
 
+    it('reads text and revision of one screen when output lands in the hop after the flush', async () => {
+        const { h, term, ctx } = wired();
+        term.feed(P2, encoder.encode('Proceed? [y/n]'));
+        await term.flush(P2);
+
+        // A feed from a promise continuation (the boot adopt path feeds from one), queued so it
+        // runs after the flush saw an idle queue and before an `await flush()` could resume.
+        queueMicrotask(() => term.feed(P2, encoder.encode('\r\nAre you sure? [y/n]')));
+        const reply = await capture(ctx);
+        const seen = reply['revision'] as number;
+
+        // The text and the revision describe the same screen: the second prompt is newer.
+        expect(reply['text']).toBe('Proceed? [y/n]');
+        const refused = guardedSend(ctx, 'y', seen);
+        expect(refused.only()).toMatchObject({ ok: false, code: 'SCREEN_CHANGED', revision: seen + 1 });
+        expect(h.pty.writes).toEqual([]);
+
+        const reread = await capture(ctx);
+        expect(reread).toMatchObject({ text: 'Proceed? [y/n]\nAre you sure? [y/n]', revision: seen + 1 });
+    });
+
+    it('refuses a revision read before the pane was disposed and attached again', async () => {
+        const { h, term, ctx } = wired();
+        for (const chunk of ['a', 'b', 'c']) term.feed(P2, encoder.encode(chunk));
+        const before = await capture(ctx);
+        expect(before['text']).toBe('abc');
+
+        // Restart old terminals respawns into the same pane id with fresh terminal state.
+        term.dispose(P2);
+        term.attach(P2, 80, 24);
+        for (const chunk of ['x', 'y', 'z']) term.feed(P2, encoder.encode(chunk));
+        const after = await capture(ctx);
+
+        expect(after['text']).toBe('xyz');
+        expect(after['revision']).not.toBe(before['revision']);
+        const refused = guardedSend(ctx, 'y', before['revision'] as number);
+        expect(refused.only()).toMatchObject({ ok: false, code: 'SCREEN_CHANGED', revision: after['revision'] });
+        expect(h.pty.writes).toEqual([]);
+    });
+
     it('guards send-key the same way', async () => {
         const { h, term, ctx } = wired();
         const seen = (await capture(ctx))['revision'] as number;
@@ -198,6 +238,7 @@ describe('screen revision over the real terminal seams (#390)', () => {
 
     it('settle_ms answers only after that much quiet, with the screen as it ended', async () => {
         const { term, ctx } = wired();
+        const start = term.revision(P2);
         const started = performance.now();
         const pending = capture(ctx, { settle_ms: 60 });
         await new Promise((resolve) => setTimeout(resolve, 20));
@@ -207,7 +248,7 @@ describe('screen revision over the real terminal seams (#390)', () => {
         const fedAt = performance.now();
 
         const reply = await pending;
-        expect(reply).toMatchObject({ ok: true, text: 'working done', settled: true, revision: 2 });
+        expect(reply).toMatchObject({ ok: true, text: 'working done', settled: true, revision: start + 2 });
         // A timer may fire a millisecond early; 55 of the 60 quiet ms is the floor allowed.
         expect(performance.now() - fedAt).toBeGreaterThanOrEqual(55);
         expect(performance.now() - started).toBeGreaterThanOrEqual(95);

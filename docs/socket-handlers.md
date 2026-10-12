@@ -560,14 +560,18 @@ exists (an emulator fault) → `{ok:false,error:"pane capture failed: <error>"}`
 (`input.ts:136`). Either way the client gets a line rather than waiting for an EOF that
 never comes.
 
-The async read (#390, `readCapture`, `input.ts:176-190`): when `settleMs` is given, first wait
+The async read (#390, `readCapture`, `input.ts:165-229`): when `settleMs` is given, first wait
 on `term.settle(paneID, settleMs)`, which resolves `true` once the pane has had no output for
 that long (counted from the call, restarted by every byte fed or resize) and `false` when the
-cap is reached first. Then `flush()` the pane's pending VT writes, and read the text, the
-revision (`term.revision`) and the cursor (`term.screenCursor`, active screen) with no await
-between them, so no byte can be fed between the text and the revision that describes it. A
+cap is reached first (or when the pane's terminal state is disposed mid-wait, since no quiet
+was seen). Then `term.readScreen(paneID, opts)` (`term/service.ts`) drains the pane's pending
+VT writes and reads the text, the revision and the cursor (active screen) in the same turn as
+the drain loop's last "queue empty" check, with no await after it. So a byte fed after the
+flush is never counted in the revision without being in the text, which `await flush()` and
+then a read could not promise: a feed could run in the hop before the read resumed. A
 pane that closes during the settle wait takes the same `pane closed during capture` path. A
-seam without `flush` falls back to `captureAsync` / `capture`. Missing reads degrade to
+seam without `readScreen` falls back to `flush()` then `capture` / `revision` /
+`screenCursor`, and one without `flush` to `captureAsync` / `capture`. Missing reads degrade to
 revision 0, cursor `{0,0}`, `alt_screen` false and `settled` true. Apply `tailLines` when
 `lines` given:
 

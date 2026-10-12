@@ -36,6 +36,7 @@ export {
     sameModes,
     type GridSize,
     type ScreenCursor,
+    type ScreenRead,
     type TerminalSnapshot,
     type TerminalStateOptions
 } from './service.js';

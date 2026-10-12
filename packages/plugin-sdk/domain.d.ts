@@ -145,7 +145,8 @@ export interface TerminalRead {
     /**
      * The pane's screen revision when `text` was read. It bumps on every chunk of output the daemon
      * has fed the pane (output still in flight from the terminal host is not counted yet) and on
-     * every resize. It is not persisted: a daemon restart starts every pane at 0 again.
+     * every resize. Within one daemon run a pane never repeats a revision, even when its terminal is
+     * restarted. It is not persisted: a daemon restart starts the counter again.
      */
     revision: number;
     /** 0-based and viewport-relative, on the active screen. */

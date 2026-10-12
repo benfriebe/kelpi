@@ -23,43 +23,58 @@ afterEach(() => {
 });
 
 describe('TerminalStateServiceImpl: revision', () => {
-    it('starts at 0 and reads 0 for a pane with no terminal state', () => {
+    it('starts new state past every revision the service has issued, and reads 0 with no state', () => {
         const service = makeService();
-        service.attach('p', 80, 24);
+        expect(service.revision('nope')).toBe(0);
 
-        expect(service.revision('p')).toBe(0);
+        service.attach('a', 80, 24);
+        expect(service.revision('a')).toBe(1);
+        service.feed('a', 'x');
+        service.feed('a', 'y');
+        expect(service.revision('a')).toBe(3);
+        service.attach('b', 80, 24);
+        expect(service.revision('b')).toBe(4);
+        // Each bump is +1 on that pane's own value, whatever the other panes are at.
+        service.feed('a', 'z');
+        expect(service.revision('a')).toBe(4);
         expect(service.revision('nope')).toBe(0);
     });
 
     it('bumps once per non-empty feed, at enqueue time, before the bytes are parsed', async () => {
         const service = makeService();
         service.attach('p', 80, 24);
+        const start = service.revision('p');
 
         service.feed('p', encoder.encode('one'));
-        expect(service.revision('p')).toBe(1);
+        expect(service.revision('p')).toBe(start + 1);
         service.feed('p', 'two');
         service.feed('p', new Uint8Array(0));
         service.feed('p', '');
-        expect(service.revision('p')).toBe(2);
+        expect(service.revision('p')).toBe(start + 2);
 
         await service.flush('p');
-        expect(service.revision('p')).toBe(2);
+        expect(service.revision('p')).toBe(start + 2);
         expect(service.capture('p', { scrollback: false })).toBe('onetwo');
     });
 
     it('counts a replayed feed split across two writes as one bump', () => {
         const service = makeService();
         service.attach('p', 80, 24);
+        const start = service.revision('p');
         service.markReplay('p', 3, false);
 
         service.feed('p', encoder.encode('abcdef'));
-        expect(service.revision('p')).toBe(1);
+        expect(service.revision('p')).toBe(start + 1);
     });
 
-    it('creates a lazily fed pane at 0 and counts that first feed', () => {
+    it('creates a lazily fed pane past every issued revision and counts that first feed', () => {
         const service = makeService();
+        service.attach('p', 80, 24);
+        service.feed('p', 'abc');
+        const highest = service.revision('p');
+
         service.feed('late', 'hi');
-        expect(service.revision('late')).toBe(1);
+        expect(service.revision('late')).toBe(highest + 2);
     });
 
     it('bumps on a restore that queues a snapshot, and not on an empty one', async () => {
@@ -70,10 +85,11 @@ describe('TerminalStateServiceImpl: revision', () => {
         if (checkpoint === null) throw new Error('no checkpoint');
 
         service.attach('p', 40, 10);
+        const start = service.revision('p');
         service.restore('p', checkpoint);
-        expect(service.revision('p')).toBe(1);
+        expect(service.revision('p')).toBe(start + 1);
         service.restore('p', { ...checkpoint, snapshot: new Uint8Array(0) });
-        expect(service.revision('p')).toBe(1);
+        expect(service.revision('p')).toBe(start + 1);
         service.restore('nope', checkpoint);
         expect(service.revision('nope')).toBe(0);
     });
@@ -81,28 +97,107 @@ describe('TerminalStateServiceImpl: revision', () => {
     it('bumps on a resize that changes the grid, and only then', () => {
         const service = makeService();
         service.attach('p', 80, 24);
+        const start = service.revision('p');
 
         service.resize('p', 80, 24);
-        expect(service.revision('p')).toBe(0);
+        expect(service.revision('p')).toBe(start);
         service.resize('p', 100, 24);
-        expect(service.revision('p')).toBe(1);
+        expect(service.revision('p')).toBe(start + 1);
         service.resize('p', 100, 30);
-        expect(service.revision('p')).toBe(2);
+        expect(service.revision('p')).toBe(start + 2);
         // A re-attach at a new size is a resize too; at the same size it is not.
         service.attach('p', 100, 30);
-        expect(service.revision('p')).toBe(2);
+        expect(service.revision('p')).toBe(start + 2);
         service.attach('p', 90, 30);
-        expect(service.revision('p')).toBe(3);
+        expect(service.revision('p')).toBe(start + 3);
     });
 
-    it('starts over when the pane is disposed and attached again', () => {
+    it('carries on past the old value when the pane is disposed and gets state again', () => {
         const service = makeService();
         service.attach('p', 80, 24);
         service.feed('p', 'x');
+        const before = service.revision('p');
         service.dispose('p');
         expect(service.revision('p')).toBe(0);
         service.attach('p', 80, 24);
-        expect(service.revision('p')).toBe(0);
+        expect(service.revision('p')).toBe(before + 1);
+
+        // A late feed after dispose creates the state lazily, and that too starts past it.
+        const second = service.revision('p');
+        service.dispose('p');
+        service.feed('p', 'late');
+        expect(service.revision('p')).toBe(second + 2);
+    });
+
+    it('never describes two screens with one revision across dispose and re-attach (ABA)', async () => {
+        const service = makeService();
+        service.attach('p', 80, 24);
+        for (const chunk of ['a', 'b', 'c']) service.feed('p', chunk);
+        const before = await service.readScreen('p', { scrollback: false });
+        expect(before.text).toBe('abc');
+
+        // Restart old terminals and a forgotten shell both dispose and respawn into the same id.
+        service.dispose('p');
+        service.attach('p', 80, 24);
+        const seen = [service.revision('p')];
+        for (const chunk of ['x', 'y', 'z']) {
+            service.feed('p', chunk);
+            seen.push(service.revision('p'));
+        }
+        const after = await service.readScreen('p', { scrollback: false });
+
+        expect(after.text).toBe('xyz');
+        expect(seen).not.toContain(before.revision);
+        expect(Math.min(...seen)).toBeGreaterThan(before.revision);
+    });
+});
+
+describe('TerminalStateServiceImpl: readScreen', () => {
+    it('reads the text, revision and cursor of what has been fed so far', async () => {
+        const service = makeService();
+        service.attach('p', 80, 24);
+        service.feed('p', 'one');
+        const reading = service.readScreen('p', { scrollback: false });
+        service.feed('p', 'two');
+
+        expect(await reading).toEqual({
+            text: 'onetwo',
+            revision: service.revision('p'),
+            cursor: { alternate: false, row: 0, col: 6 }
+        });
+    });
+
+    it('reads in the same turn as its last queue check, so a feed in a microtask is newer', async () => {
+        const service = makeService();
+        service.attach('p', 80, 24);
+        service.feed('p', 'Proceed? [y/n]');
+        await service.flush('p');
+
+        // Queued now, so it runs in the hop an `await flush()` would take before reading.
+        queueMicrotask(() => service.feed('p', '\r\nAre you sure? [y/n]'));
+        const read = await service.readScreen('p', { scrollback: false });
+
+        expect(read.text).toBe('Proceed? [y/n]');
+        expect(service.revision('p')).toBe(read.revision + 1);
+        const again = await service.readScreen('p', { scrollback: false });
+        expect(again).toMatchObject({ text: 'Proceed? [y/n]\nAre you sure? [y/n]', revision: read.revision + 1 });
+    });
+
+    it('follows a pane that is disposed and attached again while it waits', async () => {
+        const service = makeService();
+        service.attach('p', 80, 24);
+        service.feed('p', 'old');
+        const reading = service.readScreen('p', { scrollback: false });
+        service.dispose('p');
+        service.attach('p', 80, 24);
+        service.feed('p', 'new');
+
+        expect(await reading).toMatchObject({ text: 'new', revision: service.revision('p') });
+    });
+
+    it('reads an unknown pane as empty, revision 0 and no cursor', async () => {
+        const service = makeService();
+        expect(await service.readScreen('nope', { scrollback: false })).toEqual({ text: '', revision: 0, cursor: null });
     });
 });
 
@@ -187,7 +282,7 @@ describe('TerminalStateServiceImpl: settle', () => {
         expect(vi.getTimerCount()).toBe(before);
     });
 
-    it('resolves on dispose and clears its timers', async () => {
+    it('resolves false on dispose, since no quiet was seen, and clears its timers', async () => {
         vi.useFakeTimers();
         const service = makeService();
         service.attach('p', 80, 24);
@@ -198,8 +293,8 @@ describe('TerminalStateServiceImpl: settle', () => {
         expect(vi.getTimerCount()).toBe(before + 4);
         service.dispose('p');
 
-        await expect(first).resolves.toBe(true);
-        await expect(second).resolves.toBe(true);
+        await expect(first).resolves.toBe(false);
+        await expect(second).resolves.toBe(false);
         expect(vi.getTimerCount()).toBe(before);
     });
 

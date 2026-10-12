@@ -698,6 +698,8 @@ turn. On a mismatch nothing is written and the reply is
 match the ack gains `revision` (the matched value), so a caller can tell a daemon that
 honoured the guard from an older one that ignored the unknown field. Without `if_revision`
 the request and reply are exactly as above.
+An `if_revision` no revision can equal (a negative one) answers `SCREEN_CHANGED`, not a
+validation error.
 
 ```json
 {"command":"pane-send","target":"worker","text":"y","bare":false,"if_revision":42}
@@ -924,12 +926,15 @@ cap came first.
    "alt_screen":false,"settled":true,"label":"worker"}
 ```
 
-The revision is a per-pane counter that starts at 0 when the pane's terminal state is created
-and rises by 1 on every output feed with non-empty data (counted when the bytes are queued,
-not when they are parsed), on every restore of a non-empty snapshot, and on every resize that
-changes the grid. A pane with no terminal state reads 0. It is not persisted: a daemon restart
-starts every pane at 0 again. Pass it back as `if_revision` on `pane-send` / `pane-send-key`
-to type only if nothing has reached the screen since this capture.
+The revision is a per-pane counter that rises by 1 on every output feed with non-empty data
+(counted when the bytes are queued, not when they are parsed), on every restore of a
+non-empty snapshot, and on every resize that changes the grid. Within one daemon run a pane id
+never repeats a revision: the daemon seeds new terminal state (attach, or the lazy create on
+first feed) one past every revision it has issued, so a pane whose terminal state is disposed
+and created again (restart old terminals, a forgotten shell) carries on above its old values.
+A pane with no terminal state reads 0. It is not persisted: a daemon restart starts the counter
+again. Pass it back as `if_revision` on `pane-send` / `pane-send-key` to type only if nothing
+has reached the screen since this capture.
 
 #### `pane-sync` (R/R)
 
@@ -1924,5 +1929,7 @@ saved state keep working:
     The revision counts what the daemon has fed to its terminal state. With the terminal host
     (#273, `docs/terminal-host.md`), output the host has read from the PTY but the daemon has not
     yet fed is not counted, so the guard covers what the daemon had seen, which is also what the
-    capture showed. The counter restarts at 0 with the daemon, so a revision is only meaningful
-    against the daemon that issued it.
+    capture showed. Within one daemon run a pane id never repeats a revision (new terminal state
+    is seeded past every value the daemon has issued, and a pane with no terminal state reads 0),
+    but the counter starts again with the daemon, so a revision is only meaningful against the
+    daemon that issued it.

@@ -88,14 +88,14 @@ describe('dispatcher', () => {
         expect(bare.stdout).toBe('');
         expect(bare.stderr).toContain('Usage:');
 
-        const help = await runCLI(['--help']);
+        const help = await runCLI(['--help'], { env: { KELPI_REQUIRE_SOCKET: '1' } });
         expect(help.code).toBe(0);
         expect(help.stdout).toBe('');
         expect(help.stderr).toContain('kelpi doctor [--json]');
     });
 
     it('names an unknown command before the usage block', async () => {
-        const result = await runCLI(['frobnicate']);
+        const result = await runCLI(['frobnicate'], { env: { KELPI_REQUIRE_SOCKET: '1' } });
         expect(result.code).toBe(1);
         expect(result.stderr.startsWith('Unknown command: frobnicate\n')).toBe(true);
     });
@@ -1787,7 +1787,7 @@ describe('workspace rename', () => {
         const unknown = await runCLI(['workspace', 'retitle'], { port: server.port });
         expect(unknown.code).toBe(1);
         expect(unknown.stderr).toContain('Valid actions: list, create, move, delete, profile, label, mute, rename');
-        expect(server.requests).toHaveLength(0);
+        expect(server.requests).toEqual([{ command: 'plugin', action: 'cli-list', text: '{}' }]);
     });
 });
 

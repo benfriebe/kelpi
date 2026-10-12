@@ -265,7 +265,7 @@ describe('kelpi install-hooks', () => {
     });
 
     it('is listed in the top-level usage block', async () => {
-        const result = await runCLI(['--help']);
+        const result = await runCLI(['--help'], { env: { KELPI_REQUIRE_SOCKET: '1' } });
         expect(result.stderr).toContain('kelpi install-hooks');
     });
 

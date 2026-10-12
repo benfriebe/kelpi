@@ -60,7 +60,7 @@ describe('terminal.read and ifRevision', () => {
             { command: 'pane-send', target: 'P1', text: 'ls', bare: false },
             { command: 'pane-send-key', target: 'P1', key: 'enter' },
         ]);
-        // Revision 0 is a real revision (a fresh pane), not an absent guard.
+        // Revision 0 is what a pane with no terminal state reads, not an absent guard.
         expect(await api.terminal.send('P1', 'y', { bare: true, ifRevision: 0 })).toMatchObject({ paneID: 'P1', bare: true, revision: 0 });
         expect(await api.terminal.sendKey('P1', 'enter', { ifRevision: 7 })).toMatchObject({ key: 'enter', revision: 7 });
         expect(sent).toStrictEqual([

@@ -176,6 +176,88 @@ timeouts, activation failures, recursion guards, and recovery behavior are descr
 authentication, workbench ownership, and editor save lifecycle require their existing native
 protocols and are outside these four service contracts.
 
+## Agent permission decisions
+
+`kelpi.agent.permissions@1` decides an agent's permission requests (#388). Claude Code's
+`PermissionRequest` hook runs `kelpi event permission-request`, which sends the wire verb of the
+same name ([wire-protocol.md §6.1.1](wire-protocol.md)); the daemon asks the active provider and
+the CLI prints Claude's decision JSON. The service has one method:
+
+```ts
+decide({
+    paneID: string,
+    workspaceID: string,
+    agent: 'claude' | 'codex',
+    sessionID?: string,
+    toolName: string,
+    toolInput: object,
+    mcpServer?: string,
+    cwd?: string,
+    permissionMode?: string,
+}): Promise<{behavior: 'allow' | 'deny' | 'abstain', message?: string}>
+```
+
+`toolName` and `toolInput` are Claude's `tool_name` and `tool_input` as sent (for Bash,
+`toolInput.command` is the real command string, not what the terminal drew). `toolName` is
+nonempty and `toolInput` is an object; other arguments are optional. `agent` and `sessionID`
+come from the pane. A result other than those three behaviors, or a `message` that is not a
+string, is malformed. `message` is used only on `deny`: Claude passes it to the model as the
+tool's error, and its own UI shows a fixed "Denied by PermissionRequest hook" line.
+
+- **Abstain by default.** The bundled implementation always returns `{behavior: 'abstain'}`,
+  which prints nothing and leaves Claude's normal prompt in place.
+- **Explicit selection.** As for every service, installing or enabling a provider does not
+  select it. Nothing is ever approved until the user picks the provider with
+  `kelpi plugin service-select kelpi.agent.permissions <provider>` or Settings → Plugins →
+  Service providers; `default` goes back to the bundled abstain.
+- **2 second deadline.** The daemon waits at most 2 seconds for `decide`, whatever the
+  provider's `timeoutMs` says, then aborts the call. Claude draws its prompt while the hook
+  runs, so a late `allow` would dismiss a prompt the user may already be reading; the deadline
+  keeps that window short. Decide from the arguments alone, without slow I/O. An `on-demand`
+  plugin activates on its first call, and a request that waits longer than the deadline for
+  that abstains; use `startup` activation for a provider that must answer the first request.
+- **Fail open means abstain.** A timeout, a thrown error, a malformed result or an
+  unavailable provider is answered as `abstain`, with one warning in the daemon log naming the
+  provider. A malformed result also fails the backend, so later calls use the bundled abstain
+  until it reloads. Nothing but the provider's own `allow` is ever answered as allow.
+- **Visibility.** The daemon logs every decision (pane, tool, behavior, provider). The
+  reply's `provider` field names the provider that was asked.
+
+In sessions that cannot show a prompt (background subagents, non-interactive runs), Claude
+denies a call that no hook decided, so `abstain` there means deny, as it does without Kelpi.
+
+Declare the provider under `contributes.providers`:
+
+```json
+{
+  "id": "example.policy.permissions",
+  "title": "Allow plain moves",
+  "service": "kelpi.agent.permissions",
+  "version": 1,
+  "methods": ["decide"]
+}
+```
+
+Then register it in the backend. This one allows a plain `mv`, denies a force push, and
+abstains on everything else:
+
+```ts
+import type { BackendAPI, BuiltinProviderMethods } from '@kelpi/plugin-sdk';
+
+export function activate(api: BackendAPI) {
+    const methods: BuiltinProviderMethods<'kelpi.agent.permissions'> = {
+        decide({ toolName, toolInput }) {
+            const command = toolName === 'Bash' && typeof toolInput['command'] === 'string' ? toolInput['command'] : null;
+            if (command === null) return { behavior: 'abstain' };
+            if (/^git push (-f|--force)\b/.test(command)) return { behavior: 'deny', message: 'Force pushes need a person.' };
+            if (/^mv [^;&|`$<>]+$/.test(command)) return { behavior: 'allow' };
+            return { behavior: 'abstain' };
+        },
+    };
+    return api.providers.register<'kelpi.agent.permissions'>('example.policy.permissions', methods);
+}
+```
+
 ## Updates and validation
 
 `plugin dev` can apply provider changes while preserving the daemon's selected provider IDs.

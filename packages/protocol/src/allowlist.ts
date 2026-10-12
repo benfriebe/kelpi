@@ -40,6 +40,7 @@ export const REPLY_COMMANDS: ReadonlySet<WireCommandName> = new Set([
     'graft-status',
     'ping',
     'restart-old-terminals',
+    'permission-request',
     'web-open',
     'web-navigate',
     'web-url',

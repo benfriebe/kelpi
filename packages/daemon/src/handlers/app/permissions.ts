@@ -1,0 +1,130 @@
+/**
+ * `permission-request` (#388; socket-handlers.md §3.7, wire-protocol.md §6.1.1).
+ *
+ * The one agent hook verb with a reply. Claude's PermissionRequest hook asks, the selected
+ * `kelpi.agent.permissions` provider decides, and the CLI prints Claude's decision JSON from
+ * the reply. Routing uses the same parked-INCLUSIVE pane lookup as the lifecycle events.
+ *
+ * This handler owns the deadline. A provider that is late, throws or answers malformed is
+ * replied to as `abstain`, which leaves Claude's own prompt in place: failing open means
+ * abstaining, never allowing. Every decision is one info line in the daemon log.
+ */
+
+import { pluginRecord, type JsonObject, type JsonValue } from '@kelpi/protocol';
+
+import { findPaneAnywhere, workspaceByID } from '../../store/index.js';
+import { forCommand } from './common.js';
+import { fail, ok, type AppDeps, type AppHandler } from './context.js';
+
+/** How long the selected provider gets before the daemon answers `abstain` for it. */
+export const PERMISSION_DEADLINE_MS = 2000;
+
+export const UNKNOWN_PANE_ERROR = 'unknown pane';
+
+export type PermissionBehavior = 'allow' | 'deny' | 'abstain';
+
+export interface PermissionDecision {
+    readonly behavior: PermissionBehavior;
+    /** Only ever present on `deny`. */
+    readonly message?: string;
+}
+
+interface PermissionOutcome {
+    /** Absent only when no provider could be asked at all. */
+    readonly provider?: string;
+    readonly decision: PermissionDecision;
+}
+
+const ABSTAIN: PermissionDecision = { behavior: 'abstain' };
+const TIMED_OUT = Symbol('timed out');
+
+/** The provider's result as a decision, or the reason it is not one. */
+function parseDecision(result: JsonValue): PermissionDecision | string {
+    if (!pluginRecord(result)) return 'the result is not an object';
+    const behavior = result['behavior'];
+    if (behavior !== 'allow' && behavior !== 'deny' && behavior !== 'abstain') {
+        return `unknown behavior ${JSON.stringify(behavior) ?? 'undefined'}`;
+    }
+    const message = result['message'];
+    if (message !== undefined && typeof message !== 'string') return 'the message is not a string';
+    return behavior === 'deny' && message !== undefined ? { behavior, message } : { behavior };
+}
+
+function describeError(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
+}
+
+/** Ask the provider, bounded by `PERMISSION_DEADLINE_MS`. Never rejects. */
+async function askProvider(args: JsonObject, deps: AppDeps): Promise<PermissionOutcome> {
+    const controller = new AbortController();
+    let call;
+    try {
+        call = deps.decidePermission(args, controller.signal);
+    } catch (error) {
+        deps.log(`WARNING: permission-request: no provider could be asked (${describeError(error)}); answering abstain`);
+        return { decision: ABSTAIN };
+    }
+    const { provider } = call;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<typeof TIMED_OUT>((resolve) => {
+        timer = setTimeout(() => {
+            resolve(TIMED_OUT);
+        }, PERMISSION_DEADLINE_MS);
+    });
+    let reason: string;
+    try {
+        const result = await Promise.race([call.result, deadline]);
+        if (result === TIMED_OUT) {
+            controller.abort();
+            reason = `did not answer within ${String(PERMISSION_DEADLINE_MS)} ms`;
+        } else {
+            const decision = parseDecision(result);
+            if (typeof decision !== 'string') return { provider, decision };
+            reason = `returned a malformed result (${decision})`;
+        }
+    } catch (error) {
+        reason = `failed (${describeError(error)})`;
+    } finally {
+        clearTimeout(timer);
+    }
+    deps.log(`WARNING: permission-request: provider ${provider} ${reason}; answering abstain`);
+    return { provider, decision: ABSTAIN };
+}
+
+export function permissionHandlerEntries(deps: AppDeps): readonly (readonly [string, AppHandler])[] {
+    return [
+        forCommand('permission-request', (msg, ctx, reply) => {
+            // #372: the pane's agent is being restarted on a new terminal host; nobody is asked.
+            if (deps.agentEventsMuted(msg.pane_id)) {
+                deps.log(`permission-request: pane ${msg.pane_id} tool ${msg.tool_name}: abstain (agent events muted)`);
+                ok(reply, { behavior: 'abstain' });
+                return;
+            }
+            const state = ctx.store.getState();
+            const location = findPaneAnywhere(state, msg.pane_id);
+            const workspace = location === null ? null : workspaceByID(state, location.workspaceID);
+            if (location === null || workspace === null) {
+                fail(reply, UNKNOWN_PANE_ERROR);
+                return;
+            }
+            const { pane } = location;
+            const args: JsonObject = {
+                paneID: msg.pane_id,
+                workspaceID: workspace.id,
+                agent: pane.agentKind ?? 'claude',
+                ...(pane.agentSessionID !== null ? { sessionID: pane.agentSessionID } : {}),
+                toolName: msg.tool_name,
+                toolInput: msg.tool_input,
+                ...(msg.mcp_server !== undefined ? { mcpServer: msg.mcp_server } : {}),
+                ...(msg.cwd !== undefined ? { cwd: msg.cwd } : {}),
+                ...(msg.permission_mode !== undefined ? { permissionMode: msg.permission_mode } : {})
+            };
+            void askProvider(args, deps).then(({ provider, decision }) => {
+                ok(reply, { ...decision, ...(provider !== undefined ? { provider } : {}) });
+                deps.log(
+                    `permission-request: pane ${msg.pane_id} tool ${msg.tool_name}: ${decision.behavior} (provider ${provider ?? 'none'})`
+                );
+            });
+        })
+    ];
+}

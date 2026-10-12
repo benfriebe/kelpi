@@ -11,6 +11,7 @@ const commands = new Map();
 const hooks = new Map();
 const providers = new Map();
 let sequence = 0;
+const promptMethods = new Set(['ui.showDialog', 'ui.showQuickPick', 'ui.showInput', 'ui.showNotification']);
 let deactivate;
 let closing = false;
 const send = message => { if (process.connected) process.send(message, () => {}); };
@@ -18,7 +19,8 @@ const call = (method, args = {}) => new Promise((resolve, reject) => {
     if (closing) return reject(new Error('plugin is stopping'));
     if (pending.size >= 128) return reject(new Error('too many plugin calls'));
     const id = String(++sequence);
-    const timer = setTimeout(() => { pending.delete(id); reject(new Error(`${method} timed out`)); }, 30_000);
+    // A prompt waits for its user as long as it is open (#389); the daemon bounds the rest.
+    const timer = promptMethods.has(method) ? undefined : setTimeout(() => { pending.delete(id); reject(new Error(`${method} timed out`)); }, 30_000);
     pending.set(id, { resolve, reject, timer });
     const parent = callContext.getStore();
     send({ type: 'call', id, method, args, context: parent?.context ?? {}, ...(parent ? { parentCallID: parent.id } : {}) });

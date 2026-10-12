@@ -952,6 +952,29 @@ export interface WsRevealPaneMessage {
 }
 
 /**
+ * #389: a plugin backend asks one window to present a shared prompt or notification. Every
+ * client receives it; only the UI in shell window `windowID` acts, answering with the `plugin`
+ * command's `prompt-ack` and `prompt-reply` actions. `options` is the view method's options,
+ * forwarded unvalidated: the window validates them exactly as it does a view's.
+ */
+export interface WsPluginPromptMessage {
+    readonly type: 'plugin-prompt';
+    readonly requestID: string;
+    readonly windowID: string;
+    readonly pluginID: string;
+    readonly pluginName: string;
+    readonly method: 'ui.showDialog' | 'ui.showQuickPick' | 'ui.showInput' | 'ui.showNotification';
+    readonly options: JsonObject;
+}
+
+/** #389: withdraw a `plugin-prompt` (its backend ended, or no window acknowledged it in time). */
+export interface WsPluginPromptCancelMessage {
+    readonly type: 'plugin-prompt-cancel';
+    readonly requestID: string;
+    readonly windowID: string;
+}
+
+/**
  * §N29: the user clicked into a web pane's PAGE, fanned out to that window's client.
  *
  * A web pane's page is a native `WebContentsView` composited over the client's renderer, so a
@@ -1043,6 +1066,8 @@ export type WsServerMessage =
     | WsWebConsoleLineMessage
     | WsWebViewFocusMessage
     | WsRevealPaneMessage
+    | WsPluginPromptMessage
+    | WsPluginPromptCancelMessage
     | WsHotkeyStatusMessage
     | WsShellActivationMessage
     | WsWorkspaceSelectionMessage

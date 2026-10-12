@@ -21,8 +21,9 @@ import type { CsvChannel } from '../content/csv/channel.js';
 import type { ContentService } from '../content/service.js';
 import type { WebPaneService } from '../webpane/service.js';
 import { decodePluginInstallation, legacyPluginRevision, PluginRevisionData, recoverPluginRevisionChange, selectPluginRevision, type PluginInstallation } from './revisions.js';
+import { BACKEND_PROMPT_METHODS, BackendPrompts, type PromptHoldTarget, type PromptParent } from './prompts.js';
 
-interface PendingCall { resolve(value: JsonValue): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout>; scope: PluginOperationScope }
+interface PendingCall extends PromptHoldTarget { resolve(value: JsonValue): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout>; scope: PluginOperationScope }
 interface Running {
     process: ChildProcess; ready: Promise<void>; pending: Map<string, PendingCall>;
     queue: PluginEventBuffer; sending: boolean; activated: boolean; stopping: boolean;
@@ -44,6 +45,10 @@ export interface PluginServiceOptions {
     readonly broadcast: (event: JsonObject) => void;
     readonly onError?: (error: Error) => void;
     readonly applicationSettings?: () => JsonObject;
+    /** A plugin command's budget; tests shorten it. */
+    readonly commandTimeoutMs?: number;
+    /** #389: how long a window has to acknowledge a backend prompt; tests shorten it. */
+    readonly promptAckTimeoutMs?: number;
 }
 export interface PluginChannel extends Partial<PluginOperationChannel> {
     run(action: string, input: JsonObject, reply: ReplyHandle, context?: Partial<PluginContext>): void;
@@ -88,6 +93,7 @@ function sameTerminalPane(pane: Pane | undefined, identity: TerminalPaneIdentity
 export class PluginService implements PluginChannel, PluginOperationChannel, BuiltinServiceHost {
     private readonly documents: PluginDocuments;
     private readonly browser: PluginBrowser;
+    private readonly prompts: BackendPrompts;
     readonly epoch = randomUUID();
     readonly daemonID: string;
     readonly directory: string;
@@ -121,6 +127,7 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
     constructor(private readonly options: PluginServiceOptions) {
         this.documents = new PluginDocuments(options.content, (name, data, id) => { this.emit(name, data, id); }, options.csv);
         this.browser = new PluginBrowser(options.store, options.webPanes, (name, data, id) => { this.emit(name, data, id); }, paneID => options.broadcast({ type: 'web-browser-changed', paneID }));
+        this.prompts = new BackendPrompts({ broadcast: event => options.broadcast(event), ackTimeoutMs: options.promptAckTimeoutMs });
         this.temporary = options.directory === undefined;
         this.directory = options.directory ?? fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-plugins-'));
         this.daemonID = randomUUID();
@@ -464,6 +471,7 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
             if (!runtime.stopping) void this.stopDependents(id);
             for (const operation of this.operations.get(id) ?? []) operation.abort();
             this.operations.delete(id);
+            this.prompts.cancelPlugin(id);
             this.documents.release(owner => owner.pluginID === id);
             this.browser.release(owner => owner.pluginID === id);
             for (const [key, lease] of this.leases) if (lease.pluginID === id) this.release(key);
@@ -512,7 +520,8 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
                 const parentCall = typeof parentCallID === 'string' ? runtime.pending.get(parentCallID) : undefined;
                 if (parentCallID !== undefined && !parentCall) { if (child.connected) child.send({ type: 'reply', id: callID, error: 'plugin invocation has expired' }, () => {}); return; }
                 const scope = { ...(parentCall?.scope ?? { trace: [] }), source: 'plugin' as const, handled: false };
-                void inOperationScope(scope, () => this.api(id, String(message['method']), message['args'], { ...this.context(message['context']), daemonID: this.daemonID })).then(result => {
+                const parent = parentCall && { call: parentCall, live: () => runtime.pending.get(parentCallID as string) === parentCall };
+                void inOperationScope(scope, () => this.api(id, String(message['method']), message['args'], { ...this.context(message['context']), daemonID: this.daemonID }, undefined, parent)).then(result => {
                     if (child.connected) child.send({ type: 'reply', id: callID, result }, () => {});
                 }, error => { if (child.connected) child.send({ type: 'reply', id: callID, error: failure(error) }, () => {}); });
             }
@@ -768,7 +777,7 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
         catch (error) { result = { ok: false, error: failure(error) }; }
         complete(result); return result;
     }
-    async api(id: string, method: string, raw: unknown, context: PluginContext, lease?: string): Promise<JsonValue> {
+    async api(id: string, method: string, raw: unknown, context: PluginContext, lease?: string, parent?: PromptParent): Promise<JsonValue> {
         const item = this.item(id);
         if (this.registryError) throw new Error(this.registryError);
         if (this.closed || !item.enabled) throw new Error('plugin is not enabled');
@@ -911,6 +920,11 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
             if (this.terminalSubs.get(subscription)?.pluginID === id) this.terminalSubs.delete(subscription); return null;
         }
         if (method === 'process.exec') return this.operation(id, lease, signal => this.callService({ service: 'kelpi.process', version: 1, method: 'exec', args }, context, signal));
+        if (BACKEND_PROMPT_METHODS.includes(method)) {
+            // A view's prompts never leave its window; only a backend asks the daemon to route one.
+            if (lease) throw new Error('window UI methods are presented by the view host');
+            return this.prompts.show({ id, name: item.manifest.name }, method, args, context, parent);
+        }
         throw new Error(`unknown plugin API method: ${method}`);
     }
     private browserOperation(method: string, args: JsonObject, context: PluginContext, signal: AbortSignal | undefined, source: PluginOperationSource): Promise<JsonValue> {
@@ -926,7 +940,7 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
     async invoke(command: string, args: JsonObject, context: PluginContext): Promise<JsonValue> {
         const item = [...this.installations.values()].find(item => item.manifest.contributes.commands.some(entry => entry.id === command));
         if (!item) throw new Error(`unknown plugin command: ${command}`);
-        return this.invokeBackend(item.manifest.id, `command:${command}`, { type: 'invoke', command, args, context: { ...context } }, 30_000, false);
+        return this.invokeBackend(item.manifest.id, `command:${command}`, { type: 'invoke', command, args, context: { ...context } }, this.options.commandTimeoutMs ?? 30_000, false);
     }
     private async invokeBackend(pluginID: string, key: string, message: JsonObject, timeoutMs: number, failOnTimeout = true, signal = operationScope().signal, validate?: () => void): Promise<JsonValue> {
         if (signal?.aborted) throw new Error('plugin invocation cancelled');
@@ -969,16 +983,18 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
             const cleanup = (): void => { signal?.removeEventListener('abort', abort); };
             const resolve = (result: JsonValue): void => { cleanup(); resolveResult(result); };
             const reject = (error: Error): void => { cleanup(); rejectResult(error); };
-            const abort = (): void => { clearTimeout(timer); runtime.pending.delete(id); reject(new Error('plugin invocation cancelled')); };
-            const timer = setTimeout(() => {
+            const abort = (): void => { clearTimeout(call.timer); runtime.pending.delete(id); reject(new Error('plugin invocation cancelled')); };
+            const expire = (): void => {
                 runtime.pending.delete(id);
                 const error = new Error(`plugin invocation timed out: ${key}`);
                 if (failOnTimeout) runtime.fail(error);
                 reject(error);
-            }, Math.max(1, deadline - Date.now()));
-            runtime.pending.set(id, { resolve, reject, timer, scope });
+            };
+            // #389: only a command's own clock pauses while it awaits a prompt it showed.
+            const call: PendingCall = { resolve, reject, timer: setTimeout(expire, Math.max(1, deadline - Date.now())), scope, ...(key.startsWith('command:') ? { deadline, expire } : {}) };
+            runtime.pending.set(id, call);
             signal?.addEventListener('abort', abort, { once: true });
-            runtime.process.send({ ...envelope, id }, error => { if (error) { clearTimeout(timer); runtime.pending.delete(id); reject(error); } });
+            runtime.process.send({ ...envelope, id }, error => { if (error) { clearTimeout(call.timer); runtime.pending.delete(id); reject(error); } });
         });
     }
     run(action: string, input: JsonObject, reply: ReplyHandle, caller: Partial<PluginContext> = {}): void {
@@ -1022,6 +1038,8 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
             return this.api(lease.pluginID, text(input['method'], 'method'), input['args'], lease.context, input['lease'] as string);
         }
         if (action === 'release') { this.release(text(input['lease'], 'lease')); return null; }
+        if (action === 'prompt-ack') return this.prompts.ack(input, context);
+        if (action === 'prompt-reply') return this.prompts.reply(input, context);
         const id = text(input['pluginID'], 'pluginID'); const item = this.item(id);
         if (action === 'logs') return this.logs.get(id) ?? [];
         if (action === 'history') return this.history(id) as unknown as JsonValue;
@@ -1098,8 +1116,8 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
         });
         throw new Error(`unknown plugin action: ${action}`);
     }
-    observe(event: JsonObject): void { if (event['type'] !== 'plugin-event' && event['type'] !== 'plugins-changed') this.emit(`daemon.${String(event['type'] ?? 'event')}`, event); }
-    releaseClient(clientID: string): void { for (const [id, lease] of this.leases) if (lease.context.clientID === clientID) this.release(id); }
+    observe(event: JsonObject): void { if (event['type'] !== 'plugin-event' && event['type'] !== 'plugins-changed' && event['type'] !== 'plugin-prompt' && event['type'] !== 'plugin-prompt-cancel') this.emit(`daemon.${String(event['type'] ?? 'event')}`, event); }
+    releaseClient(clientID: string): void { for (const [id, lease] of this.leases) if (lease.context.clientID === clientID) this.release(id); this.prompts.releaseClient(clientID); }
     private async stopDependents(id: string): Promise<void> {
         const dependents = new Set<string>();
         const order: string[] = [];
@@ -1120,6 +1138,8 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
         for (const [key, lease] of this.leases) if (lease.pluginID === id) this.release(key);
         for (const [key, sub] of this.terminalSubs) if (sub.pluginID === id) this.terminalSubs.delete(key);
         for (const operation of this.operations.get(id) ?? []) operation.abort(); this.operations.delete(id);
+        // Resuming re-arms each held parent's timer; the pending loop below reads call.timer after that, so it clears the new one.
+        this.prompts.cancelPlugin(id);
         const runtime = this.running.get(id); if (!runtime) return;
         runtime.stopping = true;
         for (const call of runtime.pending.values()) { clearTimeout(call.timer); call.reject(new Error('plugin stopped')); } runtime.pending.clear();
@@ -1135,6 +1155,7 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
         this.browser.close();
         if (this.closed) return; this.closed = true; this.offStore(); this.offPty?.(); this.terminalSubs.clear(); for (const reply of this.watcherReplies) reply.close(); this.watcherReplies.clear(); this.watchers.clear(); this.serviceListeners.clear();
         for (const lease of this.leases.keys()) this.release(lease);
+        this.prompts.cancelAll();
         for (const operations of this.operations.values()) for (const operation of operations) operation.abort();
         this.operations.clear();
         await this.mutation;

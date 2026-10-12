@@ -112,7 +112,8 @@ Top-level subcommands: `event`, `pane`, `workspace`, `group`, `layout`, `open`, 
 A word that is not a top-level subcommand may be a verb an installed plugin added
 ([plugin CLI verbs](#plugin-cli-verbs)). Only then does the CLI ask the daemon, so a built-in
 subcommand never pays for a round trip; it is unknown only when no plugin declares it, or when
-no daemon can be reached. A word starting with `-` is never sent. `kelpi --help` (and `-h`,
+no daemon can be reached. A word that could not be a verb name (one lowercase word of at most
+32 characters), such as one starting with `-`, is never sent. `kelpi --help` (and `-h`,
 `help`) appends a `Plugin commands:` block when the daemon lists any.
 
 ### 3.1 Version resolution
@@ -2468,11 +2469,20 @@ Source: [plugin-cli.ts](../packages/cli/src/commands/plugin-cli.ts). A plugin's
 kelpi <verb> [--json] [argv...]
 ```
 
+[`examples/plugins/cli-lab`](../examples/plugins/cli-lab) is a runnable example: it adds
+`kelpi hello`, which prints hello and the words you pass.
+
 - **Dispatch.** Built-in subcommands are matched first, without contacting the daemon. Any
   other word not starting with `-` is sent as one `plugin` request with action `cli` and text
   `{verb, argv, cwd, isTTY, json, paneID?}`: `cwd` is the CLI's working directory, `isTTY`
   whether its stdout is a terminal, and `paneID` the non-empty `KELPI_PANE_ID`. The daemon
   derives the workspace from the pane. The read timeout is 35 seconds, as for `plugin run`.
+  The word must pass the manifest's name rule first (`isCliVerbName` in `@kelpi/protocol`: one
+  lowercase word of at most 32 characters). When the working directory has been removed, `cwd`
+  is a non-empty `PWD`, else the home directory. The daemon gives the plugin command 30 seconds,
+  activation included, so a longer verb fails with
+  `kelpi <verb>: plugin invocation timed out: command:<id>`, exit 1, before the CLI's own
+  35 second read timeout.
 - **argv.** Every word after the verb, in order. Every `--json` before a `--` is the CLI's: it
   is removed and sets `json`. The `--` and every word after it reach the plugin unchanged, so
   `kelpi hello -- --json` passes `["--", "--json"]`. `kelpi <verb> --help` is ordinary argv for
@@ -2487,10 +2497,21 @@ kelpi <verb> [--json] [argv...]
   `unknown kelpi verb: <verb>` and the CLI prints `Unknown command: <verb>` and the usage block
   to stderr, exit 1, exactly as before plugin verbs. A word starting with `-` gets the same
   output without a request. A daemon from before plugin verbs counts as declaring none; the
-  CLI adds a line suggesting `kelpi daemon restart`.
+  CLI adds a line suggesting `kelpi daemon restart`. Any other word that fails the name rule
+  (empty, uppercase, containing a space, or longer than 32 characters) also gets the
+  `Unknown command` output without a request. The daemon's reply must be exactly
+  `unknown kelpi verb: <verb>`: a plugin's own error that merely starts with
+  `unknown kelpi verb` is printed as an error, as below.
 - **Errors.** Any other `ok:false` prints `kelpi <verb>: <error>` to stderr and exits 1, for
   example `kelpi hello: plugin acme.hello is disabled`. An empty or malformed reply is the
   usual `no response from Kelpi` or `invalid JSON response`, attributed to `kelpi <verb>`.
+- **No reply.** Three cases, told apart by the transport's failure (§5.4):
+  - connected, then the socket failed before any byte came back (`emptyReply`): the verb may
+    already have run, so the CLI prints `kelpi <verb>: no response from Kelpi`, exit 1;
+  - `KELPI_REQUIRE_SOCKET` is set and `KELPI_SOCKET` names no tcp route
+    (`requiredSocketUnmet`): the same `Error:`/`Repair:` route diagnostic a built-in prints
+    (§5.5), exit 1;
+  - no connection at all: the "No daemon" output below.
 - **No daemon.** When no daemon can be reached, the word cannot be resolved: the CLI prints
   `Unknown command: <verb>`, then one line saying plugin verbs need a running Kelpi daemon,
   then the usage block, exit 1. Inside a pane the request first waits out the pane-route retry
@@ -2501,15 +2522,15 @@ kelpi <verb> [--json] [argv...]
 
   ```text
   Plugin commands:
-    # Service Lab
-    kelpi hello             Say hello
-    kelpi shout (disabled)  Say it louder
+    # CLI Lab
+    kelpi hello  Print hello and the words you pass
   ```
 
   Verbs are grouped under their plugin's name, sorted, with summaries aligned and
   `(disabled)` after a verb whose plugin is disabled (running it fails as above). There is no
   block when no plugin declares a verb, when no daemon answers, on any error, or when the
-  answer takes longer than 2 seconds. This request skips the pane-route retry (unless
+  answer takes longer than 2 seconds. That bound is wall clock over the whole lookup, connect
+  included, so a peer that stalls or trickles bytes cannot hold help open. This request skips the pane-route retry (unless
   `KELPI_ROUTE_RETRY_MS` is set explicitly), so help answers at once inside a pane with no
   daemon. The exit code stays 0. A bare `kelpi` with no arguments
   prints only the usage block.

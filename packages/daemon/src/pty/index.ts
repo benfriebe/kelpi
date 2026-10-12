@@ -55,6 +55,13 @@ export {
 export type { ProcessCwdReader, ProcessCwdReaderOptions, SplitDirectoryFs } from './process-cwd.js';
 
 export {
+    SHELL_FOREGROUND_TIMEOUT_MS,
+    createShellForegroundProbe,
+    parseShellForeground
+} from './shell-foreground.js';
+export type { ShellForegroundProbe, ShellForegroundProbeOptions } from './shell-foreground.js';
+
+export {
     SHELL_INTEGRATION_ENV,
     ZSH_ZDOTDIR_ENV,
     applyShellIntegration,

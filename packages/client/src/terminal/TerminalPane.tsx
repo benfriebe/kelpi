@@ -1383,6 +1383,10 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
                 write: (data) => {
                     streamRef.current?.write(data);
                 },
+                // ⌘K reads this at keydown to decide whether the chord is the app's (Ghostty's
+                // `clear_screen` does nothing on the alternate screen).
+                alternateScreen: () => rendererRef.current?.alternateScreen() ?? false,
+                kittyKeyboardActive: () => kittyRef.current?.active ?? false,
                 // C9: and the half the WINDOW's key bar uses. Every one of these is a function
                 // this component already had; publishing them here is what lets ONE bar at the
                 // bottom of the window act on whichever pane holds the caret, instead of each

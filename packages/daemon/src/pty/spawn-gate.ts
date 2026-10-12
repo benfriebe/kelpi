@@ -281,6 +281,10 @@ export function withSpawnGate(pty: KelpiPtyManager, gate: PaneSpawnGate): KelpiP
         processHandle(paneID: string) {
             return pty.processHandle(paneID);
         },
+        // Output, not input: a pane still waiting on the gate has no screen to put it on.
+        injectOutput(paneID: string, data: Uint8Array | string): void {
+            pty.injectOutput(paneID, data);
+        },
         adopt(paneID, proc): void {
             // An adopted terminal already exists; nothing the gate holds for the pane may start.
             gate.cancel(paneID);

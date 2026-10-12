@@ -90,8 +90,8 @@ optimistic: new-entity UUIDs are minted up front and threaded into the effect so
 id is guaranteed to be the real one. Handlers whose reply describes the resulting state
 (`pane-name`, `pane-resize`, `pane-font-size`, `pane-sync`, `pane-sync-exclude`, `workspace-label`) apply the
 change first and reply from post-mutation state (`handlers/pane/lifecycle.ts:56`,
-`geometry.ts:87`, `sync.ts:87`). Async handlers (`pane-capture`, `graft-*`, worktree
-`workspace-create`) reply only after the async work resolves.
+`geometry.ts:87`, `sync.ts:87`). Async handlers (`pane-capture`, `pane-clear`, `graft-*`,
+worktree `workspace-create`) reply only after the async work resolves.
 
 ---
 
@@ -808,6 +808,31 @@ Inputs: `paneID?`, `target?`, `workspaceFilter?`, and exactly one of `size` (int
 
 The window sends this for ⌘= / ⌘- / ⌘0 under `font-size-scope = pane` (config-keybindings.md
 §7.6), with the arithmetic already done (`handlers/pane/font-size.ts`).
+
+### 4.16 `pane-clear` → handlePaneClear
+
+Inputs: `paneID?`, `target?`, `workspaceFilter?`.
+
+1. Resolve via `resolvePaneTarget`.
+2. If the pane does not render a terminal (as §4.15) → `error("pane {uuid} is not a terminal
+   pane")`.
+3. Run boot's screen clear (`term/clear-screen.ts`), then reply. A daemon composed without one
+   answers `error("clearing a pane is not available on this daemon")`. The clear:
+   1. asks the OS whether the pane's shell is at its prompt (`pty/shell-foreground.ts`: its own
+      process group is the terminal's foreground group, and it is zsh, bash, fish, tcsh or
+      nushell). Only a shell pane is asked; an external `$EDITOR` never is;
+   2. flushes the pane's emulator and reads its active screen and cursor;
+   3. on the alternate screen, does nothing and answers `cleared: false`,
+      `reason: "alternate-screen"`;
+   4. otherwise puts the erase into the pane's OUTPUT stream (`KelpiPtyManager.injectOutput`),
+      at a prompt the whole screen and the scrollback, elsewhere the scrollback and the rows
+      above the cursor's (removed, so the cursor's row becomes the top row), and at a prompt
+      writes `0x0c` to that pane's PTY alone
+      (`writeDirect`: never mirrored to a synchronised-input sibling) so the shell redraws.
+4. Reply `cleared: true`. A clear that throws is answered `error("pane clear failed: …")`.
+
+The window sends this for ⌘K (`clear_screen`, config-keybindings.md §4), and only when the
+focused pane's own renderer is not on the alternate screen (`client/src/app/clear-screen.ts`).
 
 ---
 
@@ -1617,6 +1642,7 @@ web-pane subsystem (see its spec): `web-open`, `web-navigate`, `web-url`, `web-b
 | pane-capture | `pane_id`, `workspace_id`, `workspace_name`, `text`, `label?` |
 | pane-resize | `pane_id`, `workspace_id`, `workspace_name`, `split_path`, `ratio`, `target_share`, `label?` |
 | pane-font-size | `pane_id`, `workspace_id`, `workspace_name`, `font_size` (number, or `null` after a reset), `label?` |
+| pane-clear | `pane_id`, `workspace_id`, `workspace_name`, `cleared` (bool), `reason?` (`"alternate-screen"` or `"no-terminal"` when not cleared), `label?` |
 | pane-move-adjacent | `pane_id`, `anchor_id`, `zone`, `workspace_id`, `workspace_name`, `label?` |
 | pane-list | `panes: [...]` |
 | pane-sync / pane-sync-exclude | `workspace_id`, `workspace_name`, `active`, `synced_pane_ids`, `excluded` |

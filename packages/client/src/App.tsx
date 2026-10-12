@@ -104,6 +104,7 @@ import { ContentPanePlaceholder } from './app/ContentPanePlaceholder';
 import { restartUI } from './app/reload';
 import { copySelection, deferredClipboardWriter, pasteIntoFocusedPane } from './app/clipboard';
 import { createLinkClickTracker, linkCaption, type LinkMenuRequest } from './app/link-click';
+import { clearFocusedScreen } from './app/clear-screen';
 import { sendLineEdit } from './app/line-editing';
 import { TerminalShortcutContext, terminalWindowChords } from './app/terminal-shortcuts';
 import type { DaemonTarget, StorageLike } from './app/config';
@@ -131,6 +132,7 @@ import {
     resetGestures,
     storeSidebarWidth,
     actionForTrigger,
+    CLIENT_MAC_LIKE,
     clientKeyBindings,
     createFaviconController,
     createKeyDispatcher,
@@ -2544,6 +2546,24 @@ function Shell(props: AppProps): ReactElement {
                 });
             },
 
+            /**
+             * ⌘K - Clear Screen, Ghostty's darwin `clear_screen`. The daemon clears the pane in its
+             * output stream (`daemon/src/term/clear-screen.ts`), so every viewer and every later
+             * reattach agree; the window only decides whether the chord is the pane's or the
+             * app's (`app/clear-screen.ts` has the alternate-screen rule). A non-terminal pane
+             * always gets it.
+             */
+            clearScreen(): boolean {
+                return clearFocusedScreen({
+                    focusedPaneID: focused,
+                    screenFor: paneHandle,
+                    macLike: CLIENT_MAC_LIKE,
+                    clear: (paneID) => {
+                        run('Clear Screen', commands.clearPane({ paneID }));
+                    }
+                });
+            },
+
             /** TERM-043 — hand a pasted image to the daemon, which writes it and types its path. */
             pasteImage(paneID: string, file: Blob): boolean {
                 return uploadPastedImage(paneID, file);
@@ -3272,6 +3292,7 @@ function Shell(props: AppProps): ReactElement {
             kill_line_backward: ({ action }) => act.lineEdit(action),
             move_to_line_start: ({ action }) => act.lineEdit(action),
             move_to_line_end: ({ action }) => act.lineEdit(action),
+            clear_screen: () => act.clearScreen(),
             reopen_closed_pane: () => act.reopenClosedPane(),
             create_scratchpad: () => act.createScratchpad(),
             // CONT-120 / APP-020. Default ⌘O, and the File menu's "Open…" reaches

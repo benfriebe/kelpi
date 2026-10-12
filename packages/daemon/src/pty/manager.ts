@@ -83,6 +83,14 @@ export interface KelpiPtyManager extends PtyManager {
     /** The process handle behind a pane (a handoff reads the host terminal's offset from it). */
     processHandle(paneID: string): PtyProcessHandle | undefined;
     /**
+     * Bytes into the pane's OUTPUT stream, as if the PTY had produced them: every `onData`
+     * listener (the daemon's terminal state, every client stream, plugin subscribers) gets them
+     * in order with the real output. What `pane-clear` clears the screen with
+     * (`term/clear-screen.ts`). Never reaches the process, and never moves the terminal host's
+     * offset, so a handoff neither replays nor loses them. A pane with no live PTY drops them.
+     */
+    injectOutput(paneID: string, data: Uint8Array | string): void;
+    /**
      * Register a PTY that already exists, wired exactly as `spawn` wires a new one: a terminal
      * the terminal host kept across a daemon restart (`docs/terminal-host.md` §7).
      */
@@ -331,6 +339,13 @@ class PtyManagerImpl implements KelpiPtyManager {
         } catch (error) {
             this.onError?.(paneID, error);
         }
+    }
+
+    injectOutput(paneID: string, data: Uint8Array | string): void {
+        const entry = this.entries.get(paneID);
+        if (entry === undefined || entry.hasExited) return;
+        const bytes = toBytes(data);
+        if (bytes.length > 0) this.emitData(paneID, bytes);
     }
 
     resize(paneID: string, cols: number, rows: number): void {

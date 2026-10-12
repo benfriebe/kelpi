@@ -23,6 +23,7 @@
 import type { Profile } from '@kelpi/core/config';
 
 import type { HandlerContext, TerminalStateService } from '../../seams.js';
+import type { ScreenClearer } from '../../term/clear-screen.js';
 import type { DaemonState, DomainAction, DomainEvent } from '../../store/index.js';
 
 /** Additive reads `TerminalStateServiceImpl` provides on top of the seam. */
@@ -123,4 +124,11 @@ export interface PaneHandlerContext
      * split copies the stored directory without waiting.
      */
     readonly liveWorkingDirectory?: ((paneID: string) => Promise<string | null>) | undefined;
+    /**
+     * `pane-clear`'s clear (`term/clear-screen.ts`): it reads the daemon's emulator, asks the OS
+     * whether the pane's shell is at its prompt, and writes into the pane's output stream, so
+     * boot composes it. Unset, as in a handler test that does not supply one, `pane-clear`
+     * answers that it is not available.
+     */
+    readonly clearScreen?: ScreenClearer | undefined;
 }

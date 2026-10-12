@@ -306,6 +306,12 @@ export interface TerminalRenderer {
      */
     scrollOffset(): number;
     /**
+     * The alternate screen is active, so a full-screen app owns the grid: ⌘K's clear leaves it
+     * alone and lets the chord through to the app, as Ghostty does. False for an engine that is
+     * gone, not open, or cannot say.
+     */
+    alternateScreen(): boolean;
+    /**
      * Fires on every change of {@link scrollOffset}. Returns an unsubscribe.
      *
      * Needed, and not a convenience: **any PTY byte snaps the viewport back to the bottom**
@@ -605,6 +611,11 @@ export interface EngineHandle {
     scrollToBottom?(): void;
     scrollOffset?(): number;
     onScroll?(listener: (offset: number) => void): EngineDisposable;
+    /**
+     * The alternate screen is active: a full-screen app (vim, less, htop) owns the grid. Both
+     * engines answer through their xterm-shaped `buffer.active.type`; a fake omits it.
+     */
+    alternateScreen?(): boolean;
     /** C3's long-press word selection. See `TerminalRenderer.selectWordAt`. */
     selectWordAt?(clientX: number, clientY: number): boolean;
     /** Extra teardown beyond `terminal.dispose()`. */
@@ -1437,6 +1448,15 @@ class AdapterRenderer implements TerminalRenderer {
     onScrollChange(listener: (offset: number) => void): () => void {
         this.scrollListeners.add(listener);
         return () => this.scrollListeners.delete(listener);
+    }
+
+    alternateScreen(): boolean {
+        if (this.disposed || this.poisoned) return false;
+        let alternate = false;
+        this.swallow(() => {
+            alternate = this.handle?.alternateScreen?.() === true;
+        });
+        return alternate;
     }
 
     resize(cols: number, rows: number): void {
@@ -2397,6 +2417,7 @@ export const loadGhosttyEngine: EngineLoader = async (options) => {
             terminal.onScroll((offset: number) => {
                 listener(Math.max(0, Math.floor(offset)));
             }),
+        alternateScreen: (): boolean => terminal.buffer.active.type === 'alternate',
         /*
          * C3's long-press: a `dblclick` at the point, on the engine's own canvas.
          *
@@ -2564,7 +2585,8 @@ export const loadXtermEngine: EngineLoader = async (options) => {
         onScroll: (listener): EngineDisposable =>
             terminal.onScroll((viewportY: number) => {
                 listener(Math.max(0, terminal.buffer.active.baseY - viewportY));
-            })
+            }),
+        alternateScreen: (): boolean => terminal.buffer.active.type === 'alternate'
         // No `selectWordAt`: xterm.js selects a word on a `mousedown` with `detail === 2`, not on
         // a `dblclick`, and its own `SelectionService` is private. The fallback engine therefore
         // has no long-press selection, which `TerminalRenderer.selectWordAt` documents as the

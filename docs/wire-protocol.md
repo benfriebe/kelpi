@@ -266,7 +266,7 @@ Every request carries `"command": "<verb>"`. Parsing happens in three stages:
    `pane-close`, `pane-list`, `pane-capture`, `graft-start`, `graft-stop`,
    `graft-status`, `ping`, `restart-old-terminals`, all `web-*` commands, `pane-sync`, `pane-sync-exclude`,
    `pane-send-key`, `pane-send`, `pane-split`, `pane-create`, `pane-name`, `pane-resize`,
-   `pane-font-size`, `pane-move-adjacent`.
+   `pane-font-size`, `pane-clear`, `pane-move-adjacent`.
    These are all parsed **before** the mandatory-`pane_id` guard, which is why
    `pane-send` / `pane-split` / `pane-create` / `pane-name` (and the close/capture/
    send-key/sync family) work from a plain shell with no `KELPI_PANE_ID`.
@@ -312,8 +312,8 @@ this fixed set (not by any request field):
 ```
 plugin, workspace-list, group-list,
 pane-list, pane-close, pane-capture, pane-send, pane-send-key,
-pane-split, pane-create, pane-name, pane-resize, pane-font-size, pane-move-adjacent,
-pane-sync, pane-sync-exclude,
+pane-split, pane-create, pane-name, pane-resize, pane-font-size, pane-clear,
+pane-move-adjacent, pane-sync, pane-sync-exclude,
 workspace-create, workspace-delete, workspace-label, workspace-mute, workspace-rename,
 workspace-icon,
 group-set-repo, group-reorder, group-sort,
@@ -376,7 +376,7 @@ Unknown → `{"ok":false,"error":"unknown key '<key>' (valid: <comma-joined list
 ### 5.7 Pane target resolution (`pane_id` / `target` / `workspace` triple)
 
 Used by `pane-close`, `pane-capture`, `pane-send`, `pane-send-key`, `pane-name`,
-`pane-resize`, `pane-font-size`, `pane-sync-exclude`, `pane-move-adjacent` (for both `target` and
+`pane-resize`, `pane-font-size`, `pane-clear`, `pane-sync-exclude`, `pane-move-adjacent` (for both `target` and
 `anchor`), and every targeted `web-*` command. Wire shape:
 
 - `pane_id` (optional): the **caller's own** pane UUID from `KELPI_PANE_ID`. Used as the
@@ -480,6 +480,7 @@ carry `"command"`.
 | `pane-send-key` | R/R | `target`, `key` | `pane_id`, `workspace` |
 | `pane-resize` | R/R | one of `pane_id`/`target`; exactly one of `ratio`/`delta` | `workspace` |
 | `pane-font-size` | R/R | one of `pane_id`/`target`; exactly one of `size`/`reset` | `workspace` |
+| `pane-clear` | R/R | one of `pane_id`/`target` | `workspace` |
 | `pane-move` | F&F | `pane_id`, `direction` | — |
 | `pane-move-adjacent` | R/R | `target`, `anchor`, `zone` | `pane_id`, `workspace` |
 | `pane-move-to-workspace` | F&F | `pane_id`, `name` | `text` (`"true"` = create) |
@@ -752,6 +753,36 @@ so the wire carries a finished size, never a step
 {"command":"pane-font-size","target":"coordinator","workspace":"main","size":16}
 → {"ok":true,"pane_id":"<uuid>","workspace_id":"<uuid>","workspace_name":"main",
    "label":"coordinator","font_size":16}
+```
+
+#### `pane-clear` (R/R)
+
+Clear the resolved terminal pane's screen and scrollback: the window's ⌘K (`clear_screen`,
+config-keybindings.md §4), which is Ghostty's macOS `clear_screen`. Guard: the pane-target
+triple. The handler refuses a pane that does not render a terminal (`pane <id> is not a
+terminal pane`), as `pane-font-size` does.
+
+The daemon clears the pane by putting VT sequences into the pane's **output** stream, so the
+daemon's own screen (what `pane capture` and a reattach read), every attached client and every
+plugin subscriber see one clear at one point in the stream. What it sends follows Ghostty's
+`Termio.clearScreen`:
+
+- **Alternate screen**: nothing. A full-screen app owns that grid; `cleared` is `false` and
+  `reason` is `"alternate-screen"`.
+- **The pane's shell is in the foreground** (its own process group holds the terminal and it is
+  a shell with a line editor: zsh, bash, fish, tcsh, nushell): the screen and scrollback are
+  erased and the shell is sent a form feed (`0x0c`, ⌃L) so it redraws its prompt, and whatever
+  had been typed at it, at the top. The ⌃L goes to that pane only, never to a synchronised-input
+  sibling.
+- **Anything else** (a command is running, or the shell cannot be identified): the scrollback is
+  erased and the rows above the cursor are REMOVED, as Ghostty's `eraseActive` removes them: the
+  cursor's row becomes the top row, what is below it moves up with it, and the cursor moves with
+  its row (scroll up, then cursor up, by the cursor's row). Nothing is typed at the program.
+
+```json
+{"command":"pane-clear","target":"worker","workspace":"main"}
+→ {"ok":true,"pane_id":"<uuid>","workspace_id":"<uuid>","workspace_name":"main",
+   "label":"worker","cleared":true}
 ```
 
 #### `pane-move` (F&F)

@@ -344,6 +344,12 @@ describe('pane commands', () => {
         expect(rejected({ command: 'pane-font-size', pane_id: PANE, size: 14.5 }).field).toBe('size');
     });
 
+    it('decodes pane-clear with the pane-target triple and nothing else', () => {
+        expect(ok({ command: 'pane-clear', pane_id: PANE })).toEqual({ command: 'pane-clear', pane_id: PANE.toUpperCase(), target: undefined, workspace: undefined });
+        expect(ok({ command: 'pane-clear', target: 'worker', workspace: 'main' })).toMatchObject({ target: 'worker', workspace: 'main' });
+        expect(rejected({ command: 'pane-clear' }).reason).toBe('guard');
+    });
+
     it('decodes pane-move-adjacent and drops unknown zones', () => {
         expect(
             ok({ command: 'pane-move-adjacent', target: 'logs', anchor: 'coordinator', zone: 'below', workspace: 'main' })

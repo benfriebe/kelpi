@@ -1,16 +1,17 @@
 import { createContext, useCallback, useContext, useEffect, useRef } from 'react';
 import { MENU_BAR_ACTIONS, actionForTrigger, keyTriggerKey, type KeyBindingMap, type KeyTrigger, type KelpiAction } from '@kelpi/core/config';
-import { clientKeyBindings, triggerFromEvent, type KeyEventLike } from '../chrome/keys';
+import { CLIENT_MAC_LIKE, clientKeyBindings, triggerFromEvent, type KeyEventLike } from '../chrome/keys';
 import { modalPresenceCount } from '../chrome/modal-presence';
 import { chordKeysForTrigger } from '../content/bridge';
 import { isOkReply, replyError } from '../connection';
 import type { KelpiRuntime } from '../state';
 import { paneHandle } from '../terminal/pane-registry';
 import { lastSelection } from '../terminal/selection-buffer';
+import { clearScreenAction } from './clear-screen';
 import { copySelection, deferredClipboardWriter } from './clipboard';
 import { LINE_EDIT_BYTES } from './line-editing';
 
-const EDITING_ACTIONS = new Set<KelpiAction>(['copy', 'paste', 'kill_line_backward', 'move_to_line_start', 'move_to_line_end']);
+const EDITING_ACTIONS = new Set<KelpiAction>(['copy', 'paste', 'kill_line_backward', 'move_to_line_start', 'move_to_line_end', 'clear_screen']);
 export interface TerminalShortcutHost {
     readonly bindings: KeyBindingMap;
     readonly windowChords?: readonly string[] | undefined;
@@ -138,6 +139,11 @@ export function dispatchTerminalEditingShortcut(event: KeyEventLike, options: {
     const handle = paneHandle(paneID);
     const original = ownedPane(runtime, paneID);
     if (!handle || !isTerminal(original)) return true;
+    // ⌘K over a full-screen app clears nothing; whether the app gets the chord is the same rule
+    // the window's own ⌘K follows (`app/clear-screen.ts`).
+    const clearing = action === 'clear_screen' ? clearScreenAction(handle, CLIENT_MAC_LIKE) : null;
+    if (clearing === 'pass') return false;
+    if (clearing === 'swallow') return true;
     const report = (title: string, error: unknown): void => reportFailure(runtime, paneID, host, title, error);
     const clipboard = options.clipboard ?? navigator.clipboard;
     if (action === 'copy') {
@@ -166,6 +172,10 @@ export function dispatchTerminalEditingShortcut(event: KeyEventLike, options: {
             writeText: typeof clipboard?.writeText === 'function' ? text => clipboard.writeText(text) : null,
             writePendingText: deferredClipboardWriter(clipboard), onError: message => report('Copy', message) });
     } else if (action === 'paste') void pasteIntoOwner(runtime, paneID, clipboard).catch(error => report('Paste', error));
+    // Cleared by the daemon that owns the pane, a remote host's included (`app/clear-screen.ts`).
+    else if (action === 'clear_screen') void runtime.commands.clearPane({ paneID }).then(reply => {
+        if (!isOkReply(reply)) report('Clear Screen', replyError(reply));
+    }, error => report('Clear Screen', error));
     else { const bytes = LINE_EDIT_BYTES[action]; if (bytes !== undefined) handle.write(bytes); }
     return true;
 }

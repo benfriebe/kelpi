@@ -205,10 +205,12 @@ describe('the set follows the config file', () => {
      * the page BEFORE the client is asked, and the client declines for a web pane, so a page
      * would lose Copy and Paste and get nothing back.
      */
-    it('leaves ⌘C, ⌘V and ⌘⌫ with the page even though the map binds them (#81, #82)', () => {
+    it('leaves ⌘C, ⌘V, ⌘⌫ and ⌘K with the page even though the map binds them (#81, #82)', () => {
         expect(DEFAULTS.has('meta+KeyC')).toBe(false);
         expect(DEFAULTS.has('meta+KeyV')).toBe(false);
         expect(DEFAULTS.has('meta+Backspace')).toBe(false);
+        // `clear_screen` is a terminal's; a page's own ⌘K command palette keeps working.
+        expect(DEFAULTS.has('meta+KeyK')).toBe(false);
         // ⌘← / ⌘→ ARE still claimed: the priority layer holds them as the browser's Back and
         // Forward, which #82 does not touch.
         expect(DEFAULTS.has('meta+ArrowLeft')).toBe(true);

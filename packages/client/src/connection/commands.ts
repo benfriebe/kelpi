@@ -522,6 +522,11 @@ export class CommandClient {
         return this.raw(wirePayload('pane-font-size', { ...scopeFields(input), ...size }), options ?? {});
     }
 
+    /** ⌘K: clear a terminal pane's screen and scrollback, in the daemon (wire-protocol.md `pane-clear`). */
+    clearPane(input: PaneScope, options?: SendOptions): Promise<CommandReply> {
+        return this.raw(wirePayload('pane-clear', scopeFields(input)), options ?? {});
+    }
+
     /** `bare` suppresses the trailing Enter (compose with `sendKey`). */
     sendText(
         input: PaneScope & { target: string; text: string; bare?: boolean },

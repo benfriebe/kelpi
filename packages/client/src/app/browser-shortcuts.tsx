@@ -17,7 +17,7 @@ const BROWSER_ACTIONS = new Set<KelpiAction>([
     'web_focus_url_bar', 'web_back', 'web_forward', 'web_reload', 'web_tab_new', 'web_tab_close',
     'web_tab_prev', 'web_tab_next', 'web_zoom_in', 'web_zoom_out', 'web_zoom_reset', 'toggle_search', 'close_pane',
 ]);
-const EDITING_ACTIONS = new Set<KelpiAction>(['copy', 'paste', 'kill_line_backward', 'move_to_line_start', 'move_to_line_end']);
+const EDITING_ACTIONS = new Set<KelpiAction>(['copy', 'paste', 'kill_line_backward', 'move_to_line_start', 'move_to_line_end', 'clear_screen']);
 const DEFAULT_HOST: TerminalShortcutHost = { bindings: clientKeyBindings() };
 
 /** Keep HTML input editing in its iframe; native browser priority still owns its fixed chords. */

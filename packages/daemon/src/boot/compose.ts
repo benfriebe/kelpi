@@ -103,6 +103,7 @@ import {
     createTerminalInput,
     chooseSplitDirectory,
     createProcessCwdReader,
+    createShellForegroundProbe,
     FALLBACK_SHELL,
     installShellIntegration,
     SHELL_INTEGRATION_ENV,
@@ -146,6 +147,7 @@ import {
 } from '../git/index.js';
 import { createSystemStatsSampler } from '../stats/index.js';
 import {
+    createScreenClearer,
     createTerminalStateService,
     type Osc52Request,
     type OscNotification,
@@ -1204,6 +1206,25 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         if (pid === undefined) return null;
         return chooseSplitDirectory(pane.workingDirectory, await readProcessCwd(pid));
     };
+    /**
+     * ⌘K (`pane-clear`, `term/clear-screen.ts`). The clear goes into the pane's output stream so
+     * the daemon's emulator, every client and every plugin subscriber see it at one point. Only
+     * a shell pane's process is asked whether it is at its prompt: a markdown pane's external
+     * `$EDITOR` is never a shell to send ⌃L to.
+     */
+    const shellAtPrompt = createShellForegroundProbe();
+    const clearScreen = createScreenClearer({
+        flush: (paneID) => term.flush(paneID),
+        screenCursor: (paneID) => term.screenCursor(paneID),
+        shellPid: (paneID) => {
+            const workspace = workspaceContainingVisiblePane(store.getState(), paneID);
+            const pane = workspace === null ? null : visiblePane(workspace, paneID);
+            return pane?.type === 'shell' ? pty.pid(paneID) : undefined;
+        },
+        shellAtPrompt,
+        injectOutput: (paneID, data) => pty.injectOutput(paneID, data),
+        writeInput: (paneID, data) => pty.writeDirect(paneID, data)
+    });
     const ctx: PaneHandlerContext = {
         prepareDocumentClose: paneIDs => {
             content.prepareClose(paneIDs);
@@ -1257,6 +1278,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         onLog: (message) => log(message),
         spawn: spawnDefaults,
         liveWorkingDirectory,
+        clearScreen,
         ...(options.now !== undefined ? { clock: options.now } : {}),
         ...(options.uuid !== undefined ? { mintPaneID: options.uuid, mintWorkspaceID: options.uuid } : {})
     };

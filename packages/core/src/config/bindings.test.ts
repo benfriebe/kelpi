@@ -22,9 +22,9 @@ const trigger = (config: string) => {
 };
 
 describe('the action table', () => {
-    it('has the 65 bindable actions and the 20 menu-bar ones', () => {
-        expect(KELPI_ACTIONS).toHaveLength(65);
-        expect(new Set(KELPI_ACTIONS).size).toBe(65);
+    it('has the 66 bindable actions and the 20 menu-bar ones', () => {
+        expect(KELPI_ACTIONS).toHaveLength(66);
+        expect(new Set(KELPI_ACTIONS).size).toBe(66);
         // #175's three text-size actions are NOT among them, deliberately: the menu-bar set is
         // the one that still fires while a chrome text field has the caret.
         expect(MENU_BAR_ACTIONS.size).toBe(20);
@@ -35,8 +35,8 @@ describe('the action table', () => {
 });
 
 describe('the default map', () => {
-    it('ships 49 triggers', () => {
-        expect(DEFAULT_KEYBINDINGS.size).toBe(49);
+    it('ships 50 triggers', () => {
+        expect(DEFAULT_KEYBINDINGS.size).toBe(50);
     });
 
     it('binds ⌃Tab and ⌃⇧Tab to the recent-workspace switcher', () => {
@@ -150,6 +150,11 @@ describe('the default map', () => {
         expect(actionForTrigger(DEFAULT_KEYBINDINGS, trigger('super+backspace'))).toBe('kill_line_backward');
         expect(actionForTrigger(DEFAULT_KEYBINDINGS, trigger('super+left'))).toBe('move_to_line_start');
         expect(actionForTrigger(DEFAULT_KEYBINDINGS, trigger('super+right'))).toBe('move_to_line_end');
+    });
+
+    // Ghostty's darwin default, and what Nex did on ⌘K.
+    it('binds ⌘K to clear_screen by default', () => {
+        expect(actionForTrigger(DEFAULT_KEYBINDINGS, trigger('super+k'))).toBe('clear_screen');
     });
 
     // #81: ⌘C and ⌘V are Kelpi's own chords now, not the Edit menu role's alone.

@@ -271,6 +271,7 @@ class FakePtyManager implements KelpiPtyManager {
     processHandle(): undefined {
         return undefined;
     }
+    injectOutput(): void {}
     adopt(paneID: string): void {
         this.live.add(paneID);
     }

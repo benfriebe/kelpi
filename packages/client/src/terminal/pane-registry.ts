@@ -95,6 +95,18 @@ export interface TerminalPaneHandle {
      */
     write(data: string): void;
     /**
+     * The pane's alternate screen is active, so a full-screen app owns the grid and ⌘K's clear
+     * falls through to it (`app/clear-screen.ts`). A live read, like `selection`. Optional: a
+     * renderer that cannot say leaves the decision to the daemon, which checks again.
+     */
+    alternateScreen?(): boolean;
+    /**
+     * An application in this pane has negotiated the kitty keyboard protocol, so it is told about
+     * ⌘ chords rather than given their bare letter. ⌘K on the alternate screen falls through to
+     * such an application and is otherwise taken (`app/clear-screen.ts`). Optional, as above.
+     */
+    kittyKeyboardActive?(): boolean;
+    /**
      * C9 - the pane's ROOT node, which is where the key bar binds its sticky-modifier
      * interceptor (`KeyBar.tsx`'s header: above the host, so a capture listener there runs
      * before the kitty interceptor and the engine's own).

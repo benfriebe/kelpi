@@ -386,6 +386,26 @@ describe('PtyManager registry (§1.2)', () => {
         expect(chunks[0]?.[1]).toBeInstanceOf(Uint8Array);
         expect(Buffer.from(chunks[0]?.[1] ?? new Uint8Array()).toString('utf8')).toBe('ok');
     });
+
+    it('injects output in order with the real output, without writing to the process', () => {
+        const { spawner, spawned } = stubSpawner();
+        const manager = createPtyManager({ spawner });
+        const seen: string[] = [];
+        manager.onData((paneID, data) => seen.push(`${paneID}:${Buffer.from(data).toString('utf8')}`));
+
+        manager.spawn(spawnOpts('pane-a'));
+        spawned[0]?.emitData('before');
+        manager.injectOutput('pane-a', '\x1b[3J');
+        spawned[0]?.emitData('after');
+        // No live PTY, nothing to put it on; an empty write is not an event.
+        manager.injectOutput('missing', 'x');
+        manager.injectOutput('pane-a', '');
+        spawned[0]?.emitExit(0);
+        manager.injectOutput('pane-a', 'gone');
+
+        expect(seen).toEqual(['pane-a:before', 'pane-a:\x1b[3J', 'pane-a:after']);
+        expect(spawned[0]?.writes).toEqual([]);
+    });
 });
 
 describe('sync-group mirroring (§8)', () => {

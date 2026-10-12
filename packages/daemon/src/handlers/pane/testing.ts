@@ -229,6 +229,8 @@ export interface HarnessOptions {
     readonly now?: number;
     /** The live-directory seam a split consults; absent = splits copy the stored directory. */
     readonly liveWorkingDirectory?: PaneHandlerContext['liveWorkingDirectory'];
+    /** `pane-clear`'s clear; absent = the command answers that it is not available. */
+    readonly clearScreen?: PaneHandlerContext['clearScreen'];
 }
 
 export interface Harness {
@@ -276,7 +278,8 @@ export function harness(options: HarnessOptions = {}): Harness {
         mintPaneID: mint,
         profiles: () => [],
         spawn: { helpersDir: '/opt/kelpi/helpers', inheritedPath: '/usr/bin', cols: 80, rows: 24 },
-        ...(options.liveWorkingDirectory !== undefined ? { liveWorkingDirectory: options.liveWorkingDirectory } : {})
+        ...(options.liveWorkingDirectory !== undefined ? { liveWorkingDirectory: options.liveWorkingDirectory } : {}),
+        ...(options.clearScreen !== undefined ? { clearScreen: options.clearScreen } : {})
     };
 
     const dispatch = (msg: WireMessage, reply: ReplyHandle | null): void => {

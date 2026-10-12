@@ -43,11 +43,11 @@
  *   - **⌘, and ⌘/ ⌘?** open Settings and Help through their own window listeners rather than
  *     through the binding map (they are OS menu-bar items in the Swift app, and there is no
  *     `KelpiAction` for either). The content-pane set folds them in for exactly this reason;
- *   - **⌘C, ⌘V and ⌘⌫** are subtracted even though the map binds them (`copy` / `paste`, #81;
- *     `kill_line_backward`, #82): they are terminal actions the client declines for a web pane,
- *     and this relay cancels a chord in the page BEFORE the client is asked, so relaying them
- *     would take a page's own Copy, Paste and delete-to-line-start and give nothing back. See
- *     `PAGE_OWNED_ACTIONS`.
+ *   - **⌘C, ⌘V, ⌘⌫ and ⌘K** are subtracted even though the map binds them (`copy` / `paste`,
+ *     #81; `kill_line_backward`, #82; `clear_screen`): they are terminal actions the client
+ *     declines for a web pane, and this relay cancels a chord in the page BEFORE the client is
+ *     asked, so relaying them would take a page's own Copy, Paste, delete-to-line-start and
+ *     command palette and give nothing back. See `PAGE_OWNED_ACTIONS`.
  *     (The older carve-out for bare ⌘[ / ⌘] is gone; `claimedChords` says why.)
  *
  * ## The native menu gets there first, for sixteen of them (#47)
@@ -224,7 +224,10 @@ const PAGE_OWNED_ACTIONS: ReadonlySet<KelpiAction> = new Set<KelpiAction>([
     // Back and Forward, which is what they mean inside a page and is unchanged by #82.)
     'kill_line_backward',
     'move_to_line_start',
-    'move_to_line_end'
+    'move_to_line_end',
+    // ⌘K clears a TERMINAL's screen and declines for a web pane, and a page that binds ⌘K for
+    // its own command palette (the module header's example) must keep it.
+    'clear_screen'
 ]);
 
 /**

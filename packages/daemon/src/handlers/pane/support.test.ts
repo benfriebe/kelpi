@@ -284,6 +284,7 @@ describe('the handler table', () => {
         expect([...paneHandlers.keys()].sort()).toEqual(
             [
                 'pane-capture',
+                'pane-clear',
                 'pane-close',
                 'pane-create',
                 'pane-font-size',

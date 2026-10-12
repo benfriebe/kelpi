@@ -123,7 +123,7 @@ describe('terminal editing shortcuts across daemon owners', () => {
 
     it('adds the terminal editing map without importing other pane commands into a remote relay', () => {
         const h = host();
-        expect(terminalShortcutChords(h)).toEqual(['8/ArrowLeft', '8/ArrowRight', '8/Backspace', '8/KeyC', '8/KeyV']);
+        expect(terminalShortcutChords(h)).toEqual(['8/ArrowLeft', '8/ArrowRight', '8/Backspace', '8/KeyC', '8/KeyK', '8/KeyV']);
         expect(terminalShortcutChords(h, ['8/KeyD', '8/KeyP'])).toEqual(expect.arrayContaining(['8/KeyC', '8/KeyV', '8/KeyD', '8/KeyP']));
         expect(terminalShortcutChords({ ...h, windowChords: ['8/Comma'] })).toContain('8/Comma');
         expect(terminalShortcutChords({ bindings: clientKeyBindings([], false) })).toContain('1/KeyC');
@@ -154,6 +154,32 @@ describe('terminal editing shortcuts across daemon owners', () => {
         expect(remote.write.mock.calls).toEqual([['\x15'], ['\x01'], ['\x05']]); expect(primary.write).not.toHaveBeenCalled();
         for (const code of ['KeyD', 'KeyP', 'Comma']) expect(dispatchTerminalEditingShortcut(event(code), target)).toBe(false);
         expect(remote.dropText).not.toHaveBeenCalled();
+    });
+
+    it('clears the remote pane on its own daemon, and never clears under a full-screen app', async () => {
+        const primary = fixture(), remote = fixture(), h = host();
+        const remoteClear = vi.spyOn(remote.runtime.commands, 'clearPane').mockResolvedValue({ ok: true });
+        const primaryClear = vi.spyOn(primary.runtime.commands, 'clearPane').mockResolvedValue({ ok: true });
+        const target = { runtime: remote.runtime, paneID: remote.paneID, visible: true, host: h };
+        expect(dispatchTerminalEditingShortcut(event('KeyK'), target)).toBe(true);
+        expect(remoteClear).toHaveBeenCalledExactlyOnceWith({ paneID: remote.paneID });
+        expect(primaryClear).not.toHaveBeenCalled(); expect(remote.write).not.toHaveBeenCalled();
+
+        // The alternate screen, legacy encoding: taken and nothing done, so no bare `k` reaches the
+        // app (Ghostty's macOS encoder writes nothing for a ⌘ chord).
+        disposals.push(registerTerminalPane(remote.paneID, { ...remote.handle, alternateScreen: () => true }));
+        expect(dispatchTerminalEditingShortcut(event('KeyK'), target)).toBe(true);
+        expect(remoteClear).toHaveBeenCalledOnce(); expect(remote.write).not.toHaveBeenCalled();
+        // Under the kitty protocol the app asked to hear ⌘ chords: back to the engine untouched.
+        disposals.push(registerTerminalPane(remote.paneID, { ...remote.handle, alternateScreen: () => true, kittyKeyboardActive: () => true }));
+        expect(dispatchTerminalEditingShortcut(event('KeyK'), target)).toBe(false);
+        expect(remoteClear).toHaveBeenCalledOnce();
+
+        // A refusal from the owning daemon is reported, not swallowed.
+        disposals.push(registerTerminalPane(remote.paneID, remote.handle));
+        remoteClear.mockResolvedValue({ ok: false, error: 'unknown command' });
+        expect(dispatchTerminalEditingShortcut(event('KeyK'), target)).toBe(true);
+        await vi.waitFor(() => expect(h.onError).toHaveBeenCalledExactlyOnceWith('Clear Screen', 'unknown command'));
     });
 
     it('supports external-editor terminals but refuses a pane from another runtime or a returned document body', () => {

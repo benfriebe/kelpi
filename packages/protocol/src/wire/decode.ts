@@ -274,6 +274,11 @@ function decodeCommand(
             }
             return { command, ...scope(), size, reset };
         }
+        case 'pane-clear': {
+            const failure = requireTargetable();
+            if (failure) return failure;
+            return { command, ...scope() };
+        }
         case 'pane-move': {
             const direction = parseMoveDirection(fields.rawText('direction'));
             if (direction === undefined) {

@@ -136,6 +136,15 @@ export interface PaneFontSizeMessage extends PaneTargetScope {
     reset: boolean;
 }
 
+/**
+ * Clear a terminal pane's screen and scrollback (⌘K, Ghostty's `clear_screen`). The daemon
+ * does the clearing, in the pane's output stream, so every viewer and the daemon's own copy of
+ * the screen agree. A no-op on the alternate screen, where a full-screen app owns the grid.
+ */
+export interface PaneClearMessage extends PaneTargetScope {
+    command: 'pane-clear';
+}
+
 export interface PaneMoveMessage {
     command: 'pane-move';
     pane_id: string;
@@ -726,6 +735,7 @@ export type WireMessage =
     | PaneSendKeyMessage
     | PaneResizeMessage
     | PaneFontSizeMessage
+    | PaneClearMessage
     | PaneMoveMessage
     | PaneMoveAdjacentMessage
     | PaneMoveToWorkspaceMessage
@@ -835,6 +845,7 @@ export const EXPLICIT_CHAIN_COMMANDS: ReadonlySet<WireCommandName> = new Set([
     'pane-name',
     'pane-resize',
     'pane-font-size',
+    'pane-clear',
     'pane-move-adjacent',
     'web-open',
     'web-navigate',

@@ -332,7 +332,9 @@ const FRAME_UNCLAIMED_ACTIONS: ReadonlySet<KelpiAction> = new Set<KelpiAction>([
     // the frame's own handling and put nothing in its place.
     'kill_line_backward',
     'move_to_line_start',
-    'move_to_line_end'
+    'move_to_line_end',
+    // ⌘K clears a terminal and declines for a content pane, so it stays the frame's.
+    'clear_screen'
 ]);
 
 /**

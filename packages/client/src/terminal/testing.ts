@@ -324,6 +324,12 @@ export class FakeRenderer implements TerminalRenderer {
         return this.offset;
     }
 
+    /** What `alternateScreen()` answers; a test flips it to model a full-screen app. */
+    alternate = false;
+    alternateScreen(): boolean {
+        return this.alternate;
+    }
+
     onScrollChange(listener: (offset: number) => void): () => void {
         this.scrollListeners.add(listener);
         return () => this.scrollListeners.delete(listener);

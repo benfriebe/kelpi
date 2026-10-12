@@ -44,7 +44,7 @@ export function parseKeybindValue(value: string): KeybindOverride | null {
     return { trigger, action: actionString };
 }
 
-/** §5.2 - the 47 shipped default triggers, in `<trigger>=<action>` form. */
+/** §5.2 - the 50 shipped default triggers, in `<trigger>=<action>` form. */
 export const DEFAULT_KEYBIND_LINES: readonly string[] = [
     'super+n=new_workspace',
     'super+o=open_file',
@@ -106,6 +106,8 @@ export const DEFAULT_KEYBIND_LINES: readonly string[] = [
     'super+backspace=kill_line_backward',
     'super+left=move_to_line_start',
     'super+right=move_to_line_end',
+    // Ghostty's darwin `super+k=clear_screen`, which Nex had for free from libghostty.
+    'super+k=clear_screen',
     'shift+super+space=cycle_layout',
     'super+p=command_palette',
     'shift+super+n=create_scratchpad',

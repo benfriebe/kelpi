@@ -1,6 +1,6 @@
 /**
  * The bindable action list.
- * Spec: docs/config-keybindings.md §4 (65 actions + the `unbind` pseudo-action).
+ * Spec: docs/config-keybindings.md §4 (66 actions + the `unbind` pseudo-action).
  * Raw values are the config-file vocabulary and must not change.
  */
 
@@ -72,6 +72,10 @@ export const KELPI_ACTIONS = [
     'kill_line_backward',
     'move_to_line_start',
     'move_to_line_end',
+    // ⌘K: clear the focused terminal's screen and scrollback, Ghostty's macOS default
+    // (`src/config/Config.zig`, `clear_screen`). Falls through on the alternate screen, where a
+    // full-screen app owns the grid, and in any pane that is not a terminal.
+    'clear_screen',
     // Terminal text size (#175). DAEMON-WIDE, not per pane and not per viewer: each steps the
     // ghostty `font-size` Settings ▸ Appearance already writes, through the same settings verb,
     // so every session on that daemon follows and a remote kelpi-to-kelpi session can drive it.

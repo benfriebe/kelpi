@@ -551,6 +551,13 @@ export interface GridSize {
     readonly rows: number;
 }
 
+/** `screenCursor()`: the active screen and the cursor's 0-based viewport position on it. */
+export interface ScreenCursor {
+    readonly alternate: boolean;
+    readonly row: number;
+    readonly col: number;
+}
+
 export interface TerminalSnapshot {
     readonly data: Uint8Array;
     readonly cols: number;
@@ -1312,6 +1319,18 @@ export class TerminalStateServiceImpl implements TerminalStateService {
     ): Promise<TerminalMatch[]> {
         await this.flush(paneID);
         return this.search(paneID, needle, options);
+    }
+
+    /**
+     * Which screen is active and where the cursor is on it, as of everything parsed so far:
+     * what `pane-clear` decides with (`./clear-screen.ts`). Call after `flush()` to include
+     * bytes fed moments ago. Unknown pane → null.
+     */
+    screenCursor(paneID: string): ScreenCursor | null {
+        const entry = this.panes.get(paneID);
+        if (!entry) return null;
+        const buffer = entry.term.buffer.active;
+        return { alternate: buffer.type === 'alternate', row: buffer.cursorY, col: buffer.cursorX };
     }
 
     /** Grid the daemon believes the pane has (authoritative cols×rows for PTY sizing). */

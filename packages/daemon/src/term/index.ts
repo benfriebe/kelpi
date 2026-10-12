@@ -18,6 +18,14 @@ export {
     type Osc52Write
 } from './osc52.js';
 export {
+    FORM_FEED,
+    clearScreenSequence,
+    createScreenClearer,
+    type ScreenClearer,
+    type ScreenClearerDeps,
+    type ScreenClearOutcome
+} from './clear-screen.js';
+export {
     createTerminalStateService,
     DEFAULT_COLS,
     DEFAULT_ROWS,
@@ -26,6 +34,7 @@ export {
     parseOsc7,
     sameModes,
     type GridSize,
+    type ScreenCursor,
     type TerminalSnapshot,
     type TerminalStateOptions
 } from './service.js';

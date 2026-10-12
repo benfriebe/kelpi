@@ -150,6 +150,7 @@ describe('HelpOverlay (APP-027 / APP-063)', () => {
         expect(shortcut('kill_line_backward')).toBe('⌘Delete');
         expect(shortcut('move_to_line_start')).toBe('⌘←');
         expect(shortcut('move_to_line_end')).toBe('⌘→');
+        expect(shortcut('clear_screen')).toBe('⌘K');
     });
 
     it('closes on the button, on the backdrop and on Escape', () => {

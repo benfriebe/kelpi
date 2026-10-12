@@ -143,6 +143,7 @@ Installed by `kelpi install-hooks` (§2.3). Expected set (the doctor's `expected
 | `Notification`         | `kelpi event notification`    | Claude posted a message (often a permission prompt) |
 | `SessionStart`         | `kelpi event session-start`   | bind session id to pane            |
 | `SessionEnd`           | `kelpi event session-end`     | clear session id (agent exited / `/clear`) |
+| `PermissionRequest`    | `kelpi event permission-request` (hook `"timeout": 5`) | ask the selected permissions provider; print Claude's allow/deny, or nothing so Claude shows its prompt (#388, §3) |
 
 - The `SessionStart` entry is written **matcher-less** so it fires for every source
   (`startup`, `resume`, `clear`, `compact`). A stale pre-v0.19 `"matcher": "startup"`
@@ -226,13 +227,17 @@ path doctor names. Behavior:
   exact command to run by hand.
 - `--dry-run` runs the whole thing and writes nothing (the merged bytes come back as
   `preview`); `--json` prints one object and nothing else.
+- The Claude `PermissionRequest` group (#388) is new to this installer: the shell script
+  never wrote it, so it is appended after the other five, and its hook carries
+  `"timeout": 5`. An install from before it gains the group on a re-run of
+  `kelpi install-hooks`; until then doctor WARNs that it is missing.
 
 ---
 
 ## 3. The `kelpi event` CLI command
 
 ```
-kelpi event stop|start|error|notification|session-start|session-end
+kelpi event stop|start|error|notification|session-start|session-end|permission-request
           [--agent claude|codex] [--message ...] [--title ...] [--body ...]
 ```
 
@@ -318,6 +323,16 @@ payload without them, stays wire-identical:
 
 A Codex payload that carries `notification_type` or `last_assistant_message` is forwarded
 under the same keys. The wire shapes are in wire-protocol.md §6.1.
+
+**The request/reply exception (#388).** `kelpi event permission-request`, run by Claude
+Code's `PermissionRequest` hook, is the one verb that waits for an answer; every other
+`kelpi event` verb is fire-and-forget. It sends `tool_name`, `tool_input` and the optional
+`mcp_server`, `cwd`, `permission_mode` and `session_id` from stdin, waits up to 3 s for the
+daemon's `allow`, `deny` or `abstain`, and prints Claude's decision JSON on allow or deny.
+On abstain, an error, no daemon or a timeout it prints nothing and exits 0, which leaves
+Claude's normal prompt in place: it fails open to the prompt, never to "allow". A 3.5 s
+guard bounds the whole run, outside a pane it exits at once, and with `--agent codex` it
+sends nothing. The output contract and timeouts are in cli.md §8.7.
 
 ---
 

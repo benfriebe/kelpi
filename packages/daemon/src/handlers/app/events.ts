@@ -10,12 +10,17 @@
  * `notification` deliberately routes through the agent-stopped transition, so a permission
  * prompt arriving mid-background-work keeps the pane `running` while still notifying
  * (`agentNotification` is not background-suppressed; the synthetic stop notification is).
+ *
+ * #387: every hook line the store applies also publishes one `agent.event` to plugins
+ * (`./agent-events.ts`), whether or not a desktop notification is shown.
  */
 
 import { notificationDecision, type AgentEvent } from '@kelpi/core/agent';
 import type { WsNotificationKind } from '@kelpi/protocol';
 
+import { isDualFire } from '../../control/dual-fire.js';
 import { findPaneAnywhere, previewAgentEvent, workspaceByID } from '../../store/index.js';
+import { agentHookEvent, createAgentHookQueue, type AgentHookMessage } from './agent-events.js';
 import { forCommand } from './common.js';
 import type { AppContext, AppDeps, AppHandler } from './context.js';
 
@@ -33,19 +38,20 @@ export function notificationDedupeKey(paneID: string): string {
     return `kelpi-${paneID}`;
 }
 
+/** True when the store applied the event (false for a muted, unknown or unowned pane). */
 export function applyAgentEvent(
     paneID: string,
     event: AgentEvent,
     ctx: AppContext,
     deps: AppDeps
-): void {
+): boolean {
     // #372: the pane's agent is being restarted on a new terminal host; this is the old one dying.
-    if (deps.agentEventsMuted(paneID)) return;
+    if (deps.agentEventsMuted(paneID)) return false;
     const state = ctx.store.getState();
     const location = findPaneAnywhere(state, paneID);
-    if (location === null) return;
+    if (location === null) return false;
     const workspace = workspaceByID(state, location.workspaceID);
-    if (workspace === null) return;
+    if (workspace === null) return false;
 
     const now = deps.now();
     const preview = previewAgentEvent(state, paneID, event, now);
@@ -56,7 +62,7 @@ export function applyAgentEvent(
         now,
         workspaceID: workspace.id
     });
-    if (preview === null) return;
+    if (preview === null) return true;
     const { effects } = preview;
 
     // §3.6 / issue #178: a cleared session id must survive the next launch.
@@ -64,7 +70,7 @@ export function applyAgentEvent(
     else if (effects.changed && effects.persist) deps.persist();
 
     const pending = effects.notification;
-    if (pending === null) return;
+    if (pending === null) return true;
 
     const isFocused =
         deps.isPaneFocused !== null
@@ -95,43 +101,53 @@ export function applyAgentEvent(
     if (decision.shouldBounce) {
         ctx.broadcast({ type: ATTENTION_EVENT, paneID, workspaceID: workspace.id, ...audience });
     }
+    return true;
 }
 
 export function eventHandlerEntries(deps: AppDeps): readonly (readonly [string, AppHandler])[] {
+    const hookEvents = createAgentHookQueue(deps.emitAgentEvent);
+    /** Apply one lifecycle message, then hold its `agent.event` for the line's dual-fire. */
+    const apply = (msg: AgentHookMessage, event: AgentEvent, ctx: AppContext): void => {
+        if (isDualFire(msg)) {
+            // The second half of a hook line: it completes the primary's event, adding none.
+            applyAgentEvent(msg.pane_id, event, ctx, deps);
+            hookEvents.flush();
+            return;
+        }
+        // An earlier line's held event goes out first, against the state that line left.
+        hookEvents.flush();
+        if (applyAgentEvent(msg.pane_id, event, ctx, deps)) {
+            hookEvents.defer(() => agentHookEvent(msg, ctx.store.getState()));
+        }
+    };
     return [
         forCommand('start', (msg, ctx) => {
             // A start while already running means the previous stop was missed; the machine
             // restarts the elapsed clock and zeroes the background count, which is the same
             // observable state as the app's "reset to idle first".
-            applyAgentEvent(msg.pane_id, { type: 'agentStarted', agent: msg.agent }, ctx, deps);
+            apply(msg, { type: 'agentStarted', agent: msg.agent }, ctx);
         }),
         forCommand('stop', (msg, ctx) => {
-            applyAgentEvent(
-                msg.pane_id,
-                { type: 'agentStopped', backgroundTaskCount: msg.background_tasks },
-                ctx,
-                deps
-            );
+            apply(msg, { type: 'agentStopped', backgroundTaskCount: msg.background_tasks }, ctx);
         }),
         forCommand('error', (msg, ctx) => {
-            applyAgentEvent(msg.pane_id, { type: 'agentError', message: msg.message }, ctx, deps);
+            apply(msg, { type: 'agentError', message: msg.message }, ctx);
         }),
         forCommand('notification', (msg, ctx) => {
-            applyAgentEvent(
-                msg.pane_id,
+            apply(
+                msg,
                 {
                     type: 'notification',
                     title: msg.title,
                     body: msg.body,
                     backgroundTaskCount: msg.background_tasks
                 },
-                ctx,
-                deps
+                ctx
             );
         }),
         forCommand('session-start', (msg, ctx) => {
-            applyAgentEvent(
-                msg.pane_id,
+            apply(
+                msg,
                 {
                     type: 'sessionStarted',
                     sessionID: msg.session_id,
@@ -140,17 +156,11 @@ export function eventHandlerEntries(deps: AppDeps): readonly (readonly [string, 
                     // later resume can spawn the pane with the same profile env.
                     ...(msg.profile !== undefined ? { profileName: msg.profile } : {})
                 },
-                ctx,
-                deps
+                ctx
             );
         }),
         forCommand('session-end', (msg, ctx) => {
-            applyAgentEvent(
-                msg.pane_id,
-                { type: 'sessionEnded', sessionID: msg.session_id },
-                ctx,
-                deps
-            );
+            apply(msg, { type: 'sessionEnded', sessionID: msg.session_id }, ctx);
         })
     ];
 }

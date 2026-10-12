@@ -25,7 +25,9 @@ import {
     type DomainEvent,
     type KelpiStore
 } from '../../store/index.js';
+import { dualFireMessage } from '../../control/server.js';
 import { createAppHandlers } from './index.js';
+import type { AgentHookEvent } from './agent-events.js';
 import type { AppContext, AppHandlerOptions, AppHandlerTable, SpawnPaneRequest } from './context.js';
 
 export const HOME = '/Users/test';
@@ -61,6 +63,8 @@ export interface Harness {
     readonly syncGroups: RecordedSyncGroup[];
     /** Every id `deps.uuid()` handed out, in order. */
     readonly minted: string[];
+    /** #387: every `agent.event` published, in order (a line's event lands by the next microtask). */
+    readonly agentEvents: AgentHookEvent[];
     state(): DaemonState;
     dispatch(...actions: readonly DomainAction[]): void;
     /** Decode + dispatch one wire object; returns the reply payloads (empty for F&F). */
@@ -154,6 +158,7 @@ export function harness(options: HarnessOptions = {}): Harness {
     const scrolled: { kind: string; id: string }[] = [];
     const syncGroups: RecordedSyncGroup[] = [];
     const minted: string[] = [];
+    const agentEvents: AgentHookEvent[] = [];
 
     const pool = [...(options.ids ?? [])];
     let counter = 0;
@@ -206,6 +211,11 @@ export function harness(options: HarnessOptions = {}): Harness {
             options.scrollTarget ??
             ((target) => {
                 scrolled.push({ kind: target.kind, id: target.id });
+            }),
+        emitAgentEvent:
+            options.emitAgentEvent ??
+            ((event) => {
+                agentEvents.push(event);
             })
     });
 
@@ -247,15 +257,8 @@ export function harness(options: HarnessOptions = {}): Harness {
         if (!decoded.ok) throw new Error(`wire decode rejected: ${decoded.detail}`);
         let last: Record<string, unknown>[] = [];
         for (const item of dispatchSequence(decoded)) {
-            const message: WireMessage =
-                item.kind === 'message'
-                    ? item.message
-                    : {
-                          command: 'session-start',
-                          pane_id: item.event.pane_id,
-                          session_id: item.event.session_id,
-                          agent: item.event.agent
-                      };
+            // The production conversion, so the dual-fire is marked as one (#387).
+            const message: WireMessage = item.kind === 'message' ? item.message : dualFireMessage(item.event);
             const payloads = run(message, item.reply);
             if (item.kind === 'message') last = payloads;
         }
@@ -275,6 +278,7 @@ export function harness(options: HarnessOptions = {}): Harness {
         scrolled,
         syncGroups,
         minted,
+        agentEvents,
         replies,
         state: () => store.getState(),
         dispatch: (...actions) => {

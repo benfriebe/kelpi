@@ -794,6 +794,35 @@ children's.
   but its footer and favicon still count the workspace's waiting panes. A new client
   reading an older daemon treats every workspace as unmuted.
 
+### 7.7 Plugin events (`agent.event`, #387)
+
+Every hook line the daemon applies publishes exactly one plugin event, `agent.event`
+(`packages/daemon/src/handlers/app/agent-events.ts`). It is separate from the notification
+matrix above: it fires whether or not §7.1 to §7.3 show anything, so the focused pane of an
+active window, a muted workspace and a pane whose status did not change all produce one.
+
+- **When.** After `ctx.store.dispatch`, so `panes.list` already agrees with it. A line's
+  §4.2 dual-fire session-start runs right after its primary message, so the primary's event
+  waits for it and goes out once it has applied (or on the next microtask when the line has
+  none). The dual-fire publishes nothing of its own (`control/dual-fire.ts` marks it), which
+  keeps it at one event per `kelpi event` call, and the event's `sessionID` and `agent` already
+  include what the dual-fire bound.
+- **Not for.** A pane `agentEventsMuted` covers (a restart of old terminals, #372), an unknown
+  pane, or a pane no workspace owns: the same early returns as the state change.
+- **Who hears it.** Plugin backends and views only, through the plugin service's event bus
+  (`AppDeps.emitAgentEvent`, `PluginService.emitDaemonEvent`). It is not a daemon broadcast, so
+  it never surfaces as `daemon.agent-event`; views see it as a `plugin-event`, like every
+  plugin event. The SDK's `agents.onEvent(listener)` wraps `events.on('agent.event')`.
+- **Payload.** `{ type, paneID, workspaceID, agent, sessionID?, status, notificationType?,
+  title?, body?, message?, lastAssistantMessage?, lastAssistantMessageTruncated?,
+  transcriptPath?, backgroundTasks?, toolName?, muted? }`. `type` is the wire verb. `agent`,
+  `sessionID` and `status` are the pane's after the event (`agent` falls back to `claude`).
+  The optional keys are present only when the wire message carried them (§3, "Hook fields
+  for plugins"): `title` / `body` on `notification` (with the decoder's defaults), `message`
+  on `error`, `backgroundTasks` only when greater than 0. `muted: true` follows §7.6's rule
+  for `daemon.notification`; the key is absent otherwise.
+- **Not stored.** `transcriptPath` rides on the event only; the pane does not keep it.
+
 ---
 
 ## 8. External indicators (menu bar + dock)
@@ -1242,6 +1271,10 @@ interface SystemStats {
     activation.
 17. Menu-bar dot precedence: waiting > running > none.
 18. Suppression checkboxes persist even when the dialog is cancelled.
+19. Plugin events (§7.7): exactly one `agent.event` per applied hook line (`start`, `stop`,
+    `notification`, `error`, `session-start`, `session-end`; the dual-fire adds none), after
+    the state change, notification shown or not; none for a muted-for-restart, unknown or
+    unowned pane.
 
 ---
 

@@ -269,6 +269,9 @@ included) and silently drop the event when no workspace owns the pane. The handl
 `packages/daemon/src/handlers/app/events.ts`; the per-pane status machine they feed is
 `packages/core/src/agent/machine.ts`.
 
+Each line the store applies also publishes one `agent.event` to plugin backends and views, after
+the state change and whether or not a notification is broadcast (agent-lifecycle.md §7.7).
+
 Pane status values: `"idle" | "running" | "waitingForInput"`.
 
 ### 3.1 `start` → agentStarted(paneID, agent)

@@ -14,6 +14,14 @@ import type { PaneModel } from './types';
 
 const NOW = 1_000_000;
 
+/** React's pointer enter/leave come from `pointerover`/`pointerout`, which jsdom cannot construct. */
+function hover(target: Element, type: 'pointerover' | 'pointerout', relatedTarget: Element | null = null, pointerType = 'mouse'): void {
+    const event = new MouseEvent(type, { bubbles: true, cancelable: true, relatedTarget });
+    Object.defineProperty(event, 'pointerType', { value: pointerType });
+    Object.defineProperty(event, 'pointerId', { value: 1 });
+    act(() => { target.dispatchEvent(event); });
+}
+
 describe('contributed pane header commands', () => {
     it('runs with the clicked pane identity and remains available after folding into overflow', () => {
         const run = vi.fn();
@@ -277,14 +285,53 @@ describe('PaneHeader rendering', () => {
      * the header's job is the button, and it is absent in edit mode — there is no rendered
      * document to copy while the editor is up.
      */
+    it('names a hovered button after a short rest, and brightens it on a faint ground', () => {
+        vi.useFakeTimers();
+        try {
+            renderHeader(testPane('a', { type: 'scratchpad', isEditing: true }));
+            const wrap = screen.getByTestId('pane-wrap-a');
+            // No native tooltip: it would show late, and a second time.
+            expect(wrap.getAttribute('title')).toBeNull();
+            expect(wrap.className).toContain('opacity-60');
+            hover(wrap, 'pointerover');
+            expect(wrap.className).toContain('opacity-100');
+            expect(wrap.style.background).not.toBe('transparent');
+            expect(screen.queryByTestId('pane-header-tip')).toBeNull();
+            act(() => { vi.advanceTimersByTime(400); });
+            expect(screen.getByTestId('pane-header-tip').textContent).toBe('Wrap lines');
+            // Moving along the row, the next button names itself at once.
+            const split = screen.getByTestId('pane-split-right-a');
+            hover(wrap, 'pointerout', split); hover(split, 'pointerover', wrap);
+            expect(screen.getAllByTestId('pane-header-tip').map((tip) => tip.textContent)).toEqual(['Split right (⌘D)']);
+            expect(wrap.className).toContain('opacity-60');
+            // A press drops the name.
+            act(() => firePointer(split, 'pointerdown'));
+            expect(screen.queryByTestId('pane-header-tip')).toBeNull();
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('names nothing for a touch', () => {
+        vi.useFakeTimers();
+        try {
+            renderHeader(testPane('a', { type: 'scratchpad', isEditing: true }));
+            const wrap = screen.getByTestId('pane-wrap-a');
+            hover(wrap, 'pointerover', null, 'touch');
+            act(() => { vi.advanceTimersByTime(1000); });
+            expect(screen.queryByTestId('pane-header-tip')).toBeNull();
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
     it('offers the markdown copy button in preview mode only', () => {
         const onCopyDocument = vi.fn();
         renderHeader(testPane('a', { type: 'markdown', isEditing: false }), { onCopyDocument });
         const button = screen.getByTestId('pane-copy-a');
-        // L26: `.help("Copy whole file")` (`PaneHeaderView.swift:193`), verbatim — tooltip and
-        // accessible name alike.
+        // L26: `.help("Copy whole file")` (`PaneHeaderView.swift:193`), verbatim — the accessible
+        // name, and the name a hover shows (`HeaderTip`).
         expect(button.getAttribute('aria-label')).toBe('Copy whole file');
-        expect(button.getAttribute('title')).toBe('Copy whole file');
         act(() => button.click());
         expect(onCopyDocument).toHaveBeenCalledExactlyOnceWith('a');
         cleanup();

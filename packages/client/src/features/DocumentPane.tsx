@@ -8,6 +8,7 @@ import { PluginView } from '../plugins/PluginView';
 import { useWorkbenchLayout } from '../plugins/Workbench';
 import { getCurrentPlugins } from '../plugins/client';
 import { resolveSlot, slotViews } from '../plugins/registry';
+import { publishRendererToggle, setPaneRenderer, usePaneRenderer } from '../plugins/pane-renderers';
 import { clearDocumentDraft, documentRequest, isRecoveredDocumentDraft, registerCsvCloseGuard, registerDocumentCloseGuard, stageDocumentDraft, useDocumentDraft } from '../plugins/document-drafts';
 import { bindDocumentFeatures, type DocumentFeatureProps } from './documents';
 import { featureBindings } from './feature';
@@ -56,7 +57,11 @@ function DocumentBody(props: DocumentPaneProps & { content: ContentApi; csv: Csv
     // the csv verbs), so nothing here may ask the content service to read the file.
     const csvGrid = kind === 'csv' && props.editing !== true;
     const layout = useWorkbenchLayout(runtime), placement = `document.${kind}` as const;
-    const selected = resolveSlot(layout.views, placement, layout.selections[placement]);
+    const choices = slotViews(layout.views, placement).filter(view => !view.container);
+    // The type's choice, unless this pane was switched on its own from its header.
+    const typeSelected = resolveSlot(layout.views, placement, layout.selections[placement]);
+    const own = usePaneRenderer(paneID);
+    const selected = choices.find(view => view.id === own) ?? typeSelected;
     const nativeID = `kelpi.${kind}`, viewID = selected?.id ?? nativeID;
     const plugin = getCurrentPlugins(runtime).find(plugin => plugin.manifest.id === selected?.pluginID);
     const generation = `${viewID}:${plugin?.instanceID ?? ''}`;
@@ -126,12 +131,31 @@ function DocumentBody(props: DocumentPaneProps & { content: ContentApi; csv: Csv
         } catch (error) { setRecoveryError(error instanceof Error ? error.message : String(error)); }
         finally { setBusy(false); }
     };
-    const choices = slotViews(layout.views, placement).filter(view => !view.container);
+    // A scratchpad's header toggle: native plain text, or a plugin renderer for this pane alone
+    // (the type's choice when that is a plugin, else the first one installed).
+    const showingPlugin = Boolean(selected?.pluginID) && !failed;
+    const pluginTarget = typeSelected?.pluginID ? typeSelected : choices.find(view => view.pluginID);
+    const toggleTitle = showingPlugin ? selected?.title : pluginTarget?.title;
+    const toggle = useRef(() => {});
+    toggle.current = () => {
+        const next = showingPlugin ? nativeID : pluginTarget?.id;
+        if (next === undefined) return;
+        // A choice that matches the type's needs no entry: the pane then follows the type again.
+        setPaneRenderer(paneID, next === (typeSelected?.id ?? nativeID) ? null : next);
+        setFailure(null);
+    };
+    useEffect(() => {
+        if (kind !== 'scratchpad' || toggleTitle === undefined) return;
+        return publishRendererToggle(paneID, { plugin: showingPlugin, title: toggleTitle }, () => toggle.current());
+    }, [kind, paneID, showingPlugin, toggleTitle]);
+    // A scratchpad's header toggle stands in for its picker (the type's choice is in Settings), so
+    // its strip is drawn only to report a failed renderer.
+    const picker = choices.length > 1 && kind !== 'scratchpad';
     return <div data-document-pane={paneID} data-document-renderer={selected?.pluginID && !failed ? viewID : nativeID} className="flex h-full min-h-0 flex-col">
-        {choices.length > 1 || failed ? <div className="flex shrink-0 items-center gap-2 border-b px-2 py-1 text-[11px]" style={{ borderColor: tokens.divider }}>
-            <label>{DOCUMENT_LABELS[kind]} renderer <select aria-label={`${kind} renderer`} value={viewID} onChange={event => layout.select(placement, event.target.value)}>
+        {picker || failed ? <div className="flex shrink-0 items-center gap-2 border-b px-2 py-1 text-[11px]" style={{ borderColor: tokens.divider }}>
+            {picker ? <label>{DOCUMENT_LABELS[kind]} renderer <select aria-label={`${kind} renderer`} value={viewID} onChange={event => layout.select(placement, event.target.value)}>
                 {choices.map(view => <option key={view.id} value={view.id}>{view.title}</option>)}
-            </select></label>
+            </select></label> : null}
             {failed ? <><span role="status">{failed}</span><button onClick={() => setFailure(null)}>Retry renderer</button></> : null}
         </div> : null}
         {recovery ? <div data-testid={`document-recovery-${paneID}`} className="shrink-0 border-b p-2 text-xs" style={{ borderColor: tokens.divider }}>

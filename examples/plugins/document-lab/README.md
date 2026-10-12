@@ -7,7 +7,8 @@ table panes, where it only shows a read-only note: a table is edited by row and 
 After [preparing the source checkout](../../../docs/plugin-development.md#prepare-a-source-checkout), start
 `node scripts/dev-instance.mjs --state out/plugin-documents-playground` from the checkout
 root. In that private instance, install this directory's absolute path through Settings → Plugins, open a
-document, and choose **Document Lab** in its renderer picker. Settings exposes the same choices
+document, and choose **Document Lab** in its renderer picker (a Scratchpad has a renderer button in its
+header instead). Settings exposes the same choices
 as `document.markdown`, `document.scratchpad`, `document.diff` and `document.csv`.
 
 The example reads and watches the daemon's native buffer, supports Markdown edit/preview and save,

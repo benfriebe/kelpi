@@ -89,8 +89,17 @@ export default async function ({ page, cli, sandbox, rec, d }) {
         const created = await inside(markdown.id, `kelpi.panes.scratchpad(${JSON.stringify(workspaceID)})`);
         const scratch = created.paneID;
         await cli.ok(['pane', 'close', '--target', terminal]);
-        await choose(scratch, 'scratchpad'); await choose(diff.id, 'diff');
+        // A scratchpad has no renderer picker: its type's choice is made the way Settings makes
+        // it, and its header toggle switches that one pane.
+        await inside(markdown.id, `kelpi.ui.selectView('document.scratchpad', ${JSON.stringify(viewID)}).then(() => true)`); await choose(diff.id, 'diff');
         if (!await ready(scratch) || !await ready(diff.id)) throw new Error('Scratchpad/diff renderer failed to attach');
+        const toggle = `[data-testid="pane-renderer-${scratch}"]`;
+        const scratchRenderer = `document.querySelector('[data-document-pane="${scratch}"]').dataset.documentRenderer`;
+        const noPicker = await page.eval(`document.querySelector('[data-document-pane="${scratch}"] select') === null && document.querySelector(${JSON.stringify(toggle)})?.getAttribute('aria-label') === 'Show as plain text'`);
+        await page.click(toggle);
+        const plain = await d.settleDom(page, `${scratchRenderer} === 'kelpi.scratchpad' && document.querySelector(${JSON.stringify(toggle)}).getAttribute('aria-label').startsWith('Show as ') && document.querySelector('[data-document-pane="${markdown.id}"]').dataset.documentRenderer === ${JSON.stringify(viewID)}`);
+        await page.click(toggle);
+        rec.check('a scratchpad has no renderer picker, and its header toggle switches it alone', noPicker && plain && await ready(scratch) && await page.eval(`${scratchRenderer} === ${JSON.stringify(viewID)}`));
         rec.check('diff exposes raw source and remains read-only', await check(diff.id, `document.getElementById('preview').textContent.includes('+Diff fixture') && document.getElementById('editor').hidden && document.getElementById('save').disabled`));
         rec.check('SDK discovery includes three independently selectable document placements', await inside(markdown.id, `(async () => { const workbench = await kelpi.ui.getWorkbench(); return ['document.markdown','document.scratchpad','document.diff'].every(id => workbench.slots.find(slot => slot.id === id)?.viewID === '${viewID}'); })()`));
 

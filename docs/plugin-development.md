@@ -106,7 +106,8 @@ third-party runtime dependencies:
 While dev runs, use another terminal to open a pane template with
 `kelpi_test plugin open example.my-pane example.my-pane.home`.
 Choose sidebars through Settings → Plugins → Workbench views. For document and browser
-templates, open a native pane and choose the replacement in Settings or its renderer picker.
+templates, open a native pane and choose the replacement in Settings or its renderer picker
+(a Scratchpad has a renderer button in its header instead).
 There is no terminal scaffold template. The [Terminal Lab](../examples/plugins/terminal-lab)
 demonstrates attachment with an actual terminal emulator;
 the [Document Lab](../examples/plugins/document-lab) and

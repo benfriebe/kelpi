@@ -60,6 +60,8 @@ export interface PaneChromeActions {
     readonly onRefreshDiff?: ((paneID: string) => void) | undefined;
     /** #324: a csv pane's header-row toggle. */
     readonly onToggleCsvHeaderRow?: ((paneID: string) => void) | undefined;
+    /** A scratchpad's renderer toggle (plain text, or a plugin renderer for that pane). */
+    readonly onToggleDocumentRenderer?: ((paneID: string) => void) | undefined;
     /** A scratchpad's wrap toggle. */
     readonly onToggleScratchpadWrap?: ((paneID: string) => void) | undefined;
     readonly onCopyDocument?: ((paneID: string) => void) | undefined;
@@ -182,6 +184,9 @@ export function createPaneChromeSurface(config: PaneChromeSurfaceConfig): PaneCh
                     return;
                 case 'header-row':
                     actions.onToggleCsvHeaderRow?.(paneID);
+                    return;
+                case 'renderer':
+                    actions.onToggleDocumentRenderer?.(paneID);
                     return;
                 case 'wrap':
                     actions.onToggleScratchpadWrap?.(paneID);

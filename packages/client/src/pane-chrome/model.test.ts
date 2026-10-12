@@ -286,6 +286,35 @@ describe('paneChromeModel', () => {
             expect(onToggleScratchpadWrap).toHaveBeenCalledWith('s');
         });
 
+        it('draws a renderer toggle before wrap when a plugin renderer is offered', () => {
+            const model = paneChromeModel({ pane: scratchpad(), focused: false, nowSeconds: NOW, renderer: { plugin: false, title: 'Markdown' } }).descriptor;
+            expect(model.controls.map((control) => control.key)).toEqual(['renderer', 'wrap', 'split-right', 'split-down', 'new-web', 'close']);
+            expect(model.size.buttons).toBe(6);
+            expect(model.controls.find((control) => control.key === 'renderer')).toMatchObject({
+                label: 'Show as Markdown',
+                icon: 'checklist',
+                enabled: true,
+                testID: 'pane-renderer-s'
+            });
+            const back = paneChromeModel({ pane: scratchpad(), focused: false, nowSeconds: NOW, renderer: { plugin: true, title: 'Markdown' } }).descriptor;
+            expect(back.controls.find((control) => control.key === 'renderer')).toMatchObject({ label: 'Show as plain text', icon: 'plain-text' });
+        });
+
+        it('runs the renderer toggle through the surface', () => {
+            const onToggleDocumentRenderer = vi.fn();
+            const model = paneChromeModel({ pane: scratchpad(), focused: false, nowSeconds: NOW, renderer: { plugin: false, title: 'Markdown' } });
+            const surface = createPaneChromeSurface({ actions: () => ({ onToggleDocumentRenderer }), model: () => model });
+            surface.runControl('s', 'renderer');
+            expect(onToggleDocumentRenderer).toHaveBeenCalledWith('s');
+        });
+
+        it('draws no renderer toggle on any other pane, whatever it is handed', () => {
+            for (const type of ['shell', 'markdown', 'diff', 'csv', 'web'] as const) {
+                const model = paneChromeModel({ pane: testPane('o', { type }), focused: false, nowSeconds: NOW, renderer: { plugin: false, title: 'Markdown' } }).descriptor;
+                expect(model.controls.some((control) => control.key === 'renderer')).toBe(false);
+            }
+        });
+
         it('draws no wrap toggle on any other pane', () => {
             for (const type of ['shell', 'markdown', 'diff', 'csv', 'web'] as const) {
                 const model = paneChromeModel({ pane: testPane('o', { type }), focused: false, nowSeconds: NOW }).descriptor;

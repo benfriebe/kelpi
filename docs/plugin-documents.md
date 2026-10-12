@@ -10,6 +10,10 @@ and in phone pane/layout views.
 replacements using only the public browser SDK, and attaches to CSV tables with a read-only
 note. It has no backend or access to the host DOM.
 
+[Markdown Scratchpad](../examples/plugins/markdown-scratchpad) is a Scratchpad renderer for
+everyday use: it edits Markdown in place in a single view, with task boxes that tick on a click,
+over the same buffer and save rules.
+
 See the [plugin roadmap](plugin-roadmap.md) for current scope and the
 [development guide](plugin-development.md) for templates, live editing and portable packages.
 
@@ -23,7 +27,8 @@ node scripts/dev-instance.mjs --state out/plugin-documents-playground
 ```
 
 In that instance, paste the absolute path to `examples/plugins/document-lab` into Settings →
-Plugins. Open a Markdown file, a Scratchpad or a Diff, then select **Document Lab** in its renderer picker.
+Plugins. Open a Markdown file or a Diff and select **Document Lab** in its renderer picker; open a
+Scratchpad and press the renderer button in its header.
 Settings → Plugins → Workbench views exposes the same choices as `document.markdown`,
 `document.scratchpad`, `document.diff` and `document.csv`.
 
@@ -32,6 +37,11 @@ and daemon identity. It does not rewrite individual pane records. A direct brows
 has separate preferences; selecting an embedded remote renderer does not change the primary
 daemon's choices. Disabling/removing a plugin restores native views while retaining the
 preference for reenabling it. A failed renderer falls back to the native view with Retry.
+A Scratchpad has no renderer picker. Its header gets a renderer toggle instead once a
+Scratchpad renderer is installed, which switches that one pane between plain text and the
+plugin's view (the type's choice when that is a plugin, otherwise the first one installed). The
+pane keeps that choice in this client until it is toggled back; Settings still sets the choice
+for every Scratchpad that has none of its own.
 
 The development instance owns its database, sockets, configuration and Electron profile.
 For an external terminal, use its printed `KELPI_SOCKET`, `KELPI_REQUIRE_SOCKET=1`, and this

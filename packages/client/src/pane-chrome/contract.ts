@@ -290,6 +290,8 @@ export const PANE_CHROME_ACTION_IDS = [
     'refresh',
     // #324: a csv pane's header-row toggle.
     'header-row',
+    // A scratchpad's renderer toggle: plain text, or a plugin renderer for that pane.
+    'renderer',
     // A scratchpad's wrap toggle.
     'wrap',
     'split-right',

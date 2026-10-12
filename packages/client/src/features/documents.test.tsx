@@ -7,6 +7,8 @@ import { contentState, createFakeContentApi } from '../content/testing';
 import { createFakeCsvApi } from '../content/csv/testing';
 import { DocumentPane } from './DocumentPane';
 import { clearDocumentDraft, getDocumentDraft, runDocumentEdit, stageDocumentDraft, type DocumentDraft } from '../plugins/document-drafts';
+import { paneRenderer, toggleDocumentRenderer, useRendererToggle } from '../plugins/pane-renderers';
+import { useWorkbenchLayout } from '../plugins/Workbench';
 
 let plugins: PluginInfo[] = [];
 vi.mock('../plugins/client', async original => ({ ...await original<object>(),
@@ -40,6 +42,12 @@ function pendingEdit() {
     return { promise, resolve };
 }
 
+/** The scratchpad type's choice, as Settings → Plugins → Workbench views makes it. */
+function TypeChoice(props: { runtime: KelpiRuntime; viewID: string }) {
+    const layout = useWorkbenchLayout(props.runtime);
+    return <button onClick={() => layout.select('document.scratchpad', props.viewID)}>Choose {props.viewID}</button>;
+}
+
 describe('registered native document features', () => {
     it('resets a focused native editor when a shared content host renders a different pane', () => {
         const first = paneID(), second = paneID(), content = createFakeContentApi();
@@ -63,7 +71,7 @@ describe('registered native document features', () => {
         const draw = () => <DocumentPane runtime={local} workspaceID="workspace" paneID={id} kind="scratchpad" content={content} />;
         const view = render(draw()); push(content, id);
         expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('Retained text');
-        fireEvent.change(screen.getByLabelText('scratchpad renderer'), { target: { value: 'sample.editor.document' } });
+        act(() => { toggleDocumentRenderer(id); });
         await screen.findByTestId(`replacement-${id}`);
         expect(content.listenerCount(id)).toBe(1);
         fireEvent.click(screen.getByText(`Fail ${id}`)); push(content, id);
@@ -139,7 +147,7 @@ describe('registered native document features', () => {
         fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Not acknowledged yet' } });
         expect(content.texts.at(-1)?.text).toBe('Not acknowledged yet');
         expect(getDocumentDraft(local, id)?.text).toBe('Not acknowledged yet');
-        fireEvent.change(screen.getByLabelText('scratchpad renderer'), { target: { value: 'sample.editor.document' } });
+        act(() => { toggleDocumentRenderer(id); });
         await screen.findByTestId(`replacement-${id}`);
         expect(screen.getByTestId(`document-recovery-${id}`)).toBeTruthy();
         fireEvent.click(screen.getByText('Review'));
@@ -151,7 +159,7 @@ describe('registered native document features', () => {
     it('retains staged text matching an earlier saved source until that draft is acknowledged', async () => {
         const id = paneID(), content = createFakeContentApi();
         render(<DocumentPane runtime={local} workspaceID="workspace" paneID={id} kind="scratchpad" content={content} />); push(content, id, '');
-        fireEvent.change(screen.getByLabelText('scratchpad renderer'), { target: { value: 'sample.editor.document' } });
+        act(() => { toggleDocumentRenderer(id); });
         await screen.findByTestId(`replacement-${id}`);
         let draft!: DocumentDraft;
         act(() => { draft = stageDocumentDraft(local, id, '', 'source:1', 'sample.editor.document'); });
@@ -211,12 +219,58 @@ describe('registered native document features', () => {
         await waitFor(() => expect(getDocumentDraft(local, id)).toBeNull());
     });
 
+    it('switches one scratchpad from its header toggle, over the type choice, and draws no picker', async () => {
+        const a = paneID(), b = paneID(), content = createFakeContentApi();
+        const Facts = (props: { paneID: string }) => { const facts = useRendererToggle(props.paneID); return <output data-testid={`facts-${props.paneID}`}>{facts ? `${String(facts.plugin)}:${facts.title}` : 'none'}</output>; };
+        render(<StrictMode><DocumentPane runtime={local} workspaceID="one" paneID={a} kind="scratchpad" content={content} />
+            <DocumentPane runtime={local} workspaceID="one" paneID={b} kind="scratchpad" content={content} /><Facts paneID={a} /><Facts paneID={b} />
+            <TypeChoice runtime={local} viewID="sample.editor.document" /></StrictMode>);
+        push(content, a); push(content, b);
+        expect(screen.queryByLabelText('scratchpad renderer')).toBeNull();
+        expect(screen.getByTestId(`facts-${a}`).textContent).toBe('false:Custom editor');
+        act(() => { expect(toggleDocumentRenderer(a)).toBe(true); });
+        await screen.findByTestId(`replacement-${a}`);
+        expect(screen.queryByTestId(`replacement-${b}`)).toBeNull();
+        expect(screen.getByTestId(`facts-${a}`).textContent).toBe('true:Custom editor');
+        expect(paneRenderer(a)).toBe('sample.editor.document');
+        // A failed renderer shows plain text, and the toggle tries the plugin again.
+        fireEvent.click(screen.getByText(`Fail ${a}`));
+        expect(screen.getByTestId(`facts-${a}`).textContent).toBe('false:Custom editor');
+        act(() => { toggleDocumentRenderer(a); });
+        await screen.findByTestId(`replacement-${a}`);
+        act(() => { toggleDocumentRenderer(a); });
+        await waitFor(() => expect(screen.queryByTestId(`replacement-${a}`)).toBeNull());
+        // Back on the type's choice, so the pane keeps no entry of its own.
+        expect(paneRenderer(a)).toBeNull();
+
+        // The type's choice moves every pane without one of its own; a toggled pane keeps its own.
+        fireEvent.click(screen.getByText('Choose sample.editor.document'));
+        await screen.findByTestId(`replacement-${a}`); await screen.findByTestId(`replacement-${b}`);
+        act(() => { toggleDocumentRenderer(b); });
+        await waitFor(() => expect(screen.queryByTestId(`replacement-${b}`)).toBeNull());
+        expect(paneRenderer(b)).toBe('kelpi.scratchpad');
+        expect(screen.getByTestId(`replacement-${a}`)).toBeTruthy();
+        expect(screen.getByTestId(`facts-${b}`).textContent).toBe('false:Custom editor');
+    });
+
+    it('offers no renderer toggle without a plugin renderer, or on another document type', () => {
+        const a = paneID(), b = paneID(), content = createFakeContentApi();
+        const Facts = (props: { paneID: string }) => { const facts = useRendererToggle(props.paneID); return <output data-testid={`facts-${props.paneID}`}>{facts ? 'offered' : 'none'}</output>; };
+        const view = render(<><DocumentPane runtime={local} workspaceID="one" paneID={a} kind="markdown" content={content} /><Facts paneID={a} /></>);
+        expect(screen.getByTestId(`facts-${a}`).textContent).toBe('none');
+        view.unmount();
+        plugins = [];
+        render(<><DocumentPane runtime={local} workspaceID="one" paneID={b} kind="scratchpad" content={content} /><Facts paneID={b} /></>);
+        expect(screen.getByTestId(`facts-${b}`).textContent).toBe('none');
+        expect(toggleDocumentRenderer(b)).toBe(false);
+    });
+
     it('synchronizes document choices within one daemon and isolates another daemon', async () => {
         const a = paneID(), b = paneID(), c = paneID(), content = createFakeContentApi();
         render(<StrictMode><DocumentPane runtime={local} workspaceID="one" paneID={a} kind="scratchpad" content={content} />
             <DocumentPane runtime={local} workspaceID="two" paneID={b} kind="scratchpad" content={content} />
-            <DocumentPane runtime={remote} workspaceID="remote" paneID={c} kind="scratchpad" content={content} /></StrictMode>);
-        fireEvent.change(screen.getAllByLabelText('scratchpad renderer')[0]!, { target: { value: 'sample.editor.document' } });
+            <DocumentPane runtime={remote} workspaceID="remote" paneID={c} kind="scratchpad" content={content} /><TypeChoice runtime={local} viewID="sample.editor.document" /></StrictMode>);
+        fireEvent.click(screen.getByText('Choose sample.editor.document'));
         await screen.findByTestId(`replacement-${a}`); await screen.findByTestId(`replacement-${b}`);
         expect(screen.queryByTestId(`replacement-${c}`)).toBeNull();
         expect(content.listenerCount(c)).toBe(2);

@@ -66,6 +66,8 @@ const REMOTE_GAPS: readonly string[] = [
     'onRefreshDiff',
     // #324: a csv pane's header-row toggle, the same kind of header verb as the two above.
     'onToggleCsvHeaderRow',
+    // A scratchpad's renderer toggle: the same kind of header verb again.
+    'onToggleDocumentRenderer',
     // A scratchpad's wrap toggle: the same kind of header verb again.
     'onToggleScratchpadWrap',
     'onCopyDocument',

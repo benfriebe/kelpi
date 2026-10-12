@@ -532,7 +532,11 @@ streams an initial snapshot followed by events; closing the connection unsubscri
 The host forwards visibility, persisted state, theme variables, and claimed Kelpi shortcuts
 to a view. Theme variables are `--kelpi-bg`, `--kelpi-fg`, `--kelpi-fg-secondary`,
 `--kelpi-fg-tertiary`, `--kelpi-surface`, `--kelpi-border`, and `--kelpi-accent`.
-Pane focus follows pointer/focus events inside the frame. Only shortcuts claimed by Kelpi
+Pane focus follows pointer/focus events inside the frame. When a view's pane is focused, the host
+focuses the frame once its document has connected, never while it is still loading. A view with
+its own text field passes the caret on itself: listen for the window's `focus` event, which also
+fires each time the pane is focused again, and check `document.hasFocus()` once the field exists,
+in case the frame was focused before the listener could hear it. Only shortcuts claimed by Kelpi
 are forwarded out of it; ordinary typing remains in the custom UI. Built-in shortcuts win
 collisions; the first available plugin command wins a collision between plugins. Commands
 also appear in the palette, plus the optional pane/workspace menu, and in Help under the

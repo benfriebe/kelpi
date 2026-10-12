@@ -19,7 +19,7 @@ function deferred<T>() {
 }
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
-async function setup(kind: 'scratchpad' | 'diff' = 'scratchpad', placements = [`document.${kind}`]) {
+async function setup(kind: 'scratchpad' | 'diff' = 'scratchpad', placements = [`document.${kind}`], options: { focused?: boolean; beforeReady?: (frame: HTMLIFrameElement) => void } = {}) {
     vi.stubGlobal('MessageChannel', MessageChannel);
     const sockets = createFakeSocketFactory();
     const runtime = createKelpiRuntime({ store: createKelpiStore(), url: `ws://${crypto.randomUUID()}.test/ws`, socketFactory: sockets.factory, notifications: null });
@@ -45,11 +45,12 @@ async function setup(kind: 'scratchpad' | 'diff' = 'scratchpad', placements = [`
     // identity stays available when a failing renderer is released and replaced by native UI.
     const catalog = renderHook(() => usePlugins(runtime));
     const onError = vi.fn();
-    const view = render(<PluginView runtime={runtime} pluginID={manifest.id} viewID={VIEW} paneID={PANE} workspaceID="W" onError={onError} />);
+    const view = render(<PluginView runtime={runtime} pluginID={manifest.id} viewID={VIEW} paneID={PANE} workspaceID="W" onError={onError} focused={options.focused} />);
     await waitFor(() => expect(screen.getByTitle('Document Test Editor').getAttribute('srcdoc')).toContain('kelpi-plugin-ready'));
     const frame = screen.getByTitle('Document Test Editor') as HTMLIFrameElement;
     const nonce = /"nonce":"([^"]+)"/.exec(frame.srcdoc)![1];
     const send = vi.spyOn(frame.contentWindow!, 'postMessage');
+    options.beforeReady?.(frame);
     act(() => window.dispatchEvent(new MessageEvent('message', { source: frame.contentWindow, data: { type: 'kelpi-plugin-ready', nonce } })));
     const child = (send.mock.calls as unknown as Array<[unknown, unknown, MessagePort[]]>)[0]![2][0]!;
     const replies: Reply[] = [];
@@ -61,10 +62,26 @@ async function setup(kind: 'scratchpad' | 'diff' = 'scratchpad', placements = [`
         return replies.find(value => value.id === id)!;
     };
     const call = (method: string, args: JsonObject = {}): Promise<Reply> => reply(post(method, args));
-    return { runtime, api, requests, view, child, replies, call, post, reply, onError, dispose: () => {
+    return { runtime, api, requests, view, frame, child, replies, call, post, reply, onError, dispose: () => {
         view.unmount(); clearDocumentDraft(runtime, PANE); catalog.unmount(); child.close(); runtime.dispose();
     } };
 }
+
+describe('focus for a document view', () => {
+    it('gives a focused pane\'s frame the caret only once its document has connected', async () => {
+        // Focus handed over while `srcdoc` is still loading never reaches the new document, so
+        // the frame is neither focused nor findable as the pane's surface until it connects.
+        let early: { active: Element | null; surface: boolean } | null = null;
+        const h = await setup('scratchpad', undefined, { focused: true, beforeReady: frame => {
+            early = { active: document.activeElement, surface: frame.hasAttribute('data-pane-surface') };
+        } });
+        try {
+            expect(early).toEqual({ active: document.body, surface: false });
+            await waitFor(() => expect(document.activeElement).toBe(h.frame));
+            expect(h.frame.getAttribute('data-pane-surface')).toBe(PANE);
+        } finally { h.dispose(); }
+    });
+});
 
 describe('document drafts through the isolated renderer bridge', () => {
     it('stages each input locally, applies the exact draft once, and preserves newer queued input', async () => {

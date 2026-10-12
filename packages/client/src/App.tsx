@@ -2,6 +2,7 @@ import { workspaceAgentDeleteWarning, type WorkspaceAgentSummary } from '@kelpi/
 import { TerminalFeaturePane } from './features/TerminalFeaturePane';
 import { BrowserFeaturePane } from './features/BrowserFeaturePane';
 import { DocumentPane, isDocumentPane } from './features/DocumentPane';
+import { toggleDocumentRenderer } from './plugins/pane-renderers';
 import { registerDocumentCloseGuard } from './plugins/document-drafts';
 import { createChromeFeatureSource } from './features/chrome-source';
 import { bindToolbarFeature, createToolbarActions } from './features/toolbar';
@@ -1943,6 +1944,15 @@ function Shell(props: AppProps): ReactElement {
                 if (pane === null || pane.type !== 'csv') return false;
                 const on = csv.peek(paneID)?.headerRow ?? pane.csvHeaderRow;
                 return runTask('Header row', csv.setHeaderRow(paneID, !on));
+            },
+
+            /**
+             * A scratchpad's renderer toggle (the header button): plain text, or a plugin
+             * renderer, for that pane in this client. Its body offers the toggle; false when none
+             * is on screen.
+             */
+            toggleDocumentRenderer(paneID: string): boolean {
+                return toggleDocumentRenderer(paneID);
             },
 
             /** A scratchpad's wrap toggle (the header button, content-panes.md §7). */
@@ -4720,6 +4730,7 @@ function Shell(props: AppProps): ReactElement {
                         onToggleMarkdownEdit: act.toggleMarkdownEdit,
                         onRefreshDiff: act.refreshDiff,
                         onToggleCsvHeaderRow: act.toggleCsvHeaderRow,
+                        onToggleDocumentRenderer: act.toggleDocumentRenderer,
                         onToggleScratchpadWrap: act.toggleScratchpadWrap,
                         onCopyDocument,
                         onSetFontSize: act.setFontSize,
@@ -4996,6 +5007,7 @@ function Shell(props: AppProps): ReactElement {
                         onToggleMarkdownEdit={act.toggleMarkdownEdit}
                         onRefreshDiff={act.refreshDiff}
                         onToggleCsvHeaderRow={act.toggleCsvHeaderRow}
+                        onToggleDocumentRenderer={act.toggleDocumentRenderer}
                         onToggleScratchpadWrap={act.toggleScratchpadWrap}
                         onCopyDocument={onCopyDocument}
                         onSetFontSize={act.setFontSize}

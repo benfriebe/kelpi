@@ -80,6 +80,14 @@ export function PluginView(props: PluginViewProps): ReactElement {
     const navigation = canAccessNavigation(hostUI, runtime) ? hostUI?.navigation : undefined;
     const services = hostUI?.runtime === runtime ? hostUI.services : undefined;
     const [documentHTML, setDocumentHTML] = useState('');
+    /**
+     * The frame's document has connected. Setting `srcdoc` navigates the frame, and a focus given
+     * to it before that navigation lands stays on the iframe element while the new document never
+     * receives it, so keys typed into a just-opened view went nowhere. Both routes to the caret
+     * wait for this: the claim below, and the app's pane hand-off (`focusPaneSurface`), which only
+     * finds the frame once it is marked as the pane's surface.
+     */
+    const [frameReady, setFrameReady] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [attempt, setAttempt] = useState(0);
     const [terminalAttachment, setTerminalAttachment] = useState(0);
@@ -332,6 +340,7 @@ export function PluginView(props: PluginViewProps): ReactElement {
             };
             channel.port1.start();
             frame.current!.contentWindow!.postMessage({ type: 'kelpi-plugin-connect', nonce }, '*', [channel.port2]);
+            setFrameReady(true);
             contextUpdate(); drain();
             if (chrome) chromeFeed = createWindowFeed('chrome', (listener, onError) => chrome.subscribe(listener, onError), message => channel.port1.postMessage(message));
             const granted = presenterHost;
@@ -352,7 +361,7 @@ export function PluginView(props: PluginViewProps): ReactElement {
         const offEvents = runtime.connection.on('message', message => { if (message['type'] === 'plugin-event') { events.push(message['event'] as unknown as PluginEvent); drain(); } });
         const observer = new MutationObserver(contextUpdate);
         observer.observe(document.documentElement, { attributes: true, attributeFilter: ['style', 'class', 'data-theme'] });
-        setError(null); setDocumentHTML(''); setBrowserSurface(null);
+        setError(null); setDocumentHTML(''); setFrameReady(false); setBrowserSurface(null);
         void pluginRequest(runtime, 'attach', { pluginID, viewID, ...(paneID ? { paneID } : {}), ...(workspaceID ? { workspaceID } : {}) }).then(result => {
             const attached = pluginObject(result); lease = String(attached['lease']);
             if (disposed) { void pluginRequest(runtime, 'release', { lease }).catch(() => {}); return; }
@@ -419,7 +428,7 @@ export function PluginView(props: PluginViewProps): ReactElement {
         port.current?.postMessage({ type: 'context', value: { visible: props.visible ?? true, chords: props.visible === false ? [] : props.claimedChords ?? [], ...(props.descriptor ? { state: props.descriptor.state, stateVersion: props.descriptor.stateVersion } : {}) } });
     }, [props.visible, props.claimedChords, props.descriptor]);
     useEffect(() => {
-        if (!props.focused || props.visible === false || !documentHTML || !mayClaimPaneCaret()) return;
+        if (!props.focused || props.visible === false || !frameReady || !mayClaimPaneCaret()) return;
         if (props.browser && browserUserFocus.current) { browserUserFocus.current = false; return; }
         if (props.browser && browserExplicitFocus.current) { browserExplicitFocus.current = false; return; }
         if (props.browser && chromeTextIsFocused(frame.current?.ownerDocument.activeElement)) return;
@@ -430,7 +439,7 @@ export function PluginView(props: PluginViewProps): ReactElement {
                 void browser.current.action({ type: tab?.url ? 'focus' : 'focusAddress' }).catch(() => {});
             } else { frame.current?.focus(); void terminal.current?.action({ type: 'focus' }).catch(() => {}); }
         });
-    }, [props.focused, props.visible, documentHTML, terminalAttachment, props.browser?.available]);
+    }, [props.focused, props.visible, frameReady, terminalAttachment, props.browser?.available]);
     const problem = unavailable ?? error;
     /*
      * A pane body paints its surface colour so the grid never shows through a loading view. An
@@ -449,7 +458,7 @@ export function PluginView(props: PluginViewProps): ReactElement {
         style={{ color: tokens.textPrimary, ...(hasPresenter ? {} : { background: tokens.surfaceBackground }) }}>
         {problem ? <div role="status" className="flex h-full flex-col items-center justify-center gap-2 p-4 text-center text-xs"><strong>{plugin?.manifest.name ?? pluginID}</strong><span>{problem}</span><span>Your pane and its state are preserved.</span><button onClick={() => { if (plugin?.enabled && plugin.status === 'failed') void pluginRequest(runtime, 'reload', { pluginID }).catch(error => setError(error.message)); else setAttempt(value => value + 1); }}>Retry</button></div> : null}
         {!problem && !documentHTML ? <div role="status" className="p-4 text-xs">{connection === 'connected' ? 'Loading plugin…' : 'Connecting to daemon…'}</div> : null}
-        {documentHTML && !problem ? <iframe ref={frame} data-pane-surface={paneID} title={plugin?.manifest.contributes.views.find(view => view.id === viewID)?.title ?? viewID} sandbox="allow-scripts" referrerPolicy="no-referrer" srcDoc={documentHTML} className="h-full min-h-0 w-full flex-1 border-0" /> : <iframe ref={frame} title="Plugin loading" hidden />}
+        {documentHTML && !problem ? <iframe ref={frame} data-pane-surface={frameReady ? paneID : undefined} title={plugin?.manifest.contributes.views.find(view => view.id === viewID)?.title ?? viewID} sandbox="allow-scripts" referrerPolicy="no-referrer" srcDoc={documentHTML} className="h-full min-h-0 w-full flex-1 border-0" /> : <iframe ref={frame} title="Plugin loading" hidden />}
         {documentHTML && !problem && props.browser && browserSurface ? <PluginBrowserSurface host={props.browser} surface={browserSurface} root={root.current} /> : null}
     </div>;
 }

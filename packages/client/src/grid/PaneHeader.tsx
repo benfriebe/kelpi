@@ -42,9 +42,11 @@ import {
     type ReactElement,
     type RefObject
 } from 'react';
+import { createPortal } from 'react-dom';
 
 import { ContextMenu, type MenuItemSpec } from '../chrome/ContextMenu';
 import { useCsvChromeFacts } from '../content/csv/chrome-facts';
+import { useRendererToggle } from '../plugins/pane-renderers';
 import {
     createPaneChromeSurface,
     paneChromeGlyph,
@@ -288,6 +290,45 @@ interface HeaderButtonProps {
     readonly onClick?: ((event: MouseEvent<HTMLButtonElement>) => void) | undefined;
 }
 
+/** How long the pointer rests on a header button before its name shows. */
+const TIP_DELAY_MS = 400;
+/** A name shown less than this long ago means the pointer is moving along the row: show at once. */
+const TIP_CHAIN_MS = 600;
+let tipHiddenAt = 0;
+
+/**
+ * A header button's name, drawn by the page while the pointer rests on it.
+ *
+ * The buttons are glyphs alone, and a native `title` tooltip did not answer for them: it waits
+ * about a second, and macOS shows it only while Kelpi is the active app, so hovering a pane
+ * header beside the app you are typing in showed nothing. The name is drawn in the header band,
+ * to the left of the button, rather than under it: a web pane's page is a native view the shell
+ * composites over this document (`webpane/poster.ts`), so anything drawn below a header would be
+ * hidden behind the page.
+ */
+function HeaderTip({ label, anchor }: { readonly label: string; readonly anchor: DOMRect }): ReactElement {
+    return createPortal(
+        <div
+            data-testid="pane-header-tip"
+            aria-hidden="true"
+            className="pointer-events-none fixed z-[10000] overflow-hidden text-ellipsis whitespace-nowrap rounded px-1.5 py-px text-[11px] leading-[16px]"
+            style={{
+                top: anchor.top + anchor.height / 2,
+                right: window.innerWidth - anchor.left + 4,
+                maxWidth: Math.max(0, anchor.left - 8),
+                transform: 'translateY(-50%)',
+                color: tokens.textPrimary,
+                background: tokens.surfaceBackground,
+                border: `1px solid ${tokens.divider}`,
+                boxShadow: '0 1px 4px rgba(0, 0, 0, 0.3)'
+            }}
+        >
+            {label}
+        </div>,
+        document.body
+    );
+}
+
 function HeaderButton({
     testID,
     label,
@@ -300,26 +341,60 @@ function HeaderButton({
     onClick
 }: HeaderButtonProps): ReactElement {
     const off = disabled === true;
+    const [hover, setHover] = useState(false);
+    const [tip, setTip] = useState<DOMRect | null>(null);
+    const tipTimer = useRef<number | undefined>(undefined);
+    const tipShown = useRef(false);
+    const hideTip = (): void => {
+        window.clearTimeout(tipTimer.current);
+        if (tipShown.current) tipHiddenAt = Date.now();
+        tipShown.current = false;
+        setTip(null);
+    };
+    useEffect(() => () => window.clearTimeout(tipTimer.current), []);
     return (
         <button
             type="button"
             {...(buttonRef === undefined ? {} : { ref: buttonRef })}
             data-testid={testID}
             aria-label={label}
-            title={label}
             disabled={off}
             {...(expanded === undefined ? {} : { 'aria-haspopup': 'menu' as const, 'aria-expanded': expanded })}
-            // L24: `.opacity(0.6)` and nothing else (`PaneHeaderView.swift:192`, `:205`, `:218`,
-            // `:230`, `:241`, `:259`, `:271`) — the shipped header buttons carry no `.onHover`,
-            // so they never brighten under the cursor. The port's `hover:opacity-100` was
-            // invented chrome, and it is gone.
+            // L24 kept the shipped `.opacity(0.6)` with no hover at all, which left glyph-only
+            // buttons with no sign they could be pressed or what they did. A hovered button now
+            // brightens on a faint ground and names itself (`HeaderTip`).
             className={`flex h-5 w-5 shrink-0 items-center justify-center rounded ${
-                off ? 'opacity-25' : 'opacity-60'
+                off ? 'opacity-25' : hover ? 'opacity-100' : 'opacity-60'
             }`}
-            style={{ color: tokens.textSecondary, cursor: off ? 'default' : 'pointer' }}
+            style={{
+                color: tokens.textSecondary,
+                cursor: off ? 'default' : 'pointer',
+                background: hover && !off ? `color-mix(in srgb, ${tokens.textPrimary} 14%, transparent)` : 'transparent'
+            }}
+            onPointerEnter={(event) => {
+                if (event.pointerType !== 'mouse') return;
+                setHover(true);
+                const target = event.currentTarget;
+                window.clearTimeout(tipTimer.current);
+                const show = (): void => {
+                    tipShown.current = true;
+                    setTip(target.getBoundingClientRect());
+                };
+                if (Date.now() - tipHiddenAt < TIP_CHAIN_MS) show();
+                else tipTimer.current = window.setTimeout(show, TIP_DELAY_MS);
+            }}
+            onPointerLeave={() => {
+                setHover(false);
+                hideTip();
+            }}
             onPointerDown={(event) => {
                 // Never let a button press start a pane-move drag.
                 event.stopPropagation();
+                // The press answers the question the name was for; a label that flips with the
+                // press (wrap, renderer) would otherwise show the old one.
+                window.clearTimeout(tipTimer.current);
+                tipShown.current = false;
+                setTip(null);
             }}
             onClick={(event) => {
                 event.stopPropagation();
@@ -333,6 +408,7 @@ function HeaderButton({
             onDoubleClick={(event) => event.stopPropagation()}
         >
             <Icon name={icon} size={iconSize} weight={iconWeight} />
+            {tip === null || expanded === true ? null : <HeaderTip label={label} anchor={tip} />}
         </button>
     );
 }
@@ -595,6 +671,8 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
     const headerExtras = props.headerExtras?.(pane.id);
     // #324: a csv pane's body says whether ⌘E is available; nothing else subscribes.
     const csvFacts = useCsvChromeFacts(pane.type === 'csv' ? pane.id : null);
+    // A scratchpad's body says whether a plugin renderer can take over, and which.
+    const rendererFacts = useRendererToggle(pane.type === 'scratchpad' ? pane.id : null);
     const model = paneChromeModel({
         pane,
         focused,
@@ -611,7 +689,8 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
         ...(props.headerItems === undefined ? {} : { items: props.headerItems }),
         ...(props.changes === undefined ? {} : { changes: props.changes }),
         canCopyDocument: onCopyDocument !== undefined,
-        csv: csvFacts
+        csv: csvFacts,
+        renderer: rendererFacts
     });
     const chrome: PaneChromeDescriptor = model.descriptor;
     const { inline, overflow, pinned } = paneChromeRow(chrome);

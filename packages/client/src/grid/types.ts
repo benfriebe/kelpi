@@ -109,6 +109,8 @@ export interface PaneActions {
     readonly onRefreshDiff?: ((paneID: string) => void) | undefined;
     /** #324: a csv pane's header-row toggle (`csv-set-header-row`). */
     readonly onToggleCsvHeaderRow?: ((paneID: string) => void) | undefined;
+    /** A scratchpad's renderer toggle (`plugins/pane-renderers.ts`, this client only). */
+    readonly onToggleDocumentRenderer?: ((paneID: string) => void) | undefined;
     /** A scratchpad's wrap toggle (`content-set-wrap`). */
     readonly onToggleScratchpadWrap?: ((paneID: string) => void) | undefined;
     /**

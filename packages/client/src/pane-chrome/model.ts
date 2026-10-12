@@ -344,6 +344,19 @@ export interface PaneChromeInput {
      * null when no body is on screen to say - the header then reads the pane record alone.
      */
     readonly csv?: PaneChromeCsvFacts | null | undefined;
+    /**
+     * What a scratchpad's renderer toggle would do (`plugins/pane-renderers.ts`), or null when no
+     * plugin renderer is installed for it, or no body is on screen to offer one.
+     */
+    readonly renderer?: PaneChromeRendererFacts | null | undefined;
+}
+
+/** What a scratchpad's renderer toggle would do: leave a plugin renderer, or switch to `title`. */
+export interface PaneChromeRendererFacts {
+    /** True while a plugin renderer is on screen, so a press goes back to plain text. */
+    readonly plugin: boolean;
+    /** The plugin renderer's title: the one on screen, or the one a press switches to. */
+    readonly title: string;
 }
 
 /** The csv document facts the header's `edit` and `header-row` controls read. */
@@ -453,6 +466,21 @@ function scratchpadWrapControl(pane: PaneModel): PaneChromeControlDescriptor {
 }
 
 /**
+ * A scratchpad's renderer toggle, between the native plain-text editor and a plugin renderer for
+ * that pane alone. Like `wrap` it names what a press DOES: show the plugin's view (by its title),
+ * or go back to plain text.
+ */
+function scratchpadRendererControl(pane: PaneModel, renderer: PaneChromeRendererFacts): PaneChromeControlDescriptor {
+    return control({
+        key: 'renderer',
+        kind: 'action',
+        label: renderer.plugin ? 'Show as plain text' : `Show as ${renderer.title}`,
+        icon: renderer.plugin ? 'plain-text' : 'checklist',
+        testID: `pane-renderer-${pane.id}`
+    });
+}
+
+/**
  * Fold a pane into its chrome.
  *
  * The order below is `PaneHeaderView.swift:177-273`'s row order, which is also the order §S40
@@ -473,6 +501,7 @@ export function paneChromeModel(input: PaneChromeInput): PaneChromeModel {
     const showCopy =
         pane.type === 'markdown' && pane.isEditing !== true && input.canCopyDocument === true;
     const csv = pane.type === 'csv';
+    const renderer = pane.type === 'scratchpad' ? (input.renderer ?? null) : null;
     const buttons =
         4 +
         (showCopy ? 1 : 0) +
@@ -481,6 +510,7 @@ export function paneChromeModel(input: PaneChromeInput): PaneChromeModel {
         // #324: raw text ⇄ table, and the header-row toggle.
         (csv ? 2 : 0) +
         (pane.type === 'scratchpad' ? 1 : 0) +
+        (renderer ? 1 : 0) +
         commandInputs.length +
         (contributions ? 4 : 0);
 
@@ -527,6 +557,7 @@ export function paneChromeModel(input: PaneChromeInput): PaneChromeModel {
               ]
             : []),
         ...(csv ? csvControls(pane, input.csv ?? null) : []),
+        ...(renderer ? [scratchpadRendererControl(pane, renderer)] : []),
         ...(pane.type === 'scratchpad' ? [scratchpadWrapControl(pane)] : []),
         ...(pane.type === 'diff'
             ? [

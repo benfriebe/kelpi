@@ -1,0 +1,12 @@
+{
+  "id": "example.markdown-scratchpad",
+  "name": "Markdown Scratchpad",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "trust": "full",
+  "contributes": {
+    "views": [
+      { "id": "example.markdown-scratchpad.editor", "title": "Markdown", "entry": "ui/index.html", "placements": ["document.scratchpad"] }
+    ]
+  }
+}

@@ -19,6 +19,9 @@ export type IconName =
     // A scratchpad's wrap toggle, named for what a press does: wrap, or run lines off the edge.
     | 'wrap'
     | 'no-wrap'
+    // A scratchpad's renderer toggle: a plugin renderer's view (boxes and lines), or plain text.
+    | 'checklist'
+    | 'plain-text'
     | 'globe'
     | 'tag'
     | 'branch'
@@ -91,6 +94,16 @@ const PATHS: Record<IconName, ReactElement> = {
             <path d="M1.5 9.2h4" />
         </>
     ),
+    checklist: (
+        <>
+            <rect x="1.5" y="1.8" width="3.2" height="3.2" rx="0.7" />
+            <path d="m2.3 3.4.7.7 1.1-1.3" />
+            <path d="M6.5 3.4h4" />
+            <rect x="1.5" y="7" width="3.2" height="3.2" rx="0.7" />
+            <path d="M6.5 8.6h4" />
+        </>
+    ),
+    'plain-text': <path d="M1.8 3h8.4M1.8 6h8.4M1.8 9h5" />,
     globe: (
         <>
             <circle cx="6" cy="6" r="4.2" />

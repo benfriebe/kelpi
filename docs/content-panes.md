@@ -1531,9 +1531,23 @@ Header layout (all panes share one header bar; content-pane specifics):
   tooltip "Copy whole file") → menu with "Copy as Markdown" / "Copy as Rich Text";
   edit/preview toggle button (pencil in view mode with tooltip "Edit (⌘E)"; eye in
   edit mode with tooltip "Preview (⌘E)"). The copy button is hidden while editing.
-- **Scratchpad-only button**: wrap toggle. Like the csv header-row control it names what a
+- **Scratchpad-only buttons**: wrap toggle. Like the csv header-row control it names what a
   press does: `Wrap lines` (wrap glyph) while the scratchpad scrolls sideways, `Stop
   wrapping lines` (no-wrap glyph) while it wraps. Sends `content-set-wrap` (§7).
+  Before it, when a plugin renderer for `document.scratchpad` is installed, a renderer
+  toggle switches that one scratchpad between the native editor and the plugin's view:
+  `Show as <view title>` (checklist glyph) while plain text is on screen, `Show as plain
+  text` (plain-text glyph) while the plugin's view is. A press switches to the type's
+  choice in Settings → Plugins → Workbench views when that is a plugin, otherwise the first
+  one installed. The choice is this client's, kept per pane in local storage
+  (`plugins/pane-renderers.ts`) and shared by its windows; nothing is sent to the daemon.
+  The toggle stands in for the renderer picker other document panes draw above their body, so
+  a scratchpad's strip appears only to report a failed renderer.
+- **Hover**: every header button brightens on a faint ground under the pointer and, after
+  400 ms (at once when the pointer moves along the row), shows its label beside it in the
+  header band. It is drawn by the page rather than as a native `title` tooltip, which is slow
+  and which macOS shows only while Kelpi is the active app; it sits in the band because a web
+  pane's page is a native view over everything below it.
 - **Diff-only button**: refresh (`arrow.clockwise`, tooltip "Refresh diff") → sends
   `content.refresh(paneID)` (5.2).
 - **Markdown-only body control**: a "$EDITOR" chip (aria-label "Open in $EDITOR") is

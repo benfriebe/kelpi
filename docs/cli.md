@@ -688,7 +688,7 @@ sole-leaf pane (no sibling). Reply:
 ### 9.7 `kelpi pane send`
 
 ```
-kelpi pane send [--bare] [--json] --target <name-or-uuid> [--workspace <name-or-uuid>] <command...>
+kelpi pane send [--bare] [--json] [--if-revision <n>] --target <name-or-uuid> [--workspace <name-or-uuid>] <command...>
 ```
 
 - Help to stdout, exit 0.
@@ -706,8 +706,18 @@ kelpi pane send [--bare] [--json] --target <name-or-uuid> [--workspace <name-or-
   ```
 
   Note `bare` is always present (boolean).
+- `--if-revision <n>` (#390): `n` must parse as a non-negative integer (0 allowed), else
+  `kelpi pane send: --if-revision must be a non-negative integer`, exit 1, nothing sent. It is
+  parsed after `--target` and before the empty-text check, and sent as `if_revision` (key
+  present only when the flag is given). If the pane's screen revision no longer equals `n`
+  the daemon replies `{"ok":false,"code":"SCREEN_CHANGED","revision":N}`, nothing is typed, and
+  the CLI prints `kelpi pane send: screen changed (revision N)` to stderr with empty stdout
+  and exit 1 (also under `--json`). Every other error reply keeps its wording. Like
+  `--bare`/`--json`, a trailing `--if-revision` with no value is not an unknown option here:
+  it joins the text and the send is unguarded.
 - Empty reply => success, exit 0, silent (6.5).
-- `--json`: reply minus `ok`, compact sorted.
+- `--json`: reply minus `ok`, compact sorted (includes `revision` when the guard was given
+  and the daemon honoured it).
 - Default ack: `sent to <id>` or `sent (bare) to <id>` (using the reply's `bare` field),
   plus optional ` (<label>)` and ` in workspace <ws>`.
 
@@ -717,16 +727,22 @@ keystroke. Reply includes resolved `pane_id`, `label?`, `workspace_name?`, `bare
 ### 9.8 `kelpi pane send-key`
 
 ```
-kelpi pane send-key --target <name-or-uuid> [--workspace <name-or-uuid>] <key>
+kelpi pane send-key [--if-revision <n>] --target <name-or-uuid> [--workspace <name-or-uuid>] <key>
 ```
 
 - `--target` required (non-empty), else usage line to stderr, exit 1.
+- `--if-revision <n>` (#390) works as on `pane send`: parsed right after the `--target` check and
+  before the unknown-option check, non-negative integer else
+  `kelpi pane send-key: --if-revision must be a non-negative integer`, exit 1. A stale value
+  prints `kelpi pane send-key: screen changed (revision N)` to stderr, exit 1. A flag given
+  with no value stays in argv and fails as `kelpi pane send-key: unknown option --if-revision`
+  + usage.
 - Remaining dash-prefixed tokens => `kelpi pane send-key: unknown option <tok>` + usage,
   exit 1. Exactly one positional key token required, else usage + the valid-key list line:
   `       <key> is one of: enter, return, tab, escape, esc, space, backspace, up, down, left, right, ctrl-c`.
 - The CLI does **not** validate the key name; the server rejects unknown names with a
   structured error before touching the surface.
-- Payload: `{"command":"pane-send-key","target":...,"key":<verbatim>, pane_id?, workspace?}`.
+- Payload: `{"command":"pane-send-key","target":...,"key":<verbatim>, pane_id?, workspace?, if_revision?}`.
 - Bespoke empty-reply error (6.5). No `--json`.
 - Ack: `sent <key> to <id>[ (<label>)][ in workspace <ws>]` where `<key>` is the reply's
   `key` field, falling back to the input lowercased.
@@ -839,7 +855,7 @@ kelpi pane list [--workspace <name-or-id> | --current] [--json] [--no-header]
 ### 9.12 `kelpi pane capture`
 
 ```
-kelpi pane capture [--target <name-or-uuid>] [--workspace <name-or-uuid>] [--lines N] [--scrollback]
+kelpi pane capture [--target <name-or-uuid>] [--workspace <name-or-uuid>] [--lines N] [--scrollback] [--settle <ms>] [--json]
 ```
 
 - Help to stdout, exit 0. Leftovers rejected with hint
@@ -847,13 +863,25 @@ kelpi pane capture [--target <name-or-uuid>] [--workspace <name-or-uuid>] [--lin
   never fall back to capturing the caller).
 - `--lines` must parse as a positive integer, else
   `kelpi pane capture: --lines must be a positive integer`, exit 1.
+- `--settle <ms>` (#390) must parse as a positive integer, else
+  `kelpi pane capture: --settle must be a positive integer`, exit 1 (checked after `--lines`).
+  The daemon waits until the pane has had no output for that long, giving up after 10 s
+  (larger values are clamped), then reads. A flag given with no value fails as
+  `kelpi pane capture: unknown option --settle` + usage.
 - With `--target`: payload includes `target` and (when `KELPI_PANE_ID` non-empty) `pane_id`
   for label scoping. Without: `requirePaneID()` (silent exit 0 outside) and `pane_id` is
   the subject.
-- Payload: `{"command":"pane-capture", target?, pane_id?, workspace?, lines?, scrollback?}`
-  (`scrollback` only present, as `true`, when the switch was given; `lines` a number).
-- Reply: `{ok:true, "text":"..."}`. On success the CLI writes the raw `text` bytes to
-  stdout **without appending a trailing newline** (captured output usually ends in one).
+- Payload: `{"command":"pane-capture", target?, pane_id?, workspace?, lines?, scrollback?, settle_ms?}`
+  (`scrollback` only present, as `true`, when the switch was given; `lines` and `settle_ms`
+  numbers, present only when given).
+- Reply: `{ok:true, "text":"...", revision, cursor:{row,col}, alt_screen, settled?}`. On success
+  the CLI writes the raw `text` bytes to stdout **without appending a trailing newline**
+  (captured output usually ends in one). This is unchanged by `--settle`.
+- `--json`: prints the reply minus `ok`, compact and key-sorted (the pane-family shape), so
+  `text`, `revision`, `cursor`, `alt_screen`, `settled?` (only with `--settle`), `pane_id`,
+  `workspace_id`, `workspace_name`, `label?`. Pass the `revision` to
+  `pane send --if-revision` / `pane send-key --if-revision` to refuse the send if the screen
+  changed since the capture.
 - Server contract: without `--scrollback` reads the visible viewport; with it, the full
   screen+scrollback. Non-terminal panes (markdown/scratchpad/diff) are refused with a
   typed `ok:false` error. `--lines N` limits to the last N lines.

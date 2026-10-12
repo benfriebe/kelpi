@@ -476,8 +476,8 @@ carry `"command"`.
 | `pane-create` | R/R | one of `pane_id`/`target`/`workspace` | `path`, `name` |
 | `pane-close` | R/R | one of `pane_id`/`target` | `workspace` |
 | `pane-name` | R/R | one of `pane_id`/`target`; `name` | `workspace` |
-| `pane-send` | R/R | `target`, `text` (non-empty) | `pane_id`, `workspace`, `bare` |
-| `pane-send-key` | R/R | `target`, `key` | `pane_id`, `workspace` |
+| `pane-send` | R/R | `target`, `text` (non-empty) | `pane_id`, `workspace`, `bare`, `if_revision` |
+| `pane-send-key` | R/R | `target`, `key` | `pane_id`, `workspace`, `if_revision` |
 | `pane-resize` | R/R | one of `pane_id`/`target`; exactly one of `ratio`/`delta` | `workspace` |
 | `pane-font-size` | R/R | one of `pane_id`/`target`; exactly one of `size`/`reset` | `workspace` |
 | `pane-clear` | R/R | one of `pane_id`/`target` | `workspace` |
@@ -485,7 +485,7 @@ carry `"command"`.
 | `pane-move-adjacent` | R/R | `target`, `anchor`, `zone` | `pane_id`, `workspace` |
 | `pane-move-to-workspace` | F&F | `pane_id`, `name` | `text` (`"true"` = create) |
 | `pane-list` | R/R | — | `pane_id`, `workspace`, `scope` |
-| `pane-capture` | R/R | one of `pane_id`/`target` | `workspace`, `lines`, `scrollback` |
+| `pane-capture` | R/R | one of `pane_id`/`target` | `workspace`, `lines`, `scrollback`, `settle_ms` |
 | `pane-sync` | R/R | `action` | `pane_id`, `workspace` |
 | `pane-sync-exclude` | R/R | `target`, `excluded` | `pane_id`, `workspace` |
 | `workspace-list` | R/R | — | `group` |
@@ -690,6 +690,22 @@ false, an Enter keystroke follows the text; when true, text only. Reply is sent
 → {"ok":true,"pane_id":"<uuid>","workspace_id":"<uuid>","workspace_name":"main","bare":false,"label":"worker"}
 ```
 
+`if_revision` (int, optional, 0 allowed) makes the send conditional on the screen. After
+target resolution the daemon compares it with the pane's current screen revision (see
+`pane-capture`), and the comparison and the write happen in the same synchronous handler
+turn. On a mismatch nothing is written and the reply is
+`{"ok":false,"error":"screen changed","code":"SCREEN_CHANGED","revision":<current>}`. On a
+match the ack gains `revision` (the matched value), so a caller can tell a daemon that
+honoured the guard from an older one that ignored the unknown field. Without `if_revision`
+the request and reply are exactly as above.
+
+```json
+{"command":"pane-send","target":"worker","text":"y","bare":false,"if_revision":42}
+→ {"ok":true,"pane_id":"<uuid>","workspace_id":"<uuid>","workspace_name":"main","bare":false,"revision":42,"label":"worker"}
+{"command":"pane-send","target":"worker","text":"y","bare":false,"if_revision":41}
+→ {"ok":false,"error":"screen changed","code":"SCREEN_CHANGED","revision":42}
+```
+
 #### `pane-send-key` (R/R)
 
 Deliver one named keystroke (§5.6) outside any bracketed-paste envelope. Key name is
@@ -701,6 +717,15 @@ mode (DECCKM).
 ```json
 {"command":"pane-send-key","target":"worker","workspace":"beta","key":"enter"}
 → {"ok":true,"pane_id":"<uuid>","workspace_id":"<uuid>","workspace_name":"beta","key":"enter","label":"worker"}
+```
+
+`if_revision` works as on `pane-send`: key validation stays first, then target resolution,
+then the revision check, then the ack (with `revision` on a match) and the key. A stale value
+answers the same `SCREEN_CHANGED` reply and sends nothing.
+
+```json
+{"command":"pane-send-key","target":"worker","key":"enter","if_revision":42}
+→ {"ok":true,"pane_id":"<uuid>","workspace_id":"<uuid>","workspace_name":"main","key":"enter","revision":42,"label":"worker"}
 ```
 
 #### `pane-resize` (R/R)
@@ -877,6 +902,34 @@ A present `lines` that is <= 0 fails with `lines must be a positive integer (got
 the target is resolved (`packages/daemon/src/handlers/pane/input.ts:77-81`). A read that
 throws for a still-present pane answers `{"ok":false,"error":"pane capture failed: <error>"}`
 (`input.ts:136-147`).
+
+`settle_ms` (int, optional) waits for the pane to go quiet before the read: the reply is
+held until the pane has had no output for `settle_ms`, counted from when the request is
+handled and restarted by every byte that arrives. Values above 10000 are clamped to 10000
+(the cap is `CAPTURE_SETTLE_CAP_MS`); a value <= 0 fails with
+`settle_ms must be a positive integer (got N)` after the `lines` check and before the target
+is resolved. If the cap is reached first the read happens anyway, at the cap.
+
+The reply always carries three more fields next to `text`, all read in the same synchronous
+turn as the text (after the flush): `revision` (int, the pane's screen revision),
+`cursor` (`{"row":<int>,"col":<int>}`, 0-based, viewport-relative, on the active screen) and
+`alt_screen` (bool, whether the alternate screen is active). `settled` (bool) is present only
+when `settle_ms` was sent: `true` when the pane was quiet for `settle_ms`, `false` when the
+cap came first.
+
+```json
+{"command":"pane-capture","target":"worker","settle_ms":500}
+→ {"ok":true,"pane_id":"<uuid>","workspace_id":"<uuid>","workspace_name":"main",
+   "text":"…terminal contents…\n","revision":42,"cursor":{"row":23,"col":2},
+   "alt_screen":false,"settled":true,"label":"worker"}
+```
+
+The revision is a per-pane counter that starts at 0 when the pane's terminal state is created
+and rises by 1 on every output feed with non-empty data (counted when the bytes are queued,
+not when they are parsed), on every restore of a non-empty snapshot, and on every resize that
+changes the grid. A pane with no terminal state reads 0. It is not persisted: a daemon restart
+starts every pane at 0 again. Pass it back as `if_revision` on `pane-send` / `pane-send-key`
+to type only if nothing has reached the screen since this capture.
 
 #### `pane-sync` (R/R)
 
@@ -1854,3 +1907,22 @@ saved state keep working:
     they assume a user's click; plugin code that runs without a gesture (a backend reacting to
     events or timers) must pass `focus: false`. A raw plugin `command` follows the wire
     default.
+
+18. **Screen revision, `settle_ms` and `if_revision` (issue #390).** `pane-capture` now reports
+    the pane's screen revision with the text, and `pane-send` / `pane-send-key` can refuse unless
+    the revision still matches, so an agent that read a prompt does not type into a screen that
+    has moved on. All three request fields are additive and optional. Compatibility, in each
+    direction:
+    - **Old CLI or agent, new daemon:** captures gain `revision`, `cursor` and `alt_screen`
+      (extra keys an old reader ignores), and sends and send-keys are unchanged because they
+      carry no `if_revision`.
+    - **New CLI, old daemon:** `if_revision` and `settle_ms` are ignored as unknown fields
+      (§2.2). The send is typed unguarded, and the capture returns at once without `revision`,
+      `cursor` or `alt_screen`. The ack of a guarded send lacks `revision`, which is how a
+      caller can tell the daemon did not check.
+    - **Old window client, new daemon:** no effect, the window client sends none of these fields.
+    The revision counts what the daemon has fed to its terminal state. With the terminal host
+    (#273, `docs/terminal-host.md`), output the host has read from the PTY but the daemon has not
+    yet fed is not counted, so the guard covers what the daemon had seen, which is also what the
+    capture showed. The counter restarts at 0 with the daemon, so a revision is only meaningful
+    against the daemon that issued it.

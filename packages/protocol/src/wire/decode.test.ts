@@ -443,9 +443,12 @@ describe('workspace and group commands', () => {
             repo: undefined,
             muted: false,
             icon: undefined,
-            group_defaults: true
+            group_defaults: true,
+            focus: false
         });
         expect(ok({ command: 'workspace-create', muted: true })).toMatchObject({ muted: true });
+        // Background by default (#295's workspace counterpart); only an explicit true reveals.
+        expect(ok({ command: 'workspace-create', focus: true })).toMatchObject({ focus: true });
         // Verbatim, for the handler to validate (workspace-icon's rule).
         expect(ok({ command: 'workspace-create', icon: 'emoji:👩‍🍳' })).toMatchObject({ icon: 'emoji:👩‍🍳' });
         expect(rejected({ command: 'workspace-create', icon: 7 })).toMatchObject({

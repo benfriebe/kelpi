@@ -237,8 +237,18 @@ describe('CommandClient RPC', () => {
         void h.client.createGroupForWorkspaces({ name: 'plain', workspaceIDs: [] });
         expect(h.lastCommand()).toEqual({ command: 'create-group-for-workspaces', name: 'plain', workspace_ids: [] });
 
+        // The window's creates are user gestures, so the wrapper reveals by default; an
+        // explicit false rides through for callers that want a background create.
         void h.client.createWorkspace({ name: 'dev', group: 'G1', groupDefaults: false });
-        expect(h.lastCommand()).toEqual({ command: 'workspace-create', name: 'dev', group: 'G1', group_defaults: false });
+        expect(h.lastCommand()).toEqual({
+            command: 'workspace-create',
+            name: 'dev',
+            group: 'G1',
+            group_defaults: false,
+            focus: true
+        });
+        void h.client.createWorkspace({ name: 'dev', focus: false });
+        expect(h.lastCommand()).toEqual({ command: 'workspace-create', name: 'dev', focus: false });
     });
 
     it('refuses a resize with both or neither directive', async () => {

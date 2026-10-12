@@ -241,6 +241,15 @@ export interface WorkspaceCreateMessage {
      * the group's defaults and the user's final choice is in the request, including "no repo".
      */
     group_defaults: boolean;
+    /**
+     * Reveal the created workspace (activate it and focus its first pane) in every window.
+     * Absent (or false) creates it in the BACKGROUND: it appears in the sidebar but the
+     * active workspace and the keyboard stay where the user has them, so an agent spawning
+     * workspaces never pulls the user away mid-sentence — the workspace counterpart of the
+     * pane rule (#295). The window's own gestures send `true`; `kelpi workspace create
+     * --focus` does too.
+     */
+    focus?: boolean | undefined;
 }
 
 export interface WorkspaceMoveMessage {

@@ -33,8 +33,8 @@ export const globalUsage = `Usage:
   kelpi pane sync include --target <name-or-uuid> [--workspace <name-or-uuid>]
   kelpi pane id
   kelpi workspace list [--json] [--no-header]
-  kelpi workspace create [--name "..."] [--path /dir] [--color blue] [--group <name>] [--profile <name>] [--muted] [--icon <emoji>] [--json]
-  kelpi workspace create --worktree <name> [--branch <name>] [--repo <path>] [--update-main] [--group <existing>] [--muted] [--icon <emoji>]
+  kelpi workspace create [--name "..."] [--path /dir] [--color blue] [--group <name>] [--profile <name>] [--muted] [--icon <emoji>] [--focus] [--json]
+  kelpi workspace create --worktree <name> [--branch <name>] [--repo <path>] [--update-main] [--group <existing>] [--muted] [--icon <emoji>] [--focus]
   kelpi workspace move <name-or-id> (--group <name> | --top-level) [--index N]
   kelpi workspace delete <name-or-id> [<name-or-id> ...] [--force|-y] [--prune-worktree [--delete-branch]] [--json]
   kelpi workspace profile <name-or-id> (<profile> | --clear)
@@ -381,12 +381,14 @@ Exit codes: 0 on success, non-zero on failure.
 export const workspaceCreateUsage = `Usage:
   kelpi workspace create [--name "..."] [--path /dir] [--color blue] \\
                        [--group <name>] [--profile <name>] [--repo <path> | --no-repo] \\
-                       [--muted] [--icon <emoji>] [--json]
+                       [--muted] [--icon <emoji>] [--focus] [--json]
   kelpi workspace create --worktree <name> [--branch <name>] [--repo <path>] \\
                        [--update-main | --no-update-main] [--group <existing>] [--muted] \\
-                       [--icon <emoji>] [--json]
+                       [--icon <emoji>] [--focus] [--json]
 
-Creates a new workspace and returns its id.
+Creates a new workspace and returns its id. The workspace opens in the
+BACKGROUND: it appears in the sidebar, but the active workspace and the
+keyboard stay where the user has them. Pass --focus to switch to it.
 
 Options:
   --name <name>      Workspace name.
@@ -411,6 +413,8 @@ Options:
   --muted            Create the workspace with its notifications muted.
   --icon <emoji>     Give the workspace this sidebar icon (one emoji or symbol)
                      instead of its first letter.
+  --focus            Reveal the new workspace (activate it and focus its first
+                     pane) instead of creating it in the background.
   --json             Print the structured reply (incl. the new workspace id).
   -h, --help         Show this help.
 

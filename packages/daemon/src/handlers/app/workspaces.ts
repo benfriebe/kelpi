@@ -213,6 +213,11 @@ interface CreateInput {
     readonly groupID: string | undefined;
     readonly workspaceID: string;
     readonly repoAssociations: readonly RepoAssociation[] | undefined;
+    /**
+     * Reveal the created workspace everywhere. False creates it in the background: the
+     * sidebar entry appears, the active workspace and the keyboard stay put.
+     */
+    readonly focus: boolean;
 }
 
 function dispatchCreate(ctx: AppContext, deps: AppDeps, input: CreateInput): void {
@@ -237,22 +242,24 @@ function dispatchCreate(ctx: AppContext, deps: AppDeps, input: CreateInput): voi
     spawnFirstPane(ctx, deps, input.workspaceID);
     refreshSyncGroup(ctx, input.workspaceID);
     deps.persist();
-    revealCreatedWorkspace(ctx, input.workspaceID, paneID);
+    if (input.focus) revealCreatedWorkspace(ctx, input.workspaceID, paneID);
 }
 
 /**
  * "Creating a workspace switches to it" — the Swift app's behaviour, made to work for a
- * client that did not issue the command (run-B L3).
+ * client that did not issue the command (run-B L3), and then made OPT-IN (`focus: true`),
+ * the workspace counterpart of the pane rule (#295): an agent's `kelpi workspace create`
+ * used to yank every window to the new workspace mid-keystroke. A background create still
+ * appears in the sidebar (and `scrollTarget` scrolls it into view), so the old failure of
+ * follow-up panes landing somewhere invisible does not return.
  *
  * The port's active workspace is **per client** (PLAN.md), so the reducer marking the new
  * workspace `lastActiveWorkspaceID` moves what `kelpi workspace list` calls ACTIVE and nothing
  * else: a `kelpi workspace create` from a terminal used to leave the daemon and every open
- * window disagreeing for the rest of the session, and an agent's follow-up `kelpi pane create`
- * then landed in a workspace the user could not see. A create is a deliberate act with an
- * obvious destination, so it is broadcast as a REVEAL — the same `reveal-pane` fan-out a
- * clicked notification uses (`ws/sync.ts`), which clients already implement as "activate the
- * workspace, then focus the pane". The client that issued the create reveals itself from the
- * reply as well; arriving twice is idempotent.
+ * window disagreeing for the rest of the session. A focusing create is broadcast as a REVEAL —
+ * the same `reveal-pane` fan-out a clicked notification uses (`ws/sync.ts`), which clients
+ * already implement as "activate the workspace, then focus the pane". The client that issued
+ * the create reveals itself from the reply as well; arriving twice is idempotent.
  */
 function revealCreatedWorkspace(ctx: AppContext, workspaceID: string, paneID: string): void {
     const workspace = workspaceByID(ctx.store.getState(), workspaceID);
@@ -435,6 +442,7 @@ function handleWorktreeCreate(
                 icon,
                 groupID,
                 workspaceID,
+                focus: msg.focus === true,
                 repoAssociations: [
                     {
                         id: deps.uuid(),
@@ -531,6 +539,7 @@ function handleCreateWithRepo(
                 icon,
                 groupID,
                 workspaceID,
+                focus: msg.focus === true,
                 repoAssociations: [association]
             });
             const created = workspaceByID(ctx.store.getState(), workspaceID);
@@ -611,6 +620,7 @@ function handleWorkspaceCreate(
             icon,
             groupID: undefined,
             workspaceID,
+            focus: msg.focus === true,
             repoAssociations: undefined
         });
         return;
@@ -649,6 +659,7 @@ function handleWorkspaceCreate(
         icon,
         groupID,
         workspaceID,
+        focus: msg.focus === true,
         repoAssociations: undefined
     });
 }

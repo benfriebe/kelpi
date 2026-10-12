@@ -352,7 +352,8 @@ function decodeCommand(
                 repo: fields.text('repo'),
                 muted: fields.flag('muted', false),
                 icon: fields.rawText('icon'),
-                group_defaults: fields.flag('group_defaults', true)
+                group_defaults: fields.flag('group_defaults', true),
+                focus: fields.flag('focus', false)
             };
         case 'workspace-move': {
             const name = fields.nonEmpty('name');

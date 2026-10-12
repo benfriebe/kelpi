@@ -708,6 +708,13 @@ export class CommandClient {
              * session reads it before the wire decode, and the CLI has no way to send it.
              */
             requestID?: string;
+            /**
+             * Reveal the created workspace in every window. Defaults to true here: every call
+             * from this client is a user gesture (the New Workspace sheet, the sidebar, the
+             * phone), and a user who creates a workspace expects to land in it. Agent-driven
+             * creates arrive over the CLI, which defaults to background instead.
+             */
+            focus?: boolean;
         } = {},
         options?: SendOptions
     ): Promise<CommandReply> {
@@ -726,7 +733,8 @@ export class CommandClient {
                 update_main: input.updateMain,
                 repo: input.repo,
                 muted: input.muted,
-                group_defaults: input.groupDefaults
+                group_defaults: input.groupDefaults,
+                focus: input.focus ?? true
             }),
             {
                 ...(timeout !== undefined ? { timeoutMs: timeout } : {}),

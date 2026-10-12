@@ -272,15 +272,25 @@ describe('workspace-create (top level)', () => {
         });
     });
 
-    it('reveals the new workspace to every attached client', () => {
+    it('reveals the new workspace to every attached client when the create asks for focus', () => {
         // run-B L3: the port's active workspace is per client, so the reducer marking the new
         // workspace last-active only moved what `kelpi workspace list` calls ACTIVE — a
         // `kelpi workspace create` from a terminal left every open window on the old workspace
         // indefinitely, and the agent's next `kelpi pane create` landed somewhere invisible.
-        // A create is broadcast as a reveal, which clients already act on (ws/sync.ts).
+        // A focusing create is broadcast as a reveal, which clients already act on (ws/sync.ts).
         const h = harness({ ids: [W1, P1] });
-        h.reply({ command: 'workspace-create', name: 'dev' });
+        h.reply({ command: 'workspace-create', name: 'dev', focus: true });
         expect(h.broadcasts).toContainEqual({ type: 'reveal-pane', workspaceID: W1, paneID: P1 });
+    });
+
+    it('creates in the background by default: no reveal broadcast without focus', () => {
+        // The workspace counterpart of the pane rule (#295): an agent's `kelpi workspace
+        // create` must not yank the user's windows to the new workspace.
+        const h = harness({ ids: [W1, P1] });
+        const reply = h.reply({ command: 'workspace-create', name: 'dev' });
+        expect(reply).toMatchObject({ ok: true, workspace_id: W1 });
+        expect(h.state().workspaces.map((w) => w.id)).toContain(W1);
+        expect(h.broadcasts.filter((b) => b.type === 'reveal-pane')).toEqual([]);
     });
 
     it('keeps an unrecognized color out of the reply path and picks a random one', () => {

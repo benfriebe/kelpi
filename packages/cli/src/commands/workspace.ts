@@ -125,6 +125,7 @@ async function handleWorkspaceCreate(args: string[]): Promise<void> {
     const noUpdateMain = popSwitch('--no-update-main', args);
     const muted = popSwitch('--muted', args);
     const iconFlag = parseFlag('--icon', args);
+    const focus = popSwitch('--focus', args);
     const asJSON = popSwitch('--json', args);
     rejectLeftoverArgs(args, 'kelpi workspace create', { usage: (write) => write(workspaceCreateUsage) });
     const icon = iconFlag === null ? null : wireIcon(iconFlag, 'kelpi workspace create');
@@ -147,6 +148,8 @@ async function handleWorkspaceCreate(args: string[]): Promise<void> {
     if (profile !== null) payload['profile'] = profile;
     if (muted) payload['muted'] = true;
     if (icon !== null) payload['icon'] = icon;
+    // Background by default, like pane creation (#295): only an explicit --focus reveals.
+    if (focus) payload['focus'] = true;
     // app-state-core.md §5.5: an explicit repo is associated even without --worktree, and
     // --no-repo is the one-off opt-out from the group's default repository.
     // Made absolute here: a relative path means the shell's cwd, not the daemon's.

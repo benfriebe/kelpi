@@ -25,7 +25,7 @@ import {
 } from '../args.js';
 import { homeDirectory, originPaneID, requirePaneID } from '../env.js';
 import { errLine, exit, printLine, writeErr, writeOut } from '../io.js';
-import { asBool, asNumber, asString, stableStringify, type JsonObject } from '../json.js';
+import { asBool, asNumber, asString, parseJsonObject, stableStringify, type JsonObject } from '../json.js';
 import { decodeReply, parseReplyOrExit } from '../reply.js';
 import { printPaneTable, replyArray } from '../table.js';
 import { printTransportFailure, sendJSON, sendJSONAndReadReply } from '../transport.js';
@@ -66,7 +66,11 @@ async function sendPaneMutationReply(payload: JsonObject, command: string, asJSO
 }
 
 /** The bespoke empty-reply path: "this Kelpi is too old", exit 1 (cli.md §6.5). */
-async function readReplyOrEmptyError(payload: JsonObject, command: string): Promise<JsonObject> {
+async function readReplyOrEmptyError(
+    payload: JsonObject,
+    command: string,
+    parse: (data: string, command: string) => JsonObject = parseReplyOrExit
+): Promise<JsonObject> {
     const data = await sendJSONAndReadReply(payload);
     if (data === null) {
         printTransportFailure(command);
@@ -76,7 +80,32 @@ async function readReplyOrEmptyError(payload: JsonObject, command: string): Prom
         errLine(`${command}: empty reply (Kelpi version may not support this command)`);
         exit(1);
     }
+    return parse(data, command);
+}
+
+/**
+ * `send`/`send-key` with `--if-revision` (#390): a `SCREEN_CHANGED` refusal gets its own line,
+ * naming the pane's current revision; every other reply goes through `parseReplyOrExit` as is.
+ */
+function parseSendReplyOrExit(data: string, command: string): JsonObject {
+    const json = parseJsonObject(data);
+    if (json !== null && asBool(json['ok']) === false && json['code'] === 'SCREEN_CHANGED') {
+        errLine(`${command}: screen changed (revision ${asNumber(json['revision']) ?? '?'})`);
+        exit(1);
+    }
     return parseReplyOrExit(data, command);
+}
+
+/** `--if-revision <n>`: null when absent, else a non-negative integer or exit 1. */
+function parseIfRevision(args: string[], command: string): number | null {
+    const raw = parseFlag('--if-revision', args);
+    if (raw === null) return null;
+    const parsed = parseIntStrict(raw);
+    if (parsed === null || parsed < 0) {
+        errLine(`${command}: --if-revision must be a non-negative integer`);
+        exit(1);
+    }
+    return parsed;
 }
 
 export async function handlePane(args: string[]): Promise<void> {
@@ -356,6 +385,7 @@ async function handlePaneSend(args: string[]): Promise<void> {
     const workspace = parseFlag('--workspace', args);
     const bare = popSwitch('--bare', args);
     const asJSON = popSwitch('--json', args);
+    const ifRevision = parseIfRevision(args, 'kelpi pane send');
 
     // Everything left is the text. There is deliberately no `--` terminator here, so a
     // literal `--json` inside the text is eaten as a flag (known, kept for compatibility).
@@ -369,6 +399,7 @@ async function handlePaneSend(args: string[]): Promise<void> {
     const origin = originPaneID();
     if (origin !== undefined) payload['pane_id'] = origin;
     if (workspace !== null) payload['workspace'] = workspace;
+    if (ifRevision !== null) payload['if_revision'] = ifRevision;
 
     const data = await sendJSONAndReadReply(payload);
     if (data === null) {
@@ -378,7 +409,7 @@ async function handlePaneSend(args: string[]): Promise<void> {
     // Empty reply = a pre-request/response Kelpi that acted then closed. Treat as success.
     if (data.length === 0) return;
 
-    const reply = parseReplyOrExit(data, 'kelpi pane send');
+    const reply = parseSendReplyOrExit(data, 'kelpi pane send');
     if (asJSON) {
         printReplyWithoutOk(reply);
         return;
@@ -393,7 +424,8 @@ async function handlePaneSend(args: string[]): Promise<void> {
     printLine(ack);
 }
 
-const SEND_KEY_USAGE = 'Usage: kelpi pane send-key --target <name-or-uuid> [--workspace <name-or-uuid>] <key>';
+const SEND_KEY_USAGE =
+    'Usage: kelpi pane send-key [--if-revision <n>] --target <name-or-uuid> [--workspace <name-or-uuid>] <key>';
 
 async function handlePaneSendKey(args: string[]): Promise<void> {
     const target = parseFlag('--target', args);
@@ -402,6 +434,8 @@ async function handlePaneSendKey(args: string[]): Promise<void> {
         errLine(SEND_KEY_USAGE);
         exit(1);
     }
+    // Parsed before the unknown-option check, which would otherwise reject it.
+    const ifRevision = parseIfRevision(args, 'kelpi pane send-key');
     const unknown = args.find((token) => token.startsWith('-'));
     if (unknown !== undefined) {
         errLine(`kelpi pane send-key: unknown option ${unknown}`);
@@ -422,8 +456,9 @@ async function handlePaneSendKey(args: string[]): Promise<void> {
     const origin = originPaneID();
     if (origin !== undefined) payload['pane_id'] = origin;
     if (workspace !== null && workspace.length > 0) payload['workspace'] = workspace;
+    if (ifRevision !== null) payload['if_revision'] = ifRevision;
 
-    const reply = await readReplyOrEmptyError(payload, 'kelpi pane send-key');
+    const reply = await readReplyOrEmptyError(payload, 'kelpi pane send-key', parseSendReplyOrExit);
     const id = asString(reply['pane_id']) ?? '?';
     const label = asString(reply['label']);
     const workspaceName = asString(reply['workspace_name']);
@@ -567,6 +602,8 @@ async function handlePaneCapture(args: string[]): Promise<void> {
     const workspace = parseFlag('--workspace', args);
     const linesArg = parseFlag('--lines', args);
     const scrollback = popSwitch('--scrollback', args);
+    const settleArg = parseFlag('--settle', args);
+    const asJSON = popSwitch('--json', args);
     rejectLeftoverArgs(args, 'kelpi pane capture', {
         positionalHint: 'target panes with --target <name-or-uuid>',
         usage: (write) => write(paneCaptureUsage)
@@ -582,6 +619,16 @@ async function handlePaneCapture(args: string[]): Promise<void> {
         lines = parsed;
     }
 
+    let settleMs: number | null = null;
+    if (settleArg !== null) {
+        const parsed = parseIntStrict(settleArg);
+        if (parsed === null || parsed <= 0) {
+            errLine('kelpi pane capture: --settle must be a positive integer');
+            exit(1);
+        }
+        settleMs = parsed;
+    }
+
     const payload: JsonObject = { command: 'pane-capture' };
     if (target !== null) {
         payload['target'] = target;
@@ -593,8 +640,13 @@ async function handlePaneCapture(args: string[]): Promise<void> {
     if (workspace !== null) payload['workspace'] = workspace;
     if (lines !== null) payload['lines'] = lines;
     if (scrollback) payload['scrollback'] = true;
+    if (settleMs !== null) payload['settle_ms'] = settleMs;
 
     const reply = await decodeReply(payload, 'kelpi pane capture');
+    if (asJSON) {
+        printReplyWithoutOk(reply);
+        return;
+    }
     // Raw bytes, no added trailing newline — captured output usually ends in one already.
     writeOut(asString(reply['text']) ?? '');
 }

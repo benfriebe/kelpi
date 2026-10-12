@@ -295,6 +295,150 @@ describe('request/response', () => {
         expect(key.stderr).toBe('kelpi pane send-key: empty reply (Kelpi version may not support this command)\n');
     });
 
+    /**
+     * #390: `--settle` and `--json` on capture, `--if-revision` on send/send-key, and the
+     * SCREEN_CHANGED refusal's own line. Without the new flags the payloads and output are the
+     * ones pinned above.
+     */
+    it('sends --settle as settle_ms and prints the capture reply minus ok under --json', async () => {
+        server.respond(() => ({
+            lines: [
+                {
+                    ok: true,
+                    text: 'line one\n',
+                    revision: 12,
+                    cursor: { row: 1, col: 4 },
+                    alt_screen: false,
+                    settled: true,
+                    pane_id: PANE,
+                    workspace_name: 'alpha'
+                }
+            ]
+        }));
+        const json = await runCLI(['pane', 'capture', '--settle', '500', '--json', '--target', PANE], {
+            port: server.port
+        });
+        expect(json.code).toBe(0);
+        expect(json.stderr).toBe('');
+        expect(json.stdout).toBe(
+            `{"alt_screen":false,"cursor":{"col":4,"row":1},"pane_id":"${PANE}","revision":12,"settled":true,"text":"line one\\n","workspace_name":"alpha"}\n`
+        );
+        expect(await lastRequest()).toEqual({ command: 'pane-capture', target: PANE, settle_ms: 500 });
+
+        // Without --json the output stays the raw text, even with --settle.
+        const raw = await runCLI(['pane', 'capture', '--settle', '250', '--target', PANE], { port: server.port });
+        expect(raw.code).toBe(0);
+        expect(raw.stdout).toBe('line one\n');
+        expect(await lastRequest()).toEqual({ command: 'pane-capture', target: PANE, settle_ms: 250 });
+    });
+
+    it('rejects a --settle that is not a positive integer before touching the socket', async () => {
+        for (const value of ['0', '-5', 'abc']) {
+            const result = await runCLI(['pane', 'capture', '--target', PANE, '--settle', value], { port: server.port });
+            expect(result.code).toBe(1);
+            expect(result.stdout).toBe('');
+            expect(result.stderr).toBe('kelpi pane capture: --settle must be a positive integer\n');
+        }
+        expect(server.requests).toHaveLength(0);
+    });
+
+    it('sends --if-revision as if_revision on pane send and send-key, 0 included', async () => {
+        server.respond(() => ({ lines: [{ ok: true, pane_id: PANE, bare: false, revision: 7 }] }));
+        const send = await runCLI(['pane', 'send', '--if-revision', '7', '--target', PANE, 'hello'], {
+            port: server.port
+        });
+        expect(send.code).toBe(0);
+        expect(send.stdout).toBe(`sent to ${PANE}\n`);
+        expect(await lastRequest()).toEqual({ command: 'pane-send', target: PANE, text: 'hello', bare: false, if_revision: 7 });
+
+        const zero = await runCLI(['pane', 'send', '--target', PANE, '--if-revision', '0', '--json', 'hello'], {
+            port: server.port
+        });
+        expect(zero.stdout).toBe(`{"bare":false,"pane_id":"${PANE}","revision":7}\n`);
+        expect(await lastRequest()).toEqual({ command: 'pane-send', target: PANE, text: 'hello', bare: false, if_revision: 0 });
+
+        server.respond(() => ({ lines: [{ ok: true, pane_id: PANE, key: 'enter', revision: 7 }] }));
+        const key = await runCLI(['pane', 'send-key', '--if-revision', '7', '--target', PANE, 'enter'], {
+            port: server.port
+        });
+        expect(key.code).toBe(0);
+        expect(key.stderr).toBe('');
+        expect(key.stdout).toBe(`sent enter to ${PANE}\n`);
+        expect(await lastRequest()).toEqual({ command: 'pane-send-key', target: PANE, key: 'enter', if_revision: 7 });
+    });
+
+    it('rejects an --if-revision that is not a non-negative integer before touching the socket', async () => {
+        for (const value of ['-1', 'abc']) {
+            const send = await runCLI(['pane', 'send', '--target', PANE, '--if-revision', value, 'hello'], {
+                port: server.port
+            });
+            expect(send.code).toBe(1);
+            expect(send.stdout).toBe('');
+            expect(send.stderr).toBe('kelpi pane send: --if-revision must be a non-negative integer\n');
+
+            const key = await runCLI(['pane', 'send-key', '--target', PANE, '--if-revision', value, 'enter'], {
+                port: server.port
+            });
+            expect(key.code).toBe(1);
+            expect(key.stdout).toBe('');
+            expect(key.stderr).toBe('kelpi pane send-key: --if-revision must be a non-negative integer\n');
+        }
+        expect(server.requests).toHaveLength(0);
+    });
+
+    it('names the current revision when the daemon refuses a send because the screen changed', async () => {
+        server.respond(() => ({
+            lines: [{ ok: false, error: 'screen changed', code: 'SCREEN_CHANGED', revision: 9 }]
+        }));
+        const send = await runCLI(['pane', 'send', '--if-revision', '7', '--target', PANE, 'hello'], {
+            port: server.port
+        });
+        expect(send.code).toBe(1);
+        expect(send.stdout).toBe('');
+        expect(send.stderr).toBe('kelpi pane send: screen changed (revision 9)\n');
+
+        const key = await runCLI(['pane', 'send-key', '--if-revision', '7', '--target', PANE, 'enter'], {
+            port: server.port
+        });
+        expect(key.code).toBe(1);
+        expect(key.stdout).toBe('');
+        expect(key.stderr).toBe('kelpi pane send-key: screen changed (revision 9)\n');
+
+        // Any other refusal keeps its existing wording.
+        server.respond(() => ({ lines: [{ ok: false, error: "no pane matched target 'ghost'" }] }));
+        const other = await runCLI(['pane', 'send-key', '--if-revision', '7', '--target', 'ghost', 'enter'], {
+            port: server.port
+        });
+        expect(other.code).toBe(1);
+        expect(other.stderr).toBe("kelpi pane send-key: no pane matched target 'ghost'\n");
+    });
+
+    it('mentions --settle, --json and --if-revision in the capture, send and send-key help', async () => {
+        const capture = await runCLI(['pane', 'capture', '--help'], { port: server.port });
+        expect(capture.code).toBe(0);
+        expect(capture.stdout).toContain('[--settle <ms>] [--json]');
+        expect(capture.stdout).toContain('--settle <ms>               Wait until the pane has had no output for <ms>');
+        expect(capture.stdout).toContain('--json                      Print the structured reply (text, revision, cursor,');
+
+        const send = await runCLI(['pane', 'send', '--help'], { port: server.port });
+        expect(send.code).toBe(0);
+        expect(send.stdout).toContain('[--if-revision <n>]');
+        expect(send.stdout).toContain('--if-revision <n>           Send only if the pane\'s screen revision is still n');
+
+        // send-key has no long help: its one usage line goes to stderr, exit 1, as before.
+        const key = await runCLI(['pane', 'send-key', '--help'], { port: server.port });
+        expect(key.code).toBe(1);
+        expect(key.stderr).toContain(
+            'Usage: kelpi pane send-key [--if-revision <n>] --target <name-or-uuid> [--workspace <name-or-uuid>] <key>'
+        );
+
+        const global = await runCLI(['--help']);
+        expect(global.stderr).toContain('kelpi pane send [--bare] [--if-revision <n>] --target');
+        expect(global.stderr).toContain('kelpi pane send-key [--if-revision <n>] --target');
+        expect(global.stderr).toContain('[--scrollback] [--settle <ms>] [--json]');
+        expect(server.requests).toHaveLength(0);
+    });
+
     it('formats the resize ack as a whole-percent share', async () => {
         server.respond(() => ({
             lines: [{ ok: true, pane_id: PANE, workspace_name: 'alpha', target_share: 0.7499 }]

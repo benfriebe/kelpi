@@ -21,13 +21,13 @@ export const globalUsage = `Usage:
   kelpi pane close [--target <name-or-uuid>] [--workspace <name-or-uuid>]
   kelpi pane name <name>
   kelpi pane resize [--target <name-or-uuid>] [--workspace <name-or-uuid>] (--ratio <0..1> | --grow [amt] | --shrink [amt])
-  kelpi pane send [--bare] --target <name-or-uuid> [--workspace <name-or-uuid>] <command...>
-  kelpi pane send-key --target <name-or-uuid> [--workspace <name-or-uuid>] <key>
+  kelpi pane send [--bare] [--if-revision <n>] --target <name-or-uuid> [--workspace <name-or-uuid>] <command...>
+  kelpi pane send-key [--if-revision <n>] --target <name-or-uuid> [--workspace <name-or-uuid>] <key>
   kelpi pane move [--focus] [left|right|up|down]
   kelpi pane move --target X (--above|--below|--left-of|--right-of) Y [--focus]
   kelpi pane move-to-workspace --to-workspace <name-or-uuid> [--create]
   kelpi pane list [--workspace <name-or-id> | --current] [--json] [--no-header]
-  kelpi pane capture [--target <name-or-uuid>] [--workspace <name-or-uuid>] [--lines N] [--scrollback]
+  kelpi pane capture [--target <name-or-uuid>] [--workspace <name-or-uuid>] [--lines N] [--scrollback] [--settle <ms>] [--json]
   kelpi pane sync (on|off|toggle|status) [--workspace <name-or-uuid>] [--json]
   kelpi pane sync exclude --target <name-or-uuid> [--workspace <name-or-uuid>]
   kelpi pane sync include --target <name-or-uuid> [--workspace <name-or-uuid>]
@@ -155,7 +155,7 @@ transport failure, etc).
 `;
 
 export const paneSendUsage = `Usage:
-  kelpi pane send [--bare] [--json] --target <name-or-uuid> [--workspace <name-or-uuid>] <command...>
+  kelpi pane send [--bare] [--json] [--if-revision <n>] --target <name-or-uuid> [--workspace <name-or-uuid>] <command...>
 
 Writes text to a pane's PTY and (unless --bare) presses Enter so it runs.
 
@@ -167,6 +167,9 @@ Options:
   --bare                      Write the text without the trailing Enter (pair
                               with \`kelpi pane send-key\` to submit).
   --json                      Print the structured reply instead of the ack.
+  --if-revision <n>           Send only if the pane's screen revision is still n
+                              (from \`kelpi pane capture --json\`); otherwise write
+                              nothing and exit 1 with "screen changed".
   -h, --help                  Show this help.
 
 Works from outside a Kelpi pane (no KELPI_PANE_ID needed) when --target is a UUID
@@ -287,7 +290,7 @@ is clamped to [0.1, 0.9]. Exit codes: 0 on success, non-zero on failure.
 `;
 
 export const paneCaptureUsage = `Usage:
-  kelpi pane capture [--target <name-or-uuid>] [--workspace <name-or-uuid>] [--lines N] [--scrollback]
+  kelpi pane capture [--target <name-or-uuid>] [--workspace <name-or-uuid>] [--lines N] [--scrollback] [--settle <ms>] [--json]
 
 Prints a pane's terminal contents to stdout. Without --target, captures the
 calling pane (requires KELPI_PANE_ID).
@@ -297,10 +300,17 @@ Options:
   --workspace <name-or-uuid>  Scope label resolution to a specific workspace.
   --lines N                   Limit to the last N lines (positive integer).
   --scrollback                Include the full scrollback, not just the viewport.
+  --settle <ms>               Wait until the pane has had no output for <ms>
+                              (positive integer) before reading, giving up after
+                              10 s and reading the screen as it is then.
+  --json                      Print the structured reply (text, revision, cursor,
+                              alt_screen, settled) instead of the raw text.
   -h, --help                  Show this help.
 
 The target is flag-only: a bare positional argument is rejected on purpose so
 \`kelpi pane capture <uuid>\` can't silently fall back to capturing the caller.
+Pass the --json revision to \`kelpi pane send --if-revision\` (or send-key) to
+refuse the send if the screen changed since the capture.
 Exit codes: 0 on success, non-zero on failure.
 
 `;

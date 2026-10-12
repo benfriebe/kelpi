@@ -111,6 +111,7 @@ export const ACTION_CATALOG: readonly ActionEntry[] = [
     { action: 'kill_line_backward', category: 'Terminal', label: 'Delete to Line Start' },
     { action: 'move_to_line_start', category: 'Terminal', label: 'Move to Line Start' },
     { action: 'move_to_line_end', category: 'Terminal', label: 'Move to Line End' },
+    { action: 'clear_screen', category: 'Terminal', label: 'Clear Screen' },
     // #175. "Text size" rather than "font size" because what they move is the Appearance tab's
     // terminal Font size slider, daemon-wide, for every session at once.
     { action: 'increase_terminal_font_size', category: 'Terminal', label: 'Increase Terminal Text Size' },

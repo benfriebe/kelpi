@@ -443,8 +443,8 @@ because no client is watching, section 4.1).
   is replaying a snapshot taken at somebody else's width and nothing on the wire used to carry
   the number. The frame is `[cols][rows]` as two uint16 BE — the same payload a `resize` carries,
   read back with `decodeResizePayload` — and the daemon emits the pair from one synchronous
-  function at all THREE replay sites: the attach, the settled-resize resync (section 5.2) and the
-  flow-control re-seed below. Its bytes are **not** charged to the flow-control window, because a
+  function at all THREE replay sites: the attach, the settled-resize resync (section 5.2, which a
+  cleared screen also re-seeds through, section 10.4) and the flow-control re-seed below. Its bytes are **not** charged to the flow-control window, because a
   client acks what it feeds its engine and it never feeds this frame to anything. Compatibility
   runs both ways and needs no version bump (it is additive within protocol generation 2): an older
   client drops an unknown frame type whole, and a newer client against an older daemon simply
@@ -1589,6 +1589,55 @@ encoder's own exemptions.
 Backspace with any other modifier is unchanged: bare `0x7f`, `ctrl` `0x08`, `alt` `ESC 0x7f`,
 and the kitty forms when a pane has negotiated the protocol.
 
+### 10.4 Clear screen (⌘K)
+
+⌘K is `clear_screen`, in the same binding layer and for the same reason: Ghostty's macOS default
+(`src/config/Config.zig`, darwin branch of `Keybinds.init`, `super+k` -> `clear_screen`), which
+the pre-port app inherited from libghostty and this port's binding table never listed. Unbound,
+the chord reached the terminal as a keystroke, and since the legacy encoder drops super it typed
+a `k` at the prompt and cleared nothing.
+
+**It is a command, not bytes.** The other chords of this section stand in for a keystroke and
+are written to the PTY. A clear is an emulator action, and the emulator that holds a pane's
+history is the daemon's (section 1): its buffer is what an attach replays (section 4.1), what
+`pane capture` reads (section 9.3) and what a handoff checkpoints
+([terminal-host.md](terminal-host.md) section 5). A client that wiped only its own engine would
+show an empty screen until its next workspace switch replayed everything back. So the client
+sends the `clear-screen` desktop command (`packages/daemon/src/ws/desktop.ts`, WS-only) for the
+focused pane, over the connection of the daemon that owns the pane, and declines the chord when
+the focused pane has no terminal renderer.
+
+**What the daemon clears** (`TerminalStateServiceImpl.clearScreenAsync`,
+`packages/daemon/src/term/service.ts`) is what Ghostty's `clearScreen` clears
+(`src/termio/Termio.zig`), once every byte fed so far has been parsed:
+
+| the pane is | result |
+|---|---|
+| on the **alternate screen** | nothing, to either screen. A full-screen program owns that screen and knows where it left its cursor; Ghostty does nothing here for the same reason. The reply says `cleared: false` |
+| on the normal screen | the scrollback and every row above the cursor are REMOVED. The cursor's row becomes the first row, at the same column, and the rows beneath it move up with it |
+
+Removing the rows above the cursor, rather than keeping the cursor's row alone as xterm's own
+`clear()` does, is what leaves a program's drawing beneath its cursor in place: the lower half
+of an agent's input box, a shell's completion menu. Ghostty has a second branch for a cursor
+sitting at a *marked* prompt (erase everything, then send the shell a form feed to repaint); this
+emulator keeps no prompt marks, so every clear takes the branch above, which is also what
+Ghostty does for a shell without its integration. The visible difference is a prompt that spans
+several rows: the rows above the cursor's are cleared with everything else and come back with the
+next prompt.
+
+**Every attached client is then re-seeded** (`PaneStreamHub.reseed`,
+`packages/daemon/src/ws/streams.ts`): each one's engine parsed the same output the daemon did and
+still holds what was just dropped, and nothing in the PTY stream will ever tell it otherwise. The
+re-seed is the settled-resize handover of section 5.2 run on demand, so it carries the same
+`replayGrid` + `replay` pair, loses and doubles no byte that lands while the snapshot is taken,
+and reaches the window that asked and every other window showing the pane alike.
+
+Not mirrored to synchronise-input siblings (section 8.2): the mirror carries keystrokes, and
+this is not one. Not carried by the terminal host's retention ring either: a clean handoff
+checkpoints the cleared buffer, but a daemon that crashes is rebuilt from the host's retained raw
+output ([terminal-host.md](terminal-host.md) section 8), which still holds whatever of the old
+history fits in it.
+
 ---
 
 ## 11. Mouse input (client-side spec)
@@ -1931,7 +1980,8 @@ interface TerminalStateService {                          // packages/daemon/src
   dispose(paneID: string): void;
 }
 // The implementation adds captureAsync / snapshotAsync / modesAsync / flush (await pending
-// writes first), cellText (section 7.6), search (section 7.7) and gridSize (section 5).
+// writes first), cellText (section 7.6), search (section 7.7), gridSize (section 5) and
+// clearScreenAsync (section 10.4).
 
 interface TerminalInput {                                 // packages/daemon/src/pty/input.ts
   sendText(paneID: string, text: string, opts: { bare: boolean }): void; // paste pipeline, then Enter unless bare

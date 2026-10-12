@@ -116,7 +116,7 @@ function fixture(
 }
 
 describe('isDesktopCommand', () => {
-    it('names exactly the seven verbs', () => {
+    it('names exactly the eight verbs', () => {
         expect(isDesktopCommand('shell-action')).toBe(true);
         expect(isDesktopCommand('restart-control-server')).toBe(true);
         expect(isDesktopCommand('open-terminal-target')).toBe(true);
@@ -124,6 +124,7 @@ describe('isDesktopCommand', () => {
         expect(isDesktopCommand('markdown-external-editor')).toBe(true);
         expect(isDesktopCommand('paste-image')).toBe(true);
         expect(isDesktopCommand('drop-text')).toBe(true);
+        expect(isDesktopCommand('clear-screen')).toBe(true);
         expect(isDesktopCommand('pane-close')).toBe(false);
         expect(isDesktopCommand('reveal-path')).toBe(false);
     });
@@ -964,5 +965,85 @@ describe('shellEscapePath', () => {
     it('is the Swift escape set, so a path types identically in either app', () => {
         expect(shellEscapePath('/a/My Notes (v2).png')).toBe('/a/My\\ Notes\\ \\(v2\\).png');
         expect(shellEscapePath('/plain/a.png')).toBe('/plain/a.png');
+    });
+});
+
+describe('clear-screen', () => {
+    /**
+     * A shell pane the emulator holds. `answer` is what the emulator says to a clear: true for a
+     * cleared screen, false for the alternate screen, absent for a service that cannot clear.
+     */
+    function clearable(answer?: boolean) {
+        const h = harness({ minted: [NEW] });
+        seedWorkspace(h, { id: W1, name: 'dev', paneID: P0, path: '/tmp/work' });
+        h.term.viewport.set(P0, '$ ');
+        const clears: string[] = [];
+        const reseeds: string[] = [];
+        if (answer !== undefined) {
+            Object.assign(h.term, {
+                clearScreenAsync: async (paneID: string) => {
+                    clears.push(paneID);
+                    return answer;
+                }
+            });
+        }
+        const channel = createDesktopChannel({ ctx: h.ctx, reseedPane: (paneID) => reseeds.push(paneID) });
+        return { h, channel, clears, reseeds };
+    }
+
+    it('clears the pane and then re-seeds its attached clients', async () => {
+        const f = clearable(true);
+
+        const reply = await f.channel.run('clear-screen', { pane_id: P0 });
+
+        expect(reply).toEqual({ ok: true, pane_id: P0, cleared: true });
+        expect(f.clears).toEqual([P0]);
+        expect(f.reseeds).toEqual([P0]);
+    });
+
+    it('answers ok without a re-seed when the emulator declined, as it does on the alternate screen', async () => {
+        const f = clearable(false);
+
+        const reply = await f.channel.run('clear-screen', { pane_id: P0 });
+
+        expect(reply).toEqual({ ok: true, pane_id: P0, cleared: false });
+        expect(f.reseeds).toEqual([]);
+    });
+
+    it.each([
+        ['no pane_id', {}],
+        ['a pane that does not exist', { pane_id: 'nope' }]
+    ])('refuses %s and clears nothing', async (_label, payload) => {
+        const f = clearable(true);
+
+        expect(await f.channel.run('clear-screen', payload)).toMatchObject({ ok: false });
+
+        expect(f.clears).toEqual([]);
+        expect(f.reseeds).toEqual([]);
+    });
+
+    it('refuses a pane with no terminal behind it', async () => {
+        const f = clearable(true);
+        f.h.store.dispatch({
+            type: 'open-markdown-pane',
+            workspaceID: W1,
+            paneID: NEW,
+            filePath: '/tmp/work/a.md',
+            now: 1
+        });
+
+        const reply = await f.channel.run('clear-screen', { pane_id: NEW });
+
+        expect(reply).toEqual({ ok: false, error: `pane '${NEW}' is not a terminal pane` });
+        expect(f.clears).toEqual([]);
+    });
+
+    it('says so when the terminal service cannot clear', async () => {
+        const f = clearable();
+
+        const reply = await f.channel.run('clear-screen', { pane_id: P0 });
+
+        expect(reply).toEqual({ ok: false, error: 'clear-screen is not available' });
+        expect(f.reseeds).toEqual([]);
     });
 });

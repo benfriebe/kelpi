@@ -104,6 +104,7 @@ import { ContentPanePlaceholder } from './app/ContentPanePlaceholder';
 import { restartUI } from './app/reload';
 import { copySelection, deferredClipboardWriter, pasteIntoFocusedPane } from './app/clipboard';
 import { createLinkClickTracker, linkCaption, type LinkMenuRequest } from './app/link-click';
+import { clearFocusedScreen } from './app/clear-screen';
 import { sendLineEdit } from './app/line-editing';
 import { TerminalShortcutContext, terminalWindowChords } from './app/terminal-shortcuts';
 import type { DaemonTarget, StorageLike } from './app/config';
@@ -2544,6 +2545,21 @@ function Shell(props: AppProps): ReactElement {
                 });
             },
 
+            /**
+             * ⌘K - Ghostty's `clear_screen`: the focused terminal's screen and scrollback.
+             *
+             * A command rather than a write to this window's engine, because the history is the
+             * daemon's; the daemon clears it and re-seeds every attached client, this one
+             * included (`app/clear-screen.ts`).
+             */
+            clearScreen(): boolean {
+                return clearFocusedScreen({
+                    focusedPaneID: focused,
+                    isTerminalPane: (paneID) => paneHandle(paneID) !== null,
+                    clear: (paneID) => run('Clear Screen', commands.clearScreen({ paneID }))
+                });
+            },
+
             /** TERM-043 — hand a pasted image to the daemon, which writes it and types its path. */
             pasteImage(paneID: string, file: Blob): boolean {
                 return uploadPastedImage(paneID, file);
@@ -3272,6 +3288,8 @@ function Shell(props: AppProps): ReactElement {
             kill_line_backward: ({ action }) => act.lineEdit(action),
             move_to_line_start: ({ action }) => act.lineEdit(action),
             move_to_line_end: ({ action }) => act.lineEdit(action),
+            // Declines without a terminal renderer, like the five above it.
+            clear_screen: () => act.clearScreen(),
             reopen_closed_pane: () => act.reopenClosedPane(),
             create_scratchpad: () => act.createScratchpad(),
             // CONT-120 / APP-020. Default ⌘O, and the File menu's "Open…" reaches

@@ -1310,6 +1310,15 @@ export class CommandClient {
         return this.raw(wirePayload('drop-text', { pane_id: input.paneID, text: input.text }), options ?? {});
     }
 
+    /**
+     * ⌘K: empty a terminal pane's screen and scrollback on the daemon, which then re-seeds every
+     * client attached to the pane (terminal-surface.md §10.4). `cleared: false` in the reply is a
+     * pane on the alternate screen, where the clear is deliberately nothing.
+     */
+    clearScreen(input: { paneID: string }, options?: SendOptions): Promise<CommandReply> {
+        return this.raw(wirePayload('clear-screen', { pane_id: input.paneID }), options ?? {});
+    }
+
     // ── terminal search (⌘F over a shell pane) ────────────────────────────────────
     //
     // One verb with an `action` field (`daemon/src/ws/search.ts`). The needle, the total and the

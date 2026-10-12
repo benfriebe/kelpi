@@ -107,6 +107,11 @@
  * place the underline and the click can then differ: a plugin hook that refuses
  * `open-terminal-target` refuses the click on a link the hover underlined.
  *
+ * ## `clear-screen`
+ *
+ * ⌘K on a terminal pane. The client has the chord and the daemon has the history, so the gesture
+ * crosses here: see `clearScreen` below and terminal-surface.md section 10.4.
+ *
  * ## `markdown-external-editor` (CONT-081…091)
  *
  * `open` resolves `$VISUAL`/`$EDITOR` (`content/external-editor.ts`), records the launch command
@@ -151,7 +156,8 @@ export const DESKTOP_COMMANDS = [
     'probe-terminal-target',
     'markdown-external-editor',
     'paste-image',
-    'drop-text'
+    'drop-text',
+    'clear-screen'
 ] as const;
 export type DesktopCommand = (typeof DESKTOP_COMMANDS)[number];
 
@@ -236,6 +242,12 @@ export interface DesktopChannelOptions {
      * injects only `fileExists`, that is used for both.
      */
     readonly probeFileExists?: ((target: string) => Promise<boolean>) | undefined;
+    /**
+     * Hand every client attached to a pane a fresh snapshot of it (`ws/streams.ts` `reseed`).
+     * Injected because the stream hub belongs to the WS server, which is built around this
+     * channel. Absent, `clear-screen` still clears; a client then sees it on its next attach.
+     */
+    readonly reseedPane?: ((paneID: string) => void) | undefined;
     readonly onError?: ((error: Error, context: string) => void) | undefined;
 }
 
@@ -939,6 +951,37 @@ export function createDesktopChannel(options: DesktopChannelOptions): DesktopCha
         return { ok: true, pane_id: paneID };
     };
 
+    /**
+     * ⌘K: empty a terminal pane's screen and scrollback (terminal-surface.md section 10.4).
+     *
+     * A verb, not bytes on the pane's stream, because the history is HERE: this side's buffer is
+     * what `pane capture` reads, what a re-attach replays and what a handoff checkpoints, so a
+     * client that only wiped its own engine would get the whole history back on its next
+     * workspace switch. The buffer is cleared first and every attached client is then re-seeded
+     * from it, the asking one included, so all of them end on the same screen.
+     *
+     * `cleared: false` is a pane on the alternate screen, where the clear is deliberately nothing
+     * (`term/service.ts` `clearScreenAsync`). It is not an error: the chord was understood.
+     */
+    const clearScreen = async (payload: Record<string, unknown>): Promise<JsonObject> => {
+        const paneID = text(payload['pane_id']);
+        if (paneID === undefined) return failure('clear-screen requires pane_id');
+
+        const state = ctx.store.getState();
+        const workspace = workspaceContainingVisiblePane(state, paneID);
+        const pane = workspace === null ? null : visiblePane(workspace, paneID);
+        if (pane === null) return failure(`pane not found: ${paneID}`);
+        // The emulator is the pane-type test: it holds state for a shell pane and for a markdown
+        // pane hosting `$EDITOR`, and for nothing else.
+        if (ctx.term.has?.(paneID) === false) return failure(`pane '${paneID}' is not a terminal pane`);
+
+        const term = ctx.term as Partial<{ clearScreenAsync(id: string): Promise<boolean> }>;
+        if (term.clearScreenAsync === undefined) return failure('clear-screen is not available');
+        const cleared = await term.clearScreenAsync(paneID);
+        if (cleared) options.reseedPane?.(paneID);
+        return { ok: true, pane_id: paneID, cleared };
+    };
+
     return {
         async run(command, payload) {
             if (command === 'shell-action') return shellAction(payload);
@@ -947,6 +990,7 @@ export function createDesktopChannel(options: DesktopChannelOptions): DesktopCha
             if (command === 'probe-terminal-target') return openTerminalTarget(payload, true);
             if (command === 'paste-image') return pasteImage(payload);
             if (command === 'drop-text') return dropText(payload);
+            if (command === 'clear-screen') return clearScreen(payload);
             return markdownExternalEditor(payload);
         }
     };

@@ -106,6 +106,9 @@ export const DEFAULT_KEYBIND_LINES: readonly string[] = [
     'super+backspace=kill_line_backward',
     'super+left=move_to_line_start',
     'super+right=move_to_line_end',
+    // Ghostty's macOS default (`src/config/Config.zig`, darwin branch of `Keybinds.init`:
+    // super+k -> clear_screen).
+    'super+k=clear_screen',
     'shift+super+space=cycle_layout',
     'super+p=command_palette',
     'shift+super+n=create_scratchpad',

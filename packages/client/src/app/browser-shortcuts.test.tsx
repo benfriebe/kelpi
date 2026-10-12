@@ -39,9 +39,9 @@ const host = (bindings: string[] = []): TerminalShortcutHost => ({ bindings: cli
 describe('browser shortcuts in replaceable chrome', () => {
     it('combines browser priority and configured actions without claiming ordinary HTML editing', () => {
         const h = host(['super+shift+j=web_back', 'super+y=copy', 'super+shift+x=close_pane']);
-        const chords = browserShortcutChords(h, ['8/Comma', '8/KeyC', '8/KeyV', '8/Backspace', '8/KeyY']);
+        const chords = browserShortcutChords(h, ['8/Comma', '8/KeyC', '8/KeyV', '8/Backspace', '8/KeyY', '8/KeyK']);
         expect(chords).toEqual(expect.arrayContaining(['8/KeyL', '8/KeyR', '8/ArrowLeft', '8/ArrowRight', '8/KeyT', '8/KeyW', '12/BracketLeft', '12/BracketRight', '8/Equal', '12/Equal', '8/Minus', '8/Digit0', '8/KeyF', '12/KeyJ', '12/KeyX', '8/Comma']));
-        for (const chord of ['8/KeyC', '8/KeyV', '8/Backspace', '8/KeyY']) expect(chords).not.toContain(chord);
+        for (const chord of ['8/KeyC', '8/KeyV', '8/Backspace', '8/KeyY', '8/KeyK']) expect(chords).not.toContain(chord);
         expect(browserShortcutChords({ ...h, globalHotkey: parseKeyTrigger('super+r') })).not.toContain('8/KeyR');
         expect(browserShortcutChords({ ...h, windowChords: ['8/Comma'] })).toContain('8/Comma');
     });

@@ -234,10 +234,22 @@ interface XtermBufferLine {
     copyCellsFrom?: (src: XtermBufferLine, srcCol: number, destCol: number, length: number, applyInReverse: boolean) => void;
     /** `CELL_WORDS` words per cell: content (codepoint + combined flag + width), fg, bg. */
     readonly _data?: Uint32Array;
+    /** This row continues the one above it. */
+    isWrapped?: boolean;
 }
 interface XtermBuffer {
-    lines?: { length: number; get: (index: number) => XtermBufferLine | undefined };
+    lines?: {
+        length: number;
+        get: (index: number) => XtermBufferLine | undefined;
+        trimStart?: (count: number) => void;
+        push?: (line: XtermBufferLine) => void;
+    };
     getNullCell?: () => unknown;
+    getBlankLine?: () => XtermBufferLine;
+    /** The cursor's row is `lines[ybase + y]`; `ydisp` is the first row a viewport shows. */
+    ybase?: number;
+    ydisp?: number;
+    y?: number;
 }
 interface XtermCore {
     _bufferService?: { buffers?: { normal?: XtermBuffer; alt?: XtermBuffer } };
@@ -448,6 +460,48 @@ function trimStrandedCells(term: HeadlessTerminal, cols: number): void {
             blankHalfGlyph(line, cols, fill);
         })
     );
+}
+
+/**
+ * Ghostty's `clear_screen` on the normal screen (`src/termio/Termio.zig` `clearScreen`, the branch
+ * for a cursor that is not at a marked prompt, which is every cursor here: this emulator keeps no
+ * prompt marks). The scrollback and every row above the cursor are REMOVED, so the cursor's row
+ * becomes the top of the screen and the rows under it follow it up.
+ *
+ * xterm's own `clear()` differs in one way that matters: it keeps the cursor's row and nothing
+ * else, which blanks whatever a program has drawn beneath its cursor (the lower half of an agent's
+ * input box, a completion menu) until that program repaints, and a program that diffs against its
+ * own last frame never does. So the rows are removed here instead, through the same fields
+ * `clear()` writes. `trimStart` is what scrollback eviction calls, so markers on the removed rows
+ * are disposed and the rest move up with their lines.
+ *
+ * Private API: a shape that does not answer falls back to `clear()`, which is still a clear.
+ */
+function clearAboveCursor(term: HeadlessTerminal): void {
+    const buffer = (term as unknown as { _core?: XtermCore })._core?._bufferService?.buffers?.normal;
+    const lines = buffer?.lines;
+    if (
+        buffer === undefined ||
+        lines === undefined ||
+        typeof lines.trimStart !== 'function' ||
+        typeof lines.push !== 'function' ||
+        typeof buffer.getBlankLine !== 'function' ||
+        typeof buffer.ybase !== 'number' ||
+        typeof buffer.y !== 'number'
+    ) {
+        term.clear();
+        return;
+    }
+    const above = buffer.ybase + buffer.y;
+    if (above <= 0) return;
+    lines.trimStart(above);
+    while (lines.length < term.rows) lines.push(buffer.getBlankLine());
+    // The row it continued is gone, so it starts a line now.
+    const top = lines.get(0);
+    if (top !== undefined) top.isWrapped = false;
+    buffer.ybase = 0;
+    buffer.ydisp = 0;
+    buffer.y = 0;
 }
 
 export interface TerminalStateOptions {
@@ -707,8 +761,8 @@ function sanitizeRows(value: number, fallback: number): number {
  * `TerminalStateService` backed by `@xterm/headless` + `@xterm/addon-serialize`.
  *
  * Widenings over the seam (all additive): `captureAsync`, `snapshotAsync`, `modesAsync`,
- * `flush`, `has`, `gridSize`, `paneIDs`, `ringTail`, `disposeAll`, and `feed()` also
- * accepting a string.
+ * `flush`, `has`, `gridSize`, `paneIDs`, `ringTail`, `clearScreenAsync`, `disposeAll`, and
+ * `feed()` also accepting a string.
  */
 export class TerminalStateServiceImpl implements TerminalStateService {
     private readonly panes = new Map<string, PaneTerminal>();
@@ -1312,6 +1366,27 @@ export class TerminalStateServiceImpl implements TerminalStateService {
     ): Promise<TerminalMatch[]> {
         await this.flush(paneID);
         return this.search(paneID, needle, options);
+    }
+
+    /**
+     * Empty the pane's screen and scrollback, as Ghostty's `clear_screen` does (terminal-surface.md
+     * section 10.4). Everything fed so far is parsed first, so the clear lands after the output the
+     * user was looking at when they asked for it.
+     *
+     * False when nothing was cleared: an unknown pane, or one on the ALTERNATE screen. A
+     * full-screen program owns that screen and knows where it left its cursor; clearing underneath
+     * it only makes it draw in the wrong place, which is why Ghostty does nothing there either.
+     *
+     * The caller re-seeds the pane's attached clients afterwards (`ws/streams.ts` `reseed`): their
+     * engines parsed the same bytes and still hold the history this just dropped.
+     */
+    async clearScreenAsync(paneID: string): Promise<boolean> {
+        await this.flush(paneID);
+        const entry = this.panes.get(paneID);
+        if (!entry || entry.disposed) return false;
+        if (entry.term.buffer.active.type === 'alternate') return false;
+        clearAboveCursor(entry.term);
+        return true;
     }
 
     /** Grid the daemon believes the pane has (authoritative cols×rows for PTY sizing). */

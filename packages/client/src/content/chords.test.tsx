@@ -70,6 +70,8 @@ describe('chordKey', () => {
         expect(claimed).not.toContain('8/KeyC');
         expect(claimed).not.toContain('8/KeyV');
         expect(claimed).not.toContain('8/KeyA');
+        // Bound (`clear_screen`), but a terminal action a preview frame must keep for itself.
+        expect(claimed).not.toContain('8/KeyK');
     });
 
     it('covers both physical keys a trigger can arrive from', () => {

@@ -1162,6 +1162,89 @@ describe('settled-resize resync', () => {
  * (`ws/sync.ts:2095` passes the measured size only `if (this.ownsSize())`, and `:1541` applies a
  * `resize-pane` only for the owner), so that is how the viewer is driven here.
  */
+describe('reseed', () => {
+    const replays = (frames: Uint8Array[], paneID: string): string[] =>
+        frames
+            .map((frame) => decodePtyFrame(frame))
+            .filter((frame) => frame !== undefined && frame.type === PTY_FRAME_TYPES.replay && frame.paneID === paneID)
+            .map((frame) => textOf((frame as { payload: Uint8Array }).payload));
+
+    it('replays the current snapshot to every client attached to the pane', async () => {
+        const h = harness();
+        const secondTransport = recordingTransport();
+        const second = h.hub.createSession(secondTransport);
+        await h.session.attach(PANE_A, { cols: 80, rows: 24 });
+        await second.attach(PANE_A, { cols: 80, rows: 24 });
+        h.term.setSnapshot(PANE_A, 'cleared');
+
+        h.hub.reseed(PANE_A);
+        await settle();
+
+        expect(replays(h.transport.frames, PANE_A)).toEqual(['', 'cleared']);
+        expect(replays(secondTransport.frames, PANE_A)).toEqual(['', 'cleared']);
+    });
+
+    it('states the grid ahead of the replay, as every replay does', async () => {
+        const h = harness();
+        await h.session.attach(PANE_A, { cols: 80, rows: 24 });
+        h.term.setSnapshot(PANE_A, 'cleared');
+        const before = h.frames().length;
+
+        h.hub.reseed(PANE_A);
+        await settle();
+
+        expect(h.frames().slice(before).map((frame) => frame.type)).toEqual([
+            PTY_FRAME_TYPES.replayGrid,
+            PTY_FRAME_TYPES.replay
+        ]);
+    });
+
+    it('goes back to live output afterwards', async () => {
+        const h = harness();
+        await h.session.attach(PANE_A, { cols: 80, rows: 24 });
+
+        h.hub.reseed(PANE_A);
+        await settle();
+        h.pty.emit(PANE_A, bytes('after'));
+
+        expect(h.frames().at(-1)).toEqual({ type: PTY_FRAME_TYPES.output, paneID: PANE_A, text: 'after' });
+    });
+
+    it('does not depend on the resize resync being switched on', async () => {
+        const h = harness({ resizeResyncMs: -1 });
+        await h.session.attach(PANE_A, { cols: 80, rows: 24 });
+        h.term.setSnapshot(PANE_A, 'cleared');
+
+        h.hub.reseed(PANE_A);
+        await settle();
+
+        expect(replays(h.transport.frames, PANE_A)).toEqual(['', 'cleared']);
+    });
+
+    it('sends nothing for a pane no client is attached to', async () => {
+        const h = harness();
+        await h.session.attach(PANE_A, { cols: 80, rows: 24 });
+        const before = h.frames().length;
+
+        h.hub.reseed(PANE_B);
+        await settle();
+
+        expect(h.frames()).toHaveLength(before);
+    });
+
+    it('sends nothing once the hub is closed', async () => {
+        const h = harness();
+        await h.session.attach(PANE_A, { cols: 80, rows: 24 });
+        const before = h.transport.frames.length;
+        h.hub.close();
+
+        h.hub.reseed(PANE_A);
+        await settle();
+
+        expect(h.transport.frames).toHaveLength(before);
+    });
+});
+
 describe('replay geometry (#166)', () => {
     const SETTLE = 40;
 

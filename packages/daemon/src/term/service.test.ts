@@ -423,3 +423,116 @@ describe('TerminalStateServiceImpl — raw ring buffer', () => {
         expect(service.capture('p', { scrollback: true }).split('\n')).toHaveLength(20);
     });
 });
+
+describe('TerminalStateServiceImpl — clear screen', () => {
+    const history = (count: number): string =>
+        Array.from({ length: count }, (_, index) => `line ${String(index + 1)}\r\n`).join('');
+
+    /** A screen of history with a prompt on its last row and the cursor after it. */
+    async function withPrompt(service: TerminalStateServiceImpl, paneID: string): Promise<void> {
+        service.attach(paneID, 30, 5);
+        await write(service, paneID, `${history(40)}$ `);
+    }
+
+    it('drops the scrollback and every row above the cursor', async () => {
+        const service = makeService();
+        await withPrompt(service, 'p');
+
+        expect(await service.clearScreenAsync('p')).toBe(true);
+
+        expect(service.capture('p', { scrollback: true })).toBe('$ ');
+    });
+
+    it('leaves the cursor on its row, now the first, at the same column', async () => {
+        const service = makeService();
+        await withPrompt(service, 'p');
+
+        await service.clearScreenAsync('p');
+        await write(service, 'p', 'ls');
+
+        expect(service.capture('p', { scrollback: false })).toBe('$ ls');
+    });
+
+    it('keeps what is drawn beneath the cursor, moved up with it', async () => {
+        const service = makeService();
+        service.attach('p', 30, 6);
+        // An input row with two rows of interface under it, and the cursor back on the input row.
+        await write(service, 'p', `${history(40)}> input\r\nborder\r\nhints\x1b[2A\x1b[8G`);
+
+        await service.clearScreenAsync('p');
+
+        expect(service.capture('p', { scrollback: true })).toBe('> input\nborder\nhints');
+    });
+
+    it('clears output that was fed but not yet parsed when the clear was asked for', async () => {
+        const service = makeService();
+        service.attach('p', 30, 5);
+        service.feed('p', encoder.encode(`${history(40)}$ `));
+
+        await service.clearScreenAsync('p');
+
+        expect(service.capture('p', { scrollback: true })).toBe('$ ');
+    });
+
+    it('scrolls and keeps history again for output after the clear', async () => {
+        const service = makeService();
+        await withPrompt(service, 'p');
+
+        await service.clearScreenAsync('p');
+        await write(service, 'p', `\r\n${history(8)}`);
+
+        expect(service.capture('p', { scrollback: true }).split('\n')).toEqual([
+            '$ ',
+            ...Array.from({ length: 8 }, (_, index) => `line ${String(index + 1)}`)
+        ]);
+        expect(service.capture('p', { scrollback: false }).split('\n')).toEqual([
+            'line 5',
+            'line 6',
+            'line 7',
+            'line 8'
+        ]);
+    });
+
+    it('snapshots as the cleared screen, which is what an attached client is re-seeded with', async () => {
+        const service = makeService();
+        await withPrompt(service, 'p');
+
+        await service.clearScreenAsync('p');
+        const snap = await service.snapshotAsync('p');
+        const replay = makeService();
+        replay.attach('r', snap.cols, snap.rows);
+        replay.feed('r', snap.data);
+        await replay.flush('r');
+        await write(replay, 'r', 'ls');
+
+        expect(replay.capture('r', { scrollback: true })).toBe('$ ls');
+    });
+
+    it('is a clear with nothing to do when the cursor is already on the first row', async () => {
+        const service = makeService();
+        service.attach('p', 30, 5);
+        await write(service, 'p', '$ ');
+
+        expect(await service.clearScreenAsync('p')).toBe(true);
+
+        expect(service.capture('p', { scrollback: true })).toBe('$ ');
+    });
+
+    it('does nothing on the alternate screen, to it or to the screen behind it', async () => {
+        const service = makeService();
+        await withPrompt(service, 'p');
+        await write(service, 'p', '\x1b[?1049h\x1b[2J\x1b[3;1HFULL SCREEN');
+
+        expect(await service.clearScreenAsync('p')).toBe(false);
+
+        expect(service.capture('p', { scrollback: false })).toBe('\n\nFULL SCREEN');
+        await write(service, 'p', '\x1b[?1049l');
+        expect(service.capture('p', { scrollback: true }).split('\n')).toHaveLength(41);
+    });
+
+    it('answers false for a pane it does not hold', async () => {
+        const service = makeService();
+
+        expect(await service.clearScreenAsync('gone')).toBe(false);
+    });
+});

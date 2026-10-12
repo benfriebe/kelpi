@@ -2480,6 +2480,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
                     ctx,
                     editor: editorResolver,
                     restartControl: restartControlServers,
+                    reseedPane: (paneID) => ws?.streams.reseed(paneID),
                     ...(onError !== undefined ? { onError } : {})
                 }),
                 // …and its graft toggle / swap prompt / orphan banner verbs.

@@ -209,6 +209,8 @@ describe('the set follows the config file', () => {
         expect(DEFAULTS.has('meta+KeyC')).toBe(false);
         expect(DEFAULTS.has('meta+KeyV')).toBe(false);
         expect(DEFAULTS.has('meta+Backspace')).toBe(false);
+        // ⌘K too: `clear_screen` binds it, and it is a page's command palette.
+        expect(DEFAULTS.has('meta+KeyK')).toBe(false);
         // ⌘← / ⌘→ ARE still claimed: the priority layer holds them as the browser's Back and
         // Forward, which #82 does not touch.
         expect(DEFAULTS.has('meta+ArrowLeft')).toBe(true);

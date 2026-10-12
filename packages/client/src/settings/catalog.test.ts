@@ -20,8 +20,8 @@ describe('the action catalog', () => {
         expect(new Set(catalogued).size).toBe(catalogued.length);
     });
 
-    it('is the 65 actions the spec counts', () => {
-        expect(ACTION_CATALOG).toHaveLength(65);
+    it('is the 66 actions the spec counts', () => {
+        expect(ACTION_CATALOG).toHaveLength(66);
     });
 
     it('lists the recent-workspace switcher under Workspaces', () => {
@@ -51,6 +51,7 @@ describe('the action catalog', () => {
             'kill_line_backward',
             'move_to_line_start',
             'move_to_line_end',
+            'clear_screen',
             'increase_terminal_font_size',
             'decrease_terminal_font_size',
             'reset_terminal_font_size'
@@ -58,6 +59,10 @@ describe('the action catalog', () => {
         expect(actionLabel('increase_terminal_font_size')).toBe('Increase Terminal Text Size');
         expect(actionLabel('decrease_terminal_font_size')).toBe('Decrease Terminal Text Size');
         expect(actionLabel('reset_terminal_font_size')).toBe('Reset Terminal Text Size');
+    });
+
+    it('labels the clear-screen action for Settings and the Help overlay', () => {
+        expect(actionLabel('clear_screen')).toBe('Clear Screen');
     });
 
     it('keeps §13.1’s fixed section order and excludes the web-pane category', () => {
@@ -78,7 +83,7 @@ describe('the action catalog', () => {
         const visible = VISIBLE_CATEGORIES.flatMap((category) => actionsInCategory(category));
         expect(visible.filter((action) => action.startsWith('web_'))).toEqual([]);
         expect(actionsInCategory('Web Pane')).toHaveLength(11);
-        expect(visible).toHaveLength(65 - 11);
+        expect(visible).toHaveLength(66 - 11);
     });
 
     it('uses §4’s display names, including the ones that are not the raw value', () => {

@@ -10,7 +10,7 @@ import { lastSelection } from '../terminal/selection-buffer';
 import { copySelection, deferredClipboardWriter } from './clipboard';
 import { LINE_EDIT_BYTES } from './line-editing';
 
-const EDITING_ACTIONS = new Set<KelpiAction>(['copy', 'paste', 'kill_line_backward', 'move_to_line_start', 'move_to_line_end']);
+const EDITING_ACTIONS = new Set<KelpiAction>(['copy', 'paste', 'kill_line_backward', 'move_to_line_start', 'move_to_line_end', 'clear_screen']);
 export interface TerminalShortcutHost {
     readonly bindings: KeyBindingMap;
     readonly windowChords?: readonly string[] | undefined;
@@ -166,6 +166,9 @@ export function dispatchTerminalEditingShortcut(event: KeyEventLike, options: {
             writeText: typeof clipboard?.writeText === 'function' ? text => clipboard.writeText(text) : null,
             writePendingText: deferredClipboardWriter(clipboard), onError: message => report('Copy', message) });
     } else if (action === 'paste') void pasteIntoOwner(runtime, paneID, clipboard).catch(error => report('Paste', error));
+    // Over the pane's own connection, like a paste: a remote host's pane is cleared on that host.
+    else if (action === 'clear_screen') void runtime.commands.clearScreen({ paneID })
+        .then(reply => { if (!isOkReply(reply)) throw new Error(replyError(reply)); }).catch(error => report('Clear Screen', error));
     else { const bytes = LINE_EDIT_BYTES[action]; if (bytes !== undefined) handle.write(bytes); }
     return true;
 }

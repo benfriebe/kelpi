@@ -349,7 +349,7 @@ interface KeyTrigger {
   modifiers: ModSet;    // set of "super" | "shift" | "alt" | "ctrl"
 }
 
-type KelpiActionId = string;  // one of the 65 raw values in section 4, or "unbind"
+type KelpiActionId = string;  // one of the 66 raw values in section 4, or "unbind"
 
 // trigger -> action dictionary. One action per trigger; an action may own
 // multiple triggers.
@@ -540,7 +540,7 @@ is platform-independent and always spells what the user wrote.
 
 ## 4. KelpiAction: the complete action list
 
-65 bindable actions + the pseudo-action `unbind` (config-file only; removes a default
+66 bindable actions + the pseudo-action `unbind` (config-file only; removes a default
 trigger, never appears in UI lists). `KELPI_ACTIONS` and `MENU_BAR_ACTIONS` in
 `packages/core/src/config/actions.ts`; the handlers are the `keyActions` table in
 `packages/client/src/App.tsx`.
@@ -658,6 +658,7 @@ fixed. ⌃C is the interrupt and is untouched.
 | `kill_line_backward` | Delete to Line Start | ⌘⌫ | monitor | writes `0x15` (⌃U) to the focused terminal pane; falls through when the focused pane has no terminal renderer |
 | `move_to_line_start` | Move to Line Start | ⌘← | monitor | writes `0x01` (⌃A); same condition |
 | `move_to_line_end` | Move to Line End | ⌘→ | monitor | writes `0x05` (⌃E); same condition |
+| `clear_screen` | Clear Screen | ⌘K | monitor | empties the focused terminal pane's screen and scrollback, on the daemon and in every window showing the pane (terminal-surface.md section 10.4); falls through when the focused pane has no terminal renderer |
 | `increase_terminal_font_size` | Increase Terminal Text Size | ⌘= and ⌘⇧= (one chord, two spellings; the keypad's `+` too) | monitor | under `font-size-scope = pane` (the default), steps the FOCUSED terminal pane's own size up one point, clamped to 32, and falls through when the focused pane is not a terminal; under `all`, steps the DAEMON-WIDE ghostty `font-size` up by the Appearance row's own step, clamped to its maximum. A focused markdown preview gets its own font size instead either way (section 7.6) |
 | `decrease_terminal_font_size` | Decrease Terminal Text Size | ⌘- (the keypad's `-` too) | monitor | the same, down, clamped to 8 |
 | `reset_terminal_font_size` | Reset Terminal Text Size | ⌘0 (the keypad's `0` too) | monitor | `pane`: drops the focused pane's own size, so it follows the Font size row again; `all`: writes the Appearance row's shipped default (13) |
@@ -693,6 +694,18 @@ Inside a **content pane's preview frame** they stay with the frame for the same 
 
 Risk, stated: a user whose shell rebinds ⌃U sees that binding fire on ⌘⌫. That is exactly what
 Ghostty and iTerm users see.
+
+**`clear_screen` is Ghostty's macOS default as well** (`src/config/Config.zig`, the same darwin
+branch: `super+k` -> `clear_screen`). The pre-port app never listed it, because libghostty owned
+the chord; this table is the only one Kelpi has, so an action absent from it is a chord that
+reaches the terminal as a keystroke, and the legacy encoder drops super: ⌘K typed a `k`. It is a
+named action for the reason the three above are, and it is a daemon command rather than terminal
+bytes because the history it empties is the daemon's (terminal-surface.md section 10.4). `unbind`
+gives the chord back to the terminal.
+
+Inside a **web pane** and a **content pane's preview frame** ⌘K stays with the page, through the
+same two sets (`PAGE_OWNED_ACTIONS`, `FRAME_UNCLAIMED_ACTIONS`): it is the usual chord for a
+page's own command palette, and the action declines for a pane with no terminal anyway.
 
 ### Category "Web Pane (active when web pane focused)" (HIDDEN from Settings)
 
@@ -754,7 +767,7 @@ One trigger maps to at most one action. One action may own any number of trigger
 (defaults give `focus_next_pane`/`focus_previous_pane` two each, and
 `increase_terminal_font_size` two that are one chord in two spellings, section 7.6).
 
-### 5.2 The default map (49 triggers)
+### 5.2 The default map (50 triggers)
 
 Exactly the defaults listed in section 4's tables. (`super` here is the primary chord
 modifier — ⌘ on macOS, Ctrl on Windows/Linux; §3.5.)
@@ -780,7 +793,7 @@ shift+super+g=new_group
 ctrl+shift+left=move_pane_left       ctrl+shift+right=move_pane_right
 ctrl+shift+down=move_pane_down       ctrl+shift+up=move_pane_up
 super+c=copy                         super+v=paste
-super+backspace=kill_line_backward
+super+backspace=kill_line_backward   super+k=clear_screen
 super+left=move_to_line_start        super+right=move_to_line_end
 ```
 
@@ -1939,7 +1952,7 @@ lives now:
    state never enter a trigger, and the exact remaining modifier set is compared
    (section 3.1).
 4. **Two dispatch layers collapse into one** in the client (a browser tab has no OS menu
-   bar). All 65 actions go through a single keydown interceptor, and three behaviors of the
+   bar). All 66 actions go through a single keydown interceptor, and three behaviors of the
    original split survive: (a) shortcuts do not fire while a modal/palette/secondary
    surface has focus (the one exception is the `close_pane` chord, which closes the
    overlay, section 7.2); (b) conditional actions FALL THROUGH to the terminal when their
@@ -2000,9 +2013,9 @@ lives now:
     differing from default), reset-all, and the profiles master-detail editor with the
     locked `KELPI_PROFILE` row, `:`/`=` input stripping, reserved `default` name, and
     write-through (on blur, Enter and structural change) against the config file.
-14. **Count sanity for tests**: 66 enum cases total; 65 bindable (excludes `unbind`);
+14. **Count sanity for tests**: 67 enum cases total; 66 bindable (excludes `unbind`);
     19 ship unbound (`open_diff`, `toggle_sync_input`, the three `*_markdown_font_size`,
-    the three single-band toggles, 11 `web_*`); the default map has exactly 49 trigger
-    entries (46 distinct actions bound; focus next/prev and `increase_terminal_font_size`
-    own two triggers each). The Settings table shows 54 actions (65 minus the 11 hidden web
+    the three single-band toggles, 11 `web_*`); the default map has exactly 50 trigger
+    entries (47 distinct actions bound; focus next/prev and `increase_terminal_font_size`
+    own two triggers each). The Settings table shows 55 actions (66 minus the 11 hidden web
     actions).

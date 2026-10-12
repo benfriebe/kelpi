@@ -29,7 +29,8 @@ function fixture() {
     disposals.push(() => runtime.dispose(), registerTerminalPane(paneID, handle));
     const dropText = vi.spyOn(runtime.commands, 'dropText').mockResolvedValue({ ok: true });
     const pasteImage = vi.spyOn(runtime.commands, 'pasteImage').mockResolvedValue({ ok: true });
-    return { runtime, paneID, workspaceID, handle, readSelection, write, dispatchKey, focusedOnScreen, dropText, pasteImage };
+    const clearScreen = vi.spyOn(runtime.commands, 'clearScreen').mockResolvedValue({ ok: true });
+    return { runtime, paneID, workspaceID, handle, readSelection, write, dispatchKey, focusedOnScreen, dropText, pasteImage, clearScreen };
 }
 const event = (code: string, metaKey = true) => ({ code, metaKey, ctrlKey: !metaKey, altKey: false, shiftKey: false });
 const host = (): TerminalShortcutHost => ({ bindings: clientKeyBindings([], true), onError: vi.fn() });
@@ -123,7 +124,7 @@ describe('terminal editing shortcuts across daemon owners', () => {
 
     it('adds the terminal editing map without importing other pane commands into a remote relay', () => {
         const h = host();
-        expect(terminalShortcutChords(h)).toEqual(['8/ArrowLeft', '8/ArrowRight', '8/Backspace', '8/KeyC', '8/KeyV']);
+        expect(terminalShortcutChords(h)).toEqual(['8/ArrowLeft', '8/ArrowRight', '8/Backspace', '8/KeyC', '8/KeyK', '8/KeyV']);
         expect(terminalShortcutChords(h, ['8/KeyD', '8/KeyP'])).toEqual(expect.arrayContaining(['8/KeyC', '8/KeyV', '8/KeyD', '8/KeyP']));
         expect(terminalShortcutChords({ ...h, windowChords: ['8/Comma'] })).toContain('8/Comma');
         expect(terminalShortcutChords({ bindings: clientKeyBindings([], false) })).toContain('1/KeyC');
@@ -154,6 +155,25 @@ describe('terminal editing shortcuts across daemon owners', () => {
         expect(remote.write.mock.calls).toEqual([['\x15'], ['\x01'], ['\x05']]); expect(primary.write).not.toHaveBeenCalled();
         for (const code of ['KeyD', 'KeyP', 'Comma']) expect(dispatchTerminalEditingShortcut(event(code), target)).toBe(false);
         expect(remote.dropText).not.toHaveBeenCalled();
+    });
+
+    it('clears the exact remote pane over its own connection, writing no bytes to any PTY', () => {
+        const primary = fixture(), remote = fixture(), h = host();
+
+        expect(dispatchTerminalEditingShortcut(event('KeyK'), { runtime: remote.runtime, paneID: remote.paneID, visible: true, host: h })).toBe(true);
+
+        expect(remote.clearScreen).toHaveBeenCalledExactlyOnceWith({ paneID: remote.paneID });
+        expect(primary.clearScreen).not.toHaveBeenCalled();
+        expect(remote.write).not.toHaveBeenCalled();
+    });
+
+    it("reports the owning daemon's refusal of a clear", async () => {
+        const remote = fixture(), h = host();
+        remote.clearScreen.mockResolvedValue({ ok: false, error: 'remote refused the clear' });
+
+        dispatchTerminalEditingShortcut(event('KeyK'), { runtime: remote.runtime, paneID: remote.paneID, visible: true, host: h });
+
+        await vi.waitFor(() => expect(h.onError).toHaveBeenCalledExactlyOnceWith('Clear Screen', 'remote refused the clear'));
     });
 
     it('supports external-editor terminals but refuses a pane from another runtime or a returned document body', () => {

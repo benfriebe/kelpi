@@ -169,6 +169,13 @@ export interface PaneStreamHub {
      * not rendering the pane has nothing to encode against and does not need the traffic.
      */
     modesChanged(paneID: string, modes: VtModes): void;
+    /**
+     * The pane's buffer was changed by something other than its own output (a cleared screen):
+     * hand every client attached to it a fresh snapshot, with the same replay/live handover as a
+     * settled resize. Each client's engine parsed the same bytes this side did and still holds
+     * what was just dropped; nothing in the output stream will ever tell it otherwise.
+     */
+    reseed(paneID: string): void;
     close(): void;
 }
 
@@ -942,6 +949,12 @@ export function createPaneStreamHub(options: PaneStreamHubOptions): PaneStreamHu
         modesChanged(paneID, modes) {
             if (closed) return;
             for (const session of sessions) session.sendModes(paneID, modes);
+        },
+        reseed(paneID) {
+            if (closed) return;
+            // A new request, so a new post-failure retry (see `resyncRetried`).
+            resyncRetried.delete(paneID);
+            void resyncPane(paneID);
         },
         close() {
             if (closed) return;

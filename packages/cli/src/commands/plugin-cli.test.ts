@@ -1,17 +1,25 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-/** Every request sent to the daemon, and the canned replies handed back in order (null: unreachable). */
-const sent = vi.hoisted(() => [] as { payload: Record<string, unknown>; timeoutSeconds: number | undefined }[]);
+/**
+ * Every request sent to the daemon, with the `KELPI_ROUTE_RETRY_MS` in force when it was sent,
+ * and the canned replies handed back in order (null: unreachable).
+ */
+const sent = vi.hoisted(
+    () => [] as { payload: Record<string, unknown>; timeoutSeconds: number | undefined; routeRetryMs: string | undefined }[]
+);
 const replies = vi.hoisted(() => [] as (string | null)[]);
-vi.mock('../transport.js', async (original) => ({
-    ...(await original<object>()),
-    sendJSONAndReadReply: (payload: Record<string, unknown>, options: { timeoutSeconds?: number } = {}) => {
-        sent.push({ payload, timeoutSeconds: options.timeoutSeconds });
-        return Promise.resolve(replies.length > 0 ? replies.shift() : null);
-    }
-}));
+vi.mock('../transport.js', async (original) => {
+    const { env } = await import('../env.js');
+    return {
+        ...(await original<object>()),
+        sendJSONAndReadReply: (payload: Record<string, unknown>, options: { timeoutSeconds?: number } = {}) => {
+            sent.push({ payload, timeoutSeconds: options.timeoutSeconds, routeRetryMs: env()['KELPI_ROUTE_RETRY_MS'] });
+            return Promise.resolve(replies.length > 0 ? replies.shift() : null);
+        }
+    };
+});
 
-import { setEnv } from '../env.js';
+import { env, setEnv } from '../env.js';
 import { resetIO, setIO } from '../io.js';
 import { globalUsage, pluginVerbsUsage } from '../usage.js';
 import { handlePluginVerb, pluginVerbsHelp, splitJsonSwitch } from './plugin-cli.js';
@@ -137,6 +145,12 @@ describe('kelpi <plugin verb>', () => {
         expect(err.endsWith(globalUsage)).toBe(true);
     });
 
+    it('should keep the pane-route retry for a verb, like a built-in command', async () => {
+        answer({ ok: true, result: {} });
+        await expect(handlePluginVerb('hello', [])).rejects.toMatchObject({ code: 0 });
+        expect(sent[0]?.routeRetryMs).toBeUndefined();
+    });
+
     it('should treat a daemon from before plugin verbs as having none', async () => {
         answer({ ok: false, error: 'missing or invalid pluginID' });
         await expect(handlePluginVerb('frobnicate', [])).rejects.toMatchObject({ code: 1 });
@@ -175,6 +189,15 @@ describe('kelpi --help plugin block', () => {
         );
         expect(sent[0]?.payload).toEqual({ command: 'plugin', action: 'cli-list', text: '{}' });
         expect(sent[0]?.timeoutSeconds).toBe(2);
+    });
+
+    it('should turn the pane-route retry off for the help request only, unless it is set explicitly', async () => {
+        await pluginVerbsHelp();
+        expect(sent[0]?.routeRetryMs).toBe('0');
+        expect(env()['KELPI_ROUTE_RETRY_MS']).toBeUndefined();
+        setEnv({ KELPI_PANE_ID: 'PANE-1', KELPI_ROUTE_RETRY_MS: '3000' });
+        await pluginVerbsHelp();
+        expect(sent[1]?.routeRetryMs).toBe('3000');
     });
 
     it('should render one verb as kelpi <name>, two spaces, then its summary', () => {

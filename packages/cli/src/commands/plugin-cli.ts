@@ -12,9 +12,10 @@
  *   - a word no plugin declares prints `Unknown command: <x>` then the usage block, exit 1, so
  *     the first stderr line is still the one harnesses read a misspelled invocation from.
  *
- * Neither request waits out the pane-route retry (transport.ts `ROUTE_RETRY_WINDOW_MS`): with
- * no daemon up, an unknown word or `kelpi --help` in a pane answers at once instead of after
- * five seconds.
+ * Running a verb keeps the pane-route retry (transport.ts `ROUTE_RETRY_WINDOW_MS`) like any
+ * built-in command, so a verb run in a pane while the daemon restarts waits for it to come back.
+ * Only the `cli-list` request behind `kelpi --help` skips it: with no daemon up, help in a pane
+ * answers at once instead of after five seconds.
  */
 
 import { env, originPaneID, setEnv } from '../env.js';
@@ -50,11 +51,16 @@ export function splitJsonSwitch(args: readonly string[]): { argv: string[]; json
     return { argv: [...kept, ...args.slice(head.length)], json: kept.length !== head.length };
 }
 
-async function pluginRequest(action: string, input: JsonObject, timeoutSeconds: number): Promise<string | null> {
+function pluginRequest(action: string, input: JsonObject, timeoutSeconds: number): Promise<string | null> {
+    return sendJSONAndReadReply({ command: 'plugin', action, text: JSON.stringify(input) }, { timeoutSeconds });
+}
+
+/** `request` with the pane-route retry off, unless `KELPI_ROUTE_RETRY_MS` is set explicitly. */
+async function withoutRouteRetry<T>(request: () => Promise<T>): Promise<T> {
     const saved = env();
     if (saved['KELPI_ROUTE_RETRY_MS'] === undefined) setEnv({ ...saved, KELPI_ROUTE_RETRY_MS: '0' });
     try {
-        return await sendJSONAndReadReply({ command: 'plugin', action, text: JSON.stringify(input) }, { timeoutSeconds });
+        return await request();
     } finally {
         setEnv(saved);
     }
@@ -121,7 +127,7 @@ export async function handlePluginVerb(verb: string, args: readonly string[]): P
  * show: no plugin verbs, no daemon, a daemon too old to answer, or no answer within 2 s.
  */
 export async function pluginVerbsHelp(): Promise<string> {
-    const data = await pluginRequest('cli-list', {}, HELP_TIMEOUT_SECONDS);
+    const data = await withoutRouteRetry(() => pluginRequest('cli-list', {}, HELP_TIMEOUT_SECONDS));
     const reply = data === null ? null : parseJsonObject(data);
     if (reply === null || reply['ok'] !== true) return '';
     const verbs = asObjectArray(objectOf(reply['result'])?.['verbs']).flatMap((entry): PluginVerbListing[] => {

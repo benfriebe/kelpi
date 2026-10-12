@@ -2493,9 +2493,9 @@ kelpi <verb> [--json] [argv...]
   usual `no response from Kelpi` or `invalid JSON response`, attributed to `kelpi <verb>`.
 - **No daemon.** When no daemon can be reached, the word cannot be resolved: the CLI prints
   `Unknown command: <verb>`, then one line saying plugin verbs need a running Kelpi daemon,
-  then the usage block, exit 1. These requests skip the pane-route retry
-  (`KELPI_ROUTE_RETRY_MS`, unless it is set explicitly), so this answers at once inside a pane
-  too.
+  then the usage block, exit 1. Inside a pane the request first waits out the pane-route retry
+  (`KELPI_ROUTE_RETRY_MS`), like any built-in command, so a verb run while the daemon restarts
+  reaches the new one.
 - **Help.** `kelpi --help` prints the usage block, then asks the daemon for `cli-list` and
   appends a block, on stderr like the rest:
 
@@ -2509,7 +2509,9 @@ kelpi <verb> [--json] [argv...]
   Verbs are grouped under their plugin's name, sorted, with summaries aligned and
   `(disabled)` after a verb whose plugin is disabled (running it fails as above). There is no
   block when no plugin declares a verb, when no daemon answers, on any error, or when the
-  answer takes longer than 2 seconds. The exit code stays 0. A bare `kelpi` with no arguments
+  answer takes longer than 2 seconds. This request skips the pane-route retry (unless
+  `KELPI_ROUTE_RETRY_MS` is set explicitly), so help answers at once inside a pane with no
+  daemon. The exit code stays 0. A bare `kelpi` with no arguments
   prints only the usage block.
 
 There is no standard input and no interactive prompt: a verb that needs a confirmation takes a

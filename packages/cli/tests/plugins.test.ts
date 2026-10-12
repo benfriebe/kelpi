@@ -196,10 +196,10 @@ describe('plugin CLI verbs through the bundled CLI', () => {
         expect((await runCLI(['plugin', 'help'], { port: server.port, cwd: home })).code).toBe(0);
         expect(server.requests).toHaveLength(0);
     });
-    it('answers at once that plugin verbs need a daemon when none is listening, even from a pane', async () => {
+    it('waits out the pane-route retry, then says plugin verbs need a daemon when none is listening', async () => {
         const started = Date.now();
-        const result = await runCLI(['frobnicate'], { port: await deadPort(), cwd: home, paneID: 'PANE-1' });
-        expect(Date.now() - started).toBeLessThan(4000);
+        const result = await runCLI(['frobnicate'], { port: await deadPort(), cwd: home, paneID: 'PANE-1', env: { KELPI_ROUTE_RETRY_MS: '1000' } });
+        expect(Date.now() - started).toBeGreaterThanOrEqual(1000); expect(Date.now() - started).toBeLessThan(10_000);
         expect(result.code).toBe(1);
         const lines = result.stderr.split('\n');
         expect(lines[0]).toBe('Unknown command: frobnicate'); expect(lines[1]).toMatch(/^Plugin verbs need a running Kelpi daemon/); expect(lines[2]).toBe('Usage:');
@@ -217,7 +217,9 @@ describe('plugin CLI verbs through the bundled CLI', () => {
         server.respond(() => ({ lines: [{ ok: true, result: { verbs: [] } }] }));
         const empty = await runCLI(['--help'], { port: server.port, cwd: home });
         expect(empty.code).toBe(0); expect(empty.stderr).toContain('Usage:'); expect(empty.stderr).not.toContain('Plugin commands:');
+        const offlineStarted = Date.now();
         const offline = await runCLI(['--help'], { port: await deadPort(), cwd: home, paneID: 'PANE-1' });
+        expect(Date.now() - offlineStarted).toBeLessThan(4000);
         expect(offline.code).toBe(0); expect(offline.stderr).toContain('Usage:'); expect(offline.stderr).not.toContain('Plugin commands:');
         server.respond(() => ({ keepOpen: true }));
         const started = Date.now();

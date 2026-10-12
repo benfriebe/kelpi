@@ -417,7 +417,7 @@ export function decodePluginManifest(raw: unknown): PluginManifest {
         if (cliNames.has(name)) throw new Error(`duplicate plugin cli verb ${name}`);
         cliNames.add(name);
         const summary = pluginContributionText(verb['summary'], 'cli verb summary', 120);
-        if (/[\u0000-\u001f\u007f]/.test(summary)) throw new Error('invalid plugin cli verb summary');
+        if (/[\u0000-\u001f\u007f-\u009f]/.test(summary)) throw new Error('invalid plugin cli verb summary');
         return { name, command: commandReference(verb['command']), summary };
     });
     const menus = array(contributes['menus']).map((raw): PluginMenuDefinition => {

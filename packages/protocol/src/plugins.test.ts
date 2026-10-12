@@ -132,7 +132,7 @@ describe('public plugin protocol', () => {
             expect(() => decodePluginManifest(withCli([hello], []))).toThrow('plugin UI command must be owned and declared');
             const { summary: _summary, ...unsummarised } = hello;
             for (const verb of [unsummarised, { ...hello, summary: '' }, { ...hello, summary: '   ' }, { ...hello, summary: 'x'.repeat(121) }, { ...hello, summary: 'two\nlines' },
-                { ...hello, summary: 'clear\u001b[2J' }, { ...hello, summary: 'tab\there' }, { ...hello, summary: 'nul\u0000' }, { ...hello, summary: 'del\u007f' }]) {
+                { ...hello, summary: 'clear\u001b[2J' }, { ...hello, summary: 'tab\there' }, { ...hello, summary: 'nul\u0000' }, { ...hello, summary: 'del\u007f' }, { ...hello, summary: 'csi\u009b2J' }, { ...hello, summary: 'nel\u0085' }]) {
                 expect(() => decodePluginManifest(withCli([verb]))).toThrow('invalid plugin cli verb summary');
             }
             expect(decodePluginManifest(withCli([{ ...hello, summary: 'x'.repeat(120) }])).contributes.cli?.[0]?.summary).toHaveLength(120);

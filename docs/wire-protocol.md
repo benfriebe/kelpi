@@ -27,6 +27,8 @@ The `text` field contains an encoded JSON object. One-shot operations return
 starts with `{ok, epoch, sequence, state}` and then sends `{ok, event}` lines; disconnect
 releases its subscription. The CLI prints one-shot `result` values and retains the watch
 envelopes unchanged.
+A plugin's own `kelpi <verb>` uses the `cli-list` and `cli` actions of this envelope
+([CLI verbs](plugins.md#cli-verbs)); it adds no wire verb.
 
 `plugin init`, `validate` and `pack` run locally without a daemon request. `plugin dev`
 validates local snapshots and uses identity-guarded `dev-install` requests. Installation

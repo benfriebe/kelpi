@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { runCLI, scratchHome, startFakeServer, type FakeServer } from './harness.js';
+import { deadPort, runCLI, scratchHome, startFakeServer, type FakeServer } from './harness.js';
 
 let server: FakeServer, home: string;
 beforeEach(async () => { server = await startFakeServer(); home = scratchHome(); });
@@ -154,5 +154,75 @@ describe('bundled plugin CLI', () => {
         expect(result.code).toBe(130);
         expect(result.stdout.trim().split('\n').map(line => JSON.parse(line))).toHaveLength(2);
         await vi.waitFor(() => expect(server.open).toHaveLength(0));
+    });
+});
+
+describe('plugin CLI verbs through the bundled CLI', () => {
+    const verbs = [{ name: 'hello', summary: 'Say hello', command: 'lab.hello', pluginID: 'lab.service', pluginName: 'Service Lab', enabled: true },
+        { name: 'shout', summary: 'Say it louder', command: 'lab.shout', pluginID: 'lab.service', pluginName: 'Service Lab', enabled: false }];
+    it('runs a verb with its argv, cwd and caller pane in one request, printing text and exiting with its exitCode', async () => {
+        server.respond(() => ({ lines: [{ ok: true, result: { text: 'hello a b', exitCode: 3 } }] }));
+        const result = await runCLI(['hello', 'a', 'b'], { port: server.port, cwd: home, paneID: 'PANE-1' });
+        expect(result.code).toBe(3); expect(result.stdout).toBe('hello a b\n'); expect(result.stderr).toBe('');
+        expect(server.requests).toHaveLength(1); expect(server.requests[0]).toMatchObject({ command: 'plugin', action: 'cli' });
+        expect(JSON.parse(String(server.requests[0]?.['text']))).toEqual({ verb: 'hello', argv: ['a', 'b'], cwd: home, isTTY: false, json: false, paneID: 'PANE-1' });
+        server.respond(() => ({ lines: [{ ok: true, result: { text: 'quiet', stderr: 'careful' } }] }));
+        const plain = await runCLI(['hello'], { port: server.port, cwd: home });
+        expect(plain.code).toBe(0); expect(plain.stdout).toBe('quiet\n'); expect(plain.stderr).toBe('careful\n');
+        expect(JSON.parse(String(server.requests[1]?.['text']))).not.toHaveProperty('paneID');
+    });
+    it('pops --json before -- and prints the json result, or the text wrapped as an object', async () => {
+        server.respond(() => ({ lines: [{ ok: true, result: { text: 'hello a', json: { argv: ['a'] } } }] }));
+        const json = await runCLI(['hello', '--json', 'a', '--', '--json'], { port: server.port, cwd: home });
+        expect(json.code).toBe(0); expect(JSON.parse(json.stdout)).toEqual({ argv: ['a'] });
+        expect(JSON.parse(String(server.requests[0]?.['text']))).toMatchObject({ argv: ['a', '--', '--json'], json: true });
+        server.respond(() => ({ lines: [{ ok: true, result: { text: 'hello' } }] }));
+        expect(JSON.parse((await runCLI(['hello', '--json'], { port: server.port, cwd: home })).stdout)).toEqual({ text: 'hello' });
+        server.respond(() => ({ lines: [{ ok: true, result: { text: 'usage: hello' } }] }));
+        expect((await runCLI(['hello', '--help'], { port: server.port, cwd: home })).stdout).toBe('usage: hello\n');
+        expect(JSON.parse(String(server.requests[2]?.['text']))).toMatchObject({ argv: ['--help'], json: false });
+    });
+    it('keeps the unknown-command output for an undeclared word and names the verb for a disabled plugin', async () => {
+        server.respond(request => ({ lines: [{ ok: false, error: JSON.parse(String(request['text'])).verb === 'hello' ? 'plugin lab.service is disabled' : 'unknown kelpi verb: frobnicate' }] }));
+        const unknown = await runCLI(['frobnicate'], { port: server.port, cwd: home });
+        expect(unknown.code).toBe(1); expect(unknown.stdout).toBe(''); expect(unknown.stderr.startsWith('Unknown command: frobnicate\nUsage:\n')).toBe(true);
+        const disabled = await runCLI(['hello'], { port: server.port, cwd: home });
+        expect(disabled.code).toBe(1); expect(disabled.stderr).toBe('kelpi hello: plugin lab.service is disabled\n');
+    });
+    it('never asks the daemon about a flag, version or a built-in verb', async () => {
+        const flag = await runCLI(['--bogus'], { port: server.port, cwd: home });
+        expect(flag.code).toBe(1); expect(flag.stderr.startsWith('Unknown command: --bogus\nUsage:\n')).toBe(true);
+        expect((await runCLI(['version'], { port: server.port, cwd: home })).code).toBe(0);
+        expect((await runCLI(['plugin', 'help'], { port: server.port, cwd: home })).code).toBe(0);
+        expect(server.requests).toHaveLength(0);
+    });
+    it('answers at once that plugin verbs need a daemon when none is listening, even from a pane', async () => {
+        const started = Date.now();
+        const result = await runCLI(['frobnicate'], { port: await deadPort(), cwd: home, paneID: 'PANE-1' });
+        expect(Date.now() - started).toBeLessThan(4000);
+        expect(result.code).toBe(1);
+        const lines = result.stderr.split('\n');
+        expect(lines[0]).toBe('Unknown command: frobnicate'); expect(lines[1]).toMatch(/^Plugin verbs need a running Kelpi daemon/); expect(lines[2]).toBe('Usage:');
+    });
+    it('lists installed verbs under their plugin after the usage text of kelpi --help and kelpi help', async () => {
+        server.respond(() => ({ lines: [{ ok: true, result: { verbs } }] }));
+        for (const word of ['--help', 'help']) {
+            const result = await runCLI([word], { port: server.port, cwd: home });
+            expect(result.code).toBe(0); expect(result.stdout).toBe('');
+            expect(result.stderr).toMatch(/kelpi install-hooks [^\n]*\n\nPlugin commands:\n  # Service Lab\n  kelpi hello             Say hello\n  kelpi shout \(disabled\)  Say it louder\n\n$/);
+        }
+        expect(server.requests).toEqual([{ command: 'plugin', action: 'cli-list', text: '{}' }, { command: 'plugin', action: 'cli-list', text: '{}' }]);
+    });
+    it('leaves the plugin block out when there are no verbs, no daemon or no answer within 2 s', async () => {
+        server.respond(() => ({ lines: [{ ok: true, result: { verbs: [] } }] }));
+        const empty = await runCLI(['--help'], { port: server.port, cwd: home });
+        expect(empty.code).toBe(0); expect(empty.stderr).toContain('Usage:'); expect(empty.stderr).not.toContain('Plugin commands:');
+        const offline = await runCLI(['--help'], { port: await deadPort(), cwd: home, paneID: 'PANE-1' });
+        expect(offline.code).toBe(0); expect(offline.stderr).toContain('Usage:'); expect(offline.stderr).not.toContain('Plugin commands:');
+        server.respond(() => ({ keepOpen: true }));
+        const started = Date.now();
+        const slow = await runCLI(['--help'], { port: server.port, cwd: home });
+        expect(Date.now() - started).toBeLessThan(4500);
+        expect(slow.code).toBe(0); expect(slow.stderr).toContain('Usage:'); expect(slow.stderr).not.toContain('Plugin commands:');
     });
 });

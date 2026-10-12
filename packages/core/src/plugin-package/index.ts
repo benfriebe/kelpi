@@ -158,6 +158,7 @@ export function pluginPackageReport(pkg: PluginPackage) {
         format: pkg.format, pluginID: pkg.manifest.id, name: pkg.manifest.name, version: pkg.manifest.version,
         apiVersion: pkg.manifest.apiVersion, revision: pkg.revision, fileCount: pkg.files.length, totalBytes: pkg.totalBytes,
         dependencies: pkg.manifest.dependencies ?? [],
+        cli: (pkg.manifest.contributes.cli ?? []).map(({ name, command, summary }) => ({ name, command, summary })),
         files: pkg.files.map(file => ({ path: file.relative, bytes: file.bytes.length, sha256: digest(file.bytes) })),
     };
 }

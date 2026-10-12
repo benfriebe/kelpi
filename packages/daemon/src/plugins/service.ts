@@ -301,6 +301,12 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
             const collision = claims(installed.manifest).find(id => incoming.has(id));
             if (collision) return `plugin contribution ${collision} is already owned by ${installed.manifest.id}`;
         }
+        // CLI verbs share one top-level namespace across plugins. The first plugin to install a
+        // name keeps it, so a later one cannot silently shadow it (#391).
+        for (const verb of manifest.contributes.cli ?? []) {
+            const owner = this.cliVerb(verb.name, manifest.id);
+            if (owner) return `cli verb "${verb.name}" is already provided by plugin ${owner.installation.manifest.id}`;
+        }
         const before = [...this.installations.values()].map(item => ({ manifest: item.manifest, enabled: item.enabled, ...(this.errors.has(item.manifest.id) ? { status: 'failed', error: this.errors.get(item.manifest.id)! } : {}) }));
         const after = [...before.filter(item => item.manifest.id !== manifest.id), { manifest, enabled }];
         const dependency = enabled ? pluginDependencyProblem(manifest.id, after) : null;
@@ -537,6 +543,19 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
         for (const runtime of this.running.values()) {
             runtime.queue.push(event); this.drain(runtime);
         }
+    }
+    /** The installation declaring `kelpi <verb>`, disabled ones included; `except` skips one plugin's own claim. */
+    private cliVerb(verb: string, except?: string): { installation: PluginInstallation; contribution: NonNullable<PluginManifest['contributes']['cli']>[number] } | undefined {
+        for (const installation of this.installations.values()) {
+            if (installation.manifest.id === except) continue;
+            const contribution = installation.manifest.contributes.cli?.find(entry => entry.name === verb);
+            if (contribution) return { installation, contribution };
+        }
+        return undefined;
+    }
+    /** A CLI call carries only its pane; plugin commands also expect that pane's workspace. */
+    private paneWorkspaceID(paneID: string): string | undefined {
+        return this.options.store.getState().workspaces.find(workspace => [...workspace.panes, ...workspace.parkedPanes].some(pane => pane.id === paneID))?.id;
     }
     private context(raw: unknown): Partial<PluginContext> {
         if (!pluginRecord(raw)) return {};
@@ -1014,6 +1033,21 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
             return await this.mutate(() => this.installNow(source, input['trust'] === true, signal)) as unknown as JsonValue;
         }
         if (action === 'run') return this.invoke(text(input['command'], 'command'), pluginObject(input['args'] ?? {}), { ...context, ...this.context(input) });
+        if (action === 'cli-list') return { verbs: [...this.installations.values()].flatMap(item => (item.manifest.contributes.cli ?? []).map(verb => ({ name: verb.name, summary: verb.summary, command: verb.command, pluginID: item.manifest.id, pluginName: item.manifest.name, enabled: item.enabled }))) };
+        if (action === 'cli') {
+            const verb = text(input['verb'], 'verb');
+            const owner = this.cliVerb(verb);
+            if (!owner) throw new Error(`unknown kelpi verb: ${verb}`);
+            if (!owner.installation.enabled) throw new Error(`plugin ${owner.installation.manifest.id} is disabled`);
+            const argv = input['argv'] ?? [];
+            if (!Array.isArray(argv) || argv.some(arg => typeof arg !== 'string')) throw new Error('missing or invalid argv');
+            const caller = this.context(input);
+            const workspaceID = caller.workspaceID ?? (caller.paneID ? this.paneWorkspaceID(caller.paneID) : undefined);
+            const result = await this.invoke(owner.contribution.command, { argv, cwd: text(input['cwd'], 'cwd'), isTTY: input['isTTY'] === true, json: input['json'] === true },
+                { ...context, ...caller, ...(workspaceID ? { workspaceID } : {}) });
+            // The CLI reads text, json, exitCode and stderr; anything else a handler returns means "no output".
+            return pluginRecord(result) ? result : {};
+        }
         if (action === 'api') {
             const lease = this.leases.get(text(input['lease'], 'lease'));
             if (!lease || lease.expires < Date.now() || this.item(lease.pluginID).revision !== lease.revision) throw new Error('plugin view access expired; reopen the view');

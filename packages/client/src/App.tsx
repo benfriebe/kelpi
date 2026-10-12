@@ -17,6 +17,8 @@ import { settingsPresenterChords } from './settings/presenter-slot';
 import { footerGitStats } from './chrome/StatusFooter';
 import { boundKeymap, buildKeymap, nativeChordOwners } from './chrome/keymap';
 import { useInteractionSurface } from './interaction/use-interaction';
+import { createBackendPromptBridge } from './interaction/backend-prompts';
+import { pluginRequest } from './plugins/client';
 import { createUIServiceAdapter } from './plugins/ui-services';
 import { PluginContributionItems } from './plugins/contributions-ui';
 import { usePaneHeaderContributions } from './plugins/contributions';
@@ -941,6 +943,22 @@ function Shell(props: AppProps): ReactElement {
             offResync();
         };
     }, [runtime, shellWindowID, webGeometry]);
+
+    /**
+     * #389: a plugin backend's prompts, drawn on this window's one surface like a view's. Every
+     * runtime is heard so a remote daemon's prompt is refused rather than left to time out; only
+     * the primary runtime presents. Remotes attach separately so a host coming or going never
+     * withdraws a prompt the primary daemon is waiting on.
+     */
+    const backendPrompts = useMemo(
+        () => createBackendPromptBridge<KelpiRuntime>({ surface, shellWindowID, isPrimary: (candidate) => candidate === runtime, send: pluginRequest }),
+        [surface, shellWindowID, runtime]
+    );
+    useEffect(() => backendPrompts.attach(runtime), [backendPrompts, runtime]);
+    useEffect(() => {
+        const detach = [...remoteDaemonRuntimes.values()].map((remote) => backendPrompts.attach(remote.runtime));
+        return () => detach.forEach((off) => off());
+    }, [backendPrompts, remoteDaemonRuntimes]);
 
     /**
      * A clicked desktop notification, arriving the long way round: shell → daemon → every

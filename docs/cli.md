@@ -873,6 +873,8 @@ kelpi pane capture [--target <name-or-uuid>] [--workspace <name-or-uuid>] [--lin
   The daemon waits until the pane has had no output for that long, giving up after 10 s
   (larger values are clamped), then reads. A flag given with no value fails as
   `kelpi pane capture: unknown option --settle` + usage.
+  The CLI's reply timeout grows by the clamped wait, rounded up to whole seconds, on top of
+  the usual 5 s or `KELPI_REPLY_TIMEOUT`.
 - With `--target`: payload includes `target` and (when `KELPI_PANE_ID` non-empty) `pane_id`
   for label scoping. Without: `requirePaneID()` (silent exit 0 outside) and `pane_id` is
   the subject.

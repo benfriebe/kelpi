@@ -23,7 +23,7 @@ import {
     parseDouble,
     rejectLeftoverArgs
 } from '../args.js';
-import { homeDirectory, originPaneID, requirePaneID } from '../env.js';
+import { homeDirectory, originPaneID, replyTimeoutSeconds, requirePaneID } from '../env.js';
 import { errLine, exit, printLine, writeErr, writeOut } from '../io.js';
 import { asBool, asNumber, asString, parseJsonObject, stableStringify, type JsonObject } from '../json.js';
 import { decodeReply, parseReplyOrExit } from '../reply.js';
@@ -611,6 +611,9 @@ async function handlePaneList(args: string[]): Promise<void> {
     printPaneTable(panes, noHeader, homeDirectory());
 }
 
+/** The daemon's cap on `settle_ms` (`CAPTURE_SETTLE_CAP_MS` in the daemon's term service). */
+const CAPTURE_SETTLE_CAP_MS = 10_000;
+
 async function handlePaneCapture(args: string[]): Promise<void> {
     if (hasHelpFlag(args)) {
         writeOut(paneCaptureUsage);
@@ -660,7 +663,14 @@ async function handlePaneCapture(args: string[]): Promise<void> {
     if (scrollback) payload['scrollback'] = true;
     if (settleMs !== null) payload['settle_ms'] = settleMs;
 
-    const reply = await decodeReply(payload, 'kelpi pane capture');
+    // The daemon sends nothing while it waits for quiet, so the read timeout has to cover the wait.
+    const reply = await decodeReply(
+        payload,
+        'kelpi pane capture',
+        settleMs !== null
+            ? { timeoutSeconds: replyTimeoutSeconds() + Math.ceil(Math.min(settleMs, CAPTURE_SETTLE_CAP_MS) / 1000) }
+            : {}
+    );
     if (asJSON) {
         printReplyWithoutOk(reply);
         return;

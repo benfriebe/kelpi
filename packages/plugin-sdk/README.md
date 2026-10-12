@@ -94,6 +94,9 @@ changed in between, nothing is typed and the call rejects with `KelpiError` code
 whose `details.revision` is the current revision. The revision counts the output the daemon has
 fed the pane, and resizes; it starts again at 0 when the daemon restarts.
 
+Against a daemon from before #390, `terminal.read` rejects with `KelpiError` code `UNSUPPORTED`
+rather than returning a screen without a revision.
+
 ```ts
 const screen = await api.terminal.read(pane.paneID, { settleMs: 300 });
 if (screen.text.includes('Continue? [y/N]')) {

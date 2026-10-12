@@ -332,6 +332,22 @@ describe('request/response', () => {
         expect(await lastRequest()).toEqual({ command: 'pane-capture', target: PANE, settle_ms: 250 });
     });
 
+    it('stretches the reply timeout by the settle wait, and only under --settle', async () => {
+        // The reply lands after the 1 s KELPI_REPLY_TIMEOUT but inside 1 s + the 7 s settle.
+        server.respond(() => ({ lines: [{ ok: true, text: 'quiet\n', revision: 3 }], delayMs: 1500 }));
+        const env = { KELPI_REPLY_TIMEOUT: '1' };
+        const [settled, plain] = await Promise.all([
+            runCLI(['pane', 'capture', '--settle', '7000', '--target', PANE], { port: server.port, env }),
+            runCLI(['pane', 'capture', '--target', PANE], { port: server.port, env })
+        ]);
+        expect(settled.code).toBe(0);
+        expect(settled.stderr).toBe('');
+        expect(settled.stdout).toBe('quiet\n');
+        expect(plain.code).toBe(1);
+        expect(plain.stdout).toBe('');
+        expect(plain.stderr).toContain('kelpi pane capture: no response from Kelpi');
+    });
+
     it('rejects a --settle that is not a positive integer before touching the socket', async () => {
         for (const value of ['0', '-5', 'abc']) {
             const result = await runCLI(['pane', 'capture', '--target', PANE, '--settle', value], { port: server.port });

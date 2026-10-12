@@ -2,6 +2,7 @@ import type { AgentsAPI, ApplicationSettingsAPI, GitAPI, GroupsAPI, LayoutAPI, P
 import type { BuiltinProviderMethods, BuiltinServiceArgs, BuiltinServiceID, BuiltinServiceMethod, BuiltinServiceResult, ProcessExecResult } from './services.js';
 import type { ContributionsAPI } from './contributions.js';
 import type { WindowUIServices } from './ui.js';
+import type { BackendUIServices } from './ui.js';
 import type { WindowChromeAPI } from './chrome.js';
 import type { WindowInteractionAPI } from './interaction.js';
 import type { WindowSettingsAPI } from './settings.js';
@@ -81,6 +82,7 @@ export interface HookInvocation {
 }
 export type HookDecision = { allow: true } | { allow: false; reason: string };
 export interface BackendAPI extends KelpiAPI {
+    ui: KelpiAPI['ui'] & BackendUIServices;
     commands: KelpiAPI['commands'] & { register(id: string, handler: (args: Data, context: Context) => Json | void | Promise<Json | void>): Dispose };
     hooks: { register(id: string, handler: (invocation: HookInvocation) => HookDecision | void | Promise<HookDecision | void>): Dispose };
     providers: {

@@ -34,6 +34,8 @@ describe('injected browser SDK', () => {
             expect(settled).not.toHaveBeenCalled();
             const calls = port.postMessage.mock.calls.map(([message]) => message).filter(message => message.type === 'call' && message.method.startsWith('ui.show'));
             expect(calls.map(message => message.method)).toEqual(['ui.showQuickPick', 'ui.showInput', 'ui.showDialog', 'ui.showNotification']);
+            // A view keeps sending its bare options; the backend `{ options, windowID }` shape is not its path.
+            expect(calls[3]?.args).toEqual({ message: 'Done' });
             for (const [index, message] of calls.entries()) await port.onmessage({ data: { type: 'reply', id: message.id, result: ['one', 'Late name', 'yes', null][index] } });
             expect(await prompts).toEqual(['one', 'Late name', 'yes', null]);
         } finally { vi.useRealTimers(); }

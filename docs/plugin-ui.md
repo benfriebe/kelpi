@@ -155,7 +155,7 @@ Plugins section, whoever is selected for
 
 ## Shared prompts and notifications
 
-These methods are browser-only, on `kelpi.ui`:
+In a view, these methods are on `kelpi.ui`:
 
 ```js
 const choice = await kelpi.ui.showQuickPick({
@@ -194,8 +194,55 @@ pick items, eight actions, 256 KiB per request, and input lengths up to 16,384 c
 
 Shared prompts and notifications are available only through the primary workbench runtime. An embedded remote
 pane receives an explicit unavailable error; a window connected directly to that remote
-daemon can present its prompts normally. Backends use events/commands to coordinate with a
-view when they need an interactive response. No host DOM or native window handle is exposed.
+daemon can present its prompts normally. Backends show the same prompts without a view; see
+[prompts from a backend](#prompts-from-a-backend). No host DOM or native window handle is exposed.
+
+### Prompts from a backend
+
+A plugin backend has the same four methods on `api.ui`, with the same options and results
+([#389](https://github.com/benfriebe/kelpi/issues/389)). A command bound to a shortcut can ask
+before it acts:
+
+```js
+api.commands.register('example.tasks.run', async () => {
+  const action = await api.ui.showDialog({
+    title: 'Run it?', message: 'Run the selected task?', cancelID: 'cancel',
+    actions: [{ id: 'cancel', label: 'Cancel' }, { id: 'run', label: 'Run', kind: 'primary' }]
+  });
+  return action; // 'cancel', 'run', or null on Escape
+});
+```
+
+**Routing.** A request opens in the window that ran the command: the window whose shortcut,
+palette or menu invoked it. A second argument `{ windowID }` names a window explicitly, for
+example one remembered from an earlier command's `context.windowID`. With neither, the call
+rejects with a `KelpiError` whose `code` is `NO_WINDOW` rather than picking a window: that is
+what `kelpi plugin run`, event listeners and other background callbacks get. A
+window that does not take the request within ten seconds (closed, or not connected) rejects
+the same way.
+
+**Lifetime.** Requests belong to the backend. Disabling, reloading or stopping the plugin, or
+its backend failing, closes its open and queued prompts. Closing the window cancels the
+prompts it was showing; the backend gets null. Escape and dismissal return null exactly as
+for a view.
+
+**Limits.** At most eight pending requests per plugin backend. They also count toward the
+window's 32, which views and native prompts share, and the per-request limits above apply.
+A request over either limit rejects with an error.
+
+**Timeouts.** Like a view's, a backend's prompt has no RPC deadline. A command has 30 seconds
+to finish; while a prompt it shows directly is open, that timer is held, and it resumes with
+the time that was left once none of the command's prompts is pending. Only that command is
+held: a caller waiting on it through `commands.execute` keeps its own 30-second call timer,
+as do activation, hooks and providers. Show the prompt from the command the user runs.
+
+**Owner.** The plugin owns the request, named by its manifest name, as a view's request is. A
+selected [prompts presenter](#selectable-interaction-presenters) draws it the same way as a
+view's, and every prompt from one plugin backend in a window shares one owner.
+
+**Remote.** The same rule as for views: a window presents the request only through its
+primary workbench runtime. A window that reaches the backend's daemon as an embedded remote
+answers with the explicit unavailable error, and the backend's call rejects with it.
 
 ## Shared interaction contracts
 
@@ -238,7 +285,7 @@ three: a prompts or notifications presenter renders other plugins' requests, so 
 the user's.
 
 [Interaction Lab](../examples/plugins/interaction-lab) is the reference presenter for all three
-placements: plain JavaScript, no backend, no build. Install its directory in a private instance,
+placements: plain JavaScript, no build. Install its directory in a private instance,
 select it for any placement, and open the palette or raise a prompt or a notification from another
 plugin such as UI Lab. Its README lists the diagnostics and the deliberate crash and stall hooks the
 live scenario uses to prove the fallback. A listener that throws is caught by the SDK and its frame

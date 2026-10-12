@@ -129,6 +129,15 @@ export function createKelpiAPI(transport, getContext = () => ({})) {
         setHeaderRow: (paneID, on) => documentCall('csv-header-row', { paneID, on }),
         discard: paneID => documentCall('csv-discard', { paneID }),
     });
+    // Backend prompts (#389): one daemon call each, sent to the invocation window unless
+    // `{ windowID }` names one. A view replaces these with its own window path (browser.js).
+    const prompt = async (method, options, to) => {
+        try { return await call(method, { options, ...(typeof to?.windowID === 'string' && to.windowID ? { windowID: to.windowID } : {}) }); }
+        catch (error) {
+            if (!error.message?.startsWith('NO_WINDOW: ')) throw error;
+            throw new KelpiError(error.message, { code: 'NO_WINDOW', method, cause: error });
+        }
+    };
     // Browser operations share native replies, but never rename page-owned data.
     // Attributes can contain underscores, and exec() may return any JSON object.
     const browserDTO = value => Array.isArray(value) ? value.map(browserDTO) : value !== null && typeof value === 'object'
@@ -166,7 +175,13 @@ export function createKelpiAPI(transport, getContext = () => ({})) {
             reveal: (path, options = {}) => done('reveal-path', { path, select: options.select ?? false }),
         }),
         process: Object.freeze({ exec: (file, args = [], options = {}) => call('process.exec', clean({ file, args, ...options })) }),
-        ui: Object.freeze({ reveal: async paneID => { await call('ui.reveal', { paneID }); } }),
+        ui: Object.freeze({
+            reveal: async paneID => { await call('ui.reveal', { paneID }); },
+            showDialog: (options, to) => prompt('ui.showDialog', options, to),
+            showQuickPick: (options, to) => prompt('ui.showQuickPick', options, to),
+            showInput: (options, to) => prompt('ui.showInput', options, to),
+            showNotification: (options, to) => prompt('ui.showNotification', options, to),
+        }),
         panes,
         documents: Object.freeze({
             get: (paneID = getContext().paneID) => documentCall('get', { paneID }),

@@ -156,7 +156,7 @@ contributions. See the [chrome feature guide](plugin-chrome.md) for commands, st
 ownership and the isolated development workflow.
 
 [Interaction Lab](../examples/plugins/interaction-lab) presents the command palette and the
-shared modal prompts from the public interaction feed, with no backend and no build. It is
+shared modal prompts from the public interaction feed, with no build, plus a one-command backend that asks through them. It is
 selected per placement in Settings → Plugins → Workbench views; see the
 [UI guide](plugin-ui.md#selectable-interaction-presenters) for what a presenter receives, what
 is withheld, and how a failed presenter falls back to the bundled one.
@@ -464,6 +464,10 @@ document.body.textContent = `${snapshot.state.workspaces.length} workspaces`;
 | `browser.get/watch/unwatch` | Observe native tabs, navigation, host availability, favourites and inspector revisions on the owning daemon. |
 | `browser.attach({element, onPresentation, onAction?})` | Browser replacement view only. Place the existing native page inside a measured slot; retain tabs and sessions across swaps. The [browser guide](plugin-browser.md) covers shared navigation, capture, cookies, inspection and batch APIs. |
 | `ui.reveal(paneID)` | Ask the invoking window to reveal a pane; broadcasts when no window context exists. |
+| `ui.showDialog(options, target?)` | Ask with a dialog; resolves with the chosen action ID, or null on Escape or dismissal. A view's prompt belongs to the view and takes no `target`. A backend's opens in the invoking window or `target.windowID`, else rejects with code `NO_WINDOW`; see [prompts from a backend](plugin-ui.md#prompts-from-a-backend). |
+| `ui.showQuickPick(options, target?)` | Pick one enabled item; resolves with its ID, or null. Same routing as `ui.showDialog`. |
+| `ui.showInput(options, target?)` | Ask for text; resolves with the entered string (possibly empty), or null. Same routing as `ui.showDialog`. |
+| `ui.showNotification(options, target?)` | Show a notification; resolves with an action ID, or null on dismissal or expiry. Same routing as `ui.showDialog`. |
 | `setState(object)` | View only. Persist this pane's state and current manifest state version. |
 | `ui.activateWorkspace(id)` / `ui.focusPane(workspaceID, paneID)` | View only. Change selection in the attached client runtime. |
 | `ui.getNavigation()` / `ui.onNavigation(listener, onError?)` | View only. Read/watch the primary window's connected hosts, workspace summaries and active selection. Returns opaque host IDs without connection credentials. Embedded remote views require per-host navigation trust in Settings ▸ Remote. |

@@ -1,11 +1,12 @@
 # Interaction Lab
 
-A build-free, UI-only set of three interaction presenters. **Interaction Lab palette** draws the
+A build-free set of three interaction presenters, plus a backend command that asks through them.
+**Interaction Lab palette** draws the
 command palette for `interaction.palette`, **Interaction Lab prompts** draws modal quick picks,
 inputs and dialogs for `interaction.prompts`, and **Interaction Lab notifications** draws the
 corner notification stack for `interaction.notifications`. All three use `window.kelpi.ui` only,
-receive their state from `onInteraction`, and have no backend, no native imports and no access to
-the host DOM.
+receive their state from `onInteraction`, and have no native imports and no access to the host
+DOM. The backend is one command, described in [Asking from a backend](#asking-from-a-backend).
 
 First [prepare the source checkout](../../../docs/plugin-development.md#prepare-a-source-checkout),
 then start an isolated instance from its root:
@@ -62,6 +63,30 @@ desktop-only, so a phone window keeps the bundled ones and the snapshot's `formF
 view opens the palette, holds focus authority, sees a `pluginID`, a command handler or an owner's
 identity beyond an opaque window-local ref, or registers a window modal: the host keeps all of that
 whoever is drawing, and the corner frame registers only the rect it covers.
+
+## Asking from a backend
+
+`backend.mjs` registers **Interaction Lab: Ask before running** (`example.interaction-lab.ask`),
+bound to ⌃⌥I (`ctrl+alt+i`) and listed in the palette. With no view mounted, the backend asks
+**Run it?** with a dialog in the window whose shortcut or palette ran it, then shows a notification
+naming the action that came back (`Interaction Lab: run` or `Interaction Lab: cancel`), or
+`Interaction Lab: cancelled` when Escape dismissed the dialog. The command returns the action id,
+or null on Escape. With **Interaction Lab prompts** and **Interaction Lab notifications** selected,
+this plugin's own presenters draw both, owned by **Interaction Lab**, exactly as they draw a view's.
+Holding the dialog open past 30 seconds still returns the answer: the command's timer waits for it.
+
+A shell has no window to ask in, so the same command run from the CLI rejects:
+
+```sh
+kelpi_test plugin run example.interaction-lab.ask
+# kelpi plugin: NO_WINDOW: the command has no window; run it from a shortcut, the palette or a menu, or pass { windowID }
+```
+
+In the backend that rejection is a `KelpiError` whose `code` is `NO_WINDOW`; the command does not
+catch it, so the CLI prints its message and no dialog opens anywhere. Disabling or reloading the
+plugin while the dialog is open closes it. See
+[prompts from a backend](../../../docs/plugin-ui.md#prompts-from-a-backend) for routing, limits and
+timeouts.
 
 ## Recovery, on purpose
 

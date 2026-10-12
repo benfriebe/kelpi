@@ -1,4 +1,4 @@
-/** Window UI belongs to the attached browser view; removing it cancels all of its requests. */
+/** Window UI belongs to the attached browser view or, for `BackendUIServices`, to the plugin backend; removing it cancels all of its requests. */
 export interface UIQuickPickItem {
     readonly id: string;
     readonly label: string;
@@ -52,4 +52,19 @@ export interface WindowUIServices {
     showDialog(options: UIDialogOptions): Promise<string | null>;
     /** Returns an action ID, or null on dismissal or 10 seconds after entering the visible stack. */
     showNotification(options: UINotificationOptions): Promise<string | null>;
+}
+/**
+ * The same prompts from a plugin backend (#389). A request goes to the window that ran the
+ * command (shortcut, palette or menu), or to `target.windowID`; with neither it rejects with
+ * a KelpiError whose code is `NO_WINDOW`. Stopping, disabling or reloading the backend cancels it.
+ */
+export interface BackendUIServices {
+    /** Selects one enabled item. Escape or dismissal returns null. */
+    showQuickPick(options: UIQuickPickOptions, target?: { windowID?: string }): Promise<string | null>;
+    /** Returns the entered string, including an empty string; cancellation returns null. */
+    showInput(options: UIInputOptions, target?: { windowID?: string }): Promise<string | null>;
+    /** Returns an explicitly chosen action ID; cancellation returns null. */
+    showDialog(options: UIDialogOptions, target?: { windowID?: string }): Promise<string | null>;
+    /** Returns an action ID, or null on dismissal or 10 seconds after entering the visible stack. */
+    showNotification(options: UINotificationOptions, target?: { windowID?: string }): Promise<string | null>;
 }

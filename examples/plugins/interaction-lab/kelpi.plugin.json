@@ -4,11 +4,16 @@
   "version": "1.0.0",
   "apiVersion": 1,
   "trust": "full",
+  "activation": "on-demand",
+  "backend": "backend.mjs",
   "contributes": {
     "views": [
       { "id": "example.interaction-lab.palette", "title": "Interaction Lab palette", "entry": "ui/palette.html", "placements": ["interaction.palette"], "stateVersion": 1 },
       { "id": "example.interaction-lab.prompts", "title": "Interaction Lab prompts", "entry": "ui/prompts.html", "placements": ["interaction.prompts"], "stateVersion": 1 },
       { "id": "example.interaction-lab.notifications", "title": "Interaction Lab notifications", "entry": "ui/notifications.html", "placements": ["interaction.notifications"], "stateVersion": 1 }
+    ],
+    "commands": [
+      { "id": "example.interaction-lab.ask", "title": "Interaction Lab: Ask before running", "shortcut": "ctrl+alt+i" }
     ]
   }
 }

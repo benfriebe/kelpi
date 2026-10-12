@@ -86,6 +86,23 @@ return arrays and mutation helpers unwrap the successful reply. Snapshots retain
 state shape, including epoch/sequence. `agents.reportStart` reports lifecycle state; launching
 arbitrary programs remains an explicit terminal or process operation.
 
+**Prompts from a backend.** A backend asks the user with `api.ui.showDialog`, `showQuickPick`,
+`showInput` and `showNotification`. They take a view's options and resolve with the choice, or null:
+
+```ts
+api.commands.register('example.my-board.run', async () => {
+    const action = await api.ui.showDialog({ title: 'Run it?', message: 'Run the tests?', cancelID: 'cancel',
+        actions: [{ id: 'cancel', label: 'Cancel' }, { id: 'run', label: 'Run', kind: 'primary' }] });
+    return action;
+});
+```
+
+The prompt opens in the window whose shortcut, palette or menu ran the command, or in the window
+named by a second argument `{ windowID }`. With neither, as for `kelpi plugin run`, it rejects with
+a `KelpiError` whose `code` is `NO_WINDOW`. The
+[UI guide](https://github.com/benfriebe/kelpi/blob/main/docs/plugin-ui.md#prompts-from-a-backend)
+covers lifetime, limits and the command timeout.
+
 A workspace can be muted so its agents raise no desktop notification, sound or dock bounce:
 `api.workspaces.create({ muted: true })`, `api.workspaces.setMuted(workspaceID, muted?)` (omit
 `muted` to toggle; it resolves with the resulting state) and `muted` on every
@@ -255,7 +272,7 @@ also cancels queued callbacks; hidden retained tabs do not relay host keyboard s
 `api.contributions.get/update` reads and atomically patches the current plugin instance's
 volatile context and native item overrides. Browser views also have `ui.showQuickPick`,
 `ui.showInput`, `ui.showDialog` and `ui.showNotification`, returning the user's choice or null
-on cancellation. These prompts belong to their attached view and hosting window. See the
+on cancellation. These prompts belong to their attached view and hosting window (a backend's are described under Prompts from a backend above). See the
 [UI guide](https://github.com/benfriebe/kelpi/blob/main/docs/plugin-ui.md), [types](ui.d.ts), and [UI Lab](https://github.com/benfriebe/kelpi/tree/main/examples/plugins/ui-lab)
 for conditions, grouped settings, scope and lifetime rules.
 

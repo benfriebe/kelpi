@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { type JsonObject } from '@kelpi/protocol';
-import { createKelpiAPI, KelpiError, type Context } from '../index.js';
+import { createKelpiAPI, KelpiError, type BackendAPI, type Context, type HostCall } from '../index.js';
 import { harness as appHarness } from '../../daemon/src/handlers/app/testing.js';
 import { harness as paneHarness, W1, W2, testID } from '../../daemon/src/handlers/pane/testing.js';
 import { paneHandlers } from '../../daemon/src/handlers/pane/index.js';
@@ -322,5 +322,28 @@ describe('public SDK over Kelpi command handlers', () => {
         expect(transport).toHaveBeenLastCalledWith('services.call', { service: 'sample.host.catalog', version: 2, method: 'read', args: { custom_arg: true }, provider: 'sample.host.local' });
         await api.services.select('kelpi.files', 1, null);
         expect(transport).toHaveBeenLastCalledWith('services.select', { service: 'kelpi.files', version: 1, providerID: null });
+    });
+    // #389: a backend prompt is one daemon call carrying the view's options and, only when
+    // named, the target window; the daemon's `NO_WINDOW: ` refusal becomes a KelpiError code.
+    it('sends backend prompts as { options, windowID? } and maps NO_WINDOW', async () => {
+        // The shared base carries the backend methods; a view replaces them (browser.test.ts).
+        const backend = (transport: HostCall) => createKelpiAPI(transport) as unknown as BackendAPI;
+        const transport = vi.fn(async (method: string, _args: JsonObject): Promise<unknown> => method === 'ui.showInput' ? null : 'run');
+        const api = backend(transport);
+        const dialog = { title: 'Run it?', message: 'Run the command?', actions: [{ id: 'run', label: 'Run', kind: 'primary' as const }] };
+        expect(await api.ui.showDialog(dialog)).toBe('run');
+        expect(transport).toHaveBeenLastCalledWith('ui.showDialog', { options: dialog });
+        await api.ui.showQuickPick({ title: 'Pick', items: [{ id: 'run', label: 'Run' }] }, { windowID: 'W' });
+        expect(transport).toHaveBeenLastCalledWith('ui.showQuickPick', { options: { title: 'Pick', items: [{ id: 'run', label: 'Run' }] }, windowID: 'W' });
+        expect(await api.ui.showInput({ title: 'Name' }, { windowID: '' })).toBeNull();
+        expect(transport).toHaveBeenLastCalledWith('ui.showInput', { options: { title: 'Name' } });
+        await api.ui.showNotification({ message: 'Done' }, {});
+        expect(transport).toHaveBeenLastCalledWith('ui.showNotification', { options: { message: 'Done' } });
+        const refused = backend(async () => { throw new Error('NO_WINDOW: the command has no window'); });
+        const failure = await refused.ui.showDialog(dialog).catch(error => error);
+        expect(failure).toBeInstanceOf(KelpiError);
+        expect(failure).toMatchObject({ code: 'NO_WINDOW', method: 'ui.showDialog', message: 'NO_WINDOW: the command has no window' });
+        const other = backend(async () => { throw new Error('too many pending prompts for this plugin'); });
+        await expect(other.ui.showNotification({ message: 'Done' })).rejects.toMatchObject({ code: 'TRANSPORT_ERROR', method: 'ui.showNotification', message: 'too many pending prompts for this plugin' });
     });
 });

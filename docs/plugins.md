@@ -383,8 +383,10 @@ The command receives a `CliInvocation` as its args:
 | `isTTY` | Whether the CLI's standard output is a terminal. |
 | `json` | Whether the caller passed `--json`. |
 
-Its context carries the caller's `paneID` when the CLI runs inside a Kelpi pane, and that pane's
-`workspaceID`. It returns a `CliResult`, `{ text?, json?, exitCode?, stderr? }`:
+Its context carries the caller's `paneID` when the CLI runs inside a pane of the daemon it asks,
+and that pane's `workspaceID`. A pane ID that daemon does not know, such as one a CLI in another
+Kelpi's pane forwards, is left out unless the request also names a `workspaceID`, so a plugin never
+acts on a foreign pane. It returns a `CliResult`, `{ text?, json?, exitCode?, stderr? }`:
 
 ```js
 api.commands.register('acme.dashboard.hello', ({ argv, json }) => {
@@ -401,6 +403,8 @@ still prints `Unknown command`; a verb whose plugin is disabled fails with
 `plugin <id> is disabled`. A verb gets no standard input and cannot prompt, so one that needs a
 confirmation should take `--yes`. `kelpi --help` lists installed verbs under their plugin's name,
 marking disabled ones; see [the CLI reference](cli.md).
+The daemon gives each call 30 seconds, activating the plugin's backend included; past that the call
+fails, but a handler that is already running is not stopped.
 
 Both requests are actions of the `plugin` envelope. `cli-list` returns
 `{ verbs: [{ name, summary, command, pluginID, pluginName, enabled }] }` for every installed plugin,
@@ -409,6 +413,10 @@ and `cli` runs one verb:
 ```json
 {"command":"plugin","action":"cli","text":"{\"verb\":\"hello\",\"argv\":[\"a\",\"b\"],\"cwd\":\"/tmp\",\"isTTY\":false,\"json\":false,\"paneID\":\"…\"}"}
 ```
+
+[CLI Lab](../examples/plugins/cli-lab) adds `kelpi hello` with no views and no build: it prints the
+words you pass, sets an exit status, writes to standard error, and with `--json` echoes the
+invocation and the pane context it received.
 
 ## Updates and recovery
 

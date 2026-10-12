@@ -72,9 +72,12 @@ describe('plugin CLI verbs (#391)', () => {
         expect(flags['args']).toEqual({ argv: ['--help'], cwd: '/elsewhere', isTTY: true, json: true });
         expect(flags['context']).not.toHaveProperty('paneID');
         expect(flags['context']).not.toHaveProperty('workspaceID');
-        // A pane the store does not know leaves the workspace out; an explicit one is kept.
-        expect((await h.call('echo-call', [], { paneID: 'gone' }) as JsonObject)['context']).not.toHaveProperty('workspaceID');
+        // A pane the store does not know (another daemon's) is dropped with no workspace; an explicit workspace keeps both.
+        const foreign = (await h.call('echo-call', [], { paneID: 'gone' }) as JsonObject)['context'];
+        expect(foreign).not.toHaveProperty('paneID');
+        expect(foreign).not.toHaveProperty('workspaceID');
         expect((await h.call('echo-call', [], { paneID, workspaceID: 'given' }) as JsonObject)['context']).toMatchObject({ paneID, workspaceID: 'given' });
+        expect((await h.call('echo-call', [], { paneID: 'gone', workspaceID: 'given' }) as JsonObject)['context']).toMatchObject({ paneID: 'gone', workspaceID: 'given' });
         for (const shape of ['text', 'array', 'null']) expect(await h.call('plain', [shape])).toEqual({});
         await expect(h.call('hello', ['a', 1 as unknown as string])).rejects.toThrow('missing or invalid argv');
     });
@@ -155,5 +158,27 @@ describe('plugin CLI verbs (#391)', () => {
         // The registry still takes changes.
         await restarted.install(h.write('third', 'sample.third', undefined), true);
         expect(restarted.list().map(plugin => plugin.manifest.id)).toEqual([id, 'sample.other', 'sample.third']);
+    });
+
+    it('reports a retained revision declaring a now built-in verb in history and refuses to roll back onto it', async () => {
+        const h = harness();
+        await h.service.install(h.write('first', id, verbs(id)), true);
+        await h.service.install(h.write('first', id, verbs(id, { hello: 'hi' }), '1.1.0'), true);
+        await h.service.install(h.write('second', 'sample.other', [{ name: 'other', command: 'sample.other.hello', summary: 'Another' }]), true);
+        await h.service.dispose();
+        // Stand in for an upgrade that adds `pane`: the retained 1.0.0 declared it as `hello`, and the other plugin's current manifest also carries it.
+        const registry = path.join(h.options.directory, 'installed.json');
+        const rename = (manifest: { contributes: { cli?: Array<{ name: string }> } }) => { for (const verb of manifest.contributes.cli ?? []) if (verb.name === 'hello' || verb.name === 'other') verb.name = 'pane'; };
+        const records = JSON.parse(fs.readFileSync(registry, 'utf8')) as Array<{ manifest: Parameters<typeof rename>[0]; revisions: Array<{ manifest: Parameters<typeof rename>[0] }> }>;
+        for (const record of records) { rename(record.manifest); for (const revision of record.revisions) rename(revision.manifest); }
+        fs.writeFileSync(registry, JSON.stringify(records));
+        const restarted = new PluginService(h.options);
+        cleanups.push(() => restarted.dispose());
+        const history = await restarted.request('history', { pluginID: id }) as unknown as Array<{ manifest: { version: string }; selected: boolean; problem: string | null }>;
+        expect(history.map(entry => [entry.manifest.version, entry.selected, entry.problem])).toEqual([['1.1.0', true, null], ['1.0.0', false, 'cli verb "pane" is a built-in kelpi command']]);
+        // The built-in reason wins over the other plugin's stored claim on the same name.
+        await expect(restarted.request('rollback', { pluginID: id })).rejects.toThrow('cli verb "pane" is a built-in kelpi command');
+        expect(restarted.list()[0]!.manifest.version).toBe('1.1.0');
+        expect(await h.call('hi', ['e'], {}, restarted)).toEqual({ text: 'hello e', exitCode: 3 });
     });
 });

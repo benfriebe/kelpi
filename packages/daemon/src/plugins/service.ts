@@ -302,6 +302,11 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
             const collision = claims(installed.manifest).find(id => incoming.has(id));
             if (collision) return `plugin contribution ${collision} is already owned by ${installed.manifest.id}`;
         }
+        // A retained revision may declare a verb a later release made built-in. Only a new selection
+        // (install, dev-install, rollback, history) reaches here, never boot or enable, so this
+        // refusal cannot take a stored plugin down; it comes first so rollback names the real cause.
+        const builtin = (manifest.contributes.cli ?? []).find(verb => isBuiltinCliVerb(verb.name));
+        if (builtin) return `cli verb "${builtin.name}" is a built-in kelpi command`;
         // CLI verbs share one top-level namespace across plugins. The first plugin to install a
         // name keeps it, so a later one cannot silently shadow it (#391).
         for (const verb of manifest.contributes.cli ?? []) {
@@ -1044,8 +1049,11 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
             if (!owner.installation.enabled) throw new Error(`plugin ${owner.installation.manifest.id} is disabled`);
             const argv = input['argv'] ?? [];
             if (!Array.isArray(argv) || argv.some(arg => typeof arg !== 'string')) throw new Error('missing or invalid argv');
-            const caller = this.context(input);
-            const workspaceID = caller.workspaceID ?? (caller.paneID ? this.paneWorkspaceID(caller.paneID) : undefined);
+            const { paneID, ...rest } = this.context(input);
+            const workspaceID = rest.workspaceID ?? (paneID ? this.paneWorkspaceID(paneID) : undefined);
+            // A CLI in another daemon's pane forwards that daemon's pane ID; drop a pane this daemon does
+            // not know, unless the caller named the workspace, so a plugin never acts on a foreign pane.
+            const caller = paneID && workspaceID ? { ...rest, paneID } : rest;
             const result = await this.invoke(owner.contribution.command, { argv, cwd: text(input['cwd'], 'cwd'), isTTY: input['isTTY'] === true, json: input['json'] === true },
                 { ...context, ...caller, ...(workspaceID ? { workspaceID } : {}) });
             // The CLI reads text, json, exitCode and stderr; anything else a handler returns means "no output".

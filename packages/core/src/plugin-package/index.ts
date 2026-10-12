@@ -5,7 +5,7 @@ import { constants } from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { gzip, gunzip } from 'node:zlib';
-import { decodePluginManifest, pluginAssetPath, pluginRecord, type PluginManifest } from '@kelpi/protocol';
+import { decodePluginManifest, isBuiltinCliVerb, pluginAssetPath, pluginRecord, type PluginManifest } from '@kelpi/protocol';
 
 export const PLUGIN_PACKAGE_MAX_BYTES = 32 * 1024 * 1024;
 export const PLUGIN_PACKAGE_MAX_FILES = 2000;
@@ -63,6 +63,10 @@ function validateFiles(files: PluginPackageFile[], format: PluginPackage['format
     const manifestFile = files.find(file => file.relative === 'kelpi.plugin.json');
     if (!manifestFile) throw new Error('missing kelpi.plugin.json');
     const manifest = decodePluginManifest(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(manifestFile.bytes)));
+    // Refused here, where a new package is read, rather than in the manifest decoder, which also
+    // reads stored manifests at boot: a verb a later release makes built-in only stops resolving.
+    const builtin = manifest.contributes.cli?.find(verb => isBuiltinCliVerb(verb.name));
+    if (builtin) throw new Error(`cli verb "${builtin.name}" is a built-in kelpi command`);
     for (const entry of [...manifest.contributes.views.map(view => view.entry), ...(manifest.backend ? [manifest.backend] : [])]) {
         if (!files.some(file => file.relative === entry)) throw new Error(`missing plugin entry: ${entry}`);
     }

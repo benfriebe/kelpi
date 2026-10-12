@@ -8,6 +8,7 @@ import { newUUID } from '@kelpi/core/codec';
 import { readPluginPackage } from '@kelpi/core/plugin-package';
 import type { Pane } from '@kelpi/core/layout';
 import { PluginEventBuffer, pluginAssetPath, pluginDependencyOrder, pluginDependencyProblem, pluginJSON, pluginObject, pluginRecord, patchPluginContributionState, pluginSettingValue, type JsonObject, type JsonValue, type PluginContext, type PluginEvent, type PluginInfo, type PluginManifest, type PluginContributionState, type PluginContributionInfo, type PluginViewDefinition, type PluginPaneDescriptor, type PluginRevisionInfo, type PluginPlacement } from '@kelpi/protocol';
+import { isBuiltinCliVerb } from '@kelpi/protocol';
 import type { ReplyHandle, PtyManager, TerminalStateService } from '../seams.js';
 import type { KelpiStore } from '../store/store.js';
 import { serializeState, serializeDomainEvents } from '../ws/serialize.js';
@@ -1033,10 +1034,12 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
             return await this.mutate(() => this.installNow(source, input['trust'] === true, signal)) as unknown as JsonValue;
         }
         if (action === 'run') return this.invoke(text(input['command'], 'command'), pluginObject(input['args'] ?? {}), { ...context, ...this.context(input) });
-        if (action === 'cli-list') return { verbs: [...this.installations.values()].flatMap(item => (item.manifest.contributes.cli ?? []).map(verb => ({ name: verb.name, summary: verb.summary, command: verb.command, pluginID: item.manifest.id, pluginName: item.manifest.name, enabled: item.enabled }))) };
+        // A verb a later Kelpi release made built-in is never reached (the CLI dispatches built-ins
+        // first), so it is neither listed nor run; the rest of its plugin keeps working.
+        if (action === 'cli-list') return { verbs: [...this.installations.values()].flatMap(item => (item.manifest.contributes.cli ?? []).filter(verb => !isBuiltinCliVerb(verb.name)).map(verb => ({ name: verb.name, summary: verb.summary, command: verb.command, pluginID: item.manifest.id, pluginName: item.manifest.name, enabled: item.enabled }))) };
         if (action === 'cli') {
             const verb = text(input['verb'], 'verb');
-            const owner = this.cliVerb(verb);
+            const owner = isBuiltinCliVerb(verb) ? undefined : this.cliVerb(verb);
             if (!owner) throw new Error(`unknown kelpi verb: ${verb}`);
             if (!owner.installation.enabled) throw new Error(`plugin ${owner.installation.manifest.id} is disabled`);
             const argv = input['argv'] ?? [];

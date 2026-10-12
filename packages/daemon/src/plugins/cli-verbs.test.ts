@@ -32,10 +32,11 @@ function harness() {
         return source;
     };
     const store = createStore(seededState());
-    const service = new PluginService({ directory: path.join(root, 'installed'), store, command: vi.fn(async (): Promise<JsonObject> => ({ ok: true })), broadcast: vi.fn() });
+    const options = { directory: path.join(root, 'installed'), store, command: vi.fn(async (): Promise<JsonObject> => ({ ok: true })), broadcast: vi.fn() };
+    const service = new PluginService(options);
     cleanups.push(async () => { await service.dispose(); fs.rmSync(root, { recursive: true, force: true }); });
-    const call = (verb: string, argv: string[] = [], extra: JsonObject = {}) => service.request('cli', { verb, argv, cwd: '/x', isTTY: false, json: false, ...extra });
-    return { root, write, store, service, call };
+    const call = (verb: string, argv: string[] = [], extra: JsonObject = {}, on = service) => on.request('cli', { verb, argv, cwd: '/x', isTTY: false, json: false, ...extra });
+    return { root, write, store, options, service, call };
 }
 
 describe('plugin CLI verbs (#391)', () => {
@@ -107,5 +108,52 @@ describe('plugin CLI verbs (#391)', () => {
         // Different names install side by side.
         await h.service.install(h.write('rival', 'sample.rival', verbs('sample.rival', { hello: 'rival-hello', echo: 'rival-echo', plain: 'rival-plain' })), true);
         expect(await h.call('rival-hello', ['c'])).toEqual({ text: 'hello c', exitCode: 3 });
+    });
+
+    it('refuses the same collision through dev-install and rollback', async () => {
+        const h = harness(), rival = 'sample.rival';
+        await h.service.install(h.write('first', id, verbs(id)), true);
+        await expect(h.service.request('dev-install', { path: h.write('rival', rival, verbs(rival, { echo: 'rival-echo', plain: 'rival-plain' })), trust: true, daemonID: h.service.daemonID }))
+            .rejects.toThrow(`cli verb "hello" is already provided by plugin ${id}`);
+        expect(h.service.list().map(plugin => plugin.manifest.id)).toEqual([id]);
+        // The rival's first revision declares `shared`; it moves off it, the owner takes it, and the rival cannot roll back onto it.
+        await h.service.install(h.write('rival', rival, verbs(rival, { hello: 'shared', echo: 'rival-echo', plain: 'rival-plain' })), true);
+        await h.service.install(h.write('rival', rival, verbs(rival, { hello: 'rival-hello', echo: 'rival-echo', plain: 'rival-plain' }), '1.1.0'), true);
+        await h.service.install(h.write('first', id, verbs(id, { hello: 'shared' }), '1.1.0'), true);
+        await expect(h.service.request('rollback', { pluginID: rival })).rejects.toThrow(`cli verb "shared" is already provided by plugin ${id}`);
+        expect(h.service.list().find(plugin => plugin.manifest.id === rival)?.manifest.version).toBe('1.1.0');
+        expect(await h.call('shared', ['d'])).toEqual({ text: 'hello d', exitCode: 3 });
+    });
+
+    it('refuses a built-in verb at install and dev-install', async () => {
+        const h = harness(), source = h.write('builtin', 'sample.builtin', verbs('sample.builtin', { hello: 'pane' }));
+        await expect(h.service.install(source, true)).rejects.toThrow('cli verb "pane" is a built-in kelpi command');
+        await expect(h.service.request('dev-install', { path: source, trust: true, daemonID: h.service.daemonID })).rejects.toThrow('cli verb "pane" is a built-in kelpi command');
+        expect(h.service.list()).toEqual([]);
+    });
+
+    it('boots over a stored verb a later release made built-in, and only drops that verb', async () => {
+        const h = harness();
+        await h.service.install(h.write('first', id, verbs(id)), true);
+        await h.service.install(h.write('second', 'sample.other', [{ name: 'other', command: 'sample.other.hello', summary: 'Another' }]), true);
+        await h.service.dispose();
+        // Stand in for an upgrade that adds `pane`: rename the stored `hello` in the current manifest and its history.
+        const registry = path.join(h.options.directory, 'installed.json');
+        const rename = (manifest: { contributes: { cli?: Array<{ name: string }> } }) => { for (const verb of manifest.contributes.cli ?? []) if (verb.name === 'hello') verb.name = 'pane'; };
+        const records = JSON.parse(fs.readFileSync(registry, 'utf8')) as Array<{ manifest: Parameters<typeof rename>[0]; revisions: Array<{ manifest: Parameters<typeof rename>[0] }> }>;
+        for (const record of records) { rename(record.manifest); for (const revision of record.revisions) rename(revision.manifest); }
+        fs.writeFileSync(registry, JSON.stringify(records));
+        const onError = vi.fn(), restarted = new PluginService({ ...h.options, onError });
+        cleanups.push(() => restarted.dispose());
+        expect(onError).not.toHaveBeenCalled();
+        expect((await restarted.request('list', {}) as unknown as Array<{ manifest: { id: string } }>).map(plugin => plugin.manifest.id)).toEqual([id, 'sample.other']);
+        expect(restarted.list()[0]!.manifest.contributes.cli?.map(verb => verb.name)).toEqual(['pane', 'echo-call', 'plain']);
+        expect((await restarted.request('cli-list', {}) as { verbs: Array<{ name: string }> }).verbs.map(verb => verb.name)).toEqual(['echo-call', 'plain', 'other']);
+        await expect(h.call('pane', ['a'], {}, restarted)).rejects.toThrow('unknown kelpi verb: pane');
+        expect((await h.call('echo-call', ['a'], {}, restarted) as JsonObject)['args']).toMatchObject({ argv: ['a'] });
+        expect(await h.call('other', ['b'], {}, restarted)).toEqual({ text: 'hello b', exitCode: 3 });
+        // The registry still takes changes.
+        await restarted.install(h.write('third', 'sample.third', undefined), true);
+        expect(restarted.list().map(plugin => plugin.manifest.id)).toEqual([id, 'sample.other', 'sample.third']);
     });
 });

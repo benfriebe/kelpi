@@ -358,8 +358,10 @@ declares:
   within the plugin.
 - A built-in verb is refused, as are `help` and `version`: `cli verb "pane" is a built-in kelpi command`.
   The list is `BUILTIN_CLI_VERBS` in [cli-verbs.ts](../packages/protocol/src/cli-verbs.ts).
+  `kelpi plugin validate`, `pack`, install, dev-install and rollback all refuse it.
 - `command` must be one of this plugin's own `contributes.commands`.
-- `summary` is required, one line of at most 120 characters; `kelpi --help` shows it.
+- `summary` is required, at most 120 characters, with no line breaks or other control
+  characters; `kelpi --help` prints it as is.
 - Install refuses a verb that another installed plugin already declares, enabled or disabled:
   `cli verb "hello" is already provided by plugin acme.other`. The first plugin keeps the name,
   so a second one cannot quietly shadow it. Reinstalling or updating the same plugin keeps its
@@ -368,8 +370,9 @@ declares:
 The other rules are manifest errors, so `kelpi plugin validate` reports them without a daemon;
 its report lists the declared verbs under `cli`. Verbs sit at the top level rather than under a
 prefix. The CLI dispatches its own verbs first without asking the daemon, so if a later Kelpi
-release adds a built-in with the same name, the built-in wins and the plugin's verb stops
-resolving.
+release adds a built-in with the same name, the built-in wins: the installed plugin still loads
+and keeps working otherwise, but that one verb is no longer listed by `kelpi --help` or
+reachable, and `cli` answers `unknown kelpi verb: <verb>` for it.
 
 The command receives a `CliInvocation` as its args:
 
@@ -392,7 +395,8 @@ api.commands.register('acme.dashboard.hello', ({ argv, json }) => {
 
 The CLI prints `stderr` to standard error, then `text` with a trailing newline, or with `--json`
 `json` as indented JSON (`{ "text": … }` when the command returned no `json`). It exits with
-`exitCode`, 0 when absent. A return value that is not an object prints nothing. An unknown verb
+`exitCode`, 0 when absent. A return value that is not an object prints nothing (`{}` with
+`--json`). An unknown verb
 still prints `Unknown command`; a verb whose plugin is disabled fails with
 `plugin <id> is disabled`. A verb gets no standard input and cannot prompt, so one that needs a
 confirmation should take `--yes`. `kelpi --help` lists installed verbs under their plugin's name,

@@ -113,9 +113,10 @@ describe('public plugin protocol', () => {
             expect(decodePluginManifest(withCli([hello])).contributes.cli).toEqual([hello]);
             const plain = decodePluginManifest(manifest).contributes;
             expect(plain).not.toHaveProperty('cli');
-            expect(plain.cli ?? []).toEqual([]);
             expect(decodePluginManifest(withCli([])).contributes).not.toHaveProperty('cli');
             expect(decodePluginManifest(withCli([{ ...hello, name: 'a'.repeat(32) }, { ...hello, name: 'auto-approve' }, { ...hello, name: 'x9' }])).contributes.cli?.map(verb => verb.name)).toEqual(['a'.repeat(32), 'auto-approve', 'x9']);
+            // Built-in names are the package reader's refusal; a stored manifest still decodes at boot.
+            expect(decodePluginManifest(withCli([{ ...hello, name: 'pane' }])).contributes.cli?.[0]?.name).toBe('pane');
         });
         it.each([
             ['Hello', 'invalid plugin cli verb name'], ['9lives', 'invalid plugin cli verb name'], ['-x', 'invalid plugin cli verb name'],
@@ -124,14 +125,14 @@ describe('public plugin protocol', () => {
         ])('refuses the verb name %j', (name, message) => {
             expect(() => decodePluginManifest(withCli([{ ...hello, name }]))).toThrow(message);
         });
-        it('refuses a built-in verb, a duplicate, an undeclared command and a missing or long summary', () => {
-            for (const name of ['pane', 'plugin', 'help', 'version', 'install-hooks']) expect(() => decodePluginManifest(withCli([{ ...hello, name }]))).toThrow(`cli verb "${name}" is a built-in kelpi command`);
+        it('refuses a duplicate, an undeclared command and a missing, long or control-character summary', () => {
             expect(() => decodePluginManifest(withCli([hello, { ...hello, summary: 'Again' }]))).toThrow('duplicate plugin cli verb hello');
             expect(() => decodePluginManifest(withCli([{ ...hello, command: 'sample.board.other' }]))).toThrow('plugin UI command must be owned and declared');
             expect(() => decodePluginManifest(withCli([{ ...hello, command: 'another.plugin.hello' }]))).toThrow('plugin UI command must be owned and declared');
             expect(() => decodePluginManifest(withCli([hello], []))).toThrow('plugin UI command must be owned and declared');
             const { summary: _summary, ...unsummarised } = hello;
-            for (const verb of [unsummarised, { ...hello, summary: '' }, { ...hello, summary: '   ' }, { ...hello, summary: 'x'.repeat(121) }, { ...hello, summary: 'two\nlines' }]) {
+            for (const verb of [unsummarised, { ...hello, summary: '' }, { ...hello, summary: '   ' }, { ...hello, summary: 'x'.repeat(121) }, { ...hello, summary: 'two\nlines' },
+                { ...hello, summary: 'clear\u001b[2J' }, { ...hello, summary: 'tab\there' }, { ...hello, summary: 'nul\u0000' }, { ...hello, summary: 'del\u007f' }]) {
                 expect(() => decodePluginManifest(withCli([verb]))).toThrow('invalid plugin cli verb summary');
             }
             expect(decodePluginManifest(withCli([{ ...hello, summary: 'x'.repeat(120) }])).contributes.cli?.[0]?.summary).toHaveLength(120);

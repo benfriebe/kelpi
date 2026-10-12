@@ -109,6 +109,12 @@ Top-level subcommands: `event`, `pane`, `workspace`, `group`, `layout`, `open`, 
   **stderr**, an existing quirk), exit 0.
 - Unknown subcommand: `Unknown command: <x>\n` to stderr, then the usage block, exit 1.
 
+A word that is not a top-level subcommand may be a verb an installed plugin added
+([plugin CLI verbs](#plugin-cli-verbs)). Only then does the CLI ask the daemon, so a built-in
+subcommand never pays for a round trip; it is unknown only when no plugin declares it, or when
+no daemon can be reached. A word starting with `-` is never sent. `kelpi --help` (and `-h`,
+`help`) appends a `Plugin commands:` block when the daemon lists any.
+
 ### 3.1 Version resolution
 
 The CLI's identity is compiled in (`packages/cli/src/version.ts:17`): `CLI_VERSION` (kept in
@@ -2421,7 +2427,8 @@ template to `pane`, and refuses an existing destination directory. It returns
 [plugin development](plugin-development.md#create-and-edit-a-project).
 
 `validate` reports format, ID/name/version, API version, dependencies, content revision,
-file count, total bytes and per-file sizes/digests. `pack` requires a source directory and
+file count, total bytes and per-file sizes/digests, plus the `kelpi` verbs the plugin
+declares under `cli` (`name`, `command`, `summary`; see [plugin CLI verbs](#plugin-cli-verbs)). `pack` requires a source directory and
 an unused output path in an existing directory outside that source. Its report adds the
 artifact path, archive size and artifact SHA-256. Packing does not install or publish it.
 The [package contract](plugins.md#package-format) defines portable path and size limits.
@@ -2450,6 +2457,63 @@ object. Native document/terminal/browser replacements attach to existing native 
 stored overrides; writing requires both `--key` and a JSON `--value`. Service calls default
 to version 1 and require a positive integer version; `service-select ... default` clears
 the saved provider choice. The [plugin reference](plugins.md) covers API behavior and scope.
+
+### Plugin CLI verbs
+
+Source: [plugin-cli.ts](../packages/cli/src/commands/plugin-cli.ts). A plugin's
+`contributes.cli` entry adds a top-level verb that runs one of its commands
+([CLI verbs](plugins.md#cli-verbs) covers the manifest, collisions and the command's side):
+
+```text
+kelpi <verb> [--json] [argv...]
+```
+
+- **Dispatch.** Built-in subcommands are matched first, without contacting the daemon. Any
+  other word not starting with `-` is sent as one `plugin` request with action `cli` and text
+  `{verb, argv, cwd, isTTY, json, paneID?}`: `cwd` is the CLI's working directory, `isTTY`
+  whether its stdout is a terminal, and `paneID` the non-empty `KELPI_PANE_ID`. The daemon
+  derives the workspace from the pane. The read timeout is 35 seconds, as for `plugin run`.
+- **argv.** Every word after the verb, in order. Every `--json` before a `--` is the CLI's: it
+  is removed and sets `json`. The `--` and every word after it reach the plugin unchanged, so
+  `kelpi hello -- --json` passes `["--", "--json"]`. `kelpi <verb> --help` is ordinary argv for
+  the plugin to answer; the CLI prints no help of its own.
+- **Output.** The result is `{text?, json?, exitCode?, stderr?}`. A non-empty `stderr` goes to
+  stderr first. Without `--json`, a non-empty `text` goes to stdout with a trailing newline
+  added if missing; a result with no `text` prints nothing. With `--json`, stdout gets
+  `JSON.stringify(json, null, 2)`, or `{"text": ...}` when the result has no `json`.
+- **Exit code.** `exitCode` when it is an integer from 0 to 255; 0 when absent; 1 for any
+  other value.
+- **Unknown.** When no installed plugin declares the verb, the daemon answers
+  `unknown kelpi verb: <verb>` and the CLI prints `Unknown command: <verb>` and the usage block
+  to stderr, exit 1, exactly as before plugin verbs. A word starting with `-` gets the same
+  output without a request. A daemon from before plugin verbs counts as declaring none; the
+  CLI adds a line suggesting `kelpi daemon restart`.
+- **Errors.** Any other `ok:false` prints `kelpi <verb>: <error>` to stderr and exits 1, for
+  example `kelpi hello: plugin acme.hello is disabled`. An empty or malformed reply is the
+  usual `no response from Kelpi` or `invalid JSON response`, attributed to `kelpi <verb>`.
+- **No daemon.** When no daemon can be reached, the word cannot be resolved: the CLI prints
+  `Unknown command: <verb>`, then one line saying plugin verbs need a running Kelpi daemon,
+  then the usage block, exit 1. These requests skip the pane-route retry
+  (`KELPI_ROUTE_RETRY_MS`, unless it is set explicitly), so this answers at once inside a pane
+  too.
+- **Help.** `kelpi --help` prints the usage block, then asks the daemon for `cli-list` and
+  appends a block, on stderr like the rest:
+
+  ```text
+  Plugin commands:
+    # Service Lab
+    kelpi hello             Say hello
+    kelpi shout (disabled)  Say it louder
+  ```
+
+  Verbs are grouped under their plugin's name, sorted, with summaries aligned and
+  `(disabled)` after a verb whose plugin is disabled (running it fails as above). There is no
+  block when no plugin declares a verb, when no daemon answers, on any error, or when the
+  answer takes longer than 2 seconds. The exit code stays 0. A bare `kelpi` with no arguments
+  prints only the usage block.
+
+There is no standard input and no interactive prompt: a verb that needs a confirmation takes a
+flag such as `--yes`.
 
 ### Watching and live development
 

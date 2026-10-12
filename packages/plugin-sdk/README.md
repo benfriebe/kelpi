@@ -238,6 +238,9 @@ with Kelpi. `kelpi.process@1` backs managed `api.process.exec`; `kelpi.files@1` 
 or all internal file access. See the [service guide](https://github.com/benfriebe/kelpi/blob/main/docs/plugin-services.md) for native
 reach, limits, fallback behavior, and the complete Git method catalog.
 
+`kelpi.agent.permissions@1` decides Claude's permission requests: its bundled `decide` always
+abstains, and a selected provider gets 2 seconds to return `allow`, `deny` or `abstain`.
+
 For provider authors, `BuiltinProviderMethods<'kelpi.content.render'>` describes a complete
 implementation. An explicit type argument on registration checks the same contract:
 

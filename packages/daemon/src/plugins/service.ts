@@ -15,6 +15,7 @@ import { inOperationScope, operationScope, type PluginOperationChannel, type Plu
 import type { BuiltinPluginService, BuiltinServiceHost } from './builtin-services.js';
 import { createFilesService } from './files-service.js';
 import { createProcessService } from './process-service.js';
+import { createPermissionsService } from './permissions-service.js';
 import { PluginDocuments } from './documents.js';
 import { PluginBrowser } from './browser.js';
 import type { CsvChannel } from '../content/csv/channel.js';
@@ -178,6 +179,7 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
         });
         this.registerBuiltinService(createFilesService());
         this.registerBuiltinService(createProcessService({ homeDirectory: () => options.store.getState().homeDirectory, cliEnvironment: () => this.cliEnvironment() }));
+        this.registerBuiltinService(createPermissionsService());
     }
 
     list(): PluginInfo[] {

@@ -96,6 +96,13 @@ events, marked `muted: true`, so a conductor plugin can watch its muted children
 honour `muted` and never echo it through `ui.showNotification` or `ui.notify`: that would undo the
 owner's mute.
 
+`api.agents.onEvent(listener)` delivers one typed `AgentHookEvent` per agent hook Kelpi handles
+(`agent.event`, also visible through `api.events.on`), whether or not a notification is shown:
+the verb, pane, workspace, agent kind, session id and status after the hook, plus the hook's
+fields such as `notificationType` and `lastAssistantMessage`. It returns an unsubscribe
+function. A muted workspace's events carry `muted: true` here too. See docs/plugins.md, State,
+events, focus, and appearance.
+
 A workspace's sidebar icon uses the flat spelling `"emoji:🔥"`:
 `api.workspaces.setIcon(workspaceID, icon)` sets it (`null` goes back to the letter),
 `api.workspaces.create({ icon: 'emoji:🧪' })` creates a workspace with one, and `icon` is on every

@@ -26,8 +26,11 @@ const camel = value => Array.isArray(value) ? value.map(camel) : value !== null 
 const target = value => typeof value === 'string' ? { target: value }
     : clean({ target: value?.paneID, workspace: value?.workspaceID });
 
-/** Create the platform-independent portion of the public API over a JSON transport. */
-export function createKelpiAPI(transport, getContext = () => ({})) {
+/**
+ * Create the platform-independent portion of the public API over a JSON transport. `on` is the
+ * platform's `events.on`; without it, `agents.onEvent` throws EVENTS_UNAVAILABLE.
+ */
+export function createKelpiAPI(transport, getContext = () => ({}), on = undefined) {
     const call = async (method, args = {}) => {
         try { return await transport(method, args); }
         catch (error) {
@@ -275,6 +278,12 @@ export function createKelpiAPI(transport, getContext = () => ({})) {
             notify: (paneID, title, body, options = {}) => done('notification', { pane_id: paneID, title, body, background_tasks: options.backgroundTasks ?? 0 }),
             sessionStart: (paneID, sessionID, agent, options = {}) => done('session-start', { pane_id: paneID, session_id: sessionID, agent, profile: options.profile }),
             sessionEnd: (paneID, sessionID) => done('session-end', { pane_id: paneID, session_id: sessionID }),
+            // #387: one `agent.event` per agent hook. Kelpi's own carry no pluginID, and a
+            // plugin's `events.emit` always does, so a plugin whose ID is `agent` cannot pass for one.
+            onEvent: listener => {
+                if (on === undefined) throw new KelpiError('agents.onEvent needs an event source', { code: 'EVENTS_UNAVAILABLE', method: 'agents.onEvent' });
+                return on('agent.event', event => event.pluginID === undefined ? listener(event.data, event) : undefined);
+            },
         }),
         terminal: Object.freeze({
             watch: paneID => call('terminal.watch', { paneID }),

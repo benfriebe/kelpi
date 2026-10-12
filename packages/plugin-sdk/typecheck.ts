@@ -39,6 +39,15 @@ async function authoring(api: BackendAPI): Promise<void> {
     await api.panes.resize('pane', { ratio: 0.3, delta: 0.2 });
     // @ts-expect-error Status is an explicit public vocabulary.
     await api.agents.setStatus('pane', 'busy');
+    // #387: one typed event per agent hook; the unsubscribe is a plain Dispose.
+    const offAgentEvents: () => void = api.agents.onEvent(async (event, raw) => {
+        if (event.type === 'notification' && event.notificationType === 'permission_prompt' && event.muted !== true) void event.paneID;
+        const reply: string | undefined = event.lastAssistantMessage;
+        void reply; void raw.sequence;
+        // @ts-expect-error The verb is a fixed vocabulary.
+        if (event.type === 'permission') return;
+    });
+    offAgentEvents();
     // @ts-expect-error Browser-only focus is not a backend operation.
     await api.ui.focusPane('workspace', 'pane');
     api.hooks.register('sample.plugin.guard', async invocation => invocation.phase === 'before' ? { allow: true } : undefined);

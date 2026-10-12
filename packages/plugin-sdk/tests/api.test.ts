@@ -324,3 +324,26 @@ describe('public SDK over Kelpi command handlers', () => {
         expect(transport).toHaveBeenLastCalledWith('services.select', { service: 'kelpi.files', version: 1, providerID: null });
     });
 });
+
+describe('agents.onEvent (#387)', () => {
+    it('subscribes to agent.event, hands over the payload, and ignores plugin-emitted look-alikes', async () => {
+        const listeners = new Map<string, (event: { name: string; data: unknown; pluginID?: string }) => unknown>();
+        const dispose = vi.fn();
+        const on = vi.fn((name: string, listener: (event: never) => unknown) => { listeners.set(name, listener as never); return dispose; });
+        const api = createKelpiAPI(async () => null, () => ({}), on as never);
+        const received: unknown[] = [];
+        const off = api.agents.onEvent(event => { received.push(event); });
+        expect(on).toHaveBeenCalledWith('agent.event', expect.any(Function));
+        const data = { type: 'stop', paneID: 'P', workspaceID: 'W', agent: 'claude', status: 'waitingForInput', lastAssistantMessage: 'done' };
+        await listeners.get('agent.event')?.({ name: 'agent.event', data });
+        // A plugin whose ID is `agent` emitting `event` produces the same name, with its pluginID.
+        await listeners.get('agent.event')?.({ name: 'agent.event', data: { type: 'stop' }, pluginID: 'agent' });
+        expect(received).toEqual([data]);
+        off();
+        expect(dispose).toHaveBeenCalledTimes(1);
+    });
+    it('refuses without an event source', () => {
+        const api = createKelpiAPI(async () => null);
+        expect(() => api.agents.onEvent(() => {})).toThrow(expect.objectContaining({ code: 'EVENTS_UNAVAILABLE' }));
+    });
+});

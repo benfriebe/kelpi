@@ -96,16 +96,29 @@ function parseSendReplyOrExit(data: string, command: string): JsonObject {
     return parseReplyOrExit(data, command);
 }
 
-/** `--if-revision <n>`: null when absent, else a non-negative integer or exit 1. */
+/**
+ * `--if-revision <n>`: null when absent, else a non-negative integer or exit 1. A trailing flag
+ * with no value is an error too, so `pane send` never types it as text, unguarded.
+ */
 function parseIfRevision(args: string[], command: string): number | null {
     const raw = parseFlag('--if-revision', args);
-    if (raw === null) return null;
-    const parsed = parseIntStrict(raw);
+    if (raw === null && !args.includes('--if-revision')) return null;
+    const parsed = raw === null ? null : parseIntStrict(raw);
     if (parsed === null || parsed < 0) {
         errLine(`${command}: --if-revision must be a non-negative integer`);
         exit(1);
     }
     return parsed;
+}
+
+/**
+ * A daemon from before #390 ignores `if_revision` and acks without `revision`, so a guarded
+ * send went through unguarded: say so on stderr, keeping the ack and exit code.
+ */
+function warnIfUnguarded(ifRevision: number | null, reply: JsonObject | null, command: string, what: string): void {
+    if (ifRevision === null) return;
+    if (reply !== null && asNumber(reply['revision']) !== undefined) return;
+    errLine(`${command}: this Kelpi did not check --if-revision; ${what} was sent unguarded`);
 }
 
 export async function handlePane(args: string[]): Promise<void> {
@@ -407,9 +420,13 @@ async function handlePaneSend(args: string[]): Promise<void> {
         exit(1);
     }
     // Empty reply = a pre-request/response Kelpi that acted then closed. Treat as success.
-    if (data.length === 0) return;
+    if (data.length === 0) {
+        warnIfUnguarded(ifRevision, null, 'kelpi pane send', 'the text');
+        return;
+    }
 
     const reply = parseSendReplyOrExit(data, 'kelpi pane send');
+    warnIfUnguarded(ifRevision, reply, 'kelpi pane send', 'the text');
     if (asJSON) {
         printReplyWithoutOk(reply);
         return;
@@ -459,6 +476,7 @@ async function handlePaneSendKey(args: string[]): Promise<void> {
     if (ifRevision !== null) payload['if_revision'] = ifRevision;
 
     const reply = await readReplyOrEmptyError(payload, 'kelpi pane send-key', parseSendReplyOrExit);
+    warnIfUnguarded(ifRevision, reply, 'kelpi pane send-key', 'the key');
     const id = asString(reply['pane_id']) ?? '?';
     const label = asString(reply['label']);
     const workspaceName = asString(reply['workspace_name']);

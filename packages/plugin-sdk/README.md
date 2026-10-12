@@ -146,8 +146,9 @@ Typed command helpers reject failures with `KelpiError` (`code`, `method`, `deta
 context)` remains compatible with the CLI/UI wire protocol and returns `{ok:false}` replies
 unchanged. Fire-and-forget operations such as layout selection and group rename resolve when
 dispatch is acknowledged; their existing daemon no-op semantics still apply.
-A refusal whose reply carries its own string `code` (such as `SCREEN_CHANGED`, or `PLUGIN_VETO`
-from a command hook) rejects with that code instead of `COMMAND_FAILED`, with the same `details`.
+In the typed command helpers, a refusal whose reply carries its own string `code` (such as
+`SCREEN_CHANGED`, or `PLUGIN_VETO` from a command hook) rejects with that code instead of
+`COMMAND_FAILED`, with the same `details`. `api.browser` calls still reject with `COMMAND_FAILED`.
 
 ## Terminal renderers
 

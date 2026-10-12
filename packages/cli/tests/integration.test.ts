@@ -348,6 +348,7 @@ describe('request/response', () => {
             port: server.port
         });
         expect(send.code).toBe(0);
+        expect(send.stderr).toBe('');
         expect(send.stdout).toBe(`sent to ${PANE}\n`);
         expect(await lastRequest()).toEqual({ command: 'pane-send', target: PANE, text: 'hello', bare: false, if_revision: 7 });
 
@@ -365,6 +366,12 @@ describe('request/response', () => {
         expect(key.stderr).toBe('');
         expect(key.stdout).toBe(`sent enter to ${PANE}\n`);
         expect(await lastRequest()).toEqual({ command: 'pane-send-key', target: PANE, key: 'enter', if_revision: 7 });
+
+        const keyZero = await runCLI(['pane', 'send-key', '--target', PANE, '--if-revision', '0', 'enter'], {
+            port: server.port
+        });
+        expect(keyZero.code).toBe(0);
+        expect(await lastRequest()).toEqual({ command: 'pane-send-key', target: PANE, key: 'enter', if_revision: 0 });
     });
 
     it('rejects an --if-revision that is not a non-negative integer before touching the socket', async () => {
@@ -386,6 +393,60 @@ describe('request/response', () => {
         expect(server.requests).toHaveLength(0);
     });
 
+    it('rejects a trailing --if-revision with no value instead of typing it unguarded', async () => {
+        const send = await runCLI(['pane', 'send', '--target', PANE, 'hello', '--if-revision'], { port: server.port });
+        expect(send.code).toBe(1);
+        expect(send.stdout).toBe('');
+        expect(send.stderr).toBe('kelpi pane send: --if-revision must be a non-negative integer\n');
+
+        const key = await runCLI(['pane', 'send-key', '--target', PANE, 'enter', '--if-revision'], {
+            port: server.port
+        });
+        expect(key.code).toBe(1);
+        expect(key.stdout).toBe('');
+        expect(key.stderr).toBe('kelpi pane send-key: --if-revision must be a non-negative integer\n');
+        expect(server.requests).toHaveLength(0);
+    });
+
+    it('warns on stderr when a guarded send is acked without a revision (an older Kelpi)', async () => {
+        server.respond(() => ({ lines: [{ ok: true, pane_id: PANE, bare: false }] }));
+        const send = await runCLI(['pane', 'send', '--if-revision', '3', '--target', PANE, 'hello'], {
+            port: server.port
+        });
+        expect(send.code).toBe(0);
+        expect(send.stdout).toBe(`sent to ${PANE}\n`);
+        expect(send.stderr).toBe('kelpi pane send: this Kelpi did not check --if-revision; the text was sent unguarded\n');
+
+        const json = await runCLI(['pane', 'send', '--if-revision', '3', '--json', '--target', PANE, 'hello'], {
+            port: server.port
+        });
+        expect(json.code).toBe(0);
+        expect(json.stdout).toBe(`{"bare":false,"pane_id":"${PANE}"}\n`);
+        expect(json.stderr).toBe('kelpi pane send: this Kelpi did not check --if-revision; the text was sent unguarded\n');
+
+        // Without the flag nothing was asked, so nothing to warn about.
+        const plain = await runCLI(['pane', 'send', '--target', PANE, 'hello'], { port: server.port });
+        expect(plain.code).toBe(0);
+        expect(plain.stderr).toBe('');
+
+        server.respond(() => ({ lines: [{ ok: true, pane_id: PANE, key: 'enter' }] }));
+        const key = await runCLI(['pane', 'send-key', '--if-revision', '3', '--target', PANE, 'enter'], {
+            port: server.port
+        });
+        expect(key.code).toBe(0);
+        expect(key.stdout).toBe(`sent enter to ${PANE}\n`);
+        expect(key.stderr).toBe('kelpi pane send-key: this Kelpi did not check --if-revision; the key was sent unguarded\n');
+
+        // The empty-reply success shim: the daemon could not have checked either.
+        server.respond(() => ({ silent: true }));
+        const empty = await runCLI(['pane', 'send', '--if-revision', '3', '--target', PANE, 'hello'], {
+            port: server.port
+        });
+        expect(empty.code).toBe(0);
+        expect(empty.stdout).toBe('');
+        expect(empty.stderr).toBe('kelpi pane send: this Kelpi did not check --if-revision; the text was sent unguarded\n');
+    });
+
     it('names the current revision when the daemon refuses a send because the screen changed', async () => {
         server.respond(() => ({
             lines: [{ ok: false, error: 'screen changed', code: 'SCREEN_CHANGED', revision: 9 }]
@@ -403,6 +464,22 @@ describe('request/response', () => {
         expect(key.code).toBe(1);
         expect(key.stdout).toBe('');
         expect(key.stderr).toBe('kelpi pane send-key: screen changed (revision 9)\n');
+
+        const json = await runCLI(['pane', 'send', '--if-revision', '7', '--json', '--target', PANE, 'hello'], {
+            port: server.port
+        });
+        expect(json.code).toBe(1);
+        expect(json.stdout).toBe('');
+        expect(json.stderr).toBe('kelpi pane send: screen changed (revision 9)\n');
+
+        // A refusal without a usable revision still gets the line, with a placeholder.
+        server.respond(() => ({ lines: [{ ok: false, error: 'screen changed', code: 'SCREEN_CHANGED' }] }));
+        const unknown = await runCLI(['pane', 'send', '--if-revision', '7', '--target', PANE, 'hello'], {
+            port: server.port
+        });
+        expect(unknown.code).toBe(1);
+        expect(unknown.stdout).toBe('');
+        expect(unknown.stderr).toBe('kelpi pane send: screen changed (revision ?)\n');
 
         // Any other refusal keeps its existing wording.
         server.respond(() => ({ lines: [{ ok: false, error: "no pane matched target 'ghost'" }] }));

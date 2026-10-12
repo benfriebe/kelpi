@@ -712,10 +712,14 @@ kelpi pane send [--bare] [--json] [--if-revision <n>] --target <name-or-uuid> [-
   present only when the flag is given). If the pane's screen revision no longer equals `n`
   the daemon replies `{"ok":false,"code":"SCREEN_CHANGED","revision":N}`, nothing is typed, and
   the CLI prints `kelpi pane send: screen changed (revision N)` to stderr with empty stdout
-  and exit 1 (also under `--json`). Every other error reply keeps its wording. Like
-  `--bare`/`--json`, a trailing `--if-revision` with no value is not an unknown option here:
-  it joins the text and the send is unguarded.
-- Empty reply => success, exit 0, silent (6.5).
+  and exit 1 (also under `--json`). Every other error reply keeps its wording. Unlike
+  `--bare`/`--json`, a trailing `--if-revision` with no value does not join the text: it fails
+  with the same `must be a non-negative integer` line, exit 1, nothing sent. If the flag was
+  given but the ack has no numeric `revision`, or the reply is empty, the daemon predates #390
+  and did not check: the CLI keeps the ack and exit 0 and adds
+  `kelpi pane send: this Kelpi did not check --if-revision; the text was sent unguarded` on stderr.
+- Empty reply => success, exit 0, silent (6.5), apart from the unguarded warning above when
+  `--if-revision` was given.
 - `--json`: reply minus `ok`, compact sorted (includes `revision` when the guard was given
   and the daemon honoured it).
 - Default ack: `sent to <id>` or `sent (bare) to <id>` (using the reply's `bare` field),
@@ -735,8 +739,9 @@ kelpi pane send-key [--if-revision <n>] --target <name-or-uuid> [--workspace <na
   before the unknown-option check, non-negative integer else
   `kelpi pane send-key: --if-revision must be a non-negative integer`, exit 1. A stale value
   prints `kelpi pane send-key: screen changed (revision N)` to stderr, exit 1. A flag given
-  with no value stays in argv and fails as `kelpi pane send-key: unknown option --if-revision`
-  + usage.
+  with no value fails with the same `must be a non-negative integer` line as `pane send`, exit 1.
+  An ack without a numeric `revision` keeps its stdout and exit 0 and adds
+  `kelpi pane send-key: this Kelpi did not check --if-revision; the key was sent unguarded` on stderr.
 - Remaining dash-prefixed tokens => `kelpi pane send-key: unknown option <tok>` + usage,
   exit 1. Exactly one positional key token required, else usage + the valid-key list line:
   `       <key> is one of: enter, return, tab, escape, esc, space, backspace, up, down, left, right, ctrl-c`.

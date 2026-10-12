@@ -167,7 +167,11 @@ export interface TerminalAPI {
     unwatch(subscription: string): Promise<void>;
     send(pane: PaneTarget, text: string, options?: { bare?: boolean } & TerminalSendGuard): Promise<PaneMutation & { bare: boolean; revision?: number }>;
     sendKey(pane: PaneTarget, key: NamedKey, options?: TerminalSendGuard): Promise<PaneMutation & { key: NamedKey; revision?: number }>;
-    /** Reads the screen with its revision, to pass back as `ifRevision` on send/sendKey. */
+    /**
+     * Reads the screen with its revision, to pass back as `ifRevision` on send/sendKey. Against a
+     * daemon from before #390, which reports no revision, cursor or alt-screen flag, it rejects with
+     * a KelpiError whose `code` is `'UNSUPPORTED'` and whose `details` is the reply; `capture` still works.
+     */
     read(pane: PaneTarget, options?: TerminalReadOptions): Promise<TerminalRead>;
     capture(pane: PaneTarget, options?: { lines?: number; scrollback?: boolean }): Promise<string>;
     sync(workspaceID: string, action?: 'on' | 'off' | 'toggle' | 'status'): Promise<TerminalSync>;

@@ -284,7 +284,12 @@ export function createKelpiAPI(transport, getContext = () => ({})) {
             sendKey: (pane, key, options = {}) => run('pane-send-key', { ...target(pane), key, if_revision: options.ifRevision }),
             // #390: the screen with its revision, cursor and alt-screen flag; `settled` only with `settleMs`.
             read: async (pane, options = {}) => {
-                const { text, revision, cursor, altScreen, settled } = await run('pane-capture', { ...target(pane), lines: options.lines, scrollback: options.scrollback ?? false, settle_ms: options.settleMs });
+                const reply = await execute('pane-capture', { ...target(pane), lines: options.lines, scrollback: options.scrollback ?? false, settle_ms: options.settleMs });
+                const { text, revision, cursor, altScreen, settled } = camel(reply);
+                // A daemon from before #390 omits these; an `ifRevision: undefined` would then send unguarded.
+                if (typeof revision !== 'number' || typeof cursor?.row !== 'number' || typeof cursor?.col !== 'number' || typeof altScreen !== 'boolean') {
+                    throw new KelpiError('terminal.read needs a Kelpi daemon that reports screen revisions (#390)', { code: 'UNSUPPORTED', method: 'pane-capture', details: reply });
+                }
                 return clean({ text, revision, cursor, altScreen, settled });
             },
             capture: async (pane, options = {}) => (await run('pane-capture', { ...target(pane), lines: options.lines, scrollback: options.scrollback ?? false })).text,

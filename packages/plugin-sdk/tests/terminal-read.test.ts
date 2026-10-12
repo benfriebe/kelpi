@@ -32,6 +32,23 @@ describe('terminal.read and ifRevision', () => {
         expect(await api.terminal.capture('P1', { lines: 1 })).toBe('visible');
         expect(sent).toStrictEqual([{ command: 'pane-capture', target: 'P1', lines: 1, scrollback: false }]);
     });
+    it('refuses read against a daemon that reports no revision, cursor or alt screen, and keeps capture', async () => {
+        const old = { ok: true, text: 'x' };
+        const { api } = stub(() => old);
+        const failure = await api.terminal.read('P1').catch((error: unknown) => error);
+        expect(failure).toBeInstanceOf(KelpiError);
+        expect(failure).toMatchObject({ code: 'UNSUPPORTED', message: 'terminal.read needs a Kelpi daemon that reports screen revisions (#390)', method: 'pane-capture', details: old });
+        expect(await api.terminal.capture('P1')).toBe('x');
+        for (const partial of [
+            { revision: 1, alt_screen: false },
+            { revision: 1, cursor: { row: 0 }, alt_screen: false },
+            { revision: 1, cursor: { row: 0, col: 0 } },
+            { revision: '1', cursor: { row: 0, col: 0 }, alt_screen: false },
+        ]) {
+            const { api: partialAPI } = stub(() => ({ ok: true, text: 'x', ...partial }));
+            await expect(partialAPI.terminal.read('P1')).rejects.toMatchObject({ code: 'UNSUPPORTED', method: 'pane-capture' });
+        }
+    });
     it('sends if_revision on send and sendKey only when ifRevision is given', async () => {
         const { api, sent } = stub(payload => ({
             ok: true, ...placement, ...(payload['command'] === 'pane-send' ? { bare: payload['bare'] } : { key: payload['key'] }),

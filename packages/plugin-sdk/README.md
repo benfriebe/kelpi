@@ -89,7 +89,7 @@ arbitrary programs remains an explicit terminal or process operation.
 To type into a terminal only if it still shows what you read, read it with its revision and pass
 that back as `ifRevision` on `terminal.send` or `terminal.sendKey`. `terminal.read` resolves to
 `{ text, revision, cursor, altScreen, settled? }`; `settleMs` first waits until the pane has had
-that long without output (capped at 10 s, `settled: false` when the cap came first). If the screen
+that long without output (capped at 10 s, `settled: false` when the cap came first or the pane's terminal was restarted during the wait). If the screen
 changed in between, nothing is typed and the call rejects with `KelpiError` code `SCREEN_CHANGED`,
 whose `details.revision` is the current revision. The revision counts the output the daemon has
 fed the pane, and resizes; it starts again when the daemon restarts.

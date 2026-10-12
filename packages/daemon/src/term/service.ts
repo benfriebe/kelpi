@@ -716,7 +716,7 @@ interface PaneTerminal {
      * Starts one past every revision the service has issued (`highestRevision`).
      */
     revision: number;
-    /** Pending `settle()` calls: told of every revision bump, and of dispose (`true`). */
+    /** Pending `settle()` calls: told of every revision bump, and of dispose (called with `disposed: true`, which resolves the wait as unsettled). */
     readonly quietWaiters: Set<(disposed: boolean) => void>;
 }
 
@@ -1054,7 +1054,7 @@ export class TerminalStateServiceImpl implements TerminalStateService {
      */
     settle(paneID: string, quietMs: number, capMs: number = this.settleCapMs): Promise<boolean> {
         const entry = this.panes.get(paneID);
-        if (!entry || entry.disposed) return Promise.resolve(true);
+        if (!entry) return Promise.resolve(true);
         const quiet = Math.max(0, Math.min(quietMs, capMs));
         return new Promise<boolean>((resolve) => {
             let quietTimer: ReturnType<typeof setTimeout> | undefined;

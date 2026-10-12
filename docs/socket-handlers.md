@@ -549,15 +549,15 @@ Validation order:
    actual type raw value: `markdown`/`scratchpad`/`diff`/`web`).
 5. Flush a deferred first spawn: a pane whose first spawn is still waiting for a client's
    geometry has no server-side terminal yet, so the handler runs that spawn now
-   (`ctx.spawn.flushSpawn(paneID)`, `handlers/pane/input.ts:95`) rather than answering with
+   (`ctx.spawn.flushSpawn(paneID)`, `handlers/pane/input.ts:136`) rather than answering with
    an empty screen. A no-op for every other pane.
 
 Without a reply handle the command is a no-op (a pure read has nothing to drop;
-`input.ts:74`). Then asynchronously read the pane's terminal contents (viewport, or viewport
+`input.ts:108`). Then asynchronously read the pane's terminal contents (viewport, or viewport
 + full scrollback when `includeScrollback`). If the surface died mid-read →
 `{ok:false,error:"pane closed during capture"}`; if the read throws while the pane still
 exists (an emulator fault) → `{ok:false,error:"pane capture failed: <error>"}`
-(`input.ts:136`). Either way the client gets a line rather than waiting for an EOF that
+(`input.ts:199-209`). Either way the client gets a line rather than waiting for an EOF that
 never comes.
 
 The async read (#390, `readCapture`, `input.ts:165-229`): when `settleMs` is given, first wait

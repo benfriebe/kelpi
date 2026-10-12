@@ -903,7 +903,7 @@ operation; empty input tails to `""`.
 A present `lines` that is <= 0 fails with `lines must be a positive integer (got N)` before
 the target is resolved (`packages/daemon/src/handlers/pane/input.ts:77-81`). A read that
 throws for a still-present pane answers `{"ok":false,"error":"pane capture failed: <error>"}`
-(`input.ts:136-147`).
+(`input.ts:199-209`).
 
 `settle_ms` (int, optional) waits for the pane to go quiet before the read: the reply is
 held until the pane has had no output for `settle_ms`, counted from when the request is
@@ -917,7 +917,7 @@ turn as the text (after the flush): `revision` (int, the pane's screen revision)
 `cursor` (`{"row":<int>,"col":<int>}`, 0-based, viewport-relative, on the active screen) and
 `alt_screen` (bool, whether the alternate screen is active). `settled` (bool) is present only
 when `settle_ms` was sent: `true` when the pane was quiet for `settle_ms`, `false` when the
-cap came first.
+cap came first or the pane's terminal was restarted during the wait.
 
 ```json
 {"command":"pane-capture","target":"worker","settle_ms":500}

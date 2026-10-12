@@ -152,7 +152,7 @@ export interface TerminalRead {
     /** 0-based and viewport-relative, on the active screen. */
     cursor: { row: number; col: number };
     altScreen: boolean;
-    /** Only with `settleMs`: false when the cap was reached first and `text` is the screen at the cap. */
+    /** Only with `settleMs`: false when the cap was reached first or the pane's terminal was restarted during the wait, and `text` is the screen at that point. */
     settled?: boolean;
 }
 /**

@@ -304,6 +304,21 @@ configs written for the pre-port CLI keep working against the daemon):
 The common Claude path (no flag, no background work) is wire-identical to the
 pre-Codex/pre-background protocol — that back-compat is a hard requirement.
 
+**Hook fields for plugins (#387).** After step 9's fields, the CLI also forwards these from
+the stdin payload, each only when it is a non-empty string (`agentHookFields` in
+`packages/cli/src/commands/event.ts`), so a manual `kelpi event stop` with no stdin, or a
+payload without them, stays wire-identical:
+
+| stdin key                | Sent on                                | Notes |
+| ------------------------ | -------------------------------------- | ----- |
+| `notification_type`      | `notification`                         | Claude-only: `permission_prompt`, `idle_prompt`, `elicitation_dialog`, … |
+| `last_assistant_message` | `stop`                                 | Claude-only: the final reply's text. Capped at 64 KiB of UTF-8 (`capAssistantMessage`), cut on a code point boundary so a surrogate pair is never split; a cut adds `"last_assistant_message_truncated": true` |
+| `transcript_path`        | `notification`, `stop`, `session-start` | both agents |
+| `tool_name`              | `notification` with `--agent codex`    | Codex's PermissionRequest; a Claude notification never forwards it |
+
+A Codex payload that carries `notification_type` or `last_assistant_message` is forwarded
+under the same keys. The wire shapes are in wire-protocol.md §6.1.
+
 ---
 
 ## 4. Wire protocol — daemon side

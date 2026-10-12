@@ -65,6 +65,68 @@ export function countBackgroundTasks(value: JsonValue | undefined): number {
     return count;
 }
 
+/**
+ * The `last_assistant_message` cap (#387), in UTF-8 bytes. Even escaped six-fold as JSON it
+ * stays far below the 64 MB request line limit (wire-protocol.md §2.1).
+ */
+export const ASSISTANT_MESSAGE_MAX_BYTES = 64 * 1024;
+
+/**
+ * Cut `text` to at most `maxBytes` of UTF-8, on a code point boundary so a surrogate pair is
+ * never split. `truncated` is true only when something was cut.
+ */
+export function capAssistantMessage(
+    text: string,
+    maxBytes: number = ASSISTANT_MESSAGE_MAX_BYTES
+): { text: string; truncated: boolean } {
+    if (Buffer.byteLength(text, 'utf8') <= maxBytes) return { text, truncated: false };
+    let bytes = 0;
+    let end = 0;
+    for (const char of text) {
+        const point = char.codePointAt(0) ?? 0;
+        // A lone surrogate counts 3, as the UTF-8 encoder writes it as U+FFFD.
+        const size = point < 0x80 ? 1 : point < 0x800 ? 2 : point < 0x10000 ? 3 : 4;
+        if (bytes + size > maxBytes) break;
+        bytes += size;
+        end += char.length;
+    }
+    return { text: text.slice(0, end), truncated: true };
+}
+
+/** The verbs that carry the hook's `transcript_path` on the wire (#387). */
+const TRANSCRIPT_EVENTS = new Set(['notification', 'stop', 'session-start']);
+
+/**
+ * The hook fields a plugin acts on (#387), each only when stdin carries it as a non-empty
+ * string, so a payload without them stays wire-identical to the older CLI. Codex sends the
+ * same keys when it sends them at all; `tool_name` comes from its PermissionRequest, which
+ * is wired to `notification --agent codex`.
+ */
+export function agentHookFields(eventType: string, agent: string | null, json: JsonObject): JsonObject {
+    const nonEmpty = (key: string): string | undefined => {
+        const value = asString(json[key]);
+        return value !== undefined && value.length > 0 ? value : undefined;
+    };
+    const fields: JsonObject = {};
+    if (eventType === 'notification') {
+        const notificationType = nonEmpty('notification_type');
+        if (notificationType !== undefined) fields['notification_type'] = notificationType;
+        const toolName = agent === 'codex' ? nonEmpty('tool_name') : undefined;
+        if (toolName !== undefined) fields['tool_name'] = toolName;
+    }
+    if (eventType === 'stop') {
+        const lastAssistantMessage = nonEmpty('last_assistant_message');
+        if (lastAssistantMessage !== undefined) {
+            const capped = capAssistantMessage(lastAssistantMessage);
+            fields['last_assistant_message'] = capped.text;
+            if (capped.truncated) fields['last_assistant_message_truncated'] = true;
+        }
+    }
+    const transcriptPath = nonEmpty('transcript_path');
+    if (transcriptPath !== undefined && TRANSCRIPT_EVENTS.has(eventType)) fields['transcript_path'] = transcriptPath;
+    return fields;
+}
+
 /** The hook payload Claude Code / Codex pipe on stdin; absent or unparseable reads as null. */
 export function readStdinJSON(): JsonObject | null {
     if (process.stdin.isTTY === true) return null;
@@ -164,6 +226,8 @@ export async function handleEvent(args: string[]): Promise<void> {
     if (agent !== null) payload['agent'] = agent;
     // Only when non-zero, so the common no-background path is wire-identical to pre-#215.
     if (backgroundTaskCount > 0) payload['background_tasks'] = backgroundTaskCount;
+    // #387: only the hook fields stdin actually carried, so a manual call is unchanged.
+    if (stdinJSON !== null) Object.assign(payload, agentHookFields(eventType, agent, stdinJSON));
 
     await sendJSON(payload, `kelpi event ${eventType}`);
 }

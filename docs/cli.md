@@ -528,6 +528,13 @@ The count is attached to the payload as `background_tasks` (a JSON **number**) o
 }
 ```
 
+Since #387 the payload may also carry hook fields copied from stdin, each only when stdin
+carries it as a non-empty string: `notification_type` and `transcript_path` on
+`notification`; `last_assistant_message` (capped at 64 KiB of UTF-8 on a code point boundary,
+with `"last_assistant_message_truncated": true` only when cut) and `transcript_path` on
+`stop`; `transcript_path` on `session-start`; and `tool_name` on `notification --agent codex`
+(agent-lifecycle.md §3, wire-protocol.md §6.1).
+
 The command label used for warning attribution is `kelpi event <type>`.
 
 ---

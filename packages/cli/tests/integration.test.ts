@@ -464,7 +464,8 @@ describe('kelpi event', () => {
             pane_id: PANE,
             title: 'Codex',
             body: 'Approval requested: Bash',
-            agent: 'codex'
+            agent: 'codex',
+            tool_name: 'Bash'
         });
     });
 

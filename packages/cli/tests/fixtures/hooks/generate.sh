@@ -1,4 +1,5 @@
 #!/bin/bash
+# The Claude PermissionRequest group (#388) is new to the TypeScript installer and is not in the Swift heredoc below, so the expected-claude-*.json goldens carry it by hand.
 # Regenerate the `expected-*.json` goldens in this directory by running the REAL Swift-era
 # installer logic — `scripts/install-hooks.sh`'s two heredocs, fed through the actual
 # `scripts/merge_hooks.py` from the shipped Kelpi repo.

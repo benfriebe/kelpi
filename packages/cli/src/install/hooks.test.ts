@@ -285,6 +285,6 @@ describe('a non-bare command prefix', () => {
         const written = read(settingsFile());
         expect(written).toContain(`${absolute} event stop`);
         // Exactly one command per event: the bare variant was replaced, not doubled up.
-        expect(written.match(/"command":/g)).toHaveLength(5);
+        expect(written.match(/"command":/g)).toHaveLength(6);
     });
 });

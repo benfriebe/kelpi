@@ -49,6 +49,17 @@
           }
         ]
       }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "kelpi event permission-request",
+            "timeout": 5
+          }
+        ]
+      }
     ]
   }
 }

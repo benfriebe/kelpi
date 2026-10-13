@@ -934,10 +934,12 @@ first feed) one past every revision it has issued, so a pane whose terminal stat
 and created again (restart old terminals, a forgotten shell) carries on above its old values.
 A pane with no terminal state reads 0. It is not persisted, but a new daemon seeds its counter
 from the clock (milliseconds since the epoch at start, a 13-digit safe integer), past any value
-an earlier daemon could have issued, so a revision captured before a restart (terminal host
-handoff, in-app update) is refused with `SCREEN_CHANGED` rather than matching a live screen by
-accident. Pass it back as `if_revision` on `pane-send` / `pane-send-key` to type only if nothing
-has reached the screen since this capture.
+an earlier daemon could plausibly have issued, so a revision captured before a restart (terminal
+host handoff, in-app update) is refused with `SCREEN_CHANGED` rather than matching a live screen
+by accident. That is not a hard guarantee: a daemon that averaged more than one revision a
+millisecond over its life, or a clock that stepped back between the two, could leave the new seed
+inside the old range. Pass it back as `if_revision` on `pane-send` / `pane-send-key` to type
+only if nothing has reached the screen since this capture.
 
 #### `pane-sync` (R/R)
 
@@ -1935,5 +1937,5 @@ saved state keep working:
     capture showed. Within one daemon run a pane id never repeats a revision (new terminal state
     is seeded past every value the daemon has issued, and a pane with no terminal state reads 0),
     and a new daemon seeds its counter from the clock (milliseconds since the epoch at start),
-    past any value an earlier daemon could have issued, so a stale revision from before a
+    past any value an earlier daemon could plausibly have issued, so a stale revision from before a
     restart is refused with `SCREEN_CHANGED`, never reissued for a different screen.

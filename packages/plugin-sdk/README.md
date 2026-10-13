@@ -93,8 +93,8 @@ that long without output (capped at 10 s, `settled: false` when the cap came fir
 changed in between, nothing is typed and the call rejects with `KelpiError` code `SCREEN_CHANGED`,
 whose `details.revision` is the current revision. The revision counts the output the daemon has
 fed the pane, and resizes; it is not persisted, but a new daemon seeds its counter from the clock,
-past any value an earlier one could have issued, so a revision from before a restart does not
-match by accident.
+past any value an earlier one could plausibly have issued, so a revision from before a restart
+does not match by accident.
 
 Against a daemon from before #390, `terminal.read` rejects with `KelpiError` code `UNSUPPORTED`
 rather than returning a screen without a revision.

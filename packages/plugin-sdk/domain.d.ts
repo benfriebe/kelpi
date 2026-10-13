@@ -147,7 +147,7 @@ export interface TerminalRead {
      * has fed the pane (output still in flight from the terminal host is not counted yet) and on
      * every resize. Within one daemon run a pane never repeats a revision, even when its terminal is
      * restarted. It is not persisted, but a new daemon seeds its counter from the clock, past any
-     * value an earlier one could have issued, so a revision from before a restart does not match by accident.
+     * value an earlier one could plausibly have issued, so a revision from before a restart does not match by accident.
      */
     revision: number;
     /** 0-based and viewport-relative, on the active screen. */

@@ -49,6 +49,8 @@ export interface PluginServiceOptions {
     readonly commandTimeoutMs?: number;
     /** #389: how long a window has to acknowledge a backend prompt; tests shorten it. */
     readonly promptAckTimeoutMs?: number;
+    /** #389: how often a held command re-arms the window RPC that started it; tests shorten it. */
+    readonly promptHeartbeatMs?: number;
 }
 export interface PluginChannel extends Partial<PluginOperationChannel> {
     run(action: string, input: JsonObject, reply: ReplyHandle, context?: Partial<PluginContext>): void;
@@ -127,7 +129,7 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
     constructor(private readonly options: PluginServiceOptions) {
         this.documents = new PluginDocuments(options.content, (name, data, id) => { this.emit(name, data, id); }, options.csv);
         this.browser = new PluginBrowser(options.store, options.webPanes, (name, data, id) => { this.emit(name, data, id); }, paneID => options.broadcast({ type: 'web-browser-changed', paneID }));
-        this.prompts = new BackendPrompts({ broadcast: event => options.broadcast(event), ackTimeoutMs: options.promptAckTimeoutMs });
+        this.prompts = new BackendPrompts({ broadcast: event => options.broadcast(event), ackTimeoutMs: options.promptAckTimeoutMs, heartbeatMs: options.promptHeartbeatMs });
         this.temporary = options.directory === undefined;
         this.directory = options.directory ?? fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-plugins-'));
         this.daemonID = randomUUID();
@@ -991,7 +993,7 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
                 reject(error);
             };
             // #389: only a command's own clock pauses while it awaits a prompt it showed.
-            const call: PendingCall = { resolve, reject, timer: setTimeout(expire, Math.max(1, deadline - Date.now())), scope, ...(key.startsWith('command:') ? { deadline, expire } : {}) };
+            const call: PendingCall = { resolve, reject, timer: setTimeout(expire, Math.max(1, deadline - Date.now())), scope, ...(key.startsWith('command:') ? { deadline, expire, ...(parent.progress ? { progress: parent.progress } : {}) } : {}) };
             runtime.pending.set(id, call);
             signal?.addEventListener('abort', abort, { once: true });
             runtime.process.send({ ...envelope, id }, error => { if (error) { clearTimeout(call.timer); runtime.pending.delete(id); reject(error); } });
@@ -1010,7 +1012,9 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
         }
         const controller = new AbortController();
         reply.onDisconnect(() => controller.abort());
-        void inOperationScope({ ...operationScope(), signal: controller.signal }, () => this.request(action, input, context)).then(result => { if (reply.closed) { if (action === 'attach' && pluginRecord(result) && typeof result['lease'] === 'string') this.release(result['lease']); return; } reply.send({ ok: true, result }); reply.close(); }, error => { reply.send({ ok: false, error: failure(error) }); reply.close(); });
+        // #389: the command a window runs keeps its RPC alive while a prompt holds it; never after the reply.
+        const progress = action === 'run' && reply.progress ? { progress: (payload: JsonObject) => { if (!reply.closed) reply.progress?.(payload); } } : {};
+        void inOperationScope({ ...operationScope(), signal: controller.signal, ...progress }, () => this.request(action, input, context)).then(result => { if (reply.closed) { if (action === 'attach' && pluginRecord(result) && typeof result['lease'] === 'string') this.release(result['lease']); return; } reply.send({ ok: true, result }); reply.close(); }, error => { reply.send({ ok: false, error: failure(error) }); reply.close(); });
     }
     async request(action: string, input: JsonObject, context: PluginContext = { daemonID: this.daemonID }): Promise<JsonValue> {
         if (this.closed) throw new Error('plugin service is stopped');

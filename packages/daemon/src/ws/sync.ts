@@ -2526,6 +2526,7 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                         const action = text(payload['action']) ?? 'list';
                         // A paired device can use installed views, but cannot install account-level code.
                         if (this.credential?.startsWith(DEVICE_TOKEN_PREFIX) && ['install', 'dev-install', 'enable', 'disable', 'reload', 'remove', 'history', 'rollback', 'service-select'].includes(action)) throw new Error('plugin management requires the daemon owner');
+                        if (this.credential?.startsWith(DEVICE_TOKEN_PREFIX) && (action === 'prompt-ack' || action === 'prompt-reply')) throw new Error("backend prompts are answered from the daemon owner's windows");
                         options.plugins.run(action, pluginObject(JSON.parse(text(payload['text']) ?? '{}')), handle, {
                             clientID: this.clientID,
                             ...(this.client?.windowID ? { windowID: this.client.windowID } : {}),

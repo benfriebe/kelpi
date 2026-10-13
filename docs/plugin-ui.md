@@ -219,7 +219,8 @@ example one remembered from an earlier command's `context.windowID`. With neithe
 rejects with a `KelpiError` whose `code` is `NO_WINDOW` rather than picking a window: that is
 what `kelpi plugin run`, event listeners and other background callbacks get. A
 window that does not take the request within ten seconds (closed, or not connected) rejects
-the same way.
+the same way. Once a window has taken a request, only that window's connection can answer it,
+and a paired device never answers a backend's prompt.
 
 **Lifetime.** Requests belong to the backend. Disabling, reloading or stopping the plugin, or
 its backend failing, closes its open and queued prompts. Closing the window cancels the
@@ -232,7 +233,10 @@ A request over either limit rejects with an error.
 
 **Timeouts.** Like a view's, a backend's prompt has no RPC deadline. A command has 30 seconds
 to finish; while a prompt it shows directly is open, that timer is held, and it resumes with
-the time that was left once none of the command's prompts is pending. Only that command is
+the time that was left once none of the command's prompts is pending. While the prompt is
+open, the daemon also tells the window that ran the command every ten seconds that the command
+is still waiting, so the window's own 35-second wait does not run out before the user answers.
+Only that command is
 held: a caller waiting on it through `commands.execute` keeps its own 30-second call timer,
 as do activation, hooks and providers. Show the prompt from the command the user runs.
 

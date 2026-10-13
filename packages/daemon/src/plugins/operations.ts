@@ -7,6 +7,8 @@ export interface PluginOperationScope {
     readonly handled?: boolean;
     readonly source?: PluginOperationSource;
     readonly signal?: AbortSignal;
+    /** #389: the window RPC's progress frame, set for the `run` action only (see prompts.ts `hold`). */
+    readonly progress?: (payload: JsonObject) => void;
 }
 const scopes = new AsyncLocalStorage<PluginOperationScope>();
 export const operationScope = (): PluginOperationScope => scopes.getStore() ?? { trace: [] };

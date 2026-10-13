@@ -101,6 +101,20 @@ describe('backend prompts (#389)', () => {
         await h.answer(frame, { value: 'other' });
         expect(await result).toBe('other');
     });
+    it('takes a reply only from the client that acknowledged the prompt, and any of the window\'s before that', async () => {
+        const h = await harness();
+        const result = h.run('run');
+        const frame = await h.prompt();
+        await h.service.request('prompt-ack', { requestID: frame['requestID']! }, h.window('WIN', 'C'));
+        await expect(h.service.request('prompt-reply', { requestID: frame['requestID']!, value: 'run' }, h.window('WIN', 'D'))).rejects.toThrow('prompt belongs to another client');
+        await expect(h.service.request('prompt-reply', { requestID: frame['requestID']!, value: 'run' }, { daemonID: h.service.daemonID, windowID: 'WIN' })).rejects.toThrow('prompt belongs to another client');
+        await h.service.request('prompt-reply', { requestID: frame['requestID']!, value: 'run' }, h.window('WIN', 'C'));
+        expect(await result).toBe('run');
+        // Unacknowledged (the window refused the options), the window check alone applies.
+        const refused = h.run('run');
+        await h.service.request('prompt-reply', { requestID: (await h.prompt(1))['requestID']!, error: 'invalid options' }, h.window('WIN', 'D'));
+        await expect(refused).rejects.toThrow('invalid options');
+    });
     it('cancels a pending prompt when its backend is disabled, reloaded or crashes', async () => {
         const h = await harness();
         const cancelled = (frame: JsonObject) => expect(h.frames('plugin-prompt-cancel')).toContainEqual({ type: 'plugin-prompt-cancel', requestID: frame['requestID'], windowID: 'WIN' });
@@ -199,6 +213,47 @@ describe('backend prompts (#389)', () => {
         await expect(h.service.request('prompt-reply', { requestID: frame['requestID']!, value: 'run' }, h.window())).rejects.toThrow('unknown prompt request');
         expect(h.frames('plugin-prompt-cancel')).toEqual([]);
     });
+    it('re-arms the window RPC that ran the command while its prompt is open, and stops on every settle', async () => {
+        const h = await harness({ promptHeartbeatMs: 50, promptAckTimeoutMs: 1000 });
+        const started = vi.spyOn(globalThis, 'setInterval'), cleared = vi.spyOn(globalThis, 'clearInterval');
+        const heartbeats = (): unknown[] => started.mock.calls.flatMap((call, index) => call[1] === 50 ? [started.mock.results[index]!.value] : []);
+        const rpc = () => {
+            const frames: JsonObject[] = [], sent: JsonObject[] = []; let atReply = -1; let disconnect: (() => void) | undefined;
+            const reply = { closed: false, send: (value: JsonObject) => { atReply = frames.length; sent.push(value); }, close: () => { reply.closed = true; }, onDisconnect: (handler: () => void) => { disconnect = handler; }, progress: (value: JsonObject) => { frames.push(value); } };
+            h.service.run('run', { command: `${id}.run` }, reply as never, h.window());
+            return { frames, sent, afterReply: () => frames.length - atReply, disconnect: () => disconnect?.() };
+        };
+        try {
+            // Answered: a frame as the prompt opens, more while it waits, none once the reply is out.
+            const answered = rpc();
+            const frame = await h.prompt();
+            expect(answered.frames[0]).toEqual({ prompt: 'pending' });
+            await vi.waitFor(() => expect(answered.frames.length).toBeGreaterThanOrEqual(3));
+            await h.answer(frame, { value: 'run' });
+            // The reply itself ends the hold, before any later beat could notice.
+            expect(cleared).toHaveBeenCalledWith(heartbeats()[0]);
+            await vi.waitFor(() => expect(answered.sent).toEqual([{ ok: true, result: 'run' }]));
+            // Stopped: the reload cancels the prompt, and its heartbeat with it.
+            const stopped = rpc();
+            const next = await h.prompt(1);
+            await h.service.request('prompt-ack', { requestID: next['requestID']! }, h.window());
+            await h.service.request('reload', { pluginID: id });
+            await vi.waitFor(() => expect(stopped.sent).toEqual([{ ok: false, error: expect.stringContaining('plugin stopped') }]));
+            // Never presented: the ack watchdog ends it.
+            const unseen = rpc();
+            await h.prompt(2);
+            await vi.waitFor(() => expect(unseen.sent).toEqual([{ ok: false, error: 'NO_WINDOW: no window presented the prompt' }]), { timeout: 3000 });
+            // Cancelled RPC: the prompt stays open, but its command is gone, so the next beat stops itself.
+            const gone = rpc();
+            await h.service.request('prompt-ack', { requestID: (await h.prompt(3))['requestID']! }, h.window());
+            gone.disconnect();
+            await vi.waitFor(() => expect(gone.sent).toEqual([{ ok: false, error: 'plugin invocation cancelled' }]));
+            await new Promise(resolve => setTimeout(resolve, 200));
+            for (const call of [answered, stopped, unseen, gone]) expect(call.afterReply()).toBe(0);
+            expect(heartbeats()).toHaveLength(4);
+            for (const handle of heartbeats()) expect(cleared).toHaveBeenCalledWith(handle);
+        } finally { started.mockRestore(); cleared.mockRestore(); }
+    }, 15_000);
     it('refuses the prompt methods for a view, whose host presents them itself', async () => {
         const h = await harness();
         const attached = pluginObject(await h.service.request('attach', { pluginID: id, viewID: `${id}.view` }, h.window()));

@@ -11,6 +11,9 @@ export interface PromptHoldTarget {
     expire?: () => void;
     holds?: number;
     remaining?: number;
+    /** The window `run` RPC that started this command (`reply.progress`), kept alive while a prompt holds it. */
+    progress?: ((payload: JsonObject) => void) | undefined;
+    heartbeat?: ReturnType<typeof setInterval> | undefined;
 }
 /** The prompt's direct parent call, and whether it is still waiting for its result. */
 export interface PromptParent { readonly call: PromptHoldTarget; live(): boolean }
@@ -29,7 +32,7 @@ interface Pending {
  */
 export class BackendPrompts {
     private readonly pending = new Map<string, Pending>();
-    constructor(private readonly options: { broadcast(event: JsonObject): void; ackTimeoutMs?: number | undefined }) {}
+    constructor(private readonly options: { broadcast(event: JsonObject): void; ackTimeoutMs?: number | undefined; heartbeatMs?: number | undefined }) {}
 
     show(plugin: { id: string; name: string }, method: string, args: JsonObject, context: PluginContext, parent?: PromptParent): Promise<JsonValue> {
         const explicit = args['windowID'];
@@ -42,7 +45,7 @@ export class BackendPrompts {
         if (count >= 8) throw new Error('too many pending prompts for this plugin');
         const requestID = randomUUID();
         return new Promise((resolve, reject) => {
-            if (parent) hold(parent.call);
+            if (parent) hold(parent, this.options.heartbeatMs ?? 10_000);
             const entry: Pending = { pluginID: plugin.id, windowID, settle: outcome => {
                 clearTimeout(entry.watchdog); this.pending.delete(requestID);
                 if (parent) resume(parent);
@@ -65,6 +68,8 @@ export class BackendPrompts {
     }
     reply(input: JsonObject, context: Partial<PluginContext>): null {
         const entry = this.entry(input, context);
+        // Once a client presents the prompt, only it answers; before the ack the window check alone applies.
+        if (entry.clientID !== undefined && context.clientID !== entry.clientID) throw new Error('prompt belongs to another client');
         const { value, error } = input;
         if (typeof error === 'string') entry.settle({ error: new Error(error || 'prompt failed') });
         else if (value === null || typeof value === 'string') entry.settle({ value });
@@ -91,16 +96,25 @@ export class BackendPrompts {
     }
 }
 
-/** Stop the parent's timeout clock while any of its prompts is open, keeping what was left. */
-function hold(call: PromptHoldTarget): void {
+/**
+ * Stop the parent's timeout clock while any of its prompts is open, keeping what was left, and
+ * re-arm the deadline of the window RPC that started it, which every progress frame resets.
+ */
+function hold(parent: PromptParent, heartbeatMs: number): void {
+    const call = parent.call;
     if (!call.expire || call.deadline === undefined) return;
     call.holds = (call.holds ?? 0) + 1;
     if (call.holds > 1) return;
     clearTimeout(call.timer); call.remaining = Math.max(1, call.deadline - Date.now());
+    const progress = call.progress; if (!progress) return;
+    // The frame's payload is `{ prompt: 'pending' }`: the command is waiting on a backend prompt.
+    const beat = (): void => { if (parent.live()) progress({ prompt: 'pending' }); else { clearInterval(call.heartbeat); call.heartbeat = undefined; } };
+    call.heartbeat = setInterval(beat, heartbeatMs); beat();
 }
 function resume(parent: PromptParent): void {
     const call = parent.call;
     if (!call.expire || !call.holds || --call.holds > 0) return;
+    clearInterval(call.heartbeat); call.heartbeat = undefined;
     // A parent that settled or was cancelled meanwhile has no timer to restore.
     if (!parent.live()) return;
     const remaining = call.remaining ?? 1;

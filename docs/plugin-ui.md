@@ -217,7 +217,10 @@ api.commands.register('example.tasks.run', async () => {
 palette or menu invoked it. A second argument `{ windowID }` names a window explicitly, for
 example one remembered from an earlier command's `context.windowID`. With neither, the call
 rejects with a `KelpiError` whose `code` is `NO_WINDOW` rather than picking a window: that is
-what `kelpi plugin run`, event listeners and other background callbacks get. A
+what `kelpi plugin run`, event listeners and other background callbacks get. Only Kelpi app
+windows present backend prompts: a run from a browser client (a phone, or the browser UI)
+names no window, so it rejects with `NO_WINDOW` like `kelpi plugin run`, even when the user
+pressed the shortcut there. A
 window that does not take the request within ten seconds (closed, or not connected) rejects
 the same way. Once a window has taken a request, only that window's connection can answer it,
 and a paired device can only report that it cannot present one.
@@ -238,7 +241,10 @@ open, the daemon also tells the window that ran the command every ten seconds th
 command is still waiting, so the window's own 35-second wait does not run out before the
 user answers. Only that command is held: a caller waiting on it through `commands.execute`
 keeps its own 30-second call timer, as do activation, hooks and providers. Show the prompt
-from the command the user runs.
+from the command the user runs. A later prompt, such as one passing a remembered `{ windowID }`,
+must come from an event listener or another command, not from a timer or promise chain the
+command left running: once the command has returned, that call rejects with a plain
+`plugin invocation has expired` error, not a `NO_WINDOW` `KelpiError`.
 
 **Owner.** The plugin owns the request, named by its manifest name, as a view's request is. A
 selected [prompts presenter](#selectable-interaction-presenters) draws it the same way as a

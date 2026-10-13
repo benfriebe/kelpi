@@ -98,7 +98,8 @@ api.commands.register('example.my-board.run', async () => {
 ```
 
 The prompt opens in the window whose shortcut, palette or menu ran the command, or in the window
-named by a second argument `{ windowID }`. With neither, as for `kelpi plugin run`, it rejects with
+named by a second argument `{ windowID }`. With neither, as for `kelpi plugin run` or a run from a
+phone or the browser UI (only Kelpi app windows present prompts), it rejects with
 a `KelpiError` whose `code` is `NO_WINDOW`. The
 [UI guide](https://github.com/benfriebe/kelpi/blob/main/docs/plugin-ui.md#prompts-from-a-backend)
 covers lifetime, limits and the command timeout.

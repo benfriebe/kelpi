@@ -839,7 +839,8 @@ plugin that answers an event by calling `agents.notify` loops.
   The SDK's `agents.onEvent(listener)` wraps `events.on('agent.event')`.
 - **Payload.** `{ type, paneID, workspaceID, agent, sessionID?, status, notificationType?,
   title?, body?, message?, lastAssistantMessage?, lastAssistantMessageTruncated?,
-  transcriptPath?, backgroundTasks?, toolName?, muted? }`. `type` is the wire verb. `agent`,
+  transcriptPath?, backgroundTasks?, toolName?, behavior?, provider?, muted? }`. `type` is the
+  wire verb. `behavior` and `provider` ride only on `permission-request` (#388, below). `agent`,
   `sessionID` and `status` are the pane's after the event (`agent` falls back to `claude`).
   The optional keys are present only when the wire message carried them (§3, "Hook fields
   for plugins"): `title` / `body` on `notification` (with the decoder's defaults), `message`
@@ -1305,7 +1306,8 @@ interface SystemStats {
 17. Menu-bar dot precedence: waiting > running > none.
 18. Suppression checkboxes persist even when the dialog is cancelled.
 19. Plugin events (§7.7): exactly one `agent.event` per applied hook line (`start`, `stop`,
-    `notification`, `error`, `session-start`, `session-end`; the dual-fire adds none), after
+    `notification`, `error`, `session-start`, `session-end`, `permission-request`; the
+    dual-fire adds none), after
     the state change, notification shown or not; none for a muted-for-restart, unknown or
     unowned pane.
 

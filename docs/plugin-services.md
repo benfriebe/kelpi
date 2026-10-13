@@ -262,14 +262,24 @@ export function activate(api: BackendAPI) {
         decide({ toolName, toolInput }) {
             const command = toolName === 'Bash' && typeof toolInput['command'] === 'string' ? toolInput['command'] : null;
             if (command === null) return { behavior: 'abstain' };
+            // A command can span several lines; never allow one you have not matched whole.
+            if (/[\r\n]/.test(command)) return { behavior: 'abstain' };
             if (/^git push (-f|--force)\b/.test(command)) return { behavior: 'deny', message: 'Force pushes need a person.' };
-            if (/^mv [^;&|`$<>]+$/.test(command)) return { behavior: 'allow' };
+            if (/^mv [^;&|`$<>()\r\n]+$/.test(command)) return { behavior: 'allow' };
             return { behavior: 'abstain' };
         },
     };
     return api.providers.register<'kelpi.agent.permissions'>('example.policy.permissions', methods);
 }
 ```
+
+`toolInput.command` is the whole command string and can span several lines. Match it whole
+and conservatively: without the `m` flag `$` matches only at the very end, and a character
+class that still admits `\n` (such as `[^;&|]+`) lets `mv a b\nrm -rf ~` through as one allowed
+`mv`, so Claude runs both lines without a prompt. The example abstains on any command containing
+a newline before it looks further, and its `mv` rule excludes every character that can start a
+second command or a substitution, `(` and `)` included. Nothing an allow rule matches should be
+able to carry a second command.
 
 ## Updates and validation
 

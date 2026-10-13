@@ -200,6 +200,12 @@ export function permissionRequestPayload(paneID: string, json: JsonObject | null
         const value = nonEmpty(key);
         if (value !== undefined) payload[key] = value;
     }
+    // As on the other verbs: a PermissionRequest may be the first hook after a missed
+    // SessionStart, so the dual-fire that binds the session also records the profile.
+    if (payload['session_id'] !== undefined) {
+        const profile = profileName();
+        if (profile !== undefined) payload['profile'] = profile;
+    }
     return payload;
 }
 

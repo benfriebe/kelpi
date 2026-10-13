@@ -15,7 +15,7 @@ import { inOperationScope, operationScope, type PluginOperationChannel, type Plu
 import type { BuiltinPluginService, BuiltinServiceHost } from './builtin-services.js';
 import { createFilesService } from './files-service.js';
 import { createProcessService } from './process-service.js';
-import { createPermissionsService } from './permissions-service.js';
+import { createPermissionsService, PERMISSIONS_SERVICE } from './permissions-service.js';
 import { PluginDocuments } from './documents.js';
 import { PluginBrowser } from './browser.js';
 import type { CsvChannel } from '../content/csv/channel.js';
@@ -70,6 +70,11 @@ function nativePaneView(pane: Pane | undefined, view: PluginViewDefinition): boo
     const document = NATIVE_DOCUMENT_TYPES.includes(pane.type);
     return (document && view.placements.includes(`document.${pane.type}`)) || (nativeTerminalPane(pane) && view.placements.includes('terminal')) || (pane.type === 'web' && view.placements.includes('browser'));
 }
+/** #388: every provider id the installation's current and retained revisions declare, matched on manifests. */
+function declaredProviderIDs(item: PluginInstallation): Set<string> {
+    return new Set([item.manifest, ...item.revisions.map(revision => revision.manifest)].flatMap(manifest => (manifest.contributes.providers ?? []).map(provider => provider.id)));
+}
+
 /** Document panes retain terminal renderer state after their external editor closes. */
 function retainedNativePaneView(pane: Pane, view: PluginViewDefinition, previous: PluginViewDefinition | undefined): boolean {
     const document = NATIVE_DOCUMENT_TYPES.includes(pane.type);
@@ -659,8 +664,9 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
         this.notifyServicesChanged(true);
         return this.services();
     }
+    /** #388: only the permissions service forgets; every other selection survives removal (plugin-services.md). */
     private dropSelections(providers: ReadonlySet<string>): void {
-        const next = new Map([...this.serviceSelections].filter(([, provider]) => !providers.has(provider)));
+        const next = new Map([...this.serviceSelections].filter(([key, provider]) => !(key.startsWith(`${PERMISSIONS_SERVICE}@`) && providers.has(provider))));
         if (next.size === this.serviceSelections.size) return;
         this.writeJSON(path.join(this.directory, 'services.json'), Object.fromEntries(next));
         this.serviceSelections.clear(); for (const [key, value] of next) this.serviceSelections.set(key, value);
@@ -1097,12 +1103,13 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
             this.changing.add(id);
             try {
                 await this.stopPlugin(id); this.errors.delete(id);
+                // #388: a removed plugin's permissions providers lose their selection, so a reinstall never decides by
+                // itself. Before the removal, so a failed write leaves the plugin installed rather than the selection kept.
+                if (action === 'remove') this.dropSelections(declaredProviderIDs(item));
                 if (action === 'remove') this.installations.delete(id);
                 else this.installations.set(id, { ...item, enabled: action !== 'disable' });
                 try { this.persist(); } catch (error) { this.installations.set(id, item); this.changed(); throw error; }
                 this.changed();
-                // #388: a removed plugin's providers lose their selection, so a reinstall never decides by itself.
-                if (action === 'remove') this.dropSelections(new Set((item.manifest.contributes.providers ?? []).map(provider => provider.id)));
                 if ((action === 'reload' || action === 'enable') && item.manifest.backend) await this.activate(id, true);
             } finally { this.finishChange(id); }
             return this.list() as unknown as JsonValue;

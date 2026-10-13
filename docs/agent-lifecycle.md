@@ -851,7 +851,10 @@ plugin that answers an event by calling `agents.notify` loops.
   with `toolName`, `behavior`, `provider` (absent when none was asked) and `message` (deny
   only) on top of the common fields; `status` is the pane's current one, since the verb
   changes no state. It never carries `toolInput`. An unknown or unowned pane (`ok:false`) and
-  a pane `agentEventsMuted` covers publish none, as above.
+  a pane `agentEventsMuted` covers publish none, as above. `behavior` is the daemon's answer
+  as Claude got it: when the decision arrives after the CLI left (its 3.5 s guard fired, so
+  Claude kept its prompt), the event says `abstain`, still naming the provider, and drops any
+  `message`.
 
 ---
 

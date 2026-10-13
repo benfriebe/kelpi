@@ -563,11 +563,14 @@ After steps 1 to 5 of section 8 (so outside Kelpi, with no `KELPI_PANE_ID`, the 
   "mcp_server": "linear",              // only when stdin carries it as a non-empty string (MCP tools)
   "cwd": "/work/app",                  // only when non-empty
   "permission_mode": "default",        // only when non-empty
-  "session_id": "..."                  // only when non-empty
+  "session_id": "...",                 // only when non-empty
+  "profile": "work"                    // only beside session_id, when KELPI_PROFILE is non-empty
 }
 ```
 
-   No `profile` and no `agent`. The other stdin fields Claude sends (`transcript_path`,
+   `profile` rides beside `session_id` as on the other verbs, since a PermissionRequest may be
+   the first hook after a missed SessionStart and its dual-fire binds the session. No `agent`.
+   The other stdin fields Claude sends (`transcript_path`,
    `permission_suggestions`, `scratchpad_dir`, `prompt_id`, `effort`, `hook_event_name`) are
    not forwarded.
 4. Print according to the reply, then exit 0:

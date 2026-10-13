@@ -17,6 +17,10 @@
  * (#388 §4, agent-lifecycle.md §7.7), published after the reply. An unknown or unowned pane
  * (`ok:false`) and a pane whose agent events are muted (#372) publish none, as for every
  * other hook; the muted pane's abstain reply still goes out.
+ *
+ * The event's `behavior` is the daemon's answer as Claude got it: a decision that arrives after
+ * the CLI left (its guard fired, so Claude kept its prompt) publishes `abstain`. An internal
+ * fault caught by the last-resort `.catch` answers abstain and publishes no event.
  */
 
 import { pluginRecord, type JsonObject, type JsonValue } from '@kelpi/protocol';
@@ -131,23 +135,35 @@ export function permissionHandlerEntries(deps: AppDeps): readonly (readonly [str
             };
             void askProvider(args, deps)
                 .then(({ provider, decision }) => {
+                    // Read before `ok()` closes it: a closed handle means the CLI already left.
+                    const delivered = reply !== null && !reply.closed;
                     ok(reply, { ...decision, ...(provider !== undefined ? { provider } : {}) });
-                    deps.log(
-                        `permission-request: pane ${msg.pane_id} tool ${msg.tool_name}: ${decision.behavior} (provider ${provider ?? 'none'})`
-                    );
+                    if (delivered) {
+                        deps.log(
+                            `permission-request: pane ${msg.pane_id} tool ${msg.tool_name}: ${decision.behavior} (provider ${provider ?? 'none'})`
+                        );
+                    } else {
+                        deps.log(
+                            `WARNING: permission-request: pane ${msg.pane_id} tool ${msg.tool_name}: provider ${provider ?? 'none'} answered ${decision.behavior} after the CLI left; Claude kept its prompt`
+                        );
+                    }
                     // Read the pane again: the provider may have taken up to the deadline.
                     if (deps.agentEventsMuted(msg.pane_id)) return;
                     const event = permissionRequestEvent(msg.pane_id, ctx.store.getState(), {
                         toolName: msg.tool_name,
-                        behavior: decision.behavior,
+                        behavior: delivered ? decision.behavior : 'abstain',
                         ...(provider !== undefined ? { provider } : {}),
-                        ...(decision.message !== undefined ? { message: decision.message } : {})
+                        ...(delivered && decision.message !== undefined ? { message: decision.message } : {})
                     });
                     if (event !== null) deps.emitAgentEvent(event);
                 })
                 .catch((error: unknown) => {
                     if (reply !== null && !reply.closed) ok(reply, { behavior: 'abstain' });
-                    deps.log(`WARNING: permission-request: ${describeError(error)}`);
+                    try {
+                        deps.log(`WARNING: permission-request: ${describeError(error)}`);
+                    } catch {
+                        // The log itself is what failed; the abstain reply already went out.
+                    }
                 });
         })
     ];

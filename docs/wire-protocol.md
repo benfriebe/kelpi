@@ -664,7 +664,8 @@ dropped.
 The optional strings read an empty string as absent. `session_id`, `agent` and `profile` ride
 along as on any hook event, and the dual-fire (§3.1) applies; the daemon reads the agent kind
 and the bound session id from the pane, not from the line.
-`kelpi event permission-request` itself sends only `session_id` of the three (cli.md §8.7).
+`kelpi event permission-request` itself sends only `session_id` and `profile` of the three,
+`profile` only beside `session_id` (cli.md §8.7).
 
 ```json
 {"command":"permission-request","pane_id":"1B4E…","tool_name":"Bash","tool_input":{"command":"mv a b","description":"Rename a"},"cwd":"/work/app","permission_mode":"default","session_id":"abc-123"}
@@ -687,8 +688,8 @@ Reply: `{"ok":true,"behavior":"allow"|"deny"|"abstain","message"?:string,"provid
   `permission-request` or `*` runs before the handler for up to 5 s, so the CLI's 3.5 s guard
   and Claude's 5 s timeout are what bound the whole request, and both fail open to the prompt.
 - Each decision, fallbacks included, is also published to plugins as one `agent.event` of
-  type `permission-request` after the reply (agent-lifecycle.md §7.7); an unknown or muted
-  pane publishes none.
+  type `permission-request` after the reply (agent-lifecycle.md §7.7); an unknown pane, or
+  one whose agent events are muted (#372), publishes none.
 - A pane no workspace owns (the parked-inclusive lookup, as for §6.1): `{"ok":false,"error":"unknown pane"}`.
 - A pane whose agent events are muted while its terminal restarts on a new host (#372):
   `{"ok":true,"behavior":"abstain"}`, without asking any provider.

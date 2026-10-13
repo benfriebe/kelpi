@@ -307,6 +307,29 @@ describe('permission-request agent.event (#388 §4)', () => {
         expect(events).toHaveLength(1);
     });
 
+    it('publishes abstain, keeping the provider, when the decision arrives after the CLI left', async () => {
+        const { h, logs, events, ask } = setup(async () => ({ behavior: 'deny', message: 'no' }));
+        ask();
+        // The CLI's guard fired before the provider settled, so Claude kept its prompt.
+        h.replies.at(-1)?.disconnect();
+        await flush();
+        expect(events.map(({ event }) => event)).toEqual([
+            {
+                type: 'permission-request',
+                paneID: P1,
+                workspaceID: W1,
+                agent: 'claude',
+                status: 'idle',
+                toolName: 'Bash',
+                behavior: 'abstain',
+                provider: PROVIDER
+            }
+        ]);
+        expect(logs).toEqual([
+            `WARNING: permission-request: pane ${P1} tool Bash: provider ${PROVIDER} answered deny after the CLI left; Claude kept its prompt`
+        ]);
+    });
+
     it('leaves out the provider when none could be asked', async () => {
         const events: AgentHookEvent[] = [];
         const h = harness({

@@ -210,7 +210,8 @@ tool's error, and its own UI shows a fixed "Denied by PermissionRequest hook" li
   select it. Nothing is ever approved until the user picks the provider with
   `kelpi plugin service-select kelpi.agent.permissions <provider>` or Settings → Plugins →
   Service providers; `default` goes back to the bundled abstain.
-  Removing the plugin forgets the selection, so reinstalling it does not select it again.
+  This service is the exception to the rule that a selection survives removal: removing the
+  plugin forgets its providers' selection here, so reinstalling it does not select it again.
 - **2 second deadline.** The daemon waits at most 2 seconds for `decide`, whatever the
   provider's `timeoutMs` says, then aborts the call. Claude draws its prompt while the hook
   runs, so a late `allow` would dismiss a prompt the user may already be reading; the deadline
@@ -229,7 +230,8 @@ tool's error, and its own UI shows a fixed "Denied by PermissionRequest hook" li
 - **Visibility.** The daemon logs every decision (pane, tool, behavior, provider). The
   reply's `provider` field names the provider that was asked.
   Each decision is also an `agent.event` of type `permission-request` with `toolName`,
-  `behavior` and `provider` (never `toolInput`), which any plugin can observe through
+  `behavior`, `provider` (absent when none could be asked) and `message` (deny only), never
+  `toolInput`, which any plugin can observe through
   `api.agents.onEvent` ([plugins.md](plugins.md), agent-lifecycle.md §7.7).
 
 In sessions that cannot show a prompt (background subagents, non-interactive runs), Claude

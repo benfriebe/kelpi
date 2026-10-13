@@ -244,6 +244,16 @@ describe('kelpi event permission-request (#388)', () => {
         expect(replies.options).toEqual([{ timeoutSeconds: 3 }]);
     });
 
+    it('sends KELPI_PROFILE beside a session_id, and never without one', async () => {
+        setEnv({ KELPI_PANE_ID: PANE, KELPI_PROFILE: 'work' });
+        await decide('', { tool_name: 'Bash', session_id: 'sess-1' });
+        await decide('', { tool_name: 'Bash' });
+        expect(sent).toEqual([
+            { command: 'permission-request', pane_id: PANE, tool_name: 'Bash', tool_input: {}, session_id: 'sess-1', profile: 'work' },
+            { command: 'permission-request', pane_id: PANE, tool_name: 'Bash', tool_input: {} }
+        ]);
+    });
+
     it('forwards mcp_server, and sends an empty object for a missing or non-object tool_input', async () => {
         await decide('', { tool_name: 'mcp__linear__save_issue', mcp_server: 'linear', cwd: '' });
         await decide('', { tool_name: 'Bash', tool_input: ['ls'], session_id: '' });

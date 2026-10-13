@@ -243,8 +243,8 @@ user answers. Only that command is held: a caller waiting on it through `command
 keeps its own 30-second call timer, as do activation, hooks and providers. Show the prompt
 from the command the user runs. A later prompt, such as one passing a remembered `{ windowID }`,
 must come from an event listener or another command, not from a timer or promise chain the
-command left running: once the command has returned, that call rejects with a plain
-`plugin invocation has expired` error, not a `NO_WINDOW` `KelpiError`.
+command left running: once the command has returned, that call rejects with a `KelpiError`
+whose `code` is `TRANSPORT_ERROR` (message `plugin invocation has expired`), not `NO_WINDOW`.
 
 **Owner.** The plugin owns the request, named by its manifest name, as a view's request is. A
 selected [prompts presenter](#selectable-interaction-presenters) draws it the same way as a

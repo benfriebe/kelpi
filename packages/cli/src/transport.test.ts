@@ -144,11 +144,11 @@ describe('the deadlineMs read option (a wall-clock bound)', () => {
         setTransport({ kind: 'tcp', host: '127.0.0.1', port: (server.address() as net.AddressInfo).port });
         setEnv({});
         const started = Date.now();
-        const reply = await sendJSONAndReadReply({ command: 'ping' }, { timeoutSeconds: 5, deadlineMs: 400 });
+        const reply = await sendJSONAndReadReply({ command: 'ping' }, { timeoutSeconds: 5, deadlineMs: 1000 });
         const elapsed = Date.now() - started;
         await vi.waitFor(() => expect(closedAfterMs).toBeGreaterThanOrEqual(0));
         await new Promise<void>((resolve) => server.close(() => resolve()));
-        expect(elapsed).toBeGreaterThanOrEqual(350);
+        expect(elapsed).toBeGreaterThanOrEqual(950);
         expect(elapsed).toBeLessThan(2000);
         expect(closedAfterMs).toBeLessThan(2000);
         expect(reply).toMatch(/^\.+$/);

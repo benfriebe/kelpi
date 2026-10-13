@@ -227,7 +227,8 @@ async function connect(deadlineAt?: number): Promise<ConnectOutcome> {
         const outcome = await connectOnce(deadlineAt);
         const refused = outcome.failure?.kind === 'tcpConnectFailed' && outcome.failure.errno === errnoNumber('ECONNREFUSED');
         if (!refused || Date.now() >= deadline) return outcome;
-        await new Promise((resolve) => setTimeout(resolve, ROUTE_RETRY_STEP_MS));
+        await new Promise((resolve) => setTimeout(resolve, Math.min(ROUTE_RETRY_STEP_MS, deadline - Date.now())));
+        if (Date.now() >= deadline) return outcome;
     }
 }
 

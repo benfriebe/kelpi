@@ -824,7 +824,7 @@ export interface PluginVerbListing {
  */
 export function pluginVerbsUsage(verbs: readonly PluginVerbListing[]): string {
     if (verbs.length === 0) return '';
-    const printable = (text: string): string => text.replace(/[\u0000-\u001f\u007f-\u009f]/g, '');
+    const printable = (text: string): string => text.replace(/\t/g, ' ').replace(/[\u0000-\u001f\u007f-\u009f]/g, '');
     const sorted = [...verbs].sort(
         (a, b) =>
             a.pluginName.localeCompare(b.pluginName) || a.pluginID.localeCompare(b.pluginID) || a.name.localeCompare(b.name)

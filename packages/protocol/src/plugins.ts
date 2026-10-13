@@ -1,6 +1,7 @@
 /** Public plugin contracts. JSON only: no daemon, React, Electron or Node dependencies. */
 import type { JsonObject, JsonValue } from './json.js';
 import { isPluginVersion, isPluginVersionRange } from './plugin-dependencies.js';
+import { isCliVerbName } from './cli-verbs.js';
 import { decodePluginWhen, decodePluginItemPatch, pluginContributionOrder, pluginContributionText, pluginSettingValue, type PluginWhen, type PluginMenuDefinition, type PluginItemDefinition, type PluginSettingGroupDefinition, type PluginContextValue } from './plugin-contributions.js';
 
 export const PLUGIN_API_VERSION = 1;
@@ -413,7 +414,7 @@ export function decodePluginManifest(raw: unknown): PluginManifest {
     const cli = array(contributes['cli']).map((raw): PluginCliContribution => {
         const verb = pluginObject(raw);
         const name = verb['name'];
-        if (typeof name !== 'string' || !/^[a-z][a-z0-9-]*$/.test(name) || name.length > 32) throw new Error('invalid plugin cli verb name; use one lowercase word of at most 32 characters');
+        if (typeof name !== 'string' || !isCliVerbName(name)) throw new Error('invalid plugin cli verb name; use one lowercase word of at most 32 characters');
         if (cliNames.has(name)) throw new Error(`duplicate plugin cli verb ${name}`);
         cliNames.add(name);
         const summary = pluginContributionText(verb['summary'], 'cli verb summary', 120);

@@ -112,8 +112,8 @@ Top-level subcommands: `event`, `pane`, `workspace`, `group`, `layout`, `open`, 
 A word that is not a top-level subcommand may be a verb an installed plugin added
 ([plugin CLI verbs](#plugin-cli-verbs)). Only then does the CLI ask the daemon, so a built-in
 subcommand never pays for a round trip; it is unknown only when no plugin declares it, or when
-no daemon can be reached. A word that could not be a verb name (one lowercase word of at most
-32 characters), such as one starting with `-`, is never sent. `kelpi --help` (and `-h`,
+no daemon can be reached. A word that could not be a verb name (the pattern `[a-z][a-z0-9-]*`,
+at most 32 characters), such as one starting with `-`, is never sent. `kelpi --help` (and `-h`,
 `help`) appends a `Plugin commands:` block when the daemon lists any.
 
 ### 3.1 Version resolution
@@ -2473,7 +2473,7 @@ kelpi <verb> [--json] [argv...]
 `kelpi hello`, which prints hello and the words you pass.
 
 - **Dispatch.** Built-in subcommands are matched first, without contacting the daemon. Any
-  other word not starting with `-` is sent as one `plugin` request with action `cli` and text
+  other word that passes the verb name rule is sent as one `plugin` request with action `cli` and text
   `{verb, argv, cwd, isTTY, json, paneID?}`: `cwd` is the CLI's working directory, `isTTY`
   whether its stdout is a terminal, and `paneID` the non-empty `KELPI_PANE_ID`. The daemon
   derives the workspace from the pane. The read timeout is 35 seconds, as for `plugin run`.
@@ -2498,7 +2498,8 @@ kelpi <verb> [--json] [argv...]
   to stderr, exit 1, exactly as before plugin verbs. A word starting with `-` gets the same
   output without a request. A daemon from before plugin verbs counts as declaring none; the
   CLI adds a line suggesting `kelpi daemon restart`. Any other word that fails the name rule
-  (empty, uppercase, containing a space, or longer than 32 characters) also gets the
+  (the pattern `[a-z][a-z0-9-]*`, at most 32 characters: so an empty word, uppercase, a space,
+  an underscore, a dot or a leading digit all fail) also gets the
   `Unknown command` output without a request. The daemon's reply must be exactly
   `unknown kelpi verb: <verb>`: a plugin's own error that merely starts with
   `unknown kelpi verb` is printed as an error, as below.

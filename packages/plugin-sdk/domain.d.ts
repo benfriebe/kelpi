@@ -146,7 +146,8 @@ export interface TerminalRead {
      * The pane's screen revision when `text` was read. It bumps on every chunk of output the daemon
      * has fed the pane (output still in flight from the terminal host is not counted yet) and on
      * every resize. Within one daemon run a pane never repeats a revision, even when its terminal is
-     * restarted. It is not persisted: a daemon restart starts the counter again.
+     * restarted. It is not persisted, but a new daemon seeds its counter from the clock, past any
+     * value an earlier one could have issued, so a revision from before a restart does not match by accident.
      */
     revision: number;
     /** 0-based and viewport-relative, on the active screen. */
@@ -160,6 +161,9 @@ export interface TerminalRead {
  * the screen changed since, nothing is written and the call rejects with a KelpiError whose `code`
  * is `'SCREEN_CHANGED'` and whose `details.revision` is the current revision. A daemon that
  * honoured the guard echoes `revision` in the result.
+ * An `ifRevision` that is not a non-negative integer rejects with `code` `'INVALID_ARGUMENT'` and
+ * sends nothing. An ack without `revision` means the daemon did not check the guard and has already
+ * typed, so the call rejects with `code` `'UNSUPPORTED'` and `details` the reply.
  */
 export interface TerminalSendGuard { ifRevision?: number }
 export interface TerminalAPI {

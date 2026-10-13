@@ -92,10 +92,15 @@ that back as `ifRevision` on `terminal.send` or `terminal.sendKey`. `terminal.re
 that long without output (capped at 10 s, `settled: false` when the cap came first or the pane's terminal was restarted during the wait). If the screen
 changed in between, nothing is typed and the call rejects with `KelpiError` code `SCREEN_CHANGED`,
 whose `details.revision` is the current revision. The revision counts the output the daemon has
-fed the pane, and resizes; it starts again when the daemon restarts.
+fed the pane, and resizes; it is not persisted, but a new daemon seeds its counter from the clock,
+past any value an earlier one could have issued, so a revision from before a restart does not
+match by accident.
 
 Against a daemon from before #390, `terminal.read` rejects with `KelpiError` code `UNSUPPORTED`
 rather than returning a screen without a revision.
+An `ifRevision` that is not a non-negative integer rejects with `INVALID_ARGUMENT` before anything
+is sent, and a guarded send whose ack carries no `revision` (a daemon that did not check the guard,
+so the input was already typed) rejects with `UNSUPPORTED`.
 
 ```ts
 const screen = await api.terminal.read(pane.paneID, { settleMs: 300 });
@@ -149,9 +154,10 @@ Typed command helpers reject failures with `KelpiError` (`code`, `method`, `deta
 context)` remains compatible with the CLI/UI wire protocol and returns `{ok:false}` replies
 unchanged. Fire-and-forget operations such as layout selection and group rename resolve when
 dispatch is acknowledged; their existing daemon no-op semantics still apply.
-In the typed command helpers, a refusal whose reply carries its own string `code` (such as
-`SCREEN_CHANGED`, or `PLUGIN_VETO` from a command hook) rejects with that code instead of
-`COMMAND_FAILED`, with the same `details`. `api.browser` calls still reject with `COMMAND_FAILED`.
+In the typed command helpers, only `SCREEN_CHANGED` (the guarded send refusal, #390) rejects with
+its own code instead of `COMMAND_FAILED`, with the same `details`. Every other refusal, a
+`PLUGIN_VETO` from a command hook included, still rejects with `COMMAND_FAILED`, with the reply and
+its `code` in `details`. `api.browser` calls still reject with `COMMAND_FAILED`.
 
 ## Terminal renderers
 

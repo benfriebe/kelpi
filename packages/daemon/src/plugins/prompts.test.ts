@@ -102,6 +102,29 @@ describe('backend prompts (#389)', () => {
         await h.answer(frame, { value: 'other' });
         expect(await result).toBe('other');
     });
+    it('takes the window from the ack and reply input when the connection declares none, as a renderer\'s does', async () => {
+        const h = await harness();
+        const renderer: PluginContext = { daemonID: h.service.daemonID, clientID: 'C' };
+        const named = h.service.request('run', { command: `${id}.run`, windowID: 'WIN' }, renderer);
+        const frame = await h.prompt();
+        expect(frame['windowID']).toBe('WIN');
+        await expect(h.service.request('prompt-ack', { requestID: frame['requestID']! }, renderer)).rejects.toThrow('prompt belongs to another window');
+        await h.service.request('prompt-ack', { requestID: frame['requestID']!, windowID: 'WIN' }, renderer);
+        await h.service.request('prompt-reply', { requestID: frame['requestID']!, windowID: 'WIN', value: 'run' }, renderer);
+        expect(await named).toBe('run');
+    });
+    it('refuses an ack or reply whose input names a window other than the prompt\'s', async () => {
+        const h = await harness();
+        const renderer: PluginContext = { daemonID: h.service.daemonID, clientID: 'C' };
+        const result = h.run('run');
+        const frame = await h.prompt();
+        await expect(h.service.request('prompt-ack', { requestID: frame['requestID']!, windowID: 'OTHER' }, renderer)).rejects.toThrow('prompt belongs to another window');
+        await expect(h.service.request('prompt-reply', { requestID: frame['requestID']!, windowID: 'OTHER', value: 'run' }, renderer)).rejects.toThrow('prompt belongs to another window');
+        // The input overrides a declared window too, exactly as `run` lets it.
+        await expect(h.service.request('prompt-reply', { requestID: frame['requestID']!, windowID: 'OTHER', value: 'run' }, h.window())).rejects.toThrow('prompt belongs to another window');
+        await h.answer(frame, { value: 'run' });
+        expect(await result).toBe('run');
+    });
     it('takes a reply only from the client that acknowledged the prompt, and any of the window\'s before that', async () => {
         const h = await harness();
         const result = h.run('run');

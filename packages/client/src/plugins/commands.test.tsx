@@ -6,7 +6,7 @@ import { completeHandshake, createFakeSocketFactory } from '../connection/testin
 import { createKelpiRuntime, createKelpiStore } from '../state';
 import { usePluginCommands } from './commands';
 
-afterEach(() => { cleanup(); localStorage.clear(); vi.restoreAllMocks(); });
+afterEach(() => { cleanup(); localStorage.clear(); vi.restoreAllMocks(); window.history.replaceState(null, '', '/'); });
 
 it('rechecks stale menus, items and shortcuts synchronously and targets the explicit pane owner', async () => {
     const manifest = decodePluginManifest({ id: 'sample.actions', version: '1.0.0', apiVersion: 1, trust: 'full', backend: 'backend.mjs', contributes: {
@@ -35,8 +35,15 @@ it('rechecks stale menus, items and shortcuts synchronously and targets the expl
         const menu = hook.result.current.menu('pane', 'pane-two')[0]!;
         const runItem = hook.result.current.runItem;
         expect(menu.enabled).toBe(true);
+        const sent = () => JSON.parse(String(calls.mock.lastCall![0]['text']));
         expect(menu.run()).toBe(true);
-        expect(JSON.parse(String(calls.mock.lastCall![0]['text']))).toMatchObject({ command: 'sample.actions.run', workspaceID: 'two', paneID: 'pane-two' });
+        expect(sent()).toMatchObject({ command: 'sample.actions.run', workspaceID: 'two', paneID: 'pane-two' });
+        expect(sent()).not.toHaveProperty('windowID');
+        // Inside a shell window the run names it, since a renderer's connection declares none (#389).
+        window.history.replaceState(null, '', '/?shellWindow=WIN');
+        expect(menu.run()).toBe(true);
+        expect(sent()).toEqual({ command: 'sample.actions.run', windowID: 'WIN', workspaceID: 'two', paneID: 'pane-two' });
+        window.history.replaceState(null, '', '/');
         calls.mockClear();
         act(() => {
             // Invoke retained callbacks before React has a chance to update the painted controls.

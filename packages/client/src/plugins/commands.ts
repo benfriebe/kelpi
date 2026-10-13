@@ -3,6 +3,7 @@ import { useStore } from 'zustand';
 import type { PluginContributionInfo, PluginInfo, PluginMenuDefinition } from '@kelpi/protocol';
 import { chordKey } from '../content/bridge';
 import type { KelpiRuntime } from '../state';
+import { readShellWindowID } from '../webpane/shell-window';
 import { getCurrentPlugins, pluginRequest, usePlugins } from './client';
 import { resolvePluginChords, usePluginShortcuts } from './shortcuts';
 import { contributionContext, getPluginContributionState, matchesWhen, resolveContributionItems, resolveContributionMenus, usePluginContributions } from './contributions';
@@ -32,7 +33,9 @@ export function usePluginCommands(runtime: KelpiRuntime, reservedChords: readonl
         const context = contributionContext(state, getPluginContributionState(runtime, plugin.manifest.id, plugin.instanceID).context, paneID);
         if (!matchesWhen(command.when, context) || !matchesWhen(command.enablement, context)) return false;
         const focused = paneID ?? (state.ui.focusEcho?.workspaceID === workspace?.id ? state.ui.focusEcho?.paneID : workspace?.focusedPaneID);
-        void pluginRequest(runtime, 'run', { command: commandID, ...(workspace ? { workspaceID: workspace.id } : {}), ...(focused ? { paneID: focused } : {}) })
+        // A renderer's connection declares no window, so the run names it for the backend's `ui.show*` (#389).
+        const windowID = readShellWindowID();
+        void pluginRequest(runtime, 'run', { command: commandID, ...(windowID ? { windowID } : {}), ...(workspace ? { workspaceID: workspace.id } : {}), ...(focused ? { paneID: focused } : {}) })
             .catch(error => runtime.store.getState().pushToast({ id: `plugin-command-${commandID}`, kind: 'info', title: command.title,
                 body: error.message, paneID: null, workspaceID: null, createdAt: Date.now() }));
         return true;

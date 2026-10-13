@@ -71,7 +71,8 @@ export function createBackendPromptBridge<R extends { readonly connection: Backe
 
     const send = (runtime: R, action: 'prompt-ack' | 'prompt-reply', input: JsonObject): void => {
         // `unknown prompt request` is the daemon having settled it already; nothing to do either way.
-        void options.send(runtime, action, input).catch((error: unknown) => console.debug('backend prompt', action, message(error)));
+        // A renderer's connection declares no window, so each answer names the one it came from.
+        void options.send(runtime, action, { ...input, windowID: shellWindowID }).catch((error: unknown) => console.debug('backend prompt', action, message(error)));
     };
 
     const forget = (groups: Map<string, Group>, group: Group, requestID: string): void => {

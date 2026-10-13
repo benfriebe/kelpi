@@ -62,14 +62,14 @@ describe('backend prompts (#389)', () => {
         const modal = surface.getSnapshot().activeModal!;
         expect(modal).toMatchObject({ kind: 'dialog', owner: { id: 'backend:example.suggest', pluginID: 'example.suggest', displayName: 'Suggest' } });
         await flush();
-        expect(sent()).toEqual([['prompt-ack', { requestID: 'r1' }]]);
+        expect(sent()).toEqual([['prompt-ack', { requestID: 'r1', windowID: WINDOW }]]);
         surface.answer(modal.id, 'run');
         await flush();
-        expect(sent()).toEqual([['prompt-ack', { requestID: 'r1' }], ['prompt-reply', { requestID: 'r1', value: 'run' }]]);
+        expect(sent()).toEqual([['prompt-ack', { requestID: 'r1', windowID: WINDOW }], ['prompt-reply', { requestID: 'r1', windowID: WINDOW, value: 'run' }]]);
         primary.emit(prompt('r2'));
         surface.answer(surface.getSnapshot().activeModal!.id, null);
         await flush();
-        expect(sent().slice(2)).toEqual([['prompt-ack', { requestID: 'r2' }], ['prompt-reply', { requestID: 'r2', value: null }]]);
+        expect(sent().slice(2)).toEqual([['prompt-ack', { requestID: 'r2', windowID: WINDOW }], ['prompt-reply', { requestID: 'r2', windowID: WINDOW, value: null }]]);
         expect(surface.getSnapshot().activeModal).toBeNull();
     });
 
@@ -92,7 +92,7 @@ describe('backend prompts (#389)', () => {
         remote.emit(prompt('r1'));
         await flush();
         expect(surface.getSnapshot().activeModal).toBeNull();
-        expect(sent()).toEqual([['prompt-reply', { requestID: 'r1', error: BACKEND_PROMPT_UNAVAILABLE }]]);
+        expect(sent()).toEqual([['prompt-reply', { requestID: 'r1', windowID: WINDOW, error: BACKEND_PROMPT_UNAVAILABLE }]]);
     });
 
     it('replies with the validation error and never acks invalid options', async () => {
@@ -131,8 +131,8 @@ describe('backend prompts (#389)', () => {
         // Three acks and r1's answer, and nothing else: no re-ack for a re-raised prompt, no null from
         // r1's withdrawn first request, no reply for a cancelled one.
         expect(sent()).toEqual([
-            ...['r1', 'r2', 'r3'].map((requestID) => ['prompt-ack', { requestID }]),
-            ['prompt-reply', { requestID: 'r1', value: 'run' }]
+            ...['r1', 'r2', 'r3'].map((requestID) => ['prompt-ack', { requestID, windowID: WINDOW }]),
+            ['prompt-reply', { requestID: 'r1', windowID: WINDOW, value: 'run' }]
         ]);
     });
 
@@ -143,7 +143,7 @@ describe('backend prompts (#389)', () => {
         primary.emit(cancel('r1'));
         await flush();
         expect(surface.getSnapshot()).toMatchObject({ activeModal: { options: { title: 'Second' } }, queued: 0 });
-        expect(sent()).toEqual([['prompt-ack', { requestID: 'r2' }]]);
+        expect(sent()).toEqual([['prompt-ack', { requestID: 'r2', windowID: WINDOW }]]);
     });
 
     it('withdraws every prompt of a runtime whose connection drops, without sending', async () => {
@@ -154,7 +154,7 @@ describe('backend prompts (#389)', () => {
         primary.status('reconnecting');
         await flush();
         expect(surface.getSnapshot()).toMatchObject({ activeModal: null, queued: 0, notifications: [] });
-        expect(sent()).toEqual([['prompt-ack', { requestID: 'r1' }], ['prompt-ack', { requestID: 'r2' }]]);
+        expect(sent()).toEqual([['prompt-ack', { requestID: 'r1', windowID: WINDOW }], ['prompt-ack', { requestID: 'r2', windowID: WINDOW }]]);
         // The connection coming back starts clean.
         primary.status('connected');
         primary.emit(prompt('r3'));
@@ -167,7 +167,7 @@ describe('backend prompts (#389)', () => {
         for (let i = 0; i < 32; i += 1) void native.request('ui.showInput', { title: `fill ${String(i)}` });
         primary.emit(prompt('r1'));
         await flush();
-        expect(sent()).toEqual([['prompt-reply', { requestID: 'r1', error: 'Too many pending window UI requests.' }]]);
+        expect(sent()).toEqual([['prompt-reply', { requestID: 'r1', windowID: WINDOW, error: 'Too many pending window UI requests.' }]]);
     });
 
     it('routes all four methods, and a notification lands in the notification stack', async () => {
@@ -184,10 +184,10 @@ describe('backend prompts (#389)', () => {
         const replies = sent().filter(([action]) => action === 'prompt-reply').map(([, input]) => input);
         expect(replies).toHaveLength(4);
         expect(replies).toEqual(expect.arrayContaining([
-            { requestID: 'notice', value: 'open' },
-            { requestID: 'pick', value: 'a' },
-            { requestID: 'input', value: 'typed' },
-            { requestID: 'dialog', value: 'skip' }
+            { requestID: 'notice', windowID: WINDOW, value: 'open' },
+            { requestID: 'pick', windowID: WINDOW, value: 'a' },
+            { requestID: 'input', windowID: WINDOW, value: 'typed' },
+            { requestID: 'dialog', windowID: WINDOW, value: 'skip' }
         ]));
         expect(sent().filter(([action]) => action === 'prompt-ack')).toHaveLength(4);
     });
@@ -219,7 +219,7 @@ describe('backend prompts (#389)', () => {
         bridge.dispose();
         await flush();
         expect(surface.getSnapshot().activeModal).toBeNull();
-        expect(sent().at(-1)).toEqual(['prompt-reply', { requestID: 'r1', value: null }]);
+        expect(sent().at(-1)).toEqual(['prompt-reply', { requestID: 'r1', windowID: WINDOW, value: null }]);
         expect(primary.listeners()).toBe(0);
         primary.emit(prompt('r2'));
         expect(surface.getSnapshot().activeModal).toBeNull();

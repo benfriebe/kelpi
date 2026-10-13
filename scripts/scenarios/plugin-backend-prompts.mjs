@@ -30,9 +30,12 @@
  * The probe's command is a real `command:` invocation, so its return value comes back on the CLI:
  * the hold is proven by `run` arriving after the 30 second clock with exit 0. The CLI reads that
  * reply with a 35 second ceiling of its own (`cli/src/commands/plugin.ts`), so the probe holds its
- * dialog 31.5 seconds from the call rather than 35, and it fires its notification without awaiting
- * it: a notification's promise settles when its card goes, ten seconds on
- * (`interaction/contract.ts` notificationMs), which would carry the reply past that ceiling.
+ * dialog 30.5 seconds from the moment it was DRAWN rather than 35 (the daemon's clock and the
+ * runner's both started before the draw, so both have run out by the click), fails outright when the
+ * draw came more than 3 seconds after the CLI started (too late for the reply to fit that ceiling),
+ * and fires its notification without awaiting it: a notification's promise settles when its card
+ * goes, ten seconds on (`interaction/contract.ts` notificationMs), which would carry the reply past
+ * that ceiling.
  *
  * ── What it depends on ──────────────────────────────────────────────────────────────
  *
@@ -47,8 +50,10 @@
  *
  * The chord is pressed over CDP with `code: 'KeyI'` and ctrl+alt, because the window's plugin
  * shortcut dispatcher matches on `event.code` and the modifier bits (`content/bridge.ts` chordKey).
- * Whether the dispatcher CLAIMED a press is read from the page (the event's `defaultPrevented` after
- * dispatch), so a press is retried only when nothing took it and a slow first activation of the
+ * Whether the dispatcher CLAIMED a press is read from the page: the dispatcher prevents the key and
+ * stops it on `window`, so a claimed press is one prevented that never reached `document` (the
+ * terminal prevents every key it receives, so `defaultPrevented` alone would not tell them apart).
+ * A press is retried only when the dispatcher did not take it, and a slow first activation of the
  * on-demand backend is never mistaken for a missed key and pressed twice. A claimed press whose
  * command fails shows the window's own toast (`plugins/commands.ts`), so a NO_WINDOW refusal is read
  * from there and ends the wait at once.
@@ -62,11 +67,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /**
- * The example whose command this presses, the client bridge that presents its prompts, the daemon
- * module that routes and holds them, the runner that exempts them from the per-call timer, and the
- * SDK that sends them.
+ * The example whose command this presses, the client bridge that presents its prompts, the window's
+ * command runner that names the window and toasts a failed command, the daemon module that routes
+ * and holds the prompts, the daemon service whose 30 s command clock the hold outlasts, the runner
+ * that exempts them from the per-call timer, and the SDK that sends them.
  */
-export const covers = ['examples/plugins/interaction-lab/', 'packages/client/src/interaction/backend-prompts.ts', 'packages/daemon/src/plugins/prompts.ts', 'packages/daemon/src/plugins/runner.mjs', 'packages/plugin-sdk/api.js'];
+export const covers = ['examples/plugins/interaction-lab/', 'packages/client/src/interaction/backend-prompts.ts', 'packages/client/src/plugins/commands.ts', 'packages/daemon/src/plugins/prompts.ts', 'packages/daemon/src/plugins/service.ts', 'packages/daemon/src/plugins/runner.mjs', 'packages/plugin-sdk/api.js'];
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const labID = 'example.interaction-lab';
@@ -104,18 +110,26 @@ const PROBE_BACKEND = `export function activate(api) {
 `;
 
 /**
- * Counts presses of ctrl+alt+KeyI that reached the page and how many of them something claimed.
- * Read after the dispatch has finished, so it does not matter where this listener sits relative to
- * the plugin dispatcher's own, which is re-registered whenever the bindings change.
+ * Counts presses of ctrl+alt+KeyI that reached the page and how many of them the plugin dispatcher
+ * claimed: prevented, and stopped on `window` before reaching `document`. Read after the dispatch has
+ * finished, so it does not matter where this listener sits relative to the dispatcher's own (also on
+ * `window`, re-registered whenever the bindings change; `stopPropagation` spares its neighbours).
  */
 const CHORD_PROBE = `(() => {
     if (globalThis.__labChord === undefined) {
-        globalThis.__labChord = { presses: 0, claimed: 0 };
-        window.addEventListener('keydown', event => {
-            if (event.code !== 'KeyI' || !event.ctrlKey || !event.altKey) return;
-            globalThis.__labChord.presses += 1;
-            setTimeout(() => { if (event.defaultPrevented) globalThis.__labChord.claimed += 1; }, 0);
-        }, true);
+        const state = { presses: 0, claimed: 0 };
+        const isChord = event => event.code === 'KeyI' && event.ctrlKey && event.altKey;
+        const reachedDocument = new WeakSet();
+        const onWindow = event => {
+            if (!isChord(event)) return;
+            state.presses += 1;
+            setTimeout(() => { if (event.defaultPrevented && !reachedDocument.has(event)) state.claimed += 1; }, 0);
+        };
+        const onDocument = event => { if (isChord(event)) reachedDocument.add(event); };
+        window.addEventListener('keydown', onWindow, true);
+        document.addEventListener('keydown', onDocument, true);
+        state.stop = () => { window.removeEventListener('keydown', onWindow, true); document.removeEventListener('keydown', onDocument, true); };
+        globalThis.__labChord = state;
     }
     return JSON.stringify(globalThis.__labChord);
 })()`;
@@ -252,17 +266,10 @@ export default async function ({ page, cli, rec, d, sleep, sandbox }) {
     const startingWorkspace = await page.eval(`document.querySelector('[data-testid="workspace-row"][data-active="true"]')?.getAttribute('data-workspace-id') ?? null`);
     const shellWindowID = await page.eval(`new URLSearchParams(location.search).get('shellWindow')`);
     rec.note(`this window's shell window id (the ?shellWindow= parameter): ${String(shellWindowID)}`);
-    const workspace = await json(['workspace', 'create', '--name', 'Backend prompts', '--json']);
-    const workspaceID = workspace.workspace_id;
-    const shellPane = (await json(['pane', 'list', '--workspace', workspaceID, '--json']))[0].id;
-    if (!await d.settleDom(page, `document.querySelector('[data-testid="pane-body-${shellPane}"]')?.getBoundingClientRect().width > 0`, { ceilingMs: 8_000 })) {
-        const row = `[data-testid="workspace-row"][data-workspace-id="${workspaceID}"]`;
-        if (await d.settleDom(page, `document.querySelector(${JSON.stringify(row)})`, { ceilingMs: 5_000 })) await page.click(row);
-        if (!await d.settleDom(page, `document.querySelector('[data-testid="pane-body-${shellPane}"]')?.getBoundingClientRect().width > 0`, { ceilingMs: 8_000 })) {
-            throw new Error(`the new workspace's shell pane ${shellPane} never drew in the window`);
-        }
-    }
-    await page.eval(TOAST_LOG);
+    // The scenario's own workspace and its shell pane, made just before the main `try` below and
+    // drawn inside it, so a failure while it draws still reaches the cleanup.
+    let workspaceID = null;
+    let shellPane = null;
 
     /**
      * Focus the shell pane and press ctrl+alt+i, retried only while nothing in the page claims the
@@ -304,7 +311,7 @@ export default async function ({ page, cli, rec, d, sleep, sandbox }) {
                 await resetToasts();
                 const presses = await pressAsk();
                 const outcome = presses === 0 ? 'unclaimed' : await drawnOrRefused(drawn, null);
-                return { drawn: outcome === 'drawn', call: null, startedAt: Date.now(), detail: `presses ${String(presses)} · ${outcome} · toasts ${JSON.stringify(await toasts())}` };
+                return { drawn: outcome === 'drawn', call: null, drawnAt: Date.now(), detail: `presses ${String(presses)} · ${outcome} · toasts ${JSON.stringify(await toasts())}` };
             }
         },
         {
@@ -312,19 +319,22 @@ export default async function ({ page, cli, rec, d, sleep, sandbox }) {
             raise: async drawn => {
                 await resetToasts();
                 const startedAt = Date.now();
-                const call = { settled: false, result: null, promise: null };
+                const call = { settled: false, result: null, ms: null, promise: null };
                 call.promise = cli.run(['plugin', 'run', probeCommand, '--args', JSON.stringify({ windowID: shellWindowID })], { timeoutMs: 90_000 })
-                    .then(result => { call.settled = true; call.result = result; return result; });
+                    .then(result => { call.settled = true; call.result = result; call.ms = Date.now() - startedAt; return result; });
                 const outcome = await drawnOrRefused(drawn, call);
-                return { drawn: outcome === 'drawn', call, startedAt, detail: `${outcome}${call.settled ? ` · cli exit ${String(call.result.code)} ${call.result.stderr.trim()} ${call.result.stdout.trim()}` : ''} · toasts ${JSON.stringify(await toasts())}` };
+                return { drawn: outcome === 'drawn', call, startedAt, drawnAt: Date.now(), detail: `${outcome}${call.settled ? ` · cli exit ${String(call.result.code)} ${call.result.stderr.trim()} ${call.result.stdout.trim()}` : ''} · toasts ${JSON.stringify(await toasts())}` };
             }
         }
     ];
-    /** The command's return value as the CLI printed it, for the probe; null for the shortcut. */
+    /**
+     * The command's return value as the CLI printed it, for the probe; null for the shortcut. `ms` is
+     * from the call to the CLI's exit, taken when it settled rather than when this is read.
+     */
     const returned = async raised => {
         if (raised.call === null) return null;
         const result = await raised.call.promise;
-        return { code: result.code, value: result.stdout.trim(), stderr: result.stderr.trim(), ms: Date.now() - raised.startedAt };
+        return { code: result.code, value: result.stdout.trim(), stderr: result.stderr.trim(), ms: raised.call.ms };
     };
     const returnedValue = (value, want) => value === null || (value.code === 0 && value.value === JSON.stringify(want));
 
@@ -415,11 +425,14 @@ export default async function ({ page, cli, rec, d, sleep, sandbox }) {
 
     const runPresenter = (subject, n) => step(`${n} ${subject.key} presenter`, async () => {
         await clearNotices();
-        presenterSelected = await selectPresenter(promptsView);
-        const attached = await d.settleDom(page, `document.querySelector('${promptsSlot}')`, { ceilingMs: 15_000 });
-        const ready = attached && await frameCheck(promptsFrame, `document.body.dataset.ready === 'true'`);
-        if (!presenterSelected || !ready) throw new Error(`the lab prompts presenter did not attach (chosen ${String(presenterSelected)}, attached ${String(attached)}): ${await labState()}`);
+        // Marked before the choice, so a throw part way through it still leaves the final cleanup
+        // the restore to do.
+        presenterSelected = true;
+        const chosen = await selectPresenter(promptsView);
         try {
+            const attached = await d.settleDom(page, `document.querySelector('${promptsSlot}')`, { ceilingMs: 15_000 });
+            const ready = attached && await frameCheck(promptsFrame, `document.body.dataset.ready === 'true'`);
+            if (!chosen || !ready) throw new Error(`the lab prompts presenter did not attach (chosen ${String(chosen)}, attached ${String(attached)}): ${await labState()}`);
             const raised = await subject.raise(presenterUp);
             const snapshot = JSON.parse(String(await inFrame(promptsFrame, `JSON.stringify(globalThis.interactionLab?.snapshot ?? null)`)));
             const prompt = snapshot?.prompt ?? null;
@@ -472,13 +485,22 @@ export default async function ({ page, cli, rec, d, sleep, sandbox }) {
             ? 'a dialog held open 35 s still answers: the notification reports "run" and no timeout toast appeared'
             : `a dialog held open past the command's 30 s clock still answers: the command returns "run" with exit 0 and the notification reports "run"${tag(subject)}`;
         if (!raised.drawn) { rec.check(label, false, `no dialog to hold: ${raised.detail}`); return; }
+        // The daemon's 30 s clock and the runner's both started before the dialog was drawn, so a
+        // hold measured from the draw is past both. The probe's answer also has to be back inside
+        // the CLI's own 35 s reply ceiling, which a draw more than 3 s after the call cannot fit.
+        const lead = raised.call === null ? null : raised.drawnAt - raised.startedAt;
+        if (lead !== null && lead > 3_000) {
+            await page.key('Escape');
+            await dialogGone();
+            rec.check(label, false, `the dialog was drawn ${String(lead)} ms after the CLI started, too slow to fit the CLI's 35 s reply ceiling with a 30.5 s hold · command returned ${JSON.stringify(await returned(raised))}`);
+            return;
+        }
         const first = (await dialogInfo(subject.pluginID))?.requestID ?? null;
         await resetToasts();
-        // The probe's answer has to be back inside the CLI's own 35 s reply ceiling.
-        const holdUntil = subject.key === 'shortcut' ? Date.now() + 35_000 : raised.startedAt + 31_500;
+        const holdUntil = raised.drawnAt + (subject.key === 'shortcut' ? 35_000 : 30_500);
         await sleep(Math.max(0, holdUntil - Date.now()));
         const still = await dialogInfo(subject.pluginID);
-        const heldMs = Date.now() - raised.startedAt;
+        const heldMs = Date.now() - raised.drawnAt;
         await clickModalButton('Run');
         const closed = await dialogGone();
         const said = await noticeSays(`${subject.owner}: run`);
@@ -488,11 +510,23 @@ export default async function ({ page, cli, rec, d, sleep, sandbox }) {
         rec.check(label,
             still !== null && still.requestID === first && closed && said && !seen.some(text => /timed out|timeout/i.test(text))
             && (value === null || (returnedValue(value, 'run') && value.ms > 30_000)),
-            `held ${String(heldMs)} ms · same request ${String(still?.requestID === first)} · closed ${String(closed)} · notices ${JSON.stringify(await notices())} · command returned ${JSON.stringify(value)} · toasts ${JSON.stringify(seen)}`);
+            `${lead === null ? '' : `drawn ${String(lead)} ms after the CLI started · `}held ${String(heldMs)} ms from the draw · same request ${String(still?.requestID === first)} · closed ${String(closed)} · notices ${JSON.stringify(await notices())} · command returned ${JSON.stringify(value)} · toasts ${JSON.stringify(seen)}`);
     });
 
     const [shortcut, probe] = subjects;
+    const workspace = await json(['workspace', 'create', '--name', 'Backend prompts', '--json']);
+    workspaceID = workspace.workspace_id ?? null;
     try {
+        shellPane = (await json(['pane', 'list', '--workspace', workspaceID, '--json']))[0].id;
+        if (!await d.settleDom(page, `document.querySelector('[data-testid="pane-body-${shellPane}"]')?.getBoundingClientRect().width > 0`, { ceilingMs: 8_000 })) {
+            const row = `[data-testid="workspace-row"][data-workspace-id="${workspaceID}"]`;
+            if (await d.settleDom(page, `document.querySelector(${JSON.stringify(row)})`, { ceilingMs: 5_000 })) await page.click(row);
+            if (!await d.settleDom(page, `document.querySelector('[data-testid="pane-body-${shellPane}"]')?.getBoundingClientRect().width > 0`, { ceilingMs: 8_000 })) {
+                throw new Error(`the new workspace's shell pane ${shellPane} never drew in the window`);
+            }
+        }
+        await page.eval(TOAST_LOG);
+
         // ── 1 · installed, listed, on demand ─────────────────────────────────────────
         await step('1 install', async () => {
             const probeDir = path.join(sandbox.root, 'prompt-probe');
@@ -570,14 +604,15 @@ export default async function ({ page, cli, rec, d, sleep, sandbox }) {
         await safely('the prompts placement goes back to bundled', async () => { if (presenterSelected) await selectPresenter('kelpi.prompts'); });
         await safely('the corner is cleared', async () => { if (!await clearNotices()) rec.note('cleanup: the corner still holds a notification'); });
         await safely('the toast sampler is stopped', () => page.eval(`(() => { clearInterval(globalThis.__toastTimer); delete globalThis.__toastLog; delete globalThis.__toastTimer; return true; })()`));
+        await safely('the chord probe is removed', () => page.eval(`(() => { globalThis.__labChord?.stop?.(); delete globalThis.__labChord; return true; })()`));
         const removed = await cli.run(['plugin', 'remove', labID]);
         const probeRemoved = await cli.run(['plugin', 'remove', probeID]);
         const leftover = await Promise.all([pluginEntry(labID), pluginEntry(probeID)]).catch(() => 'unreadable');
-        const deleted = await cli.run(['workspace', 'delete', workspaceID, '--force']);
+        const deleted = workspaceID === null ? null : await cli.run(['workspace', 'delete', workspaceID, '--force']);
         await safely('the probe source is deleted', () => fs.rmSync(path.join(sandbox.root, 'prompt-probe'), { recursive: true, force: true }));
         rec.check('cleanup removes both plugins and the scenario\'s workspace',
-            removed.code === 0 && probeRemoved.code === 0 && JSON.stringify(leftover) === '[null,null]' && deleted.code === 0,
-            `remove exit ${String(removed.code)} ${removed.stderr.trim()} / ${String(probeRemoved.code)} ${probeRemoved.stderr.trim()} · still listed ${JSON.stringify(leftover)} · workspace delete exit ${String(deleted.code)} ${deleted.stderr.trim()}`);
+            removed.code === 0 && probeRemoved.code === 0 && JSON.stringify(leftover) === '[null,null]' && (deleted === null || deleted.code === 0),
+            `remove exit ${String(removed.code)} ${removed.stderr.trim()} / ${String(probeRemoved.code)} ${probeRemoved.stderr.trim()} · still listed ${JSON.stringify(leftover)} · workspace delete ${deleted === null ? 'skipped (none was created)' : `exit ${String(deleted.code)} ${deleted.stderr.trim()}`}`);
         await safely('the window returns to the workspace it started on', async () => {
             if (startingWorkspace === null) return;
             const row = `[data-testid="workspace-row"][data-workspace-id="${startingWorkspace}"]`;

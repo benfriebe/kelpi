@@ -178,6 +178,28 @@ describe('screen revision over the real terminal seams (#390)', () => {
         expect(reread).toMatchObject({ text: 'Proceed? [y/n]\nAre you sure? [y/n]', revision: seen + 1 });
     });
 
+    it('carries a clock-seeded revision over the wire as plain digits and guards with it exactly', async () => {
+        const { h, term, ctx } = wired();
+        term.feed(P2, encoder.encode('Proceed? [y/n]'));
+
+        const reply = await capture(ctx);
+        const seen = reply['revision'] as number;
+        // Seeded from Date.now() at start: a 13-digit value that is still a safe integer.
+        expect(Number.isSafeInteger(seen)).toBe(true);
+        expect(seen).toBeGreaterThan(1_000_000_000_000);
+        const line = JSON.stringify(reply);
+        expect(line).toContain(`"revision":${seen}`);
+        expect(line).toMatch(/"revision":\d{13,15}[,}]/);
+        expect(JSON.parse(line)['revision']).toBe(seen);
+
+        const typed = guardedSend(ctx, 'y', seen);
+        expect(typed.only()).toMatchObject({ ok: true, pane_id: P2, revision: seen });
+        expect(h.pty.writes).toEqual([
+            { paneID: P2, data: 'y' },
+            { paneID: P2, data: '\r' }
+        ]);
+    });
+
     it('refuses a revision read before the pane was disposed and attached again', async () => {
         const { h, term, ctx } = wired();
         for (const chunk of ['a', 'b', 'c']) term.feed(P2, encoder.encode(chunk));

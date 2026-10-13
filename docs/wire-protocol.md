@@ -932,8 +932,11 @@ non-empty snapshot, and on every resize that changes the grid. Within one daemon
 never repeats a revision: the daemon seeds new terminal state (attach, or the lazy create on
 first feed) one past every revision it has issued, so a pane whose terminal state is disposed
 and created again (restart old terminals, a forgotten shell) carries on above its old values.
-A pane with no terminal state reads 0. It is not persisted: a daemon restart starts the counter
-again. Pass it back as `if_revision` on `pane-send` / `pane-send-key` to type only if nothing
+A pane with no terminal state reads 0. It is not persisted, but a new daemon seeds its counter
+from the clock (milliseconds since the epoch at start, a 13-digit safe integer), past any value
+an earlier daemon could have issued, so a revision captured before a restart (terminal host
+handoff, in-app update) is refused with `SCREEN_CHANGED` rather than matching a live screen by
+accident. Pass it back as `if_revision` on `pane-send` / `pane-send-key` to type only if nothing
 has reached the screen since this capture.
 
 #### `pane-sync` (R/R)
@@ -1931,5 +1934,6 @@ saved state keep working:
     yet fed is not counted, so the guard covers what the daemon had seen, which is also what the
     capture showed. Within one daemon run a pane id never repeats a revision (new terminal state
     is seeded past every value the daemon has issued, and a pane with no terminal state reads 0),
-    but the counter starts again with the daemon, so a revision is only meaningful against the
-    daemon that issued it.
+    and a new daemon seeds its counter from the clock (milliseconds since the epoch at start),
+    past any value an earlier daemon could have issued, so a stale revision from before a
+    restart is refused with `SCREEN_CHANGED`, never reissued for a different screen.

@@ -474,6 +474,14 @@ export interface TerminalStateOptions {
     /** Default `settle()` cap; `CAPTURE_SETTLE_CAP_MS` unless a test wants a short one. */
     readonly settleCapMs?: number;
     /**
+     * Screen revisions (#390): the first revision this service issues is one past it. Defaults
+     * to `Date.now()`, so a new daemon (terminal host handoff, in-app update) starts past
+     * anything an earlier one could have issued (it would have had to average more than one
+     * revision a millisecond to get there); tests pass a small value when they assert absolute
+     * numbers.
+     */
+    readonly revisionBase?: number;
+    /**
      * **OSC 7** — the shell reporting its working directory (`ESC ] 7 ; file://host/path BEL`).
      *
      * This is the port's pwd producer (terminal-panes.md §TERM-048): every byte already flows
@@ -713,7 +721,8 @@ interface PaneTerminal {
      * The screen revision (#390): +1 per non-empty `feed()`, per non-empty `restore()` and per
      * grid change, counted when the bytes are QUEUED rather than parsed, so a reader that
      * flushed before reading text and revision together sees any later byte as a newer one.
-     * Starts one past every revision the service has issued (`highestRevision`).
+     * Starts one past every revision the service has issued (`highestRevision`, which a new
+     * service seeds from the clock), so it is never 0 and never one an earlier daemon issued.
      */
     revision: number;
     /** Pending `settle()` calls: told of every revision bump, and of dispose (called with `disposed: true`, which resolves the wait as unsettled). */
@@ -749,12 +758,13 @@ export class TerminalStateServiceImpl implements TerminalStateService {
     private readonly snapshotScrollbackLines: number | undefined;
     private readonly settleCapMs: number;
     /**
-     * The highest screen revision this service has issued (#390). New terminal state starts one
-     * past it, so a pane id that is disposed and gets state again (restart old terminals, a
-     * forgotten shell) never repeats a revision within one daemon run, and 0 is only ever read
-     * by a pane with no terminal state.
+     * The highest screen revision this service has issued (#390), seeded from `revisionBase`
+     * (the clock at start, by default). New terminal state starts one past it, so a pane id that
+     * is disposed and gets state again (restart old terminals, a forgotten shell) never repeats a
+     * revision within one daemon run, a new daemon never reissues one an earlier daemon gave out,
+     * and 0 is only ever read by a pane with no terminal state.
      */
-    private highestRevision = 0;
+    private highestRevision: number;
     private readonly onDirectoryChange: ((paneID: string, directory: string) => void) | undefined;
     private readonly onTitleChange: ((paneID: string, title: string) => void) | undefined;
     private readonly onOscNotification:
@@ -779,6 +789,7 @@ export class TerminalStateServiceImpl implements TerminalStateService {
                 ? undefined
                 : Math.max(0, Math.floor(options.snapshotScrollbackLines));
         this.settleCapMs = Math.max(0, options.settleCapMs ?? CAPTURE_SETTLE_CAP_MS);
+        this.highestRevision = Math.max(0, Math.floor(options.revisionBase ?? Date.now()));
         this.onDirectoryChange = options.onDirectoryChange;
         this.onTitleChange = options.onTitleChange;
         this.onOscNotification = options.onOscNotification;

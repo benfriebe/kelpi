@@ -24,7 +24,7 @@ afterEach(() => {
 
 describe('TerminalStateServiceImpl: revision', () => {
     it('starts new state past every revision the service has issued, and reads 0 with no state', () => {
-        const service = makeService();
+        const service = makeService({ revisionBase: 0 });
         expect(service.revision('nope')).toBe(0);
 
         service.attach('a', 80, 24);
@@ -38,6 +38,40 @@ describe('TerminalStateServiceImpl: revision', () => {
         service.feed('a', 'z');
         expect(service.revision('a')).toBe(4);
         expect(service.revision('nope')).toBe(0);
+    });
+
+    it('seeds from the clock by default, so the first revision is past the time it started', () => {
+        const startedAfter = Date.now();
+        const service = makeService();
+        service.attach('a', 80, 24);
+
+        expect(service.revision('a')).toBeGreaterThan(startedAfter);
+        expect(Number.isSafeInteger(service.revision('a'))).toBe(true);
+        expect(service.revision('nope')).toBe(0);
+    });
+
+    it('never lets a service started later reissue a revision an earlier one gave out (restart)', () => {
+        vi.useFakeTimers({ now: new Date('2026-10-13T09:00:00Z') });
+        const first = makeService();
+        first.attach('p', 80, 24);
+        const issued = [first.revision('p')];
+        for (const chunk of ['a', 'b', 'c']) {
+            first.feed('p', chunk);
+            issued.push(first.revision('p'));
+        }
+        first.resize('p', 100, 24);
+        issued.push(first.revision('p'));
+        first.disposeAll();
+
+        // A second later the handoff or update brings up a new daemon, and with it a new service.
+        vi.setSystemTime(Date.now() + 1_000);
+        const second = makeService();
+        second.attach('p', 80, 24);
+        const reissued = [second.revision('p')];
+        second.feed('p', 'x');
+        reissued.push(second.revision('p'));
+
+        expect(Math.min(...reissued)).toBeGreaterThan(Math.max(...issued));
     });
 
     it('bumps once per non-empty feed, at enqueue time, before the bytes are parsed', async () => {

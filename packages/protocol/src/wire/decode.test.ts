@@ -396,6 +396,13 @@ describe('pane commands', () => {
         expect(ok({ command: 'pane-send-key', target: 'worker', key: 'enter', if_revision: 42 })).toMatchObject({
             if_revision: 42
         });
+        // A daemon seeds its revisions from the clock (milliseconds since the epoch): 13 digits.
+        expect(ok({ command: 'pane-send', target: 'worker', text: 'y', if_revision: 1760000000123 })).toMatchObject({
+            if_revision: 1760000000123
+        });
+        expect(
+            parseWireLine('{"command":"pane-send-key","target":"worker","key":"enter","if_revision":1760000000123}')
+        ).toMatchObject({ ok: true, message: { if_revision: 1760000000123 } });
         // Wrong-typed is the usual field-type rejection; the handler judges the value (settle_ms <= 0).
         expect(rejected({ command: 'pane-capture', target: 'worker', settle_ms: 1.5 }).field).toBe('settle_ms');
         expect(rejected({ command: 'pane-capture', target: 'worker', settle_ms: '500' }).field).toBe('settle_ms');

@@ -1897,6 +1897,6 @@ saved state keep working:
     - **New CLI, old daemon:** the keys are unknown to that daemon's decoder and ignored
       (§2.2), so the event is handled exactly as an older CLI's.
     - **Same version:** the CLI sends each key only when the hook's stdin carried it as a
-      non-empty string, so a manual `kelpi event stop` stays wire-identical. The largest
-      line is bounded by the CLI's 64 KiB cap on `last_assistant_message`: even escaped
-      six-fold as JSON, far below the 64 MB line limit (§2.1).
+      non-empty string, so a manual `kelpi event stop` stays wire-identical. The one new key
+      that can be large, `last_assistant_message`, is capped at 64 KiB by the CLI: even
+      escaped six-fold as JSON, far below the 64 MB line limit (§2.1).

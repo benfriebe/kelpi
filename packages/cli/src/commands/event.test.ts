@@ -178,6 +178,8 @@ describe('capAssistantMessage', () => {
         expect(capAssistantMessage('a€b', 3)).toEqual({ text: 'a', truncated: true });
         expect(capAssistantMessage('ab😀', 5)).toEqual({ text: 'ab', truncated: true });
         expect(capAssistantMessage('ab😀c', 6)).toEqual({ text: 'ab😀', truncated: true });
+        // A lone surrogate is 3 bytes, as Buffer writes it as U+FFFD.
+        expect(capAssistantMessage('a\uD800b', 4)).toEqual({ text: 'a\uD800', truncated: true });
 
         const prefix = 'a'.repeat(ASSISTANT_MESSAGE_MAX_BYTES - 2);
         const capped = capAssistantMessage(`${prefix}😀 and more`);

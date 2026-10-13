@@ -1,4 +1,4 @@
-import type { Data, Dispose, Event, Json } from './index.js';
+import type { Data, Json } from './index.js';
 
 /** Public JSON DTOs. No daemon store, React, Electron or Node types are required. */
 export type WorkspaceColor = 'red' | 'orange' | 'yellow' | 'green' | 'blue' | 'purple' | 'pink' | 'gray' | 'black' | 'white';
@@ -128,7 +128,7 @@ export interface AgentsAPI {
     sessionStart(paneID: string, sessionID: string, agent: AgentKind, options?: { profile?: string }): Promise<void>;
     sessionEnd(paneID: string, sessionID: string): Promise<void>;
     /** #387: one call per agent hook Kelpi handles (`agent.event`), shown or not. Returns an unsubscribe. */
-    onEvent(listener: (event: AgentHookEvent, raw: Event) => void | Promise<void>): Dispose;
+    onEvent(listener: (event: AgentHookEvent, raw: import('./index.js').Event) => void | Promise<void>): import('./index.js').Dispose;
 }
 /** The wire verb an agent hook arrived as (docs/agent-lifecycle.md §7.7). */
 export type AgentHookEventType = 'start' | 'stop' | 'notification' | 'error' | 'session-start' | 'session-end';

@@ -430,6 +430,27 @@ describe('agent.event plugin events (#387, agent-lifecycle §7.7)', () => {
         ]);
     });
 
+    it('keeps the state its own line left when a pane-close follows in the same socket chunk', async () => {
+        const h = harness({ initial: seeded(1) });
+        h.send({ command: 'start', pane_id: P1 });
+        h.send({ command: 'stop', pane_id: P1, last_assistant_message: 'Done.' });
+        // The next line of the chunk, before any microtask: what `pane-close` does to the store.
+        h.dispatch({ type: 'close-pane', workspaceID: W1, paneID: P1 });
+        expect(paneOf(h, P1)).toBeUndefined();
+        await settle();
+        expect(h.agentEvents).toStrictEqual([
+            { type: 'start', paneID: P1, workspaceID: W1, agent: 'claude', status: 'running' },
+            {
+                type: 'stop',
+                paneID: P1,
+                workspaceID: W1,
+                agent: 'claude',
+                status: 'waitingForInput',
+                lastAssistantMessage: 'Done.'
+            }
+        ]);
+    });
+
     it('sends nothing for an agentEventsMuted pane (#372) or an unknown pane', async () => {
         const h = harness({ initial: seeded(1), agentEventsMuted: (paneID) => paneID === P1 });
         h.send({ command: 'stop', pane_id: P1, session_id: 'live' });

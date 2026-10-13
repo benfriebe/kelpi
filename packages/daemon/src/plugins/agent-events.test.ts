@@ -11,7 +11,7 @@ const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 
 describe('agent.event reaches plugin backends (#387)', () => {
-    it('through api.events.on and api.agents.onEvent, one per hook line, never as a window broadcast', async () => {
+    it('through api.events.on and api.agents.onEvent, one per hook line, as a plugin-event and never a daemon broadcast', async () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-agent-events-'));
         const broadcast = vi.fn();
         let service: PluginService | undefined;

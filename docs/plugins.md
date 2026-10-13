@@ -534,6 +534,8 @@ the typed payload; `api.events.on('agent.event', ...)` sees the same events in `
 Kelpi's own carry no `pluginID`, which `agents.onEvent` checks, since a plugin whose ID is
 `agent` could emit a look-alike. Nothing fires for a pane whose agent is being restarted on a
 new terminal host, or for a pane no workspace owns.
+Any applied lifecycle verb publishes one, including a plugin's own `api.agents.*` calls, so a
+plugin that answers an event by calling `agents.notify` loops.
 
 | Field | Present |
 | --- | --- |

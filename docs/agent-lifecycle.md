@@ -800,19 +800,25 @@ Every hook line the daemon applies publishes exactly one plugin event, `agent.ev
 (`packages/daemon/src/handlers/app/agent-events.ts`). It is separate from the notification
 matrix above: it fires whether or not §7.1 to §7.3 show anything, so the focused pane of an
 active window, a muted workspace and a pane whose status did not change all produce one.
+Any applied lifecycle verb publishes one, including a plugin's own `api.agents.*` calls, so a
+plugin that answers an event by calling `agents.notify` loops.
 
-- **When.** After `ctx.store.dispatch`, so `panes.list` already agrees with it. A line's
-  §4.2 dual-fire session-start runs right after its primary message, so the primary's event
-  waits for it and goes out once it has applied (or on the next microtask when the line has
-  none). The dual-fire publishes nothing of its own (`control/dual-fire.ts` marks it), which
-  keeps it at one event per `kelpi event` call, and the event's `sessionID` and `agent` already
-  include what the dual-fire bound.
+- **When.** Built right after `ctx.store.dispatch`, from the state that line left, so
+  `panes.list` agrees with it unless a later line has changed the pane since. A line's §4.2
+  dual-fire session-start runs right after its primary message, so the primary's event is held
+  for it: once the dual-fire has applied, the event is rebuilt from that state and goes out
+  (or it goes out as built on the next microtask when the line has none). The dual-fire
+  publishes nothing of its own (`control/dual-fire.ts` marks it), which keeps it at one event
+  per `kelpi event` call, and the event's `sessionID` and `agent` already include what the
+  dual-fire bound. A later line in the same socket chunk (a `pane-close`, say) cannot change
+  or drop an event already built.
 - **Not for.** A pane `agentEventsMuted` covers (a restart of old terminals, #372), an unknown
   pane, or a pane no workspace owns: the same early returns as the state change.
-- **Who hears it.** Plugin backends and views only, through the plugin service's event bus
+- **Who hears it.** It goes out through the plugin service's event bus
   (`AppDeps.emitAgentEvent`, `PluginService.emitDaemonEvent`). It is not a daemon broadcast, so
-  it never surfaces as `daemon.agent-event`; views see it as a `plugin-event`, like every
-  plugin event. The SDK's `agents.onEvent(listener)` wraps `events.on('agent.event')`.
+  it never surfaces as `daemon.agent-event`; it rides the `plugin-event` frame every window
+  session receives, like every plugin event, and only plugin backends and views consume it.
+  The SDK's `agents.onEvent(listener)` wraps `events.on('agent.event')`.
 - **Payload.** `{ type, paneID, workspaceID, agent, sessionID?, status, notificationType?,
   title?, body?, message?, lastAssistantMessage?, lastAssistantMessageTruncated?,
   transcriptPath?, backgroundTasks?, toolName?, muted? }`. `type` is the wire verb. `agent`,

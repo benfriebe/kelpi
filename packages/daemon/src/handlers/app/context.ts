@@ -160,9 +160,10 @@ export interface AppHandlerOptions {
      */
     readonly agentEventsMuted?: ((paneID: string) => boolean) | undefined;
     /**
-     * #387: publish one `agent.event` to plugin backends and views (agent-lifecycle.md §7.7).
-     * Boot hands it to the plugin service's event bus; it is never a window-session broadcast.
-     * Defaults to dropping it.
+     * #387: publish one `agent.event` to plugins (agent-lifecycle.md §7.7). Boot hands it to the
+     * plugin service's event bus. It is not a daemon broadcast (never `daemon.agent-event`): it
+     * rides the `plugin-event` frame every window session receives, like every plugin event, and
+     * only plugin backends and views consume it. Defaults to dropping it.
      */
     readonly emitAgentEvent?: ((event: AgentHookEvent) => void) | undefined;
     /** Default columns/rows for a PTY spawned without a client-reported size. */

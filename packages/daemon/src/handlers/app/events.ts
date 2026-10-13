@@ -20,7 +20,7 @@ import type { WsNotificationKind } from '@kelpi/protocol';
 
 import { isDualFire } from '../../control/dual-fire.js';
 import { findPaneAnywhere, previewAgentEvent, workspaceByID } from '../../store/index.js';
-import { agentHookEvent, createAgentHookQueue, type AgentHookMessage } from './agent-events.js';
+import { createAgentHookQueue, type AgentHookMessage } from './agent-events.js';
 import { forCommand } from './common.js';
 import type { AppContext, AppDeps, AppHandler } from './context.js';
 
@@ -106,19 +106,17 @@ export function applyAgentEvent(
 
 export function eventHandlerEntries(deps: AppDeps): readonly (readonly [string, AppHandler])[] {
     const hookEvents = createAgentHookQueue(deps.emitAgentEvent);
-    /** Apply one lifecycle message, then hold its `agent.event` for the line's dual-fire. */
+    /** Apply one lifecycle message, then build its `agent.event` and hold it for the line's dual-fire. */
     const apply = (msg: AgentHookMessage, event: AgentEvent, ctx: AppContext): void => {
         if (isDualFire(msg)) {
             // The second half of a hook line: it completes the primary's event, adding none.
             applyAgentEvent(msg.pane_id, event, ctx, deps);
-            hookEvents.flush();
+            hookEvents.complete(ctx.store.getState());
             return;
         }
-        // An earlier line's held event goes out first, against the state that line left.
+        // An earlier line's held event goes out first; it was built from the state that line left.
         hookEvents.flush();
-        if (applyAgentEvent(msg.pane_id, event, ctx, deps)) {
-            hookEvents.defer(() => agentHookEvent(msg, ctx.store.getState()));
-        }
+        if (applyAgentEvent(msg.pane_id, event, ctx, deps)) hookEvents.hold(msg, ctx.store.getState());
     };
     return [
         forCommand('start', (msg, ctx) => {

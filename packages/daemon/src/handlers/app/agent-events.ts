@@ -1,16 +1,20 @@
 /**
  * `agent.event` (#387, agent-lifecycle.md §7.7): one plugin event per agent hook line.
  *
- * The payload is built from the wire message plus the pane's state AFTER the store applied it,
- * so a plugin that reads `panes.list` on receipt sees the same status and session. It reaches
- * plugin backends and views only (`AppDeps.emitAgentEvent`), never a window session as a
- * daemon broadcast.
+ * The payload is built from the wire message plus the pane's state right AFTER the store applied
+ * it, so a plugin that reads `panes.list` on receipt sees the same status and session unless a
+ * later line has changed the pane since. It is not a daemon broadcast (never
+ * `daemon.agent-event`): it goes out through `AppDeps.emitAgentEvent` and rides the
+ * `plugin-event` frame every window session receives, like every plugin event, and only plugin
+ * backends and views consume it.
  *
  * A hook line can dispatch twice: its primary message, then the §4.2 dual-fire session-start.
- * The primary's event therefore waits until that dual-fire has applied, or until the next
- * microtask when the line has none, and the dual-fire publishes nothing of its own. That keeps
- * it at one event per `kelpi event` call, and its `sessionID` / `agent` already carry what the
- * dual-fire bound (a missed SessionStart, a codex `stop` on a pane last seen as claude).
+ * The primary's event is built as soon as it applies and held until that dual-fire has applied,
+ * or until the next microtask when the line has none. A dual-fire rebuilds the held event from
+ * the state it left and publishes nothing of its own. That keeps it at one event per `kelpi
+ * event` call, and its `sessionID` / `agent` already carry what the dual-fire bound (a missed
+ * SessionStart, a codex `stop` on a pane last seen as claude). A later line in the same socket
+ * chunk (a `pane-close`, say) cannot change or drop it.
  */
 
 import type {
@@ -117,26 +121,33 @@ export function agentHookEvent(message: AgentHookMessage, state: DaemonState): A
 }
 
 export interface AgentHookQueue {
-    /** Hold `build` until the line's dual-fire has applied (`flush`) or the next microtask. */
-    defer(build: () => AgentHookEvent | null): void;
+    /** Build `message`'s event from `state` now and hold it until `complete` or the next microtask. */
+    hold(message: AgentHookMessage, state: DaemonState): void;
+    /** The line's dual-fire applied: rebuild the held event from `state`, then publish it. */
+    complete(state: DaemonState): void;
     /** Publish the held event now, if any. */
     flush(): void;
 }
 
 /** One held event at most: a dual-fire always runs synchronously right after its primary. */
 export function createAgentHookQueue(emit: (event: AgentHookEvent) => void): AgentHookQueue {
-    let pending: (() => AgentHookEvent | null) | null = null;
+    let held: { readonly message: AgentHookMessage; readonly event: AgentHookEvent } | null = null;
     const flush = (): void => {
-        const build = pending;
-        pending = null;
-        const event = build?.() ?? null;
-        if (event !== null) emit(event);
+        const pending = held;
+        held = null;
+        if (pending !== null) emit(pending.event);
     };
     return {
-        defer(build) {
+        hold(message, state) {
             flush();
-            pending = build;
+            const event = agentHookEvent(message, state);
+            if (event === null) return;
+            held = { message, event };
             queueMicrotask(flush);
+        },
+        complete(state) {
+            if (held !== null) held = { ...held, event: agentHookEvent(held.message, state) ?? held.event };
+            flush();
         },
         flush
     };

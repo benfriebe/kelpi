@@ -333,6 +333,7 @@ On abstain, an error, no daemon or a timeout it prints nothing and exits 0, whic
 Claude's normal prompt in place: it fails open to the prompt, never to "allow". A 3.5 s
 guard bounds the whole run, outside a pane it exits at once, and with `--agent codex` it
 sends nothing. The output contract and timeouts are in cli.md §8.7.
+Each decision is also one `agent.event` of type `permission-request` (§7.7).
 
 ---
 
@@ -845,6 +846,12 @@ plugin that answers an event by calling `agents.notify` loops.
   on `error`, `backgroundTasks` only when greater than 0. `muted: true` follows §7.6's rule
   for `daemon.notification`; the key is absent otherwise.
 - **Not stored.** `transcriptPath` rides on the event only; the pane does not keep it.
+- **`permission-request` (#388).** Every permission decision (allow, deny or abstain,
+  including the timeout, error and malformed fallbacks) publishes one event after the reply,
+  with `toolName`, `behavior`, `provider` (absent when none was asked) and `message` (deny
+  only) on top of the common fields; `status` is the pane's current one, since the verb
+  changes no state. It never carries `toolInput`. An unknown or unowned pane (`ok:false`) and
+  a pane `agentEventsMuted` covers publish none, as above.
 
 ---
 

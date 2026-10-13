@@ -6,6 +6,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { JsonObject, JsonValue } from '@kelpi/protocol';
 
+import type { AgentHookEvent } from './agent-events.js';
 import type { PermissionDecisionCall } from './context.js';
 import { PERMISSION_DEADLINE_MS } from './permissions.js';
 import { flush, harness, id, NOW, seeded } from './testing.js';
@@ -41,11 +42,16 @@ function provider(answer: (args: JsonObject) => Promise<JsonValue>, id = PROVIDE
 function setup(answer: (args: JsonObject) => Promise<JsonValue>, options: { muted?: boolean } = {}) {
     const stub = provider(answer);
     const logs: string[] = [];
+    /** Each `agent.event`, with how many reply payloads had gone out when it was published. */
+    const events: { event: AgentHookEvent; repliesSent: number }[] = [];
     const h = harness({
         initial: seeded(1),
         decidePermission: stub.decidePermission,
         log: (message) => {
             logs.push(message);
+        },
+        emitAgentEvent: (event) => {
+            events.push({ event, repliesSent: h.replies.at(-1)?.payloads.length ?? 0 });
         },
         ...(options.muted === true ? { agentEventsMuted: (paneID: string) => paneID === P1 } : {})
     });
@@ -56,7 +62,7 @@ function setup(answer: (args: JsonObject) => Promise<JsonValue>, options: { mute
         if (capture === undefined) throw new Error('no reply handle was allocated');
         return capture.payloads;
     };
-    return { h, calls: stub.calls, logs, ask };
+    return { h, calls: stub.calls, logs, events, ask };
 }
 
 afterEach(() => {
@@ -241,5 +247,93 @@ describe('permission-request', () => {
         expect(payloads).toEqual([{ ok: true, behavior: 'abstain' }]);
         expect(calls).toEqual([]);
         expect(logs).toEqual([`permission-request: pane ${P1} tool Bash: abstain (agent events muted)`]);
+    });
+});
+
+describe('permission-request agent.event (#388 §4)', () => {
+    it('publishes one allow event naming the provider, after the reply, without the tool input', async () => {
+        const { events, ask } = setup(async () => ({ behavior: 'allow' }));
+        ask();
+        await flush();
+        expect(events).toEqual([
+            {
+                event: {
+                    type: 'permission-request',
+                    paneID: P1,
+                    workspaceID: W1,
+                    agent: 'claude',
+                    status: 'idle',
+                    toolName: 'Bash',
+                    behavior: 'allow',
+                    provider: PROVIDER
+                },
+                repliesSent: 1
+            }
+        ]);
+    });
+
+    it('carries a deny message, the bound session and the workspace mute', async () => {
+        const { h, events, ask } = setup(async () => ({ behavior: 'deny', message: 'rm -rf is never allowed' }));
+        h.send({ command: 'session-start', pane_id: P1, session_id: 'sess-1' });
+        h.dispatch({ type: 'set-workspace-muted', id: W1, muted: true });
+        ask();
+        await flush();
+        // The session-start publishes its own event first.
+        expect(events.map(({ event }) => event).filter((event) => event.type === 'permission-request')).toEqual([
+            expect.objectContaining({
+                type: 'permission-request',
+                sessionID: 'sess-1',
+                behavior: 'deny',
+                message: 'rm -rf is never allowed',
+                provider: PROVIDER,
+                muted: true
+            })
+        ]);
+    });
+
+    it('publishes the abstain fallback once, naming the provider that timed out', async () => {
+        vi.useFakeTimers();
+        const { events, ask } = setup(() => new Promise<JsonValue>(() => {}));
+        ask();
+        await vi.advanceTimersByTimeAsync(PERMISSION_DEADLINE_MS);
+        expect(events).toEqual([
+            {
+                event: expect.objectContaining({ type: 'permission-request', behavior: 'abstain', provider: PROVIDER }),
+                repliesSent: 1
+            }
+        ]);
+        expect(events[0]?.event).not.toHaveProperty('message');
+        await vi.advanceTimersByTimeAsync(10_000);
+        expect(events).toHaveLength(1);
+    });
+
+    it('leaves out the provider when none could be asked', async () => {
+        const events: AgentHookEvent[] = [];
+        const h = harness({
+            initial: seeded(1),
+            decidePermission: () => {
+                throw new Error('plugin service is stopped');
+            },
+            emitAgentEvent: (event) => {
+                events.push(event);
+            }
+        });
+        h.send(REQUEST);
+        await flush();
+        expect(events).toHaveLength(1);
+        expect(events[0]).toMatchObject({ type: 'permission-request', behavior: 'abstain' });
+        expect(events[0]).not.toHaveProperty('provider');
+    });
+
+    it('publishes nothing for an unknown pane or a pane whose agent events are muted', async () => {
+        const unknown = setup(async () => ({ behavior: 'allow' }));
+        unknown.ask({ ...REQUEST, pane_id: id('9999aaaa', 1) });
+        await flush();
+        expect(unknown.events).toEqual([]);
+
+        const muted = setup(async () => ({ behavior: 'allow' }), { muted: true });
+        expect(muted.ask()).toEqual([{ ok: true, behavior: 'abstain' }]);
+        await flush();
+        expect(muted.events).toEqual([]);
     });
 });

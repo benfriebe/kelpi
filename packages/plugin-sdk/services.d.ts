@@ -1,4 +1,5 @@
-import type { Context, Data } from './index.js';
+import type { Context } from './index.js';
+import type { Data } from './index.js';
 
 /** Native service contracts. These types do not depend on the daemon's implementation. */
 export type NativeGitStatus = { kind: 'unknown' | 'clean' }

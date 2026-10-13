@@ -8,11 +8,21 @@
  * This handler owns the deadline. A provider that is late, throws or answers malformed is
  * replied to as `abstain`, which leaves Claude's own prompt in place: failing open means
  * abstaining, never allowing. Every decision is one info line in the daemon log.
+ *
+ * The deadline bounds the provider only: a plugin `before` operation hook on
+ * `permission-request` or `*` runs in the dispatcher first (up to 5 s), and the CLI's 3.5 s
+ * guard and Claude's 5 s hook timeout bound the whole run, both failing open to the prompt.
+ *
+ * Every decision, fallbacks included, is also one `agent.event` of type `permission-request`
+ * (#388 §4, agent-lifecycle.md §7.7), published after the reply. An unknown or unowned pane
+ * (`ok:false`) and a pane whose agent events are muted (#372) publish none, as for every
+ * other hook; the muted pane's abstain reply still goes out.
  */
 
 import { pluginRecord, type JsonObject, type JsonValue } from '@kelpi/protocol';
 
 import { findPaneAnywhere, workspaceByID } from '../../store/index.js';
+import { permissionRequestEvent } from './agent-events.js';
 import { forCommand } from './common.js';
 import { fail, ok, type AppDeps, type AppHandler } from './context.js';
 
@@ -119,12 +129,26 @@ export function permissionHandlerEntries(deps: AppDeps): readonly (readonly [str
                 ...(msg.cwd !== undefined ? { cwd: msg.cwd } : {}),
                 ...(msg.permission_mode !== undefined ? { permissionMode: msg.permission_mode } : {})
             };
-            void askProvider(args, deps).then(({ provider, decision }) => {
-                ok(reply, { ...decision, ...(provider !== undefined ? { provider } : {}) });
-                deps.log(
-                    `permission-request: pane ${msg.pane_id} tool ${msg.tool_name}: ${decision.behavior} (provider ${provider ?? 'none'})`
-                );
-            });
+            void askProvider(args, deps)
+                .then(({ provider, decision }) => {
+                    ok(reply, { ...decision, ...(provider !== undefined ? { provider } : {}) });
+                    deps.log(
+                        `permission-request: pane ${msg.pane_id} tool ${msg.tool_name}: ${decision.behavior} (provider ${provider ?? 'none'})`
+                    );
+                    // Read the pane again: the provider may have taken up to the deadline.
+                    if (deps.agentEventsMuted(msg.pane_id)) return;
+                    const event = permissionRequestEvent(msg.pane_id, ctx.store.getState(), {
+                        toolName: msg.tool_name,
+                        behavior: decision.behavior,
+                        ...(provider !== undefined ? { provider } : {}),
+                        ...(decision.message !== undefined ? { message: decision.message } : {})
+                    });
+                    if (event !== null) deps.emitAgentEvent(event);
+                })
+                .catch((error: unknown) => {
+                    if (reply !== null && !reply.closed) ok(reply, { behavior: 'abstain' });
+                    deps.log(`WARNING: permission-request: ${describeError(error)}`);
+                });
         })
     ];
 }

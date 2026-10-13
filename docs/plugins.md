@@ -551,6 +551,7 @@ plugin that answers an event by calling `agents.notify` loops.
 | `transcriptPath` | `notification`, `stop` and `session-start`, when the hook carried it. |
 | `backgroundTasks` | `stop` and `notification`, only when greater than 0. |
 | `toolName` | Codex PermissionRequest (`notification --agent codex`). |
+| `behavior`, `provider` | `permission-request` (#388): one event per Claude permission decision, `behavior` `allow`, `deny` or `abstain`, `provider` the provider asked (absent when none could be), with `toolName` and, on a deny, `message`. Never the tool input. |
 | `muted` | `true` in a muted workspace, absent otherwise, as on `daemon.notification`. Honour it the same way. |
 
 Backend and frame delivery each use a bounded queue (32 events / 512 KiB), with one event

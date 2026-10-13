@@ -377,6 +377,9 @@ The one agent hook verb with a reply (#388, wire-protocol.md §6.1.1), in
    the same `provider`, after one `WARNING: permission-request: provider <id> …` log line.
 6. Log the decision: `permission-request: pane <id> tool <name>: <behavior> (provider <id>)`.
    The tool input is never logged.
+7. Publish one `agent.event` of type `permission-request` through `deps.emitAgentEvent`
+   (agent-lifecycle.md §7.7), unless the pane's agent events are muted by then or the pane is
+   gone. Steps 1 and 2 publish none.
 
 ---
 

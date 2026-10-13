@@ -131,7 +131,7 @@ export interface AgentsAPI {
     onEvent(listener: (event: AgentHookEvent, raw: import('./index.js').Event) => void | Promise<void>): import('./index.js').Dispose;
 }
 /** The wire verb an agent hook arrived as (docs/agent-lifecycle.md §7.7). */
-export type AgentHookEventType = 'start' | 'stop' | 'notification' | 'error' | 'session-start' | 'session-end';
+export type AgentHookEventType = 'start' | 'stop' | 'notification' | 'error' | 'session-start' | 'session-end' | 'permission-request';
 /** The `agent.event` payload. Optional fields are present only when the hook carried them. */
 export interface AgentHookEvent {
     type: AgentHookEventType;
@@ -148,7 +148,7 @@ export interface AgentHookEvent {
     /** `notification` only. */
     title?: string;
     body?: string;
-    /** `error` only. */
+    /** `error`, and a `permission-request` deny when the provider gave one. */
     message?: string;
     /** Claude Stop only: the final reply's text, capped at 64 KiB of UTF-8. */
     lastAssistantMessage?: string;
@@ -157,8 +157,12 @@ export interface AgentHookEvent {
     transcriptPath?: string;
     /** `stop` / `notification`, only when > 0. */
     backgroundTasks?: number;
-    /** Codex PermissionRequest (`notification`) only. */
+    /** Codex PermissionRequest (`notification`), and every `permission-request`. */
     toolName?: string;
+    /** `permission-request` only (#388): the decision Kelpi answered Claude with. Never carries the tool input. */
+    behavior?: 'allow' | 'deny' | 'abstain';
+    /** `permission-request` only: the `kelpi.agent.permissions` provider that was asked. */
+    provider?: string;
     /** The pane's workspace is muted: honour it, never echo the event as a notification. */
     muted?: true;
 }

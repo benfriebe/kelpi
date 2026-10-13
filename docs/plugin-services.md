@@ -216,12 +216,20 @@ tool's error, and its own UI shows a fixed "Denied by PermissionRequest hook" li
   keeps that window short. Decide from the arguments alone, without slow I/O. An `on-demand`
   plugin activates on its first call, and a request that waits longer than the deadline for
   that abstains; use `startup` activation for a provider that must answer the first request.
+  The deadlines form one ladder: the provider's 2 s, then the CLI's 3 s reply read and 3.5 s
+  guard, then Claude's 5 s hook timeout ([wire-protocol.md §6.1.1](wire-protocol.md)). The
+  2 s bounds the provider only: a plugin `before` operation hook matching `permission-request`
+  or `*` runs first, for up to 5 s, so the CLI's guard and Claude's timeout bound the whole
+  request, and both fail open to the prompt. Such a hook also sees the request's `tool_input`.
 - **Fail open means abstain.** A timeout, a thrown error, a malformed result or an
   unavailable provider is answered as `abstain`, with one warning in the daemon log naming the
   provider. A malformed result also fails the backend, so later calls use the bundled abstain
   until it reloads. Nothing but the provider's own `allow` is ever answered as allow.
 - **Visibility.** The daemon logs every decision (pane, tool, behavior, provider). The
   reply's `provider` field names the provider that was asked.
+  Each decision is also an `agent.event` of type `permission-request` with `toolName`,
+  `behavior` and `provider` (never `toolInput`), which any plugin can observe through
+  `api.agents.onEvent` ([plugins.md](plugins.md), agent-lifecycle.md §7.7).
 
 In sessions that cannot show a prompt (background subagents, non-interactive runs), Claude
 denies a call that no hook decided, so `abstain` there means deny, as it does without Kelpi.

@@ -589,6 +589,12 @@ decision is made, so a fast answer exits at once. Claude keeps a hook running ev
 user answers its prompt, so the CLI bounds its own runtime; the installed 5 s hook timeout is
 the backstop.
 
+The guard can only fire once stdin is read (`readStdinJSON` reads it synchronously);
+Claude's 5 s hook timeout covers a stdin that never closes.
+
+The wire request and reply are in [wire-protocol.md §6.1.1](wire-protocol.md), and the
+provider contract in [plugin-services.md, "Agent permission decisions"](plugin-services.md).
+
 Fail open: a silent exit 0 is "no decision" to Claude, which shows its normal permission
 prompt. Every failure therefore ends at the prompt, never at "allow". Transport failures exit
 0 through the section 5.6 path; `ok:false`, empty and invalid replies and the guard print a

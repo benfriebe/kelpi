@@ -1707,6 +1707,7 @@ export declare class SelectionManager {
     private mouseDownTarget;
     private unitAnchor;
     private pressSelectedWord;
+    private pressPoint;
     private dirtySelectionRows;
     private selectionChangedEmitter;
     private boundMouseUpHandler;
@@ -1750,6 +1751,8 @@ export declare class SelectionManager {
     trackSelectionForWrite(): boolean;
     /** Reconcile the copy reader and highlight with the same surviving native endpoints. */
     restoreSelectionAfterWrite(): void;
+    /** vendor 0.4.0-kelpi.22: end a press that never selected, e.g. when output discarded its row. */
+    private abandonPress;
     /**
      * Clear the selection
      */
@@ -1836,6 +1839,9 @@ export declare class SelectionManager {
      * the anchor's start to the end of the word (line) under the pointer. Blank space under the
      * pointer of a word drag ends it at that cell. `selectionEnd` stays the moving end, which is
      * what auto-scroll compares against.
+     *
+     * vendor 0.4.0-kelpi.22: `x` is how far across the cell the pointer is, in pixels; a drag from a
+     * single press uses it to decide which cells it has crossed (`dragSelection`).
      */
     private extendSelectionTo;
     /**
@@ -1848,6 +1854,24 @@ export declare class SelectionManager {
      * Convert pixel coordinates to terminal cell coordinates
      */
     private pixelToCell;
+    /**
+     * vendor 0.4.0-kelpi.22: how far across its cell (in pixels) a canvas x lands, clamped to the
+     * grid the same way `pixelToCell` clamps the cell.
+     */
+    private pixelToCellX;
+    /**
+     * vendor 0.4.0-kelpi.22: what a drag from a single press to a cell selects, or null for nothing.
+     *
+     * Ghostty's `mouseSelection` (`Surface.zig`), minus its rectangle mode. A cell is in the
+     * selection only once the drag has crossed its threshold, 60% of the way across it, in the
+     * direction of the drag: the pressed cell if the press was before its threshold, the cell under
+     * the pointer if the pointer is past its threshold, and every cell between. So a click, or a
+     * press that wobbles a pixel or two (even over a cell boundary), selects nothing, and a single
+     * character is selected by dragging across it.
+     */
+    private dragSelection;
+    /** vendor 0.4.0-kelpi.22: the next (1) or previous (-1) cell in reading order, wrapping rows. */
+    private stepCell;
     /**
      * Normalize selection coordinates (handle backward selection)
      * Returns coordinates in VIEWPORT space for rendering, clamped to visible area

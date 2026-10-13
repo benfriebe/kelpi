@@ -373,7 +373,10 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
         if (signal?.aborted) throw new Error('plugin dev installation cancelled');
         const id = manifest.id, previous = this.installations.get(id);
         const problem = this.revisionProblem(manifest, enabled); if (problem) throw new Error(problem);
-        if (previous?.revision === revision && previous.enabled === enabled && !this.errors.has(id)) return this.list();
+        // Reinstalling what is already selected is a no-op only when the stored manifest says what
+        // this decoder says: a package an older daemon stored without a field it did not know
+        // (`contributes.cli` before #391) is re-read as a change, so the field takes effect.
+        if (previous?.revision === revision && previous.enabled === enabled && !this.errors.has(id) && JSON.stringify(previous.manifest) === JSON.stringify(manifest)) return this.list();
         const wasRunning = this.running.has(id), previousError = this.errors.get(id);
         let committed = false;
         this.changing.add(manifest.id);

@@ -31,7 +31,11 @@ export function decodePluginInstallation(raw: unknown): PluginInstallation {
 }
 
 export function selectPluginRevision(previous: PluginInstallation | undefined, manifest: PluginManifest, revision: string, enabled: boolean): PluginInstallation {
-    const selected = previous?.revisions.find(item => item.revision === revision) ?? { manifest, revision, installedAt: Date.now() };
+    // A retained record keeps its install time, but its manifest is replaced by the one decoded now:
+    // a record an older daemon stored lacks the fields its decoder did not know (`contributes.cli`
+    // before #391), and the boot check requires the selection and its history row to agree.
+    const retained = previous?.revisions.find(item => item.revision === revision);
+    const selected = retained ? { ...retained, manifest } : { manifest, revision, installedAt: Date.now() };
     return { manifest, revision, enabled, revisions: [selected, ...previous?.revisions.filter(item => item.revision !== revision) ?? []].slice(0, PLUGIN_RETAINED_REVISIONS), selectionID: randomUUID() };
 }
 

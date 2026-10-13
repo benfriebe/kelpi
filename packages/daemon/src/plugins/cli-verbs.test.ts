@@ -182,3 +182,63 @@ describe('plugin CLI verbs (#391)', () => {
         expect(await h.call('hi', ['e'], {}, restarted)).toEqual({ text: 'hello e', exitCode: 3 });
     });
 });
+
+describe('a package a pre-#391 daemon stored without contributes.cli', () => {
+    // What the older decoder kept: the same revision, with the key it did not know dropped.
+    const strip = (directory: string): void => {
+        const registry = path.join(directory, 'installed.json');
+        const records = JSON.parse(fs.readFileSync(registry, 'utf8')) as Array<{ manifest: { contributes: Record<string, unknown> }; revisions: Array<{ manifest: { contributes: Record<string, unknown> } }> }>;
+        for (const record of records) { delete record.manifest.contributes['cli']; for (const row of record.revisions) delete row.manifest.contributes['cli']; }
+        fs.writeFileSync(registry, JSON.stringify(records));
+    };
+    const stored = (directory: string) => JSON.parse(fs.readFileSync(path.join(directory, 'installed.json'), 'utf8')) as Array<{ manifest: { contributes: { cli?: unknown[] } }; revisions: Array<{ manifest: { contributes: { cli?: unknown[] } } }> }>;
+
+    it('gains its verbs when the same package is reinstalled, enabled or disabled, and still boots', async () => {
+        const h = harness();
+        const source = h.write('source', id, verbs(id));
+        await h.service.install(source, true);
+        await h.service.dispose();
+        strip(h.options.directory);
+
+        const upgraded = new PluginService(h.options);
+        cleanups.push(() => upgraded.dispose());
+        await expect(h.call('hello', ['a'], {}, upgraded)).rejects.toThrow('unknown kelpi verb: hello');
+        // The same directory again: the same revision, but a manifest this decoder reads differently.
+        await upgraded.install(source, true);
+        expect(await h.call('hello', ['a'], {}, upgraded)).toEqual({ text: 'hello a', exitCode: 3 });
+        expect(stored(h.options.directory)[0]!.revisions).toHaveLength(1);
+        expect(stored(h.options.directory)[0]!.revisions[0]!.manifest.contributes.cli).toHaveLength(3);
+        await upgraded.dispose();
+
+        strip(h.options.directory);
+        const disabled = new PluginService(h.options);
+        cleanups.push(() => disabled.dispose());
+        await disabled.request('disable', { pluginID: id });
+        await disabled.install(source, true);
+        expect(await h.call('hello', ['b'], {}, disabled)).toEqual({ text: 'hello b', exitCode: 3 });
+        expect(stored(h.options.directory)[0]!.revisions[0]!.manifest.contributes.cli).toHaveLength(3);
+        await disabled.dispose();
+
+        const errors: string[] = [];
+        const rebooted = new PluginService({ ...h.options, onError: (error: Error) => { errors.push(error.message); } });
+        cleanups.push(() => rebooted.dispose());
+        expect(errors).toEqual([]);
+        expect(rebooted.list()).toHaveLength(1);
+        expect(await h.call('hello', ['c'], {}, rebooted)).toEqual({ text: 'hello c', exitCode: 3 });
+    });
+});
+
+describe('an oversized verb result', () => {
+    it('fails only its own call and leaves the backend running', async () => {
+        const h = harness();
+        const source = path.join(h.root, 'big'); fs.mkdirSync(source, { recursive: true });
+        fs.writeFileSync(path.join(source, 'kelpi.plugin.json'), JSON.stringify({ id: 'sample.big', name: 'Big', version: '1.0.0', apiVersion: 1, trust: 'full', backend: 'backend.mjs', contributes: {
+            commands: [{ id: 'sample.big.dump', title: 'dump' }], cli: [{ name: 'dump', command: 'sample.big.dump', summary: 'Dump a log' }] } }));
+        fs.writeFileSync(path.join(source, 'backend.mjs'), `export function activate(api) { api.commands.register('sample.big.dump', args => ({ text: 'x'.repeat(Number(args.argv[0])) })); }`);
+        await h.service.install(source, true);
+        expect(await h.call('dump', ['10'])).toEqual({ text: 'xxxxxxxxxx' });
+        await expect(h.call('dump', [String(256 * 1024 + 1)])).rejects.toThrow('plugin result exceeds the 256 KiB limit');
+        expect(await h.call('dump', ['3'])).toEqual({ text: 'xxx' });
+        expect((h.service.list()[0] as { error?: string | null }).error).toBeFalsy();
+    });
+});

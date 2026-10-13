@@ -88,7 +88,8 @@ export type HookDecision = { allow: true } | { allow: false; reason: string };
 export type CliInvocation = { argv: string[]; cwd: string; isTTY: boolean; json: boolean };
 /**
  * What a `contributes.cli` command returns. The CLI prints `stderr` to standard error, then `text`
- * (or `json` with `--json`), and exits with `exitCode`, 0 when absent.
+ * (or `json` with `--json`), and exits with `exitCode`, 0 when absent. The whole result is limited
+ * to 256 KiB of JSON; a larger one fails only that call, so page or truncate a long dump.
  */
 export type CliResult = { text?: string; json?: Json; exitCode?: number; stderr?: string };
 export interface BackendAPI extends KelpiAPI {

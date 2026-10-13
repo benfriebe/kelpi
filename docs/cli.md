@@ -2490,7 +2490,8 @@ kelpi <verb> [--json] [argv...]
 - **Output.** The result is `{text?, json?, exitCode?, stderr?}`. A non-empty `stderr` goes to
   stderr first. Without `--json`, a non-empty `text` goes to stdout with a trailing newline
   added if missing; a result with no `text` prints nothing. With `--json`, stdout gets
-  `JSON.stringify(json, null, 2)`, or `{"text": ...}` when the result has no `json`.
+  `JSON.stringify(json, null, 2)`, or `{"text": ...}` when the result has no `json`. A result
+  over 256 KiB of JSON fails that call alone (`plugin result exceeds the 256 KiB limit`, exit 1).
 - **Exit code.** `exitCode` when it is an integer from 0 to 255; 0 when absent; 1 for any
   other value.
 - **Unknown.** When no installed plugin declares the verb, the daemon answers

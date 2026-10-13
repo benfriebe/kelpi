@@ -398,7 +398,9 @@ api.commands.register('acme.dashboard.hello', ({ argv, json }) => {
 The CLI prints `stderr` to standard error, then `text` with a trailing newline, or with `--json`
 `json` as indented JSON (`{ "text": … }` when the command returned no `json`). It exits with
 `exitCode`, 0 when absent. A return value that is not an object prints nothing (`{}` with
-`--json`). An unknown verb
+`--json`). A result is limited to 256 KiB of JSON, like every plugin result; a larger one fails
+only that call with `plugin result exceeds the 256 KiB limit` and the backend keeps running, so a
+verb that dumps a log should page or truncate. An unknown verb
 still prints `Unknown command`; a verb whose plugin is disabled fails with
 `plugin <id> is disabled`. A verb gets no standard input and cannot prompt, so one that needs a
 confirmation should take `--yes`. `kelpi --help` lists installed verbs under their plugin's name,

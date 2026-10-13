@@ -139,6 +139,16 @@ describe('backend prompts (#389)', () => {
         await h.service.request('prompt-reply', { requestID: (await h.prompt(1))['requestID']!, error: 'invalid options' }, h.window('WIN', 'D'));
         await expect(refused).rejects.toThrow('invalid options');
     });
+    it('takes the answering client from the connection, never from the input', async () => {
+        const h = await harness();
+        const a: PluginContext = { daemonID: h.service.daemonID, clientID: 'A' }, b: PluginContext = { daemonID: h.service.daemonID, clientID: 'B' };
+        const result = h.run('run');
+        const frame = await h.prompt();
+        await h.service.request('prompt-ack', { requestID: frame['requestID']!, windowID: 'WIN' }, a);
+        await expect(h.service.request('prompt-reply', { requestID: frame['requestID']!, clientID: 'A', windowID: 'WIN', value: 'run' }, b)).rejects.toThrow('prompt belongs to another client');
+        await h.service.request('prompt-reply', { requestID: frame['requestID']!, windowID: 'WIN', value: 'run' }, a);
+        expect(await result).toBe('run');
+    });
     it('cancels a pending prompt when its backend is disabled, reloaded or crashes', async () => {
         const h = await harness();
         const cancelled = (frame: JsonObject) => expect(h.frames('plugin-prompt-cancel')).toContainEqual({ type: 'plugin-prompt-cancel', requestID: frame['requestID'], windowID: 'WIN' });

@@ -46,20 +46,24 @@ describe('plugins use the shared Kelpi command path', () => {
             session.close(); expect(releaseClient).toHaveBeenCalledWith(session.clientID);
         } finally { hub.close(); }
     });
-    it('refuses backend prompt acks and replies from a paired device before they reach the plugin service (#389)', () => {
+    it('lets a paired device only refuse a backend prompt, never acknowledge or answer it (#389)', () => {
         const run = vi.fn((_action: string, _args: JsonObject, reply: ReplyHandle) => { reply.send({ ok: true, result: null }); reply.close(); });
         const hub = createSyncHub({ store: createStore(seededState()), dispatcher: () => {}, daemon: { version: '1', build: 'test' }, validateToken: () => true, plugins: { run } });
         try {
             const device = recordingTransport(), owner = recordingTransport();
             const deviceSession = hub.createSession(device), ownerSession = hub.createSession(owner);
             const hello = (token: string) => JSON.stringify({ type: 'hello', protocolVersion: WS_PROTOCOL_VERSION, token, client: { kind: 'browser', windowID: 'WIN' } });
-            const command = (action: string) => JSON.stringify({ type: 'command', id: action, payload: { command: 'plugin', action, text: JSON.stringify({ requestID: 'R', value: 'run' }) } });
+            const command = (action: string, input: JsonObject = { requestID: 'R', value: 'run' }) => JSON.stringify({ type: 'command', id: action, payload: { command: 'plugin', action, text: JSON.stringify(input) } });
             deviceSession.handleMessage(hello('kd_test')); ownerSession.handleMessage(hello('owner'));
-            for (const action of ['prompt-ack', 'prompt-reply']) {
-                deviceSession.handleMessage(command(action));
+            for (const [action, input] of [['prompt-ack', { requestID: 'R' }], ['prompt-reply', { requestID: 'R', value: 'run' }], ['prompt-reply', { requestID: 'R', value: null, error: 'unavailable' }]] as const) {
+                deviceSession.handleMessage(command(action, input));
                 expect(device.json.at(-1)).toMatchObject({ type: 'command-reply', id: action, reply: { ok: false, error: "backend prompts are answered from the daemon owner's windows" } });
             }
             expect(run).not.toHaveBeenCalled();
+            // A window attached to a remote daemon cannot present the prompt and says so at once.
+            deviceSession.handleMessage(command('prompt-reply', { requestID: 'R', error: 'unavailable' }));
+            expect(run).toHaveBeenCalledWith('prompt-reply', { requestID: 'R', error: 'unavailable' }, expect.anything(), expect.objectContaining({ clientID: deviceSession.clientID }));
+            run.mockClear();
             ownerSession.handleMessage(command('prompt-reply'));
             expect(run).toHaveBeenCalledWith('prompt-reply', { requestID: 'R', value: 'run' }, expect.anything(), expect.objectContaining({ clientID: ownerSession.clientID, windowID: 'WIN' }));
         } finally { hub.close(); }

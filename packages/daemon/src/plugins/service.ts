@@ -1042,9 +1042,13 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
             return this.api(lease.pluginID, text(input['method'], 'method'), input['args'], lease.context, input['lease'] as string);
         }
         if (action === 'release') { this.release(text(input['lease'], 'lease')); return null; }
-        // A renderer's connection declares no window, so its answer names one, as `run` may (#389).
-        if (action === 'prompt-ack') return this.prompts.ack(input, { ...context, ...this.context(input) });
-        if (action === 'prompt-reply') return this.prompts.reply(input, { ...context, ...this.context(input) });
+        // A renderer's connection declares no window, so its answer names one, as `run` may; the
+        // client is always the connection's, so no input can answer for the acking client (#389).
+        if (action === 'prompt-ack' || action === 'prompt-reply') {
+            const windowID = input['windowID'];
+            const answering = typeof windowID === 'string' && windowID.length > 0 && windowID.length < 200 ? { ...context, windowID } : context;
+            return action === 'prompt-ack' ? this.prompts.ack(input, answering) : this.prompts.reply(input, answering);
+        }
         const id = text(input['pluginID'], 'pluginID'); const item = this.item(id);
         if (action === 'logs') return this.logs.get(id) ?? [];
         if (action === 'history') return this.history(id) as unknown as JsonValue;

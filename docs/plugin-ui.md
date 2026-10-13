@@ -220,7 +220,7 @@ rejects with a `KelpiError` whose `code` is `NO_WINDOW` rather than picking a wi
 what `kelpi plugin run`, event listeners and other background callbacks get. A
 window that does not take the request within ten seconds (closed, or not connected) rejects
 the same way. Once a window has taken a request, only that window's connection can answer it,
-and a paired device never answers a backend's prompt.
+and a paired device can only report that it cannot present one.
 
 **Lifetime.** Requests belong to the backend. Disabling, reloading or stopping the plugin, or
 its backend failing, closes its open and queued prompts. Closing the window cancels the

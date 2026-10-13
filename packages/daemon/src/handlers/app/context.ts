@@ -176,6 +176,7 @@ export interface AppHandlerOptions {
      * only plugin backends and views consume it. Defaults to dropping it.
      */
     readonly emitAgentEvent?: ((event: AgentHookEvent) => void) | undefined;
+    /**
      * #388: ask the `kelpi.agent.permissions` provider for a decision on `permission-request`.
      * `signal` aborts when the handler's deadline passes. Defaults to the bundled answer,
      * which always abstains.
@@ -277,7 +278,7 @@ export function resolveAppDeps(options: AppHandlerOptions = {}): AppDeps {
         isAppActive: options.isAppActive ?? (() => false),
         isPaneFocused: options.isPaneFocused ?? null,
         agentEventsMuted: options.agentEventsMuted ?? (() => false),
-        emitAgentEvent: options.emitAgentEvent ?? noop
+        emitAgentEvent: options.emitAgentEvent ?? noop,
         decidePermission:
             options.decidePermission ??
             (() => ({ provider: BUNDLED_PERMISSIONS_PROVIDER, result: Promise.resolve({ behavior: 'abstain' }) })),

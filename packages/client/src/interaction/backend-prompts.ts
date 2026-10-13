@@ -12,7 +12,9 @@
  * `backend:<pluginID>` owner is the only way two prompts from one backend share an owner ref. A
  * scope can only be withdrawn whole, though, so cancelling one prompt of several disposes the
  * plugin's scope and re-raises the others, in order, on a fresh one (acked only if not yet). The
- * daemon cancels one of several only on its ack watchdog; a backend's teardown cancels them all.
+ * daemon withdraws a backend's prompts in one frame at teardown, so a re-raise happens only when a
+ * single cancel (its ack watchdog, or a refusal that reached it before this window's ack) leaves
+ * survivors.
  */
 
 import type { JsonObject, JsonValue } from '@kelpi/protocol';
@@ -60,6 +62,11 @@ interface Group {
 
 const text = (value: unknown): string => (typeof value === 'string' ? value : '');
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+/** A teardown cancel lists every withdrawn request in `requestIDs`; the watchdog's names one. */
+const named = (frame: JsonObject, requestID: string): readonly string[] => {
+    const list = frame['requestIDs'];
+    return Array.isArray(list) && list.every((id): id is string => typeof id === 'string') ? list : [requestID];
+};
 /** Already settled, so it loses a race only to a request the surface has already refused. */
 const ADMITTED = Promise.resolve(Symbol('admitted'));
 
@@ -141,25 +148,29 @@ export function createBackendPromptBridge<R extends { readonly connection: Backe
         raise(runtime, groups, group, prompt, true);
     };
 
-    const cancel = (runtime: R, groups: Map<string, Group>, requestID: string): void => {
-        const group = [...groups.values()].find((entry) => entry.prompts.has(requestID));
-        if (group === undefined) return;
-        if (group.prompts.size === 1) {
-            forget(groups, group, requestID);
-            return;
+    /** Per plugin, after removing every named id: no survivors forgets the group, survivors re-raise. */
+    const cancel = (runtime: R, groups: Map<string, Group>, requestIDs: readonly string[]): void => {
+        for (const group of [...groups.values()]) {
+            const size = group.prompts.size;
+            for (const requestID of requestIDs) group.prompts.delete(requestID);
+            if (group.prompts.size === size) continue;
+            if (group.prompts.size === 0) {
+                groups.delete(group.owner.pluginID);
+                group.scope.dispose();
+                continue;
+            }
+            group.scope.dispose();
+            try {
+                group.scope = surface.createScope(group.owner);
+            } catch (error) {
+                groups.delete(group.owner.pluginID);
+                for (const prompt of group.prompts.values())
+                    send(runtime, 'prompt-reply', { requestID: prompt.requestID, error: message(error) });
+                group.prompts.clear();
+                continue;
+            }
+            for (const prompt of [...group.prompts.values()]) raise(runtime, groups, group, prompt, !prompt.acked);
         }
-        group.prompts.delete(requestID);
-        group.scope.dispose();
-        try {
-            group.scope = surface.createScope(group.owner);
-        } catch (error) {
-            groups.delete(group.owner.pluginID);
-            for (const prompt of group.prompts.values())
-                send(runtime, 'prompt-reply', { requestID: prompt.requestID, error: message(error) });
-            group.prompts.clear();
-            return;
-        }
-        for (const prompt of [...group.prompts.values()]) raise(runtime, groups, group, prompt, !prompt.acked);
     };
 
     /** The daemon answers null for a window that went away, so a drop sends nothing. */
@@ -191,7 +202,7 @@ export function createBackendPromptBridge<R extends { readonly connection: Backe
                 // Broadcast to every client: the check is the party that knows which window it is.
                 if (shellWindowID === null || frame['windowID'] !== shellWindowID || requestID === '') return;
                 if (type === 'plugin-prompt') present(runtime, groups, frame, requestID);
-                else cancel(runtime, groups, requestID);
+                else cancel(runtime, groups, named(frame, requestID));
             });
             const offStatus = runtime.connection.on('status', (status) => {
                 if (status !== 'connected') drop(groups);

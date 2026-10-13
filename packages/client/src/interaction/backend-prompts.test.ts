@@ -146,6 +146,60 @@ describe('backend prompts (#389)', () => {
         expect(sent()).toEqual([['prompt-ack', { requestID: 'r2', windowID: WINDOW }]]);
     });
 
+    it('withdraws a backend’s prompts named in one teardown frame without re-raising any', async () => {
+        const { surface, primary, sent } = setup();
+        for (const requestID of ['r1', 'r2', 'r3']) primary.emit(prompt(requestID));
+        await flush();
+        const published: (string | null)[] = [];
+        const off = surface.subscribe(() => published.push(surface.getSnapshot().activeModal?.id ?? null));
+        primary.emit({ ...cancel('r1'), requestIDs: ['r1', 'r2', 'r3'] });
+        await flush();
+        off();
+        // The scope's one dispose, straight to empty: a re-raise would publish fresh surface ids.
+        expect(published).toEqual([null]);
+        expect(surface.getSnapshot()).toMatchObject({ activeModal: null, queued: 0 });
+        expect(sent()).toEqual(['r1', 'r2', 'r3'].map((requestID) => ['prompt-ack', { requestID, windowID: WINDOW }]));
+    });
+
+    it('forgets every plugin a daemon-dispose frame empties, and sends nothing', async () => {
+        const { surface, primary, sent } = setup();
+        const other = { pluginID: 'example.other', pluginName: 'Other' };
+        primary.emit(prompt('r1'));
+        primary.emit(prompt('r2', other));
+        primary.emit(prompt('r3'));
+        await flush();
+        primary.emit({ ...cancel('r1'), requestIDs: ['r1', 'r2', 'r3'] });
+        await flush();
+        expect(surface.getSnapshot()).toMatchObject({ activeModal: null, queued: 0 });
+        expect(sent()).toHaveLength(3);
+        // Both groups are gone, not left holding a disposed scope: each plugin presents afresh.
+        primary.emit(prompt('r4'));
+        primary.emit(prompt('r5', other));
+        await flush();
+        expect(surface.getSnapshot().queued).toBe(1);
+        expect(sent().slice(3)).toEqual(['r4', 'r5'].map((requestID) => ['prompt-ack', { requestID, windowID: WINDOW }]));
+    });
+
+    it('ignores an unknown id in a frame’s list, and falls back to requestID when the list is not all strings', async () => {
+        const { surface, primary, sent } = setup();
+        primary.emit(prompt('r1'));
+        primary.emit(prompt('r2', { options: { ...DIALOG, title: 'Second' } }));
+        primary.emit(prompt('r3', { options: { ...DIALOG, title: 'Third' } }));
+        await flush();
+        primary.emit({ ...cancel('r2'), requestIDs: ['r2', 'ghost'] });
+        await flush();
+        expect(surface.getSnapshot()).toMatchObject({ activeModal: { options: { title: 'Run it?' } }, queued: 1 });
+        primary.emit({ ...cancel('r3'), requestIDs: ['r1', 7] });
+        await flush();
+        expect(surface.getSnapshot()).toMatchObject({ activeModal: { options: { title: 'Run it?' } }, queued: 0 });
+        surface.answer(surface.getSnapshot().activeModal!.id, 'run');
+        await flush();
+        expect(sent()).toEqual([
+            ...['r1', 'r2', 'r3'].map((requestID) => ['prompt-ack', { requestID, windowID: WINDOW }]),
+            ['prompt-reply', { requestID: 'r1', windowID: WINDOW, value: 'run' }]
+        ]);
+    });
+
     it('withdraws every prompt of a runtime whose connection drops, without sending', async () => {
         const { surface, primary, sent } = setup();
         primary.emit(prompt('r1'));

@@ -234,11 +234,11 @@ A request over either limit rejects with an error.
 **Timeouts.** Like a view's, a backend's prompt has no RPC deadline. A command has 30 seconds
 to finish; while a prompt it shows directly is open, that timer is held, and it resumes with
 the time that was left once none of the command's prompts is pending. While the prompt is
-open, the daemon also tells the window that ran the command every ten seconds that the command
-is still waiting, so the window's own 35-second wait does not run out before the user answers.
-Only that command is
-held: a caller waiting on it through `commands.execute` keeps its own 30-second call timer,
-as do activation, hooks and providers. Show the prompt from the command the user runs.
+open, the daemon also tells the window that ran the command every ten seconds that the
+command is still waiting, so the window's own 35-second wait does not run out before the
+user answers. Only that command is held: a caller waiting on it through `commands.execute`
+keeps its own 30-second call timer, as do activation, hooks and providers. Show the prompt
+from the command the user runs.
 
 **Owner.** The plugin owns the request, named by its manifest name, as a view's request is. A
 selected [prompts presenter](#selectable-interaction-presenters) draws it the same way as a

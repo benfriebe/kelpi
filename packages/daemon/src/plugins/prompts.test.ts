@@ -16,12 +16,13 @@ const backend = `export function activate(api) {
     api.commands.register('${id}.run', ask);
     api.commands.register('${id}.hang', async args => { await new Promise(resolve => setTimeout(resolve, args.delay ?? 0)); await ask(args); return new Promise(() => {}); });
     api.commands.register('${id}.idle', () => new Promise(() => {}));
+    api.commands.register('${id}.nested', args => api.commands.execute('${id}.run', args));
     api.commands.register('${id}.crash', () => process.exit(3));
 }`;
 async function harness(extra: Partial<PluginServiceOptions> = {}) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-prompts-test-'));
     const source = path.join(root, 'source'); fs.mkdirSync(path.join(source, 'ui'), { recursive: true });
-    const commands = ['run', 'hang', 'idle', 'crash'].map(name => ({ id: `${id}.${name}`, title: name }));
+    const commands = ['run', 'hang', 'idle', 'nested', 'crash'].map(name => ({ id: `${id}.${name}`, title: name }));
     const manifest = { id, name: 'Board', version: '1.0.0', apiVersion: 1, trust: 'full', activation: 'startup', backend: 'backend.mjs', contributes: { views: [{ id: `${id}.view`, title: 'Board', entry: 'ui/index.html', placements: ['pane'] }], commands } };
     fs.writeFileSync(path.join(source, 'kelpi.plugin.json'), JSON.stringify(manifest));
     fs.writeFileSync(path.join(source, 'backend.mjs'), backend);
@@ -214,17 +215,17 @@ describe('backend prompts (#389)', () => {
         expect(h.frames('plugin-prompt-cancel')).toEqual([]);
     });
     it('re-arms the window RPC that ran the command while its prompt is open, and stops on every settle', async () => {
-        const h = await harness({ promptHeartbeatMs: 50, promptAckTimeoutMs: 1000 });
+        const h = await harness({ promptHeartbeatMs: 47, promptAckTimeoutMs: 1000 });
         const started = vi.spyOn(globalThis, 'setInterval'), cleared = vi.spyOn(globalThis, 'clearInterval');
-        const heartbeats = (): unknown[] => started.mock.calls.flatMap((call, index) => call[1] === 50 ? [started.mock.results[index]!.value] : []);
-        const rpc = () => {
+        const heartbeats = (): unknown[] => started.mock.calls.flatMap((call, index) => call[1] === 47 ? [started.mock.results[index]!.value] : []);
+        const rpc = (name = 'run') => {
             const frames: JsonObject[] = [], sent: JsonObject[] = []; let atReply = -1; let disconnect: (() => void) | undefined;
             const reply = { closed: false, send: (value: JsonObject) => { atReply = frames.length; sent.push(value); }, close: () => { reply.closed = true; }, onDisconnect: (handler: () => void) => { disconnect = handler; }, progress: (value: JsonObject) => { frames.push(value); } };
-            h.service.run('run', { command: `${id}.run` }, reply as never, h.window());
+            h.service.run('run', { command: `${id}.${name}` }, reply as never, h.window());
             return { frames, sent, afterReply: () => frames.length - atReply, disconnect: () => disconnect?.() };
         };
         try {
-            // Answered: a frame as the prompt opens, more while it waits, none once the reply is out.
+            // Answered: a frame as the prompt opens, more while it waits, a settled one at the answer, none once the reply is out.
             const answered = rpc();
             const frame = await h.prompt();
             expect(answered.frames[0]).toEqual({ prompt: 'pending' });
@@ -232,7 +233,10 @@ describe('backend prompts (#389)', () => {
             await h.answer(frame, { value: 'run' });
             // The reply itself ends the hold, before any later beat could notice.
             expect(cleared).toHaveBeenCalledWith(heartbeats()[0]);
+            expect(answered.frames.at(-1)).toEqual({ prompt: 'settled' });
             await vi.waitFor(() => expect(answered.sent).toEqual([{ ok: true, result: 'run' }]));
+            expect(answered.frames.at(-1)).toEqual({ prompt: 'settled' });
+            expect(answered.afterReply()).toBe(0);
             // Stopped: the reload cancels the prompt, and its heartbeat with it.
             const stopped = rpc();
             const next = await h.prompt(1);
@@ -248,9 +252,19 @@ describe('backend prompts (#389)', () => {
             await h.service.request('prompt-ack', { requestID: (await h.prompt(3))['requestID']! }, h.window());
             gone.disconnect();
             await vi.waitFor(() => expect(gone.sent).toEqual([{ ok: false, error: 'plugin invocation cancelled' }]));
+            // Released: the acking client goes away, which dismisses the prompt and ends its heartbeat.
+            const released = rpc();
+            await h.service.request('prompt-ack', { requestID: (await h.prompt(4))['requestID']! }, h.window('WIN', 'R'));
+            h.service.releaseClient('R');
+            await vi.waitFor(() => expect(released.sent).toEqual([{ ok: true, result: null }]));
+            // Nested: a prompt shown by a command that another command executed sends nothing on the outer RPC.
+            const nested = rpc('nested');
+            await h.answer(await h.prompt(5), { value: 'inner' });
+            await vi.waitFor(() => expect(nested.sent).toEqual([{ ok: true, result: 'inner' }]));
+            expect(nested.frames).toEqual([]);
             await new Promise(resolve => setTimeout(resolve, 200));
-            for (const call of [answered, stopped, unseen, gone]) expect(call.afterReply()).toBe(0);
-            expect(heartbeats()).toHaveLength(4);
+            for (const call of [answered, stopped, unseen, gone, released]) expect(call.afterReply()).toBe(0);
+            expect(heartbeats()).toHaveLength(5);
             for (const handle of heartbeats()) expect(cleared).toHaveBeenCalledWith(handle);
         } finally { started.mockRestore(); cleared.mockRestore(); }
     }, 15_000);

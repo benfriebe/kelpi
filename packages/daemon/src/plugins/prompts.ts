@@ -117,6 +117,8 @@ function resume(parent: PromptParent): void {
     clearInterval(call.heartbeat); call.heartbeat = undefined;
     // A parent that settled or was cancelled meanwhile has no timer to restore.
     if (!parent.live()) return;
+    // One more frame restarts the window's 35 s wait now, so it outlasts the (at most 30 s) budget re-armed below.
+    call.progress?.({ prompt: 'settled' });
     const remaining = call.remaining ?? 1;
     call.deadline = Date.now() + remaining; call.timer = setTimeout(call.expire, remaining);
 }

@@ -139,6 +139,35 @@ describe('backend prompts (#389)', () => {
         await h.service.request('prompt-reply', { requestID: (await h.prompt(1))['requestID']!, error: 'invalid options' }, h.window('WIN', 'D'));
         await expect(refused).rejects.toThrow('invalid options');
     });
+    it('keeps an acknowledged prompt with the client that acked it, and the watchdog until a client does', async () => {
+        const h = await harness({ promptAckTimeoutMs: 1000 });
+        const result = h.run('run');
+        const requestID = (await h.prompt())['requestID']!;
+        await h.service.request('prompt-ack', { requestID }, h.window('WIN', 'C'));
+        // Every client sees the window id in the broadcast, so another owner connection naming it takes nothing over.
+        await expect(h.service.request('prompt-ack', { requestID }, h.window('WIN', 'D'))).rejects.toThrow('prompt belongs to another client');
+        await expect(h.service.request('prompt-ack', { requestID }, { daemonID: h.service.daemonID, windowID: 'WIN' })).rejects.toThrow('prompt ack needs a client');
+        expect(await h.service.request('prompt-ack', { requestID }, h.window('WIN', 'C'))).toBeNull();
+        await expect(h.service.request('prompt-reply', { requestID, value: 'spoofed' }, h.window('WIN', 'D'))).rejects.toThrow('prompt belongs to another client');
+        await h.service.request('prompt-reply', { requestID, value: 'run' }, h.window('WIN', 'C'));
+        expect(await result).toBe('run');
+        expect(h.frames('plugin-prompt-cancel')).toEqual([]);
+        // A refused ack leaves the prompt unacknowledged, so the watchdog still gives up on it.
+        const unseen = h.run('run');
+        const next = (await h.prompt(1))['requestID']!;
+        await expect(h.service.request('prompt-ack', { requestID: next }, { daemonID: h.service.daemonID, windowID: 'WIN' })).rejects.toThrow('prompt ack needs a client');
+        await expect(unseen).rejects.toThrow('NO_WINDOW: no window presented the prompt');
+    }, 15_000);
+    it('closes an unacknowledged prompt in its window when a client refuses it', async () => {
+        const h = await harness();
+        const refused = h.run('run');
+        const requestID = (await h.prompt())['requestID']!;
+        await h.service.request('prompt-reply', { requestID, error: 'Window UI is unavailable for this daemon in this window.' }, h.window('WIN', 'D'));
+        await expect(refused).rejects.toThrow('Window UI is unavailable for this daemon in this window.');
+        // The window's own ack may still be in flight with the dialog up: the cancel closes it, and the late ack finds nothing.
+        expect(h.frames('plugin-prompt-cancel')).toEqual([{ type: 'plugin-prompt-cancel', requestID, windowID: 'WIN' }]);
+        await expect(h.service.request('prompt-ack', { requestID }, h.window('WIN', 'C'))).rejects.toThrow('unknown prompt request');
+    });
     it('takes the answering client from the connection, never from the input', async () => {
         const h = await harness();
         const a: PluginContext = { daemonID: h.service.daemonID, clientID: 'A' }, b: PluginContext = { daemonID: h.service.daemonID, clientID: 'B' };
@@ -151,7 +180,7 @@ describe('backend prompts (#389)', () => {
     });
     it('cancels a pending prompt when its backend is disabled, reloaded or crashes', async () => {
         const h = await harness();
-        const cancelled = (frame: JsonObject) => expect(h.frames('plugin-prompt-cancel')).toContainEqual({ type: 'plugin-prompt-cancel', requestID: frame['requestID'], windowID: 'WIN' });
+        const cancelled = (frame: JsonObject) => expect(h.frames('plugin-prompt-cancel')).toContainEqual({ type: 'plugin-prompt-cancel', requestID: frame['requestID'], windowID: 'WIN', requestIDs: [frame['requestID']] });
         const reloaded = expect(h.run('run')).rejects.toThrow('plugin stopped');
         const first = await h.prompt();
         await h.service.request('prompt-ack', { requestID: first['requestID']! }, h.window());
@@ -168,12 +197,26 @@ describe('backend prompts (#389)', () => {
         await h.service.request('disable', { pluginID: id }); await disabled;
         cancelled(third);
     });
+    it('withdraws a backend\'s prompts with one cancel frame per window', async () => {
+        const h = await harness();
+        const stopped: Array<Promise<void>> = [];
+        const ask = async (n: number, args: JsonObject = {}) => { stopped.push(expect(h.run('run', args)).rejects.toThrow('plugin stopped')); return (await h.prompt(n))['requestID']; };
+        // Another window's prompt between two of this window's, so the grouping follows the window, not the order.
+        const win = [await ask(0), await ask(1)], other = [await ask(2, { target: { windowID: 'OTHER' } })]; win.push(await ask(3));
+        await h.service.request('prompt-ack', { requestID: win[0]! }, h.window());
+        await h.service.request('disable', { pluginID: id }); await Promise.all(stopped);
+        expect(h.frames('plugin-prompt-cancel')).toEqual([
+            { type: 'plugin-prompt-cancel', requestID: win[0], windowID: 'WIN', requestIDs: win },
+            { type: 'plugin-prompt-cancel', requestID: other[0], windowID: 'OTHER', requestIDs: other },
+        ]);
+        expect(win).toHaveLength(3);
+    });
     it('cancels pending prompts when the daemon disposes the service', async () => {
         const h = await harness();
         const result = expect(h.run('run')).rejects.toThrow('plugin stopped');
         const frame = await h.prompt();
         await h.service.dispose(); await result;
-        expect(h.frames('plugin-prompt-cancel')).toEqual([{ type: 'plugin-prompt-cancel', requestID: frame['requestID'], windowID: 'WIN' }]);
+        expect(h.frames('plugin-prompt-cancel')).toEqual([{ type: 'plugin-prompt-cancel', requestID: frame['requestID'], windowID: 'WIN', requestIDs: [frame['requestID']] }]);
     });
     it('dismisses a prompt whose acknowledging client disconnects, without a cancel frame', async () => {
         const h = await harness();

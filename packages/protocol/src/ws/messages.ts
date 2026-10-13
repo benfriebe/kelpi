@@ -972,6 +972,8 @@ export interface WsPluginPromptCancelMessage {
     readonly type: 'plugin-prompt-cancel';
     readonly requestID: string;
     readonly windowID: string;
+    /** A backend ending names every request it had pending for the window here, `requestID` first among them. */
+    readonly requestIDs?: readonly string[];
 }
 
 /**

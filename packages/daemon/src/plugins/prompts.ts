@@ -19,6 +19,7 @@ export interface PromptHoldTarget {
 export interface PromptParent { readonly call: PromptHoldTarget; live(): boolean }
 
 interface Pending {
+    readonly requestID: string;
     readonly pluginID: string;
     readonly windowID: string;
     clientID?: string;
@@ -46,13 +47,13 @@ export class BackendPrompts {
         const requestID = randomUUID();
         return new Promise((resolve, reject) => {
             if (parent) hold(parent, this.options.heartbeatMs ?? 10_000);
-            const entry: Pending = { pluginID: plugin.id, windowID, settle: outcome => {
+            const entry: Pending = { requestID, pluginID: plugin.id, windowID, settle: outcome => {
                 clearTimeout(entry.watchdog); this.pending.delete(requestID);
                 if (parent) resume(parent);
                 if ('error' in outcome) reject(outcome.error); else resolve(outcome.value);
             } };
             entry.watchdog = setTimeout(() => {
-                this.cancel(requestID, entry);
+                this.cancel(entry);
                 entry.settle({ error: new Error('NO_WINDOW: no window presented the prompt') });
             }, this.options.ackTimeoutMs ?? 10_000);
             this.pending.set(requestID, entry);
@@ -62,8 +63,10 @@ export class BackendPrompts {
     /** The window admitted the request; from now on only a reply or the backend ends it. */
     ack(input: JsonObject, context: Partial<PluginContext>): null {
         const entry = this.entry(input, context);
-        clearTimeout(entry.watchdog); entry.watchdog = undefined;
-        if (context.clientID) entry.clientID = context.clientID;
+        if (!context.clientID) throw new Error('prompt ack needs a client');
+        // The window id travels in every broadcast, so the first client to ack keeps the prompt.
+        if (entry.clientID !== undefined && entry.clientID !== context.clientID) throw new Error('prompt belongs to another client');
+        clearTimeout(entry.watchdog); entry.watchdog = undefined; entry.clientID = context.clientID;
         return null;
     }
     reply(input: JsonObject, context: Partial<PluginContext>): null {
@@ -71,22 +74,29 @@ export class BackendPrompts {
         // Once a client presents the prompt, only it answers; before the ack the window check alone applies.
         if (entry.clientID !== undefined && context.clientID !== entry.clientID) throw new Error('prompt belongs to another client');
         const { value, error } = input;
-        if (typeof error === 'string') entry.settle({ error: new Error(error || 'prompt failed') });
-        else if (value === null || typeof value === 'string') entry.settle({ value });
-        else throw new Error('prompt reply needs a value or an error');
+        const outcome = typeof error === 'string' ? { error: new Error(error || 'prompt failed') } : value === null || typeof value === 'string' ? { value } : undefined;
+        if (!outcome) throw new Error('prompt reply needs a value or an error');
+        // Unacknowledged, a window whose ack is still in flight may be showing it: close it there.
+        if (entry.clientID === undefined) this.cancel(entry);
+        entry.settle(outcome);
         return null;
     }
     /** The backend ended (stop, disable, reload, failure, dispose): close its prompts. */
-    cancelPlugin(pluginID: string): void {
-        for (const [requestID, entry] of this.pending) if (entry.pluginID === pluginID) { this.cancel(requestID, entry); entry.settle({ value: null }); }
-    }
-    cancelAll(): void { for (const [requestID, entry] of this.pending) { this.cancel(requestID, entry); entry.settle({ value: null }); } }
+    cancelPlugin(pluginID: string): void { this.withdraw([...this.pending.values()].filter(entry => entry.pluginID === pluginID)); }
+    cancelAll(): void { this.withdraw([...this.pending.values()]); }
     /** The acking window's client is gone, so nothing will answer: dismissed, no cancel frame. */
     releaseClient(clientID: string): void {
         for (const entry of [...this.pending.values()]) if (entry.clientID === clientID) entry.settle({ value: null });
     }
-    private cancel(requestID: string, entry: Pending): void {
-        this.options.broadcast({ type: 'plugin-prompt-cancel', requestID, windowID: entry.windowID });
+    private cancel(entry: Pending): void {
+        this.options.broadcast({ type: 'plugin-prompt-cancel', requestID: entry.requestID, windowID: entry.windowID });
+    }
+    /** One cancel frame per window naming all its requests, so the window withdraws them in one step. */
+    private withdraw(entries: Pending[]): void {
+        const windows = new Map<string, string[]>();
+        for (const entry of entries) windows.set(entry.windowID, [...windows.get(entry.windowID) ?? [], entry.requestID]);
+        for (const [windowID, requestIDs] of windows) this.options.broadcast({ type: 'plugin-prompt-cancel', requestID: requestIDs[0]!, windowID, requestIDs });
+        for (const entry of entries) entry.settle({ value: null });
     }
     private entry(input: JsonObject, context: Partial<PluginContext>): Pending {
         const entry = typeof input['requestID'] === 'string' ? this.pending.get(input['requestID']) : undefined;

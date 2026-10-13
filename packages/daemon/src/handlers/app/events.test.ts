@@ -506,6 +506,18 @@ describe('agent.event plugin events (#387, agent-lifecycle §7.7)', () => {
         ]);
     });
 
+    it('pairs a dual-fire with its own line, so an unrelated line in the same tick leaves a held stop as built', async () => {
+        const h = harness({ initial: seeded(1) });
+        h.send({ command: 'stop', pane_id: P1 });
+        // The next line of the chunk is no hook, but its session_id dual-fires a session-start.
+        h.send({ command: 'ping', pane_id: P1, session_id: 'sess-ping' });
+        expect(paneOf(h, P1)?.agentSessionID).toBe('sess-ping');
+        await settle();
+        expect(h.agentEvents).toStrictEqual([
+            { type: 'stop', paneID: P1, workspaceID: W1, agent: 'claude', status: 'waitingForInput' }
+        ]);
+    });
+
     it('covers every verb: start, error, notification, session-start and session-end', async () => {
         const h = harness({ initial: seeded(1) });
         h.send({ command: 'session-start', pane_id: P1, session_id: 's1', transcript_path: '/tmp/s1.jsonl' });

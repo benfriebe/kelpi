@@ -258,7 +258,7 @@ export function harness(options: HarnessOptions = {}): Harness {
         let last: Record<string, unknown>[] = [];
         for (const item of dispatchSequence(decoded)) {
             // The production conversion, so the dual-fire is marked as one (#387).
-            const message: WireMessage = item.kind === 'message' ? item.message : dualFireMessage(item.event);
+            const message: WireMessage = item.kind === 'message' ? item.message : dualFireMessage(item.event, decoded.message);
             const payloads = run(message, item.reply);
             if (item.kind === 'message') last = payloads;
         }

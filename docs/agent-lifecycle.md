@@ -811,7 +811,9 @@ plugin that answers an event by calling `agents.notify` loops.
   publishes nothing of its own (`control/dual-fire.ts` marks it), which keeps it at one event
   per `kelpi event` call, and the event's `sessionID` and `agent` already include what the
   dual-fire bound. A later line in the same socket chunk (a `pane-close`, say) cannot change
-  or drop an event already built.
+  or drop an event already built, and its dual-fire completes only its own line's event
+  (`control/dual-fire.ts` remembers which primary each was synthesized from), so a `ping`
+  carrying the pane's `session_id` lets a held `stop` go out as built first.
 - **Not for.** A pane `agentEventsMuted` covers (a restart of old terminals, #372), an unknown
   pane, or a pane no workspace owns: the same early returns as the state change.
 - **Who hears it.** It goes out through the plugin service's event bus

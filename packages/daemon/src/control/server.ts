@@ -135,16 +135,19 @@ function toError(value: unknown): Error {
     return value instanceof Error ? value : new Error(String(value));
 }
 
-/** The synthesized dual-fire event as the `session-start` message the core already handles. */
-export function dualFireMessage(event: SynthesizedSessionStart): WireMessage {
-    // Marked, so the agent-event handlers know it is a line's second half (#387).
+/**
+ * The synthesized dual-fire event as the `session-start` message the core already handles.
+ * `primary` is the line's own message (`decoded.message`), the one dispatched just before it.
+ */
+export function dualFireMessage(event: SynthesizedSessionStart, primary: WireMessage): WireMessage {
+    // Marked, so the agent-event handlers know it is a line's second half, and whose (#387).
     return markDualFire({
         command: 'session-start',
         pane_id: event.pane_id,
         session_id: event.session_id,
         agent: event.agent,
         ...(event.profile !== undefined ? { profile: event.profile } : {})
-    });
+    }, primary);
 }
 
 export interface WireLineDispatch {
@@ -173,12 +176,12 @@ export function dispatchWireLine(line: string, deps: WireLineDispatch): void {
 
     const sequence = dispatchSequence(decoded);
     if (deps.dispatcher.dispatchBatch) {
-        try { deps.dispatcher.dispatchBatch(sequence.map(item => ({ message: item.kind === 'message' ? item.message : dualFireMessage(item.event), reply: item.reply ? deps.allocateReply() : null }))); }
+        try { deps.dispatcher.dispatchBatch(sequence.map(item => ({ message: item.kind === 'message' ? item.message : dualFireMessage(item.event, decoded.message), reply: item.reply ? deps.allocateReply() : null }))); }
         catch (error) { deps.onError?.(toError(error), 'dispatch batch'); }
         return;
     }
     for (const item of sequence) {
-        const message = item.kind === 'message' ? item.message : dualFireMessage(item.event);
+        const message = item.kind === 'message' ? item.message : dualFireMessage(item.event, decoded.message);
         const reply = item.reply ? deps.allocateReply() : null;
         try {
             deps.dispatcher(message, reply);

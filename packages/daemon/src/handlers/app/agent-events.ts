@@ -14,7 +14,8 @@
  * the state it left and publishes nothing of its own. That keeps it at one event per `kelpi
  * event` call, and its `sessionID` / `agent` already carry what the dual-fire bound (a missed
  * SessionStart, a codex `stop` on a pane last seen as claude). A later line in the same socket
- * chunk (a `pane-close`, say) cannot change or drop it.
+ * chunk (a `pane-close`, say) cannot change or drop it, and a later line's dual-fire (a `ping`
+ * carrying the pane's `session_id`) is not its line's, so the held event goes out as built first.
  */
 
 import type {
@@ -23,7 +24,8 @@ import type {
     AgentStartMessage,
     AgentStopMessage,
     SessionEndMessage,
-    SessionStartMessage
+    SessionStartMessage,
+    WireMessage
 } from '@kelpi/protocol';
 
 import { findPaneAnywhere, workspaceByID, type AgentKind, type DaemonState, type PaneStatus } from '../../store/index.js';
@@ -123,6 +125,8 @@ export function agentHookEvent(message: AgentHookMessage, state: DaemonState): A
 export interface AgentHookQueue {
     /** Build `message`'s event from `state` now and hold it until `complete` or the next microtask. */
     hold(message: AgentHookMessage, state: DaemonState): void;
+    /** True when the held event is `message`'s, the primary a dual-fire was synthesized from. */
+    holds(message: WireMessage | undefined): boolean;
     /** The line's dual-fire applied: rebuild the held event from `state`, then publish it. */
     complete(state: DaemonState): void;
     /** Publish the held event now, if any. */
@@ -144,6 +148,9 @@ export function createAgentHookQueue(emit: (event: AgentHookEvent) => void): Age
             if (event === null) return;
             held = { message, event };
             queueMicrotask(flush);
+        },
+        holds(message) {
+            return held !== null && held.message === message;
         },
         complete(state) {
             if (held !== null) held = { ...held, event: agentHookEvent(held.message, state) ?? held.event };

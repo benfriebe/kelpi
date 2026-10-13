@@ -2653,7 +2653,7 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             let answered = false;
             const batch: ControlDispatchItem[] = [];
             for (const item of dispatchSequence(decoded)) {
-                const wire = item.kind === 'message' ? item.message : dualFireMessage(item.event);
+                const wire = item.kind === 'message' ? item.message : dualFireMessage(item.event, decoded.message);
                 let handle: WsReplyHandle | null = null;
                 if (item.reply && !answered) {
                     answered = true;

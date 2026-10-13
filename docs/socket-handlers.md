@@ -366,7 +366,9 @@ The one agent hook verb with a reply (#388, wire-protocol.md §6.1.1), in
    `{"ok":false,"error":"unknown pane"}`.
 3. Build the `decide` args from the request (`toolName`, `toolInput`, and `mcpServer`, `cwd`,
    `permissionMode` when present) and the pane (`paneID`, `workspaceID`, `agent` = the pane's
-   agent kind, default `claude`, and `sessionID` = the bound session id, when there is one).
+   agent kind, default `claude`). `sessionID` is the line's own `session_id` when it carried
+   one (its dual-fire binds the pane only after this handler ran), else the pane's bound
+   session id, when there is one.
 4. Call `deps.decidePermission(args, signal)`. Boot implements it (`boot/compose.ts`) by
    naming the service's active provider (the user's selection, else
    `kelpi.agent.permissions.bundled`) and calling the plugin service with it explicitly, with

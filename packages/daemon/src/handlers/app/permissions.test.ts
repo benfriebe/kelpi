@@ -6,6 +6,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { JsonObject, JsonValue } from '@kelpi/protocol';
 
+import { findPaneAnywhere } from '../../store/index.js';
 import type { AgentHookEvent } from './agent-events.js';
 import type { PermissionDecisionCall } from './context.js';
 import { PERMISSION_DEADLINE_MS } from './permissions.js';
@@ -137,6 +138,28 @@ describe('permission-request', () => {
             cwd: '/work/app',
             permissionMode: 'acceptEdits'
         });
+    });
+
+    it("tells the provider the line's own session id, not the pane's earlier binding", async () => {
+        const { h, calls, events, ask } = setup(async () => ({ behavior: 'allow' }));
+        h.send({ command: 'session-start', pane_id: P1, session_id: 'old-session' });
+        // A PermissionRequest after a missed SessionStart: the pane still says old-session when
+        // the handler runs, and the line's dual-fire binds new-session only afterwards.
+        ask({ ...REQUEST, session_id: 'new-session' });
+        await flush();
+        expect(calls[0]?.args).toMatchObject({ sessionID: 'new-session' });
+        expect(findPaneAnywhere(h.state(), P1)?.pane.agentSessionID).toBe('new-session');
+        expect(events.map(({ event }) => event).filter((event) => event.type === 'permission-request')).toEqual([
+            expect.objectContaining({ type: 'permission-request', sessionID: 'new-session', behavior: 'allow' })
+        ]);
+    });
+
+    it('falls back to the pane\'s bound session when the line carries none', async () => {
+        const { h, calls, ask } = setup(async () => ({ behavior: 'abstain' }));
+        h.send({ command: 'session-start', pane_id: P1, session_id: 'sess-1' });
+        ask();
+        await flush();
+        expect(calls[0]?.args).toMatchObject({ sessionID: 'sess-1' });
     });
 
     it('replies abstain and logs a warning naming the provider when it throws', async () => {

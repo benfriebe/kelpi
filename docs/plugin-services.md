@@ -199,9 +199,11 @@ decide({
 
 `toolName` and `toolInput` are Claude's `tool_name` and `tool_input` as sent (for Bash,
 `toolInput.command` is the real command string, not what the terminal drew). `toolName` is
-nonempty and `toolInput` is an object; other arguments are optional. `agent` and `sessionID`
-come from the pane. A result other than those three behaviors, or a `message` that is not a
-string, is malformed. `message` is used only on `deny`: Claude passes it to the model as the
+nonempty and `toolInput` is an object; other arguments are optional. `agent` comes from the
+pane. `sessionID` is the hook's own `session_id` when it carried one, else the pane's bound
+session, so a provider that remembers grants per session is never told a previous session's id
+after a missed SessionStart. A result other than those three behaviors, or a `message` that is
+not a string, is malformed. `message` is used only on `deny`: Claude passes it to the model as the
 tool's error, and its own UI shows a fixed "Denied by PermissionRequest hook" line.
 
 - **Abstain by default.** The bundled implementation always returns `{behavior: 'abstain'}`,

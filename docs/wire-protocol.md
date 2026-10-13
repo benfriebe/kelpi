@@ -660,10 +660,14 @@ dropped.
 | `mcp_server` | string | opt | MCP tools only |
 | `cwd` | string | opt | the hook's working directory |
 | `permission_mode` | string | opt | Claude's permission mode (`default`, `acceptEdits`, …) |
+| `session_id` | string | opt | the hook's session id; the provider is told this one, and the pane's bound session only when it is absent |
 
 The optional strings read an empty string as absent. `session_id`, `agent` and `profile` ride
 along as on any hook event, and the dual-fire (§3.1) applies; the daemon reads the agent kind
-and the bound session id from the pane, not from the line.
+from the pane, not from the line. The session id it tells the provider is the line's own when
+present, since the dual-fire binds it to the pane only after the handler ran, and a provider that
+remembers grants per session would otherwise hear the previous session's id after a missed
+SessionStart.
 `kelpi event permission-request` itself sends only `session_id` and `profile` of the three,
 `profile` only beside `session_id` (cli.md §8.7).
 

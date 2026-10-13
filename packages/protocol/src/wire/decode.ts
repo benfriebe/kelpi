@@ -225,6 +225,7 @@ function decodeCommand(
             const mcpServer = fields.nonEmpty('mcp_server');
             const cwd = fields.nonEmpty('cwd');
             const permissionMode = fields.nonEmpty('permission_mode');
+            const sessionId = fields.nonEmpty('session_id');
             return {
                 command,
                 pane_id: paneId as string,
@@ -232,7 +233,8 @@ function decodeCommand(
                 tool_input: fields.object('tool_input') ?? {},
                 ...(mcpServer !== undefined ? { mcp_server: mcpServer } : {}),
                 ...(cwd !== undefined ? { cwd } : {}),
-                ...(permissionMode !== undefined ? { permission_mode: permissionMode } : {})
+                ...(permissionMode !== undefined ? { permission_mode: permissionMode } : {}),
+                ...(sessionId !== undefined ? { session_id: sessionId } : {})
             };
         }
 

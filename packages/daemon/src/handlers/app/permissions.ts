@@ -122,11 +122,14 @@ export function permissionHandlerEntries(deps: AppDeps): readonly (readonly [str
                 return;
             }
             const { pane } = location;
+            // The line's own session id first: its dual-fire binds the pane only after this handler
+            // ran, and a provider that remembers grants per session must not be told the previous one.
+            const sessionID = msg.session_id ?? pane.agentSessionID ?? undefined;
             const args: JsonObject = {
                 paneID: msg.pane_id,
                 workspaceID: workspace.id,
                 agent: pane.agentKind ?? 'claude',
-                ...(pane.agentSessionID !== null ? { sessionID: pane.agentSessionID } : {}),
+                ...(sessionID !== undefined ? { sessionID } : {}),
                 toolName: msg.tool_name,
                 toolInput: msg.tool_input,
                 ...(msg.mcp_server !== undefined ? { mcpServer: msg.mcp_server } : {}),

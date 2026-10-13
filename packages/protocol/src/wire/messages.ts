@@ -106,6 +106,12 @@ export interface PermissionRequestMessage {
     mcp_server?: string | undefined;
     cwd?: string | undefined;
     permission_mode?: string | undefined;
+    /**
+     * The hook's own session id, when the line carried one. Its §3.1 dual-fire binds it to the
+     * pane only after this message is handled, so the provider is told this one over the pane's
+     * earlier binding.
+     */
+    session_id?: string | undefined;
 }
 
 // ── 6.2 Pane commands ───────────────────────────────────────────────────────────────

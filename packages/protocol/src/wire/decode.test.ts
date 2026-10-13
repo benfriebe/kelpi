@@ -371,7 +371,8 @@ describe('permission-request (#388)', () => {
             tool_input: INPUT,
             mcp_server: 'github',
             cwd: '/private/tmp/project',
-            permission_mode: 'default'
+            permission_mode: 'default',
+            session_id: 'abc'
         });
     });
 
@@ -379,7 +380,7 @@ describe('permission-request (#388)', () => {
         const bare = { command: 'permission-request', pane_id: PANE, tool_name: 'Bash' };
         expect(ok(bare)).toStrictEqual({ ...bare, pane_id: PANE_UPPER, tool_input: {} });
         expect(ok({ ...bare, tool_input: null })).toMatchObject({ tool_input: {} });
-        expect(ok({ ...bare, mcp_server: '', cwd: '', permission_mode: '' })).toStrictEqual({
+        expect(ok({ ...bare, mcp_server: '', cwd: '', permission_mode: '', session_id: '' })).toStrictEqual({
             ...bare,
             pane_id: PANE_UPPER,
             tool_input: {}

@@ -29,6 +29,7 @@ function harness() {
         }));
         fs.writeFileSync(path.join(source, 'backend.mjs'), backend);
         await service.install(source, true);
+        return source;
     };
     const call = (args: JsonObject = ARGS) => service.callService({ service: 'kelpi.agent.permissions', version: 1, method: 'decide', args });
     return { service, install, call };
@@ -74,6 +75,17 @@ describe('kelpi.agent.permissions', () => {
         await h.service.request('service-select', { service: 'kelpi.agent.permissions', version: 1, providerID: 'sample.policy.provider' });
         expect(await h.service.callService({ service: 'kelpi.agent.permissions', version: 1, method: 'decide', args: ARGS }, { daemonID: h.service.daemonID, paneID: 'P' })).toEqual({ behavior: 'allow', message: 'P' });
         await h.service.request('service-select', { service: 'kelpi.agent.permissions', version: 1, providerID: null });
+        expect(await h.call()).toEqual({ behavior: 'abstain' });
+    });
+
+    it('forgets the selection when its plugin is removed, so a reinstall does not decide by itself', async () => {
+        const h = harness();
+        const source = await h.install('sample.policy', `export function activate(api) { api.providers.register('sample.policy.provider', { decide: () => ({ behavior: 'allow' }) }); }`);
+        await h.service.request('service-select', { service: 'kelpi.agent.permissions', version: 1, providerID: 'sample.policy.provider' });
+        expect(await h.call()).toEqual({ behavior: 'allow' });
+        await h.service.request('remove', { pluginID: 'sample.policy' });
+        await h.service.install(source, true);
+        expect(h.service.services().find(service => service['id'] === 'kelpi.agent.permissions')).toMatchObject({ selectedProviderID: null, activeProviderID: BUNDLED_PERMISSIONS_PROVIDER });
         expect(await h.call()).toEqual({ behavior: 'abstain' });
     });
 

@@ -659,6 +659,13 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
         this.notifyServicesChanged(true);
         return this.services();
     }
+    private dropSelections(providers: ReadonlySet<string>): void {
+        const next = new Map([...this.serviceSelections].filter(([, provider]) => !providers.has(provider)));
+        if (next.size === this.serviceSelections.size) return;
+        this.writeJSON(path.join(this.directory, 'services.json'), Object.fromEntries(next));
+        this.serviceSelections.clear(); for (const [key, value] of next) this.serviceSelections.set(key, value);
+        this.notifyServicesChanged(true);
+    }
     private resolveService(args: JsonObject): JsonObject {
         const serviceID = text(args['service'], 'service');
         const version = args['version'];
@@ -1094,6 +1101,8 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
                 else this.installations.set(id, { ...item, enabled: action !== 'disable' });
                 try { this.persist(); } catch (error) { this.installations.set(id, item); this.changed(); throw error; }
                 this.changed();
+                // #388: a removed plugin's providers lose their selection, so a reinstall never decides by itself.
+                if (action === 'remove') this.dropSelections(new Set((item.manifest.contributes.providers ?? []).map(provider => provider.id)));
                 if ((action === 'reload' || action === 'enable') && item.manifest.backend) await this.activate(id, true);
             } finally { this.finishChange(id); }
             return this.list() as unknown as JsonValue;

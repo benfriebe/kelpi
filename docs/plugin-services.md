@@ -210,6 +210,7 @@ tool's error, and its own UI shows a fixed "Denied by PermissionRequest hook" li
   select it. Nothing is ever approved until the user picks the provider with
   `kelpi plugin service-select kelpi.agent.permissions <provider>` or Settings → Plugins →
   Service providers; `default` goes back to the bundled abstain.
+  Removing the plugin forgets the selection, so reinstalling it does not select it again.
 - **2 second deadline.** The daemon waits at most 2 seconds for `decide`, whatever the
   provider's `timeoutMs` says, then aborts the call. Claude draws its prompt while the hook
   runs, so a late `allow` would dismiss a prompt the user may already be reading; the deadline

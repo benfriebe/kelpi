@@ -127,6 +127,23 @@ describe('KELPI_REQUIRE_SOCKET (the sandbox-harness guard)', () => {
     });
 });
 
+describe('the pane-route retry for a built-in command', () => {
+    it('sleeps a full step and dials once more after the window runs out, as it always did', async () => {
+        // Window 100 ms: one refused dial, the full 200 ms step, then the dial after the window.
+        setEnv({ KELPI_PANE_ID: 'AAAAAAAA-0000-4000-8000-000000000001', KELPI_ROUTE_RETRY_MS: '100' });
+        setTransport({ kind: 'tcp', host: '127.0.0.1', port: 1 });
+        const dial = vi.spyOn(net, 'createConnection');
+        const started = Date.now();
+        const reply = await sendJSONAndReadReply({ command: 'ping' });
+        const elapsed = Date.now() - started;
+        expect(reply).toBeNull();
+        expect(dial).toHaveBeenCalledTimes(2);
+        expect(elapsed).toBeGreaterThanOrEqual(190);
+        expect(elapsed).toBeLessThan(2000);
+        expect(takeLastTransportFailure()?.kind).toBe('tcpConnectFailed');
+    });
+});
+
 describe('the deadlineMs read option (a wall-clock bound)', () => {
     it('destroys the socket and returns what arrived when a peer trickles bytes past it', async () => {
         // One byte every 100 ms restarts the 5 s inactivity timeout forever; only the deadline ends it.

@@ -227,8 +227,12 @@ async function connect(deadlineAt?: number): Promise<ConnectOutcome> {
         const outcome = await connectOnce(deadlineAt);
         const refused = outcome.failure?.kind === 'tcpConnectFailed' && outcome.failure.errno === errnoNumber('ECONNREFUSED');
         if (!refused || Date.now() >= deadline) return outcome;
-        await new Promise((resolve) => setTimeout(resolve, Math.min(ROUTE_RETRY_STEP_MS, deadline - Date.now())));
-        if (Date.now() >= deadline) return outcome;
+        // Without a caller's deadline this is the pane-route retry as it always was: a full step,
+        // then one more dial even when the window has just run out. A deadline clips the step and
+        // ends the retry on time.
+        const step = deadlineAt === undefined ? ROUTE_RETRY_STEP_MS : Math.min(ROUTE_RETRY_STEP_MS, Math.max(0, deadlineAt - Date.now()));
+        await new Promise((resolve) => setTimeout(resolve, step));
+        if (deadlineAt !== undefined && Date.now() >= deadlineAt) return outcome;
     }
 }
 

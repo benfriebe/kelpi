@@ -21,7 +21,7 @@
  * hold help open.
  */
 
-import { isCliVerbName } from '@kelpi/protocol';
+import { isBuiltinCliVerb, isCliVerbName } from '@kelpi/protocol';
 
 import { env, homeDirectory, originPaneID, setEnv } from '../env.js';
 import { errLine, exit, printLine, writeErr, writeOut } from '../io.js';
@@ -166,6 +166,10 @@ export async function pluginVerbsHelp(): Promise<string> {
         const pluginID = asString(entry['pluginID']);
         const enabled = asBool(entry['enabled']);
         if (name === undefined || summary === undefined || pluginID === undefined || enabled === undefined) return [];
+        // A daemon a release behind this CLI can list a verb this CLI has since made built-in, and
+        // nothing stops a daemon sending a name the manifest rule refuses. Neither is runnable from
+        // here, so neither is listed.
+        if (!isCliVerbName(name) || isBuiltinCliVerb(name)) return [];
         return [{ name, summary, pluginID, pluginName: asString(entry['pluginName']) || pluginID, enabled }];
     });
     return pluginVerbsUsage(verbs);

@@ -252,6 +252,11 @@ describe('kelpi --help plugin block', () => {
         expect(sent[0]?.deadlineMs).toBe(2000);
     });
 
+    it('should leave out a verb this CLI has made built-in or a name no manifest could declare', async () => {
+        answer({ ok: true, result: { verbs: [verbs[0]!, { ...verbs[2]!, name: 'pane' }, { ...verbs[2]!, name: 'Echo' }, { ...verbs[2]!, name: 'echo\u001b[2J' }] } });
+        expect(await pluginVerbsHelp()).toBe(['Plugin commands:', '  # Service Lab', '  kelpi hello  Say hello', '', ''].join('\n'));
+    });
+
     it('should turn the pane-route retry off for the help request only, unless it is set explicitly', async () => {
         await pluginVerbsHelp();
         expect(sent[0]?.routeRetryMs).toBe('0');

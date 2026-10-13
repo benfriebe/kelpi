@@ -663,13 +663,12 @@ async function handlePaneCapture(args: string[]): Promise<void> {
     if (scrollback) payload['scrollback'] = true;
     if (settleMs !== null) payload['settle_ms'] = settleMs;
 
-    // The daemon sends nothing while it waits for quiet, so the read timeout has to cover the wait.
+    // The daemon sends nothing while it waits for quiet, and a busy pane is answered only when its
+    // cap fires, whatever `settle_ms` asked for, so the read timeout has to cover the whole cap.
     const reply = await decodeReply(
         payload,
         'kelpi pane capture',
-        settleMs !== null
-            ? { timeoutSeconds: replyTimeoutSeconds() + Math.ceil(Math.min(settleMs, CAPTURE_SETTLE_CAP_MS) / 1000) }
-            : {}
+        settleMs !== null ? { timeoutSeconds: replyTimeoutSeconds() + Math.ceil(CAPTURE_SETTLE_CAP_MS / 1000) } : {}
     );
     if (asJSON) {
         printReplyWithoutOk(reply);

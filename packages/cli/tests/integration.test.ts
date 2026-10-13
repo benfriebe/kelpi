@@ -332,17 +332,22 @@ describe('request/response', () => {
         expect(await lastRequest()).toEqual({ command: 'pane-capture', target: PANE, settle_ms: 250 });
     });
 
-    it('stretches the reply timeout by the settle wait, and only under --settle', async () => {
-        // The reply lands after the 1 s KELPI_REPLY_TIMEOUT but inside 1 s + the 7 s settle.
-        server.respond(() => ({ lines: [{ ok: true, text: 'quiet\n', revision: 3 }], delayMs: 1500 }));
+    it('stretches the reply timeout by the daemon settle cap, whatever --settle asks, and only under --settle', async () => {
+        // The reply lands after the 1 s KELPI_REPLY_TIMEOUT, and after 1 s + the small 500 ms wait
+        // rounded up, but inside 1 s + the 10 s cap: a busy pane is answered only when the cap fires.
+        server.respond(() => ({ lines: [{ ok: true, text: 'quiet\n', revision: 3 }], delayMs: 2500 }));
         const env = { KELPI_REPLY_TIMEOUT: '1' };
-        const [settled, plain] = await Promise.all([
+        const [settled, small, plain] = await Promise.all([
             runCLI(['pane', 'capture', '--settle', '7000', '--target', PANE], { port: server.port, env }),
+            runCLI(['pane', 'capture', '--settle', '500', '--target', PANE], { port: server.port, env }),
             runCLI(['pane', 'capture', '--target', PANE], { port: server.port, env })
         ]);
         expect(settled.code).toBe(0);
         expect(settled.stderr).toBe('');
         expect(settled.stdout).toBe('quiet\n');
+        expect(small.code).toBe(0);
+        expect(small.stderr).toBe('');
+        expect(small.stdout).toBe('quiet\n');
         expect(plain.code).toBe(1);
         expect(plain.stdout).toBe('');
         expect(plain.stderr).toContain('kelpi pane capture: no response from Kelpi');
@@ -388,6 +393,31 @@ describe('request/response', () => {
         });
         expect(keyZero.code).toBe(0);
         expect(await lastRequest()).toEqual({ command: 'pane-send-key', target: PANE, key: 'enter', if_revision: 0 });
+    });
+
+    it('sends a 13-digit --if-revision as a number on pane send and send-key', async () => {
+        // Revisions are seeded from a millisecond clock, so values this size are the normal case.
+        server.respond(() => ({ lines: [{ ok: true, pane_id: PANE, bare: false, revision: 1760000000123 }] }));
+        const send = await runCLI(['pane', 'send', '--target', PANE, '--if-revision', '1760000000123', 'y'], {
+            port: server.port
+        });
+        expect(send.code).toBe(0);
+        expect(send.stderr).toBe('');
+        expect(await lastRequest()).toEqual({
+            command: 'pane-send',
+            target: PANE,
+            text: 'y',
+            bare: false,
+            if_revision: 1760000000123
+        });
+
+        server.respond(() => ({ lines: [{ ok: true, pane_id: PANE, key: 'enter', revision: 1760000000123 }] }));
+        const key = await runCLI(['pane', 'send-key', '--target', PANE, '--if-revision', '1760000000123', 'enter'], {
+            port: server.port
+        });
+        expect(key.code).toBe(0);
+        expect(key.stderr).toBe('');
+        expect(await lastRequest()).toEqual({ command: 'pane-send-key', target: PANE, key: 'enter', if_revision: 1760000000123 });
     });
 
     it('rejects an --if-revision that is not a non-negative integer before touching the socket', async () => {

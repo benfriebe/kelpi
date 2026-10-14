@@ -199,6 +199,9 @@ names are listed per command below). Rules:
   (`packages/protocol/src/wire/fields.ts:143`, `:168-171`), so `{"bare":null}` decodes
   with `bare` defaulting to `false`.
 - `since` is an unsigned 64-bit integer; a negative value fails the decode.
+- `tool_input` (`permission-request`, #388) is the one **object** field: it must be a plain
+  JSON object, and an array, a string or any other JSON type fails the decode like any other
+  wrong-typed known key.
 - Many optional string fields are normalized: **empty string → treated as absent**
   (documented per command; applies to `target`, `workspace`, `group`, `profile`,
   `worktree`, `branch`, `repo`, `scope`, `level`, `send_to`, `domain`, `selector` (for
@@ -342,6 +345,7 @@ workspace-icon,
 group-set-repo, group-reorder, group-sort,
 graft-start, graft-stop, graft-status,
 ping, restart-old-terminals,
+permission-request,
 web-open, web-navigate, web-url, web-back, web-forward, web-reload, web-capture,
 web-tabs, web-tab-new, web-tab-close, web-tab-select,
 web-console, web-inspect, web-inspect-result,
@@ -495,6 +499,7 @@ carry `"command"`.
 | `notification` | F&F | `pane_id` | `title`, `body`, `background_tasks`, `session_id`†, `agent`†, `profile`† |
 | `session-start` | F&F | `pane_id`, `session_id` | `agent`, `profile` |
 | `session-end` | F&F | `pane_id`, `session_id` | — |
+| `permission-request` | R/R | `pane_id`, `tool_name` (non-empty) | `tool_input`, `mcp_server`, `cwd`, `permission_mode`, `session_id`†, `agent`†, `profile`† |
 | `pane-split` | R/R | one of `pane_id`/`target`/`workspace` | `direction`, `path`, `name` |
 | `pane-create` | R/R | one of `pane_id`/`target`/`workspace` | `path`, `name` |
 | `pane-close` | R/R | one of `pane_id`/`target` | `workspace` |
@@ -658,6 +663,69 @@ matches** `session_id` (required non-empty). Never dual-fires.
 
 ```json
 {"command":"session-end","pane_id":"1B4E…","session_id":"3f2a…"}
+```
+
+---
+
+### 6.1.1 `permission-request` (R/R)
+
+Sent by `kelpi event permission-request` from Claude Code's `PermissionRequest` hook (#388).
+It is the one agent hook verb that gets a reply: the daemon asks the selected
+`kelpi.agent.permissions` provider ([plugin-services.md](plugin-services.md)) for a decision
+and answers with it, so the CLI can print Claude's decision JSON. Because the verb is
+allowlisted, a missing or invalid `pane_id` is answered with `{"ok":false,…}` rather than
+dropped.
+
+| field | type | req/opt | notes |
+|---|---|---|---|
+| `pane_id` | string (UUID) | req | `KELPI_PANE_ID` |
+| `tool_name` | string | req | non-empty; without it the line is rejected (`permission-request requires tool_name`) |
+| `tool_input` | object | opt | the tool's arguments; absent or `null` reads as `{}`; any other type rejects the line (§2.2) |
+| `mcp_server` | string | opt | MCP tools only |
+| `cwd` | string | opt | the hook's working directory |
+| `permission_mode` | string | opt | Claude's permission mode (`default`, `acceptEdits`, …) |
+| `session_id` | string | opt | the hook's session id; the provider is told this one, and the pane's bound session only when it is absent |
+
+The optional strings read an empty string as absent. `session_id`, `agent` and `profile` ride
+along as on any hook event, and the dual-fire (§3.1) applies; the daemon reads the agent kind
+from the pane, not from the line. The session id it tells the provider is the line's own when
+present, since the dual-fire binds it to the pane only after the handler ran, and a provider that
+remembers grants per session would otherwise hear the previous session's id after a missed
+SessionStart.
+`kelpi event permission-request` itself sends only `session_id` and `profile` of the three,
+`profile` only beside `session_id` (cli.md §8.7).
+
+```json
+{"command":"permission-request","pane_id":"1B4E…","tool_name":"Bash","tool_input":{"command":"mv a b","description":"Rename a"},"cwd":"/work/app","permission_mode":"default","session_id":"abc-123"}
+```
+
+Reply: `{"ok":true,"behavior":"allow"|"deny"|"abstain","message"?:string,"provider"?:string}`.
+
+- `behavior` is the provider's decision. `abstain` means no decision: the CLI prints nothing and
+  Claude shows its own prompt.
+- `message` is passed through only on `deny`, when the provider gave one.
+- `provider` is the id of the provider the daemon asked: `kelpi.agent.permissions.bundled`
+  (which always abstains) or the selected plugin provider's id.
+- The daemon waits at most **2 s**. A provider that times out, throws or returns a malformed
+  result is answered as `abstain`, with one warning line in the daemon log naming the provider
+  and the reason. Nothing but the provider's own `allow` is ever answered as `allow`.
+- The deadlines form one ladder, each shorter than the next: the provider gets 2 s, the CLI's
+  reply read times out after 3 s of silence and its guard ends the process at 3.5 s, and
+  Claude's own hook timeout (installed as `"timeout": 5`) is 5 s.
+  The 2 s bounds the provider only: a plugin `before` operation hook matching
+  `permission-request` or `*` runs before the handler for up to 5 s, so the CLI's 3.5 s guard
+  and Claude's 5 s timeout are what bound the whole request, and both fail open to the prompt.
+- Each decision, fallbacks included, is also published to plugins as one `agent.event` of
+  type `permission-request` after the reply (agent-lifecycle.md §7.7); an unknown pane, or
+  one whose agent events are muted (#372), publishes none.
+- A pane no workspace owns (the parked-inclusive lookup, as for §6.1): `{"ok":false,"error":"unknown pane"}`.
+- A pane whose agent events are muted while its terminal restarts on a new host (#372):
+  `{"ok":true,"behavior":"abstain"}`, without asking any provider.
+
+```json
+{"ok":true,"behavior":"allow","provider":"example.policy.permissions"}
+{"ok":true,"behavior":"deny","message":"rm -rf is never allowed","provider":"example.policy.permissions"}
+{"ok":true,"behavior":"abstain","provider":"kelpi.agent.permissions.bundled"}
 ```
 
 ---
@@ -1740,7 +1808,9 @@ other key is ignored. (A known key with the wrong type poisons the whole message
 | `last_assistant_message` | string | `stop` (#387, Claude-only, at most 64 KiB of UTF-8) |
 | `last_assistant_message_truncated` | bool | `stop` (#387, `true` only when the CLI cut the message) |
 | `transcript_path` | string | `notification`, `stop`, `session-start` (#387) |
-| `tool_name` | string | `notification` (#387, Codex PermissionRequest) |
+| `tool_name` | string | `notification` (#387, Codex PermissionRequest), `permission-request` (#388, required) |
+| `tool_input` | object | `permission-request` (#388) |
+| `mcp_server`, `cwd`, `permission_mode` | string | `permission-request` (#388) |
 | `direction` | string | `pane-split`, `pane-move`, `web-open` (GUI split anchor) |
 | `path` | string | `pane-split`, `pane-create`, `workspace-create`, `open` |
 | `name` | string | `pane-split`/`pane-create` (label), `pane-name` (new label), `workspace-*` (name-or-id or new name), `group-*` (name-or-id), `layout-select` (layout name), `pane-move-to-workspace` (dest ws), `web-cookies-delete` (cookie name) |
@@ -2000,3 +2070,17 @@ saved state keep working:
       non-empty string, so a manual `kelpi event stop` stays wire-identical. The one new key
       that can be large, `last_assistant_message`, is capped at 64 KiB by the CLI: even
       escaped six-fold as JSON, far below the 64 MB line limit (§2.1).
+
+19. **`permission-request` is a new request/response verb (issue #388).** It adds the allowlist
+    entry, the §6.1.1 command and four request keys (`tool_input`, `mcp_server`, `cwd`,
+    `permission_mode`; `tool_input` is the first object-typed field, §2.2). Compatibility, in
+    each direction:
+    - **Old CLI, new daemon:** an older CLI has no `kelpi event permission-request` and never
+      sends the verb or the new keys, so nothing it sends decodes differently.
+    - **New CLI, old daemon:** the older daemon's decoder rejects the line as an unknown
+      command, which it never answers (§9 item 3). The CLI gets no reply, prints nothing once
+      its own deadline passes, and Claude shows its normal prompt.
+    - **Same version:** the daemon always replies, within its 2 s provider deadline, and fails
+      open to `abstain`, never to `allow` (§6.1.1).
+      A plugin `before` operation hook on the command runs first and can delay that reply;
+      the CLI's own deadline then leaves the prompt to Claude.

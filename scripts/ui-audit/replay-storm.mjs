@@ -94,6 +94,7 @@ const options = {
 const FRAME = { output: 0x01, input: 0x02, ack: 0x03, resize: 0x04, replay: 0x05 };
 const HEADER_BYTES = 17;
 const PROTOCOL_VERSION = 2;
+const WS_PROTOCOL_VERSION = 3; // the WebSocket hello's version (packages/protocol ws/messages.ts)
 const encoder = new TextEncoder();
 
 const uuidToBytes = (uuid) => {
@@ -265,7 +266,7 @@ const waitJson = (match, label, timeoutMs = 20_000) =>
         setTimeout(() => reject(new Error(`timed out waiting for ${label}`)), timeoutMs).unref?.();
     });
 
-send({ type: 'hello', protocolVersion: PROTOCOL_VERSION, token, client: { kind: 'browser', name: 'n23-replay-storm' } });
+send({ type: 'hello', protocolVersion: WS_PROTOCOL_VERSION, token, client: { kind: 'browser', name: 'n23-replay-storm' } });
 await waitJson((message) => message.type === 'welcome', 'welcome');
 
 /** Mount a pane the way `TerminalPane` does: engine + ingest + attach, rebuilding on a fault. */

@@ -8,6 +8,10 @@
  * command prefix). `tests/install-hooks.test.ts` asserts exactly that against fixtures generated
  * by running the real `scripts/install-hooks.sh` / `merge_hooks.py`.
  *
+ * The one exception is Claude's `PermissionRequest` group (#388): it is new to this installer,
+ * has no counterpart in the shell script, and is appended after the script's five so those
+ * keep their order. Its goldens were extended by hand.
+ *
  * Codex differences are not omissions: Codex CLI has **no** `SessionEnd` and **no**
  * `Notification` event, so it gets four hooks and `PermissionRequest` — its "waiting on
  * approval" signal — carries the notification. Every Codex command takes `--agent codex`, which
@@ -24,15 +28,20 @@ export interface HookWiring {
     readonly verb: string;
     /** `--agent codex`, or nothing for Claude Code (absent = claude on the wire). */
     readonly agent?: 'codex';
+    /** The agent's per-hook `timeout` in seconds; absent keeps the agent's default. */
+    readonly timeout?: number;
 }
 
-/** The five Claude Code hooks, in `install-hooks.sh`'s order. */
+/** The six Claude Code hooks: `install-hooks.sh`'s five in its order, then PermissionRequest. */
 export const CLAUDE_HOOK_WIRINGS: readonly HookWiring[] = [
     { event: 'Stop', verb: 'stop' },
     { event: 'Notification', verb: 'notification' },
     { event: 'SessionStart', verb: 'session-start' },
     { event: 'SessionEnd', verb: 'session-end' },
-    { event: 'UserPromptSubmit', verb: 'start' }
+    { event: 'UserPromptSubmit', verb: 'start' },
+    // #388: just over the CLI's own 3.5 s ceiling, so a stuck CLI can never approve long
+    // after Claude's prompt appeared. Never `onFailure: block`: that turns a timeout into a deny.
+    { event: 'PermissionRequest', verb: 'permission-request', timeout: 5 }
 ];
 
 /** The four Codex CLI hooks, in `install-hooks.sh`'s order. */
@@ -59,9 +68,9 @@ export function hookCommand(wiring: HookWiring, commandPrefix: string): string {
 export function hookPayload(wirings: readonly HookWiring[], commandPrefix: string): JsonObject {
     const payload: JsonObject = {};
     for (const wiring of wirings) {
-        const group: JsonValue = {
-            hooks: [{ type: 'command', command: hookCommand(wiring, commandPrefix) }]
-        };
+        const hook: JsonObject = { type: 'command', command: hookCommand(wiring, commandPrefix) };
+        if (wiring.timeout !== undefined) hook['timeout'] = wiring.timeout;
+        const group: JsonValue = { hooks: [hook] };
         const existing = payload[wiring.event];
         if (Array.isArray(existing)) existing.push(group);
         else payload[wiring.event] = [group];

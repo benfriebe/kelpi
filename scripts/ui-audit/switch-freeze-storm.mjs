@@ -787,6 +787,7 @@ async function measureReplays(sandbox, paneIDs, { cols, rows }) {
     const FRAME = { input: 0x02, ack: 0x03, replay: 0x05 };
     const HEADER_BYTES = 17;
     const PROTOCOL_VERSION = 2;
+    const WS_PROTOCOL_VERSION = 3; // the WebSocket hello's version (packages/protocol ws/messages.ts)
     const token = fs.readFileSync(path.join(sandbox.runDir, `daemon-v${String(PROTOCOL_VERSION)}.token`), 'utf8').trim();
     const uuidFromBytes = (bytes, offset = 0) => {
         const HEX = '0123456789ABCDEF';
@@ -812,7 +813,7 @@ async function measureReplays(sandbox, paneIDs, { cols, rows }) {
         const paneID = uuidFromBytes(bytes, 1);
         if (!sizes.has(paneID)) sizes.set(paneID, bytes.length - HEADER_BYTES);
     });
-    ws.send(JSON.stringify({ type: 'hello', protocolVersion: PROTOCOL_VERSION, token, client: { kind: 'browser', name: 'switch-freeze-measure' } }));
+    ws.send(JSON.stringify({ type: 'hello', protocolVersion: WS_PROTOCOL_VERSION, token, client: { kind: 'browser', name: 'switch-freeze-measure' } }));
     await sleep(300);
     for (const paneID of paneIDs) ws.send(JSON.stringify({ type: 'attach-pane', paneID, cols, rows }));
     await settle(async () => sizes.size >= paneIDs.length, { ceilingMs: 30_000, intervalMs: 100 });

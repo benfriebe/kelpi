@@ -355,6 +355,34 @@ survive the next launch or a restart would `--resume` a dead session. A matching
 clears `agentProfileName` together with the id, so a later resume can never spawn under a
 stale profile (`machine.ts:164`).
 
+### 3.7 `permission-request` → the `kelpi.agent.permissions` provider (request/response)
+
+The one agent hook verb with a reply (#388, wire-protocol.md §6.1.1), in
+`packages/daemon/src/handlers/app/permissions.ts`. It changes no pane state.
+
+1. A pane whose agent events are muted (#372, as in §3) replies
+   `{"ok":true,"behavior":"abstain"}` without asking any provider.
+2. Resolve the pane with the same parked-inclusive lookup as §3. No owning workspace:
+   `{"ok":false,"error":"unknown pane"}`.
+3. Build the `decide` args from the request (`toolName`, `toolInput`, and `mcpServer`, `cwd`,
+   `permissionMode` when present) and the pane (`paneID`, `workspaceID`, `agent` = the pane's
+   agent kind, default `claude`). `sessionID` is the line's own `session_id` when it carried
+   one (its dual-fire binds the pane only after this handler ran), else the pane's bound
+   session id, when there is one.
+4. Call `deps.decidePermission(args, signal)`. Boot implements it (`boot/compose.ts`) by
+   naming the service's active provider (the user's selection, else
+   `kelpi.agent.permissions.bundled`) and calling the plugin service with it explicitly, with
+   the pane and workspace as the invocation context.
+5. Wait at most 2000 ms (`PERMISSION_DEADLINE_MS`). On time with a valid result, reply
+   `{"ok":true,"behavior",…,"provider"}`; `message` rides along only on `deny`. A timeout
+   (which also aborts `signal`), a thrown error or a malformed result replies `abstain` with
+   the same `provider`, after one `WARNING: permission-request: provider <id> …` log line.
+6. Log the decision: `permission-request: pane <id> tool <name>: <behavior> (provider <id>)`.
+   The tool input is never logged.
+7. Publish one `agent.event` of type `permission-request` through `deps.emitAgentEvent`
+   (agent-lifecycle.md §7.7), unless the pane's agent events are muted by then or the pane is
+   gone. Steps 1 and 2 publish none.
+
 ---
 
 ## 4. Pane command handlers
@@ -1731,6 +1759,7 @@ web-pane subsystem (see its spec): `web-open`, `web-navigate`, `web-url`, `web-b
 | graft-stop | `stopped: [...]`, `failed?: [...]` (`ok` false only when a stop failed; then also `error`, `error_kind`) |
 | graft-status | `sessions: [...]` |
 | ping | `version`, `build`, `pid`, `protocol`, `tcp?`, `compat?`, `pane_route?`, `http?`, `terminals`, `persistence?` |
+| permission-request | `behavior` (`allow`, `deny` or `abstain`), `message?` (deny only), `provider?` |
 
 Fire-and-forget (no reply ever): agent lifecycle events, `pane-move` (directional),
 `pane-move-to-workspace`, `workspace-move`, `workspace-profile`, `group-create`,

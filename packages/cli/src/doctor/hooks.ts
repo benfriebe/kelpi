@@ -22,7 +22,8 @@ export const expectedHooks: readonly (readonly [string, string])[] = [
     ['Notification', 'kelpi event notification'],
     ['SessionStart', 'kelpi event session-start'],
     ['SessionEnd', 'kelpi event session-end'],
-    ['UserPromptSubmit', 'kelpi event start']
+    ['UserPromptSubmit', 'kelpi event start'],
+    ['PermissionRequest', 'kelpi event permission-request']
 ];
 
 export const expectedCodexHooks: readonly (readonly [string, string])[] = [

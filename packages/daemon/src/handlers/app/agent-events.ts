@@ -31,7 +31,7 @@ import type {
 import { findPaneAnywhere, workspaceByID, type AgentKind, type DaemonState, type PaneStatus } from '../../store/index.js';
 
 /** The wire verb the hook arrived as. A string union so a later verb is one more member. */
-export type AgentHookEventType = 'start' | 'stop' | 'notification' | 'error' | 'session-start' | 'session-end';
+export type AgentHookEventType = 'start' | 'stop' | 'notification' | 'error' | 'session-start' | 'session-end' | 'permission-request';
 
 export type AgentHookMessage =
     | AgentStartMessage
@@ -55,7 +55,7 @@ export interface AgentHookEvent {
     readonly notificationType?: string;
     readonly title?: string;
     readonly body?: string;
-    /** `error` only: the wire `message`. */
+    /** `error`: the wire `message`. `permission-request`: a deny's message, when the provider gave one. */
     readonly message?: string;
     readonly lastAssistantMessage?: string;
     readonly lastAssistantMessageTruncated?: true;
@@ -63,6 +63,10 @@ export interface AgentHookEvent {
     /** Only when > 0, as on the wire. */
     readonly backgroundTasks?: number;
     readonly toolName?: string;
+    /** `permission-request` only (#388): the decision the daemon answered with. */
+    readonly behavior?: 'allow' | 'deny' | 'abstain';
+    /** `permission-request` only: the provider that was asked; absent when none could be. */
+    readonly provider?: string;
     /** The pane's workspace is muted (agent-lifecycle.md §7.6). */
     readonly muted?: true;
 }
@@ -118,6 +122,44 @@ export function agentHookEvent(message: AgentHookMessage, state: DaemonState): A
         ...(pane.agentSessionID !== null ? { sessionID: pane.agentSessionID } : {}),
         status: pane.status,
         ...hookFields(message),
+        ...(workspace.muted ? { muted: true } : {})
+    };
+}
+
+/** What one `permission-request` decision adds to the pane's fields (#388). */
+export interface PermissionRequestFields {
+    readonly toolName: string;
+    readonly behavior: 'allow' | 'deny' | 'abstain';
+    readonly provider?: string;
+    readonly message?: string;
+}
+
+/**
+ * #388: the event for one permission decision against `state`; null once the pane or its
+ * workspace is gone. The verb changes no pane state, so `status` is simply the pane's now.
+ * `toolInput` never rides: a plugin that needs it is the provider.
+ */
+export function permissionRequestEvent(
+    paneID: string,
+    state: DaemonState,
+    fields: PermissionRequestFields
+): AgentHookEvent | null {
+    const location = findPaneAnywhere(state, paneID);
+    if (location === null) return null;
+    const workspace = workspaceByID(state, location.workspaceID);
+    if (workspace === null) return null;
+    const { pane } = location;
+    return {
+        type: 'permission-request',
+        paneID: pane.id,
+        workspaceID: workspace.id,
+        agent: pane.agentKind ?? 'claude',
+        ...(pane.agentSessionID !== null ? { sessionID: pane.agentSessionID } : {}),
+        status: pane.status,
+        toolName: fields.toolName,
+        behavior: fields.behavior,
+        ...(fields.provider !== undefined ? { provider: fields.provider } : {}),
+        ...(fields.message !== undefined ? { message: fields.message } : {}),
         ...(workspace.muted ? { muted: true } : {})
     };
 }

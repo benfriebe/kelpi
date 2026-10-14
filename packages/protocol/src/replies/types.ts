@@ -547,6 +547,16 @@ export interface WebExecReply extends WebPaneReplyBase {
     readonly result: unknown;
 }
 
+// ── agent replies ─────────────────────────────────────────────────────────────────────
+
+/** `permission-request` (#388, wire-protocol.md §6.1.1). `message` only on `deny`. */
+export interface PermissionRequestReply extends ReplySuccess {
+    readonly behavior: 'allow' | 'deny' | 'abstain';
+    readonly message?: string;
+    /** The provider the daemon asked; absent when none could be. */
+    readonly provider?: string;
+}
+
 export type WireReply =
     | ReplyFailure
     | WorkspaceDeleteFailure
@@ -571,6 +581,7 @@ export type WireReply =
     | GraftStopReply
     | GraftStatusReply
     | PingReply
+    | PermissionRequestReply
     | WebOpenReply
     | WebNavigateReply
     | WebUrlReply

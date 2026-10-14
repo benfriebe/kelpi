@@ -1,7 +1,7 @@
 /** #237: trusted pointer input, two real daemons, and an independent WS mirror. */
 import fs from 'node:fs';
 import path from 'node:path';
-import { makeSandbox, startDaemon, waitForHealthz, makeCli, PROTOCOL_VERSION } from '../ui-audit/lib/stack.mjs';
+import { makeSandbox, startDaemon, waitForHealthz, makeCli, PROTOCOL_VERSION, WS_PROTOCOL_VERSION } from '../ui-audit/lib/stack.mjs';
 
 export const covers = [
     'packages/client/src/app/RemoteDaemonSections.tsx',
@@ -16,7 +16,7 @@ async function observe(remote, token) {
     await new Promise((resolve, reject) => {
         const timeout = setTimeout(() => reject(new Error('Remote observer snapshot timed out')), 10_000);
         ws.addEventListener('error', () => { clearTimeout(timeout); reject(new Error('Remote observer failed')); });
-        ws.addEventListener('open', () => ws.send(JSON.stringify({ type: 'hello', protocolVersion: PROTOCOL_VERSION,
+        ws.addEventListener('open', () => ws.send(JSON.stringify({ type: 'hello', protocolVersion: WS_PROTOCOL_VERSION,
             token, client: { kind: 'browser', name: 'remote-reorder-observer' } })));
         ws.addEventListener('message', ({ data }) => {
             if (typeof data !== 'string') return;

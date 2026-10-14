@@ -50,7 +50,8 @@ const SPEC_TYPE_NAMES: Readonly<Record<string, WireFieldKind>> = {
     bool: 'bool',
     uint64: 'uint64',
     double: 'double',
-    'string[]': 'string[]'
+    'string[]': 'string[]',
+    object: 'object'
 };
 
 function fieldDictionaryFromSpec(): Map<string, WireFieldKind> {

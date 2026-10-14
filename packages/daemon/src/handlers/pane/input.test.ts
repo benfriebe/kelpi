@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import { NAMED_KEYS } from '@kelpi/protocol';
 
-import { handlePaneCapture, handlePaneSend } from './index.js';
-import { W1, W2, harness, seedSplit, seedWorkspace, stubReply, testID } from './testing.js';
+import { handlePaneCapture, handlePaneSend, handlePaneSendKey } from './index.js';
+import { StubTerminalState, W1, W2, harness, seedSplit, seedWorkspace, stubReply, testID } from './testing.js';
 
 const P1 = testID('1', 1);
 const P2 = testID('2', 2);
@@ -87,6 +87,56 @@ describe('pane-send', () => {
         h.runSilent({ command: 'pane-send', target: P2, text: 'hi', bare: false });
         expect(h.input.texts).toHaveLength(1);
     });
+
+    it('types when if_revision matches and acks the revision it matched', () => {
+        const h = seeded();
+        h.term.revisions.set(P2, 7);
+        const reply = h.run({ command: 'pane-send', target: P2, text: 'y', bare: false, if_revision: 7 });
+
+        expect(reply.only()).toEqual({
+            ok: true,
+            pane_id: P2,
+            workspace_id: W1,
+            workspace_name: 'dev',
+            bare: false,
+            revision: 7,
+            label: 'worker-1'
+        });
+        expect(h.input.texts).toEqual([{ paneID: P2, text: 'y', bare: false, mirror: false }]);
+    });
+
+    it('guards revision 0 too: an untouched pane matches it', () => {
+        const h = seeded();
+        const reply = h.run({ command: 'pane-send', target: P2, text: 'y', bare: true, if_revision: 0 });
+
+        expect(reply.only()).toMatchObject({ ok: true, revision: 0 });
+        expect(h.input.texts).toHaveLength(1);
+    });
+
+    it('refuses a stale if_revision with SCREEN_CHANGED and writes nothing', () => {
+        const h = seeded();
+        h.term.revisions.set(P2, 8);
+        const reply = h.run({ command: 'pane-send', target: P2, text: 'y', bare: false, if_revision: 7 });
+
+        expect(reply.only()).toEqual({ ok: false, error: 'screen changed', code: 'SCREEN_CHANGED', revision: 8 });
+        expect(reply.closeCount).toBe(1);
+        expect(h.input.texts).toEqual([]);
+    });
+
+    it('resolves before the guard: an unknown target fails on resolution, not the revision', () => {
+        const h = seeded();
+        const reply = h.run({ command: 'pane-send', pane_id: P1, target: 'ghost', text: 'y', bare: false, if_revision: 99 });
+
+        expect(reply.only()).toMatchObject({ ok: false, error: expect.stringContaining("no pane with label 'ghost'") });
+        expect(reply.only()).not.toHaveProperty('code');
+    });
+
+    it('refuses silently for a legacy client with no reply handle', () => {
+        const h = seeded();
+        h.term.revisions.set(P2, 2);
+        h.runSilent({ command: 'pane-send', target: P2, text: 'hi', bare: false, if_revision: 1 });
+        expect(h.input.texts).toEqual([]);
+    });
 });
 
 describe('pane-send-key', () => {
@@ -108,6 +158,45 @@ describe('pane-send-key', () => {
     it('validates the key BEFORE resolving, so an unknown key never touches a pane', () => {
         const h = seeded();
         const reply = h.run({ command: 'pane-send-key', target: 'no-such-pane', key: 'F13' });
+
+        expect(reply.only()).toEqual({
+            ok: false,
+            error: `unknown key 'f13' (valid: ${NAMED_KEYS.join(', ')})`
+        });
+        expect(h.input.keys).toEqual([]);
+    });
+
+    it('delivers a key whose if_revision matches, with the revision in the ack', () => {
+        const h = seeded();
+        h.term.revisions.set(P2, 3);
+        const reply = h.run({ command: 'pane-send-key', target: P2, key: 'enter', if_revision: 3 });
+
+        expect(reply.only()).toEqual({
+            ok: true,
+            pane_id: P2,
+            workspace_id: W1,
+            workspace_name: 'dev',
+            key: 'enter',
+            revision: 3,
+            label: 'worker-1'
+        });
+        expect(h.input.keys).toEqual([{ paneID: P2, key: 'enter' }]);
+    });
+
+    it('refuses a key whose if_revision is stale and sends nothing', () => {
+        const h = seeded();
+        h.term.revisions.set(P2, 4);
+        const reply = stubReply();
+        handlePaneSendKey({ command: 'pane-send-key', target: P2, key: 'enter', if_revision: 3 }, h.ctx, reply);
+
+        expect(reply.only()).toEqual({ ok: false, error: 'screen changed', code: 'SCREEN_CHANGED', revision: 4 });
+        expect(h.input.keys).toEqual([]);
+    });
+
+    it('still validates the key first: an unknown key with a stale if_revision fails on the key', () => {
+        const h = seeded();
+        h.term.revisions.set(P2, 4);
+        const reply = h.run({ command: 'pane-send-key', target: P2, key: 'F13', if_revision: 3 });
 
         expect(reply.only()).toEqual({
             ok: false,
@@ -142,6 +231,9 @@ describe('pane-capture', () => {
             workspace_id: W1,
             workspace_name: 'dev',
             text: 'visible\n',
+            revision: 0,
+            cursor: { row: 0, col: 0 },
+            alt_screen: false,
             label: 'worker-1'
         });
         expect(full.only()).toMatchObject({ text: 'history\nvisible\n' });
@@ -166,6 +258,65 @@ describe('pane-capture', () => {
             ok: false,
             error: 'lines must be a positive integer (got 0)'
         });
+    });
+
+    it('reports the revision, cursor and alternate screen it read', async () => {
+        const h = seeded();
+        h.term.viewport.set(P2, 'vim\n');
+        h.term.revisions.set(P2, 12);
+        h.term.cursors.set(P2, { alternate: true, row: 4, col: 9 });
+
+        const reply = h.run({ command: 'pane-capture', target: P2, scrollback: false });
+        await settle();
+
+        expect(reply.only()).toMatchObject({ text: 'vim\n', revision: 12, cursor: { row: 4, col: 9 }, alt_screen: true });
+        expect(reply.only()).not.toHaveProperty('settled');
+        expect(h.term.settles).toEqual([]);
+    });
+
+    it('waits for the pane to settle when settle_ms is given and says whether it did', async () => {
+        const h = seeded();
+        h.term.viewport.set(P2, 'done\n');
+
+        const quiet = h.run({ command: 'pane-capture', target: P2, scrollback: false, settle_ms: 250 });
+        await settle();
+        h.term.settleResult = false;
+        const busy = h.run({ command: 'pane-capture', target: P2, scrollback: false, settle_ms: 60_000 });
+        await settle();
+
+        expect(quiet.only()).toMatchObject({ ok: true, text: 'done\n', settled: true });
+        expect(busy.only()).toMatchObject({ ok: true, text: 'done\n', settled: false });
+        // The cap is the service's to apply: the handler passes the request through.
+        expect(h.term.settles).toEqual([
+            { paneID: P2, quietMs: 250 },
+            { paneID: P2, quietMs: 60_000 }
+        ]);
+    });
+
+    it('rejects a non-positive settle_ms after --lines and before resolving anything', async () => {
+        const h = seeded();
+        const zero = h.run({ command: 'pane-capture', target: 'ghost', settle_ms: 0, scrollback: false });
+        const negative = h.run({ command: 'pane-capture', target: 'ghost', settle_ms: -5, scrollback: false });
+        const both = h.run({ command: 'pane-capture', target: 'ghost', lines: 0, settle_ms: 0, scrollback: false });
+        await settle();
+
+        expect(zero.only()).toEqual({ ok: false, error: 'settle_ms must be a positive integer (got 0)' });
+        expect(negative.only()).toEqual({ ok: false, error: 'settle_ms must be a positive integer (got -5)' });
+        expect(both.only()).toEqual({ ok: false, error: 'lines must be a positive integer (got 0)' });
+        expect(h.term.settles).toEqual([]);
+    });
+
+    it('reads a seam without the #390 reads as revision 0 on the main screen at 0,0', async () => {
+        const h = seeded();
+        const term = new StubTerminalState();
+        term.viewport.set(P2, 'old\n');
+        // An older seam: own `undefined`s shadow the stub's methods.
+        Object.assign(term, { revision: undefined, screenCursor: undefined, settle: undefined });
+        const reply = stubReply();
+        handlePaneCapture({ command: 'pane-capture', target: P2, scrollback: false, settle_ms: 10 }, { ...h.ctx, term }, reply);
+        await settle();
+
+        expect(reply.only()).toMatchObject({ text: 'old\n', revision: 0, cursor: { row: 0, col: 0 }, alt_screen: false, settled: true });
     });
 
     it('rejects a non-terminal pane with its raw type', async () => {

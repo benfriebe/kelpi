@@ -284,14 +284,16 @@ function decodeCommand(
             if (target === undefined) return guard(command, 'pane-send requires target', 'target');
             const text = fields.nonEmpty('text');
             if (text === undefined) return guard(command, 'pane-send requires non-empty text', 'text');
-            return { command, ...scope(), target, text, bare: fields.flag('bare', false) };
+            const ifRevision = fields.int('if_revision');
+            return { command, ...scope(), target, text, bare: fields.flag('bare', false), ...(ifRevision === undefined ? {} : { if_revision: ifRevision }) };
         }
         case 'pane-send-key': {
             const target = fields.text('target');
             if (target === undefined) return guard(command, 'pane-send-key requires target', 'target');
             const key = fields.nonEmpty('key');
             if (key === undefined) return guard(command, 'pane-send-key requires key', 'key');
-            return { command, ...scope(), target, key };
+            const ifRevision = fields.int('if_revision');
+            return { command, ...scope(), target, key, ...(ifRevision === undefined ? {} : { if_revision: ifRevision }) };
         }
         case 'pane-resize': {
             const failure = requireTargetable();
@@ -355,11 +357,13 @@ function decodeCommand(
         case 'pane-capture': {
             const failure = requireTargetable();
             if (failure) return failure;
+            const settleMs = fields.int('settle_ms');
             return {
                 command,
                 ...scope(),
                 lines: fields.int('lines'),
-                scrollback: fields.flag('scrollback', false)
+                scrollback: fields.flag('scrollback', false),
+                ...(settleMs === undefined ? {} : { settle_ms: settleMs })
             };
         }
         case 'pane-sync': {

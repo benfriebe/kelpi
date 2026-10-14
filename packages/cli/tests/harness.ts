@@ -49,6 +49,8 @@ export interface ServerReply {
     readonly keepOpen?: boolean;
     /** Write nothing at all and close — the "old Kelpi" empty-reply path. */
     readonly silent?: boolean;
+    /** Wait this long before replying (a daemon that holds the reply, like a settled capture). */
+    readonly delayMs?: number;
 }
 
 export interface FakeServer {
@@ -82,12 +84,17 @@ export async function startFakeServer(): Promise<FakeServer> {
                 const request = JSON.parse(raw) as Record<string, unknown>;
                 requests.push(request);
                 const reply = responder(request);
-                if (reply.silent === true) {
-                    socket.end();
-                    continue;
-                }
-                for (const line of reply.lines ?? []) socket.write(`${JSON.stringify(line)}\n`);
-                if (reply.keepOpen !== true) socket.end();
+                const write = (): void => {
+                    if (socket.destroyed) return;
+                    if (reply.silent === true) {
+                        socket.end();
+                        return;
+                    }
+                    for (const line of reply.lines ?? []) socket.write(`${JSON.stringify(line)}\n`);
+                    if (reply.keepOpen !== true) socket.end();
+                };
+                if (reply.delayMs !== undefined) setTimeout(write, reply.delayMs);
+                else write();
             }
         });
         socket.on('error', () => undefined);

@@ -112,7 +112,9 @@ export const WIRE_FIELD_TYPES = {
     tool_input: 'object',
     mcp_server: 'string',
     cwd: 'string',
-    permission_mode: 'string'
+    permission_mode: 'string',
+    settle_ms: 'int',
+    if_revision: 'int'
 } as const satisfies Record<string, WireFieldKind>;
 
 export type WireFieldName = keyof typeof WIRE_FIELD_TYPES;

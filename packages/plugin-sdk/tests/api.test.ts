@@ -199,6 +199,28 @@ describe('public SDK over Kelpi command handlers', () => {
         expect((await api.terminal.sync(W1, 'on')).active).toBe(true);
         expect((await api.terminal.excludeFromSync(P1, true)).excluded).toEqual([{ id: P1 }]);
     });
+    it('reads a terminal with its revision and refuses a guarded send once the screen moves on (#390)', async () => {
+        const { api, pane } = host();
+        pane.term.viewport.set(P1, 'prompt> ');
+        pane.term.cursors.set(P1, { alternate: false, row: 0, col: 8 });
+        const screen = await api.terminal.read(P1);
+        expect(screen).toStrictEqual({ text: 'prompt> ', revision: expect.any(Number), cursor: { row: 0, col: 8 }, altScreen: false });
+        expect(screen).not.toHaveProperty('settled');
+
+        pane.term.feed(P1, new TextEncoder().encode('Overwrite? [y/N] '));
+        const failure = await api.terminal.send(P1, 'y', { ifRevision: screen.revision }).catch((error: unknown) => error);
+        expect(failure).toBeInstanceOf(KelpiError);
+        expect(failure).toMatchObject({ code: 'SCREEN_CHANGED', details: { revision: screen.revision + 1 } });
+        expect(pane.input.texts).toEqual([]);
+
+        const fresh = await api.terminal.read(P1);
+        expect(fresh.text).toBe('prompt> Overwrite? [y/N] ');
+        expect(await api.terminal.sendKey(P1, 'enter', { ifRevision: fresh.revision })).toMatchObject({ key: 'enter', revision: fresh.revision });
+        expect(pane.input.keys).toEqual([{ paneID: P1, key: 'enter' }]);
+
+        expect(await api.terminal.read(P1, { settleMs: 20 })).toMatchObject({ revision: fresh.revision, settled: true });
+        expect(pane.term.settles).toEqual([{ paneID: P1, quietMs: 20 }]);
+    });
     it('uses lazy pane/workspace context instead of the daemon active workspace, with explicit options winning', async () => {
         let context: Partial<Context> = { workspaceID: W1, paneID: P1 };
         const { api, app, sent } = host({}, () => context);

@@ -151,6 +151,8 @@ export interface PaneSendMessage extends PaneTargetScope {
     target: string;
     text: string;
     bare: boolean;
+    /** Refuse (`SCREEN_CHANGED`) unless the pane's screen revision is still this one (#390). */
+    if_revision?: number | undefined;
 }
 
 export interface PaneSendKeyMessage extends PaneTargetScope {
@@ -158,6 +160,8 @@ export interface PaneSendKeyMessage extends PaneTargetScope {
     target: string;
     /** Raw wire value: validated (lowercased) by the handler, which errors rather than drops. */
     key: string;
+    /** Refuse (`SCREEN_CHANGED`) unless the pane's screen revision is still this one (#390). */
+    if_revision?: number | undefined;
 }
 
 export interface PaneResizeMessage extends PaneTargetScope {
@@ -235,6 +239,8 @@ export interface PaneCaptureMessage extends PaneTargetScope {
     command: 'pane-capture';
     lines?: number | undefined;
     scrollback: boolean;
+    /** Wait for this many ms of no output before reading, up to the daemon's cap (#390). */
+    settle_ms?: number | undefined;
 }
 
 export interface PaneSyncMessage {

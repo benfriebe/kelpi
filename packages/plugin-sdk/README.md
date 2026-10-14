@@ -328,6 +328,30 @@ kelpi plugin service-select kelpi.files default
 ```
 
 
+## CLI verbs
+
+`contributes.cli` maps a one-word `kelpi <verb>` onto one of the plugin's commands:
+
+```json
+"cli": [{ "name": "hello", "command": "example.my-board.hello", "summary": "Say hello to the arguments" }]
+```
+
+The command receives a `CliInvocation` (`argv`, `cwd`, `isTTY`, `json`) as its args and returns a
+`CliResult` (`text`, `json`, `exitCode`, `stderr`), so `kelpi hello a b` prints `hello a b`:
+
+```ts
+import type { CliInvocation, CliResult } from '@kelpi/plugin-sdk';
+
+api.commands.register('example.my-board.hello', (args): CliResult => {
+    const { argv, json } = args as CliInvocation;
+    return json ? { json: { argv } } : { text: `hello ${argv.join(' ')}` };
+});
+```
+
+Names are lowercase words of at most 32 characters. Built-in verbs and a verb another installed
+plugin provides are refused. See [CLI verbs](https://github.com/benfriebe/kelpi/blob/main/docs/plugins.md#cli-verbs)
+for the rules and what the CLI prints.
+
 ## Toolbar and status replacements
 
 Browser views can use `ui.getChrome()` / `ui.onChrome(listener, onError)` to read the owning

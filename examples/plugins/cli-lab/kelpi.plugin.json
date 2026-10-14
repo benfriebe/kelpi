@@ -1,0 +1,18 @@
+{
+  "id": "example.cli-lab",
+  "name": "CLI Lab",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "trust": "full",
+  "backend": "backend.mjs",
+  "activation": "on-demand",
+  "contributes": {
+    "views": [],
+    "commands": [
+      { "id": "example.cli-lab.hello", "title": "Say hello from the CLI" }
+    ],
+    "cli": [
+      { "name": "hello", "command": "example.cli-lab.hello", "summary": "Print hello and the words you pass" }
+    ]
+  }
+}

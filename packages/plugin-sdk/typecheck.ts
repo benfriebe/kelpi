@@ -10,6 +10,7 @@ import './pane-chrome.typecheck.js';
 import './pane-search.typecheck.js';
 import './terminal.typecheck.js';
 import './browser.typecheck.js';
+import type { CliInvocation, CliResult } from './index.js';
 
 async function authoring(api: BackendAPI): Promise<void> {
     const contributions = await api.contributions.update({ context: { ready: true, count: 3, removed: null }, items: {
@@ -68,6 +69,13 @@ async function authoring(api: BackendAPI): Promise<void> {
     // @ts-expect-error The guard is a revision number.
     await api.terminal.sendKey('pane', 'enter', { ifRevision: String(revision) });
     api.hooks.register('sample.plugin.guard', async invocation => invocation.phase === 'before' ? { allow: true } : undefined);
+    // #391: a `contributes.cli` command reads its argv and returns text, JSON and an exit code.
+    api.commands.register('sample.plugin.hello', (args): CliResult => {
+        const { argv, json } = args as CliInvocation;
+        return json ? { json: { argv } } : { text: `hello ${argv.join(' ')}`, exitCode: argv.length ? 0 : 2 };
+    });
+    // @ts-expect-error A CLI exit code is a number.
+    const badExit: CliResult = { exitCode: '1' };
     api.providers.register('sample.plugin.files', { read: async args => String(args.path) });
     await api.services.call<{ answer: number }>('sample.plugin.catalog', 1, 'read');
     const branch = await api.services.call('kelpi.git', 1, 'getCurrentBranch', { repoPath: '/repo' });

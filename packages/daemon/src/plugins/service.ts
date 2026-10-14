@@ -8,6 +8,7 @@ import { newUUID } from '@kelpi/core/codec';
 import { readPluginPackage } from '@kelpi/core/plugin-package';
 import type { Pane } from '@kelpi/core/layout';
 import { PluginEventBuffer, pluginAssetPath, pluginDependencyOrder, pluginDependencyProblem, pluginJSON, pluginObject, pluginRecord, patchPluginContributionState, pluginSettingValue, type JsonObject, type JsonValue, type PluginContext, type PluginEvent, type PluginInfo, type PluginManifest, type PluginContributionState, type PluginContributionInfo, type PluginViewDefinition, type PluginPaneDescriptor, type PluginRevisionInfo, type PluginPlacement } from '@kelpi/protocol';
+import { isBuiltinCliVerb } from '@kelpi/protocol';
 import type { ReplyHandle, PtyManager, TerminalStateService } from '../seams.js';
 import type { KelpiStore } from '../store/store.js';
 import { serializeState, serializeDomainEvents } from '../ws/serialize.js';
@@ -317,6 +318,17 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
             const collision = claims(installed.manifest).find(id => incoming.has(id));
             if (collision) return `plugin contribution ${collision} is already owned by ${installed.manifest.id}`;
         }
+        // A retained revision may declare a verb a later release made built-in. Only a new selection
+        // (install, dev-install, rollback, history) reaches here, never boot or enable, so this
+        // refusal cannot take a stored plugin down; it comes first so rollback names the real cause.
+        const builtin = (manifest.contributes.cli ?? []).find(verb => isBuiltinCliVerb(verb.name));
+        if (builtin) return `cli verb "${builtin.name}" is a built-in kelpi command`;
+        // CLI verbs share one top-level namespace across plugins. The first plugin to install a
+        // name keeps it, so a later one cannot silently shadow it (#391).
+        for (const verb of manifest.contributes.cli ?? []) {
+            const owner = this.cliVerb(verb.name, manifest.id);
+            if (owner) return `cli verb "${verb.name}" is already provided by plugin ${owner.installation.manifest.id}`;
+        }
         const before = [...this.installations.values()].map(item => ({ manifest: item.manifest, enabled: item.enabled, ...(this.errors.has(item.manifest.id) ? { status: 'failed', error: this.errors.get(item.manifest.id)! } : {}) }));
         const after = [...before.filter(item => item.manifest.id !== manifest.id), { manifest, enabled }];
         const dependency = enabled ? pluginDependencyProblem(manifest.id, after) : null;
@@ -377,7 +389,10 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
         if (signal?.aborted) throw new Error('plugin dev installation cancelled');
         const id = manifest.id, previous = this.installations.get(id);
         const problem = this.revisionProblem(manifest, enabled); if (problem) throw new Error(problem);
-        if (previous?.revision === revision && previous.enabled === enabled && !this.errors.has(id)) return this.list();
+        // Reinstalling what is already selected is a no-op only when the stored manifest says what
+        // this decoder says: a package an older daemon stored without a field it did not know
+        // (`contributes.cli` before #391) is re-read as a change, so the field takes effect.
+        if (previous?.revision === revision && previous.enabled === enabled && !this.errors.has(id) && JSON.stringify(previous.manifest) === JSON.stringify(manifest)) return this.list();
         const wasRunning = this.running.has(id), previousError = this.errors.get(id);
         let committed = false;
         this.changing.add(manifest.id);
@@ -555,6 +570,19 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
         for (const runtime of this.running.values()) {
             runtime.queue.push(event); this.drain(runtime);
         }
+    }
+    /** The installation declaring `kelpi <verb>`, disabled ones included; `except` skips one plugin's own claim. */
+    private cliVerb(verb: string, except?: string): { installation: PluginInstallation; contribution: NonNullable<PluginManifest['contributes']['cli']>[number] } | undefined {
+        for (const installation of this.installations.values()) {
+            if (installation.manifest.id === except) continue;
+            const contribution = installation.manifest.contributes.cli?.find(entry => entry.name === verb);
+            if (contribution) return { installation, contribution };
+        }
+        return undefined;
+    }
+    /** A CLI call carries only its pane; plugin commands also expect that pane's workspace. */
+    private paneWorkspaceID(paneID: string): string | undefined {
+        return this.options.store.getState().workspaces.find(workspace => [...workspace.panes, ...workspace.parkedPanes].some(pane => pane.id === paneID))?.id;
     }
     private context(raw: unknown): Partial<PluginContext> {
         if (!pluginRecord(raw)) return {};
@@ -1049,6 +1077,26 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
             return await this.mutate(() => this.installNow(source, input['trust'] === true, signal)) as unknown as JsonValue;
         }
         if (action === 'run') return this.invoke(text(input['command'], 'command'), pluginObject(input['args'] ?? {}), { ...context, ...this.context(input) });
+        // A verb a later Kelpi release made built-in is never reached (the CLI dispatches built-ins
+        // first), so it is neither listed nor run; the rest of its plugin keeps working.
+        if (action === 'cli-list') return { verbs: [...this.installations.values()].flatMap(item => (item.manifest.contributes.cli ?? []).filter(verb => !isBuiltinCliVerb(verb.name)).map(verb => ({ name: verb.name, summary: verb.summary, command: verb.command, pluginID: item.manifest.id, pluginName: item.manifest.name, enabled: item.enabled }))) };
+        if (action === 'cli') {
+            const verb = text(input['verb'], 'verb');
+            const owner = isBuiltinCliVerb(verb) ? undefined : this.cliVerb(verb);
+            if (!owner) throw new Error(`unknown kelpi verb: ${verb}`);
+            if (!owner.installation.enabled) throw new Error(`plugin ${owner.installation.manifest.id} is disabled`);
+            const argv = input['argv'] ?? [];
+            if (!Array.isArray(argv) || argv.some(arg => typeof arg !== 'string')) throw new Error('missing or invalid argv');
+            const { paneID, ...rest } = this.context(input);
+            const workspaceID = rest.workspaceID ?? (paneID ? this.paneWorkspaceID(paneID) : undefined);
+            // A CLI in another daemon's pane forwards that daemon's pane ID; drop a pane this daemon does
+            // not know, unless the caller named the workspace, so a plugin never acts on a foreign pane.
+            const caller = paneID && workspaceID ? { ...rest, paneID } : rest;
+            const result = await this.invoke(owner.contribution.command, { argv, cwd: text(input['cwd'], 'cwd'), isTTY: input['isTTY'] === true, json: input['json'] === true },
+                { ...context, ...caller, ...(workspaceID ? { workspaceID } : {}) });
+            // The CLI reads text, json, exitCode and stderr; anything else a handler returns means "no output".
+            return pluginRecord(result) ? result : {};
+        }
         if (action === 'api') {
             const lease = this.leases.get(text(input['lease'], 'lease'));
             if (!lease || lease.expires < Date.now() || this.item(lease.pluginID).revision !== lease.revision) throw new Error('plugin view access expired; reopen the view');

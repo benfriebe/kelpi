@@ -106,6 +106,21 @@ describe('shared plugin packaging', () => {
         fs.unlinkSync(path.join(h.source, 'kelpi.plugin.json'));
         await expect(readPluginPackage(h.source)).rejects.toThrow('missing kelpi.plugin.json');
     });
+    it('refuses a cli verb that is a built-in kelpi command before packing, validating or installing (#391)', async () => {
+        const h = fixture();
+        const withVerb = (name: string) => fs.writeFileSync(path.join(h.source, 'kelpi.plugin.json'), JSON.stringify({ ...h.manifest, contributes: { ...h.manifest.contributes,
+            commands: [{ id: 'example.package.hello', title: 'Hello' }], cli: [{ name, command: 'example.package.hello', summary: 'Say hello' }] } }));
+        withVerb('hello');
+        await packPlugin(h.source, h.archive);
+        expect(pluginPackageReport(await readPluginPackage(h.archive)).cli).toEqual([{ name: 'hello', command: 'example.package.hello', summary: 'Say hello' }]);
+        for (const name of ['pane', 'plugin', 'help', 'version', 'install-hooks']) {
+            withVerb(name);
+            await expect(readPluginPackage(h.source)).rejects.toThrow(`cli verb "${name}" is a built-in kelpi command`);
+        }
+        fs.rmSync(h.archive);
+        await expect(packPlugin(h.source, h.archive)).rejects.toThrow('cli verb "install-hooks" is a built-in kelpi command');
+        expect(fs.existsSync(h.archive)).toBe(false);
+    });
     it('detects altered content, malformed encoding, unknown formats and damaged compression', async () => {
         const h = fixture(); await packPlugin(h.source, h.archive);
         const document = JSON.parse(gunzipSync(fs.readFileSync(h.archive)).toString());

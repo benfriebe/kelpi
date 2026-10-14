@@ -1,6 +1,7 @@
 /** Public plugin contracts. JSON only: no daemon, React, Electron or Node dependencies. */
 import type { JsonObject, JsonValue } from './json.js';
 import { isPluginVersion, isPluginVersionRange } from './plugin-dependencies.js';
+import { isCliVerbName } from './cli-verbs.js';
 import { decodePluginWhen, decodePluginItemPatch, pluginContributionOrder, pluginContributionText, pluginSettingValue, type PluginWhen, type PluginMenuDefinition, type PluginItemDefinition, type PluginSettingGroupDefinition, type PluginContextValue } from './plugin-contributions.js';
 
 export const PLUGIN_API_VERSION = 1;
@@ -112,6 +113,12 @@ export interface PluginCommandDefinition {
     readonly when?: PluginWhen;
     readonly enablement?: PluginWhen;
 }
+/** A top-level `kelpi <name>` verb that runs one of the plugin's own commands (#391). */
+export interface PluginCliContribution {
+    readonly name: string;
+    readonly command: string;
+    readonly summary: string;
+}
 export interface PluginSettingDefinition {
     readonly title: string;
     readonly type: 'string' | 'number' | 'boolean';
@@ -143,6 +150,7 @@ export interface PluginManifest {
         readonly menus?: readonly PluginMenuDefinition[];
         readonly items?: readonly PluginItemDefinition[];
         readonly settingGroups?: readonly PluginSettingGroupDefinition[];
+        readonly cli?: readonly PluginCliContribution[];
     };
 }
 export interface PluginInfo {
@@ -397,6 +405,22 @@ export function decodePluginManifest(raw: unknown): PluginManifest {
         if (typeof raw !== 'string' || !commands.some(command => command.id === raw)) throw new Error('plugin UI command must be owned and declared');
         return raw;
     };
+    // A verb shares one namespace with every built-in and every other plugin, so the name rules
+    // are checked here, where offline `kelpi plugin validate` sees them too. Another plugin's
+    // claim on the same name is an install-time check in the daemon. A built-in name is refused
+    // where a new package is read, not here: stored manifests decode through here when the daemon
+    // boots, and a verb a later release makes built-in must not take the plugin registry down.
+    const cliNames = new Set<string>();
+    const cli = array(contributes['cli']).map((raw): PluginCliContribution => {
+        const verb = pluginObject(raw);
+        const name = verb['name'];
+        if (typeof name !== 'string' || !isCliVerbName(name)) throw new Error('invalid plugin cli verb name; use one lowercase word of at most 32 characters');
+        if (cliNames.has(name)) throw new Error(`duplicate plugin cli verb ${name}`);
+        cliNames.add(name);
+        const summary = pluginContributionText(verb['summary'], 'cli verb summary', 120);
+        if (/[\u0000-\u001f\u007f-\u009f]/.test(summary)) throw new Error('invalid plugin cli verb summary');
+        return { name, command: commandReference(verb['command']), summary };
+    });
     const menus = array(contributes['menus']).map((raw): PluginMenuDefinition => {
         const menu = pluginObject(raw);
         const placement = menu['placement'];
@@ -485,7 +509,8 @@ export function decodePluginManifest(raw: unknown): PluginManifest {
         contributes: { views, commands, settings,
             ...(containers.length ? { containers } : {}), ...(hooks.length ? { hooks } : {}),
             ...(services.length ? { services } : {}), ...(providers.length ? { providers } : {}),
-            ...(menus.length ? { menus } : {}), ...(items.length ? { items } : {}), ...(settingGroups.length ? { settingGroups } : {}) } };
+            ...(menus.length ? { menus } : {}), ...(items.length ? { items } : {}), ...(settingGroups.length ? { settingGroups } : {}),
+            ...(cli.length ? { cli } : {}) } };
 }
 
 export function decodePluginPane(raw: unknown): PluginPaneDescriptor | null {

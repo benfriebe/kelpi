@@ -29,6 +29,8 @@ export const pluginUsage = `Usage: kelpi plugin <action>
 
 Install trusted local code only. Backends run with your account's access.
 Results are JSON; watch and dev emit JSON lines. See docs/plugin-development.md.
+validate also reports a plugin's kelpi verbs (contributes.cli). Once installed,
+each runs as kelpi <verb> [args...] and kelpi --help lists them.
 `;
 
 export async function handlePlugin(args: string[]): Promise<void> {

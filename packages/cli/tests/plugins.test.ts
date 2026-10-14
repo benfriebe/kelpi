@@ -1,7 +1,8 @@
 import fs from 'node:fs';
+import net from 'node:net';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { runCLI, scratchHome, startFakeServer, type FakeServer } from './harness.js';
+import { deadPort, runCLI, scratchHome, startFakeServer, type FakeServer } from './harness.js';
 
 let server: FakeServer, home: string;
 beforeEach(async () => { server = await startFakeServer(); home = scratchHome(); });
@@ -155,4 +156,117 @@ describe('bundled plugin CLI', () => {
         expect(result.stdout.trim().split('\n').map(line => JSON.parse(line))).toHaveLength(2);
         await vi.waitFor(() => expect(server.open).toHaveLength(0));
     });
+});
+
+describe('plugin CLI verbs through the bundled CLI', () => {
+    const verbs = [{ name: 'hello', summary: 'Say hello', command: 'lab.hello', pluginID: 'lab.service', pluginName: 'Service Lab', enabled: true },
+        { name: 'shout', summary: 'Say it louder', command: 'lab.shout', pluginID: 'lab.service', pluginName: 'Service Lab', enabled: false }];
+    it('runs a verb with its argv, cwd and caller pane in one request, printing text and exiting with its exitCode', async () => {
+        server.respond(() => ({ lines: [{ ok: true, result: { text: 'hello a b', exitCode: 3 } }] }));
+        const result = await runCLI(['hello', 'a', 'b'], { port: server.port, cwd: home, paneID: 'PANE-1' });
+        expect(result.code).toBe(3); expect(result.stdout).toBe('hello a b\n'); expect(result.stderr).toBe('');
+        expect(server.requests).toHaveLength(1); expect(server.requests[0]).toMatchObject({ command: 'plugin', action: 'cli' });
+        expect(JSON.parse(String(server.requests[0]?.['text']))).toEqual({ verb: 'hello', argv: ['a', 'b'], cwd: home, isTTY: false, json: false, paneID: 'PANE-1' });
+        server.respond(() => ({ lines: [{ ok: true, result: { text: 'quiet', stderr: 'careful' } }] }));
+        const plain = await runCLI(['hello'], { port: server.port, cwd: home });
+        expect(plain.code).toBe(0); expect(plain.stdout).toBe('quiet\n'); expect(plain.stderr).toBe('careful\n');
+        expect(JSON.parse(String(server.requests[1]?.['text']))).not.toHaveProperty('paneID');
+    });
+    it('pops --json before -- and prints the json result, or the text wrapped as an object', async () => {
+        server.respond(() => ({ lines: [{ ok: true, result: { text: 'hello a', json: { argv: ['a'] } } }] }));
+        const json = await runCLI(['hello', '--json', 'a', '--', '--json'], { port: server.port, cwd: home });
+        expect(json.code).toBe(0); expect(JSON.parse(json.stdout)).toEqual({ argv: ['a'] });
+        expect(JSON.parse(String(server.requests[0]?.['text']))).toMatchObject({ argv: ['a', '--', '--json'], json: true });
+        server.respond(() => ({ lines: [{ ok: true, result: { text: 'hello' } }] }));
+        expect(JSON.parse((await runCLI(['hello', '--json'], { port: server.port, cwd: home })).stdout)).toEqual({ text: 'hello' });
+        server.respond(() => ({ lines: [{ ok: true, result: { text: 'usage: hello' } }] }));
+        expect((await runCLI(['hello', '--help'], { port: server.port, cwd: home })).stdout).toBe('usage: hello\n');
+        expect(JSON.parse(String(server.requests[2]?.['text']))).toMatchObject({ argv: ['--help'], json: false });
+    });
+    it('keeps the unknown-command output for an undeclared word and names the verb for a disabled plugin', async () => {
+        server.respond(request => ({ lines: [{ ok: false, error: JSON.parse(String(request['text'])).verb === 'hello' ? 'plugin lab.service is disabled' : 'unknown kelpi verb: frobnicate' }] }));
+        const unknown = await runCLI(['frobnicate'], { port: server.port, cwd: home });
+        expect(unknown.code).toBe(1); expect(unknown.stdout).toBe(''); expect(unknown.stderr.startsWith('Unknown command: frobnicate\nUsage:\n')).toBe(true);
+        const disabled = await runCLI(['hello'], { port: server.port, cwd: home });
+        expect(disabled.code).toBe(1); expect(disabled.stderr).toBe('kelpi hello: plugin lab.service is disabled\n');
+    });
+    it('never asks the daemon about a flag, version or a built-in verb', async () => {
+        const flag = await runCLI(['--bogus'], { port: server.port, cwd: home });
+        expect(flag.code).toBe(1); expect(flag.stderr.startsWith('Unknown command: --bogus\nUsage:\n')).toBe(true);
+        for (const word of ['', 'Hello']) {
+            const result = await runCLI([word], { port: server.port, cwd: home });
+            expect(result.code).toBe(1); expect(result.stderr.startsWith(`Unknown command: ${word}\nUsage:\n`)).toBe(true);
+        }
+        expect((await runCLI(['version'], { port: server.port, cwd: home })).code).toBe(0);
+        expect((await runCLI(['plugin', 'help'], { port: server.port, cwd: home })).code).toBe(0);
+        expect(server.requests).toHaveLength(0);
+    });
+    it('waits out the pane-route retry, then says plugin verbs need a daemon when none is listening', async () => {
+        const started = Date.now();
+        const result = await runCLI(['frobnicate'], { port: await deadPort(), cwd: home, paneID: 'PANE-1', env: { KELPI_ROUTE_RETRY_MS: '1000' } });
+        expect(Date.now() - started).toBeGreaterThanOrEqual(1000); expect(Date.now() - started).toBeLessThan(10_000);
+        expect(result.code).toBe(1);
+        const lines = result.stderr.split('\n');
+        expect(lines[0]).toBe('Unknown command: frobnicate'); expect(lines[1]).toMatch(/^Plugin verbs need a running Kelpi daemon/); expect(lines[2]).toBe('Usage:');
+    });
+    it('prints the route error a built-in prints when KELPI_REQUIRE_SOCKET finds no route', async () => {
+        const result = await runCLI(['hello'], { cwd: home, env: { KELPI_REQUIRE_SOCKET: '1' } });
+        expect(result.code).toBe(1);
+        expect(result.stderr).toMatch(/^Error: kelpi hello: KELPI_REQUIRE_SOCKET is set but KELPI_SOCKET names no tcp route/);
+        expect(result.stderr).not.toContain('Unknown command');
+    });
+    it('says no response, not unknown command, when the daemon drops the connection after reading the verb', async () => {
+        const dropping = net.createServer((socket) => { socket.on('error', () => undefined); socket.once('data', () => socket.resetAndDestroy()); });
+        await new Promise<void>((resolve) => dropping.listen(0, '127.0.0.1', resolve));
+        try {
+            const result = await runCLI(['hello'], { port: (dropping.address() as net.AddressInfo).port, cwd: home });
+            expect(result.code).toBe(1); expect(result.stderr).toBe('kelpi hello: no response from Kelpi\n');
+        } finally {
+            await new Promise<void>((resolve) => dropping.close(() => resolve()));
+        }
+    });
+    it('lists installed verbs under their plugin after the usage text of kelpi --help and kelpi help', async () => {
+        server.respond(() => ({ lines: [{ ok: true, result: { verbs } }] }));
+        for (const word of ['--help', 'help']) {
+            const result = await runCLI([word], { port: server.port, cwd: home });
+            expect(result.code).toBe(0); expect(result.stdout).toBe('');
+            expect(result.stderr).toMatch(/kelpi install-hooks [^\n]*\n\nPlugin commands:\n  # Service Lab\n  kelpi hello             Say hello\n  kelpi shout \(disabled\)  Say it louder\n\n$/);
+        }
+        expect(server.requests).toEqual([{ command: 'plugin', action: 'cli-list', text: '{}' }, { command: 'plugin', action: 'cli-list', text: '{}' }]);
+    });
+    it('leaves the plugin block out when there are no verbs, no daemon or no answer within 2 s', async () => {
+        server.respond(() => ({ lines: [{ ok: true, result: { verbs: [] } }] }));
+        const empty = await runCLI(['--help'], { port: server.port, cwd: home });
+        expect(empty.code).toBe(0); expect(empty.stderr).toContain('Usage:'); expect(empty.stderr).not.toContain('Plugin commands:');
+        const offlineStarted = Date.now();
+        const offline = await runCLI(['--help'], { port: await deadPort(), cwd: home, paneID: 'PANE-1' });
+        expect(Date.now() - offlineStarted).toBeLessThan(4000);
+        expect(offline.code).toBe(0); expect(offline.stderr).toContain('Usage:'); expect(offline.stderr).not.toContain('Plugin commands:');
+        server.respond(() => ({ keepOpen: true }));
+        const started = Date.now();
+        const slow = await runCLI(['--help'], { port: server.port, cwd: home });
+        // Only proves it is not the 35 s verb timeout; the 2 s bound itself is pinned by the unit tests.
+        expect(Date.now() - started).toBeLessThan(15_000);
+        expect(slow.code).toBe(0); expect(slow.stderr).toContain('Usage:'); expect(slow.stderr).not.toContain('Plugin commands:');
+    }, 30_000);
+    it('closes the help lookup at 2 s of wall clock even when the daemon trickles a byte every 500 ms', async () => {
+        // Each byte restarts the inactivity timeout, so without the wall-clock bound help never ends.
+        // The server times its own connection, which leaves the CLI's cold start out of the bound.
+        let heldMs = -1;
+        const trickle = net.createServer((socket) => {
+            const accepted = Date.now();
+            const drip = setInterval(() => socket.write(' '), 500);
+            socket.on('error', () => undefined);
+            socket.on('close', () => { clearInterval(drip); heldMs = Date.now() - accepted; });
+        });
+        await new Promise<void>((resolve) => trickle.listen(0, '127.0.0.1', resolve));
+        try {
+            const result = await runCLI(['--help'], { port: (trickle.address() as net.AddressInfo).port, cwd: home, timeoutMs: 15_000 });
+            expect(result.code).toBe(0); expect(result.stderr).toContain('Usage:'); expect(result.stderr).not.toContain('Plugin commands:');
+            await vi.waitFor(() => expect(heldMs).toBeGreaterThanOrEqual(0));
+            expect(heldMs).toBeLessThan(4000);
+        } finally {
+            await new Promise<void>((resolve) => trickle.close(() => resolve()));
+        }
+    }, 30_000);
 });

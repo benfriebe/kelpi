@@ -56,7 +56,7 @@ describe('kelpi daemon', () => {
     });
 
     it('is listed in the global usage', async () => {
-        const result = await runCLI(['--help']);
+        const result = await runCLI(['--help'], { env: { KELPI_REQUIRE_SOCKET: '1' } });
         expect(result.stderr).toContain('kelpi daemon restart');
         expect(result.stderr).toContain('kelpi daemon stop [--force]');
     });

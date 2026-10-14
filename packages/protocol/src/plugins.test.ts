@@ -106,6 +106,39 @@ describe('public plugin protocol', () => {
         { contributes: { views: [{ ...manifest.contributes.views[0], placements: ['unknown'] }] } },
         { contributes: { commands: [{ id: 'sample.board.run', title: 'Run' }] } }
     ])('rejects incompatible or ambiguous manifests: %j', invalid => expect(() => decodePluginManifest({ ...manifest, ...invalid })).toThrow());
+    describe('cli verbs (#391)', () => {
+        const hello = { name: 'hello', command: 'sample.board.hello', summary: 'Say hello' };
+        const withCli = (cli: unknown, commands: unknown[] = [{ id: 'sample.board.hello', title: 'Hello' }]) => ({ ...manifest, backend: 'backend.mjs', contributes: { ...manifest.contributes, commands, cli } });
+        it('maps a declared verb onto an owned command and leaves it out when none is declared', () => {
+            expect(decodePluginManifest(withCli([hello])).contributes.cli).toEqual([hello]);
+            const plain = decodePluginManifest(manifest).contributes;
+            expect(plain).not.toHaveProperty('cli');
+            expect(decodePluginManifest(withCli([])).contributes).not.toHaveProperty('cli');
+            expect(decodePluginManifest(withCli([{ ...hello, name: 'a'.repeat(32) }, { ...hello, name: 'auto-approve' }, { ...hello, name: 'x9' }])).contributes.cli?.map(verb => verb.name)).toEqual(['a'.repeat(32), 'auto-approve', 'x9']);
+            // Built-in names are the package reader's refusal; a stored manifest still decodes at boot.
+            expect(decodePluginManifest(withCli([{ ...hello, name: 'pane' }])).contributes.cli?.[0]?.name).toBe('pane');
+        });
+        it.each([
+            ['Hello', 'invalid plugin cli verb name'], ['9lives', 'invalid plugin cli verb name'], ['-x', 'invalid plugin cli verb name'],
+            ['two words', 'invalid plugin cli verb name'], ['under_score', 'invalid plugin cli verb name'], ['', 'invalid plugin cli verb name'],
+            ['a'.repeat(33), 'invalid plugin cli verb name'], [42, 'invalid plugin cli verb name'],
+        ])('refuses the verb name %j', (name, message) => {
+            expect(() => decodePluginManifest(withCli([{ ...hello, name }]))).toThrow(message);
+        });
+        it('refuses a duplicate, an undeclared command and a missing, long or control-character summary', () => {
+            expect(() => decodePluginManifest(withCli([hello, { ...hello, summary: 'Again' }]))).toThrow('duplicate plugin cli verb hello');
+            expect(() => decodePluginManifest(withCli([{ ...hello, command: 'sample.board.other' }]))).toThrow('plugin UI command must be owned and declared');
+            expect(() => decodePluginManifest(withCli([{ ...hello, command: 'another.plugin.hello' }]))).toThrow('plugin UI command must be owned and declared');
+            expect(() => decodePluginManifest(withCli([hello], []))).toThrow('plugin UI command must be owned and declared');
+            const { summary: _summary, ...unsummarised } = hello;
+            for (const verb of [unsummarised, { ...hello, summary: '' }, { ...hello, summary: '   ' }, { ...hello, summary: 'x'.repeat(121) }, { ...hello, summary: 'two\nlines' },
+                { ...hello, summary: 'clear\u001b[2J' }, { ...hello, summary: 'tab\there' }, { ...hello, summary: 'nul\u0000' }, { ...hello, summary: 'del\u007f' }, { ...hello, summary: 'csi\u009b2J' }, { ...hello, summary: 'nel\u0085' }]) {
+                expect(() => decodePluginManifest(withCli([verb]))).toThrow('invalid plugin cli verb summary');
+            }
+            expect(decodePluginManifest(withCli([{ ...hello, summary: 'x'.repeat(120) }])).contributes.cli?.[0]?.summary).toHaveLength(120);
+            expect(() => decodePluginManifest(withCli({ hello }))).toThrow('expected at most 100 contributions');
+        });
+    });
     it('bounds JSON, rejects non-JSON values, and does not hand mutable input to a receiver', () => {
         for (const value of [undefined, Infinity, { value: new Date() }, JSON.parse('{"__proto__":{}}'), 'x'.repeat(262145)]) expect(() => pluginJSON(value)).toThrow();
         const cyclic: Record<string, unknown> = {}; cyclic['self'] = cyclic;

@@ -8,6 +8,10 @@ import { handleDocument } from './commands/document.js';
  *   - `--help` prints the same block, still to **stderr**, and exits 0;
  *   - `--version` prints `kelpi <version>` to stdout;
  *   - an unknown subcommand prints `Unknown command: <x>` then the usage block, exit 1.
+ *
+ * A word that is not one of the `case`s below is offered to the daemon as a plugin's verb
+ * (`commands/plugin-cli.ts`, #391); only when no plugin declares it is it unknown. The `case`
+ * labels must match `BUILTIN_CLI_VERBS` in `@kelpi/protocol` (cli.test.ts checks).
  */
 
 import { isHelpToken } from './args.js';
@@ -22,6 +26,7 @@ import { handleInstallHooks } from './commands/install-hooks.js';
 import { handleLayout } from './commands/layout.js';
 import { handleDiff, handleMarkdown, handleOpen } from './commands/openmd.js';
 import { handlePane } from './commands/pane.js';
+import { handlePluginVerb, pluginVerbsHelp } from './commands/plugin-cli.js';
 import { handleWeb } from './commands/web.js';
 import { handleWorkspace } from './commands/workspace.js';
 import { resolveTransport, setTransport } from './transport.js';
@@ -50,6 +55,7 @@ export async function run(argv: readonly string[], environment: NodeJS.ProcessEn
     if (isHelpToken(subcommand)) {
         // Deliberately stderr, exit 0 (a shipped quirk).
         writeErr(globalUsage);
+        writeErr(await pluginVerbsHelp());
         exit(0);
     }
 
@@ -85,8 +91,6 @@ export async function run(argv: readonly string[], environment: NodeJS.ProcessEn
         case 'install-hooks':
             return handleInstallHooks(args);
         default:
-            writeErr(`Unknown command: ${subcommand}\n`);
-            writeErr(globalUsage);
-            exit(1);
+            return handlePluginVerb(subcommand, args);
     }
 }

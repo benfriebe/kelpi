@@ -81,8 +81,21 @@ export interface HookInvocation {
     source: 'cli' | 'ui' | 'plugin'; phase: 'before' | 'after'; result?: Json;
 }
 export type HookDecision = { allow: true } | { allow: false; reason: string };
+/**
+ * The args a command receives when it runs as a `kelpi <verb>` from the manifest's `contributes.cli`
+ * (#391). `argv` is every word after the verb, `--help` included; `json` is true when the caller
+ * passed `--json`, which the CLI removes from `argv`.
+ */
+export type CliInvocation = { argv: string[]; cwd: string; isTTY: boolean; json: boolean };
+/**
+ * What a `contributes.cli` command returns. The CLI prints `stderr` to standard error, then `text`
+ * (or `json` with `--json`), and exits with `exitCode`, 0 when absent. The whole result is limited
+ * to 256 KiB of JSON; a larger one fails only that call, so page or truncate a long dump.
+ */
+export type CliResult = { text?: string; json?: Json; exitCode?: number; stderr?: string };
 export interface BackendAPI extends KelpiAPI {
     ui: KelpiAPI['ui'] & BackendUIServices;
+    /** A command mapped from `contributes.cli` receives a `CliInvocation` as its args and should return a `CliResult`. */
     commands: KelpiAPI['commands'] & { register(id: string, handler: (args: Data, context: Context) => Json | void | Promise<Json | void>): Dispose };
     hooks: { register(id: string, handler: (invocation: HookInvocation) => HookDecision | void | Promise<HookDecision | void>): Dispose };
     providers: {

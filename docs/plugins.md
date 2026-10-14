@@ -341,6 +341,86 @@ Reinstalling the same healthy, enabled revision is a no-op; use `reload` when yo
 For continuous development, `kelpi plugin dev <directory> --trust` validates and applies
 stable changed revisions. It keeps watching after invalid edits or failed updates.
 
+### CLI verbs
+
+A plugin can add its own top-level `kelpi` verb, so `kelpi hello a b` runs one of its commands
+with the words after the verb and prints plain text, rather than `kelpi plugin run` printing JSON
+([#391](https://github.com/benfriebe/kelpi/issues/391)). Map each verb onto a command the plugin
+declares:
+
+```json
+"contributes": {
+  "commands": [{ "id": "acme.dashboard.hello", "title": "Say hello" }],
+  "cli": [{ "name": "hello", "command": "acme.dashboard.hello", "summary": "Say hello to the arguments" }]
+}
+```
+
+- `name` is one lowercase word matching `^[a-z][a-z0-9-]*$`, at most 32 characters, and unique
+  within the plugin.
+- A built-in verb is refused, as are `help` and `version`: `cli verb "pane" is a built-in kelpi command`.
+  The list is `BUILTIN_CLI_VERBS` in [cli-verbs.ts](../packages/protocol/src/cli-verbs.ts).
+  `kelpi plugin validate`, `pack`, install, dev-install and rollback all refuse it.
+- `command` must be one of this plugin's own `contributes.commands`.
+- `summary` is required, at most 120 characters, with no line breaks or other control
+  characters; `kelpi --help` prints it as is.
+- Install refuses a verb that another installed plugin already declares, enabled or disabled:
+  `cli verb "hello" is already provided by plugin acme.other`. The first plugin keeps the name,
+  so a second one cannot quietly shadow it. Reinstalling or updating the same plugin keeps its
+  verbs. Offline validation cannot see other plugins, so this check happens only at install.
+
+The other rules are manifest errors, so `kelpi plugin validate` reports them without a daemon;
+its report lists the declared verbs under `cli`. Verbs sit at the top level rather than under a
+prefix. The CLI dispatches its own verbs first without asking the daemon, so if a later Kelpi
+release adds a built-in with the same name, the built-in wins: the installed plugin still loads
+and keeps working otherwise, but that one verb is no longer listed by `kelpi --help` or
+reachable, and `cli` answers `unknown kelpi verb: <verb>` for it.
+
+The command receives a `CliInvocation` as its args:
+
+| Field | Value |
+| --- | --- |
+| `argv` | Every word after the verb, in order. `--help` is passed through; a `--json` before any `--` is removed and sets `json`. |
+| `cwd` | The caller's working directory, on the machine running the CLI. |
+| `isTTY` | Whether the CLI's standard output is a terminal. |
+| `json` | Whether the caller passed `--json`. |
+
+Its context carries the caller's `paneID` when the CLI runs inside a pane of the daemon it asks,
+and that pane's `workspaceID`. A pane ID that daemon does not know, such as one a CLI in another
+Kelpi's pane forwards, is left out unless the request also names a `workspaceID`, so a plugin never
+acts on a foreign pane. It returns a `CliResult`, `{ text?, json?, exitCode?, stderr? }`:
+
+```js
+api.commands.register('acme.dashboard.hello', ({ argv, json }) => {
+    if (json) return { json: { argv } };
+    return { text: `hello ${argv.join(' ')}`, exitCode: argv.length ? 0 : 2 };
+});
+```
+
+The CLI prints `stderr` to standard error, then `text` with a trailing newline, or with `--json`
+`json` as indented JSON (`{ "text": … }` when the command returned no `json`). It exits with
+`exitCode`, 0 when absent. A return value that is not an object prints nothing (`{}` with
+`--json`). A result is limited to 256 KiB of JSON, like every plugin result; a larger one fails
+only that call with `plugin result exceeds the 256 KiB limit` and the backend keeps running, so a
+verb that dumps a log should page or truncate. An unknown verb
+still prints `Unknown command`; a verb whose plugin is disabled fails with
+`plugin <id> is disabled`. A verb gets no standard input and cannot prompt, so one that needs a
+confirmation should take `--yes`. `kelpi --help` lists installed verbs under their plugin's name,
+marking disabled ones; see [the CLI reference](cli.md).
+The daemon gives each call 30 seconds, activating the plugin's backend included; past that the call
+fails, but a handler that is already running is not stopped.
+
+Both requests are actions of the `plugin` envelope. `cli-list` returns
+`{ verbs: [{ name, summary, command, pluginID, pluginName, enabled }] }` for every installed plugin,
+and `cli` runs one verb:
+
+```json
+{"command":"plugin","action":"cli","text":"{\"verb\":\"hello\",\"argv\":[\"a\",\"b\"],\"cwd\":\"/tmp\",\"isTTY\":false,\"json\":false,\"paneID\":\"…\"}"}
+```
+
+[CLI Lab](../examples/plugins/cli-lab) adds `kelpi hello` with no views and no build: it prints the
+words you pass, sets an exit status, writes to standard error, and with `--json` echoes the
+invocation and the pane context it received.
+
 ## Updates and recovery
 
 Inspect retained revisions and switch back using their full content identity:

@@ -15,6 +15,16 @@ const promptMethods = new Set(['ui.showDialog', 'ui.showQuickPick', 'ui.showInpu
 let deactivate;
 let closing = false;
 const send = message => { if (process.connected) process.send(message, () => {}); };
+// The daemon refuses a result over 256 KiB of JSON (PLUGIN_MAX_JSON_BYTES in @kelpi/protocol) and,
+// as with any malformed frame, fails the backend. A command's result is measured here first, so an
+// oversized one fails only its own call: a CLI verb that dumps a log loses that one answer, not
+// the plugin. Hook and provider results keep the daemon's rule: an oversized provider is retired.
+const RESULT_LIMIT_BYTES = 256 * 1024;
+const commandResult = result => {
+    const encoded = JSON.stringify(result ?? null);
+    if (encoded !== undefined && Buffer.byteLength(encoded) > RESULT_LIMIT_BYTES) throw new Error('plugin result exceeds the 256 KiB limit');
+    return result ?? null;
+};
 const call = (method, args = {}) => new Promise((resolve, reject) => {
     if (closing) return reject(new Error('plugin is stopping'));
     if (pending.size >= 128) return reject(new Error('too many plugin calls'));
@@ -61,7 +71,7 @@ process.on('message', async message => {
             if (typeof handler !== 'function') throw new Error(`handler not registered: ${message.hook ?? message.provider ?? message.command}`);
             const context = message.context ?? message.operation?.context ?? {};
             const result = await callContext.run({ context, id: message.id }, () => message.type === 'hook' ? handler(message.operation) : handler(message.args, context));
-            send({ type: 'result', id: message.id, result: result ?? null });
+            send({ type: 'result', id: message.id, result: message.type === 'invoke' ? commandResult(result) : result ?? null });
         } catch (error) { send({ type: 'result', id: message.id, error: String(error?.message ?? error) }); }
     } else if (message.type === 'event') {
         for (const listener of [...(listeners.get(message.event.name) ?? []), ...(listeners.get('*') ?? [])]) {

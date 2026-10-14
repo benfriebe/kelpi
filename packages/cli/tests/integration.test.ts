@@ -88,14 +88,15 @@ describe('dispatcher', () => {
         expect(bare.stdout).toBe('');
         expect(bare.stderr).toContain('Usage:');
 
-        const help = await runCLI(['--help']);
+        const help = await runCLI(['--help'], { env: { KELPI_REQUIRE_SOCKET: '1' } });
         expect(help.code).toBe(0);
         expect(help.stdout).toBe('');
         expect(help.stderr).toContain('kelpi doctor [--json]');
     });
 
     it('names an unknown command before the usage block', async () => {
-        const result = await runCLI(['frobnicate']);
+        // A dead port, not the default socket: with no daemon the word cannot be a plugin verb.
+        const result = await runCLI(['frobnicate'], { port: await deadPort() });
         expect(result.code).toBe(1);
         expect(result.stderr.startsWith('Unknown command: frobnicate\n')).toBe(true);
     });
@@ -1546,7 +1547,7 @@ describe('kelpi document csv actions', () => {
         expect(help.stdout).toContain("csv-edit <pane-id> --generation <token> (--ops '<json>' | --ops-file <path>)");
         expect(help.stdout).toContain('wait up to 10 minutes');
         expect(help.stdout).toContain('kelpi pane list --json');
-        const usage = await runCLI(['--help']);
+        const usage = await runCLI(['--help'], { env: { KELPI_REQUIRE_SOCKET: '1' } });
         expect(usage.stderr).toContain('kelpi document get|watch|edit|save|refresh|mode|csv-state|rows|');
     });
 
@@ -2209,7 +2210,7 @@ describe('workspace rename', () => {
         const unknown = await runCLI(['workspace', 'retitle'], { port: server.port });
         expect(unknown.code).toBe(1);
         expect(unknown.stderr).toContain('Valid actions: list, create, move, delete, profile, label, mute, rename');
-        expect(server.requests).toHaveLength(0);
+        expect(server.requests).toEqual([{ command: 'plugin', action: 'cli-list', text: '{}' }]);
     });
 });
 

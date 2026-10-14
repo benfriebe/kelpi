@@ -9,7 +9,8 @@ and badges, group settings, and present shared prompts and actionable notificati
 The included [Agent Board](../examples/plugins/agent-board) uses the same HTML view as a pane,
 sidebar, inspector, bottom panel, workspace, toolbar, status bar, or settings view.
 
-The supported contract is **plugin API version 1** and **Kelpi protocol generation 2**.
+The supported contract is **plugin API version 1** and **Kelpi protocol generation 2**
+(WebSocket generation 3).
 The [roadmap and progress](plugin-roadmap.md) distinguish implemented capabilities from
 remaining work; the [extensibility audit](plugin-extensibility-audit.md) records the original
 design. For a practical starting point, use the [development guide](plugin-development.md).
@@ -532,6 +533,7 @@ document.body.textContent = `${snapshot.state.workspaces.length} workspaces`;
 | `commands.register(id, handler)` | Backend only. Handler receives JSON arguments and invocation context. |
 | `commands.execute(id, args?)` | Invoke a declared command, including another installed plugin's command. |
 | `events.on(name, listener)` / `emit(name, data?)` | Subscribe to a named event or `*`; emit an event under this plugin's namespace. Returns an unsubscribe function. |
+| `agents.onEvent(listener)` | One `agent.event` per agent hook Kelpi handles, typed `AgentHookEvent`, shown as a notification or not. The listener gets the payload and the raw event. Returns an unsubscribe function. |
 | `storage.get(key)` / `storage.set(key, value)` | Persistent JSON belonging to this plugin on this daemon. |
 | `settings.get()` / `settings.set(key, value)` | Manifest defaults plus persisted overrides; changes emit `settings.changed`. Overrides outlive `kelpi plugin remove` and a later reinstall inherits them ([#198](https://github.com/benfriebe/kelpi/issues/198)). Nothing clears one: `set` only merges, and writing the manifest default back persists it as an override, so a genuinely clean install means deleting `<db>.plugins/data/<plugin-id>/settings.json`, where `<db>` is the daemon database path. [Service provider preferences](plugin-services.md) survive removal the same way but, unlike settings, do have an explicit clear. |
 | `documents.get/edit/save/setMode/refresh/watch/unwatch` | Shared native Markdown, Scratchpad, Diff and CSV source API with guarded revisions. Document views also use `stage/applyDraft` to preserve pending edits; see [document renderers](plugin-documents.md). |
@@ -602,6 +604,35 @@ sets the flag (omit `muted` to toggle), `api.workspaces.create({ muted: true })`
 workspace muted, and `api.workspaces.list()` reports `muted` on every entry. The chrome
 snapshot's `agents.muted` and the `muted` bucket of `agentPanes` count the waiting panes of
 muted workspaces, which `agents.waiting` leaves out.
+
+`agent.event` is one event per agent hook Kelpi handles (`kelpi event start`, `stop`,
+`notification`, `error`, `session-start`, `session-end`; agent-lifecycle.md §7.7), so a plugin
+can react to an agent without reading its screen. It fires whether or not a desktop
+notification is shown: for the focused pane of an active window, in a muted workspace, and
+when the pane's status did not change. It is published after Kelpi applied the hook, so
+`panes.list` already agrees with it. `api.agents.onEvent(listener)` subscribes to it and passes
+the typed payload; `api.events.on('agent.event', ...)` sees the same events in `event.data`.
+Kelpi's own carry no `pluginID`, which `agents.onEvent` checks, since a plugin whose ID is
+`agent` could emit a look-alike. Nothing fires for a pane whose agent is being restarted on a
+new terminal host, or for a pane no workspace owns.
+Any applied lifecycle verb publishes one, including a plugin's own `api.agents.*` calls, so a
+plugin that answers an event by calling `agents.notify` loops.
+
+| Field | Present |
+| --- | --- |
+| `type` | Always: the wire verb, `start`, `stop`, `notification`, `error`, `session-start` or `session-end`. |
+| `paneID`, `workspaceID` | Always. |
+| `agent` | Always: the pane's agent kind after the event, `claude` when none is recorded. |
+| `sessionID` | When the pane is bound to a session after the event, including the one the hook's own `session_id` bound. |
+| `status` | Always: the pane's status after the event. |
+| `title`, `body` | `notification`. |
+| `notificationType` | Claude Notification: `permission_prompt`, `idle_prompt`, `elicitation_dialog`, and so on. |
+| `message` | `error`. |
+| `lastAssistantMessage` | Claude Stop: the final reply's text, at most 64 KiB of UTF-8. `lastAssistantMessageTruncated: true` when it was cut. |
+| `transcriptPath` | `notification`, `stop` and `session-start`, when the hook carried it. |
+| `backgroundTasks` | `stop` and `notification`, only when greater than 0. |
+| `toolName` | Codex PermissionRequest (`notification --agent codex`). |
+| `muted` | `true` in a muted workspace, absent otherwise, as on `daemon.notification`. Honour it the same way. |
 
 Backend and frame delivery each use a bounded queue (32 events / 512 KiB), with one event
 awaiting acknowledgement. Awaited listeners apply backpressure. Overflow emits `gap`:
@@ -878,8 +909,10 @@ the old database after the copy are independent and are not merged back.
 
 Plugin installations, identity, storage, and settings live in `<db-path>.plugins/`.
 The pane descriptor and parking flag live in the main database. Protocol generation 2 uses
-`daemon-v2` run files and refuses generation 1 WebSocket clients. Upgrade the UI, shell,
-daemon, and CLI together; refresh installed browser clients.
+`daemon-v2` run files and refuses generation 1 WebSocket clients. WebSocket generation 3
+(nested workspaces) keeps the `daemon-v2` run files and refuses generation 2 WebSocket
+clients (see the [wire contract](wire-protocol.md#plugin-envelope-and-protocol-generation)).
+Upgrade the UI, shell, daemon, and CLI together; refresh installed browser clients.
 
 An explicit `KELPID_DB_PATH` remains authoritative. If you use a custom path, choose a new
 path or make a consistent backup before upgrading it; an older daemon must never open the

@@ -73,7 +73,9 @@ import {
     filteredRows,
     groupCommit,
     isGroupCollapsed,
+    isParentCollapsed,
     locateWorkspace,
+    nestedFollowers,
     nextCreateColor,
     orderModelFromEntries,
     projectEntries,
@@ -81,6 +83,7 @@ import {
     resolveDropTarget,
     resolveGroupDropIndex,
     visibleOrderFromEntries,
+    withoutNestedFollowers,
     workspaceCommit,
     type CollapseState,
     type DropTarget,
@@ -536,6 +539,20 @@ export function agentCounts(workspaces: readonly ChromeWorkspace[]): AgentCounts
     return { running, waiting };
 }
 
+/**
+ * A group header's badge: its members AND (§2.9) their nested workspaces, which belong to the
+ * group for every group question. A collapsed group hides the parents' own rollups with it,
+ * so without them a waiting worker under a grouped parent would show nowhere at all.
+ */
+export function groupAgentCounts(entry: {
+    readonly workspaces: readonly ChromeWorkspace[];
+    readonly nested?: ReadonlyMap<string, readonly ChromeWorkspace[]> | undefined;
+}): AgentCounts {
+    const all = [...entry.workspaces];
+    for (const workspace of entry.workspaces) all.push(...(entry.nested?.get(workspace.id) ?? []));
+    return agentCounts(all);
+}
+
 /** §5.3: waiting wins over running; nothing when neither. */
 function statusDotColor(counts: AgentCounts): string | null {
     if (counts.waiting > 0) return tokens.statusWaiting;
@@ -891,7 +908,8 @@ function InlineEditor(props: InlineEditorProps): ReactElement {
 
 interface WorkspaceRowProps {
     readonly workspace: ChromeWorkspace;
-    readonly depth: 0 | 1;
+    /** 0 top level; 1 in a group or nested under a top-level parent; 2 nested in a group (§2.9). */
+    readonly depth: 0 | 1 | 2;
     /** The group this row is inside, or `null` at top level — §WS-007's guide needs it, and it
      *  is what lets anything outside the component tell two groups' children apart. */
     readonly groupID?: string | null | undefined;
@@ -931,6 +949,27 @@ interface WorkspaceRowProps {
     /** Bridge the 2px gap above / below so the rule reads as ONE line, not one dash per row. */
     readonly guideExtendUp?: boolean | undefined;
     readonly guideExtendDown?: boolean | undefined;
+    /**
+     * app-state-core.md §2.9: a nested row's own rule, joining a parent's children the way the
+     * group rule joins a group's, tinted with the parent's colour. Absent on a row that is not
+     * nested. Primitives again, for the same `memo` reason.
+     */
+    readonly parentGuideColor?: string | undefined;
+    readonly parentGuideExtendUp?: boolean | undefined;
+    readonly parentGuideExtendDown?: boolean | undefined;
+    /** §2.9: how many live nested workspaces this row has; 0 (or absent) = not a parent. */
+    readonly childCount?: number | undefined;
+    /** §2.9: the parent's disclosure state, overrides applied. */
+    readonly childrenCollapsed?: boolean | undefined;
+    /**
+     * §2.9's rollup: while collapsed, the parent's dot reports its hidden children too. These
+     * are the CHILDREN's counts only (the row adds its own); waiting still beats running.
+     */
+    readonly rollupRunning?: number | undefined;
+    readonly rollupWaiting?: number | undefined;
+    readonly onToggleChildren?: ((workspaceID: string) => void) | undefined;
+    /** §2.9: the row is the preview-only `ontoWorkspace` target of a drag (the header tint's twin). */
+    readonly nestDropPreview?: boolean | undefined;
     /*
      * §WS-088's 2px accent insertion line USED TO BE A PROP HERE, and is deliberately gone —
      * see the note above `WorkspaceRow`. The GAP is the slot indicator; the group header's own
@@ -988,7 +1027,13 @@ export const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps)
     const { workspace } = props;
     // Feeds the avatar's status dot ONLY (§AGNT-103) — the row's git branch and pane count went
     // with §H5's invented metadata line, because `WorkspaceRowView.swift` renders neither.
-    const counts = agentCounts([workspace]);
+    const own = agentCounts([workspace]);
+    const childCount = props.childCount ?? 0;
+    const childrenHidden = childCount > 0 && props.childrenCollapsed === true;
+    // §2.9's rollup: a collapsed parent's dot answers for the workspaces folded under it.
+    const counts: AgentCounts = childrenHidden
+        ? { running: own.running + (props.rollupRunning ?? 0), waiting: own.waiting + (props.rollupWaiting ?? 0) }
+        : own;
 
     /**
      * §WS-027: the two row states are a ZStack in the Swift, not a switch — a selected row that
@@ -1013,7 +1058,13 @@ export const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps)
     // layered `background-image` is present (jsdom's own shorthand parser drops the whole
     // declaration when a `color-mix()` rides inside the gradient, which is exactly the pair the
     // selected+active row paints). One-for-one: the shorthand only ever carried a colour here.
-    const background = props.selected ? tokens.selectionFill : props.active ? activeFill : 'transparent';
+    const background = props.selected
+        ? tokens.selectionFill
+        : props.active
+          ? activeFill
+          : props.nestDropPreview === true
+            ? withAlpha(tokens.accent, 0.18)
+            : 'transparent';
     const backgroundImage =
         props.active && props.selected ? `linear-gradient(${activeFill}, ${activeFill})` : undefined;
     /*
@@ -1044,7 +1095,8 @@ export const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps)
             : null;
 
     const hidden = props.dragHidden === true;
-    const nested = props.depth === 1 || props.nestPreview === true;
+    // §2.9: one indent per level; a drag previewing a nest takes at least one.
+    const indent = props.nestPreview === true ? Math.max(props.depth, 1) : props.depth;
     const gap = props.gap === true;
     const style: CSSProperties = {
         backgroundColor: background,
@@ -1065,7 +1117,7 @@ export const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps)
          * `offsetLeft` mid-transition reports the *animating* value, which would have made the
          * next measurement read this animation's own frame as a layout change).
          */
-        marginLeft: nested ? NEST_INDENT_PX : 0,
+        marginLeft: indent * NEST_INDENT_PX,
         /*
          * M7: the row's own TRAILING inset (`ROW_TRAILING_INSET_PX`), which the group band above
          * it does not get. It is a margin rather than padding for the same reason `marginLeft` is:
@@ -1155,6 +1207,9 @@ export const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps)
                outside the component could assert it. */
             data-selected={props.selected ? 'true' : 'false'}
             data-nest-preview={props.nestPreview === true ? 'true' : undefined}
+            data-drop-preview={props.nestDropPreview === true ? 'true' : undefined}
+            data-children={childCount > 0 ? String(childCount) : undefined}
+            data-children-collapsed={childCount > 0 ? (childrenHidden ? 'true' : 'false') : undefined}
             /* The vacated slot, legible from outside the component — an audit can ask "is the
                drop landing in a gap?" without reading a computed style. */
             data-drag-gap={gap ? 'true' : undefined}
@@ -1204,12 +1259,34 @@ export const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps)
                     data-testid="group-guide"
                     style={{
                         position: 'absolute',
-                        left: -6,
+                        // The group's rule sits 18px in from the list edge whatever the row's
+                        // own depth, so a row nested inside a group (§2.9) reaches back for it.
+                        left: 18 - props.depth * NEST_INDENT_PX,
                         top: props.guideExtendUp === true ? -ROW_OUTER_GAP_PX : 0,
                         bottom: props.guideExtendDown === true ? -ROW_OUTER_GAP_PX : 0,
                         width: 1.5,
                         borderRadius: 1,
                         background: props.guideColor,
+                        pointerEvents: 'none'
+                    }}
+                />
+            )}
+            {/*
+             * §2.9: a nested row's own rule, the group rule's twin one level in: 18px in from
+             * the parent's own left edge, which is `-6` from this row's.
+             */}
+            {props.parentGuideColor === undefined ? null : (
+                <span
+                    aria-hidden
+                    data-testid="nest-guide"
+                    style={{
+                        position: 'absolute',
+                        left: -6,
+                        top: props.parentGuideExtendUp === true ? -ROW_OUTER_GAP_PX : 0,
+                        bottom: props.parentGuideExtendDown === true ? -ROW_OUTER_GAP_PX : 0,
+                        width: 1.5,
+                        borderRadius: 1,
+                        background: props.parentGuideColor,
                         pointerEvents: 'none'
                     }}
                 />
@@ -1286,6 +1363,44 @@ export const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps)
                 >
                     +{props.dragExtra}
                 </span>
+            ) : null}
+            {/*
+             * §2.9: a parent's nested count (only while they are folded away, where it is the
+             * one way to know they exist) and its disclosure chevron, swapped not rotated like
+             * the group header's. Hidden while renaming, for the group chevron's reason.
+             */}
+            {childrenHidden ? (
+                <span
+                    data-testid="workspace-children-count"
+                    title={`${String(childCount)} nested workspace${childCount === 1 ? '' : 's'}`}
+                    className="shrink-0 rounded-full px-1.5 font-mono text-[10px]"
+                    style={{ color: tokens.textSecondary, background: withAlpha(tokens.textTertiary, 0.18) }}
+                >
+                    {childCount}
+                </span>
+            ) : null}
+            {childCount > 0 && !props.renaming ? (
+                <button
+                    type="button"
+                    aria-label={
+                        childrenHidden
+                            ? `Expand nested workspaces of ${workspace.name}`
+                            : `Collapse nested workspaces of ${workspace.name}`
+                    }
+                    aria-expanded={!childrenHidden}
+                    data-testid="workspace-children-chevron"
+                    className="shrink-0"
+                    style={{ color: tokens.textTertiary, padding: 5, margin: -5 }}
+                    onClick={(event) => {
+                        event.stopPropagation();
+                        props.onToggleChildren?.(workspace.id);
+                    }}
+                    onMouseDown={(event) => {
+                        event.stopPropagation();
+                    }}
+                >
+                    <ChromeIcon name={childrenHidden ? 'chevron-right' : 'chevron-down'} size={11} strokeWidth={1.6} />
+                </button>
             ) : null}
             {/*
              * Agent-lifecycle §7.6: a muted workspace says so on its row, beside the ⌘N badge, so
@@ -1665,6 +1780,14 @@ export interface SidebarSelectionCommands {
 export interface SidebarProps extends SidebarCallbacks {
     /** Daemon order: `selectSidebarEntries(store)`. */
     readonly entries: readonly ChromeSidebarEntry[];
+    /**
+     * The whole tree when `entries` arrives already narrowed by the filter (the bundled
+     * feature passes `selectFilteredSidebarEntries`). Absent = `entries` is the whole tree.
+     * §2.9: what a delete or a nesting verb DOES is decided by every workspace, not only the
+     * rows the filter left, so the delete dialogs' counts and guards, the worktree list, and
+     * the menus' landing indices all read this.
+     */
+    readonly allEntries?: readonly ChromeSidebarEntry[] | undefined;
     readonly activeWorkspaceID: string | null;
     readonly filter: string;
     readonly onFilterChange: (filter: string) => void;
@@ -1850,6 +1973,40 @@ function groupsInEntries(entries: readonly ChromeSidebarEntry[]): ReadonlySet<st
     return ids;
 }
 
+/** §2.9: the children's delete-gate summaries, added up (missing ones count as none). */
+function sumAgentSummaries(summaries: readonly (WorkspaceAgentSummary | undefined)[]): WorkspaceAgentSummary {
+    let running = 0;
+    let waiting = 0;
+    let inactive = 0;
+    let total = 0;
+    for (const summary of summaries) {
+        if (summary === undefined) continue;
+        running += summary.running;
+        waiting += summary.waiting;
+        inactive += summary.inactive;
+        total += summary.total;
+    }
+    return { running, waiting, inactive, total };
+}
+
+/** §2.9: parent id → its nested workspaces, across every entry. */
+function nestedInEntries(entries: readonly ChromeSidebarEntry[]): ReadonlyMap<string, readonly ChromeWorkspace[]> {
+    const nested = new Map<string, readonly ChromeWorkspace[]>();
+    for (const entry of entries) for (const [parentID, kids] of entry.nested ?? []) nested.set(parentID, kids);
+    return nested;
+}
+
+/** Every workspace in the entries by id: top-level rows, group members and (§2.9) nested ones. */
+function workspacesInEntries(entries: readonly ChromeSidebarEntry[]): ReadonlyMap<string, ChromeWorkspace> {
+    const map = new Map<string, ChromeWorkspace>();
+    for (const entry of entries) {
+        if (entry.kind === 'workspace') map.set(entry.workspace.id, entry.workspace);
+        else for (const workspace of entry.workspaces) map.set(workspace.id, workspace);
+        for (const kids of entry.nested?.values() ?? []) for (const workspace of kids) map.set(workspace.id, workspace);
+    }
+    return map;
+}
+
 /**
  * Attributes a CLONE must never carry.
  *
@@ -1940,6 +2097,8 @@ interface RowBox {
 function describeTarget(target: DropTarget): string {
     if (target.kind === 'ontoGroupHeader') return `ontoGroupHeader:${target.groupID}`;
     if (target.kind === 'intoGroup') return `intoGroup:${target.groupID}:${String(target.index)}`;
+    if (target.kind === 'ontoWorkspace') return `ontoWorkspace:${target.parentID}`;
+    if (target.kind === 'intoParent') return `intoParent:${target.parentID}:${String(target.index)}`;
     return `topLevel:${String(target.index)}`;
 }
 
@@ -1983,6 +2142,12 @@ type ConfirmState =
            * (WS-108); absent means a plain confirmation.
            */
           readonly agents?: WorkspaceAgentSummary | undefined;
+          /** §2.9: the workspace's live nested workspaces; absent when it has none. */
+          readonly children?: readonly string[] | undefined;
+          /** §2.9: false when deleting the children too would leave no workspace at all. */
+          readonly cascadeAllowed?: boolean | undefined;
+          /** §2.9: the children's agent panes, joined to `agents` while the cascade is ticked. */
+          readonly childAgents?: WorkspaceAgentSummary | undefined;
       }
     | {
           readonly kind: 'group';
@@ -1995,6 +2160,8 @@ type ConfirmState =
            * count that moved under the dialog would relabel a destructive button mid-read.
            */
           readonly memberCount: number;
+          /** §2.9: the members' nested workspaces, which a cascading delete takes too. */
+          readonly nestedCount: number;
       }
     /** §WS-060: one confirmation for the whole selection, never N prompts. */
     | { readonly kind: 'workspaces'; readonly ids: readonly string[] };
@@ -2016,6 +2183,8 @@ export function Sidebar(props: SidebarProps): ReactElement {
         groupID: string | null;
         /** Present for the bulk "Group N Workspaces…" flow: the members to create it around. */
         workspaceIDs?: readonly string[];
+        /** §2.9: "New Nested Workspace…": the workspace the new one nests under. */
+        parentID?: string;
     } | null>(null);
     const [internalSelection, setInternalSelection] = useState<ReadonlySet<string>>(EMPTY_SELECTION);
     const [dragID, setDragID] = useState<string | null>(null);
@@ -2028,6 +2197,8 @@ export function Sidebar(props: SidebarProps): ReactElement {
     const [dragActive, setDragActive] = useState(false);
     /** The group a preview-only `ontoGroupHeader` target is tinting (§5.5). */
     const [previewGroupID, setPreviewGroupID] = useState<string | null>(null);
+    /** §2.9: the workspace row a preview-only `ontoWorkspace` target is tinting. */
+    const [previewParentID, setPreviewParentID] = useState<string | null>(null);
     /** §5.5 spring-loading: a collapsed group held open for the rest of THIS drag. */
     const [springLoadedGroupID, setSpringLoadedGroupID] = useState<string | null>(null);
     /** The workspace whose icon is being picked in the custom-emoji sheet. */
@@ -2041,7 +2212,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
      */
     // eslint-disable-next-line react-hooks/exhaustive-deps -- open-edge only: the roll belongs
     // to the OPENING of the form, not to the entries it read on the way past.
-    const newFormColor = useMemo(() => nextCreateColor(props.entries), [newForm]);
+    const newFormColor = useMemo(() => nextCreateColor(props.allEntries ?? props.entries), [newForm]);
 
     const selection = props.selectedWorkspaceIDs ?? internalSelection;
     /**
@@ -2058,12 +2229,25 @@ export function Sidebar(props: SidebarProps): ReactElement {
             dragActive && dragID !== null && groupsInEntries(props.entries).has(dragID) ? dragID : null,
         [dragActive, dragID, props.entries]
     );
+    /**
+     * §2.9: a dragged PARENT folds its nested rows away for the gesture, the same way a dragged
+     * group does (§WS-095): its children go where it goes, and one row is what moves. Every
+     * parent in a multi-drag folds, not only the grabbed row: a companion parent is hidden
+     * for the gesture, and its children left showing would be rows with nothing above them.
+     */
+    const draggingParentIDs = useMemo((): readonly string[] => {
+        if (!dragActive || dragID === null) return [];
+        const moving = selection.size >= 2 && selection.has(dragID) ? [...selection] : [dragID];
+        const nested = nestedInEntries(props.entries);
+        return moving.filter((id) => (nested.get(id)?.length ?? 0) > 0);
+    }, [dragActive, dragID, props.entries, selection]);
     const collapse: CollapseState = useMemo(() => {
-        if (draggingGroupID === null) return { overrides: collapseOverrides, springLoadedGroupID };
+        const folded = [draggingGroupID, ...draggingParentIDs].filter((id): id is string => id !== null);
+        if (folded.length === 0) return { overrides: collapseOverrides, springLoadedGroupID };
         const overrides = new Map(collapseOverrides);
-        overrides.set(draggingGroupID, true);
+        for (const id of folded) overrides.set(id, true);
         return { overrides, springLoadedGroupID };
-    }, [collapseOverrides, draggingGroupID, springLoadedGroupID]);
+    }, [collapseOverrides, draggingGroupID, draggingParentIDs, springLoadedGroupID]);
 
     const baseModel = useMemo(() => orderModelFromEntries(props.entries), [props.entries]);
     const effectiveEntries = useMemo(
@@ -2217,21 +2401,31 @@ export function Sidebar(props: SidebarProps): ReactElement {
         []
     );
 
-    const workspaceByID = useMemo(() => {
-        const map = new Map<string, ChromeWorkspace>();
-        for (const entry of props.entries) {
-            if (entry.kind === 'workspace') map.set(entry.workspace.id, entry.workspace);
-            else for (const workspace of entry.workspaces) map.set(workspace.id, workspace);
-        }
-        return map;
-    }, [props.entries]);
+    const workspaceByID = useMemo(() => workspacesInEntries(props.entries), [props.entries]);
+    /** §2.9: parent id → its nested workspaces (the live order, not the drag shadow). */
+    const nestedByParent = useMemo(() => nestedInEntries(props.entries), [props.entries]);
+    /*
+     * The same three reads over the WHOLE tree (`allEntries`), for everything that decides what
+     * a command does rather than what is drawn: a filter must never shrink a delete's counts,
+     * hide a child a cascade takes, or move where an Un-nest lands.
+     */
+    const fullEntries = props.allEntries ?? props.entries;
+    const fullModel = useMemo(() => orderModelFromEntries(fullEntries), [fullEntries]);
+    const fullWorkspaceByID = useMemo(() => workspacesInEntries(fullEntries), [fullEntries]);
+    const fullNestedByParent = useMemo(() => nestedInEntries(fullEntries), [fullEntries]);
+    /** The drag loop's view of the two maps above (window listeners, timers). */
+    const workspaceByIDRef = useRef(workspaceByID);
+    workspaceByIDRef.current = workspaceByID;
+    const nestedByParentRef = useRef(nestedByParent);
+    nestedByParentRef.current = nestedByParent;
 
+    // Every group, filtered out or not: the menus' destinations and the sheet's picker.
     const groups = useMemo(
         () =>
-            props.entries
+            fullEntries
                 .filter((entry): entry is ChromeSidebarEntry & { kind: 'group' } => entry.kind === 'group')
                 .map((entry) => entry.group),
-        [props.entries]
+        [fullEntries]
     );
 
     // The drag loop reads groups from a ref: it runs from window listeners and timers whose
@@ -2239,9 +2433,14 @@ export function Sidebar(props: SidebarProps): ReactElement {
     const groupsRef = useRef(groups);
     groupsRef.current = groups;
 
+    /** The group a workspace is in; a nested workspace is in its parent's group (§2.9), as the daemon says. */
     const groupIDForWorkspace = useCallback(
-        (workspaceID: string): string | null => locateWorkspace(baseModel, workspaceID)?.groupID ?? null,
-        [baseModel]
+        (workspaceID: string): string | null => {
+            const location = locateWorkspace(fullModel, workspaceID);
+            if (location?.parentID !== undefined) return locateWorkspace(fullModel, location.parentID)?.groupID ?? null;
+            return location?.groupID ?? null;
+        },
+        [fullModel]
     );
 
     /**
@@ -2256,6 +2455,15 @@ export function Sidebar(props: SidebarProps): ReactElement {
             return groupGuideColor(group.color, bucket);
         },
         [bucket, groups]
+    );
+
+    /** §2.9: a nested row's rule, tinted with its parent's colour as a group's is with its own. */
+    const parentGuideColorFor = useCallback(
+        (parentID: string): string | undefined => {
+            const parent = workspaceByID.get(parentID);
+            return parent === undefined ? undefined : groupGuideColor(parent.color, bucket);
+        },
+        [bucket, workspaceByID]
     );
 
     // ── selection ───────────────────────────────────────────────────────────────
@@ -2458,6 +2666,20 @@ export function Sidebar(props: SidebarProps): ReactElement {
         [collapseOverrides, groups, props]
     );
 
+    /** §2.9: a parent row's chevron, optimistic exactly as a group header's is. */
+    const toggleChildren = useCallback(
+        (workspaceID: string): void => {
+            const workspace = workspaceByID.get(workspaceID);
+            if (workspace === undefined) return;
+            const current = isParentCollapsed(workspace, { overrides: collapseOverrides });
+            const next = new Map(collapseOverrides);
+            next.set(workspaceID, !current);
+            setCollapseOverrides(next);
+            props.onSetWorkspaceChildrenCollapsed?.(workspaceID, !current);
+        },
+        [collapseOverrides, props, workspaceByID]
+    );
+
     /**
      * §WS-112 — an optimistic override lasts until the daemon agrees, and not one render longer.
      *
@@ -2481,12 +2703,15 @@ export function Sidebar(props: SidebarProps): ReactElement {
             for (const [groupID, value] of current) {
                 const group = groups.find((candidate) => candidate.id === groupID);
                 if (group !== undefined && group.isCollapsed !== value) continue;
+                // §2.9: the same rule for a parent workspace's chevron.
+                const parent = group === undefined ? workspaceByID.get(groupID) : undefined;
+                if (parent !== undefined && (parent.childrenCollapsed === true) !== value) continue;
                 next ??= new Map(current);
                 next.delete(groupID);
             }
             return next ?? current;
         });
-    }, [groups]);
+    }, [groups, workspaceByID]);
 
     // ── drag ────────────────────────────────────────────────────────────────────
     const contentY = useCallback((clientY: number): number => {
@@ -2562,7 +2787,14 @@ export function Sidebar(props: SidebarProps): ReactElement {
             // selection. Only the grabbed row live-applies (a single-row gap keeps the target
             // legible); the rest are hidden and land together on release.
             const multi = kind === 'workspace' && selection.size >= 2 && selection.has(id);
-            const ids = multi ? visibleOrder.filter((candidate) => selection.has(candidate)) : [id];
+            const originModel = shadowRef.current ?? baseModel;
+            const selected = multi ? visibleOrder.filter((candidate) => selection.has(candidate)) : [id];
+            // §2.9: a selected parent carries its selected children, so they are not moved in
+            // their own right (that would pull them out from under it, in the preview and in the
+            // commit alike). Grabbing one of those children drags the family: its parent leads.
+            const followers = nestedFollowers(originModel, selected);
+            const ids = followers.size === 0 ? selected : selected.filter((candidate) => !followers.has(candidate));
+            const lead = followers.has(id) ? (locateWorkspace(originModel, id)?.parentID ?? id) : id;
             // §WS-084: where inside the row the cursor grabbed it. Measured on the press, from
             // the row's own box, so the ghost keeps that point under the pointer instead of
             // jumping its corner there when the gesture crosses the 5px threshold.
@@ -2570,21 +2802,21 @@ export function Sidebar(props: SidebarProps): ReactElement {
             const box = grabbed === null ? null : grabbed.getBoundingClientRect();
             dragRef.current = {
                 kind,
-                id,
+                id: lead,
                 startY: event.clientY,
-                originModel: shadowRef.current ?? baseModel,
+                originModel,
                 ids,
                 active: false,
                 preview: null,
                 clientY: event.clientY,
                 clientX: event.clientX,
-                ghostKey: kind === 'group' ? `header:${id}` : `ws:${id}`,
+                ghostKey: kind === 'group' ? `header:${id}` : `ws:${lead}`,
                 grabDX: box === null ? 0 : event.clientX - box.left,
                 grabDY: box === null ? 0 : event.clientY - box.top,
                 springCandidate: null,
                 springTimer: null
             };
-            setDragID(id);
+            setDragID(lead);
             // A press is not yet a drag (#41): clear any drag-active left behind by a gesture whose
             // mouseup was lost, so the companions are not collapsed before the geometry is measured.
             setDragActive(false);
@@ -2760,7 +2992,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
             const sourceGroupID = nestable ? (source.dataset['groupId'] ?? null) : null;
             ghostChromeRef.current = {
                 nestable,
-                baseWidth: source.offsetWidth + (source.dataset['depth'] === '1' ? NEST_INDENT_PX : 0),
+                baseWidth: source.offsetWidth + Number(source.dataset['depth'] ?? 0) * NEST_INDENT_PX,
                 groupID: undefined
             };
             styleDragGhost(sourceGroupID, guideColorFor(sourceGroupID));
@@ -2823,6 +3055,8 @@ export function Sidebar(props: SidebarProps): ReactElement {
             if (target === null) return null;
             if (target.kind === 'ontoGroupHeader') return target.groupID;
             if (target.kind === 'intoGroup') return target.groupID;
+            // §2.9: a parent workspace springs open the same way, its rows being its "band".
+            if (target.kind === 'ontoWorkspace' || target.kind === 'intoParent') return target.parentID;
             return null;
         };
 
@@ -2837,8 +3071,14 @@ export function Sidebar(props: SidebarProps): ReactElement {
             if (drag.springCandidate === groupID) return;
             cancelSpring(drag);
             const group = groupsRef.current.find((candidate) => candidate.id === groupID);
-            // Only a COLLAPSED group springs; an expanded one is already open.
-            if (group === undefined || !isGroupCollapsed(group, { overrides: collapseRef.current.overrides })) {
+            const parent = group === undefined ? workspaceByIDRef.current.get(groupID) : undefined;
+            const overrides = { overrides: collapseRef.current.overrides };
+            const collapsed =
+                group !== undefined
+                    ? isGroupCollapsed(group, overrides)
+                    : parent !== undefined && isParentCollapsed(parent, overrides);
+            // Only a COLLAPSED group (or parent, §2.9) springs; an expanded one is already open.
+            if (!collapsed) {
                 setSpringLoadedGroupID((current) => (current === groupID ? current : null));
                 return;
             }
@@ -2899,7 +3139,11 @@ export function Sidebar(props: SidebarProps): ReactElement {
                 contentTop: CONTENT_TOP_PADDING,
                 // Every dragged row is omitted as a target and excluded from the post-remove
                 // indices, so a multi-drag's arithmetic already describes the bulk landing.
-                dragging: new Set(drag.ids)
+                dragging: new Set(drag.ids),
+                // §2.9: nesting is one level, so a drag carrying a parent can never nest.
+                nestable:
+                    props.onNestWorkspaces !== undefined &&
+                    drag.ids.every((id) => (nestedByParentRef.current.get(id)?.length ?? 0) === 0)
             });
             const target = resolveDropTarget(layout, y);
             diagnose(drag, target === null ? null : describeTarget(target));
@@ -2915,18 +3159,48 @@ export function Sidebar(props: SidebarProps): ReactElement {
              * and therefore the one where the in-flow row's own depth spring cannot speak for
              * the clone — restyles like every other.
              */
-            const destination = target === null ? undefined : target.kind === 'topLevel' ? null : target.groupID;
-            styleDragGhost(destination, destination == null ? undefined : guideColorFor(destination));
+            const nestParent =
+                target !== null && (target.kind === 'ontoWorkspace' || target.kind === 'intoParent')
+                    ? target.parentID
+                    : null;
+            const destination =
+                target === null
+                    ? undefined
+                    : nestParent !== null
+                      ? nestParent
+                      : target.kind === 'topLevel'
+                        ? null
+                        : target.kind === 'ontoGroupHeader' || target.kind === 'intoGroup'
+                          ? target.groupID
+                          : null;
+            styleDragGhost(
+                destination,
+                destination == null
+                    ? undefined
+                    : nestParent !== null
+                      ? parentGuideColorFor(nestParent)
+                      : guideColorFor(destination)
+            );
             if (target === null) return;
             if (target.kind === 'ontoGroupHeader') {
                 // Preview-only: the cursor transits headers constantly (§5.5), so the order
                 // is NOT live-applied — the header is tinted and the move waits for release.
                 drag.preview = target;
                 setPreviewGroupID(target.groupID);
+                setPreviewParentID(null);
+                return;
+            }
+            if (target.kind === 'ontoWorkspace') {
+                // §2.9: the same rule for a row's middle band: it is crossed on every pass
+                // through the list, so it tints and waits rather than moving the rows.
+                drag.preview = target;
+                setPreviewGroupID(null);
+                setPreviewParentID(target.parentID);
                 return;
             }
             drag.preview = null;
             setPreviewGroupID(null);
+            setPreviewParentID(null);
             setShadow(applyWorkspaceDrop(current, drag.id, target));
         };
 
@@ -3044,6 +3318,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
             setDragID(null);
             setDragActive(false);
             setPreviewGroupID(null);
+            setPreviewParentID(null);
             // §5.5: the spring-loaded group stays open through the drop, then collapses.
             setSpringLoadedGroupID(null);
             if (drag === null || !drag.active) return;
@@ -3080,6 +3355,15 @@ export function Sidebar(props: SidebarProps): ReactElement {
                 }
                 const commit = workspaceCommit(drag.originModel, final, drag.id);
                 if (commit === null) return;
+                if (commit.parentID !== undefined) {
+                    // §2.9: one nest for the whole selection, as one move is for a group.
+                    props.onNestWorkspaces?.({
+                        workspaceIDs: drag.ids,
+                        parentID: commit.parentID,
+                        index: commit.index
+                    });
+                    return;
+                }
                 if (drag.ids.length > 1 && props.onMoveWorkspaces !== undefined) {
                     // The grabbed row's landing spot IS the selection's landing spot: the zones
                     // it was resolved against already had every dragged row detached.
@@ -3140,6 +3424,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
         geometryReady,
         guideColorFor,
         measureDropSettle,
+        parentGuideColorFor,
         measuredHeights,
         measuredOffsets,
         moveDragGhost,
@@ -3680,6 +3965,9 @@ export function Sidebar(props: SidebarProps): ReactElement {
         const ids = orderedSelection();
         const count = ids.length;
         const total = workspaceByID.size;
+        // §2.9: a selected parent carries its selected children with it, so a move or a new
+        // group names only the parent; naming the children too would pull them out from under it.
+        const movers = withoutNestedFollowers(fullModel, ids);
         const inAnyGroup = ids.some((id) => groupIDForWorkspace(id) !== null);
 
         // §WS-057's tri-state: a preset applied to every selected workspace shows a checkmark
@@ -3781,9 +4069,9 @@ export function Sidebar(props: SidebarProps): ReactElement {
                                             label: 'Remove from Group',
                                             onSelect: () => {
                                                 props.onMoveWorkspaces?.({
-                                                    workspaceIDs: ids,
+                                                    workspaceIDs: movers,
                                                     groupID: null,
-                                                    index: baseModel.topLevel.length
+                                                    index: fullModel.topLevel.length
                                                 });
                                             }
                                         } satisfies MenuItemSpec,
@@ -3798,9 +4086,9 @@ export function Sidebar(props: SidebarProps): ReactElement {
                                       disabled: ids.every((id) => groupIDForWorkspace(id) === group.id),
                                       onSelect: () => {
                                           props.onMoveWorkspaces?.({
-                                              workspaceIDs: ids,
+                                              workspaceIDs: movers,
                                               groupID: group.id,
-                                              index: (baseModel.children.get(group.id) ?? []).length
+                                              index: (fullModel.children.get(group.id) ?? []).length
                                           });
                                       }
                                   })
@@ -3829,15 +4117,17 @@ export function Sidebar(props: SidebarProps): ReactElement {
                 id: 'bulk-delete',
                 label: `Delete ${String(count)} Workspaces…`,
                 danger: true,
-                // §WS-060: deleting the entire list is refused, not merely discouraged.
-                disabled: count >= total,
+                // §WS-060: deleting the entire list is refused, not merely discouraged. The
+                // entire list is every workspace, not the ones a filter left on screen.
+                disabled: count >= fullWorkspaceByID.size,
                 onSelect: () => {
                     setConfirm({ kind: 'workspaces', ids });
                 }
             }
         ];
     }, [
-        baseModel,
+        fullModel,
+        fullWorkspaceByID,
         bucket,
         groupIDForWorkspace,
         groups,
@@ -3848,6 +4138,78 @@ export function Sidebar(props: SidebarProps): ReactElement {
         setSelection,
         workspaceByID
     ]);
+
+    /**
+     * §2.9's row-menu verbs: "New Nested Workspace…" on a workspace that can be a parent,
+     * "Nest Under ▸" on one that can be nested (it has no children of its own) listing every
+     * workspace that can take it, and "Un-nest" on a nested one, which lands it right after
+     * its parent in the parent's own container. All of it reads the WHOLE tree: a filter that
+     * hides a parent's children must not make it look childless, nor shift where Un-nest lands.
+     */
+    const nestingMenuItems = useCallback(
+        (workspaceID: string): MenuItemSpec[] => {
+            const location = locateWorkspace(fullModel, workspaceID);
+            const parentID = location?.parentID;
+            const hasChildren = (fullNestedByParent.get(workspaceID)?.length ?? 0) > 0;
+            const items: MenuItemSpec[] = [];
+            if (parentID === undefined && props.onCreateWorkspace !== undefined) {
+                items.push({
+                    id: 'nest:new',
+                    label: 'New Nested Workspace…',
+                    onSelect: () => {
+                        setNewForm({ kind: 'workspace', groupID: null, parentID: workspaceID });
+                    }
+                });
+            }
+            if (!hasChildren && props.onNestWorkspaces !== undefined) {
+                // Sidebar order, nested workspaces excluded: they cannot take children.
+                const candidates: string[] = [];
+                for (const slot of fullModel.topLevel) {
+                    if (slot.kind === 'workspace') candidates.push(slot.id);
+                    else candidates.push(...(fullModel.children.get(slot.id) ?? []));
+                }
+                const parents = candidates.filter((id) => id !== workspaceID && fullWorkspaceByID.has(id));
+                if (parents.length > 0) {
+                    items.push({
+                        id: 'nest',
+                        label: 'Nest Under',
+                        submenu: parents.map(
+                            (id): MenuItemSpec => ({
+                                id: `nest:${id}`,
+                                label: fullWorkspaceByID.get(id)?.name ?? id,
+                                checked: id === parentID,
+                                disabled: id === parentID,
+                                onSelect: () => {
+                                    props.onNestWorkspaces?.({
+                                        workspaceIDs: [workspaceID],
+                                        parentID: id,
+                                        index: (fullNestedByParent.get(id) ?? []).filter((child) => child.id !== workspaceID)
+                                            .length
+                                    });
+                                }
+                            })
+                        )
+                    });
+                }
+            }
+            if (parentID !== undefined) {
+                const parentLocation = locateWorkspace(fullModel, parentID);
+                items.push({
+                    id: 'nest:out',
+                    label: 'Un-nest',
+                    onSelect: () => {
+                        props.onMoveWorkspace?.({
+                            workspaceID,
+                            groupID: parentLocation?.groupID ?? null,
+                            index: parentLocation === null ? fullModel.topLevel.length : parentLocation.index + 1
+                        });
+                    }
+                });
+            }
+            return items;
+        },
+        [fullModel, fullNestedByParent, fullWorkspaceByID, props]
+    );
 
     const workspaceMenuItems = useCallback(
         (workspaceID: string): MenuItemSpec[] => {
@@ -3985,7 +4347,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
                                           props.onMoveWorkspace?.({
                                               workspaceID,
                                               groupID: null,
-                                              index: baseModel.topLevel.length
+                                              index: fullModel.topLevel.length
                                           });
                                       }
                                   } satisfies MenuItemSpec,
@@ -4002,7 +4364,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
                                     props.onMoveWorkspace?.({
                                         workspaceID,
                                         groupID: group.id,
-                                        index: (baseModel.children.get(group.id) ?? []).length
+                                        index: (fullModel.children.get(group.id) ?? []).length
                                     });
                                 }
                             })
@@ -4033,6 +4395,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
                               ])
                     ]
                 },
+                ...nestingMenuItems(workspaceID),
                 { id: 'sep', label: '', kind: 'separator' },
                 // Agent-lifecycle §7.6: an on/off setting, so a checkbox in a section of its own
                 // between the workspace's attributes and the selection verbs. The separator below
@@ -4078,29 +4441,51 @@ export function Sidebar(props: SidebarProps): ReactElement {
                     id: 'delete',
                     label: 'Delete',
                     danger: true,
-                    disabled: workspaceByID.size <= 1,
+                    // The daemon never deletes the last workspace; the filter hiding the
+                    // others does not make this one the last.
+                    disabled: fullWorkspaceByID.size <= 1,
                     onSelect: () => {
                         // WS-108: the count only enters the dialog while the daemon's
                         // `confirm-workspace-delete` is on — with it off, the delete is the
                         // plain confirmation it has always been, and the alert never fires.
                         const agents = props.confirmDeleteWhenActive === false
                             ? undefined : props.workspaceAgentSummary?.(workspaceID);
+                        // §2.9: a parent's dialog offers to take its nested workspaces too,
+                        // and counts their agents for the moment that box is ticked. Every child
+                        // counts, filtered out or not: the cascade takes them all.
+                        const children = (fullNestedByParent.get(workspaceID) ?? []).map((child) => child.id);
+                        const childAgents =
+                            props.confirmDeleteWhenActive === false || props.workspaceAgentSummary === undefined
+                                ? undefined
+                                : sumAgentSummaries(children.map((id) => props.workspaceAgentSummary?.(id)));
                         setConfirm({
                             kind: 'workspace',
                             id: workspaceID,
                             name: workspace.name,
-                            ...(agents !== undefined && agents.total > 0 ? { agents } : {})
+                            ...(agents !== undefined && agents.total > 0 ? { agents } : {}),
+                            ...(children.length === 0
+                                ? {}
+                                : {
+                                      children,
+                                      // The daemon never deletes the last workspace, so a
+                                      // cascade that would take every one of them is not offered.
+                                      cascadeAllowed: fullWorkspaceByID.size > children.length + 1,
+                                      ...(childAgents !== undefined && childAgents.total > 0 ? { childAgents } : {})
+                                  })
                         });
                     }
                 }
             ];
         },
         [
-            baseModel,
             bucket,
+            fullModel,
             groupIDForWorkspace,
             groups,
+            fullNestedByParent,
+            fullWorkspaceByID,
             iconSubmenu,
+            nestingMenuItems,
             presets,
             props,
             selectAllWorkspaces,
@@ -4201,20 +4586,26 @@ export function Sidebar(props: SidebarProps): ReactElement {
                     label: 'Delete Group…',
                     danger: true,
                     onSelect: () => {
-                        const entry = props.entries.find(
+                        // The whole group, not the members the filter left: the delete takes
+                        // every one of them (and, §2.9, their nested workspaces).
+                        const entry = fullEntries.find(
                             (candidate) => candidate.kind === 'group' && candidate.group.id === groupID
                         );
                         setConfirm({
                             kind: 'group',
                             id: groupID,
                             name: group.name,
-                            memberCount: entry?.kind === 'group' ? entry.workspaces.length : 0
+                            memberCount: entry?.kind === 'group' ? entry.workspaces.length : 0,
+                            nestedCount:
+                                entry?.kind === 'group'
+                                    ? [...(entry.nested?.values() ?? [])].reduce((sum, kids) => sum + kids.length, 0)
+                                    : 0
                         });
                     }
                 }
             ];
         },
-        [bucket, collapseOverrides, groups, iconSubmenu, props, toggleCollapse]
+        [bucket, collapseOverrides, fullEntries, groups, iconSubmenu, props, toggleCollapse]
     );
 
     /**
@@ -4513,7 +4904,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
                                 key={row.key}
                                 group={entry.group}
                                 collapsed={isGroupCollapsed(entry.group, collapse)}
-                                counts={agentCounts(entry.workspaces)}
+                                counts={groupAgentCounts(entry)}
                                 bucket={bucket}
                                 renaming={rename?.kind === 'group' && rename.id === entry.group.id}
                                 dropPreview={previewGroupID === entry.group.id}
@@ -4629,12 +5020,29 @@ export function Sidebar(props: SidebarProps): ReactElement {
                     const below = rows[index + 1];
                     const sibling = (candidate: RenderedRow | undefined): boolean =>
                         candidate !== undefined && candidate.kind === 'workspace' && candidate.groupID === row.groupID;
+                    // §2.9: a nested row's own rule bridges only to its parent's other children.
+                    const nestedSibling = (candidate: RenderedRow | undefined): boolean =>
+                        candidate !== undefined &&
+                        candidate.kind === 'workspace' &&
+                        row.parentID !== undefined &&
+                        candidate.parentID === row.parentID;
+                    const rollup =
+                        row.childrenCollapsed === true ? agentCounts(nestedByParent.get(workspace.id) ?? []) : null;
                     return (
                         <WorkspaceRow
                             key={row.key}
                             workspace={workspace}
                             depth={row.depth}
                             groupID={row.groupID}
+                            childCount={row.childCount ?? 0}
+                            childrenCollapsed={row.childrenCollapsed === true}
+                            rollupRunning={rollup?.running ?? 0}
+                            rollupWaiting={rollup?.waiting ?? 0}
+                            onToggleChildren={toggleChildren}
+                            nestDropPreview={previewParentID === workspace.id}
+                            parentGuideColor={row.parentID === undefined ? undefined : parentGuideColorFor(row.parentID)}
+                            parentGuideExtendUp={nestedSibling(above)}
+                            parentGuideExtendDown={nestedSibling(below)}
                             active={workspace.id === props.activeWorkspaceID}
                             selected={selection.has(workspace.id)}
                             badgeIndex={visibleOrder.indexOf(workspace.id)}
@@ -4652,7 +5060,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
                             dragHidden={dragActive && dragCompanions.has(workspace.id)}
                             dragExtra={dragID === workspace.id ? dragCompanions.size : 0}
                             // §WS-089: the dragged row previews the nesting it is about to get.
-                            nestPreview={dragID === workspace.id && previewGroupID !== null}
+                            nestPreview={dragID === workspace.id && (previewGroupID !== null || previewParentID !== null)}
                             // …and, once the gesture IS a drag, its slot is the empty space the
                             // drop lands in. `dragActive` rather than `dragging`: a press that
                             // never moved must not blank the row under the cursor.
@@ -5008,7 +5416,17 @@ export function Sidebar(props: SidebarProps): ReactElement {
                     defaultColor={newFormColor}
                     // §WS-076: an explicitly scoped group (the group menu's "New Workspace")
                     // wins; otherwise SET-011's inherited group, which assembly resolves.
-                    defaultGroupID={newForm.groupID ?? props.inheritGroupID ?? null}
+                    // §2.9: a nested create follows its parent, so it opens on the PARENT's group:
+                    // the picker is hidden, but that group's repository and worktree switch
+                    // prefill the sheet (§5.5) just as they would for a create in the group.
+                    defaultGroupID={
+                        newForm.parentID === undefined
+                            ? (newForm.groupID ?? props.inheritGroupID ?? null)
+                            : groupIDForWorkspace(newForm.parentID)
+                    }
+                    {...(newForm.parentID === undefined
+                        ? {}
+                        : { parentName: fullWorkspaceByID.get(newForm.parentID)?.name ?? '' })}
                     {...(newForm.kind === 'group'
                         ? { defaultName: defaultGroupName(groups.map((group) => group.name)) }
                         : {})}
@@ -5036,21 +5454,30 @@ export function Sidebar(props: SidebarProps): ReactElement {
                             // passed only when chosen, so a repo-less create calls exactly as before.
                             const repoArgs = draft.groupRepo === null ? [] : ([draft.groupRepo] as const);
                             if (members !== undefined && props.onCreateGroupForWorkspaces !== undefined) {
-                                props.onCreateGroupForWorkspaces(draft.name, members, draft.color, ...repoArgs);
+                                // §2.9: a selected parent brings its selected children along, so
+                                // they are not named (that would pull them out from under it).
+                                props.onCreateGroupForWorkspaces(
+                                    draft.name,
+                                    withoutNestedFollowers(fullModel, members),
+                                    draft.color,
+                                    ...repoArgs
+                                );
                                 setSelection(EMPTY_SELECTION);
                             } else props.onCreateGroup?.(draft.name, draft.color, ...repoArgs);
                             setNewForm(null);
                             return null;
                         }
+                        const parentID = newForm.parentID;
                         const result = await props.onCreateWorkspace?.(
                             draft.name,
-                            draft.groupID,
+                            parentID === undefined ? draft.groupID : null,
                             draft.worktree,
                             {
                                 ...(draft.color === null ? {} : { color: draft.color }),
                                 profile: draft.profile,
                                 repoPaths: draft.repoPaths,
-                                ...(draft.muted ? { muted: true } : {})
+                                ...(draft.muted ? { muted: true } : {}),
+                                ...(parentID === undefined ? {} : { parentID })
                             }
                         );
                         // §WS-079: a failed worktree create keeps the SHEET open, with the
@@ -5144,7 +5571,10 @@ export function Sidebar(props: SidebarProps): ReactElement {
                         // `cleanup` stays off the call entirely when the dialog had no list, so a
                         // callback written before it existed sees exactly the arguments it did.
                         const extra = cleanup === undefined ? [] : ([cleanup] as const);
-                        if (confirm.kind === 'workspace') props.onDeleteWorkspace?.(confirm.id, ...extra);
+                        // §2.9: `cascade` on a workspace is "also delete its nested workspaces".
+                        if (confirm.kind === 'workspace' && cascade) {
+                            props.onDeleteWorkspace?.(confirm.id, cleanup, { cascadeChildren: true });
+                        } else if (confirm.kind === 'workspace') props.onDeleteWorkspace?.(confirm.id, ...extra);
                         else if (confirm.kind === 'group') {
                             if (cascade) props.onDeleteGroup?.(confirm.id, true, ...extra);
                             else props.onDeleteGroup?.(confirm.id, false);
@@ -5332,8 +5762,11 @@ interface ConfirmDialogProps {
     readonly onConfirm: (cascade: boolean, suppress: boolean, cleanup?: WorktreeCleanupChoice | null) => void;
 }
 
-function cleanupTarget(confirm: ConfirmState): WorktreeCleanupTarget {
-    if (confirm.kind === 'workspace') return { workspaceIDs: [confirm.id] };
+function cleanupTarget(confirm: ConfirmState, cascadeChildren: boolean): WorktreeCleanupTarget {
+    if (confirm.kind === 'workspace') {
+        // §2.9: a cascading delete takes the nested workspaces' worktrees with it.
+        return { workspaceIDs: cascadeChildren ? [confirm.id, ...(confirm.children ?? [])] : [confirm.id] };
+    }
     if (confirm.kind === 'workspaces') return { workspaceIDs: confirm.ids };
     return { groupID: confirm.id };
 }
@@ -5350,13 +5783,15 @@ function ConfirmDialog(props: ConfirmDialogProps): ReactElement | null {
     // Hooks before the container guard: a conditional early return above `useState` would make
     // the hook order depend on the DOM being present.
     const [suppress, setSuppress] = useState(false);
+    /** §2.9: "Also delete N nested workspaces", off by default: children promote. */
+    const [cascadeChildren, setCascadeChildren] = useState(false);
     /*
      * graft-git.md §8.7: the workspaces' linked worktrees, planned by the daemon when the dialog
      * opens. An empty group deletes no workspace, so it asks nothing.
      */
     const cleanupSource =
         props.confirm.kind === 'group' && props.confirm.memberCount === 0 ? undefined : props.worktrees;
-    const cleanup = useWorktreeCleanup(cleanupSource, cleanupTarget(props.confirm));
+    const cleanup = useWorktreeCleanup(cleanupSource, cleanupTarget(props.confirm, cascadeChildren));
     /*
      * H11's fill tone for the three answers. The global reset strips the user-agent hover
      * response and nothing here painted one back, so `Delete "<name>"?`'s buttons were the only
@@ -5410,14 +5845,25 @@ function ConfirmDialog(props: ConfirmDialogProps): ReactElement | null {
      */
     const members = props.confirm.kind === 'group' ? props.confirm.memberCount : 0;
     const workspaceNoun = `workspace${members === 1 ? '' : 's'}`;
+    const groupNested = props.confirm.kind === 'group' ? props.confirm.nestedCount : 0;
+    const groupNestedClause =
+        groupNested === 0
+            ? ''
+            : ` (and the ${String(groupNested)} nested workspace${groupNested === 1 ? '' : 's'} under them)`;
     /**
      * WS-108 / #241: a workspace with agent panes gets `WorkspaceDeleteGate`'s alert instead of the
      * plain confirmation — the count in the message and a "Don't ask again" that writes the
      * daemon's `confirm-workspace-delete`. The caller has already applied the setting (no summary when
      * it is off), so this only renders what it was handed.
      */
-    const agents = props.confirm.kind === 'workspace' ? props.confirm.agents : undefined;
+    const nestedChildren = props.confirm.kind === 'workspace' ? (props.confirm.children ?? []) : [];
+    const ownAgents = props.confirm.kind === 'workspace' ? props.confirm.agents : undefined;
+    const childAgents =
+        props.confirm.kind === 'workspace' && cascadeChildren ? props.confirm.childAgents : undefined;
+    const agents =
+        childAgents === undefined ? ownAgents : sumAgentSummaries([ownAgents, childAgents]);
     const activeAgents = agents?.total ?? 0;
+    const nestedNoun = `nested workspace${nestedChildren.length === 1 ? '' : 's'}`;
     return createPortal(
         <div
             data-testid="confirm-dialog"
@@ -5452,7 +5898,7 @@ function ConfirmDialog(props: ConfirmDialogProps): ReactElement | null {
                     >
                         {members === 0
                             ? 'This group is empty and will be removed.'
-                            : `Choose whether to also delete the ${String(members)} ${workspaceNoun} inside this group. Moving them to the top level is the safer option.`}
+                            : `Choose whether to also delete the ${String(members)} ${workspaceNoun} inside this group${groupNestedClause}. Moving them to the top level is the safer option.`}
                     </div>
                 ) : null}
                 {isBulk ? (
@@ -5470,6 +5916,25 @@ function ConfirmDialog(props: ConfirmDialogProps): ReactElement | null {
                     </div>
                 ) : null}
             </div>
+            {nestedChildren.length > 0 && props.confirm.kind === 'workspace' ? (
+                <div className="mb-3 text-[11px]" style={{ color: tokens.textSecondary }}>
+                    <label className="flex items-center gap-2">
+                        <input
+                            type="checkbox"
+                            data-testid="confirm-cascade-children"
+                            checked={cascadeChildren}
+                            disabled={props.confirm.cascadeAllowed === false}
+                            onChange={(event) => setCascadeChildren(event.target.checked)}
+                        />
+                        {`Also delete ${String(nestedChildren.length)} ${nestedNoun}`}
+                    </label>
+                    {cascadeChildren ? null : (
+                        <div data-testid="confirm-children-promote" className="mt-1">
+                            {`The ${nestedNoun} will move up to take its place.`}
+                        </div>
+                    )}
+                </div>
+            ) : null}
             <WorktreeCleanupList
                 state={cleanup}
                 note={isGroup ? `Only when the ${workspaceNoun} ${members === 1 ? 'is' : 'are'} deleted too.` : undefined}
@@ -5561,7 +6026,7 @@ function ConfirmDialog(props: ConfirmDialogProps): ReactElement | null {
                         // Moving a group's workspaces to the top level deletes none of them, so
                         // it takes no worktree with it (and remembers no choice about them).
                         if (isGroup) props.onConfirm(false, suppress);
-                        else props.onConfirm(false, suppress, cleanup.confirm());
+                        else props.onConfirm(cascadeChildren, suppress, cleanup.confirm());
                     }}
                 >
                     {isGroup ? (members > 0 ? 'Move Workspaces to Top Level' : 'Delete Group') : 'Delete'}

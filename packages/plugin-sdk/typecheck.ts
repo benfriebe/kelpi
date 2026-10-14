@@ -30,6 +30,14 @@ async function authoring(api: BackendAPI): Promise<void> {
     await api.workspaces.create({ name: 'child', muted });
     const chef = await api.workspaces.create({ name: 'chef', icon: 'emoji:👩‍🍳' });
     await api.workspaces.setIcon(first.id, chef.icon ?? first.icon ?? null);
+    // Nested workspaces: one level under a parent, confirmed by the create reply.
+    const worker = await api.workspaces.create({ name: 'worker', parentID: first.id });
+    const parentName: string | undefined = worker.parentName ?? first.parentName;
+    const nested = await api.workspaces.nest(chef.workspaceID, first.id, { index: 0 });
+    const position: number = nested.index;
+    await api.workspaces.setChildrenCollapsed(first.id, position === 0 && parentName !== undefined);
+    await api.workspaces.list({ parentID: first.id });
+    await api.workspaces.remove(first.id, { cascade: true });
     const associations: RepositoryAssociation[] = await api.git.status(first.id);
     await api.panes.create({ workspaceID: first.id, name: associations[0]?.repoName });
     // #295: the helpers focus by default; `focus: false` opens the pane in the background.
@@ -40,6 +48,15 @@ async function authoring(api: BackendAPI): Promise<void> {
     await api.panes.resize('pane', { ratio: 0.3, delta: 0.2 });
     // @ts-expect-error Status is an explicit public vocabulary.
     await api.agents.setStatus('pane', 'busy');
+    // #387: one typed event per agent hook; the unsubscribe is a plain Dispose.
+    const offAgentEvents: () => void = api.agents.onEvent(async (event, raw) => {
+        if (event.type === 'notification' && event.notificationType === 'permission_prompt' && event.muted !== true) void event.paneID;
+        const reply: string | undefined = event.lastAssistantMessage;
+        void reply; void raw.sequence;
+        // @ts-expect-error The verb is a fixed vocabulary.
+        if (event.type === 'permission') return;
+    });
+    offAgentEvents();
     // @ts-expect-error Browser-only focus is not a backend operation.
     await api.ui.focusPane('workspace', 'pane');
     api.hooks.register('sample.plugin.guard', async invocation => invocation.phase === 'before' ? { allow: true } : undefined);

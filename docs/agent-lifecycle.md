@@ -304,6 +304,21 @@ configs written for the pre-port CLI keep working against the daemon):
 The common Claude path (no flag, no background work) is wire-identical to the
 pre-Codex/pre-background protocol — that back-compat is a hard requirement.
 
+**Hook fields for plugins (#387).** After step 9's fields, the CLI also forwards these from
+the stdin payload, each only when it is a non-empty string (`agentHookFields` in
+`packages/cli/src/commands/event.ts`), so a manual `kelpi event stop` with no stdin, or a
+payload without them, stays wire-identical:
+
+| stdin key                | Sent on                                | Notes |
+| ------------------------ | -------------------------------------- | ----- |
+| `notification_type`      | `notification`                         | Claude-only: `permission_prompt`, `idle_prompt`, `elicitation_dialog`, … |
+| `last_assistant_message` | `stop`                                 | Claude-only: the final reply's text. Capped at 64 KiB of UTF-8 (`capAssistantMessage`), cut on a code point boundary so a surrogate pair is never split; a cut adds `"last_assistant_message_truncated": true` |
+| `transcript_path`        | `notification`, `stop`, `session-start` | both agents |
+| `tool_name`              | `notification` with `--agent codex`    | Codex's PermissionRequest; a Claude notification never forwards it |
+
+A Codex payload that carries `notification_type` or `last_assistant_message` is forwarded
+under the same keys. The wire shapes are in wire-protocol.md §6.1.
+
 ---
 
 ## 4. Wire protocol — daemon side
@@ -779,6 +794,43 @@ children's.
   but its footer and favicon still count the workspace's waiting panes. A new client
   reading an older daemon treats every workspace as unmuted.
 
+### 7.7 Plugin events (`agent.event`, #387)
+
+Every hook line the daemon applies publishes exactly one plugin event, `agent.event`
+(`packages/daemon/src/handlers/app/agent-events.ts`). It is separate from the notification
+matrix above: it fires whether or not §7.1 to §7.3 show anything, so the focused pane of an
+active window, a muted workspace and a pane whose status did not change all produce one.
+Any applied lifecycle verb publishes one, including a plugin's own `api.agents.*` calls, so a
+plugin that answers an event by calling `agents.notify` loops.
+
+- **When.** Built right after `ctx.store.dispatch`, from the state that line left, so
+  `panes.list` agrees with it unless a later line has changed the pane since. A line's §4.2
+  dual-fire session-start runs right after its primary message, so the primary's event is held
+  for it: once the dual-fire has applied, the event is rebuilt from that state and goes out
+  (or it goes out as built on the next microtask when the line has none). The dual-fire
+  publishes nothing of its own (`control/dual-fire.ts` marks it), which keeps it at one event
+  per `kelpi event` call, and the event's `sessionID` and `agent` already include what the
+  dual-fire bound. A later line in the same socket chunk (a `pane-close`, say) cannot change
+  or drop an event already built, and its dual-fire completes only its own line's event
+  (`control/dual-fire.ts` remembers which primary each was synthesized from), so a `ping`
+  carrying the pane's `session_id` lets a held `stop` go out as built first.
+- **Not for.** A pane `agentEventsMuted` covers (a restart of old terminals, #372), an unknown
+  pane, or a pane no workspace owns: the same early returns as the state change.
+- **Who hears it.** It goes out through the plugin service's event bus
+  (`AppDeps.emitAgentEvent`, `PluginService.emitDaemonEvent`). It is not a daemon broadcast, so
+  it never surfaces as `daemon.agent-event`; it rides the `plugin-event` frame every window
+  session receives, like every plugin event, and only plugin backends and views consume it.
+  The SDK's `agents.onEvent(listener)` wraps `events.on('agent.event')`.
+- **Payload.** `{ type, paneID, workspaceID, agent, sessionID?, status, notificationType?,
+  title?, body?, message?, lastAssistantMessage?, lastAssistantMessageTruncated?,
+  transcriptPath?, backgroundTasks?, toolName?, muted? }`. `type` is the wire verb. `agent`,
+  `sessionID` and `status` are the pane's after the event (`agent` falls back to `claude`).
+  The optional keys are present only when the wire message carried them (§3, "Hook fields
+  for plugins"): `title` / `body` on `notification` (with the decoder's defaults), `message`
+  on `error`, `backgroundTasks` only when greater than 0. `muted: true` follows §7.6's rule
+  for `daemon.notification`; the key is absent otherwise.
+- **Not stored.** `transcriptPath` rides on the event only; the pane does not keep it.
+
 ---
 
 ## 8. External indicators (menu bar + dock)
@@ -1227,6 +1279,10 @@ interface SystemStats {
     activation.
 17. Menu-bar dot precedence: waiting > running > none.
 18. Suppression checkboxes persist even when the dialog is cancelled.
+19. Plugin events (§7.7): exactly one `agent.event` per applied hook line (`start`, `stop`,
+    `notification`, `error`, `session-start`, `session-end`; the dual-fire adds none), after
+    the state change, notification shown or not; none for a muted-for-restart, unknown or
+    unowned pane.
 
 ---
 

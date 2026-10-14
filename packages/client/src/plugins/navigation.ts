@@ -89,10 +89,15 @@ function hostSummary(id: string, name: string, kind: NavigationHost['kind'], run
         seen.add(workspace.id);
         workspaces.push(workspaceSummary(workspace, group));
     };
-    // Includes children of collapsed groups, in the same order as the native sidebar.
+    // Includes children of collapsed groups, and nested workspaces (app-state-core.md §2.9)
+    // right after their parent, in the same order as the native sidebar.
     for (const entry of selectSidebarEntries(state)) {
-        if (entry.kind === 'workspace') add(entry.workspace, null);
-        else for (const workspace of entry.workspaces) add(workspace, entry.group);
+        const withNested = (workspace: WorkspaceState, group: WorkspaceGroup | null): void => {
+            add(workspace, group);
+            for (const child of entry.nested?.get(workspace.id) ?? []) add(child, group);
+        };
+        if (entry.kind === 'workspace') withNested(entry.workspace, null);
+        else for (const workspace of entry.workspaces) withNested(workspace, entry.group);
     }
     // Keep older/partially ordered daemon mirrors complete, without inventing missing rows.
     for (const workspace of state.daemon.state.workspaces) {

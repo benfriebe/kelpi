@@ -166,28 +166,51 @@ function decodeCommand(
         // ── 6.1 agent lifecycle (pane_id already validated) ──────────────────────────
         case 'start':
             return { command, pane_id: paneId as string, agent: parseAgentKind(fields.rawText('agent')) };
-        case 'stop':
-            return { command, pane_id: paneId as string, background_tasks: fields.int('background_tasks') ?? 0 };
+        case 'stop': {
+            // #387: optional hook fields, spread only when present so an older CLI's line
+            // decodes to exactly the shape it always did.
+            const lastAssistantMessage = fields.nonEmpty('last_assistant_message');
+            const transcriptPath = fields.nonEmpty('transcript_path');
+            return {
+                command,
+                pane_id: paneId as string,
+                background_tasks: fields.int('background_tasks') ?? 0,
+                ...(lastAssistantMessage !== undefined ? { last_assistant_message: lastAssistantMessage } : {}),
+                ...(lastAssistantMessage !== undefined && fields.bool('last_assistant_message_truncated') === true
+                    ? { last_assistant_message_truncated: true as const }
+                    : {}),
+                ...(transcriptPath !== undefined ? { transcript_path: transcriptPath } : {})
+            };
+        }
         case 'error':
             return { command, pane_id: paneId as string, message: fields.rawText('message') ?? 'Unknown error' };
-        case 'notification':
+        case 'notification': {
+            const notificationType = fields.nonEmpty('notification_type');
+            const transcriptPath = fields.nonEmpty('transcript_path');
+            const toolName = fields.nonEmpty('tool_name');
             return {
                 command,
                 pane_id: paneId as string,
                 title: fields.rawText('title') ?? 'Agent',
                 body: fields.rawText('body') ?? '',
-                background_tasks: fields.int('background_tasks') ?? 0
+                background_tasks: fields.int('background_tasks') ?? 0,
+                ...(notificationType !== undefined ? { notification_type: notificationType } : {}),
+                ...(transcriptPath !== undefined ? { transcript_path: transcriptPath } : {}),
+                ...(toolName !== undefined ? { tool_name: toolName } : {})
             };
+        }
         case 'session-start': {
             const sessionId = fields.nonEmpty('session_id');
             if (sessionId === undefined) return guard(command, 'session-start requires session_id', 'session_id');
             const profile = fields.nonEmpty('profile');
+            const transcriptPath = fields.nonEmpty('transcript_path');
             return {
                 command,
                 pane_id: paneId as string,
                 session_id: sessionId,
                 agent: parseAgentKind(fields.rawText('agent')),
-                ...(profile !== undefined ? { profile } : {})
+                ...(profile !== undefined ? { profile } : {}),
+                ...(transcriptPath !== undefined ? { transcript_path: transcriptPath } : {})
             };
         }
         case 'session-end': {
@@ -335,7 +358,7 @@ function decodeCommand(
 
         // ── 6.3 workspace commands ───────────────────────────────────────────────────
         case 'workspace-list':
-            return { command, group: fields.text('group') };
+            return { command, group: fields.text('group'), parent: fields.text('parent') };
         case 'workspace-create':
             return {
                 command,
@@ -352,12 +375,22 @@ function decodeCommand(
                 repo: fields.text('repo'),
                 muted: fields.flag('muted', false),
                 icon: fields.rawText('icon'),
-                group_defaults: fields.flag('group_defaults', true)
+                group_defaults: fields.flag('group_defaults', true),
+                parent: fields.text('parent'),
+                // Verbatim: a malformed id must fail the create (no such pane), not silently un-nest it.
+                parent_pane_id: fields.text('parent_pane_id')
             };
         case 'workspace-move': {
             const name = fields.nonEmpty('name');
             if (name === undefined) return guard(command, 'workspace-move requires name', 'name');
             return { command, name, group: fields.text('group'), index: fields.int('index') };
+        }
+        case 'workspace-nest': {
+            const name = fields.nonEmpty('name');
+            if (name === undefined) return guard(command, 'workspace-nest requires name', 'name');
+            const parent = fields.text('parent');
+            if (parent === undefined) return guard(command, 'workspace-nest requires parent', 'parent');
+            return { command, name, parent, index: fields.int('index') };
         }
         case 'workspace-delete': {
             const name = fields.nonEmpty('name');
@@ -370,6 +403,8 @@ function decodeCommand(
                 command,
                 name,
                 force: fields.flag('force', false),
+                // §2.9: absent = the nested workspaces promote into the deleted one's slot.
+                cascade: fields.flag('cascade', false),
                 // Worktree cleanup (graft-git.md §8.7): all absent = the delete touches no worktree.
                 worktree_paths: fields.list('worktree_paths'),
                 force_worktree_paths: fields.list('force_worktree_paths'),

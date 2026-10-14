@@ -93,6 +93,8 @@ export const WIRE_FIELD_TYPES = {
     create_worktree: 'bool',
     repo_id: 'string',
     group_defaults: 'bool',
+    parent: 'string',
+    parent_pane_id: 'uuid',
     focus: 'bool',
     worktree_paths: 'string[]',
     force_worktree_paths: 'string[]',
@@ -100,12 +102,24 @@ export const WIRE_FIELD_TYPES = {
     delete_branches: 'bool',
     batch_ids: 'string[]',
     gesture: 'bool',
-    typed: 'bool'
+    typed: 'bool',
+    notification_type: 'string',
+    last_assistant_message: 'string',
+    last_assistant_message_truncated: 'bool',
+    transcript_path: 'string',
+    tool_name: 'string'
 } as const satisfies Record<string, WireFieldKind>;
 
 export type WireFieldName = keyof typeof WIRE_FIELD_TYPES;
 
-/** Optional string fields whose empty string is normalized to "absent" (§2.2). */
+/**
+ * Optional string fields whose empty string is normalized to "absent" (§2.2).
+ *
+ * `parent` and `parent_pane_id` are deliberately NOT here (app-state-core.md §2.9): an empty
+ * parent is almost always an unset shell variable (`--parent "$ME"`), and reading it as
+ * "no parent" would create a top-level workspace, or list EVERY workspace, instead of failing.
+ * The handlers refuse an empty or whitespace parent.
+ */
 export const EMPTY_STRING_NORMALIZED_FIELDS: ReadonlySet<string> = new Set([
     'target',
     'workspace',

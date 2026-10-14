@@ -341,3 +341,235 @@ describe('routing across workspaces', () => {
         expect(h.broadcasts).toEqual([expect.objectContaining({ type: 'notification' })]);
     });
 });
+
+describe('agent.event plugin events (#387, agent-lifecycle §7.7)', () => {
+    /** A line's event is published once its dual-fire applied, or by the next microtask. */
+    const settle = (): Promise<void> => new Promise((resolve) => queueMicrotask(resolve));
+
+    it('fires for the focused pane of an active app, where no desktop notification shows', async () => {
+        const h = harness({ initial: seeded(1), isAppActive: () => true });
+        h.send({ command: 'stop', pane_id: P1 });
+        expect(h.broadcasts).toEqual([]);
+        await settle();
+        // An older CLI's line: none of the optional keys, and no `muted` key either.
+        expect(h.agentEvents).toStrictEqual([
+            { type: 'stop', paneID: P1, workspaceID: W1, agent: 'claude', status: 'waitingForInput' }
+        ]);
+    });
+
+    it('marks a muted workspace muted: true', async () => {
+        const h = harness({ initial: seeded(1) });
+        h.dispatch({ type: 'set-workspace-muted', id: W1, muted: true });
+        h.send({ command: 'notification', pane_id: P1, title: 't', body: 'b' });
+        await settle();
+        expect(h.agentEvents).toStrictEqual([
+            {
+                type: 'notification',
+                paneID: P1,
+                workspaceID: W1,
+                agent: 'claude',
+                status: 'waitingForInput',
+                title: 't',
+                body: 'b',
+                muted: true
+            }
+        ]);
+    });
+
+    it('fires for a notification on a pane already waitingForInput (status unchanged)', async () => {
+        const h = harness({ initial: seeded(1), isAppActive: () => true });
+        h.send({ command: 'stop', pane_id: P1 });
+        await settle();
+        h.send({ command: 'notification', pane_id: P1, title: 'Claude', body: 'Approve Bash?' });
+        await settle();
+        expect(paneOf(h, P1)?.status).toBe('waitingForInput');
+        expect(h.agentEvents.map((event) => [event.type, event.status])).toEqual([
+            ['stop', 'waitingForInput'],
+            ['notification', 'waitingForInput']
+        ]);
+    });
+
+    it('fires for a stop while background tasks keep the pane running', async () => {
+        const h = harness({ initial: seeded(1) });
+        h.send({ command: 'start', pane_id: P1 });
+        h.send({ command: 'stop', pane_id: P1, background_tasks: 2 });
+        expect(h.broadcasts).toEqual([]);
+        await settle();
+        expect(h.agentEvents).toStrictEqual([
+            { type: 'start', paneID: P1, workspaceID: W1, agent: 'claude', status: 'running' },
+            { type: 'stop', paneID: P1, workspaceID: W1, agent: 'claude', status: 'running', backgroundTasks: 2 }
+        ]);
+    });
+
+    it('publishes after the store applied the event, so pane state already agrees', async () => {
+        const seen: [string, string | undefined][] = [];
+        const h = harness({
+            initial: seeded(1),
+            emitAgentEvent: (event) => {
+                seen.push([event.status, paneOf(h, P1)?.status]);
+            }
+        });
+        h.send({ command: 'start', pane_id: P1 });
+        await settle();
+        h.send({ command: 'stop', pane_id: P1 });
+        await settle();
+        expect(seen).toEqual([
+            ['running', 'running'],
+            ['waitingForInput', 'waitingForInput']
+        ]);
+    });
+
+    it('gives each of two lines in one tick its own event, against the state its line left', async () => {
+        const h = harness({ initial: seeded(1) });
+        h.send({ command: 'start', pane_id: P1 });
+        h.send({ command: 'stop', pane_id: P1 });
+        await settle();
+        expect(h.agentEvents.map((event) => [event.type, event.status])).toEqual([
+            ['start', 'running'],
+            ['stop', 'waitingForInput']
+        ]);
+    });
+
+    it('keeps the state its own line left when a pane-close follows in the same socket chunk', async () => {
+        const h = harness({ initial: seeded(1) });
+        h.send({ command: 'start', pane_id: P1 });
+        h.send({ command: 'stop', pane_id: P1, last_assistant_message: 'Done.' });
+        // The next line of the chunk, before any microtask: what `pane-close` does to the store.
+        h.dispatch({ type: 'close-pane', workspaceID: W1, paneID: P1 });
+        expect(paneOf(h, P1)).toBeUndefined();
+        await settle();
+        expect(h.agentEvents).toStrictEqual([
+            { type: 'start', paneID: P1, workspaceID: W1, agent: 'claude', status: 'running' },
+            {
+                type: 'stop',
+                paneID: P1,
+                workspaceID: W1,
+                agent: 'claude',
+                status: 'waitingForInput',
+                lastAssistantMessage: 'Done.'
+            }
+        ]);
+    });
+
+    it('sends nothing for an agentEventsMuted pane (#372) or an unknown pane', async () => {
+        const h = harness({ initial: seeded(1), agentEventsMuted: (paneID) => paneID === P1 });
+        h.send({ command: 'stop', pane_id: P1, session_id: 'live' });
+        h.send({ command: 'notification', pane_id: P1 });
+        h.send({ command: 'stop', pane_id: id('9999aaaa', 1), session_id: 'gone' });
+        await settle();
+        expect(h.agentEvents).toEqual([]);
+    });
+
+    it.each(['permission_prompt', 'idle_prompt'])('carries notification_type %s as notificationType', async (kind) => {
+        const h = harness({ initial: seeded(1) });
+        h.send({ command: 'notification', pane_id: P1, title: 'Claude Code', body: 'Needs you', notification_type: kind });
+        await settle();
+        expect(h.agentEvents).toHaveLength(1);
+        expect(h.agentEvents[0]).toMatchObject({ type: 'notification', notificationType: kind });
+    });
+
+    it('carries the final reply of a stop, and the truncated flag when the CLI cut it', async () => {
+        const h = harness({ initial: seeded(1) });
+        h.send({ command: 'stop', pane_id: P1, last_assistant_message: 'All 12 tests pass.' });
+        h.send({
+            command: 'stop',
+            pane_id: P1,
+            last_assistant_message: 'x'.repeat(100),
+            last_assistant_message_truncated: true,
+            transcript_path: '/tmp/t.jsonl'
+        });
+        await settle();
+        expect(h.agentEvents[0]).toMatchObject({ lastAssistantMessage: 'All 12 tests pass.' });
+        expect(h.agentEvents[0]).not.toHaveProperty('lastAssistantMessageTruncated');
+        expect(h.agentEvents[1]).toMatchObject({
+            lastAssistantMessage: 'x'.repeat(100),
+            lastAssistantMessageTruncated: true,
+            transcriptPath: '/tmp/t.jsonl'
+        });
+    });
+
+    it('is one event per line through the dual-fire, carrying the session and kind it bound', async () => {
+        const h = harness({ initial: seeded(1) });
+        // A missed SessionStart: the codex stop's dual-fire binds the session.
+        h.send({ command: 'stop', pane_id: P1, session_id: 'sess-1', agent: 'codex' });
+        expect(h.agentEvents).toHaveLength(1);
+        await settle();
+        expect(h.agentEvents).toStrictEqual([
+            {
+                type: 'stop',
+                paneID: P1,
+                workspaceID: W1,
+                agent: 'codex',
+                sessionID: 'sess-1',
+                status: 'waitingForInput'
+            }
+        ]);
+    });
+
+    it('pairs a dual-fire with its own line, so an unrelated line in the same tick leaves a held stop as built', async () => {
+        const h = harness({ initial: seeded(1) });
+        h.send({ command: 'stop', pane_id: P1 });
+        // The next line of the chunk is no hook, but its session_id dual-fires a session-start.
+        h.send({ command: 'ping', pane_id: P1, session_id: 'sess-ping' });
+        expect(paneOf(h, P1)?.agentSessionID).toBe('sess-ping');
+        await settle();
+        expect(h.agentEvents).toStrictEqual([
+            { type: 'stop', paneID: P1, workspaceID: W1, agent: 'claude', status: 'waitingForInput' }
+        ]);
+    });
+
+    it('covers every verb: start, error, notification, session-start and session-end', async () => {
+        const h = harness({ initial: seeded(1) });
+        h.send({ command: 'session-start', pane_id: P1, session_id: 's1', transcript_path: '/tmp/s1.jsonl' });
+        h.send({ command: 'start', pane_id: P1, session_id: 's1' });
+        h.send({
+            command: 'notification',
+            pane_id: P1,
+            agent: 'codex',
+            title: 'Codex',
+            body: 'Approval requested: Bash',
+            background_tasks: 1,
+            tool_name: 'Bash',
+            transcript_path: '/tmp/s1.jsonl'
+        });
+        h.send({ command: 'error', pane_id: P1, message: 'boom' });
+        h.send({ command: 'session-end', pane_id: P1, session_id: 's1' });
+        await settle();
+        expect(h.agentEvents).toStrictEqual([
+            {
+                type: 'session-start',
+                paneID: P1,
+                workspaceID: W1,
+                agent: 'claude',
+                sessionID: 's1',
+                status: 'idle',
+                transcriptPath: '/tmp/s1.jsonl'
+            },
+            { type: 'start', paneID: P1, workspaceID: W1, agent: 'claude', sessionID: 's1', status: 'running' },
+            {
+                type: 'notification',
+                paneID: P1,
+                workspaceID: W1,
+                agent: 'claude',
+                sessionID: 's1',
+                status: 'running',
+                title: 'Codex',
+                body: 'Approval requested: Bash',
+                transcriptPath: '/tmp/s1.jsonl',
+                backgroundTasks: 1,
+                toolName: 'Bash'
+            },
+            {
+                type: 'error',
+                paneID: P1,
+                workspaceID: W1,
+                agent: 'claude',
+                sessionID: 's1',
+                status: 'waitingForInput',
+                message: 'boom'
+            },
+            // The session it ended is gone from the pane, so no sessionID.
+            { type: 'session-end', paneID: P1, workspaceID: W1, agent: 'claude', status: 'waitingForInput' }
+        ]);
+    });
+});

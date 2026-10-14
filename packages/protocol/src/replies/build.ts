@@ -81,6 +81,8 @@ export interface WorkspaceListEntryInput {
     readonly last_activity_at?: string | undefined;
     readonly agent_session_id?: string | undefined;
     readonly group?: GroupRef | undefined;
+    /** app-state-core.md §2.9: the workspace this one is nested under. */
+    readonly parent?: GroupRef | undefined;
     readonly repos?: readonly WorkspaceListRepo[] | undefined;
 }
 
@@ -103,6 +105,7 @@ export function buildWorkspaceListEntry(input: WorkspaceListEntryInput): Workspa
         ...(lastActivity ? { last_activity_at: lastActivity.value } : {}),
         ...(session ? { agent_session_id: session.value } : {}),
         ...(input.group !== undefined ? { group_id: input.group.id, group_name: input.group.name } : {}),
+        ...(input.parent !== undefined ? { parent_id: input.parent.id, parent_name: input.parent.name } : {}),
         // Elided when empty, like every other optional field, so an entry for a workspace with
         // no repository is byte-identical to what it always was.
         ...(input.repos !== undefined && input.repos.length > 0 ? { repos: input.repos } : {})

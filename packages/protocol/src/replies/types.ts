@@ -133,6 +133,12 @@ export interface WorkspaceListEntry {
     /** Both present or both absent (absent for top-level workspaces). */
     readonly group_id?: string;
     readonly group_name?: string;
+    /**
+     * app-state-core.md §2.9: the workspace this one is nested under. Both present or both
+     * absent (absent when not nested). A nested workspace reports its parent's group.
+     */
+    readonly parent_id?: string;
+    readonly parent_name?: string;
     /** The workspace's repo associations, in stored order; absent when it has none. */
     readonly repos?: readonly WorkspaceListRepo[];
 }
@@ -151,6 +157,13 @@ export interface WorkspaceListRepo {
 
 export interface WorkspaceListReply extends ReplySuccess {
     readonly workspaces: readonly WorkspaceListEntry[];
+    /**
+     * app-state-core.md §2.9: the parent a `parent`-filtered list resolved, both present exactly
+     * when the request carried `parent`. A daemon that predates nesting omits them (and ignores
+     * the filter), which is how a caller tells its unfiltered reply from a filtered one.
+     */
+    readonly parent_id?: string;
+    readonly parent_name?: string;
 }
 
 export interface WorkspaceCreateReply extends ReplySuccess {
@@ -169,6 +182,19 @@ export interface WorkspaceCreateReply extends ReplySuccess {
     readonly update_main?: boolean;
     /** The repository the workspace was associated with (the worktree's parent, if any). */
     readonly repo_path?: string;
+    /**
+     * §2.9: the parent it was nested under; absent when not nested. Lets `--parent`/`--nested`
+     * tell a daemon that predates nesting (which drops the field and creates it unnested).
+     */
+    readonly parent_id?: string;
+    readonly parent_name?: string;
+    /**
+     * §2.9: set when the parent was deleted (or nested itself) while a worktree create's git work
+     * ran. The worktree already existed, so the workspace was created at the top level instead;
+     * `parent_lost_reason` says what happened. Absent otherwise.
+     */
+    readonly parent_lost?: boolean;
+    readonly parent_lost_reason?: string;
 }
 
 export interface WorkspaceDeleteReply extends ReplySuccess {
@@ -176,6 +202,20 @@ export interface WorkspaceDeleteReply extends ReplySuccess {
     readonly workspace_name: string;
     /** A shell pane's cwd (else the first pane's); absent for an empty workspace. */
     readonly path?: string;
+    /** §2.9 `cascade`: the nested workspaces deleted with it; absent when none were. */
+    readonly deleted_children?: readonly string[];
+    /** Their names, index for index with `deleted_children`; present exactly when it is. */
+    readonly deleted_child_names?: readonly string[];
+}
+
+/** app-state-core.md §2.9 `workspace-nest`. */
+export interface WorkspaceNestReply extends ReplySuccess {
+    readonly workspace_id: string;
+    readonly workspace_name: string;
+    readonly parent_id: string;
+    readonly parent_name: string;
+    /** The workspace's position among the parent's children after the move. */
+    readonly index: number;
 }
 
 /** Delete refusals include visible/parked running, waiting and resumable idle panes. */
@@ -223,6 +263,12 @@ export interface WorkspaceIconReply extends ReplySuccess {
 export interface GroupListMember {
     readonly id: string;
     readonly name: string;
+    /**
+     * app-state-core.md §2.9: set on a member's nested workspace, which follows its parent's group
+     * and is listed right after it. Both present or both absent.
+     */
+    readonly parent_id?: string;
+    readonly parent_name?: string;
 }
 
 export interface GroupListEntry {

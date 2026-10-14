@@ -134,7 +134,7 @@ reply.
 
 | Variable | Read by | Meaning |
 |---|---|---|
-| `KELPI_PANE_ID` | almost all commands | UUID of the caller's pane. Injected by the app into every PTY it spawns. Used (a) as the implicit target for caller-scoped commands, and (b) to scope label resolution to the caller's workspace. |
+| `KELPI_PANE_ID` | almost all commands | UUID of the caller's pane. Injected by the app into every PTY it spawns. Used (a) as the implicit target for caller-scoped commands, (b) to scope label resolution to the caller's workspace, and (c) by `workspace create --nested` as the `parent_pane_id` that names the workspace to nest under (§10.2). |
 | `KELPI_SOCKET` | transport selection | Absent/empty or any value not starting with `tcp:` selects the Unix socket at `/tmp/kelpi.sock` (the unix path itself is NOT configurable). `tcp:<host>:<port>` selects TCP. Malformed `tcp:` values (missing port, non-UInt16 port) silently fall back to the Unix socket. The host may not contain a colon (split on the first `:` after the prefix, max 1 split). |
 | `KELPI_REPLY_TIMEOUT` | reply reading | Positive integer seconds; overrides the default request/response read timeout of **5 seconds**. Non-integer or <=0 values are ignored. |
 | `KELPI_SILENT` | fire-and-forget failure path | If set (to anything), fully suppress the transport-failure `Warning:` stderr lines on fire-and-forget commands. Exit code is unchanged (0). |
@@ -535,6 +535,13 @@ The count is attached to the payload as `background_tasks` (a JSON **number**) o
 }
 ```
 
+Since #387 the payload may also carry hook fields copied from stdin, each only when stdin
+carries it as a non-empty string: `notification_type` and `transcript_path` on
+`notification`; `last_assistant_message` (capped at 64 KiB of UTF-8 on a code point boundary,
+with `"last_assistant_message_truncated": true` only when cut) and `transcript_path` on
+`stop`; `transcript_path` on `session-start`; and `tool_name` on `notification --agent codex`
+(agent-lifecycle.md §3, wire-protocol.md §6.1).
+
 The command label used for warning attribution is `kelpi event <type>`.
 
 ---
@@ -920,26 +927,37 @@ usage to stdout, exit 0; unknown action => `Unknown workspace action: <x>` +
 ### 10.1 `kelpi workspace list`
 
 ```
-kelpi workspace list [--group <name-or-id>] [--json] [--no-header]
+kelpi workspace list [--group <name-or-id>] [--parent <name-or-id>] [--json] [--no-header]
 ```
 
 - Help to stdout, exit 0. Leftovers rejected.
-- Payload: `{"command":"workspace-list", group?}`.
+- Payload: `{"command":"workspace-list", group?, parent?}`. `--parent` lists only the
+  workspaces nested under that one (app-state-core.md §2.9); an unknown or ambiguous one is
+  an `ok:false` error. An empty or whitespace `--parent` (`--parent "$ME"` with `$ME` unset) is
+  refused before anything is sent: `kelpi workspace list: --parent needs a workspace name or id
+  (it was empty)`, exit 1. The filtered reply echoes the parent as top-level `parent_id`; when it
+  is missing (a daemon that predates nesting, which ignores `parent` and lists everything) the
+  CLI prints nothing and exits 1: `kelpi workspace list: the daemon did not apply --parent;
+  restart it on this build (its reply was not filtered, so nothing is printed)`.
 - Reply: `{ok:true, "workspaces":[...]}` in sidebar order (members of collapsed groups
-  included). Each entry (server contract): `id`, `name`, `color`, `pane_count`,
+  included, and each workspace followed by the workspaces nested under it). Each entry (server contract): `id`, `name`, `color`, `pane_count`,
   `is_active`, `created_at`, `last_accessed_at`, `labels` (always present, possibly `[]`),
   `muted` (always present; §10.7), optional `icon` (§10.9; absent for the letter avatar),
   optional `last_activity_at`, optional
   `agent_session_id`, optional
-  `group_id`/`group_name` (both absent for top-level), optional `repos` (the repo
+  `group_id`/`group_name` (both absent for top-level; a nested workspace reports its
+  parent's group), optional `parent_id`/`parent_name` (both absent unless nested), optional
+  `repos` (the repo
   associations: `repo_id`, `repo_name?`, `repo_path?`, `worktree_path`, `branch?`; absent
   when there are none; `--json` only). Timestamps ISO 8601.
 - `--group` scoping an unknown/ambiguous group is an `ok:false` error (distinct from an
   empty group => empty list, exit 0).
 - `--json`: the array unwrapped, compact, sorted keys.
-- Table columns: `ID  NAME  GROUP  PANES  ACTIVE  LABELS`.
+- Table columns: `ID  NAME  GROUP  PANES  ACTIVE  LABELS`, with `PARENT` after GROUP only
+  when some listed workspace is nested (so the table is unchanged for anyone who never nests).
   - ID short-form `first8…last4` (>=12 chars only).
   - GROUP: `group_name` or `-`.
+  - PARENT: `parent_name` or `-`.
   - ACTIVE: `●` when `is_active` else `-`.
   - LABELS: comma-joined (no spaces) or `-`.
   - Width computation like pane list; LABELS (last column) unpadded. Note: LABELS does not
@@ -950,13 +968,37 @@ kelpi workspace list [--group <name-or-id>] [--json] [--no-header]
 ### 10.2 `kelpi workspace create`
 
 ```
-kelpi workspace create [--name "..."] [--path /dir] [--color blue] [--group <name>]
+kelpi workspace create [--name "..."] [--path /dir] [--color blue]
+                     [--group <name> | --parent <name-or-id> | --nested]
                      [--profile <name>] [--repo <path> | --no-repo] [--muted] [--icon <emoji>]
                      [--json]
 kelpi workspace create --worktree <name> [--branch <name>] [--repo <path>]
-                     [--update-main | --no-update-main] [--group <existing>] [--muted]
+                     [--update-main | --no-update-main]
+                     [--group <existing> | --parent <name-or-id> | --nested] [--muted]
                      [--icon <emoji>] [--json]
 ```
+
+- Nesting (app-state-core.md §2.9): `--parent <name-or-id>` sends `parent`; `--nested` sends
+  `parent_pane_id` = `KELPI_PANE_ID`, nesting under the caller's own workspace (an orchestrator
+  spawning a worker). Errors before anything is sent, exit 1: `--parent` with `--nested`
+  (`workspace create can't take both --parent and --nested`); either with `--group`
+  (`workspace create can't take --group with --parent or --nested: a nested workspace follows
+  its parent's group`); `--nested` with no `KELPI_PANE_ID` (`workspace create --nested must run
+  inside a Kelpi pane (KELPI_PANE_ID is not set); use --parent <name-or-id>`); an empty or
+  whitespace `--parent` (`kelpi workspace create: --parent needs a workspace name or id (it was
+  empty)`). With
+  `--worktree` and no `--repo`, a nested create defers the source repo to the parent's group
+  exactly as `--group` does (cwd as `path`). Timeout 30 s, as with `--group`.
+- A reply with `parent_lost: true` (the parent was deleted, or nested, while a `--worktree`
+  create's git work ran; the workspace was made at the top level) exits 1 with
+  `kelpi workspace create: <parent_lost_reason> (workspace <name> (<id>) was created at the top
+  level)`. A reply with neither `parent_id` nor `parent_lost` is a daemon that predates nesting,
+  and exits 1 with the `restart it on this build` message.
+- Nesting confirmation: when `--parent`/`--nested` was passed and the reply has no
+  `parent_id` (a daemon that predates nesting created it at the top level), stderr gets
+  `kelpi workspace create: the daemon did not nest the workspace; restart it on this build
+  (workspace <name> (<id>) was created at the top level)`, exit 1; `--json` prints the reply
+  first. The human line says ` nested under <parent_name>` where it would say ` in group <g>`.
 
 - Help to stdout, exit 0. Leftovers rejected. `--update-main` with `--no-update-main`, or
   `--repo` with `--no-repo`, => an error line, exit 1, nothing sent. An `--icon` that is not
@@ -1019,13 +1061,20 @@ that is not inside a git repository => `ok:false`, nothing created.
 ### 10.3 `kelpi workspace move`
 
 ```
-kelpi workspace move <name-or-id> (--group <name> | --top-level) [--index N]
+kelpi workspace move <name-or-id> (--group <name> | --top-level | --parent <name-or-id>) [--index N]
 ```
 
 - Help to stdout, exit 0. Missing name-or-id => usage to stderr, exit 1.
-- Neither/both of `--group`/`--top-level`:
-  `workspace move requires --group <name> or --top-level` /
-  `workspace move can't take both --group and --top-level`, exit 1.
+- None or more than one of `--group`/`--top-level`/`--parent`:
+  `workspace move requires --group <name>, --top-level or --parent <name-or-id>` /
+  `workspace move takes only one of --group, --top-level and --parent`, exit 1.
+- `--parent` (app-state-core.md §2.9) sends the request/response
+  `{"command":"workspace-nest","name":<name-or-id>,"parent":<name-or-id>, index?}` instead, and
+  prints `nested workspace <name> under <parent>`; a refusal (the parent is nested itself, the
+  workspace has nested ones, unknown names) is the reply's error on stderr, exit 1. An empty or
+  whitespace `--parent` is refused before anything is sent (`kelpi workspace move: --parent
+  needs a workspace name or id (it was empty)`), exit 1.
+  `--group` / `--top-level` also take a nested workspace out of its parent.
 - `--index` must parse as an integer, else `--index must be an integer`, exit 1.
 - Fire-and-forget payload: `{"command":"workspace-move","name":<name-or-id>, group?, index?}`
   where `index` is a native JSON number and `--top-level` is expressed by **omitting**
@@ -1035,8 +1084,18 @@ kelpi workspace move <name-or-id> (--group <name> | --top-level) [--index N]
 ### 10.4 `kelpi workspace delete`
 
 ```
-kelpi workspace delete <name-or-id> [<name-or-id> ...] [--force|-y] [--prune-worktree [--delete-branch]] [--json]
+kelpi workspace delete <name-or-id> [<name-or-id> ...] [--force|-y] [--cascade] [--prune-worktree [--delete-branch]] [--json]
 ```
+
+- `--cascade` adds `"cascade":true`: the workspaces nested under each target are deleted with
+  it (app-state-core.md §2.9); their ids come back as `deleted_children`, copied into the
+  `--json` record, and the human line becomes `deleted workspace <name> and N nested
+  workspace(s)`. Without it they move up into the deleted workspace's place.
+- A later target that an earlier target's cascade already deleted (`kelpi workspace delete boss
+  worker --cascade`, with `worker` nested under `boss`) is not a failure: its `workspace not
+  found` reply is matched against the earlier replies' `deleted_children` ids and
+  `deleted_child_names`, and it prints `workspace worker was already deleted with boss`; its
+  `--json` record is `{id, ok: true, deleted_with: "boss"}`.
 
 - Help to stdout, exit 0.
 - `--force` and `-y` are popped **unconditionally** (both consumed even when passed
@@ -1257,13 +1316,14 @@ kelpi group list [--json] [--no-header]
 
 - Leftover args (after the two switches) => usage line, exit 1.
 - Payload `{"command":"group-list"}`; reply `{ok, "groups":[...]}` where each group has
-  `id`, `name`, `color?`, `workspaces: [{id, name}]` in sidebar order, and, only while the
+  `id`, `name`, `color?`, `workspaces: [{id, name}]` in sidebar order (each member followed by
+  the workspaces nested under it, which add `parent_id` / `parent_name`), and, only while the
   group has a default repository (§11.7), `repo: {id, name, path}` and `create_worktree`.
 - `--json`: the array unwrapped, compact sorted. Empty => `[]`, exit 0.
 - Table: `ID  NAME  COLOR  REPO  WORKSPACES`; ID short-uuid; COLOR falls back `-`; REPO is
   the repository's name, suffixed ` +worktree` when the worktree switch is on, `-` when the
   group has none; WORKSPACES is `name (shortid)` pairs comma-joined (name-less members print
-  just the short id), `-` when empty; last column unpadded.
+  just the short id; a nested one adds ` under <parent>`), `-` when empty; last column unpadded.
 
 ### 11.2 `kelpi group create <name> [--color blue]`
 
@@ -2236,7 +2296,7 @@ optional `pane_id`, `reuse`, `focus` and, from `kelpi md` only, `as: "markdown"`
 Request/response: `ping`, `pane-split`, `pane-create`, `pane-close`, `pane-name`,
 `pane-resize`, `pane-send`, `pane-send-key`, `pane-move-adjacent`, `pane-list`,
 `pane-capture`, `pane-sync`, `pane-sync-exclude`, `workspace-list`, `workspace-create`,
-`workspace-delete`, `workspace-label`, `workspace-mute`, `workspace-rename`,
+`workspace-delete`, `workspace-nest`, `workspace-label`, `workspace-mute`, `workspace-rename`,
 `workspace-icon`, `group-list`, `group-set-repo`, `group-reorder`, `group-sort`,
 `graft-start`, `graft-stop`, `graft-status`, and the web family: `web-open`, `web-navigate`, `web-url`, `web-back`,
 `web-forward`, `web-reload`, `web-capture`, `web-tabs`, `web-tab-new`, `web-tab-close`,

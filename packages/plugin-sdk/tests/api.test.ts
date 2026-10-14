@@ -61,6 +61,70 @@ describe('public SDK over Kelpi command handlers', () => {
         expect(await api.workspaces.remove(created.workspaceID)).toMatchObject({ workspaceID: created.workspaceID, workspaceName: 'Board' });
         expect(await api.workspaces.list()).toHaveLength(1);
     });
+    it('nests workspaces one level deep, lists, collapses and cascades them (app-state-core §2.9)', async () => {
+        const { api, app, sent } = host();
+        const parent = await api.workspaces.create({ name: 'Orchestrator' });
+        const worker = await api.workspaces.create({ name: 'Worker', parentID: parent.workspaceID });
+        expect(worker).toMatchObject({ parentID: parent.workspaceID, parentName: 'Orchestrator' });
+        expect(sent.at(-1)).toMatchObject({ command: 'workspace-create', parent: parent.workspaceID });
+        const listed = await api.workspaces.list({ parentID: parent.workspaceID });
+        expect(listed.map(workspace => workspace.id)).toEqual([worker.workspaceID]);
+        expect(listed[0]).toMatchObject({ parentID: parent.workspaceID, parentName: 'Orchestrator' });
+
+        expect(await api.workspaces.nest(W1, parent.workspaceID, { index: 0 })).toMatchObject({
+            workspaceID: W1, parentID: parent.workspaceID, index: 0
+        });
+        await expect(api.workspaces.nest(parent.workspaceID, W1)).rejects.toThrow('nest one level deep');
+        expect(await api.workspaces.setChildrenCollapsed(parent.workspaceID, true)).toMatchObject({ collapsed: true });
+        expect(app.state().workspaces.find(workspace => workspace.id === parent.workspaceID)?.childrenCollapsed).toBe(true);
+
+        // The last-workspace guard counts the nested workspaces a cascade takes with it.
+        await expect(api.workspaces.remove(parent.workspaceID, { cascade: true })).rejects.toThrow('last workspace');
+        const survivor = await api.workspaces.create({ name: 'Survivor' });
+        const removed = await api.workspaces.remove(parent.workspaceID, { cascade: true });
+        expect(removed.deletedChildren).toEqual([W1, worker.workspaceID]);
+        expect((await api.workspaces.list()).map(workspace => workspace.id)).toEqual([survivor.workspaceID]);
+    });
+    it('refuses an empty parentID before sending, and lists nested workspaces in their group (§2.9)', async () => {
+        const { api, sent } = host();
+        const before = sent.length;
+        for (const parentID of ['', '   ']) {
+            await expect(api.workspaces.create({ name: 'Stray', parentID })).rejects.toMatchObject({ code: 'INVALID_ARGUMENT' });
+            await expect(api.workspaces.list({ parentID })).rejects.toMatchObject({ code: 'INVALID_ARGUMENT' });
+            await expect(api.workspaces.nest(W1, parentID)).rejects.toMatchObject({ code: 'INVALID_ARGUMENT' });
+        }
+        expect(sent.length).toBe(before);
+
+        const lead = await api.workspaces.create({ name: 'Lead' });
+        const group = await api.groups.create('Squad', { workspaceIDs: [lead.workspaceID] });
+        const worker = await api.workspaces.create({ name: 'Worker', parentID: lead.workspaceID });
+        const listed = (await api.groups.list()).find(entry => entry.id === group.groupID);
+        expect(listed?.workspaces).toEqual([
+            { id: lead.workspaceID, name: 'Lead' },
+            { id: worker.workspaceID, name: 'Worker', parentID: lead.workspaceID, parentName: 'Lead' }
+        ]);
+    });
+    it('rejects a parentID list or create that a daemon predating nesting ignored (§2.9)', async () => {
+        // An older daemon: it drops `parent`, lists everything and creates at the top level.
+        const older = createKelpiAPI(async (_method, args) => {
+            const payload = (args as { payload: JsonObject }).payload;
+            if (payload['command'] === 'workspace-list') return { ok: true, workspaces: [{ id: 'A', name: 'a' }, { id: 'B', name: 'b' }] };
+            return { ok: true, workspace_id: 'NEW', workspace_name: 'Worker', muted: false };
+        });
+        await expect(older.workspaces.list({ parentID: 'boss' })).rejects.toMatchObject({ code: 'UNSUPPORTED' });
+        await expect(older.workspaces.list()).resolves.toHaveLength(2);
+        await expect(older.workspaces.create({ name: 'Worker', parentID: 'boss' })).rejects.toMatchObject({
+            code: 'UNSUPPORTED', details: { workspaceID: 'NEW' }
+        });
+        // A parent deleted while a worktree create ran: created at the top level, and said so.
+        const lost = createKelpiAPI(async () => ({
+            ok: true, workspace_id: 'NEW', workspace_name: 'Worker', muted: false,
+            parent_lost: true, parent_lost_reason: "parent 'boss' was deleted while the workspace was being created"
+        }));
+        await expect(lost.workspaces.create({ name: 'Worker', parentID: 'boss', worktree: 'w' })).rejects.toMatchObject({
+            code: 'PARENT_LOST', message: expect.stringContaining("parent 'boss' was deleted")
+        });
+    });
     it('leaves update_main unsaid unless asked, so a group’s worktree switch can decide it (app-state-core §5.5)', async () => {
         const { api, sent } = host();
         const nowhere = path.join(os.tmpdir(), 'kelpi-sdk-no-such-repo');
@@ -322,5 +386,28 @@ describe('public SDK over Kelpi command handlers', () => {
         expect(transport).toHaveBeenLastCalledWith('services.call', { service: 'sample.host.catalog', version: 2, method: 'read', args: { custom_arg: true }, provider: 'sample.host.local' });
         await api.services.select('kelpi.files', 1, null);
         expect(transport).toHaveBeenLastCalledWith('services.select', { service: 'kelpi.files', version: 1, providerID: null });
+    });
+});
+
+describe('agents.onEvent (#387)', () => {
+    it('subscribes to agent.event, hands over the payload, and ignores plugin-emitted look-alikes', async () => {
+        const listeners = new Map<string, (event: { name: string; data: unknown; pluginID?: string }) => unknown>();
+        const dispose = vi.fn();
+        const on = vi.fn((name: string, listener: (event: never) => unknown) => { listeners.set(name, listener as never); return dispose; });
+        const api = createKelpiAPI(async () => null, () => ({}), on as never);
+        const received: unknown[] = [];
+        const off = api.agents.onEvent(event => { received.push(event); });
+        expect(on).toHaveBeenCalledWith('agent.event', expect.any(Function));
+        const data = { type: 'stop', paneID: 'P', workspaceID: 'W', agent: 'claude', status: 'waitingForInput', lastAssistantMessage: 'done' };
+        await listeners.get('agent.event')?.({ name: 'agent.event', data });
+        // A plugin whose ID is `agent` emitting `event` produces the same name, with its pluginID.
+        await listeners.get('agent.event')?.({ name: 'agent.event', data: { type: 'stop' }, pluginID: 'agent' });
+        expect(received).toEqual([data]);
+        off();
+        expect(dispose).toHaveBeenCalledTimes(1);
+    });
+    it('refuses without an event source', () => {
+        const api = createKelpiAPI(async () => null);
+        expect(() => api.agents.onEvent(() => {})).toThrow(expect.objectContaining({ code: 'EVENTS_UNAVAILABLE' }));
     });
 });

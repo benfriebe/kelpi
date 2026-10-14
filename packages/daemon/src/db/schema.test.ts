@@ -42,8 +42,8 @@ describe('migration ledger', () => {
             expect(MIGRATION_IDENTIFIERS).toContain(identifier);
         }
         expect(MIGRATION_IDENTIFIERS[0]).toBe('v1_initial');
-        expect(MIGRATION_IDENTIFIERS.at(-1)).toBe('v25_pane_scratchpad_wrap');
-        expect(MIGRATION_IDENTIFIERS).toHaveLength(25);
+        expect(MIGRATION_IDENTIFIERS.at(-1)).toBe('v26_workspace_nesting');
+        expect(MIGRATION_IDENTIFIERS).toHaveLength(26);
     });
 
     it('is a no-op on the second run', () => {
@@ -54,7 +54,7 @@ describe('migration ledger', () => {
         db.close();
     });
 
-    it('produces the post-v25 schema (§8 + the daemon-only tail)', () => {
+    it('produces the post-v26 schema (§8 + the daemon-only tail)', () => {
         const db = freshDatabase();
         migrate(db);
 
@@ -71,7 +71,9 @@ describe('migration ledger', () => {
             'labelsJSON',
             'icon',
             'profileName',
-            'muted'
+            'muted',
+            'childOrderJSON',
+            'childrenCollapsed'
         ]);
         expect(columnNames(db, 'pane')).toEqual([
             'id',

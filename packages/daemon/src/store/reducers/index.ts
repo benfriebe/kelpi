@@ -31,6 +31,8 @@ const ROUTES = {
     'move-workspace': 'workspace',
     'move-workspace-to-group': 'workspace',
     'move-workspaces-to-group': 'workspace',
+    'nest-workspaces': 'workspace',
+    'set-workspace-children-collapsed': 'workspace',
     'set-bulk-color': 'workspace',
     'set-bulk-label': 'workspace',
     'add-label-preset': 'workspace',

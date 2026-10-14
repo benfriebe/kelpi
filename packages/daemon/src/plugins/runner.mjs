@@ -38,7 +38,7 @@ const on = (name, listener) => {
     set.add(listener); listeners.set(name, set);
     return () => { set.delete(listener); if (set.size === 0) listeners.delete(name); };
 };
-const base = createKelpiAPI(call, () => callContext.getStore()?.context ?? {});
+const base = createKelpiAPI(call, () => callContext.getStore()?.context ?? {}, on);
 const api = Object.freeze({
     ...base,
     events: Object.freeze({ on }),

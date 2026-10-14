@@ -136,6 +136,13 @@ export interface NewEntrySheetProps {
     /** Set when the bulk menu raised this sheet: "Group N selected workspace(s)." */
     readonly workspaceCount?: number | undefined;
     /**
+     * app-state-core.md §2.9: set when "New Nested Workspace…" raised this sheet. The sheet says
+     * where the workspace will go and drops the group picker: a nested workspace follows its
+     * parent, so it has no group of its own. `defaultGroupID` is then the parent's group, which
+     * still prefills the repository and worktree switch (§5.5).
+     */
+    readonly parentName?: string | undefined;
+    /**
      * #283's native folder panel, desktop app only: the New Group sheet's Repository row offers
      * Choose Folder… with it (app-state-core.md §5.5), and shows the row even over an empty
      * registry. Resolves to the chosen path, or null on cancel.
@@ -226,7 +233,7 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
     const groups = props.groups ?? EMPTY_GROUPS;
     const profiles = props.profiles ?? EMPTY_PROFILES;
     const isWorkspace = props.kind === 'workspace';
-    const title = isWorkspace ? 'New Workspace' : 'New Group';
+    const title = isWorkspace ? (props.parentName === undefined ? 'New Workspace' : 'New Nested Workspace') : 'New Group';
 
     const [value, setValue] = useState(props.defaultName ?? '');
     const [color, setColor] = useState<WorkspaceColor | null>(
@@ -867,7 +874,17 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
                         </div>
                     )}
 
-                    {isWorkspace && groups.length > 0 ? (
+                    {isWorkspace && props.parentName !== undefined ? (
+                        <div
+                            data-testid="new-workspace-parent"
+                            className="text-[11px]"
+                            style={{ color: tokens.textSecondary }}
+                        >
+                            Nested under {props.parentName}
+                        </div>
+                    ) : null}
+
+                    {isWorkspace && groups.length > 0 && props.parentName === undefined ? (
                         <label className="flex items-center gap-2">
                             <span className="shrink-0 text-[11px]" style={{ color: tokens.textSecondary }}>
                                 Group

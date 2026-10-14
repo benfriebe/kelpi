@@ -63,13 +63,39 @@ export function selectToasts(state: KelpiState): readonly Toast[] {
 
 // ── sidebar ─────────────────────────────────────────────────────────────────────────
 
+/** app-state-core.md §2.9: parent id → its live nested workspaces, in render order. */
+export type NestedWorkspaces = ReadonlyMap<string, readonly WorkspaceState[]>;
+
 export type SidebarEntry =
-    | { readonly kind: 'workspace'; readonly workspace: WorkspaceState }
+    | {
+          readonly kind: 'workspace';
+          readonly workspace: WorkspaceState;
+          readonly nested?: NestedWorkspaces | undefined;
+      }
     | {
           readonly kind: 'group';
           readonly group: WorkspaceGroup;
           readonly workspaces: readonly WorkspaceState[];
+          readonly nested?: NestedWorkspaces | undefined;
       };
+
+/** The `nested` map for these parents, or undefined when none of them has a live child. */
+function nestedOf(
+    parents: readonly WorkspaceState[],
+    byID: ReadonlyMap<string, WorkspaceState>
+): NestedWorkspaces | undefined {
+    let nested: Map<string, readonly WorkspaceState[]> | undefined;
+    for (const parent of parents) {
+        // `?? []`: a hand-built mirror (or one predating §2.9) may carry no `childOrder`.
+        const children = ((parent.childOrder as readonly string[] | undefined) ?? [])
+            .map((id) => byID.get(id))
+            .filter((workspace): workspace is WorkspaceState => workspace !== undefined);
+        if (children.length === 0) continue;
+        nested ??= new Map();
+        nested.set(parent.id, children);
+    }
+    return nested;
+}
 
 const sidebarEntries = memoOnState((state): readonly SidebarEntry[] => {
     const byID = new Map(state.workspaces.map((workspace) => [workspace.id, workspace]));
@@ -77,7 +103,9 @@ const sidebarEntries = memoOnState((state): readonly SidebarEntry[] => {
     for (const entry of state.topLevelOrder) {
         if (entry.kind === 'workspace') {
             const workspace = byID.get(entry.id);
-            if (workspace !== undefined) entries.push({ kind: 'workspace', workspace });
+            if (workspace === undefined) continue;
+            const nested = nestedOf([workspace], byID);
+            entries.push(nested === undefined ? { kind: 'workspace', workspace } : { kind: 'workspace', workspace, nested });
             continue;
         }
         const group = groupByID(state, entry.id);
@@ -85,7 +113,10 @@ const sidebarEntries = memoOnState((state): readonly SidebarEntry[] => {
         const workspaces = group.childOrder
             .map((id) => byID.get(id))
             .filter((workspace): workspace is WorkspaceState => workspace !== undefined);
-        entries.push({ kind: 'group', group, workspaces });
+        const nested = nestedOf(workspaces, byID);
+        entries.push(
+            nested === undefined ? { kind: 'group', group, workspaces } : { kind: 'group', group, workspaces, nested }
+        );
     }
     return entries;
 });
@@ -118,26 +149,64 @@ export function selectVisibleWorkspaces(state: KelpiState): readonly WorkspaceSt
     return visibleWorkspaces(state.daemon.state);
 }
 
+/**
+ * §2.6: name OR any label, exactly the chrome's `workspaceMatchesFilter`. It also matched the
+ * slug once, which the sidebar's own filter never did: a parent kept only because a child's
+ * slug matched then rendered nothing at all.
+ */
 function matchesFilter(workspace: WorkspaceState, needle: string): boolean {
     if (workspace.name.toLowerCase().includes(needle)) return true;
-    if (workspace.slug.toLowerCase().includes(needle)) return true;
     return workspace.labels.some((label) => label.toLowerCase().includes(needle));
 }
 
-/** Sidebar entries narrowed by the UI filter; a group survives if any member matches. */
+/**
+ * §2.9: the matching children of each parent, and the parents that must stay because they or a
+ * child match. A parent kept only for its children still renders (the sidebar's filtered list
+ * re-checks every row), so a matching child keeps the path to it.
+ */
+function filterNested(
+    nested: NestedWorkspaces | undefined,
+    needle: string
+): { readonly nested: NestedWorkspaces | undefined; readonly parents: ReadonlySet<string> } {
+    if (nested === undefined) return { nested: undefined, parents: new Set() };
+    const kept = new Map<string, readonly WorkspaceState[]>();
+    for (const [parentID, children] of nested) {
+        const matching = children.filter((workspace) => matchesFilter(workspace, needle));
+        if (matching.length > 0) kept.set(parentID, matching);
+    }
+    return { nested: kept.size === 0 ? undefined : kept, parents: new Set(kept.keys()) };
+}
+
+/**
+ * Sidebar entries narrowed by the UI filter; a group survives if any member matches, and a
+ * workspace survives if it or one of its nested workspaces matches (§2.9).
+ */
 export function selectFilteredSidebarEntries(state: KelpiState): readonly SidebarEntry[] {
     const needle = state.ui.sidebarFilter.trim().toLowerCase();
     const entries = selectSidebarEntries(state);
     if (needle.length === 0) return entries;
     const filtered: SidebarEntry[] = [];
     for (const entry of entries) {
+        const { nested, parents } = filterNested(entry.nested, needle);
         if (entry.kind === 'workspace') {
-            if (matchesFilter(entry.workspace, needle)) filtered.push(entry);
+            if (matchesFilter(entry.workspace, needle) || parents.has(entry.workspace.id)) {
+                filtered.push(
+                    nested === undefined
+                        ? { kind: 'workspace', workspace: entry.workspace }
+                        : { kind: 'workspace', workspace: entry.workspace, nested }
+                );
+            }
             continue;
         }
-        const workspaces = entry.workspaces.filter((workspace) => matchesFilter(workspace, needle));
+        const workspaces = entry.workspaces.filter(
+            (workspace) => matchesFilter(workspace, needle) || parents.has(workspace.id)
+        );
         if (workspaces.length > 0 || entry.group.name.toLowerCase().includes(needle)) {
-            filtered.push({ kind: 'group', group: entry.group, workspaces });
+            filtered.push(
+                nested === undefined
+                    ? { kind: 'group', group: entry.group, workspaces }
+                    : { kind: 'group', group: entry.group, workspaces, nested }
+            );
         }
     }
     return filtered;

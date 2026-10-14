@@ -1,7 +1,7 @@
 import { pluginAssetsRoute } from '../plugins/http.js';
 import { PluginService } from '../plugins/service.js';
 import { createPluginGitService } from '../plugins/git-service.js';
-import { pluginObject } from '@kelpi/protocol';
+import { pluginObject, type JsonValue } from '@kelpi/protocol';
 /**
  * Composition root: every seam in `../seams.ts` gets its concrete implementation here, and
  * nothing else in the daemon knows how the pieces are wired.
@@ -1469,6 +1469,10 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         persistNow,
         // A restart of old terminals (#372): the dying agent's hooks must not touch the pane.
         agentEventsMuted: (paneID) => mutedAgentPanes.has(paneID),
+        // #387: one `agent.event` per hook line, onto the plugin event bus (plugins only).
+        emitAgentEvent: (event) => {
+            pluginHost?.emitDaemonEvent('agent.event', event as unknown as JsonValue);
+        },
         spawnPane: (request) => {
             spawnPaneIfShell(ctx, request.workspaceID, request.paneID);
         },

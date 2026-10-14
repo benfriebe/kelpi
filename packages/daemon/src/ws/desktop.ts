@@ -135,6 +135,7 @@ import {
 
 import type { EditorResolver } from '../content/external-editor.js';
 import { formatEditorCommand } from '../content/external-editor.js';
+import { CLOSERS, OPENERS, PROSE_BREAK, TRAILING_PUNCTUATION, urlEnd } from '../content/url-end.js';
 import {
     refreshSyncGroup,
     spawnEnvVars,
@@ -280,25 +281,27 @@ const BOX_DRAWING_BREAK: ReadonlySet<string> = (() => {
  * Characters that can never be *inside* a clicked path token.
  *
  * Whitespace ends a token; the quote/bracket/pipe set is the shell-and-prose punctuation that
- * wraps paths in real terminal output (`cat "notes.md"`, `<docs/a.md>`, `foo | bar`). Everything
- * else — including `(`, `)`, `[`, `]`, `-`, `_`, `.` — stays, because those appear in real file
- * names; the trailing-punctuation trim below is what handles them at the edges.
+ * wraps paths in real terminal output (`cat "notes.md"`, `<docs/a.md>`, `foo | bar`), and
+ * `PROSE_BREAK` is its typographic cousin (curly quotes, an em dash, an ellipsis) that an agent
+ * glues straight onto a link (`(https://…)—it fixes`). Everything else — including `(`, `)`,
+ * `[`, `]`, `-`, `_`, `.` — stays, because those appear in real file names; the trims below are
+ * what handle them at the edges.
  */
-const TOKEN_BREAK = new Set([' ', '\t', '\n', '\r', '"', "'", '`', '<', '>', '|', ...BOX_DRAWING_BREAK]);
-/** Wrappers stripped from both ends when they are balanced around the token. */
-const WRAPPERS: ReadonlyArray<readonly [string, string]> = [
-    ['(', ')'],
-    ['[', ']'],
-    ['{', '}']
-];
+const TOKEN_BREAK = new Set([' ', '\t', '\n', '\r', '"', "'", '`', '<', '>', '|', ...PROSE_BREAK, ...BOX_DRAWING_BREAK]);
+/** Trimmed off the end of a path token: sentence punctuation, and `?` and `!` (`did you read notes.md?`). */
+const PATH_TRAILING: ReadonlySet<string> = new Set([...TRAILING_PUNCTUATION, '?', '!']);
 
 /**
  * The token under `offset` in `line`, with the Swift trimming rules applied.
  *
  * `GhosttyApp.swift:267-292` trimmed trailing whitespace (ghostty's URL regex pads a match to
- * end-of-line) and then trailing dots. We do both, and additionally drop trailing prose
- * punctuation (`,;:`) and a balanced wrapper pair, because a token here comes from a plain-text
- * scan rather than a URL regex and therefore keeps punctuation the regex would have excluded.
+ * end-of-line) and then trailing dots. A token here comes from a plain-text scan rather than a
+ * URL regex, so it keeps the prose the regex would have excluded, and more comes off:
+ *
+ * - a token holding a `scheme://` is that link and nothing else. What comes before the scheme
+ *   is dropped (`(https://…`, `[docs](https://…`, `foo:https://…`) and `urlEnd` says where the
+ *   link stops, which is the markdown preview's rule too;
+ * - any other token is a path, and loses brackets and punctuation from its ends (`pathRange`).
  */
 export function tokenAt(line: string, offset: number): string | null {
     const range = tokenRangeAt(line, offset);
@@ -316,23 +319,86 @@ export function tokenRangeAt(line: string, offset: number): { start: number; end
     while (start > 0 && !TOKEN_BREAK.has(line[start - 1] as string)) start -= 1;
     let end = offset + 1;
     while (end < line.length && !TOKEN_BREAK.has(line[end] as string)) end += 1;
-    const token = (): string => line.slice(start, end);
+    return linkRange(line, start, end, offset) ?? pathRange(line, start, end);
+}
 
-    for (const [open, close] of WRAPPERS) {
-        while (token().startsWith(open) && token().endsWith(close) && end - start > 1) {
-            start += 1;
-            end -= 1;
+/**
+ * The link in the token `[start, end)` that the cell at `offset` belongs to, or null when the
+ * token holds no `scheme://`. A token can hold more than one (`[https://a](https://b)`): the cell
+ * picks, and a cell before the first link or after the last answers the nearest one, the way a
+ * hover over a trimmed full stop answers the URL before it. A scheme inside a link is part of it
+ * (`https://x/?next=https://y`), because each link is read to its end before the next is looked for.
+ */
+function linkRange(line: string, start: number, end: number, offset: number): { start: number; end: number } | null {
+    let from = schemeStart(line, start, end);
+    if (from < 0) return null;
+    for (;;) {
+        const to = urlEnd(line, from, end);
+        const next = offset < to ? -1 : schemeStart(line, to, end);
+        if (next < 0) return { start: from, end: to };
+        from = next;
+    }
+}
+
+/**
+ * Where the first `scheme://` in `line[from, to)` starts (the `SCHEME_ANCHOR` rule: a letter,
+ * then letters, digits, `+`, `.` or `-`), or -1. Found from each `://` backwards rather than by
+ * an unanchored regex, which retries every start position and is quadratic on a long word.
+ */
+function schemeStart(line: string, from: number, to: number): number {
+    for (let colon = line.indexOf('://', from); colon >= 0 && colon + 3 <= to; colon = line.indexOf('://', colon + 1)) {
+        let start = colon;
+        while (start > from && SCHEME_CHARACTER.test(line[start - 1] as string)) start -= 1;
+        while (start < colon && !ASCII_LETTER.test(line[start] as string)) start += 1;
+        if (start < colon) return start;
+    }
+    return -1;
+}
+const SCHEME_CHARACTER = /[a-zA-Z0-9+.-]/;
+const ASCII_LETTER = /[a-zA-Z]/;
+
+/**
+ * A path token `[start, end)` with prose taken off its ends, or null when nothing is left.
+ *
+ * Brackets are paired once over the whole token, so a bracket comes off only when it has no
+ * partner (`see notes.md)`, `(draft.md is ready`) or when its partner is at the other end
+ * (`(notes.md)`, `((notes.md)).`). Brackets that belong to the name stay: `a(1).md`, `(a)(b)`.
+ * Trailing `PATH_TRAILING` comes off too, in any order with the brackets: `see (notes.md),` and
+ * `see notes.md.,` both land on `notes.md`. Every step drops a character, so it is one pass.
+ */
+function pathRange(line: string, start: number, end: number): { start: number; end: number } | null {
+    const base = start;
+    const partner = new Int32Array(end - start).fill(-1);
+    const open: number[] = [];
+    for (let index = start; index < end; index += 1) {
+        const char = line[index] as string;
+        if (OPENERS.has(char)) {
+            open.push(index);
+        } else if (CLOSERS.has(char)) {
+            const top = open[open.length - 1];
+            if (top !== undefined && OPENERS.get(line[top] as string) === char) {
+                open.pop();
+                partner[top - base] = index;
+                partner[index - base] = top;
+            }
         }
     }
-    // Trailing dots first (the Swift rule), then prose punctuation, then dots again so
-    // `see notes.md.,` lands on `notes.md`.
-    for (let pass = 0; pass < 2; pass++) {
-        while (token().endsWith('.')) end -= 1;
-        while (token().endsWith(',') || token().endsWith(';') || token().endsWith(':')) end -= 1;
+    const partnerOf = (index: number): number => partner[index - base] as number;
+    while (end > start) {
+        const first = line[start] as string;
+        const last = line[end - 1] as string;
+        if (PATH_TRAILING.has(last) || (CLOSERS.has(last) && partnerOf(end - 1) < 0)) {
+            end -= 1;
+        } else if (OPENERS.has(first) && partnerOf(start) < 0) {
+            start += 1;
+        } else if (OPENERS.has(first) && partnerOf(start) === end - 1) {
+            start += 1;
+            end -= 1;
+        } else {
+            return { start, end };
+        }
     }
-    while (token().endsWith(')') && !token().includes('(')) end -= 1;
-    while (token().endsWith(']') && !token().includes('[')) end -= 1;
-    return end <= start ? null : { start, end };
+    return null;
 }
 
 /**

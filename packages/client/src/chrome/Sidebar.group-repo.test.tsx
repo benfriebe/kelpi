@@ -309,6 +309,38 @@ describe('the New Workspace sheet’s prefill from the group (§5.5)', () => {
         expect(extras).toMatchObject({ repoPaths: ['/src/app'] });
     });
 
+    it('prefills a nested create from its parent’s group, still sending the parent and no group (§2.9)', async () => {
+        const CHILD = 'aaaaaaaa-0000-4000-8000-000000000009';
+        const nested: ChromeSidebarEntry[] = [
+            {
+                kind: 'group',
+                group: group(G_WORKTREE, 'app-team', { repoID: 'r1', createWorktree: true }),
+                workspaces: [{ ...workspace(W1, 'alpha'), childOrder: [CHILD] }],
+                nested: new Map([[W1, [workspace(CHILD, 'alpha-worker')]]])
+            }
+        ];
+        const onCreateWorkspace = renderSheetHost({ entries: nested });
+        const parentRow = screen
+            .getAllByTestId('workspace-row')
+            .find((element) => element.dataset['workspaceId'] === W1) as HTMLElement;
+        fireEvent.contextMenu(parentRow);
+        fireEvent.click(screen.getByText('New Nested Workspace…'));
+        expect(screen.queryByTestId('new-workspace-group')).toBeNull();
+        expect(chosenRepos()).toEqual(['r1']);
+        expect(toggle()?.checked).toBe(true);
+        expect(updateMain()?.checked).toBe(true);
+
+        fireEvent.change(screen.getByLabelText('New workspace name'), { target: { value: 'worker-b' } });
+        fireEvent.click(screen.getByTestId('new-workspace-submit'));
+        await waitFor(() => {
+            expect(onCreateWorkspace).toHaveBeenCalledTimes(1);
+        });
+        const [, groupID, worktree, extras] = onCreateWorkspace.mock.calls[0] as unknown[];
+        expect(groupID).toBeNull();
+        expect(worktree).toMatchObject({ repoID: 'r1', name: 'worker-b', updateMain: true });
+        expect(extras).toMatchObject({ repoPaths: ['/src/app'], parentID: W1 });
+    });
+
     it('prefills only the repo when the switch is off, and nothing for a repo-less group', () => {
         renderSheetHost();
         newWorkspaceFrom('infra-team');

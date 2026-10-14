@@ -182,7 +182,7 @@ function messageOf(error: unknown): string {
 }
 
 const WORKSPACE_COLUMNS =
-    '"id","name","color","layoutJSON","focusedPaneID","createdAt","lastAccessedAt","sortOrder","slug","labelsJSON","icon","profileName","muted"';
+    '"id","name","color","layoutJSON","focusedPaneID","createdAt","lastAccessedAt","sortOrder","slug","labelsJSON","icon","profileName","muted","childOrderJSON","childrenCollapsed"';
 const PANE_COLUMNS =
     '"id","workspaceID","label","type","workingDirectory","createdAt","lastActivityAt","agentSessionID","status","filePath","content","webURL","webTabsJSON","webActiveTabID","webIsPrivate","agentKind","agentProfileName","pluginJSON","pluginParked","csvHeaderRow","terminalFontSize","scratchpadWrap"';
 const REPO_COLUMNS = '"id","path","name","remoteURL","lastAccessedAt","isAutoDiscovered"';
@@ -194,7 +194,7 @@ function placeholders(count: number): string {
     return new Array(count).fill('?').join(',');
 }
 
-const INSERT_WORKSPACE = `INSERT INTO "workspace" (${WORKSPACE_COLUMNS}) VALUES (${placeholders(13)})`;
+const INSERT_WORKSPACE = `INSERT INTO "workspace" (${WORKSPACE_COLUMNS}) VALUES (${placeholders(15)})`;
 const INSERT_PANE = `INSERT INTO "pane" (${PANE_COLUMNS}) VALUES (${placeholders(22)})`;
 const INSERT_REPO = `INSERT INTO "repo" (${REPO_COLUMNS}) VALUES (${placeholders(6)})`;
 const INSERT_REPO_ASSOCIATION = `INSERT INTO "repoAssociation" (${REPO_ASSOCIATION_COLUMNS}) VALUES (${placeholders(6)})`;
@@ -381,7 +381,9 @@ export function createPersistence(options: PersistenceOptions = {}): SqlitePersi
                         row.labelsJSON,
                         row.icon,
                         row.profileName,
-                        row.muted
+                        row.muted,
+                        row.childOrderJSON,
+                        row.childrenCollapsed
                     );
                 }
                 for (const row of rows.panes) {

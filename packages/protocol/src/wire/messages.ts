@@ -33,6 +33,15 @@ export interface AgentStopMessage {
     command: 'stop';
     pane_id: string;
     background_tasks: number;
+    /**
+     * #387: the text of the agent's final reply (Claude's Stop `last_assistant_message`),
+     * non-empty, capped by the CLI at 64 KiB of UTF-8. Optional: absent from older CLIs.
+     */
+    last_assistant_message?: string | undefined;
+    /** #387: present (and `true`) only when the CLI cut `last_assistant_message` to its cap. */
+    last_assistant_message_truncated?: true | undefined;
+    /** #387: the hook's `transcript_path`, non-empty. Optional: absent from older CLIs. */
+    transcript_path?: string | undefined;
 }
 
 export interface AgentErrorMessage {
@@ -47,6 +56,15 @@ export interface AgentNotificationMessage {
     title: string;
     body: string;
     background_tasks: number;
+    /**
+     * #387: Claude's Notification `notification_type` (`permission_prompt`, `idle_prompt`,
+     * `elicitation_dialog`, ...), non-empty. Optional: absent from older CLIs.
+     */
+    notification_type?: string | undefined;
+    /** #387: the hook's `transcript_path`, non-empty. Optional: absent from older CLIs. */
+    transcript_path?: string | undefined;
+    /** #387: the tool a Codex PermissionRequest asks about, non-empty. Optional. */
+    tool_name?: string | undefined;
 }
 
 export interface SessionStartMessage {
@@ -60,6 +78,8 @@ export interface SessionStartMessage {
      * absent from older CLIs.
      */
     profile?: string | undefined;
+    /** #387: the hook's `transcript_path`, non-empty. Optional: absent from older CLIs. */
+    transcript_path?: string | undefined;
 }
 
 export interface SessionEndMessage {
@@ -210,6 +230,8 @@ export interface PaneSyncExcludeMessage extends PaneTargetScope {
 export interface WorkspaceListMessage {
     command: 'workspace-list';
     group?: string | undefined;
+    /** app-state-core.md §2.9: list only the workspaces nested under this one (name-or-id). */
+    parent?: string | undefined;
 }
 
 export interface WorkspaceCreateMessage {
@@ -241,6 +263,29 @@ export interface WorkspaceCreateMessage {
      * the group's defaults and the user's final choice is in the request, including "no repo".
      */
     group_defaults: boolean;
+    /**
+     * app-state-core.md §2.9: nest the new workspace under this one (name-or-id). The child
+     * follows its parent's placement, so it cannot be combined with `group`.
+     */
+    parent?: string | undefined;
+    /**
+     * §2.9: nest under the workspace holding this pane (`kelpi workspace create --nested`
+     * forwards `KELPI_PANE_ID`). Exclusive with `parent`.
+     */
+    parent_pane_id?: string | undefined;
+}
+
+/**
+ * app-state-core.md §2.9: nest an existing workspace under another, or reorder it among that
+ * parent's children. Request/response, unlike `workspace-move`, because nesting can be refused
+ * (one level deep) and the caller needs to hear why. Un-nesting is `workspace-move`.
+ */
+export interface WorkspaceNestMessage {
+    command: 'workspace-nest';
+    name: string;
+    parent: string;
+    /** Post-remove index among the parent's children; absent = append. */
+    index?: number | undefined;
 }
 
 export interface WorkspaceMoveMessage {
@@ -273,6 +318,11 @@ export interface WorkspaceDeleteMessage {
      * state unreachable by any gesture. This is that asymmetry, restored.
      */
     allow_last?: boolean | undefined;
+    /**
+     * app-state-core.md §2.9: delete the workspace's nested workspaces with it. Absent or false
+     * promotes them into the parent's sidebar slot instead.
+     */
+    cascade?: boolean | undefined;
     /**
      * Worktree cleanup (graft-git.md §8.7): the linked worktrees (paths, as the preview named
      * them) that go with this workspace and its batch: a delete dialog's ticked rows. Only a
@@ -746,6 +796,7 @@ export type WireMessage =
     | WorkspaceListMessage
     | WorkspaceCreateMessage
     | WorkspaceMoveMessage
+    | WorkspaceNestMessage
     | WorkspaceDeleteMessage
     | WorkspaceProfileMessage
     | WorkspaceLabelMessage
@@ -812,6 +863,7 @@ export const EXPLICIT_CHAIN_COMMANDS: ReadonlySet<WireCommandName> = new Set([
     'workspace-create',
     'workspace-list',
     'workspace-move',
+    'workspace-nest',
     'workspace-delete',
     'workspace-profile',
     'workspace-label',

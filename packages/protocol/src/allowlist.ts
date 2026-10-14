@@ -28,6 +28,7 @@ export const REPLY_COMMANDS: ReadonlySet<WireCommandName> = new Set([
     'pane-sync-exclude',
     'workspace-create',
     'workspace-delete',
+    'workspace-nest',
     'workspace-label',
     'workspace-mute',
     'workspace-rename',

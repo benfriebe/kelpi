@@ -15,7 +15,7 @@ export const globalUsage = `Usage:
   kelpi plugin init|validate|pack|dev [--help]
   kelpi plugin list|contributions|install|enable|disable|reload|remove|history|rollback|logs [--help]
   kelpi plugin open|run|settings|watch|services|service-call|service-select [--help]
-  kelpi event stop|start|error|notification|session-start|session-end [--agent claude|codex] [--message ...] [--title ...] [--body ...]
+  kelpi event stop|start|error|notification|session-start|session-end|permission-request [--agent claude|codex] [--message ...] [--title ...] [--body ...]
   kelpi pane split [--direction horizontal|vertical] [--path /dir] [--name <label>] [--target <name-or-uuid>] [--focus]
   kelpi pane create [--path /dir] [--name <label>] [--target <name-or-uuid>] [--focus]
   kelpi pane close [--target <name-or-uuid>] [--workspace <name-or-uuid>]
@@ -125,8 +125,9 @@ Options:
   --json               Print one structured result object instead of progress.
   -h, --help           Show this help.
 
-Writes five Claude hooks (UserPromptSubmit/Stop/Notification/SessionStart —
-matcher-less, so resumed sessions bind too — and SessionEnd) and four Codex
+Writes six Claude hooks (UserPromptSubmit/Stop/Notification/SessionStart,
+matcher-less so resumed sessions bind too; SessionEnd; and PermissionRequest
+with a 5 s timeout) and four Codex
 hooks with --agent codex (Codex has no SessionEnd or Notification event;
 PermissionRequest carries the approval signal). An existing file is copied to
 <file>.kelpi-backup before it changes; a file that is not valid JSON is refused,

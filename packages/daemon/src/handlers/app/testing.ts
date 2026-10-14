@@ -45,6 +45,8 @@ export interface CapturedReply {
     /** Store state at the moment each payload was written — proves reply-before-effect. */
     readonly states: DaemonState[];
     readonly closed: boolean;
+    /** The requester left before the reply (a CLI whose guard fired): the handle reads closed. */
+    disconnect(): void;
 }
 
 export interface RecordedSpawn extends SpawnPaneRequest {}
@@ -246,6 +248,9 @@ export function harness(options: HarnessOptions = {}): Harness {
                 states,
                 get closed() {
                     return closed;
+                },
+                disconnect() {
+                    closed = true;
                 }
             });
         }

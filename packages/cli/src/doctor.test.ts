@@ -309,7 +309,8 @@ describe('hooks', () => {
             Notification: [{ hooks: [{ type: 'command', command: 'kelpi event notification' }] }],
             SessionStart: [{ hooks: [{ type: 'command', command: 'kelpi event session-start' }] }],
             SessionEnd: [{ hooks: [{ type: 'command', command: 'kelpi event session-end' }] }],
-            UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'kelpi event start' }] }]
+            UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'kelpi event start' }] }],
+            PermissionRequest: [{ hooks: [{ type: 'command', command: 'kelpi event permission-request', timeout: 5 }] }]
         }
     });
 
@@ -351,6 +352,15 @@ describe('hooks', () => {
         expect(check.detail).toContain('missing hook(s): Notification → `kelpi event notification`');
         expect(check.detail).toContain('SessionStart matcher "startup" misses source(s): resume, clear, compact');
         expect(check.detail).toContain('issue #181');
+    });
+
+    it('warns on a five-hook install from before PermissionRequest (#388), naming the repair', () => {
+        const fiveHooks = JSON.parse(wired) as { hooks: Record<string, unknown> };
+        delete fiveHooks.hooks['PermissionRequest'];
+        const check = claudeHooksCheck(fsWith({ '/Users/t/.claude/settings.json': JSON.stringify(fiveHooks) }), '/Users/t');
+        expect(check.status).toBe('WARN');
+        expect(check.detail).toContain('missing hook(s): PermissionRequest → `kelpi event permission-request`');
+        expect(check.repair).toContain('kelpi install-hooks');
     });
 
     it('flags disableAllHooks, taking the LAST file that defines it', () => {

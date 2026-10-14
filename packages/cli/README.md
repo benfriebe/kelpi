@@ -46,6 +46,7 @@ kelpi install-hooks [--claude-dir <dir>] [--codex-dir <dir>] [--command <prefix>
 | It writes | Where | Events |
 |---|---|---|
 | 5 Claude Code hooks | `~/.claude/settings.json` (`--claude-dir`) | `Stop`, `Notification`, `SessionStart` (**matcher-less**), `SessionEnd`, `UserPromptSubmit` |
+| 1 more Claude Code hook (#388) | the same file | `PermissionRequest` (`kelpi event permission-request`, `"timeout": 5`) |
 | 4 Codex CLI hooks, `--agent codex` | `~/.codex/hooks.json` (`--codex-dir`), only when the directory exists | `Stop`, `PermissionRequest`, `SessionStart`, `UserPromptSubmit` |
 
 Behaviour carried over verbatim from the Python, and verified byte-for-byte against goldens it

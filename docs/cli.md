@@ -30,7 +30,8 @@ executable), symlinked into `/usr/local/bin` (or `$KELPI_INSTALL_DIR`) by
 
 1. **Agent hook entrypoint** (`kelpi event ...`): Claude Code and Codex CLI lifecycle hooks
    call it on every Stop/Start/Notification/SessionStart/SessionEnd fire. These must be
-   silent, fast, and never fail (exit 0 even when the app is not running).
+   silent, fast, and never fail (exit 0 even when the app is not running). Claude Code's
+   PermissionRequest hook also calls it, and waits for its answer (section 8.7).
 2. **Scripting/orchestration surface**: everything else (`pane`, `workspace`, `group`,
    `layout`, `open`, `md`, `diff`, `document`, `graft`, `web`, `plugin`, `doctor`, `install-hooks`). These are used
    by humans and by orchestrator agents (the `kelpi-agentic` skill), and mostly follow
@@ -281,7 +282,7 @@ Suppression logic:
 
 ### 5.7 Fire-and-forget command list
 
-`event *` (all six), `pane move <direction>`, `pane move-to-workspace`, `workspace move`,
+`event *` (all six lifecycle verbs; `event permission-request` is request/response, section 8.7), `pane move <direction>`, `pane move-to-workspace`, `workspace move`,
 `workspace profile`, `group create`, `group rename`, `group delete`, `layout cycle`,
 `layout select`, `open` (markdown route), `md`, `diff`.
 
@@ -434,16 +435,17 @@ most `web` verbs, `md`/`open` after the first positional).
 ## 8. `kelpi event` (hook entrypoint)
 
 ```
-kelpi event stop|start|error|notification|session-start|session-end
+kelpi event stop|start|error|notification|session-start|session-end|permission-request
           [--agent claude|codex] [--message ...] [--title ...] [--body ...]
 ```
 
-Fire-and-forget. Warnings auto-suppressed unless `KELPI_VERBOSE_HOOKS` is set.
+Fire-and-forget, except `permission-request` (section 8.7). Warnings auto-suppressed unless
+`KELPI_VERBOSE_HOOKS` is set.
 
 Parsing/validation order:
 
 1. Missing event type: usage line to stderr, exit 1.
-2. Event type not in `{stop, start, error, notification, session-start, session-end}`:
+2. Event type not in `{stop, start, error, notification, session-start, session-end, permission-request}`:
    `Unknown event type: <x>` + `Valid events: ...` to stderr, exit 1.
 3. `requirePaneID()`: silently exit 0 when `KELPI_PANE_ID` is unset.
 4. Parse `--message`, `--title`, `--body`, `--agent`.
@@ -543,6 +545,70 @@ with `"last_assistant_message_truncated": true` only when cut) and `transcript_p
 (agent-lifecycle.md §3, wire-protocol.md §6.1).
 
 The command label used for warning attribution is `kelpi event <type>`.
+
+### 8.7 `kelpi event permission-request` (#388)
+
+Claude Code's `PermissionRequest` hook (installed with `"timeout": 5`, section 17). The one
+request/reply verb in the family: it asks the daemon for a decision and prints Claude's
+decision JSON on stdout (`packages/cli/src/commands/event.ts`, `handlePermissionRequest`).
+
+After steps 1 to 5 of section 8 (so outside Kelpi, with no `KELPI_PANE_ID`, the hook exits
+0 at once and sends nothing):
+
+1. `--agent codex`: exit 0 and send nothing (Codex decisions are out of scope; a warning
+   only under `KELPI_VERBOSE_HOOKS`).
+2. Read stdin as in section 8.1. No stdin, or a `tool_name` that is missing, empty or not a
+   string: exit 0 and send nothing.
+3. Send this request and read one reply line (`sendJSONAndReadReply`, `timeoutSeconds: 3`):
+
+```json
+{
+  "command": "permission-request",
+  "pane_id": "<KELPI_PANE_ID>",
+  "tool_name": "Bash",
+  "tool_input": {"command": "mv a b"}, // stdin's object; {} when absent or not an object
+  "mcp_server": "linear",              // only when stdin carries it as a non-empty string (MCP tools)
+  "cwd": "/work/app",                  // only when non-empty
+  "permission_mode": "default",        // only when non-empty
+  "session_id": "...",                 // only when non-empty
+  "profile": "work"                    // only beside session_id, when KELPI_PROFILE is non-empty
+}
+```
+
+   `profile` rides beside `session_id` as on the other verbs, since a PermissionRequest may be
+   the first hook after a missed SessionStart and its dual-fire binds the session. No `agent`.
+   The other stdin fields Claude sends (`transcript_path`,
+   `permission_suggestions`, `scratchpad_dir`, `prompt_id`, `effort`, `hook_event_name`) are
+   not forwarded.
+4. Print according to the reply, then exit 0:
+
+| Reply | stdout |
+| :- | :- |
+| `{"ok":true,"behavior":"allow"}` | `{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}` and a newline |
+| `{"ok":true,"behavior":"deny","message":"<m>"}` | `{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"<m>"}}}` and a newline; `message` omitted when the reply has none or an empty one |
+| `{"ok":true,"behavior":"abstain"}`, any other behavior, a reply without `ok:true`, `{"ok":false,"error":...}`, an empty reply, invalid JSON, a transport failure | nothing |
+
+A deny never carries `interrupt`: Claude drops the message and treats it like the user
+pressing Escape. The reply's `provider` field is not printed.
+
+Timeouts: the daemon answers within about 2 s; the reply read times out after 3 s of
+silence; and a hard guard ends the process with exit 0 and nothing printed 3.5 s after the
+verb starts, whatever the transport is doing (a refused pane route alone is retried for 5 s,
+section 5). The guard is a `setTimeout` that calls `process.exit(0)`, cleared as soon as a
+decision is made, so a fast answer exits at once. Claude keeps a hook running even after the
+user answers its prompt, so the CLI bounds its own runtime; the installed 5 s hook timeout is
+the backstop.
+
+The guard can only fire once stdin is read (`readStdinJSON` reads it synchronously);
+Claude's 5 s hook timeout covers a stdin that never closes.
+
+The wire request and reply are in [wire-protocol.md §6.1.1](wire-protocol.md), and the
+provider contract in [plugin-services.md, "Agent permission decisions"](plugin-services.md).
+
+Fail open: a silent exit 0 is "no decision" to Claude, which shows its normal permission
+prompt. Every failure therefore ends at the prompt, never at "allow". Transport failures exit
+0 through the section 5.6 path; `ok:false`, empty and invalid replies and the guard print a
+`Warning:` line to stderr only under `KELPI_VERBOSE_HOOKS`.
 
 ---
 
@@ -2016,6 +2082,7 @@ const expectedHooks: Array<[event: string, command: string]> = [
   ["SessionStart",     "kelpi event session-start"],
   ["SessionEnd",       "kelpi event session-end"],
   ["UserPromptSubmit", "kelpi event start"],
+  ["PermissionRequest", "kelpi event permission-request"],
 ];
 const sessionStartSources = ["startup", "resume", "clear", "compact"];
 ```
@@ -2165,14 +2232,15 @@ Steps, in order:
    is unknowable). Hooks run in the agent's non-interactive shell, so a bare `kelpi` is only
    written when `PATH` really resolves it.
 3. **Claude Code hooks** into `<claude-dir>/settings.json`
-   (`packages/cli/src/install/hooks.ts:100`): the five `expectedHooks` events, each as one
+   (`packages/cli/src/install/hooks.ts:100`): the six `expectedHooks` events, each as one
    matcher-less group with one `{"type":"command","command":"<prefix> event <x>"}` hook
    (matcher-less SessionStart fires for all sources: startup/resume/clear/compact), merged per
    section 18. Absent file => created (directory `mkdir -p`'d); existing file => copied to
    `<file>.kelpi-backup` then rewritten, or reported `already up to date` when the merged
    bytes are identical (no write, no backup); not valid JSON => `failed` with
    `<file> is not valid JSON — refusing to overwrite it. Fix or move the file, then re-run.`,
-   nothing written.
+   nothing written. The `PermissionRequest` hook (#388, section 8.7) comes last and also
+   carries `"timeout": 5` (seconds); an install from before it gains it on a re-run.
 4. **Skill install** (`packages/cli/src/install/skill.ts:81`): `SKILL.md` copied to
    `<claude-dir>/skills/kelpi-agentic/SKILL.md` from `--skill-source` (exclusive when given),
    else `<bundle dir>/skills/kelpi-agentic`, else `<bundle dir>/../resources/skills/kelpi-agentic`
@@ -2304,7 +2372,7 @@ Request/response: `ping`, `pane-split`, `pane-create`, `pane-close`, `pane-name`
 `web-inspect-result`, `web-private`, `web-cookies-list`, `web-cookies-clear`,
 `web-cookies-delete`, `web-click`, `web-type`, `web-q-text`, `web-q-attr`, `web-q-count`,
 `web-q-exists`, `web-q-dom`, `web-select`, `web-scroll`, `web-hover`, `web-key`, `web-exec`,
-`web-wait`.
+`web-wait`, and `permission-request` (the one event verb that waits for a reply, section 8.7).
 
 ---
 

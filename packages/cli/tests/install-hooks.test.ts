@@ -110,6 +110,20 @@ describe('kelpi install-hooks', () => {
         expect(fs.readFileSync(`${d.settings}.kelpi-backup`, 'utf8')).toBe(golden('input-claude-stale.json'));
     });
 
+    it('adds the PermissionRequest hook to a five-hook install from before #388', async () => {
+        const d = dirs();
+        fs.mkdirSync(d.claude, { recursive: true });
+        const fiveHooks = JSON.parse(golden('expected-claude-fresh.json')) as { hooks: Record<string, unknown> };
+        delete fiveHooks.hooks['PermissionRequest'];
+        fs.writeFileSync(d.settings, `${JSON.stringify(fiveHooks, null, 2)}\n`, 'utf8');
+
+        const result = await runCLI(['install-hooks', '--command', 'kelpi'], { cwd: d.home });
+        expect(result.code).toBe(0);
+        expect(fs.readFileSync(d.settings, 'utf8')).toBe(golden('expected-claude-fresh.json'));
+        const again = await runCLI(['install-hooks', '--command', 'kelpi'], { cwd: d.home });
+        expect(again.stdout).toContain('already up to date');
+    });
+
     it('refuses a malformed settings.json — exit 1, file untouched, error on stderr', async () => {
         const d = dirs();
         fs.mkdirSync(d.claude, { recursive: true });

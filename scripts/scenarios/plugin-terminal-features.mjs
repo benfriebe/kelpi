@@ -3,7 +3,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { buildTerminalLab } from '../build-terminal-lab.mjs';
-import { makeSandbox, startDaemon, waitForHealthz, makeCli, PROTOCOL_VERSION } from '../ui-audit/lib/stack.mjs';
+import { makeSandbox, startDaemon, waitForHealthz, makeCli, PROTOCOL_VERSION, WS_PROTOCOL_VERSION } from '../ui-audit/lib/stack.mjs';
 import { daemonIDFromSandbox, phoneToLanding, restoreBundledSlots } from '../ui-audit/lib/workbench.mjs';
 
 export const covers = ['examples/plugins/terminal-lab/', 'packages/plugin-sdk/', 'packages/client/src/features/',
@@ -220,7 +220,7 @@ export default async function ({ page, cli, sandbox, rec, d, harness, sleep }) {
         sizeObserver = observer; observer.binaryType = 'arraybuffer';
         await new Promise((resolve, reject) => {
             const timeout = setTimeout(() => reject(new Error('Size observer did not attach')), 10_000);
-            observer.addEventListener('open', () => observer.send(JSON.stringify({ type: 'hello', protocolVersion: PROTOCOL_VERSION, token: localToken, client: { kind: 'browser', name: 'terminal-size-observer' } })));
+            observer.addEventListener('open', () => observer.send(JSON.stringify({ type: 'hello', protocolVersion: WS_PROTOCOL_VERSION, token: localToken, client: { kind: 'browser', name: 'terminal-size-observer' } })));
             observer.addEventListener('message', ({ data }) => {
                 if (typeof data === 'string') { if (JSON.parse(data).type === 'snapshot') { clearTimeout(timeout); resolve(); } return; }
                 const bytes = Buffer.from(data);

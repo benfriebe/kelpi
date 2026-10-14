@@ -11,6 +11,7 @@
  * `session-end`, where the id IS the payload).
  */
 
+import type { JsonObject } from '../json.js';
 import type { PluginWireMessage } from '../plugins.js';
 import type { AgentKind, DropZone, MoveDirection, SplitDirection, WorkspaceColor } from './vocab.js';
 
@@ -86,6 +87,31 @@ export interface SessionEndMessage {
     command: 'session-end';
     pane_id: string;
     session_id: string;
+}
+
+// ── 6.1.1 Agent permission requests (request/response; `pane_id` mandatory) ──────────
+
+/**
+ * #388: Claude's PermissionRequest hook, asking the selected `kelpi.agent.permissions`
+ * provider for a decision. The reply carries it; the CLI prints Claude's decision JSON.
+ */
+export interface PermissionRequestMessage {
+    command: 'permission-request';
+    pane_id: string;
+    /** Required non-empty: a line without it is dropped by the decode guard. */
+    tool_name: string;
+    /** The tool's arguments, a plain JSON object. Absent reads as `{}`. */
+    tool_input: JsonObject;
+    /** Present for MCP tools only. Optional non-empty strings, as are the two below. */
+    mcp_server?: string | undefined;
+    cwd?: string | undefined;
+    permission_mode?: string | undefined;
+    /**
+     * The hook's own session id, when the line carried one. Its §3.1 dual-fire binds it to the
+     * pane only after this message is handled, so the provider is told this one over the pane's
+     * earlier binding.
+     */
+    session_id?: string | undefined;
 }
 
 // ── 6.2 Pane commands ───────────────────────────────────────────────────────────────
@@ -783,6 +809,7 @@ export type WireMessage =
     | AgentNotificationMessage
     | SessionStartMessage
     | SessionEndMessage
+    | PermissionRequestMessage
     | PaneSplitMessage
     | PaneCreateMessage
     | PaneCloseMessage
@@ -949,6 +976,7 @@ export const PANE_ID_REQUIRED_COMMANDS: ReadonlySet<WireCommandName> = new Set([
     'notification',
     'session-start',
     'session-end',
+    'permission-request',
     'pane-move',
     'pane-move-to-workspace',
     'layout-cycle',

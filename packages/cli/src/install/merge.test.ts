@@ -87,13 +87,14 @@ describe('against the Python goldens', () => {
         expect(merged).toBe(fixture('expected-claude-stale-migrated.json'));
         expect(merged).not.toContain('startup'); // SessionStart now fires for resume/clear/compact
         expect(merged).not.toContain('/Applications/Nex.app'); // no double-firing absolute variant
-        // The event the old installer never wrote is appended at the END of the map.
+        // The events the old installer never wrote are appended at the END of the map.
         expect(Object.keys(JSON.parse(merged).hooks)).toEqual([
             'Stop',
             'Notification',
             'SessionStart',
             'UserPromptSubmit',
-            'SessionEnd'
+            'SessionEnd',
+            'PermissionRequest'
         ]);
     });
 
@@ -104,6 +105,48 @@ describe('against the Python goldens', () => {
         // rather than left to double-fire alongside the codex-flagged one.
         expect(merged.match(/kelpi event stop/g)).toHaveLength(1);
         expect(merged).toContain('kelpi event stop --agent codex');
+    });
+});
+
+describe('the PermissionRequest hook (#388)', () => {
+    /** A fresh install from before #388: the first five groups, no PermissionRequest. */
+    function fiveHookInstall(): JsonObject {
+        const settings = parse('expected-claude-fresh.json');
+        delete (settings['hooks'] as JsonObject)['PermissionRequest'];
+        return settings;
+    }
+
+    it('is written last, with its 5 s timeout', () => {
+        const hooks = JSON.parse(installClaude({})).hooks as Record<string, unknown>;
+        expect(Object.keys(hooks).at(-1)).toBe('PermissionRequest');
+        expect(hooks['PermissionRequest']).toEqual([
+            { hooks: [{ type: 'command', command: 'kelpi event permission-request', timeout: 5 }] }
+        ]);
+    });
+
+    it('is added to an install from before it, once', () => {
+        expect(installClaude(fiveHookInstall())).toBe(fixture('expected-claude-fresh.json'));
+        expect(installClaude(parse('expected-claude-fresh.json'))).toBe(fixture('expected-claude-fresh.json'));
+    });
+
+    it('joins, and never replaces, a PermissionRequest hook of the user\'s own', () => {
+        const settings = fiveHookInstall();
+        const own = { matcher: '*', hooks: [{ type: 'command', command: '~/bin/agent-hook.sh', timeout: 10 }] };
+        (settings['hooks'] as JsonObject)['PermissionRequest'] = [own];
+        const merged = JSON.parse(installClaude(settings)).hooks.PermissionRequest;
+        expect(merged).toEqual([
+            own,
+            { hooks: [{ type: 'command', command: 'kelpi event permission-request', timeout: 5 }] }
+        ]);
+    });
+
+    it('sweeps the bare command when re-installed with an absolute prefix', () => {
+        const absolute = '/Users/dev/new_nex/packages/cli/dist/kelpi.js';
+        const payload = hookPayload(CLAUDE_HOOK_WIRINGS, absolute);
+        const merged = JSON.parse(renderHookFile(mergeHooks(parse('expected-claude-fresh.json'), payload, claudeBases)));
+        expect(merged.hooks.PermissionRequest).toEqual([
+            { hooks: [{ type: 'command', command: `${absolute} event permission-request`, timeout: 5 }] }
+        ]);
     });
 });
 

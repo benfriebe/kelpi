@@ -48,7 +48,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { daemonIDFromSandbox, restoreBundledSlots } from '../ui-audit/lib/workbench.mjs';
 import { buildTerminalLab } from '../build-terminal-lab.mjs';
-import { makeSandbox, startDaemon, waitForHealthz, makeCli, PROTOCOL_VERSION } from '../ui-audit/lib/stack.mjs';
+import { makeSandbox, startDaemon, waitForHealthz, makeCli, PROTOCOL_VERSION, WS_PROTOCOL_VERSION } from '../ui-audit/lib/stack.mjs';
 
 export const covers = [
     'examples/plugins/terminal-lab/',
@@ -245,7 +245,7 @@ export default async function ({ page, cli, sandbox, rec, d, sleep }) {
         socket.binaryType = 'arraybuffer'; observers.push(socket);
         await new Promise((resolve, reject) => {
             const timeout = setTimeout(() => reject(new Error(`${name} never handshook`)), 10_000);
-            socket.addEventListener('open', () => socket.send(JSON.stringify({ type: 'hello', protocolVersion: PROTOCOL_VERSION, token, client: { kind: 'browser', name } })));
+            socket.addEventListener('open', () => socket.send(JSON.stringify({ type: 'hello', protocolVersion: WS_PROTOCOL_VERSION, token, client: { kind: 'browser', name } })));
             socket.addEventListener('message', ({ data }) => {
                 if (typeof data === 'string') { if (JSON.parse(data).type === 'snapshot') { clearTimeout(timeout); resolve(); } return; }
                 // Ack whatever arrives, so the daemon never pauses this stream mid-scenario.

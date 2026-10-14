@@ -19,7 +19,10 @@ import path from 'node:path';
 import { bundleHash, cacheDecision, writeRecordedHash } from './build-cache.mjs';
 import { DESKTOP_TEST_PORT } from './desktop-slot.mjs';
 
+/** The daemon's socket and token file version (`daemon-v2.sock`, `daemon-v2.token`). */
 export const PROTOCOL_VERSION = 2;
+/** The WebSocket hello's `protocolVersion`: `WS_PROTOCOL_VERSION` in packages/protocol/src/ws/messages.ts. */
+export const WS_PROTOCOL_VERSION = 3;
 
 /** The user's dev stack and the desktop reservation: never allocate these to a sandbox. */
 export const RESERVED_PORTS = new Set([19733, 19734, 9223, 19400, DESKTOP_TEST_PORT]);

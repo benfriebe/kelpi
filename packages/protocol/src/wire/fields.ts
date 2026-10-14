@@ -6,9 +6,10 @@
  * Unknown keys are ignored. JSON `null` decodes as "absent" (Codable `decodeIfPresent`).
  */
 
+import type { JsonObject } from '../json.js';
 import { normalizeUuid } from './vocab.js';
 
-export type WireFieldKind = 'string' | 'uuid' | 'bool' | 'int' | 'uint64' | 'double' | 'string[]';
+export type WireFieldKind = 'string' | 'uuid' | 'bool' | 'int' | 'uint64' | 'double' | 'string[]' | 'object';
 
 export const WIRE_FIELD_TYPES = {
     command: 'string',
@@ -108,6 +109,10 @@ export const WIRE_FIELD_TYPES = {
     last_assistant_message_truncated: 'bool',
     transcript_path: 'string',
     tool_name: 'string',
+    tool_input: 'object',
+    mcp_server: 'string',
+    cwd: 'string',
+    permission_mode: 'string',
     settle_ms: 'int',
     if_revision: 'int'
 } as const satisfies Record<string, WireFieldKind>;
@@ -164,7 +169,16 @@ function matchesKind(value: unknown, kind: WireFieldKind): boolean {
             return typeof value === 'number' && Number.isFinite(value);
         case 'string[]':
             return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
+        case 'object':
+            return isPlainObject(value);
     }
+}
+
+/** #388: a plain JSON object; an array, `null` or any other JSON type is not one. */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+    const prototype: unknown = Object.getPrototypeOf(value);
+    return prototype === Object.prototype || prototype === null;
 }
 
 /** Returns the first known key whose JSON type is wrong, or undefined when the line is clean. */
@@ -191,6 +205,8 @@ export interface WireFieldAccess {
     int(key: WireFieldName): number | undefined;
     number(key: WireFieldName): number | undefined;
     list(key: WireFieldName): readonly string[] | undefined;
+    /** #388: a plain JSON object (the `'object'` kind); anything else reads as absent. */
+    object(key: WireFieldName): JsonObject | undefined;
     /** `pane_id` normalized to an uppercase UUID; a syntactically invalid id reads as absent. */
     paneId(): string | undefined;
     has(key: WireFieldName): boolean;
@@ -239,6 +255,10 @@ export function createFieldAccess(raw: Record<string, unknown>): WireFieldAccess
         list(key) {
             const value = read(key);
             return Array.isArray(value) ? (value as readonly string[]) : undefined;
+        },
+        object(key) {
+            const value = read(key);
+            return isPlainObject(value) ? (value as JsonObject) : undefined;
         },
         paneId() {
             const value = rawText('pane_id');

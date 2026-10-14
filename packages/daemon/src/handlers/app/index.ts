@@ -20,6 +20,7 @@ import { fileHandlerEntries } from './files.js';
 import { graftHandlerEntries } from './graft.js';
 import { groupHandlerEntries } from './groups.js';
 import { layoutHandlerEntries } from './layout.js';
+import { permissionHandlerEntries } from './permissions.js';
 import { pingHandlerEntries } from './ping.js';
 import { stubHandlerEntries } from './stubs.js';
 import { workspaceHandlerEntries } from './workspaces.js';
@@ -39,6 +40,7 @@ export function createAppHandlers(options: AppHandlerOptions = {}): AppHandlerTa
         ...layoutHandlerEntries(deps),
         ...fileHandlerEntries(deps),
         ...eventHandlerEntries(deps),
+        ...permissionHandlerEntries(deps),
         ...graftHandlerEntries(deps),
         ...webHandlerEntries(deps),
         ...pingHandlerEntries(),
@@ -53,6 +55,7 @@ export type {
     AppHandler,
     AppHandlerOptions,
     AppHandlerTable,
+    PermissionDecisionCall,
     SpawnPaneRequest,
     WorktreeCreateRun,
     WorktreeCreator
@@ -72,6 +75,7 @@ export {
 } from './graft.js';
 export { groupHandlerEntries } from './groups.js';
 export { layoutHandlerEntries } from './layout.js';
+export { permissionHandlerEntries, PERMISSION_DEADLINE_MS, UNKNOWN_PANE_ERROR } from './permissions.js';
 export { pingHandlerEntries } from './ping.js';
 export { stubHandlerEntries } from './stubs.js';
 export { workspaceHandlerEntries } from './workspaces.js';

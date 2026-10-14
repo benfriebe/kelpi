@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { makeSandbox, startDaemon, waitForHealthz, makeCli, PROTOCOL_VERSION } from '../ui-audit/lib/stack.mjs';
+import { makeSandbox, startDaemon, waitForHealthz, makeCli, PROTOCOL_VERSION, WS_PROTOCOL_VERSION } from '../ui-audit/lib/stack.mjs';
 import { daemonIDFromSandbox, openPlacementSettings, phoneToLanding, restoreBundledSlots } from '../ui-audit/lib/workbench.mjs';
 
 export const covers = ['examples/plugins/chrome-lab/', 'packages/plugin-sdk/', 'packages/client/src/features/',
@@ -144,7 +144,7 @@ export default async function ({ page, cli, sandbox, rec, d }) {
         observer = new WebSocket(`${sandbox.base.replace(/^http/, 'ws')}/ws?token=${token}`);
         await new Promise((resolve, reject) => {
             const timeout = setTimeout(() => reject(new Error('Size observer did not attach')), 10_000);
-            observer.addEventListener('open', () => observer.send(JSON.stringify({ type: 'hello', protocolVersion: PROTOCOL_VERSION, token, client: { kind: 'browser', name: 'chrome-size-observer' } })));
+            observer.addEventListener('open', () => observer.send(JSON.stringify({ type: 'hello', protocolVersion: WS_PROTOCOL_VERSION, token, client: { kind: 'browser', name: 'chrome-size-observer' } })));
             observer.addEventListener('message', ({ data }) => { const message = JSON.parse(String(data)); if (message.type === 'snapshot') { clearTimeout(timeout); resolve(); } });
             observer.addEventListener('error', reject, { once: true });
         });

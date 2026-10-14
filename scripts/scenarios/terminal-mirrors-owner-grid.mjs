@@ -29,7 +29,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { PROTOCOL_VERSION } from '../ui-audit/lib/stack.mjs';
+import { PROTOCOL_VERSION, WS_PROTOCOL_VERSION } from '../ui-audit/lib/stack.mjs';
 
 export const covers = [
     'packages/client/src/terminal/TerminalPane.tsx',
@@ -137,7 +137,7 @@ export default async function ({ page, cli, sandbox, rec, d, sleep }) {
                 observer.send(
                     JSON.stringify({
                         type: 'hello',
-                        protocolVersion: PROTOCOL_VERSION,
+                        protocolVersion: WS_PROTOCOL_VERSION,
                         token,
                         client: { kind: 'browser', name: 'kelpi-166-size-observer' }
                     })

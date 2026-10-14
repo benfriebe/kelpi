@@ -1,4 +1,5 @@
 import type { Context } from './index.js';
+import type { Data } from './index.js';
 
 /** Native service contracts. These types do not depend on the daemon's implementation. */
 export type NativeGitStatus = { kind: 'unknown' | 'clean' }
@@ -19,6 +20,25 @@ export interface ProcessExecArgs {
     cwd?: string;
 }
 export type ProcessExecResult = { stdout: string; stderr: string };
+/** #388: one agent permission request, as a `kelpi.agent.permissions` provider receives it. */
+export interface AgentPermissionArgs {
+    paneID: string;
+    workspaceID: string;
+    agent: 'claude' | 'codex';
+    /** The agent session bound to the pane, when there is one. */
+    sessionID?: string;
+    /** Claude's `tool_name`, e.g. `Bash` or `mcp__github__create_issue`. */
+    toolName: string;
+    /** Claude's `tool_input` as sent, e.g. `{command, description}` for Bash. */
+    toolInput: Data;
+    /** Present for MCP tools only. */
+    mcpServer?: string;
+    cwd?: string;
+    /** Claude's permission mode, e.g. `default` or `acceptEdits`. */
+    permissionMode?: string;
+}
+/** `abstain` leaves the agent's own prompt in place. A deny `message` goes to the model. */
+export type AgentPermissionDecision = { behavior: 'allow' | 'deny' | 'abstain'; message?: string };
 
 type Contract<Args, Result> = { args: Args; result: Result };
 type RepoArgs = { repoPath: string };
@@ -35,6 +55,9 @@ export interface BuiltinServiceMap {
     };
     'kelpi.content.render': {
         render: Contract<ContentRenderArgs, { html: string }>;
+    };
+    'kelpi.agent.permissions': {
+        decide: Contract<AgentPermissionArgs, AgentPermissionDecision>;
     };
     'kelpi.git': {
         getCurrentBranch: Contract<RepoArgs, string | null>;

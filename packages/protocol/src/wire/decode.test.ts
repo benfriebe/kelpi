@@ -348,6 +348,83 @@ describe('agent hook fields (#387)', () => {
     });
 });
 
+describe('permission-request (#388)', () => {
+    const INPUT = { command: 'touch /tmp/marker', description: 'Create marker file' };
+
+    it('decodes a full request', () => {
+        expect(
+            ok({
+                command: 'permission-request',
+                pane_id: PANE,
+                tool_name: 'Bash',
+                tool_input: INPUT,
+                mcp_server: 'github',
+                cwd: '/private/tmp/project',
+                permission_mode: 'default',
+                session_id: 'abc',
+                agent: 'claude'
+            })
+        ).toStrictEqual({
+            command: 'permission-request',
+            pane_id: PANE_UPPER,
+            tool_name: 'Bash',
+            tool_input: INPUT,
+            mcp_server: 'github',
+            cwd: '/private/tmp/project',
+            permission_mode: 'default',
+            session_id: 'abc'
+        });
+    });
+
+    it('reads an absent or null tool_input as {} and leaves empty optional strings off', () => {
+        const bare = { command: 'permission-request', pane_id: PANE, tool_name: 'Bash' };
+        expect(ok(bare)).toStrictEqual({ ...bare, pane_id: PANE_UPPER, tool_input: {} });
+        expect(ok({ ...bare, tool_input: null })).toMatchObject({ tool_input: {} });
+        expect(ok({ ...bare, mcp_server: '', cwd: '', permission_mode: '', session_id: '' })).toStrictEqual({
+            ...bare,
+            pane_id: PANE_UPPER,
+            tool_input: {}
+        });
+    });
+
+    it('ignores the Claude hook keys it does not know', () => {
+        expect(
+            ok({
+                command: 'permission-request',
+                pane_id: PANE,
+                tool_name: 'Bash',
+                tool_input: INPUT,
+                hook_event_name: 'PermissionRequest',
+                permission_suggestions: [{ type: 'setMode', mode: 'acceptEdits' }],
+                effort: { level: 'medium' }
+            })
+        ).toMatchObject({ tool_name: 'Bash', tool_input: INPUT });
+    });
+
+    it('rejects a tool_input that is not a plain object, like any wrong-typed known key', () => {
+        for (const toolInput of [['x'], 'touch x', 7, true]) {
+            expect(
+                rejected({ command: 'permission-request', pane_id: PANE, tool_name: 'Bash', tool_input: toolInput })
+            ).toMatchObject({ reason: 'field-type', field: 'tool_input', command: 'permission-request' });
+        }
+        expect(rejected({ command: 'permission-request', pane_id: PANE, tool_name: 'Bash', cwd: 7 }).field).toBe('cwd');
+    });
+
+    it('guards a missing or empty tool_name and a missing pane_id', () => {
+        expect(rejected({ command: 'permission-request', pane_id: PANE, tool_input: INPUT })).toMatchObject({
+            reason: 'guard',
+            detail: 'permission-request requires tool_name',
+            field: 'tool_name',
+            command: 'permission-request'
+        });
+        expect(rejected({ command: 'permission-request', pane_id: PANE, tool_name: '' }).field).toBe('tool_name');
+        expect(rejected({ command: 'permission-request', tool_name: 'Bash' })).toMatchObject({
+            reason: 'guard',
+            field: 'pane_id'
+        });
+    });
+});
+
 describe('pane commands', () => {
     it('accepts workspace alone for split/create but not for close/name/capture', () => {
         expect(ok({ command: 'pane-split', workspace: 'beta' })).toMatchObject({ workspace: 'beta' });

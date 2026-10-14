@@ -526,7 +526,8 @@ snapshot's `agents.muted` and the `muted` bucket of `agentPanes` count the waiti
 muted workspaces, which `agents.waiting` leaves out.
 
 `agent.event` is one event per agent hook Kelpi handles (`kelpi event start`, `stop`,
-`notification`, `error`, `session-start`, `session-end`; agent-lifecycle.md §7.7), so a plugin
+`notification`, `error`, `session-start`, `session-end` and, one per permission decision,
+`permission-request`; agent-lifecycle.md §7.7), so a plugin
 can react to an agent without reading its screen. It fires whether or not a desktop
 notification is shown: for the focused pane of an active window, in a muted workspace, and
 when the pane's status did not change. It is published after Kelpi applied the hook, so
@@ -540,7 +541,7 @@ plugin that answers an event by calling `agents.notify` loops.
 
 | Field | Present |
 | --- | --- |
-| `type` | Always: the wire verb, `start`, `stop`, `notification`, `error`, `session-start` or `session-end`. |
+| `type` | Always: the wire verb, `start`, `stop`, `notification`, `error`, `session-start`, `session-end` or `permission-request`. |
 | `paneID`, `workspaceID` | Always. |
 | `agent` | Always: the pane's agent kind after the event, `claude` when none is recorded. |
 | `sessionID` | When the pane is bound to a session after the event, including the one the hook's own `session_id` bound. |
@@ -552,6 +553,7 @@ plugin that answers an event by calling `agents.notify` loops.
 | `transcriptPath` | `notification`, `stop` and `session-start`, when the hook carried it. |
 | `backgroundTasks` | `stop` and `notification`, only when greater than 0. |
 | `toolName` | Codex PermissionRequest (`notification --agent codex`). |
+| `behavior`, `provider` | `permission-request` (#388): one event per Claude permission decision, `behavior` `allow`, `deny` or `abstain`, `provider` the provider asked (absent when none could be), with `toolName` and, on a deny, `message`. Never the tool input. |
 | `muted` | `true` in a muted workspace, absent otherwise, as on `daemon.notification`. Honour it the same way. |
 
 Backend and frame delivery each use a bounded queue (32 events / 512 KiB), with one event

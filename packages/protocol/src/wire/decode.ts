@@ -218,6 +218,25 @@ function decodeCommand(
             if (sessionId === undefined) return guard(command, 'session-end requires session_id', 'session_id');
             return { command, pane_id: paneId as string, session_id: sessionId };
         }
+        // ── 6.1.1 permission-request (#388; pane_id already validated) ──────────────────
+        case 'permission-request': {
+            const toolName = fields.nonEmpty('tool_name');
+            if (toolName === undefined) return guard(command, 'permission-request requires tool_name', 'tool_name');
+            const mcpServer = fields.nonEmpty('mcp_server');
+            const cwd = fields.nonEmpty('cwd');
+            const permissionMode = fields.nonEmpty('permission_mode');
+            const sessionId = fields.nonEmpty('session_id');
+            return {
+                command,
+                pane_id: paneId as string,
+                tool_name: toolName,
+                tool_input: fields.object('tool_input') ?? {},
+                ...(mcpServer !== undefined ? { mcp_server: mcpServer } : {}),
+                ...(cwd !== undefined ? { cwd } : {}),
+                ...(permissionMode !== undefined ? { permission_mode: permissionMode } : {}),
+                ...(sessionId !== undefined ? { session_id: sessionId } : {})
+            };
+        }
 
         // ── 6.2 pane commands ────────────────────────────────────────────────────────
         case 'pane-split': {

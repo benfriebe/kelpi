@@ -9,7 +9,8 @@ and badges, group settings, and present shared prompts and actionable notificati
 The included [Agent Board](../examples/plugins/agent-board) uses the same HTML view as a pane,
 sidebar, inspector, bottom panel, workspace, toolbar, status bar, or settings view.
 
-The supported contract is **plugin API version 1** and **Kelpi protocol generation 2**.
+The supported contract is **plugin API version 1** and **Kelpi protocol generation 2**
+(WebSocket generation 3).
 The [roadmap and progress](plugin-roadmap.md) distinguish implemented capabilities from
 remaining work; the [extensibility audit](plugin-extensibility-audit.md) records the original
 design. For a practical starting point, use the [development guide](plugin-development.md).
@@ -830,8 +831,10 @@ the old database after the copy are independent and are not merged back.
 
 Plugin installations, identity, storage, and settings live in `<db-path>.plugins/`.
 The pane descriptor and parking flag live in the main database. Protocol generation 2 uses
-`daemon-v2` run files and refuses generation 1 WebSocket clients. Upgrade the UI, shell,
-daemon, and CLI together; refresh installed browser clients.
+`daemon-v2` run files and refuses generation 1 WebSocket clients. WebSocket generation 3
+(nested workspaces) keeps the `daemon-v2` run files and refuses generation 2 WebSocket
+clients (see the [wire contract](wire-protocol.md#plugin-envelope-and-protocol-generation)).
+Upgrade the UI, shell, daemon, and CLI together; refresh installed browser clients.
 
 An explicit `KELPID_DB_PATH` remains authoritative. If you use a custom path, choose a new
 path or make a consistent backup before upgrading it; an older daemon must never open the

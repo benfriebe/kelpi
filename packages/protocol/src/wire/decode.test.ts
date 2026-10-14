@@ -733,6 +733,7 @@ describe('workspace and group commands', () => {
             command: 'workspace-delete',
             name: 'feat-x',
             force: false,
+            cascade: false,
             worktree_paths: undefined,
             force_worktree_paths: undefined,
             prune_worktrees: undefined,
@@ -748,6 +749,30 @@ describe('workspace and group commands', () => {
         expect(rejected({ command: 'workspace-delete', name: 'feat-x', worktree_paths: '/w/a' })).toMatchObject({
             reason: 'field-type',
             field: 'worktree_paths'
+        });
+    });
+
+    it('decodes the nesting fields (app-state-core §2.9)', () => {
+        expect(ok({ command: 'workspace-create', parent: 'orchestrator' })).toMatchObject({ parent: 'orchestrator' });
+        // §2.9: an empty parent reaches the handler, which refuses it (never "no parent").
+        expect(ok({ command: 'workspace-create', parent: '' })).toMatchObject({ parent: '' });
+        expect(ok({ command: 'workspace-create', parent_pane_id: '' })).toMatchObject({ parent_pane_id: '' });
+        expect(ok({ command: 'workspace-list', parent: '' })).toMatchObject({ parent: '' });
+        expect(ok({ command: 'workspace-create', parent_pane_id: 'not-a-uuid' })).toMatchObject({
+            parent_pane_id: 'not-a-uuid'
+        });
+        expect(ok({ command: 'workspace-delete', name: 'x', cascade: true })).toMatchObject({ cascade: true });
+        expect(ok({ command: 'workspace-list', parent: 'orchestrator' })).toMatchObject({ parent: 'orchestrator' });
+        expect(ok({ command: 'workspace-nest', name: 'w', parent: 'p', index: 2 })).toEqual({
+            command: 'workspace-nest',
+            name: 'w',
+            parent: 'p',
+            index: 2
+        });
+        expect(rejected({ command: 'workspace-nest', name: 'w' })).toMatchObject({ field: 'parent' });
+        expect(rejected({ command: 'workspace-create', parent: 3 })).toMatchObject({
+            reason: 'field-type',
+            field: 'parent'
         });
     });
 

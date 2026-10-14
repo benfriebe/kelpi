@@ -69,6 +69,27 @@ describe('selection across real scrollback trimming (#170)', () => {
         } finally { f.dispose(); }
     });
 
+    it('keeps a press that has not selected yet on its text across a trim (-kelpi.22)', () => {
+        const f = fixture();
+        try {
+            f.writeLines(1100);
+            f.term.viewportY = 100;
+            // Pressed, not yet dragged: no selection, but the drag must still start here.
+            f.canvas.dispatchEvent(new MouseEvent('mousedown', { clientX: 1, clientY: 2 * 20 + 10, button: 0 }));
+            expect(f.term.getSelection()).toBe('');
+            const before = f.vt.getScrollbackLength();
+            f.writeLines(100);
+            expect(f.vt.getScrollbackLength()).toBeLessThan(before); // a real page was trimmed
+            // Dragged to whatever row 3 shows now, which the trim need not have left in place.
+            const row3 = f.vt.getScrollbackLength() - Math.floor(f.term.viewportY) + 3;
+            const shown = (f.vt.getScrollbackLine(row3) ?? []).map(c => c.codepoint ? String.fromCodePoint(c.codepoint) : ' ').join('').trimEnd();
+            f.canvas.dispatchEvent(new MouseEvent('mousemove', { clientX: 179, clientY: 3 * 20 + 10, buttons: 1 }));
+            f.release();
+            expect(f.term.getSelection().split('\n')[0]).toBe(f.line(993));
+            expect(f.term.getSelection().split('\n').at(-1)).toBe(shown);
+        } finally { f.dispose(); }
+    });
+
     it('preserves a selection across a batched write with a trim hidden by net growth', () => {
         const f = fixture();
         try {

@@ -11,7 +11,7 @@ import type { WorkspacesFeatureLifecycle } from './workspaces';
 
 export interface WorkspacesActionHost {
     readonly store: KelpiStoreApi;
-    readonly commands: Pick<CommandClient, 'addRepoAssociation' | 'cancelWorkspaceCreate' | 'prefetchRepo' | 'createGroup' | 'createGroupForWorkspaces' | 'createWorkspace' | 'deleteGroup' | 'deleteWorkspace' | 'labelWorkspace' | 'moveGroup' | 'moveWorkspace' | 'moveWorkspaces' | 'renameGroup' | 'renameWorkspace' | 'setBulkColor' | 'setBulkLabel' | 'setGroupCollapsed' | 'setGroupColor' | 'setGroupIcon' | 'setGroupRepo' | 'setWorkspaceIcon' | 'setWorkspaceMuted' | 'setWorkspaceProfile'>;
+    readonly commands: Pick<CommandClient, 'addRepoAssociation' | 'cancelWorkspaceCreate' | 'prefetchRepo' | 'createGroup' | 'createGroupForWorkspaces' | 'createWorkspace' | 'deleteGroup' | 'deleteWorkspace' | 'labelWorkspace' | 'moveGroup' | 'moveWorkspace' | 'moveWorkspaces' | 'nestWorkspaces' | 'renameGroup' | 'renameWorkspace' | 'setBulkColor' | 'setBulkLabel' | 'setGroupCollapsed' | 'setGroupColor' | 'setGroupIcon' | 'setGroupRepo' | 'setWorkspaceChildrenCollapsed' | 'setWorkspaceIcon' | 'setWorkspaceMuted' | 'setWorkspaceProfile'>;
     readonly run: (label: string, command: Promise<CommandReply>) => boolean;
     readonly notifyFailure: (label: string, message: string) => void;
     readonly activateWorkspaceAndReveal: (workspaceID: string) => void;
@@ -115,19 +115,22 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
         label: string,
         workspaceIDs: readonly string[],
         cleanup: WorkspaceDeleteCleanup,
-        allowLast: boolean
+        allowLast: boolean,
+        /** §2.9: every delete in the batch also takes its nested workspaces. */
+        cascadeChildren = false
     ): Promise<void> => {
         const fields = cleanupFields(cleanup);
         const last = workspaceIDs.at(-1);
+        const cascade = cascadeChildren ? { cascadeChildren: true } : {};
         if (fields === null || last === undefined) {
-            await Promise.all(workspaceIDs.map((workspaceID) => sendDelete(label, workspaceID, allowLast)));
+            await Promise.all(workspaceIDs.map((workspaceID) => sendDelete(label, workspaceID, allowLast, cascade)));
             return;
         }
         const leading = workspaceIDs.slice(0, -1);
         // Single deletes (the common case) go out synchronously, exactly like the plain path.
-        const deleted = leading.length === 0 ? [] : await Promise.all(leading.map((workspaceID) => sendDelete(label, workspaceID, allowLast)));
+        const deleted = leading.length === 0 ? [] : await Promise.all(leading.map((workspaceID) => sendDelete(label, workspaceID, allowLast, cascade)));
         const batchIDs = leading.filter((_, index) => deleted[index] === true);
-        const ok = await sendDelete(label, last, allowLast, { ...fields, ...(batchIDs.length > 0 ? { batchIDs } : {}) });
+        const ok = await sendDelete(label, last, allowLast, { ...cascade, ...fields, ...(batchIDs.length > 0 ? { batchIDs } : {}) });
         if (!ok && batchIDs.length > 0) {
             notifyFailure('Worktrees kept', 'the delete carrying the worktree cleanup was refused, so no worktree was removed');
         }
@@ -293,6 +296,8 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
                 repoPaths?: readonly string[] | undefined;
                 muted?: boolean | undefined;
                 groupDefaults?: boolean | undefined;
+                /** §2.9: nest the new workspace under this one. */
+                parentID?: string | undefined;
             } = {}
         ): boolean {
             const trimmed = name.trim();
@@ -316,7 +321,8 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
                         : { profile: options.profile }),
                     ...(options.muted === true ? { muted: true } : {}),
                     // app-state-core.md §5.5: the sheet's repos ARE the user's choice.
-                    ...(options.groupDefaults === false ? { groupDefaults: false } : {})
+                    ...(options.groupDefaults === false ? { groupDefaults: false } : {}),
+                    ...(options.parentID === undefined ? {} : { parent: options.parentID })
                 }),
                 repoPaths
             );
@@ -324,7 +330,7 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
 
         deleteWorkspace(
             workspaceID: string,
-            options: { allowLast?: boolean; cleanup?: WorkspaceDeleteCleanup } = {}
+            options: { allowLast?: boolean; cleanup?: WorkspaceDeleteCleanup; cascadeChildren?: boolean } = {}
         ): boolean {
             // The sidebar runs its own confirmation first, which is the GUI's
             // "delete anyway?" — so the command goes out forced, as the app's own
@@ -333,7 +339,13 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
             // `allowLast` defaults OFF, so the sidebar's Delete keeps the shipped app's
             // `.disabled(store.workspaces.count <= 1)` rule; only the ⌘W gate passes it on
             // (§WS-156).
-            void sendDeletes('Delete workspace', [workspaceID], options.cleanup, options.allowLast === true);
+            void sendDeletes(
+                'Delete workspace',
+                [workspaceID],
+                options.cleanup,
+                options.allowLast === true,
+                options.cascadeChildren === true
+            );
             return true;
         },
 
@@ -351,6 +363,26 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
                     ...(request.groupID === null ? {} : { group: request.groupID }),
                     index: request.index
                 })
+            );
+        },
+
+        /** app-state-core.md §2.9: a drag onto a workspace, or "Nest Under ▸". */
+        nestWorkspaces(request: { workspaceIDs: readonly string[]; parentID: string; index: number }): boolean {
+            return run(
+                'Nest workspaces',
+                commands.nestWorkspaces({
+                    workspaceIDs: request.workspaceIDs,
+                    parentID: request.parentID,
+                    index: request.index
+                })
+            );
+        },
+
+        /** §2.9: a parent row's chevron; the collapsed flag is daemon state. */
+        setWorkspaceChildrenCollapsed(workspaceID: string, collapsed: boolean): boolean {
+            return run(
+                'Collapse nested workspaces',
+                commands.setWorkspaceChildrenCollapsed({ workspaceID, collapsed })
             );
         },
 
@@ -546,6 +578,8 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
                 profile?: string | null | undefined;
                 muted?: boolean | undefined;
                 groupDefaults?: boolean | undefined;
+                /** §2.9: nest the new workspace under this one. */
+                parentID?: string | undefined;
             } = {}
         ): Promise<string | null> {
             const onProgress = worktree.onProgress;
@@ -565,6 +599,7 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
                     branch: worktree.branch,
                     updateMain: worktree.updateMain,
                     ...(extras.groupDefaults === false ? { groupDefaults: false } : {}),
+                    ...(extras.parentID === undefined ? {} : { parent: extras.parentID }),
                     ...(worktree.requestID !== undefined ? { requestID: worktree.requestID } : {})
                 };
                 const reply = await (onProgress === undefined

@@ -76,21 +76,28 @@ export function printPaneTable(panes: readonly JsonObject[], noHeader: boolean, 
     renderRows(['ID', 'LABEL', 'TYPE', 'WORKSPACE', 'STATUS', 'SESSION', 'CWD'], rows, noHeader, 7);
 }
 
-/** `ID  NAME  GROUP  PANES  ACTIVE  LABELS` — LABELS is last, so it never sets a width. */
+/**
+ * `ID  NAME  GROUP  PANES  ACTIVE  LABELS`: LABELS is last, so it never sets a width. A PARENT
+ * column follows GROUP only when some workspace is nested (app-state-core.md §2.9), so the table
+ * is unchanged for everyone who never nests one.
+ */
 export function printWorkspaceTable(workspaces: readonly JsonObject[], noHeader: boolean): void {
+    const nesting = workspaces.some((entry) => asString(entry['parent_name']) !== undefined);
     const rows = workspaces.map((entry) => {
         const labels = asStringArray(entry['labels']) ?? [];
         return [
             shortUUID(asString(entry['id']) ?? ''),
             asString(entry['name']) ?? '',
             asString(entry['group_name']) ?? '-',
+            ...(nesting ? [asString(entry['parent_name']) ?? '-'] : []),
             String(asInt(entry['pane_count']) ?? 0),
             asBool(entry['is_active']) === true ? '●' : '-',
             labels.length === 0 ? '-' : labels.join(',')
         ];
     });
-    // Only the first five columns participate in width computation (Swift parity).
-    renderRows(['ID', 'NAME', 'GROUP', 'PANES', 'ACTIVE', 'LABELS'], rows, noHeader, 5);
+    // Only the columns before LABELS participate in width computation (Swift parity).
+    const headers = ['ID', 'NAME', 'GROUP', ...(nesting ? ['PARENT'] : []), 'PANES', 'ACTIVE', 'LABELS'];
+    renderRows(headers, rows, noHeader, headers.length - 1);
 }
 
 /**
@@ -103,7 +110,10 @@ export function printGroupTable(groups: readonly JsonObject[], noHeader: boolean
         const members = asObjectArray(entry['workspaces']).map((member) => {
             const id = shortUUID(asString(member['id']) ?? '');
             const name = asString(member['name']) ?? '';
-            return name.length === 0 ? id : `${name} (${id})`;
+            const label = name.length === 0 ? id : `${name} (${id})`;
+            // app-state-core.md §2.9: a member's nested workspace, listed right after its parent.
+            const parent = asString(member['parent_name']);
+            return parent === undefined ? label : `${label} under ${parent}`;
         });
         const memberText = members.join(', ');
         const repo = entry['repo'];

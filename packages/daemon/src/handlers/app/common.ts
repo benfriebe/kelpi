@@ -35,12 +35,14 @@ export function wireTimestamp(epochSeconds: number): string {
 
 /**
  * `workspace-list` order (§6.1): walk the top level; a workspace entry contributes itself, a
- * group entry contributes its members in child order **regardless of collapse**; dedupe
+ * group entry contributes its members in child order **regardless of collapse**, and every
+ * workspace is followed by the ones nested under it (app-state-core.md §2.9); dedupe
  * throughout; then append any workspace unreachable through the order, in state order, so a
  * recoverable ordering inconsistency can never hide a workspace from the CLI.
  */
 export function listedWorkspaceIDs(state: DaemonState): string[] {
-    const known = new Set(state.workspaces.map((workspace) => workspace.id));
+    const byID = new Map(state.workspaces.map((workspace) => [workspace.id, workspace]));
+    const known = new Set(byID.keys());
     const seen = new Set<string>();
     const order: string[] = [];
     const push = (id: string): void => {
@@ -48,16 +50,20 @@ export function listedWorkspaceIDs(state: DaemonState): string[] {
         seen.add(id);
         order.push(id);
     };
+    const pushWithChildren = (id: string): void => {
+        push(id);
+        for (const childID of byID.get(id)?.childOrder ?? []) push(childID);
+    };
     for (const entry of state.topLevelOrder) {
         if (entry.kind === 'workspace') {
-            push(entry.id);
+            pushWithChildren(entry.id);
             continue;
         }
         const group = groupByID(state, entry.id);
         if (group === null) continue;
-        for (const childID of group.childOrder) push(childID);
+        for (const childID of group.childOrder) pushWithChildren(childID);
     }
-    for (const workspace of state.workspaces) push(workspace.id);
+    for (const workspace of state.workspaces) pushWithChildren(workspace.id);
     return order;
 }
 

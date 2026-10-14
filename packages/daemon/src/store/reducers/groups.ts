@@ -8,8 +8,9 @@
 
 import { groupSidebarID, workspaceSidebarID, type SidebarID } from '@kelpi/core/codec';
 import type { DaemonState, DomainAction, GroupSortKey, WorkspaceState } from '../types.js';
+import { withNestedChildren } from '../derived.js';
 import { clampIndex, seconds } from './helpers.js';
-import { indexOfEntry, sameEntry, sidebarAnchor } from './workspaces.js';
+import { detachFromParents, indexOfEntry, placedMovers, sameEntry, sidebarAnchor } from './workspaces.js';
 
 function updateGroup(
     state: DaemonState,
@@ -34,14 +35,9 @@ function createGroup(
     const name = action.name.trim();
     if (name === '') return state;
 
-    const seen = new Set<string>();
-    const validInitial: string[] = [];
-    for (const id of action.initialWorkspaceIDs ?? []) {
-        if (seen.has(id)) continue;
-        if (!state.workspaces.some((workspace) => workspace.id === id)) continue;
-        seen.add(id);
-        validInitial.push(id);
-    }
+    // Live, deduped, in order; a member whose parent is joining too stays nested under it and
+    // comes along with it, rather than becoming a member of its own (§2.9).
+    const validInitial = placedMovers(state, action.initialWorkspaceIDs ?? []);
 
     // §5.1 step 3: an explicit anchor wins; otherwise placement decides.
     const placement = action.placement ?? 'end-of-list';
@@ -85,8 +81,10 @@ function createGroup(
         createWorktree: repoID !== null && action.createWorktree === true
     };
 
-    // §5.1 step 6: detach every member from its previous parent.
+    // §5.1 step 6: detach every member from its previous parent (a group, or a parent
+    // workspace when it was nested, §2.9).
     const memberSet = new Set(validInitial);
+    const workspaces = detachFromParents(state.workspaces, memberSet);
     const groups = [
         ...state.groups.map((candidate) => {
             const childOrder = candidate.childOrder.filter((id) => !memberSet.has(id));
@@ -110,7 +108,7 @@ function createGroup(
         order.splice(clampIndex(target, order.length), 0, entry);
     }
 
-    return { ...state, groups, topLevelOrder: order };
+    return { ...state, workspaces, groups, topLevelOrder: order };
 }
 
 /**
@@ -144,7 +142,8 @@ function deleteGroup(state: DaemonState, groupID: string, cascade: boolean): Dae
     const groups = state.groups.filter((candidate) => candidate.id !== groupID);
 
     if (cascade) {
-        const doomed = new Set(group.childOrder);
+        // §2.9: a member's nested workspaces go with it.
+        const doomed = new Set([...group.childOrder, ...withNestedChildren(state, group.childOrder)]);
         const workspaces = state.workspaces.filter((workspace) => !doomed.has(workspace.id));
         let lastActiveWorkspaceID = state.lastActiveWorkspaceID;
         if (lastActiveWorkspaceID !== null && doomed.has(lastActiveWorkspaceID)) {

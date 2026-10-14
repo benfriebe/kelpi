@@ -30,6 +30,7 @@ import {
     isDarkBackground,
     type ContentAppearance
 } from './html.js';
+import { urlEnd } from './url-end.js';
 
 /** `Pane.markdownFontSize` default (§1.1). */
 export const DEFAULT_MARKDOWN_FONT_SIZE = 14;
@@ -209,30 +210,6 @@ export function renderFrontMatter(yaml: string): string {
  */
 const AUTOLINK_PATTERN = /(?:https?|ftp|file):\/\/[^\s<>"'`]+|mailto:[^\s<>"'`]+/gi;
 
-/** Trailing punctuation is sentence punctuation, not URL (matches NSDataDetector's behavior). */
-function trimUrlTail(match: string): string {
-    let end = match.length;
-    while (end > 0) {
-        const char = match[end - 1] as string;
-        if ('.,;:!?'.includes(char)) {
-            end -= 1;
-            continue;
-        }
-        if (char === ')' || char === ']' || char === '}') {
-            const open = char === ')' ? '(' : char === ']' ? '[' : '{';
-            const slice = match.slice(0, end);
-            const opens = slice.split(open).length - 1;
-            const closes = slice.split(char).length - 1;
-            if (closes > opens) {
-                end -= 1;
-                continue;
-            }
-        }
-        break;
-    }
-    return match.slice(0, end);
-}
-
 /**
  * `<a href="ESCAPED_URL">ESCAPED_TEXT</a>` per match, surrounding text escaped normally.
  * The href is the matched text itself: every match is already an absolute URL, and
@@ -256,7 +233,8 @@ function autolinkWith(pattern: RegExp, text: string): string {
     for (;;) {
         const match = pattern.exec(text);
         if (match === null) break;
-        const url = trimUrlTail(match[0]);
+        // The terminal's rule too (`url-end.ts`): brackets, prose punctuation and sentence ends.
+        const url = match[0].slice(0, urlEnd(match[0], 0));
         if (url.length === 0) continue;
         const start = match.index;
         out += escapeHtml(text.slice(cursor, start));

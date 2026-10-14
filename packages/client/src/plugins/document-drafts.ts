@@ -131,9 +131,19 @@ function documentCloseTargets(runtime: KelpiRuntime, payload: JsonObject): strin
     const current = runtime.store.getState(), workspaces = current.daemon.state.workspaces;
     const workspace = cascade ? undefined : command['workspace_id'] ?? command['workspace'] ?? command['name'];
     const nameOrID = (id: string, name: string, value: unknown): boolean => typeof value === 'string' && (id.toUpperCase() === value.toUpperCase() || name === value);
-    const members = cascade ? current.daemon.state.groups.find(group => nameOrID(group.id, group.name, command['name']))?.childOrder ?? [] : null;
+    // §2.9: a cascade takes nested workspaces too, a group's members' and a `cascade_children` delete's.
+    const withNested = (ids: readonly string[]): string[] => ids.flatMap(id => [id, ...(workspaces.find(row => row.id === id)?.childOrder ?? [])]);
+    // The GUI's `delete-workspace` spells it `cascade_children`; the wire's `workspace-delete` (the
+    // plugin SDK's `remove(id, { cascade })`) spells it `cascade`.
+    const cascadeChildren =
+        !cascade &&
+        (command['cascade_children'] === true || (command['command'] === 'workspace-delete' && command['cascade'] === true));
+    const named = cascadeChildren ? workspaces.find(row => nameOrID(row.id, row.name, workspace)) : undefined;
+    const members = cascade
+        ? withNested(current.daemon.state.groups.find(group => nameOrID(group.id, group.name, command['name']))?.childOrder ?? [])
+        : named !== undefined ? withNested([named.id]) : null;
     const paneTarget = command['target'] ?? command['pane_id'];
-    return workspaces.filter(row => (!members || members.includes(row.id)) && (workspace === undefined || nameOrID(row.id, row.name, workspace))).flatMap(row => [...row.panes, ...row.parkedPanes].filter(pane => {
+    return workspaces.filter(row => (!members || members.includes(row.id)) && (workspace === undefined || named !== undefined || nameOrID(row.id, row.name, workspace))).flatMap(row => [...row.panes, ...row.parkedPanes].filter(pane => {
         if (!['markdown', 'scratchpad', 'diff', 'csv'].includes(pane.type)) return false;
         return command['command'] !== 'pane-close' || nameOrID(pane.id, pane.label ?? '', paneTarget) || (paneTarget === undefined && row.id === current.ui.activeWorkspaceID && pane.id === row.focusedPaneID);
     }).map(pane => pane.id));

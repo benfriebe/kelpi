@@ -377,7 +377,7 @@ function decodeCommand(
 
         // ── 6.3 workspace commands ───────────────────────────────────────────────────
         case 'workspace-list':
-            return { command, group: fields.text('group') };
+            return { command, group: fields.text('group'), parent: fields.text('parent') };
         case 'workspace-create':
             return {
                 command,
@@ -394,12 +394,22 @@ function decodeCommand(
                 repo: fields.text('repo'),
                 muted: fields.flag('muted', false),
                 icon: fields.rawText('icon'),
-                group_defaults: fields.flag('group_defaults', true)
+                group_defaults: fields.flag('group_defaults', true),
+                parent: fields.text('parent'),
+                // Verbatim: a malformed id must fail the create (no such pane), not silently un-nest it.
+                parent_pane_id: fields.text('parent_pane_id')
             };
         case 'workspace-move': {
             const name = fields.nonEmpty('name');
             if (name === undefined) return guard(command, 'workspace-move requires name', 'name');
             return { command, name, group: fields.text('group'), index: fields.int('index') };
+        }
+        case 'workspace-nest': {
+            const name = fields.nonEmpty('name');
+            if (name === undefined) return guard(command, 'workspace-nest requires name', 'name');
+            const parent = fields.text('parent');
+            if (parent === undefined) return guard(command, 'workspace-nest requires parent', 'parent');
+            return { command, name, parent, index: fields.int('index') };
         }
         case 'workspace-delete': {
             const name = fields.nonEmpty('name');
@@ -412,6 +422,8 @@ function decodeCommand(
                 command,
                 name,
                 force: fields.flag('force', false),
+                // §2.9: absent = the nested workspaces promote into the deleted one's slot.
+                cascade: fields.flag('cascade', false),
                 // Worktree cleanup (graft-git.md §8.7): all absent = the delete touches no worktree.
                 worktree_paths: fields.list('worktree_paths'),
                 force_worktree_paths: fields.list('force_worktree_paths'),

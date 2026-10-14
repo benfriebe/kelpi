@@ -12,8 +12,20 @@ import type { AgentKind, PaneStatus } from '../wire/vocab.js';
 import type { WsSettingsChangedMessage, WsSettingsSnapshot } from './settings.js';
 import type { WsUpdateStateMessage } from './update.js';
 
-/** Generation 2 adds plugin pane records that generation 1 clients cannot safely render. */
-export const WS_PROTOCOL_VERSION = 2;
+/**
+ * The client-sync generation a `hello` must match exactly.
+ *
+ *   - 2 added plugin pane records that generation 1 clients cannot safely render.
+ *   - 3 adds nested workspaces (app-state-core.md §2.9): `childOrder` / `childrenCollapsed` on a
+ *     workspace, and the `nest-workspaces` / `set-workspace-children-collapsed` verbs. A nested
+ *     workspace lives only in its parent's `childOrder`, so a generation 2 client would show no
+ *     row for it at all; it is refused instead, and told to update.
+ *
+ * Independent of `PROTOCOL_VERSION` (the process generation that names the run-dir files) from 3
+ * on: a client-only change must not move the run dir, or an updated app would start a second
+ * daemon beside the running one instead of handing it off.
+ */
+export const WS_PROTOCOL_VERSION = 3;
 
 export const WS_CLIENT_KINDS = ['electron', 'browser', 'cli'] as const;
 export type WsClientKind = (typeof WS_CLIENT_KINDS)[number];

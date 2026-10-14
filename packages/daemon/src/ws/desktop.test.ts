@@ -147,6 +147,132 @@ describe('tokenAt (CONT-122 trimming)', () => {
         expect(tokenAt('see notes.md)', 6)).toBe('notes.md');
     });
 
+    /**
+     * Agents write `name (https://…): note` and `the PR (https://…).` all the time. The wrapper
+     * pass ran before the punctuation trim, so the `:` or `.` hid the closing paren and the
+     * token kept its `(`, which no scheme anchor matches.
+     */
+    it('unwraps brackets that prose punctuation follows', () => {
+        expect(tokenAt('1. web#3133 (https://github.com/o/r/pull/3133): test fix', 14)).toBe('https://github.com/o/r/pull/3133');
+        expect(tokenAt('the PR (https://github.com/o/r/pull/5249). It has', 10)).toBe('https://github.com/o/r/pull/5249');
+        expect(tokenAt('see (notes.md), then', 7)).toBe('notes.md');
+        expect(tokenAt('see [https://example.com/x];', 7)).toBe('https://example.com/x');
+        expect(tokenAt('see ((notes.md)).', 7)).toBe('notes.md');
+    });
+
+    it('keeps parens inside a URL while unwrapping the ones around it', () => {
+        expect(tokenAt('(https://en.wikipedia.org/wiki/A_(b)).', 5)).toBe('https://en.wikipedia.org/wiki/A_(b)');
+        expect(tokenAt('https://en.wikipedia.org/wiki/A_(b)', 5)).toBe('https://en.wikipedia.org/wiki/A_(b)');
+    });
+
+    it('drops an opening bracket whose closer is outside the token', () => {
+        expect(tokenAt('(https://example.com/x and more)', 5)).toBe('https://example.com/x');
+        expect(tokenAt('[notes.md is here]', 3)).toBe('notes.md');
+        expect(tokenAt('{https://example.com/x and more}', 5)).toBe('https://example.com/x');
+        // A path opens as itself now, not as a missing `(draft.md`.
+        expect(tokenAt('(draft.md is ready', 3)).toBe('draft.md');
+    });
+
+    it('counts brackets, so only the unmatched ones are trimmed', () => {
+        expect(tokenAt('see https://en.wikipedia.org/wiki/A_(b)).', 8)).toBe('https://en.wikipedia.org/wiki/A_(b)');
+        expect(tokenAt('(https://example.com/x?q=(1)', 5)).toBe('https://example.com/x?q=(1)');
+        expect(tokenAt('see {https://example.com/x}.', 8)).toBe('https://example.com/x');
+    });
+
+    /**
+     * A link stops at the first closer that has no opener inside it, whatever the counts over the
+     * whole token say. Counting the token blocked the unwrap here and left the `(` on, so no link.
+     */
+    it('ends a link at its wrapper even when the token has a stray bracket', () => {
+        expect(tokenAt('(https://x.com/a)b)', 5)).toBe('https://x.com/a');
+        expect(tokenAt('[https://x.com/a]b]', 5)).toBe('https://x.com/a');
+        expect(tokenAt('{https://x.com/a}b}', 5)).toBe('https://x.com/a');
+        expect(tokenAt('[https://x.com/?a[b]=1]', 5)).toBe('https://x.com/?a[b]=1');
+    });
+
+    it('finds the link inside a markdown link or after a label', () => {
+        expect(tokenAt('see [the docs](https://x.com/docs).', 18)).toBe('https://x.com/docs');
+        expect(tokenAt('PR:https://github.com/o/r/pull/1', 8)).toBe('https://github.com/o/r/pull/1');
+        // Two links in one token: the cell picks.
+        const both = '[https://a.com/x](https://b.com/y)';
+        expect(tokenAt(both, 3)).toBe('https://a.com/x');
+        expect(tokenAt(both, both.indexOf('b.com'))).toBe('https://b.com/y');
+        // A scheme inside a link's query is the link's own.
+        expect(tokenAt('https://x.com/login?next=https://y.com/z', 30)).toBe('https://x.com/login?next=https://y.com/z');
+    });
+
+    it('trims a question or exclamation mark after a link only when it is not the link\'s', () => {
+        expect(tokenAt('did you see the PR (https://x.com/a)?', 22)).toBe('https://x.com/a');
+        expect(tokenAt('it landed (https://x.com/a)!', 13)).toBe('https://x.com/a');
+        expect(tokenAt('see https://x.com/a)?', 6)).toBe('https://x.com/a');
+        expect(tokenAt('https://x.com/a?q=1', 3)).toBe('https://x.com/a?q=1');
+        // A `?` that would open an empty query is the sentence's.
+        expect(tokenAt('did you see https://x.com/a?', 14)).toBe('https://x.com/a');
+        expect(tokenAt('see https://x.com/a?.', 6)).toBe('https://x.com/a');
+        // In a query or a fragment it is the link's, and so is a `!` (these are other pages).
+        expect(tokenAt('https://x.com/s?q=why?', 3)).toBe('https://x.com/s?q=why?');
+        expect(tokenAt('https://x.com/a#why?', 3)).toBe('https://x.com/a#why?');
+        expect(tokenAt('https://en.wikipedia.org/wiki/Jeopardy!', 3)).toBe('https://en.wikipedia.org/wiki/Jeopardy!');
+        expect(tokenAt('(https://en.wikipedia.org/wiki/Help!).', 3)).toBe('https://en.wikipedia.org/wiki/Help!');
+        expect(tokenAt('https://x.com/#!', 3)).toBe('https://x.com/#!');
+        // A path is not a URL: its `?` and `!` are prose.
+        expect(tokenAt('did you read notes.md?', 15)).toBe('notes.md');
+    });
+
+    it('ends a link at curly quotes, an em dash, an ellipsis and full-width brackets', () => {
+        expect(tokenAt('the PR (https://github.com/o/r/pull/1)\u2014it fixes', 10)).toBe('https://github.com/o/r/pull/1');
+        expect(tokenAt('\u201chttps://x.com/a\u201d', 3)).toBe('https://x.com/a');
+        expect(tokenAt('\u2018https://x.com/a\u2019', 3)).toBe('https://x.com/a');
+        expect(tokenAt('https://x.com/a\u2026', 3)).toBe('https://x.com/a');
+        expect(tokenAt('（https://x.com/a）', 3)).toBe('https://x.com/a');
+        expect(tokenAt('詳細（https://x.com/a）を参照。', 5)).toBe('https://x.com/a');
+        expect(tokenAt('【https://x.com/a】', 3)).toBe('https://x.com/a');
+        expect(tokenAt('see https://x.com/a。', 6)).toBe('https://x.com/a');
+        expect(tokenAt('\u201cnotes.md\u201d', 3)).toBe('notes.md');
+        expect(tokenAt('（notes.md）', 3)).toBe('notes.md');
+    });
+
+    it('keeps a path\'s own brackets unless they wrap the whole token', () => {
+        expect(tokenAt('(a)(b)', 1)).toBe('(a)(b)');
+        expect(tokenAt('see (a)(b).md.', 5)).toBe('(a)(b).md');
+        expect(tokenAt('[notes.md]', 3)).toBe('notes.md');
+        expect(tokenAt('see (notes.md]', 6)).toBe('notes.md');
+    });
+
+    it('answers null for a token of brackets and punctuation only', () => {
+        expect(tokenAt('see ((( now', 5)).toBeNull();
+        expect(tokenAt('see (. now', 5)).toBeNull();
+    });
+
+    /**
+     * A click reads the whole logical line, so a minified bundle can hand it a huge token. Each
+     * line below leans on a different trim; one that rescans or re-slices the token per step takes
+     * seconds at this length rather than a millisecond, so it fails here instead of in a pane.
+     */
+    it('trims a long token in time linear in its length', () => {
+        const n = 30_000;
+        const lines: Array<[string, number]> = [
+            ['('.repeat(n), 0],
+            ['x' + ')'.repeat(n), 0],
+            ['x' + '.,?!'.repeat(n), 0],
+            ['x' + '.)'.repeat(n), 0],
+            ['('.repeat(n) + 'x' + ')'.repeat(n) + '.', n],
+            ['https://x.com/' + '('.repeat(n), 0],
+            ['https://x.com/a' + '.;:'.repeat(n), 0],
+            ['(https://x.com/a)'.repeat(n / 10), 17 * (n / 10) - 1],
+            // The scheme search: a long word with no `://`, one with a scheme at the far end, and a
+            // `://` with no letter before it.
+            ['a'.repeat(n), 0],
+            ['a'.repeat(n) + '1://x', 0],
+            ['1'.repeat(n) + '://x', 0]
+        ];
+        for (const [line, offset] of lines) {
+            const started = performance.now();
+            tokenAt(line, offset);
+            expect(performance.now() - started, line.slice(0, 20)).toBeLessThan(250);
+        }
+    });
+
     it('keeps punctuation that is really part of a filename', () => {
         expect(tokenAt('open my-file_v2.md', 8)).toBe('my-file_v2.md');
         expect(tokenAt('open a(1).md', 8)).toBe('a(1).md');
@@ -193,6 +319,12 @@ describe('tokenRangeAt (#303)', () => {
             expect(range === null ? null : line.slice(range.start, range.end)).toBe(tokenAt(line, offset));
         }
         expect(tokenRangeAt('cat (docs/a.md) now', 7)).toEqual({ start: 5, end: 14 });
+        // The underline covers the URL only, not the paren or the full stop after it.
+        const prose = 'the PR (https://e.com/a). It';
+        expect(tokenRangeAt(prose, 10)).toEqual({ start: prose.indexOf('https'), end: prose.indexOf(')') });
+        // On the unmatched `(` itself, the underline still starts at the URL.
+        const open = '(https://e.com/a and more)';
+        expect(tokenRangeAt(open, 0)).toEqual({ start: 1, end: open.indexOf(' ') });
         expect(tokenRangeAt('a  b', 1)).toBeNull();
     });
 });
@@ -419,6 +551,17 @@ describe('open-terminal-target (CONT-122 / TERM-052)', () => {
         const clicked = await f.channel.run('open-terminal-target', { pane_id: P0, row: 0, col: 6 });
         expect(probed).toMatchObject({ ok: true, opened: 'external', url: 'https://example.com/x' });
         expect(clicked).toEqual(probed);
+    });
+
+    it('opens a URL an agent wrapped in parens before a full stop or colon, on hover and click', async () => {
+        for (const text of ['Here\'s the PR: manage#5249 (https://github.com/o/r/pull/5249). It has', '1. web#3133 (https://github.com/o/r/pull/3133): fix']) {
+            const offset = text.indexOf('https') + 4;
+            const f = fixture({ cell: { text, offset } });
+            const probed = await f.channel.run('probe-terminal-target', { pane_id: P0, row: 0, col: offset });
+            const clicked = await f.channel.run('open-terminal-target', { pane_id: P0, row: 0, col: offset });
+            expect(probed).toMatchObject({ ok: true, opened: 'external', url: text.slice(text.indexOf('https'), text.indexOf(')')) });
+            expect(clicked).toEqual(probed);
+        }
     });
 
     it('reports a .md path that is not on disk instead of opening a broken pane', async () => {

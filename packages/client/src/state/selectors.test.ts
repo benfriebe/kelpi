@@ -89,6 +89,19 @@ describe('sidebar selectors', () => {
         expect(entries).toHaveLength(1);
         expect(entries[0]?.kind).toBe('group');
     });
+
+    it('matches name or label only, as the sidebar’s own filter does, never the slug (§2.6)', () => {
+        const state = JSON.parse(JSON.stringify(daemonState())) as DaemonState;
+        const client = createKelpiStore();
+        client.getState().applySnapshot(0, {
+            ...state,
+            workspaces: state.workspaces.map((workspace) =>
+                workspace.id === W2 ? { ...workspace, slug: 'zz-only-in-the-slug' } : workspace
+            )
+        });
+        client.getState().setSidebarFilter('zz-only');
+        expect(selectFilteredSidebarEntries(client.getState())).toEqual([]);
+    });
 });
 
 describe('active workspace selectors', () => {

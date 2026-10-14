@@ -18,6 +18,7 @@ import type {
     WorkspaceState
 } from '../types.js';
 import { makeWorkspaceState } from '../types.js';
+import { nestingRefusal, parentIDForWorkspace, workspaceByID } from '../derived.js';
 import { clampIndex, newPane, seconds, updateWorkspace } from './helpers.js';
 
 // ---------------------------------------------------------------------------
@@ -36,13 +37,40 @@ function groupOfWorkspace(state: DaemonState, workspaceID: string): WorkspaceGro
     return state.groups.find((group) => group.childOrder.includes(workspaceID)) ?? null;
 }
 
+/** §2.9: the workspace a nested workspace sits under, or null when it is not nested. */
+function parentOfWorkspace(state: DaemonState, workspaceID: string): WorkspaceState | null {
+    const parentID = parentIDForWorkspace(state, workspaceID);
+    return parentID === null ? null : workspaceByID(state, parentID);
+}
+
 /** §2.4 `sidebarAnchor`: the top-level entry a workspace "sits under". */
 function sidebarAnchor(state: DaemonState, workspaceID: string | null): SidebarID | null {
     if (workspaceID === null) return null;
-    const entry = workspaceSidebarID(workspaceID);
+    // A nested workspace sits under its parent's anchor. Nesting is one level deep, so this is
+    // one hop and never a recursion: a corrupt cycle cannot overflow the stack (§2.9).
+    const placedID = parentIDForWorkspace(state, workspaceID) ?? workspaceID;
+    const entry = workspaceSidebarID(placedID);
     if (indexOfEntry(state.topLevelOrder, entry) >= 0) return entry;
-    const group = groupOfWorkspace(state, workspaceID);
+    const group = groupOfWorkspace(state, placedID);
     return group === null ? null : groupSidebarID(group.id);
+}
+
+/**
+ * The movers a bulk placement actually places: live ids, deduped, in order, minus any whose
+ * parent is moving too. Those stay nested and follow their parent, so a family moved together
+ * stays a family (§2.9).
+ */
+function placedMovers(state: DaemonState, ids: readonly string[]): string[] {
+    const live = [...new Set(ids)].filter((id) => state.workspaces.some((workspace) => workspace.id === id));
+    const liveSet = new Set(live);
+    return live.filter((id) => {
+        const parentID = parentIDForWorkspace(state, id);
+        return parentID === null || !liveSet.has(parentID);
+    });
+}
+
+function sameIDs(a: readonly string[], b: readonly string[]): boolean {
+    return a.length === b.length && a.every((id, index) => id === b[index]);
 }
 
 function insertAfter(
@@ -61,9 +89,21 @@ function insertAfter(
     return next;
 }
 
+/** Remove the given ids from every parent workspace's `childOrder` (§2.9). */
+function detachFromParents(
+    workspaces: readonly WorkspaceState[],
+    ids: ReadonlySet<string>
+): readonly WorkspaceState[] {
+    return workspaces.map((workspace) => {
+        const childOrder = workspace.childOrder.filter((id) => !ids.has(id));
+        return childOrder.length === workspace.childOrder.length ? workspace : { ...workspace, childOrder };
+    });
+}
+
 function detachWorkspace(state: DaemonState, workspaceID: string): DaemonState {
     return {
         ...state,
+        workspaces: detachFromParents(state.workspaces, new Set([workspaceID])),
         topLevelOrder: state.topLevelOrder.filter(
             (entry) => !(entry.kind === 'workspace' && entry.id === workspaceID)
         ),
@@ -121,16 +161,43 @@ function createWorkspace(
     const placement = action.placement ?? 'end-of-list';
     let next: DaemonState = { ...state, workspaces: [...state.workspaces, workspace] };
 
+    // §2.9: a nested create lands in the parent's children and wins over any group. The parent
+    // must have existed BEFORE this create (so never the new workspace itself) and must not be
+    // nested itself; anything else falls through to an ordinary placement.
+    const parent =
+        action.parentID === undefined || action.parentID === action.id
+            ? null
+            : (state.workspaces.find((candidate) => candidate.id === action.parentID) ?? null);
+    if (parent !== null && parentOfWorkspace(state, parent.id) === null) {
+        const anchorIndex =
+            placement === 'near-selection' && previousActiveID !== null
+                ? parent.childOrder.indexOf(previousActiveID)
+                : -1;
+        const childOrder = [...parent.childOrder];
+        if (anchorIndex < 0) childOrder.push(workspace.id);
+        else childOrder.splice(anchorIndex + 1, 0, workspace.id);
+        next = updateWorkspace(next, parent.id, (candidate) => ({
+            ...candidate,
+            childOrder,
+            childrenCollapsed: false
+        }));
+        // The new workspace becomes active, so it must be visible: open the parent's group too.
+        const parentGroup = groupOfWorkspace(next, parent.id);
+        if (parentGroup !== null) next = expandGroup(next, parentGroup.id);
+        return { ...next, lastActiveWorkspaceID: workspace.id };
+    }
+
     const group =
         action.groupID === undefined
             ? null
             : (next.groups.find((candidate) => candidate.id === action.groupID) ?? null);
 
     if (group !== null) {
+        // A nested active workspace anchors through its parent, which is the group member (§2.9).
+        const anchorID =
+            previousActiveID === null ? null : (parentOfWorkspace(next, previousActiveID)?.id ?? previousActiveID);
         const anchorIndex =
-            placement === 'near-selection' && previousActiveID !== null
-                ? group.childOrder.indexOf(previousActiveID)
-                : -1;
+            placement === 'near-selection' && anchorID !== null ? group.childOrder.indexOf(anchorID) : -1;
         const childOrder = [...group.childOrder];
         if (anchorIndex < 0) childOrder.push(workspace.id);
         else childOrder.splice(anchorIndex + 1, 0, workspace.id);
@@ -160,13 +227,31 @@ function deleteWorkspaces(state: DaemonState, ids: readonly string[]): DaemonSta
     const removing = new Set(ids.filter((id) => state.workspaces.some((w) => w.id === id)));
     if (removing.size === 0) return state;
 
-    const workspaces = state.workspaces.filter((workspace) => !removing.has(workspace.id));
-    const topLevelOrder = state.topLevelOrder.filter(
-        (entry) => !(entry.kind === 'workspace' && removing.has(entry.id))
+    // §2.9: a deleted parent's surviving children promote into the parent's slot, in order.
+    const promoted = new Map<string, readonly string[]>();
+    for (const workspace of state.workspaces) {
+        if (!removing.has(workspace.id)) continue;
+        const survivors = workspace.childOrder.filter(
+            (id) => !removing.has(id) && state.workspaces.some((candidate) => candidate.id === id)
+        );
+        if (survivors.length > 0) promoted.set(workspace.id, survivors);
+    }
+
+    const workspaces = detachFromParents(
+        state.workspaces.filter((workspace) => !removing.has(workspace.id)),
+        removing
+    );
+    const topLevelOrder = state.topLevelOrder.flatMap((entry) =>
+        entry.kind === 'workspace' && removing.has(entry.id)
+            ? (promoted.get(entry.id) ?? []).map((id) => workspaceSidebarID(id))
+            : [entry]
     );
     const groups = state.groups.map((group) => {
-        const childOrder = group.childOrder.filter((id) => !removing.has(id));
-        return childOrder.length === group.childOrder.length ? group : { ...group, childOrder };
+        if (!group.childOrder.some((id) => removing.has(id))) return group;
+        const childOrder = group.childOrder.flatMap((id) =>
+            removing.has(id) ? (promoted.get(id) ?? []) : [id]
+        );
+        return { ...group, childOrder };
     });
 
     let lastActiveWorkspaceID = state.lastActiveWorkspaceID;
@@ -216,13 +301,16 @@ function moveWorkspacesToGroup(
     expandOnDrop: boolean
 ): DaemonState {
     if (groupID !== null && !state.groups.some((group) => group.id === groupID)) return state;
-    const moving = ids.filter((id) => state.workspaces.some((workspace) => workspace.id === id));
+    // Deduped (an id listed twice is placed once), and a child whose parent moves too stays
+    // nested under it: only the parent is placed (§2.9).
+    const moving = placedMovers(state, ids);
     if (moving.length === 0) return state;
 
     // Single pass: detach every id from every parent, then insert the block at the target.
     const movingSet = new Set(moving);
     let next: DaemonState = {
         ...state,
+        workspaces: detachFromParents(state.workspaces, movingSet),
         topLevelOrder: state.topLevelOrder.filter(
             (entry) => !(entry.kind === 'workspace' && movingSet.has(entry.id))
         ),
@@ -254,6 +342,61 @@ function moveWorkspacesToGroup(
         })
     };
     return next;
+}
+
+/**
+ * §2.9: nest `ids` under `parentID` at the post-remove `index` (append when absent). Refused
+ * (no-op) when the parent is missing, is itself nested or is one of the movers, or when a mover
+ * has children of its own: nesting is one level deep.
+ */
+function nestWorkspaces(
+    state: DaemonState,
+    ids: readonly string[],
+    parentID: string,
+    index: number | null | undefined
+): DaemonState {
+    // The wire handlers answer the same refusal in words before dispatching.
+    if (ids.length === 0 || nestingRefusal(state, ids, parentID) !== null) return state;
+    const parent = workspaceByID(state, parentID);
+    if (parent === null) return state;
+    const moving = [...new Set(ids)];
+    const movingSet = new Set(moving);
+
+    const remaining = parent.childOrder.filter((id) => !movingSet.has(id));
+    const at = index === null || index === undefined ? remaining.length : clampIndex(index, remaining.length);
+    const childOrder = [...remaining.slice(0, at), ...moving, ...remaining.slice(at)];
+    const parentGroup = groupOfWorkspace(state, parentID);
+    // Already nested here, in this order, and visible: nothing changes, so nothing is emitted.
+    if (
+        sameIDs(childOrder, parent.childOrder) &&
+        !parent.childrenCollapsed &&
+        (parentGroup === null || !parentGroup.isCollapsed)
+    ) {
+        return state;
+    }
+
+    const workspaces = detachFromParents(state.workspaces, movingSet).map((workspace) => {
+        if (workspace.id === parentID) return { ...workspace, childOrder, childrenCollapsed: false };
+        // A nested workspace has no children: drop any dead ids it still lists.
+        if (movingSet.has(workspace.id) && workspace.childOrder.length > 0) return { ...workspace, childOrder: [] };
+        return workspace;
+    });
+    // The nested rows must be visible where they land: open the parent's group too.
+    const base = parentGroup === null || !parentGroup.isCollapsed ? state : expandGroup(state, parentGroup.id);
+    // Only rebuild the top-level order when a mover leaves it, so a re-order within the parent
+    // does not announce an order change.
+    const leavesTopLevel = base.topLevelOrder.some((entry) => entry.kind === 'workspace' && movingSet.has(entry.id));
+    return {
+        ...base,
+        workspaces,
+        topLevelOrder: leavesTopLevel
+            ? base.topLevelOrder.filter((entry) => !(entry.kind === 'workspace' && movingSet.has(entry.id)))
+            : base.topLevelOrder,
+        groups: base.groups.map((group) => {
+            const groupOrder = group.childOrder.filter((id) => !movingSet.has(id));
+            return groupOrder.length === group.childOrder.length ? group : { ...group, childOrder: groupOrder };
+        })
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -363,8 +506,16 @@ export function reduceWorkspaceAction(state: DaemonState, action: DomainAction):
                 ...workspace,
                 lastAccessedAt: seconds(action.now)
             }));
-            // Navigating to a member of a collapsed group expands it (§3.1 step 3).
-            const group = groupOfWorkspace(next, action.id);
+            // Navigating to a member of a collapsed group expands it (§3.1 step 3), and to a
+            // nested workspace expands its parent and the parent's group (§2.9).
+            const parent = parentOfWorkspace(next, action.id);
+            if (parent !== null && parent.childrenCollapsed) {
+                next = updateWorkspace(next, parent.id, (workspace) => ({
+                    ...workspace,
+                    childrenCollapsed: false
+                }));
+            }
+            const group = groupOfWorkspace(next, parent?.id ?? action.id);
             if (group !== null && group.isCollapsed) next = expandGroup(next, group.id);
             return { ...next, lastActiveWorkspaceID: action.id };
         }
@@ -383,6 +534,14 @@ export function reduceWorkspaceAction(state: DaemonState, action: DomainAction):
         case 'move-workspaces-to-group':
             // The bulk path always expands a collapsed target group (no setting check).
             return moveWorkspacesToGroup(state, action.ids, action.groupID, action.index, true);
+        case 'nest-workspaces':
+            return nestWorkspaces(state, action.ids, action.parentID, action.index);
+        case 'set-workspace-children-collapsed':
+            return updateWorkspace(state, action.id, (workspace) =>
+                workspace.childrenCollapsed === action.collapsed
+                    ? workspace
+                    : { ...workspace, childrenCollapsed: action.collapsed }
+            );
         case 'set-bulk-color': {
             let next = state;
             for (const id of action.ids) {
@@ -558,4 +717,4 @@ export function reduceWorkspaceAction(state: DaemonState, action: DomainAction):
     }
 }
 
-export { detachWorkspace, indexOfEntry, sameEntry, sidebarAnchor };
+export { detachFromParents, detachWorkspace, indexOfEntry, parentOfWorkspace, placedMovers, sameEntry, sidebarAnchor };

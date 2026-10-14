@@ -14,9 +14,29 @@ quirk is documented as-is and explained in "Compatibility rationale" at the end.
 
 ## Plugin envelope and protocol generation
 
-The current control/discovery and WebSocket generation is **2**. Plugin operations use a
-known `plugin` command; plugin-defined command/service names are nested data, not new
-top-level wire verbs:
+The current control/discovery (process) generation is **2**, and the WebSocket (client-sync)
+generation is **3**. They were one number until generation 3, which moved the WebSocket one alone:
+
+- **Process generation** (`PROTOCOL_VERSION`, `packages/protocol/src/index.ts`): what `ping`
+  and `/healthz` report as `protocol`, and what names the run-dir files (`daemon-v2.sock`,
+  `.token`, `.pid`). Moving it makes an updated app start a second daemon beside the running
+  one instead of handing it off, so only a change to the control socket or the run dir moves it.
+- **WebSocket generation** (`WS_PROTOCOL_VERSION`, `packages/protocol/src/ws/messages.ts`): what a
+  client's `hello` must match exactly. A mismatch is refused with `protocol-mismatch` ("daemon
+  speaks client protocol v3, client speaks v2; update Kelpi so the app and the daemon run the
+  same version"), and the client stops retrying and shows that sentence.
+  - 2: plugin pane records.
+  - 3: nested workspaces (app-state-core.md §2.9): `childOrder` and `childrenCollapsed` on every
+    workspace, and the `nest-workspaces` / `set-workspace-children-collapsed` verbs. A nested
+    workspace lives only in its parent's `childOrder`, so a generation 2 client would have no
+    row for it; it is refused instead.
+
+The socket wire (this document) is unversioned: new fields and verbs are additive, and the CLI
+detects a daemon that predates one from its reply (for nesting, the missing `parent_id` echo
+on `workspace-create` and `workspace-list`).
+
+Plugin operations use a known `plugin` command; plugin-defined command/service names are
+nested data, not new top-level wire verbs:
 
 ```json
 {"command":"plugin","action":"list","text":"{}"}
@@ -185,7 +205,10 @@ names are listed per command below). Rules:
 - Many optional string fields are normalized: **empty string → treated as absent**
   (documented per command; applies to `target`, `workspace`, `group`, `profile`,
   `worktree`, `branch`, `repo`, `scope`, `level`, `send_to`, `domain`, `selector` (for
-  `web-key`), `url_match`, `for`, `mode`, `block`, `behavior`, `target_path`).
+  `web-key`), `url_match`, `for`, `mode`, `block`, `behavior`, `target_path`). Not `parent` or
+  `parent_pane_id` (app-state-core.md §2.9): an empty one is an unset variable far more often
+  than a choice, and "no parent" would create a top-level workspace or list every workspace, so
+  the handlers refuse it (`parent must name a workspace (got an empty value)`).
 - `pane_id` must be a syntactically valid UUID string; an invalid UUID makes
   `pane_id` behave as absent (for commands where it's optional) or drops the message (for
   commands where it's required). UUID parsing is `normalizeUuid`
@@ -317,7 +340,7 @@ plugin, workspace-list, group-list,
 pane-list, pane-close, pane-capture, pane-send, pane-send-key,
 pane-split, pane-create, pane-name, pane-resize, pane-font-size, pane-clear,
 pane-move-adjacent, pane-sync, pane-sync-exclude,
-workspace-create, workspace-delete, workspace-label, workspace-mute, workspace-rename,
+workspace-create, workspace-delete, workspace-nest, workspace-label, workspace-mute, workspace-rename,
 workspace-icon,
 group-set-repo, group-reorder, group-sort,
 graft-start, graft-stop, graft-status,
@@ -493,10 +516,11 @@ carry `"command"`.
 | `pane-capture` | R/R | one of `pane_id`/`target` | `workspace`, `lines`, `scrollback` |
 | `pane-sync` | R/R | `action` | `pane_id`, `workspace` |
 | `pane-sync-exclude` | R/R | `target`, `excluded` | `pane_id`, `workspace` |
-| `workspace-list` | R/R | — | `group` |
-| `workspace-create` | R/R | — | `name`, `path`, `color`, `group`, `profile`, `worktree`, `branch`, `update_main`, `repo`, `muted`, `icon`, `group_defaults` |
+| `workspace-list` | R/R | — | `group`, `parent` |
+| `workspace-create` | R/R | — | `name`, `path`, `color`, `group`, `profile`, `worktree`, `branch`, `update_main`, `repo`, `muted`, `icon`, `group_defaults`, `parent`, `parent_pane_id` |
 | `workspace-move` | F&F | `name` | `group`, `index` |
-| `workspace-delete` | R/R | `name` | `force`, `worktree_paths`, `force_worktree_paths`, `prune_worktrees`, `delete_branches`, `batch_ids` |
+| `workspace-nest` | R/R | `name`, `parent` | `index` |
+| `workspace-delete` | R/R | `name` | `force`, `cascade`, `worktree_paths`, `force_worktree_paths`, `prune_worktrees`, `delete_branches`, `batch_ids` |
 | `workspace-profile` | F&F | `name` | `profile` |
 | `workspace-label` | R/R | `name`, `label_op` | `label_values` |
 | `workspace-mute` | R/R | `name` | `muted` |
@@ -1015,6 +1039,16 @@ missing → message dropped). Idempotent. Replies with the same sync-status payl
 
 #### `workspace-list` (R/R)
 
+`parent` (optional name-or-id) scopes to the workspaces nested under that one (app-state-core.md
+§2.9), in sidebar order; an unknown or ambiguous parent → the `workspace-delete` resolution
+errors (`workspace not found: <name>` / `workspace name is ambiguous: <name> (use the id)`); an
+empty or whitespace one → `parent must name a workspace (got an empty value)`. A filtered reply
+echoes the resolved parent as top-level `parent_id` and `parent_name`. A daemon that predates
+nesting ignores `parent` and lists every workspace without them, which is how `kelpi workspace
+list --parent` and the plugin SDK refuse its reply instead of passing everything on.
+A nested workspace is listed directly after its parent, collapsed or not, and with `group` it is
+listed with its parent's group.
+
 `group` (optional name-or-id) scopes to one group's members; unknown/ambiguous group →
 `{"ok":false,"error":"no group matches '<filter>'"}` (distinct from an empty group,
 which succeeds with `[]`-ish content). Order: sidebar order (top-level items and group
@@ -1037,7 +1071,9 @@ Always-present per entry: `id`, `name`, `color`, `pane_count`, `is_active`,
 `workspace-mute`). Conditionals: `icon` (the flat DB spelling, `"emoji:🔥"` /
 `"system:star"`; absent for the letter avatar),
 `last_activity_at` (max across panes; absent when no panes), `agent_session_id`
-(first pane carrying one), `group_id`/`group_name` (absent for top-level), `repos` (the
+(first pane carrying one), `group_id`/`group_name` (absent for top-level; a nested workspace
+reports its parent's group), `parent_id`/`parent_name` (the workspace it is nested under,
+app-state-core.md §2.9; absent when not nested), `repos` (the
 workspace's repo associations in stored order, each `{"repo_id", "repo_name", "repo_path",
 "worktree_path", "branch"}` with `repo_name`/`repo_path` absent when the repo left the
 registry and `branch` absent when unknown; the whole field is absent when there are none).
@@ -1128,10 +1164,63 @@ Names are sanitized before any git work: an unusable `worktree` →
 (`workspaces.ts:232`), and the worktree reply also carries `group` when the workspace was
 placed in one (`workspaces.ts:352-358`).
 
+Nesting (app-state-core.md §2.9): `parent` (workspace name-or-id) creates the workspace nested
+under that one; `parent_pane_id` (a pane UUID; `kelpi workspace create --nested` forwards
+`KELPI_PANE_ID`) nests it under the workspace holding that pane. Both are checked before
+anything is created, on every branch (plain, repository, worktree): both given →
+`give either parent or parent_pane_id, not both`; with `group` →
+`a nested workspace follows its parent's group: pass a parent or a group, not both`; an unknown
+or ambiguous `parent` → `parent workspace not found: <name>` /
+`parent workspace name is ambiguous: <name> (use the id)`; an empty or whitespace `parent` →
+`parent must name a workspace (got an empty value)` (and `parent_pane_id` → `parent_pane_id
+must name a pane (got an empty value)`); an unknown pane →
+`no pane matches '<id>', so there is no workspace to nest under`; a parent that is itself nested
+→ `'<name>' is nested itself; workspaces nest one level deep`. A nested create takes the group
+defaults (§5.5 repository and worktree switch) from the parent's group, and never creates a
+group. Every success reply of a nested create carries `parent_id` and `parent_name`, what the
+store holds, so a caller can tell a daemon that predates nesting (which drops both fields and
+creates the workspace at the top level); `kelpi workspace create --parent/--nested` then exits
+non-zero.
+
+The repository and worktree branches check the parent again once their git work is done, since
+it can be deleted (or nested under another workspace) meanwhile. The repository branch has made
+nothing yet, so it fails whole: `parent '<name>' was deleted while the workspace was being
+created`, or `parent '<name>' changed while the workspace was being created: <refusal>`. The
+worktree branch already has its worktree, so (like a cancel that arrives after git, graft-git.md
+§8.5.2) it completes, at the top level, and the reply adds `"parent_lost": true` and
+`parent_lost_reason` (the same sentence) in place of `parent_id`. The CLI exits non-zero with
+that sentence, and the plugin SDK rejects with `PARENT_LOST`.
+
+```json
+{"command":"workspace-create","name":"worker-1","parent":"orchestrator"}
+→ {"ok":true,"workspace_id":"<uuid>","workspace_name":"worker-1","muted":false,
+   "parent_id":"<uuid>","parent_name":"orchestrator"}
+```
+
+#### `workspace-nest` (R/R)
+
+`name` (required non-empty) = workspace name-or-id; `parent` (required) = the workspace to nest it
+under, name-or-id; `index` (int, optional) = position among the parent's nested workspaces after
+removal (absent = append). Nests the workspace one level deep, or reorders it within its parent.
+Request/response, unlike `workspace-move`, because nesting can be refused and the caller needs the
+reason (app-state-core.md §2.9): unknown/ambiguous `name` → the `workspace-delete` resolution
+errors; unknown/ambiguous `parent` → the same, prefixed `parent `; the parent is nested itself →
+`'<name>' is nested itself; workspaces nest one level deep`; an empty or whitespace `parent` →
+`parent must name a workspace (got an empty value)`; the workspace has nested workspaces
+of its own → `'<name>' has nested workspaces; workspaces nest one level deep`; the two are the
+same → `'<name>' cannot be nested under itself`. Un-nesting is `workspace-move`.
+
+```json
+{"command":"workspace-nest","name":"worker-2","parent":"orchestrator","index":0}
+→ {"ok":true,"workspace_id":"<uuid>","workspace_name":"worker-2",
+   "parent_id":"<uuid>","parent_name":"orchestrator","index":0}
+```
+
 #### `workspace-move` (F&F)
 
 `name` (required non-empty) = workspace name-or-id. `group` = destination group name
-(nil / empty = top level); `index` (int) = position. No reply; resolution failures
+(nil / empty = top level); `index` (int) = position. A nested workspace is taken out of its
+parent (app-state-core.md §2.9); nesting is `workspace-nest`. No reply; resolution failures
 no-op silently.
 
 ```json
@@ -1140,8 +1229,15 @@ no-op silently.
 
 #### `workspace-delete` (R/R)
 
-`name` (required non-empty) = workspace name-or-id; `force` (bool, default false).
-Refusals: last remaining workspace; ambiguous name; unknown name; agent-panes guard
+`name` (required non-empty) = workspace name-or-id; `force` (bool, default false);
+`cascade` (bool, default false; app-state-core.md §2.9) also deletes the workspaces nested under
+it: their panes are closed with the parent's, the last-workspace guard counts them, the agent
+guard sums their agents with the parent's (the error then reads `workspace <name> and its nested
+workspace(s) have …`), worktree cleanup treats each as an owner of its own worktrees, and the
+success reply carries `deleted_children` (their ids) and `deleted_child_names` (their names, index
+for index), so a caller deleting several targets can tell one this cascade already took from one
+that never existed. Without `cascade` they move into the deleted
+workspace's sidebar slot. Refusals: last remaining workspace; ambiguous name; unknown name; agent-panes guard
 without force (running, waiting for input, or idle with a bound session, including
 parked panes; see agent-lifecycle §11) —
 
@@ -1333,7 +1429,9 @@ exit 1, as for `workspace-rename`.
 #### `group-list` (R/R)
 
 No parameters. Groups in sidebar order (unplaced groups appended; duplicates
-de-duplicated); members in each group's child order.
+de-duplicated); members in each group's child order, each followed by the workspaces nested under
+it (app-state-core.md §2.9), which carry `parent_id` and `parent_name`. Those belong to the group
+too: they are what `workspace-list` `group` lists and what `group-delete` `cascade` deletes.
 
 ```json
 {"command":"group-list"}
@@ -1722,11 +1820,11 @@ other key is ignored. (A known key with the wrong type poisons the whole message
 | `key` | string | `pane-send-key`, `web-key` |
 | `bare` | bool | `pane-send` |
 | `new_name` | string | `group-rename`, `workspace-rename` |
-| `cascade` | bool | `group-delete` |
+| `cascade` | bool | `group-delete`, `workspace-delete` |
 | `force` | bool | `workspace-delete` |
 | `worktree_paths`, `force_worktree_paths`, `batch_ids` | string[] | `workspace-delete` |
 | `prune_worktrees`, `delete_branches` | bool | `workspace-delete` |
-| `index` | int | `workspace-move`, `group-move` |
+| `index` | int | `workspace-move`, `workspace-nest`, `group-move` |
 | `group` | string | `workspace-create`, `workspace-move`, `workspace-list` |
 | `profile` | string | `workspace-create`, `workspace-profile`, `session-start` (+ dual-fire on any session-id-bearing event, §3.1) |
 | `workspace` | string | pane-target commands, `pane-list`, `pane-sync`, `graft-*`, `pane-split`/`pane-create` (destination) |
@@ -1782,6 +1880,8 @@ other key is ignored. (A known key with the wrong type poisons the whole message
 | `create_worktree` | bool | `group-set-repo` |
 | `repo_id` | string | `group-set-repo` |
 | `group_defaults` | bool | `workspace-create` |
+| `parent` | string | `workspace-create`, `workspace-nest`, `workspace-list` (workspace name-or-id, app-state-core.md §2.9) |
+| `parent_pane_id` | string (UUID) | `workspace-create` (nest under the workspace holding this pane, §2.9) |
 | `focus` | bool | `pane-split`, `pane-create`, `open`, `web-open`, `pane-move`, `pane-move-adjacent` (absent = background, #295) |
 | `gesture` | bool | `web-open`, `web-navigate`, `web-back`, `web-forward`, `web-reload`, `web-tab-new` (the GUI's mark for a navigation the user made; only those pages enter the browsing history, #375; the CLI never sends it) |
 | `typed` | bool | `web-navigate` (the URL bar's submit or a picked suggestion, ranked as typed in the browsing history, #375) |

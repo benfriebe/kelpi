@@ -882,10 +882,25 @@ URI → `opened: "external", url, source: "hyperlink"`; any other scheme →
 
 **2. Otherwise the token under the cell.** The daemon reads the wrap-joined logical line
 (`cellText`, `packages/daemon/src/term/service.ts`) and takes the token at that offset:
-- the token is trimmed of trailing `.`, then `,;:`, then `.` again, and a balanced wrapper
-  pair (`()`, `[]`, `<>`, quotes) is stripped (`tokenAt`, `desktop.ts`);
+- a token that holds a `scheme://` is that link and nothing else (`tokenAt`, `desktop.ts`).
+  Whatever comes before the scheme is dropped (`(https://…`, `[docs](https://…`,
+  `PR:https://…`), and the link ends where `urlEnd` (`packages/daemon/src/content/url-end.ts`)
+  says, the same rule as the markdown preview's autolinks (content-panes.md §3.4): at the first
+  closing bracket with no opener inside the link (`(https://x/a).`, `[docs](https://x/a)`,
+  `（https://x/a）`; `https://en.wikipedia.org/wiki/A_(b)` keeps its paren), with trailing
+  `.,;:` and full-width `。、，；：！？` trimmed, and a trailing `?` trimmed only when it would
+  open an empty query. A `!` stays (`…/wiki/Yahoo!` is its own page). A token holding two links
+  (`[https://a](https://b)`) answers the one under the cell; a scheme inside a link's query is
+  part of that link;
+- any other token is a path. Its brackets are paired once (`()`, `[]`, `{}` and the full-width
+  and CJK pairs), and from its ends come off: trailing `.,;:?!` and their full-width forms, a
+  bracket with no partner (`see notes.md)`, `(draft.md is ready` opens `draft.md`), and a pair
+  around the whole token (`(notes.md)`, `((notes.md)).`), in any order until none applies.
+  Brackets that belong to the name stay (`a(1).md`, `(a)(b)`). Quotes and `<>` never reach
+  this, because they break the token;
 - a token breaks on whitespace, on the shell-and-prose punctuation (double quote, apostrophe,
-  backtick, `<`, `>`, `|`), **and on the box-drawing and block characters**
+  backtick, `<`, `>`, `|`), on curly quotes, the em dash and the ellipsis (an agent glues them
+  straight onto a link), **and on the box-drawing and block characters**
   U+2500…U+257F, U+2588 and U+2591…U+2593. A TUI draws its
   frames out of those and glues them straight onto the content when the box is full
   (`│https://example.com/x│`), and with `│` absent from the break set the border stayed on the

@@ -315,7 +315,8 @@ return result
 ```
 
 Members of a *collapsed* group are excluded. (The CLI `workspace list` deliberately differs: it
-lists collapsed members too.)
+lists collapsed members too.) Each workspace is followed by the workspaces nested under it,
+unless its `childrenCollapsed` is set (§2.9).
 
 ### 2.3 renderedEntries (derived)
 
@@ -333,15 +334,18 @@ for entry in topLevelOrder:
 
 Row identity strings for UI keying: `ws:<uuid>`, `header:<uuid>`, `empty:<uuid>`.
 
+Every `workspaceRow` is followed by its nested workspaces' rows, one depth deeper, unless the
+parent's `childrenCollapsed` is set (§2.9).
+
 ### 2.4 Placement helpers
 
-- `groupID(forWorkspace id)` = id of the first group whose `childOrder` contains the workspace,
-  else null.
+- `groupID(forWorkspace id)` = id of the first group whose `childOrder` contains the workspace
+  (for a nested workspace, its parent), else null (§2.9).
 - `topLevelSlot(forWorkspace id)` = `group(parent)` when grouped, else `workspace(id)` if present in
   `topLevelOrder`, else null.
 - `activeWorkspaceSidebarAnchor` = `sidebarAnchor(activeWorkspaceID)` where `sidebarAnchor(id)` is:
-  `workspace(id)` if that entry exists at top level, else the parent group's `group(gid)` entry,
-  else null.
+  the parent workspace's anchor when `id` is nested (§2.9), else `workspace(id)` if that entry
+  exists at top level, else the parent group's `group(gid)` entry, else null.
 - `nearSelectionAnchor(initialWorkspaceIDs)` = anchor of the FIRST initial workspace if resolvable,
   else `activeWorkspaceSidebarAnchor` (used by near-selection group placement so a row-level
   "New Group..." lands next to that row, not next to the active workspace).
@@ -455,6 +459,136 @@ Bulk operations over the selection:
   selection (so the new header becomes the visual anchor), then dispatches
   `createGroup(name, color, insertAfter: null, initialWorkspaceIDs: ids)`.
 
+### 2.9 Nested workspaces (Kelpi-only)
+
+A workspace can sit under another workspace, one level deep. The use it is built for is an
+orchestrator agent running in a parent workspace that spawns a workspace per worker
+(`kelpi workspace create --nested`); the sidebar shows the workers indented under the
+orchestrator's row, behind a disclosure chevron.
+
+**Model.** The parent owns the relationship, the way a group owns its members (§1.5):
+
+- `childOrder: string[]` on `WorkspaceState`: the nested workspaces' ids, in sidebar order.
+- `childrenCollapsed: boolean`: the parent row's disclosure state (persisted, like a group's
+  `isCollapsed`).
+
+There is no parent column on the child. `parentIDForWorkspace(id)` is derived: the workspace
+whose `childOrder` holds `id` (`packages/daemon/src/store/derived.ts`).
+
+**Invariants** (every reducer keeps them; `repairNesting` restores them on boot):
+
+1. A nested workspace appears in exactly one parent's `childOrder`, and nowhere else: not in
+   `topLevelOrder`, not in a group's `childOrder`. It follows its parent wherever the parent sits
+   (top level or a group), and moves with it.
+2. One level: a workspace that is nested has an empty `childOrder`. Nothing is ever nested under
+   itself.
+3. A nested workspace belongs to its parent's group for every group question
+   (`groupIDForWorkspace`, the CLI's GROUP column, group-default repositories, `workspace list
+   --group`), without being a member of that group's `childOrder`.
+
+**Placement on create** (`create-workspace` with `parentID`). A valid parent (it exists and is not
+nested itself) wins over `groupID`: the new workspace is appended to the parent's `childOrder`
+(`near-selection` puts it after the previously active workspace when that is a sibling), the
+parent is expanded, and the parent's group is expanded too, since the new workspace becomes
+active and must be visible. A missing or nested parent falls back to the normal §4.1 placement.
+
+**Order.** `visibleWorkspaceOrder` (§2.2) emits each workspace followed by its nested ones unless
+the parent's `childrenCollapsed` is set; `sidebarWorkspaceOrder` and `workspace list` always
+include them. The rendered rows (§2.3) put the nested rows directly under their parent row, one
+indent deeper; a collapsed parent shows an aggregate of its nested workspaces' agent state on its
+own row.
+
+**Activation.** `set-active-workspace` on a nested workspace expands a collapsed parent and the
+parent's collapsed group (the §3.1 rule, one level further).
+
+**Nesting and un-nesting existing workspaces.**
+
+- `nest-workspaces(ids, parentID, index?)`: detach every id from wherever it is (top level, a
+  group, another parent) and insert the block into the parent's `childOrder` at the post-remove
+  index (append when absent); expands the parent. The same action reorders children within one
+  parent. Refused as a whole (no-op) when the parent is missing, is nested itself or is one of
+  `ids`, or when any mover has nested workspaces of its own. `nestingRefusal(state, ids, parentID)`
+  gives the reason in words; every wire path answers with it. A nest that changes nothing (every
+  id already there, in that order, with the parent and its group expanded) returns the same
+  state and emits nothing, and a re-order within the parent leaves `topLevelOrder` untouched. A
+  workspace that becomes nested drops any dead ids from its own `childOrder`.
+- Un-nesting is the existing move: `move-workspace-to-group` / `move-workspaces-to-group`
+  detach from every parent, groups and parent workspaces alike, before inserting at the target.
+- `create-group` with a nested workspace among `initialWorkspaceIDs` un-nests it into the group.
+- A family moved together stays a family: in `move-workspaces-to-group` and `create-group`, an
+  id whose parent is also in the set is not placed itself. It stays nested and follows its
+  parent. Both actions also de-duplicate their ids, so an id listed twice is placed once.
+- `create-workspace`'s `parentID` must name a workspace that existed before the create and is
+  not nested itself; anything else (including the new workspace's own id) is ignored and the
+  workspace is placed as usual. `parentIDForWorkspace` never answers a workspace for itself,
+  and `sidebarAnchor` follows a parent one hop only, so a corrupt state cannot recurse.
+
+**Deleting.**
+
+- `delete-workspace(s)` on a parent promotes its surviving nested workspaces into the parent's
+  former slot (its `topLevelOrder` entry or its place in a group's `childOrder`), in
+  `childOrder` order. A delete that removes the parent AND its children promotes nothing.
+- Cascade is the handler's choice, not the reducer's: `workspace-delete` with `cascade` (the CLI's
+  `--cascade`, the GUI's "Delete nested workspaces too", sent as `cascade_children` on the WS
+  `delete-workspace`) deletes the live children in the same dispatch, kills their panes, counts
+  them against the last-workspace guard, sums their agents into the `--force` guard, makes each
+  an owner of its own worktrees for the cleanup, and lists their ids in the reply's
+  `deleted_children`.
+- `delete-group` with `cascade` deletes the members' nested workspaces too (and tears down their
+  panes); without it the members promote to the top level and keep their children.
+
+**Collapse.** `set-workspace-children-collapsed(id, collapsed)`; a no-op when unchanged.
+
+**Sidebar** (`packages/client/src/chrome`).
+
+- A collapsed group's header badge counts its members' nested workspaces too, since a collapsed
+  group hides the parents' own rollups with it.
+- The filter narrows what is drawn, never what a command does. The delete dialogs' counts, agent
+  totals, worktree list and last-workspace guard, the "Nest Under" and "Un-nest" items, and the
+  menus' landing indices all read the whole tree (`SidebarProps.allEntries`).
+- A selection holding a parent and some of its own children moves as one family. Dragging it,
+  "Move N Workspaces to Group" and "Group N Workspaces" send only the parent; its children
+  follow it, as the reducers' family rule keeps them. Grabbing one of those children drags the
+  family with the parent leading, and every dragged parent folds its nested rows for the gesture.
+- The last nested row under a parent splits into thirds: before it, after it (still nested), and
+  after the parent's whole block. That makes the end of a group whose last member is an expanded
+  parent reachable without collapsing the parent.
+
+**Wire surface.**
+
+- Control protocol: `workspace-create` `parent` / `parent_pane_id`, the request/response
+  `workspace-nest`, `workspace-delete` `cascade`, `workspace-list` `parent` filter and the
+  entries' `parent_id` / `parent_name` (wire-protocol.md §6.3), and `group-list` members' nested
+  workspaces. An empty `parent` is refused, never read as "no parent" (it would make a top-level
+  workspace, or list every workspace); a `parent`-filtered list echoes the parent so a caller can
+  tell an older daemon's unfiltered reply; and an async create (repository or worktree) checks
+  the parent again after git, failing (repository) or completing at the top level with
+  `parent_lost` (worktree) when it was deleted or nested meanwhile.
+- WebSocket generation 3 (`WS_PROTOCOL_VERSION`): a generation 2 client has no row for a nested
+  workspace (it walks only `topLevelOrder` and the groups), so it is refused at `hello` with
+  `protocol-mismatch` rather than silently missing workspaces. The process generation
+  (`PROTOCOL_VERSION`, the run-dir file names) stays 2 (wire-protocol.md, "Plugin envelope and
+  protocol generation").
+- WS-only (`WS_ONLY_COMMANDS`, `packages/daemon/src/ws/sync.ts`), for the sidebar's gestures:
+  `nest-workspaces {workspace_ids, parent_id, index?}` (drag onto a workspace row, "Nest Under")
+  and `set-workspace-children-collapsed {workspace_id, collapsed}` (the parent's chevron). Both
+  reply `{ok:false,error}` with the `nestingRefusal` text, or a missing-workspace error.
+
+**Persistence.** Two `workspace` columns, `childOrderJSON` (JSON array, NULL = none) and
+`childrenCollapsed` (migration `v26_workspace_nesting`, persistence.md §2.1). Boot runs
+`repairNesting` (`packages/daemon/src/store/snapshot.ts`): child ids that are dangling, the
+parent itself, duplicated, or already claimed by an earlier parent are dropped; a parent that is
+itself nested gives its children back (which also breaks a cycle); a nested workspace's
+top-level or group entry is removed; and any live workspace left with no place at all (one the
+repair released, or one an older daemon's save left unplaced) is appended to the top level, so no
+workspace is ever missing from the sidebar.
+
+**Downgrade.** An older daemon ignores both columns. Its sidebar walks only `topLevelOrder` and
+the groups, so a nested workspace is missing from that sidebar (still listed by `kelpi workspace
+list`, which appends unreachable workspaces) until it is moved to the top level or a group there.
+Its first save rewrites the rows without the nesting, so back on a newer daemon those workspaces
+come back at the top level (the repair above), not nested.
+
 ---
 
 ## 3. Active workspace switching
@@ -533,7 +667,9 @@ Behavior, in order:
    the first pane at home (issue #38).
 8. Append the workspace to the flat `workspaces` array (always at the end; only sidebar order
    reflects placement).
-9. Sidebar placement, governed by settings `newWorkspacePlacement` (default `end-of-list`):
+9. Sidebar placement, governed by settings `newWorkspacePlacement` (default `end-of-list`).
+   A valid `parentID` (§2.9) wins over all of this: the workspace goes into the parent's
+   children instead.
    - If `groupID` given AND that group exists:
      - `end-of-list`: insert at end of the group's `childOrder`.
      - `near-selection`: insert after `previousActiveID`'s slot in that group's `childOrder`;
@@ -626,7 +762,8 @@ No-op if the workspace does not exist. Otherwise:
 1. Collect `paneIDs` = all pane ids in the layout PLUS all parked pane ids; collect the workspace's
    association ids.
 2. Remove the workspace from `workspaces`; remove its entry from `topLevelOrder`; remove its id
-   from EVERY group's `childOrder`.
+   from EVERY group's `childOrder` and every parent workspace's `childOrder`. Its own surviving
+   nested workspaces take its slot, in order (§2.9; the handler's `cascade` deletes them instead).
 3. If it was active: `activeWorkspaceID` = the surviving workspace with the greatest
    `lastAccessedAt` (null when none remain).
 4. Scrub UI state: null `renamingWorkspaceID` if it pointed here; null `renamingPaneID` if that
@@ -704,8 +841,8 @@ Single-workspace re-parent (sidebar drag, "Move to Group" menu):
 
 1. Guards: workspace exists; if `groupID` non-null the group must exist (validated BEFORE
    detaching, so a stale caller cannot orphan the workspace).
-2. Detach: if currently grouped, remove from that group's `childOrder`; else remove its
-   `topLevelOrder` entry.
+2. Detach: if currently grouped, remove from that group's `childOrder`; if nested, remove from
+   the parent workspace's `childOrder` (§2.9); else remove its `topLevelOrder` entry.
 3. Attach: if `groupID` non-null, insert into the group's `childOrder` at
    `clamp(index, 0, len)` (append when `index` null); if the target group is collapsed AND settings
    `expandGroupOnWorkspaceDrop` is true, expand it. If `groupID` null, insert `workspace(id)` into
@@ -784,8 +921,8 @@ group entry from `topLevelOrder` and the group itself.
   top-level `workspace(...)` entries AT the group's former index (append if the group somehow had
   no top-level entry), in `childOrder` order, filtered to existing workspaces. Clear
   `groupDeleteConfirmation`; persist.
-- `cascade = true` ("delete group and workspaces"): batch-delete every child exactly like bulk
-  delete (4.4): collect pane ids + association ids, remove workspaces, re-point active workspace by
+- `cascade = true` ("delete group and workspaces"): batch-delete every child, and every
+  workspace nested under one (§2.9), exactly like bulk delete (4.4): collect pane ids + association ids, remove workspaces, re-point active workspace by
   max `lastAccessedAt` when needed, scrub rename/selection state (anchor nulled only when it
   pointed at a removed workspace), clear `groupDeleteConfirmation`, destroy surfaces, clear
   per-workspace sync groups, force-stop grafts, persist. (HEAD watchers and graft sessions for the

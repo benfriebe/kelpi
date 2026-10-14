@@ -132,7 +132,11 @@ last-active workspace. Raw `api.command` retains its explicit wire-field semanti
 Typed command helpers reject failures with `KelpiError` (`code`, `method`, `details`).
 `COMMAND_FAILED` retains the original reply in `details`, including fields such as
 `active_agents` or partial graft failures. `TRANSPORT_ERROR` means the host call rejected;
-`INVALID_REPLY` means the daemon returned an invalid envelope. The raw `api.command(payload,
+`INVALID_REPLY` means the daemon returned an invalid envelope. `INVALID_ARGUMENT` is an empty
+`parentID`, refused before anything is sent. A nested create or a `parentID` list that the daemon
+could not honour rejects rather than quietly returning a top-level workspace or every workspace:
+`UNSUPPORTED` when the daemon predates nested workspaces, `PARENT_LOST` when the parent was deleted
+while a worktree create ran (the workspace was created at the top level; `details` names it). The raw `api.command(payload,
 context)` remains compatible with the CLI/UI wire protocol and returns `{ok:false}` replies
 unchanged. Fire-and-forget operations such as layout selection and group rename resolve when
 dispatch is acknowledged; their existing daemon no-op semantics still apply.

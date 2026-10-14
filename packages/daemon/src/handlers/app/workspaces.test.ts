@@ -942,6 +942,33 @@ describe('workspace-create (group default repository)', () => {
         expect(groupByID(h.state(), G1)?.childOrder).toEqual([workspace?.id]);
     });
 
+    it('gives a nested worktree its parent’s group defaults, nested under the parent (§2.9)', async () => {
+        const { h, requests } = withGroupRepo(true);
+        h.dispatch({ type: 'create-workspace', id: W1, paneID: P1, name: 'orchestrator', now: NOW, groupID: G1 });
+        h.send({ command: 'workspace-create', name: 'fix', parent: 'orchestrator', worktree: 'fix' });
+        await flush();
+        expect(requests).toEqual([
+            { repoPath: REPO, worktreePath: `${HOME}/wt/kelpi/fix`, branchName: 'fix', updateMain: true }
+        ]);
+        const reply = h.replies.at(-1)?.payloads[0];
+        expect(reply).toMatchObject({ ok: true, parent_id: W1, parent_name: 'orchestrator', repo_path: REPO });
+        expect(reply).not.toHaveProperty('group');
+        const created = h.state().workspaces.find((workspace) => workspace.name === 'fix');
+        expect(h.state().workspaces.find((workspace) => workspace.id === W1)?.childOrder).toEqual([created?.id]);
+        expect(groupByID(h.state(), G1)?.childOrder).toEqual([W1]);
+    });
+
+    it('gives a nested plain create its parent’s group repository (§2.9)', async () => {
+        const { h } = withGroupRepo(false);
+        h.dispatch({ type: 'create-workspace', id: W1, paneID: P1, name: 'orchestrator', now: NOW, groupID: G1 });
+        h.send({ command: 'workspace-create', name: 'worker', parent: 'orchestrator' });
+        await flush();
+        expect(h.replies.at(-1)?.payloads[0]).toMatchObject({ ok: true, parent_id: W1, repo_path: REPO });
+        const created = h.state().workspaces.find((workspace) => workspace.name === 'worker');
+        expect(created?.repoAssociations).toEqual([expect.objectContaining({ repoID: R1 })]);
+        expect(h.state().workspaces.find((workspace) => workspace.id === W1)?.childOrder).toEqual([created?.id]);
+    });
+
     it('lets an explicit update_main false (`--no-update-main`) win over the switch', async () => {
         const { h, requests } = withGroupRepo(true);
         h.send({ command: 'workspace-create', group: 'team', worktree: 'fix', update_main: false });

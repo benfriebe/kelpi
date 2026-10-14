@@ -40,6 +40,8 @@ function richSnapshot(): PersistedSnapshot {
                 icon: { kind: 'system', name: 'star.fill' },
                 profileName: 'work',
                 muted: false,
+                childOrder: [],
+                childrenCollapsed: false,
                 layout: {
                     kind: 'split',
                     direction: 'horizontal',
@@ -137,6 +139,8 @@ function richSnapshot(): PersistedSnapshot {
                 icon: { kind: 'emoji', grapheme: '📁' },
                 profileName: null,
                 muted: true,
+                childOrder: [],
+                childrenCollapsed: false,
                 layout: { kind: 'leaf', paneID: P_WEB },
                 focusedPaneID: null,
                 createdAt: 1_755_400_000,

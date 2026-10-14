@@ -115,48 +115,107 @@ export function resolveStateOf(state: DaemonState): ResolveState {
 // Sidebar order
 // ---------------------------------------------------------------------------
 
+function walkSidebar(state: DaemonState, includeCollapsed: boolean): string[] {
+    const byID = new Map(state.workspaces.map((workspace) => [workspace.id, workspace]));
+    const result: string[] = [];
+    const push = (id: string): void => {
+        const workspace = byID.get(id);
+        if (workspace === undefined) return;
+        result.push(id);
+        // §2.9: nested workspaces follow their parent, one level deep.
+        if (workspace.childrenCollapsed && !includeCollapsed) return;
+        for (const childID of workspace.childOrder) {
+            if (byID.has(childID)) result.push(childID);
+        }
+    };
+    for (const entry of state.topLevelOrder) {
+        if (entry.kind === 'workspace') {
+            push(entry.id);
+            continue;
+        }
+        const group = groupByID(state, entry.id);
+        if (group === null || (group.isCollapsed && !includeCollapsed)) continue;
+        for (const childID of group.childOrder) push(childID);
+    }
+    return result;
+}
+
 /**
  * Workspaces the user can actually see, in render order (§2.2). Members of a COLLAPSED group
- * are excluded (the CLI `workspace list` deliberately differs and lists them).
+ * and children of a collapsed parent are excluded (the CLI `workspace list` deliberately
+ * differs and lists them).
  */
 export function visibleWorkspaceOrder(state: DaemonState): string[] {
-    const known = new Set(state.workspaces.map((workspace) => workspace.id));
-    const result: string[] = [];
-    for (const entry of state.topLevelOrder) {
-        if (entry.kind === 'workspace') {
-            if (known.has(entry.id)) result.push(entry.id);
-            continue;
-        }
-        const group = groupByID(state, entry.id);
-        if (group === null || group.isCollapsed) continue;
-        for (const childID of group.childOrder) {
-            if (known.has(childID)) result.push(childID);
-        }
-    }
-    return result;
+    return walkSidebar(state, false);
 }
 
-/** Sidebar order including collapsed group members — what `workspace list` walks. */
+/** Sidebar order including collapsed group members and nested children: what `workspace list` walks. */
 export function sidebarWorkspaceOrder(state: DaemonState): string[] {
-    const known = new Set(state.workspaces.map((workspace) => workspace.id));
+    return walkSidebar(state, true);
+}
+
+/** §2.9: the workspace a nested workspace sits under, or null when it is not nested. */
+export function parentIDForWorkspace(state: DaemonState, workspaceID: string): string | null {
+    // A workspace is never its own parent, even if a corrupt `childOrder` lists it.
+    return (
+        state.workspaces.find(
+            (workspace) => workspace.id !== workspaceID && workspace.childOrder.includes(workspaceID)
+        )?.id ?? null
+    );
+}
+
+/**
+ * §2.9: `ids` (live ones, deduped, in order), each followed by the live workspaces nested under
+ * it. What a cascading delete takes, and what a group's listing covers.
+ */
+export function withNestedChildren(state: DaemonState, ids: readonly string[]): string[] {
+    const byID = new Map(state.workspaces.map((workspace) => [workspace.id, workspace]));
     const result: string[] = [];
-    for (const entry of state.topLevelOrder) {
-        if (entry.kind === 'workspace') {
-            if (known.has(entry.id)) result.push(entry.id);
-            continue;
-        }
-        const group = groupByID(state, entry.id);
-        if (group === null) continue;
-        for (const childID of group.childOrder) {
-            if (known.has(childID)) result.push(childID);
-        }
+    const seen = new Set<string>();
+    const push = (id: string): void => {
+        if (!byID.has(id) || seen.has(id)) return;
+        seen.add(id);
+        result.push(id);
+    };
+    for (const id of ids) {
+        const workspace = byID.get(id);
+        if (workspace === undefined) continue;
+        push(id);
+        for (const childID of workspace.childOrder) push(childID);
     }
     return result;
 }
 
-/** The group a workspace belongs to, or null when it lives at top level (§2.4). */
+/**
+ * §2.9: why nesting `ids` under `parentID` would be refused, in words a user can act on, or
+ * null when the `nest-workspaces` reducer will apply it. Shared by every wire path so the
+ * CLI and the GUI give the same reasons.
+ */
+export function nestingRefusal(state: DaemonState, ids: readonly string[], parentID: string): string | null {
+    const parent = workspaceByID(state, parentID);
+    if (parent === null) return `no workspace matches '${parentID}'`;
+    const grandparent = parentIDForWorkspace(state, parentID);
+    if (grandparent !== null) {
+        return `'${parent.name}' is nested itself; workspaces nest one level deep`;
+    }
+    for (const id of ids) {
+        const workspace = workspaceByID(state, id);
+        if (workspace === null) return `no workspace matches '${id}'`;
+        if (id === parentID) return `'${workspace.name}' cannot be nested under itself`;
+        if (workspace.childOrder.some((childID) => workspaceByID(state, childID) !== null)) {
+            return `'${workspace.name}' has nested workspaces; workspaces nest one level deep`;
+        }
+    }
+    return null;
+}
+
+/**
+ * The group a workspace belongs to, or null when it lives at top level (§2.4). A nested
+ * workspace belongs to its parent's group (§2.9).
+ */
 export function groupIDForWorkspace(state: DaemonState, workspaceID: string): string | null {
-    return state.groups.find((group) => group.childOrder.includes(workspaceID))?.id ?? null;
+    const placed = parentIDForWorkspace(state, workspaceID) ?? workspaceID;
+    return state.groups.find((group) => group.childOrder.includes(placed))?.id ?? null;
 }
 
 // ---------------------------------------------------------------------------

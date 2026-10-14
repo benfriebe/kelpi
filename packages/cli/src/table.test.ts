@@ -87,6 +87,21 @@ describe('printWorkspaceTable', () => {
         expect(lines[1]).toBe('9C2B9A2E…6666  alpha  -      2      ●       ship-it,review');
         expect(lines[2]).toBe('0A1B2C3D…E8F9  beta   squad  0      -       -');
     });
+
+    it('adds a PARENT column only when a workspace is nested (app-state-core §2.9)', () => {
+        const lines = capture(() => {
+            printWorkspaceTable(
+                [
+                    { id: PANE_A, name: 'boss', pane_count: 1, is_active: true, labels: [] },
+                    { id: PANE_B, name: 'worker', parent_id: PANE_A, parent_name: 'boss', pane_count: 1, is_active: false, labels: [] }
+                ],
+                false
+            );
+        });
+        expect(lines[0]).toBe('ID             NAME    GROUP  PARENT  PANES  ACTIVE  LABELS');
+        expect(lines[1]).toBe('9C2B9A2E…6666  boss    -      -       1      ●       -');
+        expect(lines[2]).toBe('0A1B2C3D…E8F9  worker  -      boss    1      -       -');
+    });
 });
 
 describe('printGroupTable', () => {
@@ -99,6 +114,25 @@ describe('printGroupTable', () => {
         });
         expect(lines[0]).toBe('ID             NAME   COLOR  REPO  WORKSPACES');
         expect(lines[1]).toBe('9C2B9A2E…6666  squad  red    -     alpha (0A1B2C3D…E8F9)');
+    });
+
+    it('marks a member’s nested workspace with its parent (§2.9)', () => {
+        const lines = capture(() => {
+            printGroupTable(
+                [
+                    {
+                        id: PANE_A,
+                        name: 'squad',
+                        workspaces: [
+                            { id: PANE_B, name: 'lead' },
+                            { id: PANE_A, name: 'worker', parent_id: PANE_B, parent_name: 'lead' }
+                        ]
+                    }
+                ],
+                true
+            );
+        });
+        expect(lines[0]).toContain('lead (0A1B2C3D…E8F9), worker (9C2B9A2E…6666) under lead');
     });
 
     it('falls back to `-` for a colorless, memberless, repo-less group', () => {

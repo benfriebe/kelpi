@@ -29,6 +29,14 @@ async function authoring(api: BackendAPI): Promise<void> {
     await api.workspaces.create({ name: 'child', muted });
     const chef = await api.workspaces.create({ name: 'chef', icon: 'emoji:👩‍🍳' });
     await api.workspaces.setIcon(first.id, chef.icon ?? first.icon ?? null);
+    // Nested workspaces: one level under a parent, confirmed by the create reply.
+    const worker = await api.workspaces.create({ name: 'worker', parentID: first.id });
+    const parentName: string | undefined = worker.parentName ?? first.parentName;
+    const nested = await api.workspaces.nest(chef.workspaceID, first.id, { index: 0 });
+    const position: number = nested.index;
+    await api.workspaces.setChildrenCollapsed(first.id, position === 0 && parentName !== undefined);
+    await api.workspaces.list({ parentID: first.id });
+    await api.workspaces.remove(first.id, { cascade: true });
     const associations: RepositoryAssociation[] = await api.git.status(first.id);
     await api.panes.create({ workspaceID: first.id, name: associations[0]?.repoName });
     // #295: the helpers focus by default; `focus: false` opens the pane in the background.

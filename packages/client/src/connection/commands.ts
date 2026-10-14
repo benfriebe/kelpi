@@ -703,6 +703,8 @@ export class CommandClient {
              * already shown those defaults and carries the user's final choice.
              */
             groupDefaults?: boolean;
+            /** app-state-core.md §2.9: nest the new workspace under this workspace id. */
+            parent?: string;
             /**
              * #294: names this create so `cancelWorkspaceCreate` can stop it. WS-only: the daemon's
              * session reads it before the wire decode, and the CLI has no way to send it.
@@ -726,7 +728,8 @@ export class CommandClient {
                 update_main: input.updateMain,
                 repo: input.repo,
                 muted: input.muted,
-                group_defaults: input.groupDefaults
+                group_defaults: input.groupDefaults,
+                parent: input.parent
             }),
             {
                 ...(timeout !== undefined ? { timeoutMs: timeout } : {}),
@@ -796,6 +799,11 @@ export class CommandClient {
             deleteBranches?: boolean;
             /** Workspaces deleted earlier in the same gesture whose worktrees this one takes too. */
             batchIDs?: readonly string[];
+            /**
+             * app-state-core.md §2.9: delete the workspace's nested workspaces too (otherwise they
+             * move up into its place). GUI-only, so it rides the WS `delete-workspace` verb.
+             */
+            cascadeChildren?: boolean;
         },
         options?: SendOptions
     ): Promise<CommandReply> {
@@ -813,12 +821,13 @@ export class CommandClient {
                   }
                 : null;
         const sendOptions = options ?? (cleanup === null ? {} : { timeoutMs: WORKTREE_REMOVE_TIMEOUT_MS });
-        if (input.allowLast === true) {
+        if (input.allowLast === true || input.cascadeChildren === true) {
             return this.raw(
                 wirePayload('delete-workspace', {
                     workspace_id: input.workspace,
                     force: input.force ?? false,
-                    allow_last: true,
+                    ...(input.allowLast === true ? { allow_last: true } : {}),
+                    ...(input.cascadeChildren === true ? { cascade_children: true } : {}),
                     ...cleanup
                 }),
                 sendOptions
@@ -1031,6 +1040,38 @@ export class CommandClient {
     ): Promise<CommandReply> {
         return this.raw(
             wirePayload('set-group-collapsed', { group_id: input.groupID, collapsed: input.collapsed }),
+            options ?? {}
+        );
+    }
+
+    /** app-state-core.md §2.9: a parent workspace row's disclosure chevron (daemon state). */
+    setWorkspaceChildrenCollapsed(
+        input: { workspaceID: string; collapsed: boolean },
+        options?: SendOptions
+    ): Promise<CommandReply> {
+        return this.raw(
+            wirePayload('set-workspace-children-collapsed', {
+                workspace_id: input.workspaceID,
+                collapsed: input.collapsed
+            }),
+            options ?? {}
+        );
+    }
+
+    /**
+     * §2.9: nest workspaces under `parentID` at its post-remove `index`, in ONE change (a drag of
+     * a whole selection, like `moveWorkspaces`). The daemon answers with why when it refuses.
+     */
+    nestWorkspaces(
+        input: { workspaceIDs: readonly string[]; parentID: string; index?: number },
+        options?: SendOptions
+    ): Promise<CommandReply> {
+        return this.raw(
+            wirePayload('nest-workspaces', {
+                workspace_ids: [...input.workspaceIDs],
+                parent_id: input.parentID,
+                index: input.index
+            }),
             options ?? {}
         );
     }

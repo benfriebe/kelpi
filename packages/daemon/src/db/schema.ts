@@ -229,6 +229,16 @@ export const MIGRATIONS: readonly Migration[] = [
         // pane reads back as "off", which is how every scratchpad drew before the toggle existed.
         identifier: 'v25_pane_scratchpad_wrap',
         apply: (db) => addColumn(db, 'pane', 'scratchpadWrap', 'BOOLEAN NOT NULL DEFAULT 0')
+    },
+    {
+        // Kelpi-only: nested workspaces (app-state-core.md §2.9). A parent stores its children's
+        // ids in sidebar order and whether they are collapsed; every existing workspace reads back
+        // as no children, expanded. Not `folderID`: legacy Swift DBs may carry that name (§2.6).
+        identifier: 'v26_workspace_nesting',
+        apply: (db) => {
+            addColumn(db, 'workspace', 'childOrderJSON', 'TEXT');
+            addColumn(db, 'workspace', 'childrenCollapsed', 'BOOLEAN NOT NULL DEFAULT 0');
+        }
     }
 ];
 
@@ -247,7 +257,8 @@ export const DAEMON_ONLY_MIGRATIONS: readonly string[] = [
     'v22_workspace_group_repo',
     'v23_pane_csv_header_row',
     'v24_pane_terminal_font_size',
-    'v25_pane_scratchpad_wrap'
+    'v25_pane_scratchpad_wrap',
+    'v26_workspace_nesting'
 ];
 
 export function ensureMigrationsTable(db: SqlDatabase): void {

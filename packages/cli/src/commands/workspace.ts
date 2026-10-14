@@ -30,6 +30,7 @@ import {
     popSwitch,
     rejectLeftoverArgs
 } from '../args.js';
+import { originPaneID } from '../env.js';
 import { errLine, exit, printLine, writeErr, writeOut } from '../io.js';
 import { asBool, asInt, asString, asStringArray, stableStringify, type JsonObject, type JsonValue } from '../json.js';
 import { runProcess, type ProcessRunner } from '../proc.js';
@@ -94,17 +95,42 @@ async function handleWorkspaceList(args: string[]): Promise<void> {
     const asJSON = popSwitch('--json', args);
     const noHeader = popSwitch('--no-header', args);
     const group = parseFlag('--group', args);
+    const parent = parseFlag('--parent', args);
     rejectLeftoverArgs(args, 'kelpi workspace list', { usage: (write) => write(workspaceListUsage) });
+    rejectEmptyParent(parent, 'kelpi workspace list');
 
     const payload: JsonObject = { command: 'workspace-list' };
     if (group !== null) payload['group'] = group;
+    // app-state-core.md §2.9: only the workspaces nested under this one.
+    if (parent !== null) payload['parent'] = parent;
     const reply = await decodeReply(payload, 'kelpi workspace list');
+    // A daemon that predates nesting ignores `parent` and lists EVERY workspace; a script that
+    // deletes what it lists must never get that. The filtered reply echoes the parent it resolved.
+    if (parent !== null && asString(reply['parent_id']) === undefined) {
+        errLine(
+            'kelpi workspace list: the daemon did not apply --parent; restart it on this build ' +
+                '(its reply was not filtered, so nothing is printed)'
+        );
+        exit(1);
+    }
     const workspaces = replyArray(reply, 'workspaces');
     if (asJSON) {
         printLine(stableStringify(workspaces));
         return;
     }
     printWorkspaceTable(workspaces, noHeader);
+}
+
+/**
+ * app-state-core.md §2.9: `--parent ""` is nearly always an unset variable (`--parent "$ME"`).
+ * Refused before anything is sent: read as "no parent" it would create a top-level workspace,
+ * or list every workspace.
+ */
+function rejectEmptyParent(parent: string | null, command: string): void {
+    if (parent !== null && parent.trim() === '') {
+        errLine(`${command}: --parent needs a workspace name or id (it was empty)`);
+        exit(1);
+    }
 }
 
 async function handleWorkspaceCreate(args: string[]): Promise<void> {
@@ -125,8 +151,11 @@ async function handleWorkspaceCreate(args: string[]): Promise<void> {
     const noUpdateMain = popSwitch('--no-update-main', args);
     const muted = popSwitch('--muted', args);
     const iconFlag = parseFlag('--icon', args);
+    const parent = parseFlag('--parent', args);
+    const nested = popSwitch('--nested', args);
     const asJSON = popSwitch('--json', args);
     rejectLeftoverArgs(args, 'kelpi workspace create', { usage: (write) => write(workspaceCreateUsage) });
+    rejectEmptyParent(parent, 'kelpi workspace create');
     const icon = iconFlag === null ? null : wireIcon(iconFlag, 'kelpi workspace create');
     if (updateMain && noUpdateMain) {
         errLine("workspace create can't take both --update-main and --no-update-main");
@@ -136,6 +165,21 @@ async function handleWorkspaceCreate(args: string[]): Promise<void> {
         errLine("workspace create can't take both --repo and --no-repo");
         exit(1);
     }
+    // app-state-core.md §2.9: a nested workspace sits under one parent and follows its group.
+    if (parent !== null && nested) {
+        errLine("workspace create can't take both --parent and --nested");
+        exit(1);
+    }
+    if ((parent !== null || nested) && group !== null) {
+        errLine("workspace create can't take --group with --parent or --nested: a nested workspace follows its parent's group");
+        exit(1);
+    }
+    const callerPane = nested ? originPaneID() : undefined;
+    if (nested && callerPane === undefined) {
+        errLine('workspace create --nested must run inside a Kelpi pane (KELPI_PANE_ID is not set); use --parent <name-or-id>');
+        exit(1);
+    }
+    const nesting = parent !== null || nested;
 
     const payload: JsonObject = { command: 'workspace-create' };
     if (name !== null) payload['name'] = name;
@@ -147,6 +191,8 @@ async function handleWorkspaceCreate(args: string[]): Promise<void> {
     if (profile !== null) payload['profile'] = profile;
     if (muted) payload['muted'] = true;
     if (icon !== null) payload['icon'] = icon;
+    if (parent !== null) payload['parent'] = parent;
+    if (callerPane !== undefined) payload['parent_pane_id'] = callerPane;
     // app-state-core.md §5.5: an explicit repo is associated even without --worktree, and
     // --no-repo is the one-off opt-out from the group's default repository.
     // Made absolute here: a relative path means the shell's cwd, not the daemon's.
@@ -160,9 +206,10 @@ async function handleWorkspaceCreate(args: string[]): Promise<void> {
         if (updateMain) payload['update_main'] = true;
         if (noUpdateMain) payload['update_main'] = false;
         if (repo === null) {
-            if (group !== null && !noRepo) {
-                // Leave the source to the group's default repository, with the cwd as the
-                // fallback the daemon reaches for when the group has none (`repo ?? group ?? path`).
+            if ((group !== null || nesting) && !noRepo) {
+                // Leave the source to the group's default repository (a nested workspace's is
+                // its parent's group, §2.9), with the cwd as the fallback the daemon reaches for
+                // when the group has none (`repo ?? group ?? path`).
                 if (dir === null) payload['path'] = process.cwd();
             } else {
                 // No group to defer to: the source repo is the cwd, as it always was.
@@ -177,7 +224,7 @@ async function handleWorkspaceCreate(args: string[]): Promise<void> {
     const reply = await decodeReply(
         payload,
         'kelpi workspace create',
-        worktree !== null ? { timeoutSeconds: 120 } : repo !== null || group !== null ? { timeoutSeconds: 30 } : {}
+        worktree !== null ? { timeoutSeconds: 120 } : repo !== null || group !== null || nesting ? { timeoutSeconds: 30 } : {}
     );
     const workspaceName = asString(reply['workspace_name']) ?? name ?? 'Workspace';
     const workspaceID = asString(reply['workspace_id']) ?? '?';
@@ -200,13 +247,36 @@ async function handleWorkspaceCreate(args: string[]): Promise<void> {
         );
         exit(1);
     }
+    // §2.9: the parent went away while git made the worktree; the daemon kept the worktree and
+    // created the workspace at the top level. Not a version problem, so say what happened.
+    if (nesting && asBool(reply['parent_lost']) === true) {
+        if (asJSON) printLine(stableStringify(reply));
+        const reason = asString(reply['parent_lost_reason']) ?? 'the parent changed while the workspace was being created';
+        errLine(
+            `kelpi workspace create: ${reason} ` +
+                `(workspace ${workspaceName} (${workspaceID}) was created at the top level)`
+        );
+        exit(1);
+    }
+    // And for nesting: an older daemon ignores `parent` / `parent_pane_id` and creates the
+    // workspace at the top level, which an orchestrator spawning its workers must hear about.
+    if (nesting && asString(reply['parent_id']) === undefined) {
+        if (asJSON) printLine(stableStringify(reply));
+        errLine(
+            `kelpi workspace create: the daemon did not nest the workspace; restart it on this build ` +
+                `(workspace ${workspaceName} (${workspaceID}) was created at the top level)`
+        );
+        exit(1);
+    }
     if (asJSON) {
         printLine(stableStringify(reply));
         return;
     }
     const worktreePath = asString(reply['worktree_path']);
     const groupName = asString(reply['group']);
-    const inGroup = groupName !== undefined ? ` in group ${groupName}` : '';
+    const parentName = asString(reply['parent_name']);
+    const inGroup =
+        parentName !== undefined ? ` nested under ${parentName}` : groupName !== undefined ? ` in group ${groupName}` : '';
     if (worktreePath !== undefined) {
         const resolvedBranch = asString(reply['branch']) ?? '?';
         // §5.5: a group's switch can choose update main on the caller's behalf, so say so.
@@ -233,15 +303,37 @@ async function handleWorkspaceMove(args: string[]): Promise<void> {
     }
     const group = parseFlag('--group', args);
     const topLevel = popSwitch('--top-level', args);
+    const parent = parseFlag('--parent', args);
     const indexRaw = parseFlag('--index', args);
+    rejectEmptyParent(parent, 'kelpi workspace move');
 
-    if (group === null && !topLevel) {
-        errLine('workspace move requires --group <name> or --top-level');
+    const destinations = [group !== null, topLevel, parent !== null].filter(Boolean).length;
+    if (destinations === 0) {
+        errLine('workspace move requires --group <name>, --top-level or --parent <name-or-id>');
         exit(1);
     }
-    if (group !== null && topLevel) {
-        errLine("workspace move can't take both --group and --top-level");
+    if (destinations > 1) {
+        errLine("workspace move takes only one of --group, --top-level and --parent");
         exit(1);
+    }
+
+    if (parent !== null) {
+        // app-state-core.md §2.9: nesting can be refused (one level deep), so it is a
+        // request/response verb of its own rather than the fire-and-forget move.
+        const nest: JsonObject = { command: 'workspace-nest', name: nameOrID, parent };
+        if (indexRaw !== null) {
+            const index = parseIntStrict(indexRaw);
+            if (index === null) {
+                errLine('--index must be an integer');
+                exit(1);
+            }
+            nest['index'] = index;
+        }
+        const reply = await decodeReply(nest, 'kelpi workspace move');
+        printLine(
+            `nested workspace ${asString(reply['workspace_name']) ?? nameOrID} under ${asString(reply['parent_name']) ?? parent}`
+        );
+        return;
     }
 
     const payload: JsonObject = { command: 'workspace-move', name: nameOrID };
@@ -274,6 +366,7 @@ async function handleWorkspaceDelete(args: string[], options: DeleteOptions = {}
     const force = forceFlag || yFlag;
     const prune = popSwitch('--prune-worktree', args);
     const deleteBranch = popSwitch('--delete-branch', args);
+    const cascade = popSwitch('--cascade', args);
     const asJSON = popSwitch('--json', args);
 
     const bad = args.find((token) => token.startsWith('-'));
@@ -297,12 +390,20 @@ async function handleWorkspaceDelete(args: string[], options: DeleteOptions = {}
 
     const results: JsonObject[] = [];
     let anyFailed = false;
+    /*
+     * app-state-core.md §2.9: what each `--cascade` delete took with it, by id (upper-cased) and by
+     * name, with the parent that took it. `delete boss worker --cascade` deletes `worker` with
+     * `boss`, so the second delete answers "not found": that target is reported as deleted.
+     */
+    const cascaded = new Map<string, string>();
     for (const id of ids) {
         const reply = await decodeReplyAllowingFailure(
             {
                 command: 'workspace-delete',
                 name: id,
                 force,
+                // app-state-core.md §2.9: absent promotes the nested workspaces instead.
+                ...(cascade ? { cascade: true } : {}),
                 ...(prune ? { prune_worktrees: true } : {}),
                 ...(deleteBranch ? { delete_branches: true } : {})
             },
@@ -322,7 +423,17 @@ async function handleWorkspaceDelete(args: string[], options: DeleteOptions = {}
             const workspacePath = asString(reply['path']);
             if (workspacePath !== undefined) record['path'] = workspacePath;
 
-            if (!asJSON) printLine(`deleted workspace ${workspaceName}`);
+            const deletedChildren = asStringArray(reply['deleted_children']) ?? [];
+            if (deletedChildren.length > 0) record['deleted_children'] = deletedChildren;
+            for (const childID of deletedChildren) cascaded.set(childID.toUpperCase(), workspaceName);
+            for (const childName of asStringArray(reply['deleted_child_names']) ?? []) {
+                cascaded.set(childName, workspaceName);
+            }
+            if (!asJSON) {
+                const count = deletedChildren.length;
+                const nestedNote = count === 0 ? '' : ` and ${String(count)} nested workspace${count === 1 ? '' : 's'}`;
+                printLine(`deleted workspace ${workspaceName}${nestedNote}`);
+            }
 
             const worktrees = reply['worktrees'];
             if (prune && Array.isArray(worktrees)) {
@@ -344,6 +455,15 @@ async function handleWorkspaceDelete(args: string[], options: DeleteOptions = {}
                     if (!asJSON) errLine(`Warning: ${message}`);
                 }
             }
+        } else if (
+            asString(reply['error']) === `workspace not found: ${id}` &&
+            (cascaded.has(id) || cascaded.has(id.toUpperCase()))
+        ) {
+            // Already gone with its parent's cascade: deleted, as asked.
+            const takenWith = cascaded.get(id) ?? cascaded.get(id.toUpperCase()) ?? '';
+            record['ok'] = true;
+            record['deleted_with'] = takenWith;
+            if (!asJSON) printLine(`workspace ${id} was already deleted with ${takenWith}`);
         } else {
             anyFailed = true;
             const error = asString(reply['error']) ?? 'unknown error';
@@ -362,7 +482,7 @@ async function handleWorkspaceDelete(args: string[], options: DeleteOptions = {}
 }
 
 const DELETE_USAGE_LINE =
-    'Usage: kelpi workspace delete <name-or-id> [<name-or-id> ...] [--force|-y] [--prune-worktree [--delete-branch]] [--json]';
+    'Usage: kelpi workspace delete <name-or-id> [<name-or-id> ...] [--force|-y] [--cascade] [--prune-worktree [--delete-branch]] [--json]';
 
 /** How long a `--prune-worktree` delete waits for the daemon's git work. */
 const PRUNE_TIMEOUT_SECONDS = 300;

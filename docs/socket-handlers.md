@@ -503,12 +503,21 @@ label change synchronously, replies:
 
 ### 4.5 `pane-send` → handlePaneSend
 
-Inputs: `paneID?`, `target` (required by the wire), `text`, `workspaceFilter?`, `bare`.
-Resolve via `resolvePaneTarget`. Success reply (sent **before** the PTY write):
+Inputs: `paneID?`, `target` (required by the wire), `text`, `workspaceFilter?`, `bare`,
+`ifRevision?`. Resolve via `resolvePaneTarget`. Then the revision guard (#390,
+`checkRevision`, `input.ts:99`): when `ifRevision` is present and differs from the pane's
+current screen revision (`term.revision`, 0 for a pane with no terminal state), answer
+`{"ok":false,"error":"screen changed","code":"SCREEN_CHANGED","revision":<current>}` and write
+nothing (`input.ts:37-41`). The check, the ack and the write run in one synchronous turn, with
+no await between them. Success reply (sent **before** the PTY write):
 
 ```json
 {"ok": true, "pane_id": "<uuid>", "workspace_id": "<uuid>", "workspace_name": "dev", "bare": false, "label": "worker-1"}
 ```
+
+When `ifRevision` was given and matched, the ack also carries `"revision": <matched value>`
+(before `label`), which tells a caller a daemon that checked from one that ignored the field.
+Without `ifRevision` the ack is exactly as above.
 
 Then write to the pane's PTY through the paste pipeline (`sendText` in
 `packages/daemon/src/pty/input.ts:136`; terminal-surface.md §9.1). Both bare and non-bare
@@ -526,7 +535,7 @@ The same write helper is reused by the web-pane element picker (which defaults t
 
 ### 4.6 `pane-send-key` → handlePaneSendKey
 
-Inputs: `paneID?`, `target`, `key`, `workspaceFilter?`.
+Inputs: `paneID?`, `target`, `key`, `workspaceFilter?`, `ifRevision?`.
 
 **Key validation runs before target resolution** so an unknown key never resolves (or
 touches) a pane. `normalizedKey = key.toLowerCase()`; the allowlist (order matters for the
@@ -538,11 +547,15 @@ enter, return, tab, escape, esc, space, backspace, up, down, left, right, ctrl-c
 
 Unknown → `{ok:false,error:"unknown key '<key>' (valid: enter, return, tab, escape, esc, space, backspace, up, down, left, right, ctrl-c)"}`.
 
-Then resolve via `resolvePaneTarget`; success reply (before the keystroke):
+Then resolve via `resolvePaneTarget`, then the same revision guard as §4.5 (after key
+validation and resolution, before the ack and the key; `input.ts:72-76`: a stale `ifRevision`
+answers `SCREEN_CHANGED` and sends nothing). Success reply (before the keystroke):
 
 ```json
 {"ok": true, "pane_id": "...", "workspace_id": "...", "workspace_name": "dev", "key": "enter", "label": "worker-1"}
 ```
+
+A matched `ifRevision` adds `"revision": <matched value>` before `label`.
 
 Then synthesize the named key on the pane's terminal, outside any bracketed-paste
 envelope. Byte-mapped keys (enter/return `\r`, tab `\t`, escape `\x1b`, space, backspace,
@@ -552,11 +565,14 @@ text so the terminal encodes them per DECCKM mode (`\eOA` vs `\e[A`).
 
 ### 4.7 `pane-capture` → handlePaneCapture
 
-Inputs: `paneID?`, `target?`, `workspaceFilter?`, `lines?`, `includeScrollback`.
+Inputs: `paneID?`, `target?`, `workspaceFilter?`, `lines?`, `includeScrollback`, `settleMs?`.
 
 Validation order:
 1. `lines != null && lines <= 0` → `error("lines must be a positive integer (got {lines})")`.
    (The CLI pre-validates, but raw socket clients can send anything.)
+1a. `settleMs != null && settleMs <= 0` → `error("settle_ms must be a positive integer (got {settleMs})")`
+   (`input.ts:116`). A value above the cap is not an error: the term service clamps it to
+   `CAPTURE_SETTLE_CAP_MS` (10000).
 2. `resolvePaneTarget` (no `--target` ⇒ capture the caller's own pane, requires
    KELPI_PANE_ID).
 3. Defensive pane lookup → `error("pane not found: {uuid}")`.
@@ -564,16 +580,31 @@ Validation order:
    actual type raw value: `markdown`/`scratchpad`/`diff`/`web`).
 5. Flush a deferred first spawn: a pane whose first spawn is still waiting for a client's
    geometry has no server-side terminal yet, so the handler runs that spawn now
-   (`ctx.spawn.flushSpawn(paneID)`, `handlers/pane/input.ts:95`) rather than answering with
+   (`ctx.spawn.flushSpawn(paneID)`, `handlers/pane/input.ts:136`) rather than answering with
    an empty screen. A no-op for every other pane.
 
 Without a reply handle the command is a no-op (a pure read has nothing to drop;
-`input.ts:74`). Then asynchronously read the pane's terminal contents (viewport, or viewport
+`input.ts:108`). Then asynchronously read the pane's terminal contents (viewport, or viewport
 + full scrollback when `includeScrollback`). If the surface died mid-read →
 `{ok:false,error:"pane closed during capture"}`; if the read throws while the pane still
 exists (an emulator fault) → `{ok:false,error:"pane capture failed: <error>"}`
-(`input.ts:136`). Either way the client gets a line rather than waiting for an EOF that
-never comes. Apply `tailLines` when `lines` given:
+(`input.ts:199-209`). Either way the client gets a line rather than waiting for an EOF that
+never comes.
+
+The async read (#390, `readCapture`, `input.ts:165-229`): when `settleMs` is given, first wait
+on `term.settle(paneID, settleMs)`, which resolves `true` once the pane has had no output for
+that long (counted from the call, restarted by every byte fed or resize) and `false` when the
+cap is reached first (or when the pane's terminal state is disposed mid-wait, since no quiet
+was seen). Then `term.readScreen(paneID, opts)` (`term/service.ts`) drains the pane's pending
+VT writes and reads the text, the revision and the cursor (active screen) in the same turn as
+the drain loop's last "queue empty" check, with no await after it. So a byte fed after the
+flush is never counted in the revision without being in the text, which `await flush()` and
+then a read could not promise: a feed could run in the hop before the read resumed. A
+pane that closes during the settle wait takes the same `pane closed during capture` path. A
+seam without `readScreen` falls back to `flush()` then `capture` / `revision` /
+`screenCursor`, and one without `flush` to `captureAsync` / `capture`. Missing reads degrade to
+revision 0, cursor `{0,0}`, `alt_screen` false and `settled` true. Apply `tailLines` when
+`lines` given:
 
 ```
 tailLines(text, n):
@@ -588,8 +619,11 @@ tailLines(text, n):
 Success reply:
 
 ```json
-{"ok": true, "pane_id": "...", "workspace_id": "...", "workspace_name": "dev", "text": "…captured lines…\n", "label": "worker-1"}
+{"ok": true, "pane_id": "...", "workspace_id": "...", "workspace_name": "dev", "text": "…captured lines…\n", "revision": 42, "cursor": {"row": 23, "col": 2}, "alt_screen": false, "label": "worker-1"}
 ```
+
+`revision`, `cursor` and `alt_screen` are always present. `settled` (bool) is added after
+`alt_screen` only when `settleMs` was given.
 
 ### 4.8 `pane-move` (directional form) → fire-and-forget
 
@@ -1736,9 +1770,9 @@ web-pane subsystem (see its spec): `web-open`, `web-navigate`, `web-url`, `web-b
 | pane-split / pane-create | `pane_id` (new pane), `workspace_id`, `workspace_name`, `label?` |
 | pane-close | `pane_id`, `workspace_id`, `workspace_name`, `label?` |
 | pane-name | `pane_id`, `workspace_id`, `workspace_name`, `label?` (omitted when cleared) |
-| pane-send | `pane_id`, `workspace_id`, `workspace_name`, `bare`, `label?` |
-| pane-send-key | `pane_id`, `workspace_id`, `workspace_name`, `key` (normalized), `label?` |
-| pane-capture | `pane_id`, `workspace_id`, `workspace_name`, `text`, `label?` |
+| pane-send | `pane_id`, `workspace_id`, `workspace_name`, `bare`, `revision?` (with `if_revision`), `label?` |
+| pane-send-key | `pane_id`, `workspace_id`, `workspace_name`, `key` (normalized), `revision?` (with `if_revision`), `label?` |
+| pane-capture | `pane_id`, `workspace_id`, `workspace_name`, `text`, `revision`, `cursor` (`{row, col}`), `alt_screen`, `settled?` (with `settle_ms`), `label?` |
 | pane-resize | `pane_id`, `workspace_id`, `workspace_name`, `split_path`, `ratio`, `target_share`, `label?` |
 | pane-font-size | `pane_id`, `workspace_id`, `workspace_name`, `font_size` (number, or `null` after a reset), `label?` |
 | pane-clear | `pane_id`, `workspace_id`, `workspace_name`, `cleared` (bool), `reason?` (`"alternate-screen"` or `"no-terminal"` when not cleared), `label?` |

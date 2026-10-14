@@ -58,6 +58,15 @@ async function authoring(api: BackendAPI): Promise<void> {
     offAgentEvents();
     // @ts-expect-error Browser-only focus is not a backend operation.
     await api.ui.focusPane('workspace', 'pane');
+    // #390: read the screen, then type only if it has not changed since.
+    const screen = await api.terminal.read('pane', { lines: 20, settleMs: 300 });
+    const revision: number = screen.revision;
+    const settled: boolean | undefined = screen.settled;
+    if (!screen.altScreen && screen.cursor.row >= 0 && settled !== false) await api.terminal.send('pane', 'y', { bare: true, ifRevision: revision });
+    const guarded: number | undefined = (await api.terminal.sendKey('pane', 'enter', { ifRevision: revision })).revision;
+    void guarded;
+    // @ts-expect-error The guard is a revision number.
+    await api.terminal.sendKey('pane', 'enter', { ifRevision: String(revision) });
     api.hooks.register('sample.plugin.guard', async invocation => invocation.phase === 'before' ? { allow: true } : undefined);
     api.providers.register('sample.plugin.files', { read: async args => String(args.path) });
     await api.services.call<{ answer: number }>('sample.plugin.catalog', 1, 'read');

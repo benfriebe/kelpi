@@ -116,6 +116,13 @@ export class StubTerminalState implements TerminalStateService {
     readonly disposed: string[] = [];
     /** Set to make `capture` throw (surface-died race). */
     failCapture: Error | null = null;
+    /** Screen revision per pane (#390); `feed` bumps it, unset reads 0. */
+    readonly revisions = new Map<string, number>();
+    /** Active screen and cursor per pane; unset reads the main screen at 0,0. */
+    readonly cursors = new Map<string, { alternate: boolean; row: number; col: number }>();
+    /** Every `settle()` asked for; each resolves with `settleResult`. */
+    readonly settles: { paneID: string; quietMs: number }[] = [];
+    settleResult = true;
 
     attach(paneID: string, cols: number, rows: number): void {
         this.attached.push({ paneID, cols, rows });
@@ -123,6 +130,20 @@ export class StubTerminalState implements TerminalStateService {
 
     feed(paneID: string, data: Uint8Array): void {
         this.viewport.set(paneID, (this.viewport.get(paneID) ?? '') + asText(data));
+        this.revisions.set(paneID, this.revision(paneID) + 1);
+    }
+
+    revision(paneID: string): number {
+        return this.revisions.get(paneID) ?? 0;
+    }
+
+    screenCursor(paneID: string): { alternate: boolean; row: number; col: number } {
+        return this.cursors.get(paneID) ?? { alternate: false, row: 0, col: 0 };
+    }
+
+    async settle(paneID: string, quietMs: number): Promise<boolean> {
+        this.settles.push({ paneID, quietMs });
+        return this.settleResult;
     }
 
     resize(): void {

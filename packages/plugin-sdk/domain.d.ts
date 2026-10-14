@@ -204,12 +204,49 @@ export interface TerminalSearch {
     selected: number | null; caseSensitive: boolean;
     match: { line: number; col: number; length: number; linesFromBottom: number } | null;
 }
+export interface TerminalReadOptions {
+    lines?: number; scrollback?: boolean;
+    /** Wait until the pane has had no output for this many ms (capped at 10000) before reading. */
+    settleMs?: number;
+}
+export interface TerminalRead {
+    text: string;
+    /**
+     * The pane's screen revision when `text` was read. It bumps on every chunk of output the daemon
+     * has fed the pane (output still in flight from the terminal host is not counted yet) and on
+     * every resize. Within one daemon run a pane never repeats a revision, even when its terminal is
+     * restarted. It is not persisted, but a new daemon seeds its counter from the clock, past any
+     * value an earlier one could plausibly have issued, so a revision from before a restart does not match by accident.
+     */
+    revision: number;
+    /** 0-based and viewport-relative, on the active screen. */
+    cursor: { row: number; col: number };
+    altScreen: boolean;
+    /** Only with `settleMs`: false when the cap was reached first or the pane's terminal was restarted during the wait, and `text` is the screen at that point. */
+    settled?: boolean;
+}
+/**
+ * `ifRevision` sends only if the pane's revision still equals it (a `TerminalRead.revision`). When
+ * the screen changed since, nothing is written and the call rejects with a KelpiError whose `code`
+ * is `'SCREEN_CHANGED'` and whose `details.revision` is the current revision. A daemon that
+ * honoured the guard echoes `revision` in the result.
+ * An `ifRevision` that is not a non-negative integer rejects with `code` `'INVALID_ARGUMENT'` and
+ * sends nothing. An ack without `revision` means the daemon did not check the guard and has already
+ * typed, so the call rejects with `code` `'UNSUPPORTED'` and `details` the reply.
+ */
+export interface TerminalSendGuard { ifRevision?: number }
 export interface TerminalAPI {
     /** Snapshot plus subscription; listen for terminal.output events and unwatch on disposal. */
     watch(paneID: string): Promise<TerminalSubscription>;
     unwatch(subscription: string): Promise<void>;
-    send(pane: PaneTarget, text: string, options?: { bare?: boolean }): Promise<PaneMutation & { bare: boolean }>;
-    sendKey(pane: PaneTarget, key: NamedKey): Promise<PaneMutation & { key: NamedKey }>;
+    send(pane: PaneTarget, text: string, options?: { bare?: boolean } & TerminalSendGuard): Promise<PaneMutation & { bare: boolean; revision?: number }>;
+    sendKey(pane: PaneTarget, key: NamedKey, options?: TerminalSendGuard): Promise<PaneMutation & { key: NamedKey; revision?: number }>;
+    /**
+     * Reads the screen with its revision, to pass back as `ifRevision` on send/sendKey. Against a
+     * daemon from before #390, which reports no revision, cursor or alt-screen flag, it rejects with
+     * a KelpiError whose `code` is `'UNSUPPORTED'` and whose `details` is the reply; `capture` still works.
+     */
+    read(pane: PaneTarget, options?: TerminalReadOptions): Promise<TerminalRead>;
     capture(pane: PaneTarget, options?: { lines?: number; scrollback?: boolean }): Promise<string>;
     sync(workspaceID: string, action?: 'on' | 'off' | 'toggle' | 'status'): Promise<TerminalSync>;
     excludeFromSync(pane: PaneTarget, excluded: boolean): Promise<TerminalSync>;

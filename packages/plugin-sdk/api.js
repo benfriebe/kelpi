@@ -17,6 +17,8 @@ export class KelpiError extends Error {
 const clean = value => Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined));
 /** Daemon error prefixes (`CODE: message`) that become a KelpiError `code` on documents calls. */
 const documentErrorCodes = ['DOCUMENT_CONFLICT', 'CSV_STALE', 'CSV_GONE', 'CSV_READ_ONLY', 'CSV_BUSY', 'CSV_INVALID'];
+/** Reply `code`s that become a KelpiError `code` on typed command helpers; every other refusal is COMMAND_FAILED. */
+const commandErrorCodes = ['SCREEN_CHANGED'];
 // Built-in command DTOs use snake_case; the public facade uses the same camelCase/ID
 // convention as context and snapshots. Never apply this to arbitrary plugin data/settings.
 const camelKey = key => key.replace(/_([a-z]+)(?=_|$)/g, (_, word) =>
@@ -46,8 +48,9 @@ export function createKelpiAPI(transport, getContext = () => ({}), on = undefine
         if (!reply || typeof reply !== 'object' || typeof reply.ok !== 'boolean') {
             throw new KelpiError(`Invalid reply to ${name}`, { code: 'INVALID_REPLY', method: name, details: reply });
         }
+        // Only an allowlisted refusal (`SCREEN_CHANGED`) keeps its code; `PLUGIN_VETO` and the rest stay COMMAND_FAILED.
         if (!reply.ok) throw new KelpiError(reply.error ?? `${name} failed`, {
-            code: 'COMMAND_FAILED', method: name, details: reply,
+            code: commandErrorCodes.includes(reply.code) ? reply.code : 'COMMAND_FAILED', method: name, details: reply,
         });
         return reply;
     };
@@ -130,6 +133,21 @@ export function createKelpiAPI(transport, getContext = () => ({}), on = undefine
         if (context.paneID) return { pane_id: context.paneID };
         if (context.workspaceID) return { workspace: context.workspaceID };
         throw unavailableContext(method);
+    };
+    // #390: a guard that is not a revision would cross IPC as null and send unguarded, and a daemon
+    // that ignores `if_revision` has already typed by the time it acks without `revision`.
+    const guardedSend = async (name, label, what, fields, ifRevision) => {
+        if (ifRevision === undefined) return run(name, fields);
+        if (!Number.isSafeInteger(ifRevision) || ifRevision < 0) {
+            const got = typeof ifRevision === 'string' ? JSON.stringify(ifRevision) : String(ifRevision);
+            throw new KelpiError(`ifRevision must be a non-negative integer (got ${got})`, { code: 'INVALID_ARGUMENT', method: name });
+        }
+        const reply = await execute(name, { ...fields, if_revision: ifRevision });
+        if (typeof reply.revision !== 'number') {
+            throw new KelpiError(`${label}: this Kelpi did not check ifRevision, so ${what} was sent unguarded (#390)`, { code: 'UNSUPPORTED', method: name, details: reply });
+        }
+        const { ok, ...result } = reply;
+        return camel(result);
     };
     const panes = Object.freeze({
         list: async (options = {}) => list('pane-list', 'panes', paneListScope(options)),
@@ -342,8 +360,18 @@ export function createKelpiAPI(transport, getContext = () => ({}), on = undefine
         terminal: Object.freeze({
             watch: paneID => call('terminal.watch', { paneID }),
             unwatch: async subscription => { await call('terminal.unwatch', { subscription }); },
-            send: (pane, text, options = {}) => run('pane-send', { ...target(pane), text, bare: options.bare ?? false }),
-            sendKey: (pane, key) => run('pane-send-key', { ...target(pane), key }),
+            send: (pane, text, options = {}) => guardedSend('pane-send', 'terminal.send', 'the text', { ...target(pane), text, bare: options.bare ?? false }, options.ifRevision),
+            sendKey: (pane, key, options = {}) => guardedSend('pane-send-key', 'terminal.sendKey', 'the key', { ...target(pane), key }, options.ifRevision),
+            // #390: the screen with its revision, cursor and alt-screen flag; `settled` only with `settleMs`.
+            read: async (pane, options = {}) => {
+                const reply = await execute('pane-capture', { ...target(pane), lines: options.lines, scrollback: options.scrollback ?? false, settle_ms: options.settleMs });
+                const { text, revision, cursor, altScreen, settled } = camel(reply);
+                // A daemon from before #390 omits these; an `ifRevision: undefined` would then send unguarded.
+                if (typeof revision !== 'number' || typeof cursor?.row !== 'number' || typeof cursor?.col !== 'number' || typeof altScreen !== 'boolean') {
+                    throw new KelpiError('terminal.read needs a Kelpi daemon that reports screen revisions (#390)', { code: 'UNSUPPORTED', method: 'pane-capture', details: reply });
+                }
+                return clean({ text, revision, cursor, altScreen, settled });
+            },
             capture: async (pane, options = {}) => (await run('pane-capture', { ...target(pane), lines: options.lines, scrollback: options.scrollback ?? false })).text,
             sync: (workspaceID, action = 'status') => run('pane-sync', { workspace: workspaceID, action }),
             excludeFromSync: (pane, excluded) => run('pane-sync-exclude', { ...target(pane), excluded }),

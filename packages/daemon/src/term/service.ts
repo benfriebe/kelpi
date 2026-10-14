@@ -53,6 +53,11 @@ type SerializeAddonInstance = InstanceType<typeof SerializeAddon>;
 export const DEFAULT_SCROLLBACK_LINES = 10_000;
 export const DEFAULT_COLS = 80;
 export const DEFAULT_ROWS = 24;
+/**
+ * The longest `settle()` waits for a quiet pane (#390): `pane-capture`'s `settle_ms` is clamped
+ * to it, and a pane still printing when it passes is read as it is, unsettled.
+ */
+export const CAPTURE_SETTLE_CAP_MS = 10_000;
 /** Bound normal PTY read-ahead well below xterm's 50 MB write-discard threshold. */
 export const WRITE_HIGH_WATER_BYTES = 512 * 1024;
 export const WRITE_LOW_WATER_BYTES = 128 * 1024;
@@ -466,6 +471,16 @@ export interface TerminalStateOptions {
      * is what a reattaching client wants (it gets history for free).
      */
     readonly snapshotScrollbackLines?: number;
+    /** Default `settle()` cap; `CAPTURE_SETTLE_CAP_MS` unless a test wants a short one. */
+    readonly settleCapMs?: number;
+    /**
+     * Screen revisions (#390): the first revision this service issues is one past it. Defaults
+     * to `Date.now()`, so a new daemon (terminal host handoff, in-app update) starts past
+     * anything an earlier one could have issued (it would have had to average more than one
+     * revision a millisecond to get there); tests pass a small value when they assert absolute
+     * numbers.
+     */
+    readonly revisionBase?: number;
     /**
      * **OSC 7** — the shell reporting its working directory (`ESC ] 7 ; file://host/path BEL`).
      *
@@ -556,6 +571,13 @@ export interface ScreenCursor {
     readonly alternate: boolean;
     readonly row: number;
     readonly col: number;
+}
+
+/** `readScreen()`: the text, revision and cursor of one screen, read in the same turn. */
+export interface ScreenRead {
+    readonly text: string;
+    readonly revision: number;
+    readonly cursor: ScreenCursor | null;
 }
 
 export interface TerminalSnapshot {
@@ -695,6 +717,16 @@ interface PaneTerminal {
     /** Bytes still to be fed as replay (`markReplay`), and in which mode. */
     replayBudget: number;
     replayBudgetMode: ReplayMode;
+    /**
+     * The screen revision (#390): +1 per non-empty `feed()`, per non-empty `restore()` and per
+     * grid change, counted when the bytes are QUEUED rather than parsed, so a reader that
+     * flushed before reading text and revision together sees any later byte as a newer one.
+     * Starts one past every revision the service has issued (`highestRevision`, which a new
+     * service seeds from the clock), so it is never 0 and never one an earlier daemon issued.
+     */
+    revision: number;
+    /** Pending `settle()` calls: told of every revision bump, and of dispose (called with `disposed: true`, which resolves the wait as unsettled). */
+    readonly quietWaiters: Set<(disposed: boolean) => void>;
 }
 
 const encoder = new TextEncoder();
@@ -714,8 +746,8 @@ function sanitizeRows(value: number, fallback: number): number {
  * `TerminalStateService` backed by `@xterm/headless` + `@xterm/addon-serialize`.
  *
  * Widenings over the seam (all additive): `captureAsync`, `snapshotAsync`, `modesAsync`,
- * `flush`, `has`, `gridSize`, `paneIDs`, `ringTail`, `disposeAll`, and `feed()` also
- * accepting a string.
+ * `flush`, `has`, `gridSize`, `paneIDs`, `ringTail`, `disposeAll`, `revision`, `settle`,
+ * `readScreen`, and `feed()` also accepting a string.
  */
 export class TerminalStateServiceImpl implements TerminalStateService {
     private readonly panes = new Map<string, PaneTerminal>();
@@ -724,6 +756,15 @@ export class TerminalStateServiceImpl implements TerminalStateService {
     private readonly defaultCols: number;
     private readonly defaultRows: number;
     private readonly snapshotScrollbackLines: number | undefined;
+    private readonly settleCapMs: number;
+    /**
+     * The highest screen revision this service has issued (#390), seeded from `revisionBase`
+     * (the clock at start, by default). New terminal state starts one past it, so a pane id that
+     * is disposed and gets state again (restart old terminals, a forgotten shell) never repeats a
+     * revision within one daemon run, a new daemon never reissues one an earlier daemon gave out,
+     * and 0 is only ever read by a pane with no terminal state.
+     */
+    private highestRevision: number;
     private readonly onDirectoryChange: ((paneID: string, directory: string) => void) | undefined;
     private readonly onTitleChange: ((paneID: string, title: string) => void) | undefined;
     private readonly onOscNotification:
@@ -747,6 +788,8 @@ export class TerminalStateServiceImpl implements TerminalStateService {
             options.snapshotScrollbackLines === undefined
                 ? undefined
                 : Math.max(0, Math.floor(options.snapshotScrollbackLines));
+        this.settleCapMs = Math.max(0, options.settleCapMs ?? CAPTURE_SETTLE_CAP_MS);
+        this.highestRevision = Math.max(0, Math.floor(options.revisionBase ?? Date.now()));
         this.onDirectoryChange = options.onDirectoryChange;
         this.onTitleChange = options.onTitleChange;
         this.onOscNotification = options.onOscNotification;
@@ -790,6 +833,9 @@ export class TerminalStateServiceImpl implements TerminalStateService {
         // flush()/captureAsync() can never hang on a callback that will now never fire.
         for (const settle of [...entry.settlers]) settle();
         entry.settlers.clear();
+        // Likewise a settle() wait: it resolves now (unsettled) and its timers go with it.
+        for (const waiter of [...entry.quietWaiters]) waiter(true);
+        entry.quietWaiters.clear();
         entry.writes.length = 0;
         this.setOutputPaused(paneID, entry, false);
         entry.mouseFormat.dispose();
@@ -819,6 +865,7 @@ export class TerminalStateServiceImpl implements TerminalStateService {
             entry = this.create(paneID, this.defaultCols, this.defaultRows);
             this.panes.set(paneID, entry);
         }
+        this.bumpRevision(entry);
         entry.ring.append(typeof data === 'string' ? encoder.encode(data) : data);
         // The first `replayBudget` bytes after `markReplay` are replayed output (§7).
         if (entry.replayBudget > 0) {
@@ -853,7 +900,10 @@ export class TerminalStateServiceImpl implements TerminalStateService {
     restore(paneID: string, checkpoint: TerminalCheckpoint): void {
         const entry = this.panes.get(paneID);
         if (!entry) return;
-        if (checkpoint.snapshot.length > 0) this.enqueue(paneID, entry, checkpoint.snapshot, 2);
+        if (checkpoint.snapshot.length > 0) {
+            this.bumpRevision(entry);
+            this.enqueue(paneID, entry, checkpoint.snapshot, 2);
+        }
         entry.kitty.importState(checkpoint.kitty);
         entry.mouseFormat.restore(checkpoint.mouseFormat);
     }
@@ -1000,6 +1050,45 @@ export class TerminalStateServiceImpl implements TerminalStateService {
         await Promise.all([...this.panes.keys()].map((paneID) => this.flush(paneID)));
     }
 
+    /** The pane's screen revision (see `PaneTerminal.revision`). Unknown pane → 0. */
+    revision(paneID: string): number {
+        return this.panes.get(paneID)?.revision ?? 0;
+    }
+
+    /**
+     * Wait until the pane has gone `quietMs` without a revision bump, counted from this call
+     * (so output a caller's own keystroke is about to provoke still gets a chance to arrive).
+     * Resolves `true` then, or `false` once `capMs` passes first; `quietMs` is clamped to the
+     * cap. An unknown pane resolves `true` at once. A wait whose pane is disposed resolves
+     * `false`, since no quiet was seen (the caller's own "is it still there" check reports the
+     * rest). Never leaves a timer behind.
+     */
+    settle(paneID: string, quietMs: number, capMs: number = this.settleCapMs): Promise<boolean> {
+        const entry = this.panes.get(paneID);
+        if (!entry) return Promise.resolve(true);
+        const quiet = Math.max(0, Math.min(quietMs, capMs));
+        return new Promise<boolean>((resolve) => {
+            let quietTimer: ReturnType<typeof setTimeout> | undefined;
+            let capTimer: ReturnType<typeof setTimeout> | undefined;
+            const finish = (settled: boolean): void => {
+                clearTimeout(quietTimer);
+                clearTimeout(capTimer);
+                entry.quietWaiters.delete(waiter);
+                resolve(settled);
+            };
+            const waiter = (disposed: boolean): void => {
+                clearTimeout(quietTimer);
+                if (disposed) finish(false);
+                else quietTimer = setTimeout(() => finish(true), quiet);
+            };
+            // The quiet timer is armed first so that, at `quietMs === capMs`, an untouched pane
+            // fires it before the cap and counts as settled.
+            quietTimer = setTimeout(() => finish(true), quiet);
+            capTimer = setTimeout(() => finish(false), capMs);
+            entry.quietWaiters.add(waiter);
+        });
+    }
+
     // ── reads ───────────────────────────────────────────────────────────────────────
 
     /**
@@ -1018,6 +1107,27 @@ export class TerminalStateServiceImpl implements TerminalStateService {
     async captureAsync(paneID: string, opts: { scrollback: boolean }): Promise<string> {
         await this.flush(paneID);
         return this.capture(paneID, opts);
+    }
+
+    /**
+     * Flush, then read the text, revision and cursor in the same turn as the drain loop's last
+     * "queue empty" check (#390), so the revision counts exactly the bytes the text shows: a
+     * `feed()` cannot land between the flush and the read, as it can across `await flush()`.
+     * What `pane-capture` reads with. Unknown pane → `''`, 0 and null.
+     */
+    async readScreen(paneID: string, opts: { scrollback: boolean }): Promise<ScreenRead> {
+        let entry = this.panes.get(paneID);
+        // `tail` is replaced by each new feed(), and dispose() can swap the entry, so re-read both.
+        while (entry !== undefined && entry.done < entry.issued) {
+            await entry.tail;
+            entry = this.panes.get(paneID);
+        }
+        // No await from the loop's last check to here.
+        return {
+            text: this.capture(paneID, opts),
+            revision: this.revision(paneID),
+            cursor: this.screenCursor(paneID)
+        };
     }
 
     /**
@@ -1366,6 +1476,7 @@ export class TerminalStateServiceImpl implements TerminalStateService {
     private applyGrid(entry: PaneTerminal, cols: number, rows: number): void {
         const term = entry.term;
         if (term.cols === cols && term.rows === rows) return;
+        this.bumpRevision(entry);
         if (term.rows !== rows) {
             term.options.windowsPty = STOCK_REFLOW;
             try {
@@ -1382,6 +1493,14 @@ export class TerminalStateServiceImpl implements TerminalStateService {
             if (cols < fromCols) trimStrandedCells(term, cols);
             else restoreStrandedCells(term, fromCols, cols);
         }
+    }
+
+    private bumpRevision(entry: PaneTerminal): void {
+        entry.revision += 1;
+        if (entry.revision > this.highestRevision) this.highestRevision = entry.revision;
+        // Runs on every PTY chunk: no copy, which is safe because a bump only re-arms a waiter's
+        // timer and never removes it from the set.
+        for (const waiter of entry.quietWaiters) waiter(false);
     }
 
     /** Emit `onModesChange` when this pane's modes are not what they last were. */
@@ -1506,7 +1625,9 @@ export class TerminalStateServiceImpl implements TerminalStateService {
             disposed: false,
             effects,
             replayBudget: 0,
-            replayBudgetMode: 1
+            replayBudgetMode: 1,
+            revision: ++this.highestRevision,
+            quietWaiters: new Set()
         };
         entry.lastModes = readModes(entry);
         return entry;

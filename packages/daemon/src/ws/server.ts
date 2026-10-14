@@ -42,7 +42,7 @@ import type { RepoChannel } from './repos.js';
 import type { GraftChannel } from './graft.js';
 import { createTerminalSearchChannel, type TerminalSearchBackend } from './search.js';
 import { createPaneStreamHub, type PaneStreamHub } from './streams.js';
-import type { WsOldTerminalHostsMessage, WsTransportStatus } from '@kelpi/protocol';
+import { WS_PROTOCOL_VERSION, type WsOldTerminalHostsMessage, type WsTransportStatus } from '@kelpi/protocol';
 
 import { type RemoteChannel } from './remote.js';
 import {
@@ -328,7 +328,14 @@ export function createWsServer(options: WsServerOptions): WsServer {
             build: options.version.build,
             pid: options.daemonInfo?.pid
         },
-        protocolVersion: options.version.protocol,
+        /*
+         * The CLIENT protocol generation, which the hello check holds a client to. Not
+         * `version.protocol`: that is the process generation (`PROTOCOL_VERSION`), which names the
+         * run-dir files (`daemon-v<N>.sock`) an update hands off through. Moving it would make an
+         * updated app miss the running daemon and start a second one on the same database, so a
+         * client-only change (generation 3, nested workspaces) moves this one alone.
+         */
+        protocolVersion: WS_PROTOCOL_VERSION,
         plugins: options.plugins,
         content: options.content,
         csv: options.csv,

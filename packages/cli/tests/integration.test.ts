@@ -464,7 +464,8 @@ describe('kelpi event', () => {
             pane_id: PANE,
             title: 'Codex',
             body: 'Approval requested: Bash',
-            agent: 'codex'
+            agent: 'codex',
+            tool_name: 'Bash'
         });
     });
 
@@ -496,6 +497,160 @@ describe('kelpi event', () => {
         const loud = await runCLI(['event', 'stop'], { port, paneID: PANE, env: { ...noRetry, KELPI_VERBOSE_HOOKS: '1' } });
         expect(loud.code).toBe(0);
         expect(loud.stderr).toContain('Warning: kelpi event stop:');
+    });
+});
+
+describe('nested workspaces (app-state-core §2.9)', () => {
+    it('creates under --parent, or under the caller pane’s workspace with --nested', async () => {
+        server.respond(() => ({
+            lines: [{ ok: true, workspace_id: PANE, workspace_name: 'worker', muted: false, parent_id: OTHER, parent_name: 'boss' }]
+        }));
+        const named = await runCLI(['workspace', 'create', '--name', 'worker', '--parent', 'boss'], { port: server.port });
+        expect(named.code).toBe(0);
+        expect(named.stdout).toBe(`created workspace worker (${PANE}) nested under boss\n`);
+        expect(await lastRequest()).toEqual({ command: 'workspace-create', name: 'worker', parent: 'boss' });
+
+        const nested = await runCLI(['workspace', 'create', '--name', 'worker', '--nested'], {
+            port: server.port,
+            paneID: OTHER
+        });
+        expect(nested.code).toBe(0);
+        expect(await lastRequest()).toEqual({ command: 'workspace-create', name: 'worker', parent_pane_id: OTHER });
+    });
+
+    it('refuses conflicting flags, and --nested outside a pane, before sending anything', async () => {
+        const both = await runCLI(['workspace', 'create', '--parent', 'boss', '--nested'], { port: server.port, paneID: PANE });
+        expect(both.code).toBe(1);
+        expect(both.stderr).toContain("can't take both --parent and --nested");
+        const grouped = await runCLI(['workspace', 'create', '--parent', 'boss', '--group', 'squad'], { port: server.port });
+        expect(grouped.code).toBe(1);
+        expect(grouped.stderr).toContain("follows its parent's group");
+        const outside = await runCLI(['workspace', 'create', '--nested'], { port: server.port });
+        expect(outside.code).toBe(1);
+        expect(outside.stderr).toContain('must run inside a Kelpi pane');
+        expect(server.requests).toHaveLength(0);
+    });
+
+    it('fails when a daemon that predates nesting created the workspace at the top level', async () => {
+        server.respond(() => ({ lines: [{ ok: true, workspace_id: PANE, workspace_name: 'worker', muted: false }] }));
+        const result = await runCLI(['workspace', 'create', '--name', 'worker', '--parent', 'boss'], { port: server.port });
+        expect(result.code).toBe(1);
+        expect(result.stderr).toContain('the daemon did not nest the workspace');
+    });
+
+    it('defers a nested worktree’s source repo to the parent’s group, with the cwd as fallback', async () => {
+        const home = scratchHome();
+        server.respond(() => ({
+            lines: [{ ok: true, workspace_id: PANE, workspace_name: 'fix', worktree_path: '/tmp/wt/fix', branch: 'fix', parent_id: OTHER, parent_name: 'boss' }]
+        }));
+        await runCLI(['workspace', 'create', '--worktree', 'fix', '--parent', 'boss'], { port: server.port, cwd: home });
+        expect(await lastRequest()).toEqual({ command: 'workspace-create', worktree: 'fix', parent: 'boss', path: home });
+    });
+
+    it('nests an existing workspace with move --parent, and reports a refusal', async () => {
+        server.respond((request) =>
+            request['parent'] === 'worker'
+                ? { lines: [{ ok: false, error: "'worker' is nested itself; workspaces nest one level deep" }] }
+                : { lines: [{ ok: true, workspace_id: PANE, workspace_name: 'w2', parent_id: OTHER, parent_name: 'boss', index: 1 }] }
+        );
+        const nested = await runCLI(['workspace', 'move', 'w2', '--parent', 'boss', '--index', '1'], { port: server.port });
+        expect(nested.code).toBe(0);
+        expect(nested.stdout).toBe('nested workspace w2 under boss\n');
+        expect(await lastRequest()).toEqual({ command: 'workspace-nest', name: 'w2', parent: 'boss', index: 1 });
+
+        const refused = await runCLI(['workspace', 'move', 'w2', '--parent', 'worker'], { port: server.port });
+        expect(refused.code).toBe(1);
+        expect(refused.stderr).toContain('nest one level deep');
+
+        const conflicting = await runCLI(['workspace', 'move', 'w2', '--parent', 'boss', '--top-level'], { port: server.port });
+        expect(conflicting.code).toBe(1);
+        expect(conflicting.stderr).toContain('only one of --group, --top-level and --parent');
+    });
+
+    it('deletes with --cascade and reports the nested workspaces it took', async () => {
+        server.respond(() => ({
+            lines: [{ ok: true, workspace_id: PANE, workspace_name: 'boss', deleted_children: [OTHER] }]
+        }));
+        const human = await runCLI(['workspace', 'delete', 'boss', '--cascade'], { port: server.port });
+        expect(human.stdout).toBe('deleted workspace boss and 1 nested workspace\n');
+        expect(await lastRequest()).toEqual({ command: 'workspace-delete', name: 'boss', force: false, cascade: true });
+        const json = await runCLI(['workspace', 'delete', 'boss', '--cascade', '--json'], { port: server.port });
+        expect(JSON.parse(json.stdout)).toEqual([
+            { id: 'boss', ok: true, workspace_id: PANE, workspace_name: 'boss', deleted_children: [OTHER] }
+        ]);
+    });
+
+    it('lists one parent’s nested workspaces with --parent', async () => {
+        server.respond(() => ({ lines: [{ ok: true, workspaces: [], parent_id: OTHER, parent_name: 'boss' }] }));
+        const result = await runCLI(['workspace', 'list', '--parent', 'boss', '--json'], { port: server.port });
+        expect(result.code).toBe(0);
+        expect(result.stdout).toBe('[]\n');
+        expect(await lastRequest()).toEqual({ command: 'workspace-list', parent: 'boss' });
+    });
+
+    it('never lists everything for --parent: an unfiltered (older daemon) reply fails, printing nothing', async () => {
+        server.respond(() => ({
+            lines: [{ ok: true, workspaces: [{ id: PANE, name: 'a' }, { id: OTHER, name: 'b' }] }]
+        }));
+        const result = await runCLI(['workspace', 'list', '--parent', 'boss', '--json'], { port: server.port });
+        expect(result.code).toBe(1);
+        expect(result.stdout).toBe('');
+        expect(result.stderr).toContain('the daemon did not apply --parent');
+    });
+
+    it('refuses an empty or whitespace --parent before sending anything', async () => {
+        for (const args of [
+            ['workspace', 'list', '--parent', ''],
+            ['workspace', 'create', '--name', 'stray', '--parent', '  '],
+            ['workspace', 'move', 'w2', '--parent', '']
+        ]) {
+            const result = await runCLI(args, { port: server.port });
+            expect(result.code).toBe(1);
+            expect(result.stderr).toContain('--parent needs a workspace name or id (it was empty)');
+        }
+        expect(server.requests).toHaveLength(0);
+    });
+
+    it('says the parent was lost, not that the daemon is old, when it went away during a worktree create', async () => {
+        server.respond(() => ({
+            lines: [
+                {
+                    ok: true,
+                    workspace_id: PANE,
+                    workspace_name: 'fix',
+                    muted: false,
+                    worktree_path: '/tmp/wt/fix',
+                    branch: 'fix',
+                    parent_lost: true,
+                    parent_lost_reason: "parent 'boss' was deleted while the workspace was being created"
+                }
+            ]
+        }));
+        const result = await runCLI(['workspace', 'create', '--worktree', 'fix', '--parent', 'boss'], { port: server.port });
+        expect(result.code).toBe(1);
+        expect(result.stderr).toContain("parent 'boss' was deleted while the workspace was being created");
+        expect(result.stderr).toContain('was created at the top level');
+        expect(result.stderr).not.toContain('restart it on this build');
+    });
+
+    it('counts a later target the cascade already took as deleted, not as a failure', async () => {
+        server.respond((request) =>
+            request['name'] === 'boss'
+                ? { lines: [{ ok: true, workspace_id: PANE, workspace_name: 'boss', deleted_children: [OTHER], deleted_child_names: ['worker'] }] }
+                : { lines: [{ ok: false, error: `workspace not found: ${String(request['name'])}` }] }
+        );
+        const human = await runCLI(['workspace', 'delete', 'boss', 'worker', '--cascade'], { port: server.port });
+        expect(human.code).toBe(0);
+        expect(human.stdout).toBe('deleted workspace boss and 1 nested workspace\nworkspace worker was already deleted with boss\n');
+
+        // By id as well (any case), and a target that never existed still fails.
+        const json = await runCLI(['workspace', 'delete', 'boss', OTHER.toLowerCase(), 'ghost', '--cascade', '--json'], { port: server.port });
+        expect(json.code).toBe(1);
+        expect(JSON.parse(json.stdout)).toEqual([
+            { id: 'boss', ok: true, workspace_id: PANE, workspace_name: 'boss', deleted_children: [OTHER] },
+            { id: OTHER.toLowerCase(), ok: true, deleted_with: 'boss' },
+            { id: 'ghost', ok: false, error: 'workspace not found: ghost' }
+        ]);
     });
 });
 

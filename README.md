@@ -153,6 +153,20 @@ kelpi workspace create --name search --worktree search --group Acme
 kelpi workspace rename fix-login "fix-login: SSO redirect"
 ```
 
+Let an orchestrator agent spawn its workers as workspaces nested under its own. In the sidebar
+they sit indented under the orchestrator's row, which collapses them behind a chevron and still
+shows when one of them needs you:
+
+```bash
+# run from a pane in the orchestrator's workspace (it reads KELPI_PANE_ID)
+kelpi workspace create --nested --name worker-auth --worktree worker-auth --muted
+kelpi workspace create --parent orchestrator --name worker-docs
+
+kelpi workspace list --parent orchestrator          # just the workers
+kelpi workspace move worker-docs --top-level        # take one out
+kelpi workspace delete orchestrator --cascade       # tear down the orchestrator and its workers
+```
+
 Drive a web pane, from you or from an agent:
 
 ```bash

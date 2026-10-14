@@ -135,7 +135,9 @@ describe('workspace row decoding', () => {
             focusedPaneID: P1,
             createdAt: 1_755_500_000.5,
             lastAccessedAt: 1_755_500_100.5,
-            labels: ['frontend', 'wip']
+            labels: ['frontend', 'wip'],
+            childOrder: [],
+            childrenCollapsed: false
         } satisfies Omit<PersistedWorkspace, 'panes' | 'repoAssociations'>);
     });
 
@@ -192,6 +194,17 @@ describe('workspace row decoding', () => {
         expect(decodeWorkspaceRow(workspaceRow({ muted: 0 }))?.workspace.muted).toBe(false);
         expect(decodeWorkspaceRow(workspaceRow({ muted: null }))?.workspace.muted).toBe(false);
         expect(decodeWorkspaceRow(workspaceRow())?.workspace.muted).toBe(false);
+    });
+
+    it('reads nested children and their collapse, and a pre-v26 row as none, expanded (§2.9)', () => {
+        const nested = decodeWorkspaceRow(
+            workspaceRow({ childOrderJSON: JSON.stringify([W2]), childrenCollapsed: 1 })
+        )?.workspace;
+        expect(nested?.childOrder).toEqual([W2]);
+        expect(nested?.childrenCollapsed).toBe(true);
+        const legacy = decodeWorkspaceRow(workspaceRow())?.workspace;
+        expect(legacy?.childOrder).toEqual([]);
+        expect(legacy?.childrenCollapsed).toBe(false);
     });
 });
 
@@ -477,6 +490,16 @@ describe('encoding (§5.4)', () => {
         } satisfies PersistedWorkspace;
         expect(encodeWorkspaceRow(workspace, 0).muted).toBe(1);
         expect(encodeWorkspaceRow({ ...workspace, muted: false }, 0).muted).toBe(0);
+    });
+
+    it('writes nested children as a JSON array, and none as NULL (§2.9)', () => {
+        const workspace = decodeWorkspaceRow(workspaceRow())?.workspace;
+        if (workspace === undefined) throw new Error('fixture');
+        const base = { ...workspace, panes: [], repoAssociations: [] };
+        expect(encodeWorkspaceRow(base, 0).childOrderJSON).toBeNull();
+        const row = encodeWorkspaceRow({ ...base, childOrder: [W2], childrenCollapsed: true }, 0);
+        expect(JSON.parse(row.childOrderJSON ?? '[]')).toEqual([W2]);
+        expect(row.childrenCollapsed).toBe(1);
     });
 
     it('writes NULL tab columns for private web panes and for non-web panes (§5.4)', () => {

@@ -102,10 +102,15 @@ Read/write tolerances (`packages/daemon/src/db/codec.ts`):
 | `icon`          | TEXT    | yes  |         | prefix-qualified icon string (§3.4): `"system:star.fill"` or `"emoji:📁"`. NULL / unparseable → default avatar (first letter of name). |
 | `profileName`   | TEXT    | yes  |         | assigned workspace-profile name (env-var set). NULL = unassigned (resolves the built-in `default` profile at spawn time). The app normalizes `"default"` / empty string to NULL before it ever reaches the DB. |
 | `muted`         | BOOLEAN | no   | 0       | Kelpi-only (v21). 1 = the workspace's agents raise no attention signals (agent-lifecycle.md §7.6). NULL or absent (a pre-v21 row) reads as unmuted. |
+| `childOrderJSON`| TEXT    | yes  |         | Kelpi-only (v26). JSON array of the UUIDs nested under this workspace, in sidebar order (app-state-core.md §2.9). NULL (written when there are none), absent (a pre-v26 row) or undecodable → none. |
+| `childrenCollapsed` | BOOLEAN | no | 0     | Kelpi-only (v26). 1 = the nested workspaces are hidden behind the parent's chevron. NULL or absent reads as expanded. |
 
 Note: there is **no group membership column**. A workspace belongs to a group iff its UUID
 appears in some `workspace_group.childOrderJSON`; it is top-level iff it appears in the
-`topLevelOrder` app-state value (§2.4). This is the only representation of grouping.
+`topLevelOrder` app-state value (§2.4). This is the only representation of grouping. Nesting
+works the same way from the parent's side: a workspace is nested iff its UUID appears in another
+workspace's `childOrderJSON`, and then it appears in neither `topLevelOrder` nor a group (the
+boot repair, app-state-core.md §2.9, restores that when the rows disagree).
 
 ### 2.2 `pane`
 
@@ -330,10 +335,10 @@ labels are trimmed, non-empty, order-preserving, deduped case-sensitively.
 ## 4. Migration history
 
 Migration identifiers are strings; each runs once, recorded in `grdb_migrations`
-(`MIGRATIONS`, `packages/daemon/src/db/schema.ts`). There are 24 in total: the 18 shared
+(`MIGRATIONS`, `packages/daemon/src/db/schema.ts`). There are 26 in total: the 18 shared
 with the legacy app plus `v19_pane_agent_profile`, `v20_plugin_panes`,
-`v21_workspace_muted`, `v22_workspace_group_repo`, `v23_pane_csv_header_row` and
-`v24_pane_terminal_font_size`. From v3 onward, every
+`v21_workspace_muted`, `v22_workspace_group_repo`, `v23_pane_csv_header_row`,
+`v24_pane_terminal_font_size`, `v25_pane_scratchpad_wrap` and `v26_workspace_nesting`. From v3 onward, every
 `ALTER TABLE ADD COLUMN` (and the v15 rename) is **guarded**: it first checks the live column
 list and skips if the column already exists (or, for v15, if the target name already exists /
 the source is missing). This guard exists because pre-release builds of the legacy app
@@ -370,6 +375,7 @@ migration idempotent regardless of ledger drift.
 | `v23_pane_csv_header_row` | `pane` + `csvHeaderRow BOOLEAN NOT NULL DEFAULT 1` (§2.2; issue #324, [csv-pane.md](csv-pane.md)). Kelpi-only (in `DAEMON_ONLY_MIGRATIONS`) and guarded. Additive, so no new database generation: an older daemon's explicit-column INSERT leaves the default (headers on), and it loads a `csv` pane as an unavailable placeholder that keeps its raw type, so a downgrade keeps every csv pane but resets each header-row choice to on the first time it saves. |
 | `v24_pane_terminal_font_size` | `pane` + `terminalFontSize INTEGER` (nullable, §2.2). Kelpi-only (in `DAEMON_ONLY_MIGRATIONS`) and guarded. Additive, so no new database generation: every existing pane reads back NULL and keeps following the ghostty `font-size`; an older daemon's explicit-column INSERT leaves NULL, so a downgrade drops each pane's own size the first time it saves. |
 | `v25_pane_scratchpad_wrap` | `pane` + `scratchpadWrap BOOLEAN NOT NULL DEFAULT 0` (§2.2). Kelpi-only (in `DAEMON_ONLY_MIGRATIONS`) and guarded. Additive, so no new database generation: every existing scratchpad reads back unwrapped, as it drew before; an older daemon's explicit-column INSERT leaves the default, so a downgrade turns each scratchpad's wrap off the first time it saves. |
+| `v26_workspace_nesting` | `workspace` + `childOrderJSON TEXT` and `childrenCollapsed BOOLEAN NOT NULL DEFAULT 0` (§2.1), guarded per column. Kelpi-only (in `DAEMON_ONLY_MIGRATIONS`). Additive, so no new database generation: every existing workspace reads back with nothing nested, expanded. An older daemon ignores both columns and its sidebar does not show nested workspaces (app-state-core.md §2.9, Downgrade); its save rewrites every row with the defaults, so the nesting is lost once it saves, and a newer daemon's boot repair then places those workspaces at the top level. |
 
 ---
 
@@ -746,7 +752,9 @@ CREATE TABLE workspace (
   labelsJSON     TEXT NOT NULL DEFAULT '[]',
   icon           TEXT,                      -- "system:<name>" | "emoji:<grapheme>"
   profileName    TEXT,
-  muted          BOOLEAN NOT NULL DEFAULT 0 -- Kelpi-only (v21)
+  muted          BOOLEAN NOT NULL DEFAULT 0, -- Kelpi-only (v21)
+  childOrderJSON TEXT,                       -- Kelpi-only (v26): nested workspace UUIDs
+  childrenCollapsed BOOLEAN NOT NULL DEFAULT 0 -- Kelpi-only (v26)
 );
 
 CREATE TABLE pane (

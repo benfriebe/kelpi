@@ -67,7 +67,17 @@ function array(value: unknown): unknown[] {
  */
 function hydrateWorkspace(raw: unknown): unknown {
     if (!isRecord(raw)) return raw;
-    return { ...raw, muted: raw['muted'] === true, recentlyClosedPanes: [] };
+    // A daemon older than nesting (app-state-core.md §2.9) sends neither field: no children.
+    const childOrder = Array.isArray(raw['childOrder'])
+        ? raw['childOrder'].filter((id): id is string => typeof id === 'string')
+        : [];
+    return {
+        ...raw,
+        muted: raw['muted'] === true,
+        childOrder,
+        childrenCollapsed: raw['childrenCollapsed'] === true,
+        recentlyClosedPanes: []
+    };
 }
 
 export function emptyDaemonState(): DaemonState {

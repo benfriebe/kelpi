@@ -18,6 +18,7 @@ import type { ReplyHandle } from '../../seams.js';
 import {
     groupByID,
     resolveStateOf,
+    withNestedChildren,
     workspaceByID,
     type DaemonState,
     type GroupSortKey,
@@ -26,6 +27,11 @@ import {
 import { forCommand, listedGroupIDs, refreshSyncGroup, uuidOut } from './common.js';
 import { fail, ok, type AppContext, type AppDeps, type AppHandler } from './context.js';
 import { groupRepo, registeredRepo, repoRef, resolveRepo } from './repos.js';
+
+/** A cascading delete's workspaces: the live members and the workspaces nested under them (§2.9). */
+function doomedWorkspaceIDs(state: DaemonState, group: WorkspaceGroup): string[] {
+    return withNestedChildren(state, group.childOrder);
+}
 
 /** Group child order filtered to live workspaces and deduped (§7.4 step 2). */
 function liveMembers(state: DaemonState, group: WorkspaceGroup): string[] {
@@ -50,9 +56,18 @@ function handleGroupList(ctx: AppContext, reply: ReplyHandle | null): void {
     const groups = listedGroupIDs(state).flatMap((groupID) => {
         const group = groupByID(state, groupID);
         if (group === null) return [];
+        // app-state-core.md §2.9: a member's nested workspaces belong to the group too (they are
+        // what `group-delete --cascade` takes), each listed right after its parent.
         const workspaces = group.childOrder.flatMap((memberID) => {
             const workspace = workspaceByID(state, memberID);
-            return workspace === null ? [] : [{ id: uuidOut(workspace.id), name: workspace.name }];
+            if (workspace === null) return [];
+            const children = workspace.childOrder.flatMap((childID) => {
+                const child = workspaceByID(state, childID);
+                return child === null
+                    ? []
+                    : [{ id: uuidOut(child.id), name: child.name, parent_id: uuidOut(workspace.id), parent_name: workspace.name }];
+            });
+            return [{ id: uuidOut(workspace.id), name: workspace.name }, ...children];
         });
         const repo = groupRepo(state, group);
         return [
@@ -123,8 +138,9 @@ function handleGroupDelete(
     if (group === null) return;
 
     if (cascade) {
-        // Cascade destroys the member workspaces' surfaces too (app-state-core §5.4).
-        const paneIDs = liveMembers(state, group).flatMap(memberID => {
+        // Cascade destroys the member workspaces' surfaces too (app-state-core §5.4), and those
+        // of the workspaces nested under them, which the reducer deletes with them (§2.9).
+        const paneIDs = doomedWorkspaceIDs(state, group).flatMap(memberID => {
             const workspace = workspaceByID(state, memberID)!;
             return [...workspace.panes, ...workspace.parkedPanes].map(pane => pane.id);
         });
@@ -135,7 +151,7 @@ function handleGroupDelete(
         for (const paneID of paneIDs) deps.killPane(paneID, ctx);
     }
     ctx.store.dispatch({ type: 'delete-group', id: group.id, cascade });
-    if (cascade) for (const memberID of group.childOrder) refreshSyncGroup(ctx, memberID);
+    if (cascade) for (const memberID of doomedWorkspaceIDs(state, group)) refreshSyncGroup(ctx, memberID);
     deps.persist();
 }
 

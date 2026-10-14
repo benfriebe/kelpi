@@ -34,6 +34,7 @@ import {
 } from '../../git/index.js';
 import { createGraftService, type GraftService } from '../../graft/index.js';
 import { createWebPaneService, type WebPaneService } from '../../webpane/service.js';
+import type { AgentHookEvent } from './agent-events.js';
 
 export type AppContext = HandlerContext<DaemonState, DomainAction, DomainEvent>;
 export type AppHandler = CommandHandler<AppContext>;
@@ -158,6 +159,13 @@ export interface AppHandlerOptions {
      * restart is about to resume. Defaults to never.
      */
     readonly agentEventsMuted?: ((paneID: string) => boolean) | undefined;
+    /**
+     * #387: publish one `agent.event` to plugins (agent-lifecycle.md §7.7). Boot hands it to the
+     * plugin service's event bus. It is not a daemon broadcast (never `daemon.agent-event`): it
+     * rides the `plugin-event` frame every window session receives, like every plugin event, and
+     * only plugin backends and views consume it. Defaults to dropping it.
+     */
+    readonly emitAgentEvent?: ((event: AgentHookEvent) => void) | undefined;
     /** Default columns/rows for a PTY spawned without a client-reported size. */
     readonly defaultCols?: number | undefined;
     readonly defaultRows?: number | undefined;
@@ -183,6 +191,7 @@ export interface AppDeps {
     readonly isAppActive: () => boolean;
     readonly isPaneFocused: ((paneID: string, workspaceID: string) => boolean) | null;
     readonly agentEventsMuted: (paneID: string) => boolean;
+    readonly emitAgentEvent: (event: AgentHookEvent) => void;
 }
 
 const noop = (): void => {};
@@ -248,7 +257,8 @@ export function resolveAppDeps(options: AppHandlerOptions = {}): AppDeps {
         scrollTarget: options.scrollTarget ?? noop,
         isAppActive: options.isAppActive ?? (() => false),
         isPaneFocused: options.isPaneFocused ?? null,
-        agentEventsMuted: options.agentEventsMuted ?? (() => false)
+        agentEventsMuted: options.agentEventsMuted ?? (() => false),
+        emitAgentEvent: options.emitAgentEvent ?? noop
     };
 }
 

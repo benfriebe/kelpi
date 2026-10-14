@@ -1281,6 +1281,12 @@ describe('the GUI’s delete-workspace (§WS-156)', () => {
         });
     });
 
+    it('carries cascade_children as the delete’s cascade (app-state-core §2.9)', () => {
+        const f = drive({ command: 'delete-workspace', workspace_id: W1, cascade_children: true });
+        expect(f.calls[0]?.message).toMatchObject({ command: 'workspace-delete', name: W1, cascade: true });
+        expect(drive({ command: 'delete-workspace', workspace_id: W1 }).calls[0]?.message).not.toHaveProperty('cascade');
+    });
+
     it('never asserts allow_last on its own — the caller has to say so', () => {
         const f = drive({ command: 'delete-workspace', workspace_id: W1 });
         expect(f.calls[0]?.message).toMatchObject({ allow_last: false, force: false });

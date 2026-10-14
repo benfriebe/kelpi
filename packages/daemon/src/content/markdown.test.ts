@@ -215,6 +215,23 @@ describe('autolinkText', () => {
             '<a href="https://en.wikipedia.org/wiki/A_(b)">https://en.wikipedia.org/wiki/A_(b)</a>'
         );
     });
+
+    it('ends a link where the terminal does (url-end.ts)', () => {
+        // The first unmatched closer ends it, so the next link is found on its own.
+        expect(autolinkText('(https://a.com/x)(https://b.com/y)')).toBe(
+            '(<a href="https://a.com/x">https://a.com/x</a>)(<a href="https://b.com/y">https://b.com/y</a>)'
+        );
+        // A `!` and a `?` in a query are the link's; a `?` that would open an empty query is not.
+        expect(autolinkText('https://en.wikipedia.org/wiki/Yahoo!')).toBe(
+            '<a href="https://en.wikipedia.org/wiki/Yahoo!">https://en.wikipedia.org/wiki/Yahoo!</a>'
+        );
+        expect(autolinkText('https://x.com/s?q=why?')).toBe('<a href="https://x.com/s?q=why?">https://x.com/s?q=why?</a>');
+        expect(autolinkText('seen https://x.com/a?')).toBe('seen <a href="https://x.com/a">https://x.com/a</a>?');
+        // Curly quotes, an em dash and full-width brackets are prose.
+        expect(autolinkText('“https://x.com/a”')).toBe('“<a href="https://x.com/a">https://x.com/a</a>”');
+        expect(autolinkText('https://x.com/a—see')).toBe('<a href="https://x.com/a">https://x.com/a</a>—see');
+        expect(autolinkText('（https://x.com/a）')).toBe('（<a href="https://x.com/a">https://x.com/a</a>）');
+    });
 });
 
 // ---------------------------------------------------------------------------

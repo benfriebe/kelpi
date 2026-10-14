@@ -43,7 +43,10 @@ const SWIFT_CLI = process.env['KELPI_COMPAT_CLI'] ?? '/Applications/Nex.app/Cont
 /** Frame layout from `@kelpi/protocol` `ws/pty.ts` (kept in sync by `smoke.test.ts`). */
 const FRAME = { output: 0x01, input: 0x02, ack: 0x03, resize: 0x04, replay: 0x05, inputDirect: 0x06, replayGrid: 0x07 };
 const FRAME_HEADER_BYTES = 17;
+/** The process generation: names the run-dir files and is what `/healthz` reports. */
 const PROTOCOL_VERSION = 2;
+/** The client-sync generation a `hello` must match (`@kelpi/protocol` `WS_PROTOCOL_VERSION`). */
+const WS_PROTOCOL_VERSION = 3;
 
 const argv = new Set(process.argv.slice(2));
 const options = {
@@ -407,14 +410,14 @@ async function main() {
         ws = await connectWs(daemon.base, daemon.token);
         ws.send({
             type: 'hello',
-            protocolVersion: PROTOCOL_VERSION,
+            protocolVersion: WS_PROTOCOL_VERSION,
             token: daemon.token,
             client: { kind: 'browser', name: 'kelpi-smoke' }
         });
         const welcome = await ws.waitJson((m) => m.type === 'welcome', 'welcome');
         check(
             'the WS handshake completes',
-            welcome.protocolVersion === PROTOCOL_VERSION && typeof welcome.clientID === 'string',
+            welcome.protocolVersion === WS_PROTOCOL_VERSION && typeof welcome.clientID === 'string',
             `daemon ${welcome.daemon?.version} pid ${welcome.daemon?.pid}`
         );
 

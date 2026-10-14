@@ -45,7 +45,7 @@ const repoRoot = path.resolve(here, '..', '..', '..', '..');
 const vendorRoot = path.join(repoRoot, 'vendor', 'ghostty-web-patched');
 
 /** The version the audit evidence and PROVENANCE.md were written against. */
-const EXPECTED_VERSION = '0.4.0-kelpi.21';
+const EXPECTED_VERSION = '0.4.0-kelpi.22';
 
 /** Markers of the caret-anchored IME, in the built ESM bundle the client imports. */
 const CARET_MARKERS = ['data-ime-preedit', 'data-ime-caret', 'syncImeCaret'];
@@ -465,6 +465,17 @@ describe('vendored ghostty-web engine', () => {
         // Every copy the manager makes by itself is gated; a bare call would bypass the setting.
         expect(selectionSource.match(/this\.copyToClipboard\(/g) ?? []).toHaveLength(2);
         expect(selectionSource.match(/if \(this\.terminal\.options\.copyOnSelect\) this\.copyToClipboard\(text\);/g) ?? []).toHaveLength(2);
+    });
+
+    it('selects nothing on a single press, only on a drag past a cell threshold (§-kelpi.22)', () => {
+        // Take a future npm release wholesale and a click selects (and copies) the pressed cell
+        // again: every click that focuses a pane replaces the clipboard with one character.
+        const bundle = read(path.join(vendorRoot, 'dist', 'ghostty-web.js'));
+        expect(bundle).toContain('this.renderer.getMetrics().width * 0.6');
+        expect(bundle).toContain('return this.selectionStart !== null && this.selectionEnd !== null;');
+        const selectionSource = read(path.join(vendorRoot, 'source', 'lib', 'selection-manager.ts'));
+        expect(selectionSource).toContain('this.pressPoint = { col: cell.col, absoluteRow, x: this.pixelToCellX(e.offsetX) };');
+        expect(selectionSource).not.toContain('this.selectionStart = { col: cell.col, absoluteRow };');
     });
 
     it('keeps the snapshotted source in step with the bundle', () => {

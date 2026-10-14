@@ -58,7 +58,10 @@ const shellRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
 const repoRoot = path.resolve(shellRoot, '..', '..');
 const daemonEntry = path.join(repoRoot, 'packages', 'daemon', 'dist', 'kelpid.js');
 const shellEntry = path.join(shellRoot, 'dist', 'main.js');
+/** The process generation: names the run-dir files (`daemon-v<N>.*`). */
 const PROTOCOL_VERSION = 2;
+/** The client-sync generation a `hello` must match (`@kelpi/protocol` `WS_PROTOCOL_VERSION`). */
+const WS_PROTOCOL_VERSION = 3;
 
 /** The shipped Swift CLI — the whole point of this smoke. */
 const KELPI_CLI = process.env.KELPI_COMPAT_CLI ?? '/Applications/Nex.app/Contents/Helpers/nex';
@@ -505,7 +508,7 @@ async function connectProbe(sandbox) {
     socket.send(
         JSON.stringify({
             type: 'hello',
-            protocolVersion: PROTOCOL_VERSION,
+            protocolVersion: WS_PROTOCOL_VERSION,
             token,
             client: { kind: 'browser', name: 'geometry-probe' }
         })

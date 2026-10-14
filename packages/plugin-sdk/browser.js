@@ -453,7 +453,7 @@
         };
         port.start(); applyTheme(); resolveReady();
     });
-    const base = createKelpiAPI(call, () => live.context ?? {});
+    const base = createKelpiAPI(call, () => live.context ?? {}, on);
     globalThis.kelpi = Object.freeze({
         ...base,
         ready, onContext, get context() { return live.context; }, get state() { return live.state; },

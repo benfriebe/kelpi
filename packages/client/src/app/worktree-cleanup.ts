@@ -133,10 +133,19 @@ export interface WorktreeCleanupSourceHost {
     readonly remember: (choice: { readonly removeWorktrees: boolean; readonly deleteBranches: boolean }) => void;
 }
 
-/** The workspaces a target deletes: a group's are ALL its members, as the cascade's are. */
+/**
+ * The workspaces a target deletes: a group's are ALL its members, as the cascade's are, and
+ * each member's nested workspaces (app-state-core.md §2.9), listed before their parent.
+ */
 export function targetWorkspaceIDs(state: DaemonState, target: WorktreeCleanupTarget): readonly string[] {
-    if ('groupID' in target) return state.groups.find((group) => group.id === target.groupID)?.childOrder ?? [];
-    return target.workspaceIDs;
+    if (!('groupID' in target)) return target.workspaceIDs;
+    const members = state.groups.find((group) => group.id === target.groupID)?.childOrder ?? [];
+    return members.flatMap((id) => [
+        ...(state.workspaces.find((workspace) => workspace.id === id)?.childOrder ?? []).filter((childID) =>
+            state.workspaces.some((workspace) => workspace.id === childID)
+        ),
+        id
+    ]);
 }
 
 /**

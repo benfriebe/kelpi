@@ -37,7 +37,7 @@ export class KelpiError extends Error {
 }
 export type HostCall = (method: string, args: Data) => Promise<unknown>;
 /** Adapter used by Kelpi's browser and backend transports. */
-export function createKelpiAPI(transport: HostCall, getContext?: () => Partial<Context>): Omit<KelpiAPI, 'events'>;
+export function createKelpiAPI(transport: HostCall, getContext?: () => Partial<Context>, on?: KelpiAPI['events']['on']): Omit<KelpiAPI, 'events'>;
 export interface KelpiAPI {
     /** Method names and the raw command catalog are documented in docs/plugins.md. */
     call<T = Json>(method: string, args?: Data): Promise<T>;

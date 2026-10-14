@@ -1099,6 +1099,8 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
         throw new Error(`unknown plugin action: ${action}`);
     }
     observe(event: JsonObject): void { if (event['type'] !== 'plugin-event' && event['type'] !== 'plugins-changed') this.emit(`daemon.${String(event['type'] ?? 'event')}`, event); }
+    /** A daemon-originated plugin event (#387 `agent.event`): not a `daemon.*` event, so `observe` never mirrors it; like every plugin event it reaches window sessions as a `plugin-event` frame. */
+    emitDaemonEvent(name: string, data: JsonValue): void { this.emit(name, data); }
     releaseClient(clientID: string): void { for (const [id, lease] of this.leases) if (lease.context.clientID === clientID) this.release(id); }
     private async stopDependents(id: string): Promise<void> {
         const dependents = new Set<string>();

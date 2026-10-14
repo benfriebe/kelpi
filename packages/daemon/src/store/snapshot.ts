@@ -86,6 +86,12 @@ export interface PersistedWorkspace {
     /** Epoch seconds. */
     readonly lastAccessedAt: number;
     readonly labels: readonly string[];
+    /**
+     * app-state-core.md §2.9: nested workspaces, in sidebar order. Optional because a snapshot
+     * built by the legacy importer carries neither; absent restores as no children, expanded.
+     */
+    readonly childOrder?: readonly string[] | undefined;
+    readonly childrenCollapsed?: boolean | undefined;
     /** Visible panes plus parked plugin panes; parked terminals remain transient. */
     readonly panes: readonly PersistedPane[];
     readonly repoAssociations: readonly RepoAssociation[];
@@ -171,6 +177,8 @@ function persistWorkspace(workspace: WorkspaceState): PersistedWorkspace {
         createdAt: workspace.createdAt,
         lastAccessedAt: workspace.lastAccessedAt,
         labels: [...workspace.labels],
+        childOrder: [...workspace.childOrder],
+        childrenCollapsed: workspace.childrenCollapsed,
         panes: [
             ...workspace.panes.map((pane) => persistPane(pane, workspace.webPanes[pane.id])),
             ...workspace.parkedPanes.filter(pane => pane.type === 'plugin').map(pane => ({ ...persistPane(pane, undefined), parked: true as const }))
@@ -253,6 +261,73 @@ export interface FromSnapshotOptions {
     readonly homeDirectory: string;
 }
 
+interface NestingRepair {
+    readonly workspaces: WorkspaceState[];
+    readonly groups: WorkspaceGroup[];
+    readonly topLevelOrder: SidebarID[];
+}
+
+/**
+ * app-state-core.md §2.9: make the restored nesting obey its invariants, whatever the rows say
+ * (a hand-edited file, or a database an older daemon wrote to after a newer one nested).
+ *
+ * - A child id must name another live workspace, once, under one parent (the first claim wins).
+ * - Nesting is one level: a workspace that is itself nested keeps no children.
+ * - A nested workspace lives only under its parent, so its top-level or group entry is dropped.
+ * - A live workspace that is neither nested nor placed (one these rules released, or one an older
+ *   daemon's save left in no order at all, since it drops the nesting columns) lands at the top
+ *   level, so no workspace is ever missing from the sidebar.
+ */
+export function repairNesting(
+    workspaces: readonly WorkspaceState[],
+    groups: readonly WorkspaceGroup[],
+    topLevelOrder: readonly SidebarID[]
+): NestingRepair {
+    const live = new Set(workspaces.map((workspace) => workspace.id));
+    const parentOf = new Map<string, string>();
+    for (const workspace of workspaces) {
+        for (const id of workspace.childOrder) {
+            if (!live.has(id) || id === workspace.id || parentOf.has(id)) continue;
+            parentOf.set(id, workspace.id);
+        }
+    }
+    // One level: a parent that is itself claimed gives its children back.
+    for (const [childID, parentID] of [...parentOf]) {
+        if (parentOf.has(parentID)) parentOf.delete(childID);
+    }
+
+    const repaired = workspaces.map((workspace) => {
+        const childOrder = workspace.childOrder.filter((id, index) =>
+            parentOf.get(id) === workspace.id && workspace.childOrder.indexOf(id) === index
+        );
+        const same =
+            childOrder.length === workspace.childOrder.length &&
+            childOrder.every((id, index) => workspace.childOrder[index] === id);
+        return same ? workspace : { ...workspace, childOrder };
+    });
+    const order = topLevelOrder.filter((entry) => !(entry.kind === 'workspace' && parentOf.has(entry.id)));
+    const repairedGroups = groups.map((group) => {
+        const childOrder = group.childOrder.filter((id) => !parentOf.has(id));
+        return childOrder.length === group.childOrder.length ? group : { ...group, childOrder };
+    });
+
+    // Released children first, in their old parent's order, then any other unplaced workspace.
+    const released = workspaces
+        .flatMap((workspace) => workspace.childOrder)
+        .filter((id) => live.has(id) && !parentOf.has(id));
+    const placed = new Set<string>([
+        ...parentOf.keys(),
+        ...order.filter((entry) => entry.kind === 'workspace').map((entry) => entry.id),
+        ...repairedGroups.flatMap((group) => group.childOrder)
+    ]);
+    for (const id of [...released, ...workspaces.map((workspace) => workspace.id)]) {
+        if (placed.has(id)) continue;
+        placed.add(id);
+        order.push(workspaceSidebarID(id));
+    }
+    return { workspaces: repaired, groups: repairedGroups, topLevelOrder: order };
+}
+
 /**
  * Rebuild state from the DB. Transient fields take their defaults; persisted statuses and
  * session ids are restored VERBATIM — clearing them is `applyLoadReset`'s job, which runs after
@@ -290,6 +365,8 @@ export function fromSnapshot(
             createdAt: record.createdAt,
             lastAccessedAt: record.lastAccessedAt,
             labels: record.labels ?? [],
+            childOrder: record.childOrder ?? [],
+            childrenCollapsed: record.childrenCollapsed === true,
             isSyncInputActive: false,
             syncInputExcluded: []
         } satisfies WorkspaceState;
@@ -318,10 +395,11 @@ export function fromSnapshot(
 
     // Legacy synthesis: a DB predating groups has no top-level order (§2.1 / §6.2 step 3).
     const loadedOrder = snapshot.topLevelOrder ?? [];
-    const topLevelOrder =
+    const synthesizedOrder =
         loadedOrder.length > 0
             ? [...loadedOrder]
             : workspaces.map((workspace) => workspaceSidebarID(workspace.id));
+    const nesting = repairNesting(workspaces, groups, synthesizedOrder);
 
     const activeID = snapshot.activeWorkspaceID;
     const lastActiveWorkspaceID =
@@ -330,9 +408,9 @@ export function fromSnapshot(
             : (workspaces[0]?.id ?? null);
 
     return {
-        workspaces,
-        groups,
-        topLevelOrder,
+        workspaces: nesting.workspaces,
+        groups: nesting.groups,
+        topLevelOrder: nesting.topLevelOrder,
         lastActiveWorkspaceID,
         repos: snapshot.repos ?? [],
         labelPresets: snapshot.labelPresets ?? [],

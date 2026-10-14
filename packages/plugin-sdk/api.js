@@ -28,8 +28,11 @@ const camel = value => Array.isArray(value) ? value.map(camel) : value !== null 
 const target = value => typeof value === 'string' ? { target: value }
     : clean({ target: value?.paneID, workspace: value?.workspaceID });
 
-/** Create the platform-independent portion of the public API over a JSON transport. */
-export function createKelpiAPI(transport, getContext = () => ({})) {
+/**
+ * Create the platform-independent portion of the public API over a JSON transport. `on` is the
+ * platform's `events.on`; without it, `agents.onEvent` throws EVENTS_UNAVAILABLE.
+ */
+export function createKelpiAPI(transport, getContext = () => ({}), on = undefined) {
     const call = async (method, args = {}) => {
         try { return await transport(method, args); }
         catch (error) {
@@ -59,6 +62,43 @@ export function createKelpiAPI(transport, getContext = () => ({})) {
         return result[field];
     };
     const settings = async (name, fields) => (await execute(name, fields)).settings;
+    // Nested workspaces (app-state-core.md §2.9). An empty parent is refused before anything is
+    // sent: read as "no parent" it would create a top-level workspace or list every workspace.
+    const parentArgument = (parentID, method) => {
+        if (parentID === undefined) return undefined;
+        if (typeof parentID !== 'string' || parentID.trim() === '') {
+            throw new KelpiError(`${method} parentID must name a workspace`, { code: 'INVALID_ARGUMENT', method });
+        }
+        return parentID;
+    };
+    const listWorkspaces = async (options) => {
+        const parent = parentArgument(options.parentID, 'workspace-list');
+        const result = await run('workspace-list', clean({ group: options.groupID, parent }));
+        if (!Array.isArray(result.workspaces)) throw new KelpiError('Invalid workspaces reply to workspace-list', { code: 'INVALID_REPLY', method: 'workspace-list', details: result });
+        // A daemon that predates nesting ignores `parent` and lists EVERYTHING; the filtered
+        // reply echoes the parent it resolved, so a missing echo is never taken for a filter.
+        if (parent !== undefined && result.parentID === undefined) {
+            throw new KelpiError('workspace-list ignored parentID: the daemon predates nested workspaces', { code: 'UNSUPPORTED', method: 'workspace-list', details: result });
+        }
+        return result.workspaces;
+    };
+    const createWorkspace = async (options) => {
+        const parent = parentArgument(options.parentID, 'workspace-create');
+        const result = await run('workspace-create', clean({
+            name: options.name, path: options.path, color: options.color, group: options.groupID,
+            profile: options.profile, worktree: options.worktree, branch: options.branch,
+            update_main: options.updateMain, repo: options.repo, muted: options.muted, icon: options.icon,
+            parent,
+        }));
+        // The workspace exists either way; `details` carries it so the caller can move or remove it.
+        if (parent !== undefined && result.parentLost === true) {
+            throw new KelpiError(`${result.parentLostReason ?? 'the parent changed while the workspace was being created'}; it was created at the top level`, { code: 'PARENT_LOST', method: 'workspace-create', details: result });
+        }
+        if (parent !== undefined && result.parentID === undefined) {
+            throw new KelpiError('workspace-create ignored parentID: the daemon predates nested workspaces; it was created at the top level', { code: 'UNSUPPORTED', method: 'workspace-create', details: result });
+        }
+        return result;
+    };
     const unavailableContext = method => new KelpiError(`${method} requires a paneID or workspaceID outside a Kelpi view or scoped command`, { code: 'CONTEXT_UNAVAILABLE', method });
     const creationTarget = options => {
         if (options.paneID !== undefined || options.workspaceID !== undefined) return target(options);
@@ -247,18 +287,20 @@ export function createKelpiAPI(transport, getContext = () => ({})) {
             }),
         }),
         workspaces: Object.freeze({
-            list: (options = {}) => list('workspace-list', 'workspaces', { group: options.groupID }),
+            list: (options = {}) => listWorkspaces(options),
             // `update_main` is sent only when asked: absent lets a group whose worktree switch is on
             // make update main the default, as it does for the CLI (app-state-core.md §5.5).
-            create: (options = {}) => run('workspace-create', clean({
-                name: options.name, path: options.path, color: options.color, group: options.groupID,
-                profile: options.profile, worktree: options.worktree, branch: options.branch,
-                update_main: options.updateMain, repo: options.repo, muted: options.muted, icon: options.icon,
-            })),
+            create: (options = {}) => createWorkspace(options),
             rename: (workspaceID, name) => run('rename-workspace', { workspace_id: workspaceID, name }),
-            remove: (workspaceID, options = {}) => run('workspace-delete', { name: workspaceID, force: options.force ?? false }),
+            remove: (workspaceID, options = {}) => run('workspace-delete', { name: workspaceID, force: options.force ?? false, cascade: options.cascade ?? false }),
             move: (workspaceID, options = {}) => done('workspace-move', { name: workspaceID, group: options.groupID, index: options.index }),
             moveMany: (workspaceIDs, options = {}) => run('move-workspaces', { workspace_ids: workspaceIDs, group_id: options.groupID ?? null, index: options.index }),
+            // Nested workspaces (app-state-core.md §2.9): one level deep, refused with a reason otherwise.
+            nest: async (workspaceID, parentID, options = {}) => {
+                if (parentID === undefined) throw new KelpiError('workspace-nest parentID must name a workspace', { code: 'INVALID_ARGUMENT', method: 'workspace-nest' });
+                return run('workspace-nest', clean({ name: workspaceID, parent: parentArgument(parentID, 'workspace-nest'), index: options.index }));
+            },
+            setChildrenCollapsed: (workspaceID, collapsed) => run('set-workspace-children-collapsed', { workspace_id: workspaceID, collapsed }),
             setProfile: (workspaceID, profile) => done('workspace-profile', { name: workspaceID, profile: profile ?? '' }),
             setMuted: (workspaceID, muted) => run('workspace-mute', { name: workspaceID, muted }),
             labels: (workspaceID, operation, values = []) => run('workspace-label', { name: workspaceID, label_op: operation, label_values: values }),
@@ -293,6 +335,12 @@ export function createKelpiAPI(transport, getContext = () => ({})) {
             notify: (paneID, title, body, options = {}) => done('notification', { pane_id: paneID, title, body, background_tasks: options.backgroundTasks ?? 0 }),
             sessionStart: (paneID, sessionID, agent, options = {}) => done('session-start', { pane_id: paneID, session_id: sessionID, agent, profile: options.profile }),
             sessionEnd: (paneID, sessionID) => done('session-end', { pane_id: paneID, session_id: sessionID }),
+            // #387: one `agent.event` per agent hook. Kelpi's own carry no pluginID, and a
+            // plugin's `events.emit` always does, so a plugin whose ID is `agent` cannot pass for one.
+            onEvent: listener => {
+                if (on === undefined) throw new KelpiError('agents.onEvent needs an event source', { code: 'EVENTS_UNAVAILABLE', method: 'agents.onEvent' });
+                return on('agent.event', event => event.pluginID === undefined ? listener(event.data, event) : undefined);
+            },
         }),
         terminal: Object.freeze({
             watch: paneID => call('terminal.watch', { paneID }),

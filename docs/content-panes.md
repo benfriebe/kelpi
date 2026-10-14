@@ -374,11 +374,19 @@ off). Plain-text nodes are additionally scanned for URLs (`AUTOLINK_PATTERN` and
 - Output per match: `<a href="ESCAPED_URL">ESCAPED_SOURCE_TEXT</a>`, where the href is
   the matched text itself, never re-canonicalized (`new URL()` would append slashes the
   source never had); surrounding text is escaped normally.
-- Trailing sentence punctuation is not part of the link: `trimUrlTail` strips any run of
-  `.`, `,`, `;`, `:`, `!`, `?` off the end of a match, and strips a trailing `)`, `]` or
-  `}` only when it is unbalanced within the match (so `(see https://x.y/z)` links
-  `https://x.y/z` but `https://en.wikipedia.org/wiki/Foo_(bar)` keeps its paren). A
-  match that trims to nothing is skipped.
+- The link ends where `urlEnd` (`packages/daemon/src/content/url-end.ts`) says, the same
+  rule a terminal ⌘-click and hover use (terminal-surface.md §7.6):
+  - brackets (`()`, `[]`, `{}` and the full-width and CJK pairs) pair as the match goes, and
+    the first closer with no opener inside the link ends it, so `(see https://x.y/z)` links
+    `https://x.y/z`, `(https://a/x)(https://b/y)` is two links, and
+    `https://en.wikipedia.org/wiki/Foo_(bar)` keeps its paren;
+  - curly quotes, the em dash and the ellipsis end it;
+  - trailing `.`, `,`, `;`, `:` and the full-width `。、，；：！？` come off the end;
+  - a trailing `?` comes off only when it would open an empty query (`seen https://x/a?`),
+    so `?q=why?` and `#why?` keep theirs;
+  - a `!` stays: `https://en.wikipedia.org/wiki/Yahoo!` is its own page.
+
+  Text after the link's end is scanned again, so a second link glued on is found.
 - Autolinking is disabled inside explicit links and image alt text (a depth counter
   is incremented around their children) — text there is escape-only.
 

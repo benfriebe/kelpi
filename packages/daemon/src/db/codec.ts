@@ -88,6 +88,9 @@ export interface WorkspaceRow {
     readonly icon: string | null;
     readonly profileName: string | null;
     readonly muted: number;
+    /** app-state-core.md §2.9: nested workspace ids, a JSON array (NULL / absent = none). */
+    readonly childOrderJSON: string | null;
+    readonly childrenCollapsed: number;
 }
 
 export interface PaneRow {
@@ -350,7 +353,12 @@ export function encodeWorkspaceRow(workspace: PersistedWorkspace, sortOrder: num
         icon: iconColumn(workspace.icon),
         // §2.1: "default" / empty never reach the DB — null IS the default-profile baseline.
         profileName: normalizedAssignment(workspace.profileName),
-        muted: workspace.muted ? 1 : 0
+        muted: workspace.muted ? 1 : 0,
+        childOrderJSON:
+            workspace.childOrder === undefined || workspace.childOrder.length === 0
+                ? null
+                : encodeChildOrderJSON(workspace.childOrder),
+        childrenCollapsed: workspace.childrenCollapsed === true ? 1 : 0
     };
 }
 
@@ -560,7 +568,9 @@ export function decodeWorkspaceRow(row: SqlRow): DecodedWorkspaceScalars | null 
             focusedPaneID: parseUUID(textColumn(row, 'focusedPaneID')),
             createdAt: timestampColumn(row, 'createdAt'),
             lastAccessedAt: timestampColumn(row, 'lastAccessedAt'),
-            labels: decodeLabelsJSON(textColumn(row, 'labelsJSON'))
+            labels: decodeLabelsJSON(textColumn(row, 'labelsJSON')),
+            childOrder: decodeChildOrderJSON(textColumn(row, 'childOrderJSON')),
+            childrenCollapsed: boolColumn(row, 'childrenCollapsed') ?? false
         }
     };
 }

@@ -97,6 +97,8 @@ import {
     findPaneAnywhere,
     groupByID,
     groupIDForWorkspace,
+    nestingRefusal,
+    parentIDForWorkspace,
     workspaceByID,
     workspaceContainingVisiblePane
 } from '../store/derived.js';
@@ -391,6 +393,8 @@ function parseClientInfo(value: unknown): WsClientInfo {
  *   set-group-icon       `group_id`, `icon`              → set-group-icon
  *   set-group-color      `group_id`, `color?`            → set-group-color
  *   move-workspaces      `workspace_ids`, `group_id?`, `index?` → move-workspaces-to-group
+ *   nest-workspaces      `workspace_ids`, `parent_id`, `index?` → nest-workspaces (§2.9)
+ *   set-workspace-children-collapsed `workspace_id`, `collapsed` → the same action (§2.9)
  *   clear-pane-status    `pane_id`                       → pane-agent-event(clearPaneStatus)
  *   set-pane-status      `pane_id`, `status`             → pane-agent-event(setPaneStatus)
  *   add-label-preset     `name`, `color?`, `text_color?` → add-label-preset (+ text colour)
@@ -432,6 +436,8 @@ export const WS_ONLY_COMMANDS = [
     // existed; this is the verb the sidebar's "Color ▸" submenu needed.
     'set-group-color',
     'move-workspaces',
+    'nest-workspaces',
+    'set-workspace-children-collapsed',
     'create-group-for-workspaces',
     'set-bulk-color',
     'set-bulk-label',
@@ -705,6 +711,30 @@ export function handleWsOnlyCommand(
             ...(index === undefined ? {} : { index })
         });
         return { ok: true, workspace_ids: ids, group_id: groupID, index: index ?? null };
+    }
+
+    if (command === 'nest-workspaces') {
+        // §2.9: the sidebar's drag onto a workspace row and its "Nest Under" menu. Every reason
+        // the reducer would refuse is answered here with words, so the GUI can say why.
+        const raw = payload['workspace_ids'];
+        const ids = Array.isArray(raw) ? raw.filter((entry): entry is string => typeof entry === 'string') : [];
+        if (ids.length === 0) return failure('nest-workspaces requires workspace_ids');
+        const parentID = text(payload['parent_id']);
+        if (parentID === undefined) return failure('nest-workspaces requires parent_id');
+        const refusal = nestingRefusal(state, ids, parentID);
+        if (refusal !== null) return failure(refusal);
+        const index = count(payload['index']);
+        store.dispatch({ type: 'nest-workspaces', ids, parentID, ...(index === undefined ? {} : { index }) });
+        return { ok: true, workspace_ids: ids, parent_id: parentID, index: index ?? null };
+    }
+
+    if (command === 'set-workspace-children-collapsed') {
+        const workspaceID = text(payload['workspace_id']);
+        if (workspaceID === undefined) return failure('set-workspace-children-collapsed requires workspace_id');
+        if (workspaceByID(state, workspaceID) === null) return failure(`no workspace matches '${workspaceID}'`);
+        const collapsed = payload['collapsed'] === true;
+        store.dispatch({ type: 'set-workspace-children-collapsed', id: workspaceID, collapsed });
+        return { ok: true, workspace_id: workspaceID, collapsed };
     }
 
     if (command === 'create-group-for-workspaces') {
@@ -2084,7 +2114,8 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             if (version !== protocolVersion) {
                 this.reject(
                     'protocol-mismatch',
-                    `daemon speaks client protocol v${protocolVersion}, client speaks v${version ?? 'unknown'}`,
+                    `daemon speaks client protocol v${protocolVersion}, client speaks v${version ?? 'unknown'}; ` +
+                        'update Kelpi so the app and the daemon run the same version',
                     'protocol-mismatch'
                 );
                 return;
@@ -2427,7 +2458,10 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
              * changed: a collapsed parent is work, and the dispatch goes out.
              */
             const parentID = groupIDForWorkspace(state, workspaceID);
-            const parentCollapsed = parentID !== null && groupByID(state, parentID)?.isCollapsed === true;
+            const nestedUnder = parentIDForWorkspace(state, workspaceID);
+            const parentCollapsed =
+                (parentID !== null && groupByID(state, parentID)?.isCollapsed === true) ||
+                (nestedUnder !== null && workspaceByID(state, nestedUnder)?.childrenCollapsed === true);
             if (state.lastActiveWorkspaceID === workspaceID && !parentCollapsed) return;
             if (workspaceByID(state, workspaceID) === null) return;
             // The daemon keeps the last-active workspace so a fresh client restores where
@@ -2653,7 +2687,7 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             let answered = false;
             const batch: ControlDispatchItem[] = [];
             for (const item of dispatchSequence(decoded)) {
-                const wire = item.kind === 'message' ? item.message : dualFireMessage(item.event);
+                const wire = item.kind === 'message' ? item.message : dualFireMessage(item.event, decoded.message);
                 let handle: WsReplyHandle | null = null;
                 if (item.reply && !answered) {
                     answered = true;
@@ -2836,6 +2870,9 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                         name: workspaceID,
                         force: payload['force'] === true,
                         allow_last: payload['allow_last'] === true,
+                        // app-state-core.md §2.9: the delete dialog's "Delete nested workspaces
+                        // too". Absent promotes them into the parent's slot.
+                        ...(payload['cascade_children'] === true ? { cascade: true } : {}),
                         // The same worktree cleanup the wire verb takes (graft-git.md §8.7),
                         // present only when the window asked for it.
                         ...(worktreePaths !== undefined && worktreePaths.length > 0 ? { worktree_paths: worktreePaths } : {}),

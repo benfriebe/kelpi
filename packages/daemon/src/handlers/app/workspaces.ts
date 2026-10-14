@@ -6,7 +6,8 @@
  * run, failures are silently dropped — §1 legacy path).
  * `workspace-mute` is request/response too, so a toggle can report the state it produced, and
  * so is `workspace-rename`, so a rename that did not resolve is an error rather than silence,
- * and so is `workspace-icon`, for the same reason.
+ * and so is `workspace-icon`, for the same reason, and `workspace-nest` (app-state-core.md §2.9),
+ * because nesting is one level deep and a refusal has to reach the caller.
  *
  * Ordering rules that are contract:
  *   - list order = sidebar order INCLUDING collapsed group members, deduped, with any
@@ -46,7 +47,8 @@ import {
     type WorkspaceColor,
     type WorkspaceCreateMessage,
     type WorkspaceDeleteMessage,
-    type WorkspaceListEntry
+    type WorkspaceListEntry,
+    type WorkspaceNestMessage
 } from '@kelpi/protocol';
 
 import type { ReplyHandle } from '../../seams.js';
@@ -54,9 +56,13 @@ import {
     workspaceAgentSummary,
     groupByID,
     groupIDForWorkspace,
+    nestingRefusal,
     nextRandomColor,
+    parentIDForWorkspace,
     resolveStateOf,
+    withNestedChildren,
     workspaceByID,
+    workspaceContainingPane,
     type DaemonState,
     type Repo,
     type RepoAssociation,
@@ -88,15 +94,34 @@ const DEFAULT_WORKSPACE_NAME = 'Workspace';
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-function groupRef(state: DaemonState, workspaceID: string): { id: string; name: string } | undefined {
-    const groupID = groupIDForWorkspace(state, workspaceID);
-    if (groupID === null) return undefined;
-    const group = state.groups.find((candidate) => candidate.id === groupID);
-    if (group === undefined) return undefined;
-    return { id: uuidOut(group.id), name: group.name };
+/**
+ * One pass over the sidebar's placement, built once per `workspace-list`, so each entry's group
+ * and parent are map lookups rather than scans of every workspace and group (§6.1, §2.9).
+ */
+interface ListIndex {
+    readonly byID: ReadonlyMap<string, WorkspaceState>;
+    readonly parentOf: ReadonlyMap<string, WorkspaceState>;
+    readonly groupOf: ReadonlyMap<string, { readonly id: string; readonly name: string }>;
 }
 
-function workspaceEntry(state: DaemonState, workspace: WorkspaceState): WorkspaceListEntry {
+function listIndex(state: DaemonState): ListIndex {
+    const byID = new Map(state.workspaces.map((workspace) => [workspace.id, workspace]));
+    const parentOf = new Map<string, WorkspaceState>();
+    for (const workspace of state.workspaces) {
+        for (const childID of workspace.childOrder) {
+            if (!parentOf.has(childID)) parentOf.set(childID, workspace);
+        }
+    }
+    const groupOf = new Map<string, { readonly id: string; readonly name: string }>();
+    for (const group of state.groups) {
+        for (const memberID of group.childOrder) {
+            if (!groupOf.has(memberID)) groupOf.set(memberID, { id: uuidOut(group.id), name: group.name });
+        }
+    }
+    return { byID, parentOf, groupOf };
+}
+
+function workspaceEntry(state: DaemonState, workspace: WorkspaceState, index: ListIndex): WorkspaceListEntry {
     let lastActivity: number | undefined;
     for (const pane of workspace.panes) {
         if (lastActivity === undefined || pane.lastActivityAt > lastActivity) {
@@ -104,7 +129,9 @@ function workspaceEntry(state: DaemonState, workspace: WorkspaceState): Workspac
         }
     }
     const session = workspace.panes.find((pane) => pane.agentSessionID !== null)?.agentSessionID;
-    const group = groupRef(state, workspace.id);
+    const parent = index.parentOf.get(workspace.id) ?? null;
+    // A nested workspace belongs to its parent's group (§2.9), as `groupIDForWorkspace` says.
+    const group = index.groupOf.get(parent?.id ?? workspace.id);
     // §6.1: the repo associations, so a script (or a scenario) can see which checkout a
     // workspace works in without the GUI's inspector. Elided by the builder when empty.
     const repos = workspace.repoAssociations.map((association) => {
@@ -130,6 +157,7 @@ function workspaceEntry(state: DaemonState, workspace: WorkspaceState): Workspac
         ...(lastActivity !== undefined ? { last_activity_at: wireTimestamp(lastActivity) } : {}),
         ...(session !== undefined && session !== null ? { agent_session_id: session } : {}),
         ...(group !== undefined ? { group } : {}),
+        ...(parent !== null ? { parent: { id: uuidOut(parent.id), name: parent.name } } : {}),
         repos
     });
 }
@@ -161,8 +189,12 @@ function spawnFirstPane(ctx: AppContext, deps: AppDeps, workspaceID: string): vo
 // workspace-list (§6.1)
 // ---------------------------------------------------------------------------
 
+/** §2.9: what an explicit but empty `parent` is refused with, on every verb that takes one. */
+const EMPTY_PARENT_ERROR = 'parent must name a workspace (got an empty value)';
+
 function handleWorkspaceList(
     filter: string | undefined,
+    parentFilter: string | undefined,
     ctx: AppContext,
     reply: ReplyHandle | null
 ): void {
@@ -170,6 +202,26 @@ function handleWorkspaceList(
     const state = ctx.store.getState();
 
     let allowed: Set<string> | null = null;
+    let parentEchoFields: { parent_id: string; parent_name: string } | null = null;
+    if (parentFilter !== undefined) {
+        // app-state-core.md §2.9: the workspaces nested under one, in sidebar order. An empty
+        // parent is refused rather than read as "no filter": that would list EVERY workspace.
+        const token = parentFilter.trim();
+        if (token === '') {
+            fail(reply, EMPTY_PARENT_ERROR);
+            return;
+        }
+        const scope = resolveStateOf(state);
+        const resolved = resolveWorkspaceStrict(scope, token);
+        const parent = resolved === null ? null : workspaceByID(state, resolved.id);
+        if (parent === null) {
+            fail(reply, unresolvedWorkspaceError(scope, token));
+            return;
+        }
+        allowed = new Set(parent.childOrder);
+        // Echoed so a caller can tell a filtered reply from an older daemon's unfiltered one.
+        parentEchoFields = { parent_id: uuidOut(parent.id), parent_name: parent.name };
+    }
     if (filter !== undefined && filter !== '') {
         const group = resolveGroupStrict(resolveStateOf(state), filter);
         if (group === null) {
@@ -179,17 +231,20 @@ function handleWorkspaceList(
             return;
         }
         const resolved = state.groups.find((candidate) => candidate.id === group.id);
-        allowed = new Set(resolved?.childOrder ?? []);
+        // A nested member belongs to its parent's group (§2.9), so it is listed with it.
+        const members = new Set(withNestedChildren(state, resolved?.childOrder ?? []));
+        allowed = allowed === null ? members : new Set([...allowed].filter((id) => members.has(id)));
     }
 
+    const index = listIndex(state);
     const workspaces: WorkspaceListEntry[] = [];
     for (const workspaceID of listedWorkspaceIDs(state)) {
         if (allowed !== null && !allowed.has(workspaceID)) continue;
-        const workspace = workspaceByID(state, workspaceID);
-        if (workspace === null) continue;
-        workspaces.push(workspaceEntry(state, workspace));
+        const workspace = index.byID.get(workspaceID);
+        if (workspace === undefined) continue;
+        workspaces.push(workspaceEntry(state, workspace, index));
     }
-    ok(reply, { workspaces });
+    ok(reply, { workspaces, ...(parentEchoFields ?? {}) });
 }
 
 // ---------------------------------------------------------------------------
@@ -211,6 +266,8 @@ interface CreateInput {
     /** Set on the create itself, so the workspace has its icon from its first frame. */
     readonly icon: IconRef | null;
     readonly groupID: string | undefined;
+    /** app-state-core.md §2.9: nest under this workspace (wins over `groupID`). */
+    readonly parentID: string | undefined;
     readonly workspaceID: string;
     readonly repoAssociations: readonly RepoAssociation[] | undefined;
 }
@@ -228,6 +285,7 @@ function dispatchCreate(ctx: AppContext, deps: AppDeps, input: CreateInput): voi
         placement: deps.placement,
         ...(input.workingDirectory !== undefined ? { workingDirectory: input.workingDirectory } : {}),
         ...(input.groupID !== undefined ? { groupID: input.groupID } : {}),
+        ...(input.parentID !== undefined ? { parentID: input.parentID } : {}),
         ...(input.profile !== undefined ? { profileName: input.profile } : {}),
         ...(input.muted ? { muted: true } : {}),
         ...(input.icon !== null ? { icon: input.icon } : {}),
@@ -270,10 +328,78 @@ function unknownWorktreeGroupError(name: string): string {
     return `unknown group: ${name} — --worktree only supports existing groups; create it first (\`kelpi group create\`) or omit --group`;
 }
 
+/**
+ * app-state-core.md §2.9: the parent a `workspace-create` nests under, from `parent`
+ * (name-or-id) or `parent_pane_id` (`--nested`: the workspace holding the caller's pane).
+ * `parentID` undefined = not nested.
+ */
+function resolveCreateParent(
+    msg: WorkspaceCreateMessage,
+    state: DaemonState
+): { readonly parentID: string | undefined } | { readonly error: string } {
+    // §2.9: a parent that was GIVEN but is empty is an error (an unset shell variable), never
+    // "no parent": that would quietly make a top-level workspace.
+    if (msg.parent !== undefined && msg.parent.trim() === '') return { error: EMPTY_PARENT_ERROR };
+    if (msg.parent_pane_id !== undefined && msg.parent_pane_id.trim() === '') {
+        return { error: 'parent_pane_id must name a pane (got an empty value)' };
+    }
+    const parentToken = msg.parent?.trim() ?? '';
+    const paneToken = msg.parent_pane_id?.trim() ?? '';
+    if (parentToken === '' && paneToken === '') return { parentID: undefined };
+    if (parentToken !== '' && paneToken !== '') {
+        return { error: 'give either parent or parent_pane_id, not both' };
+    }
+    if ((msg.group?.trim() ?? '') !== '') {
+        return { error: "a nested workspace follows its parent's group: pass a parent or a group, not both" };
+    }
+    let parent: WorkspaceState | null;
+    if (parentToken !== '') {
+        const scope = resolveStateOf(state);
+        const resolved = resolveWorkspaceStrict(scope, parentToken);
+        if (resolved === null) return { error: `parent ${unresolvedWorkspaceError(scope, parentToken)}` };
+        parent = workspaceByID(state, resolved.id);
+    } else {
+        parent = workspaceContainingPane(state, paneToken.toUpperCase());
+        if (parent === null) return { error: `no pane matches '${paneToken}', so there is no workspace to nest under` };
+    }
+    if (parent === null) return { error: `parent workspace not found: ${parentToken}` };
+    const refusal = nestingRefusal(state, [], parent.id);
+    return refusal === null ? { parentID: parent.id } : { error: refusal };
+}
+
+/** A create reply's `parent_id` / `parent_name`: what the store holds, so nesting is confirmed. */
+function parentEcho(state: DaemonState, workspaceID: string): { parent_id?: string; parent_name?: string } {
+    const parentID = parentIDForWorkspace(state, workspaceID);
+    const parent = parentID === null ? null : workspaceByID(state, parentID);
+    return parent === null ? {} : { parent_id: uuidOut(parent.id), parent_name: parent.name };
+}
+
+/**
+ * §2.9: why the parent an async create resolved up front can no longer take it, or null when it
+ * still can. Git work runs between the two looks, and the parent can be deleted (a cascade from
+ * the orchestrator's own teardown) or nested under another workspace meanwhile.
+ */
+function lostParent(state: DaemonState, parentID: string | undefined, parentName: string): string | null {
+    if (parentID === undefined) return null;
+    if (workspaceByID(state, parentID) === null) {
+        return `parent '${parentName}' was deleted while the workspace was being created`;
+    }
+    const refusal = nestingRefusal(state, [], parentID);
+    return refusal === null ? null : `parent '${parentName}' changed while the workspace was being created: ${refusal}`;
+}
+
+/** §2.9: the group a nested create takes its defaults from, the parent's. */
+function parentGroup(state: DaemonState, parentID: string | undefined): WorkspaceGroup | null {
+    if (parentID === undefined) return null;
+    const groupID = groupIDForWorkspace(state, parentID);
+    return groupID === null ? null : groupByID(state, groupID);
+}
+
 function handleWorktreeCreate(
     msg: WorkspaceCreateMessage,
     worktreeName: string,
     icon: IconRef | null,
+    parentID: string | undefined,
     ctx: AppContext,
     reply: ReplyHandle | null,
     deps: AppDeps
@@ -302,6 +428,8 @@ function handleWorktreeCreate(
         groupName = group.name;
         if (msg.group_defaults) groupDefault = groupByID(state, group.id);
     }
+    // §2.9: a nested worktree takes its defaults from the parent's group.
+    if (parentID !== undefined && msg.group_defaults) groupDefault = parentGroup(state, parentID);
 
     // 2. Source repo: an explicit `repo` wins, then the group's default repository
     // (app-state-core.md §5.5), then `path` (which the CLI fills with its cwd when it leaves
@@ -347,6 +475,7 @@ function handleWorktreeCreate(
     // 6. Pre-minted workspace id, then the async git work.
     const workspaceID = deps.uuid();
     const seed: WorktreeSeed = { path: worktreePath, branchName: safeBranch };
+    const parentName = parentID === undefined ? '' : (workspaceByID(state, parentID)?.name ?? '');
 
     /*
      * #294 (graft-git.md §8.5.1): the steps are streamed to the connection that asked, when it
@@ -392,6 +521,13 @@ function handleWorktreeCreate(
              * that raced git's exit is still honoured there.)
              */
             steps?.running('create-workspace');
+            /*
+             * §2.9: the parent was resolved before git ran and may be gone (or nested) now. The
+             * worktree exists, so the create completes, at the top level, as §8.5.2 completes a
+             * create a late cancel reaches; the reply says so (`parent_lost`) rather than leaving
+             * the caller to mistake a missing `parent_id` for a daemon that predates nesting.
+             */
+            const parentLost = lostParent(ctx.store.getState(), parentID, parentName);
             if (existingRepo !== undefined) {
                 /*
                  * §GIT-103, the half the insert-skip used to swallow.
@@ -434,6 +570,7 @@ function handleWorktreeCreate(
                 muted: msg.muted === true,
                 icon,
                 groupID,
+                parentID: parentLost === null ? parentID : undefined,
                 workspaceID,
                 repoAssociations: [
                     {
@@ -459,7 +596,9 @@ function handleWorktreeCreate(
                 // Echoed so `--muted` is confirmed: a daemon that predates it drops the field.
                 muted: created?.muted ?? false,
                 ...iconEcho(created?.icon ?? null),
-                ...(groupName !== undefined ? { group: groupName } : {})
+                ...(groupName !== undefined ? { group: groupName } : {}),
+                ...parentEcho(ctx.store.getState(), workspaceID),
+                ...(parentLost !== null ? { parent_lost: true, parent_lost_reason: parentLost } : {})
             });
         })
         .catch((error: unknown) => {
@@ -489,6 +628,7 @@ function handleCreateWithRepo(
     msg: WorkspaceCreateMessage,
     source: { readonly path: string } | { readonly repo: Repo },
     icon: IconRef | null,
+    parentID: string | undefined,
     ctx: AppContext,
     reply: ReplyHandle | null,
     deps: AppDeps
@@ -496,6 +636,7 @@ function handleCreateWithRepo(
     const workspaceName = msg.name ?? DEFAULT_WORKSPACE_NAME;
     const trimmedGroup = msg.group?.trim() ?? '';
     const workspaceID = deps.uuid();
+    const parentName = parentID === undefined ? '' : (workspaceByID(ctx.store.getState(), parentID)?.name ?? '');
     const resolving: Promise<RepoResolution> =
         'repo' in source ? Promise.resolve(registeredRepo(ctx, source.repo)) : resolveRepo(ctx, deps, source.path);
     void resolving
@@ -505,6 +646,14 @@ function handleCreateWithRepo(
                 return;
             }
             const association = await associationFor(deps, resolution);
+            // §2.9: so can the parent. Nothing has been created yet, so the create fails whole
+            // (the registry may have gained the repo, which is kept and saved).
+            const parentLost = lostParent(ctx.store.getState(), parentID, parentName);
+            if (parentLost !== null) {
+                deps.persist();
+                fail(reply, parentLost);
+                return;
+            }
             // Re-resolved after the git work: the group the request named can have been
             // created, renamed or deleted while it ran.
             let groupID: string | undefined;
@@ -530,6 +679,7 @@ function handleCreateWithRepo(
                 muted: msg.muted === true,
                 icon,
                 groupID,
+                parentID,
                 workspaceID,
                 repoAssociations: [association]
             });
@@ -541,7 +691,8 @@ function handleCreateWithRepo(
                 // What the store holds, never the request, so `--icon` is confirmed only when applied.
                 ...iconEcho(created?.icon ?? null),
                 repo_path: resolution.repo.path,
-                ...(trimmedGroup !== '' ? { group: trimmedGroup } : {})
+                ...(trimmedGroup !== '' ? { group: trimmedGroup } : {}),
+                ...parentEcho(ctx.store.getState(), workspaceID)
             });
         })
         .catch((error: unknown) => {
@@ -564,9 +715,17 @@ function handleWorkspaceCreate(
     }
     const icon = requested.icon;
 
+    // §2.9: the parent is resolved up front too, so a bad one leaves nothing behind.
+    const nesting = resolveCreateParent(msg, ctx.store.getState());
+    if ('error' in nesting) {
+        fail(reply, nesting.error);
+        return;
+    }
+    const parentID = nesting.parentID;
+
     const worktreeName = msg.worktree;
     if (worktreeName !== undefined && worktreeName !== '') {
-        handleWorktreeCreate(msg, worktreeName, icon, ctx, reply, deps);
+        handleWorktreeCreate(msg, worktreeName, icon, parentID, ctx, reply, deps);
         return;
     }
 
@@ -579,7 +738,9 @@ function handleWorkspaceCreate(
     // create that replies AFTER the effect, like the worktree branch.
     const scope = resolveStateOf(state);
     const existing = trimmedGroup === '' ? null : resolveGroupStrict(scope, trimmedGroup);
-    const existingGroup = existing === null ? null : groupByID(state, existing.id);
+    // §2.9: a nested create takes its defaults from the parent's group.
+    const existingGroup =
+        parentID !== undefined ? parentGroup(state, parentID) : existing === null ? null : groupByID(state, existing.id);
     const defaultRepo =
         msg.group_defaults && existingGroup !== null ? groupRepo(state, existingGroup) : null;
     const source = msg.repo !== undefined ? { path: msg.repo } : defaultRepo !== null ? { repo: defaultRepo } : null;
@@ -588,19 +749,22 @@ function handleWorkspaceCreate(
             fail(reply, ambiguousGroupError(trimmedGroup));
             return;
         }
-        handleCreateWithRepo(msg, source, icon, ctx, reply, deps);
+        handleCreateWithRepo(msg, source, icon, parentID, ctx, reply, deps);
         return;
     }
 
     const workspaceID = deps.uuid();
 
     // (b) Top-level branch: reply first, then create.
+    // A nested create is this branch too: the child follows its parent, so no group is made.
     if (trimmedGroup === '') {
+        const parent = parentID === undefined ? null : workspaceByID(state, parentID);
         ok(reply, {
             workspace_id: uuidOut(workspaceID),
             workspace_name: workspaceName,
             muted: msg.muted === true,
-            ...iconEcho(icon)
+            ...iconEcho(icon),
+            ...(parent !== null ? { parent_id: uuidOut(parent.id), parent_name: parent.name } : {})
         });
         dispatchCreate(ctx, deps, {
             name: workspaceName,
@@ -610,6 +774,7 @@ function handleWorkspaceCreate(
             muted: msg.muted === true,
             icon,
             groupID: undefined,
+            parentID,
             workspaceID,
             repoAssociations: undefined
         });
@@ -648,6 +813,7 @@ function handleWorkspaceCreate(
         muted: msg.muted === true,
         icon,
         groupID,
+        parentID: undefined,
         workspaceID,
         repoAssociations: undefined
     });
@@ -926,29 +1092,54 @@ function handleWorkspaceDelete(
      * flag is set by exactly that path in the client (`act.closeFocused`) and by nothing else:
      * the CLI does not send it, so `kelpi workspace delete` still refuses here.
      */
-    if (state.workspaces.length <= 1 && !allowLast) {
+    // app-state-core.md §2.9: `cascade` takes the nested workspaces too; without it they are
+    // promoted into this one's slot by the reducer, and nothing here concerns them.
+    const children = msg.cascade === true
+        ? workspace.childOrder
+              .map((childID) => workspaceByID(state, childID))
+              .filter((child): child is WorkspaceState => child !== null)
+        : [];
+    const doomed = [workspace, ...children];
+
+    if (state.workspaces.length <= doomed.length && !allowLast) {
         fail(reply, 'refusing to delete the last workspace');
         return;
     }
 
-    const agents = workspaceAgentSummary(workspace);
+    const agents = doomed
+        .map((candidate) => workspaceAgentSummary(candidate))
+        .reduce((sum, next) => ({
+            running: sum.running + next.running,
+            waiting: sum.waiting + next.waiting,
+            inactive: sum.inactive + next.inactive,
+            total: sum.total + next.total
+        }));
     if (!force && agents.total > 0) {
+        const nested = children.length === 0 ? '' : ` and its ${children.length === 1 ? 'nested workspace' : 'nested workspaces'}`;
         fail(
             reply,
-            `workspace ${workspace.name} has ${describeAgentSummary(agents)}; pass --force to delete anyway`,
+            `workspace ${workspace.name}${nested} ${children.length === 0 ? 'has' : 'have'} ${describeAgentSummary(agents)}; pass --force to delete anyway`,
             { active_agents: agents.total, running: agents.running, waiting: agents.waiting, inactive: agents.inactive }
         );
         return;
     }
 
-    const panes = [...workspace.panes, ...workspace.parkedPanes];
+    const panes = doomed.flatMap((candidate) => [...candidate.panes, ...candidate.parkedPanes]);
     try { ctx.prepareDocumentClose?.(panes.map(pane => pane.id)); }
     catch (error) { fail(reply, error instanceof Error ? error.message : String(error)); return; }
     const path = workspacePath(workspace);
     const head: JsonObject = {
         workspace_id: uuidOut(workspace.id),
         workspace_name: workspace.name,
-        ...(path !== undefined ? { path } : {})
+        ...(path !== undefined ? { path } : {}),
+        // The names ride beside the ids so a multi-target `kelpi workspace delete` can tell a
+        // later target this cascade already took from one that never existed.
+        ...(children.length > 0
+            ? {
+                  deleted_children: children.map((child) => uuidOut(child.id)),
+                  deleted_child_names: children.map((child) => child.name)
+              }
+            : {})
     };
     const cleanup = worktreeCleanupOf(msg);
     if (cleanup === null) ok(reply, head);
@@ -959,16 +1150,79 @@ function handleWorkspaceDelete(
     for (const pane of panes) {
         deps.killPane(pane.id, ctx);
     }
-    ctx.store.dispatch({ type: 'delete-workspace', id: workspace.id });
-    refreshSyncGroup(ctx, workspace.id);
+    // One dispatch, so a cascade never promotes a child for an instant before deleting it.
+    if (children.length === 0) ctx.store.dispatch({ type: 'delete-workspace', id: workspace.id });
+    else ctx.store.dispatch({ type: 'delete-workspaces', ids: doomed.map((candidate) => candidate.id) });
+    for (const candidate of doomed) refreshSyncGroup(ctx, candidate.id);
     deps.persist();
-    const self = { id: workspace.id, rows: workspace.repoAssociations, path, exited };
+    // Each deleted workspace is an owner of its own worktrees (graft-git.md §8.7).
+    const owners = doomed.map((candidate) => ({
+        id: candidate.id,
+        rows: candidate.repoAssociations,
+        path: workspacePath(candidate),
+        exited
+    }));
     if (cleanup === null) {
-        deleted.remember(self);
+        for (const owner of owners) deleted.remember(owner);
         return;
     }
-    const batch = deleted.take(cleanup.batch.filter((id) => uuidOut(id) !== uuidOut(workspace.id)));
-    void removeDeletedWorkspaceWorktrees([self, ...batch], cleanup, head, ctx, reply, deps);
+    const doomedIDs = new Set(doomed.map((candidate) => uuidOut(candidate.id)));
+    const batch = deleted.take(cleanup.batch.filter((id) => !doomedIDs.has(uuidOut(id))));
+    void removeDeletedWorkspaceWorktrees([...owners, ...batch], cleanup, head, ctx, reply, deps);
+}
+
+// ---------------------------------------------------------------------------
+// workspace-nest (app-state-core.md §2.9)
+// ---------------------------------------------------------------------------
+
+/**
+ * Nest a workspace under another, or reorder it among that parent's children. Request/response
+ * (unlike `workspace-move`) because nesting is one level deep and can be refused, and the
+ * caller needs the reason. Un-nesting is `workspace-move --group` / `--top-level`.
+ */
+function handleWorkspaceNest(
+    msg: WorkspaceNestMessage,
+    ctx: AppContext,
+    reply: ReplyHandle | null,
+    deps: AppDeps
+): void {
+    const state = ctx.store.getState();
+    const scope = resolveStateOf(state);
+    const workspace = resolveWorkspaceStrict(scope, msg.name);
+    if (workspace === null) {
+        fail(reply, unresolvedWorkspaceError(scope, msg.name));
+        return;
+    }
+    if (msg.parent.trim() === '') {
+        fail(reply, EMPTY_PARENT_ERROR);
+        return;
+    }
+    const parent = resolveWorkspaceStrict(scope, msg.parent.trim());
+    if (parent === null) {
+        fail(reply, `parent ${unresolvedWorkspaceError(scope, msg.parent.trim())}`);
+        return;
+    }
+    const refusal = nestingRefusal(state, [workspace.id], parent.id);
+    if (refusal !== null) {
+        fail(reply, refusal);
+        return;
+    }
+    ctx.store.dispatch({
+        type: 'nest-workspaces',
+        ids: [workspace.id],
+        parentID: parent.id,
+        ...(msg.index !== undefined ? { index: msg.index } : {})
+    });
+    deps.persist();
+    const after = ctx.store.getState();
+    const parentAfter = workspaceByID(after, parent.id);
+    ok(reply, {
+        workspace_id: uuidOut(workspace.id),
+        workspace_name: workspace.name,
+        parent_id: uuidOut(parent.id),
+        parent_name: parentAfter?.name ?? parent.name,
+        index: parentAfter?.childOrder.indexOf(workspace.id) ?? -1
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -1199,7 +1453,7 @@ export function workspaceHandlerEntries(deps: AppDeps): readonly (readonly [stri
     const deleted = createDeletedWorkspaceMemory(deps.now);
     return [
         forCommand('workspace-list', (msg, ctx, reply) => {
-            handleWorkspaceList(msg.group, ctx, reply);
+            handleWorkspaceList(msg.group, msg.parent, ctx, reply);
         }),
         forCommand('workspace-create', (msg, ctx, reply) => {
             handleWorkspaceCreate(msg, ctx, reply, deps);
@@ -1209,6 +1463,9 @@ export function workspaceHandlerEntries(deps: AppDeps): readonly (readonly [stri
         }),
         forCommand('workspace-move', (msg, ctx) => {
             handleWorkspaceMove(msg.name, msg.group, msg.index, ctx, deps);
+        }),
+        forCommand('workspace-nest', (msg, ctx, reply) => {
+            handleWorkspaceNest(msg, ctx, reply, deps);
         }),
         forCommand('workspace-profile', (msg, ctx) => {
             handleWorkspaceProfile(msg.name, msg.profile, ctx, deps);

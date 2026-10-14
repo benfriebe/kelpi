@@ -64,6 +64,10 @@ export class SelectionManager {
   // vendor 0.4.0-kelpi.19: that press already selected its word, so the `dblclick` the browser
   // raises on its release must not select the word under the RELEASE point instead.
   private pressSelectedWord: boolean = false;
+  // vendor 0.4.0-kelpi.22: the cell a single-click press landed on, and how far across it (px).
+  // The press itself selects nothing; a drag selects from it once it crosses a cell's threshold
+  // (see `dragSelection`).
+  private pressPoint: { col: number; absoluteRow: number; x: number } | null = null;
 
   // Track rows that need redraw for clearing old selection
   // Using a Set prevents the overwrite bug where mousemove would clobber
@@ -251,18 +255,23 @@ export class SelectionManager {
    * Check if there's an active selection
    */
   hasSelection(): boolean {
-    if (!this.selectionStart || !this.selectionEnd) return false;
-
-    // Check if start and end are the same (single cell, no real selection)
-    return !(
-      this.selectionStart.col === this.selectionEnd.col &&
-      this.selectionStart.absoluteRow === this.selectionEnd.absoluteRow
-    );
+    // vendor 0.4.0-kelpi.22: a single cell is a selection. Upstream counted it as none because
+    // every press made one, which is why it was never highlighted yet still copied; a press now
+    // selects nothing, so a single cell is only ever one the user dragged across.
+    return this.selectionStart !== null && this.selectionEnd !== null;
   }
 
   /** Pin both endpoints before output can prune or move their buffer rows (#170). */
   trackSelectionForWrite(): boolean {
-    if (!this.selectionStart || !this.selectionEnd) return false;
+    if (!this.selectionStart || !this.selectionEnd) {
+      // vendor 0.4.0-kelpi.22: a press not yet dragged far enough to select still has to follow
+      // its text, or the drag would start from whatever row output moved under it.
+      const press = this.isSelecting ? this.pressPoint : null;
+      if (!press) return false;
+      const tracked = this.wasmTerm.trackSelection(press.col, press.absoluteRow, press.col, press.absoluteRow);
+      if (!tracked) this.abandonPress();
+      return tracked;
+    }
     this.markCurrentSelectionDirty();
     const tracked = this.wasmTerm.trackSelection(
       this.selectionStart.col, this.selectionStart.absoluteRow,
@@ -275,6 +284,16 @@ export class SelectionManager {
   /** Reconcile the copy reader and highlight with the same surviving native endpoints. */
   restoreSelectionAfterWrite(): void {
     const coords = this.wasmTerm.readTrackedSelection();
+    if (!this.selectionStart && this.pressPoint) {
+      // vendor 0.4.0-kelpi.22: only the press was pinned (see `trackSelectionForWrite`).
+      if (coords) {
+        this.pressPoint.col = coords.startCol;
+        this.pressPoint.absoluteRow = coords.startRow;
+      } else {
+        this.abandonPress();
+      }
+      return;
+    }
     if (!coords) {
       // Never silently re-point a selection whose text was discarded at the history cap.
       this.clearSelection();
@@ -293,8 +312,18 @@ export class SelectionManager {
       this.unitAnchor.startRow += anchorShift;
       this.unitAnchor.endRow += anchorShift;
     }
+    // vendor 0.4.0-kelpi.22: a cell drag's start is its press or the cell beside it, so the press
+    // moves as far as the start did.
+    if (this.pressPoint) this.pressPoint.absoluteRow += anchorShift;
     this.markCurrentSelectionDirty();
     if (changed) this.selectionChangedEmitter.fire();
+  }
+
+  /** vendor 0.4.0-kelpi.22: end a press that never selected, e.g. when output discarded its row. */
+  private abandonPress(): void {
+    this.pressPoint = null;
+    this.isSelecting = false;
+    this.stopAutoScroll();
   }
 
   /**
@@ -315,6 +344,7 @@ export class SelectionManager {
     this.selectionEnd = null;
     this.isSelecting = false;
     this.unitAnchor = null;
+    this.pressPoint = null;
     this.stopAutoScroll();
 
     // Force redraw of previously selected lines to clear the overlay
@@ -539,15 +569,19 @@ export class SelectionManager {
         if (unit) {
           const range = this.getUnitAt(unit, cell.col, absoluteRow);
           this.unitAnchor = { unit, ...range };
+          this.pressPoint = null;
           // Chromium raises `dblclick` after the second click only, never the third or later.
           this.pressSelectedWord = unit === 'word';
           this.selectionStart = { col: range.startCol, absoluteRow: range.startRow };
           this.selectionEnd = { col: range.endCol, absoluteRow: range.endRow };
         } else {
+          // vendor 0.4.0-kelpi.22: a single press selects nothing. Upstream selected the pressed
+          // cell, so a click (to focus a pane, say) left one character selected, which nothing
+          // drew (`hasSelection` called it none) but the release copied to the clipboard and ⌘C
+          // read. The drag that follows decides what is selected, as in Ghostty.
           this.unitAnchor = null;
           this.pressSelectedWord = false;
-          this.selectionStart = { col: cell.col, absoluteRow };
-          this.selectionEnd = { col: cell.col, absoluteRow };
+          this.pressPoint = { col: cell.col, absoluteRow, x: this.pixelToCellX(e.offsetX) };
         }
         this.isSelecting = true;
       }
@@ -561,7 +595,7 @@ export class SelectionManager {
 
         const cell = this.pixelToCell(e.offsetX, e.offsetY);
         const absoluteRow = this.viewportRowToAbsolute(cell.row);
-        this.extendSelectionTo(cell.col, absoluteRow);
+        this.extendSelectionTo(cell.col, absoluteRow, this.pixelToCellX(e.offsetX));
         this.requestRender();
 
         // vendor 0.4.0-kelpi.19: the pointer is over the terminal, so the drag does not scroll.
@@ -631,7 +665,7 @@ export class SelectionManager {
 
             const cell = this.pixelToCell(offsetX, offsetY);
             const absoluteRow = this.viewportRowToAbsolute(cell.row);
-            this.extendSelectionTo(cell.col, absoluteRow);
+            this.extendSelectionTo(cell.col, absoluteRow, this.pixelToCellX(offsetX));
             this.requestRender();
           }
         }
@@ -656,6 +690,7 @@ export class SelectionManager {
       if (!canvas.contains(e.target as Node)) this.pressSelectedWord = false;
       if (this.isSelecting) {
         this.isSelecting = false;
+        this.pressPoint = null;
         this.stopAutoScroll();
 
         const text = this.getSelection();
@@ -829,21 +864,23 @@ export class SelectionManager {
 
       // Extend selection in the scroll direction
       // Key insight: we need to EXTEND the selection, not reset it to viewport edge
-      if (this.selectionEnd) {
+      // vendor 0.4.0-kelpi.22: or from the press, when the drag has not selected anything yet.
+      const movingEnd = this.selectionEnd ?? this.pressPoint;
+      if (movingEnd) {
         const dims = this.wasmTerm.getDimensions();
         if (this.autoScrollDirection < 0) {
           // Scrolling up - extend selection upward (decrease absoluteRow)
           // Set to top of viewport, but only if it extends the selection
           const topAbsoluteRow = this.viewportRowToAbsolute(0);
-          if (topAbsoluteRow < this.selectionEnd.absoluteRow) {
-            this.extendSelectionTo(0, topAbsoluteRow);
+          if (topAbsoluteRow < movingEnd.absoluteRow) {
+            this.extendSelectionTo(0, topAbsoluteRow, 0);
           }
         } else {
           // Scrolling down - extend selection downward (increase absoluteRow)
           // Set to bottom of viewport, but only if it extends the selection
           const bottomAbsoluteRow = this.viewportRowToAbsolute(dims.rows - 1);
-          if (bottomAbsoluteRow > this.selectionEnd.absoluteRow) {
-            this.extendSelectionTo(dims.cols - 1, bottomAbsoluteRow);
+          if (bottomAbsoluteRow > movingEnd.absoluteRow) {
+            this.extendSelectionTo(dims.cols - 1, bottomAbsoluteRow, this.renderer.getMetrics().width);
           }
         }
       }
@@ -872,11 +909,21 @@ export class SelectionManager {
    * the anchor's start to the end of the word (line) under the pointer. Blank space under the
    * pointer of a word drag ends it at that cell. `selectionEnd` stays the moving end, which is
    * what auto-scroll compares against.
+   *
+   * vendor 0.4.0-kelpi.22: `x` is how far across the cell the pointer is, in pixels; a drag from a
+   * single press uses it to decide which cells it has crossed (`dragSelection`).
    */
-  private extendSelectionTo(col: number, absoluteRow: number): void {
+  private extendSelectionTo(col: number, absoluteRow: number, x: number): void {
     const anchor = this.unitAnchor;
     if (!anchor) {
-      this.selectionEnd = { col, absoluteRow };
+      if (!this.pressPoint) {
+        this.selectionEnd = { col, absoluteRow };
+        return;
+      }
+      // Like any drag, announced on release, not on every move.
+      const range = this.dragSelection(this.pressPoint, col, absoluteRow, x);
+      this.selectionStart = range?.start ?? null;
+      this.selectionEnd = range?.end ?? null;
       return;
     }
     const target = this.getUnitAt(anchor.unit, col, absoluteRow);
@@ -923,6 +970,68 @@ export class SelectionManager {
       col: Math.max(0, Math.min(col, this.terminal.cols - 1)),
       row: Math.max(0, Math.min(row, this.terminal.rows - 1)),
     };
+  }
+
+  /**
+   * vendor 0.4.0-kelpi.22: how far across its cell (in pixels) a canvas x lands, clamped to the
+   * grid the same way `pixelToCell` clamps the cell.
+   */
+  private pixelToCellX(x: number): number {
+    const width = this.renderer.getMetrics().width;
+    const clamped = Math.max(0, Math.min(x, this.terminal.cols * width - 1));
+    return clamped - Math.floor(clamped / width) * width;
+  }
+
+  /**
+   * vendor 0.4.0-kelpi.22: what a drag from a single press to a cell selects, or null for nothing.
+   *
+   * Ghostty's `mouseSelection` (`Surface.zig`), minus its rectangle mode. A cell is in the
+   * selection only once the drag has crossed its threshold, 60% of the way across it, in the
+   * direction of the drag: the pressed cell if the press was before its threshold, the cell under
+   * the pointer if the pointer is past its threshold, and every cell between. So a click, or a
+   * press that wobbles a pixel or two (even over a cell boundary), selects nothing, and a single
+   * character is selected by dragging across it.
+   */
+  private dragSelection(
+    press: { col: number; absoluteRow: number; x: number },
+    col: number,
+    absoluteRow: number,
+    x: number
+  ): { start: { col: number; absoluteRow: number }; end: { col: number; absoluteRow: number } } | null {
+    const threshold = this.renderer.getMetrics().width * 0.6;
+    const click = { col: press.col, absoluteRow: press.absoluteRow };
+    const drag = { col, absoluteRow };
+    const same = (a: typeof click, b: typeof click) => a.col === b.col && a.absoluteRow === b.absoluteRow;
+    const samePin = same(click, drag);
+    const backwards = samePin
+      ? x < press.x
+      : absoluteRow < press.absoluteRow || (absoluteRow === press.absoluteRow && col < press.col);
+    const includeClick = backwards ? press.x >= threshold : press.x < threshold;
+    const includeDrag = backwards ? x < threshold : x >= threshold;
+    const start = includeClick ? click : this.stepCell(click, backwards ? -1 : 1);
+    const end = includeDrag ? drag : this.stepCell(drag, backwards ? 1 : -1);
+    if ((!includeClick && samePin) || (!includeClick && same(end, click)) || (!includeDrag && same(start, drag))) {
+      return null;
+    }
+    return { start, end };
+  }
+
+  /** vendor 0.4.0-kelpi.22: the next (1) or previous (-1) cell in reading order, wrapping rows. */
+  private stepCell(cell: { col: number; absoluteRow: number }, step: 1 | -1): { col: number; absoluteRow: number } {
+    const { cols, rows } = this.wasmTerm.getDimensions();
+    const lastRow = this.wasmTerm.getScrollbackLength() + rows - 1;
+    let col = cell.col + step;
+    let absoluteRow = cell.absoluteRow;
+    if (col >= cols) {
+      if (absoluteRow >= lastRow) return cell;
+      col = 0;
+      absoluteRow++;
+    } else if (col < 0) {
+      if (absoluteRow <= 0) return cell;
+      col = cols - 1;
+      absoluteRow--;
+    }
+    return { col, absoluteRow };
   }
 
   /**

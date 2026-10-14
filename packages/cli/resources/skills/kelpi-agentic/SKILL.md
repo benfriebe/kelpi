@@ -417,6 +417,17 @@ Each JSON entry includes `id`, `name`, `color`, `pane_count`, `is_active`,
 and optional `group_id` / `group_name` (both absent for a top-level
 workspace). The `group_name` field matches the one on `pane list`, so
 `.group_name // "top-level"` answers "which group is this workspace in".
+A nested workspace is listed right after its parent and carries
+`parent_id` / `parent_name` (the table adds a PARENT column when any
+workspace is nested). `--parent <ws>` lists only one parent's nested
+workspaces, which is how an orchestrator inventories its own workers. It
+never falls back to listing everything: an empty `--parent` (an unset
+variable) is refused, and so is a reply from a daemon too old to filter, so
+it is safe to pipe into `workspace delete`:
+
+```bash
+kelpi workspace list --parent "$ORCHESTRATOR_ID" --json
+```
 
 ### Event Commands (Agent Lifecycle)
 
@@ -482,7 +493,27 @@ to these verbs with `--agent codex`. `pane list --json` then reports an
 # read timeout so a slow `git fetch` isn't a spurious failure.
 # --icon <emoji> gives the new workspace a sidebar icon from the start (one
 # emoji; see `workspace icon` below).
-kelpi workspace create [--name "..."] [--path /dir] [--color blue|green|red|yellow|purple|orange|pink|gray] [--group <name>] [--profile <name>] [--icon <emoji>] [--worktree <name> [--branch <name>] [--repo <path>] [--update-main]] [--json]
+# --muted creates it with notifications muted, so a worker never pings the
+# user; the coordinator watches it instead.
+# Nesting (one level deep): a nested workspace sits indented under its
+# parent in the sidebar, collapsible, and follows the parent's group (and
+# that group's default repository):
+#   --nested            nest under THIS pane's workspace (reads KELPI_PANE_ID):
+#                       the way an orchestrator spawns its workers
+#   --parent <ws>       nest under the named workspace (name or id)
+# Both are exclusive with --group. The reply adds parent_id / parent_name;
+# an older daemon that cannot nest makes the command exit non-zero, and so
+# does a parent deleted while a --worktree create ran (the workspace is then
+# made at the top level, and the message says so). An empty --parent is
+# refused before anything is created.
+kelpi workspace create [--name "..."] [--path /dir] [--color blue|green|red|yellow|purple|orange|pink|gray] [--group <name> | --nested | --parent <ws>] [--profile <name>] [--muted] [--icon <emoji>] [--worktree <name> [--branch <name>] [--repo <path>] [--update-main]] [--json]
+
+# Nest an existing workspace under another (or reorder it among the parent's
+# nested workspaces with --index); request/response, so a refusal (the parent
+# is nested itself, or the workspace has nested ones) exits non-zero with
+# the reason. --top-level / --group take it back out.
+kelpi workspace move <name-or-id> --parent <ws> [--index N]
+kelpi workspace move <name-or-id> (--group <name> | --top-level) [--index N]
 
 # Assign or clear a workspace's profile (fire-and-forget). Applies to the
 # KELPIT pane spawned in the workspace; existing panes keep their env.
@@ -526,13 +557,21 @@ kelpi workspace icon <name-or-id> (<emoji> | --clear) [--json]
 #                     not a failure). An *empty* workspace has no directory
 #                     to prune — delete it before closing its panes if you
 #                     want the worktree reclaimed automatically.
+#   --cascade         also delete the workspaces nested under it (their
+#                     agents count toward --force; --prune-worktree covers
+#                     their worktrees). Without it they move up into the
+#                     deleted workspace's place in the sidebar. A later
+#                     target the cascade already took (`delete boss worker
+#                     --cascade`) reports "already deleted with boss", not
+#                     an error.
 #   --json            compact per-id result array: each row has `id` (the
 #                     arg as typed), `ok`, and on success `workspace_id`,
-#                     `workspace_name`, `path?`, `worktree_pruned?`,
-#                     `worktree_error?` — or `error` on failure.
+#                     `workspace_name`, `path?`, `deleted_children?`,
+#                     `worktree_pruned?`, `worktree_error?`, or `error` on
+#                     failure.
 # Exit code reflects DELETES only: a prune that git refuses is a Warning,
 # not a failure, so the command still exits 0 if the workspace was deleted.
-kelpi workspace delete <name-or-id> [<name-or-id> ...] [--force|-y] [--prune-worktree] [--json]
+kelpi workspace delete <name-or-id> [<name-or-id> ...] [--force|-y] [--cascade] [--prune-worktree] [--json]
 ```
 
 ### Workspace Profiles (multi-account env injection)
@@ -1088,6 +1127,37 @@ kelpi pane send --target coder claude
 sleep 2
 kelpi pane send --target coder "You are a coder. Write code for the task in .kelpi-tasks/feature.md and save it to .kelpi-results/code.md"
 ```
+
+### Pattern 3b: Orchestrator with nested worker workspaces
+
+When each worker needs a whole workspace (its own worktree, several panes,
+its own web pane), spawn the workers as workspaces nested under the
+orchestrator's. The user sees them grouped under the orchestrator in the
+sidebar and can collapse them; a collapsed orchestrator row still shows when
+a worker is running or waiting for input.
+
+```bash
+# In the orchestrator's pane. Capture each worker's workspace id.
+ORCH=$(kelpi pane list --current --json | jq -r '.[0].workspace_id')
+WS=$(kelpi workspace create --nested --name worker-auth --worktree worker-auth --muted --json \
+  | jq -r '.workspace_id')
+
+# The new workspace's first pane has no label; name it, then start the agent.
+PANE=$(kelpi pane list --workspace "$WS" --json | jq -r '.[0].id')
+kelpi pane name --target "$PANE" worker
+kelpi pane send --target worker --workspace "$WS" claude
+sleep 2
+kelpi pane send --target worker --workspace "$WS" "Do the task in .kelpi-tasks/auth.md and write the result to .kelpi-results/auth.md"
+
+# Later: inventory the workers, and tear everything down when done.
+kelpi workspace list --parent "$ORCH" --json
+kelpi workspace delete "$WS" --force --prune-worktree      # one worker
+kelpi workspace delete "$ORCH" --cascade --force           # the orchestrator and all its workers
+```
+
+Nesting is one level deep: a worker cannot spawn nested workspaces of its
+own (its `--nested` create is refused). A worker that needs sub-workers
+splits panes inside its own workspace instead.
 
 ### Pattern 4: Agent driving / observing a web app via web pane
 

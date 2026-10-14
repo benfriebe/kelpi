@@ -357,8 +357,10 @@ export const workspaceUsage = `Usage:
 
 Subcommands:
   list      List every workspace (grouped + top-level).
-  create    Create a new workspace (optionally with a git worktree).
-  move      Move a workspace into a group or to the top level.
+  create    Create a new workspace (optionally with a git worktree, or nested
+            under another workspace).
+  move      Move a workspace into a group, to the top level, or under another
+            workspace.
   delete    Delete one or more workspaces.
   profile   Assign or clear a workspace's profile.
   label     Set/add/remove/clear a workspace's labels.
@@ -371,15 +373,18 @@ Run \`kelpi workspace <subcommand> --help\` for subcommand-specific usage.
 `;
 
 export const workspaceListUsage = `Usage:
-  kelpi workspace list [--group <name-or-id>] [--json] [--no-header]
+  kelpi workspace list [--group <name-or-id>] [--parent <name-or-id>] [--json] [--no-header]
 
 Lists workspaces as a table, or a JSON array with --json. Each entry
 carries id, name, group, color, pane count, created_at, last_accessed_at,
-last_activity_at, labels, muted, and the icon and agent session id (when
-present).
+last_activity_at, labels, muted, and the icon, agent session id and parent
+(parent_id, parent_name) when present. Nested workspaces follow their parent,
+and the table gains a PARENT column when any workspace is nested.
 
 Options:
-  --group <name-or-id>  Only list workspaces in this group.
+  --group <name-or-id>  Only list workspaces in this group (with the
+                        workspaces nested under them).
+  --parent <name-or-id> Only list the workspaces nested under this one.
   --json                Print a JSON array instead of the table.
   --no-header           Omit the table header row.
   -h, --help            Show this help.
@@ -390,10 +395,12 @@ Exit codes: 0 on success, non-zero on failure.
 
 export const workspaceCreateUsage = `Usage:
   kelpi workspace create [--name "..."] [--path /dir] [--color blue] \\
-                       [--group <name>] [--profile <name>] [--repo <path> | --no-repo] \\
+                       [--group <name> | --parent <name-or-id> | --nested] \\
+                       [--profile <name>] [--repo <path> | --no-repo] \\
                        [--muted] [--icon <emoji>] [--json]
   kelpi workspace create --worktree <name> [--branch <name>] [--repo <path>] \\
-                       [--update-main | --no-update-main] [--group <existing>] [--muted] \\
+                       [--update-main | --no-update-main] \\
+                       [--group <existing> | --parent <name-or-id> | --nested] [--muted] \\
                        [--icon <emoji>] [--json]
 
 Creates a new workspace and returns its id.
@@ -408,6 +415,11 @@ Options:
                      unless --worktree is given, which requires an existing group).
                      A group with a repository (\`kelpi group set-repo\`) starts the
                      workspace with that repository associated.
+  --parent <ws>      Nest the workspace under this one (name or id) in the
+                     sidebar. Nesting is one level deep, and a nested workspace
+                     follows its parent's group (and that group's repository).
+  --nested           Nest the workspace under the one this pane belongs to
+                     (KELPI_PANE_ID): an orchestrator spawning its workers.
   --profile <name>   Assign a workspace profile at creation.
   --repo <path>      Repository to associate; with --worktree, the source repo
                      (defaults to the group's repository, then --path, then
@@ -429,23 +441,29 @@ Exit codes: 0 on success, non-zero on failure.
 `;
 
 export const workspaceMoveUsage = `Usage:
-  kelpi workspace move <name-or-id> (--group <name> | --top-level) [--index N]
+  kelpi workspace move <name-or-id> (--group <name> | --top-level | --parent <ws>) [--index N]
 
-Moves a workspace into a group or detaches it to the top level.
+Moves a workspace into a group, detaches it to the top level, or nests it
+under another workspace. --group and --top-level also take a nested
+workspace back out of its parent.
 
 Options:
   --group <name>   Destination group (must already exist).
-  --top-level      Detach the workspace from its current group.
+  --top-level      Detach the workspace from its current group or parent.
+  --parent <ws>    Nest it under this workspace (name or id), or reorder it
+                   among that workspace's nested ones. Refused, with the
+                   reason, when that would nest more than one level deep.
   --index N        Position within the destination (0-based).
   -h, --help       Show this help.
 
-Exactly one of --group / --top-level is required. Exit codes: 0 on success,
-non-zero on failure.
+Exactly one of --group / --top-level / --parent is required. Exit codes: 0 on
+success, non-zero on failure (--group and --top-level are fire-and-forget, so
+only --parent reports a refusal).
 
 `;
 
 export const workspaceDeleteUsage = `Usage:
-  kelpi workspace delete <name-or-id> [<name-or-id> ...] [--force|-y] \\
+  kelpi workspace delete <name-or-id> [<name-or-id> ...] [--force|-y] [--cascade] \\
                        [--prune-worktree [--delete-branch]] [--json]
 
 Deletes one or more workspaces (closing any remaining panes). Refuses to
@@ -453,6 +471,9 @@ delete the last remaining workspace.
 
 Options:
   --force, -y        Delete even with running, waiting or inactive agent sessions.
+  --cascade          Also delete the workspaces nested under it (their agents
+                     count toward --force, and --prune-worktree covers them).
+                     Without it, they move up into its place in the sidebar.
   --prune-worktree   Also remove the git worktrees Kelpi created for the
                      workspace (inside the worktree base path), on the Kelpi
                      host. Never forced: a worktree with uncommitted changes,

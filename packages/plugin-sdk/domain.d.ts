@@ -28,8 +28,14 @@ export interface WorkspaceInfo {
     /** The sidebar icon in `setIcon`'s spelling (`"emoji:🔥"`); absent for the letter avatar. */
     icon?: string;
     lastActivityAt?: string; agentSessionID?: string; groupID?: string; groupName?: string;
+    /** The workspace this one is nested under; absent when it is not nested. */
+    parentID?: string; parentName?: string;
 }
-export interface GroupInfo { id: string; name: string; color?: WorkspaceColor; workspaces: { id: string; name: string }[] }
+export interface GroupInfo {
+    id: string; name: string; color?: WorkspaceColor;
+    /** Members in order, each followed by the workspaces nested under it (those carry `parentID`). */
+    workspaces: { id: string; name: string; parentID?: string; parentName?: string }[];
+}
 export interface PaneMutation { paneID: string; workspaceID: string; workspaceName: string; label?: string }
 export interface PaneResize extends PaneMutation { splitPath: string; ratio: number; targetShare: number }
 export interface PanePlacement { paneID: string; workspaceID: string }
@@ -46,6 +52,11 @@ export interface WorkspaceCreateOptions {
     muted?: boolean;
     /** Create the workspace with this sidebar icon, in `setIcon`'s spelling (`"emoji:🔥"`). */
     icon?: string;
+    /**
+     * Nest the new workspace under this one (an id or name). Nesting is one level deep, and the
+     * child follows its parent's group, so it cannot be combined with `groupID`.
+     */
+    parentID?: string;
 }
 export interface WorkspaceCreated extends WorkspaceIdentity {
     group?: string; worktreePath?: string; branch?: string;
@@ -57,16 +68,36 @@ export interface WorkspaceCreated extends WorkspaceIdentity {
     muted: boolean;
     /** The icon it was created with; absent when none was asked for. */
     icon?: string;
+    /**
+     * The parent it was nested under, so a `parentID` request can be confirmed. A create whose
+     * parent is missing from the reply rejects (`PARENT_LOST` or `UNSUPPORTED`), with the created
+     * workspace in the error's `details`.
+     */
+    parentID?: string; parentName?: string;
+}
+export interface WorkspaceNested extends WorkspaceIdentity {
+    parentID: string; parentName: string;
+    /** Its position among the parent's nested workspaces. */
+    index: number;
 }
 export interface WorkspaceMoveOptions { groupID?: string; index?: number }
 export interface WorkspacesAPI {
-    list(options?: { groupID?: string }): Promise<WorkspaceInfo[]>;
+    /** `parentID` lists only the workspaces nested under that one. */
+    list(options?: { groupID?: string; parentID?: string }): Promise<WorkspaceInfo[]>;
     create(options?: WorkspaceCreateOptions): Promise<WorkspaceCreated>;
     rename(workspaceID: string, name: string): Promise<{ workspaceID: string; name: string }>;
     /** Uses the CLI deletion guard, including its refusal to remove the final workspace. */
-    remove(workspaceID: string, options?: { force?: boolean }): Promise<WorkspaceIdentity & { path?: string }>;
+    /** `cascade` deletes its nested workspaces too; otherwise they move up into its place. */
+    remove(workspaceID: string, options?: { force?: boolean; cascade?: boolean }): Promise<WorkspaceIdentity & { path?: string; deletedChildren?: string[]; deletedChildNames?: string[] }>;
     move(workspaceID: string, options?: WorkspaceMoveOptions): Promise<void>;
     moveMany(workspaceIDs: string[], options?: WorkspaceMoveOptions): Promise<{ workspaceIDs: string[]; groupID: string | null; index: number | null }>;
+    /**
+     * Nest a workspace under another (one level deep), or reorder it among that parent's nested
+     * workspaces. `move` / `moveMany` take a workspace back out.
+     */
+    nest(workspaceID: string, parentID: string, options?: { index?: number }): Promise<WorkspaceNested>;
+    /** Show or hide a parent's nested workspaces in the sidebar. */
+    setChildrenCollapsed(workspaceID: string, collapsed: boolean): Promise<{ workspaceID: string; collapsed: boolean }>;
     setProfile(workspaceID: string, profile: string | null): Promise<void>;
     /**
      * Mute or unmute a workspace's notifications; omit `muted` to toggle. Resolves with the state
@@ -127,6 +158,40 @@ export interface AgentsAPI {
     notify(paneID: string, title: string, body: string, options?: { backgroundTasks?: number }): Promise<void>;
     sessionStart(paneID: string, sessionID: string, agent: AgentKind, options?: { profile?: string }): Promise<void>;
     sessionEnd(paneID: string, sessionID: string): Promise<void>;
+    /** #387: one call per agent hook Kelpi handles (`agent.event`), shown or not. Returns an unsubscribe. */
+    onEvent(listener: (event: AgentHookEvent, raw: import('./index.js').Event) => void | Promise<void>): import('./index.js').Dispose;
+}
+/** The wire verb an agent hook arrived as (docs/agent-lifecycle.md §7.7). */
+export type AgentHookEventType = 'start' | 'stop' | 'notification' | 'error' | 'session-start' | 'session-end';
+/** The `agent.event` payload. Optional fields are present only when the hook carried them. */
+export interface AgentHookEvent {
+    type: AgentHookEventType;
+    paneID: string;
+    workspaceID: string;
+    /** The pane's agent kind after the event; `claude` when none is recorded. */
+    agent: AgentKind;
+    /** The session the pane is bound to after the event. */
+    sessionID?: string;
+    /** The pane's status after Kelpi applied the event, as `panes.list` reports it. */
+    status: PaneStatus;
+    /** Claude Notification only: `permission_prompt`, `idle_prompt`, `elicitation_dialog`, ... */
+    notificationType?: string;
+    /** `notification` only. */
+    title?: string;
+    body?: string;
+    /** `error` only. */
+    message?: string;
+    /** Claude Stop only: the final reply's text, capped at 64 KiB of UTF-8. */
+    lastAssistantMessage?: string;
+    /** Present (true) only when `lastAssistantMessage` was cut to the cap. */
+    lastAssistantMessageTruncated?: true;
+    transcriptPath?: string;
+    /** `stop` / `notification`, only when > 0. */
+    backgroundTasks?: number;
+    /** Codex PermissionRequest (`notification`) only. */
+    toolName?: string;
+    /** The pane's workspace is muted: honour it, never echo the event as a notification. */
+    muted?: true;
 }
 export interface TerminalSubscription { subscription: string; paneID: string; base64: string; cols: number; rows: number }
 export interface TerminalSync extends WorkspaceIdentity { active: boolean; syncedPaneIDs: string[]; excluded: { id: string; label?: string }[] }

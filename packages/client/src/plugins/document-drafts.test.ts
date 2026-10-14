@@ -345,6 +345,22 @@ describe('document command close guards', () => {
         remove();
     });
 
+    it.each([
+        ['the GUI delete-workspace with cascade_children', { command: 'delete-workspace', workspace_id: 'W2', cascade_children: true }],
+        ['the wire workspace-delete with cascade', { command: 'workspace-delete', name: 'Other', cascade: true }]
+    ] as const)('flushes nested workspaces\' documents for %s (§2.9)', async (_label, payload) => {
+        const h = setup();
+        // W1 (holding the documents) nested under W2, so deleting W2 with its children closes them.
+        h.state.dispatch({ type: 'nest-workspaces', ids: ['W1'], parentID: 'W2' });
+        h.runtime.store.getState().applySnapshot(2, JSON.parse(JSON.stringify(h.state.getState())));
+        const content = createFakeContentApi();
+        const remove = registerDocumentCloseGuard(h.runtime, content);
+        const deleting = h.runtime.commands.raw({ ...payload });
+        await vi.waitFor(() => expect(h.frames()).toHaveLength(1));
+        expect(content.flushes).toEqual([PANE, PARKED]); h.answer(); await deleting;
+        remove();
+    });
+
     it('keeps remote pane guards scoped and leaves terminal commands synchronous', async () => {
         const h = setup();
         const content = createFakeContentApi();

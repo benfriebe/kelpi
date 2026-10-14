@@ -18,12 +18,14 @@ import {
     nextCreateColor,
     groupCommit,
     locateWorkspace,
+    nestedFollowers,
     orderModelFromEntries,
     projectEntries,
     renderedRows,
     resolveDropTarget,
     resolveGroupDropIndex,
     visibleOrderFromEntries,
+    withoutNestedFollowers,
     workspaceCommit
 } from './sidebar-model';
 import type { ChromeSidebarEntry } from './types';
@@ -422,5 +424,191 @@ describe('defaultGroupName', () => {
         expect(defaultGroupName(['New Group', 'New Group 2'])).toBe('New Group 3');
         // A gap is filled rather than skipped past.
         expect(defaultGroupName(['New Group', 'New Group 3'])).toBe('New Group 2');
+    });
+});
+
+// ── nested workspaces (app-state-core.md §2.9) ─────────────────────────────────────
+
+/**
+ * `alpha` with `w5`, `w6` nested under it; `delta`; then `squad [beta]` with `w7` nested under
+ * `beta`. Built through the real daemon store, so the rows are what the daemon would send.
+ */
+function nestedState(options: { alphaCollapsed?: boolean; betaCollapsed?: boolean } = {}): DaemonState {
+    const store = createDaemonStore(emptyDaemonState(HOME));
+    store.dispatch({ type: 'create-workspace', id: W(1), paneID: P(1), name: 'alpha', now: NOW });
+    store.dispatch({ type: 'create-workspace', id: W(2), paneID: P(2), name: 'beta', now: NOW + 1 });
+    store.dispatch({ type: 'create-workspace', id: W(4), paneID: P(4), name: 'delta', now: NOW + 3 });
+    store.dispatch({ type: 'create-group', id: G1, name: 'squad', now: NOW + 4 });
+    store.dispatch({ type: 'move-workspace-to-group', id: W(2), groupID: G1 });
+    store.dispatch({ type: 'create-workspace', id: W(5), paneID: P(5), name: 'w5', now: NOW + 5, parentID: W(1) });
+    store.dispatch({ type: 'create-workspace', id: W(6), paneID: P(6), name: 'w6', now: NOW + 6, parentID: W(1) });
+    store.dispatch({ type: 'create-workspace', id: W(7), paneID: P(7), name: 'w7', now: NOW + 7, parentID: W(2) });
+    if (options.alphaCollapsed === true) {
+        store.dispatch({ type: 'set-workspace-children-collapsed', id: W(1), collapsed: true });
+    }
+    if (options.betaCollapsed === true) {
+        store.dispatch({ type: 'set-workspace-children-collapsed', id: W(2), collapsed: true });
+    }
+    return store.getState();
+}
+
+describe('nested workspaces: rows and order', () => {
+    it('renders children under their parent, one indent deeper, carrying the parent group', () => {
+        const rows = renderedRows(entriesFor(nestedState()));
+        expect(
+            rows.map((row) =>
+                row.kind === 'workspace'
+                    ? [row.workspaceID, row.depth, row.groupID, row.parentID ?? null, row.childCount ?? 0]
+                    : [row.key]
+            )
+        ).toEqual([
+            [W(1), 0, null, null, 2],
+            [W(5), 1, null, W(1), 0],
+            [W(6), 1, null, W(1), 0],
+            [W(4), 0, null, null, 0],
+            [`header:${G1}`],
+            [W(2), 1, G1, null, 1],
+            [W(7), 2, G1, W(2), 0]
+        ]);
+    });
+
+    it('matches the daemon visible order, with parents expanded and collapsed', () => {
+        for (const alphaCollapsed of [false, true]) {
+            for (const betaCollapsed of [false, true]) {
+                const state = nestedState({ alphaCollapsed, betaCollapsed });
+                expect(visibleOrderFromEntries(entriesFor(state))).toEqual(visibleWorkspaceOrder(state));
+            }
+        }
+        expect(visibleOrderFromEntries(entriesFor(nestedState({ alphaCollapsed: true })))).toEqual([
+            W(1),
+            W(4),
+            W(2),
+            W(7)
+        ]);
+    });
+
+    it('a collapsed parent reports its count and hides its rows; an override and a spring-load win', () => {
+        const entries = entriesFor(nestedState({ alphaCollapsed: true }));
+        const parent = renderedRows(entries).find((row) => row.key === `ws:${W(1)}`);
+        expect(parent).toMatchObject({ childCount: 2, childrenCollapsed: true });
+        expect(visibleOrderFromEntries(entries, { overrides: new Map([[W(1), false]]) })).toContain(W(5));
+        expect(visibleOrderFromEntries(entries, { springLoadedGroupID: W(1) })).toContain(W(6));
+    });
+
+    it('locates a nested workspace by its parent, and round-trips through the projection', () => {
+        const entries = entriesFor(nestedState());
+        const model = orderModelFromEntries(entries);
+        expect(locateWorkspace(model, W(6))).toEqual({ groupID: null, index: 1, parentID: W(1) });
+        expect(locateWorkspace(model, W(7))).toEqual({ groupID: null, index: 0, parentID: W(2) });
+        expect(renderedRows(projectEntries(entries, model)).map((row) => row.key)).toEqual(
+            renderedRows(entries).map((row) => row.key)
+        );
+    });
+
+    it('filters nested rows flat, captioned with their parent', () => {
+        expect(filteredRows(entriesFor(nestedState({ alphaCollapsed: true })), 'w').map((row) => [row.workspace.id, row.groupName])).toEqual([
+            [W(5), 'alpha'],
+            [W(6), 'alpha'],
+            [W(7), 'beta']
+        ]);
+    });
+});
+
+describe('nested workspaces: drag and drop', () => {
+    const entries = (): readonly ChromeSidebarEntry[] => entriesFor(nestedState());
+
+    it('nests onto a row and reorders within a parent, committing the parent location', () => {
+        const before = orderModelFromEntries(entries());
+        const onto = applyWorkspaceDrop(before, W(4), { kind: 'ontoWorkspace', parentID: W(1) });
+        expect(workspaceCommit(before, onto, W(4))).toEqual({ groupID: null, index: 2, parentID: W(1) });
+        const within = applyWorkspaceDrop(before, W(6), { kind: 'intoParent', parentID: W(1), index: 0 });
+        expect(workspaceCommit(before, within, W(6))).toEqual({ groupID: null, index: 0, parentID: W(1) });
+        // Dropped back where it was: nothing to commit.
+        const same = applyWorkspaceDrop(before, W(6), { kind: 'intoParent', parentID: W(1), index: 1 });
+        expect(workspaceCommit(before, same, W(6))).toBeNull();
+    });
+
+    it('un-nests to the top level as an ordinary move', () => {
+        const before = orderModelFromEntries(entries());
+        const after = applyWorkspaceDrop(before, W(5), { kind: 'topLevel', index: 0 });
+        expect(workspaceCommit(before, after, W(5))).toEqual({ groupID: null, index: 0 });
+    });
+
+    it('keeps every other parent\'s children in the drag shadow, whatever the target', () => {
+        const before = orderModelFromEntries(entries());
+        for (const target of [
+            { kind: 'topLevel', index: 0 },
+            { kind: 'intoGroup', groupID: G1, index: 0 },
+            { kind: 'ontoGroupHeader', groupID: G1 }
+        ] as const) {
+            const shadow = applyWorkspaceDrop(before, W(4), target);
+            const keys = renderedRows(projectEntries(entries(), shadow)).map((row) => row.key);
+            expect(keys).toEqual(expect.arrayContaining([`ws:${W(5)}`, `ws:${W(6)}`, `ws:${W(7)}`]));
+        }
+    });
+
+    it('splits a nestable row into thirds: before, onto, after (or first child when expanded)', () => {
+        const rows = renderedRows(entries());
+        const model = orderModelFromEntries(entries());
+        const layout = buildDropZones(model, rows, { rowHeight: 30, contentTop: 0, dragging: new Set([W(4)]), nestable: true });
+        // Row 0 is alpha (expanded parent) at y 0..30.
+        expect(resolveDropTarget(layout, 5)).toEqual({ kind: 'topLevel', index: 0 });
+        expect(resolveDropTarget(layout, 15)).toEqual({ kind: 'ontoWorkspace', parentID: W(1) });
+        expect(resolveDropTarget(layout, 25)).toEqual({ kind: 'intoParent', parentID: W(1), index: 0 });
+        // Row 1 is w5, alpha's first child, at y 30..60.
+        expect(resolveDropTarget(layout, 35)).toEqual({ kind: 'intoParent', parentID: W(1), index: 0 });
+        expect(resolveDropTarget(layout, 55)).toEqual({ kind: 'intoParent', parentID: W(1), index: 1 });
+        // Row 5 is beta, a group member, at y 150..180: nests too.
+        expect(resolveDropTarget(layout, 165)).toEqual({ kind: 'ontoWorkspace', parentID: W(2) });
+    });
+
+    it('a non-nestable drag keeps two halves and treats nested rows as after the parent block', () => {
+        const rows = renderedRows(entries());
+        const model = orderModelFromEntries(entries());
+        const layout = buildDropZones(model, rows, { rowHeight: 30, contentTop: 0, dragging: new Set([W(4)]) });
+        expect(resolveDropTarget(layout, 10)).toEqual({ kind: 'topLevel', index: 0 });
+        expect(resolveDropTarget(layout, 45)).toEqual({ kind: 'topLevel', index: 1 });
+        // w7 under beta (in the group) at y 180..210 lands after beta in the group.
+        expect(resolveDropTarget(layout, 185)).toEqual({ kind: 'intoGroup', groupID: G1, index: 1 });
+    });
+
+    it('reaches the end of a group whose last member is an expanded parent: the last nested row’s bottom third', () => {
+        const rows = renderedRows(entries());
+        const model = orderModelFromEntries(entries());
+        const layout = buildDropZones(model, rows, { rowHeight: 30, contentTop: 0, dragging: new Set([W(4)]), nestable: true });
+        // w7, beta's only child and the group's last row, at y 180..210.
+        expect(resolveDropTarget(layout, 185)).toEqual({ kind: 'intoParent', parentID: W(2), index: 0 });
+        expect(resolveDropTarget(layout, 195)).toEqual({ kind: 'intoParent', parentID: W(2), index: 1 });
+        expect(resolveDropTarget(layout, 205)).toEqual({ kind: 'intoGroup', groupID: G1, index: 1 });
+        // Alpha's last child (w6, y 60..90) does the same at the top level: after alpha's block.
+        expect(resolveDropTarget(layout, 85)).toEqual({ kind: 'topLevel', index: 1 });
+    });
+
+    it('a dragged parent’s nested rows land where its slot closes up, not at a guessed index', () => {
+        // Alpha and delta move together and alpha's rows were not folded: they mean "after
+        // alpha", which, with alpha itself leaving, is the slot alpha leaves behind (index 0).
+        const rows = renderedRows(entries());
+        const model = orderModelFromEntries(entries());
+        const layout = buildDropZones(model, rows, { rowHeight: 30, contentTop: 0, dragging: new Set([W(1), W(4)]) });
+        expect(resolveDropTarget(layout, 45)).toEqual({ kind: 'topLevel', index: 0 });
+    });
+
+    it('names a parent’s children that move with it as followers, so bulk commands leave them out', () => {
+        const model = orderModelFromEntries(entries());
+        // w5 is alpha's and alpha moves; w7's parent (beta) stays, so w7 moves in its own right.
+        expect([...nestedFollowers(model, [W(1), W(5), W(4), W(7)])]).toEqual([W(5)]);
+        expect(withoutNestedFollowers(model, [W(1), W(5), W(4), W(7)])).toEqual([W(1), W(4), W(7)]);
+        expect(withoutNestedFollowers(model, [W(5), W(6)])).toEqual([W(5), W(6)]);
+    });
+
+    it('a group drag counts a nested row as part of its parent span', () => {
+        const rows = renderedRows(entries());
+        const model = orderModelFromEntries(entries());
+        const spans = buildGroupSpans(model, rows, { rowHeight: 30, contentTop: 0 });
+        expect(spans.spans.map((span) => [span.slotID, span.yTop, span.yBottom])).toEqual([
+            [`workspace:${W(1)}`, 0, 90],
+            [`workspace:${W(4)}`, 90, 120],
+            [`group:${G1}`, 120, 210]
+        ]);
     });
 });

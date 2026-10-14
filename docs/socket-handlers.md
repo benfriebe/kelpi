@@ -269,6 +269,9 @@ included) and silently drop the event when no workspace owns the pane. The handl
 `packages/daemon/src/handlers/app/events.ts`; the per-pane status machine they feed is
 `packages/core/src/agent/machine.ts`.
 
+Each line the store applies also publishes one `agent.event` to plugin backends and views, after
+the state change and whether or not a notification is broadcast (agent-lifecycle.md §7.7).
+
 Pane status values: `"idle" | "running" | "waitingForInput"`.
 
 ### 3.1 `start` → agentStarted(paneID, agent)
@@ -906,15 +909,24 @@ focused pane's own renderer is not on the alternate screen (`client/src/app/clea
 
 ### 6.1 `workspace-list` → handleWorkspaceList (pure read)
 
-Input: `group?` (name-or-id filter). Requires a reply handle.
+Input: `group?` (name-or-id filter), `parent?` (name-or-id filter; app-state-core.md §2.9).
+Requires a reply handle.
+
+- `parent` given → an empty or whitespace one is `error("parent must name a workspace (got an
+  empty value)")` (never "no filter": that would list every workspace); otherwise strict
+  `resolveWorkspace` or the §6.4 resolution errors (`workspace not found: …` / `workspace name
+  is ambiguous: … (use the id)`). The filter set is that workspace's `childOrder`, and the reply
+  adds top-level `parent_id` / `parent_name` for the resolved parent, so a caller can tell it
+  from an older daemon's unfiltered reply. With `group` as well, both apply.
 
 - Non-empty `group` filter → `resolveGroup` (strict) or
   `error("no group matches '{filter}'")` — an unknown/ambiguous group is an **error**, not
   an empty list, so scripts can tell "no such group" from "empty group". The filter set is
-  the group's `childOrder` members.
+  the group's `childOrder` members and the workspaces nested under them.
 - Ordering: walk the sidebar's top-level order; a workspace entry contributes itself, a
   group entry contributes its members in child order (**regardless of the group's
-  collapsed state** — unlike the GUI's visible order). Dedupe throughout. Then append any
+  collapsed state**, unlike the GUI's visible order), and every workspace is followed by
+  the workspaces nested under it (regardless of `childrenCollapsed`). Dedupe throughout. Then append any
   workspace unreachable through the top-level order, in state order, so a recoverable
   ordering inconsistency can never hide a workspace from the CLI. Finally apply the group
   filter, preserving order.
@@ -935,7 +947,8 @@ Entry shape (timestamps plain ISO 8601):
     "icon": "emoji:🔥",                                   // absent for the letter avatar (§6.9)
     "last_activity_at": "2026-08-18T02:05:00Z",           // max of the panes' lastActivityAt; absent with no panes
     "agent_session_id": "…",                              // the FIRST pane carrying one
-    "group_id": "…", "group_name": "Client X",            // absent for top-level workspaces
+    "group_id": "…", "group_name": "Client X",            // absent for top-level workspaces; a nested one reports its parent's group
+    "parent_id": "…", "parent_name": "orchestrator",      // absent unless nested (app-state-core.md §2.9)
     "repos": [                                            // absent when it has no repo associations
       {"repo_id": "…", "repo_name": "kelpi", "repo_path": "/code/kelpi",   // name/path absent if unregistered
        "worktree_path": "/code/kelpi", "branch": "main"}                   // branch absent when unknown
@@ -957,6 +970,30 @@ can tell a daemon that predates the field (it drops it and creates the workspace
 icon fails the create before any branch runs (no workspace, group or worktree is made); then
 carried on the `create-workspace` action, so the workspace has it from its first frame; and
 echoed as `icon` in every success reply, but only when one was set.
+
+Nesting (app-state-core.md §2.9): `parent?` (workspace name-or-id) and `parentPaneID?` (a pane
+UUID; the workspace holding it) are resolved after the icon and before any branch, so a bad
+one creates nothing: an empty or whitespace `parent` → `error("parent must name a workspace (got
+an empty value)")` (an empty `parentPaneID` likewise); both given → `error("give either parent or
+parent_pane_id, not both")`;
+either with a non-empty `group` → `error("a nested workspace follows its parent's group: pass a
+parent or a group, not both")`; `parent` unresolved → `error("parent " + <the §6.4 resolution
+error>)`; pane unknown → `error("no pane matches '{id}', so there is no workspace to nest
+under")`; parent nested itself → the `nestingRefusal` text. The resolved `parentID` rides on the
+`create-workspace` action in every branch (so the reducer places the workspace in the parent's
+`childOrder`); the group-default repository and worktree switch come from the parent's group
+(`groupIDForWorkspace(parent)`), so a nested create reaches (d) or (a) exactly like a create in
+that group, but no group is ever created or echoed. Every success reply of a nested create
+carries `parent_id` / `parent_name` read back from the store (on (b), from the resolved parent,
+since it replies before the effect).
+
+(a) and (d) await git before they create anything, and the parent can be deleted, or nested
+under another workspace, meanwhile, so both check it again (`lostParent`) once git is done. (d)
+has created nothing, so it fails whole with `parent '<name>' was deleted while the workspace was
+being created` (or `… changed while …: <nestingRefusal>`), saving any repo it registered. (a) has
+its worktree on disk, so, like a cancel that arrives after git (graft-git.md §8.5.2), it completes
+at the top level and the reply carries `parent_lost: true` and `parent_lost_reason` instead of
+`parent_id`.
 
 Four branches, checked in this order ((d) is checked before (b) and (c)):
 
@@ -1121,9 +1158,28 @@ off, moving a workspace into a collapsed group leaves the group collapsed around
 just swallowed (`workspaces.ts:528`). The sidebar's drag-and-drop is this same verb, so the
 setting is applied at the verb rather than at the gesture and governs the CLI form as well.
 
+### 6.3a `workspace-nest` → handleWorkspaceNest (request/response)
+
+Inputs: `nameOrID`, `parent` (name-or-id), `index?`. app-state-core.md §2.9.
+
+```
+ws = resolveWorkspace(nameOrID) or error(<the §6.4 resolution error>)
+if parent.trim() == "": error("parent must name a workspace (got an empty value)")
+parent = resolveWorkspace(parent) or error("parent " + <the §6.4 resolution error>)
+refusal = nestingRefusal(state, [ws.id], parent.id)   // nested parent / has children / itself
+if refusal: error(refusal)
+dispatch nest-workspaces([ws.id], parent.id, index)
+persist
+reply {"ok": true, "workspace_id", "workspace_name", "parent_id", "parent_name",
+       "index": <its position in the parent's childOrder after the move>}
+```
+
+Un-nesting is §6.3: `move-workspace-to-group` detaches from parent workspaces as well as groups.
+
 ### 6.4 `workspace-delete` → handleWorkspaceDelete
 
-Inputs: `nameOrID`, `force` (bool), and the worktree cleanup fields `worktree_paths`
+Inputs: `nameOrID`, `force` (bool), `cascade` (bool; app-state-core.md §2.9), and the worktree
+cleanup fields `worktree_paths`
 (string[]), `force_worktree_paths` (string[]), `prune_worktrees` (bool), `delete_branches`
 (bool), `batch_ids` (string[])
 (graft-git.md §8.7). (The CLI's bulk form loops one message per id; `--prune-worktree`
@@ -1154,6 +1210,17 @@ if !force and agents.total > 0:
   // Each nonzero bucket names its own count and kind; active_agents includes inactive sessions.
   return
 ```
+
+With `cascade`, `doomed = [ws, ...ws's live nested workspaces]` and every step covers all of
+them: the last-workspace guard is `workspaces.length <= doomed.length`; the agent guard sums the
+buckets across `doomed` (the error names `workspace {ws.name} and its nested workspace(s)
+have …`); `prepareDocumentClose`, the pane kills and `refreshSyncGroup` cover every doomed
+workspace; one `delete-workspaces` dispatch removes them together (so no child is promoted on
+the way); each is an owner of its own worktrees for the cleanup and is remembered for later
+batches; and the reply adds `"deleted_children": [<ids>]` and `"deleted_child_names": [<names>]`
+(index for index). Without `cascade` the reducer
+promotes the nested workspaces into the deleted one's slot. The GUI's `delete-workspace` maps
+its `cascade_children: true` onto `cascade`.
 
 The last-workspace guard has one caller allowed past it: the handler takes an `allowLast`
 flag and the guard is `state.workspaces.length <= 1 && !allowLast`
@@ -1328,7 +1395,9 @@ The icon reaches attached windows as a `workspace-upserted` event in the next st
 Requires a reply handle. Order: group ids appearing in the sidebar's top-level order
 (deduped — a corrupted order with a duplicate entry must not list a group twice), then any
 groups missing from that order appended in state order (never hide a group). Member lists
-follow each group's child order, skipping dangling ids.
+follow each group's child order, skipping dangling ids, and each member is followed by its live
+nested workspaces (app-state-core.md §2.9), as `{"id", "name", "parent_id", "parent_name"}`:
+they belong to the group, as `workspace-list --group` and `group-delete --cascade` treat them.
 
 ```jsonc
 {"ok": true, "groups": [
@@ -1354,7 +1423,9 @@ the wire (UI-only affordance).
 
 `resolveGroup(nameOrID)`; null ⇒ silent no-op. Rename dispatches the rename action with
 the new name; delete dispatches deletion with the `cascade` flag (without cascade,
-children promote to top level; with it, member workspaces are deleted too).
+children promote to top level, keeping the workspaces nested under them; with it, member
+workspaces and the workspaces nested under them are deleted too, and the panes of all of them
+are torn down; app-state-core.md §2.9).
 
 ### 7.4 `group-reorder` / `group-sort` → handleGroupReorder (shared)
 
@@ -1681,8 +1752,9 @@ web-pane subsystem (see its spec): `web-open`, `web-navigate`, `web-url`, `web-b
 | pane-list | `panes: [...]` |
 | pane-sync / pane-sync-exclude | `workspace_id`, `workspace_name`, `active`, `synced_pane_ids`, `excluded` |
 | workspace-list | `workspaces: [...]` |
-| workspace-create | `workspace_id`, `workspace_name`, `muted`, `icon?`, `group?` (+ `worktree_path`, `branch` on the worktree path) |
-| workspace-delete | `workspace_id`, `workspace_name`, `path?` (failure may add `active_agents`, `running`, `waiting`, `inactive`) |
+| workspace-create | `workspace_id`, `workspace_name`, `muted`, `icon?`, `group?`, `parent_id?`, `parent_name?` (+ `worktree_path`, `branch` on the worktree path) |
+| workspace-nest | `workspace_id`, `workspace_name`, `parent_id`, `parent_name`, `index` |
+| workspace-delete | `workspace_id`, `workspace_name`, `path?`, `deleted_children?` (failure may add `active_agents`, `running`, `waiting`, `inactive`) |
 | workspace-label | `workspace_id`, `workspace_name`, `labels` |
 | workspace-mute | `workspace_id`, `workspace_name`, `muted` |
 | workspace-rename | `workspace_id`, `workspace_name` (the new name), `old_name` |

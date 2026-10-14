@@ -25,9 +25,10 @@ import { useStore } from 'zustand';
 import { registerGestureReset } from '../chrome/gesture-reset';
 import { hoverFill, hoverText, useHoverKey } from '../chrome/hover';
 import { ChromeIcon } from '../chrome/icons';
-import { agentCounts, groupGuideColor, GroupHeaderRow, groupRepoOf, WorkspaceRow } from '../chrome/Sidebar';
+import { groupAgentCounts, groupGuideColor, GroupHeaderRow, groupRepoOf, WorkspaceRow } from '../chrome/Sidebar';
 import { tokens } from '../chrome/tokens';
 import type { ChromeBucket } from '../chrome/theme';
+import { nestedTreeRows, type TreeRowOptions } from '../chrome/nested-tree';
 import type { ChromeLabelPreset, ChromeWorkspace } from '../chrome/types';
 import type { ConnectionStatus } from '../connection';
 import { selectSidebarEntries } from '../state';
@@ -285,11 +286,18 @@ function RemoteDaemonSection(props: {
     const row = (
         workspace: ChromeWorkspace,
         options: {
-            depth: 0 | 1;
+            depth: 0 | 1 | 2;
             groupID?: string;
             guideColor?: string;
             guideExtendUp?: boolean;
             guideExtendDown?: boolean;
+            parentGuideColor?: string;
+            parentGuideExtendUp?: boolean;
+            parentGuideExtendDown?: boolean;
+            childCount?: number;
+            childrenCollapsed?: boolean;
+            rollupRunning?: number;
+            rollupWaiting?: number;
         }
     ): ReactElement => (
         <WorkspaceRow
@@ -297,6 +305,28 @@ function RemoteDaemonSection(props: {
             workspace={workspace}
             depth={options.depth}
             {...(options.groupID === undefined ? {} : { groupID: options.groupID })}
+            {...(options.parentGuideColor === undefined
+                ? {}
+                : {
+                      parentGuideColor: options.parentGuideColor,
+                      parentGuideExtendUp: options.parentGuideExtendUp === true,
+                      parentGuideExtendDown: options.parentGuideExtendDown === true
+                  })}
+            {...(options.childCount === undefined || options.childCount === 0
+                ? {}
+                : {
+                      childCount: options.childCount,
+                      childrenCollapsed: options.childrenCollapsed === true,
+                      rollupRunning: options.rollupRunning ?? 0,
+                      rollupWaiting: options.rollupWaiting ?? 0,
+                      // The REMOTE daemon's own state, as the group chevron below toggles it.
+                      onToggleChildren: (workspaceID: string) => {
+                          void held.runtime.commands.setWorkspaceChildrenCollapsed({
+                              workspaceID,
+                              collapsed: options.childrenCollapsed !== true
+                          });
+                      }
+                  })}
             active={
                 props.selection !== null &&
                 props.selection.daemon === held.name &&
@@ -323,6 +353,14 @@ function RemoteDaemonSection(props: {
             }}
         />
     );
+
+    /** app-state-core.md §2.9: a row and, unless folded away, its nested rows (`nestedTreeRows`). */
+    const tree = (
+        workspace: ChromeWorkspace,
+        nested: ReadonlyMap<string, readonly ChromeWorkspace[]> | undefined,
+        options: TreeRowOptions & { readonly depth: 0 | 1 }
+    ): ReactElement[] =>
+        nestedTreeRows(workspace, nested, options, props.bucket).map((planned) => row(planned.workspace, planned.options));
 
     return (
         <div className="mt-2 flex shrink-0 flex-col" data-testid={`remote-daemon-${held.name}`}>
@@ -364,7 +402,7 @@ function RemoteDaemonSection(props: {
                     ) : null}
                     {entries.map((entry) => {
                         if (entry.kind === 'workspace') {
-                            return row(entry.workspace as ChromeWorkspace, { depth: 0 });
+                            return tree(entry.workspace as ChromeWorkspace, entry.nested as ReadonlyMap<string, readonly ChromeWorkspace[]> | undefined, { depth: 0 });
                         }
                         const group = entry.group;
                         const guide = groupGuideColor(group.color, props.bucket);
@@ -373,7 +411,10 @@ function RemoteDaemonSection(props: {
                                 <GroupHeaderRow
                                     group={group}
                                     collapsed={group.isCollapsed}
-                                    counts={agentCounts(entry.workspaces as readonly ChromeWorkspace[])}
+                                    counts={groupAgentCounts({
+                                        workspaces: entry.workspaces as readonly ChromeWorkspace[],
+                                        nested: entry.nested as ReadonlyMap<string, readonly ChromeWorkspace[]> | undefined
+                                    })}
                                     bucket={props.bucket}
                                     renaming={false}
                                     dropPreview={false}
@@ -395,8 +436,8 @@ function RemoteDaemonSection(props: {
                                 />
                                 {group.isCollapsed
                                     ? null
-                                    : entry.workspaces.map((workspace, index) =>
-                                          row(workspace as ChromeWorkspace, {
+                                    : entry.workspaces.flatMap((workspace, index) =>
+                                          tree(workspace as ChromeWorkspace, entry.nested as ReadonlyMap<string, readonly ChromeWorkspace[]> | undefined, {
                                               depth: 1,
                                               groupID: group.id,
                                               guideColor: guide,

@@ -67,7 +67,9 @@ function commands() {
         setWorkspaceProfile: vi.fn<Commands['setWorkspaceProfile']>().mockResolvedValue({ ok: true }),
         setWorkspaceMuted: vi.fn<Commands['setWorkspaceMuted']>().mockResolvedValue({ ok: true }),
         cancelWorkspaceCreate: vi.fn<Commands['cancelWorkspaceCreate']>().mockResolvedValue({ ok: true, cancelled: true }),
-        prefetchRepo: vi.fn<Commands['prefetchRepo']>().mockResolvedValue({ ok: true, status: 'started' })
+        prefetchRepo: vi.fn<Commands['prefetchRepo']>().mockResolvedValue({ ok: true, status: 'started' }),
+        nestWorkspaces: vi.fn<Commands['nestWorkspaces']>().mockResolvedValue({ ok: true }),
+        setWorkspaceChildrenCollapsed: vi.fn<Commands['setWorkspaceChildrenCollapsed']>().mockResolvedValue({ ok: true })
     };
 }
 

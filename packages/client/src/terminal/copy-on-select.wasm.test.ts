@@ -41,11 +41,16 @@ function fixture(options: { copyOnSelect?: boolean } = {}) {
 
     const fire = (type: string, point: { clientX: number; clientY: number }, init: MouseEventInit = {}) =>
         canvas.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, ...point, ...init }));
-    /** A single-click drag from one cell to another, released on the canvas. */
+    /**
+     * A single-click drag across the cells from one to another (from the start of the first to the
+     * end of the last, so both are crossed), released on the canvas.
+     */
     const dragSelect = (from: [number, number], to: [number, number]) => {
-        fire('mousedown', at(...from), { detail: 1, buttons: 1 });
-        fire('mousemove', at(...to), { buttons: 1 });
-        fire('mouseup', at(...to), { detail: 1 });
+        const start = { clientX: from[0] * 10 + 1, clientY: at(...from).clientY };
+        const end = { clientX: to[0] * 10 + 9, clientY: at(...to).clientY };
+        fire('mousedown', start, { detail: 1, buttons: 1 });
+        fire('mousemove', end, { buttons: 1 });
+        fire('mouseup', end, { detail: 1 });
     };
     /** A whole double-click, the browser's `dblclick` included. */
     const doubleClick = (col: number, row: number) => {
@@ -112,3 +117,75 @@ describe('copy-on-select (vendor 0.4.0-kelpi.21)', () => {
         } finally { f.dispose(); }
     });
 });
+
+// A click (to focus a pane, say) used to select the pressed cell and copy it on release, so
+// switching panes replaced the clipboard with one character, and a press that wobbled over a cell
+// boundary with two. A cell is now selected only once a drag crosses 60% of it, as in Ghostty.
+describe('a click selects nothing (vendor 0.4.0-kelpi.22)', () => {
+    /** A point `x` pixels into a cell. */
+    const px = (col: number, x: number, row: number) => ({ clientX: col * 10 + x, clientY: row * 20 + 10 });
+
+    it('a click on a character leaves the clipboard and the selection alone', () => {
+        const f = fixture();
+        try {
+            f.term.write(TEXT);
+            f.fire('mousedown', at(6, 2), { detail: 1, buttons: 1 });
+            f.fire('mouseup', at(6, 2), { detail: 1 });
+            expect(f.term.getSelection()).toBe('');
+            expect(f.term.hasSelection()).toBe(false);
+            expect(f.writeText).not.toHaveBeenCalled();
+        } finally { f.dispose(); }
+    });
+
+    it('a press that wobbles across a cell boundary selects nothing', () => {
+        const f = fixture();
+        try {
+            f.term.write(TEXT);
+            f.fire('mousedown', px(6, 9, 2), { detail: 1, buttons: 1 });
+            f.fire('mousemove', px(7, 1, 2), { buttons: 1 });
+            f.fire('mouseup', px(7, 1, 2), { detail: 1 });
+            expect(f.term.getSelection()).toBe('');
+            expect(f.writeText).not.toHaveBeenCalled();
+        } finally { f.dispose(); }
+    });
+
+    it('a drag across one character selects, shows and copies just it', () => {
+        const f = fixture();
+        try {
+            f.term.write(TEXT);
+            f.fire('mousedown', px(6, 1, 2), { detail: 1, buttons: 1 });
+            f.fire('mousemove', px(6, 8, 2), { buttons: 1 });
+            f.fire('mouseup', px(6, 8, 2), { detail: 1 });
+            expect(f.term.getSelection()).toBe('i');
+            expect(f.term.hasSelection()).toBe(true);
+            expect(f.writeText).toHaveBeenCalledWith('i');
+        } finally { f.dispose(); }
+    });
+
+    it('takes a cell at either end only once the drag has crossed its threshold', () => {
+        const f = fixture();
+        try {
+            f.term.write(TEXT);
+            // Pressed late in `q` (past its threshold) and released early in `k`: neither is crossed.
+            f.fire('mousedown', px(4, 8, 2), { detail: 1, buttons: 1 });
+            f.fire('mousemove', px(8, 2, 2), { buttons: 1 });
+            f.fire('mouseup', px(8, 2, 2), { detail: 1 });
+            expect(f.writeText).toHaveBeenLastCalledWith('uic');
+            // Backwards, from late in `k` to early in `q`: both are crossed.
+            f.fire('mousedown', px(8, 8, 2), { detail: 1, buttons: 1 });
+            f.fire('mousemove', px(4, 2, 2), { buttons: 1 });
+            f.fire('mouseup', px(4, 2, 2), { detail: 1 });
+            expect(f.writeText).toHaveBeenLastCalledWith('quick');
+        } finally { f.dispose(); }
+    });
+
+    it('a drag to another row starts at the press', () => {
+        const f = fixture();
+        try {
+            f.term.write('\r\n\r\nthe quick brown fox\r\njumps over');
+            f.dragSelect([16, 2], [4, 3]);
+            expect(f.writeText).toHaveBeenCalledWith('fox\njumps');
+        } finally { f.dispose(); }
+    });
+});
+

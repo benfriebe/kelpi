@@ -64,7 +64,20 @@ export type ChromeWorkspace = Pick<WorkspaceState, 'id' | 'name' | 'color' | 'ic
      * for the same reason as `profileName`; absent reads as unmuted.
      */
     readonly muted?: boolean | undefined;
+    /**
+     * app-state-core.md §2.9: the workspaces nested under this one, in sidebar order, and
+     * whether they are collapsed. Optional for the same reason as `profileName`; absent reads as
+     * no children, expanded. The rows themselves ride the entry's `nested` map.
+     */
+    readonly childOrder?: readonly string[] | undefined;
+    readonly childrenCollapsed?: boolean | undefined;
 };
+
+/**
+ * §2.9: a sidebar entry's nested workspaces, keyed by the parent's id, in render order. Only
+ * live children are listed and a parent with none has no key. Absent = nothing nested.
+ */
+export type ChromeNestedWorkspaces = ReadonlyMap<string, readonly ChromeWorkspace[]>;
 
 export type ChromeGroup = Pick<WorkspaceGroup, 'id' | 'name' | 'color' | 'icon' | 'isCollapsed'> & {
     /**
@@ -103,11 +116,16 @@ export type NewGroupRepo =
  * so `selectSidebarEntries(store)` is passed straight in.
  */
 export type ChromeSidebarEntry =
-    | { readonly kind: 'workspace'; readonly workspace: ChromeWorkspace }
+    | {
+          readonly kind: 'workspace';
+          readonly workspace: ChromeWorkspace;
+          readonly nested?: ChromeNestedWorkspaces | undefined;
+      }
     | {
           readonly kind: 'group';
           readonly group: ChromeGroup;
           readonly workspaces: readonly ChromeWorkspace[];
+          readonly nested?: ChromeNestedWorkspaces | undefined;
       };
 
 /** A label preset as the chip renderer needs it (`theme.ts`'s `LabelPresetLike`). */
@@ -162,6 +180,22 @@ export interface WorkspacesMoveRequest {
 }
 
 /**
+ * app-state-core.md §2.9: nest workspaces under `parentID`, at the POST-REMOVE `index` among its
+ * children (the `nest-workspaces` WS verb). Un-nesting is an ordinary `WorkspaceMoveRequest`.
+ */
+export interface WorkspacesNestRequest {
+    readonly workspaceIDs: readonly string[];
+    readonly parentID: string;
+    readonly index: number;
+}
+
+/** What the workspace delete dialog asks beyond the worktrees (§2.9). */
+export interface WorkspaceDeleteOptions {
+    /** Also delete the workspace's nested workspaces; absent/false promotes them instead. */
+    readonly cascadeChildren?: boolean | undefined;
+}
+
+/**
  * A repo-registry entry as the chrome renders it. `worktreeBase` is the daemon's RESOLVED base
  * path for this repo (`repo-registry`'s `worktree_base`): `~` and `<repo>` expand against the
  * daemon host's home directory, which the client mirror deliberately does not carry.
@@ -202,6 +236,8 @@ export interface NewWorkspaceExtras {
      * included. Absent (every other caller) lets the group's defaults apply.
      */
     readonly groupDefaults?: boolean | undefined;
+    /** app-state-core.md §2.9: create the workspace nested under this one (wins over the group). */
+    readonly parentID?: string | undefined;
 }
 
 export interface WorkspaceWorktreeRequest {
@@ -270,7 +306,14 @@ export interface SidebarCallbacks {
      * (the `workspace-delete-worktrees` setting decides), null when the list never arrived (keep
      * every worktree).
      */
-    readonly onDeleteWorkspace?: ((workspaceID: string, cleanup?: WorktreeCleanupChoice | null) => void) | undefined;
+    readonly onDeleteWorkspace?:
+        | ((
+              workspaceID: string,
+              cleanup?: WorktreeCleanupChoice | null,
+              /** §2.9: present only when the dialog's "Also delete nested workspaces" is ticked. */
+              options?: WorkspaceDeleteOptions
+          ) => void)
+        | undefined;
     readonly onSetWorkspaceColor?: ((workspaceID: string, color: WorkspaceColor) => void) | undefined;
     /** `applied` is the state AFTER the toggle: true = add the label, false = remove it. */
     readonly onToggleWorkspaceLabel?:
@@ -283,6 +326,13 @@ export interface SidebarCallbacks {
      * moving the grabbed row alone, which is strictly better than moving nothing.
      */
     readonly onMoveWorkspaces?: ((request: WorkspacesMoveRequest) => void) | undefined;
+    /**
+     * §2.9: nest one workspace or a selection under another (a drag onto a row or between a
+     * parent's children, or "Nest Under ▸"). Absent = the sidebar offers no nesting gesture.
+     */
+    readonly onNestWorkspaces?: ((request: WorkspacesNestRequest) => void) | undefined;
+    /** §2.9: a parent row's disclosure chevron; `collapsed` is the new state. */
+    readonly onSetWorkspaceChildrenCollapsed?: ((workspaceID: string, collapsed: boolean) => void) | undefined;
     readonly onMoveGroup?: ((request: GroupMoveRequest) => void) | undefined;
     /**
      * "Change Icon" (§5.6). `icon` is the flat DB spelling (`"emoji:🔥"` / `"system:star"`);

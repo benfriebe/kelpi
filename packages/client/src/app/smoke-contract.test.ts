@@ -8,7 +8,7 @@
  * every constant still matches `@kelpi/protocol`.
  */
 
-import { PTY_FRAME_HEADER_BYTES, PTY_FRAME_TYPES, WS_PROTOCOL_VERSION } from '@kelpi/protocol';
+import { PROTOCOL_VERSION, PTY_FRAME_HEADER_BYTES, PTY_FRAME_TYPES, WS_PROTOCOL_VERSION } from '@kelpi/protocol';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -42,7 +42,10 @@ describe('smoke.mjs protocol constants', () => {
 
     it('declares the same frame header size and protocol version', () => {
         expect(numberLiteral('FRAME_HEADER_BYTES')).toBe(PTY_FRAME_HEADER_BYTES);
-        expect(numberLiteral('PROTOCOL_VERSION')).toBe(WS_PROTOCOL_VERSION);
+        // Two generations since the client one moved alone (3, nested workspaces): the process
+        // one names the run-dir files and `/healthz`, the client one is the hello's.
+        expect(numberLiteral('PROTOCOL_VERSION')).toBe(PROTOCOL_VERSION);
+        expect(numberLiteral('WS_PROTOCOL_VERSION')).toBe(WS_PROTOCOL_VERSION);
     });
 
     it('never points a smoke run at the production control socket', () => {

@@ -135,6 +135,22 @@ describe('CommandClient RPC', () => {
         expect(isOkReply(await rename)).toBe(true);
     });
 
+    it('sends the nested-workspace verbs (app-state-core.md §2.9)', () => {
+        const h = harness();
+        void h.client.nestWorkspaces({ workspaceIDs: ['W2'], parentID: 'W1', index: 0 }).catch(() => undefined);
+        expect(h.lastCommand()).toEqual({ command: 'nest-workspaces', workspace_ids: ['W2'], parent_id: 'W1', index: 0 });
+        void h.client.setWorkspaceChildrenCollapsed({ workspaceID: 'W1', collapsed: true }).catch(() => undefined);
+        expect(h.lastCommand()).toEqual({ command: 'set-workspace-children-collapsed', workspace_id: 'W1', collapsed: true });
+        void h.client.createWorkspace({ name: 'worker', parent: 'W1' }).catch(() => undefined);
+        expect(h.lastCommand()).toEqual({ command: 'workspace-create', name: 'worker', parent: 'W1' });
+        // A cascading delete is GUI-only, so it rides `delete-workspace`, still under the
+        // last-workspace guard (no `allow_last`).
+        void h.client.deleteWorkspace({ workspace: 'W1', force: true, cascadeChildren: true }).catch(() => undefined);
+        expect(h.lastCommand()).toEqual({ command: 'delete-workspace', workspace_id: 'W1', force: true, cascade_children: true });
+        void h.client.deleteWorkspace({ workspace: 'W1', force: true }).catch(() => undefined);
+        expect(h.lastCommand()).toEqual({ command: 'workspace-delete', name: 'W1', force: true });
+    });
+
     it('routes replies by id, not arrival order', async () => {
         const h = harness();
         const first = h.client.listPanes();

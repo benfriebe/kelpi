@@ -165,6 +165,15 @@ export interface WorkspaceState {
     /** Epoch seconds. */
     readonly lastAccessedAt: number;
     readonly labels: readonly string[];
+    /**
+     * app-state-core.md §2.9: the workspaces nested under this one, in sidebar order. A nested
+     * workspace appears here and nowhere else (not in `topLevelOrder`, not in a group), so it
+     * follows its parent wherever the parent sits. Nesting is one level deep: a workspace that
+     * is itself nested never has children of its own.
+     */
+    readonly childOrder: readonly string[];
+    /** §2.9: the parent's disclosure state; collapsed hides the nested rows. */
+    readonly childrenCollapsed: boolean;
     /** TRANSIENT */
     readonly isSyncInputActive: boolean;
     /** TRANSIENT: a set, stored as an ordered array so events/snapshots stay plain JSON. */
@@ -228,6 +237,11 @@ export type DomainAction =
           readonly color?: WorkspaceColor | undefined;
           readonly workingDirectory?: string | undefined;
           readonly groupID?: string | undefined;
+          /**
+           * §2.9: nest the new workspace under this one. Wins over `groupID` (the child follows
+           * its parent's placement); a missing or already-nested parent falls back to `groupID`.
+           */
+          readonly parentID?: string | undefined;
           readonly profileName?: string | null | undefined;
           readonly muted?: boolean | undefined;
           readonly icon?: IconRef | null | undefined;
@@ -269,6 +283,19 @@ export type DomainAction =
           readonly groupID: string | null;
           readonly index?: number | null | undefined;
       }
+    /**
+     * §2.9: nest workspaces under `parentID` at `index` (post-remove; append when absent), or
+     * reorder them within it. A no-op when the parent is missing, is itself nested or is among
+     * `ids`, or when any moving workspace has children of its own (nesting is one level).
+     * Un-nesting is `move-workspace(s)-to-group`, which detaches from every parent.
+     */
+    | {
+          readonly type: 'nest-workspaces';
+          readonly ids: readonly string[];
+          readonly parentID: string;
+          readonly index?: number | null | undefined;
+      }
+    | { readonly type: 'set-workspace-children-collapsed'; readonly id: string; readonly collapsed: boolean }
     | {
           readonly type: 'set-bulk-color';
           readonly ids: readonly string[];
@@ -860,6 +887,8 @@ export interface NewWorkspaceFields {
     readonly repoAssociations?: readonly RepoAssociation[] | undefined;
     readonly webPanes?: Readonly<Record<string, WebPaneState>> | undefined;
     readonly lastAccessedAt?: number | undefined;
+    readonly childOrder?: readonly string[] | undefined;
+    readonly childrenCollapsed?: boolean | undefined;
 }
 
 /** Build a workspace with every transient field at its default (§1.9 / §2). */
@@ -890,6 +919,8 @@ export function makeWorkspaceState(fields: NewWorkspaceFields): WorkspaceState {
         createdAt: fields.createdAt,
         lastAccessedAt: fields.lastAccessedAt ?? fields.createdAt,
         labels: fields.labels ?? [],
+        childOrder: fields.childOrder ?? [],
+        childrenCollapsed: fields.childrenCollapsed ?? false,
         isSyncInputActive: false,
         syncInputExcluded: []
     };

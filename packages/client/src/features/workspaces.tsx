@@ -13,7 +13,7 @@ import type { ChromeBucket } from '../chrome/theme';
 import type { NewWorkspaceExtras, SubmitResult, WorkspaceWorktreeRequest } from '../chrome/types';
 import { useSidebarNativeMounted } from '../plugins/Workbench';
 import type { SidebarPlacement } from '../plugins/registry';
-import { selectActiveWorkspace, selectFilteredSidebarEntries, selectGroupForWorkspace, type KelpiStoreApi } from '../state';
+import { selectActiveWorkspace, selectFilteredSidebarEntries, selectGroupForWorkspace, selectSidebarEntries, type KelpiStoreApi } from '../state';
 import type { KelpiState } from '../state/store';
 import { WORKSPACES_FEATURE } from './definitions';
 import type { BundledFeatureBinding } from './feature';
@@ -57,6 +57,8 @@ export function useWorkspacesFeatureModel(state: KelpiState) {
         const workspace = selectActiveWorkspace(state);
         return {
             entries: selectFilteredSidebarEntries(state),
+            // §2.9: the whole tree, for what a delete or a nesting verb does (`SidebarProps.allEntries`).
+            allEntries: selectSidebarEntries(state),
             activeWorkspaceID: workspace?.id ?? null,
             filter: state.ui.sidebarFilter,
             labelPresets: state.daemon.state.labelPresets,
@@ -131,6 +133,7 @@ export function WorkspacesFeatureView(props: WorkspacesFeatureViewProps): ReactE
     const { model, actions, lifecycle } = props;
     return <Sidebar
         entries={model.entries}
+        allEntries={model.allEntries}
         remoteDaemons={model.remoteNames}
         onCreateRemoteGroup={(daemonName, name, color) => { createRemoteGroup(props, daemonName, name, color); }}
         trailingSections={<RemoteDaemonSections daemons={[...props.remotes.values()]} selection={props.remoteSelection} onSelect={props.selectRemote} bucket={props.bucket} />}
@@ -142,7 +145,11 @@ export function WorkspacesFeatureView(props: WorkspacesFeatureViewProps): ReactE
         onActivateWorkspace={actions.activateWorkspace}
         onToggleGroupCollapse={actions.setGroupCollapsed}
         onRenameWorkspace={actions.renameWorkspace}
-        onDeleteWorkspace={(workspaceID, cleanup) => actions.deleteWorkspace(workspaceID, { cleanup })}
+        onDeleteWorkspace={(workspaceID, cleanup, options) =>
+            actions.deleteWorkspace(workspaceID, {
+                cleanup,
+                ...(options?.cascadeChildren === true ? { cascadeChildren: true } : {})
+            })}
         worktreeCleanup={props.worktreeCleanup}
         workspaceAgentSummary={model.workspaceAgentSummary}
         confirmDeleteWhenActive={model.confirmDeleteWhenActive}
@@ -150,6 +157,8 @@ export function WorkspacesFeatureView(props: WorkspacesFeatureViewProps): ReactE
         onToggleWorkspaceLabel={actions.toggleWorkspaceLabel}
         onMoveWorkspace={actions.moveWorkspace}
         onMoveWorkspaces={actions.moveWorkspaces}
+        onNestWorkspaces={actions.nestWorkspaces}
+        onSetWorkspaceChildrenCollapsed={actions.setWorkspaceChildrenCollapsed}
         onMoveGroup={actions.moveGroup}
         onSetWorkspaceIcon={actions.setWorkspaceIcon}
         onSetGroupIcon={actions.setGroupIcon}
@@ -244,12 +253,13 @@ function WorkspacesCreateSheet(props: WorkspacesCreateSheetProps): ReactElement 
     }, [open, setCreateSheetOpen]);
 
     const groups = useMemo(
-        () => model.entries.filter((entry): entry is Extract<WorkspacesFeatureModel['entries'][number], { kind: 'group' }> => entry.kind === 'group').map(entry => entry.group),
-        [model.entries]
+        // Every group, filtered out or not: the sheet's picker offers them all.
+        () => model.allEntries.filter((entry): entry is Extract<WorkspacesFeatureModel['allEntries'][number], { kind: 'group' }> => entry.kind === 'group').map(entry => entry.group),
+        [model.allEntries]
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps -- open-edge only, as the sidebar rolls
     // it: the swatch belongs to the OPENING of the form, not to the entries it read on the way.
-    const color = useMemo(() => nextCreateColor(model.entries), [form]);
+    const color = useMemo(() => nextCreateColor(model.allEntries), [form]);
 
     if (form === null) return null;
     return <NewEntrySheet

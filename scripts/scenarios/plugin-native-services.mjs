@@ -61,8 +61,10 @@ export default async function ({ page, cli, sandbox, rec, d }) {
     const socket = new WebSocket(`${sandbox.base.replace(/^http/, 'ws')}/ws?token=${token}`);
     const pending = new Map(); let sequence = 0;
     const ready = new Promise((resolve, reject) => {
-        socket.addEventListener('open', () => socket.send(JSON.stringify({ type: 'hello', protocolVersion: 2, token, client: { kind: 'browser', name: 'native-service-scenario' } })));
+        socket.addEventListener('open', () => socket.send(JSON.stringify({ type: 'hello', protocolVersion: 3, token, client: { kind: 'browser', name: 'native-service-scenario' } })));
         socket.addEventListener('error', reject, { once: true });
+        // A refused hello (a protocol version the daemon no longer speaks) closes without a welcome.
+        socket.addEventListener('close', event => reject(new Error(`the daemon closed the scenario's socket before its welcome (code ${event.code})`)), { once: true });
         socket.addEventListener('message', event => {
             let message; try { message = JSON.parse(String(event.data)); } catch { return; }
             if (message.type === 'welcome') resolve();

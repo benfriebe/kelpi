@@ -2,6 +2,7 @@ import { workspaceAgentDeleteWarning, type WorkspaceAgentSummary } from '@kelpi/
 import { TerminalFeaturePane } from './features/TerminalFeaturePane';
 import { BrowserFeaturePane } from './features/BrowserFeaturePane';
 import { DocumentPane, isDocumentPane } from './features/DocumentPane';
+import { ImagePane } from './content/ImagePane';
 import { toggleDocumentRenderer } from './plugins/pane-renderers';
 import { registerDocumentCloseGuard } from './plugins/document-drafts';
 import { createChromeFeatureSource } from './features/chrome-source';
@@ -2252,7 +2253,7 @@ function Shell(props: AppProps): ReactElement {
             },
 
             /**
-             * "Open in Finder" (TERM-110). A markdown/diff/csv pane with a file path REVEALS that
+             * "Open in Finder" (TERM-110). A markdown/diff/csv/image pane with a file path REVEALS that
              * file inside its folder; everything else opens the pane's working directory. Only
              * the Electron shell can act on it, so the menu item is hidden in a plain browser.
              */
@@ -2260,7 +2261,7 @@ function Shell(props: AppProps): ReactElement {
                 const pane = selectPane(store.getState(), paneID);
                 if (pane === null) return false;
                 const file =
-                    (pane.type === 'markdown' || pane.type === 'diff' || pane.type === 'csv') &&
+                    (pane.type === 'markdown' || pane.type === 'diff' || pane.type === 'csv' || pane.type === 'image') &&
                     pane.filePath !== null &&
                     pane.filePath !== ''
                         ? pane.filePath
@@ -4485,6 +4486,19 @@ function Shell(props: AppProps): ReactElement {
                 'kelpi.csv': renderDocument,
                 'kelpi.diff': renderDocument,
                 'kelpi.scratchpad': renderDocument,
+                // §12: an image file, drawn straight from the daemon's `/pane-assets/` route.
+                'kelpi.image': () => (
+                    <ImagePane
+                        runtime={runtime}
+                        paneID={paneID}
+                        filePath={pane.filePath}
+                        focused={focused}
+                        visible={renderState.visible}
+                        phone={phoneActive}
+                        background={paneFill}
+                        onFocusRequest={onTerminalFocus}
+                    />
+                ),
                 // The one pane whose body this client cannot draw: the page lives in a native view
                 // the Electron shell owns. The chrome is ours, the page area is a measured hole
                 // (`webpane/WebPane.tsx`), and in a browser that hole holds an honest card.

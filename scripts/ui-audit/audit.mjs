@@ -17871,7 +17871,7 @@ function buildFlows(ctx) {
                 await recorder.shot(page, 'refused');
                 // #335: the refusal `dropDecision` writes (`packages/client/src/app/open-file.ts`).
                 const toast = await page.eval(
-                    `(document.body.innerText ?? '').includes('is not a .md, .csv or .tsv file')`
+                    `(document.body.innerText ?? '').includes('is not a .md, .csv, .tsv or image file')`
                 );
                 const afterReject = await cli.json(['pane', 'list', '--json']);
                 recorder.check('a non-.md drop creates nothing', afterReject.length === beforeReject.length, `${String(beforeReject.length)} → ${String(afterReject.length)}`);

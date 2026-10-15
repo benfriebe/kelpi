@@ -787,7 +787,7 @@ Timestamps: ISO 8601 with internet date-time format.
 {"ok": true, "panes": [
   {
     "id": "5B2C…-full-uuid",
-    "type": "shell",                       // shell|markdown|scratchpad|diff|csv|web
+    "type": "shell",                       // shell|markdown|scratchpad|diff|csv|image|web
     "workspace_id": "…",
     "workspace_name": "dev",
     "working_directory": "/Users/me/proj",
@@ -1550,7 +1550,9 @@ The CLI's `kelpi open`/`kelpi md` document route. **Pane type by extension (issu
 `path` ending in `.csv` or `.tsv` (case-insensitive, `isCsvPath`) opens a csv table pane
 ([csv-pane.md](csv-pane.md)) through the same `open-markdown-pane` action with
 `paneType: 'csv'`, so everything below (reuse, split placement, background, focus, sync-group
-refresh) applies unchanged; any other path opens a markdown pane. `as: "markdown"` (sent by
+refresh) applies unchanged. An image path (`isImagePath`, case-insensitive) opens an image pane
+the same way with `paneType: 'image'` ([content-panes.md](content-panes.md) §12). Any other path
+opens a markdown pane. `as: "markdown"` (sent by
 `kelpi md`) skips the extension check and always opens markdown. If `paneID` is set and some workspace's
 `panes` contain it: open the markdown file in that workspace, reusing the caller's pane
 (converting it in place) when `reuse` is true, else opening a new markdown pane split beside

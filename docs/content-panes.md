@@ -1,4 +1,4 @@
-# Content Panes: Markdown, Diff, Scratchpad, CSV
+# Content Panes: Markdown, Diff, Scratchpad, CSV, Image
 
 Behavioral specification of Kelpi's non-terminal "content" panes (markdown preview/edit
 panes, git-diff panes, scratchpad panes and, in its own spec, csv table panes) plus the
@@ -22,6 +22,12 @@ mode (§4), but none of the whole-string pipeline: its daemon indexes the file a
 range, and its client is a virtualised grid. External-editor bodies can
 also use a [terminal replacement](plugin-terminals.md) while retaining their native PTY.
 
+The `image` pane (§12) shows one image file, read-only. It shares the pane model, placement
+path (§2.1) and closing rules (§2.4), and nothing else: it has no content entry, no edit
+buffer and no rendered document. The client draws the file with an `<img>` loaded from the
+same `/pane-assets/` route a preview's sibling images use. It is not a native document type,
+so the document replacement contract does not cover it.
+
 Source files this spec describes (TypeScript):
 
 - `packages/daemon/src/content/markdown.ts`: markdown → HTML + CSS, front-matter extraction and rendering, bare-URL autolinking
@@ -36,8 +42,10 @@ Source files this spec describes (TypeScript):
 - `packages/daemon/src/graft/watcher.ts`: recursive directory watcher (used by Graft, spec'd here for completeness)
 - `packages/daemon/src/store/reducers/panes.ts`, `packages/daemon/src/store/types.ts`: the pane model, the open/close/park/reopen reducers, closed-pane snapshots
 - `packages/daemon/src/handlers/app/files.ts`: the `open` and `diff` wire commands (`open`
-  routes `.csv`/`.tsv` to a csv pane; see [csv-pane.md](csv-pane.md) for that pane's own
-  sources)
+  routes `.csv`/`.tsv` to a csv pane, see [csv-pane.md](csv-pane.md) for that pane's own
+  sources, and an image file to an image pane, §12)
+- `packages/daemon/src/content/image.ts`: the image pane's asset rule and file watch (§12)
+- `packages/client/src/content/ImagePane.tsx`: the image pane body (§12)
 - `packages/client/src/content/ContentFrame.tsx`: the sandboxed preview host, find bar, copy menu, scroll restore
 - `packages/client/src/content/bridge.ts`: the injected bridge script (copy button, links, find, chord relay, scroll) and its host-side effects
 - `packages/client/src/content/copy.ts`: the whole-document copy commands
@@ -160,12 +168,13 @@ the close snapshot, preserving view identity and saved state when the plugin is 
 A `.csv`/`.tsv` path (case-insensitive) reaches this same action from every entry point below
 with `paneType: 'csv'` and opens a csv pane instead, with the same placement, `--here` and
 focus behaviour; only `kelpi md` (wire `as: 'markdown'`) forces markdown for it
-([csv-pane.md §2](csv-pane.md)).
+([csv-pane.md §2](csv-pane.md)). An image path does the same with `paneType: 'image'` (§12).
 
 Entry points (all converge on this one action):
 
-1. **⌘O** file picker (File ▸ Open…, panel title "Open File", filters "Markdown and CSV",
-   "Markdown" and "CSV") and **drag-and-drop** of a `.md` (or `.csv`/`.tsv`) file onto the
+1. **⌘O** file picker (File ▸ Open…, panel title "Open File", filters "Markdown, CSV and
+   Images", "Markdown", "CSV" and "Images") and **drag-and-drop** of a `.md` (or `.csv`/`.tsv`,
+   or image) file onto the
    window, outside a terminal pane → app-level `openFileAtPath(path, fromPaneID?)`:
    - If no workspace is active yet, the `open` (or `diff`) command is dropped; the
      daemon keeps no pending-open queue (`route()` in
@@ -934,6 +943,18 @@ scheme, including the `file://` and `ftp://` URLs §3.4 autolinks, because the h
 untrusted content and `javascript:` must never reach `window.open` on the app's own
 origin (`openExternalLink` in `packages/client/src/content/bridge.ts`).
 
+One exception, in a markdown preview: a link to a **local image** opens it in an image pane
+beside the preview (§12). The frame posts the `href` attribute as written (`raw`) beside the
+resolved URL, because a `../assets/shot.png` has already climbed out of the asset base once
+the browser resolves it. `localImagePath` reads a path out of `raw`: a relative path, an
+absolute path or a local `file:` URL, with the query and fragment dropped and escapes
+decoded, and only for an `isImagePath` file. The host sends it to the daemon's `open` with the
+preview as the caller, so a relative path resolves against the markdown file's directory.
+A click on a local image itself (an `<img>` whose `src` has no scheme, not inside a link) does
+the same (`open-image` message), and the frame shows a zoom-in cursor over such images. Links
+to other local files keep the behaviour above. A diff pane has no file opener, so a local
+image link in a diff opens outside like any other.
+
 ### 3.16 Font size (preview only)
 
 Per-pane `markdownFontSize`, adjusted by ⌘= / ⌘- / ⌘0. Rules (enforced by the daemon
@@ -1643,7 +1664,8 @@ Markdown:
 - Raw HTML in markdown passes through unescaped.
 - Link clicks on `http:`/`https:`/`mailto:` leave the app (system browser); other
   schemes are dropped; only an in-document `#fragment` link moves the preview, and the
-  preview never navigates to another document (§3.15).
+  preview never navigates to another document (§3.15). A link to a local image, or a click
+  on one, opens an image pane instead (§12).
 - `--here` panes restore their parked terminal on close; if the parked terminal's
   process died first, close behaves normally.
 
@@ -1668,6 +1690,94 @@ Fonts (defaults, bindable):
 - ⌘E toggle_markdown_edit; ⌘= / ⌘- / ⌘0 font size (guarded: a markdown pane in view mode
   takes its own preview size, anything else steps the daemon-wide terminal size;
   config-keybindings.md §7.6); ⌘⇧N create_scratchpad; open_diff default unbound.
+
+---
+
+## 12. Image panes
+
+An image pane shows one image file, read-only, fitted to the pane.
+
+### 12.1 Which files
+
+`@kelpi/protocol` `image.ts` is the one rule: `isImagePath` is true for a name with text before
+the dot and one of `IMAGE_OPEN_EXTENSIONS` (`png`, `apng`, `jpg`, `jpeg`, `gif`, `webp`, `avif`,
+`svg`, `bmp`, `ico`), case-insensitively. These are the formats Chromium draws in an `<img>`;
+HEIC and TIFF are left out because the pane could only show an error for them.
+
+### 12.2 Opening
+
+Every route that opens a markdown or csv file opens an image file as an image pane, through
+the same `open-markdown-pane` action with `paneType: 'image'` and the same placement (§2.1):
+
+- the daemon's `open` (`kelpi open shot.png`, ⌘O, a drop outside a terminal, Finder ▸ Open
+  With), unless the caller sent `as: 'markdown'` (`kelpi md`);
+- a ⌘-click on an image path in a terminal (`open-terminal-target`, reply `opened: 'image'`),
+  and the hover underline (`probe-terminal-target`) on the same path. A missing file answers
+  `opened: 'missing'` and opens nothing, as for markdown;
+- a ⌘-click on an OSC 8 hyperlink whose target is a local `file:` URL to an image
+  (`ls --hyperlink`, a tool listing what it wrote). Any other `file:` hyperlink is still
+  refused with `link-not-http`;
+- a click on a link to a local image, or on a local image, in a markdown preview (§3.15).
+
+The ⌘O panel lists images beside Markdown and CSV, and the app bundle declares an `Image`
+document type over the system image UTIs as a **Viewer**, rank Alternate, so Kelpi joins
+Finder's Open With without taking the default from Preview.
+
+An `http(s)` URL to an image is a web address like any other: it opens in the browser or a web
+pane (`open-links-in`), which draws images natively.
+
+The pane's label and title are the file name, its working directory the file's directory.
+Open in Finder reveals the file.
+
+### 12.3 Serving the file
+
+The client loads the file from `/pane-assets/c/<credential>/<paneID>/<name>`, the
+credentialed route a markdown preview's sibling images use (port note 4), gated the same way.
+For an image pane the route serves the pane's own file, asked for by its own base name, while
+it is a regular file, and nothing else: no sibling, no subdirectory, no traversal
+(`imageAssetPath` in `packages/daemon/src/content/image.ts`). The `content-type` comes from the
+opened name's extension, and the response carries the route's sandbox CSP and `nosniff`.
+
+The URL is built from the pane's connection target (`paneFileURL` in
+`packages/client/src/content/asset-credential.ts`), not the page: a remote workspace's image
+pane lives on another daemon, so its file is that daemon's, under that daemon's token. An
+`<img>` loads cross-origin without CORS.
+
+### 12.4 Live reload
+
+The daemon watches the file of every visible image pane (`createImageWatchService`; the same
+`watchFile` as §3.12, so an atomic replace re-attaches after 200 ms) and broadcasts
+`{type: 'image-changed', paneID, workspaceID}` 120 ms after the last change in a burst. A client
+showing that pane loads the file again under a new URL (`?v=<n>`, a per-mount counter that only
+grows), as it does after a reconnect, when a change may have gone unheard. The new image
+decodes off screen and replaces the shown one only once it has, so a regenerated screenshot
+swaps in place without a blank frame, and a failed reload keeps the last good pixels and says
+so in the caption.
+
+### 12.5 The pane
+
+- **Fit** (the default) scales an image larger than the pane down to fit and never scales a
+  smaller one up. A click on a scaled-down image shows it at **actual size**, scrollable, with
+  the clicked point kept under the pointer; a second click fits it again. The cursor says which
+  (zoom-in, zoom-out; none when the image already fits).
+- A caption in the bottom-right corner gives the pixel size, and the scale when fit shrinks it
+  (`1920 × 1080 · 42%`).
+- The image cannot be dragged out: its URL carries the asset credential.
+- A file that is missing or not drawable shows "Can't show <name>: the file is missing, or it
+  is not an image Kelpi can draw."
+- A press focuses the pane, and the pane takes the keyboard (a `data-pane-surface` element) so
+  app chords reach the app rather than the last terminal.
+- The phone and remote-workspace views draw the same pane.
+
+### 12.6 Edge cases
+
+- An image pane opened on a path that does not exist yet shows the error and is not watched
+  until it is reopened (the watch attaches only to an existing file, as §3.12's does).
+- A relative path the daemon could not absolutise (a raw socket client with no caller pane)
+  serves nothing.
+- An older client that does not know the `image` type draws its placeholder and keeps the
+  pane; an older daemon never creates one.
+- No migration: the pane type is stored as text, and an image pane carries no extra column.
 
 ---
 
@@ -1706,7 +1816,10 @@ as decisions rather than accidents.
    `<base href>` for it, so relative images work even though the frame is loaded
    through `srcdoc` (a plain `srcdoc` iframe would resolve them against the client
    page); copy-as-rich-text resolves relative URLs against the same base (§3.14). The
-   client re-inserts the `<base>` tag if a document lacks one.
+   daemon's base is the shared, uncredentialed form, which a daemon with a token refuses,
+   so each client replaces it with its own credentialed form of the same base
+   (`/pane-assets/c/<credential>/<paneID>/`, `prepareContentDocument`), and inserts that
+   tag if a document lacks one. Any other `<base>` a document carries is left alone.
 
 5. **Clipboard.** `navigator.clipboard.writeText` for plain text; copy-as-rich-text
    writes both `text/html` and `text/plain` flavors via `ClipboardItem` (browsers can't

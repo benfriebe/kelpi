@@ -25,6 +25,7 @@ const TYPE_ICON: Readonly<Record<PaneModel['type'], IconName>> = {
     scratchpad: 'note',
     diff: 'plusminus',
     csv: 'table',
+    image: 'image',
     plugin: 'document',
     web: 'globe'
 };
@@ -35,6 +36,7 @@ const TYPE_LABEL: Readonly<Record<PaneModel['type'], string>> = {
     scratchpad: 'Scratchpad',
     diff: 'Diff',
     csv: 'CSV table',
+    image: 'Image',
     plugin: 'Plugin view',
     web: 'Web page'
 };

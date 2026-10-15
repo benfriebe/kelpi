@@ -9,6 +9,7 @@ import {
     CONTENT_BRIDGE_SOURCE,
     contentBridgeScript,
     frameBaseStyle,
+    localImagePath,
     openExternalLink,
     parseBridgeMessage,
     prepareContentDocument,
@@ -127,6 +128,21 @@ describe('parseBridgeMessage', () => {
         });
     });
 
+    it('carries a link\'s raw href, and a click on a local image (§12)', () => {
+        expect(parseBridgeMessage(message({ kind: 'link', href: 'http://h/pane-assets/x/a.png', raw: 'a.png' }), PANE)).toEqual({
+            kind: 'link',
+            href: 'http://h/pane-assets/x/a.png',
+            raw: 'a.png'
+        });
+        expect(parseBridgeMessage(message({ kind: 'link', href: 'https://example.com' }), PANE)).toEqual({
+            kind: 'link',
+            href: 'https://example.com'
+        });
+        expect(parseBridgeMessage(message({ kind: 'open-image', src: 'img/a.png' }), PANE)).toEqual({ kind: 'open-image', src: 'img/a.png' });
+        expect(parseBridgeMessage(message({ kind: 'open-image', src: '' }), PANE)).toBeNull();
+        expect(parseBridgeMessage(message({ kind: 'open-image' }), PANE)).toBeNull();
+    });
+
     it('rejects anything else', () => {
         expect(parseBridgeMessage(null, PANE)).toBeNull();
         expect(parseBridgeMessage('ready', PANE)).toBeNull();
@@ -147,6 +163,22 @@ describe('host effects', () => {
         expect(openExternalLink('data:text/html,<script>x</script>', open)).toBe(false);
         expect(openExternalLink('file:///etc/passwd', open)).toBe(false);
         expect(open).toHaveBeenCalledTimes(2);
+    });
+
+    it('reads a local image path out of a link or image source as written (§12)', () => {
+        expect(localImagePath('shot.png')).toBe('shot.png');
+        expect(localImagePath('../assets/My%20Shot.PNG?raw=1#top')).toBe('../assets/My Shot.PNG');
+        expect(localImagePath('/Users/me/shot.jpg')).toBe('/Users/me/shot.jpg');
+        expect(localImagePath('file:///Users/me/shot.webp')).toBe('/Users/me/shot.webp');
+        expect(localImagePath('100%.png')).toBe('100%.png');
+        // Not a local image: a URL, another host, a fragment, a document that is not an image.
+        expect(localImagePath('https://example.com/shot.png')).toBeNull();
+        expect(localImagePath('//cdn.example.com/shot.png')).toBeNull();
+        expect(localImagePath('file://otherhost/shot.png')).toBeNull();
+        expect(localImagePath('data:image/png;base64,AAAA')).toBeNull();
+        expect(localImagePath('#shot.png')).toBeNull();
+        expect(localImagePath('notes.md')).toBeNull();
+        expect(localImagePath('')).toBeNull();
     });
 
     it('ignores an empty clipboard write and survives a rejecting one', () => {

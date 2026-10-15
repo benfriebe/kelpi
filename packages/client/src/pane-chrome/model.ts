@@ -103,6 +103,7 @@ export function paneDisplayTitle(pane: PaneModel, homeDirectory = ''): string {
             return 'Scratchpad';
         case 'markdown':
         case 'csv':
+        case 'image':
             return basename(pane.filePath ?? pane.workingDirectory);
         case 'diff': {
             // §L48: empty-as-unscoped, the Swift's own test (`PaneHeaderView.swift:496-502` reads
@@ -389,6 +390,7 @@ const TYPE_GLYPHS: Record<Exclude<PaneModel['type'], 'shell'>, IconName> = {
     scratchpad: 'note',
     diff: 'plusminus',
     csv: 'table',
+    image: 'image',
     plugin: 'document',
     web: 'globe'
 };

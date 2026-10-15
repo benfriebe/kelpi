@@ -2,6 +2,7 @@ import { TerminalFeaturePane } from '../features/TerminalFeaturePane';
 import { BrowserFeaturePane } from '../features/BrowserFeaturePane';
 import { PluginView } from '../plugins/PluginView';
 import { DocumentPane, isDocumentPane } from '../features/DocumentPane';
+import { ImagePane } from '../content/ImagePane';
 import { PluginContributionItems } from '../plugins/contributions-ui';
 import { usePaneHeaderContributions } from '../plugins/contributions';
 import { usePluginCommands } from '../plugins/commands';
@@ -103,6 +104,8 @@ export function RemoteWorkspaceView(props: RemoteWorkspaceViewProps): ReactEleme
         // #324: a csv pane routes here too; `editing` is what picks its grid or raw text.
         if (isDocumentPane(pane.type) && pane.externalEditorCommand == null) return <DocumentPane runtime={runtime} workspaceID={workspaceID} paneID={paneID} kind={pane.type} editing={pane.isEditing} filePath={pane.filePath} wrap={pane.scratchpadWrap} focused={focused} visible={state.visible} onFocusRequest={id => runtime.focusPane(workspaceID, id)} />;
         if (pane.type === 'web') return <BrowserFeaturePane runtime={runtime} workspaceID={workspaceID} paneID={paneID} focused={focused} visible={state.visible} embedded={false} onFocusRequest={id => runtime.focusPane(workspaceID, id)} />;
+        // §12: the file comes from the remote daemon's own route, under its own token.
+        if (pane.type === 'image') return <ImagePane runtime={runtime} paneID={paneID} filePath={pane.filePath} focused={focused} visible={state.visible} onFocusRequest={id => runtime.focusPane(workspaceID, id)} />;
         if (pane.type !== 'shell' && pane.externalEditorCommand == null) {
             return (
                 <div

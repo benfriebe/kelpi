@@ -115,7 +115,7 @@ import {
 import { contentContextMenuLogLine, contentContextMenuTemplate } from './context-menu.js';
 import { createUnresponsiveWatchdog } from './unresponsive.js';
 import { focusWindowContents, presentWindow, presentWindowLogLine } from './window-present.js';
-import { isForwardableOpenPath, scriptedFolderAnswer } from './shell-actions.js';
+import { OPEN_FILE_EXTENSIONS, isForwardableOpenPath, scriptedFolderAnswer } from './shell-actions.js';
 import { resolveDroppedFiles, serialized, type DroppedFilesResult } from './dropped-files.js';
 import { titleBarLogLine, titleBarStyleFor, trafficLightQuery, windowButtonsLogLine, windowButtonsVisible } from './titlebar.js';
 import { describeSkillRefresh, refreshBundledSkill } from './skill.js';
@@ -154,7 +154,7 @@ import {
     readAuditUpdaterControl,
     type AuditUpdaterControl
 } from './update-audit.js';
-import type { UpdateView } from '@kelpi/protocol';
+import { IMAGE_OPEN_EXTENSIONS, type UpdateView } from '@kelpi/protocol';
 import { installQuitGate, settingsFile, type QuitGate } from './quit.js';
 import { EMPTY_COUNTS } from './agents.js';
 import {
@@ -1161,7 +1161,8 @@ function forwardOpen(filePath: string, paneID: string | null = null): void {
  *
  * Started as the Swift panel (`AppReducer+SearchNotify.swift:83-99`: `md` only, single
  * selection, files only). #324 widens it to the document types Kelpi opens natively, Markdown
- * and CSV (docs/csv-pane.md §2), with Markdown and CSV filters beside the combined one. The
+ * and CSV (docs/csv-pane.md §2), and the image pane adds images (docs/content-panes.md §12),
+ * with a filter for each beside the combined one. The
  * chosen path goes back out as an ordinary `open` control command, so the daemon sees one
  * file-open route no matter who raised it, and picks the pane type by extension.
  */
@@ -1187,12 +1188,13 @@ function promptOpenFile(paneID: string | null): void {
     const parent = mainWindow !== null && !mainWindow.isDestroyed() ? mainWindow : undefined;
     const options: Electron.OpenDialogOptions = {
         title: 'Open File',
-        message: 'Choose a Markdown or CSV file to open',
+        message: 'Choose a Markdown, CSV or image file to open',
         properties: ['openFile'],
         filters: [
-            { name: 'Markdown and CSV', extensions: ['md', 'markdown', 'csv', 'tsv'] },
+            { name: 'Markdown, CSV and Images', extensions: [...OPEN_FILE_EXTENSIONS] },
             { name: 'Markdown', extensions: ['md', 'markdown'] },
-            { name: 'CSV', extensions: ['csv', 'tsv'] }
+            { name: 'CSV', extensions: ['csv', 'tsv'] },
+            { name: 'Images', extensions: [...IMAGE_OPEN_EXTENSIONS] }
         ]
     };
     const shown = parent === undefined ? dialog.showOpenDialog(options) : dialog.showOpenDialog(parent, options);
@@ -2224,9 +2226,9 @@ if (!app.requestSingleInstanceLock()) {
         showWindow();
         for (const arg of argv.slice(1)) {
             // CONT-124's filter: `open` renders whatever path it is handed AS MARKDOWN unless it
-            // is a csv (#324), so an unfiltered forward would turn `open -a Kelpi.app photo.png`
-            // into a pane showing PNG bytes as markdown source. `AppDelegate.swift:45-51`
-            // filtered for the same reason.
+            // is a csv (#324) or an image (content-panes.md §12), so an unfiltered forward would
+            // turn `open -a Kelpi.app archive.zip` into a pane showing zip bytes as markdown
+            // source. `AppDelegate.swift:45-51` filtered for the same reason.
             if (!arg.startsWith('-') && isForwardableOpenPath(arg)) forwardOpen(arg);
         }
     });

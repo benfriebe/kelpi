@@ -1546,9 +1546,12 @@ const markdownOpenExtensions = new Set([
 // command as markdown; the daemon picks the csv pane by extension (csv-pane.md §2).
 const csvOpenExtensions = new Set(CSV_OPEN_EXTENSIONS); // "csv", "tsv"
 
-const webOpenExtensions = new Set([
-  "html", "htm", "pdf", "svg", "png", "jpg", "jpeg", "gif", "webp",
-]);
+// content-panes.md §12: the protocol's IMAGE_OPEN_EXTENSIONS. Also the `open` command; the
+// daemon picks the image pane by extension. (Images used to be web extensions.)
+const imageOpenExtensions = new Set(IMAGE_OPEN_EXTENSIONS);
+// "png", "apng", "jpg", "jpeg", "gif", "webp", "avif", "svg", "bmp", "ico"
+
+const webOpenExtensions = new Set(["html", "htm", "pdf"]);
 
 // Applies ONLY to the bare dotted-hostname case in `kelpi open`.
 // Deliberately excludes TLDs colliding with common file extensions
@@ -1638,7 +1641,7 @@ through the file router (which then routes it to a web pane as `file://`).
   Usage: kelpi open [--here] [--focus] <path-or-url>
   URLs & hostnames (google.com, https://…, localhost:3000) → web pane.
   Local files route by type: .md/.markdown → markdown pane; .csv/.tsv → table pane;
-  .html/.htm/.pdf/.svg and images (.png/.jpg/.gif/.webp) → web pane.
+  images (.png/.jpg/.gif/.webp/.svg/...) → image pane; .html/.htm/.pdf → web pane.
   The new pane opens in the background; --focus moves focus to it.
   ```
 
@@ -1651,9 +1654,10 @@ through the file router (which then routes it to a web pane as `file://`).
   `kelpi open: --here is ignored for URLs (web panes always open in a new pane)` to stderr;
   then send `web-open` (13.7) and print its ack. Request/response.
 - Else, resolve to an absolute standardized path; lowercase the path extension:
-  - in `markdownOpenExtensions` or `csvOpenExtensions`: the document route (13.6),
-    honoring `--here`. The payload is identical for both; the daemon opens a csv table pane
-    for `.csv`/`.tsv` (issue #324, [csv-pane.md](csv-pane.md) §2) and a markdown pane
+  - in `markdownOpenExtensions`, `csvOpenExtensions` or `imageOpenExtensions`: the document
+    route (13.6), honoring `--here`. The payload is identical for all three; the daemon opens a
+    csv table pane for `.csv`/`.tsv` (issue #324, [csv-pane.md](csv-pane.md) §2), an image
+    pane for an image ([content-panes.md](content-panes.md) §12) and a markdown pane
     otherwise.
   - in `webOpenExtensions`: if `--here`, stderr note
     `kelpi open: --here is ignored for web files (web panes always open in a new pane)`;
@@ -1664,7 +1668,8 @@ through the file router (which then routes it to a web pane as `file://`).
     kelpi open: don't know how to open '.<ext>' files      (or: ... open files without an extension)
            URLs & hostnames (e.g. google.com) open a web pane;
            Markdown (.md, .markdown) opens a preview pane; CSV (.csv, .tsv) opens a
-           table pane; .html/.htm/.pdf/.svg and images (.png/.jpg/.gif/.webp) open a web pane.
+           table pane; images (.png/.jpg/.gif/.webp/.svg/...) open an image pane;
+           .html/.htm/.pdf open a web pane.
            Use `kelpi md <file>` to force a markdown pane, or `kelpi web open <url>`.
     ```
 

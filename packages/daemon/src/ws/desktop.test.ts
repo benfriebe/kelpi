@@ -16,6 +16,7 @@ import {
     clippedByBorder,
     createDesktopChannel,
     isDesktopCommand,
+    localFileURLPath,
     looksLikeLink,
     resolveTerminalPath,
     shellEscapePath,
@@ -397,6 +398,21 @@ describe('urlFromToken', () => {
     });
 });
 
+describe('localFileURLPath (content-panes.md §12)', () => {
+    it('decodes a local file URL to its absolute path', () => {
+        expect(localFileURLPath('file:///tmp/shot.png')).toBe('/tmp/shot.png');
+        expect(localFileURLPath('file://localhost/tmp/My%20Shot.png')).toBe('/tmp/My Shot.png');
+        expect(localFileURLPath('FILE:///tmp/a.png')).toBe('/tmp/a.png');
+    });
+
+    it('refuses another host, another scheme, and a NUL byte', () => {
+        expect(localFileURLPath('file://otherhost/tmp/shot.png')).toBeNull();
+        expect(localFileURLPath('https://example.com/shot.png')).toBeNull();
+        expect(localFileURLPath('/tmp/shot.png')).toBeNull();
+        expect(localFileURLPath('file:///tmp/a%00.png')).toBeNull();
+    });
+});
+
 describe('shell-action', () => {
     it('broadcasts the request so whichever shell is attached acts', async () => {
         const f = fixture();
@@ -635,6 +651,73 @@ describe('open-terminal-target (CONT-122 / TERM-052)', () => {
         expect(visiblePane(workspaceByID(f.h.state(), W1)!, NEW)?.type).toBe('csv');
     });
 
+    // content-panes.md §12: an image file opens an image pane; the reply says `opened: 'image'`.
+    it('opens an image pane for an existing image path under the cell', async () => {
+        const f = fixture({ cell: { text: 'saved shots/home.PNG.', offset: 8 } });
+        const reply = await f.channel.run('open-terminal-target', { pane_id: P0, row: 0, col: 8 });
+        expect(reply).toMatchObject({
+            ok: true,
+            opened: 'image',
+            path: '/tmp/work/shots/home.PNG',
+            token: 'shots/home.PNG',
+            pane_id: NEW,
+            workspace_id: W1
+        });
+        const pane = visiblePane(workspaceByID(f.h.state(), W1)!, NEW);
+        expect(pane?.type).toBe('image');
+        expect(pane?.filePath).toBe('/tmp/work/shots/home.PNG');
+        expect(pane?.title).toBe('home.PNG');
+    });
+
+    it('answers a probe on an image path as image, with its cells, and opens nothing', async () => {
+        const f = fixture({ cell: { text: 'saved shot.webp', offset: 8 } });
+        const before = f.h.state();
+        const reply = await f.channel.run('probe-terminal-target', { pane_id: P0, row: 0, col: 8 });
+        expect(reply).toMatchObject({ ok: true, opened: 'image', probe: true, path: '/tmp/work/shot.webp' });
+        expect(f.h.state()).toBe(before);
+    });
+
+    it('reports an image path that is not on disk instead of opening a broken pane', async () => {
+        const f = fixture({ cell: { text: 'see shot.png', offset: 6 }, exists: false });
+        expect(await f.channel.run('open-terminal-target', { pane_id: P0, row: 0, col: 6 })).toMatchObject({
+            ok: true,
+            opened: 'missing',
+            path: '/tmp/work/shot.png'
+        });
+        expect(visiblePane(workspaceByID(f.h.state(), W1)!, NEW)).toBeNull();
+    });
+
+    it('opens an image pane for a file: hyperlink to an image, and probes it with its cells', async () => {
+        const segments = [{ row: 0, col: 4, width: 8 }];
+        const f = fixture({ hyperlink: 'file:///pics/My%20Shot.png', cell: null });
+        expect(await f.channel.run('open-terminal-target', { pane_id: P0, row: 0, col: 5 })).toMatchObject({
+            ok: true,
+            opened: 'image',
+            path: '/pics/My Shot.png',
+            link: 'file:///pics/My%20Shot.png',
+            source: 'hyperlink',
+            pane_id: NEW
+        });
+        expect(visiblePane(workspaceByID(f.h.state(), W1)!, NEW)?.type).toBe('image');
+
+        const probe = await fixture({ hyperlinkRange: { uri: 'file:///pics/a.png', segments }, cell: null })
+            .channel.run('probe-terminal-target', { pane_id: P0, row: 0, col: 5 });
+        expect(probe).toMatchObject({ opened: 'image', probe: true, path: '/pics/a.png', span: segments });
+    });
+
+    it('still refuses a file: hyperlink that is not an image, and one on another host', async () => {
+        for (const link of ['file:///pics/notes.md', 'file://otherhost/pics/a.png']) {
+            const f = fixture({ hyperlink: link, cell: null });
+            expect(await f.channel.run('open-terminal-target', { pane_id: P0, row: 0, col: 2 })).toMatchObject({
+                ok: true,
+                opened: 'none',
+                reason: 'link-not-http',
+                link
+            });
+            expect(visiblePane(workspaceByID(f.h.state(), W1)!, NEW)).toBeNull();
+        }
+    });
+
     it('reports a .csv path that is not on disk instead of opening a broken pane', async () => {
         const f = fixture({ cell: { text: 'see sales.csv', offset: 6 }, exists: false });
         expect(await f.channel.run('open-terminal-target', { pane_id: P0, row: 0, col: 6 })).toMatchObject({
@@ -817,6 +900,7 @@ describe('probe-terminal-target (#303)', () => {
         const quiet: Array<Parameters<typeof fixture>[0]> = [
             { cell: line('see notes.md', 6), exists: false },
             { cell: line('see sales.csv', 6), exists: false },
+            { cell: line('see shot.png', 6), exists: false },
             { cell: line('cargo build --release', 2) },
             { cell: line('see slack://channel now', 6) },
             { cell: line('  │https://example.com/wrapped/pa│', 8) },

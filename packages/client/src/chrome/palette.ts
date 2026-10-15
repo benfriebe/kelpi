@@ -62,6 +62,7 @@ export const PANE_TYPE_ICONS: Readonly<Record<ChromePane['type'], string>> = {
     scratchpad: 'note.text',
     diff: 'plusminus',
     csv: 'tablecells',
+    image: 'photo',
     plugin: 'document',
     web: 'globe'
 };

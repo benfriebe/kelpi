@@ -922,7 +922,10 @@ URI → `opened: "external", url, source: "hyperlink"`; any other scheme →
   focus the source pane first (`opened: "markdown"`); a `.md` token whose file is missing
   answers `opened: "missing"` and nothing opens (deliberate: a ⌘-click on prose must not leave
   a broken preview behind); issue #324: a `.csv`/`.tsv` token (case-insensitive, the socket
-  `open` rule) opens a csv table pane the same way (`opened: "csv"`, csv-pane.md §2);
+  `open` rule) opens a csv table pane the same way (`opened: "csv"`, csv-pane.md §2), and an
+  image token (`isImagePath`, case-insensitive) an image pane (`opened: "image"`,
+  content-panes.md §12). An OSC 8 hyperlink to a local `file:` URL of an image opens an image
+  pane too (any other `file:` hyperlink is still `link-not-http`);
 - anything else → `opened: "none"`, with no `reason`.
 
 **A `reason` is what the client is allowed to speak about.** `opened: "missing"`,
@@ -982,8 +985,9 @@ modifier) over a shell pane asks the same `probe-terminal-target` as the plain c
 underlines the cells the reply's `span` names, with a pointer cursor (a plain click there raises
 the link menu, a ⌘-click opens it):
 one `{ row, col, width }` run per viewport row, given only for `opened: "external"`,
-`opened: "markdown"` and `opened: "csv"` (an existing `.csv`/`.tsv` path, #324). So a URL refused
-as `link-not-http` or `link-clipped`, a missing `.md` or `.csv` path and prose get no underline; a soft-wrapped URL is underlined on every row it covers; an OSC 8
+`opened: "markdown"`, `opened: "csv"` (an existing `.csv`/`.tsv` path, #324) and `opened: "image"`
+(an existing image path or `file:` image hyperlink, content-panes.md §12). So a URL refused
+as `link-not-http` or `link-clipped`, a missing `.md`, `.csv` or image path and prose get no underline; a soft-wrapped URL is underlined on every row it covers; an OSC 8
 link is underlined on every row that carries its URI (matched by URI rather than link id,
 because xterm gives each OSC 8 without an `id=` its own id and a TUI that hard-wraps a link emits
 one per row), with the box border between them left out. A probe has no side effects: no pane is
@@ -1870,7 +1874,8 @@ not only the engine's host element. The decision is `terminalDropPlan`
 More rules for every route:
 
 - **Every file type is typed**, `.md` included. A terminal types what is dropped on it. Only a
-  drop outside a terminal opens a markdown (or, for `.csv`/`.tsv`, a csv) pane
+  drop outside a terminal opens a markdown (or, for `.csv`/`.tsv`, a csv, or for an image, an
+  image) pane
   (content-panes.md §2.1, CONT-121).
 - **Folders are typed like files.** Several items are typed in drop order, space-separated, with
   no trailing newline: the user presses Enter.
@@ -2010,7 +2015,8 @@ Wire-level socket handlers already specced elsewhere sit on top of this:
     string → (no text) PNG image as a temp-PNG path on the PTY host (shell-escaped, typed
     bare) → nothing; there is no paste-confirmation dialog.
 14. Cmd-click intercepts only existing `.md` paths (and, issue #324, `.csv`/`.tsv` paths,
-    opened as a csv pane) after trailing-dot/punctuation/wrapper trim, resolved against the
+    opened as a csv pane, and image paths, opened as an image pane, content-panes.md §12)
+    after trailing-dot/punctuation/wrapper trim, resolved against the
     pane's cwd; `http(s)` URLs are handed to the OS opener; a missing file opens nothing.
 15. Bell is a no-op.
 16. Appearance changes are written through into the user's ghostty config (no override

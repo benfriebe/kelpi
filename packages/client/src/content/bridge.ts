@@ -11,7 +11,9 @@
  * Because the frame is cross-origin, everything the host needs travels as `postMessage`:
  *
  *   frame → host   `ready` (document parsed), `scroll` (position tracking), `copy` (a code
- *                  block's raw text), `link` (a click the host must open externally),
+ *                  block's raw text), `link` (a click the host must open externally, or a
+ *                  local image it opens in an image pane), `open-image` (a click on a local
+ *                  image, content-panes.md §12),
  *                  `focus` (a press inside the pane), `toggle-edit` (⌘E inside the preview),
  *                  `key` (any OTHER chord the app claims — see below)
  *   host  → frame  `scroll-to` (restore a saved position), `chords` (which chords to relay)
@@ -48,6 +50,8 @@
  */
 
 import type { KelpiAction, KeyBindingMap, KeyTrigger } from '@kelpi/core/config';
+
+import { isImagePath } from '@kelpi/protocol';
 
 import { CODE_TO_KEY_CODE } from '../chrome/keys';
 import { sha256 } from './asset-credential';
@@ -142,7 +146,10 @@ export type ContentBridgeMessage =
     | ({ readonly kind: 'key-up' } & ContentChordEvent)
     | { readonly kind: 'scroll'; readonly top: number; readonly fraction: number }
     | { readonly kind: 'copy'; readonly text: string }
-    | { readonly kind: 'link'; readonly href: string }
+    /** `raw` is the `href` attribute as written (§12 reads a local image path from it). */
+    | { readonly kind: 'link'; readonly href: string; readonly raw?: string | undefined }
+    /** §12: a click on a local image (its `src` attribute as written, never a URL). */
+    | { readonly kind: 'open-image'; readonly src: string }
     | { readonly kind: 'toggle-edit' }
     /** ⌘F inside the preview — the host's key interceptor cannot see through the iframe. */
     | { readonly kind: 'find-open' }
@@ -222,7 +229,13 @@ export function parseBridgeMessage(data: unknown, paneID: string): ContentBridge
         }
         case 'link': {
             const href = data['href'];
-            return typeof href === 'string' && href.length > 0 ? { kind: 'link', href } : null;
+            if (typeof href !== 'string' || href.length === 0) return null;
+            const raw = data['raw'];
+            return typeof raw === 'string' && raw.length > 0 ? { kind: 'link', href, raw } : { kind: 'link', href };
+        }
+        case 'open-image': {
+            const src = data['src'];
+            return typeof src === 'string' && src.length > 0 ? { kind: 'open-image', src } : null;
         }
         case 'key':
         case 'key-up': {
@@ -491,6 +504,20 @@ export function prepareContentDocument(html: string, options: PrepareDocumentOpt
         } else {
             document = tag + document;
         }
+    } else if (base !== null && base.length > 0) {
+        /*
+         * The daemon embeds the shared, uncredentialed `/pane-assets/<paneID>/` base, and a daemon
+         * with a token 404s it (`ws/http.ts`). This client's credentialed form of that SAME base
+         * (`asset-credential.ts`) replaces it, or every sibling image in every note is broken. Any
+         * other base the document carries is left alone.
+         */
+        const legacy = /^\/pane-assets\/c\/[^/]+\/(.+)$/.exec(base);
+        if (legacy !== null) {
+            document = document.replace(
+                `<base href="${escapeAttribute(`/pane-assets/${legacy[1] ?? ''}`)}">`,
+                `<base href="${escapeAttribute(base)}">`
+            );
+        }
     }
 
     const background = options.background ?? null;
@@ -571,17 +598,34 @@ export function contentBridgeScript(
     }, ${COPY_FEEDBACK_MS});
   });
 
-  // §3.15 — links never navigate the pane; the host opens them.
+  // §3.15 — links never navigate the pane; the host opens them. 'raw' is the attribute as
+  // written: a link to a local image (§12) is a path relative to the FILE, which the resolved
+  // href cannot say once a '../' has climbed out of the asset base.
   document.addEventListener('click', function (event) {
     if (event.defaultPrevented) return;
     var target = event.target;
     var anchor = target && target.closest ? target.closest('a[href]') : null;
-    if (!anchor) return;
+    if (!anchor) {
+      // §12: a click on a local image (no scheme in its src) opens it in an image pane.
+      var image = target && target.closest ? target.closest('img[src]') : null;
+      var src = image ? image.getAttribute('src') || '' : '';
+      if (src === '' || src.indexOf(':') !== -1) return;
+      event.preventDefault();
+      post({ kind: 'open-image', src: src });
+      return;
+    }
     var href = anchor.getAttribute('href') || '';
     if (href.charAt(0) === '#') return;
     event.preventDefault();
-    post({ kind: 'link', href: anchor.href || href });
+    post({ kind: 'link', href: anchor.href || href, raw: href });
   });
+  (function () {
+    var head = document.head || document.documentElement;
+    if (!head) return;
+    var style = document.createElement('style');
+    style.textContent = 'img:not([src*=":"]){cursor:zoom-in}a img{cursor:pointer}';
+    head.appendChild(style);
+  })();
 
   // §4.3 — a press inside the frame focuses the pane (the host never sees the event).
   document.addEventListener('mousedown', function () { post({ kind: 'focus' }); }, true);
@@ -899,6 +943,42 @@ export function openExternalLink(href: string, open?: LinkOpener | undefined): b
     }
     globalThis.open?.(url.toString(), '_blank', 'noopener,noreferrer');
     return true;
+}
+
+/**
+ * §12: the local image a markdown link or image source names, as a path, or null.
+ *
+ * `raw` is the attribute as the document wrote it. A relative path stays relative (the daemon's
+ * `open` resolves it against the markdown pane, whose directory is the file's), an absolute path
+ * and a local `file:` URL become absolute paths, and anything with another scheme, a
+ * protocol-relative URL or a bare fragment is not a local file. The query and fragment are
+ * dropped and percent-escapes decoded, as a browser would before reading the file. Only an
+ * `isImagePath` file qualifies: the other links keep opening the way they always have.
+ */
+export function localImagePath(raw: string): string | null {
+    const trimmed = raw.trim();
+    if (trimmed === '' || trimmed.startsWith('#') || trimmed.startsWith('//')) return null;
+    let filePath: string;
+    if (/^file:/i.test(trimmed)) {
+        let url: URL;
+        try {
+            url = new URL(trimmed);
+        } catch {
+            return null;
+        }
+        if (url.hostname !== '' && url.hostname !== 'localhost') return null;
+        filePath = url.pathname;
+    } else if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed)) {
+        return null;
+    } else {
+        filePath = trimmed.replace(/[?#].*$/, '');
+    }
+    try {
+        filePath = decodeURIComponent(filePath);
+    } catch {
+        // A stray `%` is a literal character in a file name, not an escape.
+    }
+    return filePath !== '' && isImagePath(filePath) ? filePath : null;
 }
 
 export interface ClipboardWriter {

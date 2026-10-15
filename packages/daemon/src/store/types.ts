@@ -539,9 +539,10 @@ export type DomainAction =
           readonly focus?: boolean | undefined;
           /**
            * #324: `'csv'` opens the file as a csv document pane instead (the daemon's `open`
-           * routes `.csv`/`.tsv` here unless the caller forced markdown). Same placement path.
+           * routes `.csv`/`.tsv` here unless the caller forced markdown). `'image'` opens an
+           * image pane (content-panes.md §12) for an `isImagePath` file. Same placement path.
            */
-          readonly paneType?: 'csv' | undefined;
+          readonly paneType?: 'csv' | 'image' | undefined;
       }
     | {
           readonly type: 'open-diff-pane';

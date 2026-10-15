@@ -857,6 +857,7 @@ const PANE_ICONS: Readonly<Record<ChromePane['type'], ChromeIconName>> = {
     scratchpad: 'note',
     diff: 'plusminus',
     csv: 'table',
+    image: 'image',
     plugin: 'document',
     web: 'globe'
 };

@@ -81,7 +81,8 @@
  *    rules, resolved against the pane's working directory.
  *
  * Only a `.md` file opens a markdown pane (and, #324, a `.csv`/`.tsv` file a csv pane, reply
- * `opened: 'csv'`); everything else is reported back so the client can
+ * `opened: 'csv'`, and an image file an image pane, reply `opened: 'image'`, content-panes.md
+ * §12); everything else is reported back so the client can
  * fall through to the system opener, exactly as returning `false` did in Swift. A click that
  * was AIMED at a link and refused carries `reason: 'link-not-http'` so the client can say so;
  * a click on prose or empty screen carries no reason and stays silent, which is the difference
@@ -91,12 +92,13 @@
  *
  * `open-terminal-target`'s question without the click: the same two reads and the same answer,
  * no side effects (a `markdown` answer says `probe: true` and opens nothing), plus a `span` (one
- * `{ row, col, width }` run of cells per viewport row) on an `external`, `markdown` or `csv` answer. The
+ * `{ row, col, width }` run of cells per viewport row) on an `external`, `markdown`, `csv` or
+ * `image` answer. The
  * plain-click link menu (#326) offers a menu only for an `external` answer; the hover underline
  * (#303) underlines exactly the `span`. Neither can offer what a ⌘-click would refuse.
  *
  * A probe reads at most `PROBE_MAX_ROWS` rows either side of the cell (a longer line answers
- * none), and its `.md` existence check is asynchronous and bounded (`createProbeFileExists`):
+ * none), and its file existence check is asynchronous and bounded (`createProbeFileExists`):
  * the hover runs it on every cell the pointer crosses.
  *
  * A verb of its own rather than a flag on the click's, because a daemon that predates it would
@@ -128,6 +130,7 @@ import {
     UPDATE_ACTION_SHELL_ACTION,
     UPDATE_USER_ACTIONS,
     isCsvPath,
+    isImagePath,
     isUpdateUserAction,
     updateSeq,
     type JsonObject
@@ -484,6 +487,22 @@ export function looksLikeLink(token: string): boolean {
 }
 
 
+/**
+ * §12: the absolute path a local `file:` URL names (`file:///x`, `file://localhost/x`), decoded,
+ * or null for any other URI, a file on another host, or one that does not parse.
+ */
+export function localFileURLPath(uri: string): string | null {
+    if (!/^file:/i.test(uri)) return null;
+    try {
+        const parsed = new URL(uri);
+        if (parsed.hostname !== '' && parsed.hostname !== 'localhost') return null;
+        const decoded = decodeURIComponent(parsed.pathname);
+        return decoded.startsWith('/') && !decoded.includes('\0') ? decoded : null;
+    } catch {
+        return null;
+    }
+}
+
 /** A token that is a real URL rather than a path — the client hands these to the OS opener. */
 export function urlFromToken(token: string): string | null {
     if (!SCHEME_ANCHOR.test(token)) return null;
@@ -725,10 +744,58 @@ export function createDesktopChannel(options: DesktopChannelOptions): DesktopCha
                     ? await reads.hyperlinkAtAsync(paneID, row, col)
                     : (reads.hyperlinkAt?.(paneID, row, col) ?? null);
         }
+        /**
+         * The file-pane tail both routes share: a path that names a file Kelpi opens itself.
+         * `facts` is what the answer says about where the path came from (the token, or the
+         * hyperlink), and `span` is what a probe underlines.
+         */
+        const openFilePane = async (
+            resolved: string,
+            kind: 'markdown' | 'csv' | 'image',
+            facts: JsonObject,
+            span: readonly TerminalCellSpan[] | undefined
+        ): Promise<JsonObject> => {
+            // Deliberate improvement over the Swift path, which opened a pane for any `.md`-suffixed
+            // word: a ⌘-click on prose must not leave a broken preview behind. The client says so.
+            // #303: a probe asks without blocking on the filesystem (`createProbeFileExists`).
+            const found = probe ? await probeExists(resolved) : exists(resolved);
+            if (!found) return { ok: true, opened: 'missing', ...facts, path: resolved };
+            // A probe stops before the only branch that changes anything.
+            if (probe) {
+                return { ok: true, opened: kind, probe: true, path: resolved, ...facts, ...withSpan(span) };
+            }
+
+            const newPaneID = mint();
+            ctx.store.dispatch({ type: 'focus-pane', workspaceID: workspace.id, paneID });
+            ctx.store.dispatch({
+                type: 'open-markdown-pane',
+                workspaceID: workspace.id,
+                paneID: newPaneID,
+                filePath: resolved,
+                now: now(),
+                ...(kind !== 'markdown' ? { paneType: kind } : {})
+            });
+            refreshSyncGroup(ctx, workspace.id);
+            return {
+                ok: true,
+                opened: kind,
+                path: resolved,
+                ...facts,
+                pane_id: newPaneID,
+                workspace_id: workspace.id
+            };
+        };
+
         if (hyperlink !== null) {
             const hyperlinkURL = urlFromToken(hyperlink);
             if (hyperlinkURL !== null) {
                 return { ok: true, opened: 'external', url: hyperlinkURL, source: 'hyperlink', ...withSpan(hyperlinkSpan) };
+            }
+            // §12: a `file:` hyperlink to an image (`ls --hyperlink`, a TUI listing what it
+            // wrote) opens an image pane, exactly as the bare path would.
+            const filePath = localFileURLPath(hyperlink);
+            if (filePath !== null && isImagePath(filePath)) {
+                return openFilePane(filePath, 'image', { link: hyperlink, source: 'hyperlink' }, hyperlinkSpan);
             }
             // A hyperlink we will not hand to the OS (`file:`, `slack:`, a malformed URI) is
             // still a link the user clicked: say so instead of swallowing it.
@@ -770,41 +837,19 @@ export function createDesktopChannel(options: DesktopChannelOptions): DesktopCha
 
         const resolved = resolveTerminalPath(token, pane.workingDirectory, state.homeDirectory);
         // #324: `.csv`/`.tsv` (case-insensitive, the same rule as the socket `open`) open a csv
-        // pane through the same placement path.
-        const csv = isCsvPath(resolved);
-        // Case-sensitive, matching `path.hasSuffix(".md")` in `GhosttyApp.swift:280`.
-        if (!csv && !resolved.endsWith(TERMINAL_MARKDOWN_SUFFIX)) {
+        // pane through the same placement path, and an image file an image pane (§12).
+        // Case-sensitive `.md`, matching `path.hasSuffix(".md")` in `GhosttyApp.swift:280`.
+        const kind: 'markdown' | 'csv' | 'image' | null = isCsvPath(resolved)
+            ? 'csv'
+            : isImagePath(resolved)
+              ? 'image'
+              : resolved.endsWith(TERMINAL_MARKDOWN_SUFFIX)
+                ? 'markdown'
+                : null;
+        if (kind === null) {
             return { ok: true, opened: 'none', token, path: resolved };
         }
-        // Deliberate improvement over the Swift path, which opened a pane for any `.md`-suffixed
-        // word: a ⌘-click on prose must not leave a broken preview behind. The client says so.
-        // #303: a probe asks without blocking on the filesystem (`createProbeFileExists`).
-        const found = probe ? await probeExists(resolved) : exists(resolved);
-        if (!found) return { ok: true, opened: 'missing', token, path: resolved };
-        // A probe stops before the only branch that changes anything.
-        if (probe) {
-            return { ok: true, opened: csv ? 'csv' : 'markdown', probe: true, path: resolved, token, ...withSpan(tokenSpan) };
-        }
-
-        const newPaneID = mint();
-        ctx.store.dispatch({ type: 'focus-pane', workspaceID: workspace.id, paneID });
-        ctx.store.dispatch({
-            type: 'open-markdown-pane',
-            workspaceID: workspace.id,
-            paneID: newPaneID,
-            filePath: resolved,
-            now: now(),
-            ...(csv ? { paneType: 'csv' as const } : {})
-        });
-        refreshSyncGroup(ctx, workspace.id);
-        return {
-            ok: true,
-            opened: csv ? 'csv' : 'markdown',
-            path: resolved,
-            token,
-            pane_id: newPaneID,
-            workspace_id: workspace.id
-        };
+        return openFilePane(resolved, kind, { token }, tokenSpan);
     };
 
     /** CONT-081…091. `open` hosts the editor; `close` ends the session and returns to preview. */

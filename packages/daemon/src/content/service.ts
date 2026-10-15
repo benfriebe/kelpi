@@ -39,6 +39,7 @@ import {
     isDarkBackground,
     type ContentAppearance
 } from './html.js';
+import { imageAssetPath } from './image.js';
 import {
     DEFAULT_MARKDOWN_FONT_SIZE,
     fileLoadErrorMarkdown
@@ -154,7 +155,10 @@ export interface ContentService {
      * workspace sync, so the reply's snapshot is the usual one rather than a carrier for it.
      */
     setWrap(paneID: string, on: boolean): Promise<ContentPaneState>;
-    /** Sibling-asset resolution for `/pane-assets/<paneID>/<relpath>`; null = 404. */
+    /**
+     * Asset resolution for `/pane-assets/<paneID>/<relpath>`; null = 404. A markdown pane's
+     * siblings, or an image pane's own file (§12).
+     */
     assetPath(paneID: string, relativePath: string): string | null;
     /** Re-render every live entry against a new ghostty background (§3.8 theme change). */
     setAppearance(appearance: ContentAppearance): void;
@@ -1142,6 +1146,11 @@ export function createContentService(options: ContentServiceOptions): ContentSer
         },
 
         assetPath(paneID, relativePath) {
+            if (relativePath.includes('\0') || relativePath === '') return null;
+            // An image pane is not a content pane (`locate` refuses it): it serves its own file
+            // and nothing beside it (§12, `./image.ts`).
+            const found = findPaneAnywhere(store.getState(), paneID);
+            if (found?.pane.type === 'image') return imageAssetPath(found.pane, relativePath);
             let pane: Pane;
             try {
                 pane = locate(paneID).pane;
@@ -1149,7 +1158,6 @@ export function createContentService(options: ContentServiceOptions): ContentSer
                 return null;
             }
             if (pane.type !== 'markdown' || pane.filePath === null) return null;
-            if (relativePath.includes('\0') || relativePath === '') return null;
             if (path.isAbsolute(relativePath)) return null;
 
             const directory = path.resolve(path.dirname(pane.filePath));

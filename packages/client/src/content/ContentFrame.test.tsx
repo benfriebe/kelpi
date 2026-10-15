@@ -117,6 +117,21 @@ describe('relative assets', () => {
         expect(document.match(/<base /g)).toHaveLength(1);
         expect(document).not.toContain('/pane-assets/other/');
     });
+
+    /**
+     * The daemon's base is the shared, uncredentialed form, which a daemon with a token 404s; the
+     * client's credentialed form of the same base must win, or every sibling image is broken.
+     */
+    it('upgrades the daemon’s base to this client’s credentialed form of it', () => {
+        const withBase = BARE_DOCUMENT.replace('<head>\n', `<head>\n<base href="/pane-assets/${PANE}/">\n`);
+        render(
+            <ContentFrame paneID={PANE} title="markdown preview" html={withBase} assetBase={`/pane-assets/c/cred-1/${PANE}/`} />
+        );
+
+        const document = srcdoc();
+        expect(document.match(/<base /g)).toHaveLength(1);
+        expect(document).toContain(`<base href="/pane-assets/c/cred-1/${PANE}/">`);
+    });
 });
 
 describe('the message bridge', () => {
@@ -164,6 +179,36 @@ describe('the message bridge', () => {
         openLink.mockClear();
         fromFrame({ kind: 'link', href: 'javascript:alert(1)' });
         expect(openLink).not.toHaveBeenCalled();
+    });
+
+    it('opens a link to a local image in Kelpi, and every other link outside (§12)', () => {
+        const openLink = vi.fn();
+        const onOpenFile = vi.fn();
+        render(
+            <ContentFrame paneID={PANE} title="markdown preview" html={BARE_DOCUMENT} openLink={openLink} onOpenFile={onOpenFile} />
+        );
+
+        fromFrame({ kind: 'link', href: 'http://127.0.0.1/pane-assets/c/x/assets/shot.png', raw: '../assets/shot.png' });
+        expect(onOpenFile).toHaveBeenCalledWith('../assets/shot.png');
+        expect(openLink).not.toHaveBeenCalled();
+
+        fromFrame({ kind: 'link', href: 'https://example.com/shot.png', raw: 'https://example.com/shot.png' });
+        fromFrame({ kind: 'link', href: 'http://127.0.0.1/pane-assets/c/x/p/notes.md', raw: 'notes.md' });
+        expect(openLink.mock.calls).toEqual([['https://example.com/shot.png'], ['http://127.0.0.1/pane-assets/c/x/p/notes.md']]);
+        expect(onOpenFile).toHaveBeenCalledTimes(1);
+
+        fromFrame({ kind: 'open-image', src: 'img/diagram.svg' });
+        expect(onOpenFile).toHaveBeenLastCalledWith('img/diagram.svg');
+    });
+
+    it('opens a local image link outside when no host takes files (a diff, a plain frame)', () => {
+        const openLink = vi.fn();
+        render(<ContentFrame paneID={PANE} title="diff" html={BARE_DOCUMENT} openLink={openLink} />);
+        fromFrame({ kind: 'link', href: 'http://127.0.0.1/pane-assets/c/x/p/shot.png', raw: 'shot.png' });
+        expect(openLink).toHaveBeenCalledWith('http://127.0.0.1/pane-assets/c/x/p/shot.png');
+        // A click on an image has nowhere to go and does nothing.
+        fromFrame({ kind: 'open-image', src: 'shot.png' });
+        expect(openLink).toHaveBeenCalledTimes(1);
     });
 
     it('reports a press inside the frame as a focus request', () => {

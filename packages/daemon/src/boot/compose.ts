@@ -33,7 +33,7 @@ import { newUUID } from '@kelpi/core/codec';
 import { SYSTEM_STATS_INTERVAL_MS, WS_TRANSPORT_CHANGED_MESSAGE } from '@kelpi/protocol';
 import { captureResumeTuple, type ResumeTuple } from '@kelpi/core/agent';
 
-import { createContentService, createContentRenderService, type ContentService } from '../content/index.js';
+import { createContentService, createContentRenderService, createImageWatchService, type ContentService } from '../content/index.js';
 import { createCsvService, type CsvService } from '../content/csv/service.js';
 import { defaultSortCacheRoot } from '../content/csv/sort.js';
 import {
@@ -773,6 +773,16 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         appearance: contentAppearanceOf(settings.snapshot),
         ...(onError !== undefined ? { onError } : {}),
         ...(options.now !== undefined ? { now: options.now } : {})
+    });
+    /**
+     * Image panes (content-panes.md §12): every visible one's file is watched, and a change goes
+     * out as `image-changed` so the pane fetches the file again. The pixels themselves travel
+     * over `/pane-assets/` (the route below), never the WebSocket.
+     */
+    const images = createImageWatchService({
+        store,
+        broadcast: (event) => ws?.broadcast(event),
+        ...(onError !== undefined ? { onError } : {})
     });
     /**
      * The footer's system-stat gauges (APP-078…085). The Swift app samples in the VIEW; a
@@ -2221,6 +2231,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         offPluginServices();
         settings.dispose();
         content.dispose();
+        images.dispose();
         void csv.dispose();
         // Releases the host slot (the shell sees `host-revoked`) and ends every console
         // follow stream; nothing here can block the shutdown.
@@ -2541,7 +2552,8 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
                 // #372: a draining terminal host is a standing condition, replayed on attach.
                 oldTerminalHosts: oldTerminalHostsEvent,
                 // `/pane-assets/…` — sibling files of an open markdown file, so relative
-                // `<img src>` resolves (content-panes.md port note 4). Gated by the derived
+                // `<img src>` resolves (content-panes.md port note 4), and an image pane's own
+                // file (§12). Gated by the derived
                 // asset credential (owner or live paired device), because `--tailnet` makes
                 // this HTTP surface tailnet-reachable and `devices revoke` must cover it.
                 routes: app => {

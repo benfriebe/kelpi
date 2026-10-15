@@ -493,6 +493,15 @@ function bundlePhase() {
             /<key>LSHandlerRank<\/key>\s*<string>Alternate<\/string>/.test(csvType) &&
             /<key>LSItemContentTypes<\/key>\s*<array>\s*<string>public\.comma-separated-values-text<\/string>\s*<string>public\.tab-separated-values-text<\/string>\s*<\/array>/.test(csvType)
     );
+    // The image pane (docs/content-panes.md §12): read-only, so a Viewer, and still Alternate.
+    const imageType = /<dict>(?:(?!<\/dict>)[\s\S])*<string>Image<\/string>(?:(?!<\/dict>)[\s\S])*<\/dict>/.exec(plist)?.[0] ?? '';
+    check(
+        'the bundle declares an Image document type over the system image UTIs (Viewer, rank Alternate)',
+        /<key>CFBundleTypeRole<\/key>\s*<string>Viewer<\/string>/.test(imageType) &&
+            /<key>LSHandlerRank<\/key>\s*<string>Alternate<\/string>/.test(imageType) &&
+            /<string>public\.png<\/string>/.test(imageType) &&
+            /<string>public\.jpeg<\/string>/.test(imageType)
+    );
 }
 
 /** Fuses are flipped in the binary itself, so this reads them back out of it. */

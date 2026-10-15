@@ -248,8 +248,16 @@ describe('isForwardableOpenPath (CONT-124)', () => {
         expect(isForwardableOpenPath('/a/book.xlsx')).toBe(false);
     });
 
+    it('accepts the image pane extensions, case-insensitively (content-panes.md §12)', () => {
+        expect(isForwardableOpenPath('/a/photo.png')).toBe(true);
+        expect(isForwardableOpenPath('/a/Photo.JPG')).toBe(true);
+        expect(isForwardableOpenPath('/a/icon.svg')).toBe(true);
+        expect(isForwardableOpenPath('/a/.png')).toBe(false);
+        expect(isForwardableOpenPath('/a/scan.heic')).toBe(false);
+    });
+
     it('ignores everything else — an unfiltered forward renders bytes as markdown', () => {
-        expect(isForwardableOpenPath('/a/photo.png')).toBe(false);
+        expect(isForwardableOpenPath('/a/archive.zip')).toBe(false);
         expect(isForwardableOpenPath('/a/README')).toBe(false);
         expect(isForwardableOpenPath('/a/.md')).toBe(false);
         expect(isForwardableOpenPath('')).toBe(false);

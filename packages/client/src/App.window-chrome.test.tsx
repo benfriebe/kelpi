@@ -161,7 +161,7 @@ describe('modals park a live web pane (§H1)', () => {
                 dataTransfer: {
                     types: ['text/uri-list'],
                     files: { length: 0 },
-                    getData: (format: string) => (format === 'text/uri-list' ? 'file:///repo/photo.png' : '')
+                    getData: (format: string) => (format === 'text/uri-list' ? 'file:///repo/archive.zip' : '')
                 }
             });
             await Promise.resolve();

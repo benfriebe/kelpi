@@ -24,7 +24,7 @@ import { isHelpToken, popSwitch } from '../args.js';
 import { homeDirectory, rawPaneID } from '../env.js';
 import { errLine, exit, printLine } from '../io.js';
 import type { JsonObject } from '../json.js';
-import { csvOpenExtensions, fileURLString, markdownOpenExtensions, pathExtensionLower, webOpenExtensions, webTargetForOpenArg } from '../routing.js';
+import { csvOpenExtensions, fileURLString, imageOpenExtensions, markdownOpenExtensions, pathExtensionLower, webOpenExtensions, webTargetForOpenArg } from '../routing.js';
 import { sendJSON } from '../transport.js';
 import { sendWebOpen } from './web.js';
 
@@ -75,7 +75,7 @@ export async function handleOpen(args: string[]): Promise<void> {
         printLine('Usage: kelpi open [--here] [--focus] <path-or-url>');
         printLine('URLs & hostnames (google.com, https://…, localhost:3000) → web pane.');
         printLine('Local files route by type: .md/.markdown → markdown pane; .csv/.tsv → table pane;');
-        printLine('.html/.htm/.pdf/.svg and images (.png/.jpg/.gif/.webp) → web pane.');
+        printLine('images (.png/.jpg/.gif/.webp/.svg/...) → image pane; .html/.htm/.pdf → web pane.');
         printLine('The new pane opens in the background; --focus moves focus to it.');
         exit(0);
     }
@@ -97,7 +97,7 @@ export async function handleOpen(args: string[]): Promise<void> {
     const absolutePath = path.resolve(process.cwd(), argument);
     const extension = pathExtensionLower(absolutePath);
 
-    if (markdownOpenExtensions.has(extension) || csvOpenExtensions.has(extension)) {
+    if (markdownOpenExtensions.has(extension) || csvOpenExtensions.has(extension) || imageOpenExtensions.has(extension)) {
         await sendDocumentOpen(absolutePath, reuse, focus);
         return;
     }
@@ -110,7 +110,8 @@ export async function handleOpen(args: string[]): Promise<void> {
     errLine(`kelpi open: don't know how to open ${shown}`);
     errLine('       URLs & hostnames (e.g. google.com) open a web pane;');
     errLine('       Markdown (.md, .markdown) opens a preview pane; CSV (.csv, .tsv) opens a');
-    errLine('       table pane; .html/.htm/.pdf/.svg and images (.png/.jpg/.gif/.webp) open a web pane.');
+    errLine('       table pane; images (.png/.jpg/.gif/.webp/.svg/...) open an image pane;');
+    errLine('       .html/.htm/.pdf open a web pane.');
     errLine('       Use `kelpi md <file>` to force a markdown pane, or `kelpi web open <url>`.');
     exit(1);
 }

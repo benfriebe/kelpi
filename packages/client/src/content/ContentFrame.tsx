@@ -40,6 +40,7 @@ import { PaneSearchOverlay } from '../grid/PaneSearchOverlay';
 import {
     CONTENT_HOST_SOURCE,
     chordKey,
+    localImagePath,
     openExternalLink,
     parseBridgeMessage,
     prepareContentDocument,
@@ -114,6 +115,12 @@ export interface ContentFrameProps {
     readonly writeClipboard?: ClipboardWriter | undefined;
     readonly writeRichClipboard?: RichClipboardWriter | undefined;
     readonly openLink?: LinkOpener | undefined;
+    /**
+     * §12: open a local file the document names (a link to an image, or a click on one), as the
+     * path the document wrote: relative to the file, or absolute. Absent, such a link opens
+     * externally like any other and a click on an image does nothing.
+     */
+    readonly onOpenFile?: ((path: string) => void) | undefined;
     /**
      * §3.14: the pane's raw markdown. A string enables both copy commands (the button and the
      * preview's context menu); `null`/absent disables them — which is how a failed load is
@@ -422,9 +429,21 @@ export function ContentFrame(props: ContentFrameProps): ReactElement {
                 case 'copy':
                     writeClipboardText(message.text, current.writeClipboard);
                     return;
-                case 'link':
+                case 'link': {
+                    // §12: a link to a local image opens it in an image pane beside this one.
+                    const image = message.raw === undefined ? null : localImagePath(message.raw);
+                    if (image !== null && current.onOpenFile !== undefined) {
+                        current.onOpenFile(image);
+                        return;
+                    }
                     openExternalLink(message.href, current.openLink);
                     return;
+                }
+                case 'open-image': {
+                    const image = localImagePath(message.src);
+                    if (image !== null) current.onOpenFile?.(image);
+                    return;
+                }
                 case 'focus':
                     current.onFocusRequest?.(paneID);
                     return;

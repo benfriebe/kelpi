@@ -1895,7 +1895,7 @@ other key is ignored. (A known key with the wrong type poisons the whole message
 | `workspace` | string | pane-target commands, `pane-list`, `pane-sync`, `graft-*`, `pane-split`/`pane-create` (destination) |
 | `scope` | string | `pane-list` |
 | `reuse` | bool | `open` |
-| `as` | string | `open` (`"markdown"` only: force a markdown pane for a `.csv`/`.tsv` path, #324) |
+| `as` | string | `open` (`"markdown"` only: force a markdown pane for a `.csv`/`.tsv` path, #324, or an image path, content-panes.md §12) |
 | `repo_path`, `target_path` | string | `diff` |
 | `lines` | int | `pane-capture` |
 | `scrollback` | bool | `pane-capture` |

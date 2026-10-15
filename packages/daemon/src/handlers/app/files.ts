@@ -1,6 +1,7 @@
 /**
- * `open` (markdown, or a csv pane for `.csv`/`.tsv` unless `as: 'markdown'`, #324) and `diff` (diff
- * pane): socket-handlers.md §8.1–§8.2. Both fire-and-forget.
+ * `open` (markdown, or a csv pane for `.csv`/`.tsv` and an image pane for an image file unless
+ * `as: 'markdown'`, #324 and content-panes.md §12) and `diff` (diff pane): socket-handlers.md
+ * §8.1–§8.2. Both fire-and-forget.
  *
  * Routing is identical for the two: a known caller pane routes the open to ITS workspace,
  * otherwise the active workspace takes it, and with no active workspace the message is dropped.
@@ -15,7 +16,7 @@
 
 import path from 'node:path';
 
-import { isCsvPath } from '@kelpi/protocol';
+import { isCsvPath, isImagePath } from '@kelpi/protocol';
 
 import {
     workspaceByID,
@@ -69,6 +70,13 @@ function resolveAgainstPane(state: DaemonState, target: Route, filePath: string)
     return cwd === null ? filePath : path.join(cwd, filePath);
 }
 
+/** The pane type `open` picks by extension; markdown (the reducer's default) when neither. */
+function routedPaneType(filePath: string): { readonly paneType?: 'csv' | 'image' } {
+    if (isCsvPath(filePath)) return { paneType: 'csv' };
+    if (isImagePath(filePath)) return { paneType: 'image' };
+    return {};
+}
+
 export function fileHandlerEntries(deps: AppDeps): readonly (readonly [string, AppHandler])[] {
     return [
         forCommand('open', (msg, ctx) => {
@@ -99,9 +107,10 @@ export function fileHandlerEntries(deps: AppDeps): readonly (readonly [string, A
                 // Reuse only applies to the caller's own pane; the fallback branch never reuses.
                 ...(msg.reuse && target.paneID !== null ? { reusePaneID: target.paneID } : {}),
                 ...(target.paneID !== null ? { sourcePaneID: target.paneID } : {}),
-                // #324: `.csv`/`.tsv` open as a csv document pane unless the caller forced
-                // markdown (`kelpi md data.csv` sends `as: 'markdown'`).
-                ...(msg.as !== 'markdown' && isCsvPath(filePath) ? { paneType: 'csv' as const } : {}),
+                // #324: `.csv`/`.tsv` open as a csv document pane, and an image file as an image
+                // pane (§12), unless the caller forced markdown (`kelpi md data.csv` sends
+                // `as: 'markdown'`).
+                ...(msg.as !== 'markdown' ? routedPaneType(filePath) : {}),
                 focus
             });
             // `--here` parks a shell, which changes the sync broadcast group.

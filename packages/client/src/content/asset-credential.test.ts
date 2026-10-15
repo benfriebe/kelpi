@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 
 import { describe, expect, it } from 'vitest';
 
-import { assetCredentialFor, credentialedAssetBase, setAssetCredentialToken, sha256 } from './asset-credential';
+import { assetCredentialFor, credentialedAssetBase, paneFileURL, setAssetCredentialToken, sha256 } from './asset-credential';
 
 function hex(bytes: Uint8Array): string {
     return [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('');
@@ -44,5 +44,27 @@ describe('credentialedAssetBase', () => {
     it('passes the base through untouched when there is no token (dev daemon)', () => {
         setAssetCredentialToken(undefined);
         expect(credentialedAssetBase('/pane-assets/pane-9/')).toBe('/pane-assets/pane-9/');
+    });
+});
+
+describe('paneFileURL (content-panes.md §12)', () => {
+    it('addresses the daemon the connection dials, under that connection\'s own token', () => {
+        const cred = assetCredentialFor('tok-remote');
+        expect(paneFileURL('ws://100.64.0.2:7777/ws?token=tok-remote', 'pane-1', 'shot.png')).toBe(
+            `http://100.64.0.2:7777/pane-assets/c/${cred}/pane-1/shot.png`
+        );
+        expect(paneFileURL('wss://kelpi.example.ts.net/ws?token=tok-remote', 'pane-1', 'shot.png')).toBe(
+            `https://kelpi.example.ts.net/pane-assets/c/${cred}/pane-1/shot.png`
+        );
+    });
+
+    it('escapes the name, keeps a path prefix, and falls back to the legacy form with no token', () => {
+        expect(paneFileURL('ws://127.0.0.1:7777/kelpi/ws', 'pane-1', 'my shot#1.png')).toBe(
+            'http://127.0.0.1:7777/kelpi/pane-assets/pane-1/my%20shot%231.png'
+        );
+    });
+
+    it('refuses a target that is not a ws or http URL', () => {
+        expect(paneFileURL('file:///tmp/ws', 'pane-1', 'shot.png')).toBeNull();
     });
 });

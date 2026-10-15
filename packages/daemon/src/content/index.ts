@@ -1,5 +1,5 @@
 /**
- * M5 — content panes (markdown / diff / scratchpad), daemon half.
+ * M5 — content panes (markdown / diff / scratchpad, and image panes, §12), daemon half.
  *
  * Spec: docs/content-panes.md. The daemon owns file reading, file watching, git
  * invocation, the markdown/diff → HTML transformation (to the doc's exact HTML/CSS contract)
@@ -88,6 +88,14 @@ export {
 } from './service.js';
 
 export { createContentRenderService } from './render-service.js';
+
+export {
+    IMAGE_CHANGE_DEBOUNCE_MS,
+    createImageWatchService,
+    imageAssetPath,
+    type ImageWatchOptions,
+    type ImageWatchService
+} from './image.js';
 
 export {
     EDITOR_BEGIN_MARKER,

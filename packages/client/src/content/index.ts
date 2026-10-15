@@ -65,6 +65,7 @@ export {
 export { MarkdownPane, type MarkdownPaneProps } from './MarkdownPane';
 export { DiffPane, type DiffPaneProps } from './DiffPane';
 export { ScratchpadPane, type ScratchpadPaneProps } from './ScratchpadPane';
+export { ImagePane, imageCaption, type ImagePaneProps } from './ImagePane';
 
 export {
     CONTENT_BRIDGE_SOURCE,

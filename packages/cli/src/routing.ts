@@ -22,7 +22,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { CSV_OPEN_EXTENSIONS } from '@kelpi/protocol';
+import { CSV_OPEN_EXTENSIONS, IMAGE_OPEN_EXTENSIONS } from '@kelpi/protocol';
 
 /** Extensions that route to a markdown preview pane. */
 export const markdownOpenExtensions: ReadonlySet<string> = new Set([
@@ -42,18 +42,15 @@ export const markdownOpenExtensions: ReadonlySet<string> = new Set([
  */
 export const csvOpenExtensions: ReadonlySet<string> = new Set(CSV_OPEN_EXTENSIONS);
 
+/**
+ * Extensions that route to an image pane (docs/content-panes.md §12). Like csv, the CLI only
+ * decides the file is a document and the daemon picks the pane type, so the list is the
+ * protocol's. Images used to open as a `file://` web pane; `kelpi web open` still does that.
+ */
+export const imageOpenExtensions: ReadonlySet<string> = new Set(IMAGE_OPEN_EXTENSIONS);
+
 /** Extensions a web pane renders natively, opened as a `file://` URL. */
-export const webOpenExtensions: ReadonlySet<string> = new Set([
-    'html',
-    'htm',
-    'pdf',
-    'svg',
-    'png',
-    'jpg',
-    'jpeg',
-    'gif',
-    'webp'
-]);
+export const webOpenExtensions: ReadonlySet<string> = new Set(['html', 'htm', 'pdf']);
 
 /** TLDs that let `kelpi open` route a BARE dotted argument to a web pane. */
 export const webOpenCommonTLDs: ReadonlySet<string> = new Set([

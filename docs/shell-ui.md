@@ -67,9 +67,10 @@ on the right; either sidebar can host either feature or a compatible plugin:
   glyph (48pt, very faint), "No workspace selected" (secondary text), and a
   "Create Workspace" button that opens the New Workspace sheet.
 - A command-palette overlay can cover the middle row (see §7).
-- Dropping a `.md` file on the window (outside a terminal) opens it as a markdown pane, and a
-  `.csv`/`.tsv` file as a csv table pane (issue #324, [csv-pane.md](csv-pane.md) §2), the same
-  route as Finder Open With; any other drop shows an "Open file" failure toast.
+- Dropping a `.md` file on the window (outside a terminal) opens it as a markdown pane, a
+  `.csv`/`.tsv` file as a csv table pane (issue #324, [csv-pane.md](csv-pane.md) §2), and an
+  image as an image pane ([content-panes.md](content-panes.md) §12), the same route as Finder
+  Open With; any other drop shows an "Open file" failure toast.
   Dropping onto a **terminal** instead types the dropped path(s), shell-escaped and
   space-separated, into that pane, for every file type (a `.md` included) and for folders. It is
   the only drop route that accepts several files or a non-markdown path (`onDrop` in

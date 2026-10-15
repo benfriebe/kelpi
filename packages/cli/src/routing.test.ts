@@ -12,10 +12,11 @@ import path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { CSV_OPEN_EXTENSIONS } from '@kelpi/protocol';
+import { CSV_OPEN_EXTENSIONS, IMAGE_OPEN_EXTENSIONS } from '@kelpi/protocol';
 
 import {
     csvOpenExtensions,
+    imageOpenExtensions,
     localFileURL,
     markdownOpenExtensions,
     pathExtensionLower,
@@ -159,15 +160,23 @@ describe('routing tables', () => {
         }
     });
 
+    it('routes image extensions to an image pane, from the protocol list (content-panes.md §12)', () => {
+        expect([...imageOpenExtensions]).toEqual([...IMAGE_OPEN_EXTENSIONS]);
+        // No extension is claimed twice: a file routes to exactly one pane type.
+        for (const extension of imageOpenExtensions) {
+            expect(markdownOpenExtensions.has(extension)).toBe(false);
+            expect(csvOpenExtensions.has(extension)).toBe(false);
+            expect(webOpenExtensions.has(extension)).toBe(false);
+        }
+    });
+
     it('leaves csv-shaped names to the file router, not the web', () => {
         expect(webTargetForOpenArg('data.csv', context)).toBeNull();
         expect(webTargetForOpenArg('report.tsv', context)).toBeNull();
     });
 
-    it('routes renderable file types to a web pane', () => {
-        expect([...webOpenExtensions].sort()).toEqual(
-            ['gif', 'htm', 'html', 'jpeg', 'jpg', 'pdf', 'png', 'svg', 'webp'].sort()
-        );
+    it('routes the remaining renderable file types to a web pane', () => {
+        expect([...webOpenExtensions].sort()).toEqual(['htm', 'html', 'pdf']);
     });
 
     it('excludes TLDs that collide with file extensions', () => {

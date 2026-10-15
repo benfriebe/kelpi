@@ -9,6 +9,7 @@
 
 import {
     CHOOSE_FOLDER_DIALOG_ACTION,
+    IMAGE_OPEN_EXTENSIONS,
     MAX_DROPPED_FILES,
     RESOLVE_DROPPED_FILES_ACTION,
     UPDATE_ACTION_SHELL_ACTION,
@@ -225,21 +226,23 @@ export function parseWindowChrome(message: Record<string, unknown>): WindowChrom
 
 /**
  * The extensions `AppDelegate.swift:45-51` forwarded (`md`, `markdown`), plus the csv table's
- * (#324, docs/csv-pane.md §2); anything else is ignored outright.
+ * (#324, docs/csv-pane.md §2) and the image pane's (content-panes.md §12, `@kelpi/protocol`
+ * `IMAGE_OPEN_EXTENSIONS`); anything else is ignored outright.
  */
-export const OPEN_FILE_EXTENSIONS = ['md', 'markdown', 'csv', 'tsv'] as const;
+export const OPEN_FILE_EXTENSIONS: readonly string[] = ['md', 'markdown', 'csv', 'tsv', ...IMAGE_OPEN_EXTENSIONS];
 
 /**
  * Whether a file handed to us by Finder (or on argv) should become a document pane.
  *
  * The Swift delegate filtered before forwarding, and the filter matters: `open` opens whatever
- * path it is given AS MARKDOWN (a `.csv`/`.tsv` as a table), so an unfiltered forward turns
- * `open -a Kelpi.app photo.png` into a pane rendering PNG bytes as markdown source.
+ * path it is given AS MARKDOWN (a `.csv`/`.tsv` as a table, an image as an image), so an
+ * unfiltered forward turns `open -a Kelpi.app archive.zip` into a pane rendering zip bytes as
+ * markdown source.
  */
 export function isForwardableOpenPath(filePath: string): boolean {
     const name = filePath.split('/').pop() ?? filePath;
     const dot = name.lastIndexOf('.');
     if (dot <= 0) return false;
     const extension = name.slice(dot + 1).toLowerCase();
-    return (OPEN_FILE_EXTENSIONS as readonly string[]).includes(extension);
+    return OPEN_FILE_EXTENSIONS.includes(extension);
 }

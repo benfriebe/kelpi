@@ -640,14 +640,16 @@ and the pane lands in the caller's workspace (via `KELPI_PANE_ID`).
 #      host with a known TLD: google.com, https://x.com, localhost:3000)
 #   .md / .markdown / .mdown / .mkd / ...   → markdown preview pane
 #   .csv / .tsv                             → editable table (csv) pane
-#   .html / .htm / .pdf / .svg / images     → web pane (file:// URL)
+#   .png / .jpg / .gif / .webp / .svg / ... → image pane (redraws when the
+#                                             file is rewritten)
+#   .html / .htm / .pdf                     → web pane (file:// URL)
 #   anything else                           → usage error, no pane
 # Explicit paths (./x, /x, ~/x) and existing files stay local, so
 # `./google.com` is a file; a bare word (README) or an unknown/file-type
 # TLD (notes.txt, foo.museum) is NOT a host — use `kelpi web open` for those.
-# --here reuses the calling pane (markdown and csv routes only).
+# --here reuses the calling pane (markdown, csv and image routes only).
 # Request/response on the web/URL route (prints `open ok: <pane-uuid>`);
-# fire-and-forget on the markdown and csv routes. The pane opens in the background; --focus moves
+# fire-and-forget on the markdown, csv and image routes. The pane opens in the background; --focus moves
 # focus to it (only when the user asked for that).
 kelpi open [--here] [--focus] <path-or-url>
 

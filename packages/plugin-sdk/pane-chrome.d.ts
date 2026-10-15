@@ -70,7 +70,7 @@
 export type PaneChromePlacement = 'pane.chrome';
 
 /** The pane kinds. A presenter draws all seven or none: fallback is all-or-nothing. */
-export type PaneChromeKind = 'shell' | 'markdown' | 'scratchpad' | 'diff' | 'csv' | 'web' | 'plugin';
+export type PaneChromeKind = 'shell' | 'markdown' | 'scratchpad' | 'diff' | 'csv' | 'image' | 'web' | 'plugin';
 
 export type PaneChromeStatus = 'idle' | 'running' | 'waitingForInput';
 

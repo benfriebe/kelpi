@@ -18,4 +18,5 @@ export * from './plugin-contributions.js';
 export * from './plugin-dependencies.js';
 export * from './documents.js';
 export * from './csv.js';
+export * from './image.js';
 export * from './browser.js';

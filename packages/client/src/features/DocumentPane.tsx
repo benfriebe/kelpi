@@ -110,6 +110,9 @@ function DocumentBody(props: DocumentPaneProps & { content: ContentApi; csv: Csv
         }
     }), [content, runtime, nativeID]);
     const bindings = featureBindings(bindDocumentFeatures({ ...props, content: nativeContent,
+        // §12: the daemon's `open` resolves a relative path against the markdown pane, whose
+        // directory is its file's, and picks the image pane by extension.
+        onOpenFile: props.onOpenFile ?? ((id, path) => { void runtime.commands.openFile({ path, paneID: id }); }),
         onToggleEdit: props.onToggleEdit ?? (id => {
             const editing = kind === 'csv' ? props.editing === true : content.peek(id)?.mode === 'edit';
             // #324: a csv grid's edits are answered before the daemon starts refusing them.

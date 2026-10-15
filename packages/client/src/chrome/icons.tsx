@@ -41,6 +41,8 @@ export type ChromeIconName =
     | 'plusminus'
     // #324: a csv pane.
     | 'table'
+    // An image pane.
+    | 'image'
     | 'globe'
     | 'bolt'
     | 'ellipsis'
@@ -143,6 +145,13 @@ const PATHS: Record<ChromeIconName, ReactElement> = {
         <>
             <rect x="1.8" y="2.2" width="8.4" height="7.6" rx="0.8" />
             <path d="M1.8 4.8h8.4M1.8 7.3h8.4M5 2.2v7.6" />
+        </>
+    ),
+    image: (
+        <>
+            <rect x="1.8" y="2.2" width="8.4" height="7.6" rx="0.8" />
+            <circle cx="4.4" cy="4.8" r="0.9" />
+            <path d="M1.8 8.7l2.7-2.5 1.9 1.7 1.5-1.2 2.3 2" />
         </>
     ),
     globe: (
@@ -299,6 +308,8 @@ export const ICON_TOKEN_GLYPHS: Readonly<Record<string, string>> = {
     plusminus: '±',
     // #324: the palette's csv pane symbol.
     tablecells: '▦',
+    // The palette's image pane symbol.
+    photo: '▣',
     globe: '◍',
     gearshape: '⚙'
 };

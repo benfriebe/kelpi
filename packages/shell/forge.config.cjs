@@ -188,6 +188,10 @@ module.exports = {
          * Editor, rank Alternate, so Kelpi joins Open With without taking the default from
          * Numbers or Excel. Their UTIs are the system's own (`public.comma-separated-values-text`,
          * `public.tab-separated-values-text`), so there is nothing to import.
+         *
+         * Images (the image pane, docs/content-panes.md §12) join as a **Viewer**, rank Alternate:
+         * the pane is read-only, and Preview keeps the default. The UTIs are the system's own for
+         * `@kelpi/protocol`'s `IMAGE_OPEN_EXTENSIONS` (APNG is `public.png`).
          */
         extendInfo: {
             ...USAGE_DESCRIPTIONS,
@@ -203,6 +207,21 @@ module.exports = {
                     CFBundleTypeRole: 'Editor',
                     LSHandlerRank: 'Alternate',
                     LSItemContentTypes: ['public.comma-separated-values-text', 'public.tab-separated-values-text']
+                },
+                {
+                    CFBundleTypeName: 'Image',
+                    CFBundleTypeRole: 'Viewer',
+                    LSHandlerRank: 'Alternate',
+                    LSItemContentTypes: [
+                        'public.png',
+                        'public.jpeg',
+                        'com.compuserve.gif',
+                        'org.webmproject.webp',
+                        'public.avif',
+                        'public.svg-image',
+                        'com.microsoft.bmp',
+                        'com.microsoft.ico'
+                    ]
                 }
             ],
             UTImportedTypeDeclarations: [

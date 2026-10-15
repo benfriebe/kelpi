@@ -74,6 +74,9 @@ const CONTENT_TYPES: ReadonlyMap<string, string> = new Map([
     ['.txt', 'text/plain; charset=utf-8'],
     ['.svg', 'image/svg+xml'],
     ['.png', 'image/png'],
+    // An image pane serves any `IMAGE_OPEN_EXTENSIONS` file (`@kelpi/protocol` `image.ts`).
+    ['.apng', 'image/apng'],
+    ['.bmp', 'image/bmp'],
     ['.jpg', 'image/jpeg'],
     ['.jpeg', 'image/jpeg'],
     ['.gif', 'image/gif'],

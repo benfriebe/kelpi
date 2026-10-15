@@ -275,6 +275,11 @@ flowchart LR
   and scroll without waiting, saves keep every untouched row byte for byte, and an agent can read
   and edit rows with
   `kelpi document rows` / `csv-edit` (see [`docs/csv-pane.md`](docs/csv-pane.md)).
+- **An image viewer**: `kelpi open shot.png`, a ⌘-click on an image path (or an OSC 8 `file:`
+  link to one) in a terminal, a click on a linked or inline image in a markdown preview, ⌘O, a
+  drop or Finder opens it in an image pane: fitted to the pane, a click for actual size, and
+  redrawn in place when the file is rewritten (an agent regenerating a screenshot). The bytes
+  come straight from the daemon over HTTP, so it works on the phone and in remote workspaces.
 - **Agent awareness**: lifecycle hooks from Claude Code and Codex CLI drive pane status, session
   ids and desktop notifications; `kelpi install-hooks` wires them and `kelpi doctor` verifies the
   whole chain.

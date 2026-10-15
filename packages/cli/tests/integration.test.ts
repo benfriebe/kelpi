@@ -1088,6 +1088,15 @@ describe('open / md / diff routing', () => {
         expect(String((await lastRequest())['url']).endsWith('/page%20one.html')).toBe(true);
     });
 
+    /** content-panes.md §12: an image is a document now; the daemon picks the image pane. */
+    it('routes a local image to the document open, not a file:// web pane', async () => {
+        const home = scratchHome();
+        await runCLI(['open', 'shot.PNG'], { port: server.port, cwd: home, paneID: PANE });
+        expect(await lastRequest()).toEqual({ command: 'open', path: path.join(home, 'shot.PNG'), pane_id: PANE });
+        await runCLI(['open', '--here', 'diagram.svg'], { port: server.port, cwd: home, paneID: PANE });
+        expect(await lastRequest()).toEqual({ command: 'open', path: path.join(home, 'diagram.svg'), pane_id: PANE, reuse: true });
+    });
+
     /** #295: `--focus` rides every route `kelpi open` / `kelpi md` can take; absent sends nothing. */
     it('sends focus: true only with --focus, on the markdown and web routes alike', async () => {
         const home = scratchHome();

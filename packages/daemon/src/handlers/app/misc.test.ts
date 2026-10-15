@@ -206,6 +206,30 @@ describe('open', () => {
         expect(h.state().workspaces[0]?.panes[1]).toMatchObject({ type: 'markdown', filePath: '/data/sales.csv' });
     });
 
+    // content-panes.md §12: an image file opens an image pane through the same placement path.
+    it('opens an image path as an image pane beside the caller, in any case', () => {
+        const h = harness({ initial: seeded(1), ids: [PNEW, id('ffffffff', 2)] });
+        h.send({ command: 'open', path: '/pics/shot.png', pane_id: P1, focus: true });
+        const workspace = h.state().workspaces[0];
+        expect(workspace?.panes[1]).toMatchObject({
+            id: PNEW,
+            type: 'image',
+            filePath: '/pics/shot.png',
+            label: 'shot.png',
+            title: 'shot.png',
+            workingDirectory: '/pics'
+        });
+        expect(workspace?.focusedPaneID).toBe(PNEW);
+        h.send({ command: 'open', path: '/pics/Photo.JPEG', pane_id: P1 });
+        expect(h.state().workspaces[0]?.panes.map((pane) => pane.type)).toEqual(['shell', 'image', 'image']);
+    });
+
+    it("keeps an image path a markdown pane when the caller sends as: 'markdown' (kelpi md)", () => {
+        const h = harness({ initial: seeded(1), ids: [PNEW] });
+        h.send({ command: 'open', path: '/pics/shot.png', pane_id: P1, as: 'markdown' });
+        expect(h.state().workspaces[0]?.panes[1]).toMatchObject({ type: 'markdown', filePath: '/pics/shot.png' });
+    });
+
     it('does not treat a name merely containing csv as a csv file', () => {
         const h = harness({ initial: seeded(1), ids: [PNEW] });
         h.send({ command: 'open', path: '/data/csv-notes.md', pane_id: P1 });

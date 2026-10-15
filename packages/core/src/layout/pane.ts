@@ -11,7 +11,7 @@ import type { PluginPaneDescriptor } from '@kelpi/protocol';
 import type { PaneID } from './types.js';
 
 /** Only `shell` panes have terminal surfaces / sync input / can be captured. */
-export type PaneType = 'shell' | 'markdown' | 'scratchpad' | 'diff' | 'csv' | 'web' | 'plugin';
+export type PaneType = 'shell' | 'markdown' | 'scratchpad' | 'diff' | 'csv' | 'image' | 'web' | 'plugin';
 
 export const PANE_TYPES: readonly PaneType[] = [
     'shell',
@@ -19,6 +19,7 @@ export const PANE_TYPES: readonly PaneType[] = [
     'scratchpad',
     'diff',
     'csv',
+    'image',
     'web',
     'plugin'
 ];

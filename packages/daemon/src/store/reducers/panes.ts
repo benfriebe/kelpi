@@ -433,7 +433,8 @@ function openMarkdownPane(
         nowMillis: action.now,
         label: fileName,
         title: fileName,
-        // #324: a csv file opens as a csv document pane through the same placement path.
+        // #324: a csv file opens as a csv document pane through the same placement path, and
+        // an image file as an image pane (content-panes.md §12).
         type: action.paneType ?? 'markdown',
         filePath: action.filePath
     });

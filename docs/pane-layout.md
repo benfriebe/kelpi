@@ -805,8 +805,8 @@ wires it into the daemon (`packages/daemon/src/store/reducers/panes.ts`, `layout
   agents spawn panes) opens the pane in the **background**: `focusedPaneID`, `focusHistory` and
   the window's caret stay on the pane the user is typing in, and the source is not focused
   either. `kelpi pane split --focus` asks for the GUI behaviour. The same rule covers
-  `pane create`, `web open` and the document `open` (markdown, or a csv pane for a
-  `.csv`/`.tsv` path, issue #324).
+  `pane create`, `web open` and the document `open` (markdown, a csv pane for a
+  `.csv`/`.tsv` path, issue #324, or an image pane for an image, content-panes.md §12).
 - `createPane` (CLI `pane create` into an empty workspace) instead sets
   `layout ← leaf(newPaneID)` semantics via the same splitting path when a source exists,
   or a plain first-pane layout when the workspace is empty.

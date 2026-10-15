@@ -108,9 +108,14 @@ describe('dropDecision', () => {
     });
 
     it('explains a path it cannot open rather than silently ignoring it', () => {
-        const decision = dropDecision(transfer({ 'text/uri-list': 'file:///a/photo.png' }));
+        const decision = dropDecision(transfer({ 'text/uri-list': 'file:///a/archive.zip' }));
         expect(decision.kind).toBe('reject');
-        expect(decision.kind === 'reject' ? decision.reason : '').toContain('not a .md, .csv or .tsv file');
+        expect(decision.kind === 'reject' ? decision.reason : '').toContain('not a .md, .csv, .tsv or image file');
+    });
+
+    it('opens a dropped image path through the same verb (§12)', () => {
+        expect(dropDecision(transfer({ 'text/uri-list': 'file:///a/photo.png' }))).toEqual({ kind: 'open', path: '/a/photo.png' });
+        expect(dropDecision(transfer({ 'text/plain': '/a/Shot.JPG' }))).toEqual({ kind: 'open', path: '/a/Shot.JPG' });
     });
 
     it('opens a dropped .csv or .tsv path through the same verb (#324), in any case', () => {
@@ -178,9 +183,9 @@ describe('cellFromPoint (CONT-122)', () => {
 });
 
 describe('the ⌘O panel copy', () => {
-    it('is the Swift NSOpenPanel message, widened for csv as the shell’s panel is (CONT-120, #324)', () => {
-        expect(OPEN_PANEL_MESSAGE).toBe('Choose a Markdown or CSV file to open');
-        expect([...OPEN_PANEL_EXTENSIONS]).toEqual(['md', 'csv', 'tsv']);
+    it('is the Swift NSOpenPanel message, widened for csv and images as the shell’s panel is (CONT-120, #324, §12)', () => {
+        expect(OPEN_PANEL_MESSAGE).toBe('Choose a Markdown, CSV or image file to open');
+        expect([...OPEN_PANEL_EXTENSIONS]).toEqual(['md', 'csv', 'tsv', 'png', 'apng', 'jpg', 'jpeg', 'gif', 'webp', 'avif', 'svg', 'bmp', 'ico']);
     });
 });
 
@@ -192,6 +197,14 @@ describe('isOpenableDropPath (#324)', () => {
         expect(isOpenableDropPath('/a/TABLE.TSV')).toBe(true);
         expect(isOpenableDropPath('/a/table.xlsx')).toBe(false);
         expect(isOpenableDropPath('/a/notes.markdown')).toBe(false);
+    });
+
+    it('is an image extension too (§12), case-insensitively', () => {
+        expect(isOpenableDropPath('/a/shot.png')).toBe(true);
+        expect(isOpenableDropPath('/a/Photo.JPEG')).toBe(true);
+        expect(isOpenableDropPath('/a/diagram.svg')).toBe(true);
+        expect(isOpenableDropPath('/a/scan.tiff')).toBe(false);
+        expect(isOpenableDropPath('/a/.png')).toBe(false);
     });
 });
 

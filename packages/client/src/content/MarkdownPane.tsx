@@ -43,6 +43,11 @@ export interface MarkdownPaneProps {
     readonly writeClipboard?: ClipboardWriter | undefined;
     readonly writeRichClipboard?: RichClipboardWriter | undefined;
     readonly openLink?: LinkOpener | undefined;
+    /**
+     * §12: open a local image the preview links to, or that was clicked, in an image pane. The
+     * path is as the document wrote it, so a relative one resolves against this pane's file.
+     */
+    readonly onOpenFile?: ((paneID: string, path: string) => void) | undefined;
     /** Bump to open the find bar: the preview's (§3.13), or the editor's in edit mode (§4.4). */
     readonly findToken?: number | undefined;
     /** §TERM-103: bump to open the Copy menu from the pane header's copy button. */
@@ -135,6 +140,7 @@ export function MarkdownPane(props: MarkdownPaneProps): ReactElement {
             writeClipboard={props.writeClipboard}
             writeRichClipboard={props.writeRichClipboard}
             openLink={props.openLink}
+            onOpenFile={props.onOpenFile === undefined ? undefined : (path) => props.onOpenFile?.(paneID, path)}
             findToken={props.findToken}
             copyToken={props.copyToken}
             findPalette={props.findPalette}

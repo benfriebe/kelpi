@@ -38,6 +38,8 @@ export function paneGlyph(type: PaneModel['type']): ChromeIconName {
             return 'note';
         case 'csv':
             return 'table';
+        case 'image':
+            return 'image';
         case 'web':
             return 'globe';
         default:

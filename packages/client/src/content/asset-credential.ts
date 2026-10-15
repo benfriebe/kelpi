@@ -121,3 +121,29 @@ export function credentialedAssetBase(base: string | null): string | null {
     if (base === null || credential === undefined || !base.startsWith(PANE_ASSETS_PREFIX)) return base;
     return `${PANE_ASSETS_PREFIX}c/${credential}/${base.slice(PANE_ASSETS_PREFIX.length)}`;
 }
+
+/**
+ * An image pane's own file (content-panes.md §12), on the daemon a connection dials:
+ * `<origin>/pane-assets/c/<credential>/<paneID>/<name>`, or the legacy uncredentialed form when
+ * the connection carries no token (a dev daemon).
+ *
+ * Built from the connection's target rather than the page, because a remote workspace's pane
+ * lives on another daemon: its file is served by that daemon, under that daemon's token. An
+ * `<img>` loads cross-origin without CORS, so nothing else is needed. Null for a target that is
+ * not a ws/http URL.
+ */
+export function paneFileURL(target: string, paneID: string, name: string): string | null {
+    let url: URL;
+    try {
+        url = new URL(target, globalThis.location?.href ?? 'http://localhost/');
+    } catch {
+        return null;
+    }
+    const protocol = url.protocol === 'wss:' ? 'https:' : url.protocol === 'ws:' ? 'http:' : url.protocol;
+    if (protocol !== 'http:' && protocol !== 'https:') return null;
+    const token = url.searchParams.get('token');
+    const scope = token === null || token.length === 0 ? '' : `c/${assetCredentialFor(token)}/`;
+    // The daemon's routes hang off whatever prefix its `/ws` does.
+    const root = url.pathname.replace(/\/ws\/?$/, '').replace(/\/$/, '');
+    return `${protocol}//${url.host}${root}${PANE_ASSETS_PREFIX}${scope}${encodeURIComponent(paneID)}/${encodeURIComponent(name)}`;
+}

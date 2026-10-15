@@ -421,6 +421,12 @@ and `cli` runs one verb:
 words you pass, sets an exit status, writes to standard error, and with `--json` echoes the
 invocation and the pane context it received.
 
+[Run Suggested Command](../examples/plugins/run-suggested) puts a verb beside a window command:
+it remembers the `! cmd` line or shell block in Claude's last reply from `agent.event` Stop
+events, runs it from ⌃⌥R or a `pane.header` item after a backend dialog, typing into the session
+behind `ifRevision`, and adds `kelpi run-suggested`, which cannot prompt, so it prints the
+command or runs it with `--yes`.
+
 ## Updates and recovery
 
 Inspect retained revisions and switch back using their full content identity:

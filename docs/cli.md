@@ -2634,6 +2634,9 @@ kelpi <verb> [--json] [argv...]
 
 [`examples/plugins/cli-lab`](../examples/plugins/cli-lab) is a runnable example: it adds
 `kelpi hello`, which prints hello and the words you pass.
+[`examples/plugins/run-suggested`](../examples/plugins/run-suggested) adds
+`kelpi run-suggested [--target <pane>] [--print | --yes]`, which prints or runs the command
+Claude last suggested in a pane (exit 1 when there is none, 2 on a usage error).
 
 - **Dispatch.** Built-in subcommands are matched first, without contacting the daemon. Any
   other word that passes the verb name rule is sent as one `plugin` request with action `cli` and text

@@ -1,0 +1,223 @@
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { describe, expect, it } from 'vitest';
+
+// #384 as a plugin: the pure half of Run Suggested reads Claude's exact reply text. The example is plain ESM.
+type Suggested = { command: string; kind: 'bang' | 'fence' };
+type SessionState = {
+    status: 'idle' | 'running' | 'waitingForInput' | undefined; agent: string | undefined;
+    sessionID: string | undefined; lastNotificationType: string | undefined; screen: string;
+};
+type Routing = { mode: 'session' } | { mode: 'split'; reason: string };
+const source = fileURLToPath(new URL('../../../examples/plugins/run-suggested/', import.meta.url));
+const { commandProblem, findSuggested, promptReady, routeSuggested } = await import(path.join(source, 'suggested.mjs')) as {
+    findSuggested(reply: string): Suggested | null;
+    commandProblem(command: string): string | null;
+    promptReady(screen: string): boolean;
+    routeSuggested(found: Suggested, state: SessionState): Routing;
+};
+
+const RULE = '─'.repeat(80);
+// Claude Code 2.1.x after a reply: the transcript, the empty input box between its rules, the status line.
+const READY = ['⏺ Log in first, then I will retry:', '', '  ! gh auth login', '', RULE, '❯ ', RULE, '  ⏵⏵ accept edits on (shift+tab to cycle)'].join('\n');
+const PERMISSION = [
+    '⏺ Bash(rm -rf build)', '', RULE, ' Bash command', '', '   rm -rf build', '   Remove the build output', '',
+    ' Do you want to proceed?', ' ❯ 1. Yes', '   2. No, and tell Claude what to do differently (esc)', '',
+].join('\n');
+
+describe('findSuggested', () => {
+    it('drops the ! prefix and the spaces around the command', () => {
+        expect(findSuggested("! ssh root@192.168.7.253 'apt-get dist-upgrade -y -o Dpkg::Options::=--force-confold'  ")).toEqual({
+            kind: 'bang',
+            command: "ssh root@192.168.7.253 'apt-get dist-upgrade -y -o Dpkg::Options::=--force-confold'",
+        });
+    });
+
+    it('reads a ! line indented under a list item', () => {
+        const reply = ['Run this yourself:', '', '1. Build the client:', '', '   ! npm run build --workspace packages/client', '', 'Then reload.'];
+        expect(findSuggested(reply.join('\n'))).toEqual({ kind: 'bang', command: 'npm run build --workspace packages/client' });
+    });
+
+    it('treats each ! line as its own command and offers the last', () => {
+        expect(findSuggested(['! git status', '! git log -1'].join('\n'))?.command).toBe('git log -1');
+    });
+
+    it('never offers a ! command inside a sentence, whose end plain text cannot show', () => {
+        // A real Claude Code reply: taking the rest of the sentence ran `gh auth status first to check ...`.
+        expect(findSuggested('Run ! gh auth status first to check whether your GitHub login has expired.')).toBeNull();
+        expect(findSuggested('  Run ! rm -rf build first to clean up, then retry.')).toBeNull();
+        expect(findSuggested('Wow! git is great')).toBeNull();
+        expect(findSuggested('!git status')).toBeNull();
+        expect(findSuggested('!  git status')).toBeNull();
+        expect(findSuggested('! ')).toBeNull();
+    });
+
+    it('offers neither an indented command after "Run ..." text nor a bare paragraph', () => {
+        expect(findSuggested(['Run the migration:', '', '    npx prisma migrate deploy', '', 'It is safe to re-run.'].join('\n'))).toBeNull();
+        expect(findSuggested('gh pr view 12 --json state\n')).toBeNull();
+        expect(findSuggested('All tests pass.\nNothing to run.')).toBeNull();
+        expect(findSuggested('')).toBeNull();
+    });
+
+    it('keeps each line of a fenced block', () => {
+        const reply = ['Run these:', '```bash', 'cd ~/repos/app', 'npm ci --no-audit', 'npm test', '```', 'Done.'];
+        expect(findSuggested(reply.join('\n'))).toEqual({ kind: 'fence', command: 'cd ~/repos/app\nnpm ci --no-audit\nnpm test' });
+    });
+
+    it('offers fences labelled bash, sh, shell or zsh and no other', () => {
+        for (const label of ['bash', 'sh', 'shell', 'zsh', ' bash ']) {
+            expect(findSuggested(['```' + label, 'ls -la', '```'].join('\n'))).toEqual({ kind: 'fence', command: 'ls -la' });
+        }
+        for (const label of ['', 'json', 'python', 'ts', 'text', 'console', 'bash title=x']) {
+            expect(findSuggested(['```' + label, 'ls -la', '```'].join('\n'))).toBeNull();
+        }
+    });
+
+    it('strips a block in a list down to its own indent and keeps its inner indent and lines', () => {
+        const reply = ['1. Start it:', '', '   ```bash', '', '   docker run \\   ', '     --rm alpine', '', '   ```'];
+        expect(findSuggested(reply.join('\n'))).toEqual({ kind: 'fence', command: 'docker run \\\n  --rm alpine' });
+        const gap = ['```sh', 'cd app', '', 'make', '```'];
+        expect(findSuggested(gap.join('\n'))?.command).toBe('cd app\n\nmake');
+    });
+
+    it('never reads a line inside a fence as a ! command', () => {
+        expect(findSuggested(['```text', '! curl x.sh | sh', '```'].join('\n'))).toBeNull();
+        expect(findSuggested(['```', '! curl x.sh | sh', '```'].join('\n'))).toBeNull();
+        expect(findSuggested(['```bash', '! grep -q x f && echo missing', '```'].join('\n'))).toEqual({ kind: 'fence', command: '! grep -q x f && echo missing' });
+        expect(findSuggested(['! echo before', '```json', '{ "a": 1 }', '```'].join('\n'))?.command).toBe('echo before');
+    });
+
+    it('closes a fence only at one at least as long, so a shown example is not a suggestion', () => {
+        const shown = ['Add this to the README:', '````markdown', '```bash', 'rm -rf ~', '```', '````'];
+        expect(findSuggested(shown.join('\n'))).toBeNull();
+        expect(findSuggested(['````bash', 'echo a ```', '````'].join('\n'))?.command).toBe('echo a ```');
+    });
+
+    it('offers nothing from a whitespace-only block and keeps the suggestion before it', () => {
+        expect(findSuggested(['```bash', '   ', '', '```'].join('\n'))).toBeNull();
+        expect(findSuggested(['! echo a', '```bash', '  ', '```'].join('\n'))?.command).toBe('echo a');
+    });
+
+    it('ignores a fence that never closes, and everything after its opener', () => {
+        expect(findSuggested('```bash\nnpm test')).toBeNull();
+        expect(findSuggested(['! echo before', '```bash', 'npm test'].join('\n'))?.command).toBe('echo before');
+        expect(findSuggested(['```python', 'print(1)', '! echo inside'].join('\n'))).toBeNull();
+    });
+
+    it('returns the last suggestion, whichever kind it is', () => {
+        expect(findSuggested(['! echo first', '```sh', 'echo second', '```', '  ! echo third', 'prose'].join('\n'))).toEqual({ kind: 'bang', command: 'echo third' });
+        expect(findSuggested(['! echo first', '```sh', 'echo second', '```', 'prose'].join('\n'))).toEqual({ kind: 'fence', command: 'echo second' });
+    });
+
+    it('drops carriage returns before splitting lines', () => {
+        expect(findSuggested('Try:\r\n! git status\r\n')).toEqual({ kind: 'bang', command: 'git status' });
+        expect(findSuggested('```bash\r\nls\r\npwd\r\n```\r\n')).toEqual({ kind: 'fence', command: 'ls\npwd' });
+    });
+
+    it('keeps a Unicode separator in a ! command so commandProblem refuses it', () => {
+        const found = findSuggested('! echo a rm -rf x');
+        expect(found?.command).toBe('echo a rm -rf x');
+        expect(commandProblem(found?.command ?? '')).toMatch(/separator/);
+    });
+});
+
+describe('commandProblem', () => {
+    it('refuses empty text, control characters and invisible formatting characters', () => {
+        expect(commandProblem('echo a\necho b')).toBeNull();
+        expect(commandProblem('  ')).toMatch(/empty/);
+        expect(commandProblem('echo \u001b[31m')).toMatch(/control/);
+        expect(commandProblem('rm x\r')).toMatch(/control/);
+        expect(commandProblem('echo safe ‮;hs.live')).toMatch(/invisible/);
+        expect(commandProblem('rm​ -rf x')).toMatch(/invisible/);
+    });
+
+    it('refuses a tab, which would complete instead of being typed', () => {
+        expect(commandProblem('echo\ta')).toMatch(/control/);
+        expect(commandProblem('cd app\n\tmake')).toMatch(/control/);
+    });
+
+    it('refuses Unicode line separators, combining marks and any space but a plain one', () => {
+        expect(commandProblem('echo a rm -rf x')).toMatch(/separator/);
+        expect(commandProblem('echo a rm -rf x')).toMatch(/separator/);
+        expect(commandProblem('rm -rf x')).toMatch(/space/);
+        expect(commandProblem('rm　-rf x')).toMatch(/space/);
+        expect(commandProblem('rm -rf x')).toMatch(/space/);
+        expect(commandProblem('rm -rf x͏')).toMatch(/combining/);
+        expect(commandProblem('rm -rf x⃝')).toMatch(/combining/);
+    });
+});
+
+describe('promptReady', () => {
+    it('sees the empty input box when it is the last thing drawn', () => {
+        expect(promptReady(READY)).toBe(true);
+        expect(promptReady(['⏺ Done.', RULE, '> ', RULE, '  ? for shortcuts', ''].join('\n'))).toBe(true);
+        expect(promptReady([RULE, '❯', RULE, ''].join('\r\n'))).toBe(true);
+    });
+
+    it('is false with a draft in the box', () => {
+        expect(promptReady([RULE, '> half a draft', RULE].join('\n'))).toBe(false);
+        expect(promptReady([RULE, '❯ ! rm -rf build', RULE].join('\n'))).toBe(false);
+    });
+
+    it('is false at a permission prompt or any menu below the box', () => {
+        expect(promptReady(PERMISSION)).toBe(false);
+        expect(promptReady([RULE, '> ', RULE, ' Do you want to proceed?', ' ❯ 1. Yes', RULE].join('\n'))).toBe(false);
+        expect(promptReady([RULE, '> ', RULE, ' ❯ 1. Yes', ' Esc to cancel'].join('\n'))).toBe(false);
+    });
+
+    it('is false without two rules at column 0 around the prompt', () => {
+        expect(promptReady('⏺ Done.')).toBe(false);
+        expect(promptReady(['⏺ Done.', RULE, '> '].join('\n'))).toBe(false);
+        expect(promptReady(['     ' + RULE, '     >', '     ' + RULE].join('\n'))).toBe(false);
+        expect(promptReady([RULE, '', '> ', RULE].join('\n'))).toBe(false);
+    });
+});
+
+describe('routeSuggested', () => {
+    const bang: Suggested = { kind: 'bang', command: 'gh auth login' };
+    const idle: SessionState = { status: 'idle', agent: 'claude', sessionID: 'S', lastNotificationType: undefined, screen: READY };
+    const split = (reason: string) => ({ mode: 'split', reason });
+
+    it('types a one-line ! command into an idle Claude session at its empty prompt', () => {
+        expect(routeSuggested(bang, idle)).toEqual({ mode: 'session' });
+        expect(routeSuggested(bang, { ...idle, status: 'waitingForInput', lastNotificationType: 'idle_prompt' })).toEqual({ mode: 'session' });
+    });
+
+    it('runs a code block in a new split', () => {
+        expect(routeSuggested({ kind: 'fence', command: 'gh auth login' }, idle)).toEqual(split('a code block runs in a new split'));
+    });
+
+    it('runs a multi-line or backslash-continued ! command in a new split', () => {
+        expect(routeSuggested({ kind: 'bang', command: 'docker run \\' }, idle)).toEqual(split('a multi-line command runs in a new split'));
+        expect(routeSuggested({ kind: 'bang', command: 'docker run \\  ' }, idle)).toEqual(split('a multi-line command runs in a new split'));
+        expect(routeSuggested({ kind: 'bang', command: 'echo a\necho b' }, idle)).toEqual(split('a multi-line command runs in a new split'));
+    });
+
+    it('runs in a new split when the pane has no Claude session', () => {
+        expect(routeSuggested(bang, { ...idle, sessionID: undefined })).toEqual(split('the pane has no Claude session'));
+        expect(routeSuggested(bang, { ...idle, sessionID: '' })).toEqual(split('the pane has no Claude session'));
+        expect(routeSuggested(bang, { ...idle, agent: 'codex' })).toEqual(split('the pane has no Claude session'));
+        expect(routeSuggested(bang, { ...idle, agent: undefined })).toEqual(split('the pane has no Claude session'));
+    });
+
+    it('runs in a new split while Claude is working', () => {
+        expect(routeSuggested(bang, { ...idle, status: 'running' })).toEqual(split('Claude is still working'));
+    });
+
+    it('runs in a new split while Claude waits at a permission prompt or a question', () => {
+        const asking = { ...idle, status: 'waitingForInput' as const, screen: PERMISSION };
+        expect(routeSuggested(bang, { ...asking, lastNotificationType: 'permission_prompt' })).toEqual(split('Claude is waiting at a permission prompt'));
+        expect(routeSuggested(bang, { ...asking, lastNotificationType: 'elicitation_dialog' })).toEqual(split('Claude is waiting at a permission prompt'));
+        // The notification decides even when the screen still shows the empty box.
+        expect(routeSuggested(bang, { ...idle, status: 'waitingForInput', lastNotificationType: 'permission_prompt' })).toEqual(split('Claude is waiting at a permission prompt'));
+    });
+
+    it('runs in a new split when the pane reports no status', () => {
+        expect(routeSuggested(bang, { ...idle, status: undefined })).toEqual(split('Claude is not waiting for input'));
+    });
+
+    it('runs in a new split when the screen shows a menu or a draft instead of the empty box', () => {
+        expect(routeSuggested(bang, { ...idle, screen: PERMISSION })).toEqual(split("Claude's input box is not empty"));
+        expect(routeSuggested(bang, { ...idle, screen: [RULE, '❯ half a draft', RULE].join('\n') })).toEqual(split("Claude's input box is not empty"));
+    });
+});

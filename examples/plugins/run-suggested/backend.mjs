@@ -1,18 +1,25 @@
-import { commandProblem, findSuggested, routeSuggested, typedReady } from './suggested.mjs';
+import { PROMPTS, commandProblem, findSuggested, routeSuggested, typedReady } from './suggested.mjs';
 
 /** @typedef {import('./suggested.mjs').Suggested} Suggested */
 /** @typedef {import('./suggested.mjs').Routing} Routing */
 /** @typedef {import('../../../packages/plugin-sdk/index.js').PaneInfo} PaneInfo */
 /** @typedef {import('../../../packages/plugin-sdk/index.js').TerminalRead} TerminalRead */
 /**
- * What one run did. `changed` says which guarded step found the screen moved: `before` nothing
- * was typed, `after` the command sits typed in Claude's box without Enter.
+ * What one run did. `refused` says which guard stopped it: `before` the screen moved before typing,
+ * so nothing was typed; `after` it moved before Enter; `mismatch` Claude's box did not show the
+ * command as typed. After `after` or `mismatch` the command sits typed in Claude's box without Enter.
  * @typedef {{ ok: true, mode: 'session' } | { ok: true, mode: 'split', paneID: string, reason: string }
- *   | { ok: false, changed: 'before' | 'after' } | { ok: false, error: string }} Outcome
+ *   | { ok: false, refused: 'before' | 'after' | 'mismatch' } | { ok: false, error: string }} Outcome
  */
 
 const VERB = 'kelpi run-suggested';
-const TYPED_NOT_RUN = "the screen changed before Enter; the command is typed in Claude's box, not run";
+// What a refused run tells the user, by the guard that refused it.
+const REFUSED = {
+    before: 'the screen changed, nothing was sent',
+    after: "the screen changed before Enter; the command is typed in Claude's box, not run",
+    mismatch: "Enter was not pressed, Claude's box did not show the command as typed; it sits typed, not run",
+};
+const NO_LONGER_WAITING = 'Run suggested: Claude is no longer waiting at its prompt, nothing was sent';
 const usage = [
     'Usage: kelpi run-suggested [--target <pane>] [--print | --yes] [--json]',
     '',
@@ -52,7 +59,10 @@ export function activate(api) {
     const stopEvents = api.agents.onEvent(event => {
         // `muted` only asks a plugin not to echo the event as a notification, which this one never does.
         if (event.type === 'stop' || event.type === 'start') lastNotification.delete(event.paneID);
-        if (event.type === 'notification' && event.notificationType) lastNotification.set(event.paneID, event.notificationType);
+        // A prompt stays the pane's state until the turn moves on: a later idle_prompt may arrive while its dialog is still open.
+        if (event.type === 'notification' && event.notificationType && !PROMPTS.has(lastNotification.get(event.paneID) ?? '')) {
+            lastNotification.set(event.paneID, event.notificationType);
+        }
         // Abstain leaves Claude's own permission prompt on screen.
         if (event.type === 'permission-request' && event.behavior === 'abstain') lastNotification.set(event.paneID, 'permission_prompt');
         // A Stop without the reply's text (a hook running a CLI that does not forward it, a manual
@@ -118,7 +128,7 @@ export function activate(api) {
                 step = 'after';
                 const typed = await api.terminal.read(pane.id, { scrollback: false, settleMs: 300 });
                 // The revision alone would let Enter answer whatever drew meanwhile, such as a permission menu.
-                if (!typedReady(typed.text, found.command)) return { ok: false, changed: 'after' };
+                if (!typedReady(typed.text, found.command, typed.cursor)) return { ok: false, refused: 'mismatch' };
                 await api.terminal.sendKey(pane.id, 'enter', { ifRevision: typed.revision });
                 return { ok: true, mode: 'session' };
             }
@@ -130,7 +140,7 @@ export function activate(api) {
             return { ok: true, mode: 'split', paneID: split.paneID, reason: routing.reason };
         } catch (error) {
             const failure = /** @type {{ code?: string, message?: string }} */ (error);
-            if (failure?.code === 'SCREEN_CHANGED') return { ok: false, changed: step };
+            if (failure?.code === 'SCREEN_CHANGED') return { ok: false, refused: step };
             return { ok: false, error: failure?.message ?? String(error) };
         }
     };
@@ -140,6 +150,17 @@ export function activate(api) {
      * @param {import('../../../packages/plugin-sdk/index.js').UINotificationOptions} options
      */
     const notify = options => api.ui.showNotification(options).catch(() => null);
+
+    /**
+     * Why the suggestion the user confirmed no longer stands, or null. The dialog may have been open
+     * through another reply or a new session in the pane, which replace or clear what was confirmed.
+     * @param {PaneInfo} pane as listed now @param {PaneInfo} before as listed before the dialog @param {Suggested} found
+     */
+    const staleReason = (pane, before, found) => {
+        if (pane.agentSessionID !== before.agentSessionID) return 'a new Claude session started';
+        if (remembered.get(pane.id)?.command !== found.command) return 'Claude replied again';
+        return null;
+    };
 
     /** @type {(args: unknown, context: import('../../../packages/plugin-sdk/index.js').Context) => Promise<string | null>} */
     const runFromWindow = async (_args, context) => {
@@ -176,20 +197,28 @@ export function activate(api) {
         /** @type {Outcome} */
         let outcome;
         if (action === 'split') {
-            outcome = await run(found, before.pane, { mode: 'split', reason: 'you chose a new split' }, before.read);
+            const pane = (await listPanes()).find(entry => entry.id === paneID);
+            if (!pane) { await notify({ message: 'Run suggested: the pane is gone', tone: 'warning' }); return action; }
+            const stale = staleReason(pane, before.pane, found);
+            if (stale) { await notify({ message: NO_LONGER_WAITING, detail: stale, tone: 'warning' }); return action; }
+            outcome = await run(found, pane, { mode: 'split', reason: 'you chose a new split' }, before.read);
         } else {
             // The dialog may have been open a while: check again, after any redraw closing it caused.
             const now = await inspect(paneID, found, 300);
-            if (!now || now.routing.mode !== 'session') {
-                await notify({ message: 'Run suggested: Claude is no longer waiting at its prompt, nothing was sent', ...(now?.routing.mode === 'split' ? { detail: now.routing.reason } : {}), tone: 'warning' });
+            const stale = now && staleReason(now.pane, before.pane, found);
+            if (!now || stale || now.routing.mode !== 'session') {
+                const detail = stale || (now?.routing.mode === 'split' ? now.routing.reason : undefined);
+                await notify({ message: NO_LONGER_WAITING, ...(detail ? { detail } : {}), tone: 'warning' });
                 return action;
             }
             outcome = await run(found, now.pane, now.routing, now.read);
         }
-        if (!outcome.ok && 'changed' in outcome) {
-            await notify(outcome.changed === 'before'
-                ? { message: 'Run suggested: the screen changed, nothing was sent', detail: 'It changed before the command was typed.', tone: 'warning' }
-                : { message: `Run suggested: ${TYPED_NOT_RUN}`, tone: 'warning' });
+        if (!outcome.ok && 'refused' in outcome) {
+            await notify({
+                message: `Run suggested: ${REFUSED[outcome.refused]}`,
+                ...(outcome.refused === 'before' ? { detail: 'It changed before the command was typed.' } : {}),
+                tone: 'warning',
+            });
         } else if (!outcome.ok) {
             await notify({ message: `Run suggested: ${outcome.error}`, tone: 'error' });
         }
@@ -238,10 +267,7 @@ export function activate(api) {
         const now = await inspect(pane.id, found);
         if (!now) return fail(`pane ${pane.id} is gone`);
         const outcome = await run(found, now.pane, now.routing, now.read);
-        if (!outcome.ok && 'changed' in outcome) {
-            return fail(outcome.changed === 'before' ? 'the screen changed, nothing was sent' : TYPED_NOT_RUN);
-        }
-        if (!outcome.ok) return fail(outcome.error);
+        if (!outcome.ok) return fail('refused' in outcome ? REFUSED[outcome.refused] : outcome.error);
         if (outcome.mode === 'session') return { text: 'ran in the Claude session', json: { ...shown.json, ran: 'session', paneID: pane.id } };
         return { text: `ran in a new split: ${outcome.reason}`, json: { ...shown.json, ran: 'split', paneID: outcome.paneID, reason: outcome.reason } };
     };

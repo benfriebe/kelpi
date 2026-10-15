@@ -15,7 +15,8 @@ per pane, the last suggestion in that reply:
   run something in its own session, alone on its line or as one inline code span
   (`` `! gh auth status` ``), or
 - a code block, fenced with backticks or tildes, labelled `bash`, `sh`, `shell` or `zsh`, whose
-  lines are the command.
+  lines are the command. Only the block's common indent and its blank first and last lines are
+  dropped; every other space stays, so a heredoc writes what Claude wrote.
 
 Whichever comes last in the reply wins. A reply with no suggestion clears the pane's entry, and so
 does the start or end of a Claude session in the pane. Running a suggestion does not clear it;
@@ -27,7 +28,8 @@ command exactly as it will run, with where it will run:
 - **Run in this Claude session** types `! <command>` into Claude's input box and presses Enter, so
   Claude runs it and sees the output. It is offered only for a one-line `!` suggestion, when the
   pane is a Claude session that has finished its reply, is not asking for a permission or an
-  answer, and shows its input box empty with no menu below it.
+  answer (a permission or question notification counts until Claude's next turn starts or ends,
+  whatever notification follows it), and shows its input box empty with no menu below it.
   Claude's prompt suggestion often draws its guess at your next prompt as dim ghost text in the
   empty box, and right after a `!` reply the guess is usually that same line. The screen text
   has no styling, so the plugin goes by the cursor: Claude keeps it right after the prompt glyph
@@ -39,22 +41,35 @@ command exactly as it will run, with where it will run:
   runs the command there. A code block, a multi-line command, a busy Claude or a Claude waiting at
   a permission prompt only gets this choice, with the reason in the dialog.
 
-Typing into the session is guarded. Once you choose, the plugin reads the screen again and checks
-that Claude still waits at an empty prompt. It types `! <command>` only if the screen is still the
-one it just read. It then reads again and presses Enter only if Claude's input box shows exactly
-what it typed, with no menu below it, and the screen has not moved since that read. Ghost text
-drawn after the typed command counts as a difference, so Enter is not pressed. When a check
-fails before typing, it sends nothing and says so in a notification ("the screen changed, nothing
-was sent"). When one fails after typing, the command sits in Claude's input box, unrun, and the
-notification says so ("the screen changed before Enter; the command is typed in Claude's box, not
-run"). It never retries.
+Typing into the session is guarded. Once you choose, the plugin checks that the suggestion is still
+the one you confirmed, then reads the screen again and checks that Claude still waits at an empty
+prompt. It types `! <command>` only if the screen is still the one it just read. The typed `!`
+switches Claude's box to bash mode, which draws `!` in place of `❯`. The plugin then reads again
+and presses Enter only if the box is in bash mode, the cursor is in the box but not right after
+the glyph (where it sits in front of ghost text), the text after the glyph is exactly the command (spaces inside quotes count; a command too long for
+one line may wrap), no menu or key hint shows below the box, and the screen has not moved since
+that read. Ghost text drawn after the typed command counts as a difference, so Enter is not
+pressed. It never retries. Each refusal says why in a notification, or on standard error from the
+CLI:
+
+- "Claude is no longer waiting at its prompt, nothing was sent": checked once you answer the
+  dialog, with the reason. "Claude replied again" means a newer reply replaced or cleared the
+  suggestion, "a new Claude session started" means the pane's session changed, and any other
+  reason is why Claude no longer waits at an empty prompt. This applies to both choices.
+- "the screen changed, nothing was sent": the screen moved before the command was typed.
+- "the screen changed before Enter; the command is typed in Claude's box, not run": the screen
+  moved after the plugin read the typed command.
+- "Enter was not pressed, Claude's box did not show the command as typed; it sits typed, not
+  run": the box failed the typed check.
+
+After the last two, clear the box yourself or press Enter in it once you have read it.
 
 ## Install
 
 Kelpi's Claude hooks must be installed (`kelpi install-hooks`): the suggestion comes from the Stop
 hook, so without them the plugin never hears a reply. The hooks must also run a Kelpi CLI that
 forwards the reply's text (Claude's `last_assistant_message`), such as one built from this
-checkout. The 0.2.16 release's CLI does not, and with it the plugin never sees a suggestion. A
+checkout. Kelpi 0.2.16 and earlier do not, and with them the plugin never sees a suggestion. A
 Stop without the text changes nothing, so a pane whose hooks run two CLIs, which gets two Stop
 events per reply, goes by the one that carries it. Then, from the checkout root:
 
@@ -98,7 +113,8 @@ kelpi run-suggested [--target <pane>] [--print | --yes] [--json]
 
 Exit codes: 0 when it printed or ran the command; 1 when there is no target pane, Claude has not
 suggested a command in that pane (`{ "found": false }` with `--json`), the command holds a
-character it will not type, the screen changed, or the run failed; 2 for a usage error, including
+character it will not type, a guard refused (the screen changed, or Claude's box did not show the
+command as typed), or the run failed; 2 for a usage error, including
 `--print` with `--yes`.
 
 ## Limits

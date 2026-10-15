@@ -10,6 +10,9 @@ import { KelpiError, type AgentHookEvent, type BackendAPI, type Context, type Da
 const source = fileURLToPath(new URL('../../../examples/plugins/run-suggested/', import.meta.url));
 const RULE = '─'.repeat(40);
 const box = (typed: string) => ['⏺ Run this to check your login:', '', RULE, `❯\u00a0${typed}`, RULE, '  ? for shortcuts'].join('\n');
+// What Claude Code 2.1.300 shows after a bare send of `! cmd` into its empty box: bash mode's glyph `!`
+// for `❯`, U+00A0, the rest as typed with its leading space, and one footer row.
+const typedBox = (typed: string) => ['⏺ Run this to check your login:', '', RULE, typed.replace(/^!/, '!\u00a0'), RULE, '  ! for shell mode'].join('\n');
 const READY = box('');
 const BUSY = ['⏺ Running…', '', RULE, '> fix the tests', RULE].join('\n');
 const PERMISSION = ['⏺ Bash(rm -rf build)', '', RULE, ' Bash command', '', '   rm -rf build', '', ' Do you want to proceed?', ' ❯ 1. Yes', '   2. No', ''].join('\n');
@@ -29,13 +32,14 @@ function stop(paneID: string, lastAssistantMessage: string): AgentHookEvent {
 // Claude keeps the cursor at the end of what its box holds, after the glyph and its space when empty.
 function cursorOf(text: string) {
     const rows = text.split('\n');
-    const row = rows.findLastIndex(line => /^[❯>]/.test(line));
+    const row = rows.findLastIndex(line => /^[❯>!]/.test(line));
     return row < 0 ? { row: 0, col: 0 } : { row, col: rows[row]!.length };
 }
 
 // `screens` are the reads' texts in turn; past them a read shows `screen`, or the box holding what a bare
-// send typed. `cursor`, when given, is every read's cursor.
-async function setup(options: { panes?: PaneInfo[]; screen?: string; screens?: string[]; cursor?: { row: number; col: number }; answer?: string | null; sendError?: unknown; keyError?: unknown } = {}) {
+// send typed. `cursor`, when given, is the cursor of every read before that send, and `typedCursor` of every
+// read after it; by default a read's cursor is at the end of the box.
+async function setup(options: { panes?: PaneInfo[]; screen?: string; screens?: string[]; cursor?: { row: number; col: number }; typedCursor?: { row: number; col: number }; answer?: string | null; sendError?: unknown; keyError?: unknown } = {}) {
     const { activate } = await import(path.join(source, 'backend.mjs')) as { activate(api: BackendAPI): () => void };
     const handlers = new Map<string, (args: Data, context: Context) => Promise<unknown>>();
     let listener: ((event: AgentHookEvent) => void) | undefined;
@@ -45,8 +49,8 @@ async function setup(options: { panes?: PaneInfo[]; screen?: string; screens?: s
     const calls: string[] = [];
     const read = vi.fn(async (paneID: string) => {
         calls.push(`read ${paneID}`);
-        const text = options.screens?.[reads++] ?? (typed === undefined ? options.screen ?? READY : box(typed));
-        return { text, revision: ++revision, cursor: options.cursor ?? cursorOf(text), altScreen: true };
+        const text = options.screens?.[reads++] ?? (typed === undefined ? options.screen ?? READY : typedBox(typed));
+        return { text, revision: ++revision, cursor: (typed === undefined ? options.cursor : options.typedCursor) ?? cursorOf(text), altScreen: true };
     });
     const send = vi.fn(async (paneID: string, text: string, sendOptions?: { bare?: boolean }) => {
         calls.push(`send ${paneID}`);
@@ -80,6 +84,8 @@ async function setup(options: { panes?: PaneInfo[]; screen?: string; screens?: s
 
 const screenChanged = () => new KelpiError('the screen changed', { code: 'SCREEN_CHANGED', details: { revision: 99 } });
 const TYPED_NOT_RUN = "the screen changed before Enter; the command is typed in Claude's box, not run";
+const MISMATCH = "Enter was not pressed, Claude's box did not show the command as typed; it sits typed, not run";
+const NO_LONGER = 'Run suggested: Claude is no longer waiting at its prompt, nothing was sent';
 const event = (type: AgentHookEvent['type'], extra: Partial<AgentHookEvent> = {}): AgentHookEvent =>
     ({ type, paneID: 'pane-a', workspaceID: 'ws-1', agent: 'claude', sessionID: 'session-1', status: 'waitingForInput', ...extra });
 const readResults = async (read: { mock: { results: { value: unknown }[] } }) =>
@@ -230,12 +236,36 @@ describe('Run Suggested Command example', () => {
         expect(plugin.calls).toEqual(['read pane-a', 'read pane-a', 'send pane-a', 'read pane-a']);
         expect(plugin.send).toHaveBeenCalledTimes(1);
         expect(plugin.sendKey).not.toHaveBeenCalled();
-        expect(plugin.showNotification).toHaveBeenCalledWith({ message: `Run suggested: ${TYPED_NOT_RUN}`, tone: 'warning' });
+        expect(plugin.showNotification).toHaveBeenCalledWith({ message: `Run suggested: ${MISMATCH}`, tone: 'warning' });
 
         const cli = await setup({ screens: [READY, PERMISSION] });
         cli.emit(stop('pane-a', '! gh auth status'));
-        expect(await cli.cli(['--yes'])).toEqual({ stderr: `kelpi run-suggested: ${TYPED_NOT_RUN}`, exitCode: 1 });
+        expect(await cli.cli(['--yes'])).toEqual({ stderr: `kelpi run-suggested: ${MISMATCH}`, exitCode: 1 });
         expect(cli.sendKey).not.toHaveBeenCalled();
+    });
+
+    it("never presses Enter when the typed text did not switch Claude's box to bash mode", async () => {
+        // The box shows the text after the plain glyph: Enter would send it to Claude as a prompt.
+        const notBash = box('! gh auth status');
+        const plugin = await setup({ screens: [READY, READY, notBash] });
+        plugin.emit(stop('pane-a', '! gh auth status'));
+        expect(await plugin.window()).toBe('session');
+        expect(plugin.send).toHaveBeenCalledTimes(1);
+        expect(plugin.sendKey).not.toHaveBeenCalled();
+        expect(plugin.showNotification).toHaveBeenCalledWith({ message: `Run suggested: ${MISMATCH}`, tone: 'warning' });
+
+        const cli = await setup({ screens: [READY, notBash] });
+        cli.emit(stop('pane-a', '! gh auth status'));
+        expect(await cli.cli(['--yes'])).toEqual({ stderr: `kelpi run-suggested: ${MISMATCH}`, exitCode: 1 });
+        expect(cli.sendKey).not.toHaveBeenCalled();
+    });
+
+    it('never presses Enter when the cursor after typing sits right after the glyph, in front of ghost text', async () => {
+        const plugin = await setup({ typedCursor: { row: 3, col: 2 } });
+        plugin.emit(stop('pane-a', '! gh auth status'));
+        expect(await plugin.cli(['--yes'])).toEqual({ stderr: `kelpi run-suggested: ${MISMATCH}`, exitCode: 1 });
+        expect(plugin.send).toHaveBeenCalledTimes(1);
+        expect(plugin.sendKey).not.toHaveBeenCalled();
     });
 
     it('offers only a new split after a permission prompt notification or an abstained request, until the next turn', async () => {
@@ -257,6 +287,26 @@ describe('Run Suggested Command example', () => {
         expect(plugin.send).not.toHaveBeenCalled();
     });
 
+    it('keeps a permission prompt notification through a later notification of another type', async () => {
+        const plugin = await setup({ panes: [pane({ status: 'waitingForInput' })], answer: 'cancel' });
+        const actions = (call: number) => plugin.showDialog.mock.calls[call]![0].actions.map(action => action.id);
+        plugin.emit(stop('pane-a', '! gh auth status'));
+        plugin.emit(event('notification', { notificationType: 'permission_prompt' }));
+        plugin.emit(event('notification', { notificationType: 'idle_prompt' }));
+        await plugin.window();
+        expect(actions(0)).toEqual(['cancel', 'split']);
+        plugin.emit(event('stop', { status: 'idle' }));
+        plugin.emit(event('notification', { notificationType: 'elicitation_dialog' }));
+        plugin.emit(event('notification', { notificationType: 'idle_prompt' }));
+        await plugin.window();
+        expect(actions(1)).toEqual(['cancel', 'split']);
+        plugin.emit(event('start', { status: 'running' }));
+        plugin.emit(stop('pane-a', '! gh auth status'));
+        plugin.emit(event('notification', { notificationType: 'idle_prompt' }));
+        await plugin.window();
+        expect(actions(2)).toEqual(['cancel', 'split', 'session']);
+    });
+
     it('refuses a command with a control character on both paths and sends nothing', async () => {
         const plugin = await setup();
         plugin.emit(stop('pane-a', '! echo \u001b[31m'));
@@ -270,7 +320,7 @@ describe('Run Suggested Command example', () => {
     });
 
     it('sends nothing when Claude stops waiting at its prompt while the dialog is open', async () => {
-        const noLonger = 'Run suggested: Claude is no longer waiting at its prompt, nothing was sent';
+        const noLonger = NO_LONGER;
         const working = await setup();
         working.list.mockResolvedValueOnce([pane()]).mockResolvedValueOnce([pane({ status: 'running' })]);
         working.emit(stop('pane-a', '! gh auth status'));
@@ -287,6 +337,52 @@ describe('Run Suggested Command example', () => {
             expect(plugin.sendKey).not.toHaveBeenCalled();
             expect(plugin.split).not.toHaveBeenCalled();
         }
+    });
+
+    it('runs nothing when Claude replies with another suggestion while the dialog is open', async () => {
+        for (const answer of ['session', 'split']) {
+            const plugin = await setup();
+            plugin.emit(stop('pane-a', '! gh auth status'));
+            plugin.showDialog.mockImplementationOnce(async () => { plugin.emit(stop('pane-a', '! rm -rf build')); return answer; });
+            expect(await plugin.window()).toBe(answer);
+            expect(plugin.showNotification).toHaveBeenCalledWith({ message: NO_LONGER, detail: 'Claude replied again', tone: 'warning' });
+            expect(plugin.send).not.toHaveBeenCalled();
+            expect(plugin.sendKey).not.toHaveBeenCalled();
+            expect(plugin.split).not.toHaveBeenCalled();
+        }
+    });
+
+    it('runs nothing when a new Claude session starts in the pane while the dialog is open', async () => {
+        for (const answer of ['session', 'split']) {
+            const plugin = await setup();
+            plugin.emit(stop('pane-a', '! gh auth status'));
+            plugin.list.mockResolvedValueOnce([pane()]).mockResolvedValue([pane({ agentSessionID: 'session-2' })]);
+            // Even when the new session's first reply suggests the same line, it is not what the user confirmed.
+            plugin.showDialog.mockImplementationOnce(async () => {
+                plugin.emit(event('session-start', { sessionID: 'session-2', status: 'idle' }));
+                plugin.emit({ ...stop('pane-a', '! gh auth status'), sessionID: 'session-2' });
+                return answer;
+            });
+            expect(await plugin.window()).toBe(answer);
+            expect(plugin.showNotification).toHaveBeenCalledWith({ message: NO_LONGER, detail: 'a new Claude session started', tone: 'warning' });
+            expect(plugin.send).not.toHaveBeenCalled();
+            expect(plugin.split).not.toHaveBeenCalled();
+        }
+    });
+
+    it('still runs when Claude repeats the same suggestion while the dialog is open', async () => {
+        const plugin = await setup();
+        plugin.emit(stop('pane-a', '! gh auth status'));
+        plugin.showDialog.mockImplementationOnce(async () => { plugin.emit(stop('pane-a', 'Once more:\n\n! gh auth status')); return 'session'; });
+        expect(await plugin.window()).toBe('session');
+        expect(plugin.calls).toEqual(['read pane-a', 'read pane-a', 'send pane-a', 'read pane-a', 'key pane-a']);
+        expect(plugin.showNotification).not.toHaveBeenCalled();
+
+        const split = await setup({ answer: 'split' });
+        split.emit(stop('pane-a', '! gh auth status'));
+        split.showDialog.mockImplementationOnce(async () => { split.emit(stop('pane-a', '! gh auth status')); return 'split'; });
+        expect(await split.window()).toBe('split');
+        expect(split.send).toHaveBeenCalledWith('pane-new', 'gh auth status');
     });
 
     it('tells the user when the pane has no suggestion or none is focused, without asking', async () => {

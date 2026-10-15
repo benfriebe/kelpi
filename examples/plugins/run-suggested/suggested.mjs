@@ -26,14 +26,15 @@ const closes = (line, fence) => {
 };
 
 /**
- * A fence's body as one command: common indent removed, trailing spaces and blank edge lines dropped.
+ * A fence's body as one command: blank edge lines dropped and the common indent removed. Every other
+ * space stays, trailing ones too: a heredoc's lines are data.
  * @param {string[]} body
  */
 function fenceCommand(body) {
-    const lines = body.map(line => line.trimEnd());
-    while (lines.length && !lines[0]) lines.shift();
-    while (lines.length && !lines.at(-1)) lines.pop();
-    const indent = Math.min(...lines.filter(Boolean).map(lead));
+    const lines = [...body];
+    while (lines.length && !lines[0]?.trim()) lines.shift();
+    while (lines.length && !lines.at(-1)?.trim()) lines.pop();
+    const indent = Math.min(...lines.filter(line => line.trim()).map(lead));
     return lines.map(line => line.slice(indent)).join('\n');
 }
 
@@ -98,7 +99,9 @@ const PROMPT_EMPTY = /^[>❯]\s*$/;
 const PROMPT_LINE = /^[>❯](?:\s(.*))?$/s;
 // Where the cursor sits in an empty box: after the glyph and its space (`>`, `❯` and U+00A0 are one cell each).
 const PROMPT_COL = 2;
-const MENU = /[>❯]\s*\d+\.|Do you want|Esc to cancel/;
+// Any line below the box that belongs to a menu or picker: numbered or pointed-at items, a question,
+// or a key hint. Claude's status rows there (model and context, mode, `! for shell mode`) match none.
+const MENU = /[>❯]\s*\d+\.|do you want|esc to|enter to|to navigate|↑\/↓|^\s*[>❯]\s/im;
 
 /** @param {string} text */
 const collapse = text => text.replace(/\s+/g, ' ').trim();
@@ -132,27 +135,35 @@ export function promptReady(screen, cursor, command) {
     const rest = collapse(match[1] ?? '');
     return rest === '' || rest === collapse('! ' + command);
 }
-const PROMPT_GLYPH = /^[>❯!]\s*/;
+// Claude's bash mode: the typed `!` switches the box to running shell commands, and its glyph
+// replaces `❯`. Claude Code 2.1.300 draws `! gh auth status` typed into the empty box as `!`, U+00A0,
+// then the rest of what was typed, its leading space included.
+const BASH_PROMPT = /^!\s*/;
 
 /**
- * True when the screen ends with Claude Code's input box holding exactly `command` as typed with
- * `! ` before it, and no menu below it: what must still show before Enter goes to the box. Lenient
- * about the drawing: the box's lines are trimmed and joined (a long command wraps inside it),
- * whitespace runs count as one space, and the prompt glyph (`>`, `❯`, or `!` in Claude's bash mode)
- * may or may not be followed by the typed `!`. Strict about the text: ghost text Claude draws after
- * what was typed makes it false, which leaves the command typed and unrun.
- * @param {string} screen @param {string} command
+ * True when the screen ends with Claude Code's input box in bash mode holding exactly `command`,
+ * and no menu below it: what must still show before Enter goes to the box. Without the `!` glyph,
+ * Enter would send the text to Claude as a prompt. `cursor` (the same read's) must be in the box,
+ * and not right after the glyph, where Claude keeps it in front of ghost text: a box showing only
+ * Claude's prediction `❯ ! cmd` holds nothing typed. The text after the glyph and its spaces must
+ * equal `command` exactly, spaces inside quotes included. A command too long for one line wraps:
+ * its lines, each trimmed, are joined with nothing (a cut inside a word) or one space (a cut at a
+ * space). Ghost text drawn after what was typed makes it false, which leaves the command typed and
+ * unrun.
+ * @param {string} screen @param {string} command @param {{ row: number, col: number }} [cursor]
  */
-export function typedReady(screen, command) {
+export function typedReady(screen, command, cursor) {
     const lines = screen.replace(/\r/g, '').split('\n');
     const rules = lines.flatMap((line, index) => (BOX_RULE.test(line) ? [index] : []));
     const below = rules.at(-1);
     const above = rules.at(-2);
     if (below === undefined || above === undefined) return false;
     if (lines.slice(below + 1).some(line => MENU.test(line))) return false;
-    const typed = collapse(lines.slice(above + 1, below).join(' ')).replace(PROMPT_GLYPH, '');
-    const want = collapse(command);
-    return typed === want || typed.replace(/^!\s*/, '') === want;
+    const [first = '', ...rest] = lines.slice(above + 1, below);
+    if (!first.startsWith('!')) return false;
+    if (cursor && (cursor.row <= above || cursor.row >= below || (cursor.row === above + 1 && cursor.col === PROMPT_COL))) return false;
+    const parts = [first.replace(BASH_PROMPT, ''), ...rest.map(line => line.trimStart())].map(line => line.trimEnd());
+    return parts.join('') === command || parts.join(' ') === command;
 }
 
 /**
@@ -174,7 +185,8 @@ export function typedReady(screen, command) {
 
 // A finished reply and a permission prompt are both waitingForInput; the notification and the screen tell them apart.
 const READY_STATUSES = new Set(['idle', 'waitingForInput']);
-const PROMPTS = new Set(['permission_prompt', 'elicitation_dialog']);
+/** Notification types that mean Claude is asking something, not waiting at its prompt. */
+export const PROMPTS = new Set(['permission_prompt', 'elicitation_dialog']);
 
 /**
  * Where the suggestion runs: typed into the Claude session it came from, or in a new shell split

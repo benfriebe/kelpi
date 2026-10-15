@@ -15,7 +15,7 @@ const { commandProblem, findSuggested, promptReady, routeSuggested, typedReady }
     findSuggested(reply: string): Suggested | null;
     commandProblem(command: string): string | null;
     promptReady(screen: string, cursor: Cursor | undefined, command: string): boolean;
-    typedReady(screen: string, command: string): boolean;
+    typedReady(screen: string, command: string, cursor?: Cursor): boolean;
     routeSuggested(found: Suggested, state: SessionState): Routing;
 };
 
@@ -31,6 +31,25 @@ const ghost = (prompt = '❯\u00a0! gh auth status') => [
     RULE, prompt, RULE, '  Opus 5.5 [1M] | ctx:5% [50k]', '  ⏸ manual mode on · ← 3 agents',
 ].join('\n');
 const GHOST_CURSOR = { row: 45, col: 2 };
+// Claude Code 2.1.300 right after the plugin's bare send of `! gh auth status` (e2e capture, frame 5): the
+// typed `!` switched the box to bash mode, whose glyph `!` replaced `❯`, then U+00A0, then the rest as typed,
+// its leading space included. The footer shrank to one line, so the box moved down a row.
+const typedFrame = (box: string[] = ['!\u00a0 gh auth status'], below: string[] = ['  ! for shell mode']) => [
+    ...Array.from({ length: 43 }, () => ''), '⏺ ! gh auth status', '✻ Worked for 1s · done 12:54 PM',
+    RULE, ...box, RULE, ...below,
+].join('\n');
+// Rules at rows 45 and 47, the cursor at the end of the typed text.
+const TYPED_CURSOR = { row: 46, col: 17 };
+// The rows Claude Code 2.1.x draws below its box in the e2e captures, none of them a menu.
+const FOOTERS = [
+    '  Opus 5.5 [1M] | ctx:5% [50k] | 5h:34% [2h4m] | 7d:8% [6d4h44m]', '  ⏸ manual mode on · ← 3 agents',
+    '  ! for shell mode', '  ? for shortcuts', '  ⏵⏵ accept edits on (shift+tab to cycle)',
+];
+// A picker with a one-line search field between column-0 rules and unnumbered items below.
+const picker = (field: string) => [
+    'Resume a conversation', RULE, field, RULE, '  Fix the login flow (2h ago)', '  Add CSV export (1d ago)',
+    '  ↑/↓ to navigate · Enter to select · Esc to go back',
+].join('\n');
 const PERMISSION = [
     '⏺ Bash(rm -rf build)', '', RULE, ' Bash command', '', '   rm -rf build', '   Remove the build output', '',
     ' Do you want to proceed?', ' ❯ 1. Yes', '   2. No, and tell Claude what to do differently (esc)', '',
@@ -92,8 +111,9 @@ describe('findSuggested', () => {
     });
 
     it('strips a block in a list down to its own indent and keeps its inner indent and lines', () => {
-        const reply = ['1. Start it:', '', '   ```bash', '', '   docker run \\   ', '     --rm alpine', '', '   ```'];
-        expect(findSuggested(reply.join('\n'))).toEqual({ kind: 'fence', command: 'docker run \\\n  --rm alpine' });
+        // The spaces after the backslash stay: in a shell they make it escape a space, not the newline.
+        const reply = ['1. Start it:', '', '   ```bash', '', '   docker run \\   ', '     --rm alpine', '  ', '   ```'];
+        expect(findSuggested(reply.join('\n'))).toEqual({ kind: 'fence', command: 'docker run \\   \n  --rm alpine' });
         const gap = ['```sh', 'cd app', '', 'make', '```'];
         expect(findSuggested(gap.join('\n'))?.command).toBe('cd app\n\nmake');
     });
@@ -116,6 +136,11 @@ describe('findSuggested', () => {
         const shown = ['Add this to the README:', '````markdown', '```bash', 'rm -rf ~', '```', '````'];
         expect(findSuggested(shown.join('\n'))).toBeNull();
         expect(findSuggested(['````bash', 'echo a ```', '````'].join('\n'))?.command).toBe('echo a ```');
+    });
+
+    it("keeps a fenced line's trailing spaces, which a heredoc writes out", () => {
+        const reply = ['```bash', "cat > notes.txt <<'EOF'", 'line with spaces  ', 'EOF', '```'];
+        expect(findSuggested(reply.join('\n'))).toEqual({ kind: 'fence', command: "cat > notes.txt <<'EOF'\nline with spaces  \nEOF" });
     });
 
     it('offers nothing from a whitespace-only block and keeps the suggestion before it', () => {
@@ -201,6 +226,17 @@ describe('promptReady', () => {
         expect(promptReady([RULE, '> ', RULE, ' ❯ 1. Yes', ' Esc to cancel'].join('\n'), { row: 1, col: 2 }, 'gh auth login')).toBe(false);
     });
 
+    it('is false above an unnumbered picker or any key hint, in any case', () => {
+        expect(promptReady(picker('❯\u00a0'), { row: 2, col: 2 }, 'gh auth status')).toBe(false);
+        expect(promptReady([RULE, '❯\u00a0', RULE, '  esc to cancel'].join('\n'), { row: 1, col: 2 }, 'x')).toBe(false);
+        expect(promptReady([RULE, '❯\u00a0', RULE, '  ❯ Yes, allow once', '    No'].join('\n'), { row: 1, col: 2 }, 'x')).toBe(false);
+        expect(promptReady([RULE, '❯\u00a0', RULE, '  Enter to confirm'].join('\n'), { row: 1, col: 2 }, 'x')).toBe(false);
+    });
+
+    it("is true above each of Claude's status rows", () => {
+        for (const footer of FOOTERS) expect(promptReady([RULE, '❯\u00a0', RULE, footer].join('\n'), { row: 1, col: 2 }, 'x')).toBe(true);
+    });
+
     it('is false without two rules at column 0 around the prompt', () => {
         expect(ready('⏺ Done.')).toBe(false);
         expect(ready(['⏺ Done.', RULE, '> '].join('\n'))).toBe(false);
@@ -245,36 +281,68 @@ describe('promptReady', () => {
 });
 
 describe('typedReady', () => {
-    const box = (...lines: string[]) => ['⏺ Log in first:', '', RULE, ...lines, RULE, '  ? for shortcuts', ''].join('\n');
+    const command = 'gh pr create --title "Fix the login check" --body "Closes the stale token bug"';
 
-    it('sees the typed ! command in the box, whichever glyph Claude draws', () => {
-        expect(typedReady(box('> ! gh auth status'), 'gh auth status')).toBe(true);
-        expect(typedReady(box('! gh auth status'), 'gh auth status')).toBe(true);
-        // Claude Code 2.1.x draws a no-break space after its glyph.
-        expect(typedReady(box('❯\u00a0! gh auth status   '), 'gh auth status')).toBe(true);
-        expect(typedReady(box('!  gh auth status'), 'gh  auth status')).toBe(true);
+    it("sees the command typed into Claude's box in bash mode", () => {
+        expect(typedReady(typedFrame(), 'gh auth status', TYPED_CURSOR)).toBe(true);
+        expect(typedReady(typedFrame(), 'gh auth status')).toBe(true);
+        expect(typedReady(typedFrame(['!\u00a0gh auth status   ']), 'gh auth status', { row: 46, col: 16 })).toBe(true);
     });
 
-    it('joins a command wrapped over several lines of the box', () => {
-        const command = 'gh pr create --title "Fix the login check" --body "Closes the stale token bug"';
-        expect(typedReady(box('> ! gh pr create --title "Fix the login check"', '  --body "Closes the stale token bug"'), command)).toBe(true);
+    it("is false without bash mode's ! glyph, where Enter would send the text to Claude as a prompt", () => {
+        expect(typedReady(typedFrame(['❯\u00a0gh auth status']), 'gh auth status', { row: 46, col: 16 })).toBe(false);
+        expect(typedReady(typedFrame(['❯\u00a0 gh auth status']), 'gh auth status', TYPED_CURSOR)).toBe(false);
+        expect(typedReady(typedFrame(['> ! gh auth status']), 'gh auth status', { row: 46, col: 18 })).toBe(false);
+        // A command that itself starts like a glyph, in a box not in bash mode.
+        expect(typedReady(typedFrame(['> build.log']), '> build.log', { row: 46, col: 11 })).toBe(false);
     });
 
-    it('is false with a menu below the box', () => {
-        expect(typedReady([RULE, '> ! gh auth status', RULE, ' Do you want to proceed?', ' ❯ 1. Yes', '   2. No'].join('\n'), 'gh auth status')).toBe(false);
-        expect(typedReady(PERMISSION, 'rm -rf build')).toBe(false);
+    it('is false for a box holding only ghost text, the cursor right after the glyph', () => {
+        expect(typedReady(typedFrame(['❯\u00a0! gh auth status']), 'gh auth status', { row: 46, col: 2 })).toBe(false);
+        expect(typedReady(typedFrame(), 'gh auth status', { row: 46, col: 2 })).toBe(false);
+    });
+
+    it('is false unless the cursor is inside the box', () => {
+        expect(typedReady(typedFrame(), 'gh auth status', { row: 45, col: 17 })).toBe(false);
+        expect(typedReady(typedFrame(), 'gh auth status', { row: 47, col: 17 })).toBe(false);
+        expect(typedReady(typedFrame(), 'gh auth status', { row: 48, col: 17 })).toBe(false);
+    });
+
+    it('compares the text exactly, spaces inside quotes included', () => {
+        expect(typedReady(typedFrame(['!\u00a0 echo "a b"']), 'echo "a  b"', { row: 46, col: 13 })).toBe(false);
+        expect(typedReady(typedFrame(['!\u00a0 echo "a  b"']), 'echo "a  b"', { row: 46, col: 14 })).toBe(true);
+    });
+
+    it('joins a command wrapped over several lines of the box, cut at a space or inside a word', () => {
+        const atSpace = ['!\u00a0 gh pr create --title "Fix the login check"', '  --body "Closes the stale token bug"'];
+        expect(typedReady(typedFrame(atSpace), command, { row: 47, col: 37 })).toBe(true);
+        const inWord = ['!\u00a0 gh pr create --title "Fix the lo', '  gin check" --body "Closes the stale token bug"'];
+        expect(typedReady(typedFrame(inWord), command, { row: 47, col: 47 })).toBe(true);
     });
 
     it('is false unless the box holds exactly the command', () => {
-        expect(typedReady(box('> '), 'gh auth status')).toBe(false);
-        expect(typedReady(box('> ! gh auth status --hostname x'), 'gh auth status')).toBe(false);
-        expect(typedReady(box('> ! gh auth'), 'gh auth status')).toBe(false);
+        expect(typedReady(typedFrame(['!\u00a0 gh auth status --hostname x']), 'gh auth status', { row: 46, col: 31 })).toBe(false);
+        expect(typedReady(typedFrame(['!\u00a0 gh auth']), 'gh auth status', { row: 46, col: 10 })).toBe(false);
+        expect(typedReady(typedFrame(['!\u00a0']), 'gh auth status', { row: 46, col: 2 })).toBe(false);
+        expect(typedReady(typedFrame(['!\u00a0 ! gh auth status']), 'gh auth status', { row: 46, col: 19 })).toBe(false);
+    });
+
+    it('is false with a menu, a picker or a key hint below the box', () => {
+        expect(typedReady(typedFrame(undefined, [' Do you want to proceed?', ' ❯ 1. Yes', '   2. No']), 'gh auth status', TYPED_CURSOR)).toBe(false);
+        expect(typedReady(PERMISSION, 'rm -rf build')).toBe(false);
+        expect(typedReady(picker('!\u00a0 gh auth status'), 'gh auth status', { row: 2, col: 17 })).toBe(false);
+        expect(typedReady(typedFrame(undefined, ['  esc to cancel']), 'gh auth status', TYPED_CURSOR)).toBe(false);
+    });
+
+    it("is true above each of Claude's status rows", () => {
+        for (const footer of FOOTERS) expect(typedReady(typedFrame(undefined, [footer]), 'gh auth status', TYPED_CURSOR)).toBe(true);
     });
 
     it('is false without two rules at column 0', () => {
-        expect(typedReady('> ! gh auth status', 'gh auth status')).toBe(false);
-        expect(typedReady([RULE, '> ! gh auth status'].join('\n'), 'gh auth status')).toBe(false);
-        expect(typedReady(['  ' + RULE, '  > ! gh auth status', '  ' + RULE].join('\n'), 'gh auth status')).toBe(false);
+        expect(typedReady('!\u00a0 gh auth status', 'gh auth status')).toBe(false);
+        expect(typedReady([RULE, '!\u00a0 gh auth status'].join('\n'), 'gh auth status')).toBe(false);
+        expect(typedReady(['  ' + RULE, '  !\u00a0 gh auth status', '  ' + RULE].join('\n'), 'gh auth status')).toBe(false);
+        expect(typedReady([RULE, RULE].join('\n'), 'gh auth status')).toBe(false);
     });
 });
 

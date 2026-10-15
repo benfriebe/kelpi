@@ -3252,10 +3252,10 @@ export function Sidebar(props: SidebarProps): ReactElement {
                 const before = list.scrollTop;
                 if (step !== 0) list.scrollTop = before + step;
                 if (list.scrollTop === before) {
-                    // Hit an end: nothing more to scroll, so stop burning a timer on it. Resolve
-                    // once more on the way out, so a still pointer is left with what the stopped
-                    // list gives (its thirds again) without a mouse move: a slot left showing
-                    // while the resolver would already nest would misdescribe the release.
+                    // Stopped (at an end, or the band no longer applies): resolve once more so a
+                    // still pointer's preview matches what the still list offers. The last moving
+                    // tick already resolved after its write, so this is a backstop, not the thing
+                    // that restores the thirds.
                     stopAutoScroll();
                 }
                 resolve(live);

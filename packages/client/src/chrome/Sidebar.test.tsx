@@ -991,7 +991,11 @@ describe('drag auto-scroll (§5.5)', () => {
     it('never nests while the list scrolls under a still pointer, and the release moves', () => {
         const { list, onMoveWorkspace, onNestWorkspaces } = mount(204);
         fireEvent.mouseDown(screen.getAllByTestId('workspace-row')[0] as HTMLElement, { clientY: 10 });
-        fireEvent.mouseMove(window, { clientY: 70 });
+        // The entering move itself, before any tick: content y 72 is w4's middle third
+        // (64..84, middle 70.67..77.33), which would nest but must read the slot before it.
+        fireEvent.mouseMove(window, { clientY: 72 });
+        expect(list.dataset['dragTarget']).toBe('topLevel:2');
+        expect(nestPreviews()).toEqual([]);
         const seen = new Set<string>();
         for (let index = 0; index < 25; index += 1) {
             expect(list.dataset['dragTarget']).not.toMatch(/^ontoWorkspace/);

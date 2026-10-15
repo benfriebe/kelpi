@@ -39,9 +39,10 @@ command exactly as it will run, with where it will run:
   cursor moved back to the start looks the same; the typed check below then catches it, nothing
   runs, and the command sits typed in the box.
 - **Run in new split** opens a shell split beside the pane, in the pane's working directory, and
-  runs the command there. A code block, a multi-line command, a busy Claude or a Claude last seen
-  at a permission prompt only gets this choice, with the reason in the dialog ("Claude was last
-  seen at a permission prompt").
+  runs the command there once the new shell has drawn its prompt, only if its screen has not
+  moved since (the split takes focus, and anything typed into it would join the command). A code
+  block, a multi-line command, a busy Claude or a Claude last seen at a permission prompt only
+  gets this choice, with the reason in the dialog ("Claude was last seen at a permission prompt").
 
 Typing into the session is guarded. Once you choose, the plugin checks that the suggestion is still
 the one you confirmed, then reads the screen again and checks that Claude still waits at an empty
@@ -61,6 +62,8 @@ CLI:
   turn (see Limits), and any other reason is why Claude no longer waits at an empty prompt. This
   applies to both choices.
 - "the screen changed, nothing was sent": the screen moved before the command was typed.
+- "the new split changed before the command was sent, nothing was sent": the new split's screen
+  moved after its prompt settled, or could not be read. The split stays open.
 - "the screen changed before Enter; the command is typed in Claude's box, not run": the screen
   moved after the plugin read the typed command.
 - "Enter was not pressed, Claude's box did not show the command as typed; it sits typed, not
@@ -117,9 +120,9 @@ kelpi run-suggested [--target <pane>] [--print | --yes] [--json]
 
 Exit codes: 0 when it printed or ran the command; 1 when there is no target pane, Claude has not
 suggested a command in that pane (`{ "found": false }` with `--json`), the command holds a
-character it will not type, a guard refused (the screen changed, or Claude's box did not show the
-command as typed), or the run failed; 2 for a usage error, including
-`--print` with `--yes`.
+character it will not type, a guard refused (the screen or the new split changed, or Claude's box
+did not show the command as typed), or the run failed; 2 for a usage error, including
+`--print` with `--yes` and a `--target` with no pane after it.
 
 ## Limits
 
@@ -144,6 +147,7 @@ command as typed), or the run failed; 2 for a usage error, including
 - The empty-box check relies on Claude Code keeping the terminal cursor in its input box, as
   2.1.x does. A version that parks it elsewhere only gets **Run in new split**.
 - A CLI run cannot show the dialog, so it only prints unless you pass `--yes`.
+- A dialog message holds at most 2,048 characters, so a longer command gets a notification in place of the dialog; run it with `kelpi run-suggested --print` or `--yes`.
 - The screen guard refuses instead of retrying: press the shortcut again once the pane is quiet.
 
 The parser and the routing rules are in `suggested.mjs`. Unit coverage:

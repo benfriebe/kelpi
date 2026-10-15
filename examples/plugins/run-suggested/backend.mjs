@@ -8,8 +8,10 @@ import { PROMPTS, commandProblem, findSuggested, routeSuggested, typedReady } fr
  * What one run did. `refused` says which guard stopped it: `before` the screen moved before typing,
  * so nothing was typed; `after` it moved before Enter; `mismatch` Claude's box did not show the
  * command as typed. After `after` or `mismatch` the command sits typed in Claude's box without Enter.
+ * `changed: 'split'` the new split's screen moved before the command was sent; the split stays open.
  * @typedef {{ ok: true, mode: 'session' } | { ok: true, mode: 'split', paneID: string, reason: string }
- *   | { ok: false, refused: 'before' | 'after' | 'mismatch' } | { ok: false, error: string }} Outcome
+ *   | { ok: false, refused: 'before' | 'after' | 'mismatch' } | { ok: false, changed: 'split' }
+ *   | { ok: false, error: string }} Outcome
  */
 
 const VERB = 'kelpi run-suggested';
@@ -19,6 +21,10 @@ const REFUSED = {
     after: "the screen changed before Enter; the command is typed in Claude's box, not run",
     mismatch: "Enter was not pressed, Claude's box did not show the command as typed; it sits typed, not run",
 };
+const SPLIT_CHANGED = 'the new split changed before the command was sent, nothing was sent';
+// showDialog rejects a longer message: packages/client/src/interaction/contract.ts caps a dialog's
+// `message` at 2048 characters, and the dialog shows the command as its message.
+const DIALOG_MESSAGE_MAX = 2048;
 const NO_LONGER_WAITING = 'Run suggested: Claude is no longer waiting at its prompt, nothing was sent';
 const usage = [
     'Usage: kelpi run-suggested [--target <pane>] [--print | --yes] [--json]',
@@ -121,7 +127,7 @@ export function activate(api) {
      * @returns {Promise<Outcome>}
      */
     const run = async (found, pane, routing, read) => {
-        /** @type {'before' | 'after'} */
+        /** @type {'before' | 'after' | 'split'} */
         let step = 'before';
         try {
             if (routing.mode === 'session') {
@@ -133,15 +139,19 @@ export function activate(api) {
                 await api.terminal.sendKey(pane.id, 'enter', { ifRevision: typed.revision });
                 return { ok: true, mode: 'session' };
             }
+            step = 'split';
             const split = await api.panes.split(pane.id, { direction: 'horizontal', path: pane.workingDirectory, focus: true });
             // Let the new shell print its prompt first; send starts a shell that is not running yet.
-            await api.terminal.read(split.paneID, { settleMs: 500 }).catch(() => null);
+            // The split takes focus, so whatever is typed into it meanwhile would join the command:
+            // send only while its screen is the one this read saw, and never without that read.
+            const fresh = await api.terminal.read(split.paneID, { scrollback: false, settleMs: 500 }).catch(() => null);
+            if (!fresh) return { ok: false, changed: 'split' };
             // Without `bare`, send presses Enter; a code block's lines go as one text and run in turn.
-            await api.terminal.send(split.paneID, found.command);
+            await api.terminal.send(split.paneID, found.command, { ifRevision: fresh.revision });
             return { ok: true, mode: 'split', paneID: split.paneID, reason: routing.reason };
         } catch (error) {
             const failure = /** @type {{ code?: string, message?: string }} */ (error);
-            if (failure?.code === 'SCREEN_CHANGED') return { ok: false, refused: step };
+            if (failure?.code === 'SCREEN_CHANGED') return step === 'split' ? { ok: false, changed: 'split' } : { ok: false, refused: step };
             return { ok: false, error: failure?.message ?? String(error) };
         }
     };
@@ -171,6 +181,13 @@ export function activate(api) {
         if (!found) { await notify({ message: 'Run suggested: Claude has not suggested a command in this pane', tone: 'info' }); return null; }
         const problem = commandProblem(found.command);
         if (problem) { await notify({ message: `Run suggested: not running it: ${problem}`, tone: 'warning' }); return null; }
+        if (found.command.length > DIALOG_MESSAGE_MAX) {
+            await notify({
+                message: `Run suggested: the command is too long to confirm in a dialog (${found.command.length} characters); run \`kelpi run-suggested --print\` or \`--yes\` in the pane instead`,
+                tone: 'warning',
+            });
+            return null;
+        }
         const before = await inspect(paneID, found);
         if (!before) { await notify({ message: 'Run suggested: the pane is gone', tone: 'warning' }); return null; }
 
@@ -220,6 +237,8 @@ export function activate(api) {
                 ...(outcome.refused === 'before' ? { detail: 'It changed before the command was typed.' } : {}),
                 tone: 'warning',
             });
+        } else if (!outcome.ok && 'changed' in outcome) {
+            await notify({ message: `Run suggested: ${SPLIT_CHANGED}`, detail: 'The new split stays open.', tone: 'warning' });
         } else if (!outcome.ok) {
             await notify({ message: `Run suggested: ${outcome.error}`, tone: 'error' });
         }
@@ -239,7 +258,8 @@ export function activate(api) {
             if (word === '--help') return { text: usage };
             if (word === '--print') print = true;
             else if (word === '--yes') yes = true;
-            else if (word === '--target' && argv[index + 1] !== undefined) target = argv[++index];
+            // A missing value, or an option in its place, is a usage error rather than a pane name.
+            else if (word === '--target' && argv[index + 1] !== undefined && !argv[index + 1].startsWith('--')) target = argv[++index];
             else return fail(`${word === '--target' ? '--target needs a pane' : `unknown argument ${word}`}\n\n${usage}`, 2);
         }
         if (print && yes) return fail(`--print and --yes cannot be combined\n\n${usage}`, 2);
@@ -268,7 +288,7 @@ export function activate(api) {
         const now = await inspect(pane.id, found);
         if (!now) return fail(`pane ${pane.id} is gone`);
         const outcome = await run(found, now.pane, now.routing, now.read);
-        if (!outcome.ok) return fail('refused' in outcome ? REFUSED[outcome.refused] : outcome.error);
+        if (!outcome.ok) return fail('refused' in outcome ? REFUSED[outcome.refused] : 'changed' in outcome ? SPLIT_CHANGED : outcome.error);
         if (outcome.mode === 'session') return { text: 'ran in the Claude session', json: { ...shown.json, ran: 'session', paneID: pane.id } };
         return { text: `ran in a new split: ${outcome.reason}`, json: { ...shown.json, ran: 'split', paneID: outcome.paneID, reason: outcome.reason } };
     };

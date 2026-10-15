@@ -38,8 +38,9 @@ function cursorOf(text: string) {
 
 // `screens` are the reads' texts in turn; past them a read shows `screen`, or the box holding what a bare
 // send typed. `cursor`, when given, is the cursor of every read before that send, and `typedCursor` of every
-// read after it; by default a read's cursor is at the end of the box.
-async function setup(options: { panes?: PaneInfo[]; screen?: string; screens?: string[]; cursor?: { row: number; col: number }; typedCursor?: { row: number; col: number }; answer?: string | null; sendError?: unknown; keyError?: unknown } = {}) {
+// read after it; by default a read's cursor is at the end of the box. `splitSendError` and `splitReadError`
+// fail only a send to, or a read of, the new split.
+async function setup(options: { panes?: PaneInfo[]; screen?: string; screens?: string[]; cursor?: { row: number; col: number }; typedCursor?: { row: number; col: number }; answer?: string | null; sendError?: unknown; keyError?: unknown; splitSendError?: unknown; splitReadError?: unknown } = {}) {
     const { activate } = await import(path.join(source, 'backend.mjs')) as { activate(api: BackendAPI): () => void };
     const handlers = new Map<string, (args: Data, context: Context) => Promise<unknown>>();
     let listener: ((event: AgentHookEvent) => void) | undefined;
@@ -49,12 +50,14 @@ async function setup(options: { panes?: PaneInfo[]; screen?: string; screens?: s
     const calls: string[] = [];
     const read = vi.fn(async (paneID: string) => {
         calls.push(`read ${paneID}`);
+        if (paneID === 'pane-new' && options.splitReadError) throw options.splitReadError;
         const text = options.screens?.[reads++] ?? (typed === undefined ? options.screen ?? READY : typedBox(typed));
         return { text, revision: ++revision, cursor: (typed === undefined ? options.cursor : options.typedCursor) ?? cursorOf(text), altScreen: true };
     });
-    const send = vi.fn(async (paneID: string, text: string, sendOptions?: { bare?: boolean }) => {
+    const send = vi.fn(async (paneID: string, text: string, sendOptions?: { bare?: boolean; ifRevision?: number }) => {
         calls.push(`send ${paneID}`);
         if (options.sendError) throw options.sendError;
+        if (paneID === 'pane-new' && options.splitSendError) throw options.splitSendError;
         if (sendOptions?.bare) typed = text;
         return {};
     });
@@ -86,6 +89,7 @@ const screenChanged = () => new KelpiError('the screen changed', { code: 'SCREEN
 const TYPED_NOT_RUN = "the screen changed before Enter; the command is typed in Claude's box, not run";
 const MISMATCH = "Enter was not pressed, Claude's box did not show the command as typed; it sits typed, not run";
 const NO_LONGER = 'Run suggested: Claude is no longer waiting at its prompt, nothing was sent';
+const SPLIT_CHANGED = 'the new split changed before the command was sent, nothing was sent';
 const event = (type: AgentHookEvent['type'], extra: Partial<AgentHookEvent> = {}): AgentHookEvent =>
     ({ type, paneID: 'pane-a', workspaceID: 'ws-1', agent: 'claude', sessionID: 'session-1', status: 'waitingForInput', ...extra });
 const readResults = async (read: { mock: { results: { value: unknown }[] } }) =>
@@ -202,7 +206,7 @@ describe('Run Suggested Command example', () => {
         expect(dialog.detail).toBe('Runs in a new shell split: a code block runs in a new split.');
         expect(dialog.actions).toEqual([{ id: 'cancel', label: 'Cancel' }, { id: 'split', label: 'Run in new split', kind: 'primary' }]);
         expect(fenced.split).toHaveBeenCalledWith('pane-a', { direction: 'horizontal', path: '/work/app', focus: true });
-        expect(fenced.send).toHaveBeenCalledWith('pane-new', 'npm ci\nnpm test');
+        expect(fenced.send).toHaveBeenCalledWith('pane-new', 'npm ci\nnpm test', { ifRevision: expect.any(Number) });
         expect(fenced.sendKey).not.toHaveBeenCalled();
 
         const busy = await setup({ panes: [pane({ status: 'running' })], answer: 'cancel' });
@@ -211,6 +215,59 @@ describe('Run Suggested Command example', () => {
         expect(busy.showDialog.mock.calls[0]![0].actions.map(action => action.id)).toEqual(['cancel', 'split']);
         expect(busy.split).not.toHaveBeenCalled();
         expect(busy.send).not.toHaveBeenCalled();
+    });
+
+    it('sends to the new split only while its screen is the one its settled read saw', async () => {
+        const plugin = await setup({ answer: 'split' });
+        plugin.emit(stop('pane-a', '! gh auth status'));
+        expect(await plugin.window()).toBe('split');
+        // Read before the dialog, then the settled read of the new split, then the guarded send.
+        expect(plugin.calls).toEqual(['read pane-a', 'read pane-new', 'send pane-new']);
+        expect(plugin.read).toHaveBeenLastCalledWith('pane-new', { scrollback: false, settleMs: 500 });
+        const reads = await readResults(plugin.read);
+        expect(plugin.send).toHaveBeenCalledWith('pane-new', 'gh auth status', { ifRevision: reads[1]!.revision });
+        expect(plugin.showNotification).not.toHaveBeenCalled();
+    });
+
+    it('sends nothing to a new split that changed, or could not be read, after it opened, and leaves it open', async () => {
+        for (const failure of [{ splitSendError: screenChanged() }, { splitReadError: new Error('pane closed during capture') }]) {
+            const plugin = await setup({ answer: 'split', ...failure });
+            plugin.emit(stop('pane-a', '! gh auth status'));
+            expect(await plugin.window()).toBe('split');
+            expect(plugin.showNotification).toHaveBeenCalledWith({ message: `Run suggested: ${SPLIT_CHANGED}`, detail: 'The new split stays open.', tone: 'warning' });
+
+            const cli = await setup({ screen: BUSY, ...failure });
+            cli.emit(stop('pane-a', '! gh auth status'));
+            expect(await cli.cli(['--yes'])).toEqual({ stderr: `kelpi run-suggested: ${SPLIT_CHANGED}`, exitCode: 1 });
+
+            for (const run of [plugin, cli]) {
+                expect(run.split).toHaveBeenCalledTimes(1);
+                // A failed read leaves send unreached; a changed screen gets the one guarded attempt.
+                expect(run.send).toHaveBeenCalledTimes('splitSendError' in failure ? 1 : 0);
+                expect(run.send.mock.calls.every(([, , sendOptions]) => sendOptions?.ifRevision !== undefined)).toBe(true);
+                expect(run.sendKey).not.toHaveBeenCalled();
+            }
+        }
+    });
+
+    it('notifies instead of asking when the command is too long for the dialog, and sends nothing', async () => {
+        const command = 'echo ' + 'a'.repeat(2048);
+        const plugin = await setup();
+        plugin.emit(stop('pane-a', `! ${command}`));
+        expect(await plugin.window()).toBeNull();
+        expect(plugin.showDialog).not.toHaveBeenCalled();
+        expect(plugin.showNotification).toHaveBeenCalledWith({
+            message: `Run suggested: the command is too long to confirm in a dialog (${command.length} characters); run \`kelpi run-suggested --print\` or \`--yes\` in the pane instead`,
+            tone: 'warning',
+        });
+        expect(plugin.send).not.toHaveBeenCalled();
+        expect(plugin.split).not.toHaveBeenCalled();
+        // At the cap it still asks; the CLI has no dialog and prints it either way.
+        const atCap = await setup({ answer: 'cancel' });
+        atCap.emit(stop('pane-a', `! ${'a'.repeat(2048)}`));
+        await atCap.window();
+        expect(atCap.showDialog).toHaveBeenCalledTimes(1);
+        expect(await plugin.cli(['--print'])).toMatchObject({ text: command });
     });
 
     it('sends nothing when the screen changed before typing, and says the command is typed when it changed before Enter', async () => {
@@ -382,7 +439,7 @@ describe('Run Suggested Command example', () => {
         split.emit(stop('pane-a', '! gh auth status'));
         split.showDialog.mockImplementationOnce(async () => { split.emit(stop('pane-a', '! gh auth status')); return 'split'; });
         expect(await split.window()).toBe('split');
-        expect(split.send).toHaveBeenCalledWith('pane-new', 'gh auth status');
+        expect(split.send).toHaveBeenCalledWith('pane-new', 'gh auth status', { ifRevision: expect.any(Number) });
     });
 
     it('tells the user when the pane has no suggestion or none is focused, without asking', async () => {
@@ -417,7 +474,7 @@ describe('Run Suggested Command example', () => {
         busy.emit(stop('pane-a', '! gh auth status'));
         expect(await busy.cli(['--yes'])).toMatchObject({ text: "ran in a new split: Claude's input box is not empty" });
         expect(busy.split).toHaveBeenCalledWith('pane-a', expect.objectContaining({ path: '/work/app' }));
-        expect(busy.send).toHaveBeenCalledWith('pane-new', 'gh auth status');
+        expect(busy.send).toHaveBeenCalledWith('pane-new', 'gh auth status', { ifRevision: expect.any(Number) });
 
         const changed = await setup({ sendError: screenChanged() });
         changed.emit(stop('pane-a', '! gh auth status'));
@@ -441,7 +498,11 @@ describe('Run Suggested Command example', () => {
         const plugin = await setup();
         expect(await plugin.cli(['--print', '--yes'])).toMatchObject({ exitCode: 2, stderr: expect.stringContaining('--print and --yes cannot be combined') });
         expect(await plugin.cli(['--frobnicate'])).toMatchObject({ exitCode: 2, stderr: expect.stringContaining('Usage: kelpi run-suggested') });
-        expect(await plugin.cli(['--target'])).toMatchObject({ exitCode: 2 });
+        // `--target` as the last word, or an option where its pane should be, is a missing value.
+        for (const argv of [['--target'], ['--target', '--yes'], ['--yes', '--target', '--print']]) {
+            expect(await plugin.cli(argv)).toEqual({ stderr: expect.stringMatching(/^kelpi run-suggested: --target needs a pane\n\nUsage: kelpi run-suggested/), exitCode: 2 });
+        }
+        expect(plugin.list).not.toHaveBeenCalled();
         expect(await plugin.cli(['--help'])).toEqual({ text: expect.stringContaining('Usage: kelpi run-suggested') });
     });
 });

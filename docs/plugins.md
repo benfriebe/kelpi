@@ -421,6 +421,11 @@ and `cli` runs one verb:
 words you pass, sets an exit status, writes to standard error, and with `--json` echoes the
 invocation and the pane context it received.
 
+[Auto-approve](../examples/plugins/auto-approve) adds `kelpi auto-approve on [minutes] | off | status`
+the same way, beside a `kelpi.agent.permissions` provider, a status bar item and a palette toggle:
+while on, it allows Claude's Bash commands that pass its never-auto-approve list and abstains on
+everything else, and `on` and `status` warn on standard error until the provider is selected.
+
 ## Updates and recovery
 
 Inspect retained revisions and switch back using their full content identity:

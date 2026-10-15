@@ -281,6 +281,11 @@ a newline before it looks further, and its `mv` rule excludes every character th
 second command or a substitution, `(` and `)` included. Nothing an allow rule matches should be
 able to carry a second command.
 
+[Auto-approve](../examples/plugins/auto-approve) is a complete provider for unattended runs:
+`kelpi auto-approve on [minutes]` allows Claude's Bash commands that pass a never-auto-approve
+list for a set time, abstains on the rest, never denies, and checks `api.services.list()` to warn
+when it is not the selected provider.
+
 ## Updates and validation
 
 `plugin dev` can apply provider changes while preserving the daemon's selected provider IDs.

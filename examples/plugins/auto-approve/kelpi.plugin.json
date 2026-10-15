@@ -1,0 +1,34 @@
+{
+  "id": "example.auto-approve",
+  "name": "Auto-approve",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "trust": "full",
+  "backend": "backend.mjs",
+  "activation": "startup",
+  "contributes": {
+    "views": [],
+    "commands": [
+      { "id": "example.auto-approve.cli", "title": "Run the auto-approve CLI verb" },
+      { "id": "example.auto-approve.toggle", "title": "Toggle auto-approve" }
+    ],
+    "menus": [
+      { "id": "example.auto-approve.cli-palette", "command": "example.auto-approve.cli", "placement": "palette", "when": { "context.showCliInPalette": true } }
+    ],
+    "cli": [
+      { "name": "auto-approve", "command": "example.auto-approve.cli", "summary": "Answer Claude's Bash permission prompts for a set time" }
+    ],
+    "providers": [
+      {
+        "id": "example.auto-approve.permissions",
+        "title": "Auto-approve Claude's Bash commands",
+        "service": "kelpi.agent.permissions",
+        "version": 1,
+        "methods": ["decide"]
+      }
+    ],
+    "items": [
+      { "id": "example.auto-approve.status", "placement": "statusbar", "text": "Auto-approve off", "tooltip": "Click to turn auto-approve on for 10 minutes", "tone": "default", "command": "example.auto-approve.toggle", "when": { "connection": "connected" } }
+    ]
+  }
+}

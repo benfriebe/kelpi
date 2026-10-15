@@ -833,6 +833,9 @@ type DropTarget =
   third → before it, middle third → `ontoWorkspace` (nest under it), bottom third → after it,
   or its first nested slot (`intoParent`, index 0) when its children are expanded. A slot
   outside a group is therefore the top or bottom third of a row, never its middle.
+  While the pointer would auto-scroll the list (see Auto-scroll below), the middle third resolves
+  to the nearer slot instead of `ontoWorkspace`: its upper half → the before slot, its lower half
+  → whatever the bottom third gives. A drag that does not scroll is unaffected.
 - nested row zone, nestable drag: halves → `intoParent` before or after that row; the
   parent's last nested row splits in thirds instead, its bottom third meaning after the
   parent's whole block in the parent's own container. Non-nestable drag: the whole row is
@@ -868,6 +871,12 @@ type DropTarget =
   3pt every 15ms (~200pt/s). Because the OS emits no drag events while the pointer is
   stationary, each tick re-derives the content-space cursor position
   (`viewportY + scrollOffset`) and re-runs the whole target/live-apply/spring-load logic.
+  While the pointer would auto-scroll (in the 40pt band AND the list can still scroll that way,
+  including the move that enters the band) `ontoWorkspace` is never offered: rows sweeping under
+  a still pointer would otherwise cycle slot / nest / slot, and a release mid-sweep would nest by
+  accident (#412). Once the list hits its end, or the pointer leaves the band, the list is still
+  under the pointer and the thirds apply again. Only `ontoWorkspace` is suspended; every slot
+  target, including a parent's first-child slot, is unchanged. `ontoGroupHeader` is not suspended.
 - **Empty-group placeholder physics:** when a drag live-applies the group's only member
   in/out, the "No workspaces" placeholder stays/reappears under the dragged row so the
   group's total height is constant while the cursor sweeps it (no layout jumps). Walker

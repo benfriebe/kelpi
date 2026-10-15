@@ -1,11 +1,11 @@
-# ghostty-web 0.4.0-kelpi.22 (vendored)
+# ghostty-web 0.4.0-kelpi.23 (vendored)
 
 **Version labels.** These versions were tagged `-nex.N` before the Nex to Kelpi rename and were
 relabelled `-kelpi.N` on 2026-10-03 with the same numbering, so an older commit, log or audit
 record that says `0.4.0-nex.N` means the same build as `0.4.0-kelpi.N`.
 
 A build of `ghostty-web` v0.4.0 carrying two open upstream PRs — applied after a line-by-line
-review in the orchestrating session and explicit user authorization to integrate both, plus twenty-one
+review in the orchestrating session and explicit user authorization to integrate both, plus twenty-two
 Kelpi-authored adaptations on top of them (`-kelpi.2`: the caret-anchored IME; `-kelpi.3`: an
 `allowTransparency` that does something; `-kelpi.4`: a cursor that knows whether its surface has
 focus; `-kelpi.5`: a `write()` that survives zero bytes; `-kelpi.6`: a paint that can be suspended;
@@ -21,8 +21,9 @@ built-in link detection can be turned off, and an embedder-drawn link underline;
 double-click held and dragged selects whole words from the pressed word, a triple-click selects a
 line and drags by lines, and a drag scrolls only once the pointer leaves the terminal; `-kelpi.20`: a
 view scrolled to a fractional offset paints every row, so no line shows twice; `-kelpi.21`:
-copy-on-select can be turned off; `-kelpi.22`: a click selects nothing, and a drag selects a cell
-only once it crosses 60% of it).
+copy-on-select can be turned off; `-kelpi.22`: a click selects nothing; `-kelpi.23`: a drag selects
+from the pressed cell to the cell under the pointer, both included, once it leaves a dead zone
+around the press).
 
 **`-kelpi.13` is the first adaptation that is NOT TypeScript-only.** Every version up to `-kelpi.12`
 shipped `ghostty-vt.wasm` byte-identical to the npm `ghostty-web@0.4.0` package; `-kelpi.13`
@@ -54,7 +55,64 @@ reproduces the `0.4.0` wasm BYTE-IDENTICALLY when run without the patch, is in
 | `0.4.0-kelpi.19` | a double-click selects its word on the second PRESS, and a drag from it extends by whole words from that word; a triple-click selects the whole line (soft-wrapped rows included) and a drag from it extends by whole lines; the word under a double-click is measured on the row on screen when the view is scrolled back; a drag no longer auto-scrolls while the pointer is over the terminal |
 | `0.4.0-kelpi.20` | the renderer maps rows through `Math.floor(viewportY)` like the selection, link hit-testing and search already did: a pixel-mode wheel left the offset fractional and the row where the live screen starts unpainted, so a neighbouring line showed twice |
 | `0.4.0-kelpi.21` | `copyOnSelect: false` keeps a selection off the clipboard: a drag's release and a `dblclick` still select and announce, but do not copy; read at every copy, so it can be changed at runtime |
-| `0.4.0-kelpi.22` | a single press selects nothing; a drag from it selects with Ghostty's threshold rule (a cell counts once the drag crosses 60% of it), so a click, or a press that wobbles over a cell boundary, neither selects nor copies; `hasSelection()` counts a single dragged cell |
+| `0.4.0-kelpi.22` | a single press selects nothing; a drag from it selects with Ghostty's threshold rule (a cell counts once the drag crosses 60% of it; replaced in `-kelpi.23`), so a click, or a press that wobbles over a cell boundary, neither selects nor copies; `hasSelection()` counts a single dragged cell |
+| `0.4.0-kelpi.23` | a single-click drag selects from the pressed cell to the cell under the pointer, both included, once the pointer is 60% of a cell width from the press point in either axis; a selection that starts on a wide glyph's second half starts on its first (#404) |
+
+## Kelpi adaptation: a drag includes the cell under the pointer (`0.4.0-kelpi.23`, 2026-10-15)
+
+**The defect (#404).** Since `-kelpi.22` a single-click drag came out one cell short at its end:
+dragging across `conversation-00667` copied `conversation-0066`, and a run of `WSTART`, eight `漢`
+and `WEND` copied as `WSTART漢漢漢漢漢漢漢漢WEN`. `-kelpi.22` took Ghostty's threshold rule
+faithfully (`mouseSelection` in `Surface.zig`, now `SelectionGesture.zig` upstream): the cell under
+the pointer counts only once the pointer is past 60% of its width in the drag's direction, and the
+pressed cell only if the press was before 60% (forward) or after it (backward). People stop a drag
+in the middle of the last character they want, and so do Kelpi's scenarios and audit (they drag to
+`cellWidth * (col + 0.5)`), so the end cell always dropped out.
+
+**The fix.** A single-click drag selects from the pressed cell to the cell under the pointer, both
+included, as upstream ghostty-web, xterm.js and Kelpi before `-kelpi.22` did; dragged backward, the
+cell under the pointer is where the selection starts and the pressed cell where it ends. What
+`-kelpi.22` was for is kept by a dead zone instead of a threshold: there is no selection while the
+pointer is within 60% of a cell width of the press point, `max(|dx|, |dy|) < 0.6 * cellWidth` in
+canvas pixels. `dragSelection` decides that from the press point and the current pointer on every
+move, holding no state, so a pointer that comes back into the dead zone shows nothing again. So a
+click selects and copies nothing; a press that wobbles a couple of pixels over a cell boundary, or
+now over a ROW boundary, selects nothing (the engine before `-kelpi.22` would have selected to the
+row below); and dragging 7 px across a 10 px cell selects that one character. `pressPoint` now
+keeps the press's canvas point (`x`, `y`) instead of how far across its cell it was, and
+`pixelToCellX` and `stepCell` are gone. The dead zone is measured on the canvas, not against the
+text, so output that scrolls text under a held press does not turn a wobble into a drag.
+
+A wide glyph's second cell holds no character, and `getSelection` skips it (that is what keeps
+spaces out of a copied `漢漢`). So a selection that STARTED on one (a backward drag released on a
+glyph's right half, or a forward drag pressed there) left that glyph out of the copy, and the
+renderer, which paints a wide glyph's background from its first cell, did not highlight it either.
+`wideGlyphStart` moves such a start onto the glyph's first cell; an end on either half already
+includes the glyph. Measured: without it, a backward drag from `WEND` to the right half of the
+third `漢` copied `漢漢漢漢漢WEND` instead of `漢漢漢漢漢漢WEND`.
+
+Everything else `-kelpi.22` added is unchanged: a press selects nothing; it is pinned through
+`trackSelectionForWrite` / `restoreSelectionAfterWrite` across a scrollback trim (#170) and
+abandoned (`abandonPress`) if its row is discarded; `hasSelection()` counts a single dragged cell;
+auto-scroll extends from the press when nothing is selected yet (its synthetic point is the canvas
+corner the pointer left by). Double- and triple-click and their word and line drags (`-kelpi.19`,
+`unitAnchor`) do not use `dragSelection` and are unchanged.
+
+TypeScript only; the WASM is unchanged from `-kelpi.17`. Rebuilt with
+`TMPDIR=<scratch> pnpm vendor:build` under Node 24.15.0 / pnpm 10.28.1, which resolved vite 4.5.14,
+vite-plugin-dts 4.5.4 and typescript 5.9.3; the declaration step printed the four pre-existing
+`Bun` / `fs/promises` errors in `lib/ghostty.ts` and the build went on. `dist/ghostty-web.js` is
+741.36 kB as vite reports it (741,032 to 741,440 bytes), `dist/ghostty-web.umd.cjs` 667.51 kB; the
+embedded-WASM check passes for both bundles and the installed copy (sha256 `fb2e9d5d…`, 426,715
+bytes, the tracked `ghostty-vt.wasm`). Covered by
+`packages/client/src/terminal/copy-on-select.wasm.test.ts` (forward and backward drags released in
+the middle of the end cell, `conversation-00667` whole, wide glyphs both ways and ending on either
+half, a press and release with no move, drift over a cell and a row boundary, the dead zone entered
+and left, a one-character drag), a drag that has just started selecting held across a real trim in
+`selection-scrollback.wasm.test.ts`, and the `-kelpi.23` markers in `vendor-engine.test.ts`. Two
+`-kelpi.22` expectations changed with the rule: a late press in `q` released early in `k` now
+copies `quick` (was `uic`), and a single-click drag from the middle of `i` to the middle of `o`
+copies `ick brown fo` (was `ick brown f`).
 
 ## Kelpi adaptation: a click selects nothing (`0.4.0-kelpi.22`, 2026-10-13)
 
@@ -77,8 +135,9 @@ With no press-made single cell left, `hasSelection()` counts any non-null select
 single character is highlighted as well as copied. Double- and triple-click (`-kelpi.19`) are
 unchanged.
 
-A drag from centre to centre now leaves out the cell it ends in, as Ghostty and Terminal.app do;
-it used to be included. Auto-scroll extends from the press when nothing is selected yet. A press
+A drag from centre to centre left out the cell it ended in, as Ghostty and Terminal.app do; it
+used to be included, and is again since `-kelpi.23` (#404), which replaced the threshold rule
+with a dead zone around the press. Auto-scroll extends from the press when nothing is selected yet. A press
 that has not selected yet is pinned through `trackSelectionForWrite` like a selection is (#170),
 so output that trims history under a held press moves the press with its text; if its row is
 discarded the press is abandoned. Once a selection exists, the press moves with the selection's
@@ -86,7 +145,7 @@ start.
 
 TypeScript only; the WASM is unchanged from `-kelpi.17`. Rebuilt with `pnpm vendor:build`.
 Covered by `packages/client/src/terminal/copy-on-select.wasm.test.ts` (a click, a wobble over a
-boundary, a one-character drag, the threshold at both ends in both directions, a drag across
+boundary, a one-character drag, a late press and an early release in both directions, a drag across
 rows), a press held across a real trim in `selection-scrollback.wasm.test.ts`, and the
 `-kelpi.22` markers in `vendor-engine.test.ts`.
 

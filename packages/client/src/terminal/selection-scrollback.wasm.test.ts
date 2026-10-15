@@ -90,6 +90,32 @@ describe('selection across real scrollback trimming (#170)', () => {
         } finally { f.dispose(); }
     });
 
+    it('keeps the text of a drag that has just started selecting across a trim (-kelpi.23)', () => {
+        const f = fixture();
+        try {
+            f.writeLines(1100);
+            f.term.viewportY = 100;
+            // 7 px across the first cell: just out of the dead zone, so one cell is selected.
+            f.canvas.dispatchEvent(new MouseEvent('mousedown', { clientX: 1, clientY: 2 * 20 + 10, button: 0 }));
+            f.canvas.dispatchEvent(new MouseEvent('mousemove', { clientX: 8, clientY: 2 * 20 + 10, buttons: 1 }));
+            expect(f.term.hasSelection()).toBe(true);
+            expect(f.term.getSelection()).toBe('c');
+            const before = f.vt.getScrollbackLength();
+            f.writeLines(100);
+            expect(f.vt.getScrollbackLength()).toBeLessThan(before); // a real page was trimmed
+            expect(f.term.getSelection()).toBe('c');
+            const coords = f.selection.getSelectionCoords();
+            expect(coords).not.toBeNull();
+            const row = f.vt.getScrollbackLength() - Math.floor(f.term.viewportY) + coords!.startRow;
+            const visible = (f.vt.getScrollbackLine(row) ?? []).map(c => c.codepoint ? String.fromCodePoint(c.codepoint) : ' ').join('').trimEnd();
+            expect(visible).toBe(f.line(993));
+            // The press moved with its text: dragging on along the row it is on now takes that line.
+            f.canvas.dispatchEvent(new MouseEvent('mousemove', { clientX: 175, clientY: coords!.startRow * 20 + 10, buttons: 1 }));
+            f.release();
+            expect(f.term.getSelection()).toBe(f.line(993));
+        } finally { f.dispose(); }
+    });
+
     it('preserves a selection across a batched write with a trim hidden by net growth', () => {
         const f = fixture();
         try {

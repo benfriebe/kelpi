@@ -64,10 +64,10 @@ export class SelectionManager {
   // vendor 0.4.0-kelpi.19: that press already selected its word, so the `dblclick` the browser
   // raises on its release must not select the word under the RELEASE point instead.
   private pressSelectedWord: boolean = false;
-  // vendor 0.4.0-kelpi.22: the cell a single-click press landed on, and how far across it (px).
-  // The press itself selects nothing; a drag selects from it once it crosses a cell's threshold
-  // (see `dragSelection`).
-  private pressPoint: { col: number; absoluteRow: number; x: number } | null = null;
+  // vendor 0.4.0-kelpi.22: the cell a single-click press landed on, and (`-kelpi.23`) the canvas
+  // point it was pressed at. The press itself selects nothing; a drag selects from it once the
+  // pointer leaves a dead zone around that point (see `dragSelection`).
+  private pressPoint: { col: number; absoluteRow: number; x: number; y: number } | null = null;
 
   // Track rows that need redraw for clearing old selection
   // Using a Set prevents the overwrite bug where mousemove would clobber
@@ -312,8 +312,9 @@ export class SelectionManager {
       this.unitAnchor.startRow += anchorShift;
       this.unitAnchor.endRow += anchorShift;
     }
-    // vendor 0.4.0-kelpi.22: a cell drag's start is its press or the cell beside it, so the press
-    // moves as far as the start did.
+    // vendor 0.4.0-kelpi.22: a cell drag's start is on its press's row (`-kelpi.23`: it is the
+    // pressed cell, or the first half of a wide glyph pressed on its second), so the press moves as
+    // far as the start did.
     if (this.pressPoint) this.pressPoint.absoluteRow += anchorShift;
     this.markCurrentSelectionDirty();
     if (changed) this.selectionChangedEmitter.fire();
@@ -578,10 +579,10 @@ export class SelectionManager {
           // vendor 0.4.0-kelpi.22: a single press selects nothing. Upstream selected the pressed
           // cell, so a click (to focus a pane, say) left one character selected, which nothing
           // drew (`hasSelection` called it none) but the release copied to the clipboard and ⌘C
-          // read. The drag that follows decides what is selected, as in Ghostty.
+          // read. The drag that follows decides what is selected (`dragSelection`).
           this.unitAnchor = null;
           this.pressSelectedWord = false;
-          this.pressPoint = { col: cell.col, absoluteRow, x: this.pixelToCellX(e.offsetX) };
+          this.pressPoint = { col: cell.col, absoluteRow, x: e.offsetX, y: e.offsetY };
         }
         this.isSelecting = true;
       }
@@ -595,7 +596,7 @@ export class SelectionManager {
 
         const cell = this.pixelToCell(e.offsetX, e.offsetY);
         const absoluteRow = this.viewportRowToAbsolute(cell.row);
-        this.extendSelectionTo(cell.col, absoluteRow, this.pixelToCellX(e.offsetX));
+        this.extendSelectionTo(cell.col, absoluteRow, { x: e.offsetX, y: e.offsetY });
         this.requestRender();
 
         // vendor 0.4.0-kelpi.19: the pointer is over the terminal, so the drag does not scroll.
@@ -665,7 +666,7 @@ export class SelectionManager {
 
             const cell = this.pixelToCell(offsetX, offsetY);
             const absoluteRow = this.viewportRowToAbsolute(cell.row);
-            this.extendSelectionTo(cell.col, absoluteRow, this.pixelToCellX(offsetX));
+            this.extendSelectionTo(cell.col, absoluteRow, { x: offsetX, y: offsetY });
             this.requestRender();
           }
         }
@@ -872,15 +873,18 @@ export class SelectionManager {
           // Scrolling up - extend selection upward (decrease absoluteRow)
           // Set to top of viewport, but only if it extends the selection
           const topAbsoluteRow = this.viewportRowToAbsolute(0);
+          // vendor 0.4.0-kelpi.23: the pointer is off the canvas; the corner of the canvas it left
+          // by stands in for it.
           if (topAbsoluteRow < movingEnd.absoluteRow) {
-            this.extendSelectionTo(0, topAbsoluteRow, 0);
+            this.extendSelectionTo(0, topAbsoluteRow, { x: 0, y: 0 });
           }
         } else {
           // Scrolling down - extend selection downward (increase absoluteRow)
           // Set to bottom of viewport, but only if it extends the selection
           const bottomAbsoluteRow = this.viewportRowToAbsolute(dims.rows - 1);
           if (bottomAbsoluteRow > movingEnd.absoluteRow) {
-            this.extendSelectionTo(dims.cols - 1, bottomAbsoluteRow, this.renderer.getMetrics().width);
+            const { width, height } = this.renderer.getMetrics();
+            this.extendSelectionTo(dims.cols - 1, bottomAbsoluteRow, { x: dims.cols * width, y: dims.rows * height });
           }
         }
       }
@@ -910,10 +914,10 @@ export class SelectionManager {
    * pointer of a word drag ends it at that cell. `selectionEnd` stays the moving end, which is
    * what auto-scroll compares against.
    *
-   * vendor 0.4.0-kelpi.22: `x` is how far across the cell the pointer is, in pixels; a drag from a
-   * single press uses it to decide which cells it has crossed (`dragSelection`).
+   * vendor 0.4.0-kelpi.22: `point` is the pointer's canvas position, in pixels; a drag from a
+   * single press uses it to tell a drag from a wobble (`dragSelection`).
    */
-  private extendSelectionTo(col: number, absoluteRow: number, x: number): void {
+  private extendSelectionTo(col: number, absoluteRow: number, point: { x: number; y: number }): void {
     const anchor = this.unitAnchor;
     if (!anchor) {
       if (!this.pressPoint) {
@@ -921,7 +925,7 @@ export class SelectionManager {
         return;
       }
       // Like any drag, announced on release, not on every move.
-      const range = this.dragSelection(this.pressPoint, col, absoluteRow, x);
+      const range = this.dragSelection(this.pressPoint, col, absoluteRow, point);
       this.selectionStart = range?.start ?? null;
       this.selectionEnd = range?.end ?? null;
       return;
@@ -973,65 +977,54 @@ export class SelectionManager {
   }
 
   /**
-   * vendor 0.4.0-kelpi.22: how far across its cell (in pixels) a canvas x lands, clamped to the
-   * grid the same way `pixelToCell` clamps the cell.
+   * vendor 0.4.0-kelpi.22: what a drag from a single press to a cell selects, or null for nothing.
+   *
+   * vendor 0.4.0-kelpi.23 (#404): the pressed cell to the cell under the pointer, both included,
+   * as upstream, xterm.js and Kelpi before `-kelpi.22` did, but nothing while the pointer is still
+   * within a dead zone around the press point, 60% of a cell width in either axis. So a click, or a
+   * press that wobbles a pixel or two (even over a cell or row boundary), selects nothing, and a
+   * single character is selected by dragging a little way across it. The dead zone is measured on
+   * the canvas, so output that moves text under a held press does not turn it into a drag; the
+   * selection is still anchored on the pressed cell, which is pinned across trims (#170).
+   *
+   * `-kelpi.22` used Ghostty's threshold rule instead: a cell counted only once the drag had crossed
+   * 60% of it in the drag's direction. Kelpi users stop a drag in the middle of the last character
+   * they want, and that rule left it out (`conversation-00667` copied as `conversation-0066`).
    */
-  private pixelToCellX(x: number): number {
-    const width = this.renderer.getMetrics().width;
-    const clamped = Math.max(0, Math.min(x, this.terminal.cols * width - 1));
-    return clamped - Math.floor(clamped / width) * width;
+  private dragSelection(
+    press: { col: number; absoluteRow: number; x: number; y: number },
+    col: number,
+    absoluteRow: number,
+    point: { x: number; y: number }
+  ): { start: { col: number; absoluteRow: number }; end: { col: number; absoluteRow: number } } | null {
+    const deadZone = this.renderer.getMetrics().width * 0.6;
+    if (Math.max(Math.abs(point.x - press.x), Math.abs(point.y - press.y)) < deadZone) return null;
+    const click = { col: press.col, absoluteRow: press.absoluteRow };
+    const drag = { col, absoluteRow };
+    const backwards = absoluteRow < press.absoluteRow || (absoluteRow === press.absoluteRow && col < press.col);
+    // `selectionEnd` stays the moving end; whichever end comes first in reading order is the one
+    // `getSelection` starts from, and must not be a wide glyph's second half.
+    return backwards
+      ? { start: click, end: this.wideGlyphStart(drag) }
+      : { start: this.wideGlyphStart(click), end: drag };
   }
 
   /**
-   * vendor 0.4.0-kelpi.22: what a drag from a single press to a cell selects, or null for nothing.
-   *
-   * Ghostty's `mouseSelection` (`Surface.zig`), minus its rectangle mode. A cell is in the
-   * selection only once the drag has crossed its threshold, 60% of the way across it, in the
-   * direction of the drag: the pressed cell if the press was before its threshold, the cell under
-   * the pointer if the pointer is past its threshold, and every cell between. So a click, or a
-   * press that wobbles a pixel or two (even over a cell boundary), selects nothing, and a single
-   * character is selected by dragging across it.
+   * vendor 0.4.0-kelpi.23: the first half of the wide glyph a cell is the second half of, or the
+   * cell itself. `getSelection` skips a glyph's second half (it holds no character) and the
+   * renderer highlights a wide glyph from its first, so a selection starting on the second half
+   * would neither copy nor show the glyph it starts on.
    */
-  private dragSelection(
-    press: { col: number; absoluteRow: number; x: number },
-    col: number,
-    absoluteRow: number,
-    x: number
-  ): { start: { col: number; absoluteRow: number }; end: { col: number; absoluteRow: number } } | null {
-    const threshold = this.renderer.getMetrics().width * 0.6;
-    const click = { col: press.col, absoluteRow: press.absoluteRow };
-    const drag = { col, absoluteRow };
-    const same = (a: typeof click, b: typeof click) => a.col === b.col && a.absoluteRow === b.absoluteRow;
-    const samePin = same(click, drag);
-    const backwards = samePin
-      ? x < press.x
-      : absoluteRow < press.absoluteRow || (absoluteRow === press.absoluteRow && col < press.col);
-    const includeClick = backwards ? press.x >= threshold : press.x < threshold;
-    const includeDrag = backwards ? x < threshold : x >= threshold;
-    const start = includeClick ? click : this.stepCell(click, backwards ? -1 : 1);
-    const end = includeDrag ? drag : this.stepCell(drag, backwards ? 1 : -1);
-    if ((!includeClick && samePin) || (!includeClick && same(end, click)) || (!includeDrag && same(start, drag))) {
-      return null;
-    }
-    return { start, end };
-  }
-
-  /** vendor 0.4.0-kelpi.22: the next (1) or previous (-1) cell in reading order, wrapping rows. */
-  private stepCell(cell: { col: number; absoluteRow: number }, step: 1 | -1): { col: number; absoluteRow: number } {
-    const { cols, rows } = this.wasmTerm.getDimensions();
-    const lastRow = this.wasmTerm.getScrollbackLength() + rows - 1;
-    let col = cell.col + step;
-    let absoluteRow = cell.absoluteRow;
-    if (col >= cols) {
-      if (absoluteRow >= lastRow) return cell;
-      col = 0;
-      absoluteRow++;
-    } else if (col < 0) {
-      if (absoluteRow <= 0) return cell;
-      col = cols - 1;
-      absoluteRow--;
-    }
-    return { col, absoluteRow };
+  private wideGlyphStart(cell: { col: number; absoluteRow: number }): { col: number; absoluteRow: number } {
+    if (cell.col === 0) return cell;
+    const scrollbackLength = this.wasmTerm.getScrollbackLength();
+    const line =
+      cell.absoluteRow < scrollbackLength
+        ? this.wasmTerm.getScrollbackLine(cell.absoluteRow)
+        : this.wasmTerm.getLine(cell.absoluteRow - scrollbackLength);
+    return line?.[cell.col]?.width === 0 && line[cell.col - 1]?.width === 2
+      ? { col: cell.col - 1, absoluteRow: cell.absoluteRow }
+      : cell;
   }
 
   /**

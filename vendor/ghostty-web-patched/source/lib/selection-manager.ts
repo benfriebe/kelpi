@@ -873,10 +873,14 @@ export class SelectionManager {
           // Scrolling up - extend selection upward (decrease absoluteRow)
           // Set to top of viewport, but only if it extends the selection
           const topAbsoluteRow = this.viewportRowToAbsolute(0);
-          // vendor 0.4.0-kelpi.23: the pointer is off the canvas; the corner of the canvas it left
-          // by stands in for it.
+          // vendor 0.4.0-kelpi.23: the pointer is off the canvas; a point a full row beyond the
+          // edge it left by stands in for it, here and going down. Not the canvas corner: a press
+          // within the dead zone of that corner made every tick a wobble, so nothing was selected
+          // however far the view scrolled. A row beyond the edge is always out of the dead zone,
+          // as the press is on the canvas.
           if (topAbsoluteRow < movingEnd.absoluteRow) {
-            this.extendSelectionTo(0, topAbsoluteRow, { x: 0, y: 0 });
+            const { height } = this.renderer.getMetrics();
+            this.extendSelectionTo(0, topAbsoluteRow, { x: 0, y: -height });
           }
         } else {
           // Scrolling down - extend selection downward (increase absoluteRow)
@@ -884,7 +888,7 @@ export class SelectionManager {
           const bottomAbsoluteRow = this.viewportRowToAbsolute(dims.rows - 1);
           if (bottomAbsoluteRow > movingEnd.absoluteRow) {
             const { width, height } = this.renderer.getMetrics();
-            this.extendSelectionTo(dims.cols - 1, bottomAbsoluteRow, { x: dims.cols * width, y: dims.rows * height });
+            this.extendSelectionTo(dims.cols - 1, bottomAbsoluteRow, { x: dims.cols * width, y: (dims.rows + 1) * height });
           }
         }
       }
@@ -914,7 +918,7 @@ export class SelectionManager {
    * pointer of a word drag ends it at that cell. `selectionEnd` stays the moving end, which is
    * what auto-scroll compares against.
    *
-   * vendor 0.4.0-kelpi.22: `point` is the pointer's canvas position, in pixels; a drag from a
+   * vendor 0.4.0-kelpi.23: `point` is the pointer's canvas position, in pixels; a drag from a
    * single press uses it to tell a drag from a wobble (`dragSelection`).
    */
   private extendSelectionTo(col: number, absoluteRow: number, point: { x: number; y: number }): void {

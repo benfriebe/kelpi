@@ -1840,7 +1840,7 @@ export declare class SelectionManager {
      * pointer of a word drag ends it at that cell. `selectionEnd` stays the moving end, which is
      * what auto-scroll compares against.
      *
-     * vendor 0.4.0-kelpi.22: `point` is the pointer's canvas position, in pixels; a drag from a
+     * vendor 0.4.0-kelpi.23: `point` is the pointer's canvas position, in pixels; a drag from a
      * single press uses it to tell a drag from a wobble (`dragSelection`).
      */
     private extendSelectionTo;

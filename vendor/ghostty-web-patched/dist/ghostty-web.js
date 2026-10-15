@@ -2672,12 +2672,15 @@ const z = class b {
         const E = this.wasmTerm.getDimensions();
         if (this.autoScrollDirection < 0) {
           const C = this.viewportRowToAbsolute(0);
-          C < B.absoluteRow && this.extendSelectionTo(0, C, { x: 0, y: 0 });
+          if (C < B.absoluteRow) {
+            const { height: I } = this.renderer.getMetrics();
+            this.extendSelectionTo(0, C, { x: 0, y: -I });
+          }
         } else {
           const C = this.viewportRowToAbsolute(E.rows - 1);
           if (C > B.absoluteRow) {
             const { width: I, height: D } = this.renderer.getMetrics();
-            this.extendSelectionTo(E.cols - 1, C, { x: E.cols * I, y: E.rows * D });
+            this.extendSelectionTo(E.cols - 1, C, { x: E.cols * I, y: (E.rows + 1) * D });
           }
         }
       }
@@ -2700,7 +2703,7 @@ const z = class b {
    * pointer of a word drag ends it at that cell. `selectionEnd` stays the moving end, which is
    * what auto-scroll compares against.
    *
-   * vendor 0.4.0-kelpi.22: `point` is the pointer's canvas position, in pixels; a drag from a
+   * vendor 0.4.0-kelpi.23: `point` is the pointer's canvas position, in pixels; a drag from a
    * single press uses it to tell a drag from a wobble (`dragSelection`).
    */
   extendSelectionTo(A, Q, B) {

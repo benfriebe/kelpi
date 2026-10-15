@@ -14,7 +14,7 @@ beforeAll(async () => {
     )));
     ghostty = new Ghostty(await WebAssembly.instantiate(module, { env: { log() {} } }), module);
 });
-afterEach(() => { vi.unstubAllGlobals(); });
+afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 /** Cells are 10 x 20 px; jsdom reports `offsetX`/`offsetY` as the client point. */
 const at = (col: number, row: number) => ({ clientX: col * 10 + 5, clientY: row * 20 + 10 });
@@ -262,6 +262,11 @@ describe('a drag includes the cell under the pointer (vendor 0.4.0-kelpi.23)', (
             // And a forward drag pressed on a glyph's second half starts with that glyph.
             gesture(f, at(7, 2), at(25, 2));
             expect(f.writeText).toHaveBeenLastCalledWith(`${'漢'.repeat(8)}WEND`);
+            // A backward drag pressed on either half of a glyph ends with that glyph.
+            gesture(f, at(10, 2), at(0, 2));
+            expect(f.term.getSelection()).toBe('WSTART漢漢漢');
+            gesture(f, at(11, 2), at(0, 2));
+            expect(f.term.getSelection()).toBe('WSTART漢漢漢');
         } finally { f.dispose(); }
     });
 
@@ -308,5 +313,74 @@ describe('a drag includes the cell under the pointer (vendor 0.4.0-kelpi.23)', (
             expect(f.term.hasSelection()).toBe(true);
             expect(f.writeText).toHaveBeenLastCalledWith('i');
         } finally { f.dispose(); }
+    });
+
+    it('leaves the dead zone vertically too, inside one cell', () => {
+        const f = fixture();
+        try {
+            f.term.write(TEXT);
+            // Same x, 7 px apart in y, both in `i`'s cell.
+            gesture(f, point(6, 5, 2, 2), point(6, 5, 2, 9));
+            expect(f.term.getSelection()).toBe('i');
+            expect(f.writeText).toHaveBeenLastCalledWith('i');
+        } finally { f.dispose(); }
+    });
+
+    it('a straight drag down a column selects from the pressed cell to the one below, both included', () => {
+        const f = fixture();
+        try {
+            f.term.write('\r\n\r\nthe quick brown fox\r\njumps over');
+            // From `q` (col 4, row 2) to the `s` below it (col 4, row 3), with no x movement at all.
+            gesture(f, at(4, 2), at(4, 3));
+            expect(f.writeText).toHaveBeenLastCalledWith('quick brown fox\njumps');
+        } finally { f.dispose(); }
+    });
+
+    // An auto-scroll tick has no pointer: a point a full row beyond the edge the pointer left by
+    // stands in for it. The canvas corner used to, so a press within 6 px of that corner scrolled
+    // the view but never selected, and its release copied nothing.
+    describe('auto-scroll from a press beside the corner it leaves by', () => {
+        // line-000 to line-039, then an empty row: line-031 is on row 0, line-030 the last in history.
+        const LINES = Array.from({ length: 40 }, (_, i) => `line-${String(i).padStart(3, '0')}`);
+        const docMove = (clientX: number, clientY: number) =>
+            document.dispatchEvent(new MouseEvent('mousemove', { clientX, clientY, buttons: 1 }));
+        const docRelease = (clientX: number, clientY: number) =>
+            document.dispatchEvent(new MouseEvent('mouseup', { button: 0, clientX, clientY }));
+
+        it('up, from the top-left cell, takes the history scrolled into view', () => {
+            vi.useFakeTimers();
+            const f = fixture();
+            try {
+                f.term.write(LINES.map(line => `${line}\r\n`).join(''));
+                f.fire('mousedown', { clientX: 2, clientY: 2 }, { detail: 1, buttons: 1 });
+                f.fire('mousemove', { clientX: 2, clientY: 0 }, { buttons: 1 });
+                docMove(2, -10);
+                vi.advanceTimersByTime(200); // four ticks of three rows
+                expect(f.term.viewportY).toBe(12);
+                expect(f.term.hasSelection()).toBe(true);
+                docRelease(2, -10);
+                // From the top row now on screen (line-019) to the pressed `l` of line-031.
+                expect(f.writeText).toHaveBeenLastCalledWith([...LINES.slice(19, 31), 'l'].join('\n'));
+            } finally { f.dispose(); }
+        });
+
+        it('down, from the bottom-right cell, takes the lines scrolled into view', () => {
+            vi.useFakeTimers();
+            const f = fixture();
+            try {
+                f.term.write(LINES.map(line => `${line}\r\n`).join(''));
+                f.term.viewportY = 20; // line-011 to line-020 on screen
+                f.fire('mousedown', { clientX: 398, clientY: 198 }, { detail: 1, buttons: 1 });
+                f.fire('mousemove', { clientX: 398, clientY: 200 }, { buttons: 1 });
+                docMove(398, 210);
+                vi.advanceTimersByTime(200);
+                expect(f.term.viewportY).toBe(8);
+                expect(f.term.hasSelection()).toBe(true);
+                docRelease(398, 210);
+                // From the pressed cell, blank past the end of line-020, to the bottom row now on
+                // screen (line-032).
+                expect(f.writeText).toHaveBeenLastCalledWith(['', ...LINES.slice(21, 33)].join('\n'));
+            } finally { f.dispose(); }
+        });
     });
 });

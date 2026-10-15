@@ -91,24 +91,35 @@ renderer, which paints a wide glyph's background from its first cell, did not hi
 includes the glyph. Measured: without it, a backward drag from `WEND` to the right half of the
 third `漢` copied `漢漢漢漢漢WEND` instead of `漢漢漢漢漢漢WEND`.
 
+An auto-scroll tick has no pointer (the pointer is off the canvas), so it hands `dragSelection` a
+stand-in: a point a full row beyond the edge the pointer left by, `(0, -height)` going up and
+`(cols * width, (rows + 1) * height)` going down. The first build of `-kelpi.23` used the canvas
+corner itself, `(0, 0)` and `(cols * width, rows * height)`. A press within the dead zone of that
+corner (2 px into the top-left cell, say) then made every tick a wobble: the view scrolled, nothing
+was selected however far it went, and the release copied nothing, where `-kelpi.22` copied the
+history scrolled into view. A row beyond the edge is always out of the dead zone, because the press
+is on the canvas.
+
 Everything else `-kelpi.22` added is unchanged: a press selects nothing; it is pinned through
 `trackSelectionForWrite` / `restoreSelectionAfterWrite` across a scrollback trim (#170) and
 abandoned (`abandonPress`) if its row is discarded; `hasSelection()` counts a single dragged cell;
-auto-scroll extends from the press when nothing is selected yet (its synthetic point is the canvas
-corner the pointer left by). Double- and triple-click and their word and line drags (`-kelpi.19`,
-`unitAnchor`) do not use `dragSelection` and are unchanged.
+auto-scroll extends from the press when nothing is selected yet, from wherever on the canvas it was
+pressed. Double- and triple-click and their word and line drags (`-kelpi.19`, `unitAnchor`) do not
+use `dragSelection` and are unchanged.
 
 TypeScript only; the WASM is unchanged from `-kelpi.17`. Rebuilt with
 `TMPDIR=<scratch> pnpm vendor:build` under Node 24.15.0 / pnpm 10.28.1, which resolved vite 4.5.14,
 vite-plugin-dts 4.5.4 and typescript 5.9.3; the declaration step printed the four pre-existing
-`Bun` / `fs/promises` errors in `lib/ghostty.ts` and the build went on. `dist/ghostty-web.js` is
-741.36 kB as vite reports it (741,032 to 741,440 bytes), `dist/ghostty-web.umd.cjs` 667.51 kB; the
-embedded-WASM check passes for both bundles and the installed copy (sha256 `fb2e9d5d…`, 426,715
-bytes, the tracked `ghostty-vt.wasm`). Covered by
-`packages/client/src/terminal/copy-on-select.wasm.test.ts` (forward and backward drags released in
-the middle of the end cell, `conversation-00667` whole, wide glyphs both ways and ending on either
-half, a press and release with no move, drift over a cell and a row boundary, the dead zone entered
-and left, a one-character drag), a drag that has just started selecting held across a real trim in
+`Bun` / `fs/promises` errors in `lib/ghostty.ts` and the build went on. After the auto-scroll
+stand-in fix, `dist/ghostty-web.js` is 741.46 kB as vite reports it (741,032 to 741,537 bytes),
+`dist/ghostty-web.umd.cjs` 667.56 kB (667,568 bytes); the embedded-WASM check passes for both
+bundles and the installed copy (sha256 `fb2e9d5d…`, 426,715 bytes, the tracked `ghostty-vt.wasm`).
+Covered by `packages/client/src/terminal/copy-on-select.wasm.test.ts` (forward and backward drags
+released in the middle of the end cell, `conversation-00667` whole, wide glyphs both ways, ending
+on either half and pressed on either half, a press and release with no move, drift over a cell and
+a row boundary, the dead zone entered and left, a one-character drag, the dead zone left in y alone
+inside a cell and by a straight drag down a column, and auto-scroll up from 2 px into the top-left
+cell and down from 2 px short of the bottom-right corner), a drag that has just started selecting held across a real trim in
 `selection-scrollback.wasm.test.ts`, and the `-kelpi.23` markers in `vendor-engine.test.ts`. Two
 `-kelpi.22` expectations changed with the rule: a late press in `q` released early in `k` now
 copies `quick` (was `uic`), and a single-click drag from the middle of `i` to the middle of `o`

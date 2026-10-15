@@ -22993,7 +22993,7 @@ function buildFlows(ctx) {
         {
             id: 'sidebar-spring',
             expect:
-                'The sidebar’s drag-time motion is a REAL interruptible spring, not a curve shaped like one: a row the cursor crosses runs home frame by frame and overshoots its slot; a second crossing that lands MID-FLIGHT retargets the same motion (the visual position continuous through the retarget and the velocity carried past it) instead of restarting at zero velocity; the released row springs into its slot from where the ghost left it; the cursor clone restyles LIVE with the resolved container (a member dragged out of a group sheds its band and its indent at a top-level slot, keeps a member’s dressing over a top-level row’s MIDDLE third, which is a nest band that tints that row, and takes both back on the way in) and hands over to the row on release with no frame showing two copies, none showing zero and none showing a landing node; §WS-093’s drop geometry is unmoved by any of it; a collapsed group spring-loads open at 650 ms and NOT at 300 ms; and a drag held in the auto-scroll band of an overflowing list never resolves to `ontoWorkspace` nor tints a row while the list scrolls under it, nor nests on a release mid-scroll, while the thirds come back once the list hits its end (#412) (§WS-008/§WS-084/§WS-089/§WS-092/§WS-093/§5.5/§2.9).',
+                'The sidebar’s drag-time motion is a REAL interruptible spring, not a curve shaped like one: a row the cursor crosses runs home frame by frame and overshoots its slot; a second crossing that lands MID-FLIGHT retargets the same motion (the visual position continuous through the retarget and the velocity carried past it) instead of restarting at zero velocity; the released row springs into its slot from where the ghost left it; the cursor clone restyles LIVE with the resolved container (a member dragged out of a group sheds its band and its indent at a top-level slot, keeps a member’s dressing over a top-level row’s MIDDLE third, which is a nest band that tints that row, and takes both back on the way in) and hands over to the row on release with no frame showing two copies, none showing zero and none showing a landing node; §WS-093’s drop geometry is unmoved by any of it; a collapsed group spring-loads open at 650 ms and NOT at 300 ms; and a drag held in the auto-scroll band of an overflowing list never resolves to `ontoWorkspace` nor tints a row while the list scrolls under it, nor nests on a release mid-scroll, while the thirds come back once the pointer is out of the band after a sweep (#412) (§WS-008/§WS-084/§WS-089/§WS-092/§WS-093/§5.5/§2.9).',
             needsEyes: true,
             async run(recorder) {
                 const activeBefore = String(
@@ -23020,7 +23020,11 @@ function buildFlows(ctx) {
                 /** Phase (f)'s padding rows, by name: declared up here so every exit tears them down. */
                 const sweepPads = [];
                 const handBack = async () => {
-                    await page.eval(`(() => { delete window.__kelpiSpring; delete window.__kelpiSweep; return true; })()`);
+                    // Stopped before they are dropped: a sampler an exception left running would
+                    // keep its rAF loop going for the rest of a full run.
+                    await page.eval(
+                        `(() => { window.__kelpiSpring?.stop?.(); window.__kelpiSweep?.stop?.(); delete window.__kelpiSpring; delete window.__kelpiSweep; return true; })()`
+                    );
                     await cli.run(['group', 'delete', 'Springboard', '--cascade']);
                     // Phase (d) drags `Spring Nested` OUT of the group, so the cascade above may
                     // no longer own it. Deleting it by name is a no-op when the cascade already
@@ -24137,8 +24141,12 @@ function buildFlows(ctx) {
                  * (`Spring Sweep N`, the `Fold Pad` recipe: measure, create only what is missing,
                  * delete in `handBack`) until it can scroll at least ten row pitches, moves the
                  * first pad to the very top, and drags THAT from a list scrolled to zero, so the
-                 * sweep runs over every row there is. A pad is a childless top-level fixture the
-                 * step owns, so a regression that nests it costs nothing outside the step.
+                 * sweep covers a whole scroll range: every row that passes under the band between
+                 * the bottom of the first screen and the end of the list. A pad is a childless
+                 * top-level fixture the step owns, so a regression that nests it nests only a
+                 * pad. In a scoped run the would-be parent is another pad; in a full run it is
+                 * whichever foreign row the sweep had reached, still harmless, because `handBack`
+                 * deletes the nested pad with the rest.
                  *
                  * Two holds, in the bottom band:
                  *
@@ -24147,8 +24155,11 @@ function buildFlows(ctx) {
                  *      scroll down (the product's own test, 1 px tolerance and all), the resolved
                  *      target, and which workspace rows carry `data-drop-preview` (§2.9: the
                  *      preview-only `ontoWorkspace` target's tint). No frame in which the list can
-                 *      still scroll may read `ontoWorkspace:` or tint a row. At the end the
-                 *      thirds come back, so a row's middle inside the band nests again;
+                 *      still scroll may read `ontoWorkspace:` or tint a row. After the sweep a
+                 *      row's middle just out of the band nests again, so the suspension ends
+                 *      with the band rather than outliving it. At the end of the list no row
+                 *      middle can sit IN the band (the end-of-travel comment below says why),
+                 *      so the in-band cases are left to `Sidebar.test.tsx`;
                  *   2. a release while the list is still scrolling, which is the user-facing
                  *      bug: the workspace must come out of it top level, with no parent.
                  *
@@ -24419,6 +24430,14 @@ function buildFlows(ctx) {
                             `scrollTop ${String(held.from)} → ${String(held.to)} of ${String(Math.round(held.max))} over ${String(held.ms)}ms · ` +
                                 `${String(moving.length)} of ${String(sweep.length)} frames while it could still scroll · ${String(held.rearms)} re-arm(s)`
                         );
+                        // The two checks below can only pass on a target that is live: one that
+                        // stopped updating on the timer path would hold a single stale slot.
+                        const slots = seen.filter((target) => target.startsWith('topLevel:') || target.startsWith('intoGroup:'));
+                        recorder.check(
+                            '#412: the resolved target moved with the sweep, through at least three distinct slots',
+                            slots.length >= 3,
+                            `${String(slots.length)} distinct slot target(s) while it could still scroll ${JSON.stringify(slots.slice(0, 12))}${slots.length > 12 ? ' …' : ''}`
+                        );
                         recorder.check(
                             '#412: while the list auto-scrolls under it, the drag never resolves to ontoWorkspace (option A)',
                             moving.length > 0 && nested.length === 0,
@@ -24432,19 +24451,25 @@ function buildFlows(ctx) {
                         );
 
                         /*
-                         * The end of travel: the list cannot scroll down any more, so the band no
-                         * longer suspends anything and the thirds apply again. Where the still
-                         * pointer happens to sit at that moment is geometry, so that is a note
-                         * (the "targets once the list could not scroll" above).
+                         * After the sweep: the list cannot scroll down any more, so the band no
+                         * longer suspends anything. Where the still pointer happens to sit at that
+                         * moment is geometry, so that is a note (the "targets once the list could
+                         * not scroll" above).
                          *
                          * The check AIMS instead, at the middle of the lowest pad row whose middle
                          * is on screen, which makes the answer certain: `ontoWorkspace` on that
-                         * row, tinted alone, so the suspension is not left behind by the sweep.
-                         * The first run of this phase measured why that row is usually just ABOVE
-                         * the band rather than in it: at the end of the list the bottom band
-                         * covers the list's trailing spacer (about 45 px under the last row, the
-                         * dragged row's own gap) and nothing else, so no row middle can sit in it
-                         * there. The detail says which case this run aimed at.
+                         * row, tinted alone. That row sits just ABOVE the band, not in it, so what
+                         * this proves is that the suspension ends with the band and the sweep
+                         * leaves nothing sticky behind, not that the end of travel lifts it. The
+                         * first run of this phase measured why no row middle can be in the band
+                         * there: at the end of the list the bottom band covers the list's tail
+                         * (the dragged row's own gap, one 34 + 4 px pitch, plus the content
+                         * padding: about 45 px under the last row) and nothing else. The detail says
+                         * which case this run aimed at. The in-band end-of-travel case (the
+                         * thirds back under a still pointer, no move needed) and the top band at
+                         * scrollTop 0 (nothing to scroll toward, so a row's middle there nests)
+                         * are pinned by `packages/client/src/chrome/Sidebar.test.tsx`, "drag
+                         * auto-scroll (§5.5)".
                          */
                         if (held.atEnd) {
                             await recorder.shot(page, 'sweep-end-of-travel');
@@ -24502,7 +24527,7 @@ function buildFlows(ctx) {
                                     )
                                 );
                                 recorder.check(
-                                    '#412: once the list has hit its end the thirds apply again, so a row’s middle nests (§5.5)',
+                                    '#412: after the sweep, a row’s middle out of the band nests again: the suspension ends with the band (§5.5)',
                                     atEnd.canScroll === false &&
                                         atEnd.target === `ontoWorkspace:${String(aim.id)}` &&
                                         atEnd.tinted.length === 1 &&
@@ -24520,13 +24545,14 @@ function buildFlows(ctx) {
                         } else {
                             recorder.note(`end of travel not reached within the hold (scrollTop ${String(held.to)} of ${String(Math.round(held.max))}), so the thirds there are not checked`);
                         }
+                        await page.mouse('mouseReleased', sweepPointer.x, sweepPointer.y, { button: 'left', clickCount: 1 });
+                        sweepPointer = null;
+                        // After the release, for the reason hold 2 gives below.
                         const firstRelease = String(
                             await page.eval(
                                 `document.querySelector('[data-testid="sidebar"] [role="listbox"]')?.getAttribute('data-drag-target') ?? 'none'`
                             )
                         );
-                        await page.mouse('mouseReleased', sweepPointer.x, sweepPointer.y, { button: 'left', clickCount: 1 });
-                        sweepPointer = null;
                         await sleep(900);
                         recorder.note(`hold 1 released at ${firstRelease}`);
 
@@ -24553,17 +24579,23 @@ function buildFlows(ctx) {
                                 capMs: 5000,
                                 stop: (state) => state.atEnd || (state.elapsed >= 600 && state.travelled >= pitch * 2)
                             });
-                            await page.mouse('mouseMoved', box2.x, bandY - 1, { button: 'left', buttons: 1 });
-                            sweepPointer = { x: box2.x, y: bandY - 1 };
+                            // Toggled against wherever the re-arms left the pointer, so this move is
+                            // never zero-distance: one that is may not re-arm a stalled timer.
+                            const lastY = sweepPointer.y === bandY ? bandY - 1 : bandY;
+                            await page.mouse('mouseMoved', box2.x, lastY, { button: 'left', buttons: 1 });
+                            sweepPointer = { x: box2.x, y: lastY };
                             await sleep(60);
+                            const releaseAt = Number(await page.eval(`window.__kelpiSweep?.samples?.length ?? 0`));
+                            await page.mouse('mouseReleased', sweepPointer.x, sweepPointer.y, { button: 'left', clickCount: 1 });
+                            sweepPointer = null;
+                            // Read AFTER the release: no resolve runs after the mouseup and `onUp`
+                            // flips only `data-drag-active`, so this is the target the drop used.
+                            // Read before it, it can lag a list still scrolling by a tick or more.
                             const releaseTarget = String(
                                 await page.eval(
                                     `document.querySelector('[data-testid="sidebar"] [role="listbox"]')?.getAttribute('data-drag-target') ?? 'none'`
                                 )
                             );
-                            const releaseAt = Number(await page.eval(`window.__kelpiSweep?.samples?.length ?? 0`));
-                            await page.mouse('mouseReleased', sweepPointer.x, sweepPointer.y, { button: 'left', clickCount: 1 });
-                            sweepPointer = null;
                             const frames = (await stopSweepSampler()).slice(0, releaseAt);
                             const lastAt = frames.at(-1)?.[0] ?? 0;
                             const recent = frames.filter((sample) => lastAt - sample[0] <= 150);

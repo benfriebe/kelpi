@@ -57,7 +57,8 @@ Auto-approve is on until 09:03. 1 approved, 1 left for you.
 ## Status bar and palette
 
 The status bar shows `Auto-approve off` while off and `Auto-approve 7m` (the time left, `<1m` in
-the last minute) while on, refreshed every minute. Clicking it runs **Toggle auto-approve**, which
+the last minute) while on, refreshed every minute, so after a Mac sleeps past the end it can read
+on for up to a minute while nothing is approved. Clicking it runs **Toggle auto-approve**, which
 is also in the command palette: off turns on for 10 minutes, on turns off, and a notification says
 which. Turning on while the plugin is not the selected provider says so in that notification. The
 CLI verb's own command is kept out of the palette by a palette rule that never matches.
@@ -78,21 +79,25 @@ Only Claude's Bash tool is ever allowed: MCP tools, Fetch, file edits and every 
 you, and so does another agent's shell. A Bash command is left for you, with the reason in
 `status`, when it spans lines (any `\r` or `\n`, so nothing can ride in after a line that only
 looks harmless) or matches the never-auto-approve list, whatever its quoting: `rm -r`, `git push`,
-`sudo`, a download or anything else piped or heredoc'd into a shell or interpreter, inline code
-(`bash -c`, `python -c`, `node -e`), any command that mentions `auto-approve` (so it cannot extend
-itself), `mkfs`, `dd of=`, `find -delete`, `git clean -f`, `git reset --hard`, `git checkout -- .`,
+`sudo`, a download or anything else piped or heredoc'd into a shell or interpreter (behind `env`,
+`nohup`, `timeout` or a redirection too), inline code (`bash -c`, `python -c`, `node -e`, `node -p`, also
+attached as in `--eval=` or `-c'...'`), any command that mentions `auto-approve` (so it cannot extend
+itself), `kelpi plugin` (so it cannot select or install another permissions provider), `mkfs`,
+`dd of=`, `find -delete`, `git clean -f`, `git reset --hard`, `git checkout -- .`,
 `git branch -D` and its kin, `git -c` and other git config overrides, `chmod -R`, `chown -R`,
 `rsync --delete`, `gh pr merge`, `gh api` with `DELETE`, `npm publish`, `kubectl`, `terraform`,
-`helm` and `aws` writes, a variable as the command word, `alias` and `eval`, and any word with a
-brace or glob character. The whole command is judged, never a prefix. The provider never answers
+`helm` and `aws` writes (S3 uploads included), a variable or a command substitution as the command
+word, `$IFS`, `alias` and `eval`, and any word with a brace or glob character. The whole command is
+judged, never a prefix. The provider never answers
 deny: anything it does not allow falls through to Claude's own prompt, exactly as if the plugin
 were not there.
 
 ## Limits
 
-The never-list is best effort, not a sandbox. An agent set on getting past it can (base64, `\u`
-escapes, a `git config` write or `GIT_SSH_COMMAND` that a later git command runs). Turn it on only
-for work you would approve anyway.
+The never-list is best effort, not a sandbox. An agent set on getting past it can (base64 written
+to a script it then runs, `$'\x..'` style and `\u` escapes, `env -S` with its command attached, a
+wrapper the list does not know in front of a shell, a `git config` write or
+`GIT_SSH_COMMAND` that a later git command runs). Turn it on only for work you would approve anyway.
 
 Nothing is persisted: a daemon restart, or a plugin reload, disable or upgrade, turns it off and
 clears the counts. The window is timed on a monotonic clock, so setting the system clock back

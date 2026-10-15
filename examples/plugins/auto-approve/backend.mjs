@@ -23,6 +23,7 @@ const COMMAND_CAP = 200;
 const MINUTE = 60_000;
 
 const SELECT_HINT = `Select it with: kelpi plugin service-select ${SERVICE} ${PROVIDER} (or Settings > Plugins > Service providers).`;
+/** @type {import('../../../packages/plugin-sdk/index.js').ContributionItemPatch} */
 const OFF_ITEM = { text: 'Auto-approve off', tone: 'default', tooltip: `Click to turn auto-approve on for ${DEFAULT_MINUTES} minutes` };
 
 const usage = [
@@ -39,6 +40,9 @@ const usage = [
     `sandbox. Nothing is approved until this plugin is the selected ${SERVICE}`,
     'provider. A daemon or plugin restart turns it off.',
 ].join('\n');
+
+/** @param {string} text Every control character a space, so a left command cannot drive the terminal `status` prints to. */
+const printable = (text) => text.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ');
 
 /** @param {Date} date HH:MM in local time, for the end shown to the user. */
 const clock = (date) => `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
@@ -91,6 +95,7 @@ export function activate(api) {
     const isOn = () => remaining() > 0;
 
     const publish = () => {
+        /** @type {import('../../../packages/plugin-sdk/index.js').ContributionItemPatch} */
         const item = isOn() && wallEndsAt !== null
             ? { text: `Auto-approve ${timeLeft(remaining())}`, tone: 'success', tooltip: `On until ${clock(wallEndsAt)}. Click to turn off.` }
             : OFF_ITEM;
@@ -133,7 +138,7 @@ export function activate(api) {
      * @param {unknown} command
      */
     const leave = (paneID, workspaceID, reason, command) => {
-        const text = typeof command === 'string' ? command : '';
+        const text = typeof command === 'string' ? printable(command) : '';
         leftCount += 1;
         left.push({
             paneID: typeof paneID === 'string' ? paneID : '?',
@@ -148,7 +153,7 @@ export function activate(api) {
     /**
      * The service's one method. Synchronous and without I/O, well inside the daemon's 2 second
      * deadline. Only ever allow or abstain: a thrown error abstains here rather than in the daemon.
-     * @param {import('../../../packages/plugin-sdk/index.js').AgentPermissionArgs} args
+     * @param {import('../../../packages/plugin-sdk/index.js').Data} args An `AgentPermissionArgs`, checked as it is read.
      * @returns {import('../../../packages/plugin-sdk/index.js').AgentPermissionDecision}
      */
     const decide = (args) => {
@@ -156,7 +161,8 @@ export function activate(api) {
             // Checked on every call, not left to the expiry timer: a late timer must never leak an allow.
             if (!isOn()) return { behavior: 'abstain' };
             if (args.agent !== 'claude' || args.toolName !== 'Bash') return { behavior: 'abstain' };
-            const command = args.toolInput?.['command'];
+            const input = args.toolInput;
+            const command = input !== null && typeof input === 'object' && !Array.isArray(input) ? input['command'] : undefined;
             const judgement = judgeCommand(command);
             if (judgement.allow) {
                 approved += 1;
@@ -209,7 +215,7 @@ export function activate(api) {
     const summary = () => {
         const counts = `${approved} approved, ${leftCount} left for you.`;
         const lines = [isOn() && wallEndsAt !== null ? `Auto-approve is on until ${clock(wallEndsAt)}. ${counts}` : `Auto-approve is off. ${counts}`];
-        for (const entry of left) lines.push(`  ${entry.paneID}: ${entry.reason}${entry.command ? `: ${entry.command.replace(/[\r\n]+/g, ' ')}` : ''}`);
+        for (const entry of left) lines.push(`  ${entry.paneID}: ${entry.reason}${entry.command ? `: ${printable(entry.command)}` : ''}`);
         return lines.join('\n');
     };
 

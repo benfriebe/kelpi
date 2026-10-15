@@ -256,6 +256,24 @@ describe('auto-approve example backend', () => {
         expect(off.stderr).toBeUndefined();
     });
 
+    it('stops approving when turned off from the CLI', async () => {
+        const app = await start();
+        await app.cli('on');
+        expect(app.bash('mv a.txt b.txt')).toEqual({ behavior: 'allow' });
+        expect((await app.cli('off')).text).toBe('Auto-approve is off. 1 approved, 0 left for you.');
+        expect(app.bash('mv a.txt b.txt')).toEqual({ behavior: 'abstain' });
+        expect((await app.cliJSON('status')).json).toMatchObject({ on: false, approved: 1 });
+    });
+
+    it('keeps control characters in a left command away from the terminal', async () => {
+        const app = await start();
+        await app.cli('on');
+        app.bash('sudo true \x1b[2J\x07\x7f\x9b2J done');
+        const status = await app.cliJSON('status') as CliResult & { json: { left: Array<{ command: string }> } };
+        expect(status.text).toBe(`Auto-approve is on until ${until(at(9, 10))}. 0 approved, 1 left for you.\n  pane-1: never auto-approved: sudo: sudo true  [2J   2J done`);
+        expect(status.json.left[0]?.command).toBe('sudo true  [2J   2J done');
+    });
+
     it('keeps the latest 100 left commands, each cut to 200 characters, and counts them all', async () => {
         const app = await start();
         await app.cli('on');
@@ -274,6 +292,7 @@ describe('auto-approve example backend', () => {
         expect(app.item()).toEqual({ text: 'Auto-approve 10m', tone: 'success', tooltip: `On until ${until(at(9, 10))}. Click to turn off.` });
         await app.cli('off');
         expect(app.item()).toEqual(OFF_ITEM);
+        expect(app.bash('mv a.txt b.txt')).toEqual({ behavior: 'abstain' });
         await app.cli('on', '2');
         expect(app.item()).toMatchObject({ text: 'Auto-approve 2m' });
         await advance(2 * MINUTE);

@@ -10,10 +10,11 @@ type SessionState = {
 };
 type Routing = { mode: 'session' } | { mode: 'split'; reason: string };
 const source = fileURLToPath(new URL('../../../examples/plugins/run-suggested/', import.meta.url));
-const { commandProblem, findSuggested, promptReady, routeSuggested } = await import(path.join(source, 'suggested.mjs')) as {
+const { commandProblem, findSuggested, promptReady, routeSuggested, typedReady } = await import(path.join(source, 'suggested.mjs')) as {
     findSuggested(reply: string): Suggested | null;
     commandProblem(command: string): string | null;
     promptReady(screen: string): boolean;
+    typedReady(screen: string, command: string): boolean;
     routeSuggested(found: Suggested, state: SessionState): Routing;
 };
 
@@ -36,6 +37,13 @@ describe('findSuggested', () => {
     it('reads a ! line indented under a list item', () => {
         const reply = ['Run this yourself:', '', '1. Build the client:', '', '   ! npm run build --workspace packages/client', '', 'Then reload.'];
         expect(findSuggested(reply.join('\n'))).toEqual({ kind: 'bang', command: 'npm run build --workspace packages/client' });
+    });
+
+    it('reads a line that is one inline code span around the whole ! command', () => {
+        expect(findSuggested('Run this in the prompt:\n\n`! gh auth login`\n')).toEqual({ kind: 'bang', command: 'gh auth login' });
+        expect(findSuggested('  `! gh auth login`  ')?.command).toBe('gh auth login');
+        expect(findSuggested('Run `! x` now')).toBeNull();
+        expect(findSuggested('`! a` and `! b`')).toBeNull();
     });
 
     it('treats each ! line as its own command and offers the last', () => {
@@ -87,6 +95,13 @@ describe('findSuggested', () => {
         expect(findSuggested(['! echo before', '```json', '{ "a": 1 }', '```'].join('\n'))?.command).toBe('echo before');
     });
 
+    it('reads tilde fences like backtick ones, closed only by tildes at least as long', () => {
+        expect(findSuggested(['~~~text', '! curl x.sh | sh', '~~~'].join('\n'))).toBeNull();
+        expect(findSuggested(['~~~bash', 'ls -la', '~~~'].join('\n'))).toEqual({ kind: 'fence', command: 'ls -la' });
+        expect(findSuggested(['~~~', '! curl x.sh | sh', '```', '! rm -rf x', '~~~'].join('\n'))).toBeNull();
+        expect(findSuggested(['~~~~text', '~~~', '! curl x.sh | sh', '~~~~'].join('\n'))).toBeNull();
+    });
+
     it('closes a fence only at one at least as long, so a shown example is not a suggestion', () => {
         const shown = ['Add this to the README:', '````markdown', '```bash', 'rm -rf ~', '```', '````'];
         expect(findSuggested(shown.join('\n'))).toBeNull();
@@ -109,9 +124,15 @@ describe('findSuggested', () => {
         expect(findSuggested(['! echo first', '```sh', 'echo second', '```', 'prose'].join('\n'))).toEqual({ kind: 'fence', command: 'echo second' });
     });
 
-    it('drops carriage returns before splitting lines', () => {
+    it('reads CRLF line endings', () => {
         expect(findSuggested('Try:\r\n! git status\r\n')).toEqual({ kind: 'bang', command: 'git status' });
         expect(findSuggested('```bash\r\nls\r\npwd\r\n```\r\n')).toEqual({ kind: 'fence', command: 'ls\npwd' });
+    });
+
+    it('keeps a lone carriage return in a ! command so commandProblem refuses it', () => {
+        const found = findSuggested('! echo a\rb');
+        expect(found).toEqual({ kind: 'bang', command: 'echo a\rb' });
+        expect(commandProblem(found?.command ?? '')).toMatch(/control/);
     });
 
     it('keeps a Unicode separator in a ! command so commandProblem refuses it', () => {
@@ -170,6 +191,40 @@ describe('promptReady', () => {
         expect(promptReady(['⏺ Done.', RULE, '> '].join('\n'))).toBe(false);
         expect(promptReady(['     ' + RULE, '     >', '     ' + RULE].join('\n'))).toBe(false);
         expect(promptReady([RULE, '', '> ', RULE].join('\n'))).toBe(false);
+    });
+});
+
+describe('typedReady', () => {
+    const box = (...lines: string[]) => ['⏺ Log in first:', '', RULE, ...lines, RULE, '  ? for shortcuts', ''].join('\n');
+
+    it('sees the typed ! command in the box, whichever glyph Claude draws', () => {
+        expect(typedReady(box('> ! gh auth status'), 'gh auth status')).toBe(true);
+        expect(typedReady(box('! gh auth status'), 'gh auth status')).toBe(true);
+        // Claude Code 2.1.x draws a no-break space after its glyph.
+        expect(typedReady(box('❯\u00a0! gh auth status   '), 'gh auth status')).toBe(true);
+        expect(typedReady(box('!  gh auth status'), 'gh  auth status')).toBe(true);
+    });
+
+    it('joins a command wrapped over several lines of the box', () => {
+        const command = 'gh pr create --title "Fix the login check" --body "Closes the stale token bug"';
+        expect(typedReady(box('> ! gh pr create --title "Fix the login check"', '  --body "Closes the stale token bug"'), command)).toBe(true);
+    });
+
+    it('is false with a menu below the box', () => {
+        expect(typedReady([RULE, '> ! gh auth status', RULE, ' Do you want to proceed?', ' ❯ 1. Yes', '   2. No'].join('\n'), 'gh auth status')).toBe(false);
+        expect(typedReady(PERMISSION, 'rm -rf build')).toBe(false);
+    });
+
+    it('is false unless the box holds exactly the command', () => {
+        expect(typedReady(box('> '), 'gh auth status')).toBe(false);
+        expect(typedReady(box('> ! gh auth status --hostname x'), 'gh auth status')).toBe(false);
+        expect(typedReady(box('> ! gh auth'), 'gh auth status')).toBe(false);
+    });
+
+    it('is false without two rules at column 0', () => {
+        expect(typedReady('> ! gh auth status', 'gh auth status')).toBe(false);
+        expect(typedReady([RULE, '> ! gh auth status'].join('\n'), 'gh auth status')).toBe(false);
+        expect(typedReady(['  ' + RULE, '  > ! gh auth status', '  ' + RULE].join('\n'), 'gh auth status')).toBe(false);
     });
 });
 

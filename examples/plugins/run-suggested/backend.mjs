@@ -1,4 +1,4 @@
-import { commandProblem, findSuggested, routeSuggested } from './suggested.mjs';
+import { commandProblem, findSuggested, routeSuggested, typedReady } from './suggested.mjs';
 
 /** @typedef {import('./suggested.mjs').Suggested} Suggested */
 /** @typedef {import('./suggested.mjs').Routing} Routing */
@@ -13,6 +13,7 @@ import { commandProblem, findSuggested, routeSuggested } from './suggested.mjs';
 
 const VERB = 'kelpi run-suggested';
 const SCREEN_LINES = 60;
+const TYPED_NOT_RUN = "the screen changed before Enter; the command is typed in Claude's box, not run";
 const usage = [
     'Usage: kelpi run-suggested [--target <pane>] [--print | --yes] [--json]',
     '',
@@ -35,26 +36,35 @@ export function activate(api) {
     /** @type {Map<string, string>} */
     const lastNotification = new Map();
     let published = false;
+    let publishing = false;
 
-    // `when` has no per-pane plugin facts, so the header chip's condition is plugin-wide.
+    // `when` has no per-pane plugin facts, so the header chip's condition is plugin-wide. `published`
+    // moves only once an update lands; a failed one is retried by the next event or command.
     const publish = () => {
         const hasSuggestion = remembered.size > 0;
-        if (hasSuggestion === published) return;
-        published = hasSuggestion;
-        api.contributions.update({ context: { hasSuggestion } }).catch(() => null);
+        if (publishing || hasSuggestion === published) return;
+        publishing = true;
+        api.contributions.update({ context: { hasSuggestion } }).then(
+            () => { publishing = false; published = hasSuggestion; publish(); },
+            () => { publishing = false; },
+        );
     };
 
     const stopEvents = api.agents.onEvent(event => {
         // `muted` only asks a plugin not to echo the event as a notification, which this one never does.
         if (event.type === 'stop' || event.type === 'start') lastNotification.delete(event.paneID);
         if (event.type === 'notification' && event.notificationType) lastNotification.set(event.paneID, event.notificationType);
+        // Abstain leaves Claude's own permission prompt on screen.
+        if (event.type === 'permission-request' && event.behavior === 'abstain') lastNotification.set(event.paneID, 'permission_prompt');
         if (event.type === 'stop' && event.agent === 'claude') {
-            // A reply that suggests nothing replaces the last one's suggestion.
-            const found = findSuggested(event.lastAssistantMessage ?? '');
+            // A reply that suggests nothing replaces the last one's suggestion. A reply cut at the hook's
+            // cap offers nothing: its last suggestion may be past the cut, or the cut may end one early.
+            const found = event.lastAssistantMessageTruncated ? null : findSuggested(event.lastAssistantMessage ?? '');
             if (found) remembered.set(event.paneID, found);
             else remembered.delete(event.paneID);
         }
-        if (event.type === 'session-end') {
+        // A new session never runs the last one's suggestion, even when that one ended without a session-end.
+        if (event.type === 'session-start' || event.type === 'session-end') {
             remembered.delete(event.paneID);
             lastNotification.delete(event.paneID);
         }
@@ -89,7 +99,8 @@ export function activate(api) {
 
     /**
      * Runs the suggestion where `routing` says. In the session it types `! command` only while the
-     * screen is still the one `read` saw, and presses Enter only while it still shows what was typed.
+     * screen is still the one `read` saw, and presses Enter only while Claude's box shows what was
+     * typed (typedReady) and the screen is still the one that showed it.
      * @param {Suggested} found @param {PaneInfo} pane @param {Routing} routing @param {TerminalRead} read
      * @returns {Promise<Outcome>}
      */
@@ -101,6 +112,8 @@ export function activate(api) {
                 await api.terminal.send(pane.id, '! ' + found.command, { bare: true, ifRevision: read.revision });
                 step = 'after';
                 const typed = await api.terminal.read(pane.id, { lines: SCREEN_LINES, settleMs: 300 });
+                // The revision alone would let Enter answer whatever drew meanwhile, such as a permission menu.
+                if (!typedReady(typed.text, found.command)) return { ok: false, changed: 'after' };
                 await api.terminal.sendKey(pane.id, 'enter', { ifRevision: typed.revision });
                 return { ok: true, mode: 'session' };
             }
@@ -169,11 +182,9 @@ export function activate(api) {
             outcome = await run(found, now.pane, now.routing, now.read);
         }
         if (!outcome.ok && 'changed' in outcome) {
-            await notify({
-                message: 'Run suggested: the screen changed, nothing was sent',
-                detail: outcome.changed === 'before' ? 'It changed before the command was typed.' : "It changed after the command was typed and before Enter: the command is in Claude's input box, not run.",
-                tone: 'warning',
-            });
+            await notify(outcome.changed === 'before'
+                ? { message: 'Run suggested: the screen changed, nothing was sent', detail: 'It changed before the command was typed.', tone: 'warning' }
+                : { message: `Run suggested: ${TYPED_NOT_RUN}`, tone: 'warning' });
         } else if (!outcome.ok) {
             await notify({ message: `Run suggested: ${outcome.error}`, tone: 'error' });
         }
@@ -217,13 +228,13 @@ export function activate(api) {
         const shown = { text: found.command, json: { command: found.command, kind: found.kind } };
         if (print) return shown;
         // A verb cannot prompt, so without --yes it only shows what would run.
-        if (!yes) return { ...shown, stderr: 'Pass --yes to run it, or press Ctrl+Alt+R in the pane to choose where it runs.' };
+        if (!yes) return { ...shown, stderr: "Pass --yes to run it, or press the Run Claude's suggested command shortcut (Ctrl+Alt+R by default) in the pane to choose where it runs." };
 
         const now = await inspect(pane.id, found);
         if (!now) return fail(`pane ${pane.id} is gone`);
         const outcome = await run(found, now.pane, now.routing, now.read);
         if (!outcome.ok && 'changed' in outcome) {
-            return fail(outcome.changed === 'before' ? 'the screen changed, nothing was sent' : "the screen changed, nothing was sent: the command is typed in Claude's input box but Enter was not pressed");
+            return fail(outcome.changed === 'before' ? 'the screen changed, nothing was sent' : TYPED_NOT_RUN);
         }
         if (!outcome.ok) return fail(outcome.error);
         if (outcome.mode === 'session') return { text: 'ran in the Claude session', json: { ...shown.json, ran: 'session', paneID: pane.id } };

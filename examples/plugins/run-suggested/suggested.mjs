@@ -1,8 +1,8 @@
 /**
  * Run Suggested (#384 as a plugin): find the last shell command Claude suggested in a reply, check it
  * is safe to type, and decide where it runs. The reply is the exact text Claude's Stop hook carries
- * (`AgentHookEvent.lastAssistantMessage`), so nothing here undoes screen wraps. Only the idle check
- * reads the screen. Everything here is pure; backend.mjs does the I/O.
+ * (`AgentHookEvent.lastAssistantMessage`), so nothing here undoes screen wraps. Only the idle and
+ * typed checks read the screen. Everything here is pure; backend.mjs does the I/O.
  */
 
 /** @typedef {{ command: string, kind: 'bang' | 'fence' }} Suggested */
@@ -11,13 +11,19 @@
 const lead = line => line.length - line.trimStart().length;
 // `s`: a U+2028 in the command stays in it, so commandProblem names it instead of the line being skipped.
 const BANG = /^\s*! (\S.*)$/s;
-// Any fence opens a code block; only one labelled for a shell is a suggestion. A closing fence is at
-// least as long as its opener, so a ````markdown block can show a ```bash one without it counting.
-const FENCE_OPEN = /^\s*(`{3,})\s*([^`]*?)\s*$/;
-const FENCE_CLOSE = /^\s*(`{3,})\s*$/;
+// A line that is one inline code span holding the whole `! cmd`: the backticks mark where it ends.
+const SPAN = /^\s*`(! \S[^`]*)`\s*$/;
+// Any fence, of backticks or tildes, opens a code block; only one labelled for a shell is a suggestion.
+// A closing fence is the same character and at least as long as its opener, so a ````markdown block
+// can show a ```bash one without it counting. A backtick fence's label holds no backtick.
+const FENCE_OPEN = /^\s*(`{3,}(?=[^`]*$)|~{3,})\s*(.*?)\s*$/;
+const FENCE_CLOSE = /^\s*(`{3,}|~{3,})\s*$/;
 const SHELL = new Set(['bash', 'sh', 'shell', 'zsh']);
-/** @param {string} line @param {number} ticks */
-const closes = (line, ticks) => (FENCE_CLOSE.exec(line)?.[1]?.length ?? 0) >= ticks;
+/** @param {string} line @param {string} fence */
+const closes = (line, fence) => {
+    const close = FENCE_CLOSE.exec(line)?.[1] ?? '';
+    return close[0] === fence[0] && close.length >= fence.length;
+};
 
 /**
  * A fence's body as one command: common indent removed, trailing spaces and blank edge lines dropped.
@@ -32,31 +38,33 @@ function fenceCommand(body) {
 }
 
 /**
- * The last command Claude suggested in the reply text, or null: a line that is `! cmd` alone, or the
- * body of a closed fence labelled bash, sh, shell or zsh. A `!` inside a sentence is never offered:
- * nothing marks where its command ends. Lines inside any fence are code, never `! cmd` lines, and a
- * fence that never closes runs to the end of the reply.
+ * The last command Claude suggested in the reply text, or null: a line that is `! cmd` alone (bare,
+ * or as one inline code span), or the body of a closed fence labelled bash, sh, shell or zsh. A `!`
+ * inside a sentence is never offered: nothing marks where its command ends. Lines inside any fence
+ * are code, never `! cmd` lines, and a fence that never closes runs to the end of the reply.
  * @param {string} reply
  * @returns {Suggested | null}
  */
 export function findSuggested(reply) {
-    const lines = reply.replace(/\r/g, '').split('\n');
+    // Only CRLF endings: a lone \r stays in its line, so commandProblem refuses the command instead
+    // of it running as different text.
+    const lines = reply.replace(/\r\n/g, '\n').split('\n');
     /** @type {Suggested | null} */
     let found = null;
     for (let i = 0; i < lines.length; i += 1) {
         const line = lines[i] ?? '';
         const open = FENCE_OPEN.exec(line);
         if (open) {
-            const ticks = open[1]?.length ?? 3;
+            const fence = open[1] ?? '```';
             let close = i + 1;
-            while (close < lines.length && !closes(lines[close] ?? '', ticks)) close += 1;
+            while (close < lines.length && !closes(lines[close] ?? '', fence)) close += 1;
             if (close >= lines.length) break; // never closed (or cut at the hook's cap)
             const command = SHELL.has(open[2] ?? '') ? fenceCommand(lines.slice(i + 1, close)) : '';
             if (command.trim()) found = { kind: 'fence', command };
             i = close;
             continue;
         }
-        const command = BANG.exec(line)?.[1]?.trim();
+        const command = BANG.exec(SPAN.exec(line)?.[1] ?? line)?.[1]?.trim();
         if (command) found = { kind: 'bang', command };
     }
     return found;
@@ -102,6 +110,30 @@ export function promptReady(screen) {
     const above = rules.at(-2);
     if (below === undefined || above !== below - 2 || !PROMPT_EMPTY.test(lines[below - 1] ?? '')) return false;
     return !lines.slice(below + 1).some(line => MENU.test(line));
+}
+
+/** @param {string} text */
+const collapse = text => text.replace(/\s+/g, ' ').trim();
+const PROMPT_GLYPH = /^[>❯!]\s*/;
+
+/**
+ * True when the screen ends with Claude Code's input box holding exactly `command` as typed with
+ * `! ` before it, and no menu below it: what must still show before Enter goes to the box. Lenient
+ * about the drawing: the box's lines are trimmed and joined (a long command wraps inside it),
+ * whitespace runs count as one space, and the prompt glyph (`>`, `❯`, or `!` in Claude's bash mode)
+ * may or may not be followed by the typed `!`.
+ * @param {string} screen @param {string} command
+ */
+export function typedReady(screen, command) {
+    const lines = screen.replace(/\r/g, '').split('\n');
+    const rules = lines.flatMap((line, index) => (BOX_RULE.test(line) ? [index] : []));
+    const below = rules.at(-1);
+    const above = rules.at(-2);
+    if (below === undefined || above === undefined) return false;
+    if (lines.slice(below + 1).some(line => MENU.test(line))) return false;
+    const typed = collapse(lines.slice(above + 1, below).join(' ')).replace(PROMPT_GLYPH, '');
+    const want = collapse(command);
+    return typed === want || typed.replace(/^!\s*/, '') === want;
 }
 
 /**

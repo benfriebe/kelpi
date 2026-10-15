@@ -12,15 +12,17 @@ When Claude finishes a reply, its Stop hook hands Kelpi the reply's exact text. 
 per pane, the last suggestion in that reply:
 
 - a line that starts with `! ` and a command (`! gh auth status`), which is how Claude asks you to
-  run something in its own session, or
-- a code block labelled `bash`, `sh`, `shell` or `zsh`, whose lines are the command.
+  run something in its own session, alone on its line or as one inline code span
+  (`` `! gh auth status` ``), or
+- a code block, fenced with backticks or tildes, labelled `bash`, `sh`, `shell` or `zsh`, whose
+  lines are the command.
 
 Whichever comes last in the reply wins. A reply with no suggestion clears the pane's entry, and so
-does the end of its Claude session. Running a suggestion does not clear it; Claude's next reply
-replaces it.
+does the start or end of a Claude session in the pane. Running a suggestion does not clear it;
+Claude's next reply replaces it.
 
 Press **Ctrl+Alt+R** in the pane, or click **Run suggested** in its header, and a dialog shows the
-command exactly as it will be typed, with where it will run:
+command exactly as it will run, with where it will run:
 
 - **Run in this Claude session** types `! <command>` into Claude's input box and presses Enter, so
   Claude runs it and sees the output. It is offered only for a one-line `!` suggestion, when the
@@ -32,10 +34,12 @@ command exactly as it will be typed, with where it will run:
 
 Typing into the session is guarded. Once you choose, the plugin reads the screen again and checks
 that Claude still waits at an empty prompt. It types `! <command>` only if the screen is still the
-one it just read, then reads again and presses Enter only if the screen is still the one showing
-what it typed. When either check fails, it sends nothing more and says so in a notification
-("the screen changed, nothing was sent"); if the change came after typing, the command sits in
-Claude's input box, unrun, and the notification says that too. It never retries.
+one it just read. It then reads again and presses Enter only if Claude's input box shows exactly
+what it typed, with no menu below it, and the screen has not moved since that read. When a check
+fails before typing, it sends nothing and says so in a notification ("the screen changed, nothing
+was sent"). When one fails after typing, the command sits in Claude's input box, unrun, and the
+notification says so ("the screen changed before Enter; the command is typed in Claude's box, not
+run"). It never retries.
 
 ## Install
 
@@ -61,7 +65,9 @@ acts on the focused pane. The header item acts on its own pane.
 The **Run suggested** header item shows on a pane with an agent while the plugin remembers a
 suggestion for any pane. Item conditions have no per-pane plugin facts, so `hasSuggestion` is
 plugin-wide: the chip can show on a Claude pane that has no suggestion of its own. Clicking it
-there says "Claude has not suggested a command in this pane" and does nothing else.
+there says "Claude has not suggested a command in this pane" and does nothing else. The plugin
+notices a closed pane only when the command or the verb next runs, so after the suggesting pane
+closes the chip can stay lit until then.
 
 ## The CLI verb
 
@@ -85,7 +91,7 @@ character it will not type, the screen changed, or the run failed; 2 for a usage
 
 ## Limits
 
-- Only labelled `bash`, `sh`, `shell` and `zsh` code blocks count. An unlabelled block is as
+- Only `bash`, `sh`, `shell` and `zsh` code blocks count. An unlabelled block is as
   often a file or some output as a command, so it is never offered.
 - Only a one-line `!` suggestion runs in the session. A multi-line command, or one ending in `\`,
   runs in a new split, since Enter in Claude's box would start a new line.
@@ -93,7 +99,7 @@ character it will not type, the screen changed, or the run failed; 2 for a usage
   starts with `! ` is a suggestion.
 - A command holding a control character, a tab, an invisible format character, a combining mark
   or any space other than a plain one is refused rather than typed.
-- The hook caps a reply at 64 KiB, cutting its end, so a suggestion past the cap is missed.
+- The hook caps a reply at 64 KiB, cutting its end, so a reply over 64 KiB offers nothing.
 - A CLI run cannot show the dialog, so it only prints unless you pass `--yes`.
 - The screen guard refuses instead of retrying: press the shortcut again once the pane is quiet.
 

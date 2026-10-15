@@ -124,7 +124,28 @@ describe('neverAutoApprove', () => {
         ['kelpi_test plugin install ./evil --trust', 'kelpi plugin'],
         ['node packages/cli/dist/kelpi.js plugin install ./evil --trust', 'kelpi plugin'],
         ['rm --rec x', 'rm -r'],
-        ['chmod --rec 777 .', 'chmod or chown -R']
+        ['chmod --rec 777 .', 'chmod or chown -R'],
+        // A substitution after a separator inside a word, or after prefixes that span words.
+        ['x;$(echo rm) -rf y', 'command substitution as the command word'],
+        ['x;A=1 B=2 `echo rm` -rf y', 'command substitution as the command word'],
+        ['x; then $(echo rm) -rf y', 'command substitution as the command word'],
+        // `env -S` runs its attached string as a command line.
+        ["env -S'rm -rf x'", 'env -S'],
+        ['env -S"git push --force"', 'env -S'],
+        ["env --split-string='rm -rf x'", 'env -S'],
+        ["env -iS'sh -c x'", 'env -S'],
+        ['kelpi --json plugin list', 'kelpi plugin'],
+        ['kelpi --flag value plugin install ./evil', 'kelpi plugin'],
+        // The S3 verb after options, and the bucket and website writes.
+        ['aws s3 --region x cp ./f s3://b/k', 'aws write'],
+        ['aws s3 mb s3://new', 'aws write'],
+        ['aws s3 website s3://b --index-document i.html', 'aws write'],
+        ['doas rm x', 'sudo'],
+        ['cat x | doas sh', 'sudo'],
+        ['pkexec id', 'sudo'],
+        ['kubectl debug pod/x', 'kubectl write'],
+        ['kubectl attach pod/x', 'kubectl write'],
+        ['kubectl port-forward svc/x 8080:80', 'kubectl write']
     ])('refuses %s', (command, rule) => {
         expect(neverAutoApprove(command)).toBe(rule);
     });
@@ -141,7 +162,9 @@ describe('neverAutoApprove', () => {
         'aws s3 cp s3://bucket/key ./local', 'aws s3 sync s3://bucket ./dir', 'aws s3 ls', 'aws s3 ls s3://bucket',
         'kubectl get pods', 'kubectl describe pod x', 'kubectl logs x', 'helm list',
         'echo $(date)', 'cd $(git rev-parse --show-toplevel)', 'x=$(date) && echo $x', 'git log $(git merge-base main HEAD)..HEAD', 'echo "$(date)" > out.txt',
-        'kelpi pane list', 'kelpi workspace list', 'chmod --reference=a b'
+        'kelpi pane list', 'kelpi workspace list', 'chmod --reference=a b',
+        // `plugin` is only the kelpi verb in the verb's place.
+        'kelpi pane send worker "review the plugin please"', 'env FOO=1 npm test', 'aws s3 --region x ls'
     ])(
         'lets %s through',
         (command) => {
@@ -169,6 +192,18 @@ describe('judgeCommand', () => {
         expect(judgeCommand('mv a b\rrm -rf ~')).toEqual({ allow: false, reason: 'multi-line command' });
         expect(judgeCommand('mv a.txt b.txt\n')).toEqual({ allow: false, reason: 'multi-line command' });
         expect(judgeCommand('ls -la\r\n')).toEqual({ allow: false, reason: 'multi-line command' });
+    });
+
+    // The daemon waits 2 seconds for an answer. A rule that read the whole text once per segment
+    // took 38 seconds on this command, and a long ordinary command missed the deadline.
+    it('judges a long command in linear time', () => {
+        let start = performance.now();
+        expect(judgeCommand("';a='".repeat(2000))).toEqual({ allow: true });
+        expect(performance.now() - start).toBeLessThan(1000);
+        const fields = Array.from({ length: 400 }, (_, i) => `p${i}=v${i}&param${i}=value${i}`).join('&');
+        start = performance.now();
+        expect(judgeCommand(`curl -s -X POST -d '${fields}' https://example.com/api`)).toEqual({ allow: true });
+        expect(performance.now() - start).toBeLessThan(1000);
     });
 
     it('refuses anything that is not a command', () => {

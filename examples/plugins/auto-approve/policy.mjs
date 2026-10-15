@@ -108,7 +108,15 @@ const kelpiPlugin = (tokens) =>
         if (!KELPI.has(base(x))) return false;
         for (let j = i + 1; j < tokens.length; j++) {
             const word = tokens[j] ?? '';
-            if (word === 'plugin') return true;
+            // The next kelpi token reads its own words, so each word is read once.
+            if (KELPI.has(base(word))) return false;
+            // A verb only known when the shell runs: `kelpi $(echo plugin)`, `kelpi $V`.
+            if (word === 'plugin' || word.includes('$')) return true;
+            // The shell drops redirections before kelpi sees its words: `kelpi 2>/dev/null plugin`.
+            if (REDIRECTION.test(word)) {
+                if (BARE_REDIRECTION.test(word)) j++;
+                continue;
+            }
             if (!word.startsWith('-') && !(tokens[j - 1] ?? '').startsWith('-')) return false;
         }
         return false;
@@ -157,7 +165,8 @@ export const NEVER_AUTO_APPROVE = [
         }
     },
     // `env -S'rm -rf x'` runs its attached string as a command line, which reads `-Srm` once the quotes go.
-    { name: 'env -S', test: (t) => after(t, 'env')?.some((f) => /^-[A-Za-z0-9]*S/.test(f) || f.startsWith('--split-string')) ?? false },
+    // GNU env takes any unique prefix of a long option too: `--s` is `--split-string`.
+    { name: 'env -S', test: (t) => after(t, 'env')?.some((f) => /^-[A-Za-z0-9]*S/.test(f) || /^--s/.test(f)) ?? false },
     // Auto-approve must not be able to extend or restart itself, by the CLI or a raw socket write.
     { name: 'auto-approve itself', whole: true, test: (_t, all) => /auto-?approve/i.test(all.replace(/["'\\]/g, '')) },
     // Nor hand the decision to another provider, which would outlast the window and survive `off`.

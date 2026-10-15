@@ -134,8 +134,20 @@ describe('neverAutoApprove', () => {
         ['env -S"git push --force"', 'env -S'],
         ["env --split-string='rm -rf x'", 'env -S'],
         ["env -iS'sh -c x'", 'env -S'],
+        ["env --sp='rm -rf x'", 'env -S'],
+        ["env --s='rm -rf x'", 'env -S'],
         ['kelpi --json plugin list', 'kelpi plugin'],
         ['kelpi --flag value plugin install ./evil', 'kelpi plugin'],
+        // The shell drops a redirection before kelpi reads its verb, and a substitution there may be `plugin`.
+        ['kelpi 2>/dev/null plugin install x', 'kelpi plugin'],
+        ['kelpi >out plugin install x', 'kelpi plugin'],
+        ['kelpi > out plugin install x', 'kelpi plugin'],
+        ['kelpi < /dev/null plugin install x', 'kelpi plugin'],
+        ['kelpi 0<x plugin install x', 'kelpi plugin'],
+        ['kelpi $(echo plugin) install ./evil', 'kelpi plugin'],
+        ['kelpi "$(echo plugin)" install ./evil', 'kelpi plugin'],
+        ['kelpi `echo plugin` install ./evil', 'kelpi plugin'],
+        ['kelpi $P install', 'kelpi plugin'],
         // The S3 verb after options, and the bucket and website writes.
         ['aws s3 --region x cp ./f s3://b/k', 'aws write'],
         ['aws s3 mb s3://new', 'aws write'],
@@ -164,7 +176,8 @@ describe('neverAutoApprove', () => {
         'echo $(date)', 'cd $(git rev-parse --show-toplevel)', 'x=$(date) && echo $x', 'git log $(git merge-base main HEAD)..HEAD', 'echo "$(date)" > out.txt',
         'kelpi pane list', 'kelpi workspace list', 'chmod --reference=a b',
         // `plugin` is only the kelpi verb in the verb's place.
-        'kelpi pane send worker "review the plugin please"', 'env FOO=1 npm test', 'aws s3 --region x ls'
+        'kelpi pane send worker "review the plugin please"', 'env FOO=1 npm test', 'aws s3 --region x ls',
+        'kelpi pane send w plugin', 'kelpi 2>/dev/null pane list', 'kelpi pane list 2>/dev/null', 'kelpi pane send w "$MSG"', 'kelpi workspace list --json'
     ])(
         'lets %s through',
         (command) => {
@@ -203,6 +216,9 @@ describe('judgeCommand', () => {
         const fields = Array.from({ length: 400 }, (_, i) => `p${i}=v${i}&param${i}=value${i}`).join('&');
         start = performance.now();
         expect(judgeCommand(`curl -s -X POST -d '${fields}' https://example.com/api`)).toEqual({ allow: true });
+        expect(performance.now() - start).toBeLessThan(1000);
+        start = performance.now();
+        expect(judgeCommand('kelpi -x '.repeat(20000))).toEqual({ allow: true });
         expect(performance.now() - start).toBeLessThan(1000);
     });
 

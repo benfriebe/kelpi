@@ -716,8 +716,22 @@ export function buildDropZones(
     return { zones, tailIndex: topAfterRemoval.length, contentBottom: y };
 }
 
+export interface ResolveDropOptions {
+    /**
+     * §2.9 / §5.5: the pointer is in the auto-scroll band and the list can still scroll that
+     * way, so rows slide under a still cursor and a middle third would flicker slot / nest /
+     * slot with every row that passes. While set, a nestable row's middle third resolves to
+     * the nearer slot instead of `ontoWorkspace`. Every other target is unchanged.
+     */
+    readonly suspendNesting?: boolean | undefined;
+}
+
 /** Cursor-y → drop target, per §5.5's half-height rules. */
-export function resolveDropTarget(layout: DropZoneLayout, y: number): DropTarget | null {
+export function resolveDropTarget(
+    layout: DropZoneLayout,
+    y: number,
+    options: ResolveDropOptions = {}
+): DropTarget | null {
     for (const zone of layout.zones) {
         if (y < zone.yTop || y >= zone.yBottom) continue;
         const topHalf = y < (zone.yTop + zone.yBottom) / 2;
@@ -742,7 +756,13 @@ export function resolveDropTarget(layout: DropZoneLayout, y: number): DropTarget
                     ? { kind: 'topLevel', index: kind.postRemoveTopIndex }
                     : { kind: 'intoGroup', groupID: kind.groupID, index: kind.postRemoveChildIndex };
             if (y < zone.yTop + third) return before;
-            if (y < zone.yBottom - third) return { kind: 'ontoWorkspace', parentID: nest.parentID };
+            if (y < zone.yBottom - third) {
+                if (options.suspendNesting !== true) return { kind: 'ontoWorkspace', parentID: nest.parentID };
+                // §5.5: nesting suspended while the list auto-scrolls, so the middle third
+                // splits at the row's midpoint: its upper half is the slot before, its lower
+                // half whatever the bottom third gives.
+                if (topHalf) return before;
+            }
             if (nest.expanded) return { kind: 'intoParent', parentID: nest.parentID, index: 0 };
             return kind.kind === 'topLevelWorkspace'
                 ? { kind: 'topLevel', index: kind.postRemoveTopIndex + 1 }

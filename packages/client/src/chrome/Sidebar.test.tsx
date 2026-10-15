@@ -922,6 +922,127 @@ describe('drag & drop', () => {
     });
 });
 
+describe('drag auto-scroll (§5.5)', () => {
+    /**
+     * Ten top-level rows of 20px under the 4px content padding (4..204) in a faked 100px
+     * viewport, so the list scrolls 104px and the bottom band is client y 60..100. jsdom lays
+     * nothing out, so the zones come from `rowHeight` and the cursor's content y is
+     * `clientY + scrollTop`. Every row may be nested onto: the host wires `onNestWorkspaces` and
+     * the dragged row has no children.
+     */
+    const ids = Array.from({ length: 10 }, (_, index) => `bbbbbbbb-0000-4000-8000-0000000000${String(index + 10)}`);
+    const many = (): ChromeSidebarEntry[] =>
+        ids.map((id, index) => ({ kind: 'workspace', workspace: workspace(id, `w${String(index + 1)}`) }));
+
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
+    function mount(contentHeight: number): {
+        list: HTMLElement;
+        onMoveWorkspace: ReturnType<typeof vi.fn>;
+        onNestWorkspaces: ReturnType<typeof vi.fn>;
+    } {
+        vi.useFakeTimers();
+        const onMoveWorkspace = vi.fn();
+        const onNestWorkspaces = vi.fn();
+        render(
+            <Sidebar
+                {...noopProps()}
+                activeWorkspaceID={ids[0] as string}
+                entries={many()}
+                onMoveWorkspace={onMoveWorkspace}
+                onNestWorkspaces={onNestWorkspaces}
+            />
+        );
+        const list = screen.getByTestId('sidebar').querySelector<HTMLElement>('[role="listbox"]');
+        if (list === null) throw new Error('no list');
+        const viewport = 100;
+        let scrollTop = 0;
+        Object.defineProperty(list, 'getBoundingClientRect', {
+            configurable: true,
+            value: () => ({ top: 0, bottom: viewport, height: viewport, left: 0, right: 240, width: 240, x: 0, y: 0 })
+        });
+        Object.defineProperty(list, 'clientHeight', { configurable: true, get: () => viewport });
+        Object.defineProperty(list, 'scrollHeight', { configurable: true, get: () => contentHeight });
+        Object.defineProperty(list, 'scrollTop', {
+            configurable: true,
+            get: () => scrollTop,
+            set: (value: number) => {
+                scrollTop = Math.min(Math.max(0, value), Math.max(0, contentHeight - viewport));
+            }
+        });
+        return { list, onMoveWorkspace, onNestWorkspaces };
+    }
+
+    function tick(): void {
+        act(() => {
+            vi.advanceTimersByTime(15);
+        });
+    }
+
+    function nestPreviews(): string[] {
+        return screen
+            .getAllByTestId('workspace-row')
+            .filter((element) => element.dataset['dropPreview'] === 'true')
+            .map((element) => element.dataset['workspaceId'] ?? '');
+    }
+
+    it('never nests while the list scrolls under a still pointer, and the release moves', () => {
+        const { list, onMoveWorkspace, onNestWorkspaces } = mount(204);
+        fireEvent.mouseDown(screen.getAllByTestId('workspace-row')[0] as HTMLElement, { clientY: 10 });
+        fireEvent.mouseMove(window, { clientY: 70 });
+        const seen = new Set<string>();
+        for (let index = 0; index < 25; index += 1) {
+            expect(list.dataset['dragTarget']).not.toMatch(/^ontoWorkspace/);
+            expect(nestPreviews()).toEqual([]);
+            seen.add(list.dataset['dragTarget'] ?? '');
+            tick();
+        }
+        // The sweep really scrolled, through several rows' middle thirds.
+        expect(list.scrollTop).toBe(75);
+        expect(seen.size).toBeGreaterThan(3);
+        fireEvent.mouseUp(window);
+        expect(onNestWorkspaces).not.toHaveBeenCalled();
+        expect(onMoveWorkspace).toHaveBeenCalledTimes(1);
+    });
+
+    it('nests again once the list hits its end, without another pointer move', () => {
+        const { list, onMoveWorkspace, onNestWorkspaces } = mount(204);
+        fireEvent.mouseDown(screen.getAllByTestId('workspace-row')[0] as HTMLElement, { clientY: 10 });
+        fireEvent.mouseMove(window, { clientY: 70 });
+        for (let index = 0; index < 60; index += 1) tick();
+        expect(list.scrollTop).toBe(104);
+        // Content y 174 is the middle of the row in slot 8 (164..184): w9, the dragged w1 now
+        // sitting just above it.
+        expect(list.dataset['dragY']).toBe('174');
+        expect(list.dataset['dragTarget']).toBe(`ontoWorkspace:${ids[8] as string}`);
+        expect(nestPreviews()).toEqual([ids[8]]);
+        fireEvent.mouseUp(window);
+        expect(onMoveWorkspace).not.toHaveBeenCalled();
+        expect(onNestWorkspaces).toHaveBeenCalledWith({ workspaceIDs: [ids[0]], parentID: ids[8], index: 0 });
+    });
+
+    it('nests as before outside the band, or in a band the list cannot scroll toward', () => {
+        for (const contentHeight of [204, 100]) {
+            const { list, onNestWorkspaces } = mount(contentHeight);
+            fireEvent.mouseDown(screen.getAllByTestId('workspace-row')[0] as HTMLElement, { clientY: 10 });
+            // Clear of both bands: w3's middle third (44..64).
+            fireEvent.mouseMove(window, { clientY: 54 });
+            expect(list.dataset['dragTarget']).toBe(`ontoWorkspace:${ids[2] as string}`);
+            // The top band at scrollTop 0: nothing to scroll toward, so w2's middle still nests.
+            fireEvent.mouseMove(window, { clientY: 34 });
+            expect(list.dataset['dragTarget']).toBe(`ontoWorkspace:${ids[1] as string}`);
+            tick();
+            expect(list.scrollTop).toBe(0);
+            fireEvent.mouseUp(window);
+            expect(onNestWorkspaces).toHaveBeenCalledWith({ workspaceIDs: [ids[0]], parentID: ids[1], index: 0 });
+            cleanup();
+            vi.useRealTimers();
+        }
+    });
+});
+
 describe('filter field', () => {
     it('renders a flat list with the group caption and no ⌘N badges', () => {
         render(<Sidebar {...noopProps()} entries={entries()} filter="ta" />);

@@ -176,15 +176,21 @@ describe('spring-loaded groups', () => {
 // ── drag auto-scroll (§5.5) ─────────────────────────────────────────────────────────
 
 describe('drag auto-scroll', () => {
-    /** jsdom has no layout, so the scroll container gets a measurable box and a real scrollTop. */
-    function scrollableList(): { top: number; get scrollTop(): number } {
+    /**
+     * jsdom has no layout, so the scroll container gets a measurable box and a real scrollTop:
+     * a 100px viewport over 300px of content, clamped the way a browser clamps it. The band only
+     * scrolls a list that can still move that way, so a test scrolling up starts part way down.
+     */
+    function scrollableList(initialScrollTop = 0): { top: number; get scrollTop(): number } {
         const list = screen.getByRole('listbox');
-        let scrollTop = 0;
+        let scrollTop = initialScrollTop;
+        Object.defineProperty(list, 'clientHeight', { configurable: true, value: 100 });
+        Object.defineProperty(list, 'scrollHeight', { configurable: true, value: 300 });
         Object.defineProperty(list, 'scrollTop', {
             configurable: true,
             get: () => scrollTop,
             set: (value: number) => {
-                scrollTop = value;
+                scrollTop = Math.min(Math.max(0, value), 200);
             }
         });
         list.getBoundingClientRect = () =>
@@ -228,14 +234,14 @@ describe('drag auto-scroll', () => {
     it('scrolls up in the top edge zone and stops when the drag ends', () => {
         vi.useFakeTimers();
         render(<Sidebar {...baseProps()} entries={entries()} autoScrollIntervalMs={15} />);
-        const list = scrollableList();
+        const list = scrollableList(30);
 
         fireEvent.mouseDown(rowFor(W4), { clientY: 60 });
         fireEvent.mouseMove(window, { clientY: 10 });
         act(() => {
             vi.advanceTimersByTime(30);
         });
-        expect(list.scrollTop).toBe(-6);
+        expect(list.scrollTop).toBe(24);
 
         fireEvent.mouseUp(window);
         const settled = list.scrollTop;

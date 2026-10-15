@@ -562,6 +562,80 @@ describe('nested workspaces: drag and drop', () => {
         expect(resolveDropTarget(layout, 165)).toEqual({ kind: 'ontoWorkspace', parentID: W(2) });
     });
 
+    it('with nesting suspended (auto-scroll, §5.5), a middle third resolves to the nearer slot', () => {
+        const suspended = { suspendNesting: true };
+        // Expanded parents: alpha (top level) at y 0..30, beta (a group member) at y 150..180.
+        const expanded = buildDropZones(orderModelFromEntries(entries()), renderedRows(entries()), {
+            rowHeight: 30,
+            contentTop: 0,
+            dragging: new Set([W(4)]),
+            nestable: true
+        });
+        expect(resolveDropTarget(expanded, 12)).toEqual({ kind: 'ontoWorkspace', parentID: W(1) });
+        expect(resolveDropTarget(expanded, 12, suspended)).toEqual({ kind: 'topLevel', index: 0 });
+        expect(resolveDropTarget(expanded, 18, suspended)).toEqual({ kind: 'intoParent', parentID: W(1), index: 0 });
+        expect(resolveDropTarget(expanded, 162)).toEqual({ kind: 'ontoWorkspace', parentID: W(2) });
+        expect(resolveDropTarget(expanded, 162, suspended)).toEqual({ kind: 'intoGroup', groupID: G1, index: 0 });
+        expect(resolveDropTarget(expanded, 168, suspended)).toEqual({ kind: 'intoParent', parentID: W(2), index: 0 });
+
+        // Collapsed parents: alpha at y 0..30, then delta (dragged), the header, beta at 90..120.
+        const state = nestedState({ alphaCollapsed: true, betaCollapsed: true });
+        const collapsed = buildDropZones(orderModelFromEntries(entriesFor(state)), renderedRows(entriesFor(state)), {
+            rowHeight: 30,
+            contentTop: 0,
+            dragging: new Set([W(4)]),
+            nestable: true
+        });
+        expect(resolveDropTarget(collapsed, 18)).toEqual({ kind: 'ontoWorkspace', parentID: W(1) });
+        expect(resolveDropTarget(collapsed, 12, suspended)).toEqual({ kind: 'topLevel', index: 0 });
+        expect(resolveDropTarget(collapsed, 18, suspended)).toEqual({ kind: 'topLevel', index: 1 });
+        expect(resolveDropTarget(collapsed, 108)).toEqual({ kind: 'ontoWorkspace', parentID: W(2) });
+        expect(resolveDropTarget(collapsed, 102, suspended)).toEqual({ kind: 'intoGroup', groupID: G1, index: 0 });
+        expect(resolveDropTarget(collapsed, 108, suspended)).toEqual({ kind: 'intoGroup', groupID: G1, index: 1 });
+    });
+
+    it('suspending nesting changes only the ontoWorkspace band: every other zone resolves the same', () => {
+        const expandedEntries = entries();
+        const collapsedEntries = entriesFor(nestedState({ alphaCollapsed: true, betaCollapsed: true }));
+        const layouts = [
+            ...[expandedEntries, collapsedEntries].map((list) =>
+                buildDropZones(orderModelFromEntries(list), renderedRows(list), {
+                    rowHeight: 30,
+                    contentTop: 0,
+                    dragging: new Set([W(4)]),
+                    nestable: true
+                })
+            ),
+            // A non-nestable drag (no nest bands at all) and a nested row's own drag.
+            buildDropZones(orderModelFromEntries(expandedEntries), renderedRows(expandedEntries), {
+                rowHeight: 30,
+                contentTop: 0,
+                dragging: new Set([W(4)])
+            }),
+            buildDropZones(orderModelFromEntries(expandedEntries), renderedRows(expandedEntries), {
+                rowHeight: 30,
+                contentTop: 0,
+                dragging: new Set([W(6)]),
+                nestable: true
+            })
+        ];
+        let nestBands = 0;
+        for (const layout of layouts) {
+            for (let y = -10; y <= 240; y += 0.5) {
+                const plain = resolveDropTarget(layout, y);
+                const suspended = resolveDropTarget(layout, y, { suspendNesting: true });
+                expect(suspended?.kind).not.toBe('ontoWorkspace');
+                if (plain?.kind === 'ontoWorkspace') {
+                    nestBands += 1;
+                    continue;
+                }
+                expect(suspended).toEqual(plain);
+            }
+        }
+        // The sweep really crossed middle thirds (and so the slot, header and nested zones too).
+        expect(nestBands).toBeGreaterThan(0);
+    });
+
     it('a non-nestable drag keeps two halves and treats nested rows as after the parent block', () => {
         const rows = renderedRows(entries());
         const model = orderModelFromEntries(entries());

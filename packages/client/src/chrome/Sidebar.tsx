@@ -3145,7 +3145,9 @@ export function Sidebar(props: SidebarProps): ReactElement {
                     props.onNestWorkspaces !== undefined &&
                     drag.ids.every((id) => (nestedByParentRef.current.get(id)?.length ?? 0) === 0)
             });
-            const target = resolveDropTarget(layout, y);
+            // §5.5: no nesting while the pointer would auto-scroll the list, judged by the same
+            // test the timer steps by, so the move that enters the band never flashes a nest.
+            const target = resolveDropTarget(layout, y, { suspendNesting: autoScrollDelta(drag.clientY) !== 0 });
             diagnose(drag, target === null ? null : describeTarget(target));
             updateSpring(drag, target);
             /*
@@ -3215,13 +3217,21 @@ export function Sidebar(props: SidebarProps): ReactElement {
             clearInterval(autoScrollTimer);
             autoScrollTimer = null;
         };
+        /**
+         * The one "would this pointer auto-scroll the list?" test: the timer steps by it and
+         * `resolve` suspends nesting while it is non-zero, so the two cannot disagree. The edge
+         * band only counts while the list can still scroll that way; at an end it is 0, and the
+         * thirds apply again. The 1px allows for a fractional `scrollTop` stopping just short.
+         */
         const autoScrollDelta = (clientY: number): number => {
             const list = listRef.current;
             if (list === null) return 0;
             const rect = list.getBoundingClientRect();
             if (rect.height <= 0) return 0;
-            if (clientY < rect.top + AUTO_SCROLL_EDGE_PX) return -AUTO_SCROLL_STEP_PX;
-            if (clientY > rect.bottom - AUTO_SCROLL_EDGE_PX) return AUTO_SCROLL_STEP_PX;
+            if (clientY < rect.top + AUTO_SCROLL_EDGE_PX) return list.scrollTop > 0 ? -AUTO_SCROLL_STEP_PX : 0;
+            if (clientY > rect.bottom - AUTO_SCROLL_EDGE_PX) {
+                return list.scrollTop + list.clientHeight < list.scrollHeight - 1 ? AUTO_SCROLL_STEP_PX : 0;
+            }
             return 0;
         };
         const syncAutoScroll = (drag: DragState): void => {
@@ -3239,16 +3249,14 @@ export function Sidebar(props: SidebarProps): ReactElement {
                     return;
                 }
                 const step = autoScrollDelta(live.clientY);
-                if (step === 0) {
-                    stopAutoScroll();
-                    return;
-                }
                 const before = list.scrollTop;
-                list.scrollTop = before + step;
+                if (step !== 0) list.scrollTop = before + step;
                 if (list.scrollTop === before) {
-                    // Hit an end: nothing more to scroll, so stop burning a timer on it.
+                    // Hit an end: nothing more to scroll, so stop burning a timer on it. Resolve
+                    // once more on the way out, so a still pointer is left with what the stopped
+                    // list gives (its thirds again) without a mouse move: a slot left showing
+                    // while the resolver would already nest would misdescribe the release.
                     stopAutoScroll();
-                    return;
                 }
                 resolve(live);
             }, autoScrollIntervalMs);

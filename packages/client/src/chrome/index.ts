@@ -254,6 +254,7 @@ export {
     type GroupSpan,
     type GroupSpanLayout,
     type RenderedRow,
+    type ResolveDropOptions,
     type SidebarOrderModel,
     type SidebarSlot,
     type WorkspaceLocation

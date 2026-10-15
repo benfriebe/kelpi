@@ -126,6 +126,17 @@ describe('auto-approve example backend', () => {
         ].join('\n'));
     });
 
+    it('leaves a command Claude would run outside its sandbox, whatever the command', async () => {
+        const app = await start();
+        await app.cli('on');
+        expect(app.decide({ toolName: 'Bash', toolInput: { command: 'mv a b', dangerouslyDisableSandbox: true } })).toEqual({ behavior: 'abstain' });
+        expect(app.decide({ toolName: 'Bash', toolInput: { command: 'mv a b', dangerouslyDisableSandbox: false } })).toEqual({ behavior: 'allow' });
+        expect((await app.cli('status')).text).toBe([
+            `Auto-approve is on until ${until(at(9, 10))}. 1 approved, 1 left for you.`,
+            '  pane-1: sandbox disabled: mv a b',
+        ].join('\n'));
+    });
+
     it('abstains on every tool but Claude\'s Bash, even while on, and does not count them as left', async () => {
         const app = await start();
         await app.cli('on');

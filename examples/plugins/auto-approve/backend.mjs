@@ -162,7 +162,13 @@ export function activate(api) {
             if (!isOn()) return { behavior: 'abstain' };
             if (args.agent !== 'claude' || args.toolName !== 'Bash') return { behavior: 'abstain' };
             const input = args.toolInput;
-            const command = input !== null && typeof input === 'object' && !Array.isArray(input) ? input['command'] : undefined;
+            const fields = input !== null && typeof input === 'object' && !Array.isArray(input) ? input : undefined;
+            const command = fields?.['command'];
+            // Claude asks before running a command outside its sandbox: that prompt is the user's, whatever the command.
+            if (fields?.['dangerouslyDisableSandbox']) {
+                leave(args.paneID, args.workspaceID, 'sandbox disabled', command);
+                return { behavior: 'abstain' };
+            }
             const judgement = judgeCommand(command);
             if (judgement.allow) {
                 approved += 1;

@@ -13,14 +13,16 @@
 
 /** @typedef {{ allow: true } | { allow: false, reason: string }} Judgement */
 
-const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'fish']);
+/** Longer than this is left for the user unread, so judging stays well inside the daemon's 2 second deadline. */
+const MAX_COMMAND = 16_384;
+const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'fish', 'csh', 'tcsh']);
 const INTERPRETERS = /^(?:python[0-9.]*|node|nodejs|perl|ruby|php|deno|bun)$/;
-const AWS_WRITE = /^(?:delete|put|create|update|terminate|modify|remove)-/;
+const AWS_WRITE = /^(?:(?:delete|put|create|update|terminate|modify|remove|stop|start|reboot|send|run|invoke|execute|attach|detach|associate|disassociate|restore|reset)-|(?:invoke|deploy)$)/;
 const S3_URL = /^s3:\/\//i;
 const S3_VERBS = /^(?:cp|mv|sync|rm|rb|mb|website)$/;
-const WRAPPERS = new Set(['command', 'exec', 'env', 'nohup', 'time', 'builtin', 'nice', 'stdbuf', 'timeout']);
+const WRAPPERS = new Set(['command', 'exec', 'env', 'nohup', 'time', 'builtin', 'nice', 'stdbuf', 'timeout', 'caffeinate']);
 /** Words that come before a command without being it: `then $R -rf x`. */
-const KEYWORDS = new Set(['!', 'if', 'then', 'else', 'elif', 'do', 'while', 'until']);
+const KEYWORDS = new Set(['!', 'if', 'then', 'else', 'elif', 'do', 'while', 'until', 'coproc']);
 /** A wrapper's options that take the next word as their value: `env -u NAME`, `exec -a NAME`, `time -o FILE`. */
 const WRAPPER_VALUES = new Map([
     ['env', /^-[A-Za-z0-9]*[uCP]$|^--(?:unset|chdir)$/],
@@ -28,14 +30,35 @@ const WRAPPER_VALUES = new Map([
     ['time', /^-[A-Za-z]*[fo]$|^--(?:format|output)$/],
     ['nice', /^-[A-Za-z]*n$|^--adjustment$/],
     ['stdbuf', /^-[A-Za-z]*[ioe]$|^--(?:input|output|error)$/],
-    ['timeout', /^-[A-Za-z]*[sk]$|^--(?:signal|kill-after)$/]
+    ['timeout', /^-[A-Za-z]*[sk]$|^--(?:signal|kill-after)$/],
+    ['caffeinate', /^-[A-Za-z]*[tw]$/]
 ]);
 /** `2>/dev/null`, `</dev/null`, `>out`, `2>1` (how `2>&1` reads whole); a bare `>` or `2>` takes the next word as its target. */
 const REDIRECTION = /^(?:[0-9]*|&)[<>]/;
 const BARE_REDIRECTION = /^(?:[0-9]*|&)[<>][<>&|-]*$/;
-/** `node -p` evaluates and prints its argument. */
-const PRINTERS = /^(?:node|nodejs|bun)$/;
-const KELPI = new Set(['kelpi', 'kelpi_test', 'kelpi.js']);
+/**
+ * A redirection operator glued to the word before it (`kelpi>/dev/null`, `cat<in`, `a&>b`), but not
+ * a file descriptor's own digits (`2>&1`): the operator is spaced off, its target stays attached.
+ */
+const GLUED = /(?=&?[<>])(?<=[^\s<>&])(?<!(?:^|[\s;&|()])[0-9]+)&?(?:<<<|<<-?|<>|>>|>\||[<>])/g;
+const KELPI = new Set(['kelpi', 'kelpi_test', 'kelpi.js', 'nex', 'nex.js']);
+const KELPI_PLUGIN = [/^plugin$/];
+const KELPI_PANE_SEND = [/^pane$/, /^send/];
+/** Words with a rule here, so what they are told must be readable: `xargs rm`, `rm $F`. */
+const RULED = new Set([
+    'rm', 'git', 'sudo', 'doas', 'pkexec', 'chmod', 'chown', 'find', 'gfind', 'rsync', 'dd', 'gh', 'npm', 'pnpm', 'yarn', 'kubectl', 'terraform',
+    'terragrunt', 'tofu', 'helm', 'aws', 'claude', 'codex', 'env', 'xargs', 'diskutil'
+]);
+/**
+ * Claude's and Codex's own settings: `settings` in any `.claude` or `.claude_1` directory, anything at
+ * home named for Claude (`~/.claude/`, `~/.claude_1/`, `~/.claude.json`), `.codex`, and the variables that move them.
+ */
+const AGENT_SETTINGS =
+    /\.claude[^/]*\/settings|\.claude\.json|(?:~[^/]*|\$\{?HOME\}?|\/(?:Users|home)\/[^/]+|\/root|\/var\/root)\/\.claude|(?:^|[/=<>])\.codex(?:[/.]|$)|CLAUDE_CONFIG_DIR|CODEX_HOME/;
+/** Commands that may name those settings and still only read them. */
+const READERS = new Set(['cat', 'ls', 'grep', 'jq']);
+/** Claude permission modes that ask no less than the default does. */
+const ASKING_MODES = /^(?:default|plan)$/;
 /** `$(` or a backtick opening a word, or right after a separator inside one: `x;$(echo rm)`. */
 const SUBSTITUTION = /^(?:\$\(|`)/;
 const SUBSTITUTION_AFTER = /[;&|(](?:\$\(|`)/;
@@ -43,6 +66,62 @@ const SUBSTITUTION_AFTER = /[;&|(](?:\$\(|`)/;
 const PREFIX_AFTER = /[;&|(](?:[A-Za-z_]\w*=|(?:!|if|then|else|elif|do|while|until)?$)/;
 /** @param {string} token */
 const base = (token) => token.split('/').pop() ?? token;
+/** @param {string} word */
+const ruled = (word) => RULED.has(word) || KELPI.has(word) || SHELLS.has(word) || INTERPRETERS.test(word) || /^(?:mkfs|newfs)/.test(word);
+/** @param {string} form */
+const spaced = (form) => form.replace(GLUED, ' $&');
+/**
+ * @param {string} letters
+ * @param {string} [more]
+ */
+const inline = (letters, more = '') => new RegExp(`^-[A-Za-z]*[${letters}]|^--(?:eval|print|command)(?:=|$)|^eval$${more}`);
+/**
+ * The flags that carry code, per shell or interpreter. Each keeps `-c`, `-e`, `-E`, `--eval`, `--print`,
+ * `--command` and `eval`, the one class all of them were once read with, so none is refused less.
+ * @type {ReadonlyArray<readonly [(word: string) => boolean, RegExp]>}
+ */
+const INLINE = [
+    [(word) => SHELLS.has(word), inline('ceE')],
+    [(word) => /^python[0-9.]*$/.test(word), inline('ceE')],
+    [(word) => word === 'ruby', inline('ceE')],
+    // `perl -M'strict;system …'` splices its value into a `use` line.
+    [(word) => word === 'perl', inline('ceEmM')],
+    // `-r` runs its code, `-R`, `-B` and `-E` run it per input line, before and after.
+    [(word) => word === 'php', inline('ceErRBE')],
+    // `-p` evaluates and prints its argument; `--import=data:…` runs code held in the word itself.
+    [(word) => /^(?:node|nodejs|bun)$/.test(word), inline('ceEp', '|data:')],
+    [(word) => word === 'deno', inline('ceE', '|data:')]
+];
+/**
+ * The last reading's answer, so a rule that needs the whole text once per segment works it out once per reading.
+ * @template T
+ * @param {(all: string) => T} read
+ * @returns {(all: string) => T}
+ */
+const perReading = (read) => {
+    /** @type {string | null} */
+    let last = null;
+    /** @type {T} */
+    let value;
+    return (all) => {
+        if (all !== last) {
+            value = read(all);
+            last = all;
+        }
+        return value;
+    };
+};
+const downloads = perReading((all) => /\b(?:curl|wget)\b/.test(all));
+/** The words standing in a pipeline stage after the first, by name: `… | base64 -d | sh` holds `sh`. */
+const pipedWords = perReading((all) => {
+    const stripped = all.replace(/["'\\]/g, '');
+    /** @type {Set<string>} */
+    const words = new Set();
+    for (const form of new Set([stripped, spaced(stripped)])) {
+        for (const stage of form.split('|').slice(1)) for (const word of stage.split(/\s+/)) words.add(base(word));
+    }
+    return words;
+});
 /**
  * @param {readonly string[]} tokens
  * @param {string} name
@@ -58,6 +137,8 @@ const after = (tokens, name) => {
  * @param {readonly string[]} verbs
  */
 const sub = (tokens, name, verbs) => after(tokens, name)?.some((token) => verbs.includes(token)) ?? false;
+/** @param {string} f A short option cluster or a long option that forces: `-f`, `-fd`, `--force`, `--fo`. */
+const forced = (f) => /^--f/.test(f) || /^-[A-Za-z]*f/.test(f);
 /**
  * Where the command word is, or -1: past `NAME=value` prefixes, redirections, keywords, and wrappers
  * with their options, so `| env -i sh` and `| 2>/dev/null sh` still read as sh.
@@ -99,28 +180,85 @@ const substitutionAsCommand = (all) => {
     return next;
 };
 /**
- * Whether the kelpi CLI's verb is `plugin`. The verb is its first word, but a word after a flag is
- * read as the verb too, in case the flag takes a value: `kelpi --json plugin list`.
+ * Whether a kelpi CLI command's verbs are `path`: `plugin`, or `pane` then `send` or `send-key`. A verb
+ * is the first word, but a word after a flag is read as the verb too, in case the flag takes a value:
+ * `kelpi --json plugin list`.
  * @param {readonly string[]} tokens
+ * @param {readonly RegExp[]} path
  */
-const kelpiPlugin = (tokens) =>
+const kelpiVerbs = (tokens, path) =>
     tokens.some((x, i) => {
         if (!KELPI.has(base(x))) return false;
-        for (let j = i + 1; j < tokens.length; j++) {
+        // How many of the verbs each reading so far has matched.
+        let levels = new Set([0]);
+        for (let j = i + 1; j < tokens.length && levels.size > 0; j++) {
             const word = tokens[j] ?? '';
             // The next kelpi token reads its own words, so each word is read once.
             if (KELPI.has(base(word))) return false;
             // A verb only known when the shell runs: `kelpi $(echo plugin)`, `kelpi $V`.
-            if (word === 'plugin' || word.includes('$')) return true;
+            if (word.includes('$')) return true;
             // The shell drops redirections before kelpi sees its words: `kelpi 2>/dev/null plugin`.
             if (REDIRECTION.test(word)) {
                 if (BARE_REDIRECTION.test(word)) j++;
                 continue;
             }
-            if (!word.startsWith('-') && !(tokens[j - 1] ?? '').startsWith('-')) return false;
+            const optional = word.startsWith('-') || (tokens[j - 1] ?? '').startsWith('-');
+            /** @type {Set<number>} */
+            const next = new Set();
+            for (const level of levels) {
+                if (path[level]?.test(word)) {
+                    if (level + 1 === path.length) return true;
+                    next.add(level + 1);
+                }
+                if (optional) next.add(level);
+            }
+            levels = next;
         }
         return false;
     });
+/**
+ * The words after git's verb when the verb is `verb`, or null. The verb is the first word that is not
+ * an option or a redirection, but a word after an option is read as the verb too, in case the option
+ * takes a value: `git -C repo checkout .` gives `.`.
+ * @param {readonly string[]} tokens
+ * @param {string} verb
+ * @returns {readonly string[] | null}
+ */
+const gitVerb = (tokens, verb) => {
+    const rest = after(tokens, 'git');
+    if (rest === null) return null;
+    for (let j = 0; j < rest.length; j++) {
+        const word = rest[j] ?? '';
+        if (word === verb) return rest.slice(j + 1);
+        if (REDIRECTION.test(word)) {
+            if (BARE_REDIRECTION.test(word)) j++;
+            continue;
+        }
+        if (!word.startsWith('-') && !(rest[j - 1] ?? '').startsWith('-')) return null;
+    }
+    return null;
+};
+/**
+ * Whether xargs runs a word with a rule here. Its own options come first; a word after one is read as
+ * the command too, in case the option takes a value: `xargs -n 1 rm`.
+ * @param {readonly string[]} tokens
+ */
+const xargsRuled = (tokens) => {
+    const rest = after(tokens, 'xargs');
+    if (rest === null) return false;
+    for (let j = 0; j < rest.length; j++) {
+        const word = rest[j] ?? '';
+        if (word.includes('$')) return true;
+        if (REDIRECTION.test(word)) {
+            if (BARE_REDIRECTION.test(word)) j++;
+            continue;
+        }
+        if (word.startsWith('-')) continue;
+        if (ruled(base(word)) || WRAPPERS.has(base(word))) return true;
+        if (!(rest[j - 1] ?? '').startsWith('-')) return false;
+    }
+    return false;
+};
 
 /**
  * Commands auto-approve never answers: the prompt is left for the user. Each rule sees one
@@ -134,21 +272,27 @@ export const NEVER_AUTO_APPROVE = [
     { name: 'rm -r', test: (t) => after(t, 'rm')?.some((f) => /^--r/.test(f) || /^-[A-Za-z]*[rR]/.test(f)) ?? false },
     { name: 'git push', test: (t) => after(t, 'git')?.includes('push') ?? false },
     { name: 'sudo', test: (t) => t.some((x) => ['sudo', 'doas', 'pkexec'].includes(base(x))) },
-    // The segment first: the whole text is only read for a segment that runs a shell or interpreter.
-    { name: 'download piped into a shell', test: (t, all) => t.some((x) => SHELLS.has(base(x))) && /\b(?:curl|wget)\b/.test(all) },
-    { name: 'download piped into an interpreter', test: (t, all) => t.some((x) => INTERPRETERS.test(base(x))) && /\b(?:curl|wget)\b/.test(all) },
+    // The segment first: the whole text is only read for a segment that runs a shell or interpreter, once per reading.
+    { name: 'download piped into a shell', test: (t, all) => t.some((x) => SHELLS.has(base(x))) && downloads(all) },
+    { name: 'download piped into an interpreter', test: (t, all) => t.some((x) => INTERPRETERS.test(base(x))) && downloads(all) },
     // Code fed to a shell or interpreter on stdin is hidden from every other rule: `… | base64 -d | sh`, `python3 <<EOF`.
     {
         name: 'piped or heredoc into a shell or interpreter',
         test: (t, all) => {
             const at = commandAt(t);
             const word = t[at];
-            if (word === undefined || (!SHELLS.has(base(word)) && !INTERPRETERS.test(base(word)))) return false;
-            const piped = new RegExp(`\\|[^|]*(?:^|[\\s/])${base(word).replace(/[.]/g, '\\.')}(?:\\s|$)`).test(all.replace(/["'\\]/g, ''));
-            // No script file to run means it reads its code from stdin, wherever that comes from.
+            if (word === undefined) return false;
             const args = t.slice(at + 1);
+            // `source` and `.` read stdin from `/dev/stdin`, `-`, or a process substitution, which splits off as a bare `<`.
+            if (word === 'source' || word === '.') return args.some((f) => f === '-' || f.startsWith('<') || /^\/(?:dev|proc)\//.test(f));
+            if (!SHELLS.has(base(word)) && !INTERPRETERS.test(base(word))) return false;
+            // No script file to run means it reads its code from stdin, wherever that comes from.
             const files = args.filter((f, i) => !f.startsWith('-') && !REDIRECTION.test(f) && !BARE_REDIRECTION.test(args[i - 1] ?? ''));
-            return piped || files.length === 0 || args.some((f) => f.startsWith('<') || f === '-' || f === '-s' || /^\/(?:dev|proc)\//.test(f));
+            return (
+                pipedWords(all).has(base(word)) ||
+                files.length === 0 ||
+                args.some((f) => f.startsWith('<') || f === '-' || f === '-s' || /^\/(?:dev|proc)\//.test(f))
+            );
         }
     },
     // `python -c '…'` hides its command from every rule below; so does `bash -c` with quotes in the way.
@@ -156,12 +300,11 @@ export const NEVER_AUTO_APPROVE = [
     {
         name: 'shell or interpreter running inline code',
         test: (t) => {
-            const i = t.findIndex((x) => SHELLS.has(base(x)) || INTERPRETERS.test(base(x)));
-            const p = t.findIndex((x) => PRINTERS.test(base(x)));
-            return (
-                (i >= 0 && t.slice(i + 1).some((f) => /^-[A-Za-z]*[ceE]/.test(f) || /^--(?:eval|print|command)(?:=|$)/.test(f) || f === 'eval')) ||
-                (p >= 0 && t.slice(p + 1).some((f) => /^-[A-Za-z]*p/.test(f)))
-            );
+            const words = t.map(base);
+            return INLINE.some(([is, flag]) => {
+                const i = words.findIndex(is);
+                return i >= 0 && t.slice(i + 1).some((f) => flag.test(f));
+            });
         }
     },
     // `env -S'rm -rf x'` runs its attached string as a command line, which reads `-Srm` once the quotes go.
@@ -170,18 +313,19 @@ export const NEVER_AUTO_APPROVE = [
     // Auto-approve must not be able to extend or restart itself, by the CLI or a raw socket write.
     { name: 'auto-approve itself', whole: true, test: (_t, all) => /auto-?approve/i.test(all.replace(/["'\\]/g, '')) },
     // Nor hand the decision to another provider, which would outlast the window and survive `off`.
-    { name: 'kelpi plugin', test: kelpiPlugin },
-    { name: 'mkfs', test: (t) => t.some((x) => /^mkfs(?:\.|$)/.test(base(x))) },
+    { name: 'kelpi plugin', test: (t) => kelpiVerbs(t, KELPI_PLUGIN) },
+    { name: 'mkfs', test: (t) => t.some((x) => /^(?:mkfs(?:\.|$)|newfs)/.test(base(x))) },
     { name: 'dd of=', test: (t) => after(t, 'dd')?.some((f) => f.startsWith('of=')) ?? false },
     {
         name: 'find -delete or -exec rm',
         test: (t) => {
-            const rest = after(t, 'find');
+            const rest = after(t, 'find') ?? after(t, 'gfind');
             return rest !== null && (rest.includes('-delete') || rest.some((x, i) => ['-exec', '-execdir', '-ok', '-okdir'].includes(x) && base(rest[i + 1] ?? '') === 'rm'));
         }
     },
-    { name: 'git clean -f', test: (t) => { const rest = after(t, 'git'); return rest !== null && rest.includes('clean') && rest.some((f) => f === '--force' || /^-[A-Za-z]*f/.test(f)); } },
-    { name: 'git reset --hard', test: (t) => { const rest = after(t, 'git'); return rest !== null && rest.includes('reset') && rest.includes('--hard'); } },
+    // git takes any unique prefix of a long option: `--fo` is `--force`, `--ha` is `--hard`.
+    { name: 'git clean -f', test: (t) => { const rest = after(t, 'git'); return rest !== null && rest.includes('clean') && rest.some(forced); } },
+    { name: 'git reset --hard', test: (t) => { const rest = after(t, 'git'); return rest !== null && rest.includes('reset') && rest.some((f) => /^--ha/.test(f)); } },
     {
         name: 'git checkout -- . or git restore .',
         test: (t) => {
@@ -189,7 +333,21 @@ export const NEVER_AUTO_APPROVE = [
             return rest !== null && ((rest.includes('checkout') && rest.includes('--') && rest.includes('.')) || (rest.includes('restore') && rest.includes('.')));
         }
     },
-    { name: 'rsync --delete', test: (t) => after(t, 'rsync')?.some((f) => f.startsWith('--delete') || f.startsWith('--remove-source-files')) ?? false },
+    {
+        // Each overwrites uncommitted work: any restore, a forced or discarding switch, and a checkout
+        // that forces, names paths (`.`, `--`, a pathspec file) or a ref and then a path.
+        name: 'git checkout, restore or switch discarding changes',
+        test: (t) => {
+            if (gitVerb(t, 'restore') !== null || gitVerb(t, 'switch')?.some((f) => forced(f) || /^--di/.test(f))) return true;
+            const args = gitVerb(t, 'checkout');
+            if (args === null) return false;
+            if (args.some((f) => forced(f) || f === '--' || f === '.' || /^--pa/.test(f))) return true;
+            // The value of `-b`, `-B` or `--orphan` names the new branch, and a redirection's target is no path.
+            const named = args.filter((f, j) => !f.startsWith('-') && !REDIRECTION.test(f) && !/^(?:-[bB]|--orphan)$/.test(args[j - 1] ?? '') && !BARE_REDIRECTION.test(args[j - 1] ?? ''));
+            return named.length > 1;
+        }
+    },
+    { name: 'rsync --delete', test: (t) => after(t, 'rsync')?.some((f) => /^--del/.test(f) || /^--remove-s/.test(f)) ?? false },
     {
         name: 'git branch -D',
         test: (t) => {
@@ -222,13 +380,27 @@ export const NEVER_AUTO_APPROVE = [
         }
     },
     {
+        // A field (`-f`, `-F`) or `--input` makes the call a POST unless the method says GET.
+        name: 'gh api write',
+        test: (t) => {
+            const rest = after(t, 'gh');
+            if (rest === null || !rest.includes('api')) return false;
+            const methods = rest.flatMap((f, i) => {
+                const attached = /^(?:-X=?|--method=)(.+)$/.exec(f);
+                return attached !== null ? [attached[1] ?? ''] : ['-X', '--method'].includes(f) ? [rest[i + 1] ?? ''] : [];
+            });
+            if (methods.some((m) => /^(?:PUT|POST|PATCH)$/i.test(m))) return true;
+            return !methods.some((m) => /^GET$/i.test(m)) && rest.some((f) => /^-[fF]/.test(f) || /^--(?:field|raw-field|input)(?:=|$)/.test(f));
+        }
+    },
+    {
         name: 'gh pr merge or gh repo delete',
         test: (t) => {
             const rest = after(t, 'gh');
             return rest !== null && ((rest.includes('pr') && rest.includes('merge')) || (rest.includes('repo') && rest.includes('delete')));
         }
     },
-    { name: 'npm publish', test: (t) => ['npm', 'yarn', 'pnpm'].some((tool) => sub(t, tool, ['publish'])) },
+    { name: 'npm publish', test: (t) => ['npm', 'yarn', 'pnpm', 'bun'].some((tool) => sub(t, tool, ['publish'])) },
     {
         name: 'kubectl write',
         test: (t) =>
@@ -266,7 +438,57 @@ export const NEVER_AUTO_APPROVE = [
     { name: 'command substitution as the command word', whole: true, test: (_t, all) => substitutionAsCommand(all) },
     { name: 'alias or eval', test: (t) => t.some((x) => base(x) === 'alias' || base(x) === 'eval') },
     // `{rm,-rf,/x}` and `/bin/r? -rf x` only become a command once the shell expands them.
-    { name: 'brace or glob expansion', test: (t) => t.some((x) => /[{}*?[]/.test(x)) }
+    { name: 'brace or glob expansion', test: (t) => t.some((x) => /[{}*?[]/.test(x)) },
+    // A session started like this approves for itself, past the window and `off`.
+    {
+        name: 'claude permission flags',
+        test: (t) => {
+            const rest = after(t, 'claude');
+            return (
+                rest !== null &&
+                (rest[0] === 'config' ||
+                    rest.some(
+                        (f, i) =>
+                            /^--(?:allow-)?dangerously/.test(f) ||
+                            /^--allowed-?tools(?:=|$)/i.test(f) ||
+                            /^--(?:settings|permission-prompt-tool)(?:=|$)/.test(f) ||
+                            (f === '--permission-mode' && !ASKING_MODES.test(rest[i + 1] ?? '')) ||
+                            (f.startsWith('--permission-mode=') && !ASKING_MODES.test(f.slice('--permission-mode='.length)))
+                    ))
+            );
+        }
+    },
+    {
+        name: 'codex permission flags',
+        test: (t) =>
+            after(t, 'codex')?.some(
+                (f, i, rest) =>
+                    /^--(?:dangerously|yolo|full-auto)/.test(f) ||
+                    f.includes('danger-full-access') ||
+                    /^--ask-for-approval=never$/.test(f) ||
+                    (/^(?:-a|--ask-for-approval)$/.test(f) && rest[i + 1] === 'never') ||
+                    (/^(?:-c|--config)$/.test(f) && /approval|sandbox/.test(rest[i + 1] ?? '')) ||
+                    /^(?:-c|--config=).*(?:approval|sandbox)/.test(f)
+            ) ?? false
+    },
+    // Any mention but a plain read: `sed -i`, `tee`, `cp`, a redirection or `cd` there and a write after.
+    {
+        name: 'agent settings write',
+        test: (t) => t.some((x) => AGENT_SETTINGS.test(x)) && !(READERS.has(base(commandWord(t) ?? '')) && !t.some((x) => /[<>]/.test(x)))
+    },
+    // Typing into another pane can answer a prompt left there for the user.
+    { name: 'kelpi pane send', test: (t) => kelpiVerbs(t, KELPI_PANE_SEND) },
+    { name: 'xargs into a ruled command', test: xargsRuled },
+    { name: 'diskutil erase', test: (t) => after(t, 'diskutil')?.some((f) => /^(?:erase|zero|secureErase|reformat|partitionDisk|delete)/i.test(f)) ?? false },
+    // `F=-rf; rm $F dir` and `git pu$()sh`: what a ruled command is told is only known when the shell runs it.
+    {
+        name: 'expansion in a ruled command',
+        test: (t) => {
+            const at = commandAt(t);
+            const from = at < 0 ? -1 : t.findIndex((x, i) => i <= at && (i === at || WRAPPERS.has(base(x))) && ruled(base(x)));
+            return from >= 0 && t.slice(from + 1).some((x) => /[$`]/.test(x));
+        }
+    }
 ];
 
 /**
@@ -274,6 +496,7 @@ export const NEVER_AUTO_APPROVE = [
  * The text is also read three more ways, each only adding segments: with the `$` of `$'…'` and `$"…"` dropped
  * (r$'m' is rm), with `2>&1` and `&>` kept whole, and with a substitution's words run into the command around
  * it, the substitution itself left as a `$` on the word before it (git $(echo push), x=$(date) stays an assignment).
+ * Each reading is read again with a redirection glued to a word spaced off it: `kelpi>/dev/null plugin`.
  * @param {string} text
  * @returns {string[][]}
  */
@@ -281,7 +504,8 @@ const segments = (text) => {
     const dollars = text.replace(/\$(?=["'])/g, '');
     const redirections = dollars.replace(/([<>])&|&(?=>)/g, '$1');
     const substitutions = redirections.replace(/\$\(/g, '$ ').replace(/\)/g, ' ').replace(/`([^`]*)`?/g, '$ $1 ');
-    return [...new Set([dollars, text, redirections, substitutions])].flatMap((form) =>
+    const forms = [dollars, text, redirections, substitutions];
+    return [...new Set([...forms, ...forms.map(spaced)])].flatMap((form) =>
         form
             .replace(/["'\\]/g, '')
             .split(/&&|\|\||[;|&\n`]|\$\(|[()]/)
@@ -313,12 +537,13 @@ export function neverAutoApprove(command) {
 /**
  * The provider's whole answer for one Bash command. The whole command is judged: a command that
  * spans lines is never allowed, whatever the lines say, so nothing can ride in after a line that
- * only looks harmless.
+ * only looks harmless. One longer than 16 KiB is never read at all.
  * @param {unknown} command
  * @returns {Judgement}
  */
 export function judgeCommand(command) {
     if (typeof command !== 'string' || !command.trim()) return { allow: false, reason: 'no command' };
+    if (command.length > MAX_COMMAND) return { allow: false, reason: 'command too long' };
     if (/[\r\n]/.test(command)) return { allow: false, reason: 'multi-line command' };
     const rule = neverAutoApprove(command);
     return rule === null ? { allow: true } : { allow: false, reason: 'never auto-approved: ' + rule };

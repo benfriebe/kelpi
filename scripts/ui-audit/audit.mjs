@@ -21550,7 +21550,7 @@ function buildFlows(ctx) {
         {
             id: 'sidebar-drag-affordances',
             expect:
-                'The sidebar’s motion and chrome: a continuous guide rule joining an expanded group’s children, NO insertion line at a slot landing in ANY drag phase — the vacated GAP is the slot indicator and the header band’s tint is the onto-header one, which is what the shipped app does (its own line branch is unreachable: `dropIndicatorOverlay` is gated on `!shouldLiveApplyDropTarget`, and every slot target IS live-applied) — a cursor-following drag ghost carrying §WS-084’s whole lift over that empty gap, sidebar text that cannot be selected and a drag that smears none while every editable in the sidebar still types and selects, the entry animation a new row plays, the collapse a removed row (and an emptied group) plays on the way out, and the scroll-into-view that follows an activation (§WS-007/§WS-008/§WS-084/§WS-088/§WS-100/§WS-102).',
+                'The sidebar’s motion and chrome: a continuous guide rule joining an expanded group’s children, NO insertion line at a slot landing in ANY drag phase — the vacated GAP is the slot indicator and the header band’s tint is the onto-header one, which is what the shipped app does (its own line branch is unreachable: `dropIndicatorOverlay` is gated on `!shouldLiveApplyDropTarget`, and every slot target IS live-applied) — the MIDDLE third of a workspace row is a nest band instead of a slot, so it tints that row alone and indents the gap while the slot is aimed at in the row’s top third, a cursor-following drag ghost carrying §WS-084’s whole lift over that empty gap, sidebar text that cannot be selected and a drag that smears none while every editable in the sidebar still types and selects, the entry animation a new row plays, the collapse a removed row (and an emptied group) plays on the way out, and the scroll-into-view that follows an activation (§WS-007/§WS-008/§WS-084/§WS-088/§WS-100/§WS-102/§2.9).',
             needsEyes: true,
             async run(recorder) {
                 // Expand the group this run has been dropping into, so it has visible children.
@@ -21885,6 +21885,52 @@ function buildFlows(ctx) {
                         ghostA.lines === 0 && ghostB.lines === 0 && ghostA.gapPainted === 0 && ghostB.gapPainted === 0,
                         `lines ${String(ghostA.lines)}/${String(ghostB.lines)} · painted-in-gap ${String(ghostA.gapPainted)}/${String(ghostB.gapPainted)}`
                     );
+                    /*
+                     * ── §2.9: the travel ends on the MIDDLE of the target row, a nest band ──
+                     *
+                     * Since nesting (§2.9), a nestable drag splits each workspace row into
+                     * thirds: before it, onto it (nest), after it. The cursor is now on `to`'s
+                     * centre, so the target is NOT a slot: it is preview-only `ontoWorkspace`,
+                     * which tints that one row (the header tint's twin), leaves the order alone
+                     * and lets the vacated gap preview the nested indent it would get. This
+                     * used to be where the slot below was read, which is why that read started
+                     * seeing a tinted band; the slot is now aimed at deliberately, one move later.
+                     */
+                    await sleep(250);
+                    const onto = JSON.parse(
+                        String(
+                            await page.eval(
+                                `(() => {
+                                    const list = document.querySelector('[data-testid="sidebar"] [role="listbox"]');
+                                    const gap = document.querySelector('[data-drag-gap="true"]');
+                                    return JSON.stringify({
+                                        target: list?.getAttribute('data-drag-target') ?? null,
+                                        tinted: Array.from(document.querySelectorAll('[data-drop-preview="true"]'))
+                                            .map(el => el.getAttribute('data-workspace-id') ?? el.getAttribute('data-group-id') ?? '?'),
+                                        gapNestPreview: gap?.getAttribute('data-nest-preview') ?? null,
+                                        gapMarginLeft: gap === null ? null : getComputedStyle(gap).marginLeft,
+                                        lines: document.querySelectorAll('[data-testid="drop-insert-line"]').length
+                                            + document.querySelectorAll('[data-insert-line]').length
+                                    });
+                                })()`
+                            )
+                        )
+                    );
+                    recorder.note(`row middle: ${JSON.stringify(onto)}`);
+                    recorder.check(
+                        'the MIDDLE of a workspace row is a nest band: it resolves onto that row, tints it alone, and the gap previews the nested indent (§2.9)',
+                        onto.target === `ontoWorkspace:${String(to.id)}` &&
+                            onto.tinted.length === 1 &&
+                            onto.tinted[0] === to.id &&
+                            onto.gapNestPreview === 'true' &&
+                            onto.gapMarginLeft === '24px' &&
+                            onto.lines === 0,
+                        JSON.stringify(onto)
+                    );
+                    // The slot this block has always read: BEFORE `to`, which its centre used to
+                    // resolve to under §5.5's halves and its top third resolves to now.
+                    const slotY = to.y - to.height * 0.3;
+                    await page.mouse('mouseMoved', to.x, slotY, { button: 'left', buttons: 1 });
                     await sleep(250);
                     const slot = JSON.parse(
                         String(
@@ -21955,7 +22001,7 @@ function buildFlows(ctx) {
                         slot.tinted === 0,
                         String(slot.tinted)
                     );
-                    await page.mouse('mouseReleased', to.x, to.y, { button: 'left', clickCount: 1 });
+                    await page.mouse('mouseReleased', to.x, slotY, { button: 'left', clickCount: 1 });
                 // SETTLE-WAIT (was sleep(900)): every insert indicator is gone — the exact count
                 // the next line reads and the assertion after it states.
                 await settleDom(
@@ -22947,7 +22993,7 @@ function buildFlows(ctx) {
         {
             id: 'sidebar-spring',
             expect:
-                'The sidebar’s drag-time motion is a REAL interruptible spring, not a curve shaped like one: a row the cursor crosses runs home frame by frame and overshoots its slot; a second crossing that lands MID-FLIGHT retargets the same motion — the visual position continuous through the retarget and the velocity carried past it — instead of restarting at zero velocity; the released row springs into its slot from where the ghost left it; the cursor clone restyles LIVE with the resolved container (a member dragged out of a group sheds its band and its indent, and takes both back on the way in) and hands over to the row on release with no frame showing two copies, none showing zero and none showing a landing node; §WS-093’s drop geometry is unmoved by any of it; and a collapsed group spring-loads open at 650 ms and NOT at 300 ms (§WS-008/§WS-084/§WS-089/§WS-092/§WS-093/§5.5).',
+                'The sidebar’s drag-time motion is a REAL interruptible spring, not a curve shaped like one: a row the cursor crosses runs home frame by frame and overshoots its slot; a second crossing that lands MID-FLIGHT retargets the same motion — the visual position continuous through the retarget and the velocity carried past it — instead of restarting at zero velocity; the released row springs into its slot from where the ghost left it; the cursor clone restyles LIVE with the resolved container (a member dragged out of a group sheds its band and its indent at a top-level slot, keeps a member’s dressing over a top-level row’s MIDDLE third, which is a nest band that tints that row, and takes both back on the way in) and hands over to the row on release with no frame showing two copies, none showing zero and none showing a landing node; §WS-093’s drop geometry is unmoved by any of it; and a collapsed group spring-loads open at 650 ms and NOT at 300 ms (§WS-008/§WS-084/§WS-089/§WS-092/§WS-093/§5.5/§2.9).',
             needsEyes: true,
             async run(recorder) {
                 const activeBefore = String(
@@ -23513,6 +23559,9 @@ function buildFlows(ctx) {
                                             topLevelLeft: box(topLevel)?.left ?? null,
                                             memberLeft: box(member)?.left ?? null,
                                             target: list?.getAttribute('data-drag-target') ?? null,
+                                            // §2.9: the rows and headers a preview-only target tints.
+                                            tinted: Array.from(document.querySelectorAll('[data-drop-preview="true"]'))
+                                                .map(el => el.getAttribute('data-workspace-id') ?? el.getAttribute('data-group-id') ?? '?'),
                                             clones: document.querySelectorAll('[data-testid="sidebar-drag-ghost"]').length,
                                             gaps: document.querySelectorAll('[data-drag-gap="true"]').length,
                                             landings: document.querySelectorAll('[data-landing]').length
@@ -23537,15 +23586,32 @@ function buildFlows(ctx) {
                      * currently-rendered top-level rows and taking the first y that answers
                      * `topLevel:` makes the phase independent of where the row has been moved to
                      * so far.
+                     *
+                     * Each probe is a row's BOTTOM third, which is "after this row" under §2.9's
+                     * thirds as it was under §5.5's halves. And no probe sits in the scroller's
+                     * 40 px auto-scroll bands (`AUTO_SCROLL_EDGE_PX`, `chrome/Sidebar.tsx`), nor
+                     * close enough to the bottom one that the release's slide below reaches it.
+                     * A full run's list overflows, so the first probe used to land there (y 22,
+                     * above the scroller's top): auto-scroll then walked the list under the
+                     * stationary pointer and re-resolved on every tick. Under the halves every
+                     * row it swept still answered a slot, so the phase passed by luck. Under
+                     * the thirds every row's MIDDLE is a nest band, so 120 ms after the probe
+                     * answered `topLevel:` the clone was read at `ontoWorkspace:` on whichever
+                     * row the sweep had reached (#404). Reproduced on a padded sandbox sidebar.
                      */
                     const seekTopLevel = async () => {
                         const probes = JSON.parse(
                             String(
                                 await page.eval(
-                                    `JSON.stringify(Array.from(document.querySelectorAll('[data-testid="workspace-row"]'))
-                                        .filter(el => el.getAttribute('data-depth') === '0' && el.getAttribute('data-drag-gap') !== 'true')
-                                        .map(el => { const r = el.getBoundingClientRect(); return Math.round(r.y + r.height * 0.8); })
-                                        .filter(y => y > 0))`
+                                    `(() => {
+                                        const list = document.querySelector('[data-testid="sidebar"] [role="listbox"]');
+                                        const edge = list === null ? null : list.getBoundingClientRect();
+                                        const clear = (y) => edge === null || (y >= edge.top + 44 && y + ${String(Math.ceil(pitch * 0.45))} <= edge.bottom - 44);
+                                        return JSON.stringify(Array.from(document.querySelectorAll('[data-testid="workspace-row"]'))
+                                            .filter(el => el.getAttribute('data-depth') === '0' && el.getAttribute('data-drag-gap') !== 'true')
+                                            .map(el => { const r = el.getBoundingClientRect(); return Math.round(r.y + r.height * 0.8); })
+                                            .filter(y => y > 0 && clear(y)));
+                                    })()`
                                 )
                             )
                         );
@@ -23567,6 +23633,37 @@ function buildFlows(ctx) {
                     await page.mouse('mouseMoved', nestedX, nestedGrabY - 8, { button: 'left', buttons: 1 });
                     await sleep(60);
                     const inside = await readDressing();
+
+                    /*
+                     * §2.9: on the way out, the MIDDLE of a top-level row is a nest band, not a
+                     * way out of the group. `Spring 1` has not moved (the press only reached the
+                     * header's band, which is preview-only too), so its settled centre is still
+                     * its middle third: the target is `ontoWorkspace` on it, it is the one row
+                     * tinted, the clone keeps a member's dressing (now that row's band, depth 1)
+                     * and the order is not live-applied, so the gap has not moved.
+                     */
+                    const spring1 = nestedBoxes['Spring 1'];
+                    await page.mouse('mouseMoved', nestedX, spring1.mid, { button: 'left', buttons: 1 });
+                    await sleep(140);
+                    const onto = await readDressing();
+                    recorder.note(`clone over Spring 1's middle: ${JSON.stringify(onto)}`);
+                    recorder.check(
+                        'a top-level row’s MIDDLE nests rather than leaving the group: onto that row, tinted alone, clone still a member, order untouched (§2.9)',
+                        onto.target === `ontoWorkspace:${String(spring1.id)}` &&
+                            onto.tinted.length === 1 &&
+                            onto.tinted[0] === spring1.id &&
+                            onto.clone !== null &&
+                            onto.clone.depth === '1' &&
+                            onto.clone.bands === 1 &&
+                            onto.clone.group === spring1.id &&
+                            onto.gap !== null &&
+                            inside.gap !== null &&
+                            onto.gap.index === inside.gap.index &&
+                            onto.clones === 1 &&
+                            onto.gaps === 1,
+                        `${JSON.stringify(onto.clone)} @ ${String(onto.target)} · tinted ${JSON.stringify(onto.tinted)} · gap index ${String(inside.gap?.index)} → ${String(onto.gap?.index)}`
+                    );
+
                     const out = await seekTopLevel();
                     recorder.check(
                         'the drag can be resolved to a top-level slot to leave the group by',
@@ -23787,7 +23884,7 @@ function buildFlows(ctx) {
                  *
                  * The four `Spring` rows are created last, so they live at the TAIL of a list
                  * that overflows its scroller by this point in a full run — and phase (d)'s
-                 * `seekTopLevel` parks a LIVE drag inside the scroller's own 40 px auto-scroll
+                 * `seekTopLevel` used to park a LIVE drag inside the scroller's own 40 px auto-scroll
                  * margin (`AUTO_SCROLL_EDGE_PX`, `chrome/Sidebar.tsx`): `run-AI` records that
                  * probe resolving at y 128 against a scroller whose top edge is 88.2, so §5.5's
                  * auto-scroll runs for the whole of each 140 ms dwell and walks the list away
@@ -23805,6 +23902,10 @@ function buildFlows(ctx) {
                  *
                  * A scoped run's list does not overflow, so this is a no-op there — which is why
                  * the step is 7 / 88 / 0 scoped and red in every full run.
+                 *
+                 * The seek's probes now skip both auto-scroll bands (#404), so phase (d) no
+                 * longer walks the list itself. The reveal stays, so this phase never depends on
+                 * where an earlier phase left the scroller.
                  */
                 const revealTail = async () =>
                     JSON.parse(

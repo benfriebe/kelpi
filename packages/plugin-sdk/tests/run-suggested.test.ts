@@ -4,16 +4,17 @@ import { describe, expect, it } from 'vitest';
 
 // #384 as a plugin: the pure half of Run Suggested reads Claude's exact reply text. The example is plain ESM.
 type Suggested = { command: string; kind: 'bang' | 'fence' };
+type Cursor = { row: number; col: number };
 type SessionState = {
     status: 'idle' | 'running' | 'waitingForInput' | undefined; agent: string | undefined;
-    sessionID: string | undefined; lastNotificationType: string | undefined; screen: string;
+    sessionID: string | undefined; lastNotificationType: string | undefined; screen: string; cursor: Cursor | undefined;
 };
 type Routing = { mode: 'session' } | { mode: 'split'; reason: string };
 const source = fileURLToPath(new URL('../../../examples/plugins/run-suggested/', import.meta.url));
 const { commandProblem, findSuggested, promptReady, routeSuggested, typedReady } = await import(path.join(source, 'suggested.mjs')) as {
     findSuggested(reply: string): Suggested | null;
     commandProblem(command: string): string | null;
-    promptReady(screen: string): boolean;
+    promptReady(screen: string, cursor: Cursor | undefined, command: string): boolean;
     typedReady(screen: string, command: string): boolean;
     routeSuggested(found: Suggested, state: SessionState): Routing;
 };
@@ -21,6 +22,15 @@ const { commandProblem, findSuggested, promptReady, routeSuggested, typedReady }
 const RULE = '─'.repeat(80);
 // Claude Code 2.1.x after a reply: the transcript, the empty input box between its rules, the status line.
 const READY = ['⏺ Log in first, then I will retry:', '', '  ! gh auth login', '', RULE, '❯ ', RULE, '  ⏵⏵ accept edits on (shift+tab to cycle)'].join('\n');
+// Where Claude keeps the cursor in READY's empty box: on the prompt row, after the glyph and its space.
+const READY_CURSOR = { row: 5, col: 2 };
+// Claude Code 2.1.300 right after replying `! gh auth status`, its prompt suggestion drawn as ghost text in
+// the empty box. The text has no styling: only the cursor, at the start of the text, says it is not a draft.
+const ghost = (prompt = '❯\u00a0! gh auth status') => [
+    ...Array.from({ length: 42 }, () => ''), '⏺ ! gh auth status', '✻ Worked for 1s · done 12:54 PM',
+    RULE, prompt, RULE, '  Opus 5.5 [1M] | ctx:5% [50k]', '  ⏸ manual mode on · ← 3 agents',
+].join('\n');
+const GHOST_CURSOR = { row: 45, col: 2 };
 const PERMISSION = [
     '⏺ Bash(rm -rf build)', '', RULE, ' Bash command', '', '   rm -rf build', '   Remove the build output', '',
     ' Do you want to proceed?', ' ❯ 1. Yes', '   2. No, and tell Claude what to do differently (esc)', '',
@@ -169,28 +179,68 @@ describe('commandProblem', () => {
 });
 
 describe('promptReady', () => {
+    // Without a cursor only a bare glyph counts as an empty box.
+    const ready = (screen: string) => promptReady(screen, undefined, 'gh auth login');
+
     it('sees the empty input box when it is the last thing drawn', () => {
-        expect(promptReady(READY)).toBe(true);
-        expect(promptReady(['⏺ Done.', RULE, '> ', RULE, '  ? for shortcuts', ''].join('\n'))).toBe(true);
-        expect(promptReady([RULE, '❯', RULE, ''].join('\r\n'))).toBe(true);
+        expect(ready(READY)).toBe(true);
+        expect(ready(['⏺ Done.', RULE, '> ', RULE, '  ? for shortcuts', ''].join('\n'))).toBe(true);
+        expect(ready([RULE, '❯', RULE, ''].join('\r\n'))).toBe(true);
+        expect(promptReady(READY, READY_CURSOR, 'gh auth login')).toBe(true);
     });
 
     it('is false with a draft in the box', () => {
-        expect(promptReady([RULE, '> half a draft', RULE].join('\n'))).toBe(false);
-        expect(promptReady([RULE, '❯ ! rm -rf build', RULE].join('\n'))).toBe(false);
+        expect(ready([RULE, '> half a draft', RULE].join('\n'))).toBe(false);
+        expect(ready([RULE, '❯ ! rm -rf build', RULE].join('\n'))).toBe(false);
     });
 
     it('is false at a permission prompt or any menu below the box', () => {
-        expect(promptReady(PERMISSION)).toBe(false);
-        expect(promptReady([RULE, '> ', RULE, ' Do you want to proceed?', ' ❯ 1. Yes', RULE].join('\n'))).toBe(false);
-        expect(promptReady([RULE, '> ', RULE, ' ❯ 1. Yes', ' Esc to cancel'].join('\n'))).toBe(false);
+        expect(ready(PERMISSION)).toBe(false);
+        expect(ready([RULE, '> ', RULE, ' Do you want to proceed?', ' ❯ 1. Yes', RULE].join('\n'))).toBe(false);
+        expect(ready([RULE, '> ', RULE, ' ❯ 1. Yes', ' Esc to cancel'].join('\n'))).toBe(false);
+        expect(promptReady([RULE, '> ', RULE, ' ❯ 1. Yes', ' Esc to cancel'].join('\n'), { row: 1, col: 2 }, 'gh auth login')).toBe(false);
     });
 
     it('is false without two rules at column 0 around the prompt', () => {
-        expect(promptReady('⏺ Done.')).toBe(false);
-        expect(promptReady(['⏺ Done.', RULE, '> '].join('\n'))).toBe(false);
-        expect(promptReady(['     ' + RULE, '     >', '     ' + RULE].join('\n'))).toBe(false);
-        expect(promptReady([RULE, '', '> ', RULE].join('\n'))).toBe(false);
+        expect(ready('⏺ Done.')).toBe(false);
+        expect(ready(['⏺ Done.', RULE, '> '].join('\n'))).toBe(false);
+        expect(ready(['     ' + RULE, '     >', '     ' + RULE].join('\n'))).toBe(false);
+        expect(ready([RULE, '', '> ', RULE].join('\n'))).toBe(false);
+        expect(promptReady([RULE, '', '> ', RULE].join('\n'), { row: 2, col: 2 }, 'gh auth login')).toBe(false);
+    });
+
+    it("reads Claude's ghost text equal to the suggestion as an empty box when the cursor sits before it", () => {
+        expect(promptReady(ghost(), GHOST_CURSOR, 'gh auth status')).toBe(true);
+        expect(promptReady(ghost('❯\u00a0!  gh   auth status  '), GHOST_CURSOR, 'gh  auth status')).toBe(true);
+        expect(promptReady(ghost('> ! gh auth status'), GHOST_CURSOR, 'gh auth status')).toBe(true);
+    });
+
+    it('reads a blank prompt line as an empty box when the cursor sits after the glyph', () => {
+        expect(promptReady(ghost('❯'), GHOST_CURSOR, 'gh auth status')).toBe(true);
+        expect(promptReady(ghost('❯\u00a0'), GHOST_CURSOR, 'gh auth status')).toBe(true);
+        expect(promptReady(ghost('>'), GHOST_CURSOR, 'gh auth status')).toBe(true);
+        expect(promptReady(ghost('> '), GHOST_CURSOR, 'make test')).toBe(true);
+    });
+
+    it('is false for ghost text that is not the suggestion, or a draft', () => {
+        expect(promptReady(ghost(), GHOST_CURSOR, 'gh auth login')).toBe(false);
+        expect(promptReady(ghost('❯\u00a0run the tests'), GHOST_CURSOR, 'gh auth status')).toBe(false);
+        expect(promptReady(ghost('❯\u00a0gh auth status'), GHOST_CURSOR, 'gh auth status')).toBe(false);
+        // A draft of the same text leaves the cursor at its end.
+        expect(promptReady(ghost(), { row: 45, col: 18 }, 'gh auth status')).toBe(false);
+        expect(promptReady(ghost('❯\u00a0'), { row: 45, col: 3 }, 'gh auth status')).toBe(false);
+    });
+
+    it('is false unless the cursor is on the prompt line', () => {
+        expect(promptReady(ghost(), { row: 44, col: 2 }, 'gh auth status')).toBe(false);
+        expect(promptReady(ghost(), { row: 48, col: 2 }, 'gh auth status')).toBe(false);
+        expect(promptReady(ghost('❯'), { row: 0, col: 0 }, 'gh auth status')).toBe(false);
+        expect(promptReady(ghost('❯x'), GHOST_CURSOR, 'gh auth status')).toBe(false);
+    });
+
+    it('falls back to the text alone without a cursor, where ghost text reads as a draft', () => {
+        expect(promptReady(ghost(), undefined, 'gh auth status')).toBe(false);
+        expect(promptReady(ghost('❯\u00a0'), undefined, 'gh auth status')).toBe(true);
     });
 });
 
@@ -230,12 +280,19 @@ describe('typedReady', () => {
 
 describe('routeSuggested', () => {
     const bang: Suggested = { kind: 'bang', command: 'gh auth login' };
-    const idle: SessionState = { status: 'idle', agent: 'claude', sessionID: 'S', lastNotificationType: undefined, screen: READY };
+    const idle: SessionState = { status: 'idle', agent: 'claude', sessionID: 'S', lastNotificationType: undefined, screen: READY, cursor: READY_CURSOR };
     const split = (reason: string) => ({ mode: 'split', reason });
 
     it('types a one-line ! command into an idle Claude session at its empty prompt', () => {
         expect(routeSuggested(bang, idle)).toEqual({ mode: 'session' });
         expect(routeSuggested(bang, { ...idle, status: 'waitingForInput', lastNotificationType: 'idle_prompt' })).toEqual({ mode: 'session' });
+    });
+
+    it("types it when Claude's ghost text in the empty box is the suggestion itself", () => {
+        const ghosted = { ...idle, status: 'waitingForInput' as const, screen: ghost(), cursor: GHOST_CURSOR };
+        expect(routeSuggested({ kind: 'bang', command: 'gh auth status' }, ghosted)).toEqual({ mode: 'session' });
+        expect(routeSuggested(bang, ghosted)).toEqual(split("Claude's input box is not empty"));
+        expect(routeSuggested({ kind: 'bang', command: 'gh auth status' }, { ...ghosted, cursor: undefined })).toEqual(split("Claude's input box is not empty"));
     });
 
     it('runs a code block in a new split', () => {
@@ -273,6 +330,6 @@ describe('routeSuggested', () => {
 
     it('runs in a new split when the screen shows a menu or a draft instead of the empty box', () => {
         expect(routeSuggested(bang, { ...idle, screen: PERMISSION })).toEqual(split("Claude's input box is not empty"));
-        expect(routeSuggested(bang, { ...idle, screen: [RULE, '❯ half a draft', RULE].join('\n') })).toEqual(split("Claude's input box is not empty"));
+        expect(routeSuggested(bang, { ...idle, screen: [RULE, '❯ half a draft', RULE].join('\n'), cursor: { row: 1, col: 14 } })).toEqual(split("Claude's input box is not empty"));
     });
 });

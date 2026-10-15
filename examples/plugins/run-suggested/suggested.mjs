@@ -94,26 +94,44 @@ export function commandProblem(command) {
 // The input box's own rules start at column 0; rules inside reply text or tool output are indented.
 const BOX_RULE = /^[─━═]{20,}\s*$/;
 const PROMPT_EMPTY = /^[>❯]\s*$/;
+// The glyph, then (unless the row was trimmed to it) one space and whatever the box shows after it.
+const PROMPT_LINE = /^[>❯](?:\s(.*))?$/s;
+// Where the cursor sits in an empty box: after the glyph and its space (`>`, `❯` and U+00A0 are one cell each).
+const PROMPT_COL = 2;
 const MENU = /[>❯]\s*\d+\.|Do you want|Esc to cancel/;
 
+/** @param {string} text */
+const collapse = text => text.replace(/\s+/g, ' ').trim();
+
 /**
- * True when the screen ends with Claude Code's input box empty: a bare `>` or `❯` prompt between its
- * two rules, and no menu below it. A permission prompt or a half-typed draft replaces the bare prompt,
+ * True when the screen ends with Claude Code's input box empty: one prompt line between its two
+ * rules, and no menu below it. A permission prompt or a half-typed draft replaces the empty prompt,
  * and typing there would answer it. `screen` is `TerminalRead.text`; Claude Code 2.1.x draws on the
  * alternate screen, so `altScreen` says nothing here.
- * @param {string} screen
+ *
+ * Claude's prompt suggestion draws its predicted next prompt as dim ghost text in the empty box,
+ * and right after a `! cmd` reply that prediction is usually the same line. The text carries no
+ * styling, so `cursor` (`TerminalRead.cursor`, whose row indexes `screen`'s lines) tells the two
+ * apart: an empty box keeps the cursor on the prompt line right after the glyph, at the start of
+ * any ghost text, while a draft leaves it at its end. With the cursor there, the box counts as
+ * empty when the rest of the line is blank or reads `! ` + `command`. Without a cursor, only a bare
+ * glyph counts.
+ * @param {string} screen @param {{ row: number, col: number } | undefined} cursor @param {string} command
  */
-export function promptReady(screen) {
+export function promptReady(screen, cursor, command) {
     const lines = screen.replace(/\r/g, '').split('\n');
     const rules = lines.flatMap((line, index) => (BOX_RULE.test(line) ? [index] : []));
     const below = rules.at(-1);
     const above = rules.at(-2);
-    if (below === undefined || above !== below - 2 || !PROMPT_EMPTY.test(lines[below - 1] ?? '')) return false;
-    return !lines.slice(below + 1).some(line => MENU.test(line));
+    if (below === undefined || above !== below - 2) return false;
+    if (lines.slice(below + 1).some(line => MENU.test(line))) return false;
+    const prompt = lines[below - 1] ?? '';
+    if (!cursor) return PROMPT_EMPTY.test(prompt);
+    const match = PROMPT_LINE.exec(prompt);
+    if (!match || cursor.row !== below - 1 || cursor.col !== PROMPT_COL) return false;
+    const rest = collapse(match[1] ?? '');
+    return rest === '' || rest === collapse('! ' + command);
 }
-
-/** @param {string} text */
-const collapse = text => text.replace(/\s+/g, ' ').trim();
 const PROMPT_GLYPH = /^[>❯!]\s*/;
 
 /**
@@ -121,7 +139,8 @@ const PROMPT_GLYPH = /^[>❯!]\s*/;
  * `! ` before it, and no menu below it: what must still show before Enter goes to the box. Lenient
  * about the drawing: the box's lines are trimmed and joined (a long command wraps inside it),
  * whitespace runs count as one space, and the prompt glyph (`>`, `❯`, or `!` in Claude's bash mode)
- * may or may not be followed by the typed `!`.
+ * may or may not be followed by the typed `!`. Strict about the text: ghost text Claude draws after
+ * what was typed makes it false, which leaves the command typed and unrun.
  * @param {string} screen @param {string} command
  */
 export function typedReady(screen, command) {
@@ -140,13 +159,15 @@ export function typedReady(screen, command) {
  * What the caller knows about the pane the suggestion came from. From `panes.list`: `status` is
  * `PaneInfo.status`, `agent` is `PaneInfo.agent`, `sessionID` is `PaneInfo.agentSessionID` (or the
  * Stop event's `sessionID`). `lastNotificationType` is the `notificationType` of the pane's last
- * Claude Notification since its last Stop, and `screen` is `TerminalRead.text`.
+ * Claude Notification since its last Stop, `screen` is `TerminalRead.text` and `cursor` is
+ * `TerminalRead.cursor` of the same read.
  * @typedef {{
  *   status: 'idle' | 'running' | 'waitingForInput' | undefined,
  *   agent: string | undefined,
  *   sessionID: string | undefined,
  *   lastNotificationType: string | undefined,
- *   screen: string
+ *   screen: string,
+ *   cursor: { row: number, col: number } | undefined
  * }} SessionState
  * @typedef {{ mode: 'session' } | { mode: 'split', reason: string }} Routing
  */
@@ -174,6 +195,6 @@ export function routeSuggested(found, state) {
     if (state.status === 'running') return split('Claude is still working');
     if (PROMPTS.has(state.lastNotificationType ?? '')) return split('Claude is waiting at a permission prompt');
     if (!READY_STATUSES.has(state.status ?? '')) return split('Claude is not waiting for input');
-    if (!promptReady(state.screen)) return split("Claude's input box is not empty");
+    if (!promptReady(state.screen, state.cursor, found.command)) return split("Claude's input box is not empty");
     return { mode: 'session' };
 }

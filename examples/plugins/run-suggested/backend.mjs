@@ -12,7 +12,6 @@ import { commandProblem, findSuggested, routeSuggested, typedReady } from './sug
  */
 
 const VERB = 'kelpi run-suggested';
-const SCREEN_LINES = 60;
 const TYPED_NOT_RUN = "the screen changed before Enter; the command is typed in Claude's box, not run";
 const usage = [
     'Usage: kelpi run-suggested [--target <pane>] [--print | --yes] [--json]',
@@ -56,10 +55,12 @@ export function activate(api) {
         if (event.type === 'notification' && event.notificationType) lastNotification.set(event.paneID, event.notificationType);
         // Abstain leaves Claude's own permission prompt on screen.
         if (event.type === 'permission-request' && event.behavior === 'abstain') lastNotification.set(event.paneID, 'permission_prompt');
-        if (event.type === 'stop' && event.agent === 'claude') {
+        // A Stop without the reply's text (a hook running a CLI that does not forward it, a manual
+        // `kelpi event stop`, or the second of two hook sets on one pane) leaves the entry alone.
+        if (event.type === 'stop' && event.agent === 'claude' && typeof event.lastAssistantMessage === 'string') {
             // A reply that suggests nothing replaces the last one's suggestion. A reply cut at the hook's
             // cap offers nothing: its last suggestion may be past the cut, or the cut may end one early.
-            const found = event.lastAssistantMessageTruncated ? null : findSuggested(event.lastAssistantMessage ?? '');
+            const found = event.lastAssistantMessageTruncated ? null : findSuggested(event.lastAssistantMessage);
             if (found) remembered.set(event.paneID, found);
             else remembered.delete(event.paneID);
         }
@@ -89,10 +90,14 @@ export function activate(api) {
     const inspect = async (paneID, found, settleMs) => {
         const pane = (await listPanes()).find(entry => entry.id === paneID);
         if (!pane) return null;
-        const read = await api.terminal.read(paneID, settleMs ? { lines: SCREEN_LINES, settleMs } : { lines: SCREEN_LINES });
+        // The whole viewport, uncapped: the daemon reads it from the top row and trims only trailing
+        // blank rows, so line N is the cursor's row N. A `lines` cap keeps the last N lines, shifting
+        // every index in a taller pane. A soft-wrapped row joins the next, moving the box up a line:
+        // promptReady then finds the cursor off the prompt line, which is the safe side.
+        const read = await api.terminal.read(paneID, settleMs ? { scrollback: false, settleMs } : { scrollback: false });
         const routing = routeSuggested(found, {
             status: pane.status, agent: pane.agent, sessionID: pane.agentSessionID,
-            lastNotificationType: lastNotification.get(paneID), screen: read.text,
+            lastNotificationType: lastNotification.get(paneID), screen: read.text, cursor: read.cursor,
         });
         return { pane, read, routing };
     };
@@ -111,7 +116,7 @@ export function activate(api) {
             if (routing.mode === 'session') {
                 await api.terminal.send(pane.id, '! ' + found.command, { bare: true, ifRevision: read.revision });
                 step = 'after';
-                const typed = await api.terminal.read(pane.id, { lines: SCREEN_LINES, settleMs: 300 });
+                const typed = await api.terminal.read(pane.id, { scrollback: false, settleMs: 300 });
                 // The revision alone would let Enter answer whatever drew meanwhile, such as a permission menu.
                 if (!typedReady(typed.text, found.command)) return { ok: false, changed: 'after' };
                 await api.terminal.sendKey(pane.id, 'enter', { ifRevision: typed.revision });

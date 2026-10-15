@@ -26,8 +26,16 @@ function stop(paneID: string, lastAssistantMessage: string): AgentHookEvent {
     return { type: 'stop', paneID, workspaceID: 'ws-1', agent: 'claude', sessionID: 'session-1', status: 'idle', lastAssistantMessage };
 }
 
-// `screens` are the reads' texts in turn; past them a read shows `screen`, or the box holding what a bare send typed.
-async function setup(options: { panes?: PaneInfo[]; screen?: string; screens?: string[]; answer?: string | null; sendError?: unknown; keyError?: unknown } = {}) {
+// Claude keeps the cursor at the end of what its box holds, after the glyph and its space when empty.
+function cursorOf(text: string) {
+    const rows = text.split('\n');
+    const row = rows.findLastIndex(line => /^[❯>]/.test(line));
+    return row < 0 ? { row: 0, col: 0 } : { row, col: rows[row]!.length };
+}
+
+// `screens` are the reads' texts in turn; past them a read shows `screen`, or the box holding what a bare
+// send typed. `cursor`, when given, is every read's cursor.
+async function setup(options: { panes?: PaneInfo[]; screen?: string; screens?: string[]; cursor?: { row: number; col: number }; answer?: string | null; sendError?: unknown; keyError?: unknown } = {}) {
     const { activate } = await import(path.join(source, 'backend.mjs')) as { activate(api: BackendAPI): () => void };
     const handlers = new Map<string, (args: Data, context: Context) => Promise<unknown>>();
     let listener: ((event: AgentHookEvent) => void) | undefined;
@@ -38,7 +46,7 @@ async function setup(options: { panes?: PaneInfo[]; screen?: string; screens?: s
     const read = vi.fn(async (paneID: string) => {
         calls.push(`read ${paneID}`);
         const text = options.screens?.[reads++] ?? (typed === undefined ? options.screen ?? READY : box(typed));
-        return { text, revision: ++revision, cursor: { row: 0, col: 0 }, altScreen: true };
+        return { text, revision: ++revision, cursor: options.cursor ?? cursorOf(text), altScreen: true };
     });
     const send = vi.fn(async (paneID: string, text: string, sendOptions?: { bare?: boolean }) => {
         calls.push(`send ${paneID}`);
@@ -119,6 +127,15 @@ describe('Run Suggested Command example', () => {
         expect(await plugin.cli(['--print'])).toMatchObject({ stderr: 'kelpi run-suggested: Claude has not suggested a command in this pane', exitCode: 1 });
     });
 
+    it('keeps the suggestion through a Stop that carries no reply text', async () => {
+        const plugin = await setup();
+        plugin.emit(stop('pane-a', '! gh auth status'));
+        // An older CLI's hook, a manual `kelpi event stop`, or the second of two hook sets on the pane.
+        plugin.emit(event('stop', { status: 'idle' }));
+        expect(await plugin.cli(['--print'])).toEqual({ text: 'gh auth status', json: { command: 'gh auth status', kind: 'bang' } });
+        expect(plugin.update.mock.calls.map(([patch]) => patch)).toEqual([{ context: { hasSuggestion: true } }]);
+    });
+
     it('offers nothing from a reply cut at the hook\'s cap, and forgets the one before it', async () => {
         const plugin = await setup();
         plugin.emit(stop('pane-a', '! echo old'));
@@ -151,6 +168,24 @@ describe('Run Suggested Command example', () => {
         expect(plugin.sendKey).toHaveBeenCalledWith('pane-a', 'enter', { ifRevision: reads[2]!.revision });
         expect(plugin.split).not.toHaveBeenCalled();
         expect(plugin.showNotification).not.toHaveBeenCalled();
+    });
+
+    it('types into the session when Claude\'s ghost text in the empty box is the suggestion, the cursor before it', async () => {
+        // Claude Code 2.1.300 draws its prompt suggestion, here the reply's own line, as dim text the read cannot tell from typed.
+        const plugin = await setup({ screen: box('! gh auth status'), cursor: { row: 3, col: 2 } });
+        plugin.emit(stop('pane-a', '! gh auth status'));
+        expect(await plugin.window()).toBe('session');
+        expect(plugin.showDialog.mock.calls[0]![0].actions.map(action => action.id)).toEqual(['cancel', 'split', 'session']);
+        expect(plugin.calls).toEqual(['read pane-a', 'read pane-a', 'send pane-a', 'read pane-a', 'key pane-a']);
+        expect(plugin.send).toHaveBeenCalledWith('pane-a', '! gh auth status', expect.objectContaining({ bare: true }));
+        expect(plugin.read).toHaveBeenCalledWith('pane-a', { scrollback: false });
+        expect(plugin.showNotification).not.toHaveBeenCalled();
+
+        // The same text with the cursor at its end is a draft.
+        const draft = await setup({ screen: box('! gh auth status'), cursor: { row: 3, col: 18 }, answer: 'cancel' });
+        draft.emit(stop('pane-a', '! gh auth status'));
+        await draft.window();
+        expect(draft.showDialog.mock.calls[0]![0].actions.map(action => action.id)).toEqual(['cancel', 'split']);
     });
 
     it('offers only a new split for a code block or a busy pane, and runs it in the pane\'s directory', async () => {

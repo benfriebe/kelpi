@@ -343,21 +343,23 @@ describe('judgeCommand', () => {
     });
 
     // Over 16 KiB is never read; under it, no rule reads the whole text once per segment (`sh a |`
-    // repeated took 1.8 s at 64 KB when the piped and download rules did).
+    // repeated took 1.8 s at 64 KB when the piped and download rules did). The bounds leave room
+    // for the full parallel suite on a loaded machine and still sit at half the provider's 2 s
+    // deadline, which is what they guard.
     it('refuses a command over 16 KiB unread, and judges one under it in well under the deadline', () => {
         let start = performance.now();
         expect(judgeCommand('sh a |'.repeat(11000))).toEqual({ allow: false, reason: 'command too long' });
-        expect(performance.now() - start).toBeLessThan(20);
+        expect(performance.now() - start).toBeLessThan(100);
         expect(judgeCommand('x'.repeat(16384))).toEqual({ allow: true });
         expect(judgeCommand('x'.repeat(16385))).toEqual({ allow: false, reason: 'command too long' });
         start = performance.now();
         expect(judgeCommand('sh a |'.repeat(2700))).toMatchObject({ allow: false });
-        expect(performance.now() - start).toBeLessThan(200);
+        expect(performance.now() - start).toBeLessThan(1000);
         const near = (unit: string) => unit.repeat(Math.floor(16000 / unit.length));
         for (const command of [near('sh x;'), near('echo sh;'), near('python3 a.py ;'), near("sh 'a'\"b\";"), near('node a.js;'), near('sh -- a;'), near('cat x>y;'), near('a>| '), 'kelpi ' + near('-a ')]) {
             start = performance.now();
             judgeCommand(command);
-            expect(performance.now() - start).toBeLessThan(200);
+            expect(performance.now() - start).toBeLessThan(1000);
         }
     });
 

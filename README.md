@@ -658,6 +658,10 @@ runs `.github/workflows/release.yml`, which:
 5. drafts a GitHub Release with the DMG and the ZIP (Squirrel installs from the ZIP). Publishing
    the draft is manual.
 
+Apple's services drop connections from the hosted runner now and then. So the app build is tried
+up to three times, and each of the DMG's `codesign`, `notarytool` and `stapler` calls up to four
+times, with a warning in the run log for each retry.
+
 What to know when cutting one:
 
 - **Versions:** main carries the next version with `-dev` (for example `0.3.0-dev`), so a build

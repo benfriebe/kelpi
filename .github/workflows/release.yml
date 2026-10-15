@@ -9,6 +9,10 @@
 # Running it by hand (workflow_dispatch) does everything except the release, and uploads the
 # DMG and ZIP as workflow artifacts: a dry run of the whole pipeline without a tag.
 #
+# Apple's timestamp, notary and ticket services drop connections from the hosted runner now and
+# then: v0.2.18 failed three times, on a different Apple call each time, with no incident on
+# either status page. So every step that talks to Apple retries before it fails.
+#
 # Secrets live in the `Kelpi` environment:
 #   DEVELOPER_ID_CERTIFICATE  base64 of the Developer ID Application .p12
 #   DEVELOPER_ID_PASSWORD     that .p12's export password
@@ -39,7 +43,7 @@ jobs:
   release:
     runs-on: macos-15
     environment: Kelpi
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - name: Check the secrets are set
         env:
@@ -113,15 +117,23 @@ jobs:
           security list-keychains -d user -s "$keychain" login.keychain
 
       # forge.config.cjs signs every Mach-O file under the hardened runtime, then notarizes and
-      # staples the app, before the ZIP and DMG are made from it.
+      # staples the app, before the ZIP and DMG are made from it. Forge does all of that in one
+      # go, so a dropped Apple call reruns the whole build, from a clean `out/`.
       - name: Build, sign and notarize the app
-        timeout-minutes: 40
+        timeout-minutes: 50
         env:
           KELPI_MACOS_IDENTITY: ${{ env.SIGNING_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
           APPLE_TEAM_ID: ${{ env.TEAM_ID }}
-        run: pnpm dist
+        run: |
+          for attempt in 1 2 3; do
+            pnpm dist && exit 0
+            [ "$attempt" -lt 3 ] || exit 1
+            echo "::warning::pnpm dist failed (attempt $attempt of 3); retrying in $((attempt * 30))s"
+            sleep $((attempt * 30))
+            rm -rf packages/shell/out
+          done
 
       - name: Name the artifacts
         id: artifacts
@@ -141,10 +153,21 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
         run: |
-          codesign --sign "$SIGNING_IDENTITY" --timestamp "$DMG"
-          xcrun notarytool submit "$DMG" --apple-id "$APPLE_ID" --password "$APPLE_ID_PASSWORD" \
+          # Each Apple call gets four tries, 30, 60 and 90 seconds apart.
+          retry() {
+            local attempt=1
+            until "$@"; do
+              [ "$attempt" -lt 4 ] || return 1
+              echo "::warning::$1 $2 failed (attempt $attempt of 4); retrying in $((attempt * 30))s"
+              sleep $((attempt * 30))
+              attempt=$((attempt + 1))
+            done
+          }
+          # --force, so a retry re-signs over anything a dropped call left behind.
+          retry codesign --force --sign "$SIGNING_IDENTITY" --timestamp "$DMG"
+          retry xcrun notarytool submit "$DMG" --apple-id "$APPLE_ID" --password "$APPLE_ID_PASSWORD" \
             --team-id "$TEAM_ID" --wait
-          xcrun stapler staple "$DMG"
+          retry xcrun stapler staple "$DMG"
 
       - name: Verify with Gatekeeper
         env:

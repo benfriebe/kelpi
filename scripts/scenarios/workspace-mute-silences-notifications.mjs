@@ -279,7 +279,7 @@ export default async function ({ page, harness, cli, sandbox, rec, d, sleep, dae
         rec.check(
             'the row menu shows Mute Notifications in its own section above Select All, as a ticked checkbox',
             JSON.stringify(mutedMenu.order.slice(mutedMenu.order.indexOf('move'), mutedMenu.order.indexOf('select-all') + 1)) ===
-                JSON.stringify(['move', '-', 'mute', '-', 'select-all']) &&
+                JSON.stringify(['move', 'nest:new', 'nest', '-', 'mute', '-', 'select-all']) &&
                 mutedMenu.role === 'menuitemcheckbox' &&
                 mutedMenu.ariaChecked === 'true' &&
                 mutedMenu.box === 'checked' &&

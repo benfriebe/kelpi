@@ -915,6 +915,9 @@ Move to Group ▸                  → "Remove from Group" (when grouped) / each
                                    (current disabled) / "New Group…" (creates a group
                                    seeded with this workspace, placeholder name,
                                    auto-starts inline rename)
+New Nested Workspace…            (top-level rows only, app-state-core.md §2.9)
+Nest Under ▸                     (rows without children, when a parent exists)
+Un-nest                          (nested rows only)
 ──────────
 Mute Notifications         [ ]   → a checkbox at the row's trailing edge, ticked while the
                                    workspace is muted; toggles its mute IN PLACE, the menu

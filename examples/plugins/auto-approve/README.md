@@ -80,45 +80,52 @@ you, and so does another agent's shell. A Bash command is left for you, with the
 `status`, when Claude asks to run it outside its sandbox (`dangerouslyDisableSandbox`), when it is
 longer than 16 KiB (it is not read at all), when it spans lines (any `\r` or `\n`, so nothing can
 ride in after a line that only looks harmless), or when it matches the never-auto-approve list,
-however it is quoted or a redirection is glued to a word (`rm>/dev/null -rf x`):
+however it is quoted or a redirection is glued to a word or written `>|` (`rm>/dev/null -rf x`,
+`rm >| out -rf x`):
 
 - `rm -r`, `git push`, `sudo`, `doas`, `pkexec`, `mkfs`, `newfs_*`, `diskutil` erase and delete
   verbs, `dd of=`, `find -delete`, `chmod -R`, `chown -R`, `rsync --delete`.
 - A download or anything else piped or heredoc'd into a shell or interpreter (behind `env`,
-  `nohup`, `timeout` or a redirection too), csh and tcsh included, and `source` or `.` reading
-  `/dev/stdin`, `-` or a process substitution.
+  `nohup`, `timeout` or a redirection too), csh, tcsh, mksh, yash and pwsh included, a download
+  that is then sourced, and a shell, an interpreter, `source` or `.` reading `/dev/stdin`, `-` or a
+  process substitution (`<(...)` or zsh's `=(...)`).
 - Inline code, by each interpreter's own flags: `bash -c`, `python -c`, `node -e`/`-p`/`--eval`,
-  `bun -e`, `deno eval`, `ruby -e`, `perl -e`/`-M`, `php -r`, also attached as in `--eval=` or
-  `-c'...'`; and `env -S`.
+  `bun -e`, `deno eval`, `ruby -e`, `perl -e`/`-M`, `php -r`/`--run` and its per-line flags, also
+  attached as in `--eval=` or `-c'...'`; and `env -S`.
 - git work that is lost or rewritten: `git clean -f`, `git reset --hard`, `git branch -D` and its
-  kin, every `git restore`, `git checkout` with `-f`, `.`, `--` or a ref then a path, `git switch`
-  with `-f` or `--discard-changes`, and `git -c` and other git config overrides.
+  kin, every `git restore`, `git checkout` with `-f`, `.`, `./`, a `:` pathspec, `--` or a ref then
+  a path, `git switch` with `-f` or `--discard-changes`, and `git -c` and other git config
+  overrides.
 - `gh pr merge`, `gh repo delete`, `gh api` with `DELETE`, `PUT`, `POST` or `PATCH` (or a field,
   which makes it a POST), `npm`, `pnpm`, `yarn` and `bun publish`, `kubectl`, `terraform` and
   `helm` writes, and `aws` verbs starting `delete-`, `put-`, `create-`, `update-`, `terminate-`,
   `modify-`, `remove-`, `stop-`, `start-`, `reboot-`, `send-`, `run-`, `invoke-`, `execute-`,
-  `attach-`, `detach-`, `associate-`, `disassociate-`, `restore-` or `reset-`, the verbs
-  `invoke` and `deploy`, and S3 writes (uploads included).
+  `attach-`, `detach-`, `associate-`, `disassociate-`, `restore-` or `reset-`, the verbs `invoke`
+  and `deploy`, and S3 writes (uploads included).
 - Anything that would outlast the window or answer for you: any command that mentions
-  `auto-approve` (so it cannot extend itself); `kelpi plugin` and `kelpi pane send` or
-  `send-key`, by `kelpi`, `kelpi_test` or the `nex` launcher, with redirections, flags or an
-  expansion between the words (so it cannot select or install another permissions provider, or
-  type an answer into another pane); `claude` with `--dangerously-skip-permissions`, a
-  `--permission-mode` other than `default` or `plan`, `--allowedTools`, `--settings` or
-  `claude config`; `codex` with `--dangerously-bypass-approvals-and-sandbox`, `--yolo`,
-  `--full-auto`, `danger-full-access`, `-a never` or a `-c` approval or sandbox override; and any
-  command naming Claude's or Codex's settings (`.claude/settings*`, `~/.claude*`, `~/.codex`,
-  `CLAUDE_CONFIG_DIR`) other than a plain `cat`, `ls`, `grep` or `jq` with no redirection.
-- `xargs` running any command above, a shell, an interpreter or a wrapper, and an expansion (`$`
-  or a backtick) in any argument of those commands: `rm $F dir`, `git pu$()sh`.
-- A variable or a command substitution as the command word, `$IFS`, `alias` and `eval`, and any
-  word with a brace or glob character.
+  `auto-approve` (so it cannot extend itself); `kelpi plugin` and `kelpi pane send` or `send-key`,
+  by `kelpi`, `kelpi_test` or the `nex` launcher, with redirections, flags or an expansion between
+  the words (so it cannot select or install another permissions provider, or type an answer into
+  another pane); `kelpi install-hooks` in any form (it rewrites Claude's and Codex's hooks, and
+  `--command` sets the program they run, the `PermissionRequest` hook included); `claude` with
+  `--dangerously-skip-permissions`, a `--permission-mode` other than `default` or `plan`,
+  `--allowedTools`, `--settings` or `claude config`; `codex` with
+  `--dangerously-bypass-approvals-and-sandbox`, `--yolo`, `--full-auto`, `danger-full-access`,
+  `-a never` (or `-anever`) or a `-c` approval or sandbox override; and any command naming Claude's
+  or Codex's settings (`.claude/settings*`, `~/.claude*`, `~/.codex`, `CLAUDE_CONFIG_DIR`) other
+  than a plain `cat`, `ls`, `grep` or `jq` with no redirection.
+- `xargs` or `gxargs` running any command above, a shell, an interpreter or a wrapper, in any case,
+  and an expansion (`$` or a backtick) in any argument of those commands: `rm $F dir`,
+  `git pu$()sh`.
+- A variable or a command substitution as the command word, and a command word above typed in
+  another case (`RM -rf x`, `GIT push`), which the Mac's case-insensitive file system runs as rm
+  and git; `$IFS`, `alias` and `eval`, and any word with a brace or glob character.
 
-The whole command is judged, never a prefix. Long options are matched by their unambiguous
-prefixes where the list names them (`--har` for `--hard`, `--fo` for `--force`, `--del` for
-`--delete`, `--disc` for `--discard-changes`); other abbreviations are not covered. The provider
-never answers deny: anything it does not allow falls through to Claude's own prompt, exactly as if
-the plugin were not there.
+The whole command is judged, never a prefix. Long options are matched by prefix where the list
+names them, from the shortest one the tool accepts (`--h` for `--hard` but not `--help`, `--f` for
+`--force`, `--di` for `--discard-changes`, `--del` for rsync's `--delete`); other abbreviations are
+not covered. The provider never answers deny: anything it does not allow falls through to Claude's
+own prompt, exactly as if the plugin were not there.
 
 ## Limits
 
@@ -126,14 +133,16 @@ The never-list is best effort, not a sandbox, and it reads the command as text. 
 gets through: aliases and shell functions from your own shell (Claude's shell snapshot carries
 them, so a function named `ll` can run anything), a script or file it writes and then runs,
 `$'\x..'` style and `\u` escapes, a separator inside quotes (which splits the command where the
-shell would not), a wrapper or tool the list does not know (`osascript`, `awk 'system()'`,
-`parallel`, `busybox sh`, `npx`, `docker`, `gcloud`), verbs of known tools it does not name
-(`gh repo sync --force`, `kubectl certificate approve`), the kelpi CLI run from its source
+shell would not), a wrapper, shell or tool the list does not know (`osascript`, `awk 'system()'`,
+`parallel`, `busybox sh`, `npx`, `docker`, `gcloud`), a shell's own long inline flags (pwsh's
+`-Command`), verbs of known tools it does not name (`gh repo sync --force`,
+`kubectl certificate approve`), the kelpi CLI run from its source
 (`tsx packages/cli/src/index.ts`), a `git config` write or `GIT_SSH_COMMAND` that a later git
 command runs, git plumbing (`git send-pack`) and git commands by their own binaries
-(`.../git-core/git-push`), `git stash drop` and `git stash clear`, a `git checkout` of one path
-(it reads like a branch name), and a settings file reached by a relative path after a `cd`. Turn
-it on only for work you would approve anyway.
+(`.../git-core/git-push`), `git stash drop` and `git stash clear`, a `git checkout` of one path (it
+reads like a branch name), an interactive discard answered from stdin (`yes | git checkout -p`),
+and a settings file reached by a relative path after a `cd`. Turn it on only for work you would
+approve anyway.
 
 Some ordinary commands are left for you too, since a false match only costs a manual answer: an
 expansion in a ruled command's arguments (`git log $(git merge-base main HEAD)..HEAD`,

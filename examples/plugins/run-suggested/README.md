@@ -29,7 +29,8 @@ command exactly as it will run, with where it will run:
   Claude runs it and sees the output. It is offered only for a one-line `!` suggestion, when the
   pane is a Claude session that has finished its reply, is not asking for a permission or an
   answer (a permission or question notification counts until Claude's next turn starts or ends,
-  whatever notification follows it), and shows its input box empty with no menu below it.
+  whatever notification follows it), and shows its input box empty with no menu below it. An
+  AskUserQuestion question arrives as a permission notification too and is handled the same way.
   Claude's prompt suggestion often draws its guess at your next prompt as dim ghost text in the
   empty box, and right after a `!` reply the guess is usually that same line. The screen text
   has no styling, so the plugin goes by the cursor: Claude keeps it right after the prompt glyph
@@ -38,8 +39,9 @@ command exactly as it will run, with where it will run:
   cursor moved back to the start looks the same; the typed check below then catches it, nothing
   runs, and the command sits typed in the box.
 - **Run in new split** opens a shell split beside the pane, in the pane's working directory, and
-  runs the command there. A code block, a multi-line command, a busy Claude or a Claude waiting at
-  a permission prompt only gets this choice, with the reason in the dialog.
+  runs the command there. A code block, a multi-line command, a busy Claude or a Claude last seen
+  at a permission prompt only gets this choice, with the reason in the dialog ("Claude was last
+  seen at a permission prompt").
 
 Typing into the session is guarded. Once you choose, the plugin checks that the suggestion is still
 the one you confirmed, then reads the screen again and checks that Claude still waits at an empty
@@ -54,8 +56,10 @@ CLI:
 
 - "Claude is no longer waiting at its prompt, nothing was sent": checked once you answer the
   dialog, with the reason. "Claude replied again" means a newer reply replaced or cleared the
-  suggestion, "a new Claude session started" means the pane's session changed, and any other
-  reason is why Claude no longer waits at an empty prompt. This applies to both choices.
+  suggestion, "a new Claude session started" means the pane's session changed, "Claude was last
+  seen at a permission prompt" means a permission prompt or question came up since Claude's last
+  turn (see Limits), and any other reason is why Claude no longer waits at an empty prompt. This
+  applies to both choices.
 - "the screen changed, nothing was sent": the screen moved before the command was typed.
 - "the screen changed before Enter; the command is typed in Claude's box, not run": the screen
   moved after the plugin read the typed command.
@@ -131,6 +135,12 @@ command as typed), or the run failed; 2 for a usage error, including
 - A `!` command still running in the session, or Claude's reply to its output, is not seen as
   busy: neither reports a start, and Claude shows its empty box meanwhile. Claude queues the
   typed command and runs it afterwards.
+- Dismissing a permission prompt or question with Esc fires no Claude hook, so the plugin still
+  counts Claude as at the prompt: until Claude's next turn starts or ends it offers only **Run in
+  new split** ("Claude was last seen at a permission prompt"), though the box is empty again.
+- Kelpi's pane status can read idle while a permission prompt is on screen, which is why the
+  plugin does not trust the status alone: the permission notification and the screen check each
+  refuse the session on their own.
 - The empty-box check relies on Claude Code keeping the terminal cursor in its input box, as
   2.1.x does. A version that parks it elsewhere only gets **Run in new split**.
 - A CLI run cannot show the dialog, so it only prints unless you pass `--yes`.

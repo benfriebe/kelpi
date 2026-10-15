@@ -205,7 +205,7 @@ export function routeSuggested(found, state) {
     if (found.command.includes('\n') || found.command.trimEnd().endsWith('\\')) return split('a multi-line command runs in a new split');
     if (state.agent !== 'claude' || !state.sessionID) return split('the pane has no Claude session');
     if (state.status === 'running') return split('Claude is still working');
-    if (PROMPTS.has(state.lastNotificationType ?? '')) return split('Claude is waiting at a permission prompt');
+    if (PROMPTS.has(state.lastNotificationType ?? '')) return split('Claude was last seen at a permission prompt');
     if (!READY_STATUSES.has(state.status ?? '')) return split('Claude is not waiting for input');
     if (!promptReady(state.screen, state.cursor, found.command)) return split("Claude's input box is not empty");
     return { mode: 'session' };

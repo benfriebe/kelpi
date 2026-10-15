@@ -275,7 +275,7 @@ describe('Run Suggested Command example', () => {
         plugin.emit(event('notification', { notificationType: 'permission_prompt' }));
         await plugin.window();
         expect(actions(0)).toEqual(['cancel', 'split']);
-        expect(plugin.showDialog.mock.calls[0]![0].detail).toBe('Runs in a new shell split: Claude is waiting at a permission prompt.');
+        expect(plugin.showDialog.mock.calls[0]![0].detail).toBe('Runs in a new shell split: Claude was last seen at a permission prompt.');
         plugin.emit(event('start', { status: 'running' }));
         plugin.emit(stop('pane-a', '! gh auth status'));
         await plugin.window();

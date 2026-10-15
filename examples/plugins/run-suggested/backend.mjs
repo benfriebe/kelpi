@@ -60,6 +60,7 @@ export function activate(api) {
         // `muted` only asks a plugin not to echo the event as a notification, which this one never does.
         if (event.type === 'stop' || event.type === 'start') lastNotification.delete(event.paneID);
         // A prompt stays the pane's state until the turn moves on: a later idle_prompt may arrive while its dialog is still open.
+        // Esc on the dialog fires no hook, so the state can outlast it; the route then says Claude was last seen there.
         if (event.type === 'notification' && event.notificationType && !PROMPTS.has(lastNotification.get(event.paneID) ?? '')) {
             lastNotification.set(event.paneID, event.notificationType);
         }

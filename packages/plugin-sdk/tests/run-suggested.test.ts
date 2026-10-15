@@ -55,6 +55,66 @@ const PERMISSION = [
     ' Do you want to proceed?', ' ❯ 1. Yes', '   2. No, and tell Claude what to do differently (esc)', '',
 ].join('\n');
 
+// Real Claude Code 2.1.300 captures (`pane capture --json`, e2e-3 run): a frame's rows from `top` down, the
+// transcript above it blank, so the captured cursor row still indexes the text. The scratch project's path
+// reads /tmp/example; row widths matter to no check.
+const captured = (top: number, rows: string[]) => [...Array.from({ length: top }, () => ''), ...rows].join('\n');
+const WIDE_RULE = '─'.repeat(131);
+// 10-permission-prompt.json: the Bash permission prompt replaces the input box, so its top edge (row 18) is
+// the only column-0 rule. promptReady finds no rule two rows above it, typedReady none above it at all, and
+// `Do you want`, `❯ 1.` and `Esc to cancel` below it would each fail the menu test too. The tip row carries a
+// U+2014; the cursor is on the `❯` of `1. Yes`.
+const REAL_PERMISSION = captured(13, [
+    '❯ Run this with the Bash tool: touch /tmp/example/perm-test.txt'.padEnd(131), '',
+    '  Creating an empty perm-test.txt file', '  ⎿  $ touch /tmp/example/perm-test.txt', '',
+    WIDE_RULE, ' Bash command', ' Tip: auto mode handles these prompts for you \u2014 choose "switch to auto mode" below',
+    ' Create an empty perm-test.txt file', '╌'.repeat(131), ' touch /tmp/example/perm-test.txt', '╌'.repeat(131),
+    ' Do you want to proceed?', ' ❯ 1. Yes', '   2. Yes, and always allow access to /tmp/example from this project',
+    '   3. Yes, and switch to auto mode · auto mode handles these prompts for you', '   4. No', '',
+    ' Esc to cancel · Tab to amend',
+]);
+const REAL_PERMISSION_CURSOR = { row: 26, col: 1 };
+// 20-model-picker.json: `/model` draws its picker where the box was, under a U+2594 edge that is no box rule,
+// so the screen has no column-0 rule at all and neither check reaches its menu test. The cursor is on the
+// `❯` of item 2.
+const REAL_MODEL_PICKER = captured(29, [
+    '▔'.repeat(131), '   Select model',
+    '   Switch between Claude models. Your pick becomes the default for new sessions. For other/previous model names, specify with ',
+    '   --model.', '',
+    '     1.  Default (recommended)  Opus 5.5 · Best for everyday, complex tasks',
+    '   ❯ 2.  Opus 5.5 ✔             For complex work and everyday tasks',
+    '     3.  Fable 5.1              For your toughest challenges',
+    '     4.  Sonnet 5.5             Most efficient for simpler tasks',
+    '     5.  Haiku 5.5              Fastest for quick answers',
+    '     6.  Haiku 4.5              Fastest for quick answers',
+    '     7.  Sonnet 5               Efficient for routine tasks',
+    '     8.  Opus 5                 Best for everyday, complex tasks',
+    '     9.  Fable 5                Most capable for your hardest and longest-running tasks',
+    '   ↓ 10. Opus 4.8               Best for everyday, complex tasks',
+    '      … +3 models', '', '   ◉ xHigh effort ←/→ to adjust', '',
+    '   Enter to set as default · s to use this session only · Esc to cancel',
+]);
+const REAL_MODEL_PICKER_CURSOR = { row: 35, col: 3 };
+// 30-ask-user-question.json: AskUserQuestion draws its question between two column-0 rules (rows 24 and 34),
+// ten rows apart, with its last item and key hints below the lower one. promptReady wants the rules two rows
+// apart; typedReady stops at the key hint row (`Esc to cancel` and the rest) below the lower rule. The cursor
+// is on the `❯` of `1. Tea`, at column 0.
+const REAL_QUESTION = captured(23, [
+    '❯ Use the AskUserQuestion tool to ask me whether I prefer tea or coffee'.padEnd(131),
+    WIDE_RULE, ' ☐ Drink ', '', 'Do you prefer tea or coffee?', '', '❯ 1. Tea', '     You prefer tea.', '  2. Coffee',
+    '     You prefer coffee.', '  3. Type something.', WIDE_RULE, '  4. Chat about this', '',
+    'Enter to select · ↑/↓ to navigate · Esc to cancel', '', '', ' '.repeat(5), ' '.repeat(5), '', ' '.repeat(64),
+]);
+const REAL_QUESTION_CURSOR = { row: 29, col: 0 };
+// 24-after-escape.json, the control: the same pane once Esc dismissed the permission prompt. The empty box is
+// back between rules at rows 44 and 46 (`❯`, U+00A0), the cursor right after the glyph, so promptReady passes.
+// Nothing is typed in bash mode, so typedReady does not.
+const REAL_AFTER_ESCAPE = captured(43, [
+    ' '.repeat(112) + '◉ xhigh · /effort', WIDE_RULE, '❯\u00a0', WIDE_RULE,
+    '  Opus 5.5 [1M] | ctx:5% [50k] | 5h:37% [1h54m] | 7d:9% [6d4h34m]', '  ⏸ manual mode on · ← 3 agents',
+]);
+const REAL_AFTER_ESCAPE_CURSOR = { row: 45, col: 2 };
+
 describe('findSuggested', () => {
     it('drops the ! prefix and the spaces around the command', () => {
         expect(findSuggested("! ssh root@192.168.7.253 'apt-get dist-upgrade -y -o Dpkg::Options::=--force-confold'  ")).toEqual({
@@ -386,10 +446,10 @@ describe('routeSuggested', () => {
 
     it('runs in a new split while Claude waits at a permission prompt or a question', () => {
         const asking = { ...idle, status: 'waitingForInput' as const, screen: PERMISSION };
-        expect(routeSuggested(bang, { ...asking, lastNotificationType: 'permission_prompt' })).toEqual(split('Claude is waiting at a permission prompt'));
-        expect(routeSuggested(bang, { ...asking, lastNotificationType: 'elicitation_dialog' })).toEqual(split('Claude is waiting at a permission prompt'));
+        expect(routeSuggested(bang, { ...asking, lastNotificationType: 'permission_prompt' })).toEqual(split('Claude was last seen at a permission prompt'));
+        expect(routeSuggested(bang, { ...asking, lastNotificationType: 'elicitation_dialog' })).toEqual(split('Claude was last seen at a permission prompt'));
         // The notification decides even when the screen still shows the empty box.
-        expect(routeSuggested(bang, { ...idle, status: 'waitingForInput', lastNotificationType: 'permission_prompt' })).toEqual(split('Claude is waiting at a permission prompt'));
+        expect(routeSuggested(bang, { ...idle, status: 'waitingForInput', lastNotificationType: 'permission_prompt' })).toEqual(split('Claude was last seen at a permission prompt'));
     });
 
     it('runs in a new split when the pane reports no status', () => {
@@ -399,5 +459,41 @@ describe('routeSuggested', () => {
     it('runs in a new split when the screen shows a menu or a draft instead of the empty box', () => {
         expect(routeSuggested(bang, { ...idle, screen: PERMISSION })).toEqual(split("Claude's input box is not empty"));
         expect(routeSuggested(bang, { ...idle, screen: [RULE, '❯ half a draft', RULE].join('\n'), cursor: { row: 1, col: 14 } })).toEqual(split("Claude's input box is not empty"));
+    });
+});
+
+describe('real Claude Code 2.1.300 dialogs', () => {
+    const bang: Suggested = { kind: 'bang', command: 'gh auth status' };
+    const dialogs: [string, string, Cursor][] = [
+        ['a permission prompt', REAL_PERMISSION, REAL_PERMISSION_CURSOR],
+        ['the /model picker', REAL_MODEL_PICKER, REAL_MODEL_PICKER_CURSOR],
+        ['an AskUserQuestion dialog', REAL_QUESTION, REAL_QUESTION_CURSOR],
+    ];
+
+    it.each(dialogs)('reads %s as neither an empty box nor a typed command', (_name, text, cursor) => {
+        expect(promptReady(text, cursor, 'gh auth status')).toBe(false);
+        expect(promptReady(text, undefined, 'gh auth status')).toBe(false);
+        expect(typedReady(text, 'gh auth status', cursor)).toBe(false);
+    });
+
+    it.each(dialogs)('runs in a new split at %s on the screen alone, with no notification', (_name, text, cursor) => {
+        // The same run saw the pane's status read idle while the permission prompt was still up.
+        for (const status of ['waitingForInput', 'idle'] as const) {
+            expect(routeSuggested(bang, { status, agent: 'claude', sessionID: 's', lastNotificationType: undefined, screen: text, cursor }))
+                .toEqual({ mode: 'split', reason: "Claude's input box is not empty" });
+        }
+    });
+
+    it('sees the empty box once Esc dismissed the prompt, though the stale flag still refuses the session', () => {
+        expect(promptReady(REAL_AFTER_ESCAPE, REAL_AFTER_ESCAPE_CURSOR, 'gh auth status')).toBe(true);
+        expect(promptReady(REAL_AFTER_ESCAPE, undefined, 'gh auth status')).toBe(true);
+        expect(typedReady(REAL_AFTER_ESCAPE, 'gh auth status', REAL_AFTER_ESCAPE_CURSOR)).toBe(false);
+        const state: SessionState = {
+            status: 'idle', agent: 'claude', sessionID: 's', lastNotificationType: undefined, screen: REAL_AFTER_ESCAPE, cursor: REAL_AFTER_ESCAPE_CURSOR,
+        };
+        expect(routeSuggested(bang, state)).toEqual({ mode: 'session' });
+        // Esc fires no hook, so the prompt's flag stays until Claude's next turn starts or ends.
+        expect(routeSuggested(bang, { ...state, lastNotificationType: 'permission_prompt' }))
+            .toEqual({ mode: 'split', reason: 'Claude was last seen at a permission prompt' });
     });
 });

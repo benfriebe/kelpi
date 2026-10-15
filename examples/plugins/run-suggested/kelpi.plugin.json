@@ -1,0 +1,29 @@
+{
+  "id": "example.run-suggested",
+  "name": "Run Suggested Command",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "trust": "full",
+  "backend": "backend.mjs",
+  "activation": "startup",
+  "contributes": {
+    "views": [],
+    "commands": [
+      { "id": "example.run-suggested.run", "title": "Run Claude's suggested command", "shortcut": "ctrl+alt+r" },
+      { "id": "example.run-suggested.cli", "title": "Run suggested command (CLI)" }
+    ],
+    "menus": [
+      { "id": "example.run-suggested.cli-palette", "command": "example.run-suggested.cli", "placement": "palette", "when": { "context.showCliInPalette": true } }
+    ],
+    "items": [
+      {
+        "id": "example.run-suggested.header", "placement": "pane.header", "text": "Run suggested",
+        "tooltip": "Run the command Claude last suggested (Ctrl+Alt+R)", "command": "example.run-suggested.run",
+        "when": { "pane.hasAgent": true, "context.hasSuggestion": true }
+      }
+    ],
+    "cli": [
+      { "name": "run-suggested", "command": "example.run-suggested.cli", "summary": "Run the command Claude last suggested in a pane" }
+    ]
+  }
+}

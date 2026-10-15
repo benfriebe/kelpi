@@ -803,7 +803,12 @@ type DropZoneKind =
   | { kind: "topLevelWorkspace"; id: UUID; postRemoveTopIndex: number }
   | { kind: "groupHeader"; groupID: UUID; postRemoveTopIndex: number }
   | { kind: "groupChild"; groupID: UUID; childID: UUID; postRemoveChildIndex: number }
-  | { kind: "groupEmpty"; groupID: UUID };
+  | { kind: "groupEmpty"; groupID: UUID }
+  // §2.9, built only while the drag may nest into a row (`nestInto` rides on the
+  // topLevelWorkspace and groupChild kinds above):
+  | { kind: "nestedChild"; parentID: UUID; childID: UUID; postRemoveChildIndex: number;
+      after?: DropTarget }   // `after` only on the parent's last nested row
+  | { kind: "fixed"; target: DropTarget };   // a nested row under a non-nestable drag
 interface DropZone { kind: DropZoneKind; yTop: number; yBottom: number }
 ```
 
@@ -828,6 +833,10 @@ type DropTarget =
   third → before it, middle third → `ontoWorkspace` (nest under it), bottom third → after it,
   or its first nested slot (`intoParent`, index 0) when its children are expanded. A slot
   outside a group is therefore the top or bottom third of a row, never its middle.
+- nested row zone, nestable drag: halves → `intoParent` before or after that row; the
+  parent's last nested row splits in thirds instead, its bottom third meaning after the
+  parent's whole block in the parent's own container. Non-nestable drag: the whole row is
+  `kind: 'fixed'`, meaning after the parent's block as a whole.
 - group header zone: top half → top-level before the group; bottom half →
   `ontoGroupHeader` (append into it).
 - group child zone: top/bottom half → before/after that child.
@@ -841,8 +850,8 @@ type DropTarget =
 - The grabbed row tracks the cursor exactly (offset = cursorY − grabOffset − restingY),
   rendered above siblings, at 80% opacity, scaled 1.03, with a drop shadow. Cursor
   tracking must NOT animate; everything else springs.
-- **Live-apply:** `topLevel` and `intoGroup` targets are applied to state *while
-  dragging*, so sibling rows shift out of the way in real time (the reorder itself is
+- **Live-apply:** every target except `ontoGroupHeader` and `ontoWorkspace` (`topLevel`,
+  `intoGroup`, `intoParent`) is applied to state *while dragging*, so sibling rows shift out of the way in real time (the reorder itself is
   the drop indicator). `ontoGroupHeader` is **preview-only** (the cursor transits headers
   constantly): it renders as an accent @ 0.18 tint over the header band, and the grabbed
   row previews a nested indent (depth ≥ 1) while it's the target. `ontoWorkspace` is
@@ -924,8 +933,11 @@ Move to Group ▸                  → "Remove from Group" (when grouped) / each
                                    (current disabled) / "New Group…" (creates a group
                                    seeded with this workspace, placeholder name,
                                    auto-starts inline rename)
-New Nested Workspace…            (top-level rows only, app-state-core.md §2.9)
-Nest Under ▸                     (rows without children, when a parent exists)
+New Nested Workspace…            (rows that are not nested themselves, group members
+                                   included; app-state-core.md §2.9)
+Nest Under ▸                     (whenever another non-nested workspace exists to take the
+                                   row; a nested row shows it with its current parent
+                                   ticked and disabled)
 Un-nest                          (nested rows only)
 ──────────
 Mute Notifications         [ ]   → a checkbox at the row's trailing edge, ticked while the

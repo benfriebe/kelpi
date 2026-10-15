@@ -23776,6 +23776,14 @@ function buildFlows(ctx) {
                     }
                     await sleep(120);
                     const beforeRelease = await readDressing();
+                    recorder.check(
+                        'and on the way back OUT to the top level the clone sheds the group band again (§5.5)',
+                        beforeRelease.clone !== null &&
+                            beforeRelease.clone.bands === 0 &&
+                            beforeRelease.clone.depth === '0' &&
+                            beforeRelease.clone.group === null,
+                        JSON.stringify(beforeRelease.clone)
+                    );
                     const releaseY = finalOut.y + pitch * 0.45;
                     await page.mouse('mouseMoved', nestedX, releaseY, { button: 'left', buttons: 1 });
                     await sleep(60);

@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
-import { KEYS } from './cdp.mjs';
+import { KEYS, MOD, physicalKeyFor, typedKeyEvents } from './cdp.mjs';
 
 /**
  * Every key code the harness names, and every physical key the client knows, resolves in `KEYS`.
@@ -166,6 +166,53 @@ describe('the KEYS table', () => {
         // unmodified letter press in the suite into a typed character.
         for (const code of Object.keys(KEYS).filter((name) => /^(?:Key[A-Z]|Digit[0-9])$/.test(name))) {
             expect(KEYS[code].text).toBeUndefined();
+        }
+    });
+});
+
+describe('typing a character (#354)', () => {
+    const PRINTABLE_ASCII = Array.from({ length: 0x7e - 0x20 + 1 }, (_, index) => String.fromCharCode(0x20 + index));
+
+    it('is a rawKeyDown, a char and a keyUp, and only the char carries text', () => {
+        for (const character of PRINTABLE_ASCII) {
+            const events = typedKeyEvents(character);
+            expect(events.map((event) => event.type)).toEqual(['rawKeyDown', 'char', 'keyUp']);
+            // A `keyDown` with `text` is a key AND its character; a `char` after it was the second
+            // copy of every key that xterm.js typed.
+            expect(events.filter((event) => 'text' in event)).toEqual([events[1]]);
+            expect(events[1]).toMatchObject({ text: character, key: character });
+        }
+    });
+
+    it('gives the down and the up the same physical key, with a real virtual key code', () => {
+        for (const character of PRINTABLE_ASCII) {
+            const [down, , up] = typedKeyEvents(character);
+            expect(down.code).not.toBe('Unidentified');
+            expect(down.windowsVirtualKeyCode).toBeGreaterThan(0);
+            expect(down.windowsVirtualKeyCode).toBe(KEYS[down.code].keyCode);
+            expect(up).toEqual({ ...down, type: 'keyUp' });
+        }
+    });
+
+    it('presses the US-layout key, shifted where the character needs it', () => {
+        expect(physicalKeyFor('q')).toEqual({ code: 'KeyQ', keyCode: 81, shift: false });
+        expect(physicalKeyFor('Z')).toEqual({ code: 'KeyZ', keyCode: 90, shift: true });
+        expect(physicalKeyFor('7')).toEqual({ code: 'Digit7', keyCode: 55, shift: false });
+        expect(physicalKeyFor(' ')).toEqual({ code: 'Space', keyCode: 32, shift: false });
+        // Punctuation used to go out with its own code point as the virtual key code: `-` as 45
+        // (Insert) and `.` as 46 (Delete), which xterm.js typed as their escape sequences.
+        expect(physicalKeyFor('-')).toEqual({ code: 'Minus', keyCode: 189, shift: false });
+        expect(physicalKeyFor('.')).toEqual({ code: 'Period', keyCode: 190, shift: false });
+        expect(physicalKeyFor(':')).toEqual({ code: 'Semicolon', keyCode: 186, shift: true });
+        expect(physicalKeyFor('!')).toEqual({ code: 'Digit1', keyCode: 49, shift: true });
+        expect(physicalKeyFor('~')).toEqual({ code: 'Backquote', keyCode: 192, shift: true });
+        expect(typedKeyEvents(':')[0].modifiers).toBe(MOD.shift);
+        expect(typedKeyEvents(';')[0].modifiers).toBe(0);
+    });
+
+    it('refuses a character no key types, instead of inventing one', () => {
+        for (const character of ['\n', '\t', '\u001b', 'é', '\u2014']) {
+            expect(() => typedKeyEvents(character)).toThrow(/key\(\)|insertText\(\)/);
         }
     });
 });

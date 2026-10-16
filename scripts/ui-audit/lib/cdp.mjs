@@ -536,36 +536,18 @@ export async function connect(webSocketDebuggerUrl, { repoRoot, verbose = false 
             });
         },
 
-        /** Type printable text one key at a time — the terminal is a canvas, not an input. */
+        /**
+         * Type printable text one key at a time: the terminal is a canvas, not an input.
+         *
+         * Each character goes out as the three events Chromium on macOS delivers for a real
+         * keystroke; see `typedKeyEvents` for why that exact shape matters (#354). The whole
+         * string is resolved before the first key, so a character with no key throws without
+         * leaving half a command typed.
+         */
         async type(value, { perKeyMs = 14 } = {}) {
-            for (const character of value) {
-                const code = codeForCharacter(character);
-                const shift = /[A-Z~!@#$%^&*()_+{}|:"<>?]/.test(character);
-                await send('Input.dispatchKeyEvent', {
-                    type: 'keyDown',
-                    code,
-                    key: character,
-                    text: character,
-                    unmodifiedText: character,
-                    windowsVirtualKeyCode: character.toUpperCase().charCodeAt(0),
-                    nativeVirtualKeyCode: character.toUpperCase().charCodeAt(0),
-                    modifiers: shift ? MOD.shift : 0
-                });
-                await send('Input.dispatchKeyEvent', {
-                    type: 'char',
-                    text: character,
-                    unmodifiedText: character,
-                    key: character,
-                    modifiers: shift ? MOD.shift : 0
-                });
-                await send('Input.dispatchKeyEvent', {
-                    type: 'keyUp',
-                    code,
-                    key: character,
-                    windowsVirtualKeyCode: character.toUpperCase().charCodeAt(0),
-                    nativeVirtualKeyCode: character.toUpperCase().charCodeAt(0),
-                    modifiers: shift ? MOD.shift : 0
-                });
+            const keystrokes = [...value].map(typedKeyEvents);
+            for (const events of keystrokes) {
+                for (const event of events) await send('Input.dispatchKeyEvent', event);
                 await sleep(perKeyMs);
             }
         },
@@ -685,24 +667,66 @@ export const KEYS = {
     Numpad0: { key: '0', keyCode: 96, text: '0' }
 };
 
-function codeForCharacter(character) {
-    if (/[a-zA-Z]/.test(character)) return `Key${character.toUpperCase()}`;
-    if (/[0-9]/.test(character)) return `Digit${character}`;
-    const punctuation = {
-        ' ': 'Space',
-        '-': 'Minus',
-        '=': 'Equal',
-        '.': 'Period',
-        ',': 'Comma',
-        '/': 'Slash',
-        ';': 'Semicolon',
-        "'": 'Quote',
-        '[': 'BracketLeft',
-        ']': 'BracketRight',
-        '\\': 'Backslash',
-        '`': 'Backquote'
-    };
-    return punctuation[character] ?? 'Unidentified';
+/** The unshifted printable keys of the US layout, by the character each one types. */
+const UNSHIFTED_CHARACTER_CODES = [
+    'Space', 'Comma', 'Period', 'Semicolon', 'Quote', 'Backquote', 'Backslash', 'Equal', 'Minus', 'Slash',
+    'BracketLeft', 'BracketRight'
+];
+
+/** The US layout's shifted characters, by the key that types each one with shift held. */
+const SHIFTED_CHARACTER_CODES = {
+    '~': 'Backquote', '!': 'Digit1', '@': 'Digit2', '#': 'Digit3', $: 'Digit4', '%': 'Digit5', '^': 'Digit6',
+    '&': 'Digit7', '*': 'Digit8', '(': 'Digit9', ')': 'Digit0', _: 'Minus', '+': 'Equal', '{': 'BracketLeft',
+    '}': 'BracketRight', '|': 'Backslash', ':': 'Semicolon', '"': 'Quote', '<': 'Comma', '>': 'Period', '?': 'Slash'
+};
+
+/**
+ * The physical key, on a US layout, that types `character`: its `KeyboardEvent.code`, its virtual
+ * key code, and whether shift is held. Every printable ASCII character has one; anything else
+ * throws, because there is no key to report and a made-up one is worse than none.
+ */
+export function physicalKeyFor(character) {
+    let code;
+    let shift = false;
+    if (/^[a-z]$/.test(character)) code = `Key${character.toUpperCase()}`;
+    else if (/^[A-Z]$/.test(character)) [code, shift] = [`Key${character}`, true];
+    else if (/^[0-9]$/.test(character)) code = `Digit${character}`;
+    else if (SHIFTED_CHARACTER_CODES[character] !== undefined) [code, shift] = [SHIFTED_CHARACTER_CODES[character], true];
+    else code = UNSHIFTED_CHARACTER_CODES.find((name) => KEYS[name].key === character);
+    if (code === undefined) {
+        throw new Error(
+            `type() has no US-layout key for ${JSON.stringify(character)}: press a named key with key(), ` +
+                'or commit text with insertText()'
+        );
+    }
+    return { code, keyCode: KEYS[code].keyCode, shift };
+}
+
+/**
+ * The `Input.dispatchKeyEvent` params for typing one character, in order.
+ *
+ * This is what Chromium on macOS delivers for a real keystroke: a `rawKeyDown` that carries the
+ * key but no text, a `char` that carries the text, and a `keyUp`. Blink drops the `char` when the
+ * page prevented the `rawKeyDown`, exactly as it does for a person typing.
+ *
+ * #354: this used to send `keyDown` WITH `text`, and then a separate `char`. A `keyDown` with
+ * text is already a key plus its character, so every key carried its character twice. ghostty-web
+ * never noticed because it has no keypress path. xterm.js sends a printable key from its keydown
+ * handler and relies on `preventDefault()` to suppress the keypress that follows; the stray
+ * `char` produced one anyway, and every typed key reached the PTY twice. The virtual key code was
+ * also the character's own code point, which is the letter's key for letters and a different key
+ * for punctuation: `-` went out as 45 (Insert) and `.` as 46 (Delete), and xterm.js sent their
+ * escape sequences ahead of the text.
+ */
+export function typedKeyEvents(character) {
+    const { code, keyCode, shift } = physicalKeyFor(character);
+    const modifiers = shift ? MOD.shift : 0;
+    const key = { code, key: character, windowsVirtualKeyCode: keyCode, nativeVirtualKeyCode: keyCode, modifiers };
+    return [
+        { type: 'rawKeyDown', ...key },
+        { type: 'char', text: character, unmodifiedText: character, key: character, modifiers },
+        { type: 'keyUp', ...key }
+    ];
 }
 
 export { sleep };

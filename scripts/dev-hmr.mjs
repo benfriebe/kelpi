@@ -26,6 +26,7 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 const { buildAll, freePort, startDaemon, waitForHealthz, clearBackgroundTaskPolicy } = await import(
     path.join(repoRoot, 'scripts', 'ui-audit', 'lib', 'stack.mjs')
 );
+const { launcherEnv } = await import(path.join(repoRoot, 'scripts', 'ui-audit', 'lib', 'launcher-env.mjs'));
 
 const args = process.argv.slice(2);
 const stateArg = (() => {
@@ -53,6 +54,9 @@ const sandbox = {
     env: {
         PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
         HOME: path.join(root, 'home'),
+        // Who you are, so a pane is not left with no USER and LOGNAME=root (#410). The HOME is
+        // isolated, so only the identity keys: `launcher-env.mjs` says why.
+        ...launcherEnv(process.env, { realHome: false }),
         KELPID_RUN_DIR: path.join(root, 'run'),
         KELPID_SOCKET_PATH: path.join(root, 'kelpid.sock'),
         KELPID_TCP_PORT: String(controlPort),

@@ -28,6 +28,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { launcherEnv } from './ui-audit/lib/launcher-env.mjs';
 import { killSandboxHosts } from './ui-audit/lib/stack.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -64,7 +65,9 @@ const verbose = has('--verbose');
  * pinned below by name (run dir, database, config, Ghostty config, client dir), and Electron gets
  * its own `--user-data-dir`: a real `HOME` changes what a pane's shell sees and nothing the
  * daemon writes. `--isolated-home` restores the old sandbox: an empty `HOME` under the state dir
- * and no `SHELL`, so panes fall back to `/bin/sh` with no rc files.
+ * and no `SHELL`, so panes fall back to `/bin/sh` with no rc files. Either way panes keep your
+ * `USER` and `LOGNAME`; only the real HOME also passes `TMPDIR` and `SSH_AUTH_SOCK`
+ * (`ui-audit/lib/launcher-env.mjs`, #410).
  */
 const isolatedHome = has('--isolated-home');
 const persistent = stateDir !== undefined;
@@ -189,6 +192,10 @@ const sandbox = {
         PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
         HOME: isolatedHome ? path.join(root, 'home') : os.homedir(),
         ...(!isolatedHome && process.env.SHELL ? { SHELL: process.env.SHELL } : {}),
+        // Who you are, and with the real HOME your temp dir and ssh agent: without them a pane
+        // came up with no USER and LOGNAME=root, and `claude` there was not logged in (#410).
+        // `launcher-env.mjs` says which keys and why. This env reaches the shell process too.
+        ...launcherEnv(process.env, { realHome: !isolatedHome }),
         KELPID_RUN_DIR: path.join(root, 'run'),
         KELPID_SOCKET_PATH: socketPath,
         KELPID_TCP_PORT: String(controlPort),

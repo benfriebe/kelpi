@@ -67,10 +67,11 @@ export default async function ({ page, harness, cli, rec, d, sleep }) {
     };
 
     await d.focusPaneBody(page, paneID);
-    // Bracketed paste ON and the protocol negotiated, in one line, then a reader that prints
-    // what the PTY actually received.
-    await d.runInTerminal(page, `printf '\\033[?2004h\\033[>3u'`, { settleMs: 600 });
-    await d.runInTerminal(page, 'cat -vt', { settleMs: 800 });
+    // Bracketed paste ON and the protocol negotiated, then a reader that prints what the PTY
+    // actually received, all in ONE command line: a line-editing shell (zsh's zle) turns mode
+    // 2004 off again before it runs each accepted line, so a `cat` started on the next line
+    // would get the paste bare (#420).
+    await d.runInTerminal(page, `printf '\\033[?2004h\\033[>3u'; cat -vt`, { settleMs: 1_000 });
 
     const negotiated = await d.settle(async () => (await readFlags()) === '3', { ceilingMs: 5_000, intervalMs: 150 });
     rec.check('the pane reports the negotiated kitty flags (data-terminal-kitty="3")', negotiated, String(await readFlags()));

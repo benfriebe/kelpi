@@ -106,7 +106,9 @@ export default async function ({ page, cli, rec, d, sleep }) {
     await pressBackspace(0);
     await pressBackspace(d.MOD.ctrl);
     await pressBackspace(d.MOD.alt);
-    const matrix = (await captureUntil((text) => text.length > before.length)).slice(before.length - 40);
+    // Clamped: on a short screen (a shorter prompt than `sh-3.2$ `) the start would go negative
+    // and slice from the END, leaving one character to search (#420).
+    const matrix = (await captureUntil((text) => text.length > before.length)).slice(Math.max(0, before.length - 40));
     rec.note(`matrix tail: ${JSON.stringify(matrix.slice(-80))}`);
     rec.check('a bare Backspace is still ^? (DEL)', matrix.includes('^?'), matrix.slice(-80));
     rec.check('ctrl+Backspace is still ^H (0x08)', matrix.includes('^H'), matrix.slice(-80));
@@ -127,7 +129,7 @@ export default async function ({ page, cli, rec, d, sleep }) {
         const kittyBefore = await capture();
         await pressBackspace(d.MOD.meta);
         const kitty = await captureUntil((text) => text.length > kittyBefore.length, 2_000);
-        const tail = kitty.slice(kittyBefore.length - 40);
+        const tail = kitty.slice(Math.max(0, kittyBefore.length - 40));
         rec.note(`screen after ⌘Backspace with the protocol on: ${JSON.stringify(tail.slice(-120))}`);
         rec.check(
             'with the protocol ON it is still ^U, because a bound chord never reaches the encoder',

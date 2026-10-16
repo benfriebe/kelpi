@@ -15,6 +15,15 @@
  * Linux it is dash, which would type ⌃L into the line), so the pane `exec`s a bare zsh first: the
  * same pid, now a shell whose prompt the daemon can see and whose zle redraws on ⌃L.
  *
+ * That pane is one of its own, split off the window's first pane and closed at the end. The
+ * battery runs every scenario against one sandbox, and several later ones take
+ * `domPaneIDs(page)[0]` and expect `sh`: after an `exec zsh` there, `cmd-backspace-line-kill`
+ * sliced its byte matrix off a shorter prompt and `kitty-keeps-system-chords` lost its
+ * bracketed paste to zle (#420). The split is `vertical` (stacked, the ⌘⇧D split) so the pane
+ * keeps the first pane's width: the redrawn prompt below is checked to be one line, which a soft
+ * wrap would break. `pane split` takes only `horizontal | vertical`, and any other word is
+ * dropped for the side-by-side default, so the width is checked rather than assumed.
+ *
  * Three cases, Ghostty's three:
  *  - at a prompt, with a half-typed command: everything goes, and the shell redraws its prompt
  *    with the typed text still on it;
@@ -38,12 +47,45 @@ const TAG = Math.random().toString(36).slice(2, 7).toUpperCase();
 const TYPED = `echo KELPI-CLEAR-${TAG}`;
 const RUNNING = `KELPI-RUNNING-${TAG}`;
 
+/** The pane wearing the focus ring: the one the client's ⌘K clears. */
+const RINGED_PANE = `(() => {
+    const el = document.querySelector('[data-pane-id][data-focused="true"]');
+    return el === null ? '' : (el.getAttribute('data-pane-id') ?? '');
+})()`;
+
 export default async function ({ page, cli, rec, d, sleep }) {
     await d.settle(async () => (await d.domPaneIDs(page)).length > 0, { ceilingMs: 15_000, intervalMs: 200 });
-    const paneID = (await d.domPaneIDs(page))[0];
-    rec.check('a terminal pane to clear', paneID !== undefined);
-    if (paneID === undefined) return;
-    rec.note(`target pane: ${String(paneID)}`);
+    const firstPane = (await d.domPaneIDs(page))[0];
+    rec.check('a terminal pane to split from', firstPane !== undefined);
+    if (firstPane === undefined) return;
+
+    const paneID = JSON.parse(await cli.ok(['pane', 'split', '--target', firstPane, '--direction', 'vertical', '--json'])).pane_id;
+    rec.note(`target pane: ${String(paneID)} (split off ${String(firstPane)})`);
+    try {
+        await clearScreenCases({ page, cli, rec, d, sleep, paneID, firstPane });
+    } finally {
+        await cli.run(['pane', 'close', '--target', paneID]);
+        const gone = await d.settle(async () => !(await d.domPaneIDs(page)).includes(paneID), { ceilingMs: 8_000, intervalMs: 150 });
+        rec.check('its own pane closed again', gone);
+        let refocused = false;
+        try {
+            await d.focusPaneBody(page, firstPane);
+            refocused = await d.settle(async () => (await page.eval(RINGED_PANE)) === firstPane, { ceilingMs: 3_000, intervalMs: 100 });
+        } catch {}
+        rec.check(
+            'and the first pane is still first, with the focus back, for the scenario after this one',
+            (await d.domPaneIDs(page))[0] === firstPane && refocused,
+            `panes ${JSON.stringify(await d.domPaneIDs(page))}, ringed ${String(await page.eval(RINGED_PANE))}`
+        );
+    }
+}
+
+async function clearScreenCases({ page, cli, rec, d, sleep, paneID, firstPane }) {
+    const mounted = await d.settleDom(page, `document.querySelectorAll('[data-pane-id="${paneID}"] [data-pane-surface] textarea').length > 0`, { ceilingMs: 15_000 });
+    rec.check('its own pane mounted a terminal surface', mounted);
+    if (!mounted) return;
+    const widths = await page.eval(`[${JSON.stringify(firstPane)}, ${JSON.stringify(paneID)}].map((id) => document.querySelector('[data-testid="pane-body-' + id + '"]')?.getBoundingClientRect().width ?? 0)`);
+    rec.check('and it is stacked below the first pane, at the same width', Math.abs(widths[0] - widths[1]) <= 2 && widths[1] > 0, JSON.stringify(widths));
 
     const capture = async () => await cli.ok(['pane', 'capture', '--target', paneID, '--scrollback']);
     const captureUntil = async (predicate, ceilingMs = 3_000) => {
@@ -65,7 +107,17 @@ export default async function ({ page, cli, rec, d, sleep }) {
         await d.runInTerminal(page, `for i in $(seq 1 120); do echo ${prefix}-$i; done`, { settleMs: 900 });
     };
 
+    // A CLI split never takes focus, and ⌘K clears the CLIENT's focused pane: without this a
+    // ⌘K that cleared the first pane instead could still pass.
     await d.focusPaneBody(page, paneID);
+    const focused = await d.settle(async () => (await page.eval(RINGED_PANE)) === paneID, { ceilingMs: 5_000, intervalMs: 100 });
+    rec.check('its own pane has the focus the ⌘K presses go to', focused, `ringed ${String(await page.eval(RINGED_PANE))}`);
+    if (!focused) return;
+    // A pane moments old can lose what is typed before its shell has drawn a prompt
+    // (`ui-audit/audit.mjs` ▸ `settleShellPane`), and a mangled `exec` would leave this in sh.
+    const prompted = await d.settle(async () => (await capture()).trim().length > 0, { ceilingMs: 10_000, intervalMs: 150 });
+    rec.check('its shell drew a prompt before anything was typed', prompted);
+    if (!prompted) return;
     await d.runInTerminal(page, `exec zsh -f`, { settleMs: 1_200 });
 
     // ── at a prompt ────────────────────────────────────────────────────────────────

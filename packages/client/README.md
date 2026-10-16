@@ -123,6 +123,10 @@ on every `VITE_*` variable:
 VITE_TERMINAL_ENGINE=xterm node scripts/scenario.mjs typed-keys-arrive-once
 ```
 
+Every harness run in a worktree builds into the same `packages/client/dist`, so do not start an
+xterm run while a default-engine run (an audit, `verify.mjs`) is going in the same worktree: the
+second build replaces the bundle under the first.
+
 Both engines sit behind `TerminalRenderer` (`src/terminal/renderer.ts`) and are code-split, so
 only the selected one is downloaded. The xterm build additionally pulls in
 `@xterm/xterm/css/xterm.css`, which `main.tsx` imports **only** for that engine. Known

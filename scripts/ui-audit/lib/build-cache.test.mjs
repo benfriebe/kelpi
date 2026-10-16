@@ -42,6 +42,11 @@ describe('the client bundle keys on its build-time environment (#353)', () => {
         }
     });
 
+    it('NODE_ENV changes the client hash, since it picks the React build', () => {
+        const root = fixture();
+        expect(bundleHash(root, 'client', { env: { NODE_ENV: 'development' } })).not.toBe(bundleHash(root, 'client', { env: {} }));
+    });
+
     it('ignores variables Vite does not substitute', () => {
         const root = fixture();
         expect(bundleHash(root, 'client', { env: { HOME: '/a' } })).toBe(bundleHash(root, 'client', { env: { HOME: '/b' } }));

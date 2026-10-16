@@ -33,6 +33,7 @@
  */
 
 import { runDesktopTest, ownDesktopResource, assertDesktopActive, waitForDesktopChildExit } from '../../../scripts/ui-audit/lib/desktop-lifecycle.mjs';
+import { typedKeyEvents } from '../../../scripts/ui-audit/lib/cdp.mjs';
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
@@ -364,18 +365,11 @@ async function connectPage(port) {
             }
             await sleep(150);
         },
+        // The harness's own keystroke shape, so this smoke types each key once on either engine
+        // (#354: a `keyDown` carrying text plus a `char` typed every key twice on xterm.js).
         async type(value) {
-            for (const character of value) {
-                const upper = character.toUpperCase();
-                const params = {
-                    key: character,
-                    text: character,
-                    unmodifiedText: character,
-                    windowsVirtualKeyCode: /[a-z]/i.test(character) ? upper.charCodeAt(0) : character.charCodeAt(0)
-                };
-                await send('Input.dispatchKeyEvent', { type: 'keyDown', ...params });
-                await send('Input.dispatchKeyEvent', { type: 'char', ...params });
-                await send('Input.dispatchKeyEvent', { type: 'keyUp', ...params });
+            for (const events of [...value].map(typedKeyEvents)) {
+                for (const event of events) await send('Input.dispatchKeyEvent', event);
             }
         },
         async enter() {

@@ -383,11 +383,10 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
     /**
      * Type into the lab's field, the way a real find bar is typed into.
      *
-     * `insertText` rather than `page.type`: CDP's key-at-a-time path dispatches a `keyDown` carrying
-     * text AND a `char` event, and a real `<input>` inserts on both - measured here as
-     * `NNEEEEDDLLEEFFIINNDD` for a ten-character needle. `page.type` exists for a TERMINAL, which is
-     * a canvas and consumes the key event itself; a text field takes the IME-style commit instead,
-     * which is what `plugin-pane-chrome` already does for the native find bar.
+     * `insertText` rather than `page.type`: a text field takes the IME-style commit, which is what
+     * `plugin-pane-chrome` already does for the native find bar. `page.type` used to dispatch a
+     * `keyDown` carrying text AND a `char` event, and a real `<input>` inserted on both, measured
+     * here as `NNEEEEDDLLEEFFIINNDD` for a ten-character needle; it sends one copy since #354.
      */
     const typeIntoLab = async text => {
         // Inside the host's CLIPPED rectangle, not the element's own box: on a narrow pane the bar

@@ -5737,9 +5737,9 @@ function buildFlows(ctx) {
                 );
 
                 await page.click(`[data-testid="web-find-input-${paneID}"]`);
-                // `insertText`, not `type`: a React-controlled input receives both the synthetic
-                // keyDown's `text` and the following `char` event, and ends up with every
-                // character doubled ("ffiixxttuurree").
+                // `insertText`, not `type`: a text field takes the IME-style commit. (`type` used
+                // to send a keyDown carrying text plus a `char`, which doubled every character
+                // here as "ffiixxttuurree"; it sends one copy since #354.)
                 await page.insertText('fixture');
                 await sleep(900);
                 await recorder.shot(page);
@@ -15696,9 +15696,10 @@ function buildFlows(ctx) {
                         );
                     await page.click(`[data-testid="pane-search-input-${paneID}"]`);
                     const started = Date.now();
-                    // `insertText`, not `type`: the needle field is a real <input>, and a
-                    // synthetic key event inserts the character TWICE there (once from
-                    // `keyDown.text`, once from the `char` event) — the first run typed `NN`.
+                    // `insertText`, not `type`: the needle field is a real <input>, which takes
+                    // the IME-style commit. (`type` used to insert the character twice there, once
+                    // from `keyDown.text` and once from the `char` event, and the first run typed
+                    // `NN`; it sends one copy since #354.)
                     await page.insertText('N');
                     let firstCountAt = null;
                     for (let waited = 0; waited < 4000; waited += 40) {

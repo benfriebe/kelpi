@@ -20,6 +20,7 @@ import { useStore } from 'zustand';
 import { layoutPaneOrder, type WorkspaceState } from '@kelpi/daemon/store';
 
 import { RemoteWorkspaceView } from '../app/RemoteWorkspaceView';
+import { remoteDefaultFontSize } from '../app/text-size';
 import { tokens } from '../chrome/tokens';
 import type { KelpiRuntime } from '../state';
 import type { TerminalRendererFactory } from '../terminal';
@@ -51,6 +52,8 @@ export function PhoneRemoteWorkspace(props: PhoneRemoteWorkspaceProps): ReactEle
     );
     const focusEcho = useStore(runtime.store, (state) => state.ui.focusEcho);
     const connection = useStore(runtime.store, (state) => state.ui.connection);
+    // #267: the pane's own size, else this daemon's, exactly as `RemoteWorkspaceView` draws it.
+    const defaultFontSize = useStore(runtime.store, remoteDefaultFontSize);
     const shownPaneID = workspace === undefined || mode !== 'pane' ? null : remoteShownPane(workspace, focusEcho);
 
     // `layout` mode's activation is `RemoteWorkspaceView`'s own effect; `pane` mode reports the
@@ -116,6 +119,7 @@ export function PhoneRemoteWorkspace(props: PhoneRemoteWorkspaceProps): ReactEle
                         // editing chords itself, exactly as `RemoteWorkspaceView` has it do in
                         // `layout` mode above. Every remote render site owes this.
                         editingShortcuts
+                        fontSize={pane.terminalFontSize ?? defaultFontSize}
                         onFocusRequest={(id) => runtime.focusPane(workspaceID, id)}
                         createRenderer={props.createRenderer}
                     />

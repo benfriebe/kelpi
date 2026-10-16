@@ -96,3 +96,34 @@ describe('remote phone documents', () => {
         expect(getDocumentDraft(h.runtime, FIRST)?.text).toBe('Unapplied remote input');
     });
 });
+
+/**
+ * #267: a remote daemon's terminal is drawn at that daemon's size: its own, else the remote
+ * ghostty `font-size`, never the engine's built-in 13 (which is what every other viewer of the
+ * same PTY would not be drawing).
+ */
+describe('a remote terminal on the phone', () => {
+    it("is drawn at the remote daemon's ghostty font-size, and at its own size when it has one", async () => {
+        const { createFakeRendererFactory, installFakeResizeObserver } = await import('../terminal/testing');
+        const observers = installFakeResizeObserver();
+        try {
+            const daemon = createDaemonStore(emptyDaemonState('/tmp'));
+            daemon.dispatch({ type: 'create-workspace', id: WORKSPACE, paneID: FIRST, name: 'Remote', color: 'blue', now: 1 });
+            const sockets = createFakeSocketFactory();
+            const runtime = createKelpiRuntime({ store: createKelpiStore(), url: `ws://${crypto.randomUUID()}.test/ws`, socketFactory: sockets.factory, notifications: null });
+            runtimes.push(runtime); runtime.connect();
+            completeHandshake(sockets.last(), { state: JSON.parse(JSON.stringify(daemon.getState())) });
+            const current = runtime.store.getState().settings.value;
+            runtime.store.getState().applySettings({ ...current, appearance: { ...current.appearance, fontSize: 17 } });
+            const renderers = createFakeRendererFactory();
+            render(<PhoneRemoteWorkspace runtime={runtime} workspaceID={WORKSPACE} hostName="Remote" mode="pane" createRenderer={renderers.factory} />);
+            await waitFor(() => expect(renderers.instances.at(-1)?.options?.fontSize).toBe(17));
+
+            daemon.dispatch({ type: 'set-terminal-font-size', workspaceID: WORKSPACE, paneID: FIRST, size: 21 });
+            act(() => { runtime.store.getState().applySnapshot(1, JSON.parse(JSON.stringify(daemon.getState()))); });
+            await waitFor(() => expect(renderers.instances.at(-1)?.options?.fontSize).toBe(21));
+        } finally {
+            observers.restore();
+        }
+    });
+});

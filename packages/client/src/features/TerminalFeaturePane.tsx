@@ -17,7 +17,7 @@ export interface TerminalFeaturePaneProps extends TerminalPaneProps {
     readonly claimedChords?: readonly string[] | undefined;
     /**
      * This pane answers the five terminal editing chords itself, because no window dispatcher
-     * will (#172, #170).
+     * will (#172, #170), and the three text-size chords against its own daemon (#267).
      *
      * **Every site that renders a REMOTE daemon's terminal pane must set this**, and only those
      * sites may: `app/RemoteWorkspaceView.tsx` (the desktop grid, and the phone's `layout` mode
@@ -72,7 +72,8 @@ export function TerminalFeaturePane(props: TerminalFeaturePaneProps): ReactEleme
     // `middle-click-paste`, off the same store, and the paste goes over the same connection.
     const middleClickPasteOn = useStore(runtime.store, (state) => state.settings.value.general.middleClickPaste);
     const middleClickPaste = useMiddleClickPaste(runtime, paneID);
-    const shortcuts = useTerminalShortcuts(runtime, paneID, props.visible, props.claimedChords);
+    // #267: a remote pane also answers ⌘= / ⌘- / ⌘0 against its own daemon, for the same reason.
+    const shortcuts = useTerminalShortcuts(runtime, paneID, props.visible, props.claimedChords, { remoteTextSize: props.editingShortcuts === true });
     const layout = useWorkbenchLayout(runtime);
     const selected = resolveSlot(layout.views, 'terminal', layout.selections.terminal);
     const viewID = selected?.id ?? TERMINAL_FEATURE.id;

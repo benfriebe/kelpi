@@ -31,6 +31,7 @@ import { wireEdgeForDropZone } from '@kelpi/core/layout';
 
 import { tokens } from '../chrome/tokens';
 import { PaneGrid } from '../grid';
+import { remoteDefaultFontSize } from './text-size';
 import type { KelpiRuntime } from '../state';
 
 export interface RemoteWorkspaceViewProps {
@@ -71,6 +72,13 @@ export function RemoteWorkspaceView(props: RemoteWorkspaceViewProps): ReactEleme
      * a remote daemon's workspace (#216).
      */
     const general = useStore(runtime.store, (state) => state.settings.value.general);
+    /*
+     * #267: the size a terminal with none of its own is drawn at is THIS daemon's ghostty
+     * `font-size`, the one every other viewer of the same PTY draws. It used to be the engine's
+     * built-in 13, so a remote daemon's "All panes" size, and the arithmetic a pane's own step
+     * starts from, never reached this window.
+     */
+    const defaultFontSize = useStore(runtime.store, remoteDefaultFontSize);
 
     // The remote daemon fans PTY bytes out by what this connection REPORTS it is showing —
     // the same activation contract the primary window keeps.
@@ -126,9 +134,10 @@ export function RemoteWorkspaceView(props: RemoteWorkspaceViewProps): ReactEleme
                 ptyApi={runtime.pty}
                 focused={focused}
                 visible={state.visible}
-                // The pane's own text size, set on its own daemon (config-keybindings.md §7.6), so
-                // this viewer draws it as every other viewer of that PTY does.
-                {...(pane.terminalFontSize != null ? { fontSize: pane.terminalFontSize } : {})}
+                // The pane's own text size, else its daemon's, both set on that daemon
+                // (config-keybindings.md §7.6), so this viewer draws it as every other viewer of
+                // that PTY does.
+                fontSize={pane.terminalFontSize ?? defaultFontSize}
                 // #172/#170: the same stance as `blockWindowShortcuts` above, for the other half
                 // of the keyboard. The window dispatcher stands down while a remote workspace
                 // fills the pane area (`App.tsx` reports `hasActiveWorkspace: false`), so copy,

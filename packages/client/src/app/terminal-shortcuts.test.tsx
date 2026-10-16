@@ -418,6 +418,39 @@ describe('the bundled terminal renderer in an embedded remote workspace (#172, #
         expect(bytes(local)).toEqual([]);
     });
 
+    /**
+     * #267: ⌘= / ⌘- / ⌘0 in a remote pane step that daemon's size, from the pane that took the
+     * chord, because the window dispatcher stands down there. A primary pane's chord is left to
+     * the dispatcher, exactly as the editing chords are.
+     */
+    it("steps the text size on the daemon whose pane took the chord, under that daemon's scope", async () => {
+        const { local, remote } = await mount();
+        const current = remote.runtime.store.getState().settings.value;
+        act(() => { remote.runtime.store.getState().applySettings({ ...current, general: { ...current.general, fontSizeScope: 'pane' } }); });
+        const remoteSize = vi.spyOn(remote.runtime.commands, 'setPaneFontSize').mockResolvedValue({ ok: true });
+        const localSize = vi.spyOn(local.runtime.commands, 'setPaneFontSize').mockResolvedValue({ ok: true });
+        const pressed = new KeyboardEvent('keydown', { code: 'Equal', key: '=', metaKey: true, bubbles: true, cancelable: true });
+        fireEvent(hostOf(remote), pressed);
+        expect(remoteSize).toHaveBeenCalledExactlyOnceWith({ paneID: remote.paneID, size: 14 });
+        expect(pressed.defaultPrevented).toBe(true);
+        const seen = engineSees(local);
+        fireEvent.keyDown(hostOf(local), { code: 'Equal', key: '=', metaKey: true });
+        expect(localSize).not.toHaveBeenCalled();
+        expect(seen).toEqual(['Equal']);
+        // A plugin renderer is told to relay them only in a remote pane.
+        expect(terminalShortcutChords(windowHost(true), [], true)).toEqual(expect.arrayContaining(['8/Equal', '12/Equal', '8/Minus', '8/Digit0']));
+        expect(terminalShortcutChords(windowHost(true), [])).not.toContain('8/Equal');
+    });
+
+    it('lets a remote text-size chord fall through to the engine before that daemon has sent settings', async () => {
+        const { remote } = await mount();
+        const remoteSize = vi.spyOn(remote.runtime.commands, 'setPaneFontSize').mockResolvedValue({ ok: true });
+        const pressed = new KeyboardEvent('keydown', { code: 'Equal', key: '=', metaKey: true, bubbles: true, cancelable: true });
+        fireEvent(hostOf(remote), pressed);
+        expect(remoteSize).not.toHaveBeenCalled();
+        expect(pressed.defaultPrevented).toBe(false);
+    });
+
     it('leaves an unbound chord to the engine, which is why Ctrl+U kept working all along', async () => {
         const { remote } = await mount();
         const event = new KeyboardEvent('keydown', { code: 'KeyU', ctrlKey: true, bubbles: true, cancelable: true });

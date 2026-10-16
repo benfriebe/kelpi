@@ -10,8 +10,20 @@ import { lastSelection } from '../terminal/selection-buffer';
 import { clearScreenAction } from './clear-screen';
 import { copySelection, deferredClipboardWriter } from './clipboard';
 import { LINE_EDIT_BYTES } from './line-editing';
+import { stepRemoteTextSize } from './text-size';
+import type { FontSizeStep } from '../content';
 
 const EDITING_ACTIONS = new Set<KelpiAction>(['copy', 'paste', 'kill_line_backward', 'move_to_line_start', 'move_to_line_end', 'clear_screen']);
+/**
+ * #267: ⌘= / ⌘- / ⌘0, answered by a REMOTE daemon's terminal pane against that daemon
+ * (`app/text-size.ts` ▸ `stepRemoteTextSize`). Only where the caller says no window dispatcher is
+ * coming (`remoteTextSize`); in the primary window the dispatcher owns them.
+ */
+const TEXT_SIZE_ACTIONS: ReadonlyMap<KelpiAction, FontSizeStep> = new Map<KelpiAction, FontSizeStep>([
+    ['increase_terminal_font_size', 'increase'],
+    ['decrease_terminal_font_size', 'decrease'],
+    ['reset_terminal_font_size', 'reset']
+]);
 export interface TerminalShortcutHost {
     readonly bindings: KeyBindingMap;
     readonly windowChords?: readonly string[] | undefined;
@@ -29,8 +41,8 @@ export function terminalWindowChords(bindings: KeyBindingMap): string[] {
         .filter(binding => MENU_BAR_ACTIONS.has(binding.action)).flatMap(binding => chordKeysForTrigger(binding.trigger))])].sort();
 }
 
-export function terminalShortcutChords(host: TerminalShortcutHost, existing: readonly string[] = host.windowChords ?? []): string[] {
-    const editing = [...host.bindings.values()].filter(binding => EDITING_ACTIONS.has(binding.action) &&
+export function terminalShortcutChords(host: TerminalShortcutHost, existing: readonly string[] = host.windowChords ?? [], remoteTextSize = false): string[] {
+    const editing = [...host.bindings.values()].filter(binding => (EDITING_ACTIONS.has(binding.action) || (remoteTextSize && TEXT_SIZE_ACTIONS.has(binding.action))) &&
         (!host.globalHotkey || keyTriggerKey(binding.trigger) !== keyTriggerKey(host.globalHotkey)));
     const reserved = new Set(host.globalHotkey ? chordKeysForTrigger(host.globalHotkey) : []);
     return [...new Set([...existing, ...editing.flatMap(binding => chordKeysForTrigger(binding.trigger))])].filter(chord => !reserved.has(chord)).sort();
@@ -128,14 +140,20 @@ let raisingAtEngine = false;
 export function dispatchTerminalEditingShortcut(event: KeyEventLike, options: {
     runtime: KelpiRuntime; paneID: string; visible: boolean; host: TerminalShortcutHost;
     clipboard?: Clipboard | undefined;
+    /** #267: this pane is a remote daemon's, so it also answers the three text-size chords. */
+    remoteTextSize?: boolean | undefined;
 }): boolean {
     if (raisingAtEngine) return false;
     const { runtime, paneID, host } = options;
     const trigger = triggerFromEvent(event), action = trigger && actionForTrigger(host.bindings, trigger);
-    if (!action || !EDITING_ACTIONS.has(action)) return false;
+    if (!action) return false;
+    const textSize = options.remoteTextSize === true ? TEXT_SIZE_ACTIONS.get(action) : undefined;
+    if (!EDITING_ACTIONS.has(action) && textSize === undefined) return false;
     // An expired/hidden renderer's editing chord must never fall through to primary focus.
     if (!options.visible || host.blocked?.() || modalPresenceCount() > 0 ||
         (host.globalHotkey && trigger && keyTriggerKey(trigger) === keyTriggerKey(host.globalHotkey))) return true;
+    // A decline (settings not arrived yet) falls through to the engine, as any unclaimed chord does.
+    if (textSize !== undefined) return stepRemoteTextSize(runtime, paneID, textSize, (title, message) => reportFailure(runtime, paneID, host, title, message));
     const handle = paneHandle(paneID);
     const original = ownedPane(runtime, paneID);
     if (!handle || !isTerminal(original)) return true;
@@ -180,8 +198,10 @@ export function dispatchTerminalEditingShortcut(event: KeyEventLike, options: {
     return true;
 }
 
-export function useTerminalShortcuts(runtime: KelpiRuntime, paneID: string, visible: boolean, existing?: readonly string[]) {
+export function useTerminalShortcuts(runtime: KelpiRuntime, paneID: string, visible: boolean, existing?: readonly string[],
+    options: { readonly remoteTextSize?: boolean | undefined } = {}) {
     const host = useContext(TerminalShortcutContext) ?? DEFAULT_HOST;
-    return { chords: terminalShortcutChords(host, existing),
-        onKey: (event: KeyEventLike) => dispatchTerminalEditingShortcut(event, { runtime, paneID, visible, host }) };
+    const remoteTextSize = options.remoteTextSize === true;
+    return { chords: terminalShortcutChords(host, existing, remoteTextSize),
+        onKey: (event: KeyEventLike) => dispatchTerminalEditingShortcut(event, { runtime, paneID, visible, host, remoteTextSize }) };
 }

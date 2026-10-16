@@ -191,7 +191,7 @@ import { createUpdateSheetController, type UpdateSheetState } from './app/update
 import { UpdateSheet } from './chrome/UpdateSheet';
 import { oldHostKey, readLaterOldHosts, writeLaterOldHosts } from './chrome/OldTerminalHostNotice';
 import { ToastStack } from './chrome/ToastStack';
-import { createPaneTextSizeStep, createTextSizeStep } from './app/text-size';
+import { createPaneTextSizeStep, createRemoteMenuStep, createTextSizeStep } from './app/text-size';
 import { installActivationClick } from './app/activation-click';
 import { focusPaneSurface, handCaretToPaneWhenReady, mayClaimPaneCaret, releaseFocusedPaneCaret } from './app/pane-focus';
 import { navigationTrustedRuntimes, useRemoteDaemons, type RemoteRuntimeFactory } from './app/remote-daemons';
@@ -453,6 +453,9 @@ function Shell(props: AppProps): ReactElement {
     const { selection: remoteSelection, select: setRemoteSelection, activeRemote } = useRemoteWorkspaceSelection(remoteDaemonRuntimes);
     const remoteSelectionRef = useRef(remoteSelection);
     remoteSelectionRef.current = remoteSelection;
+    /** The remote daemon behind `remoteSelection`, read at press time by the text-size step (#267). */
+    const activeRemoteRef = useRef(activeRemote);
+    activeRemoteRef.current = activeRemote;
 
     /**
      * The Workspaces host's visibility, which now lives in the root arrangement
@@ -1050,6 +1053,9 @@ function Shell(props: AppProps): ReactElement {
     const phoneMode = phoneView.mode;
     const phoneShownPaneID = phoneView.shownPaneID;
     const phoneRemoteSelected = phoneView.remote !== null;
+    /** Read by the text-size step, which is built once (#267). */
+    const phoneRemoteSelectedRef = useRef(phoneRemoteSelected);
+    phoneRemoteSelectedRef.current = phoneRemoteSelected;
     const phoneAtLanding = phoneView.atLanding;
     const visible = useMemo(() => {
         const layoutVisible = visiblePaneIDs({
@@ -3167,7 +3173,18 @@ function Shell(props: AppProps): ReactElement {
     const textSizeStep = useMemo(
         () =>
             createTextSizeStep({
-                remoteWorkspaceSelected: () => remoteSelectionRef.current !== null,
+                // The phone's remote host counts too: its pane answers its own chord, so the step
+                // declines here (the phone has no remote selection below) and the chord falls
+                // through to that pane, never resizing the hidden local workspace behind it.
+                remoteWorkspaceSelected: () => remoteSelectionRef.current !== null || phoneRemoteSelectedRef.current,
+                // #267: the View menu row while a paired daemon's workspace is selected. The same
+                // function the remote pane's own chord calls, against that daemon's runtime and the
+                // pane its focus ring is on. The phone has no menu row, so nothing to step there.
+                remoteStep: createRemoteMenuStep({
+                    selection: () => remoteSelectionRef.current,
+                    remote: () => activeRemoteRef.current,
+                    report: (title, message) => notifyFailureRef.current(title, message)
+                }),
                 previewStep: (step) => act.setFontSizeFocused(step),
                 scope: () => store.getState().settings.value.general.fontSizeScope,
                 paneStep: (step) => {

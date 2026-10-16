@@ -778,6 +778,27 @@ the open internet, and this port is a shell. Proxied requests arrive with Tailsc
 headers (`Tailscale-User-Login`, `Tailscale-User-Name`), which is where per-user gating would
 go if it is ever wanted.
 
+#### Voice dictation records on the machine the session runs on (#268)
+
+A Kelpi pane carries keystrokes and screen output, not audio. Claude Code's voice dictation
+(`/voice`) records from the microphone of the machine its `claude` process runs on, and it starts
+when it sees a held Space as a run of key repeats. So with a session on the Studio viewed from
+the Air, holding Space on the Air sends those repeats to the Studio's terminal, and the
+**Studio's** microphone turns on. Kelpi cannot route the Air's microphone to it: the terminal
+has no audio channel, and Claude Code offers no way to record from another machine. Its own
+[voice dictation docs](https://code.claude.com/docs/en/voice-dictation) say it needs a local
+microphone and does not work over SSH for the same reason; a Kelpi pane is simply not detected
+as remote.
+
+What works from the viewing Mac instead:
+
+- **macOS Dictation** (press the Dictation key, or Fn twice). It types the text into the
+  focused Kelpi pane, which reaches the remote session like any other typing.
+- On the host, turn Claude Code's dictation off (`/voice off`, or `"voice": { "enabled": false }`
+  in its settings), or move push-to-talk off a held Space (`/voice tap`, or rebind
+  `voice:pushToTalk` in the `Chat` context of `~/.claude/keybindings.json`) so typing a space
+  never starts it. All of these are Claude Code's own settings, documented on the page above.
+
 ## Repository layout
 
 ```

@@ -1299,15 +1299,30 @@ not redesigned here. The workaround in the meantime is the one the grammar alrea
   live menu and asserts a single ⌘= moved the daemon's `font-size` by exactly one step.
   `terminal-text-size-per-pane.mjs` measures the `pane` default the same way.
 - **An embedded remote workspace** (`RemoteWorkspaceView`, a second daemon paired in Settings ▸
-  Remote): they do nothing, exactly as ⌘D and ⌘W do nothing there, because the window dispatcher stands
-  down while a remote workspace fills the pane area (section 1.7's rule, `hasActiveWorkspace`).
-  The window's settings surface holds the PRIMARY daemon's snapshot and verbs and there is no
-  per-remote settings surface, so firing there would resize the wrong daemon's terminals. Under
-  `font-size-scope = pane` they decline there too: the remote pane's own size is its daemon's
-  state, and this window's dispatcher is standing down. The
-  case the report describes, a browser or a second Kelpi attached **directly** to the remote
-  daemon over a tailnet, is unaffected: that daemon is the primary runtime for that window, so
-  the chord changes its daemon-wide size and every session on it follows.
+  Remote, and the phone's remote hosts; #267): they change **that daemon's** size, never this
+  window's. The window dispatcher stands down there (section 1.7's rule, `hasActiveWorkspace`),
+  and on the phone its text-size step declines while a remote host is shown, so the remote
+  terminal pane answers its own chord (`app/terminal-shortcuts.tsx`, beside copy and paste), and
+  the View menu row reaches the same function (`app/text-size.ts` ▸ `stepRemoteTextSize`):
+
+  | the REMOTE daemon's `font-size-scope` | ⌘= / ⌘- / ⌘0 |
+  |---|---|
+  | `pane` | that pane's own size on its daemon (`pane-font-size`), stepped from that daemon's default |
+  | `all` (or absent, an older daemon) | that daemon's ghostty `font-size` (`set-ghostty-setting`): this window writes the paired daemon's `~/.config/ghostty/config`, which is what "All panes" means there |
+
+  The `all` step is the Font size row's own arithmetic (`steppedSettingsValue`, clamped and on its
+  grid), and repeats compose from the size last asked for. A focused remote pane that is not a
+  terminal declines under either scope, so the menu row and the chord agree, and so does a press
+  before that daemon's settings have arrived. A refused or failed write toasts; the menu row's
+  toast names the daemon. A remote markdown preview's own size is not stepped from here.
+
+  A remote terminal with no size of its own is drawn at that daemon's ghostty `font-size`, not at
+  13: every viewer of one PTY draws it alike, which is also what makes the remote daemon's "All
+  panes" size visible in this window at all.
+
+  A browser or a second Kelpi attached **directly** to the remote daemon over a tailnet is the
+  other case: that daemon is the primary runtime for that window, so the chord changes its size
+  exactly as on the daemon's own machine.
 
 ---
 

@@ -146,7 +146,11 @@ function fakeRemoteRuntime(target: string): { runtime: KelpiRuntime; calls: stri
                 calls.push(`rename:${input.paneID}:${input.name}`);
                 return Promise.resolve({ ok: true });
             }),
-            setGroupCollapsed: vi.fn(() => Promise.resolve({ ok: true }))
+            setGroupCollapsed: vi.fn(() => Promise.resolve({ ok: true })),
+            setPaneFontSize: vi.fn((input: { paneID: string; size: number | null }) => {
+                calls.push(`font-size:${input.paneID}:${String(input.size)}`);
+                return Promise.resolve({ ok: true });
+            })
         },
         connect: vi.fn(() => {
             calls.push('connect');
@@ -718,6 +722,20 @@ describe('hosts', () => {
         fireEvent.keyDown(remoteHost, { code: 'Backspace', metaKey: true });
         expect(remotePty.streams.flatMap((stream) => stream.input)).toEqual(['\x15']);
         expect(h.sent().some((frame) => frame['type'] === 'input')).toBe(false);
+        /*
+         * #267: ⌘= over the remote pane steps THAT host's pane, once, and never the origin's
+         * hidden one: the window's text-size step declines for a phone remote host and the chord
+         * falls through to the pane, which answers it against its own daemon.
+         */
+        act(() => {
+            const current = remote!.runtime.store.getState().settings.value;
+            remote!.runtime.store.getState().applySettings({ ...current, general: { ...current.general, fontSizeScope: 'pane' } });
+        });
+        const plus = new KeyboardEvent('keydown', { code: 'Equal', key: '=', metaKey: true, bubbles: true, cancelable: true });
+        fireEvent(remoteHost, plus);
+        expect(remote?.calls.filter((call) => call.startsWith('font-size:'))).toEqual([`font-size:${REMOTE_PANE}:14`]);
+        expect(plus.defaultPrevented).toBe(true);
+        expect(h.commands().filter((command) => ['pane-font-size', 'set-ghostty-setting'].includes(String(command['command'])))).toEqual([]);
 
         // The pane sheet and the menu act on the remote host's commands.
         tap('phone-more');

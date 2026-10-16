@@ -1067,6 +1067,21 @@ describe('drag auto-scroll (§5.5)', () => {
         fireEvent.mouseUp(window);
     });
 
+    it('a press after a gesture whose mouseup was lost does not inherit its auto-scroll (#415)', () => {
+        const { list } = mount(204);
+        fireEvent.mouseDown(screen.getAllByTestId('workspace-row')[0] as HTMLElement, { clientY: 10 });
+        fireEvent.mouseMove(window, { clientY: 72 });
+        tick();
+        expect(list.dataset['dragAutoscroll']).toBe('true');
+        const scrolled = list.scrollTop;
+        // No mouseup: the next press replaces the drag while the pointer is still in the band.
+        fireEvent.mouseDown(screen.getAllByTestId('workspace-row')[4] as HTMLElement, { clientY: 80 });
+        for (let index = 0; index < 5; index += 1) tick();
+        expect(list.scrollTop).toBe(scrolled);
+        expect(list.dataset['dragAutoscroll']).toBe('false');
+        fireEvent.mouseUp(window);
+    });
+
     it('an unmount mid-sweep leaves no auto-scroll interval running (#415)', () => {
         const { list, rerenderWithFreshProps } = mount(204);
         const idle = vi.getTimerCount();

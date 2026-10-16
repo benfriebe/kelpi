@@ -23039,9 +23039,11 @@ function buildFlows(ctx) {
                     for (const name of sweepPads) {
                         await cli.run(['workspace', 'delete', name, '--force']);
                     }
-                    // Then its two groups (#416), empty by now; a no-op when they never landed.
+                    // Then its two groups (#416), empty by now; a no-op when they never landed. Not
+                    // `--cascade`: should a same-named group have held something else, its
+                    // members are moved out rather than deleted.
                     for (const name of SWEEP_GROUPS) {
-                        await cli.run(['group', 'delete', name, '--cascade']);
+                        await cli.run(['group', 'delete', name]);
                     }
                     await page.waitFor(
                         `document.querySelectorAll('[data-testid="workspace-row"]').length > 0 &&
@@ -24524,6 +24526,11 @@ function buildFlows(ctx) {
                         const before = await scrollerNow();
                         await sleep(300);
                         const after = await scrollerNow();
+                        // Read with `after`, not after the rename back: by then the list may
+                        // legitimately have reached its end and stopped the timer.
+                        const timer = String(
+                            await page.eval(`document.querySelector('[data-testid="sidebar"] [role="listbox"]')?.getAttribute('data-drag-autoscroll') ?? 'none'`)
+                        );
                         await cli.ok(['workspace', 'rename', pick.id, pick.name]);
                         await settleDom(page, `!${rowText}.includes(${JSON.stringify(temp)})`, { ceilingMs: 3000, intervalMs: 40 });
                         return {
@@ -24534,7 +24541,7 @@ function buildFlows(ctx) {
                             before: before.top,
                             after: after.top,
                             max: before.max,
-                            timer: String(await page.eval(`document.querySelector('[data-testid="sidebar"] [role="listbox"]')?.getAttribute('data-drag-autoscroll') ?? 'none'`))
+                            timer
                         };
                     };
                     const bandY = Math.round((scroller.rectBottom ?? 0) - AUTO_SCROLL_BAND_PX / 2);

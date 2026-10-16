@@ -3267,7 +3267,10 @@ export function Sidebar(props: SidebarProps): ReactElement {
         autoScrollTickRef.current = (): void => {
             const live = dragRef.current;
             const list = listRef.current;
-            if (live === null || list === null) {
+            // `!live.active`: a press that is not a drag yet. Only a gesture whose mouseup was
+            // lost leaves the timer running into the next press (`onDragStart` replaces the
+            // drag without passing through `onUp`), and that press must not scroll the list.
+            if (live === null || !live.active || list === null) {
                 stopAutoScroll();
                 return;
             }

@@ -141,6 +141,22 @@ export interface WorkspaceListEntry {
     readonly parent_name?: string;
     /** The workspace's repo associations, in stored order; absent when it has none. */
     readonly repos?: readonly WorkspaceListRepo[];
+    /**
+     * workspace-feature.md §11: the GitHub PRs found for those associations' branches, open
+     * first; absent when there are none (or PR status is off, or gh is unavailable).
+     */
+    readonly pull_requests?: readonly WorkspaceListPullRequest[];
+}
+
+/** One PR on a `workspace-list` entry (workspace-feature.md §11). */
+export interface WorkspaceListPullRequest {
+    readonly number: number;
+    readonly title: string;
+    readonly url: string;
+    readonly state: 'open' | 'draft' | 'merged' | 'closed';
+    /** The association's repo, as in `repos[].repo_id`. */
+    readonly repo_id: string;
+    readonly branch: string;
 }
 
 /** One repo association on a `workspace-list` entry (app-state-core.md §5.5). */

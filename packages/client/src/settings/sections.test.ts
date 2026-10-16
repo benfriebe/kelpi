@@ -219,6 +219,7 @@ describe('the field table', () => {
         ).toEqual([
             'worktree-base-path',
             'auto-detect-repos-toggle',
+            'workspace-pr-status-toggle',
             'inherit-group-toggle',
             'new-workspace-placement',
             'new-group-placement',

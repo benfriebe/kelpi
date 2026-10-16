@@ -18,6 +18,7 @@
 
 import type { AgentEvent, AgentKind } from '@kelpi/core/agent';
 import type { IconRef, SidebarID, WebTab } from '@kelpi/core/codec';
+import type { PullRequestState, WorkspacePullRequest } from '@kelpi/core/git';
 import type {
     Direction,
     DropZone,
@@ -32,6 +33,7 @@ import type { WorkspaceColor } from '@kelpi/protocol';
 
 export type { AgentKind, Direction, DropZone, IconRef, Pane, PaneLayout, PaneStatus, PaneType };
 export type { PredefinedLayoutKind, SidebarID, SplitDirection, WebTab, WorkspaceColor };
+export type { PullRequestState, WorkspacePullRequest };
 
 // ---------------------------------------------------------------------------
 // State
@@ -178,6 +180,12 @@ export interface WorkspaceState {
     readonly isSyncInputActive: boolean;
     /** TRANSIENT: a set, stored as an ordered array so events/snapshots stay plain JSON. */
     readonly syncInputExcluded: readonly string[];
+    /**
+     * TRANSIENT (§1.11, §11): the GitHub PRs for this workspace's association branches, as the
+     * daemon's poller last found them, sorted by aggregate rank then newest first. Empty until
+     * the first lookup after start, and whenever lookups are off or `gh` is unavailable.
+     */
+    readonly pullRequests: readonly WorkspacePullRequest[];
 }
 
 export interface DaemonState {
@@ -431,6 +439,12 @@ export type DomainAction =
           readonly workspaceID: string;
           readonly associationID: string;
           readonly branchName: string | null;
+      }
+    /** §7.17: replace the workspace's PR list (the poller dispatches only on a change). */
+    | {
+          readonly type: 'set-workspace-pull-requests';
+          readonly id: string;
+          readonly pullRequests: readonly WorkspacePullRequest[];
       }
 
     // ── panes ──────────────────────────────────────────────────────────────
@@ -958,7 +972,8 @@ export function makeWorkspaceState(fields: NewWorkspaceFields): WorkspaceState {
         childOrder: fields.childOrder ?? [],
         childrenCollapsed: fields.childrenCollapsed ?? false,
         isSyncInputActive: false,
-        syncInputExcluded: []
+        syncInputExcluded: [],
+        pullRequests: []
     };
 }
 

@@ -368,7 +368,8 @@ export function fromSnapshot(
             childOrder: record.childOrder ?? [],
             childrenCollapsed: record.childrenCollapsed === true,
             isSyncInputActive: false,
-            syncInputExcluded: []
+            syncInputExcluded: [],
+            pullRequests: []
         } satisfies WorkspaceState;
     });
 

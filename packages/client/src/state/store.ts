@@ -19,6 +19,7 @@
  * daemon's derived helpers usable verbatim.
  */
 
+import { pullRequestsFrom } from '@kelpi/core/git';
 import { applyDomainEvents, type DaemonState, type DomainEvent } from '@kelpi/daemon/store';
 import {
     DEFAULT_WS_CHROME_SETTINGS,
@@ -76,6 +77,8 @@ function hydrateWorkspace(raw: unknown): unknown {
         muted: raw['muted'] === true,
         childOrder,
         childrenCollapsed: raw['childrenCollapsed'] === true,
+        // A daemon older than PR status (workspace-feature.md §11) sends no list: none to draw.
+        pullRequests: pullRequestsFrom(raw['pullRequests']),
         recentlyClosedPanes: []
     };
 }
@@ -506,6 +509,7 @@ export function hydrateSettings(raw: unknown): WsSettingsSnapshot | null {
             // §GIT-074's gate. A daemon that predates the field sends nothing and the shipped
             // default (on) stands — the same additive rule every field above follows.
             autoDetectRepos: bool(general['autoDetectRepos'], fallbackGeneral.autoDetectRepos),
+            workspacePrStatus: bool(general['workspacePrStatus'], fallbackGeneral.workspacePrStatus),
             // SET-008/013/014. A blank template falls back to the default rather than pointing
             // worktree creation at the filesystem root.
             worktreeBasePath:

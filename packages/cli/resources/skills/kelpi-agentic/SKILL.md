@@ -439,6 +439,11 @@ it is safe to pipe into `workspace delete`:
 kelpi workspace list --parent "$ORCHESTRATOR_ID" --json
 ```
 
+With the user's `gh` installed and logged in, an entry whose branches have
+GitHub pull requests also carries `pull_requests` (`number`, `title`, `url`,
+`state` of `open` / `draft` / `merged` / `closed`, `repo_id`, `branch`; absent
+when there are none), the same status the sidebar row shows.
+
 ### Event Commands (Agent Lifecycle)
 
 ```bash

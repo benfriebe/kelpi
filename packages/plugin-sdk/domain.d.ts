@@ -301,7 +301,7 @@ export interface ApplicationSettings {
         focusFollowsMouse: boolean; focusFollowsMouseDelay: number; theme: string | null;
         confirmWorkspaceDeleteWhenActive: boolean; confirmQuitWhenActive: boolean; tcpPort: number;
         globalHotkey: string | null; globalHotkeyHideOnRepress: boolean; autoDetectRepos: boolean;
-        worktreeBasePath: string; newWorkspacePlacement: string; newGroupPlacement: string;
+        workspacePrStatus: boolean; worktreeBasePath: string; newWorkspacePlacement: string; newGroupPlacement: string;
         inheritGroupOnNewWorkspace: boolean; expandGroupOnWorkspaceDrop: boolean; clipboardWrite: boolean;
     };
     appearance: {
@@ -316,7 +316,7 @@ export type GeneralSettingKey = 'focus-follows-mouse' | 'focus-follows-mouse-del
     | 'chrome-colors' | 'sidebar-color-intensity' | 'sidebar-avatar-fill' | 'sidebar-avatar-stroke' | 'sidebar-group-fill'
     | 'sidebar-group-stroke' | 'show-system-stats' | 'system-stats' | 'show-system-stat-graphs' | 'sparkline-style'
     | 'sparkline-color' | 'sparkline-width' | 'search-match-color' | 'search-match-text-color' | 'search-match-current-color'
-    | 'search-match-current-text-color' | 'auto-detect-repos' | 'worktree-base-path' | 'new-workspace-placement'
+    | 'search-match-current-text-color' | 'auto-detect-repos' | 'workspace-pr-status' | 'worktree-base-path' | 'new-workspace-placement'
     | 'new-group-placement' | 'inherit-group-on-new-workspace' | 'expand-group-on-workspace-drop' | 'clipboard-write';
 export type AppearanceSettingKey = 'background' | 'background-opacity' | 'font-family' | 'font-size' | 'theme' | 'window-padding-x' | 'window-padding-y';
 export interface ApplicationSettingsAPI {

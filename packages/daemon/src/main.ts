@@ -42,7 +42,7 @@ import { HOST_BUNDLE_NAME } from './host/runtime.js';
 import { endHost, recordedHostProtocols, resolveHostPaths, verifiedHostPid } from './host/launch.js';
 import { connectTestOwner, type TestOwner } from './lifecycle/test-owner.js';
 import { expandTilde, legacyDataDir, LEGACY_DATABASE_FILENAME, legacyMacAppDatabasePath, resolveDatabasePath } from './db/index.js';
-import { inspectTargetDatabase, isLegacyImportError, runImport, type ImportReport } from './import/index.js';
+import { isLegacyImportError, runImport, type ImportReport } from './import/index.js';
 import {
     currentRequester,
     deleteDevice,
@@ -171,6 +171,7 @@ Import (one-time migration from the macOS app):
     kelpi daemon stop && kelpi daemon import && kelpi daemon start
     (or: kelpid stop && kelpid import && kelpid start)
 
+  With Kelpi.app open, its window's Start button can stand in for the last start.
   Panes come back on that start, and any pane that had an agent session resumes it
   (\`claude --resume <id>\` / \`codex resume <id>\`) just as a Kelpi.app restart would.
   They all resume at once.
@@ -1437,16 +1438,25 @@ function importLegacyConfig(
     return { action: 'copied', from, to };
 }
 
+/** What starts the daemon again after an import: the window's Start button, or a terminal. */
+const START_AGAIN = "press Start in Kelpi's window (or open Kelpi.app, or run `kelpi daemon start`)";
+
 /**
- * How to get the daemon out of an import's way (#360), as the repair sentence. A caller in one of
- * the daemon's own panes is sent to Terminal.app: the stop ends the terminal it is typing in.
+ * Said first to a caller in one of the daemon's own panes (#360): the stop it is about to be told
+ * to run ends the terminal it is typing in.
  */
-function importSteps(env: NodeJS.ProcessEnv, probe: DaemonProbe): string {
-    const steps =
-        '`kelpi daemon stop` (or `kelpid stop`), then `kelpi daemon import`, then reopen Kelpi.app (or `kelpi daemon start`).';
+function paneWarning(env: NodeJS.ProcessEnv, probe: DaemonProbe): string {
     return callerIsPane(env, probe)
-        ? `Stop it first, from Terminal.app: this terminal is one of its panes, and stopping it ends this terminal too. ${steps}`
-        : `Stop it first: ${steps}`;
+        ? 'Do this from Terminal.app, not here: this terminal is one of its panes, and stopping the daemon ends it. '
+        : '';
+}
+
+/**
+ * How to get the daemon out of an import's way, as the repair sentence. "This import" rather than
+ * a bare `kelpi daemon import`, so a `--from` or `--force` the caller gave is not lost.
+ */
+function importSteps(env: NodeJS.ProcessEnv, probe: DaemonProbe, dryRun: boolean): string {
+    return `${paneWarning(env, probe)}Stop it first with \`kelpi daemon stop\` (or \`kelpid stop\`), run this import again${dryRun ? ' without --dry-run' : ''}, then ${START_AGAIN}.`;
 }
 
 async function commandImport(io: CliIO, args: ParsedArgs): Promise<number> {
@@ -1478,7 +1488,7 @@ async function commandImport(io: CliIO, args: ParsedArgs): Promise<number> {
         if (args.dryRun !== true) {
             return fail(
                 `kelpid is running (pid ${pid}) and owns ${to}`,
-                `${importSteps(env, probe)} --force does not override this: a running daemon holds the state in memory and would overwrite the import on its next save. A --dry-run works while it runs.`
+                `${importSteps(env, probe, false)} --force does not override this: a running daemon holds the state in memory and would overwrite the import on its next save. A --dry-run works while it runs.`
             );
         }
         io.err(
@@ -1494,10 +1504,10 @@ async function commandImport(io: CliIO, args: ParsedArgs): Promise<number> {
     } catch (error) {
         // The live daemon can hold its database in a state a read-only open cannot read. That
         // is a read failure, not a verdict, so it must not end in the importer's "pass --force".
-        if (daemonOwnsTarget && isLegacyImportError(error) && error.code === 'target-populated' && !inspectTargetDatabase(to, []).readable) {
+        if (daemonOwnsTarget && isLegacyImportError(error) && error.code === 'target-unreadable') {
             return fail(
                 `${error.message} while kelpid (pid ${pid}) has it open`,
-                `${importSteps(env, probe)} A dry run after the stop can read it; this failure alone is no reason to pass --force.`
+                `${paneWarning(env, probe)}Stop it first with \`kelpi daemon stop\` (or \`kelpid stop\`) and run this dry run again: a stopped daemon's database can be read. This failure alone is no reason to pass --force.`
             );
         }
         if (isLegacyImportError(error)) return fail(error.message, error.repair);
@@ -1554,9 +1564,9 @@ async function commandImport(io: CliIO, args: ParsedArgs): Promise<number> {
     io.out(
         report.dryRun
             ? daemonOwnsTarget
-                ? `Nothing was written. To import: ${importSteps(env, probe)}`
+                ? `Nothing was written. ${importSteps(env, probe, true)}`
                 : 'Nothing was written. Re-run without --dry-run to import.'
-            : 'Next: reopen Kelpi.app, or run `kelpi daemon start` (or `kelpid start`). Panes are restored, and every agent session resumes at once.'
+            : `Next: ${START_AGAIN}. Panes are restored, and every agent session resumes at once.`
     );
     return 0;
 }

@@ -83,8 +83,10 @@ export type LegacyImportErrorCode =
     | 'source-unreadable'
     /** Opened fine, but has no `workspace` table — this is not a Kelpi database. */
     | 'not-a-kelpi-database'
-    /** The target already holds workspaces (or cannot be inspected) and `--force` was not given. */
+    /** The target already holds workspaces and `--force` was not given. */
     | 'target-populated'
+    /** The target exists but could not be read to tell what it holds, and `--force` was not given. */
+    | 'target-unreadable'
     /** `--from` and `--to` name the same file. */
     | 'same-database'
     /** The target could not be opened/migrated, or the write transaction failed. */

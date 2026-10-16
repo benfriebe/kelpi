@@ -2582,16 +2582,17 @@ daemon's own verbs from a terminal was `…/Resources/node …/Resources/daemon/
 - **Which daemon:** `kelpid`'s own rule, the run dir from `KELPID_RUN_DIR` or the platform
   default. A dev-instance pane carries its instance's `KELPID_RUN_DIR`, so it targets that instance.
 - **The packaged app's environment (#360):** when this CLI is the one inside an app bundle
-  (`<App>/Contents/Resources/cli/kelpi.js`, judged from its real path, never from `KELPID_ENTRY`),
-  it adds what the app gives a daemon it starts (`daemonSpawnEnv` in `packages/shell/src/daemon.ts`),
-  each only when unset: `KELPID_CLIENT_DIR` (`Resources/client`, if it has an `index.html`),
+  (`<App>/Contents/Resources/cli/kelpi.js`, judged from its real path) and the `kelpid` it runs is
+  that bundle's own (`Resources/daemon/kelpid.js`, so not a `KELPID_ENTRY` elsewhere), it adds what
+  the app gives a daemon it starts (`daemonSpawnEnv` in `packages/shell/src/daemon.ts`), each only
+  when unset: `KELPID_CLIENT_DIR` (`Resources/client`, if it has an `index.html`),
   `KELPID_HELPERS_DIR` (`Resources/cli`, if the `kelpi` launcher is there) and `KELPID_VERSION`
-  (from `KELPI_CLI_VERSION`, which the launcher exports as the app's version). A daemon started
+  (the bundle's `CFBundleShortVersionString`, else `KELPI_CLI_VERSION`, which the launcher exports). A daemon started
   from a terminal then serves the web client, puts `kelpi` on its panes' PATH, and reports the
   app's version, so the next app launch adopts it instead of replacing it as an old daemon.
 - **`import`** (#360) runs `kelpid import`, the one-time move from the legacy Nex app (README,
   "Importing from the legacy macOS app"). First it lists processes (`ps -axo pid=,comm=`) and
-  warns on stderr when one ends in `/Nex.app/Contents/MacOS/Nex`: `Warning: Nex is running (pid
+  warns on stderr when one ends in `.app/Contents/MacOS/Nex`: `Warning: Nex is running (pid
   <pid>). Quit it before starting Kelpi, or each agent session both apps resume runs twice.` The
   import still runs.
 - **`restart`** hands running terminals to the next daemon (`docs/terminal-host.md` §10).

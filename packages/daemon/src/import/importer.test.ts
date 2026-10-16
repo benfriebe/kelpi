@@ -354,6 +354,11 @@ describe('runImport: a target that is only a fresh install (#360)', () => {
     it.each([
         ['the workspace was renamed', `UPDATE "workspace" SET "name" = 'Work'`],
         ['the workspace was labelled', `UPDATE "workspace" SET "labelsJSON" = '["wip"]'`],
+        ['the workspace was given an icon', `UPDATE "workspace" SET "icon" = '{"kind":"emoji","value":"x"}'`],
+        ['the workspace was given a profile', `UPDATE "workspace" SET "profileName" = 'work'`],
+        ['the workspace was muted', `UPDATE "workspace" SET "muted" = 1`],
+        ['a label preset was made in Settings', `UPDATE "appState" SET "value" = '[{"name":"wip"}]' WHERE "key" = 'kelpid.labelPresets'`],
+        ['app state it does not know is there', `INSERT INTO "appState" ("key","value") VALUES ('kelpid.somethingNew','1')`],
         [
             'a second workspace exists',
             `INSERT INTO "workspace" ("id","name","color","layoutJSON","createdAt","lastAccessedAt") VALUES ('66666666-6666-4666-8666-666666666666','Default','blue','{}',0,0)`
@@ -450,7 +455,7 @@ describe('runImport — target failures', () => {
         } catch (error) {
             expect(isLegacyImportError(error)).toBe(true);
             // "I could not tell what is in there" must never become "so I replaced it".
-            expect((error as LegacyImportError).code).toBe('target-populated');
+            expect((error as LegacyImportError).code).toBe('target-unreadable');
             expect((error as LegacyImportError).message).toContain('could not be inspected');
         }
         expect(fs.readFileSync(to, 'utf8')).toBe('not a database');

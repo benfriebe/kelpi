@@ -504,15 +504,16 @@ Its default source is the pre-rename port daemon's `nexd/nex.db` when that exist
 handles both generations), else the Swift app's.
 
 Run it from Terminal.app, not from a Kelpi pane: stopping the daemon ends every Kelpi terminal,
-the one you are typing in included. `kelpi` is on your PATH once Kelpi.app has installed its CLI
-(the app's "Install CLI" item, or `kelpi install-hooks --link`).
+the one you are typing in included. `kelpi` is on your PATH once Kelpi.app has installed it (the
+tray's "Install CLI", or the offer on first launch); until then use its full path,
+`/Applications/Kelpi.app/Contents/Resources/cli/kelpi`.
 
 ```bash
 kelpi daemon import --dry-run   # what would come across; fine while Kelpi runs
 # quit Nex (Cmd-Q), so the two apps do not both resume the same agent sessions
 kelpi daemon stop
 kelpi daemon import             # --force only if this Kelpi has been used (see below)
-# reopen Kelpi.app, or press Start on the "daemon stopped" page its window shows
+# press Start in Kelpi's window (or open Kelpi.app if you quit it)
 kelpi install-hooks             # hooks now report to Kelpi instead of Nex
 ```
 
@@ -523,9 +524,10 @@ saved, so the running daemon may hold changes that make the real run judge it di
 
 Opening Kelpi.app once before importing is fine. That leaves a "Default" workspace holding one
 untouched shell pane, and the import replaces it without `--force`; it is still copied aside
-first, and the report says it replaced it and where the copy is. A Kelpi you have used (any other
-workspace, a second pane, a label, an agent session, a group, a repository) needs `--force`,
-which also copies the old database aside first. The dry run answers the same way.
+first, and the report says it replaced it and where the copy is. A Kelpi you have used needs
+`--force`, which also copies the old database aside first: any other workspace, a second pane, an
+agent session, a group or repository, a label or label preset, or an icon, profile or mute on
+"Default". The dry run answers the same way.
 
 On the next start the panes come back, and every pane that had an agent session resumes it:
 `claude --resume <id>` or `codex resume <id>`, chosen by the pane's last-known agent. They all

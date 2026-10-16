@@ -18,7 +18,7 @@
  */
 
 import { spawn } from 'node:child_process';
-import { existsSync, realpathSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -30,8 +30,8 @@ import { daemonUsage } from '../usage.js';
 
 const VERBS = new Set(['status', 'start', 'restart', 'stop', 'restart-old-terminals', 'import']);
 
-/** The legacy app's executable, as `ps -o comm=` prints it. */
-const NEX_APP_EXECUTABLE = '/Nex.app/Contents/MacOS/Nex';
+/** The legacy app's executable, as `ps -o comm=` prints it (any bundle name: `Nex Beta.app`). */
+const NEX_APP_EXECUTABLE = '.app/Contents/MacOS/Nex';
 
 /**
  * Where `kelpid.js` is, given this CLI's own file:
@@ -47,6 +47,16 @@ export function daemonEntryCandidates(cliFile: string, environment: NodeJS.Proce
     return [path.resolve(dir, '..', 'daemon', 'kelpid.js'), path.resolve(dir, '..', '..', 'daemon', 'dist', 'kelpid.js')];
 }
 
+/** `CFBundleShortVersionString` from an XML `Info.plist`, or undefined. */
+function bundleVersion(infoPlist: string): string | undefined {
+    try {
+        const match = /<key>CFBundleShortVersionString<\/key>\s*<string>([^<]+)<\/string>/.exec(readFileSync(infoPlist, 'utf8'));
+        return match?.[1]?.trim() || undefined;
+    } catch {
+        return undefined;
+    }
+}
+
 /**
  * The environment the packaged app gives a daemon it starts (`daemonSpawnEnv` in
  * `packages/shell/src/daemon.ts`), for a daemon started by this CLI instead: `kelpi daemon start`
@@ -54,22 +64,26 @@ export function daemonEntryCandidates(cliFile: string, environment: NodeJS.Proce
  * window), puts no `kelpi` on its panes' PATH, and reports the compiled-in `0.3.0-dev` as its
  * version, so the next app launch takes it for an old daemon and replaces it.
  *
- * Only for the CLI inside an app bundle (`<App>/Contents/Resources/cli/kelpi.js`; `cliFile` is
- * its real path), and each value only when the caller has not set it. `KELPID_ENTRY` never
- * decides it: a dev instance sets that and is not packaged. `KELPI_CLI_VERSION` is the app's
- * version, which the packaged launcher exports (`packages/shell/src/packaging.ts`).
+ * Only when this is the CLI inside an app bundle (`<App>/Contents/Resources/cli/kelpi.js`;
+ * `cliFile` is its real path) AND it is about to run that bundle's own `kelpid` (`entry`): a
+ * `KELPID_ENTRY` pointing at a checkout's daemon gets none of the app's identity. Each value is
+ * set only when the caller has not set it. The version is the bundle's `Info.plist`, else
+ * `KELPI_CLI_VERSION`, which the packaged launcher exports (`packages/shell/src/packaging.ts`).
  */
-export function packagedDaemonEnv(cliFile: string, environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+export function packagedDaemonEnv(cliFile: string, entry: string, environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
     const cliDir = path.dirname(cliFile);
     const resources = path.dirname(cliDir);
     if (path.basename(cliDir) !== 'cli' || path.basename(resources) !== 'Resources') return environment;
+    if (path.resolve(entry) !== path.join(resources, 'daemon', 'kelpid.js')) return environment;
     const unset = (name: string): boolean => (environment[name]?.trim() ?? '') === '';
     const result: NodeJS.ProcessEnv = { ...environment };
     const client = path.join(resources, 'client');
     if (unset('KELPID_CLIENT_DIR') && existsSync(path.join(client, 'index.html'))) result['KELPID_CLIENT_DIR'] = client;
     if (unset('KELPID_HELPERS_DIR') && existsSync(path.join(cliDir, 'kelpi'))) result['KELPID_HELPERS_DIR'] = cliDir;
-    const version = environment['KELPI_CLI_VERSION']?.trim();
-    if (unset('KELPID_VERSION') && version !== undefined && version.length > 0) result['KELPID_VERSION'] = version;
+    if (unset('KELPID_VERSION')) {
+        const version = bundleVersion(path.join(path.dirname(resources), 'Info.plist')) ?? environment['KELPI_CLI_VERSION']?.trim();
+        if (version !== undefined && version.length > 0) result['KELPID_VERSION'] = version;
+    }
     return result;
 }
 
@@ -80,14 +94,10 @@ export function nexRunningWarning(psOutput: string): string | undefined {
     return `Warning: Nex is running (pid ${pids.join(', ')}). Quit it before starting Kelpi, or each agent session both apps resume runs twice.`;
 }
 
+/** `runProcess` never rejects: without a `ps` the output is empty and nothing is said. */
 async function warnIfNexRuns(run: ProcessRunner): Promise<void> {
-    try {
-        const ps = await run('/bin/ps', ['-axo', 'pid=,comm=']);
-        const warning = nexRunningWarning(ps.stdout);
-        if (warning !== undefined) errLine(warning);
-    } catch {
-        // A check that cannot run says nothing; the import itself does not depend on it.
-    }
+    const warning = nexRunningWarning((await run('/bin/ps', ['-axo', 'pid=,comm='])).stdout);
+    if (warning !== undefined) errLine(warning);
 }
 
 function thisFile(): string {
@@ -110,14 +120,15 @@ export async function handleDaemon(args: string[]): Promise<void> {
         exit(1);
     }
     const cliFile = thisFile();
-    const environment = packagedDaemonEnv(cliFile, env());
-    const candidates = daemonEntryCandidates(cliFile, environment);
+    const callerEnvironment = env();
+    const candidates = daemonEntryCandidates(cliFile, callerEnvironment);
     const entry = candidates.find((candidate) => existsSync(candidate));
     if (entry === undefined) {
         errLine(`kelpi daemon: no kelpid next to this kelpi (looked at ${candidates.join(', ')}).`);
         errLine('Repair: run it on the machine the daemon runs on, from the Kelpi app\'s own CLI, or set KELPID_ENTRY.');
         exit(1);
     }
+    const environment = packagedDaemonEnv(cliFile, entry, callerEnvironment);
     if (verb === 'import') await warnIfNexRuns(runProcess);
     // The same Node that runs this CLI: the packaged launcher runs both under the app's `node`.
     const code = await new Promise<number>((resolve) => {

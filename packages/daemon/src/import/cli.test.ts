@@ -173,7 +173,7 @@ describe('kelpid import — with no daemon running', () => {
         expect(captured.text()).toContain('imported 2 workspace(s), 3 pane(s), 1 group(s)');
         expect(captured.text()).toContain('agent session(s) to resume on the next start: 1');
         expect(captured.text()).toContain('pane broken: unparseable pane id');
-        expect(captured.text()).toContain('Next: reopen Kelpi.app, or run `kelpi daemon start` (or `kelpid start`)');
+        expect(captured.text()).toContain("Next: press Start in Kelpi's window (or open Kelpi.app, or run `kelpi daemon start`).");
         expect(captured.text()).not.toContain('Default');
         expect(workspaceNames(paths.target)).toEqual(['Alpha', 'Beta']);
     });
@@ -294,7 +294,7 @@ describe('kelpid import — with a daemon running', () => {
         expect(dry.stderr.join('\n')).toContain('This dry run reads it as last saved');
         expect(dry.stdout.join('\n')).toContain('would import 2 workspace(s)');
         expect(dry.stdout.at(-1)).toBe(
-            'Nothing was written. To import: Stop it first: `kelpi daemon stop` (or `kelpid stop`), then `kelpi daemon import`, then reopen Kelpi.app (or `kelpi daemon start`).'
+            "Nothing was written. Stop it first with `kelpi daemon stop` (or `kelpid stop`), run this import again without --dry-run, then press Start in Kelpi's window (or open Kelpi.app, or run `kelpi daemon start`)."
         );
 
         // From one of the daemon's own panes, the stop would end the terminal it is typed in.
@@ -302,7 +302,7 @@ describe('kelpid import — with a daemon running', () => {
         expect(route).toBeTruthy();
         const inPane = io({ ...env, KELPI_PANE_ID: 'B5EDDB88-1B61-412D-8D02-E62026261A9E', KELPI_SOCKET: route });
         expect(await runKelpid(['import', '--from', paths.source], inPane)).toBe(1);
-        expect(inPane.stderr.join('\n')).toContain('Stop it first, from Terminal.app: this terminal is one of its panes');
+        expect(inPane.stderr.join('\n')).toContain('Repair: Do this from Terminal.app, not here: this terminal is one of its panes');
         expect(captured.stderr.join('\n')).not.toContain('Terminal.app');
 
         // The daemon's own database is untouched by any of that (a freshly booted daemon has

@@ -145,44 +145,75 @@ export interface TargetInspection {
  */
 export const FRESH_INSTALL_WORKSPACE_NAME = 'Default';
 
-/** Pane columns that a first boot leaves empty, under every schema generation that has them. */
+/**
+ * Columns a first boot leaves empty, under every schema generation that has them. A workspace's
+ * colour is not among them: a first boot picks it at random.
+ */
+const FRESH_WORKSPACE_EMPTY_COLUMNS = ['labelsJSON', 'icon', 'profileName', 'muted', 'childOrderJSON', 'childrenCollapsed'];
 const FRESH_PANE_EMPTY_COLUMNS = ['agentSessionID', 'claudeSessionID', 'agentKind', 'label', 'filePath', 'content'];
+
+/**
+ * The `appState` a first boot writes, with the one value that could be the user's own pinned:
+ * label presets made in Settings live under `kelpid.labelPresets`, and the import replaces them.
+ * A key outside this list is somebody's state, so it is not fresh.
+ */
+const FRESH_APP_STATE: Readonly<Record<string, string | null>> = {
+    activeWorkspaceID: null,
+    topLevelOrder: null,
+    'kelpid.labelPresets': '[]',
+    'kelpid.labelPresetsMigrated': null,
+    'kelpid.snapshotVersion': null
+};
 
 function rowCount(db: SqlDatabase, table: string): number {
     const value = db.get(`SELECT COUNT(*) AS n FROM "${table}"`)?.['n'];
     return typeof value === 'number' ? value : Number(value ?? 0);
 }
 
+/** Absent (an older schema), NULL, empty, `[]` or false. */
+function leftEmpty(row: Record<string, unknown>, column: string): boolean {
+    const value = row[column];
+    return value === undefined || value === null || value === '' || value === '[]' || value === 0 || value === false;
+}
+
 /**
  * Does the target hold only what a first launch writes (`ensureDefaultWorkspace` in
- * `boot/compose.ts`): one unlabelled workspace named "Default" holding one shell pane that never
- * ran an agent and has no label, file or content, and no group, repository or repository
- * association?
- * That is a Kelpi.app opened once before the import (#360), and replacing it loses nothing.
+ * `boot/compose.ts`)? One workspace named "Default" that nobody labelled, decorated, gave a
+ * profile, muted or nested under; one shell pane in it that never ran an agent and has no label,
+ * file or content; no group, repository or repository association; and no `appState` beyond
+ * `FRESH_APP_STATE`. That is a Kelpi.app opened once before the import (#360), and replacing it
+ * loses nothing.
  *
  * `SELECT *` rather than named columns, so a target from before a column existed (the session
  * id was `claudeSessionID` before v15) is judged on what it has. Any doubt is a no: a query that
- * throws means "not fresh", and the caller then asks for `--force` as before.
+ * throws means "not fresh", with a warning, and the caller then asks for `--force` as before.
  */
-function holdsOnlyFreshInstall(db: SqlDatabase): boolean {
+function holdsOnlyFreshInstall(db: SqlDatabase, target: string, warnings: string[]): boolean {
     try {
         const workspaces = db.all('SELECT * FROM "workspace"');
         const workspace = workspaces[0];
         if (workspaces.length !== 1 || workspace === undefined || workspace['name'] !== FRESH_INSTALL_WORKSPACE_NAME) return false;
-        const labels = workspace['labelsJSON'];
-        if (labels !== undefined && labels !== null && labels !== '' && labels !== '[]') return false;
+        if (!FRESH_WORKSPACE_EMPTY_COLUMNS.every((column) => leftEmpty(workspace, column))) return false;
         for (const table of ['workspace_group', 'repo', 'repoAssociation']) {
             if (tableExists(db, table) && rowCount(db, table) > 0) return false;
+        }
+        if (tableExists(db, 'appState')) {
+            for (const row of db.all('SELECT "key", "value" FROM "appState"')) {
+                const key = String(row['key']);
+                if (!Object.hasOwn(FRESH_APP_STATE, key)) return false;
+                const expected = FRESH_APP_STATE[key];
+                if (expected !== null && expected !== undefined && row['value'] !== expected) return false;
+            }
         }
         if (!tableExists(db, 'pane')) return false;
         const panes = db.all('SELECT * FROM "pane"');
         const pane = panes[0];
         if (panes.length !== 1 || pane === undefined || pane['type'] !== 'shell') return false;
-        return FRESH_PANE_EMPTY_COLUMNS.every((column) => {
-            const value = pane[column];
-            return value === undefined || value === null || value === '';
-        });
-    } catch {
+        return FRESH_PANE_EMPTY_COLUMNS.every((column) => leftEmpty(pane, column));
+    } catch (error) {
+        warnings.push(
+            `could not tell whether ${target} is a fresh install: ${error instanceof Error ? error.message : String(error)}`
+        );
         return false;
     }
 }
@@ -203,9 +234,11 @@ export function inspectTargetDatabase(target: string, warnings: string[]): Targe
         return { workspaces: 0, readable: false, freshInstall: false };
     }
     try {
+        // A live daemon may hold the file (a dry run while it runs): wait out a brief lock.
+        db.exec('PRAGMA busy_timeout = 500');
         if (!tableExists(db, 'workspace')) return { workspaces: 0, readable: true, freshInstall: false };
         const workspaces = rowCount(db, 'workspace');
-        return { workspaces, readable: true, freshInstall: workspaces === 1 && holdsOnlyFreshInstall(db) };
+        return { workspaces, readable: true, freshInstall: workspaces === 1 && holdsOnlyFreshInstall(db, target, warnings) };
     } catch (error) {
         warnings.push(
             `target ${target} could not be inspected: ${error instanceof Error ? error.message : String(error)}`
@@ -268,7 +301,7 @@ export function runImport(options: RunImportOptions): ImportReport {
         // Refuse BEFORE the dry-run short-circuit: a dry run that says "would import" against a
         // populated target would be lying about what the real run does.
         throw new LegacyImportError(
-            'target-populated',
+            target.readable ? 'target-populated' : 'target-unreadable',
             target.readable
                 ? `${options.to} already holds ${String(targetWorkspacesBefore)} workspace(s)`
                 : `${options.to} exists but could not be inspected`,

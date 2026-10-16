@@ -146,6 +146,91 @@ describe('drop resolution', () => {
         expect(resolveDropTarget(layout, 120)).toEqual({ kind: 'topLevel', index: layout.tailIndex });
     });
 
+    describe('a group header while the list auto-scrolls (#416, §5.5)', () => {
+        const scrolling = { autoScrolling: true };
+
+        it('an expanded header: the bottom half is the slot under the header, not an append', () => {
+            const entries = entriesFor(daemonState(false));
+            const layout = buildDropZones(orderModelFromEntries(entries), renderedRows(entries), {
+                rowHeight,
+                contentTop: 0,
+                dragging: new Set([W(4)])
+            });
+            // rows: [alpha 0-20][delta 20-40, dragged][header 40-60][beta 60-80][gamma 80-100]
+            expect(resolveDropTarget(layout, 45, scrolling)).toEqual({ kind: 'topLevel', index: 1 });
+            expect(resolveDropTarget(layout, 55, scrolling)).toEqual({ kind: 'intoGroup', groupID: G1, index: 0 });
+            // A still list keeps §5.5's append.
+            expect(resolveDropTarget(layout, 55)).toEqual({ kind: 'ontoGroupHeader', groupID: G1 });
+        });
+
+        it('a collapsed header: the bottom half is the top-level slot after the group', () => {
+            const entries = entriesFor(daemonState(true));
+            const layout = buildDropZones(orderModelFromEntries(entries), renderedRows(entries), {
+                rowHeight,
+                contentTop: 0,
+                dragging: new Set([W(4)])
+            });
+            // rows: [alpha 0-20][delta 20-40, dragged][header 40-60]; top level after removal is
+            // [alpha, squad], so the slot after the group is index 2.
+            expect(resolveDropTarget(layout, 45, scrolling)).toEqual({ kind: 'topLevel', index: 1 });
+            expect(resolveDropTarget(layout, 55, scrolling)).toEqual({ kind: 'topLevel', index: 2 });
+            expect(resolveDropTarget(layout, 55)).toEqual({ kind: 'ontoGroupHeader', groupID: G1 });
+        });
+
+        it('a spring-loaded group counts as expanded, and so does one whose only member is dragged', () => {
+            const springEntries = entriesFor(daemonState(true));
+            const springRows = renderedRows(springEntries, { springLoadedGroupID: G1 });
+            const spring = buildDropZones(orderModelFromEntries(springEntries), springRows, {
+                rowHeight,
+                contentTop: 0,
+                dragging: new Set([W(4)])
+            });
+            expect(resolveDropTarget(spring, 55, scrolling)).toEqual({ kind: 'intoGroup', groupID: G1, index: 0 });
+
+            // alpha, then squad holding only beta, which is the row being dragged.
+            const full = entriesFor(daemonState(false));
+            const group = full.find((entry) => entry.kind === 'group');
+            if (group?.kind !== 'group') throw new Error('no group');
+            const lone: ChromeSidebarEntry[] = [full[0] as ChromeSidebarEntry, { ...group, workspaces: group.workspaces.slice(0, 1) }];
+            const loneLayout = buildDropZones(orderModelFromEntries(lone), renderedRows(lone), {
+                rowHeight,
+                contentTop: 0,
+                dragging: new Set([W(2)])
+            });
+            // rows: [alpha 0-20][header 20-40][beta 40-60, dragged]
+            expect(resolveDropTarget(loneLayout, 35, scrolling)).toEqual({ kind: 'intoGroup', groupID: G1, index: 0 });
+        });
+
+        it('an empty expanded group: the bottom half is its index 0, as its placeholder is', () => {
+            const entries: ChromeSidebarEntry[] = [
+                {
+                    kind: 'group',
+                    group: { id: G1, name: 'squad', color: null, icon: null, isCollapsed: false },
+                    workspaces: []
+                }
+            ];
+            const layout = buildDropZones(orderModelFromEntries(entries), renderedRows(entries), { rowHeight, contentTop: 0 });
+            expect(resolveDropTarget(layout, 15, scrolling)).toEqual({ kind: 'intoGroup', groupID: G1, index: 0 });
+            expect(resolveDropTarget(layout, 25, scrolling)).toEqual({ kind: 'intoGroup', groupID: G1, index: 0 });
+        });
+
+        it('the slot under the header, for the group\'s own first member, moves nothing', () => {
+            const entries = entriesFor(daemonState(false));
+            const model = orderModelFromEntries(entries);
+            const layout = buildDropZones(model, renderedRows(entries), {
+                rowHeight,
+                contentTop: 0,
+                dragging: new Set([W(2)])
+            });
+            // rows: [alpha 0-20][delta 20-40][header 40-60][beta 60-80, dragged][gamma 80-100]
+            const target = resolveDropTarget(layout, 55, scrolling);
+            expect(target).toEqual({ kind: 'intoGroup', groupID: G1, index: 0 });
+            if (target === null) throw new Error('no target');
+            const shadow = applyWorkspaceDrop(model, W(2), target);
+            expect(workspaceCommit(model, shadow, W(2))).toBeNull();
+        });
+    });
+
     it('indices are post-remove: the dragged row is detached first', () => {
         const entries = entriesFor(daemonState(false));
         const model = orderModelFromEntries(entries);
@@ -193,7 +278,7 @@ describe('drop resolution', () => {
         // row last — the dragged one is excluded as a target but still occupies its space.
         const model = { topLevel: [{ kind: 'group' as const, id: 'target' }], children: new Map<string, readonly string[]>() };
         const asRows = [
-            ...keys.slice(0, 6).map((key) => ({ kind: 'group-header' as const, key, groupID: key })),
+            ...keys.slice(0, 6).map((key) => ({ kind: 'group-header' as const, key, groupID: key, collapsed: false })),
             { kind: 'workspace' as const, key: 'dragged', workspaceID: 'dragged', groupID: null, depth: 0 as const }
         ];
         const dragging = new Set(['dragged']);
@@ -562,8 +647,8 @@ describe('nested workspaces: drag and drop', () => {
         expect(resolveDropTarget(layout, 165)).toEqual({ kind: 'ontoWorkspace', parentID: W(2) });
     });
 
-    it('with nesting suspended (auto-scroll, §5.5), a middle third resolves to the nearer slot', () => {
-        const suspended = { suspendNesting: true };
+    it('while auto-scrolling (§5.5), a middle third resolves to the nearer slot', () => {
+        const suspended = { autoScrolling: true };
         // Expanded parents: alpha (top level) at y 0..30, beta (a group member) at y 150..180.
         const expanded = buildDropZones(orderModelFromEntries(entries()), renderedRows(entries()), {
             rowHeight: 30,
@@ -594,7 +679,7 @@ describe('nested workspaces: drag and drop', () => {
         expect(resolveDropTarget(collapsed, 108, suspended)).toEqual({ kind: 'intoGroup', groupID: G1, index: 1 });
     });
 
-    it('suspending nesting changes only the ontoWorkspace band: every other zone resolves the same', () => {
+    it('auto-scrolling changes only the ontoWorkspace and ontoGroupHeader bands: every other zone resolves the same', () => {
         const expandedEntries = entries();
         const collapsedEntries = entriesFor(nestedState({ alphaCollapsed: true, betaCollapsed: true }));
         const layouts = [
@@ -623,9 +708,10 @@ describe('nested workspaces: drag and drop', () => {
         for (const layout of layouts) {
             for (let y = -10; y <= 240; y += 0.5) {
                 const plain = resolveDropTarget(layout, y);
-                const suspended = resolveDropTarget(layout, y, { suspendNesting: true });
+                const suspended = resolveDropTarget(layout, y, { autoScrolling: true });
                 expect(suspended?.kind).not.toBe('ontoWorkspace');
-                if (plain?.kind === 'ontoWorkspace') {
+                expect(suspended?.kind).not.toBe('ontoGroupHeader');
+                if (plain?.kind === 'ontoWorkspace' || plain?.kind === 'ontoGroupHeader') {
                     nestBands += 1;
                     continue;
                 }

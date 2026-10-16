@@ -856,7 +856,9 @@ type DropTarget =
   parent's whole block in the parent's own container. Non-nestable drag: the whole row is
   `kind: 'fixed'`, meaning after the parent's block as a whole.
 - group header zone: top half → top-level before the group; bottom half →
-  `ontoGroupHeader` (append into it).
+  `ontoGroupHeader` (append into it). While the pointer would auto-scroll the list, the bottom
+  half resolves to a slot instead: the group's first slot (`intoGroup`, index 0, right under the
+  header) when it is expanded, the top-level slot after the group when it is collapsed (#416).
 - group child zone: top/bottom half → before/after that child.
 - empty-group placeholder zone: → into that group at index 0.
 - cursor below every zone: → top level, after the last top-level entry.
@@ -889,9 +891,17 @@ type DropTarget =
   While the pointer would auto-scroll (in the 40pt band AND the list can still scroll that way,
   including the move that enters the band) `ontoWorkspace` is never offered: rows sweeping under
   a still pointer would otherwise cycle slot / nest / slot, and a release mid-sweep would nest by
-  accident (#412). Once the list hits its end, or the pointer leaves the band, the list is still
-  under the pointer and the thirds apply again. Only `ontoWorkspace` is suspended; every slot
-  target, including a parent's first-child slot, is unchanged. `ontoGroupHeader` is not suspended.
+  accident (#412). `ontoGroupHeader` is not offered either: each header passing under the pointer
+  would tint for about 85 ms, and a release then would append the workspace to the END of that
+  group, which in a long expanded group is far from the pointer (#416). So while the list
+  auto-scrolls only slots are offered, and the header's bottom half gives the same pair of answers
+  a parent row's lower middle does: the first slot inside when expanded, the slot after when
+  collapsed. Once the list hits its end, or the pointer leaves the band, the list is still under
+  the pointer and the thirds and the header append apply again. Every slot target, including a
+  parent's first-child slot, is unchanged.
+  The auto-scroll timer belongs to the gesture, not to one render: a parent re-render mid-hold
+  (the 1-second agent-status tick) must not stop it, since a still pointer sends no move to
+  restart it (#415).
 - **Empty-group placeholder physics:** when a drag live-applies the group's only member
   in/out, the "No workspaces" placeholder stays/reappears under the dragged row so the
   group's total height is constant while the cursor sweeps it (no layout jumps). Walker

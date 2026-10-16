@@ -554,7 +554,8 @@ parent's collapsed group (the §3.1 rule, one level further).
   after the parent's whole block. That makes the end of a group whose last member is an expanded
   parent reachable without collapsing the parent.
 - A row's middle third is not a nest target while the list auto-scrolls under a still pointer, so a
-  release mid-sweep cannot nest by accident (#412). This is a shell-ui.md §5.5 rule.
+  release mid-sweep cannot nest by accident (#412). A group header's bottom half is not an append
+  target then either (#416). These are shell-ui.md §5.5 rules.
 
 **Wire surface.**
 

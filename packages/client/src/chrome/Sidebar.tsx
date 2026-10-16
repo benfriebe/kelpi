@@ -3153,9 +3153,10 @@ export function Sidebar(props: SidebarProps): ReactElement {
                     props.onNestWorkspaces !== undefined &&
                     drag.ids.every((id) => (nestedByParentRef.current.get(id)?.length ?? 0) === 0)
             });
-            // §5.5: no nesting while the pointer would auto-scroll the list, judged by the same
-            // test the timer steps by, so the move that enters the band never flashes a nest.
-            const target = resolveDropTarget(layout, y, { suspendNesting: autoScrollDelta(drag.clientY) !== 0 });
+            // §5.5: no nest and no header append while the pointer would auto-scroll the list,
+            // judged by the same test the timer steps by, so the move that enters the band never
+            // flashes either.
+            const target = resolveDropTarget(layout, y, { autoScrolling: autoScrollDelta(drag.clientY) !== 0 });
             diagnose(drag, target === null ? null : describeTarget(target));
             updateSpring(drag, target);
             /*

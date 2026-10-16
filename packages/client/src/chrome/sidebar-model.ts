@@ -313,7 +313,13 @@ export type RenderedRow =
           /** §2.9: present only on a parent row: whether its nested rows are hidden. */
           readonly childrenCollapsed?: boolean | undefined;
       }
-    | { readonly kind: 'group-header'; readonly key: string; readonly groupID: string }
+    | {
+          readonly kind: 'group-header';
+          readonly key: string;
+          readonly groupID: string;
+          /** Whether its members are hidden: false for an expanded or spring-loaded group. */
+          readonly collapsed: boolean;
+      }
     | { readonly kind: 'group-empty'; readonly key: string; readonly groupID: string };
 
 export interface CollapseState {
@@ -395,8 +401,9 @@ export function renderedRows(
             pushWorkspace(entry.workspace, null, 0, entry.nested);
             continue;
         }
-        rows.push({ kind: 'group-header', key: `header:${entry.group.id}`, groupID: entry.group.id });
-        if (isGroupCollapsed(entry.group, collapse)) continue;
+        const collapsed = isGroupCollapsed(entry.group, collapse);
+        rows.push({ kind: 'group-header', key: `header:${entry.group.id}`, groupID: entry.group.id, collapsed });
+        if (collapsed) continue;
         if (entry.workspaces.length === 0) {
             rows.push({ kind: 'group-empty', key: `empty:${entry.group.id}`, groupID: entry.group.id });
             continue;
@@ -475,7 +482,13 @@ export type DropZoneKind =
           readonly postRemoveTopIndex: number;
           readonly nestInto?: NestTarget | undefined;
       }
-    | { readonly kind: 'groupHeader'; readonly groupID: string; readonly postRemoveTopIndex: number }
+    | {
+          readonly kind: 'groupHeader';
+          readonly groupID: string;
+          readonly postRemoveTopIndex: number;
+          /** Its members are rendered below it, so index 0 is the slot right under the header. */
+          readonly expanded: boolean;
+      }
     | {
           readonly kind: 'groupChild';
           readonly groupID: string;
@@ -703,7 +716,8 @@ export function buildDropZones(
                 kind: {
                     kind: 'groupHeader',
                     groupID: row.groupID,
-                    postRemoveTopIndex: topIndexOf.get(`group:${row.groupID}`) ?? 0
+                    postRemoveTopIndex: topIndexOf.get(`group:${row.groupID}`) ?? 0,
+                    expanded: !row.collapsed
                 },
                 yTop,
                 yBottom
@@ -719,11 +733,17 @@ export function buildDropZones(
 export interface ResolveDropOptions {
     /**
      * §2.9 / §5.5: the pointer is in the auto-scroll band and the list can still scroll that
-     * way, so rows slide under a still cursor and a middle third would flicker slot / nest /
-     * slot with every row that passes. While set, a nestable row's middle third resolves to
-     * the nearer slot instead of `ontoWorkspace`. Every other target is unchanged.
+     * way, so rows slide under a still cursor. A preview-only target would then flash on and
+     * off with every row that passes, and a release at the wrong moment would take it: a nest
+     * under a passing row (#412), or an append to the end of a passing group (#416). While set,
+     * neither is offered, only slots:
+     * - a nestable row's middle third resolves to the nearer slot instead of `ontoWorkspace`;
+     * - a group header's bottom half resolves to the slot right under it (its index 0) when
+     *   the group is expanded, and to the top-level slot after it when collapsed, instead of
+     *   `ontoGroupHeader`. That is the same pair of answers a parent row's lower middle gives.
+     * Every slot target is unchanged.
      */
-    readonly suspendNesting?: boolean | undefined;
+    readonly autoScrolling?: boolean | undefined;
 }
 
 /** Cursor-y → drop target, per §5.5's half-height rules. */
@@ -757,7 +777,7 @@ export function resolveDropTarget(
                     : { kind: 'intoGroup', groupID: kind.groupID, index: kind.postRemoveChildIndex };
             if (y < zone.yTop + third) return before;
             if (y < zone.yBottom - third) {
-                if (options.suspendNesting !== true) return { kind: 'ontoWorkspace', parentID: nest.parentID };
+                if (options.autoScrolling !== true) return { kind: 'ontoWorkspace', parentID: nest.parentID };
                 // §5.5: nesting suspended while the list auto-scrolls, so the middle third
                 // splits at the row's midpoint: its upper half is the slot before, its lower
                 // half whatever the bottom third gives.
@@ -772,9 +792,13 @@ export function resolveDropTarget(
             return { kind: 'topLevel', index: topHalf ? kind.postRemoveTopIndex : kind.postRemoveTopIndex + 1 };
         }
         if (kind.kind === 'groupHeader') {
-            return topHalf
-                ? { kind: 'topLevel', index: kind.postRemoveTopIndex }
-                : { kind: 'ontoGroupHeader', groupID: kind.groupID };
+            if (topHalf) return { kind: 'topLevel', index: kind.postRemoveTopIndex };
+            if (options.autoScrolling !== true) return { kind: 'ontoGroupHeader', groupID: kind.groupID };
+            // §5.5 (#416): no append while the list auto-scrolls. Where the pointer is: the first
+            // slot inside an expanded group, or past a collapsed one.
+            return kind.expanded
+                ? { kind: 'intoGroup', groupID: kind.groupID, index: 0 }
+                : { kind: 'topLevel', index: kind.postRemoveTopIndex + 1 };
         }
         if (kind.kind === 'groupChild') {
             return {

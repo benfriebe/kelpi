@@ -10,10 +10,10 @@ and the next implementation task.
 ## Prepare a source checkout
 
 Use Node.js 24 or newer (`.nvmrc` and `.node-version` name it, so `nvm install` picks it up), and
-the pnpm version `packageManager` in the root `package.json` names, pnpm 10.28.1. pnpm and
-corepack both honour that field and switch to it. `engineStrict` in `pnpm-workspace.yaml` makes
-both requirements hard: the wrong Node, or a pnpm that did not switch, stops `pnpm install` with
-the version it expected.
+the pnpm version `packageManager` in the root `package.json` names, pnpm 10.28.1. pnpm 10 and
+later and corepack honour that field and switch to it; pnpm 9 does not. Both requirements are
+hard (`engines` in `package.json`, with `engineStrict` in `pnpm-workspace.yaml` for Node): the
+wrong Node, or a pnpm that did not switch, stops `pnpm install` with the version it expected.
 
 The pin is not decoration, and neither is the location of the two pnpm settings.
 `overrides` and `onlyBuiltDependencies` live in `pnpm-workspace.yaml` because pnpm 11 stopped

@@ -1,16 +1,17 @@
 packages:
   - packages/*
 
-# `engines` in package.json is a hard requirement, not advice (#6). Without this pnpm prints
+# `engines.node` in package.json is a hard requirement, not advice (#6). Without this pnpm prints
 # "Unsupported engine" and installs anyway, so a clone on Node 22 got as far as a build that
 # failed for reasons that did not name Node. With it, `pnpm install` stops at once and says
-# which Node it wanted. Two things ride on it:
-#   - `engines.pnpm` (>=10.28.1 <11) catches a pnpm that did not switch to `packageManager`
-#     (pnpm >= 9.7 and corepack both do, unless told not to: pnpm 10's
-#     `manage-package-manager-versions=false`, pnpm 11's `pmOnFail: ignore`).
-#     It and `packageManager` name the same pnpm, so change them together.
-#   - It applies to every dependency's `engines.node` too: a future dependency that caps Node
-#     below the one this repo runs fails the install here rather than misbehaving at runtime.
+# which Node it wanted. It covers every non-optional dependency's `engines.node` too (pnpm skips
+# an optional one instead): a future dependency that caps Node below the one this repo runs
+# fails the install here rather than misbehaving at runtime.
+#
+# `engines.pnpm` (>=10.28.1 <11) needs no setting: pnpm always stops on the root project's pnpm
+# range. It catches a pnpm that did not switch to `packageManager`: pnpm 9, which never does, or
+# pnpm 10 and 11 told not to (`manage-package-manager-versions=false`, `pmOnFail: ignore`).
+# It and `packageManager` name the same pnpm, so change them together.
 engineStrict: true
 
 # `overrides` and `onlyBuiltDependencies` live HERE, not in the root package.json's `pnpm` field

@@ -22993,7 +22993,7 @@ function buildFlows(ctx) {
         {
             id: 'sidebar-spring',
             expect:
-                'The sidebar’s drag-time motion is a REAL interruptible spring, not a curve shaped like one: a row the cursor crosses runs home frame by frame and overshoots its slot; a second crossing that lands MID-FLIGHT retargets the same motion (the visual position continuous through the retarget and the velocity carried past it) instead of restarting at zero velocity; the released row springs into its slot from where the ghost left it; the cursor clone restyles LIVE with the resolved container (a member dragged out of a group sheds its band and its indent at a top-level slot, keeps a member’s dressing over a top-level row’s MIDDLE third, which is a nest band that tints that row, and takes both back on the way in) and hands over to the row on release with no frame showing two copies, none showing zero and none showing a landing node; §WS-093’s drop geometry is unmoved by any of it; a collapsed group spring-loads open at 650 ms and NOT at 300 ms; and a drag held in the auto-scroll band of an overflowing list never resolves to `ontoWorkspace` nor tints a row while the list scrolls under it, nor nests on a release mid-scroll, while the thirds come back once the pointer is out of the band after a sweep (#412) (§WS-008/§WS-084/§WS-089/§WS-092/§WS-093/§5.5/§2.9).',
+                'The sidebar’s drag-time motion is a REAL interruptible spring, not a curve shaped like one: a row the cursor crosses runs home frame by frame and overshoots its slot; a second crossing that lands MID-FLIGHT retargets the same motion (the visual position continuous through the retarget and the velocity carried past it) instead of restarting at zero velocity; the released row springs into its slot from where the ghost left it; the cursor clone restyles LIVE with the resolved container (a member dragged out of a group sheds its band and its indent at a top-level slot, keeps a member’s dressing over a top-level row’s MIDDLE third, which is a nest band that tints that row, and takes both back on the way in) and hands over to the row on release with no frame showing two copies, none showing zero and none showing a landing node; §WS-093’s drop geometry is unmoved by any of it; a collapsed group spring-loads open at 650 ms and NOT at 300 ms; and a drag held in the auto-scroll band of an overflowing list never resolves to `ontoWorkspace` nor tints a row while the list scrolls under it, nor nests on a release mid-scroll, while the thirds come back once the pointer is out of the band after a sweep (#412); a group header passing under that still pointer offers a slot (the expanded group’s first, the slot after a collapsed one) and never `ontoGroupHeader` nor a header tint (#416); and a parent render mid-hold does not stop the auto-scroll (#415) (§WS-008/§WS-084/§WS-089/§WS-092/§WS-093/§5.5/§2.9).',
             needsEyes: true,
             async run(recorder) {
                 const activeBefore = String(
@@ -23019,6 +23019,8 @@ function buildFlows(ctx) {
                  */
                 /** Phase (f)'s padding rows, by name: declared up here so every exit tears them down. */
                 const sweepPads = [];
+                /** Phase (f)'s two groups (#416), one left expanded and one collapsed, named off the `Spring ` prefix. */
+                const SWEEP_GROUPS = ['Sweep Band Open', 'Sweep Band Shut'];
                 const handBack = async () => {
                     // Stopped before they are dropped: a sampler an exception left running would
                     // keep its rAF loop going for the rest of a full run.
@@ -23037,10 +23039,15 @@ function buildFlows(ctx) {
                     for (const name of sweepPads) {
                         await cli.run(['workspace', 'delete', name, '--force']);
                     }
+                    // Then its two groups (#416), empty by now; a no-op when they never landed.
+                    for (const name of SWEEP_GROUPS) {
+                        await cli.run(['group', 'delete', name, '--cascade']);
+                    }
                     await page.waitFor(
                         `document.querySelectorAll('[data-testid="workspace-row"]').length > 0 &&
-                     !Array.from(document.querySelectorAll('[data-testid="workspace-row"]')).some(el => (el.innerText ?? '').includes('Spring '))`,
-                        { timeoutMs: 30_000, label: 'the spring rows to leave the sidebar' }
+                     !Array.from(document.querySelectorAll('[data-testid="workspace-row"]')).some(el => (el.innerText ?? '').includes('Spring ')) &&
+                     !Array.from(document.querySelectorAll('[data-testid="group-header"]')).some(el => (el.innerText ?? '').includes('Sweep Band '))`,
+                        { timeoutMs: 30_000, label: 'the spring rows and sweep groups to leave the sidebar' }
                     );
                     await sleep(900);
                     let handedBack = '';
@@ -24163,14 +24170,27 @@ function buildFlows(ctx) {
                  *   2. a release while the list is still scrolling, which is the user-facing
                  *      bug: the workspace must come out of it top level, with no parent.
                  *
-                 * The hold is not perfectly still, and on purpose. The drag effect re-runs on a
-                 * parent render (the 1-second agent-status tick, §15, is one) and its cleanup
-                 * stops the auto-scroll timer, which nothing re-arms until the next `mousemove`:
-                 * a pointer held truly still can stop travelling mid-list, and the rest of the
-                 * hold would sweep nothing. So a stall that is not the end of the list is
-                 * answered with a 1 px move inside the band, which re-arms the timer as a real
-                 * hand's tremor would, and the re-arms are counted in the detail. Each such move
-                 * resolves under the same rule, so it is part of what is checked.
+                 * Hold 1 also carries #416's and #415's checks.
+                 *
+                 *   - #416: two groups sit in the swept range, `Sweep Band Open` (expanded) and
+                 *     `Sweep Band Shut` (collapsed), each holding a pad. A header's bottom half
+                 *     used to offer `ontoGroupHeader` as it passed (tinting the header, and a
+                 *     release appended to the END of that group); while the list auto-scrolls it
+                 *     must offer a slot instead, the expanded group's first one and the slot after
+                 *     the collapsed one, and no frame may tint a header.
+                 *   - #415: the drag effect re-runs on every parent render (the 1-second
+                 *     agent-status tick is one), and its cleanup used to stop the auto-scroll
+                 *     timer, which nothing re-armed until the next `mousemove`: a still pointer
+                 *     stopped travelling mid-list. Hold 1 FORCES one such render mid-sweep (a pad
+                 *     renamed and renamed back, its row's text proving the sidebar re-rendered)
+                 *     and checks the list kept travelling, and every frame publishes the timer
+                 *     (`data-drag-autoscroll`), which must stay on while the list can scroll.
+                 *
+                 * A stall that is not the end of the list is still answered with a 1 px move
+                 * inside the band, as a real hand's tremor would, so a regression still sweeps
+                 * the rest of the list and fails only its own checks; the re-arms are counted in
+                 * the detail. Each such move resolves under the same rules, so it is part of what
+                 * is checked.
                  */
                 await sleep(300);
                 /** `AUTO_SCROLL_EDGE_PX` in `chrome/Sidebar.tsx`: how deep each auto-scroll band is. */
@@ -24221,6 +24241,55 @@ function buildFlows(ctx) {
                         );
                         // SETTLE-WAIT: the list has come to REST with the new rows in it, so the
                         // scroll range below is not measured mid-growth.
+                        await settleStable(
+                            () =>
+                                page.eval(
+                                    `(() => { const list = document.querySelector('[data-testid="sidebar"] [role="listbox"]');
+                                      return String(document.querySelectorAll('[data-testid="workspace-row"]').length) + '/' +
+                                          String(list === null ? -1 : Math.round(list.scrollHeight)); })()`
+                                ),
+                            { ceilingMs: 900, stableMs: 250, intervalMs: 70 }
+                        );
+                        scroller = await scrollerNow();
+                    }
+                    /*
+                     * #416's fixtures: two groups the sweep must carry past the pointer, one
+                     * expanded and one collapsed, each holding a pad. `group create` appends its
+                     * header to the end of the list, so three more top-level pads follow them:
+                     * both headers then sit below the first screen (after every pad above) and
+                     * above the end of travel, so hold 1's end-of-travel release can never land
+                     * on one. Only when the pad loop above produced a list worth sweeping.
+                     */
+                    let sweepGroups = { open: '', shut: '' };
+                    if (scroller.found === true && sweepPads.length > 0) {
+                        for (const group of SWEEP_GROUPS) {
+                            await cli.run(['group', 'create', group]);
+                            const name = `Spring Sweep ${String(sweepPads.length + 1)}`;
+                            sweepPads.push(name);
+                            await cli.ok(['workspace', 'create', '--name', name, '--group', group]);
+                        }
+                        for (let n = 0; n < 3; n++) {
+                            const name = `Spring Sweep ${String(sweepPads.length + 1)}`;
+                            sweepPads.push(name);
+                            await cli.ok(['workspace', 'create', '--name', name]);
+                        }
+                        const groups = await cli.json(['group', 'list', '--json']);
+                        sweepGroups = {
+                            open: String(groups.find((group) => group.name === SWEEP_GROUPS[0])?.id ?? ''),
+                            shut: String(groups.find((group) => group.name === SWEEP_GROUPS[1])?.id ?? '')
+                        };
+                        const lastPad = sweepPads.at(-1) ?? '';
+                        await page.waitFor(
+                            `Array.from(document.querySelectorAll('[data-testid="workspace-row"]')).some(el => (el.innerText ?? '').includes(${JSON.stringify(lastPad)}))`,
+                            { timeoutMs: 40_000, label: `the ${lastPad} row` }
+                        );
+                        // Collapsed through its chevron, as a user would, and CONFIRMED, retrying.
+                        const shutHeader = `document.querySelector('[data-testid="group-header"][data-group-id="${sweepGroups.shut}"]')`;
+                        for (let attempt = 0; attempt < 4 && (await page.eval(`${shutHeader}?.getAttribute('data-collapsed') ?? 'gone'`)) !== 'true'; attempt++) {
+                            await page.eval(`(() => { ${shutHeader}?.querySelector('[data-testid="group-chevron"]')?.click(); return true; })()`);
+                            await settleDom(page, `${shutHeader}?.getAttribute('data-collapsed') === 'true'`, { ceilingMs: 900, intervalMs: 60 });
+                        }
+                        // SETTLE-WAIT: the list at rest with the groups in it, as above.
                         await settleStable(
                             () =>
                                 page.eval(
@@ -24320,8 +24389,13 @@ function buildFlows(ctx) {
                             `scrollTop ${String(scroller.top)} · dragged ${JSON.stringify(first.box ?? null)} · active ${String(first.active ?? false)}`
                     );
 
-                    /** One frame per sample: [time, scrollTop, can still scroll down, target, tinted rows]. */
-                    const startSweepSampler = async () => {
+                    /**
+                     * One frame per sample: [time, scrollTop, can still scroll down, target, tinted
+                     * rows, tinted group headers (#416), `data-drag-autoscroll` (#415), the group
+                     * header whose bottom half is under `pointerY` (#416)]. A header renders
+                     * `data-drop-preview="false"` when untinted, so only `"true"` is matched.
+                     */
+                    const startSweepSampler = async (pointerY) => {
                         await page.eval(
                             `(() => {
                                 const list = document.querySelector('[data-testid="sidebar"] [role="listbox"]');
@@ -24329,13 +24403,22 @@ function buildFlows(ctx) {
                                 let running = true;
                                 const tick = (time) => {
                                     if (!running) return;
+                                    const headers = Array.from(document.querySelectorAll('[data-testid="group-header"]'));
+                                    const under = headers.find(el => {
+                                        const r = el.getBoundingClientRect();
+                                        return ${String(pointerY)} >= r.y + r.height / 2 && ${String(pointerY)} < r.bottom;
+                                    });
                                     samples.push([
                                         Math.round(time * 100) / 100,
                                         list === null ? -1 : Math.round(list.scrollTop * 10) / 10,
                                         list !== null && list.scrollTop + list.clientHeight < list.scrollHeight - 1 ? 1 : 0,
                                         list === null ? null : list.getAttribute('data-drag-target'),
                                         Array.from(document.querySelectorAll('[data-testid="workspace-row"][data-drop-preview="true"]'))
-                                            .map(el => el.getAttribute('data-workspace-id')).join(',')
+                                            .map(el => el.getAttribute('data-workspace-id')).join(','),
+                                        headers.filter(el => el.getAttribute('data-drop-preview') === 'true')
+                                            .map(el => el.getAttribute('data-group-id')).join(','),
+                                        list === null ? null : list.getAttribute('data-drag-autoscroll'),
+                                        under === undefined ? '' : under.getAttribute('data-group-id')
                                     ]);
                                     requestAnimationFrame(tick);
                                 };
@@ -24356,7 +24439,7 @@ function buildFlows(ctx) {
                      * timer with a 1 px move that stays inside the band (see above). The end of the
                      * list is the product's own test: `scrollTop` within 1 px of the range.
                      */
-                    const holdInBand = async (x, y, { capMs, stop }) => {
+                    const holdInBand = async (x, y, { capMs, stop, midHold }) => {
                         const started = Date.now();
                         let last = await scrollerNow();
                         const from = last.top;
@@ -24364,6 +24447,7 @@ function buildFlows(ctx) {
                         let endAt = null;
                         let rearms = 0;
                         let nudge = 0;
+                        let midHeld = null;
                         while (Date.now() - started < capMs) {
                             await sleep(60);
                             const now = await scrollerNow();
@@ -24375,9 +24459,16 @@ function buildFlows(ctx) {
                                 atEnd,
                                 sinceEnd: endAt === null ? 0 : Date.now() - endAt,
                                 travelled: now.top - from,
+                                remaining: now.max - now.top,
                                 elapsed: Date.now() - started
                             };
                             if (stop(state)) break;
+                            // At most once, between moves: the pointer is not touched while it runs.
+                            if (midHold !== undefined && midHeld === null && midHold.when(state)) {
+                                midHeld = await midHold.run();
+                                movedAt = Date.now();
+                                continue;
+                            }
                             if (!atEnd && Date.now() - movedAt >= 250) {
                                 nudge = nudge === 0 ? 1 : 0;
                                 await page.mouse('mouseMoved', x, y - nudge, { button: 'left', buttons: 1 });
@@ -24386,7 +24477,65 @@ function buildFlows(ctx) {
                                 movedAt = Date.now();
                             }
                         }
-                        return { from, to: last.top, max: last.max, atEnd: endAt !== null, rearms, ms: Date.now() - started };
+                        return { from, to: last.top, max: last.max, atEnd: endAt !== null, rearms, ms: Date.now() - started, midHeld };
+                    };
+                    /**
+                     * #415's forced parent render. A rename changes the sidebar's `entries`, so the
+                     * app re-renders the sidebar with fresh props and its drag effect re-runs,
+                     * which is what used to stop the timer. The renamed row's own text is the
+                     * proof the render happened (it can only change through a Sidebar render with
+                     * the new entries), and the scroll position either side of a fixed wait, with
+                     * the pointer untouched, says whether the list kept travelling after it. The
+                     * pad is renamed back at once; its temporary name joins `sweepPads` first, so
+                     * `handBack` deletes it whichever name it ends with.
+                     */
+                    const forceParentRender = async () => {
+                        const pick = JSON.parse(
+                            String(
+                                await page.eval(
+                                    `(() => {
+                                        const list = document.querySelector('[data-testid="sidebar"] [role="listbox"]');
+                                        const edge = list === null ? null : list.getBoundingClientRect();
+                                        const pads = ${JSON.stringify(
+                                            listed
+                                                .filter((workspace) => sweepPads.includes(String(workspace.name)) && workspace.id !== draggedID)
+                                                .map((workspace) => ({ id: String(workspace.id), name: String(workspace.name) }))
+                                                .reverse()
+                                        )};
+                                        for (const pad of pads) {
+                                            const row = document.querySelector('[data-testid="workspace-row"][data-workspace-id="' + pad.id + '"]');
+                                            if (row === null || edge === null) continue;
+                                            const r = row.getBoundingClientRect();
+                                            if (r.bottom <= edge.top || r.top >= edge.bottom) return JSON.stringify(pad);
+                                        }
+                                        return 'null';
+                                    })()`
+                                )
+                            )
+                        );
+                        if (pick === null) return { ran: false, why: 'no pad row outside the viewport' };
+                        const temp = `${pick.name} R`;
+                        sweepPads.push(temp);
+                        const rowText = `(document.querySelector('[data-testid="workspace-row"][data-workspace-id="${pick.id}"]')?.innerText ?? '')`;
+                        const asked = Date.now();
+                        await cli.ok(['workspace', 'rename', pick.id, temp]);
+                        const rendered = await settleDom(page, `${rowText}.includes(${JSON.stringify(temp)})`, { ceilingMs: 3000, intervalMs: 20 });
+                        const renderedMs = Date.now() - asked;
+                        const before = await scrollerNow();
+                        await sleep(300);
+                        const after = await scrollerNow();
+                        await cli.ok(['workspace', 'rename', pick.id, pick.name]);
+                        await settleDom(page, `!${rowText}.includes(${JSON.stringify(temp)})`, { ceilingMs: 3000, intervalMs: 40 });
+                        return {
+                            ran: true,
+                            pad: pick.name,
+                            rendered,
+                            renderedMs,
+                            before: before.top,
+                            after: after.top,
+                            max: before.max,
+                            timer: String(await page.eval(`document.querySelector('[data-testid="sidebar"] [role="listbox"]')?.getAttribute('data-drag-autoscroll') ?? 'none'`))
+                        };
                     };
                     const bandY = Math.round((scroller.rectBottom ?? 0) - AUTO_SCROLL_BAND_PX / 2);
                     const press = async (box) => {
@@ -24403,13 +24552,15 @@ function buildFlows(ctx) {
                         const box = first.box;
                         // ── hold 1: to the end of travel ──
                         const live = await press(box);
-                        await startSweepSampler();
+                        await startSweepSampler(bandY);
                         await page.mouse('mouseMoved', box.x, bandY, { button: 'left', buttons: 1 });
                         sweepPointer = { x: box.x, y: bandY };
                         const held = await holdInBand(box.x, bandY, {
                             capMs: Math.min(20_000, 4000 + scroller.max * 8),
                             // The springs the sweep started come home before the end is read.
-                            stop: (state) => state.atEnd && state.sinceEnd >= 700
+                            stop: (state) => state.atEnd && state.sinceEnd >= 700,
+                            // #415: early in the sweep, with plenty of list left to travel.
+                            midHold: { when: (state) => state.travelled >= pitch * 2 && state.remaining >= pitch * 5, run: forceParentRender }
                         });
                         const sweep = await stopSweepSampler();
                         const moving = sweep.filter((sample) => sample[2] === 1);
@@ -24448,6 +24599,64 @@ function buildFlows(ctx) {
                             '#412: and no row is nest-tinted during the sweep (§2.9’s preview-only target)',
                             moving.length > 0 && tinted.length === 0,
                             `${String(tinted.length)} of ${String(moving.length)} frames tinted ${JSON.stringify([...new Set(tinted.map((sample) => sample[4]))].slice(0, 6))}`
+                        );
+
+                        /*
+                         * #415: the forced parent render. Its row's text proves the sidebar really
+                         * re-rendered with fresh props (so the drag effect re-ran), and the list
+                         * must keep travelling across the 300 ms after it with the pointer
+                         * untouched: before the fix it stopped dead there until the next move. Then
+                         * every frame from the moment the timer first ran, while the list could
+                         * still scroll, must show it running: the pointer never leaves the band in
+                         * this hold, so a frame with it off is a stall, whatever caused it.
+                         */
+                        const forced = held.midHeld;
+                        const forcedMoved = forced?.ran === true ? forced.after - forced.before : 0;
+                        recorder.check(
+                            '#415: a parent render mid-hold (a pad renamed, its row re-rendered) does not stop the auto-scroll under a still pointer',
+                            forced?.ran === true && forced.rendered === true && forcedMoved >= 9 && forced.timer === 'true',
+                            forced?.ran === true
+                                ? `renamed ${String(forced.pad)}: row re-rendered ${String(forced.rendered)} after ${String(forced.renderedMs)}ms · ` +
+                                      `scrollTop ${String(forced.before)} → ${String(forced.after)} of ${String(Math.round(forced.max))} over the next 300ms · timer ${forced.timer}`
+                                : `the forced render did not run: ${String(forced?.why ?? 'the hold never reached it')}`
+                        );
+                        const armedAt = sweep.findIndex((sample) => sample[6] === 'true');
+                        const stalled = armedAt < 0 ? [] : sweep.slice(armedAt).filter((sample) => sample[2] === 1 && sample[6] !== 'true');
+                        recorder.check(
+                            '#415: and the auto-scroll timer runs in every frame of the hold while the list can still scroll',
+                            armedAt >= 0 && stalled.length === 0,
+                            `timer first on at frame ${String(armedAt)} of ${String(sweep.length)} · ${String(stalled.length)} later frame(s) with it off while the list could scroll · ` +
+                                `${String(held.rearms)} 1 px re-arm(s) needed`
+                        );
+
+                        /*
+                         * #416: both fixture headers passed under the pointer while the list could
+                         * still scroll (the eighth field: the header whose bottom half the pointer
+                         * was over, by its painted box), and no such frame, nor any other moving
+                         * frame, offered `ontoGroupHeader` or tinted a header. Where the pointer
+                         * was over a header's bottom half, the expanded group answers its own first
+                         * slot and the collapsed one a top-level slot. The painted box can lead or
+                         * trail the resolver's layout by a spring, so those two need ONE such
+                         * frame each, not every one.
+                         */
+                        const headerTargets = moving.filter((sample) => String(sample[3] ?? '').startsWith('ontoGroupHeader:'));
+                        const headerTinted = moving.filter((sample) => sample[5] !== '');
+                        recorder.check(
+                            '#416: while the list auto-scrolls under it, the drag never resolves to ontoGroupHeader nor tints a header',
+                            moving.length > 0 && headerTargets.length === 0 && headerTinted.length === 0,
+                            `${String(headerTargets.length)} of ${String(moving.length)} frames read ontoGroupHeader · ${String(headerTinted.length)} tinted a header ` +
+                                `${JSON.stringify([...new Set(headerTinted.map((sample) => sample[5]))].slice(0, 4))}`
+                        );
+                        const overOpen = moving.filter((sample) => sample[7] === sweepGroups.open);
+                        const overShut = moving.filter((sample) => sample[7] === sweepGroups.shut);
+                        recorder.check(
+                            '#416: both sweep groups’ headers passed under the pointer, the expanded one answering its first slot and the collapsed one a top-level slot',
+                            sweepGroups.open !== '' &&
+                                sweepGroups.shut !== '' &&
+                                overOpen.some((sample) => sample[3] === `intoGroup:${sweepGroups.open}:0`) &&
+                                overShut.some((sample) => String(sample[3] ?? '').startsWith('topLevel:')),
+                            `expanded ${sweepGroups.open || 'missing'}: ${String(overOpen.length)} frame(s) over its bottom half, targets ${JSON.stringify([...new Set(overOpen.map((sample) => sample[3]))])} · ` +
+                                `collapsed ${sweepGroups.shut || 'missing'}: ${String(overShut.length)} frame(s), targets ${JSON.stringify([...new Set(overShut.map((sample) => sample[3]))])}`
                         );
 
                         /*
@@ -24572,7 +24781,7 @@ function buildFlows(ctx) {
                         } else {
                             const box2 = second.box;
                             const live2 = await press(box2);
-                            await startSweepSampler();
+                            await startSweepSampler(bandY);
                             await page.mouse('mouseMoved', box2.x, bandY, { button: 'left', buttons: 1 });
                             sweepPointer = { x: box2.x, y: bandY };
                             const held2 = await holdInBand(box2.x, bandY, {

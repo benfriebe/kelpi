@@ -1913,9 +1913,12 @@ and no inspector section.
   --limit=20 --json=...`. Then:
   - a PR whose head repository is not origin's owner/name is dropped (`--head` matches a
     branch NAME, so a fork's branch of the same name would otherwise match);
-  - a merged or closed PR counts only if its head commit is the branch's tip or an
-    ancestor of it here (`git merge-base --is-ancestor`); a commit this repo never had is
-    someone else's use of a reused branch name. Open and draft PRs always count;
+  - a merged or closed PR must be shown to be ours, because branch names get reused. Its
+    head commit counts when it is on the local branch or on `origin/<branch>`, or descends
+    from the local tip (GitHub's Update branch or a web commit, then a fetch). A head this
+    repo has never fetched counts only for a PR this daemon already saw open on this
+    branch; one known here but on another line of work never counts. Open and draft PRs
+    always count;
   - a URL that is not https is dropped.
 
 ### 11.2 The gh contract
@@ -1929,6 +1932,10 @@ and no inspector section.
   host; a lookup exits 4 or asks for `gh auth login`), clears every workspace's
   `pullRequests`, logs one line, and looks again after 10 minutes. Logging in or
   installing gh later starts working without a restart.
+- **The hourly recheck.** A working `gh` is asked `auth status` again every hour. That call
+  checks the token against GitHub, so offline or timed out it names no host either; then
+  the hosts it had are kept and the recheck comes round again in 5 minutes. Only gh saying
+  it is not logged in stands it down.
 - **Rate limit.** A lookup that fails with a rate-limit error pauses every lookup for 15
   minutes and keeps what is shown. The GitHub budget is per user and shared with every
   `gh` an agent runs.
@@ -1944,7 +1951,9 @@ and no inspector section.
 - At most two `gh` processes at once, stalest key first.
 - A change to the key set (a branch switch, a new or removed association, a workspace
   deleted) drops what no longer applies at once and looks up new keys after a 2 s
-  debounce. The association watcher's 30 s status reads are not a trigger.
+  debounce. A new key is never looked up before its debounce ends, so a quick run of
+  checkouts never asks about the branches passed through. The association watcher's 30 s
+  status reads are not a trigger.
 - An answer that arrives after its key changed or vanished, or after lookups were turned
   off, is discarded.
 - `setWorkspacePullRequests` is dispatched only when a workspace's list actually changed.
@@ -1953,7 +1962,8 @@ and no inspector section.
 
 `workspace-pr-status` (config-keybindings.md; Settings ▸ General ▸ Repositories "Show pull
 request status"), default true; only `false` turns it off. Read at every decision point:
-off clears every row at once and spawns nothing; on looks up every key at once.
+off clears every row at once and spawns nothing; on looks up every key at once, except
+during a rate-limit pause, which holds until it ends.
 
 ### 11.5 Not covered
 

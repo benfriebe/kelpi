@@ -159,7 +159,7 @@ export default async function ({ page, cli, sandbox, harness, shell, rec, d }) {
         // arrangement through the menu row whose relay this also proves.
         await harness.menuClick({ path: ['View', 'Reset Window Arrangement'] });
         await settleLayout(everyBand, 'reset before the run');
-        const created = await json(['workspace', 'create', '--name', 'Root layout', '--json']);
+        const created = await json(['workspace', 'create', '--focus', '--name', 'Root layout', '--json']);
         workspaceID = created.workspace_id;
         const paneID = (await json(['pane', 'list', '--workspace', workspaceID, '--json']))[0].id;
         await d.settleDom(page, `document.querySelector('[data-testid="workspace-row"][data-workspace-id="${workspaceID}"][data-active="true"]')`, { ceilingMs: 10_000 });
@@ -318,7 +318,7 @@ export default async function ({ page, cli, sandbox, harness, shell, rec, d }) {
         remote = await makeSandbox(repoRoot, { label: 'root-layout-remote', clientDir: path.join(repoRoot, 'packages/client/dist') });
         remoteDaemon = startDaemon(remote, { repoRoot }); await waitForHealthz(remote.base);
         const remoteCLI = makeCli(remote, { repoRoot });
-        const remoteWorkspace = JSON.parse(await remoteCLI.ok(['workspace', 'create', '--name', 'Remote layout', '--json']));
+        const remoteWorkspace = JSON.parse(await remoteCLI.ok(['workspace', 'create', '--focus', '--name', 'Remote layout', '--json']));
         const remoteToken = fs.readFileSync(path.join(remote.runDir, `daemon-v${PROTOCOL_VERSION}.token`), 'utf8').trim();
         fs.writeFileSync(sandbox.configPath, `${config}\nremote-daemon = LayoutRemote:${remote.base}/?token=${remoteToken}\n`);
         await frameCheck('topbar', `(async () => (await kelpi.ui.getNavigation()).hosts.some(host => host.name === 'LayoutRemote' && host.connection === 'connected'))()`, 20_000);

@@ -51,7 +51,7 @@ process.stdin.on('data', bytes => {
             });
             state.installed = true;
         })()`);
-        workspaceID = JSON.parse(await cli.ok(['workspace', 'create', '--name', 'Scrollback resize', '--path', sandbox.root, '--json'])).workspace_id;
+        workspaceID = JSON.parse(await cli.ok(['workspace', 'create', '--focus', '--name', 'Scrollback resize', '--path', sandbox.root, '--json'])).workspace_id;
         const paneID = JSON.parse(await cli.ok(['pane', 'list', '--workspace', workspaceID, '--json']))[0].id;
         const root = `[data-pane-id="${paneID}"][data-terminal-status]`;
         if (!await d.settleDom(page, `document.querySelector('${root}')?.getAttribute('data-terminal-status') === 'live'`)) {

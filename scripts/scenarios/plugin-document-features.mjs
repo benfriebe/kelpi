@@ -72,12 +72,12 @@ export default async function ({ page, cli, sandbox, rec, d }) {
         fs.writeFileSync(markdownFile, '# Document Lab\n\nOriginal text\n'); git(['add', '.']);
         git(['-c', 'user.name=Kelpi Scenario', '-c', 'user.email=scenario@localhost', 'commit', '-m', 'Private fixture']);
         fs.appendFileSync(markdownFile, '\nDiff fixture\n');
-        const workspace = await json(['workspace', 'create', '--name', 'Document Lab', '--path', repository, '--json']);
+        const workspace = await json(['workspace', 'create', '--focus', '--name', 'Document Lab', '--path', repository, '--json']);
         const workspaceID = workspace.workspace_id;
         const panes = () => json(['pane', 'list', '--workspace', workspaceID, '--json']);
         const terminal = (await panes())[0].id;
         await cli.ok(['open', markdownFile], { cwd: repository, paneID: terminal });
-        await cli.ok(['diff'], { cwd: repository, paneID: terminal });
+        await cli.ok(['diff', '--focus'], { cwd: repository, paneID: terminal });
         let markdown, diff;
         if (!await d.settle(async () => { const rows = await panes(); markdown = rows.find(pane => pane.type === 'markdown'); diff = rows.find(pane => pane.type === 'diff'); return markdown && diff; })) throw new Error('Documents did not open');
         await cli.ok(['plugin', 'install', packagePath, '--trust']);
@@ -167,7 +167,7 @@ export default async function ({ page, cli, sandbox, rec, d }) {
         remoteDaemon = startDaemon(remote, { repoRoot }); await waitForHealthz(remote.base);
         const remoteCLI = makeCli(remote, { repoRoot });
         await remoteCLI.ok(['plugin', 'install', packagePath, '--trust']);
-        const remoteWorkspace = JSON.parse(await remoteCLI.ok(['workspace', 'create', '--name', 'Remote Documents', '--json']));
+        const remoteWorkspace = JSON.parse(await remoteCLI.ok(['workspace', 'create', '--focus', '--name', 'Remote Documents', '--json']));
         const remoteTerminal = JSON.parse(await remoteCLI.ok(['pane', 'list', '--workspace', remoteWorkspace.workspace_id, '--json']))[0].id;
         const remoteFile = path.join(remote.root, 'remote.md'); fs.writeFileSync(remoteFile, '# Remote document\n');
         await remoteCLI.ok(['open', remoteFile], { paneID: remoteTerminal });

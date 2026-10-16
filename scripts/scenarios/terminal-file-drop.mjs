@@ -73,7 +73,7 @@ export default async function ({ page, cli, rec, d, sleep }) {
 
     let workspaceID;
     try {
-        const created = JSON.parse(await cli.ok(['workspace', 'create', '--name', 'File drop', '--json']));
+        const created = JSON.parse(await cli.ok(['workspace', 'create', '--focus', '--name', 'File drop', '--json']));
         workspaceID = created.workspace_id ?? created.id;
         await d.settleDom(page, `document.querySelector('[data-workspace-id="${workspaceID}"]')`, { ceilingMs: 10_000 });
         await d.settle(async () => (await d.domPaneIDs(page)).length === 1, { ceilingMs: 15_000, intervalMs: 200 });

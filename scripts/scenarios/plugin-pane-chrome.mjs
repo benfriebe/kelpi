@@ -368,7 +368,7 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
     // Where the window was before this scenario took it: restored at the end, because the sandbox
     // and its window are shared with whatever runs next.
     const startingWorkspace = await page.eval(`document.querySelector('[data-testid="workspace-row"][data-active="true"]')?.getAttribute('data-workspace-id') ?? null`);
-    const workspace = await json(['workspace', 'create', '--name', 'Pane chrome', '--json']);
+    const workspace = await json(['workspace', 'create', '--focus', '--name', 'Pane chrome', '--json']);
     const workspaceID = workspace.workspace_id;
     /** The workspace check 3 proves WITHHOLDING with: many panes, each with a maximal title. */
     let crowdedID = null;
@@ -380,7 +380,7 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
         // ── 1 · the placement is offered, and the lab attaches ───────────────────────
         await cli.ok(['plugin', 'install', labPath, '--trust']);
         await cli.ok(['plugin', 'install', uiPath, '--trust']);
-        const uiPane = await json(['plugin', 'open', uiID, `${uiID}.panel`, '--workspace', workspaceID]);
+        const uiPane = await json(['plugin', 'open', '--focus', uiID, `${uiID}.panel`, '--workspace', workspaceID]);
         uiFrame = `[data-testid="plugin-view-${uiPane.paneID}"] iframe`;
         if (!await d.settle(async () => {
             try { return await page.evalInFrame(uiFrame, `document.body.dataset.ready === 'true'`); } catch { return false; }
@@ -439,7 +439,7 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
          * PREFIX and count the rest. This builds that workspace: panes whose titles are as long as
          * a shell can honestly make them, until the budget bites.
          */
-        const crowded = await json(['workspace', 'create', '--name', 'Pane chrome crowded', '--json']);
+        const crowded = await json(['workspace', 'create', '--focus', '--name', 'Pane chrome crowded', '--json']);
         crowdedID = crowded.workspace_id;
         const crowdedPanes = [(await json(['pane', 'list', '--workspace', crowdedID, '--json']))[0].id];
         for (let index = 0; index < 5; index += 1) {

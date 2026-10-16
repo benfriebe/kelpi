@@ -467,7 +467,7 @@ await runDesktopTest(async () => {
         await sleep(700);
     };
     const createWorkspace = async (name, extra = []) => {
-        const created = await json(['workspace', 'create', '--name', name, ...extra]);
+        const created = await json(['workspace', 'create', '--focus', '--name', name, ...extra]);
         const workspaceID = created.workspace_id;
         await d.settle(async () => (await panesOf(workspaceID)).length === 1, { ceilingMs: 15_000, intervalMs: 200 });
         const [pane] = await panesOf(workspaceID);

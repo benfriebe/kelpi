@@ -195,7 +195,7 @@ async function main() {
             }
         };
 
-        const created = await cli.run(['workspace', 'create', '--name', 'revive'], { timeoutMs: 40_000 });
+        const created = await cli.run(['workspace', 'create', '--focus', '--name', 'revive'], { timeoutMs: 40_000 });
         if (created.code !== 0) throw new Error(`workspace create failed: ${created.stderr || created.stdout}`);
         await waitFor(
             'the workspace to be active on screen',
@@ -279,7 +279,7 @@ async function main() {
         }
 
         // ── 4. a pane hidden on purpose must NOT come back ──────────────────────────
-        const second = await cli.run(['workspace', 'create', '--name', 'elsewhere'], { timeoutMs: 40_000 });
+        const second = await cli.run(['workspace', 'create', '--focus', '--name', 'elsewhere'], { timeoutMs: 40_000 });
         if (second.code !== 0) throw new Error(`second workspace create failed: ${second.stderr || second.stdout}`);
         const hiddenAt = await settleOwner(paneID, 'holder', 20_000, 'the workspace switch to park it');
         check('switching workspace still parks the view', hiddenAt !== null, ownerOf(paneID)?.reason ?? '');

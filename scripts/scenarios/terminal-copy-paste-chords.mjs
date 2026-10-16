@@ -63,7 +63,7 @@ export default async function ({ page, harness, cli, rec, d, sleep }) {
          * `workspace create` reveals the new workspace to every client, so the window is on it by the
          * time the settle below returns, and it starts with exactly one pane.
          */
-        const created = JSON.parse(await cli.ok(['workspace', 'create', '--name', `Copy-${TAG}`, '--json']));
+        const created = JSON.parse(await cli.ok(['workspace', 'create', '--focus', '--name', `Copy-${TAG}`, '--json']));
         const workspaceID = created.workspace_id ?? created.id;
         rec.check('a workspace of its own to copy in', typeof workspaceID === 'string', JSON.stringify(created));
         if (typeof workspaceID !== 'string') return;

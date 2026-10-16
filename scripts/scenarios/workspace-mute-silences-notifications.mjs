@@ -114,9 +114,9 @@ export default async function ({ page, harness, cli, sandbox, rec, d, sleep, dae
     const created = [];
     try {
         // ── 1 · a muted child and an unmuted conductor, as the CLI makes them ────────────
-        const child = JSON.parse(await cli.ok(['workspace', 'create', '--name', 'Mute Child', '--muted', '--json']));
+        const child = JSON.parse(await cli.ok(['workspace', 'create', '--focus', '--name', 'Mute Child', '--muted', '--json']));
         if (typeof child.workspace_id === 'string') created.push(child.workspace_id);
-        const conductor = JSON.parse(await cli.ok(['workspace', 'create', '--name', 'Conductor', '--json']));
+        const conductor = JSON.parse(await cli.ok(['workspace', 'create', '--focus', '--name', 'Conductor', '--json']));
         if (typeof conductor.workspace_id === 'string') created.push(conductor.workspace_id);
         const childID = child.workspace_id;
         const conductorID = conductor.workspace_id;

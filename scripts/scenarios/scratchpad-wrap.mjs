@@ -53,7 +53,7 @@ export default async function ({ page, cli, daemon, rec, d, sleep }) {
     if (cli) {
         const workspaces = JSON.parse(await cli.ok(['workspace', 'list', '--json']));
         homeID = workspaces.find((workspace) => workspace.is_active === true)?.id ?? null;
-        ownID = JSON.parse(await cli.ok(['workspace', 'create', '--name', 'Scratchpad Wrap', '--json'])).id;
+        ownID = JSON.parse(await cli.ok(['workspace', 'create', '--focus', '--name', 'Scratchpad Wrap', '--json'])).id;
         const row = `[data-testid="workspace-row"][data-workspace-id="${String(ownID)}"]`;
         if (await d.settleDom(page, `document.querySelector(${JSON.stringify(row)})`, { ceilingMs: 8_000 })) await page.click(row);
     } else {

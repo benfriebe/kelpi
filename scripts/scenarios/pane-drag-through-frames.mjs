@@ -20,11 +20,11 @@ export default async function ({ page, cli, sandbox, rec, d, repoRoot }) {
     try {
         await cli.ok(['plugin', 'install', path.join(repoRoot, 'examples/plugins/agent-board'), '--trust']);
         for (const kind of ['plugin', 'markdown', 'diff']) {
-            workspaceID = (await json(['workspace', 'create', '--name', `Frame drag ${kind}`, '--path', repo, '--json'])).workspace_id;
+            workspaceID = (await json(['workspace', 'create', '--focus', '--name', `Frame drag ${kind}`, '--path', repo, '--json'])).workspace_id;
             const panes = () => json(['pane', 'list', '--workspace', workspaceID, '--json']);
             const source = (await panes())[0].id;
             const command = kind === 'plugin' ? ['plugin', 'run', 'example.agent-board.open']
-                : kind === 'markdown' ? ['open', path.join(repo, 'README.md')] : ['diff'];
+                : kind === 'markdown' ? ['open', path.join(repo, 'README.md')] : ['diff', '--focus'];
             await cli.ok(command, { cwd: repo, paneID: source });
             let destination;
             await d.settle(async () => { destination = (await panes()).find(pane => pane.type === kind); return !!destination; });

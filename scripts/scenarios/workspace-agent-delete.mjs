@@ -15,7 +15,7 @@ export default async function ({ page, cli, rec, d }) {
     const name = `inactive-delete-${Date.now().toString(36)}`;
     let workspaceID;
     try {
-        const created = JSON.parse(await cli.ok(['workspace', 'create', '--name', name, '--json']));
+        const created = JSON.parse(await cli.ok(['workspace', 'create', '--focus', '--name', name, '--json']));
         workspaceID = created.workspace_id;
         const panes = JSON.parse(await cli.ok(['pane', 'list', '--workspace', workspaceID, '--json']));
         const paneID = panes[0].id;

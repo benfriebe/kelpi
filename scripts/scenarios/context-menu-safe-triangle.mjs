@@ -37,7 +37,7 @@ export const covers = [
 
 export default async function ({ page, cli, rec, d, sleep }) {
     const name = `Safe triangle ${Date.now().toString(36)}`;
-    const created = JSON.parse(await cli.ok(['workspace', 'create', '--name', name, '--json']));
+    const created = JSON.parse(await cli.ok(['workspace', 'create', '--focus', '--name', name, '--json']));
     const workspaceID = created.workspace_id;
     const colorOf = async () =>
         JSON.parse(await cli.ok(['workspace', 'list', '--json'])).find((w) => w.id === workspaceID)?.color ?? null;

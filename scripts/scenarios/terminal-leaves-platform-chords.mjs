@@ -128,7 +128,7 @@ export default async function ({ page, harness, cli, rec, d, sleep }) {
         // against ONE sandbox, and by the time this one runs the Default workspace holds whatever
         // the scenarios before it left there - a pane mid-command, a pane running a reader, a pane
         // that is not even the focused one. This file needs a shell at a prompt, so it makes one.
-        const created = JSON.parse(await cli.ok(['workspace', 'create', '--name', `Chords-${TAG}`, '--json']));
+        const created = JSON.parse(await cli.ok(['workspace', 'create', '--focus', '--name', `Chords-${TAG}`, '--json']));
         const workspaceID = created.workspace_id ?? created.id;
         rec.check('a workspace of its own to press in', typeof workspaceID === 'string', JSON.stringify(created));
         if (typeof workspaceID !== 'string') return;

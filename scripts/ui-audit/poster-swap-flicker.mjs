@@ -178,7 +178,7 @@ async function main() {
         const target = await waitForPageTarget(sandbox.debugPort, { match: (t) => t.url.includes('shellWindow=') });
         page = await connect(target.webSocketDebuggerUrl, { repoRoot, verbose: options.verbose });
 
-        const created = await cli.run(['workspace', 'create', '--name', 'poster-swap'], { timeoutMs: 40_000 });
+        const created = await cli.run(['workspace', 'create', '--focus', '--name', 'poster-swap'], { timeoutMs: 40_000 });
         check('a scratch workspace for this run exists', created.code === 0, created.stdout.trim());
         await waitFor(
             'the workspace to be active on screen',

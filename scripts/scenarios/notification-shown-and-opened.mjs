@@ -68,7 +68,7 @@ export default async function ({ page, harness, cli, rec, d, sleep }) {
         const env = { KELPI_PANE_ID: paneID };
         await d.settleDom(page, `document.querySelector('[data-testid="pane-header-${paneID}"]')`, { ceilingMs: 5_000 });
 
-        const parked = JSON.parse(await cli.ok(['workspace', 'create', '--name', 'Parked A', '--json']));
+        const parked = JSON.parse(await cli.ok(['workspace', 'create', '--focus', '--name', 'Parked A', '--json']));
         const leftDefault = await d.settle(async () => !(await d.domPaneIDs(page)).includes(paneID), { ceilingMs: 5_000 });
         rec.check(
             '§7.1/§7.2 precondition: the agent pane is not the focused pane of the active workspace',
@@ -181,7 +181,7 @@ export default async function ({ page, harness, cli, rec, d, sleep }) {
         await rec.shot(page, 'after-open');
 
         // ── leave again, so §7.1's own precondition holds for the stop ──────────────────
-        await cli.ok(['workspace', 'create', '--name', 'Parked B', '--json']);
+        await cli.ok(['workspace', 'create', '--focus', '--name', 'Parked B', '--json']);
         await d.settle(async () => !(await d.domPaneIDs(page)).includes(paneID), { ceilingMs: 5_000 });
         await harness.blur();
 

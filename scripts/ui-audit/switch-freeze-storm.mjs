@@ -442,7 +442,7 @@ async function main() {
         ];
 
         for (const workspace of workspaces) {
-            await cli.ok(['workspace', 'create', '--name', workspace.name]);
+            await cli.ok(['workspace', 'create', '--focus', '--name', workspace.name]);
             await settle(async () =>
                 (await page.eval(
                     `(document.querySelector('[data-testid="workspace-row"][data-active="true"]')?.textContent ?? '')

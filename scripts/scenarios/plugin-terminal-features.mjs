@@ -85,7 +85,7 @@ export default async function ({ page, cli, sandbox, rec, d, harness, sleep }) {
         return item;
     };
     const create = async (target, root, name) => {
-        const created = await json(['workspace', 'create', '--name', name, '--json'], target);
+        const created = await json(['workspace', 'create', '--focus', '--name', name, '--json'], target);
         const panes = await json(['pane', 'list', '--workspace', created.workspace_id, '--json'], target);
         return launch(target, root, created.workspace_id, panes[0].id);
     };
@@ -204,7 +204,7 @@ export default async function ({ page, cli, sandbox, rec, d, harness, sleep }) {
         await page.eval(`Array.from(document.querySelectorAll('[data-terminal-pane="${local.paneID}"] button')).find(button => button.textContent === 'Retry renderer').click()`);
         rec.check('retry restores the renderer after an empty error', await ready(local.paneID) && alive(local));
 
-        const otherWorkspace = await json(['workspace', 'create', '--name', 'Terminal Lab Hidden Check', '--json']);
+        const otherWorkspace = await json(['workspace', 'create', '--focus', '--name', 'Terminal Lab Hidden Check', '--json']);
         const otherPane = (await json(['pane', 'list', '--workspace', otherWorkspace.workspace_id, '--json']))[0].id;
         if (!await ready(otherPane)) throw new Error('Other workspace renderer did not attach');
         rec.check('leaving a workspace preserves the daemon-owned process', alive(local));

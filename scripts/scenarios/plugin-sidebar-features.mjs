@@ -82,8 +82,8 @@ export default async function ({ page, cli, sandbox, rec, d }) {
     fs.appendFileSync(notes, '\nFirst change.\n');
     let remote = null, remoteDaemon = null;
     try {
-        const alpha = await json(['workspace', 'create', '--name', 'Sidebar Alpha', '--path', sandbox.work, '--json']);
-        const beta = await json(['workspace', 'create', '--name', 'Sidebar Beta', '--path', sandbox.work, '--json']);
+        const alpha = await json(['workspace', 'create', '--focus', '--name', 'Sidebar Alpha', '--path', sandbox.work, '--json']);
+        const beta = await json(['workspace', 'create', '--focus', '--name', 'Sidebar Beta', '--path', sandbox.work, '--json']);
         await cli.ok(['plugin', 'install', packagePath, '--trust']);
         await chooseViews();
         rec.check('the two replacement sidebars render through their sandboxed public SDKs', await checkFrame(workspacesFrame(), `document.querySelectorAll('.workspace-row').length >= 2`) && await inFrame(inspectorFrame(), `(() => { try { parent.document.body; return false; } catch { return true; } })()`));
@@ -149,7 +149,7 @@ export default async function ({ page, cli, sandbox, rec, d }) {
         const remoteCLI = makeCli(remote, { repoRoot });
         const remoteJSON = async args => { const result = await remoteCLI.run(args); if (result.code) throw new Error(result.stderr || result.stdout); return JSON.parse(result.stdout); };
         await remoteJSON(['plugin', 'install', packagePath, '--trust']);
-        const remoteWorkspace = await remoteJSON(['workspace', 'create', '--name', 'Sidebar Remote', '--json']);
+        const remoteWorkspace = await remoteJSON(['workspace', 'create', '--focus', '--name', 'Sidebar Remote', '--json']);
         const token = fs.readFileSync(path.join(remote.runDir, `daemon-v${PROTOCOL_VERSION}.token`), 'utf8').trim();
         fs.writeFileSync(sandbox.configPath, `${previousConfig}\nremote-daemon = SidebarRemote:${remote.base}/?token=${token}\n`);
         rec.check('replacement Workspaces discovers a connected remote host through public navigation', await checkFrame(workspacesFrame(), `document.querySelector('[data-host-name="SidebarRemote"] [data-workspace-id="${remoteWorkspace.workspace_id}"]')`, 15_000));

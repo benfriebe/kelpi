@@ -127,7 +127,7 @@ export default async function ({ page, cli, shell, rec, d, sleep, sandbox }) {
         git(repo, 'commit', '-q', '-m', 'first');
         const worktree = async (name) => {
             const created = JSON.parse(
-                await cli.ok(['workspace', 'create', '--worktree', name, '--repo', repo, '--no-update-main', '--json'])
+                await cli.ok(['workspace', 'create', '--focus', '--worktree', name, '--repo', repo, '--no-update-main', '--json'])
             );
             if (created.workspace_id) cleanupWorkspaces.push(created.workspace_id);
             return created;
@@ -245,7 +245,7 @@ export default async function ({ page, cli, shell, rec, d, sleep, sandbox }) {
 
         // ── 2 · a page that arrives on screen with the toast already up (#358) ─────────────
         const second = await worktree('live-under-toast-b');
-        const plain = JSON.parse(await cli.ok(['workspace', 'create', '--name', 'live-under-toast-other', '--json']));
+        const plain = JSON.parse(await cli.ok(['workspace', 'create', '--focus', '--name', 'live-under-toast-other', '--json']));
         if (plain.workspace_id) cleanupWorkspaces.push(plain.workspace_id);
         rec.check('a second worktree workspace and a neighbour exist', Boolean(second.workspace_id && plain.workspace_id));
         if (!second.workspace_id || !plain.workspace_id) return;

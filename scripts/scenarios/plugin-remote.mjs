@@ -28,8 +28,8 @@ export default async function ({ page, cli, sandbox, rec, d }) {
         await waitForHealthz(remote.base);
         const localPanes = await cli.ok(['pane', 'list', '--json']);
         await command(['plugin', 'install', path.join(repoRoot, 'examples/plugins/agent-board'), '--trust']);
-        const workspace = await command(['workspace', 'create', '--name', 'Remote plugin validation', '--json']);
-        const pane = await command(['plugin', 'open', pluginID, viewID, '--workspace', workspace.workspace_id]);
+        const workspace = await command(['workspace', 'create', '--focus', '--name', 'Remote plugin validation', '--json']);
+        const pane = await command(['plugin', 'open', '--focus', pluginID, viewID, '--workspace', workspace.workspace_id]);
         const token = fs.readFileSync(path.join(remote.runDir, `daemon-v${PROTOCOL_VERSION}.token`), 'utf8').trim();
         fs.writeFileSync(sandbox.configPath, `${previousConfig}\nremote-daemon = PluginRemote:${remote.base}/?token=${token}\n`);
         await page.watchFrames();
@@ -90,7 +90,7 @@ export default async function ({ page, cli, sandbox, rec, d }) {
         })()`);
         rec.check('trusted remote views receive the navigation subscription', await d.settle(async () =>
             await page.evalInFrame(frame, `globalThis.__remoteNavigation.length > 0`), { ceilingMs: 8_000 }));
-        const navigationWorkspace = await command(['workspace', 'create', '--name', 'Navigation subscription update', '--json']);
+        const navigationWorkspace = await command(['workspace', 'create', '--focus', '--name', 'Navigation subscription update', '--json']);
         rec.check('trusted remote navigation subscription follows live workspace changes', await d.settle(async () =>
             await page.evalInFrame(frame, `globalThis.__remoteNavigation.some(value => value.hosts.some(host => host.workspaces.some(workspace => workspace.id === ${JSON.stringify(navigationWorkspace.workspace_id)})))`), { ceilingMs: 8_000 }));
         const localHost = navigation.hosts.find(host => host.kind === 'local');

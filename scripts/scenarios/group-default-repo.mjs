@@ -368,24 +368,24 @@ export default async function ({ page, cli, sandbox, rec, d, sleep }) {
 
         // ── 4 · the CLI in the same group ───────────────────────────────────────────────────────
         rec.note(`before the CLI creates: ${JSON.stringify(await ourGroup())}`);
-        const fromCli = JSON.parse(await cli.ok(['workspace', 'create', '--name', 'CLI Tree', '--group', GROUP, '--worktree', 'cli-tree', '--json']));
+        const fromCli = JSON.parse(await cli.ok(['workspace', 'create', '--focus', '--name', 'CLI Tree', '--group', GROUP, '--worktree', 'cli-tree', '--json']));
         if (typeof fromCli.workspace_id === 'string') created.push(fromCli.workspace_id);
         rec.check(
             'kelpi workspace create --group --worktree uses the group’s repo and updates main by default',
             fromCli.ok === true && fromCli.repo_path === repo && fromCli.update_main === true && fromCli.branch === 'cli-tree',
             JSON.stringify(fromCli)
         );
-        const taken = await cli.run(['workspace', 'create', '--name', 'Dup', '--group', GROUP, '--worktree', 'fix-login-bug']);
+        const taken = await cli.run(['workspace', 'create', '--focus', '--name', 'Dup', '--group', GROUP, '--worktree', 'fix-login-bug']);
         rec.check(
             'an update-main worktree on a branch that already exists fails with the clear message',
             taken.code !== 0 && taken.stderr.includes("branch 'fix-login-bug' already exists") && taken.stderr.includes('turn off update main'),
             taken.stderr
         );
-        const optOut = await cli.run(['workspace', 'create', '--name', 'Reuse', '--group', GROUP, '--worktree', 'fix-login-2', '--no-update-main', '--json']);
+        const optOut = await cli.run(['workspace', 'create', '--focus', '--name', 'Reuse', '--group', GROUP, '--worktree', 'fix-login-2', '--no-update-main', '--json']);
         const optOutReply = optOut.code === 0 ? JSON.parse(optOut.stdout) : {};
         if (typeof optOutReply.workspace_id === 'string') created.push(optOutReply.workspace_id);
         rec.check('--no-update-main opts out of the group’s default', optOut.code === 0 && optOutReply.update_main === false, optOut.stdout + optOut.stderr);
-        const plainCli = JSON.parse(await cli.ok(['workspace', 'create', '--name', 'CLI Plain', '--group', GROUP, '--json']));
+        const plainCli = JSON.parse(await cli.ok(['workspace', 'create', '--focus', '--name', 'CLI Plain', '--group', GROUP, '--json']));
         if (typeof plainCli.workspace_id === 'string') created.push(plainCli.workspace_id);
         rec.check('without --worktree the group’s repo is associated', plainCli.repo_path === repo, JSON.stringify(plainCli));
 

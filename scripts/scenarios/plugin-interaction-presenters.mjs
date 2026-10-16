@@ -360,7 +360,7 @@ export default async function ({ page, cli, rec, d, sleep, daemon }) {
     // Where the window was before this scenario took it: restored at the end, because the sandbox
     // and its window are shared with whatever runs next.
     const startingWorkspace = await page.eval(`document.querySelector('[data-testid="workspace-row"][data-active="true"]')?.getAttribute('data-workspace-id') ?? null`);
-    const workspace = await json(['workspace', 'create', '--name', 'Interaction presenters', '--json']);
+    const workspace = await json(['workspace', 'create', '--focus', '--name', 'Interaction presenters', '--json']);
     const workspaceID = workspace.workspace_id;
     const panes = () => json(['pane', 'list', '--workspace', workspaceID, '--json']);
     const uiSnapshot = () => json(['plugin', 'run', `${uiID}.snapshot`]);
@@ -389,7 +389,7 @@ export default async function ({ page, cli, rec, d, sleep, daemon }) {
         await cli.ok(['plugin', 'install', labPath, '--trust']);
         await cli.ok(['plugin', 'install', uiPath, '--trust']);
         const shellPane = (await panes())[0].id;
-        const uiPane = await json(['plugin', 'open', uiID, `${uiID}.panel`, '--workspace', workspaceID]);
+        const uiPane = await json(['plugin', 'open', '--focus', uiID, `${uiID}.panel`, '--workspace', workspaceID]);
         uiFrame = `[data-testid="plugin-view-${uiPane.paneID}"] iframe`;
         if (!await uiReady()) throw new Error('UI Lab did not attach');
         await openPlugins();

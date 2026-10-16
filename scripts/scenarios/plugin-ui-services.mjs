@@ -10,7 +10,7 @@ const id = 'example.ui-lab';
 export default async function ({ page, cli, rec, d }) {
     await page.watchFrames();
     const json = async args => JSON.parse(await cli.ok(args));
-    const workspace = await json(['workspace', 'create', '--name', 'Plugin UI validation', '--json']);
+    const workspace = await json(['workspace', 'create', '--focus', '--name', 'Plugin UI validation', '--json']);
     const workspaceID = workspace.workspace_id;
     const snapshot = () => json(['plugin', 'run', `${id}.snapshot`]);
     const toggle = (field, value) => cli.ok(['plugin', 'run', `${id}.toggle`, '--args', JSON.stringify({ field, value })]);
@@ -34,7 +34,7 @@ export default async function ({ page, cli, rec, d }) {
     try {
         await cli.ok(['plugin', 'install', packagePath, '--trust']);
         originalSettings = await json(['plugin', 'settings', id]);
-        const pane = await json(['plugin', 'open', id, `${id}.panel`, '--workspace', workspaceID]);
+        const pane = await json(['plugin', 'open', '--focus', id, `${id}.panel`, '--workspace', workspaceID]);
         const frame = `[data-testid="plugin-view-${pane.paneID}"] iframe`;
         const inFrame = expression => page.evalInFrame(frame, expression);
         const frameCheck = expression => d.settle(async () => { try { return await inFrame(expression); } catch { return false; } }, { ceilingMs: 12_000 });

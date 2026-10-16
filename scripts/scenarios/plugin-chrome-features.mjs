@@ -48,8 +48,8 @@ export default async function ({ page, cli, sandbox, rec, d }) {
         const git = args => execFileSync('git', args, { cwd: repository, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
         git(['init', '--initial-branch=main']); fs.writeFileSync(path.join(repository, 'notes.md'), '# Chrome Lab\n');
         git(['add', '.']); git(['-c', 'user.name=Kelpi Scenario', '-c', 'user.email=scenario@localhost', 'commit', '-m', 'Private fixture']);
-        const first = await json(['workspace', 'create', '--name', 'Chrome Alpha', '--path', repository, '--json']);
-        const second = await json(['workspace', 'create', '--name', 'Chrome Beta', '--json']);
+        const first = await json(['workspace', 'create', '--focus', '--name', 'Chrome Alpha', '--path', repository, '--json']);
+        const second = await json(['workspace', 'create', '--focus', '--name', 'Chrome Beta', '--json']);
         const workspaceID = first.workspace_id, otherID = second.workspace_id;
         await json(['pane', 'create', '--workspace', workspaceID, '--json']);
         const paneID = (await json(['pane', 'list', '--workspace', workspaceID, '--json']))[0].id;
@@ -158,8 +158,8 @@ export default async function ({ page, cli, sandbox, rec, d }) {
         const remoteCLI = makeCli(remote, { repoRoot });
         await remoteCLI.ok(['plugin', 'install', path.join(repoRoot, 'examples/plugins/agent-board'), '--trust']);
         await remoteCLI.ok(['plugin', 'install', packagePath, '--trust']);
-        const remoteWorkspace = JSON.parse(await remoteCLI.ok(['workspace', 'create', '--name', 'Remote Chrome', '--json']));
-        const remotePane = JSON.parse(await remoteCLI.ok(['plugin', 'open', 'example.agent-board', 'example.agent-board.board', '--workspace', remoteWorkspace.workspace_id]));
+        const remoteWorkspace = JSON.parse(await remoteCLI.ok(['workspace', 'create', '--focus', '--name', 'Remote Chrome', '--json']));
+        const remotePane = JSON.parse(await remoteCLI.ok(['plugin', 'open', '--focus', 'example.agent-board', 'example.agent-board.board', '--workspace', remoteWorkspace.workspace_id]));
         const remoteToken = fs.readFileSync(path.join(remote.runDir, `daemon-v${PROTOCOL_VERSION}.token`), 'utf8').trim();
         fs.writeFileSync(sandbox.configPath, `${config}\nremote-daemon = ChromeRemote:${remote.base}/?token=${remoteToken}\n`);
         await check(toolbar, `(async () => (await kelpi.ui.getNavigation()).hosts.some(host => host.name === 'ChromeRemote' && host.connection === 'connected'))()`, 15_000);

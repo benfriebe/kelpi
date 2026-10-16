@@ -79,10 +79,10 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, repoRoot, ha
         if (!await page.eval(`!!document.querySelector('[data-testid="sidebar"]')`)) await harness.menuClick({ path: ['View', 'Toggle Sidebar'] });
         await waitForHealthz(remote.base);
         const localBefore = await cli.ok(['workspace', 'list', '--json']);
-        const first = (await json(['workspace', 'create', '--name', 'Reorder First', '--json'])).workspace_id;
-        const memberA = (await json(['workspace', 'create', '--name', 'Reorder Member A', '--group', 'Reorder Group', '--json'])).workspace_id;
-        const memberB = (await json(['workspace', 'create', '--name', 'Reorder Member B', '--group', 'Reorder Group', '--json'])).workspace_id;
-        const tail = (await json(['workspace', 'create', '--name', 'Reorder Tail', '--json'])).workspace_id;
+        const first = (await json(['workspace', 'create', '--focus', '--name', 'Reorder First', '--json'])).workspace_id;
+        const memberA = (await json(['workspace', 'create', '--focus', '--name', 'Reorder Member A', '--group', 'Reorder Group', '--json'])).workspace_id;
+        const memberB = (await json(['workspace', 'create', '--focus', '--name', 'Reorder Member B', '--group', 'Reorder Group', '--json'])).workspace_id;
+        const tail = (await json(['workspace', 'create', '--focus', '--name', 'Reorder Tail', '--json'])).workspace_id;
         const token = fs.readFileSync(path.join(remote.runDir, `daemon-v${PROTOCOL_VERSION}.token`), 'utf8').trim();
         observer = await observe(remote, token);
         const group = observer.groups.find(entry => entry.name === 'Reorder Group').id;

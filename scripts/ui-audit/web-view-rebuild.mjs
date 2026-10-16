@@ -170,7 +170,7 @@ async function main() {
         page = await connect(target.webSocketDebuggerUrl, { repoRoot, verbose: options.verbose });
         harness = harnessClient(sandbox.harnessSocket ?? path.join(sandbox.root, 'harness.sock'));
 
-        const created = await cli.run(['workspace', 'create', '--name', 'rebuild'], { timeoutMs: 40_000 });
+        const created = await cli.run(['workspace', 'create', '--focus', '--name', 'rebuild'], { timeoutMs: 40_000 });
         if (created.code !== 0) throw new Error(`workspace create failed: ${created.stderr || created.stdout}`);
         await waitFor(
             'the workspace to be active on screen',

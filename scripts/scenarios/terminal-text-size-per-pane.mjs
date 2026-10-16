@@ -139,7 +139,7 @@ export default async function ({ page, cli, sandbox, daemon, rec, d, sleep }) {
 
     try {
         // ── a workspace of its own, with two terminals ──────────────────────────────
-        const created = JSON.parse(await cli.ok(['workspace', 'create', '--name', `PaneTextSize-${TAG}`, '--json']));
+        const created = JSON.parse(await cli.ok(['workspace', 'create', '--focus', '--name', `PaneTextSize-${TAG}`, '--json']));
         const workspaceID = created.workspace_id ?? created.id;
         rec.check('a workspace of its own to resize in', typeof workspaceID === 'string', JSON.stringify(created));
         if (typeof workspaceID !== 'string') return;

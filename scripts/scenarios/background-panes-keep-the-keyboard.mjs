@@ -82,7 +82,7 @@ export default async function ({ page, cli, rec, d, sleep, sandbox }) {
     const workspaceName = 'Background295';
     let workspaceID = null;
     try {
-        const created = JSON.parse(await cli.ok(['workspace', 'create', '--name', workspaceName, '--json']));
+        const created = JSON.parse(await cli.ok(['workspace', 'create', '--focus', '--name', workspaceName, '--json']));
         workspaceID = created.workspace_id ?? created.id;
         rec.check('a workspace of its own was created', typeof workspaceID === 'string', JSON.stringify(created));
         if (typeof workspaceID !== 'string') return;

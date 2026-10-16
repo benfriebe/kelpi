@@ -42,14 +42,14 @@ export default async function ({ page, cli, sandbox, rec, d }) {
     const json = async args => JSON.parse(await cli.ok(args));
     try {
         await cli.ok(['plugin', 'install', fixture, '--trust']);
-        const workspace = await json(['workspace', 'create', '--name', 'Preview shortcuts', '--path', repo, '--json']);
+        const workspace = await json(['workspace', 'create', '--focus', '--name', 'Preview shortcuts', '--path', repo, '--json']);
         workspaceID = workspace.workspace_id;
         const panes = () => json(['pane', 'list', '--workspace', workspaceID, '--json']);
         const terminal = (await panes())[0].id;
         const invocation = () => json(['plugin', 'run', `${pluginID}.read`]);
 
         for (const kind of ['markdown', 'diff']) {
-            await cli.ok(kind === 'markdown' ? ['open', markdownFile] : ['diff'], { cwd: repo, paneID: terminal });
+            await cli.ok(kind === 'markdown' ? ['open', markdownFile] : ['diff', '--focus'], { cwd: repo, paneID: terminal });
             let pane;
             const opened = await d.settle(async () => { pane = (await panes()).find(pane => pane.type === kind); return !!pane; });
             if (!opened) throw new Error(`the ${kind} pane did not open`);

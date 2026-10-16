@@ -514,7 +514,7 @@ export default async function ({ page, cli, rec, d, sleep, sandbox }) {
     });
 
     const [shortcut, probe] = subjects;
-    const workspace = await json(['workspace', 'create', '--name', 'Backend prompts', '--json']);
+    const workspace = await json(['workspace', 'create', '--focus', '--name', 'Backend prompts', '--json']);
     workspaceID = workspace.workspace_id ?? null;
     try {
         shellPane = (await json(['pane', 'list', '--workspace', workspaceID, '--json']))[0].id;

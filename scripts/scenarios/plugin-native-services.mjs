@@ -92,7 +92,7 @@ export default async function ({ page, cli, sandbox, rec, d }) {
         const catalog = await services();
         rec.check('composed daemon exposes all four native service contracts', ['kelpi.files', 'kelpi.git', 'kelpi.content.render', 'kelpi.process'].every(id => catalog.some(service => service.id === id && service.activeProviderID === `${id}.bundled`)));
         await cli.ok(['plugin', 'install', fixture, '--trust']);
-        const workspace = await json(['workspace', 'create', '--name', 'Native service validation', '--path', repo, '--json']);
+        const workspace = await json(['workspace', 'create', '--focus', '--name', 'Native service validation', '--path', repo, '--json']);
         workspaceID = workspace.workspace_id;
         const terminal = (await panes(workspaceID))[0].id;
         await command({ command: 'add-repo-association', workspace_id: workspaceID, path: repo });
@@ -111,7 +111,7 @@ export default async function ({ page, cli, sandbox, rec, d }) {
         await select('kelpi.content.render', `${pluginID}.renderer`);
         rec.check('selecting a renderer updates the existing native Markdown pane', await frameHas(markdown, 'Service Lab'));
         rec.check('provider HTML retains the content iframe sandbox', await page.eval(`document.querySelector(${JSON.stringify(frame(markdown))}).getAttribute('sandbox') === 'allow-scripts'`) && await page.evalInFrame(frame(markdown), `(() => { try { parent.document.body; return false; } catch { return true; } })()`));
-        await cli.ok(['diff'], { cwd: repo, paneID: terminal });
+        await cli.ok(['diff', '--focus'], { cwd: repo, paneID: terminal });
         await d.settle(async () => (await panes(workspaceID)).some(pane => pane.type === 'diff'));
         const diff = (await panes(workspaceID)).find(pane => pane.type === 'diff').id;
         rec.check('CLI-created native Diff uses the same Git and rendering providers', await frameHas(diff, 'Service Lab') && (await json(['plugin', 'run', `${pluginID}.history`])).some(entry => entry.service === 'kelpi.git' && entry.method === 'getDiff'));
@@ -158,7 +158,7 @@ export default async function ({ page, cli, sandbox, rec, d }) {
         rec.check('reload recovers a failed native provider in the same pane', await frameHas(markdown, 'Service Lab'));
 
         await command({ command: 'set-general-setting', key: 'worktree-base-path', value: path.join(sandbox.root, 'provider-worktrees') });
-        const worktree = await json(['workspace', 'create', '--name', 'Provider worktree', '--worktree', 'provider-check', '--branch', 'provider-check', '--repo', repo, '--json']);
+        const worktree = await json(['workspace', 'create', '--focus', '--name', 'Provider worktree', '--worktree', 'provider-check', '--branch', 'provider-check', '--repo', repo, '--json']);
         worktreeWorkspaceID = worktree.workspace_id;
         rec.check('ordinary CLI workspace creation delegates real worktree creation to the Git provider', fs.existsSync(path.join(worktree.worktree_path, 'NOTES.md')) && (await json(['plugin', 'run', `${pluginID}.history`])).some(entry => entry.method === 'worktreeAdd'));
         const associated = await command({ command: 'workspace-repo-status', workspace_id: worktreeWorkspaceID, refresh: true });

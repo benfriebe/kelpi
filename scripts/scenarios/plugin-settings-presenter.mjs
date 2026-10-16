@@ -583,7 +583,7 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
     const startingWorkspace = await page.eval(`document.querySelector('[data-testid="workspace-row"][data-active="true"]')?.getAttribute('data-workspace-id') ?? null`);
     const startingViewport = await page.eval('`${innerWidth}x${innerHeight}`');
     const originalConfig = readConfig();
-    const workspace = await json(['workspace', 'create', '--name', 'Settings presenter', '--json']);
+    const workspace = await json(['workspace', 'create', '--focus', '--name', 'Settings presenter', '--json']);
     const workspaceID = workspace.workspace_id;
     const liveBase = path.join(sandbox.root, 'presenter-worktrees', '<repo>');
     let uiFrame = '';
@@ -594,7 +594,7 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
         // ── 1 · the placement is offered, and the lab attaches ───────────────────────
         await cli.ok(['plugin', 'install', labPath, '--trust']);
         await cli.ok(['plugin', 'install', uiPath, '--trust']);
-        const uiPane = await json(['plugin', 'open', uiID, `${uiID}.panel`, '--workspace', workspaceID]);
+        const uiPane = await json(['plugin', 'open', '--focus', uiID, `${uiID}.panel`, '--workspace', workspaceID]);
         uiFrame = `[data-testid="plugin-view-${uiPane.paneID}"] iframe`;
         if (!await d.settle(async () => {
             try { return await page.evalInFrame(uiFrame, `document.body.dataset.ready === 'true'`); } catch { return false; }

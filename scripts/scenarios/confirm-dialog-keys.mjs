@@ -15,7 +15,7 @@ export const covers = ['packages/client/src/chrome/Sidebar.tsx', 'packages/clien
 
 export default async function ({ page, cli, rec, d }) {
     const name = `doomed-${Date.now().toString(36)}`;
-    const created = await cli.run(['workspace', 'create', '--name', name, '--json']);
+    const created = await cli.run(['workspace', 'create', '--focus', '--name', name, '--json']);
     rec.check(`created workspace ${name} via the CLI`, created.code === 0, created.stderr || created.stdout);
     await d.settleDom(page, `Array.from(document.querySelectorAll('${d.PAGE.workspaceRows}')).some(el => (el.innerText ?? '').includes(${JSON.stringify(name)}))`, { ceilingMs: 5_000 });
 

@@ -126,13 +126,13 @@ export default async function ({ page, cli, sandbox, rec, d, shell }) {
         rec.check('external project packs reproducibly with the same validated revision', !source.startsWith(repoRoot + path.sep) && validated.revision === packed.revision && packed.sha256 === second.sha256);
         await json(['plugin', 'install', archive, '--trust']);
         rec.check('artifact install activates the external backend', (await current()).revision === packed.revision && (await json(['plugin', 'run', pluginID + '.summary'])).version === '1.0.0');
-        workspace = await json(['workspace', 'create', '--name', 'Plugin authoring', '--json']);
+        workspace = await json(['workspace', 'create', '--focus', '--name', 'Plugin authoring', '--json']);
         terminal = (await json(['pane', 'list', '--workspace', workspace.workspace_id, '--json']))[0].id;
         const pidPath = path.join(external, 'terminal.pid');
         await cli.ok(['pane', 'send', '--target', terminal, 'export KELPI_AUTHOR_SENTINEL=preserved; printf "%s" "$$" > ' + shellQuote(pidPath)]);
         if (!await d.settle(() => fs.existsSync(pidPath) && Number(fs.readFileSync(pidPath, 'utf8')) > 0)) throw new Error('Terminal did not initialize.');
         pid = Number(fs.readFileSync(pidPath, 'utf8'));
-        paneID = (await json(['plugin', 'open', pluginID, viewID, '--workspace', workspace.workspace_id, '--state', '{"note":"Keep this plugin note"}'])).paneID;
+        paneID = (await json(['plugin', 'open', '--focus', pluginID, viewID, '--workspace', workspace.workspace_id, '--state', '{"note":"Keep this plugin note"}'])).paneID;
         const url = fixture.url + '/page/one?owner=external-author';
         const opened = await cli.ok(['web', 'open', url], { paneID: terminal });
         browserPaneID = /open ok:\s*([0-9a-f-]{36})/i.exec(opened)?.[1];

@@ -202,7 +202,7 @@ async function main() {
             30_000
         );
 
-        const created = await cli.run(['workspace', 'create', '--name', 'restore'], { timeoutMs: 40_000 });
+        const created = await cli.run(['workspace', 'create', '--focus', '--name', 'restore'], { timeoutMs: 40_000 });
         if (created.code !== 0) throw new Error(`workspace create failed: ${created.stderr || created.stdout}`);
         await waitFor(
             'the workspace to be active on screen',
@@ -293,7 +293,7 @@ async function main() {
         // The one way this fix could be worse than the bug: a park the CLIENT asked for is not
         // the shell's to undo, and a restore that resurrected it would put a page the user
         // navigated away from back on top of the workspace they are looking at.
-        const second = await cli.run(['workspace', 'create', '--name', 'elsewhere'], { timeoutMs: 40_000 });
+        const second = await cli.run(['workspace', 'create', '--focus', '--name', 'elsewhere'], { timeoutMs: 40_000 });
         if (second.code !== 0) throw new Error(`second workspace create failed: ${second.stderr || second.stdout}`);
         const parkedOnPurposeAt = await settleOwner(paneID, 'holder', 20_000, 'the workspace switch to park it');
         check(

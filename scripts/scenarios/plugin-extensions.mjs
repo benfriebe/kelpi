@@ -8,7 +8,7 @@ const lab = 'example.workbench-lab', dependency = 'example.agent-board';
 
 export default async function ({ page, cli, sandbox, harness, rec, d }) {
     await page.watchFrames();
-    const workspace = JSON.parse(await cli.ok(['workspace', 'create', '--name', 'Extension validation', '--json']));
+    const workspace = JSON.parse(await cli.ok(['workspace', 'create', '--focus', '--name', 'Extension validation', '--json']));
     const initialWorkspaces = new Set(JSON.parse(await cli.ok(['workspace', 'list', '--json'])).map(workspace => workspace.id ?? workspace.workspace_id));
     const fixture = path.join(sandbox.root, 'provider-fixture.txt');
     fs.writeFileSync(fixture, 'Private scenario file');
@@ -40,7 +40,7 @@ export default async function ({ page, cli, sandbox, harness, rec, d }) {
         rec.check('installing after its dependency activates the plugin', await running(lab));
         rec.check('the dependent backend can invoke a declared dependency command', Array.isArray(JSON.parse(await cli.ok(['plugin', 'run', `${lab}.dependency-history`]))));
 
-        const denied = await cli.run(['workspace', 'create', '--name', 'Blocked by Workbench Lab', '--json']);
+        const denied = await cli.run(['workspace', 'create', '--focus', '--name', 'Blocked by Workbench Lab', '--json']);
         rec.check('the CLI returns an operation veto before creating a workspace', denied.code !== 0 && `${denied.stderr}${denied.stdout}`.includes('Workbench Lab blocked'));
         await harness.menuClick({ path: ['File', 'New Workspace'] });
         await d.settleDom(page, `document.querySelector('[aria-label="New workspace name"]')`);

@@ -173,7 +173,7 @@ export default async function ({ page, cli, rec, d, sleep }) {
      */
     let twoID = null;
     try {
-        const created = JSON.parse(await cli.ok(['workspace', 'create', '--name', 'Two', '--json']));
+        const created = JSON.parse(await cli.ok(['workspace', 'create', '--focus', '--name', 'Two', '--json']));
         twoID = created.workspace_id ?? created.id;
         rec.check('a second workspace was created', typeof twoID === 'string', JSON.stringify(created));
         if (typeof twoID !== 'string') return;

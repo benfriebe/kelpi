@@ -110,7 +110,7 @@ export default async function ({ page, harness, cli, shell, rec, d, sleep }) {
         // The guard-rail, and the one way this fix could be worse than the bug: a park the CLIENT
         // asked for is not the shell's to undo. This passes on a broken build too, which is what
         // stops the scenario being a restatement of the fix.
-        await cli.ok(['workspace', 'create', '--name', 'elsewhere']);
+        await cli.ok(['workspace', 'create', '--focus', '--name', 'elsewhere']);
         const parkedOnPurpose = await d.settle(() => ownerOf(shell, paneID)?.owner === 'holder', {
             ceilingMs: 15_000,
             intervalMs: 50

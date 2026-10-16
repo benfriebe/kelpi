@@ -98,7 +98,7 @@ export default async function ({ page, cli, sandbox, rec, d, sleep }) {
     const startingWorkspaces = JSON.parse(await cli.ok(['workspace', 'list', '--json']));
     const startingWorkspace = startingWorkspaces.find((workspace) => workspace.is_active === true)?.id ?? null;
     const initialWorkspaceIDs = new Set(startingWorkspaces.map((workspace) => workspace.id));
-    const created = JSON.parse(await cli.ok(['workspace', 'create', '--name', `Mirror-${TAG}`, '--json']));
+    const created = JSON.parse(await cli.ok(['workspace', 'create', '--focus', '--name', `Mirror-${TAG}`, '--json']));
     const workspaceID = created.workspace_id ?? created.id;
     rec.check('a workspace of its own', typeof workspaceID === 'string', JSON.stringify(created));
     if (typeof workspaceID !== 'string') return;

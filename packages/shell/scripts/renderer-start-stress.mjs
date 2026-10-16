@@ -457,7 +457,7 @@ async function main() {
         const workspaces = [];
         for (let index = 1; index <= options.workspaces; index += 1) {
             const name = `Stress ${String(index)}`;
-            const reply = jsonOr(cli(sandbox, ['workspace', 'create', '--name', name, '--json']).stdout, null);
+            const reply = jsonOr(cli(sandbox, ['workspace', 'create', '--focus', '--name', name, '--json']).stdout, null);
             if (reply?.workspace_id === undefined) throw new Error(`could not create workspace ${name}`);
             workspaces.push(name);
         }

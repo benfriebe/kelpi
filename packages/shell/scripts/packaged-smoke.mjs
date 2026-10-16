@@ -941,6 +941,8 @@ async function launchPhase() {
             const ping = JSON.parse(doctor.stdout).checks.find((entry) => entry.name === 'ping');
             check('the shipped kelpi CLI gets a ping round-trip', ping?.status === 'pass', ping?.detail);
 
+            // No `--focus`: this is the INSTALLED app's CLI (`KELPI_CLI`), which may predate the
+            // flag, and nothing here needs the window to switch; the pane is addressed by name.
             const workspace = await cli(sandbox, ['workspace', 'create', '--name', 'packaged', '--json']);
             const workspaceID = JSON.parse(workspace.stdout || '{}').workspace_id;
             check('`kelpi workspace create` works against the packaged daemon', workspace.code === 0 && typeof workspaceID === 'string');

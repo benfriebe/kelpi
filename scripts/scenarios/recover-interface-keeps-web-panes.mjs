@@ -115,7 +115,7 @@ export default async function ({ page, harness, cli, shell, rec, d, sleep }) {
          * parked is not the shell's to put back, and the chord must not resurrect it. This passes on
          * a broken build too, which is what stops the scenario being a restatement of the fix.
          */
-        await cli.ok(['workspace', 'create', '--name', 'elsewhere']);
+        await cli.ok(['workspace', 'create', '--focus', '--name', 'elsewhere']);
         const parkedOnPurpose = await d.settle(() => trail(shell, paneID).at(-1)?.owner === 'holder', {
             ceilingMs: 15_000,
             intervalMs: 50

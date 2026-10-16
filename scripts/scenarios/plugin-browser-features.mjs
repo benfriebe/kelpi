@@ -82,7 +82,7 @@ export default async function ({ page, cli, sandbox, rec, d, harness, shell, sle
         if (!await check(id, `document.querySelector(${JSON.stringify(selector)}).value === ${JSON.stringify(value)}`)) throw new Error(`Typing did not reach ${selector}`);
     };
     const open = async (target, name, suffix) => {
-        const workspace = await json(['workspace', 'create', '--name', name, '--json'], target);
+        const workspace = await json(['workspace', 'create', '--focus', '--name', name, '--json'], target);
         const terminal = (await json(['pane', 'list', '--workspace', workspace.workspace_id, '--json'], target))[0].id;
         const url = `${fixture.url}/page/one?owner=${suffix}`;
         const opened = await target.ok(['web', 'open', url], {paneID:terminal});
@@ -178,7 +178,7 @@ export default async function ({ page, cli, sandbox, rec, d, harness, shell, sle
         await page.click(`[data-testid="pane-header-${sibling}"]`,{clickCount:2});
         rec.check('leaving sibling zoom restores the browser surface and live page', await ready(local.paneID) && await owner(local.paneID) && await sameState(native,original));
         await cli.ok(['pane','close','--target',sibling]);
-        await cli.ok(['workspace','create','--name','Browser hide control','--json']);
+        await cli.ok(['workspace','create','--focus','--name','Browser hide control','--json']);
         rec.check('switching workspaces parks the plugin’s native browser page', await owner(local.paneID,'holder') && await sameState(native,original));
         await page.click(`[data-testid="workspace-row"][data-workspace-id="${local.workspaceID}"]`);
         rec.check('returning to the workspace restores the same browser target and state', await ready(local.paneID) && await owner(local.paneID) && await sameState(native,original));

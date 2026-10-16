@@ -207,7 +207,7 @@ async function main() {
               return true; })()`
         );
 
-        const created = await cli.run(['workspace', 'create', '--name', 'lockout'], { timeoutMs: 40_000 });
+        const created = await cli.run(['workspace', 'create', '--focus', '--name', 'lockout'], { timeoutMs: 40_000 });
         if (created.code !== 0) throw new Error(`workspace create failed: ${created.stderr || created.stdout}`);
         await waitFor(
             'the workspace to be active on screen',

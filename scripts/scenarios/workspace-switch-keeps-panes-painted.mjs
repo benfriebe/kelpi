@@ -101,7 +101,7 @@ export default async function ({ page, cli, rec, d, sleep }) {
         const panesOf = {};
         const workspaceIDOf = {};
         for (const name of WORKSPACES) {
-            await cli.ok(['workspace', 'create', '--name', name]);
+            await cli.ok(['workspace', 'create', '--focus', '--name', name]);
             for (let index = 1; index < PANES_PER_WORKSPACE; index += 1) {
                 const ids = (await json(['pane', 'list', '--workspace', name, '--json'])).map((pane) => pane.id);
                 await json(['pane', 'split', '--target', ids[ids.length - 1], '--direction', index % 2 ? 'right' : 'down', '--json']);

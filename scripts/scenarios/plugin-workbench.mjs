@@ -17,7 +17,7 @@ export default async function ({ page, harness, cli, rec, d }) {
     const offException = page.on('Runtime.exceptionThrown', details => failures.push(JSON.stringify(details)));
     const offLog = page.on('Log.entryAdded', details => failures.push(JSON.stringify(details)));
     await page.send('Log.enable');
-    const created = JSON.parse(await cli.ok(['workspace', 'create', '--name', 'Plugin validation', '--json']));
+    const created = JSON.parse(await cli.ok(['workspace', 'create', '--focus', '--name', 'Plugin validation', '--json']));
     const workspaceID = created.workspace_id;
     const installed = await cli.run(['plugin', 'install', packagePath, '--trust']);
     rec.check('local plugin installs and activates through the shipped CLI', installed.code === 0, installed.stderr || installed.stdout);
@@ -68,7 +68,7 @@ export default async function ({ page, harness, cli, rec, d }) {
         if (!open) throw new Error('the right sidebar did not finish opening');
     };
     try {
-        const pane = JSON.parse(await cli.ok(['plugin', 'open', pluginID, viewID, '--workspace', workspaceID]));
+        const pane = JSON.parse(await cli.ok(['plugin', 'open', '--focus', pluginID, viewID, '--workspace', workspaceID]));
         const frame = `[data-testid="plugin-view-${pane.paneID}"] iframe`;
         rec.check('plugin pane appears in the normal grid', await d.settleDom(page, `document.querySelector(${JSON.stringify(frame)})?.getAttribute('srcdoc')?.includes('Agent Board')`, { ceilingMs: 10_000 }));
         const ready = await d.settle(async () => {

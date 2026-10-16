@@ -86,7 +86,7 @@ export default async function ({ page, cli, sandbox, rec, d, sleep }) {
     };
     try {
         for (const name of ['MRU A', 'MRU B', 'MRU C']) {
-            created.push(JSON.parse(await cli.ok(['workspace', 'create', '--name', name, '--path', sandbox.root, '--json'])).workspace_id);
+            created.push(JSON.parse(await cli.ok(['workspace', 'create', '--focus', '--name', name, '--path', sandbox.root, '--json'])).workspace_id);
         }
         const [a, b, c] = created;
         for (const id of [a, b, c]) await visit(id);
@@ -127,7 +127,7 @@ export default async function ({ page, cli, sandbox, rec, d, sleep }) {
         // ── From a focused web page ──────────────────────────────────────────────────────
         // The page gives the chord up to the shell's relay, which also hands the window the
         // keyboard: Chromium suppresses the page's keyups after the chord, ⌃'s included.
-        const w = JSON.parse(await cli.ok(['workspace', 'create', '--name', 'MRU Web', '--path', sandbox.root, '--json'])).workspace_id;
+        const w = JSON.parse(await cli.ok(['workspace', 'create', '--focus', '--name', 'MRU Web', '--path', sandbox.root, '--json'])).workspace_id;
         created.push(w);
         await visit(w);
         await cli.ok(['web', 'open', '--focus', 'data:text/html,<title>mru-web</title><input autofocus>']);
@@ -195,7 +195,7 @@ export default async function ({ page, cli, sandbox, rec, d, sleep }) {
         }
 
         // ── From a focused markdown preview (a frame: it passes its keyups on) ─────────────
-        const m = JSON.parse(await cli.ok(['workspace', 'create', '--name', 'MRU Preview', '--path', sandbox.root, '--json'])).workspace_id;
+        const m = JSON.parse(await cli.ok(['workspace', 'create', '--focus', '--name', 'MRU Preview', '--path', sandbox.root, '--json'])).workspace_id;
         created.push(m);
         await visit(m);
         await cli.ok(['open', '--focus', path.join(REPO_ROOT, 'README.md')]);
@@ -204,10 +204,10 @@ export default async function ({ page, cli, sandbox, rec, d, sleep }) {
         await frameGestures('markdown preview', m, previewFrame);
 
         // ── From a focused plugin pane (a frame running the plugin SDK) ────────────────────
-        const p = JSON.parse(await cli.ok(['workspace', 'create', '--name', 'MRU Plugin', '--path', sandbox.root, '--json'])).workspace_id;
+        const p = JSON.parse(await cli.ok(['workspace', 'create', '--focus', '--name', 'MRU Plugin', '--path', sandbox.root, '--json'])).workspace_id;
         created.push(p);
         await cli.ok(['plugin', 'install', UI_LAB, '--trust']);
-        const pluginPane = JSON.parse(await cli.ok(['plugin', 'open', UI_LAB_ID, `${UI_LAB_ID}.panel`, '--workspace', p])).paneID;
+        const pluginPane = JSON.parse(await cli.ok(['plugin', 'open', '--focus', UI_LAB_ID, `${UI_LAB_ID}.panel`, '--workspace', p])).paneID;
         await visit(p);
         const pluginFrame = `[data-testid="plugin-view-${pluginPane}"] iframe`;
         rec.check('the plugin pane rendered', await d.settle(() => page.eval(`document.querySelector('${pluginFrame}') !== null`), { ceilingMs: 20_000 }));
@@ -242,7 +242,7 @@ export default async function ({ page, cli, sandbox, rec, d, sleep }) {
         rec.check('a ⌃-click on a row switches to it', await d.settle(async () => (await active()) === row.id));
 
         // A workspace closed mid-gesture is not switched to, and the window keeps showing one.
-        const doomed = JSON.parse(await cli.ok(['workspace', 'create', '--name', 'MRU D', '--path', sandbox.root, '--json'])).workspace_id;
+        const doomed = JSON.parse(await cli.ok(['workspace', 'create', '--focus', '--name', 'MRU D', '--path', sandbox.root, '--json'])).workspace_id;
         created.push(doomed);
         await visit(doomed);
         await visit(b);

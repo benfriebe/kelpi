@@ -91,7 +91,7 @@ export default async function ({ page, cli, sandbox, rec, d, sleep }) {
                 state.reads++; return 'CLIPBOARD-SINK';
             } });
         })()`);
-        workspaceID = JSON.parse(await cli.ok(['workspace', 'create', '--name', 'Copy on select', '--path', sandbox.root, '--json'])).workspace_id;
+        workspaceID = JSON.parse(await cli.ok(['workspace', 'create', '--focus', '--name', 'Copy on select', '--path', sandbox.root, '--json'])).workspace_id;
         const paneID = JSON.parse(await cli.ok(['pane', 'list', '--workspace', workspaceID, '--json']))[0].id;
         const root = `[data-pane-id="${paneID}"][data-terminal-status]`;
         if (!(await d.settleDom(page, `document.querySelector('${root}')?.getAttribute('data-terminal-status') === 'live'`))) {

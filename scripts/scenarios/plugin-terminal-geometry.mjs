@@ -217,7 +217,7 @@ export default async function ({ page, cli, sandbox, rec, d, sleep }) {
         item.pid = state(item).pid; fixtures.push(item); return item;
     };
     const create = async (target, root, name) => {
-        const created = await json(['workspace', 'create', '--name', name, '--json'], target);
+        const created = await json(['workspace', 'create', '--focus', '--name', name, '--json'], target);
         const workspaceID = created.workspace_id ?? created.id;
         const panes = await json(['pane', 'list', '--workspace', workspaceID, '--json'], target);
         return launch(target, root, workspaceID, panes[0].id);
@@ -439,7 +439,7 @@ export default async function ({ page, cli, sandbox, rec, d, sleep }) {
             JSON.stringify(input(local).subarray(offset).toString('latin1')));
 
         // ── 6. hidden and revealed: the reattached renderer mirrors again ───────────
-        const other = await json(['workspace', 'create', '--name', 'Terminal Geometry Hidden Check', '--json']);
+        const other = await json(['workspace', 'create', '--focus', '--name', 'Terminal Geometry Hidden Check', '--json']);
         const otherWorkspaceID = other.workspace_id ?? other.id;
         const otherPane = (await json(['pane', 'list', '--workspace', otherWorkspaceID, '--json']))[0].id;
         if (!await ready(otherPane)) throw new Error('The other workspace renderer did not attach');

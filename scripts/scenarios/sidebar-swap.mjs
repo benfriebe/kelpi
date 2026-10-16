@@ -5,7 +5,7 @@ export const covers = [
 ];
 
 export default async function ({ page, cli, harness, rec, d }) {
-    const created = JSON.parse(await cli.ok(['workspace', 'create', '--name', 'Sidebar swap', '--json']));
+    const created = JSON.parse(await cli.ok(['workspace', 'create', '--focus', '--name', 'Sidebar swap', '--json']));
     const workspaceID = created.workspace_id;
     const painted = () => page.eval(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))`);
     const choose = async (side, viewID) => {

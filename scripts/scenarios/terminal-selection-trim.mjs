@@ -27,7 +27,7 @@ export default async function ({ page, cli, sandbox, rec, d, sleep }) {
                 state.text = String(text); state.writes++;
             } });
         })()`);
-        workspaceID = JSON.parse(await cli.ok(['workspace', 'create', '--name', 'Selection trim', '--path', sandbox.root, '--json'])).workspace_id;
+        workspaceID = JSON.parse(await cli.ok(['workspace', 'create', '--focus', '--name', 'Selection trim', '--path', sandbox.root, '--json'])).workspace_id;
         const paneID = JSON.parse(await cli.ok(['pane', 'list', '--workspace', workspaceID, '--json']))[0].id;
         const root = `[data-pane-id="${paneID}"][data-terminal-status]`;
         if (!await d.settleDom(page, `document.querySelector('${root}')?.getAttribute('data-terminal-status') === 'live'`)) throw new Error('terminal did not start');

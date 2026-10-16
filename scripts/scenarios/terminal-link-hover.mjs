@@ -16,6 +16,10 @@
  *      off `harness.counters()`, so "underlined" and "opens" are checked against each other.
  *   2. **An any-motion mouse pane (DECSET 1003)**, the way Claude Code runs. Every hover is
  *      reported to the application, and the underline still has to appear.
+ *
+ * #329: the last row puts two emoji in front of a URL. ghostty-web draws each in two cells, and the
+ * daemon has to count them the same way, or the underline starts two cells early and a ⌘-click
+ * on the URL's last cell reads the space after it.
  */
 
 import fs from 'node:fs';
@@ -34,6 +38,9 @@ export const covers = [
 
 const PLAIN_URL = 'https://example.com/plain/url';
 const OSC8_URL = 'https://example.com/osc8/changelog';
+const EMOJI_URL = 'https://example.com/after/emoji';
+/** `✅🚀 `: two two-cell emoji and a space, so the URL starts at column 5. */
+const EMOJI_PREFIX_CELLS = 5;
 
 /**
  * The screen, as a shell script: clear, then one target per row. A file rather than a typed
@@ -63,6 +70,7 @@ function screenScript({ markdown, missing, wrapped, csvPath }) {
         `printf '${wrapped}\\r\\n'`,
         `printf 'see ${osc8(OSC8_URL, 'the changelog')} now\\r\\n'`,
         `printf '${csvPath}\\r\\n'`,
+        `printf '✅🚀 ${EMOJI_URL}\\r\\n'`,
         'if [ "$mode" = any ]; then',
         '  dd of="$out" bs=1 count=65536 2>/dev/null',
         'else',
@@ -197,6 +205,8 @@ export default async function ({ page, harness, cli, sandbox, rec, d, sleep }) {
         starts.push(next);
         next += Math.max(1, Math.ceil(line.length / cols));
     }
+    const emojiRow = next;
+    next += 1;
     rec.check('the screen fits the pane', next <= rows, `${String(next)} rows of ${String(rows)}`);
     if (next > rows) return;
     const [plainRow, sshRow, markdownRow, missingRow, proseRow, wrappedRow, osc8Row, csvRow] = starts;
@@ -219,6 +229,8 @@ export default async function ({ page, harness, cli, sandbox, rec, d, sleep }) {
     await rec.shot(page, 'wrapped-url-hovered');
     await hover('an OSC 8 link behind prose', osc8Row, 8, runsFor(osc8Row, 4, 'the changelog'.length, cols));
     await hover('an existing .csv path (#324)', csvRow, 4, runsFor(csvRow, 0, csvPath.length, cols));
+    await hover('a URL after two emoji (#329)', emojiRow, EMOJI_PREFIX_CELLS + 3, runsFor(emojiRow, EMOJI_PREFIX_CELLS, EMOJI_URL.length, cols));
+    await rec.shot(page, 'emoji-url-hovered');
 
     // ── what was underlined is what opens, and what was not does not ─────────────────
     /** ⌘-click a cell; what the shell was asked to open, if anything. */
@@ -237,6 +249,7 @@ export default async function ({ page, harness, cli, sandbox, rec, d, sleep }) {
     await opens('the plain URL', plainRow, 10, PLAIN_URL);
     await opens('the tail row of the wrapped URL', osc8Row - 1, 1, wrapped);
     await opens('the OSC 8 link', osc8Row, 8, OSC8_URL);
+    await opens('the last cell of the URL after two emoji (#329)', emojiRow, EMOJI_PREFIX_CELLS + EMOJI_URL.length - 1, EMOJI_URL);
 
     const refused = await metaClick(sshRow, 12);
     const toast = await d.settle(

@@ -46,3 +46,12 @@ onlyBuiltDependencies:
   - fs-xattr
   - macos-alias
   - node-pty
+
+# #329: `@xterm/addon-unicode-graphemes` read its width trie's header through
+# `new DataView(data.buffer)`, which is offset 0 of Node's shared Buffer pool rather than of the
+# trie, so in the daemon every astral emoji read as one cell. The patch passes the view the trie's
+# own `byteOffset` and `byteLength` in both builds (`main` and `module`) and in the TypeScript
+# source. One token each; the patch is large only because each build is one minified line.
+# `packages/daemon/src/term/unicode-width.test.ts` pins it.
+patchedDependencies:
+  '@xterm/addon-unicode-graphemes@0.4.0': patches/@xterm__addon-unicode-graphemes@0.4.0.patch

@@ -1037,9 +1037,14 @@ opened and no focus moves.
   daemon, where the pane does not exist, so an underline would promise a click that cannot
   work; #328), an external-editor terminal (not a shell pane), the build-time xterm fallback
   engine (no underline layer, so no probes either), and a phone (no hover).
-- **Known gap shared with the click:** the daemon's emulator counts emoji such as `✅` as one
-  cell where the engine draws two, so after one on the same row the underline (and the click)
-  lands a cell left per emoji (#329).
+- **Character widths.** The daemon's emulator counts cells with the engine's widths (#329):
+  `@xterm/addon-unicode-graphemes`, `15-graphemes` (`term/service.ts` `UNICODE_VERSION`), so an
+  emoji such as `✅`, a variation-selector emoji (`❤️`) and a ZWJ sequence are two cells, as
+  ghostty-web draws them, and the click and the underline after one land on the right cell.
+  Measured over every codepoint to U+3FFFF it still differs from the engine on 823, none of them
+  an emoji an agent prints: Unicode 16 additions (U+2630..2637, U+1D300..1D356), a lone regional
+  indicator or skin-tone modifier, and zero-width format characters. After one of those the
+  column is off by one, as every emoji was before.
 
 ### 7.7 In-terminal search actions (`START_SEARCH`, `END_SEARCH`, `SEARCH_TOTAL`, `SEARCH_SELECTED`)
 

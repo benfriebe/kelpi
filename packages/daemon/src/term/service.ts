@@ -20,6 +20,7 @@
  */
 
 import serializeModule from '@xterm/addon-serialize';
+import graphemesModule from '@xterm/addon-unicode-graphemes';
 import headless from '@xterm/headless';
 import type { IBufferCell, IBufferLine, Terminal as HeadlessTerminal } from '@xterm/headless';
 
@@ -46,6 +47,28 @@ import { searchTerminal, type SearchOptions, type TerminalMatch } from './search
 
 const { Terminal } = headless;
 const { SerializeAddon } = serializeModule;
+const { UnicodeGraphemesAddon } = graphemesModule;
+
+/**
+ * The character width table, which must be the renderer's (#329).
+ *
+ * The client's ghostty-web engine decides how many cells a character takes, and every column the
+ * client sends here (a ⌘-click, a hover) is counted in ITS cells. Left alone, `@xterm/headless`
+ * uses Unicode 6 widths, where `✅` and `🚀` are one cell and ghostty draws two, so every emoji
+ * before a link moved the click and the underline one cell left.
+ *
+ * Measured by writing every codepoint U+0020..U+3FFFF (after a base letter) into the vendored
+ * engine and into this emulator: Unicode 6 differs on 10 865 of them, `addon-unicode11` on 1 612
+ * (variation selector 16, skin tones and ZWJ sequences among them), and the graphemes table on
+ * 823, none of them an emoji, a VS16, a skin tone or a ZWJ sequence an agent prints. What is left
+ * is Unicode 16 additions (the trigrams U+2630..2637, U+1D300..1D356), a lone regional indicator
+ * or skin-tone modifier, and zero-width format characters (ZWSP, bidi marks).
+ *
+ * The addon is patched (`patches/`, pinned in `pnpm-workspace.yaml`): as published it reads its
+ * width table's header from offset 0 of Node's shared Buffer pool instead of from the table, which
+ * in this process made every astral emoji (`🚀`) one cell again. `unicode-width.test.ts`.
+ */
+const UNICODE_VERSION = '15-graphemes';
 
 type SerializeAddonInstance = InstanceType<typeof SerializeAddon>;
 
@@ -1526,6 +1549,8 @@ export class TerminalStateServiceImpl implements TerminalStateService {
         });
         const serializer = new SerializeAddon();
         term.loadAddon(serializer);
+        term.loadAddon(new UnicodeGraphemesAddon());
+        term.unicode.activeVersion = UNICODE_VERSION;
         const effects: { mode: ReplayMode } = { mode: 0 };
         if (this.onDirectoryChange !== undefined) {
             const report = this.onDirectoryChange;

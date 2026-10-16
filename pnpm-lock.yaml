@@ -7,6 +7,11 @@ settings:
 overrides:
   ghostty-web: file:vendor/ghostty-web-patched
 
+patchedDependencies:
+  '@xterm/addon-unicode-graphemes@0.4.0':
+    hash: a9677f69ea4a4e41f67e886da0a12173c8fd24743a57d7cf8ec4bf9a22f3b24d
+    path: patches/@xterm__addon-unicode-graphemes@0.4.0.patch
+
 importers:
 
   .:
@@ -106,6 +111,9 @@ importers:
       '@xterm/addon-serialize':
         specifier: ^0.14.0
         version: 0.14.0
+      '@xterm/addon-unicode-graphemes':
+        specifier: 0.4.0
+        version: 0.4.0(patch_hash=a9677f69ea4a4e41f67e886da0a12173c8fd24743a57d7cf8ec4bf9a22f3b24d)
       '@xterm/headless':
         specifier: ^6.0.0
         version: 6.0.0
@@ -1475,6 +1483,9 @@ packages:
 
   '@xterm/addon-serialize@0.14.0':
     resolution: {integrity: sha512-uteyTU1EkrQa2Ux6P/uFl2fzmXI46jy5uoQMKEOM0fKTyiW7cSn0WrFenHm5vO5uEXX/GpwW/FgILvv3r0WbkA==}
+
+  '@xterm/addon-unicode-graphemes@0.4.0':
+    resolution: {integrity: sha512-9+/CqwbKcnlkJU4d3wIgO+wjsL8f6vyz+UwUWLu6nADQz8Gr8ONqGCJfdDjIdI+yYZLABQqQy47FzEM6AWELjw==}
 
   '@xterm/headless@6.0.0':
     resolution: {integrity: sha512-5Yj1QINYCyzrZtf8OFIHi47iQtI+0qYFPHmouEfG8dHNxbZ9Tb9YGSuLcsEwj9Z+OL75GJqPyJbyoFer80a2Hw==}
@@ -4990,6 +5001,8 @@ snapshots:
   '@xmldom/xmldom@0.9.11': {}
 
   '@xterm/addon-serialize@0.14.0': {}
+
+  '@xterm/addon-unicode-graphemes@0.4.0(patch_hash=a9677f69ea4a4e41f67e886da0a12173c8fd24743a57d7cf8ec4bf9a22f3b24d)': {}
 
   '@xterm/headless@6.0.0': {}
 

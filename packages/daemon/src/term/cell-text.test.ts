@@ -235,3 +235,68 @@ describe('cellText', () => {
         expect(cell?.text).toContain('notes.md');
     });
 });
+
+/**
+ * #329: the emulator counts cells the way the client's engine draws them. Under xterm's default
+ * Unicode 6 table `✅` was one cell where ghostty-web draws two, so a click on the `h` of a URL
+ * after it read the space before it, and the underline sat one cell left per emoji.
+ */
+describe('cellText widths match the renderer (#329)', () => {
+    it('maps the cell after an emoji to the character the renderer draws there', async () => {
+        const term = await seeded('✅ https://example.com\r\n', 40, 4);
+        const cell = term.cellText(PANE, 0, 3)!;
+        expect(cell.text[cell.offset]).toBe('h');
+        const range = tokenRangeAt(cell.text, cell.offset)!;
+        expect(cell.text.slice(range.start, range.end)).toBe('https://example.com');
+        expect(cellRuns(cell.cellsOf(range.start, range.end))).toEqual([{ row: 0, col: 3, width: 19 }]);
+    });
+
+    it('counts two emoji before a path as four cells', async () => {
+        const term = await seeded('🚀✅ docs/a.md\r\n', 40, 4);
+        const cell = term.cellText(PANE, 0, 5)!;
+        expect(cell.text.slice(tokenRangeAt(cell.text, cell.offset)!.start)).toBe('docs/a.md');
+        expect(cellRuns(cell.cellsOf(cell.offset, cell.offset + 9))).toEqual([{ row: 0, col: 5, width: 9 }]);
+    });
+
+    it('draws a variation-selector emoji and a ZWJ family as one two-cell cluster each', async () => {
+        // ghostty-web: "❤️" (U+2764 U+FE0F) and "👨‍👩‍👧" are two cells. Unicode 11 counted the
+        // first as one and the family as six.
+        const heart = await seeded('❤️ https://a.example\r\n', 40, 4);
+        const afterHeart = heart.cellText(PANE, 0, 3)!;
+        expect(afterHeart.text[afterHeart.offset]).toBe('h');
+        const family = await seeded('👨‍👩‍👧 https://b.example\r\n', 40, 4);
+        const afterFamily = family.cellText(PANE, 0, 3)!;
+        expect(afterFamily.text[afterFamily.offset]).toBe('h');
+        // The right half of the cluster reads as the cluster.
+        expect(family.cellText(PANE, 0, 1)!.offset).toBe(0);
+    });
+
+    it('wraps a row of emoji where the renderer does', async () => {
+        // Ten columns hold five two-cell emoji; the sixth starts the next row.
+        const term = await seeded(`${'✅'.repeat(6)} next\r\n`, 10, 4);
+        const second = term.cellText(PANE, 1, 3)!;
+        expect(second.text).toBe(`${'✅'.repeat(6)} next`);
+        expect(second.text.slice(second.offset)).toBe('next');
+    });
+
+    it('keeps search columns as offsets into the line text', async () => {
+        const term = await seeded('✅ needle here\r\n', 40, 4);
+        expect(term.search(PANE, 'needle')).toEqual([
+            expect.objectContaining({ col: 2, length: 6 })
+        ]);
+    });
+
+    it('replays a snapshot of a row with emoji onto the same cells', async () => {
+        const term = await seeded('a✅b🚀c https://x.example\r\n', 40, 4);
+        const replayed = createTerminalStateService({ defaultCols: 40, defaultRows: 4 });
+        replayed.attach(PANE, 40, 4);
+        replayed.feed(PANE, new TextDecoder().decode(term.snapshot(PANE).data));
+        await replayed.flush(PANE);
+        for (const col of [0, 1, 3, 4, 6, 8]) {
+            const a = term.cellText(PANE, 0, col)!;
+            const b = replayed.cellText(PANE, 0, col)!;
+            expect(b.offset).toBe(a.offset);
+        }
+        expect(replayed.cellText(PANE, 0, 8)!.text[replayed.cellText(PANE, 0, 8)!.offset]).toBe('h');
+    });
+});

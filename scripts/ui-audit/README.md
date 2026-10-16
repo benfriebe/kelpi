@@ -250,7 +250,9 @@ What key status was buying is the page's own belief that it is focused, which th
 
 `harness.window().focused` is `false` for the whole of a lane run and says so honestly. No scenario asserts `focused === true`; the two that read the field (`dock-bounce-stop-only`, `notification-shown-and-opened`) assert `focused === false`, which is the state a keyless window is already in.
 
-The `default` placement (the on-screen full audit, and every user launch) keeps `focusable: true` and is unchanged: a visible window that could not be typed into would be a worse lie than the one this fixes. Measured: `fresh-boot,terminal-ls,terminal-cursor-focus` at the default placement is assertion-identical either side of the change, `terminal-cursor-focus`'s window-blur half included.
+The same goes for the window's activation report (§AGNT-056 `shell-activation`, which #340's activation click reads): a keyless lane window reports itself **active** on every status socket connect (`audit-window.ts` ▸ `auditWindowReportsActive`). Reported by its real focus it said `inactive`, and whether the page heard that was a race. At boot the shell connects before the page exists, so the report was lost and the page kept its default of active. After `daemon.restart()` the shell and the page reconnect on the same backoff, and when the page won, the next press in the host page was consumed as the click that brought the window forward (#348, #373). Only the report changes: the dock-bounce gate still reads the real focus, so `harness.window().focused` and the two scenarios above are unaffected. The shell logs `activation report: active` after each `status ws connected`, which is what `plugin-pane-chrome` and `plugin-settings-presenter` assert after their restart.
+
+Every user launch keeps `focusable: true` (and reports its real focus) and is unchanged: a visible window that could not be typed into would be a worse lie than the one this fixes. Measured: `fresh-boot,terminal-ls,terminal-cursor-focus` at the default placement is assertion-identical either side of the change, `terminal-cursor-focus`'s window-blur half included.
 
 ## The rule
 

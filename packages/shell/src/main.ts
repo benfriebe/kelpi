@@ -74,6 +74,7 @@ import {
     auditWindowBounds,
     auditWindowFocusable,
     auditWindowLogLine,
+    auditWindowReportsActive,
     auditWindowVisibility,
     resolveWindowPolicy
 } from './audit-window.js';
@@ -338,6 +339,13 @@ function isVisibleOnAllWorkspaces(): boolean {
  * becomes a step about the clamp.
  */
 let parkedRestoreOrigin: { x: number; y: number } | null = null;
+
+/**
+ * The test lane this process runs under, if any (`./audit-window.ts`), read once so the window's
+ * `focusable` and the activation report it sends can never disagree. `SHIPPED_WINDOW_POLICY` for
+ * every user launch.
+ */
+const windowPolicy = resolveWindowPolicy(process.env);
 
 /** `getNormalBounds()`, with the lane's parked origin swapped back out. */
 function persistableBounds(window: BrowserWindow): Rect {
@@ -690,7 +698,7 @@ function createWindow(): BrowserWindow {
      * gate open (every user launch, every packaged launch) the policy is Electron's own
      * defaults and the three expressions below are the identity.
      */
-    const lane = resolveWindowPolicy(process.env);
+    const lane = windowPolicy;
     const placedBounds = lane.active
         ? auditWindowBounds(lane.placement, bounds, screen.getPrimaryDisplay().workArea)
         : bounds;
@@ -1931,6 +1939,11 @@ function startStatusController(): void {
             host: {
                 showWindow,
                 isWindowFocused: () => BrowserWindow.getAllWindows().some((window) => window.isFocused()),
+                // #348: a lane window is keyless, so it is never focused and reports itself active
+                // instead (`auditWindowReportsActive`). Every user launch reports its real focus.
+                isWindowActive: () =>
+                    auditWindowReportsActive(windowPolicy) ||
+                    BrowserWindow.getAllWindows().some((window) => window.isFocused()),
                 startDaemon: () => {
                     void startDaemonFromShell('tray');
                 },

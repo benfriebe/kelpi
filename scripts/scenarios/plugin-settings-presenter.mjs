@@ -146,7 +146,7 @@ const SEED_LINES = `remote-daemon = ScenarioRemote:${PAIRING_URL}\nprofile = Sce
 const FORBIDDEN = [PAIRING_TOKEN, PAIRING_URL, PROFILE_SECRET, 'remote-daemon', 'token=',
     'set-general-setting', 'set-ghostty-setting', uiID];
 
-export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
+export default async function ({ page, cli, sandbox, rec, d, sleep, daemon, shell }) {
     if (!fs.existsSync(path.join(labPath, 'kelpi.plugin.json'))) {
         throw new Error(`settings-lab is not in this checkout (${labPath}); the example has to land before this scenario can run`);
     }
@@ -1118,6 +1118,7 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
             })()`);
             const pidBefore = daemon.pid, generationBefore = daemon.generation;
             const startedAt = Date.now();
+            const shellMark = shell?.lines.length ?? 0;
             await daemon.restart();
             const healthzMs = Date.now() - startedAt;
             const reconnected = await d.settleDom(page, `document.querySelector('[data-testid="kelpi-app"]')?.getAttribute('data-connection') === 'connected'`, { ceilingMs: 30_000 });
@@ -1126,14 +1127,24 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
             // reconnect (a late write, a failure toast, a lost draft), and a negative read taken in
             // the same tick as the reconnect proves nothing.
             await sleep(2_000);
+            /*
+             * #373: the shell's reconnect report. A lane window is keyless, so it reports itself
+             * ACTIVE rather than by its focus (`audit-window.ts` ▸ `auditWindowReportsActive`).
+             * Reported inactive, it reached the page whenever the page won the reconnect race, and
+             * #340's activation click then ate the cleanup's `settings-close` press, leaving the
+             * dialog open for the next scenario. Read off the shell's log after the restart's
+             * `status ws connected`, so the check holds whoever wins the race.
+             */
+            const reportedActive = await d.shellReportedActiveSince(shell, shellMark);
+            if (reportedActive === null) rec.note('LIMIT: not a keyless lane window (or no shell handle under --attach), so the reconnect activation report follows the real focus and is not asserted');
             const samples = JSON.parse(String(await page.eval('globalThis.__daemonTrailStop()')));
             const offline = samples.filter(sample => sample.connection !== 'connected');
             rec.note(`the daemon was replaced in ${String(healthzMs)} ms (stop ${String(daemon.lastStopMs)} ms, start to healthz ${String(daemon.lastStartMs)} ms; a stop at or above 8000 is the SIGTERM window elapsing and the SIGKILL behind it) and the window was back in ${String(connectedMs)} ms; ${String(samples.length)} recorded states, ${String(offline.length)} of them disconnected`);
             for (const sample of samples) rec.note(`  +${String(sample.at - startedAt)} ms ${JSON.stringify({ connection: sample.connection, presenter: sample.presenter, settings: sample.settings, appearance: sample.appearance, draft: sample.draft, toast: sample.toast })}`);
             rec.check('stopping the primary daemon disconnects the window, and the replacement reconnects it',
-                reconnected && offline.length > 0 && samples.at(-1)?.connection === 'connected'
+                reconnected && offline.length > 0 && samples.at(-1)?.connection === 'connected' && reportedActive !== false
                 && daemon.pid !== pidBefore && daemon.generation === generationBefore + 1,
-                `pid ${String(pidBefore)} → ${String(daemon.pid)}, generation ${String(generationBefore)} → ${String(daemon.generation)}; connection states ${JSON.stringify([...new Set(samples.map(sample => sample.connection))])}`);
+                `pid ${String(pidBefore)} → ${String(daemon.pid)}, generation ${String(generationBefore)} → ${String(daemon.generation)}; connection states ${JSON.stringify([...new Set(samples.map(sample => sample.connection))])}; the shell reported the window active after reconnecting: ${String(reportedActive)}`);
             rec.check('the bundled dialog draws the same section with the uncommitted draft while the daemon is gone',
                 offline.every(sample => sample.presenter !== labView)
                 && offline.some(sample => sample.presenter === 'bundled' && sample.settings === true && sample.appearance === true && sample.draft === draftText),
@@ -1245,7 +1256,9 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
             await chooseSlot(bundledView);
             await d.settleDom(page, `document.querySelector('${bundledSlot}')`, { ceilingMs: 10_000 });
         });
-        await safely('the Settings overlay is closed', () => closeSettings());
+        await safely('the Settings overlay is closed', async () => {
+            if (!await closeSettings()) rec.note('cleanup: the Settings overlay was still open 8 s after its close button was pressed');
+        });
         await cli.run(['plugin', 'remove', labID]);
         await cli.run(['plugin', 'remove', uiID]);
         await cli.run(['workspace', 'delete', workspaceID, '--force']);

@@ -7,6 +7,7 @@ import {
     auditWindowFocusable,
     auditWindowLogLine,
     auditWindowPolicy,
+    auditWindowReportsActive,
     auditWindowVisibility,
     harnessWindowPolicy,
     resolveWindowPolicy
@@ -242,6 +243,19 @@ describe('no lane window is ever the key window (#109)', () => {
         expect(auditWindowFocusable(resolveWindowPolicy({}))).toBe(true);
         expect(auditWindowFocusable(resolveWindowPolicy({ KELPI_HARNESS: '1', KELPI_AUDIT_WINDOW: 'hidden' }))).toBe(true);
         expect(auditWindowFocusable(resolveWindowPolicy({ KELPI_HARNESS_SOCKET: '/tmp/kelpi-harness.sock' }))).toBe(true);
+    });
+
+    it('reports a keyless lane window active, and a user’s window by its real focus (#348)', () => {
+        // A window that can never be key would otherwise report "inactive" on every reconnect,
+        // and #340's activation click would eat the scenario's next press after a daemon restart.
+        for (const placement of ['hidden', 'offscreen', 'onscreen'] as const) {
+            expect(auditWindowReportsActive(harnessWindowPolicy(laneEnv(placement)))).toBe(true);
+            expect(auditWindowReportsActive(auditWindowPolicy({ KELPI_AUDIT: '1', KELPI_AUDIT_WINDOW: placement }))).toBe(true);
+        }
+        expect(auditWindowReportsActive(auditWindowPolicy({ KELPI_AUDIT: '1' }))).toBe(true);
+        expect(auditWindowReportsActive(SHIPPED_WINDOW_POLICY)).toBe(false);
+        expect(auditWindowReportsActive(resolveWindowPolicy({}))).toBe(false);
+        expect(auditWindowReportsActive(resolveWindowPolicy({ KELPI_HARNESS_SOCKET: '/tmp/kelpi-harness.sock' }))).toBe(false);
     });
 
     it('states the rule in the log line, so the policy is checkable from outside the process', () => {

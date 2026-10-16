@@ -103,6 +103,12 @@ export interface StatusHost {
     showWindow(): void;
     /** Bounce suppression: §7.1's `isAppActive`. */
     isWindowFocused(): boolean;
+    /**
+     * What the §AGNT-056 activation report says when a status socket connects. Absent means
+     * `isWindowFocused`. A test lane's window can never be key, so it answers `true` there
+     * (`./audit-window.ts` ▸ `auditWindowReportsActive`); the bounce gate keeps the real focus.
+     */
+    isWindowActive?(): boolean;
     /** Tray "Start Daemon" — spawn/adopt and re-point this connection. */
     startDaemon(): void;
     /** Tray "Quit Kelpi" (goes through the quit gate). */
@@ -953,7 +959,7 @@ export function createStatusController(options: StatusOptions): StatusController
                 // background, a window opened unfocused) would otherwise assume it is active
                 // and clear a badge nobody has looked at. Scoped to this window, so a shell
                 // with no window at all reports into an empty room.
-                sendActivation(host.isWindowFocused());
+                sendActivation(host.isWindowActive?.() ?? host.isWindowFocused());
                 publish();
                 break;
             }

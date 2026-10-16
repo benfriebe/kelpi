@@ -287,6 +287,26 @@ export async function settle(predicate, { ceilingMs = 5_000, intervalMs = 50 } =
     }
 }
 
+/**
+ * #348: whether the shell reported its window ACTIVE on the first status socket connect logged after
+ * `mark` (an index into `shell.lines`, taken before a `daemon.restart()`).
+ *
+ * A keyless lane window reports itself active whatever the OS says (`packages/shell/src/
+ * audit-window.ts` ▸ `auditWindowReportsActive`); reported by its real focus it said `inactive`,
+ * and a page that won the reconnect race had its next press eaten by #340's activation click.
+ * Null when the answer would say nothing: no shell handle (`--attach`), or a window that is not a
+ * keyless lane (no `focusable=false` in the shell's placement line), whose report rightly follows
+ * its real focus and is `inactive` whenever the run is in the background.
+ */
+export async function shellReportedActiveSince(shell, mark, { ceilingMs = 10_000 } = {}) {
+    if (shell === null || !shell.lines.some((line) => line.includes('focusable=false'))) return null;
+    return await settle(() => {
+        const after = shell.lines.slice(mark);
+        const connected = after.findIndex((line) => line.includes('status ws connected'));
+        return connected >= 0 && after.slice(connected).some((line) => line.includes('activation report: active'));
+    }, { ceilingMs });
+}
+
 /** Poll a page expression until it is truthy. */
 export async function settleDom(page, expression, options = {}) {
     return await settle(async () => (await page.eval(`Boolean(${expression})`)) === true, { intervalMs: 40, ...options });

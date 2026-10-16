@@ -439,6 +439,59 @@ describe('the dock bounce is stop-only, decided by the daemon (#55; agent-lifecy
     });
 });
 
+describe('the activation report a status socket opens with (§AGNT-056, #348)', () => {
+    let controller: ReturnType<typeof createStatusController> | null = null;
+    let bounce: ReturnType<typeof vi.spyOn>;
+
+    beforeEach(() => {
+        setLogStreams({ out: { write: () => true }, err: { write: () => true } });
+        electronMock.trays.length = 0;
+        bounce = vi.spyOn(electronMock.dock, 'bounce');
+    });
+
+    afterEach(() => {
+        controller?.stop();
+        controller = null;
+        bounce.mockRestore();
+        setLogStreams({ out: process.stdout, err: process.stderr });
+    });
+
+    /** Connect a controller over a fresh socket and return the activation reports it sent. */
+    function connect(host: ReturnType<typeof createHost> & { isWindowActive?: () => boolean }): FakeSocket {
+        const socket = createFakeSocket();
+        controller = createStatusController({
+            location: LOCATION,
+            host,
+            windowID: 'window-1',
+            socketFactory: () => socket as unknown as WebSocket
+        });
+        controller.start();
+        socket.emit('open');
+        socket.emit('message', WELCOME, false);
+        return socket;
+    }
+    const reports = (socket: FakeSocket): unknown[] =>
+        socket.sent.map((raw) => JSON.parse(raw) as { type?: string }).filter((message) => message.type === 'shell-activation');
+
+    it('states the real window focus when the host has nothing else to say', () => {
+        const host = createHost();
+        expect(reports(connect(host))).toEqual([{ type: 'shell-activation', active: false, windowID: 'window-1' }]);
+        controller?.stop();
+        host.isWindowFocused.mockReturnValue(true);
+        expect(reports(connect(host))).toEqual([{ type: 'shell-activation', active: true, windowID: 'window-1' }]);
+    });
+
+    it('states what isWindowActive says, and still gates the bounce on the real focus', () => {
+        // A keyless lane window: never focused, reported active, so a page that reconnects after a
+        // daemon restart is not told its window went to the background.
+        const host = { ...createHost(), isWindowActive: vi.fn(() => true) };
+        const socket = connect(host);
+        expect(reports(socket)).toEqual([{ type: 'shell-activation', active: true, windowID: 'window-1' }]);
+        socket.emit('message', JSON.stringify({ type: 'attention-request', paneID: 'p1', workspaceID: 'w1' }), false);
+        expect(bounce).toHaveBeenCalledTimes(1);
+    });
+});
+
 describe('the tray gesture — no handler creeps back in anywhere else (N16 sweep)', () => {
     it('no file in the shell registers a Tray event handler', () => {
         const src = path.dirname(fileURLToPath(import.meta.url));

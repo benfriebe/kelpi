@@ -130,7 +130,7 @@ const retryID = `pane-chrome-presenter-retry-${slot}`;
 /** The declared band this scenario measures a live shell against. The host's ceiling is 96. */
 const TALL = 96;
 
-export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
+export default async function ({ page, cli, sandbox, rec, d, sleep, daemon, shell }) {
     if (!fs.existsSync(path.join(labPath, 'kelpi.plugin.json'))) {
         throw new Error(`pane-lab is not in this checkout (${labPath}); the example has to land before this scenario can run`);
     }
@@ -1188,22 +1188,34 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
         if (daemon === null) rec.note('LIMIT: no sandbox daemon handle (--attach), so the disconnect check was skipped');
         else {
             const pidBefore = daemon.pid, generationBefore = daemon.generation;
+            const shellMark = shell?.lines.length ?? 0;
             await daemon.restart();
             const offline = await d.settleDom(page, `!document.querySelector('[data-testid="pane-chrome-presenter"]')`, { ceilingMs: 20_000 });
             // `data-connection` is on the app root rather than on `documentElement`, and it is the
             // only authority on the CLIENT having reconnected (`ui-audit/lib/stack.mjs` says so).
             const reconnected = await d.settleDom(page, `document.querySelector('[data-connection]')?.getAttribute('data-connection') === 'connected'`, { ceilingMs: 30_000 });
             const back = reconnected && await attached(30_000) && await ready(20_000);
+            /*
+             * #348: the shell's reconnect report. A lane window is keyless, so it is never focused,
+             * and the shell reports it ACTIVE rather than by that focus (`audit-window.ts` ▸
+             * `auditWindowReportsActive`). Reported inactive, it reached the page only when the page
+             * won the reconnect race, and then #340's activation click ate the Plugins tab press
+             * below as the click that "brought the window forward". Read off the shell's own log
+             * after the restart's `status ws connected`, so the check holds whoever wins the race.
+             */
+            const reportedActive = await d.shellReportedActiveSince(shell, shellMark);
+            if (reportedActive === null) rec.note('LIMIT: not a keyless lane window (or no shell handle under --attach), so the reconnect activation report follows the real focus and is not asserted');
             // Opened first: the row is a Settings control, and reading one with the dialog closed
-            // answers `''` whatever the truth is.
-            await openPlugins();
+            // answers `''` whatever the truth is. Its result is part of the check, so a tab that
+            // never opened fails as that and `latched` cannot pass on a row that is not there.
+            const pluginsOpened = await openPlugins();
             const latched = (await statusRow()).includes('Failed');
             const stillSelected = await slotValue();
             await closeSettings();
             rec.check('a daemon restart hands every band back while disconnected, and the presenter re-attaches with nothing latched',
-                offline && reconnected && back && !latched && stillSelected === labView
+                offline && reconnected && back && reportedActive !== false && pluginsOpened && !latched && stillSelected === labView
                 && daemon.pid !== pidBefore && daemon.generation === generationBefore + 1,
-                `pid ${String(pidBefore)} -> ${String(daemon.pid)} · offline ${String(offline)} · back ${String(back)} · latched ${String(latched)} · selection ${String(stillSelected)} · ${await labState()}`);
+                `pid ${String(pidBefore)} -> ${String(daemon.pid)} · offline ${String(offline)} · back ${String(back)} · reported active ${String(reportedActive)} · Plugins opened ${String(pluginsOpened)} · latched ${String(latched)} · selection ${String(stillSelected)} · ${await labState()}`);
             rec.note(`the daemon was replaced (stop ${String(daemon.lastStopMs)} ms, start to healthz ${String(daemon.lastStartMs)} ms)`);
         }
 

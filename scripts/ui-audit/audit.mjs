@@ -11108,8 +11108,9 @@ function buildFlows(ctx) {
                 recorder.check('the typed session-end cleared the id', (entry?.agent_session_id ?? null) === null, String(entry?.agent_session_id));
 
                 // Leave the world idle: focusing the pane runs §AGNT-055's 600 ms dwell — but
-                // §AGNT-056 suspends it while the app is inactive, and a scoped audit window
-                // usually is. So do what `agent-lifecycle` does: report activation over the
+                // §AGNT-056 suspends it while the app is inactive, and an earlier step may have
+                // reported it inactive (the audit window itself reports active since #348). So do
+                // what `agent-lifecycle` does: report activation over the
                 // real wire (a second WS client speaking the shell's `shell-activation`), then
                 // focus the pane and let the dwell clear it.
                 const tokenFile = fs.readdirSync(sandbox.runDir).find((entry) => entry.endsWith('.token'));

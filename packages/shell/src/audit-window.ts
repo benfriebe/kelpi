@@ -339,6 +339,27 @@ export function auditWindowFocusable(policy: AuditWindowPolicy): boolean {
 }
 
 /**
+ * Whether the window's activation report (§AGNT-056 `shell-activation`) says "active" whatever
+ * the OS says. `true` for every lane placement, `false` for every user launch.
+ *
+ * A keyless window is never focused, so "is the OS window key" is always `false` in a lane and says
+ * nothing about anyone looking at it. Reported as it is, it was `inactive` on every status socket
+ * connect, and whether the page heard it was a race: at boot the shell connects before the page
+ * exists, so the report is lost and `ui.appActive` keeps its default (`true`), but after a daemon
+ * restart the shell and the page reconnect on the same backoff, and when the page won it heard
+ * "inactive". #340's activation click (`client/src/app/activation-click.ts`) then consumed the
+ * scenario's next press as the click that brought the window forward (#348, #373). A lane stands in
+ * for the active window instead, the same way its page focus is emulated as focused (see
+ * `auditWindowFocusable` above), so every scenario runs against the window it was written for.
+ *
+ * Only the report changes. The bounce gate keeps reading the real focus, which is what
+ * `dock-bounce-stop-only` and `notification-shown-and-opened` measure.
+ */
+export function auditWindowReportsActive(policy: AuditWindowPolicy): boolean {
+    return !auditWindowFocusable(policy);
+}
+
+/**
  * How the window is made invisible, for the placements that do it that way.
  *
  * `opacity: 0` rather than `hide()`/`minimize()`: this app acts on both of those events

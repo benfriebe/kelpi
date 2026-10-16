@@ -2271,6 +2271,14 @@ export function Sidebar(props: SidebarProps): ReactElement {
     const footerMenuButtonRef = useRef<HTMLButtonElement | null>(null);
     const rowElements = useRef(new Map<string, HTMLElement>());
     const dragRef = useRef<DragState | null>(null);
+    /**
+     * §5.5's auto-scroll interval, held here rather than in the drag effect's closure so it
+     * outlives the effect's RE-RUNS (#415): `props` is in that effect's dependency list, so every
+     * parent render re-runs it mid-gesture. Each run points `autoScrollTickRef` at a tick built
+     * from its own fresh closures, so the one interval always steps with the current props.
+     */
+    const autoScrollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+    const autoScrollTickRef = useRef<() => void>(() => undefined);
     /** A finished drag is followed by a `click` on the row; that click must not activate it. */
     const suppressClickRef = useRef(false);
     /** Removes the one-shot window listener that retires the flag above, if one is armed. */
@@ -3210,12 +3218,20 @@ export function Sidebar(props: SidebarProps): ReactElement {
          * §5.5 auto-scroll. The OS emits no mousemove while the pointer is stationary, so each
          * tick re-derives the content-space cursor from the STORED client position and re-runs
          * the whole resolution — otherwise the list would scroll under a frozen drop target.
+         *
+         * The interval lives in `autoScrollTimerRef`, not in this closure, and steps through
+         * `autoScrollTickRef`, which this run repoints below: a re-run of this effect must
+         * neither stop the timer (a still pointer sends no move to restart it, #415) nor leave
+         * it ticking a stale `resolve`. `data-drag-autoscroll` publishes whether it runs, for
+         * the same reason as `diagnose`'s attributes.
          */
-        let autoScrollTimer: ReturnType<typeof setInterval> | null = null;
         const stopAutoScroll = (): void => {
-            if (autoScrollTimer === null) return;
-            clearInterval(autoScrollTimer);
-            autoScrollTimer = null;
+            const timer = autoScrollTimerRef.current;
+            if (timer === null) return;
+            clearInterval(timer);
+            autoScrollTimerRef.current = null;
+            const list = listRef.current;
+            if (list !== null) list.dataset['dragAutoscroll'] = 'false';
         };
         /**
          * The one "would this pointer auto-scroll the list?" test: the timer steps by it and
@@ -3240,26 +3256,31 @@ export function Sidebar(props: SidebarProps): ReactElement {
                 stopAutoScroll();
                 return;
             }
-            if (autoScrollTimer !== null) return;
-            autoScrollTimer = setInterval(() => {
-                const live = dragRef.current;
-                const list = listRef.current;
-                if (live === null || list === null) {
-                    stopAutoScroll();
-                    return;
-                }
-                const step = autoScrollDelta(live.clientY);
-                const before = list.scrollTop;
-                if (step !== 0) list.scrollTop = before + step;
-                if (list.scrollTop === before) {
-                    // Stopped (at an end, or the band no longer applies): resolve once more so a
-                    // still pointer's preview matches what the still list offers. The last moving
-                    // tick already resolved after its write, so this is a backstop, not the thing
-                    // that restores the thirds.
-                    stopAutoScroll();
-                }
-                resolve(live);
+            if (autoScrollTimerRef.current !== null) return;
+            autoScrollTimerRef.current = setInterval(() => {
+                autoScrollTickRef.current();
             }, autoScrollIntervalMs);
+            const list = listRef.current;
+            if (list !== null) list.dataset['dragAutoscroll'] = 'true';
+        };
+        autoScrollTickRef.current = (): void => {
+            const live = dragRef.current;
+            const list = listRef.current;
+            if (live === null || list === null) {
+                stopAutoScroll();
+                return;
+            }
+            const step = autoScrollDelta(live.clientY);
+            const before = list.scrollTop;
+            if (step !== 0) list.scrollTop = before + step;
+            if (list.scrollTop === before) {
+                // Stopped (at an end, or the band no longer applies): resolve once more so a
+                // still pointer's preview matches what the still list offers. The last moving
+                // tick already resolved after its write, so this is a backstop, not the thing
+                // that restores the thirds.
+                stopAutoScroll();
+            }
+            resolve(live);
         };
 
         const onMove = (event: MouseEvent): void => {
@@ -3402,7 +3423,6 @@ export function Sidebar(props: SidebarProps): ReactElement {
         return () => {
             target.removeEventListener('mousemove', onMove);
             target.removeEventListener('mouseup', onUp);
-            stopAutoScroll();
             /*
              * A RE-RUN is not the end of the gesture, and this cleanup used to treat it as one.
              *
@@ -3418,9 +3438,16 @@ export function Sidebar(props: SidebarProps): ReactElement {
              * to tear those two down only when there IS no gesture. `onUp` ends the ghost itself,
              * and the unmount case is handled by its own effect below — the one place where
              * "this component is going away" is actually true.
+             *
+             * §5.5's auto-scroll timer is the third thing a re-run used to end (#415): the list
+             * stopped under a still pointer, which sends no mousemove to restart it, once a
+             * second. It lives in `autoScrollTimerRef` now and the next run repoints its tick, so
+             * it too is stopped only with no gesture. `onUp` stops it, a tick that finds no drag
+             * stops itself, and the unmount effect below stops it as well.
              */
             const drag = dragRef.current;
             if (drag !== null) return;
+            stopAutoScroll();
             endDragGhost();
         };
     }, [
@@ -3453,6 +3480,11 @@ export function Sidebar(props: SidebarProps): ReactElement {
     useEffect(
         () => () => {
             endDragGhost();
+            // §5.5 / #415: the auto-scroll interval outlives the drag effect's re-runs, so the
+            // unmount is where a gesture that never saw its mouseup lets go of it.
+            const timer = autoScrollTimerRef.current;
+            if (timer !== null) clearInterval(timer);
+            autoScrollTimerRef.current = null;
         },
         [endDragGhost]
     );

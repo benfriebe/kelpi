@@ -942,11 +942,12 @@ describe('drag auto-scroll (§5.5)', () => {
         list: HTMLElement;
         onMoveWorkspace: ReturnType<typeof vi.fn>;
         onNestWorkspaces: ReturnType<typeof vi.fn>;
+        rerenderWithFreshProps: () => void;
     } {
         vi.useFakeTimers();
         const onMoveWorkspace = vi.fn();
         const onNestWorkspaces = vi.fn();
-        render(
+        const element = (): ReactElement => (
             <Sidebar
                 {...noopProps()}
                 activeWorkspaceID={ids[0] as string}
@@ -955,6 +956,7 @@ describe('drag auto-scroll (§5.5)', () => {
                 onNestWorkspaces={onNestWorkspaces}
             />
         );
+        const { rerender } = render(element());
         const list = screen.getByTestId('sidebar').querySelector<HTMLElement>('[role="listbox"]');
         if (list === null) throw new Error('no list');
         const viewport = 100;
@@ -972,7 +974,11 @@ describe('drag auto-scroll (§5.5)', () => {
                 scrollTop = Math.min(Math.max(0, value), Math.max(0, contentHeight - viewport));
             }
         });
-        return { list, onMoveWorkspace, onNestWorkspaces };
+        // A parent render, as the 1 s agent-status tick does: every prop object is new.
+        const rerenderWithFreshProps = (): void => {
+            rerender(element());
+        };
+        return { list, onMoveWorkspace, onNestWorkspaces, rerenderWithFreshProps };
     }
 
     function tick(): void {
@@ -1025,6 +1031,54 @@ describe('drag auto-scroll (§5.5)', () => {
         fireEvent.mouseUp(window);
         expect(onMoveWorkspace).not.toHaveBeenCalled();
         expect(onNestWorkspaces).toHaveBeenCalledWith({ workspaceIDs: [ids[0]], parentID: ids[8], index: 0 });
+    });
+
+    it('keeps scrolling under a still pointer across a parent re-render (#415)', () => {
+        const { list, rerenderWithFreshProps } = mount(204);
+        fireEvent.mouseDown(screen.getAllByTestId('workspace-row')[0] as HTMLElement, { clientY: 10 });
+        fireEvent.mouseMove(window, { clientY: 72 });
+        for (let index = 0; index < 5; index += 1) tick();
+        expect(list.scrollTop).toBe(15);
+        rerenderWithFreshProps();
+        for (let index = 0; index < 5; index += 1) tick();
+        expect(list.scrollTop).toBe(30);
+        rerenderWithFreshProps();
+        rerenderWithFreshProps();
+        for (let index = 0; index < 5; index += 1) tick();
+        expect(list.scrollTop).toBe(45);
+        fireEvent.mouseUp(window);
+        // The release still stops it, re-render or not.
+        for (let index = 0; index < 5; index += 1) tick();
+        expect(list.scrollTop).toBe(45);
+    });
+
+    it('a press under the drag threshold never scrolls, parent re-render or not (#415)', () => {
+        const { list, rerenderWithFreshProps } = mount(204);
+        // Pressed IN the bottom band and moved 3px: under the 5px threshold, so no drag yet.
+        fireEvent.mouseDown(screen.getAllByTestId('workspace-row')[3] as HTMLElement, { clientY: 70 });
+        fireEvent.mouseMove(window, { clientY: 73 });
+        rerenderWithFreshProps();
+        for (let index = 0; index < 5; index += 1) tick();
+        expect(list.scrollTop).toBe(0);
+        expect(list.dataset['dragAutoscroll']).not.toBe('true');
+        fireEvent.mouseUp(window);
+    });
+
+    it('an unmount mid-sweep leaves no auto-scroll interval running (#415)', () => {
+        const { list, rerenderWithFreshProps } = mount(204);
+        const idle = vi.getTimerCount();
+        fireEvent.mouseDown(screen.getAllByTestId('workspace-row')[0] as HTMLElement, { clientY: 10 });
+        fireEvent.mouseMove(window, { clientY: 72 });
+        rerenderWithFreshProps();
+        tick();
+        expect(list.dataset['dragAutoscroll']).toBe('true');
+        expect(vi.getTimerCount()).toBeGreaterThan(idle);
+        cleanup();
+        // Whatever else the unmount leaves (springs, retire timers) runs out; the interval would not.
+        act(() => {
+            vi.advanceTimersByTime(5000);
+        });
+        expect(vi.getTimerCount()).toBe(0);
     });
 
     it('nests as before outside the band, or in a band the list cannot scroll toward', () => {

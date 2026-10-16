@@ -1244,8 +1244,13 @@ action → usage error, exit 1.
 The CLI's request/response framing: send one JSON line, read until EOF with a
 5-second receive timeout (`KELPI_REPLY_TIMEOUT` env overrides; `workspace create
 --worktree` uses a 120s override because `git worktree add` + `git fetch` can be
-slow). Transport failure / empty reply / invalid JSON / `ok:false` → stderr message +
-exit 1.
+slow). `graft start` and `graft stop` use the same 120s as a floor (a longer
+`KELPI_REPLY_TIMEOUT` still wins; `packages/cli/src/commands/graft.ts`): a start replies
+after the first sync pass, and a stop only after the in-flight pass, the parent restore and
+the stash pop (§4.4). On a big repo that is well past 5s, and the default would print "no
+response" for a start or stop that actually succeeded (#271). This matches the web client's
+budget for the same verbs (§7.7). Transport failure / empty reply / invalid JSON / `ok:false`
+→ stderr message + exit 1.
 
 ### 7.7 WS-only graft verbs and broadcasts
 

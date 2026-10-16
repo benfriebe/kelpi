@@ -10,12 +10,15 @@
  */
 
 import { popSwitch, parseFlag } from '../args.js';
-import { rawPaneID } from '../env.js';
+import { rawPaneID, replyTimeoutSeconds } from '../env.js';
 import { errLine, exit, printLine, writeErr } from '../io.js';
 import { asString, stableStringify, type JsonObject } from '../json.js';
 import { decodeReply } from '../reply.js';
 import { replyArray } from '../table.js';
 import { graftUsage } from '../usage.js';
+
+/** Minimum reply budget for `graft start` / `graft stop`, in seconds. */
+export const GRAFT_REPLY_TIMEOUT_SECONDS = 120;
 
 export async function handleGraft(args: string[]): Promise<void> {
     const action = args.shift();
@@ -56,7 +59,14 @@ async function handleGraftCommand(command: string, args: string[]): Promise<void
         if (paneID !== undefined) payload['pane_id'] = paneID;
     }
 
-    const reply = await decodeReply(payload, `kelpi ${command}`);
+    // Both verbs run git in the parent repo before replying: a start makes the first sync pass, a
+    // stop waits for the pass in flight and then restores the parent (graft-git.md §4.4). On a big
+    // repo that is well past the 5 s default, and a slow-but-succeeding start or stop must not read
+    // as "no response" (#271). Same budget as `workspace create --worktree` and the web client, as
+    // a floor: a longer KELPI_REPLY_TIMEOUT still wins.
+    const reply = await decodeReply(payload, `kelpi ${command}`, {
+        timeoutSeconds: Math.max(GRAFT_REPLY_TIMEOUT_SECONDS, replyTimeoutSeconds())
+    });
 
     if (command === 'graft-start') {
         const started = replyArray(reply, 'started');

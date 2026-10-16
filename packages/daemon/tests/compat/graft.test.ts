@@ -26,6 +26,7 @@
  */
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -34,13 +35,19 @@ import { BREADCRUMB_FILENAME } from '../../src/graft/index.js';
 import {
     currentBranch,
     git,
+    GIT,
     gitAvailable,
     initRepo,
     porcelain,
     readIfPresent,
     waitFor
 } from './gitfix.js';
-import { startCompatDaemon, swiftCLIAvailable, type CompatDaemon } from './harness.js';
+import {
+    bundleKelpiCLI,
+    startCompatDaemon,
+    swiftCLIAvailable,
+    type CompatDaemon
+} from './harness.js';
 
 const RUNNABLE = swiftCLIAvailable() && gitAvailable();
 
@@ -506,5 +513,96 @@ describe.skipIf(!RUNNABLE)('compat: graft across several associations', () => {
         expect(currentBranch(parent)).toBe('main');
         expect(fs.existsSync(path.join(parent, '.git', BREADCRUMB_FILENAME))).toBe(false);
         expect(git(parent, 'stash', 'list').trim()).toBe('');
+    }, 180_000);
+});
+
+/**
+ * #271: `graft stop` issued while the session is `syncing`. This one runs OUR bundled CLI, because
+ * the question is whether this CLI and this daemon agree on a slow stop, and slows the daemon's git
+ * on purpose: a `KELPI_GIT` wrapper parks the parent's `read-tree --reset` for as long as a flag
+ * file exists. The test lifts the flag well past the CLI's old 5 s default reply wait, so the stop's
+ * reply lands late for certain, which is what a big repo does.
+ */
+describe.skipIf(!gitAvailable())('compat: graft stop while syncing (#271)', () => {
+    /** Past the CLI's old 5 s default, with room for the CLI spawns either side of it. */
+    const RELEASE_AFTER_MS = 8_000;
+    let kelpi: CompatDaemon | undefined;
+    let bundleDir: string | undefined;
+
+    afterEach(async () => {
+        await kelpi?.stop();
+        kelpi = undefined;
+        if (bundleDir !== undefined) fs.rmSync(bundleDir, { recursive: true, force: true });
+        bundleDir = undefined;
+    }, 60_000);
+
+    it('stops the session, restores the parent and frees the root for a new start', async () => {
+        bundleDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-graft-cli-'));
+        const cli = await bundleKelpiCLI(bundleDir);
+        const flag = path.join(bundleDir, 'slow');
+        const wrapper = path.join(bundleDir, 'slow-git');
+        fs.writeFileSync(
+            wrapper,
+            `#!/bin/sh\nif [ "$1" = read-tree ] && [ "$2" = --reset ]; then while [ -e '${flag}' ]; do sleep 0.1; done; fi\nexec '${GIT}' "$@"\n`,
+            { mode: 0o755 }
+        );
+        // The daemon resolves its git once, when it is created; restore the env right after.
+        const previous = process.env['KELPI_GIT'];
+        process.env['KELPI_GIT'] = wrapper;
+        try {
+            kelpi = await startCompatDaemon({ cli });
+        } finally {
+            if (previous === undefined) delete process.env['KELPI_GIT'];
+            else process.env['KELPI_GIT'] = previous;
+        }
+        const daemon = kelpi;
+        const parent = initRepo(path.join(daemon.root, 'repo'), { 'keep.txt': 'original\n' });
+        const created = await createWorktreeWorkspace(daemon, 'feature', parent);
+        const worktree = created.worktree_path as string;
+        const panes = await daemon.json<{ id: string }[]>(['pane', 'list', '--workspace', 'feature', '--json']);
+        const paneID = panes[0]?.id as string;
+
+        fs.writeFileSync(path.join(parent, 'keep.txt'), 'parent work in progress\n');
+        const started = await daemon.run(['graft', 'start'], { paneID, timeoutMs: 60_000 });
+        expect(started.code, started.stderr).toBe(0);
+        const id = (await graftSessions(daemon))[0]?.association_id as string;
+
+        // A worktree edit starts a pass that parks in the parent's read-tree.
+        fs.writeFileSync(flag, '');
+        fs.writeFileSync(path.join(worktree, 'late.txt'), 'from the worktree\n');
+        const syncing = await waitFor(
+            async () => (await graftSessions(daemon))[0]?.status === 'syncing',
+            30_000,
+            50
+        );
+        expect(syncing, 'the session never reported syncing').toBe(true);
+
+        const sent = Date.now();
+        const stopping = daemon.run(['graft', 'stop'], { paneID, timeoutMs: 120_000 });
+        const release = setTimeout(() => fs.rmSync(flag, { force: true }), RELEASE_AFTER_MS);
+        let stopped: Awaited<typeof stopping>;
+        try {
+            stopped = await stopping;
+        } finally {
+            clearTimeout(release);
+            fs.rmSync(flag, { force: true });
+        }
+        // The stop waited for the parked pass, so its reply came after the old 5 s budget.
+        expect(Date.now() - sent).toBeGreaterThan(RELEASE_AFTER_MS - 500);
+        expect(stopped.code, stopped.stderr).toBe(0);
+        expect(stopped.stdout.trim()).toBe(`stopped ${id}`);
+
+        expect(await graftSessions(daemon)).toEqual([]);
+        expect(readIfPresent(path.join(parent, 'late.txt'))).toBe(null);
+        expect(readIfPresent(path.join(parent, 'keep.txt'))).toBe('parent work in progress\n');
+        expect(fs.existsSync(path.join(parent, '.git', BREADCRUMB_FILENAME))).toBe(false);
+        expect(git(parent, 'stash', 'list').trim()).toBe('');
+
+        // The report's next step failed with `another graft is already active`.
+        const again = await daemon.run(['graft', 'start'], { paneID, timeoutMs: 60_000 });
+        expect(again.code, again.stderr).toBe(0);
+        expect(await graftSessions(daemon)).toHaveLength(1);
+        const unwound = await daemon.run(['graft', 'stop'], { paneID, timeoutMs: 60_000 });
+        expect(unwound.code, unwound.stderr).toBe(0);
     }, 180_000);
 });

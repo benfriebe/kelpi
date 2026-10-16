@@ -1715,6 +1715,37 @@ describe('graft', () => {
         expect(await lastRequest()).toEqual({ command: 'graft-stop', pane_id: PANE });
     });
 
+    it('waits past the default reply timeout for a slow start or stop (#271)', async () => {
+        // The daemon replies only once git in the parent is done: a start makes the first sync
+        // pass, a stop waits for the pass in flight and then restores. A reply that lands after
+        // KELPI_REPLY_TIMEOUT must still count; `status` only reads the engine's map and keeps
+        // the default budget.
+        server.respond((request) => ({
+            lines: [
+                request['command'] === 'graft-start'
+                    ? { ok: true, started: [{ association_id: 'assoc-1', branch: 'feature', worktree_path: '/tmp/wt' }] }
+                    : request['command'] === 'graft-stop'
+                      ? { ok: true, stopped: ['assoc-1'] }
+                      : { ok: true, sessions: [] }
+            ],
+            delayMs: 2500
+        }));
+        const env = { KELPI_REPLY_TIMEOUT: '1' };
+        const [start, stop, status] = await Promise.all([
+            runCLI(['graft', 'start'], { port: server.port, paneID: PANE, env }),
+            runCLI(['graft', 'stop'], { port: server.port, paneID: PANE, env }),
+            runCLI(['graft', 'status'], { port: server.port, env })
+        ]);
+        expect(start.code).toBe(0);
+        expect(start.stderr).toBe('');
+        expect(start.stdout).toBe('started feature (assoc-1) at /tmp/wt\n');
+        expect(stop.code).toBe(0);
+        expect(stop.stderr).toBe('');
+        expect(stop.stdout).toBe('stopped assoc-1\n');
+        expect(status.code).toBe(1);
+        expect(status.stderr).toContain('kelpi graft status: no response from Kelpi');
+    }, 30_000);
+
     it('renders an empty status two ways', async () => {
         server.respond(() => ({ lines: [{ ok: true, sessions: [] }] }));
         const human = await runCLI(['graft', 'status'], { port: server.port });

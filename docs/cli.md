@@ -204,6 +204,10 @@ messages.
 - Per-command overrides (passed as `readTimeoutOverride`):
   - `doctor`'s ping check: 2 seconds.
   - `workspace create --worktree ...`: 120 seconds (worktree add + optional `git fetch`).
+  - `graft start` / `graft stop`: at least 120 seconds, or `KELPI_REPLY_TIMEOUT` when that is
+    longer (a start makes the first sync pass; a stop waits for the in-flight pass, then
+    restores the parent and pops the stash). A slow start or stop that succeeds must not
+    read as "no response" (#271). `graft status` keeps the default.
   - `web wait`: `max(ceil(--timeout seconds) + 5, defaultTimeout)`.
   - `web exec`: `max(ceil(--timeout seconds) + 5, defaultTimeout)` with `--timeout`
     defaulting to 30.
@@ -1779,7 +1783,8 @@ kelpi graft stop  [--workspace <name-or-uuid>] [--repo <name-or-path>]
 - Payload: `{"command":"graft-start"|"graft-stop", workspace?, repo?}`. When **neither**
   filter is given and `KELPI_PANE_ID` is set, `pane_id` is attached (default scope = the
   caller's workspace).
-- Request/response (`decodeReply`, label `kelpi graft-start` / `kelpi graft-stop`).
+- Request/response (`decodeReply`, label `kelpi graft-start` / `kelpi graft-stop`), with a
+  read timeout of at least 120 seconds (§5.3): both run git in the parent repo before replying.
 - `start` rendering: for each entry of reply `started: [{association_id, branch, worktree_path}]`
   print `started <branch> (<assoc>) at <path>` (each field falls back `-`); empty =>
   `No associations started.`. A reply `partial_error: string` prints
@@ -2546,10 +2551,11 @@ state keep working; each explains why the code does something that would otherwi
     the `…` short-uuid form, `-` placeholders, the `●` active marker, and full pane UUIDs
     in `pane list` (issue #240).
 18. **Timeout envelope**: default 5s (`KELPI_REPLY_TIMEOUT` override), 2s ping, 120s
-    worktree create, `wait`/`exec` padded by +5s over their logical timeouts, and 35s for
-    one-shot plugin/document requests. `plugin dev` installations disable the CLI read
-    timeout so their temporary source remains available until the daemon replies. A daemon
-    reply path that can exceed these must be extended in both places.
+    worktree create, at least 120s for graft start/stop, `wait`/`exec` padded by +5s over
+    their logical timeouts, and 35s for one-shot plugin/document requests. `plugin dev`
+    installations disable the CLI read timeout so their temporary source remains available
+    until the daemon replies. A daemon reply path that can exceed these must be extended in
+    both places.
 19. **`--json` output shapes differ by family** and scripts depend on them: pane mutation
     verbs and sync strip the `ok` key (compact, sorted); `workspace create`/`label`,
     `group reorder`/`sort` include `ok` (compact, sorted); list verbs unwrap the array;

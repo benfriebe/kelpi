@@ -571,6 +571,63 @@ describe.skipIf(!HAS_GIT)('stop semantics', () => {
         expect(fs.existsSync(breadcrumbPath(f.parent))).toBe(false);
         void session;
     }, 60_000);
+
+    it('a stop while the session is syncing ends it: parent restored, root free (#271)', async () => {
+        const f = fixture('stop-syncing');
+        const real = createGitService();
+        const watch = watchControl();
+        // Hold the next pass inside `read-tree` until the test lets it go, so the stop lands
+        // while `graft status` would say `syncing`.
+        const gate: { release: (() => void) | null } = { release: null };
+        let holdNext = false;
+        const gated: GitService = {
+            ...real,
+            readTreeInto: async (repoPath, tree) => {
+                if (holdNext) {
+                    holdNext = false;
+                    await new Promise<void>((resolve) => {
+                        gate.release = resolve;
+                    });
+                }
+                await real.readTreeInto(repoPath, tree);
+            }
+        };
+        const graft = service(gated, watch);
+
+        fs.writeFileSync(path.join(f.parent, 'keep.txt'), 'local edit\n');
+        const session = await graft.start(f.association);
+        holdNext = true;
+        fs.writeFileSync(path.join(f.worktree, 'late.txt'), 'from the worktree\n');
+        watch.fire(f.worktree, 'late.txt');
+        await waitFor(() => gate.release !== null);
+        expect(graft.session(session.id)?.status).toEqual({ kind: 'syncing' });
+
+        let stopped = false;
+        const stopping = graft.stop(session.id).then(() => {
+            stopped = true;
+        });
+        await settle(80);
+        // The stop waits for the pass, so the pass cannot land after the restore.
+        expect(stopped).toBe(false);
+        gate.release?.();
+        await stopping;
+
+        expect(graft.activeSessions()).toEqual([]);
+        expect(graft.claimedRoots()).toEqual([]);
+        expect(fs.existsSync(breadcrumbPath(f.parent))).toBe(false);
+        expect(fs.existsSync(path.join(f.parent, 'late.txt'))).toBe(false);
+        expect(fs.readFileSync(path.join(f.parent, 'keep.txt'), 'utf8')).toBe('local edit\n');
+        expect(git(f.parent, 'stash', 'list').trim()).toBe('');
+        // Nothing comes back to life afterwards, and the same parent can be grafted again (the
+        // report's second start failed with `already active`).
+        fs.writeFileSync(path.join(f.worktree, 'later.txt'), 'x\n');
+        watch.fire(f.worktree, 'later.txt');
+        await settle(80);
+        expect(graft.activeSessions()).toEqual([]);
+        const again = await graft.start(f.association);
+        expect(again.status).toEqual({ kind: 'watching' });
+        await graft.stop(again.id);
+    }, 60_000);
 });
 
 describe.skipIf(!HAS_GIT)('breadcrumbs and orphan recovery', () => {

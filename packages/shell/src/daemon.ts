@@ -215,6 +215,10 @@ export function resolveNodeBinary(lookup: EntryLookup = {}): string | undefined 
  * running (started by the CLI, or by a dev build) is adopted as-is, so it keeps whatever client
  * directory it was started with; one started by an older release is handed off instead
  * (`daemonReplacement`), which is how an update's new client reaches the window.
+ *
+ * A daemon started from a terminal by the app's own CLI (`kelpi daemon start`, as after an import)
+ * gets the same three values from `packagedDaemonEnv` in `packages/cli/src/commands/daemon.ts`
+ * (#360). A change to what is handed over here belongs there too.
  */
 export function daemonSpawnEnv(env: NodeJS.ProcessEnv, lookup: EntryLookup = {}, appVersion?: string): NodeJS.ProcessEnv {
     let result = env;

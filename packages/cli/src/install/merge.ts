@@ -96,6 +96,31 @@ function commandOf(hook: JsonValue): string | null {
     return typeof command === 'string' ? command : null;
 }
 
+/** A hook that reports to the legacy Nex app: a bare `nex`, or a path ending in `/nex`, then `event <verb>`. */
+const NEX_EVENT_BASE = /(^|[\s/'"])nex(\.[cm]?js)?['"]?\s+event\s+[A-Za-z0-9._-]+$/;
+
+/**
+ * The hook commands in a Claude or Codex hook file that report to the legacy Nex app (#360).
+ * `mergeHooks` sweeps them in favour of the `kelpi` form, and from then on Nex records no new
+ * session ids, which `installHooks` says in a note.
+ */
+export function nexEventCommands(settings: JsonObject): string[] {
+    const found: string[] = [];
+    const hooks = settings['hooks'];
+    if (!isObject(hooks)) return found;
+    for (const groups of Object.values(hooks)) {
+        if (!Array.isArray(groups)) continue;
+        for (const group of groups) {
+            if (!isObject(group) || !Array.isArray(group['hooks'])) continue;
+            for (const hook of group['hooks']) {
+                const command = commandOf(hook);
+                if (command !== null && NEX_EVENT_BASE.test(baseCommand(command))) found.push(command);
+            }
+        }
+    }
+    return found;
+}
+
 /**
  * Merge `newHooks` (an event → groups map) into `settings`, in place, and return `settings`.
  *

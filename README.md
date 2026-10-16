@@ -498,36 +498,57 @@ the file costs one badly-wrapped first prompt per pane and nothing else.
 
 The Swift app (Nex) keeps its state in `~/Library/Application Support/Nex/nex.db`; the daemon
 owns a separate database (`~/Library/Application Support/kelpid/kelpi-v2.db`, or `KELPID_DB_PATH`)
-so the two run side by side. `kelpid import` copies the legacy state into Kelpi's, once: the
-database AND `~/.config/nex/config` (never over an existing Kelpi config). Its default source
-is the pre-rename port daemon's `nexd/nex.db` when that exists (the reader handles both
-generations), else the Swift app's.
+so the two run side by side. `kelpi daemon import` (or `kelpid import`) copies the legacy state
+into Kelpi's, once: the database AND `~/.config/nex/config` (never over an existing Kelpi config).
+Its default source is the pre-rename port daemon's `nexd/nex.db` when that exists (the reader
+handles both generations), else the Swift app's.
 
-The daemon must be stopped: it holds the whole state in memory and its next save would overwrite
-whatever the import wrote. That is also the order that gets your sessions back:
+Run it from Terminal.app, not from a Kelpi pane: stopping the daemon ends every Kelpi terminal,
+the one you are typing in included. `kelpi` is on your PATH once Kelpi.app has installed its CLI
+(the app's "Install CLI" item, or `kelpi install-hooks --link`).
 
 ```bash
-kelpid stop
-kelpid import          # or: kelpid import --dry-run   to see the report first
-kelpid start
+kelpi daemon import --dry-run   # what would come across; fine while Kelpi runs
+# quit Nex (Cmd-Q), so the two apps do not both resume the same agent sessions
+kelpi daemon stop
+kelpi daemon import             # --force only if this Kelpi has been used (see below)
+# reopen Kelpi.app, or press Start on the "daemon stopped" page its window shows
+kelpi install-hooks             # hooks now report to Kelpi instead of Nex
 ```
 
-On that `start` the panes come back, and every pane that had an agent session resumes it:
-`claude --resume <id>` or `codex resume <id>`, chosen by the pane's last-known agent. Session ids
-that fail the shell-safety allowlist are skipped, and the report says which.
+The real import needs the daemon stopped: it holds the whole state in memory, and its next save
+would overwrite whatever the import wrote. A dry run while it runs reads the database as last
+saved, so the running daemon may hold changes that make the real run judge it differently.
+`kelpi daemon import` warns when Nex is still running.
+
+Opening Kelpi.app once before importing is fine. That leaves a "Default" workspace holding one
+untouched shell pane, and the import replaces it without `--force`; it is still copied aside
+first, and the report says it replaced it and where the copy is. A Kelpi you have used (any other
+workspace, a second pane, a label, an agent session, a group, a repository) needs `--force`,
+which also copies the old database aside first. The dry run answers the same way.
+
+On the next start the panes come back, and every pane that had an agent session resumes it:
+`claude --resume <id>` or `codex resume <id>`, chosen by the pane's last-known agent. They all
+resume at once, so expect a busy minute after a large import. Session ids that fail the
+shell-safety allowlist are skipped, and the report says which.
+
+`kelpi install-hooks` comes last because it replaces Nex's hooks: from then on Nex records no new
+session ids, and it says so when it replaces them. The `nex` launcher inside Kelpi.app
+(`Contents/Resources/cli/nex`) is the same program as `kelpi`, kept so hooks written before the
+rename keep working.
 
 | flag | meaning |
 |------|---------|
 | `--from <db>` | legacy database (default: the Swift app's path above) |
 | `--to <db>` | daemon database (default: `KELPID_DB_PATH`, else the platform default) |
-| `--force` | replace a target that already holds workspaces; the existing database is copied aside as `<target>.<timestamp>.bak` first |
-| `--dry-run` | print the report and write nothing (not even an empty database) |
-| `--json` | one JSON report on stdout; the two paths still go to stderr |
+| `--force` | replace a target that already holds workspaces; the existing database is copied aside as `<target>.<timestamp>.bak` first. Not needed for a fresh install's untouched "Default" workspace |
+| `--dry-run` | print the report and write nothing (not even an empty database); works while the daemon runs |
+| `--json` | one JSON report on stdout; the two paths still go to stderr. `targetFreshInstall` is true when the target was (or would be) a fresh install replaced without `--force` |
 
 Both paths are printed before anything is opened. The source is opened **read-only** and is never
 written, migrated or deleted, so importing twice (or importing into a scratch `--to`) is safe.
-Without `--force`, a target that already holds workspaces is refused; a running daemon is refused
-regardless of `--force`.
+Without `--force`, a target that already holds workspaces is refused, unless all it holds is that
+fresh install. A running daemon is refused regardless of `--force`; only `--dry-run` goes ahead.
 
 What comes across: workspaces (name, color, icon, labels, profile, layout tree, focused pane),
 groups (order, collapse state, members), the sidebar order, panes of every type (shell, markdown,

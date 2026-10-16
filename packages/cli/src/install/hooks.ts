@@ -30,7 +30,7 @@
 
 import { parseJsonObject, type JsonObject } from '../json.js';
 import type { InstallFs } from './fs.js';
-import { mergeHooks, renderHookFile } from './merge.js';
+import { mergeHooks, nexEventCommands, renderHookFile } from './merge.js';
 import { installSkill, type SkillOutcome } from './skill.js';
 import { CLAUDE_HOOK_WIRINGS, CODEX_HOOK_WIRINGS, canonicalBases, hookPayload } from './spec.js';
 
@@ -39,6 +39,13 @@ export const BACKUP_SUFFIX = '.kelpi-backup';
 
 export const CODEX_TRUST_NOTE =
     'Codex requires one-time hook trust — run /hooks inside codex to trust the kelpi hooks (repeat whenever hooks.json changes). Requires Codex CLI >= 0.142.';
+
+/**
+ * Said when the merge replaced the legacy Nex app's hooks (#360): Nex then records no new agent
+ * session ids, so an import done later brings back sessions that have moved on without it.
+ */
+export const NEX_HOOKS_NOTE =
+    'This replaces the Nex app\'s hooks (`nex event ...`), so Nex records no new agent session ids from here on. If its workspaces are not in Kelpi yet, import them now: `kelpi daemon import` (README, "Importing from the legacy macOS app").';
 
 export type InstallAction = 'created' | 'merged' | 'unchanged' | 'skipped' | 'failed';
 
@@ -52,6 +59,8 @@ export interface TargetOutcome {
     readonly backup?: string;
     /** The bytes that were (or would be) written. */
     readonly preview?: string;
+    /** How many of the file's `nex event ...` hooks the merge replaced (or would). */
+    readonly nexHooksReplaced?: number;
 }
 
 export interface InstallHooksResult {
@@ -116,17 +125,22 @@ function installOne(target: WriteTarget, fsys: InstallFs, dryRun: boolean): Targ
         settings = parsed;
     }
 
-    const contents = renderHookFile(mergeHooks(settings, target.payload, target.bases));
+    const nexBefore = nexEventCommands(settings).length;
+    const merged = mergeHooks(settings, target.payload, target.bases);
+    const nexReplaced = nexBefore - nexEventCommands(merged).length;
+    const contents = renderHookFile(merged);
 
     if (existing === contents) {
         return { agent: target.agent, path: target.file, action: 'unchanged', preview: contents };
     }
+    const replaced = nexReplaced > 0 ? { nexHooksReplaced: nexReplaced } : {};
     if (dryRun) {
         return {
             agent: target.agent,
             path: target.file,
             action: existing === null ? 'created' : 'merged',
-            preview: contents
+            preview: contents,
+            ...replaced
         };
     }
 
@@ -143,7 +157,8 @@ function installOne(target: WriteTarget, fsys: InstallFs, dryRun: boolean): Targ
             path: target.file,
             action: existing === null ? 'created' : 'merged',
             ...(backup === undefined ? {} : { backup }),
-            preview: contents
+            preview: contents,
+            ...replaced
         };
     } catch (error) {
         return {
@@ -217,6 +232,8 @@ export function installHooks(options: InstallHooksOptions, fsys: InstallFs): Ins
             notes.push(CODEX_TRUST_NOTE);
         }
     }
+
+    if ((claude.nexHooksReplaced ?? 0) + (codex.nexHooksReplaced ?? 0) > 0) notes.push(NEX_HOOKS_NOTE);
 
     return {
         ok: claude.action !== 'failed',

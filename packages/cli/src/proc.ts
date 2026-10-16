@@ -29,3 +29,20 @@ export async function runProcess(path: string, args: readonly string[]): Promise
         });
     });
 }
+
+/**
+ * The pids in `ps -axo pid=,comm=` output whose executable path ends with `suffix`: one app's
+ * processes, told apart by the path inside its bundle (`Kelpi.app/Contents/MacOS/Kelpi`).
+ */
+export function pidsOfExecutable(psOutput: string, suffix: string): number[] {
+    const pids: number[] = [];
+    for (const line of psOutput.split('\n')) {
+        const trimmed = line.trim();
+        const separator = trimmed.indexOf(' ');
+        if (separator < 0) continue;
+        const pid = Number.parseInt(trimmed.slice(0, separator), 10);
+        const comm = trimmed.slice(separator + 1).trim();
+        if (Number.isInteger(pid) && comm.endsWith(suffix)) pids.push(pid);
+    }
+    return pids;
+}

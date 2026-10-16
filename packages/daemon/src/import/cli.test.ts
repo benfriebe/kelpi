@@ -12,8 +12,9 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { createDaemon } from '../boot/index.js';
+import { createDaemon, resolveDaemonVersion } from '../boot/index.js';
 import { createPersistence } from '../db/index.js';
+import { probeDaemon, resolveRunPaths } from '../lifecycle/index.js';
 import { helpText, parseKelpidArgs, runKelpid, type CliIO } from '../main.js';
 import {
     legacyGroup,
@@ -172,7 +173,8 @@ describe('kelpid import — with no daemon running', () => {
         expect(captured.text()).toContain('imported 2 workspace(s), 3 pane(s), 1 group(s)');
         expect(captured.text()).toContain('agent session(s) to resume on the next start: 1');
         expect(captured.text()).toContain('pane broken: unparseable pane id');
-        expect(captured.text()).toContain('Next: `kelpid start`');
+        expect(captured.text()).toContain('Next: reopen Kelpi.app, or run `kelpi daemon start` (or `kelpid start`)');
+        expect(captured.text()).not.toContain('Default');
         expect(workspaceNames(paths.target)).toEqual(['Alpha', 'Beta']);
     });
 
@@ -285,13 +287,54 @@ describe('kelpid import — with a daemon running', () => {
         expect(await runKelpid(['import', '--from', paths.source, '--force'], forced)).toBe(1);
         expect(forced.stderr.join('\n')).toContain('--force does not override this');
 
-        // Even a dry run is refused: the answer would be about to become wrong.
+        // A dry run is let through (#360): it writes nothing, and it says the real import needs
+        // the daemon stopped and may judge a database the daemon has since changed differently.
         const dry = io(env);
-        expect(await runKelpid(['import', '--from', paths.source, '--dry-run'], dry)).toBe(1);
+        expect(await runKelpid(['import', '--from', paths.source, '--dry-run'], dry)).toBe(0);
+        expect(dry.stderr.join('\n')).toContain('This dry run reads it as last saved');
+        expect(dry.stdout.join('\n')).toContain('would import 2 workspace(s)');
+        expect(dry.stdout.at(-1)).toBe(
+            'Nothing was written. To import: Stop it first: `kelpi daemon stop` (or `kelpid stop`), then `kelpi daemon import`, then reopen Kelpi.app (or `kelpi daemon start`).'
+        );
+
+        // From one of the daemon's own panes, the stop would end the terminal it is typed in.
+        const route = (await probeDaemon(resolveRunPaths({ env, protocol: resolveDaemonVersion(env).protocol }), { timeoutMs: 2000 })).paneRoute;
+        expect(route).toBeTruthy();
+        const inPane = io({ ...env, KELPI_PANE_ID: 'B5EDDB88-1B61-412D-8D02-E62026261A9E', KELPI_SOCKET: route });
+        expect(await runKelpid(['import', '--from', paths.source], inPane)).toBe(1);
+        expect(inPane.stderr.join('\n')).toContain('Stop it first, from Terminal.app: this terminal is one of its panes');
+        expect(captured.stderr.join('\n')).not.toContain('Terminal.app');
 
         // The daemon's own database is untouched by any of that (a freshly booted daemon has
         // not even written its "Default" workspace yet — the import must not add ours).
         expect(workspaceNames(paths.target)).not.toContain('Alpha');
+    }, 30_000);
+
+    it('replaces the "Default" workspace a first boot saved, once stopped, without --force', async () => {
+        const paths = scratch();
+        const daemon = createDaemon({
+            env: {},
+            home: paths.home,
+            runDir: paths.runDir,
+            controlSocketPath: paths.socketPath,
+            dbPath: paths.target,
+            configPath: paths.configPath,
+            httpPort: 0,
+            settleMs: 0
+        });
+        await daemon.start();
+        await daemon.stop();
+        expect(workspaceNames(paths.target)).toEqual(['Default']);
+
+        const dry = io(envFor(paths));
+        expect(await runKelpid(['import', '--from', paths.source, '--dry-run'], dry)).toBe(0);
+        expect(dry.text()).toContain('would replace: the untouched "Default" workspace of a fresh install');
+
+        const captured = io(envFor(paths));
+        expect(await runKelpid(['import', '--from', paths.source], captured)).toBe(0);
+        expect(captured.text()).toContain('replaced: the untouched "Default" workspace of a fresh install');
+        expect(captured.text()).toContain('backup:');
+        expect(workspaceNames(paths.target)).toEqual(['Alpha', 'Beta']);
     }, 30_000);
 
     it('imports into an unrelated database with a warning', async () => {

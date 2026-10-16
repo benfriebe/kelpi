@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { nodeInstallFs } from './fs.js';
-import { BACKUP_SUFFIX, CODEX_TRUST_NOTE, installHooks } from './hooks.js';
+import { BACKUP_SUFFIX, CODEX_TRUST_NOTE, installHooks, NEX_HOOKS_NOTE } from './hooks.js';
 import { findBundledSkill } from './skill.js';
 
 const fixtures = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'tests', 'fixtures', 'hooks');
@@ -286,5 +286,45 @@ describe('a non-bare command prefix', () => {
         expect(written).toContain(`${absolute} event stop`);
         // Exactly one command per event: the bare variant was replaced, not doubled up.
         expect(written.match(/"command":/g)).toHaveLength(6);
+    });
+});
+
+describe('replacing the Nex app\'s hooks (#360)', () => {
+    const nexStop = '/Applications/Nex.app/Contents/Helpers/nex event stop';
+    const withHook = (command: string): string =>
+        JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: 'command', command }] }] } }, null, 2);
+
+    it('says Nex stops recording sessions and to import first, on a dry run and on the real one', () => {
+        fs.mkdirSync(claudeDir, { recursive: true });
+        fs.writeFileSync(settingsFile(), withHook(nexStop), 'utf8');
+
+        const dry = run({ dryRun: true });
+        expect(dry.claude.nexHooksReplaced).toBe(1);
+        expect(dry.notes).toEqual([NEX_HOOKS_NOTE]);
+        expect(read(settingsFile())).toContain(nexStop);
+
+        const result = run();
+        expect(result.notes).toEqual([NEX_HOOKS_NOTE]);
+        expect(read(settingsFile())).not.toContain('nex event');
+        expect(NEX_HOOKS_NOTE).toContain('kelpi daemon import');
+
+        // Once they are gone there is nothing left to say.
+        expect(run().notes).toEqual([]);
+    });
+
+    it('counts the Codex file too', () => {
+        fs.mkdirSync(codexDir, { recursive: true });
+        fs.writeFileSync(codexFile(), withHook('nex event stop --agent codex'), 'utf8');
+        const result = run();
+        expect(result.codex.nexHooksReplaced).toBe(1);
+        expect(result.notes).toEqual([CODEX_TRUST_NOTE, NEX_HOOKS_NOTE]);
+    });
+
+    it('stays quiet when the file holds only kelpi and user hooks', () => {
+        fs.mkdirSync(claudeDir, { recursive: true });
+        fs.writeFileSync(settingsFile(), withHook('/usr/local/bin/notify.sh'), 'utf8');
+        const result = run();
+        expect(result.claude.nexHooksReplaced).toBeUndefined();
+        expect(result.notes).toEqual([]);
     });
 });

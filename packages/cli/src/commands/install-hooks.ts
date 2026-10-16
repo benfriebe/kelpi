@@ -28,6 +28,7 @@ function outcomeJSON(outcome: TargetOutcome): JsonObject {
     const json: JsonObject = { path: outcome.path, action: outcome.action };
     if (outcome.reason !== undefined) json['reason'] = outcome.reason;
     if (outcome.backup !== undefined) json['backup'] = outcome.backup;
+    if (outcome.nexHooksReplaced !== undefined) json['nex_hooks_replaced'] = outcome.nexHooksReplaced;
     return json;
 }
 

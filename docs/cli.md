@@ -2333,6 +2333,11 @@ Steps, in order:
    `could not write Codex hooks (<reason>). Skipping Codex hooks — the Claude Code hooks above are unaffected.`;
    success adds the trust note, printed as
    `  Note: Codex requires one-time hook trust — run /hooks inside codex to trust the kelpi hooks (repeat whenever hooks.json changes). Requires Codex CLI >= 0.142.`
+   When either file's merge replaced (or, under `--dry-run`, would replace) a legacy
+   `nex event <verb>` hook (#360), a second note follows, since Nex records no new session ids
+   after that:
+   ``  Note: This replaces the Nex app's hooks (`nex event ...`), so Nex records no new agent session ids from here on. If its workspaces are not in Kelpi yet, import them now: `kelpi daemon import` (README, "Importing from the legacy macOS app").``
+   That file's `--json` outcome then carries `nex_hooks_replaced` (the count).
 6. **Output**: progress lines are data and go to stdout
    (`Configuring Claude Code hooks (command: <prefix>)...`, then per file `  created <path>`,
    `  merged into <path>[ (backup: <b>)]`, `  <path> already up to date`,
@@ -2564,8 +2569,9 @@ state keep working; each explains why the code does something that would otherwi
 
 ## Daemon commands (#311)
 
-`kelpi daemon status|start|restart|stop` runs the `kelpid` bundled with this CLI, with the same
-arguments, environment and terminal, and exits with its code (`packages/cli/src/commands/daemon.ts`).
+`kelpi daemon status|start|restart|stop|restart-old-terminals|import` runs the `kelpid` bundled with
+this CLI, with the same arguments, environment and terminal, and exits with its code
+(`packages/cli/src/commands/daemon.ts`).
 The packaged app installs `kelpi` but not `kelpid`, so before this the only way to reach the
 daemon's own verbs from a terminal was `…/Resources/node …/Resources/daemon/kelpid.js <verb>`.
 
@@ -2575,6 +2581,19 @@ daemon's own verbs from a terminal was `…/Resources/node …/Resources/daemon/
   looked: a CLI on another machine (`KELPI_SOCKET=tcp:…`) has no daemon process to signal.
 - **Which daemon:** `kelpid`'s own rule, the run dir from `KELPID_RUN_DIR` or the platform
   default. A dev-instance pane carries its instance's `KELPID_RUN_DIR`, so it targets that instance.
+- **The packaged app's environment (#360):** when this CLI is the one inside an app bundle
+  (`<App>/Contents/Resources/cli/kelpi.js`, judged from its real path, never from `KELPID_ENTRY`),
+  it adds what the app gives a daemon it starts (`daemonSpawnEnv` in `packages/shell/src/daemon.ts`),
+  each only when unset: `KELPID_CLIENT_DIR` (`Resources/client`, if it has an `index.html`),
+  `KELPID_HELPERS_DIR` (`Resources/cli`, if the `kelpi` launcher is there) and `KELPID_VERSION`
+  (from `KELPI_CLI_VERSION`, which the launcher exports as the app's version). A daemon started
+  from a terminal then serves the web client, puts `kelpi` on its panes' PATH, and reports the
+  app's version, so the next app launch adopts it instead of replacing it as an old daemon.
+- **`import`** (#360) runs `kelpid import`, the one-time move from the legacy Nex app (README,
+  "Importing from the legacy macOS app"). First it lists processes (`ps -axo pid=,comm=`) and
+  warns on stderr when one ends in `/Nex.app/Contents/MacOS/Nex`: `Warning: Nex is running (pid
+  <pid>). Quit it before starting Kelpi, or each agent session both apps resume runs twice.` The
+  import still runs.
 - **`restart`** hands running terminals to the next daemon (`docs/terminal-host.md` §10).
 - **`stop`** ends every terminal and agent. At a terminal (stdin and stdout both TTYs) it says
   what will end, points at `restart`, and asks `Stop anyway? [y/N]`, with No as the default:

@@ -42,7 +42,7 @@ import { HOST_BUNDLE_NAME } from './host/runtime.js';
 import { endHost, recordedHostProtocols, resolveHostPaths, verifiedHostPid } from './host/launch.js';
 import { connectTestOwner, type TestOwner } from './lifecycle/test-owner.js';
 import { expandTilde, legacyDataDir, LEGACY_DATABASE_FILENAME, legacyMacAppDatabasePath, resolveDatabasePath } from './db/index.js';
-import { isLegacyImportError, runImport, type ImportReport } from './import/index.js';
+import { inspectTargetDatabase, isLegacyImportError, runImport, type ImportReport } from './import/index.js';
 import {
     currentRequester,
     deleteDevice,
@@ -157,17 +157,23 @@ Import (one-time migration from the macOS app):
            else the Swift app's ~/Library/Application Support/Nex/nex.db)
     --to     daemon database (default: KELPID_DB_PATH, else the platform default)
     --force  replace a target that already holds workspaces; the existing database
-             is copied aside as <target>.<timestamp>.bak first
-    --dry-run  print the report and write nothing
+             is copied aside as <target>.<timestamp>.bak first. A fresh install that
+             holds only its untouched "Default" workspace is replaced (and backed up)
+             without it
+    --dry-run  print the report and write nothing; works while the daemon runs
 
-  The source is opened read-only and is never modified. Stop the daemon first —
+  The source is opened read-only and is never modified. Stop the daemon first:
   the import is refused while one is running against the target, and --force does
-  not override that. Recommended flow:
+  not override that. Run it from Terminal.app, not a Kelpi pane, since stopping
+  the daemon ends its panes. Recommended flow:
 
-    kelpid stop && kelpid import && kelpid start
+    kelpi daemon import --dry-run
+    kelpi daemon stop && kelpi daemon import && kelpi daemon start
+    (or: kelpid stop && kelpid import && kelpid start)
 
   Panes come back on that start, and any pane that had an agent session resumes it
   (\`claude --resume <id>\` / \`codex resume <id>\`) just as a Kelpi.app restart would.
+  They all resume at once.
 
 Who stopped it: \`stop\` and \`restart\` append the requesting pid, tty and pane to
 <run dir>/lifecycle.log before they signal the daemon.
@@ -1390,7 +1396,9 @@ function commandDevices(io: CliIO, action: 'list' | 'revoke' | 'delete', target:
  *     so "which two files?" must be answerable before, not after;
  *   - refusing while a daemon is running against the target. `--force` does NOT override it:
  *     the running daemon holds the state in memory and its next save would overwrite whatever
- *     we imported, so the only correct order is stop → import → start.
+ *     we imported, so the only correct order is stop → import → start. A `--dry-run` is let
+ *     through (#360), with a note that it reads the database as last saved: it writes nothing,
+ *     and "what would this bring over?" is the question to answer before stopping anything.
  *
  * "Running against the target" is judged from THIS environment: the run dir it names is probed,
  * and the answer only matters when the target is also the database that environment resolves.
@@ -1429,6 +1437,18 @@ function importLegacyConfig(
     return { action: 'copied', from, to };
 }
 
+/**
+ * How to get the daemon out of an import's way (#360), as the repair sentence. A caller in one of
+ * the daemon's own panes is sent to Terminal.app: the stop ends the terminal it is typing in.
+ */
+function importSteps(env: NodeJS.ProcessEnv, probe: DaemonProbe): string {
+    const steps =
+        '`kelpi daemon stop` (or `kelpid stop`), then `kelpi daemon import`, then reopen Kelpi.app (or `kelpi daemon start`).';
+    return callerIsPane(env, probe)
+        ? `Stop it first, from Terminal.app: this terminal is one of its panes, and stopping it ends this terminal too. ${steps}`
+        : `Stop it first: ${steps}`;
+}
+
 async function commandImport(io: CliIO, args: ParsedArgs): Promise<number> {
     const env = io.env ?? process.env;
     const home = env['HOME'] ?? homedir();
@@ -1451,15 +1471,20 @@ async function commandImport(io: CliIO, args: ParsedArgs): Promise<number> {
     };
 
     const probe = await probeDaemon(runPathsFor(env), { timeoutMs: 500 });
-    if (probe.alive) {
-        const pid = probe.pid === undefined ? 'unknown' : String(probe.pid);
-        // "Running against the target" = the daemon this environment describes owns that file.
-        if (nodePath.resolve(to) === nodePath.resolve(resolveDatabasePath({ env, home }))) {
+    const pid = probe.pid === undefined ? 'unknown' : String(probe.pid);
+    // "Running against the target" = the daemon this environment describes owns that file.
+    const daemonOwnsTarget = probe.alive && nodePath.resolve(to) === nodePath.resolve(resolveDatabasePath({ env, home }));
+    if (daemonOwnsTarget) {
+        if (args.dryRun !== true) {
             return fail(
                 `kelpid is running (pid ${pid}) and owns ${to}`,
-                'Stop it first — `kelpid stop`, then `kelpid import`, then `kelpid start`. --force does not override this: a running daemon holds the state in memory and would overwrite the import on its next save.'
+                `${importSteps(env, probe)} --force does not override this: a running daemon holds the state in memory and would overwrite the import on its next save. A --dry-run works while it runs.`
             );
         }
+        io.err(
+            `Note: kelpid is running (pid ${pid}) and owns ${to}. This dry run reads it as last saved, and the running daemon may hold newer changes, so the real import can judge it differently. The real import needs the daemon stopped.`
+        );
+    } else if (probe.alive) {
         io.err(`Warning: kelpid is running (pid ${pid}), but ${to} is not the database it opened; importing anyway.`);
     }
 
@@ -1467,6 +1492,14 @@ async function commandImport(io: CliIO, args: ParsedArgs): Promise<number> {
     try {
         report = runImport({ from, to, force: args.force, dryRun: args.dryRun });
     } catch (error) {
+        // The live daemon can hold its database in a state a read-only open cannot read. That
+        // is a read failure, not a verdict, so it must not end in the importer's "pass --force".
+        if (daemonOwnsTarget && isLegacyImportError(error) && error.code === 'target-populated' && !inspectTargetDatabase(to, []).readable) {
+            return fail(
+                `${error.message} while kelpid (pid ${pid}) has it open`,
+                `${importSteps(env, probe)} A dry run after the stop can read it; this failure alone is no reason to pass --force.`
+            );
+        }
         if (isLegacyImportError(error)) return fail(error.message, error.repair);
         return fail(
             error instanceof Error ? error.message : String(error),
@@ -1486,6 +1519,13 @@ async function commandImport(io: CliIO, args: ParsedArgs): Promise<number> {
     );
     if (report.resumable > 0) {
         io.out(`  agent session(s) to resume on the next start: ${String(report.resumable)}`);
+    }
+    if (report.targetFreshInstall) {
+        io.out(
+            report.dryRun
+                ? '  would replace: the untouched "Default" workspace of a fresh install (backed up first, no --force needed)'
+                : '  replaced: the untouched "Default" workspace of a fresh install'
+        );
     }
     if (report.backupPath !== null) io.out(`  backup: ${report.backupPath}`);
     switch (config.action) {
@@ -1513,8 +1553,10 @@ async function commandImport(io: CliIO, args: ParsedArgs): Promise<number> {
     }
     io.out(
         report.dryRun
-            ? 'Nothing was written. Re-run without --dry-run to import.'
-            : 'Next: `kelpid start` — panes are restored and agent sessions resume automatically.'
+            ? daemonOwnsTarget
+                ? `Nothing was written. To import: ${importSteps(env, probe)}`
+                : 'Nothing was written. Re-run without --dry-run to import.'
+            : 'Next: reopen Kelpi.app, or run `kelpi daemon start` (or `kelpid start`). Panes are restored, and every agent session resumes at once.'
     );
     return 0;
 }

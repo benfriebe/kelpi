@@ -8,8 +8,9 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { DEFAULT_WORKSPACE_NAME } from '../boot/index.js';
 import { createPersistence, openSqliteDatabase } from '../db/index.js';
-import { runImport } from './importer.js';
+import { FRESH_INSTALL_WORKSPACE_NAME, runImport } from './importer.js';
 import { isLegacyImportError, type LegacyImportError } from './reader.js';
 import {
     legacyGroup,
@@ -128,6 +129,69 @@ function workspaceNames(target: string): string[] {
     return (snapshot?.workspaces ?? []).map((workspace) => workspace.name);
 }
 
+const FRESH_WS = '88888888-8888-4888-8888-888888888888';
+const FRESH_PANE = '77777777-7777-4777-8777-777777777777';
+
+/** Seed a target the way a first launch of Kelpi.app leaves it: "Default" with one shell pane. */
+function seedFreshInstall(target: string): void {
+    const persistence = createPersistence({ path: target });
+    persistence.saveNow({
+        version: 1,
+        workspaces: [
+            {
+                id: FRESH_WS,
+                name: 'Default',
+                slug: 'default-88888888',
+                color: 'purple',
+                icon: null,
+                profileName: null,
+                muted: false,
+                layout: { kind: 'leaf', paneID: FRESH_PANE },
+                focusedPaneID: FRESH_PANE,
+                createdAt: 1_776_000_000,
+                lastAccessedAt: 1_776_000_000,
+                labels: [],
+                panes: [
+                    {
+                        id: FRESH_PANE,
+                        label: null,
+                        type: 'shell',
+                        workingDirectory: '/Users/dev',
+                        createdAt: 1_776_000_000,
+                        lastActivityAt: 1_776_000_000,
+                        agentSessionID: null,
+                        agentKind: null,
+                        agentProfileName: null,
+                        status: 'idle',
+                        filePath: null,
+                        scratchpadContent: null,
+                        webTabs: null,
+                        webActiveTabID: null,
+                        webIsPrivate: false
+                    }
+                ],
+                repoAssociations: []
+            }
+        ],
+        groups: [],
+        topLevelOrder: [{ kind: 'workspace', id: FRESH_WS }],
+        activeWorkspaceID: FRESH_WS,
+        repos: [],
+        labelPresets: []
+    });
+    persistence.close();
+}
+
+/** Change a seeded target behind the persistence layer's back, the way use would. */
+function alterTarget(target: string, sql: string): void {
+    const db = openSqliteDatabase(target, { wal: false });
+    try {
+        db.exec(sql);
+    } finally {
+        db.close();
+    }
+}
+
 describe('runImport — into a fresh target', () => {
     it('writes the whole snapshot and reports what landed', () => {
         const from = makeSource();
@@ -139,6 +203,7 @@ describe('runImport — into a fresh target', () => {
         expect(report.dryRun).toBe(false);
         expect(report.backupPath).toBeNull();
         expect(report.targetWorkspacesBefore).toBe(0);
+        expect(report.targetFreshInstall).toBe(false);
         expect(report).toMatchObject({
             from,
             to,
@@ -254,6 +319,93 @@ describe('runImport — a populated target', () => {
         expect(two.backupPath).toBe(`${to}.20260819T101112Z-2.bak`);
         expect(workspaceNames(one.backupPath as string)).toEqual(['first']);
         expect(workspaceNames(two.backupPath as string)).toEqual(['second']);
+    });
+});
+
+describe('runImport: a target that is only a fresh install (#360)', () => {
+    it('replaces it without --force, backing it up first', () => {
+        const from = makeSource();
+        const to = path.join(scratchDir(), 'kelpid.db');
+        seedFreshInstall(to);
+
+        const report = runImport({ from, to, now: () => new Date('2026-10-16T10:11:12.345Z') });
+
+        expect(report.written).toBe(true);
+        expect(report.targetFreshInstall).toBe(true);
+        expect(report.targetWorkspacesBefore).toBe(1);
+        expect(report.backupPath).toBe(`${to}.20261016T101112Z.bak`);
+        expect(workspaceNames(to)).toEqual(['Alpha', 'Beta']);
+        expect(workspaceNames(report.backupPath as string)).toEqual(['Default']);
+    });
+
+    it('says so on a dry run, and writes nothing', () => {
+        const from = makeSource();
+        const to = path.join(scratchDir(), 'kelpid.db');
+        seedFreshInstall(to);
+        const before = fs.readFileSync(to);
+
+        const report = runImport({ from, to, dryRun: true });
+
+        expect(report).toMatchObject({ written: false, targetFreshInstall: true, backupPath: null, workspaces: 2 });
+        expect(fs.readFileSync(to).equals(before)).toBe(true);
+        expect(fs.readdirSync(path.dirname(to)).some((entry) => entry.endsWith('.bak'))).toBe(false);
+    });
+
+    it.each([
+        ['the workspace was renamed', `UPDATE "workspace" SET "name" = 'Work'`],
+        ['the workspace was labelled', `UPDATE "workspace" SET "labelsJSON" = '["wip"]'`],
+        [
+            'a second workspace exists',
+            `INSERT INTO "workspace" ("id","name","color","layoutJSON","createdAt","lastAccessedAt") VALUES ('66666666-6666-4666-8666-666666666666','Default','blue','{}',0,0)`
+        ],
+        [
+            'a second pane exists',
+            `INSERT INTO "pane" ("id","workspaceID","type","workingDirectory","createdAt","lastActivityAt") VALUES ('55555555-5555-4555-8555-555555555555','${FRESH_WS}','shell','/tmp',0,0)`
+        ],
+        ['the pane recorded an agent session', `UPDATE "pane" SET "agentSessionID" = 'sess-1', "agentKind" = 'claude'`],
+        ['the pane has a label', `UPDATE "pane" SET "label" = 'server'`],
+        ['the pane is no longer a shell', `UPDATE "pane" SET "type" = 'markdown', "filePath" = '/tmp/a.md'`],
+        [
+            'a group exists',
+            `INSERT INTO "workspace_group" ("id","name","createdAt") VALUES ('44444444-4444-4444-8444-444444444444','g',0)`
+        ],
+        [
+            'a repository is registered',
+            `INSERT INTO "repo" ("id","path","name","lastAccessedAt") VALUES ('33333333-3333-4333-8333-333333333333','/Users/dev/app','app',0)`
+        ]
+    ])('still asks for --force when %s', (_why, sql) => {
+        const from = makeSource();
+        const to = path.join(scratchDir(), 'kelpid.db');
+        seedFreshInstall(to);
+        alterTarget(to, sql);
+        const before = fs.readFileSync(to);
+
+        expect(() => runImport({ from, to })).toThrow(/already holds/);
+        expect(() => runImport({ from, to, dryRun: true })).toThrow(/already holds/);
+        expect(fs.readFileSync(to).equals(before)).toBe(true);
+    });
+
+    it('judges a target from before the session column was renamed by the columns it has', () => {
+        const from = makeSource();
+        const fresh = path.join(scratchDir(), 'kelpid.db');
+        writeLegacyDatabase(fresh, {
+            schema: 'v14',
+            workspaces: [legacyWorkspace({ id: FRESH_WS, name: 'Default' })],
+            panes: [legacyPane({ id: FRESH_PANE, workspaceID: FRESH_WS })]
+        });
+        expect(runImport({ from, to: fresh, dryRun: true }).targetFreshInstall).toBe(true);
+
+        const used = path.join(scratchDir(), 'kelpid.db');
+        writeLegacyDatabase(used, {
+            schema: 'v14',
+            workspaces: [legacyWorkspace({ id: FRESH_WS, name: 'Default' })],
+            panes: [legacyPane({ id: FRESH_PANE, workspaceID: FRESH_WS, claudeSessionID: 'sess-old' })]
+        });
+        expect(() => runImport({ from, to: used, dryRun: true })).toThrow(/already holds 1 workspace/);
+    });
+
+    it('names the workspace a first boot creates', () => {
+        expect(FRESH_INSTALL_WORKSPACE_NAME).toBe(DEFAULT_WORKSPACE_NAME);
     });
 });
 

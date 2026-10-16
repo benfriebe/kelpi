@@ -81,6 +81,7 @@ export const globalUsage = `Usage:
   kelpi daemon restart|status|start                      # restart keeps running terminals and agents
   kelpi daemon stop [--force]                            # ends every terminal and agent; asks first
   kelpi daemon restart-old-terminals [--force]           # moves terminals off an older terminal host
+  kelpi daemon import [--dry-run] [--force]              # brings workspaces over from the Nex app
   kelpi install-hooks [--claude-dir <dir>] [--codex-dir <dir>] [--link] [--dry-run] [--json]
 
 `;
@@ -95,6 +96,11 @@ export const daemonUsage = `Usage:
                                  Restart the terminals still on an older terminal host
                                  (status shows one) on the current host, resuming their
                                  agents, so the old host exits. Asks first at a terminal
+  kelpi daemon import [--dry-run] [--force] [--from <db>] [--to <db>] [--json]
+                                 Bring workspaces, panes and agent sessions over from the
+                                 Nex app. Needs the daemon stopped, so run it from
+                                 Terminal.app (a --dry-run works while it runs). A used
+                                 Kelpi needs --force. kelpid --help has the details
 
 Runs the kelpid bundled with this kelpi, so it works on the daemon's own machine.
 To pick up a new daemon build, or to get a stuck one going again, use restart.

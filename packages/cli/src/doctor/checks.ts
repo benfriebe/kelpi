@@ -25,7 +25,7 @@ import path from 'node:path';
 import { PROTOCOL_VERSION } from '@kelpi/protocol';
 
 import { asInt, asString, parseJsonObject } from '../json.js';
-import type { ProcessResult } from '../proc.js';
+import { pidsOfExecutable, type ProcessResult } from '../proc.js';
 import { describeTransportFailure, takeLastTransportFailure, type Transport } from '../transport.js';
 import type { CliIdentity } from '../version.js';
 import type { DoctorCheck } from './types.js';
@@ -234,17 +234,7 @@ export interface ProcessDeps {
  * DIFFERENT product running side by side; its processes are none of this doctor's business.
  */
 function kelpiAppPids(psOutput: string): number[] {
-    const pids: number[] = [];
-    for (const line of psOutput.split('\n')) {
-        const trimmed = line.trim();
-        const separator = trimmed.indexOf(' ');
-        if (separator < 0) continue;
-        const pid = Number.parseInt(trimmed.slice(0, separator), 10);
-        const comm = trimmed.slice(separator + 1).trim();
-        if (!Number.isInteger(pid)) continue;
-        if (comm.endsWith('Kelpi.app/Contents/MacOS/Kelpi')) pids.push(pid);
-    }
-    return pids;
+    return pidsOfExecutable(psOutput, 'Kelpi.app/Contents/MacOS/Kelpi');
 }
 
 /** `ps` rows whose command line runs `kelpid` or `kelpid.js` (a bundled daemon under node). */

@@ -49,6 +49,7 @@ import { createWebHostClient, type WebHostClient } from './client.js';
 import { chordCommand, chordLabel, setForwardedKeybindLines, startsHeldGesture } from './keys.js';
 import { parkKeyboardDecision, releaseBeforeHide } from './park-keyboard.js';
 import { SCREENSHOT_WRITE_ERROR, createVerbDispatcher } from './dispatch.js';
+import { createDeferredFocus } from './deferred-focus.js';
 import { createEmbedController, type EmbedController } from './embed.js';
 import { GEOMETRY_NOTIFY_VERB, cssToDipScale, parsePaneGeometry, type WindowMetrics } from './geometry.js';
 import type { KeyboardOwner } from './nav-focus.js';
@@ -292,9 +293,9 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
                 for (const tab of registry.pane(paneID)?.tabs ?? []) {
                     if (tab.id !== owner.tabID) continue;
                     // Through the tab's own WEB-043 verb, so the page it goes back to marks the
-                    // handoff as deliberate and its own in-flight load cannot undo it.
-                    tab.view.focusView?.();
-                    return true;
+                    // handoff as deliberate and its own in-flight load cannot undo it. A parked
+                    // view takes it once it is placed (#351), which is still a hand-back.
+                    return tab.view.focusView?.() !== 'none';
                 }
             }
         }
@@ -330,9 +331,17 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
         );
     };
 
+    /*
+     * Issue #351: one slot for the whole host, because the keyboard is one thing. A `focus-view`
+     * that reaches a parked view waits here for the placement that brings the view back (the
+     * attach hook below); `./deferred-focus.ts` has the rule and every way a claim is dropped.
+     */
+    const deferredFocus = createDeferredFocus();
+
     const hooks = createTabHooks({
         keyboardOwner,
         restoreKeyboard,
+        deferredFocus,
         // A keyless test-lane window (`../audit-window.ts`) hands a view the keyboard over CDP, because
         // `webContents.focus()` would activate the app. `./view-focus.ts` ▸ `viewKeyboardRoute`.
         windowMayBeKey: () => {
@@ -524,6 +533,24 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
                 // the hole shows its clipped top-left corner at 1× (run-B L2). `setEmbedded`
                 // sequences itself behind CDP readiness.
                 tab.setEmbedded(true);
+                /*
+                 * Issue #351: a page that asked for the keyboard while it was parked (every modal
+                 * hands back before it unmounts) takes it now, last, with the view in the window
+                 * and visible. Guarded on its own: `./embed.ts` rolls a placement back on ANY
+                 * throw from this hook, and a focus failure must never turn into a blank pane.
+                 */
+                try {
+                    const outcome = deferredFocus.placed(tab.paneID, tab.tabID, {
+                        windowMayBeKey: window.isFocusable(),
+                        windowIsFocused: window.isFocused()
+                    });
+                    if (outcome === 'focus') tab.focusView?.();
+                    else if (outcome !== 'none') {
+                        log(`web pane ${tab.paneID}: dropped the keyboard hand-back it was waiting for (${outcome}, tab ${tab.tabID})`);
+                    }
+                } catch (error) {
+                    onError(error instanceof Error ? error : new Error(String(error)), 'attach-focus');
+                }
             },
             detach: (tab) => {
                 const view = tab.contentsView;
@@ -889,8 +916,13 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
 
     const dispatcher = createVerbDispatcher<HostTab>({
         registry,
-        // The client's ring has left every web pane in this window (issue #33).
-        restoreClientKeyboard: () => restoreKeyboard({ kind: 'client' }),
+        // The client's ring has left every web pane in this window (issue #33). A page still
+        // waiting to take the keyboard once placed (#351) loses that claim here, and only here:
+        // `restoreKeyboard` itself also runs for parks and the ⌃Tab relay, which must not end it.
+        restoreClientKeyboard: () => {
+            deferredFocus.cancel();
+            return restoreKeyboard({ kind: 'client' });
+        },
         storage: sessions.storage,
         writeScreenshot: spillScreenshot,
         /**

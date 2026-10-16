@@ -7538,26 +7538,45 @@ function buildFlows(ctx) {
                     /*
                      * Consequence 2 — the palette's §10.4 handoff comes back to the WEB pane.
                      * Closing the palette hands the keyboard to the focused pane, and for a web
-                     * pane that is the host focusing the page (WEB-043's log line).
+                     * pane that is the host focusing the page.
+                     *
+                     * #351: asserted on the PAGE target's own `document.hasFocus()`. This step
+                     * used to count WEB-043's `focusing the page view` log line, which is logged
+                     * whether or not the page ends up with the keyboard, and passed straight
+                     * through a hand-back that reached a view still parked under the palette.
+                     * The page must also LOSE the keyboard while the palette is up: a lane's page
+                     * focus is not exclusive, so without that the check could pass on nothing.
+                     * Two closes: Escape (the presenter's own delayed hand-back) and ⌘W (the
+                     * immediate one that #351 measured failing). ⌘W with no palette open closes
+                     * the PANE, so the palette is proved open right before it.
                      */
-                    const handoffsBefore = (runtime.shell?.lines ?? []).filter((line) =>
-                        line.includes('focusing the page view')
-                    ).length;
-                    await pressBoundAction(page, 'command_palette');
-                    await page.waitFor(`document.querySelector('[data-testid="command-palette"]') !== null`, {
-                        timeoutMs: 8000,
-                        label: 'the command palette'
-                    });
-                    await page.key('Escape');
-                    await sleep(800);
-                    const handoffs = (runtime.shell?.lines ?? []).filter((line) =>
-                        line.includes('focusing the page view')
-                    );
-                    recorder.check(
-                        'closing the palette hands focus back to the web pane (§10.4)',
-                        handoffs.length > handoffsBefore,
-                        `${String(handoffsBefore)} → ${String(handoffs.length)} focus-view calls`
-                    );
+                    const paletteOpen = () => page.eval(`document.querySelector('[data-testid="command-palette"]') !== null`);
+                    for (const close of ['Escape', '⌘W']) {
+                        await view.send('Page.bringToFront');
+                        await sleep(300);
+                        await pressBoundAction(page, 'command_palette');
+                        await page.waitFor(`document.querySelector('[data-testid="command-palette"]') !== null`, {
+                            timeoutMs: 8000,
+                            label: 'the command palette'
+                        });
+                        await sleep(400);
+                        const underPalette = await view.eval('document.hasFocus()');
+                        recorder.check(
+                            `the page gives the keyboard up under the palette (closed with ${close})`,
+                            underPalette === false,
+                            `page hasFocus=${String(underPalette)}`
+                        );
+                        if (close === 'Escape') await page.key('Escape');
+                        else if ((await paletteOpen()) === true) await page.key('KeyW', { modifiers: MOD.meta });
+                        await sleep(800);
+                        const closed = (await paletteOpen()) === false;
+                        const pageHasKeyboard = await view.eval('document.hasFocus()');
+                        recorder.check(
+                            `closing the palette with ${close} hands the keyboard back to the web page (§10.4, #351)`,
+                            closed && pageHasKeyboard === true,
+                            `palette closed=${String(closed)} · page hasFocus=${String(pageHasKeyboard)}`
+                        );
+                    }
 
                     /*
                      * The reverse direction, which the DOM has always handled and must not

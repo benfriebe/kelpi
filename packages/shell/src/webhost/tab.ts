@@ -68,7 +68,8 @@ import {
     type RemoteObject
 } from './console-format.js';
 import { POSTER_JPEG_QUALITY } from './caps.js';
-import { clampZoom, type EvalOutcome, type TabController } from './dispatch.js';
+import { clampZoom, type EvalOutcome, type FocusViewOutcome, type TabController } from './dispatch.js';
+import type { DeferredFocus } from './deferred-focus.js';
 import { isWebErrorPageURL, reportedTabURL, webErrorPageDataURL } from './error-page.js';
 import { createFrameSessions, type FrameSessions } from './frames.js';
 import type { CreateTabInput, DestroyReason } from './registry.js';
@@ -190,6 +191,11 @@ export interface TabFactoryOptions {
     readonly restoreKeyboard?: ((owner: KeyboardOwner) => boolean) | undefined;
     /** False when the shell window may not become key (a test lane window). Absent means it may. */
     readonly windowMayBeKey?: (() => boolean) | undefined;
+    /**
+     * Issue #351: the host's one slot for "a page asked for the keyboard while its view was
+     * parked" (`./deferred-focus.ts`). Absent means a parked view is focused in place, as before.
+     */
+    readonly deferredFocus?: DeferredFocus | undefined;
     readonly onError?: ((error: Error, context: string) => void) | undefined;
     readonly viewport?: { readonly width: number; readonly height: number } | undefined;
 }
@@ -296,6 +302,8 @@ class ElectronTab implements HostTab {
     private readonly keyboardOwner: (() => KeyboardOwner) | undefined;
     private readonly restoreKeyboard: ((owner: KeyboardOwner) => boolean) | undefined;
     private readonly windowMayBeKey: (() => boolean) | undefined;
+    /** Issue #351: where a `focusView` on a parked view waits for the placement (`./deferred-focus.ts`). */
+    private readonly deferredFocus: DeferredFocus | undefined;
 
     private mainFrameId: string | null = null;
     private readonly contexts = new Map<number, CdpContext>();
@@ -313,12 +321,16 @@ class ElectronTab implements HostTab {
         this.keyboardOwner = options.keyboardOwner;
         this.restoreKeyboard = options.restoreKeyboard;
         this.windowMayBeKey = options.windowMayBeKey;
+        this.deferredFocus = options.deferredFocus;
         this.focusGate = (options.focusGate ?? createViewFocusGate)({
             report: () => {
                 if (this.disposed || this.contents.isDestroyed()) return;
                 // §N30: the user pressed into this page, so the page is meant to have the
                 // keyboard — a commit landing mid-load must not take it back off them.
                 this.navFocus.pageClaimedKeyboard();
+                // Issue #351: the person chose a widget, so a hand-back still waiting for some
+                // parked view to be placed must not take the keyboard off them later.
+                this.deferredFocus?.cancel();
                 // Logged for the same reason `focusView` is: keyboard focus lives in another
                 // renderer, so this line is the shell's only externally visible account of the
                 // gesture — the live smoke and the audit both assert on it.
@@ -1039,11 +1051,28 @@ class ElectronTab implements HostTab {
      * when no chrome text field has the caret), mirroring the Swift `claimFirstResponder`
      * guard's `firstResponder is NSText` test.
      */
-    focusView(): void {
-        if (this.disposed || this.contents.isDestroyed()) return;
+    focusView(): FocusViewOutcome {
+        if (this.disposed || this.contents.isDestroyed()) return 'none';
         // §N30: this is the client saying the page should have the keyboard. A navigation that
-        // is mid-flight must not undo it when it commits.
+        // is mid-flight must not undo it when it commits. True whether the focus happens now or
+        // once the view is placed, so it is recorded on both paths.
         this.navFocus.pageClaimedKeyboard();
+        /*
+         * Issue #351: a parked view is in the off-screen holder, where `focus()` does nothing for
+         * the person, and the placement that brings it back does not touch focus. Every modal's
+         * close hands the keyboard back while the modal is still mounted, so every one of them
+         * hit this. The claim waits for the placement (`./index.ts` ▸ the attach hook).
+         *
+         * The log line must not contain the WEB-043 one below: the audit and the web smoke count
+         * that line as "the page was focused".
+         */
+        if (!this.embedded && this.deferredFocus !== undefined) {
+            this.deferredFocus.defer({ paneID: this.paneID, tabID: this.tabID });
+            log(`web pane ${this.paneID}: page view is parked; it takes the keyboard once it is placed (tab ${this.tabID})`);
+            return 'deferred';
+        }
+        // Last request wins: a focus that runs now ends any claim another view was waiting on.
+        this.deferredFocus?.cancel();
         // Logged because it is otherwise unobservable from outside: keyboard focus lives in
         // another renderer, so this line is what the visual audit asserts the handoff by.
         log(`web pane ${this.paneID}: focusing the page view (tab ${this.tabID})`);
@@ -1055,11 +1084,16 @@ class ElectronTab implements HostTab {
             windowMayBeKey: this.windowMayBeKey?.() ?? true,
             debuggerAttached: this.attached
         });
-        if (route === 'contents-focus') this.contents.focus();
-        else if (route === 'cdp-bring-to-front') {
-            this.send('Page.bringToFront').catch((error: unknown) => this.report(error, 'focus-view'));
+        if (route === 'contents-focus') {
+            this.contents.focus();
+            return 'focused';
         }
-        else log(`web pane ${this.paneID}: no CDP session, so the page view was not focused (tab ${this.tabID})`);
+        if (route === 'cdp-bring-to-front') {
+            this.send('Page.bringToFront').catch((error: unknown) => this.report(error, 'focus-view'));
+            return 'focused';
+        }
+        log(`web pane ${this.paneID}: no CDP session, so the page view was not focused (tab ${this.tabID})`);
+        return 'none';
     }
 
     reload(hard: boolean): void {
@@ -1247,6 +1281,8 @@ class ElectronTab implements HostTab {
     dispose(reason: DestroyReason): void {
         if (this.disposed) return;
         this.disposed = true;
+        // Issue #351: a hand-back waiting for this view to be placed has nothing left to focus.
+        this.deferredFocus?.forgetTab(this.paneID, this.tabID);
         // §N29: a held focus event must not fire into a tab that no longer exists.
         this.focusGate.dispose();
         // §N30: and a commit racing the teardown must not move anyone's keyboard.

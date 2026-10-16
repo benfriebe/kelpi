@@ -31,7 +31,8 @@ export const covers = [
     'packages/plugin-sdk/browser.js',
     'packages/shell/src/webhost/keys.ts',
     'packages/shell/src/webhost/index.ts',
-    'examples/plugins/ui-lab/'
+    'examples/plugins/ui-lab/',
+    'packages/shell/src/webhost/deferred-focus.ts'
 ];
 
 export default async function ({ page, cli, sandbox, rec, d, sleep }) {
@@ -187,10 +188,12 @@ export default async function ({ page, cli, sandbox, rec, d, sleep }) {
             await control('keyUp');
             await sleep(300);
             rec.check('releasing on the web page’s own workspace keeps it', (await active()) === w);
-            // Not asserted: the page does not get its keyboard back here, and no modal gives it
-            // back either (closing the palette over a focused page is the same): the hand-back's
-            // `focusView` reaches the view while it is still parked.
-            rec.note(`after a never-mind the page has the keyboard: ${String(await pageHasKeyboard())}`);
+            // #351: the hand-back's `focusView` reaches the view while the switcher still has it
+            // parked, so the shell holds it until the placement and focuses the page then.
+            rec.check(
+                '…and the page gets its keyboard back (#351)',
+                await d.settle(pageHasKeyboard, { ceilingMs: 2000 })
+            );
         } finally {
             web.close();
         }

@@ -16,6 +16,7 @@ import {
     type CookieRecord,
     type DispatchDeps,
     type EvalOutcome,
+    type FocusViewOutcome,
     type PaneStorage,
     type TabController
 } from './dispatch.js';
@@ -61,8 +62,10 @@ class FakeTab implements TabController {
         this.stops += 1;
     }
     focuses = 0;
-    focusView(): void {
+    focusOutcome: FocusViewOutcome = 'focused';
+    focusView(): FocusViewOutcome {
         this.focuses += 1;
+        return this.focusOutcome;
     }
     /** Every call that touches the page, in order: a viewport pin has to come BEFORE the read. */
     calls: string[] = [];
@@ -248,6 +251,12 @@ describe('navigation', () => {
         // Both resolve the ACTIVE tab when the caller names none — the chrome usually does not.
         await dispatcher.call('focus-view', { paneID: scope.paneID });
         expect(tab.focuses).toBe(2);
+    });
+
+    it('says when a parked view will take the keyboard once it is placed (#351)', async () => {
+        const { dispatcher, tab } = harness();
+        tab.focusOutcome = 'deferred';
+        await expect(dispatcher.call('focus-view', scope)).resolves.toEqual({ ok: true, deferred: true });
     });
 
     /**

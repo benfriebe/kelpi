@@ -3538,9 +3538,12 @@ function Shell(props: AppProps): ReactElement {
     useEffect(() => {
         const bindings = clientKeyBindings(keybindLines);
         const onKeyDown = (event: KeyboardEvent): void => {
-            // The key as the binding map reads it (#245), so a layout that moves `,` moves this too.
+            // #245: the key as the binding map reads it, or any key that typed `,`. French AZERTY
+            // types `,` on the M key, which is positional, and its Comma key types `;`; a macOS
+            // menu matches ⌘, by character, and so does this, so Settings stays one press away.
             const identity = chordKeyIdentity(event);
-            if (identity.code !== 'Comma' || !event.metaKey || event.ctrlKey || event.altKey || identity.shiftKey) return;
+            const comma = (identity.code === 'Comma' && !identity.shiftKey) || event.key === ',';
+            if (!comma || !event.metaKey || event.ctrlKey || event.altKey) return;
             if (surface.hasActiveModal()) { event.preventDefault(); event.stopPropagation(); return; }
             const trigger = triggerFromEvent(event);
             if (trigger !== null && actionForTrigger(bindings, trigger) !== null) return;

@@ -14,7 +14,8 @@
  *   1. **the measured cell** (`data-terminal-cell`), which the pane publishes from what the
  *      ENGINE measured after the font changed;
  *   2. **the focus ring**: the pane header's `data-focused`, which ⌘+ must not move and ⌘ü must;
- *   3. **the Help overlay**: German ⌘- must not open it, German ⌘? must.
+ *   3. **the Help overlay**: German ⌘- must not open it, German ⌘? must;
+ *   4. **the Settings panel**: French AZERTY types `,` on the M key, and ⌘ on it opens Settings.
  */
 
 export const covers = [
@@ -49,7 +50,7 @@ export default async function ({ page, cli, rec, d, sleep }) {
         await page.eval(`document.querySelector('[data-testid="pane-header-${paneID}"]')?.getAttribute('data-focused') === 'true'`);
     const helpOpen = async () => await page.eval(`document.querySelector('[data-testid="help-overlay"]') !== null`);
 
-    /** One press as a German Mac keyboard reports it: the physical `code`, the produced `key`. */
+    /** One press as a non-US keyboard reports it: the physical `code`, the produced `key`. */
     const german = async (code, key, modifiers = d.MOD.meta) => {
         await page.key(code, { modifiers, key });
         await sleep(150);
@@ -109,6 +110,16 @@ export default async function ({ page, cli, rec, d, sleep }) {
         if (await helpOpen()) {
             await page.click('[data-testid="help-close"]').catch(() => {});
             await d.settleDom(page, `document.querySelector('[data-testid="help-overlay"]') === null`, { ceilingMs: 5_000 });
+        }
+
+        // ── French AZERTY ⌘,: `,` is typed on the M key ──────────────────────────────
+        await d.focusPaneBody(page, first);
+        await german('KeyM', ',');
+        const settingsShown = await d.settleDom(page, `document.querySelector('${d.PAGE.settingsPanel}') !== null`, { ceilingMs: 5_000 });
+        rec.check('French ⌘, (the M key typing ,) opens Settings', settingsShown);
+        if (settingsShown) {
+            await page.click('[data-testid="settings-close"]').catch(() => {});
+            await d.settleDom(page, `document.querySelector('${d.PAGE.settingsPanel}') === null`, { ceilingMs: 5_000 });
         }
 
         // ── German ⌘ü: the brackets stay physical ────────────────────────────────────

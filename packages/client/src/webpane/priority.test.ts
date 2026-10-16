@@ -159,8 +159,12 @@ describe('the table (WEB-152)', () => {
         // `+` is the BracketRight key (⌘] would focus the next pane), `-` the Slash key.
         expect(dispatch(german('BracketRight', '+'))).toBe(true);
         expect(dispatch(german('Slash', '-'))).toBe(true);
+        // A layout whose `-` needs Shift on another key: the trigger is the unshifted US ⌘-, and
+        // the table reads the TRIGGER's Shift, so it is zoom-out rather than a decline.
+        expect(dispatch({ ...german('Equal', '-'), shiftKey: true })).toBe(true);
         expect(calls).toEqual([
             { verb: 'zoom', args: ['P', 'in'] },
+            { verb: 'zoom', args: ['P', 'out'] },
             { verb: 'zoom', args: ['P', 'out'] }
         ]);
     });

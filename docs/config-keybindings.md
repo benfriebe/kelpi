@@ -455,6 +455,10 @@ Known limits:
   them is Help and increase, and the pane-focus brackets are reachable through ⌥⌘← / ⌥⌘→.
 - A physical key whose character translates elsewhere cannot be bound by its position any more,
   and the recorder records the character's chord.
+- A character key's character typed on a LETTER or DIGIT key (French AZERTY types `,` on the M
+  key and `;` on the Comma key) is not translated, so a chord on that character is reached only
+  through its US position's character, if the layout has it on a punctuation key. ⌘, (Settings)
+  is the exception: its listener also accepts any key that typed `,`, as a macOS menu would.
 - `IntlBackslash` (the ISO key beside left Shift) is not a source key.
 - Help and Settings ▸ Keybindings still label chords with the US key (⌘= for increase).
 - Plugin iframes and presenter frames claim chords by physical key, through the plugin SDK.

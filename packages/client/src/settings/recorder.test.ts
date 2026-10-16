@@ -59,6 +59,13 @@ describe('the key recorder (§13.2)', () => {
         });
     });
 
+    it('refuses a German ⇧, (which types the bare US `;`) as a combo with no modifier (#245)', () => {
+        expect(recordKeyEvent(press('Comma', { shiftKey: true, key: ';' }), { bindings: new Map() })).toEqual({
+            kind: 'rejected',
+            reason: NEEDS_MODIFIER_MESSAGE
+        });
+    });
+
     it('refuses a combo another action already owns, naming it (§8.5)', () => {
         const outcome = recordKeyEvent(press('KeyD', { metaKey: true }), {
             bindings: DEFAULT_KEYBINDINGS,

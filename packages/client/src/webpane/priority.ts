@@ -68,19 +68,39 @@ export interface WebPanePriorityDeps {
     zoom: (paneID: string, direction: 'in' | 'out' | 'reset') => void;
 }
 
-/** The trigger shape the dispatcher hands over (only `keyCode` matters here). */
+/**
+ * The trigger shape the dispatcher hands over. `modifiers`, when present, is what the table reads
+ * rather than the event's own flags: a chord matched by character (#245) carries the US
+ * keystroke's Shift, which can differ from the Shift the layout needed to type it.
+ */
 export interface PriorityTrigger {
     readonly keyCode: number;
+    readonly modifiers?: readonly ('ctrl' | 'alt' | 'shift' | 'super')[] | undefined;
 }
 
 export type WebPanePriority = (trigger: PriorityTrigger, event: KeyEventLike) => boolean | null;
 
-function plainCommand(event: KeyEventLike): boolean {
-    return event.metaKey && !event.shiftKey && !event.ctrlKey && !event.altKey;
+interface HeldModifiers {
+    readonly meta: boolean;
+    readonly shift: boolean;
+    readonly ctrl: boolean;
+    readonly alt: boolean;
 }
 
-function commandShift(event: KeyEventLike): boolean {
-    return event.metaKey && event.shiftKey && !event.ctrlKey && !event.altKey;
+function heldModifiers(trigger: PriorityTrigger, event: KeyEventLike): HeldModifiers {
+    if (trigger.modifiers === undefined) {
+        return { meta: event.metaKey, shift: event.shiftKey, ctrl: event.ctrlKey, alt: event.altKey };
+    }
+    const held = new Set(trigger.modifiers);
+    return { meta: held.has('super'), shift: held.has('shift'), ctrl: held.has('ctrl'), alt: held.has('alt') };
+}
+
+function plainCommand(held: HeldModifiers): boolean {
+    return held.meta && !held.shift && !held.ctrl && !held.alt;
+}
+
+function commandShift(held: HeldModifiers): boolean {
+    return held.meta && held.shift && !held.ctrl && !held.alt;
 }
 
 export function createWebPanePriority(deps: WebPanePriorityDeps): WebPanePriority {
@@ -88,8 +108,9 @@ export function createWebPanePriority(deps: WebPanePriorityDeps): WebPanePriorit
         const pane = deps.focusedWebPane();
         if (pane === null) return null;
 
-        const isCommand = plainCommand(event);
-        const isCommandShift = commandShift(event);
+        const held = heldModifiers(trigger, event);
+        const isCommand = plainCommand(held);
+        const isCommandShift = commandShift(held);
         if (!isCommand && !isCommandShift) return null;
 
         switch (trigger.keyCode) {

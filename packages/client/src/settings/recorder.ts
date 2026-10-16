@@ -111,7 +111,9 @@ export function recordKeyEvent(event: KeyEventLike, options: RecorderOptions): R
     // the file can store): not a capture, not an error — keep listening.
     if (trigger === null) return { kind: 'ignored' };
 
-    const bare = modifiers.length === 0;
+    // The TRIGGER's modifiers, not the event's (#245): a German ⇧ on the `,` key types `;`, which is
+    // the bare US `;` key, and a bare binding would steal that character from every text field.
+    const bare = trigger.modifiers.length === 0;
     const exempt = event.code === 'Escape' || FUNCTION_KEY.test(event.code);
     if (bare && !exempt) return { kind: 'rejected', reason: NEEDS_MODIFIER_MESSAGE };
 

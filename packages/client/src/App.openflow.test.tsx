@@ -16,6 +16,7 @@ import { completeHandshake, createFakeSocketFactory, type FakeWebSocket } from '
 import { contentState } from './content/testing';
 import { createKelpiRuntime, createKelpiStore, type KelpiRuntime } from './state';
 import { createFakeRendererFactory } from './terminal/testing';
+import { paneHandle, registerTerminalPane, type TerminalLinkCommands } from './terminal/pane-registry';
 
 // jsdom's `Location` is unforgeable, so the menu row is tested through its seam.
 vi.mock('./app/reload', () => ({ restartUI: vi.fn() }));
@@ -793,6 +794,94 @@ describe('a plain click on a terminal link (#326)', () => {
         expect(reached).toBe(true);
         await waitFor(() => expect(screen.queryByText('Open in Kelpi')).toBeNull());
         expect(document.activeElement?.closest('[role="menu"]') ?? null).toBeNull();
+    });
+});
+
+/**
+ * #328: a remote workspace's pane resolves its links on its OWN daemon.
+ *
+ * `RemoteWorkspaceView` gives such a pane the remote runtime's commands, which it publishes on its
+ * handle (`linkCommands`). Here PANE_A's real handle is re-published with a stand-in remote
+ * daemon, which is exactly what the app reads at click time, so these pin the app's half: the
+ * ⌘-click and the plain-click probe go there and never to this window's daemon, where the pane
+ * does not exist and the answer was `pane not found`.
+ */
+describe('a remote workspace pane\'s links (#328)', () => {
+    const HOST = { width: 800, height: 340 };
+
+    async function remotePane(answer: JsonObject): Promise<{
+        host: HTMLElement;
+        remote: { openTerminalTarget: ReturnType<typeof vi.fn>; probeTerminalTarget: ReturnType<typeof vi.fn> };
+    }> {
+        const host = document.querySelector<HTMLElement>(`[data-pane-id="${PANE_A}"] [data-terminal-host]`);
+        if (host === null) throw new Error('the shell pane has no terminal host');
+        Object.defineProperty(host, 'clientWidth', { configurable: true, value: HOST.width });
+        Object.defineProperty(host, 'clientHeight', { configurable: true, value: HOST.height });
+        host.getBoundingClientRect = () =>
+            ({ left: 0, top: 0, right: HOST.width, bottom: HOST.height, x: 0, y: 0, ...HOST }) as DOMRect;
+        await act(async () => {
+            window.dispatchEvent(new Event('resize'));
+            await new Promise((resolve) => setTimeout(resolve, 150));
+        });
+        await waitFor(() => {
+            const cell = document.querySelector(`[data-pane-id="${PANE_A}"][data-terminal-cell]`)?.getAttribute('data-terminal-cell');
+            if (cell === null || cell === undefined || cell === '') throw new Error('no cell metrics yet');
+        });
+        const own = paneHandle(PANE_A);
+        if (own === null) throw new Error('the shell pane published no handle');
+        const remote = {
+            openTerminalTarget: vi.fn(async () => ({ ok: true, ...answer })),
+            probeTerminalTarget: vi.fn(async () => ({ ok: true, ...answer }))
+        };
+        registerTerminalPane(PANE_A, { ...own, linkCommands: () => remote as unknown as TerminalLinkCommands });
+        return { host, remote };
+    }
+
+    it('sends the ⌘-click to the pane\'s own daemon, and opens its URL in this machine\'s browser', async () => {
+        const h = setup();
+        const open = vi.fn();
+        vi.stubGlobal('open', open);
+        // Even with links set to open in Kelpi: a web pane on the remote daemon draws there.
+        const current = h.runtime.store.getState().settings.value;
+        act(() => {
+            h.runtime.store.getState().applySettings({ ...current, general: { ...current.general, openLinksIn: 'kelpi' } });
+        });
+        const { host, remote } = await remotePane({ opened: 'external', url: 'https://remote.example/docs' });
+        await act(async () => {
+            fireEvent.click(host, { metaKey: true, button: 0, clientX: 100, clientY: 100 });
+            await Promise.resolve();
+            await Promise.resolve();
+        });
+        expect(remote.openTerminalTarget).toHaveBeenCalledWith({ paneID: PANE_A, row: 5, col: 10 });
+        expect(h.lastCommand('open-terminal-target')).toBeUndefined();
+        expect(open).toHaveBeenCalledWith('https://remote.example/docs', '_blank', 'noreferrer');
+        expect(h.lastCommand('web-open')).toBeUndefined();
+        vi.unstubAllGlobals();
+    });
+
+    it('still says why for a missing file and a refused link', async () => {
+        setup();
+        const missing = await remotePane({ opened: 'missing', path: '/remote/notes.md' });
+        fireEvent.click(missing.host, { metaKey: true, button: 0, clientX: 100, clientY: 100 });
+        expect(await screen.findByText(/\/remote\/notes\.md does not exist/)).toBeDefined();
+        cleanup();
+
+        setup();
+        const refused = await remotePane({ opened: 'none', reason: 'link-not-http', link: 'ssh://remote.example' });
+        fireEvent.click(refused.host, { metaKey: true, button: 0, clientX: 100, clientY: 100 });
+        expect(await screen.findByText(/ssh:\/\/remote\.example is not an http\(s\) address/)).toBeDefined();
+    });
+
+    it('probes a plain click there too, and leaves Open in Kelpi out of the menu', async () => {
+        const h = setup();
+        const { host, remote } = await remotePane({ opened: 'external', url: 'https://remote.example/docs' });
+        fireEvent.mouseDown(host, { button: 0, clientX: 100, clientY: 100, detail: 1 });
+        fireEvent.click(host, { button: 0, clientX: 100, clientY: 100, detail: 1 });
+        await waitFor(() => expect(remote.probeTerminalTarget).toHaveBeenCalledWith({ paneID: PANE_A, row: 5, col: 10 }));
+        expect(h.lastCommand('probe-terminal-target')).toBeUndefined();
+        expect(await screen.findByText('Open in Browser')).toBeDefined();
+        expect(screen.getByText('Copy Link')).toBeDefined();
+        expect(screen.queryByText('Open in Kelpi')).toBeNull();
     });
 });
 

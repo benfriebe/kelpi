@@ -37,6 +37,8 @@ export function registerPluginTerminal(paneID: string, scope: TerminalScope, roo
         hideKeyboard: () => { action({ type: 'hideKeyboard' }); root()?.blur(); },
         setModifiers: modifiers => { action({ type: 'modifiers', ...modifiers }); },
         cellHeight: () => scope.cellHeight,
+        // #328: a remote pane's links resolve on its own daemon, whichever renderer draws it.
+        linkCommands: () => current()?.linkCommands,
         focusedOnScreen: () => scope.attached && current()?.visible === true && current()?.focused === true
     });
 }

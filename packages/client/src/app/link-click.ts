@@ -37,6 +37,11 @@ export const LINK_CLICK_SLOP_PX = 4;
 export interface LinkMenuRequest {
     readonly paneID: string;
     readonly url: string;
+    /**
+     * #328: the pane is a remote workspace's. Its "Open in Kelpi" would place a web pane on THAT
+     * daemon, whose page draws in that machine's desktop shell, so the menu leaves it out.
+     */
+    readonly remote?: boolean | undefined;
     /** Where the menu opens: the pointer, in client coordinates. */
     readonly x: number;
     readonly y: number;

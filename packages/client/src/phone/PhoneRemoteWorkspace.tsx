@@ -120,6 +120,9 @@ export function PhoneRemoteWorkspace(props: PhoneRemoteWorkspaceProps): ReactEle
                         // `layout` mode above. Every remote render site owes this.
                         editingShortcuts
                         fontSize={pane.terminalFontSize ?? defaultFontSize}
+                        // #328: its links resolve on its own daemon (a ⌘-click from an iPad's
+                        // keyboard; a phone has no hover and no plain-click link menu).
+                        linkCommands={runtime.commands}
                         onFocusRequest={(id) => runtime.focusPane(workspaceID, id)}
                         createRenderer={props.createRenderer}
                     />

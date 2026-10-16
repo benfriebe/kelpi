@@ -268,10 +268,11 @@ import {
     terminalFontStack,
     terminalPaletteCssVars,
     terminalThemePreset,
-    linkSpanFromReply,
+    probeLinkVia,
     visiblePaneIDs,
     type TerminalGeometry,
     type TerminalRendererFactory,
+    type TerminalLinkCommands,
     type TerminalSearchHighlight,
     type TerminalTheme
 } from './terminal';
@@ -2370,9 +2371,16 @@ function Shell(props: AppProps): ReactElement {
              * prose and on empty screen all day long and a toast for those would be noise. Two
              * cases have one: a link with a scheme we refuse to hand the OS, and a URL a TUI's
              * box border cut in half (which used to open the truncated address instead).
+             *
+             * #328: `via` is the daemon that owns the pane when it is not this window's (a remote
+             * workspace's pane, from its handle). Its answer is read the same way, with one
+             * difference: a URL always goes to this machine's browser, because a web pane on
+             * that daemon would draw its page in that machine's desktop shell, not here. A
+             * `markdown`, `csv` or `image` answer opened the pane on that daemon, in its own
+             * workspace, which this window already shows.
              */
-            openTerminalTarget(paneID: string, row: number, col: number): boolean {
-                void commands.openTerminalTarget({ paneID, row, col }).then(
+            openTerminalTarget(paneID: string, row: number, col: number, via?: TerminalLinkCommands): boolean {
+                void (via ?? commands).openTerminalTarget({ paneID, row, col }).then(
                     (reply) => {
                         if (!isOkReply(reply)) {
                             notifyFailure('Open path', replyError(reply));
@@ -2383,7 +2391,7 @@ function Shell(props: AppProps): ReactElement {
                             const url = replyText(reply, 'url');
                             if (url === undefined) return;
                             // #326: `open-links-in` picks where; the system browser by default.
-                            if (store.getState().settings.value.general.openLinksIn === 'kelpi') {
+                            if (via === undefined && store.getState().settings.value.general.openLinksIn === 'kelpi') {
                                 actRef.current.openLinkInWebPane(paneID, url);
                             } else {
                                 globalThis.open?.(url, '_blank', 'noreferrer');
@@ -4335,12 +4343,15 @@ function Shell(props: AppProps): ReactElement {
     const linkClicks = useMemo(
         () =>
             createLinkClickTracker({
+                // #328: asked of the daemon that owns the pane (a remote workspace's, for its panes).
                 probe: async (paneID, row, col) => {
-                    const reply = await commands.probeTerminalTarget({ paneID, row, col });
+                    const reply = await (paneHandle(paneID)?.linkCommands?.() ?? commands).probeTerminalTarget({ paneID, row, col });
                     if (!isOkReply(reply)) return null;
                     return { opened: replyText(reply, 'opened'), url: replyText(reply, 'url') };
                 },
-                open: setLinkMenu
+                open: (request) => {
+                    setLinkMenu({ ...request, remote: paneHandle(request.paneID)?.linkCommands?.() !== undefined });
+                }
             }),
         [commands]
     );
@@ -4437,7 +4448,7 @@ function Shell(props: AppProps): ReactElement {
             }
             event.preventDefault();
             event.stopPropagation();
-            act.openTerminalTarget(paneID, cell.row, cell.col);
+            act.openTerminalTarget(paneID, cell.row, cell.col, handle?.linkCommands?.());
         },
         [act, getPaneDimensions, linkClicks]
     );
@@ -4447,15 +4458,10 @@ function Shell(props: AppProps): ReactElement {
      *
      * The question `onRootClickCapture` above asks on a click, asked of the same daemon
      * (`commands`, this window's runtime) as `probe-terminal-target`, which answers it the same
-     * way and does none of it. Only this window's own shell panes get it: a remote workspace's
-     * ⌘-click is sent here too, where its pane does not exist, so an underline there would promise
-     * a click that cannot work.
+     * way and does none of it. This window's own shell panes; a remote workspace's panes ask
+     * their own daemon (`linkCommands`, #328).
      */
-    const probeTerminalLink = useCallback(
-        (paneID: string, row: number, col: number) =>
-            commands.probeTerminalTarget({ paneID, row, col }).then(linkSpanFromReply, () => null),
-        [commands]
-    );
+    const probeTerminalLink = useMemo(() => probeLinkVia(commands), [commands]);
 
     const renderPane = useCallback<RenderPane>(
         (paneID, _frame, focused, renderState) => {
@@ -5415,11 +5421,16 @@ function Shell(props: AppProps): ReactElement {
                     passiveKeys
                     items={[
                         { id: 'link:caption', label: linkCaption(linkMenu.url), kind: 'caption' },
-                        {
-                            id: 'link:kelpi',
-                            label: 'Open in Kelpi',
-                            onSelect: () => act.openLinkInWebPane(linkMenu.paneID, linkMenu.url)
-                        },
+                        // #328: not for a remote pane, whose web pane would draw on its machine.
+                        ...(linkMenu.remote === true
+                            ? []
+                            : [
+                                  {
+                                      id: 'link:kelpi',
+                                      label: 'Open in Kelpi',
+                                      onSelect: () => act.openLinkInWebPane(linkMenu.paneID, linkMenu.url)
+                                  }
+                              ]),
                         { id: 'link:browser', label: 'Open in Browser', onSelect: () => act.openLinkInBrowser(linkMenu.url) },
                         { id: 'link:sep', label: '', kind: 'separator' },
                         { id: 'link:copy', label: 'Copy Link', onSelect: () => act.copyLink(linkMenu.url) }

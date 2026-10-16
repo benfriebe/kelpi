@@ -978,7 +978,18 @@ the soft keyboard. The logic is `packages/client/src/app/link-click.ts`.
 **Where a ⌘-click opens a link** is the `open-links-in` setting (Settings ▸ General ▸ Links):
 `browser`, the default, hands an `external` answer to the system opener as above; `kelpi` opens
 it with the same `web-open` as the menu's "Open in Kelpi". It only changes ⌘-click: the plain
-click's menu always offers both.
+click's menu always offers both, except in a remote workspace (below).
+
+**A remote workspace's pane asks its own daemon (#328).** A remote workspace (a paired daemon's
+panes, drawn in this window by `app/RemoteWorkspaceView.tsx`, or `phone/PhoneRemoteWorkspace.tsx`)
+is not in this window's daemon, which used to answer its ⌘-click with `pane not found`. Both
+render sites pass the remote runtime's commands to the pane (`linkCommands`), which publishes them
+on its handle (`terminal/pane-registry.ts`); the ⌘-click, the plain click's probe and the hover
+underline all go there. The answer is read the same way, with two differences, both because a
+web pane on the remote daemon would draw its page in that machine's desktop shell, not here: an
+`external` answer always goes to this machine's browser, whatever `open-links-in` says, and the
+link menu leaves out "Open in Kelpi". A `markdown`, `csv` or `image` answer opens the pane on the
+remote daemon, in its own workspace, and focuses it there, which this window already shows.
 
 **A hover underlines exactly what a ⌘-click there would open (#303).** A plain hover (no
 modifier) over a shell pane asks the same `probe-terminal-target` as the plain click above and
@@ -1033,10 +1044,9 @@ opened and no focus moves.
   underlined a plain hover in blue on its own rules (any scheme, one row, no paths). The
   underline is `setLinkUnderline` (`0.4.0-kelpi.18`), drawn in each cell's foreground colour as
   SGR 4 is, with a pointer cursor while it shows.
-- **Where it does not run.** A remote workspace's panes (their ⌘-click is sent to this window's
-  daemon, where the pane does not exist, so an underline would promise a click that cannot
-  work; #328), an external-editor terminal (not a shell pane), the build-time xterm fallback
-  engine (no underline layer, so no probes either), and a phone (no hover).
+- **Where it does not run.** An external-editor terminal (not a shell pane), the build-time
+  xterm fallback engine (no underline layer, so no probes either), and a phone (no hover). A
+  remote workspace's panes do get it, asked of their own daemon (below).
 - **Character widths.** The daemon's emulator counts cells with the engine's widths (#329):
   `@xterm/addon-unicode-graphemes`, `15-graphemes` (`term/service.ts` `UNICODE_VERSION`), so an
   emoji such as `✅`, a variation-selector emoji (`❤️`) and a ZWJ sequence are two cells, as

@@ -30,6 +30,7 @@
  *   - **Leaving clears at once.** Off the link, off the grid, a scroll or a resize.
  */
 
+import type { TerminalLinkCommands } from './pane-registry';
 import type { TerminalCellRun } from './renderer';
 
 export interface LinkHoverCell {
@@ -108,6 +109,17 @@ export function linkSpanFromReply(reply: unknown): readonly TerminalCellRun[] | 
         runs.push({ row: row as number, col: col as number, width: width as number });
     }
     return runs.length === 0 ? null : runs;
+}
+
+/**
+ * The hover's question, asked of `commands` (#303, #328): the daemon that owns the pane, which is
+ * this window's for its own panes and the remote runtime's for a remote workspace's. A failed or
+ * refused probe is "no link".
+ */
+export function probeLinkVia(
+    commands: TerminalLinkCommands
+): (paneID: string, row: number, col: number) => Promise<readonly TerminalCellRun[] | null> {
+    return (paneID, row, col) => commands.probeTerminalTarget({ paneID, row, col }).then(linkSpanFromReply, () => null);
 }
 
 const defaultSchedule = (run: () => void, ms: number): (() => void) => {

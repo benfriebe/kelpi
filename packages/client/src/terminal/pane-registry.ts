@@ -57,7 +57,17 @@
  * this window is a NON-owner, so a desktop window that sizes its own PTY pays for none of it.
  */
 
+import type { CommandClient } from '../connection';
 import type { TerminalKeyInit } from './renderer';
+
+/**
+ * #328 - the two verbs a terminal link is resolved with, on the daemon that OWNS the pane.
+ *
+ * A remote workspace's panes (another daemon's, drawn in this window) are not in this window's
+ * daemon, which answered their ⌘-click with `pane not found`. Their render sites pass the owning
+ * runtime's commands, and the app asks those instead.
+ */
+export type TerminalLinkCommands = Pick<CommandClient, 'openTerminalTarget' | 'probeTerminalTarget'>;
 
 /**
  * #178 - how much of a MIRRORED canvas this pane's box cannot show, in whole cells.
@@ -142,6 +152,12 @@ export interface TerminalPaneHandle {
      * divide the host box instead.
      */
     cellAt?(clientX: number, clientY: number): { readonly row: number; readonly col: number } | null;
+    /**
+     * #328 - the daemon this pane's links are resolved on, when it is not this window's own (a
+     * remote workspace's pane), or undefined for this window's daemon. A live read, like
+     * `selection`.
+     */
+    linkCommands?(): TerminalLinkCommands | undefined;
     /**
      * C9 - this pane is the focused one AND on screen: exactly the condition C1's bar mounted
      * itself under (`focused && visible`), now asked once for the window.

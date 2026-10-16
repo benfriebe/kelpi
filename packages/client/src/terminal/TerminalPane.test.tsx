@@ -16,7 +16,7 @@ import {
 import { PhoneKeyBar } from './PhoneKeyBar';
 import { restartUI } from '../app/reload';
 import { registerModal } from '../chrome/modal-presence';
-import { paneHandle } from './pane-registry';
+import { paneHandle, type TerminalLinkCommands } from './pane-registry';
 import { lastSelection, recordSelection, resetSelectionBufferForTests } from './selection-buffer';
 import {
     createFakePhoneWindow,
@@ -2558,5 +2558,37 @@ describe('TerminalPane: link hover (#303)', () => {
         const xterm = await hoverHarness({ drawsLinkUnderline: false });
         xterm.move(45, 61);
         expect(xterm.asked).toHaveLength(0);
+    });
+
+    /**
+     * #328: a remote workspace's pane is given its own daemon's commands. They are published on
+     * the pane's handle, where the app's ⌘-click finds them, and the hover asks them when no
+     * `probeLink` was given, rather than asking nothing.
+     */
+    it('publishes linkCommands on the handle and asks them for the hover', async () => {
+        const pty = createFakePtyApi();
+        const renderers = createFakeRendererFactory({ cell: { width: 10, height: 20 } });
+        const probeTerminalTarget = vi.fn(async () => ({ ok: true, opened: 'external', url: 'https://remote.example/', span: LINK }));
+        const openTerminalTarget = vi.fn(async () => ({ ok: true }));
+        const linkCommands = { probeTerminalTarget, openTerminalTarget } as unknown as TerminalLinkCommands;
+        const view = render(
+            <TerminalPane paneID="pane-1" ptyApi={pty} focused visible createRenderer={renderers.factory} measure={box(800, 480)} linkCommands={linkCommands} />
+        );
+        await settle();
+        expect(paneHandle('pane-1')?.linkCommands?.()).toBe(linkCommands);
+        const host = view.container.querySelector('[data-terminal-host]') as HTMLElement;
+        await act(async () => {
+            fireEvent(host, new MouseEvent('pointermove', { clientX: 45, clientY: 61, bubbles: true }));
+            await Promise.resolve();
+            await Promise.resolve();
+        });
+        expect(probeTerminalTarget).toHaveBeenCalledWith({ paneID: 'pane-1', row: 3, col: 4 });
+        expect(renderers.last().linkUnderlines.at(-1)).toEqual(LINK);
+        expect(openTerminalTarget).not.toHaveBeenCalled();
+    });
+
+    it('publishes no linkCommands for a pane of this window\'s own daemon', async () => {
+        await hoverHarness();
+        expect(paneHandle('pane-1')?.linkCommands?.()).toBeUndefined();
     });
 });

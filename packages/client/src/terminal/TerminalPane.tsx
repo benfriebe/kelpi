@@ -60,8 +60,8 @@ import {
     watchSoftKeyboardMotion
 } from './keyboard-inset';
 import { createKittyKeyboard, sanitizeKittyFlags, type KittyKeyboard } from './kitty-keyboard';
-import { createLinkHover, type LinkHover } from './link-hover';
-import { notifyTerminalPanes, registerTerminalPane, type TerminalMirrorClip } from './pane-registry';
+import { createLinkHover, probeLinkVia, type LinkHover } from './link-hover';
+import { notifyTerminalPanes, registerTerminalPane, type TerminalLinkCommands, type TerminalMirrorClip } from './pane-registry';
 import {
     PHONE_TERMINAL_POSTER_BUDGET_BYTES,
     TERMINAL_POSTER_BUDGET_BYTES,
@@ -455,14 +455,21 @@ export interface TerminalPaneProps {
      *
      * Assembly asks the daemon a ⌘-click goes to (`App.tsx`, `probe-terminal-target`), which
      * decides exactly as it does for the click, so the underline never promises a link the click
-     * would refuse. Omitted, no hover underline: that is every site whose ⌘-click does not reach
-     * this pane's daemon (a remote workspace's panes) and every terminal that is not a shell pane
-     * (an external editor), which the daemon would refuse anyway. Read through `latest`, so a new
-     * function per render costs nothing.
+     * would refuse. Omitted with no `linkCommands` either, no hover underline: that is every
+     * terminal that is not a shell pane (an external editor), which the daemon would refuse
+     * anyway. Read through `latest`, so a new function per render costs nothing.
      */
     readonly probeLink?:
         | ((paneID: string, row: number, col: number) => Promise<readonly TerminalCellRun[] | null>)
         | undefined;
+    /**
+     * #328: the daemon that owns this pane, when it is not this window's own. A remote workspace's
+     * render sites (`app/RemoteWorkspaceView.tsx`, `phone/PhoneRemoteWorkspace.tsx`) pass the
+     * remote runtime's commands. The pane publishes them on its handle, where the app's ⌘-click
+     * and plain-click link menu find them, and asks them for the hover underline when no
+     * `probeLink` is given. Omitted, everything goes to this window's daemon, as it always did.
+     */
+    readonly linkCommands?: TerminalLinkCommands | undefined;
     readonly className?: string | undefined;
 }
 
@@ -1403,6 +1410,7 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
                     const cell = mouseRef.current?.cellAt({ clientX, clientY }) ?? null;
                     return cell === null ? null : { row: cell.y, col: cell.x };
                 },
+                linkCommands: () => latest.current.linkCommands,
                 // `latest` is written in a LAYOUT effect (§N35 residual (b)), so this answers with
                 // the commit that gave the pane the ring rather than one commit later.
                 focusedOnScreen: () => latest.current.focused && latest.current.visible,
@@ -1871,7 +1879,8 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
     // viewport is scrolled into history: the daemon reads rows from the live bottom, so the
     // answer would be about a different line from the one under the pointer. Nor on an engine
     // that cannot draw the underline (the xterm fallback), which would only cost round trips.
-    const hasLinkProbe = props.probeLink !== undefined;
+    // #328: a remote pane has no `probeLink` from assembly; it asks its own daemon.
+    const hasLinkProbe = props.probeLink !== undefined || props.linkCommands !== undefined;
     useEffect(() => {
         const root = rootRef.current;
         const host = hostRef.current;
@@ -1879,7 +1888,11 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
         if (!hasLinkProbe || root === null || host === null || renderer === null || status !== 'live') return;
         if (!renderer.setLinkUnderline(null)) return;
         const hover = createLinkHover({
-            probe: (row, col) => latest.current.probeLink?.(paneID, row, col) ?? Promise.resolve(null),
+            probe: (row, col) => {
+                const { probeLink, linkCommands } = latest.current;
+                if (probeLink !== undefined) return probeLink(paneID, row, col);
+                return linkCommands === undefined ? Promise.resolve(null) : probeLinkVia(linkCommands)(paneID, row, col);
+            },
             snapshot: (rows) => rendererRef.current?.screenRowsKey(rows) ?? null,
             paint: (cells) => {
                 const drawn = rendererRef.current?.setLinkUnderline(cells) === true;

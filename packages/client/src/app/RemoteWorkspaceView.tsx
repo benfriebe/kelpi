@@ -21,7 +21,8 @@ import { usePluginCommands } from '../plugins/commands';
  * place that draws a REMOTE daemon's terminal pane must pass `editingShortcuts` to
  * `TerminalFeaturePane` (#172, #170). The window dispatcher stands down here, so the pane is the
  * only layer left to answer copy, paste and the three line edits. This file and
- * `phone/PhoneRemoteWorkspace.tsx` are the two that do.
+ * `phone/PhoneRemoteWorkspace.tsx` are the two that do. They also owe `linkCommands` (#328), or
+ * the pane's links are resolved on this window's daemon, which answers `pane not found`.
  */
 
 import { useEffect, type ReactElement, type ReactNode } from 'react';
@@ -145,6 +146,9 @@ export function RemoteWorkspaceView(props: RemoteWorkspaceViewProps): ReactEleme
                 // chord, against THIS daemon's runtime. In the primary window the dispatcher
                 // still owns them and this stays off.
                 editingShortcuts
+                // #328: ⌘-click, the plain-click link menu and the hover underline ask the daemon
+                // that owns the pane, not this window's, where it does not exist.
+                linkCommands={runtime.commands}
                 onFocusRequest={(id) => runtime.focusPane(workspaceID, id)}
             />
         );

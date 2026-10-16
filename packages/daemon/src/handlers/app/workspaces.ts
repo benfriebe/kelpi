@@ -161,7 +161,17 @@ function workspaceEntry(state: DaemonState, workspace: WorkspaceState, index: Li
         ...(session !== undefined && session !== null ? { agent_session_id: session } : {}),
         ...(group !== undefined ? { group } : {}),
         ...(parent !== null ? { parent: { id: uuidOut(parent.id), name: parent.name } } : {}),
-        repos
+        repos,
+        // workspace-feature.md §11: what the row's PR glyph shows, so a script can find merged
+        // workspaces without reading colours. Elided by the builder when empty.
+        pull_requests: workspace.pullRequests.map((pullRequest) => ({
+            number: pullRequest.number,
+            title: pullRequest.title,
+            url: pullRequest.url,
+            state: pullRequest.state,
+            repo_id: uuidOut(pullRequest.repoID),
+            branch: pullRequest.branch
+        }))
     });
 }
 

@@ -207,6 +207,42 @@ describe('repository associations (§WS-139…§WS-142)', () => {
         expect(onRemoveAssociation).toHaveBeenLastCalledWith('a-wt', true);
     });
 
+    it('lists each PR as a link under the association it was found for (workspace-feature.md §11)', () => {
+        const pr = (number: number, state: 'open' | 'merged', associationID: string, branch: string) => ({
+            number,
+            title: `Title ${String(number)}`,
+            url: `https://github.com/acme/app/pull/${String(number)}`,
+            state,
+            repoID: 'r1',
+            associationID,
+            branch
+        });
+        view({ workspace: workspace({ pullRequests: [pr(41, 'open', 'a-wt', 'login'), pr(12, 'merged', 'a-main', 'main')] }) });
+        const lists = screen.getAllByTestId('inspector-pr-list');
+        expect(lists).toHaveLength(2);
+        const links = screen.getAllByTestId('inspector-pr-link');
+        // Main checkout first, as the rows are.
+        expect(links.map((link) => link.getAttribute('href'))).toEqual([
+            'https://github.com/acme/app/pull/12',
+            'https://github.com/acme/app/pull/41'
+        ]);
+        const worktreeLink = links[1] as HTMLElement;
+        expect(worktreeLink.getAttribute('target')).toBe('_blank');
+        expect(worktreeLink.getAttribute('rel')).toBe('noreferrer');
+        expect(worktreeLink.getAttribute('data-pr-state')).toBe('open');
+        expect(worktreeLink.textContent).toBe('#41Title 41');
+        expect(worktreeLink.querySelector('[data-icon="pull-request"]')).not.toBeNull();
+        expect(links[0]?.querySelector('[data-icon="pull-request-merged"]')).not.toBeNull();
+        // Under the worktree row it belongs to, after that row's own controls.
+        const row = screen.getByTestId('inspector-assoc-menu-a-wt');
+        expect(row.compareDocumentPosition(worktreeLink) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it('draws no PR lines for a workspace without PRs', () => {
+        view();
+        expect(screen.queryByTestId('inspector-pr-list')).toBeNull();
+    });
+
     it('says so plainly when the workspace has no repositories', () => {
         view({ associations: [] });
         expect(screen.getByTestId('inspector-repos').textContent).toContain('No repositories associated');

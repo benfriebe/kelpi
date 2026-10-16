@@ -32,10 +32,27 @@ describe('toSnapshot', () => {
                 now: NOW
             },
             { type: 'pane-title-changed', paneID: PA, title: 'live title', now: NOW },
-            { type: 'pane-branch-changed', paneID: PA, branch: 'main' }
+            { type: 'pane-branch-changed', paneID: PA, branch: 'main' },
+            {
+                type: 'set-workspace-pull-requests',
+                id: W1,
+                pullRequests: [
+                    {
+                        number: 12,
+                        title: 'Add widgets',
+                        url: 'https://github.com/acme/widgets/pull/12',
+                        state: 'open',
+                        repoID: 'r1',
+                        associationID: 'a1',
+                        branch: 'feat-x'
+                    }
+                ]
+            }
         );
 
         const snapshot = toSnapshot(h.state());
+        // workspace-feature.md §11: PR status is looked up again after a restart, never stored.
+        expect(JSON.stringify(snapshot)).not.toContain('pullRequests');
         const workspace = snapshot.workspaces[0];
         expect(workspace).toMatchObject({
             id: W1,
@@ -59,7 +76,8 @@ describe('toSnapshot', () => {
             zoomedPaneID: null,
             savedLayout: null,
             searchingPaneID: null,
-            searchNeedle: ''
+            searchNeedle: '',
+            pullRequests: []
         });
         const pane = reloaded?.panes.find((candidate) => candidate.id === PA);
         expect(pane).toMatchObject({

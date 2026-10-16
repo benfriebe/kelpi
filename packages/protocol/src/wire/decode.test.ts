@@ -761,6 +761,7 @@ describe('workspace and group commands', () => {
             'workspace-mute',
             'workspace-rename',
             'workspace-icon',
+            'workspace-color',
             'group-create',
             'group-rename',
             'group-delete',
@@ -887,6 +888,29 @@ describe('workspace and group commands', () => {
         expect(rejected({ command: 'workspace-icon', name: 'feat-x', icon: true })).toMatchObject({
             reason: 'field-type',
             field: 'icon'
+        });
+    });
+
+    it('decodes workspace-color from a plain shell, keeping color verbatim for the handler', () => {
+        // Explicit chain: no pane_id needed, so an agent outside a pane can recolor a workspace.
+        expect(ok({ command: 'workspace-color', name: 'feat-x', color: 'purple' })).toEqual({
+            command: 'workspace-color',
+            name: 'feat-x',
+            color: 'purple'
+        });
+        // Not `parseWorkspaceColor`'s drop-to-absent: the handler refuses, and says why.
+        expect(ok({ command: 'workspace-color', name: 'feat-x', color: 'teal' })).toMatchObject({ color: 'teal' });
+        expect(ok({ command: 'workspace-color', name: 'feat-x', color: ' Purple ' })).toMatchObject({
+            color: ' Purple '
+        });
+        expect(ok({ command: 'workspace-color', name: 'feat-x' })).toEqual({
+            command: 'workspace-color',
+            name: 'feat-x',
+            color: undefined
+        });
+        expect(rejected({ command: 'workspace-color', name: 'feat-x', color: 3 })).toMatchObject({
+            reason: 'field-type',
+            field: 'color'
         });
     });
 

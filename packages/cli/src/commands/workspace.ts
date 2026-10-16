@@ -19,6 +19,7 @@
 import path from 'node:path';
 
 import { iconRefusal } from '@kelpi/core/codec';
+import { WORKSPACE_COLORS, parseWorkspaceColor } from '@kelpi/protocol';
 
 import {
     absoluteUserPath,
@@ -40,6 +41,7 @@ import { sendJSON } from '../transport.js';
 import {
     workspaceCreateUsage,
     workspaceDeleteUsage,
+    workspaceColorUsage,
     workspaceIconUsage,
     workspaceLabelUsage,
     workspaceListUsage,
@@ -80,9 +82,11 @@ export async function handleWorkspace(args: string[]): Promise<void> {
             return handleWorkspaceRename(args);
         case 'icon':
             return handleWorkspaceIcon(args);
+        case 'color':
+            return handleWorkspaceColor(args);
         default:
             errLine(`Unknown workspace action: ${action}`);
-            errLine('Valid actions: list, create, move, delete, profile, label, mute, rename, icon');
+            errLine('Valid actions: list, create, move, delete, profile, label, mute, rename, icon, color');
             exit(1);
     }
 }
@@ -818,4 +822,61 @@ async function handleWorkspaceIcon(args: string[]): Promise<void> {
     }
     const shown = current.startsWith('emoji:') ? current.slice('emoji:'.length) : current;
     printLine(unchanged ? `${workspaceName}: icon is already ${shown}` : `${workspaceName}: icon set to ${shown}`);
+}
+
+/** Words that ask for "no color", which a workspace cannot have; refused with the reason. */
+const NO_COLOR_WORDS = new Set(['none', 'default', 'clear']);
+
+/**
+ * `kelpi workspace color` (cli.md §10.10, #393): the sidebar's color picker, for agents. Like
+ * `workspace icon` but with no `--clear`, since a workspace always has one of the ten colors.
+ */
+async function handleWorkspaceColor(args: string[]): Promise<void> {
+    if (hasHelpFlag(args)) {
+        writeOut(workspaceColorUsage);
+        exit(0);
+    }
+    const choices = WORKSPACE_COLORS.join(', ');
+    const asJSON = popSwitch('--json', args);
+    if (popSwitch('--clear', args)) {
+        errLine(`kelpi workspace color: a workspace always has a color; give one of ${choices}`);
+        exit(1);
+    }
+    const nameOrID = args.shift();
+    const rawColor = args.shift();
+    for (const positional of [nameOrID, rawColor]) {
+        if (positional !== undefined && positional.trim().startsWith('-')) {
+            errLine(`kelpi workspace color: unknown option ${positional}`);
+            writeErr(workspaceColorUsage);
+            exit(1);
+        }
+    }
+    if (nameOrID === undefined || rawColor === undefined) {
+        writeErr(workspaceColorUsage);
+        exit(1);
+    }
+    rejectLeftoverArgs(args, 'kelpi workspace color', {
+        usage: (write) => write(workspaceColorUsage),
+        positionalHint: 'a workspace has one color'
+    });
+    const normalized = rawColor.trim().toLowerCase();
+    if (parseWorkspaceColor(normalized) === undefined) {
+        errLine(
+            NO_COLOR_WORDS.has(normalized)
+                ? `kelpi workspace color: a workspace always has a color; give one of ${choices}`
+                : `kelpi workspace color: '${rawColor}' is not a workspace color: give one of ${choices}`
+        );
+        exit(1);
+    }
+
+    const reply = await decodeReply({ command: 'workspace-color', name: nameOrID, color: normalized }, 'kelpi workspace color');
+    if (asJSON) {
+        printLine(stableStringify(reply));
+        return;
+    }
+    const workspaceName = asString(reply['workspace_name']) ?? nameOrID;
+    const color = asString(reply['color']) ?? normalized;
+    // `old_color` tells a same-color no-op from a change, as `old_icon` does for icon.
+    const unchanged = asString(reply['old_color']) === color;
+    printLine(unchanged ? `${workspaceName}: color is already ${color}` : `${workspaceName}: color set to ${color}`);
 }

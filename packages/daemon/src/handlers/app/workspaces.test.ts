@@ -1809,3 +1809,101 @@ describe('workspace-icon', () => {
         expect(icons).toEqual([{ kind: 'emoji', grapheme: '🔥' }]);
     });
 });
+
+// ---------------------------------------------------------------------------
+// workspace-color
+// ---------------------------------------------------------------------------
+
+describe('workspace-color', () => {
+    it('sets the color by name, replying with the id, the name, the color and the old one, and persisting', () => {
+        const h = harness({ initial: seeded(2) });
+        h.dispatch({ type: 'set-workspace-color', id: W1, color: 'blue' });
+        h.dispatch({ type: 'set-workspace-color', id: W2, color: 'green' });
+        expect(h.reply({ command: 'workspace-color', name: 'w1', color: 'purple' })).toEqual({
+            ok: true,
+            workspace_id: W1,
+            workspace_name: 'w1',
+            color: 'purple',
+            old_color: 'blue'
+        });
+        expect(h.state().workspaces.map((workspace) => workspace.color)).toEqual(['purple', 'green']);
+        expect(h.persists.length).toBeGreaterThan(0);
+    });
+
+    it('sets by id, in either case, and trims and lowercases the color', () => {
+        const h = harness({ initial: seeded(2) });
+        expect(h.reply({ command: 'workspace-color', name: W2.toLowerCase(), color: ' Purple ' })).toMatchObject({
+            ok: true,
+            workspace_id: W2,
+            color: 'purple'
+        });
+        expect(h.state().workspaces[1]?.color).toBe('purple');
+    });
+
+    it('treats the color it already has as a successful no-op', () => {
+        const h = harness({ initial: seeded(1) });
+        h.dispatch({ type: 'set-workspace-color', id: W1, color: 'red' });
+        const before = h.state();
+        expect(h.reply({ command: 'workspace-color', name: 'w1', color: 'red' })).toMatchObject({
+            ok: true,
+            color: 'red',
+            old_color: 'red'
+        });
+        expect(h.state()).toBe(before);
+        expect(h.persists).toEqual([]);
+    });
+
+    it('refuses a missing or unknown color with the list, without mutating or persisting', () => {
+        const h = harness({ initial: seeded(1) });
+        const before = h.state();
+        const choices = 'red, orange, yellow, green, blue, purple, pink, gray, black, white';
+        expect(h.reply({ command: 'workspace-color', name: 'w1', color: 'teal' })).toEqual({
+            ok: false,
+            error: `'teal' is not a workspace color: give one of ${choices}`
+        });
+        // There is no "clear": a workspace always has a color.
+        expect(h.reply({ command: 'workspace-color', name: 'w1' })).toEqual({
+            ok: false,
+            error: `workspace-color requires color: give one of ${choices}`
+        });
+        expect(h.reply({ command: 'workspace-color', name: 'w1', color: '  ' })['ok']).toBe(false);
+        expect(h.reply({ command: 'workspace-color', name: 'w1', color: 'none' })['ok']).toBe(false);
+        expect(h.state()).toBe(before);
+        expect(h.persists).toEqual([]);
+    });
+
+    it('distinguishes a missing workspace from an ambiguous name, mutating nothing', () => {
+        const h = harness({ initial: seeded(2) });
+        h.dispatch({ type: 'rename-workspace', id: W2, name: 'w1' });
+        const before = h.state();
+        expect(h.reply({ command: 'workspace-color', name: 'ghost', color: 'red' })).toEqual({
+            ok: false,
+            error: 'workspace not found: ghost'
+        });
+        expect(h.reply({ command: 'workspace-color', name: 'w1', color: 'red' })).toEqual({
+            ok: false,
+            error: 'workspace name is ambiguous: w1 (use the id)'
+        });
+        expect(h.reply({ command: 'workspace-color', name: W3, color: 'red' })).toEqual({
+            ok: false,
+            error: `workspace not found: ${W3}`
+        });
+        expect(h.state()).toBe(before);
+        expect(h.persists).toEqual([]);
+    });
+
+    it('streams the color to subscribers as a workspace upsert and shows it in workspace-list', () => {
+        const h = harness({ initial: seeded(1) });
+        h.dispatch({ type: 'set-workspace-color', id: W1, color: 'blue' });
+        const colors: unknown[] = [];
+        h.store.subscribe((batch) => {
+            for (const event of batch) {
+                if (event.kind === 'workspace-upserted') colors.push(event.workspace.color);
+            }
+        });
+        h.reply({ command: 'workspace-color', name: 'w1', color: 'purple' });
+        expect(colors).toEqual(['purple']);
+        const list = h.reply({ command: 'workspace-list' })['workspaces'] as readonly { readonly color: string }[];
+        expect(list[0]?.color).toBe('purple');
+    });
+});

@@ -33,6 +33,7 @@ export const REPLY_COMMANDS: ReadonlySet<WireCommandName> = new Set([
     'workspace-mute',
     'workspace-rename',
     'workspace-icon',
+    'workspace-color',
     'group-set-repo',
     'group-reorder',
     'group-sort',

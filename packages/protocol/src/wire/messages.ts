@@ -435,6 +435,22 @@ export interface WorkspaceIconMessage {
     icon?: string | undefined;
 }
 
+/**
+ * The CLI's spelling of the sidebar's colour picker (#393). The GUI keeps its WS-only
+ * `set-workspace-color` and `set-bulk-color`, which address workspaces by id; this one takes a
+ * name-or-id like every other `workspace-*` verb, so it resolves (and refuses) the way they do.
+ */
+export interface WorkspaceColorMessage {
+    command: 'workspace-color';
+    name: string;
+    /**
+     * One of the ten `WORKSPACE_COLORS`, kept verbatim for the handler, which trims, lowercases
+     * and validates it, so a refusal can say why. There is no "clear": a workspace always has a
+     * colour.
+     */
+    color?: string | undefined;
+}
+
 // ── 6.4 Group commands ──────────────────────────────────────────────────────────────
 
 export interface GroupListMessage {
@@ -836,6 +852,7 @@ export type WireMessage =
     | WorkspaceMuteMessage
     | WorkspaceRenameMessage
     | WorkspaceIconMessage
+    | WorkspaceColorMessage
     | GroupListMessage
     | GroupCreateMessage
     | GroupRenameMessage
@@ -903,6 +920,7 @@ export const EXPLICIT_CHAIN_COMMANDS: ReadonlySet<WireCommandName> = new Set([
     'workspace-mute',
     'workspace-rename',
     'workspace-icon',
+    'workspace-color',
     'group-list',
     'group-create',
     'group-rename',

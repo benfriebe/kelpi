@@ -467,6 +467,13 @@ function decodeCommand(
             // reply can say why, where absent (or null) is the explicit "clear".
             return { command, name, icon: fields.rawText('icon') };
         }
+        case 'workspace-color': {
+            const name = fields.nonEmpty('name');
+            if (name === undefined) return guard(command, 'workspace-color requires name', 'name');
+            // Verbatim, not `parseWorkspaceColor`: that drops an unknown colour to "absent" (right
+            // for create, which then picks one), where this verb must refuse it and say why.
+            return { command, name, color: fields.rawText('color') };
+        }
 
         // ── 6.4 group commands ───────────────────────────────────────────────────────
         case 'group-list':

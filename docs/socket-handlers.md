@@ -108,7 +108,7 @@ rules. This asymmetry is load-bearing for CLI compatibility. Both live in
 Used by: `pane list --workspace`, `pane sync --workspace`, `resolvePaneTarget`'s
 `--workspace` scope, `pane split/create --workspace`, `workspace-move`, `workspace-delete`,
 `workspace-profile`, `workspace-label`, `workspace-mute`, `workspace-rename`,
-`workspace-icon`, `workspace-list --group` (via `resolveGroup`).
+`workspace-icon`, `workspace-color`, `workspace-list --group` (via `resolveGroup`).
 
 ```
 resolveWorkspace(nameOrID):
@@ -124,7 +124,8 @@ resolveWorkspace(nameOrID):
   workspace literally named a UUID is still reachable).
 - Ambiguous names (2+ workspaces with the same exact name) return `null`. Callers that
   want to distinguish "ambiguous" from "missing" must re-check themselves (`workspace-delete`,
-  `workspace-rename` and `workspace-icon` do, through one shared helper, so their messages
+  `workspace-rename`, `workspace-icon` and `workspace-color` do, through one shared helper, so
+  their messages
   match; see §6.4).
 
 ### 2.2 `resolveGroup(nameOrID)` — identical contract for groups
@@ -1414,6 +1415,29 @@ icon is still not (§7.2).
 
 The icon reaches attached windows as a `workspace-upserted` event in the next store delta.
 
+### 6.10 `workspace-color` → handleWorkspaceColor
+
+Inputs: `nameOrID`, `color?` (kept verbatim by the decoder, not run through
+`parseWorkspaceColor`, which would drop an unknown color to absent). Request/response, like
+`workspace-icon` (#393). The GUI's color picker stays on its WS-only `set-workspace-color` /
+`set-bulk-color`, and so does the plugin SDK's `workspaces.setColor`; all end in the same
+reducer actions. A group's color is still not settable from the CLI.
+
+1. Strict `resolveWorkspace`, else the §6.4 pair, as in §6.8.
+2. Trim and lowercase `color`, then it must be one of the ten `WORKSPACE_COLORS`. Absent or
+   blank ⇒ `error("workspace-color requires color: give one of red, orange, …, white")`; any
+   other value ⇒ `error("'{color}' is not a workspace color: give one of red, orange, …, white")`.
+   There is no "clear": a workspace always has a color.
+3. If the color differs from the current one, dispatch `set-workspace-color(id, color)` and
+   persist. The same color is a successful no-op that writes nothing.
+4. Reply, `color` being the color it has now and `old_color` the color before:
+
+```json
+{"ok": true, "workspace_id": "…", "workspace_name": "feat-x", "color": "purple", "old_color": "blue"}
+```
+
+The color reaches attached windows as a `workspace-upserted` event in the next store delta.
+
 ---
 
 ## 7. Group command handlers
@@ -1789,6 +1813,7 @@ web-pane subsystem (see its spec): `web-open`, `web-navigate`, `web-url`, `web-b
 | workspace-mute | `workspace_id`, `workspace_name`, `muted` |
 | workspace-rename | `workspace_id`, `workspace_name` (the new name), `old_name` |
 | workspace-icon | `workspace_id`, `workspace_name`, `icon` (`null` when cleared), `old_icon` |
+| workspace-color | `workspace_id`, `workspace_name`, `color`, `old_color` |
 | group-list | `groups: [...]` |
 | group-reorder / group-sort | `group_id`, `group_name`, `order` |
 | graft-start | `started: [...]`, `partial_error?`, `partial_error_kind?` (failures add `error_kind`) |

@@ -7,7 +7,7 @@
  * UUID-valued fields are emitted uppercase; timestamps are ISO 8601 UTC.
  */
 
-import type { AgentKind, GraftStatus, PaneStatus, PaneType } from '../wire/vocab.js';
+import type { AgentKind, GraftStatus, PaneStatus, PaneType, WorkspaceColor } from '../wire/vocab.js';
 
 export interface ReplyFailure {
     readonly ok: false;
@@ -256,6 +256,15 @@ export interface WorkspaceIconReply extends ReplySuccess {
     readonly icon: string | null;
     /** The icon it had before, so the CLI can say a same-icon request changed nothing. */
     readonly old_icon: string | null;
+}
+
+export interface WorkspaceColorReply extends ReplySuccess {
+    readonly workspace_id: string;
+    readonly workspace_name: string;
+    /** The colour the workspace has now, one of the ten `WORKSPACE_COLORS`. */
+    readonly color: WorkspaceColor;
+    /** The colour it had before, so the CLI can say a same-colour request changed nothing. */
+    readonly old_color: WorkspaceColor;
 }
 
 // ── group replies ───────────────────────────────────────────────────────────────────
@@ -575,6 +584,7 @@ export type WireReply =
     | WorkspaceMuteReply
     | WorkspaceRenameReply
     | WorkspaceIconReply
+    | WorkspaceColorReply
     | GroupListReply
     | GroupOrderReply
     | GraftStartReply

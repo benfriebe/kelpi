@@ -2383,6 +2383,122 @@ describe('workspace icon', () => {
     });
 });
 
+describe('workspace color', () => {
+    const CHOICES = 'red, orange, yellow, green, blue, purple, pink, gray, black, white';
+    const colorReply = (request: Record<string, unknown>): ServerReply => ({
+        lines: [{ ok: true, workspace_id: PANE, workspace_name: 'feat', color: request['color'], old_color: 'blue' }]
+    });
+
+    it('sends the color, waits for the reply and prints it', async () => {
+        server.respond(colorReply);
+        const result = await runCLI(['workspace', 'color', 'feat', 'purple'], { port: server.port });
+        expect(result.code).toBe(0);
+        expect(result.stdout).toBe('feat: color set to purple\n');
+        expect(result.stderr).toBe('');
+        expect(await lastRequest()).toEqual({ command: 'workspace-color', name: 'feat', color: 'purple' });
+    });
+
+    it('trims and lowercases the color and passes an id through untouched', async () => {
+        server.respond(colorReply);
+        const result = await runCLI(['workspace', 'color', PANE, ' Purple '], { port: server.port });
+        expect(result.code).toBe(0);
+        expect(await lastRequest()).toEqual({ command: 'workspace-color', name: PANE, color: 'purple' });
+    });
+
+    it('prints the full reply including ok under --json', async () => {
+        server.respond(colorReply);
+        const result = await runCLI(['workspace', 'color', 'feat', 'red', '--json'], { port: server.port });
+        expect(result.code).toBe(0);
+        expect(JSON.parse(result.stdout)).toEqual({
+            ok: true,
+            workspace_id: PANE,
+            workspace_name: 'feat',
+            color: 'red',
+            old_color: 'blue'
+        });
+    });
+
+    it('says when the color was already set, from old_color', async () => {
+        server.respond((request) => ({
+            lines: [{ ok: true, workspace_id: PANE, workspace_name: 'feat', color: request['color'], old_color: request['color'] }]
+        }));
+        const same = await runCLI(['workspace', 'color', 'feat', 'blue'], { port: server.port });
+        expect(same.code).toBe(0);
+        expect(same.stdout).toBe('feat: color is already blue\n');
+    });
+
+    it('refuses an unknown color, and --clear / none, before sending', async () => {
+        for (const bad of ['teal', '', '#ff0000']) {
+            const result = await runCLI(['workspace', 'color', 'feat', bad], { port: server.port });
+            expect(result.code).toBe(1);
+            expect(result.stdout).toBe('');
+            expect(result.stderr).toBe(`kelpi workspace color: '${bad}' is not a workspace color: give one of ${CHOICES}\n`);
+        }
+        for (const argv of [['feat', '--clear'], ['--clear'], ['feat', 'none'], ['feat', 'Default']]) {
+            const result = await runCLI(['workspace', 'color', ...argv], { port: server.port });
+            expect(result.code).toBe(1);
+            expect(result.stderr).toBe(`kelpi workspace color: a workspace always has a color; give one of ${CHOICES}\n`);
+        }
+        expect(server.requests).toHaveLength(0);
+    });
+
+    it('exits 1 with the daemon error for a missing or ambiguous workspace', async () => {
+        server.respond(() => ({ lines: [{ ok: false, error: 'workspace not found: ghost' }] }));
+        const missing = await runCLI(['workspace', 'color', 'ghost', 'red'], { port: server.port });
+        expect(missing.code).toBe(1);
+        expect(missing.stderr).toBe('kelpi workspace color: workspace not found: ghost\n');
+
+        server.respond(() => ({ lines: [{ ok: false, error: 'workspace name is ambiguous: dup (use the id)' }] }));
+        const ambiguous = await runCLI(['workspace', 'color', 'dup', 'red'], { port: server.port });
+        expect(ambiguous.code).toBe(1);
+        expect(ambiguous.stderr).toBe('kelpi workspace color: workspace name is ambiguous: dup (use the id)\n');
+    });
+
+    it('prints usage and exits 1 for missing arguments, options and strays', async () => {
+        const none = await runCLI(['workspace', 'color'], { port: server.port });
+        expect(none.code).toBe(1);
+        expect(none.stderr).toContain('kelpi workspace color <name-or-id> <color> [--json]');
+
+        const one = await runCLI(['workspace', 'color', 'feat'], { port: server.port });
+        expect(one.code).toBe(1);
+        expect(one.stderr).toContain('kelpi workspace color <name-or-id> <color> [--json]');
+
+        const option = await runCLI(['workspace', 'color', 'feat', '--force'], { port: server.port });
+        expect(option.code).toBe(1);
+        expect(option.stderr).toContain('kelpi workspace color: unknown option --force');
+
+        const stray = await runCLI(['workspace', 'color', 'feat', 'red', 'blue'], { port: server.port });
+        expect(stray.code).toBe(1);
+        expect(stray.stderr).toContain("unexpected argument 'blue'");
+        expect(stray.stderr).toContain('a workspace has one color');
+        expect(server.requests).toHaveLength(0);
+    });
+
+    it('fails loudly against a daemon too old to know the verb', async () => {
+        server.respond(() => ({ silent: true }));
+        const result = await runCLI(['workspace', 'color', 'feat', 'red'], { port: server.port });
+        expect(result.code).toBe(1);
+        expect(result.stderr).toContain('kelpi workspace color: no response from Kelpi (upgrade required?)');
+    });
+
+    it('is listed in workspace --help and has its own --help', async () => {
+        const group = await runCLI(['workspace', '--help'], { port: server.port });
+        expect(group.stdout).toContain('list|create|move|delete|profile|label|mute|rename|icon|color');
+        expect(group.stdout).toMatch(/^ {2}color {5}Set a workspace's color\.$/m);
+
+        const own = await runCLI(['workspace', 'color', '--help'], { port: server.port });
+        expect(own.code).toBe(0);
+        expect(own.stdout).toContain('kelpi workspace color <name-or-id> <color> [--json]');
+        expect(own.stdout).toContain('old_color');
+
+        const global = await runCLI(['--help'], { port: server.port });
+        expect(global.stderr).toContain('kelpi workspace color <name-or-id> <color> [--json]');
+
+        const unknown = await runCLI(['workspace', 'retitle'], { port: server.port });
+        expect(unknown.stderr).toContain('Valid actions: list, create, move, delete, profile, label, mute, rename, icon, color');
+    });
+});
+
 describe('workspace create --icon', () => {
     it('sends the prefixed icon and accepts a reply that echoes it', async () => {
         server.respond((request) => ({

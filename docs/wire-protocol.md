@@ -288,7 +288,8 @@ Every request carries `"command": "<verb>"`. Parsing happens in three stages:
 1. **Explicit command chain** — each of the following commands is matched by name and has
    its own field guards (documented per command in §6): `workspace-create`,
    `workspace-list`, `workspace-move`, `workspace-delete`, `workspace-profile`,
-   `workspace-label`, `workspace-mute`, `workspace-rename`, `workspace-icon`, `group-list`,
+   `workspace-label`, `workspace-mute`, `workspace-rename`, `workspace-icon`, `workspace-color`,
+   `group-list`,
    `group-create`, `group-rename`, `group-delete`, `group-move`, `group-set-repo`,
    `group-reorder`, `group-sort`, `open`, `diff`,
    `pane-close`, `pane-list`, `pane-capture`, `graft-start`, `graft-stop`,
@@ -343,7 +344,7 @@ pane-list, pane-close, pane-capture, pane-send, pane-send-key,
 pane-split, pane-create, pane-name, pane-resize, pane-font-size, pane-clear,
 pane-move-adjacent, pane-sync, pane-sync-exclude,
 workspace-create, workspace-delete, workspace-nest, workspace-label, workspace-mute, workspace-rename,
-workspace-icon,
+workspace-icon, workspace-color,
 group-set-repo, group-reorder, group-sort,
 graft-start, graft-stop, graft-status,
 ping, restart-old-terminals,
@@ -528,6 +529,7 @@ carry `"command"`.
 | `workspace-mute` | R/R | `name` | `muted` |
 | `workspace-rename` | R/R | `name`, `new_name` | - |
 | `workspace-icon` | R/R | `name` | `icon` |
+| `workspace-color` | R/R | `name` | `color` |
 | `group-list` | R/R | — | — |
 | `group-create` | F&F | `name` | `color` |
 | `group-rename` | F&F | `name`, `new_name` | — |
@@ -1487,6 +1489,28 @@ Group icons have no such verb: they stay a sidebar gesture (socket-handlers.md �
 daemon that predates the verb, the CLI reports "no response from Kelpi (upgrade required?)" with
 exit 1, as for `workspace-rename`.
 
+#### `workspace-color` (R/R)
+
+`name` (required non-empty) = workspace name-or-id (§5.8, strict); `color` = one of the ten
+`WorkspaceColor` values (`red`, `orange`, `yellow`, `green`, `blue`, `purple`, `pink`, `gray`,
+`black`, `white`), matched after trimming and lowercasing, so `" Purple "` is `purple`. The
+CLI's spelling of the sidebar's color picker (#393); the GUI keeps its WS-only
+`set-workspace-color` / `set-bulk-color`. Unlike `workspace-create`'s `color`, an unknown value is
+refused, not dropped. There is no "clear": a workspace always has a color, so an absent `color` is
+refused too. The color reaches every attached client through the ordinary store delta. Setting
+the color the workspace already has succeeds without writing anything; the reply's `old_color`
+then equals `color`.
+
+```json
+{"command":"workspace-color","name":"feat-x","color":"purple"}
+→ {"ok":true,"workspace_id":"<uuid>","workspace_name":"feat-x","color":"purple","old_color":"blue"}
+```
+
+Refusals: `workspace not found: <name>` and `workspace name is ambiguous: <name> (use the
+id)` (as for `workspace-rename`), `workspace-color requires color: give one of red, orange, …,
+white` for an absent or blank `color`, and `'<x>' is not a workspace color: give one of red,
+orange, …, white` for anything else. Group colors have no such verb.
+
 ---
 
 ### 6.4 Group commands
@@ -1879,7 +1903,7 @@ other key is ignored. (A known key with the wrong type poisons the whole message
 | `direction` | string | `pane-split`, `pane-move`, `web-open` (GUI split anchor) |
 | `path` | string | `pane-split`, `pane-create`, `workspace-create`, `open` |
 | `name` | string | `pane-split`/`pane-create` (label), `pane-name` (new label), `workspace-*` (name-or-id or new name), `group-*` (name-or-id), `layout-select` (layout name), `pane-move-to-workspace` (dest ws), `web-cookies-delete` (cookie name) |
-| `color` | string | `workspace-create`, `group-create` |
+| `color` | string | `workspace-create`, `workspace-color`, `group-create` |
 | `target` | string | pane-target commands, `web-open` (GUI split anchor) |
 | `text` | string | `pane-send`; **`pane-move-to-workspace`'s create flag (`"true"`)**; `web-type` |
 | `key` | string | `pane-send-key`, `web-key` |

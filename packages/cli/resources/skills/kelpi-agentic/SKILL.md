@@ -542,6 +542,19 @@ kelpi workspace rename <name-or-id> <new-name> [--json]
 # workspace or an icon that is not one emoji.
 kelpi workspace icon <name-or-id> (<emoji> | --clear) [--json]
 
+# Set a workspace's color (request/response), the same as the sidebar's
+# color picker. One of red, orange, yellow, green, blue, purple, pink,
+# gray, black, white; there is no --clear (a workspace always has a
+# color). Users may give colors a meaning (e.g. purple = PR merged, ready
+# to tear down); when you own a workspace's PR, follow that convention
+# yourself instead of asking the user to recolor it. Prefer the id, as for
+# rename. Prints `<name>: color set to <color>`, or `color is already
+# <color>` when nothing changed; --json gives
+# {ok,workspace_id,workspace_name,color,old_color}. Exits non-zero, with
+# the reason on stderr, for a missing or ambiguous workspace or a color
+# that is not one of the ten.
+kelpi workspace color <name-or-id> <color> [--json]
+
 # Delete one or more workspaces by name-or-id (request/response). Deletes
 # outright — no CLI prompt — closing any remaining panes. Refuses to
 # delete the last remaining workspace. Exits non-zero if any delete fails.

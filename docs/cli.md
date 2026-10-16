@@ -407,6 +407,7 @@ Commands wired to `rejectLeftoverArgs`: `pane split`, `pane create`, `pane resiz
 `pane move` (adjacent form), `pane list`, `pane capture`, `workspace list`,
 `workspace create`, `workspace label`, `workspace mute`, `workspace rename` (hint `quote a
 new name that contains spaces`), `workspace icon` (hint `an icon is one emoji`),
+`workspace color` (hint `a workspace has one color`),
 `group reorder`, `group sort`, `install-hooks` (hint `this
 command takes options only`). Several other
 commands implement equivalent bespoke checks (`pane close`, `pane name`, `pane send-key`,
@@ -1023,7 +1024,7 @@ the caller's workspace via `KELPI_PANE_ID`; `--workspace` overrides.
 
 Dispatcher: missing action => group usage to stderr, exit 1; `--help|-h|help` => group
 usage to stdout, exit 0; unknown action => `Unknown workspace action: <x>` +
-`Valid actions: list, create, move, delete, profile, label, mute, rename, icon`, exit 1.
+`Valid actions: list, create, move, delete, profile, label, mute, rename, icon, color`, exit 1.
 
 ### 10.1 `kelpi workspace list`
 
@@ -1399,6 +1400,43 @@ the workspace already has succeeds and writes nothing. The change persists and s
 attached client. Reply `{ok, workspace_id, workspace_name, icon, old_icon}`, `icon` being
 `"emoji:<emoji>"`, or `null` once cleared, and `old_icon` the icon before, in the same
 spelling. Group icons stay a sidebar gesture.
+
+### 10.10 `kelpi workspace color` (issue #393)
+
+```
+kelpi workspace color <name-or-id> <color> [--json]
+```
+
+The sidebar's and the inspector's color picker for the terminal, so an agent can use a
+workspace's color as status (for example, turn it purple once its PR merges). The GUI and the
+plugin SDK's `workspaces.setColor` set the same color through the WebSocket-only
+`set-workspace-color` / `set-bulk-color`.
+
+- Help to stdout, exit 0. A missing `<name-or-id>` or `<color>` => usage to stderr, exit 1.
+- A dash-prefixed positional => `kelpi workspace color: unknown option <x>` + usage, exit 1. A
+  third positional => `kelpi workspace color: unexpected argument '<x>'` with the hint `a
+  workspace has one color`, exit 1.
+- The color is trimmed and lowercased and must be one of the ten `WorkspaceColor` values (`red`,
+  `orange`, `yellow`, `green`, `blue`, `purple`, `pink`, `gray`, `black`, `white`); anything else
+  => `kelpi workspace color: '<x>' is not a workspace color: give one of <the ten>`, exit 1,
+  before anything is sent.
+- There is no `--clear`: a workspace always has a color (a new one gets a random one). `--clear`,
+  `none`, `default` and `clear` => `kelpi workspace color: a workspace always has a color; give
+  one of <the ten>`, exit 1.
+- Payload: `{"command":"workspace-color","name":<name-or-id>,"color":"<color>"}`.
+- Request/response. `--json`: full reply **including `ok`**, compact sorted.
+- Default: `<workspace_name>: color set to <color>`; when the reply's `old_color` equals `color`
+  (nothing changed), `<workspace_name>: color is already <color>`.
+- Against a daemon that predates the verb: `no response from Kelpi (upgrade required?)`,
+  exit 1 (§6.1).
+
+Server contract: `<name-or-id>` resolves strictly, with `workspace rename`'s errors (`workspace
+not found: <name>`, `workspace name is ambiguous: <name> (use the id)`), both exit 1. The
+daemon trims, lowercases and validates the color again, refusing a missing one with
+`workspace-color requires color: give one of <the ten>` (unlike `workspace create --color`,
+which drops an unknown color and picks one). Setting the color the workspace already has
+succeeds and writes nothing. The change persists and syncs to every attached client. Reply
+`{ok, workspace_id, workspace_name, color, old_color}`. Group colors stay a sidebar gesture.
 
 ---
 
@@ -2405,7 +2443,7 @@ Request/response: `ping`, `pane-split`, `pane-create`, `pane-close`, `pane-name`
 `pane-resize`, `pane-send`, `pane-send-key`, `pane-move-adjacent`, `pane-list`,
 `pane-capture`, `pane-sync`, `pane-sync-exclude`, `workspace-list`, `workspace-create`,
 `workspace-delete`, `workspace-nest`, `workspace-label`, `workspace-mute`, `workspace-rename`,
-`workspace-icon`, `group-list`, `group-set-repo`, `group-reorder`, `group-sort`,
+`workspace-icon`, `workspace-color`, `group-list`, `group-set-repo`, `group-reorder`, `group-sort`,
 `graft-start`, `graft-stop`, `graft-status`, and the web family: `web-open`, `web-navigate`, `web-url`, `web-back`,
 `web-forward`, `web-reload`, `web-capture`, `web-tabs`, `web-tab-new`, `web-tab-close`,
 `web-tab-select`, `web-console` (streaming with `follow:true`), `web-inspect`,

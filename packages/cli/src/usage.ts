@@ -42,6 +42,7 @@ export const globalUsage = `Usage:
   kelpi workspace mute <name-or-id> [--off | --toggle] [--json]
   kelpi workspace rename <name-or-id> <new-name> [--json]
   kelpi workspace icon <name-or-id> (<emoji> | --clear) [--json]
+  kelpi workspace color <name-or-id> <color> [--json]
   kelpi group list [--json] [--no-header]
   kelpi group create <name> [--color blue]
   kelpi group rename <name-or-id> <new-name>
@@ -354,7 +355,7 @@ when --workspace is not supplied.
 `;
 
 export const workspaceUsage = `Usage:
-  kelpi workspace list|create|move|delete|profile|label|mute|rename|icon [...]
+  kelpi workspace list|create|move|delete|profile|label|mute|rename|icon|color [...]
 
 Subcommands:
   list      List every workspace (grouped + top-level).
@@ -368,6 +369,7 @@ Subcommands:
   mute      Mute or unmute a workspace's notifications.
   rename    Rename a workspace.
   icon      Set or clear a workspace's sidebar icon.
+  color     Set a workspace's color.
 
 Run \`kelpi workspace <subcommand> --help\` for subcommand-specific usage.
 
@@ -581,6 +583,25 @@ Options:
 
 Exit codes: 0 on success, non-zero on failure (unknown/ambiguous
 workspace, not one emoji, an emoji together with --clear).
+
+`;
+
+export const workspaceColorUsage = `Usage:
+  kelpi workspace color <name-or-id> <color> [--json]
+
+Sets a workspace's color, like the sidebar's and the inspector's color
+picker. The color is one of red, orange, yellow, green, blue, purple,
+pink, gray, black, white. A workspace always has a color, so there is no
+--clear. Setting the color it already has succeeds and changes nothing.
+The color syncs to every attached client.
+
+Options:
+  --json         Print the structured reply (workspace_id, workspace_name,
+                 color, old_color).
+  -h, --help     Show this help.
+
+Exit codes: 0 on success, non-zero on failure (unknown/ambiguous
+workspace, not one of the ten colors).
 
 `;
 

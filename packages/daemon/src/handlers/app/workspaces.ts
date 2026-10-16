@@ -6,7 +6,8 @@
  * run, failures are silently dropped — §1 legacy path).
  * `workspace-mute` is request/response too, so a toggle can report the state it produced, and
  * so is `workspace-rename`, so a rename that did not resolve is an error rather than silence,
- * and so is `workspace-icon`, for the same reason, and `workspace-nest` (app-state-core.md §2.9),
+ * and so are `workspace-icon` and `workspace-color`, for the same reason, and `workspace-nest`
+ * (app-state-core.md §2.9),
  * because nesting is one level deep and a refusal has to reach the caller.
  *
  * Ordering rules that are contract:
@@ -42,7 +43,9 @@ import {
     type WorkspaceScope
 } from '@kelpi/core/resolve';
 import {
+    WORKSPACE_COLORS,
     buildWorkspaceListEntry,
+    parseWorkspaceColor,
     type JsonObject,
     type WorkspaceColor,
     type WorkspaceCreateMessage,
@@ -1446,6 +1449,50 @@ function handleWorkspaceIcon(
 }
 
 // ---------------------------------------------------------------------------
+// workspace-color (§6.10)
+// ---------------------------------------------------------------------------
+
+/**
+ * The sidebar's colour picker, for the CLI (#393). The colour is trimmed and lowercased, then
+ * must be one of the ten `WORKSPACE_COLORS`; anything else is refused with the list, never
+ * dropped the way `workspace-create` drops an unknown colour. There is no "clear": a workspace
+ * always has a colour. Setting the colour it already has is a successful no-op.
+ */
+function handleWorkspaceColor(
+    nameOrID: string,
+    rawColor: string | undefined,
+    ctx: AppContext,
+    reply: ReplyHandle | null,
+    deps: AppDeps
+): void {
+    const state = ctx.store.getState();
+    const scope = resolveStateOf(state);
+    const resolved = resolveWorkspaceStrict(scope, nameOrID);
+    const workspace = resolved === null ? null : workspaceByID(state, resolved.id);
+    if (workspace === null) {
+        fail(reply, unresolvedWorkspaceError(scope, nameOrID));
+        return;
+    }
+    const color = parseWorkspaceColor(rawColor?.trim().toLowerCase());
+    if (color === undefined) {
+        const choices = WORKSPACE_COLORS.join(', ');
+        fail(
+            reply,
+            rawColor === undefined || rawColor.trim() === ''
+                ? `workspace-color requires color: give one of ${choices}`
+                : `'${rawColor}' is not a workspace color: give one of ${choices}`
+        );
+        return;
+    }
+    const oldColor = workspace.color;
+    if (color !== oldColor) {
+        ctx.store.dispatch({ type: 'set-workspace-color', id: workspace.id, color });
+        deps.persist();
+    }
+    ok(reply, { workspace_id: uuidOut(workspace.id), workspace_name: workspace.name, color, old_color: oldColor });
+}
+
+// ---------------------------------------------------------------------------
 // Table
 // ---------------------------------------------------------------------------
 
@@ -1481,6 +1528,9 @@ export function workspaceHandlerEntries(deps: AppDeps): readonly (readonly [stri
         }),
         forCommand('workspace-icon', (msg, ctx, reply) => {
             handleWorkspaceIcon(msg.name, msg.icon, ctx, reply, deps);
+        }),
+        forCommand('workspace-color', (msg, ctx, reply) => {
+            handleWorkspaceColor(msg.name, msg.color, ctx, reply, deps);
         })
     ];
 }

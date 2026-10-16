@@ -40,6 +40,8 @@ export const PR_RATE_LIMIT_PAUSE_MS = 15 * 60_000;
 export const PR_REPO_CACHE_MS = 60 * 60_000;
 /** How long a working `gh`'s list of logged-in hosts is believed. */
 export const PR_AUTH_RECHECK_MS = 60 * 60_000;
+/** How soon a recheck that could not reach GitHub is tried again. */
+export const PR_AUTH_RETRY_MS = 5 * 60_000;
 export const PR_DEBOUNCE_MS = 2_000;
 export const PR_TICK_MS = 5_000;
 export const PR_MAX_CONCURRENT = 2;
@@ -59,9 +61,15 @@ export interface PullRequestGit {
     remoteURL(repoPath: string): Promise<string | null>;
     /** The repo's default branch name, or null when it cannot be told. */
     defaultBranch(repoPath: string): Promise<string | null>;
-    /** Whether `commit` is the tip of `branch` or one of its ancestors, here. */
-    isAncestor(worktreePath: string, commit: string, branch: string): Promise<boolean>;
+    /**
+     * Where a PR's head commit stands against `branch` here: `contained` (the local branch or
+     * `origin/<branch>` has it), `ahead` (it descends from the local tip: pushed to on GitHub
+     * and fetched), `unrelated` (known, but another line of work) or `unknown` (never fetched).
+     */
+    headRelation(worktreePath: string, commit: string, branch: string): Promise<HeadRelation>;
 }
+
+export type HeadRelation = 'contained' | 'ahead' | 'unrelated' | 'unknown';
 
 export interface CreatePullRequestPollerOptions {
     readonly store: PullRequestStore;
@@ -114,7 +122,11 @@ interface KeyState {
     worktreePath: string;
     active: boolean;
     lastRunAt: number | null;
+    /** Not looked up before this (a key that just appeared waits out the debounce). */
+    eligibleAt: number;
     result: readonly Found[] | null;
+    /** PR numbers this daemon has seen OPEN on this key: a later merge of one is ours. */
+    readonly seenOpen: Set<number>;
     sequence: number;
     running: boolean;
 }
@@ -202,6 +214,14 @@ function isAuthFailure(result: GhResult): boolean {
         /gh auth login|not logged in|authentication required|HTTP 401|bad credentials/i.test(result.stderr);
 }
 
+/** At most `TITLE_MAX` UTF-16 units, never ending on half of a surrogate pair. */
+function clipTitle(raw: unknown): string {
+    const title = typeof raw === 'string' ? raw : '';
+    if (title.length <= TITLE_MAX) return title;
+    const clipped = title.slice(0, TITLE_MAX);
+    return /[\uD800-\uDBFF]$/.test(clipped) ? clipped.slice(0, -1) : clipped;
+}
+
 function stateOf(raw: Record<string, unknown>): PullRequestState | null {
     switch (raw['state']) {
         case 'OPEN':
@@ -245,6 +265,11 @@ export function createPullRequestPoller(options: CreatePullRequestPollerOptions)
     /** Bumped whenever every answer in flight stops counting (off, unavailable, disposed). */
     let generation = 0;
     let lastSignature: string | null = null;
+    let lastInputs: {
+        readonly workspaces: DaemonState['workspaces'] | null;
+        readonly repos: DaemonState['repos'] | null;
+        readonly active: string | null;
+    } = { workspaces: null, repos: null, active: null };
     let live = false;
     let started = false;
     let disposed = false;
@@ -313,8 +338,16 @@ export function createPullRequestPoller(options: CreatePullRequestPollerOptions)
                 markUnavailable('gh was not found');
                 return;
             }
-            const found = loggedInHosts(`${result.stdout}\n${result.stderr}`);
+            const output = `${result.stdout}\n${result.stderr}`;
+            const found = loggedInHosts(output);
             if (found.size === 0) {
+                // `auth status` checks each token against the API, so a timeout or an offline
+                // laptop names no host either. Only gh saying it holds no login stands a working
+                // poller down; anything else keeps the hosts it had and asks again sooner.
+                if (availability === 'available' && !/not logged in/i.test(output)) {
+                    authCheckedAt = clock() - PR_AUTH_RECHECK_MS + PR_AUTH_RETRY_MS;
+                    return;
+                }
                 markUnavailable(result.timedOut ? 'gh auth status timed out' : 'gh is not logged in');
                 return;
             }
@@ -375,15 +408,20 @@ export function createPullRequestPoller(options: CreatePullRequestPollerOptions)
             if (String(owner['login']).toLowerCase() !== ref.owner.toLowerCase() ||
                 String(repository['name']).toLowerCase() !== ref.name.toLowerCase()) continue;
             if (state === 'merged' || state === 'closed') {
-                // A branch name gets reused. A finished PR is ours only if its head commit is
-                // this branch's tip or behind it; a commit we have never had is someone else's.
+                // A branch name gets reused, so a finished PR must be shown to be ours: its head
+                // is on this branch (or on origin's copy of it), or descends from our tip (GitHub's
+                // Update branch, a commit made in the web UI, then a fetch). A head this repo has
+                // never fetched counts only for a PR this daemon already saw open on this branch.
                 const head = entry['headRefOid'];
                 if (typeof head !== 'string' || !/^[0-9a-f]{40}([0-9a-f]{24})?$/i.test(head)) continue;
-                if (!await git.isAncestor(key.worktreePath, head, key.branch)) continue;
+                const relation = await git.headRelation(key.worktreePath, head, key.branch);
+                if (relation === 'unrelated') continue;
+                if (relation === 'unknown' && !key.seenOpen.has(number)) continue;
+            } else {
+                key.seenOpen.add(number);
             }
-            const title = typeof entry['title'] === 'string' ? entry['title'] : '';
             numbers.add(number);
-            out.push({ number, title: title.length > TITLE_MAX ? title.slice(0, TITLE_MAX) : title, url, state });
+            out.push({ number, title: clipTitle(entry['title']), url, state });
         }
         return out;
     };
@@ -471,8 +509,11 @@ export function createPullRequestPoller(options: CreatePullRequestPollerOptions)
         return key.active ? activeInterval : idleInterval;
     };
 
-    /** Bring `keys` in line with the store; true when a key was dropped (rows may change). */
-    const syncKeys = (): boolean => {
+    /**
+     * Bring `keys` in line with the store; true when a key was dropped (rows may change). A key
+     * added here is not looked up before `eligibleAt`.
+     */
+    const syncKeys = (eligibleAt: number): boolean => {
         const desired = desiredKeys(store.getState());
         let dropped = false;
         for (const id of [...keys.keys()]) {
@@ -496,7 +537,9 @@ export function createPullRequestPoller(options: CreatePullRequestPollerOptions)
                 worktreePath: want.worktreePath,
                 active: want.active,
                 lastRunAt: null,
+                eligibleAt,
                 result: null,
+                seenOpen: new Set(),
                 sequence: 0,
                 running: false
             });
@@ -515,9 +558,10 @@ export function createPullRequestPoller(options: CreatePullRequestPollerOptions)
         const now = clock();
         if (now < pausedUntil) return;
         if (availability === 'unavailable' && now < retryAt) return;
-        if (syncKeys()) project();
+        if (syncKeys(now)) project();
         const due = [...keys.values()]
-            .filter((key) => !key.running && (key.lastRunAt === null || now - key.lastRunAt >= intervalOf(key)))
+            .filter((key) => !key.running && now >= key.eligibleAt &&
+                (key.lastRunAt === null || now - key.lastRunAt >= intervalOf(key)))
             .sort((left, right) => (left.lastRunAt ?? -Infinity) - (right.lastRunAt ?? -Infinity));
         for (const key of due) {
             if (inFlight >= maxConcurrent) break;
@@ -538,13 +582,19 @@ export function createPullRequestPoller(options: CreatePullRequestPollerOptions)
 
     const onStore = (): void => {
         if (disposed) return;
-        const signature = signatureOf(store.getState());
+        const state = store.getState();
+        // Most dispatches (a pane title, an agent event) touch none of these three.
+        if (state.workspaces === lastInputs.workspaces && state.repos === lastInputs.repos &&
+            state.lastActiveWorkspaceID === lastInputs.active) return;
+        lastInputs = { workspaces: state.workspaces, repos: state.repos, active: state.lastActiveWorkspaceID };
+        const signature = signatureOf(state);
         if (signature === lastSignature) return;
         lastSignature = signature;
         if (!live) return;
         // Drop what no longer applies now (a key, or an association that moved); look up what
-        // is new after the debounce.
-        syncKeys();
+        // is new once the debounce has passed, even if the ticker comes round sooner, so a
+        // quick run of checkouts never asks GitHub about the branches passed through.
+        syncKeys(clock() + debounce);
         project();
         scheduleSoon();
     };

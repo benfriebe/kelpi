@@ -1,5 +1,5 @@
 /**
- * The poller's three git reads (workspace-feature.md §11.1), on the daemon's git runner.
+ * The poller's git reads (workspace-feature.md §11.1), on the daemon's git runner.
  *
  * Background reads: no prompt may be shown (`BACKGROUND_GIT_ENV`) and none may hang a lookup
  * slot, so each has a short budget. All of them answer null/false rather than throw.
@@ -32,15 +32,22 @@ export function createPullRequestGit(run: GitRunner): PullRequestGit {
                 return null;
             }
         },
-        async isAncestor(worktreePath, commit, branch) {
-            // Exit 0: an ancestor (or the tip itself). Exit 1: not one. Anything else, a commit
-            // this repo has never had included: not ours either.
-            try {
-                await read(['merge-base', '--is-ancestor', commit, `refs/heads/${branch}`], worktreePath);
-                return true;
-            } catch {
-                return false;
-            }
+        async headRelation(worktreePath, commit, branch) {
+            // Each probe answers by exit code: 0 yes, anything else no.
+            const holds = async (args: readonly string[]): Promise<boolean> => {
+                try {
+                    await read(args, worktreePath);
+                    return true;
+                } catch {
+                    return false;
+                }
+            };
+            if (!await holds(['cat-file', '-e', `${commit}^{commit}`])) return 'unknown';
+            const local = `refs/heads/${branch}`;
+            if (await holds(['merge-base', '--is-ancestor', commit, local])) return 'contained';
+            if (await holds(['merge-base', '--is-ancestor', commit, `refs/remotes/origin/${branch}`])) return 'contained';
+            if (await holds(['merge-base', '--is-ancestor', local, commit])) return 'ahead';
+            return 'unrelated';
         }
     };
 }

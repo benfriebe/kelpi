@@ -126,6 +126,10 @@ export default async function ({ page, cli, sandbox, rec, d, sleep }) {
     try {
         // ── open: the row shows it ───────────────────────────────────────────────────────
         d.scriptGh(sandbox, { loggedIn: true, pulls: { 'feat-x': [wirePR(12, 'OPEN', tip)] } });
+        // An earlier scenario in this lane may have left the poller standing down on the
+        // unscripted (logged-out) stub for its ten minutes; off and on asks gh again at once.
+        await setPrStatus(false);
+        await setPrStatus(true);
         const created = JSON.parse(
             await cli.ok(['workspace', 'create', '--name', `PR status ${TAG}`, '--path', repo, '--repo', repo, '--json'])
         );

@@ -6,11 +6,14 @@ import {
     createPullRequestPoller,
     loggedInHosts,
     PR_ACTIVE_INTERVAL_MS,
+    PR_AUTH_RECHECK_MS,
+    PR_AUTH_RETRY_MS,
     PR_DEBOUNCE_MS,
     PR_IDLE_INTERVAL_MS,
     PR_RATE_LIMIT_PAUSE_MS,
     PR_SETTLED_INTERVAL_MS,
     PR_UNAVAILABLE_RETRY_MS,
+    type HeadRelation,
     type PullRequestGit,
     type PullRequestPoller
 } from './pr-poller.js';
@@ -102,8 +105,8 @@ function fakeGh(): FakeGh {
 interface FakeGit extends PullRequestGit {
     readonly remotes: Map<string, string | null>;
     readonly defaults: Map<string, string | null>;
-    /** Commits that are ancestors of (or equal to) the branch tip. */
-    readonly ancestors: Set<string>;
+    /** Head commit → where it stands against the branch; anything unlisted is `unknown`. */
+    readonly relations: Map<string, HeadRelation>;
     remoteReads: number;
 }
 
@@ -111,7 +114,7 @@ function fakeGit(): FakeGit {
     const git: FakeGit = {
         remotes: new Map([['/repo', 'git@github.com:acme/widgets.git']]),
         defaults: new Map([['/repo', 'main']]),
-        ancestors: new Set([TIP]),
+        relations: new Map([[TIP, 'contained']]),
         remoteReads: 0,
         async remoteURL(repoPath) {
             git.remoteReads += 1;
@@ -120,8 +123,8 @@ function fakeGit(): FakeGit {
         async defaultBranch(repoPath) {
             return git.defaults.get(repoPath) ?? null;
         },
-        async isAncestor(_worktreePath, commit) {
-            return git.ancestors.has(commit);
+        async headRelation(_worktreePath, commit) {
+            return git.relations.get(commit) ?? 'unknown';
         }
     };
     return git;
@@ -321,13 +324,46 @@ describe('createPullRequestPoller', () => {
         expect(h.prs().map((entry) => entry.number)).toEqual([24]);
     });
 
-    it('counts a merged PR only when its head is on this branch, so a reused name is not "merged"', async () => {
+    it('counts a merged PR only when its head is ours, so a reused name is not "merged"', async () => {
         const h = make({ start: false });
-        const old = 'b'.repeat(40);
-        h.gh.pulls.set('feat-x', [wirePR(30, 'merged', { oid: old }), wirePR(31, 'closed', { oid: 'not-a-sha' }), wirePR(32, 'merged')]);
+        const unrelated = 'b'.repeat(40);
+        const never = 'c'.repeat(40);
+        const ahead = 'd'.repeat(40);
+        h.git.relations.set(unrelated, 'unrelated');
+        h.git.relations.set(ahead, 'ahead');
+        h.gh.pulls.set('feat-x', [
+            wirePR(30, 'merged', { oid: unrelated }),
+            wirePR(31, 'closed', { oid: 'not-a-sha' }),
+            wirePR(32, 'merged'),
+            // GitHub's Update branch, then a fetch: the head descends from our tip.
+            wirePR(33, 'merged', { oid: ahead }),
+            // A head this repo never fetched, for a PR never seen open here.
+            wirePR(34, 'merged', { oid: never })
+        ]);
         h.poller.start();
         await flush();
-        expect(h.prs().map((entry) => entry.number)).toEqual([32]);
+        expect(h.prs().map((entry) => entry.number)).toEqual([33, 32]);
+    });
+
+    it('keeps a PR it saw open when it merges with a head this repo never fetched', async () => {
+        const h = make({ start: false });
+        const remoteOnly = 'e'.repeat(40);
+        h.gh.pulls.set('feat-x', [wirePR(12, 'open')]);
+        h.poller.start();
+        await flush();
+        // A commit made in the web UI, then the merge: GitHub's head is not in this clone.
+        h.gh.pulls.set('feat-x', [wirePR(12, 'merged', { oid: remoteOnly })]);
+        await advance(PR_ACTIVE_INTERVAL_MS);
+        expect(h.prs().map((entry) => [entry.number, entry.state])).toEqual([[12, 'merged']]);
+    });
+
+    it('clips a long title without splitting a surrogate pair', async () => {
+        const h = make({ start: false });
+        h.gh.pulls.set('feat-x', [{ ...wirePR(12, 'open'), title: `${'a'.repeat(299)}\u{1F525}tail` }]);
+        h.poller.start();
+        await flush();
+        const title = h.store.getState().workspaces[0]?.pullRequests[0]?.title ?? '';
+        expect(title).toBe('a'.repeat(299));
     });
 
     it('drops an entry with a non-https URL', async () => {
@@ -395,6 +431,22 @@ describe('createPullRequestPoller', () => {
         expect(h.prs().map((entry) => [entry.number, entry.state, entry.branch])).toEqual([[13, 'draft', 'feat-z']]);
     });
 
+    it('waits out the debounce for a new branch even when the ticker comes round sooner', async () => {
+        const h = make({ start: false });
+        h.gh.pulls.set('feat-x', [wirePR(12, 'open')]);
+        h.poller.start();
+        await flush();
+        // The ticker fires every 5 s from start; land the switch 500 ms before it.
+        await advance(4_500);
+        h.store.dispatch({ type: 'set-repo-association-branch', workspaceID: W1, associationID: A1, branchName: 'passing-through' });
+        await advance(1_000);
+        expect(h.gh.prCalls().map((args) => args[3])).toEqual(['--head=feat-x']);
+        // Gone again before its debounce ended: never asked about.
+        h.store.dispatch({ type: 'set-repo-association-branch', workspaceID: W1, associationID: A1, branchName: 'feat-z' });
+        await advance(PR_DEBOUNCE_MS);
+        expect(h.gh.prCalls().map((args) => args[3])).toEqual(['--head=feat-x', '--head=feat-z']);
+    });
+
     it('does not look again for a store change that moves no key (a rename, a status read)', async () => {
         const h = make({ start: false });
         h.gh.pulls.set('feat-x', [wirePR(12, 'open')]);
@@ -446,6 +498,27 @@ describe('createPullRequestPoller', () => {
         h.gh.pulls.set('feat-x', [wirePR(12, 'open')]);
         await advance(PR_UNAVAILABLE_RETRY_MS);
         expect(h.prs()).toHaveLength(1);
+    });
+
+    it('keeps working through an hourly auth recheck that cannot reach GitHub, and asks again sooner', async () => {
+        const h = make({ start: false });
+        h.gh.pulls.set('feat-x', [wirePR(12, 'open')]);
+        h.poller.start();
+        await flush();
+        h.gh.auth = { code: -1, stdout: '', stderr: '', missing: false, timedOut: true };
+        await advance(PR_AUTH_RECHECK_MS);
+        const auths = (): number => h.gh.calls.filter((args) => args[0] === 'auth').length;
+        expect(auths()).toBe(2);
+        expect(h.prs()).toHaveLength(1);
+        expect(h.logs).toEqual(['pull request status: using gh']);
+        // Not ten minutes, not an hour: the retry comes round in five.
+        await advance(PR_AUTH_RETRY_MS);
+        expect(auths()).toBe(3);
+        // gh saying it holds no login does stand it down.
+        h.gh.auth = fail(1, 'You are not logged into any GitHub hosts. To log in, run: gh auth login');
+        await advance(PR_AUTH_RETRY_MS);
+        expect(h.prs()).toEqual([]);
+        expect(h.logs.at(-1)).toBe('pull request status: gh is not logged in; looking again in 10 min');
     });
 
     it('pauses every lookup for fifteen minutes on a rate limit, keeping what it had', async () => {

@@ -105,7 +105,18 @@ import { useStore } from 'zustand';
 import { ConnectionBanner, ConnectionSplash } from './app/ConnectionScreen';
 import { ContentPanePlaceholder } from './app/ContentPanePlaceholder';
 import { restartUI } from './app/reload';
-import { copySelection, deferredClipboardWriter, pasteIntoFocusedPane, readClipboardForPaste, type ClipboardPaste } from './app/clipboard';
+import {
+    PasteSupersededError,
+    PasteTargetChangedError,
+    browserPasteFocusView,
+    copySelection,
+    deferredClipboardWriter,
+    pasteFailureDetail,
+    pasteIntoFocusedPane,
+    readClipboardForPaste,
+    warnPasteTypedNothing,
+    type ClipboardPaste
+} from './app/clipboard';
 import { createLinkClickTracker, linkCaption, type LinkMenuRequest } from './app/link-click';
 import { clearFocusedScreen } from './app/clear-screen';
 import { sendLineEdit } from './app/line-editing';
@@ -1521,7 +1532,7 @@ function Shell(props: AppProps): ReactElement {
         const leaving = previousWebPaneID.current;
         previousWebPaneID.current = focusedIsWeb ? focusedPaneID : null;
         if (leaving === null || focusedIsWeb) return;
-        void webCommands.blurView(leaving);
+        void webCommands.blurView(leaving, { ringLeft: true });
     }, [focusedPaneID, store, webCommands]);
 
     // WEB-002: a web pane (or tab) that arrives BLANK hands the caret to the URL bar; one that
@@ -1772,19 +1783,36 @@ function Shell(props: AppProps): ReactElement {
             try {
                 found = await readClipboardForPaste({
                     clipboard: navigator.clipboard as Clipboard | undefined,
-                    readFiles: droppedFiles === null ? null : () => droppedFiles.resolveClipboard()
+                    readFiles: droppedFiles === null ? null : () => droppedFiles.resolveClipboard(),
+                    // #264: a read refused because a window just brought back has not told this
+                    // page it is focused yet waits once for the focus, rather than losing the
+                    // paste. The wait can outlast the target: after it, paste only into the pane
+                    // that is still focused and still a live terminal.
+                    focus: { view: browserPasteFocusView(), stillTarget: () => paneHandle(paneID) !== null && focused() === paneID }
                 });
             } catch (error: unknown) {
+                if (error instanceof PasteSupersededError || error instanceof PasteTargetChangedError) {
+                    warnPasteTypedNothing(error.message);
+                    return;
+                }
+                warnPasteTypedNothing('the clipboard read was refused', pasteFailureDetail(error));
                 notifyFailure('Paste', error instanceof Error ? error.message : String(error));
                 return;
             }
-            if (!stillThere()) return;
+            if (!stillThere()) {
+                warnPasteTypedNothing('the pane changed while the clipboard was read');
+                return;
+            }
             if (found.kind === 'text') run('Paste', commands.dropText({ paneID, text: found.text }));
             else if (found.kind === 'image') uploadPastedImage(paneID, found.image);
             else if (found.kind === 'paths') {
                 if (found.text !== null) run('Paste', commands.dropText({ paneID, text: found.text }));
+                else warnPasteTypedNothing(found.notice ?? 'no copied file has a path that can be typed');
                 if (found.notice !== null) notifyFailure('Paste', found.notice);
-            } else notifyFailure('Paste', found.notice);
+            } else {
+                warnPasteTypedNothing(found.notice);
+                notifyFailure('Paste', found.notice);
+            }
         };
 
         const workspacesActions = createWorkspacesActions({ store, commands, run, notifyFailure, activateWorkspaceAndReveal, setSidebarVisible, lifecycle: workspacesLifecycle });

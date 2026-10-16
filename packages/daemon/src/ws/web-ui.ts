@@ -280,8 +280,9 @@ export async function webPaneGuiCommand(
         case 'web-blur-view': {
             // No tab argument: the destination is the window's own renderer, not a tab. The
             // client sends this when its ring leaves every web pane, which is the only moment
-            // it can be known - the host never sees the ring.
-            const envelope = await channel.call('blur-view', {});
+            // it can be known - the host never sees the ring. `ringLeft` (#264) marks that case,
+            // the one a host keeps for its window's return if the window is not focused now.
+            const envelope = await channel.call('blur-view', payload['ring_left'] === true ? { ringLeft: true } : {});
             return { ...envelope, ok: envelope['ok'] === true, pane_id: paneID };
         }
 

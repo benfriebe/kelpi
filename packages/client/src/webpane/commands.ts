@@ -121,8 +121,12 @@ export interface WebPaneCommands {
      *
      * `paneID` is the pane the keyboard is being taken FROM, for the daemon's pane scoping; the
      * destination is always this window's own renderer.
+     *
+     * `ringLeft` (#264) says the ring has left every web pane, the one blur a host should still
+     * honour when its window comes back if it could not honour it now. The others (⌘L, a click
+     * into the address bar, a plugin's browser action) are about this moment only.
      */
-    blurView(paneID: string): Promise<CommandReply>;
+    blurView(paneID: string, options?: { readonly ringLeft?: boolean }): Promise<CommandReply>;
     /** `</>`: toggle the docked inspector for the pane's active tab. */
     toggleDevTools(paneID: string, tabID?: string | null): Promise<CommandReply>;
 
@@ -248,10 +252,11 @@ export function createWebPaneCommands(sender: WebCommandSender): WebPaneCommands
                 ...(tabID === undefined || tabID === null ? {} : { tab_id: tabID })
             });
         },
-        blurView: (paneID) =>
+        blurView: (paneID, options) =>
             sender.raw({
                 command: 'web-blur-view',
-                pane_id: paneID
+                pane_id: paneID,
+                ...(options?.ringLeft === true ? { ring_left: true } : {})
             }),
         toggleDevTools: (paneID, tabID) =>
             sender.raw({

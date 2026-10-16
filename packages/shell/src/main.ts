@@ -957,9 +957,14 @@ function createWindow(): BrowserWindow {
      * a place to find a cause, not a mirror of the console.
      */
     window.webContents.on('console-message', (details) => {
-        if (details.level !== 'error') return;
+        // #264: plus the one warning that exists to be found here, a paste that typed nothing
+        // (`client/src/app/clipboard.ts` ▸ `warnPasteTypedNothing`). Rare by construction.
+        const pasteWarning = details.level === 'warning' && details.message.startsWith('[paste] ');
+        if (details.level !== 'error' && !pasteWarning) return;
         const source = details.sourceId === '' ? '' : ` (${details.sourceId}:${String(details.lineNumber)})`;
-        logError(`renderer console: ${details.message.split('\n', 1)[0] ?? ''}${source}`);
+        const line = `renderer console: ${details.message.split('\n', 1)[0] ?? ''}${source}`;
+        if (pasteWarning) warn(line);
+        else logError(line);
     });
     /*
      * The corner layer: the page's toast stack, drawn by this shell in a see-through view ABOVE

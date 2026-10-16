@@ -8,7 +8,17 @@ import type { KelpiRuntime } from '../state';
 import { paneHandle } from '../terminal/pane-registry';
 import { lastSelection } from '../terminal/selection-buffer';
 import { clearScreenAction } from './clear-screen';
-import { copySelection, deferredClipboardWriter, readClipboardForPaste } from './clipboard';
+import {
+    PasteSupersededError,
+    PasteTargetChangedError,
+    browserPasteFocusView,
+    copySelection,
+    deferredClipboardWriter,
+    pasteFailureDetail,
+    readClipboardForPaste,
+    warnPasteTypedNothing,
+    type ClipboardPaste
+} from './clipboard';
 import type { DroppedFilesResolution } from './dropped-files';
 import { LINE_EDIT_BYTES } from './line-editing';
 import { stepRemoteTextSize } from './text-size';
@@ -79,17 +89,39 @@ async function pasteIntoOwner(
         const pane = ownedPane(runtime, paneID);
         return isTerminal(pane) && pane?.createdAt === original?.createdAt && pane?.type === original?.type && pane?.externalEditorCommand === original?.externalEditorCommand;
     };
-    const found = await readClipboardForPaste({ clipboard, readFiles: host.readClipboardFiles ?? null });
+    let found: ClipboardPaste;
+    try {
+        // #264: a read refused for want of focus waits once for the window to be focused.
+        found = await readClipboardForPaste({
+            clipboard,
+            readFiles: host.readClipboardFiles ?? null,
+            focus: { view: browserPasteFocusView(), stillTarget: stillOwned }
+        });
+    } catch (error) {
+        if (error instanceof PasteSupersededError || error instanceof PasteTargetChangedError) {
+            warnPasteTypedNothing(error.message);
+            return;
+        }
+        warnPasteTypedNothing('the clipboard read was refused', pasteFailureDetail(error));
+        throw error;
+    }
     // Every read above can take a while (the shell's answer most of all), and the pane may have
     // been closed or replaced meanwhile: nothing is typed into a pane the user did not paste into.
-    if (!stillOwned()) return;
+    if (!stillOwned()) {
+        warnPasteTypedNothing('the pane changed while the clipboard was read');
+        return;
+    }
     if (found.kind === 'nothing') {
+        warnPasteTypedNothing(found.notice, { quiet });
         if (!quiet) report(found.notice);
         return;
     }
     if (found.kind === 'paths' && found.notice !== null) report(found.notice);
     if (found.kind === 'text' || found.kind === 'paths') {
-        if (found.text === null) return;
+        if (found.text === null) {
+            warnPasteTypedNothing(found.kind === 'paths' && found.notice !== null ? found.notice : 'no copied file has a path that can be typed');
+            return;
+        }
         const reply = await runtime.commands.dropText({ paneID, text: found.text });
         if (!isOkReply(reply)) throw new Error(replyError(reply));
         return;
@@ -177,13 +209,21 @@ export function dispatchTerminalEditingShortcut(event: KeyEventLike, options: {
     const textSize = options.remoteTextSize === true ? TEXT_SIZE_ACTIONS.get(action) : undefined;
     if (!EDITING_ACTIONS.has(action) && textSize === undefined) return false;
     // An expired/hidden renderer's editing chord must never fall through to primary focus.
-    if (!options.visible || host.blocked?.() || modalPresenceCount() > 0 ||
-        (host.globalHotkey && trigger && keyTriggerKey(trigger) === keyTriggerKey(host.globalHotkey))) return true;
+    const blocked = host.blocked?.() ?? false, modals = modalPresenceCount();
+    if (!options.visible || blocked || modals > 0 ||
+        (host.globalHotkey && trigger && keyTriggerKey(trigger) === keyTriggerKey(host.globalHotkey))) {
+        // #264: consumed and nothing typed, which is only ever worth a line for a paste.
+        if (action === 'paste') warnPasteTypedNothing('the pane could not take a paste', { visible: options.visible, blocked, modals });
+        return true;
+    }
     // A decline (settings not arrived yet) falls through to the engine, as any unclaimed chord does.
     if (textSize !== undefined) return stepRemoteTextSize(runtime, paneID, textSize, (title, message) => reportFailure(runtime, paneID, host, title, message));
     const handle = paneHandle(paneID);
     const original = ownedPane(runtime, paneID);
-    if (!handle || !isTerminal(original)) return true;
+    if (!handle || !isTerminal(original)) {
+        if (action === 'paste') warnPasteTypedNothing('the pane has no live terminal', { handle: handle !== null });
+        return true;
+    }
     // ⌘K over a full-screen app clears nothing; whether the app gets the chord is the same rule
     // the window's own ⌘K follows (`app/clear-screen.ts`).
     const clearing = action === 'clear_screen' ? clearScreenAction(handle, CLIENT_MAC_LIKE) : null;

@@ -52,7 +52,7 @@ import { SCREENSHOT_WRITE_ERROR, createVerbDispatcher } from './dispatch.js';
 import { createDeferredFocus } from './deferred-focus.js';
 import { createEmbedController, type EmbedController } from './embed.js';
 import { GEOMETRY_NOTIFY_VERB, cssToDipScale, parsePaneGeometry, type WindowMetrics } from './geometry.js';
-import type { KeyboardOwner } from './nav-focus.js';
+import { describeKeyboardOwner, type KeyboardOwner } from './nav-focus.js';
 import { createTabRegistry, type TabRegistry } from './registry.js';
 import { traceFocus } from './view-focus.js';
 import { createPaneSessions } from './sessions.js';
@@ -923,9 +923,23 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
         // The client's ring has left every web pane in this window (issue #33). A page still
         // waiting to take the keyboard once placed (#351) loses that claim here, and only here:
         // `restoreKeyboard` itself also runs for parks and the ⌃Tab relay, which must not end it.
-        restoreClientKeyboard: () => {
+        restoreClientKeyboard: ({ ringLeft }) => {
             deferredFocus.cancel();
-            return restoreKeyboard({ kind: 'client' });
+            const restored = restoreKeyboard({ kind: 'client' });
+            /*
+             * #264's candidate: refused because this window is not the active one, so a page
+             * keeps the window's first responder across the reactivation and the first ⌘V goes
+             * to it. Kept and replayed when the window is focused (`restoreViews` below), unless
+             * a press into a page or a focus-view speaks for the keyboard first. Only for the
+             * ring leaving the web panes (a plugin action's or ⌘L's blur is about that moment
+             * only), and only for a window that can be key: a lane is never focused or reactivated.
+             */
+            const window = options.window?.() ?? null;
+            if (ringLeft && !restored && windowMayBeKey() && window !== null && !window.isDestroyed() && !window.isFocused()) {
+                deferredFocus.deferClient();
+                log('web host: the client asked for the keyboard while the window was inactive; it takes it when the window is focused');
+            }
+            return restored;
         },
         storage: sessions.storage,
         writeScreenshot: spillScreenshot,
@@ -1097,6 +1111,21 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
         },
         restoreViews(reason = 'window-shown'): void {
             restoreParkedViews(reason);
+            if (reason !== 'window-focused') return;
+            /*
+             * #264: who has the keyboard as the window comes back, whenever it is not the client
+             * (a page, or nobody), or there is a hand-back to replay. A ⌘V a page swallows never
+             * reaches the client, so the client's own paste warnings cannot see that case; this
+             * line is how the next report answers it. The ordinary activation stays out of the log.
+             */
+            const owner = keyboardOwner();
+            const replay = deferredFocus.windowFocused();
+            if (owner.kind !== 'client' || replay) {
+                log(`web host: window focused; keyboard with ${describeKeyboardOwner(owner)}${replay ? '; replaying the client hand-back' : ''}`);
+            }
+            if (!replay) return;
+            const restored = restoreKeyboard({ kind: 'client' });
+            log(`web host: handed the client the keyboard it asked for while the window was inactive (${restored ? 'done' : 'refused'})`);
         },
         recoverViews(reason = 'recover-interface'): number {
             return recoverPlacedViews(reason);

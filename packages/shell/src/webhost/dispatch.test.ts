@@ -279,6 +279,19 @@ describe('navigation', () => {
         expect(restores).toBe(1);
     });
 
+    it('says whether the blur is the ring leaving the web panes (#264)', async () => {
+        const seen: boolean[] = [];
+        const { dispatcher } = harness({
+            restoreClientKeyboard: ({ ringLeft }) => {
+                seen.push(ringLeft);
+                return false;
+            }
+        });
+        await dispatcher.call('blur-view', { ringLeft: true });
+        await dispatcher.call('blur-view', {});
+        expect(seen).toEqual([true, false]);
+    });
+
     it('reports a refused handoff as an answer, not an error', async () => {
         // `restored: false` is what an inactive window says: there is no keyboard here to move,
         // and a caller must not read that as a failure worth retrying.

@@ -264,7 +264,7 @@ export interface DispatchDeps<V extends TabController = TabController> {
      * (`./index.ts` ▸ `restoreKeyboard`). Returns false when there is no keyboard in this window
      * to move, which a caller reports rather than retries.
      */
-    readonly restoreClientKeyboard?: (() => boolean) | undefined;
+    readonly restoreClientKeyboard?: ((request: { readonly ringLeft: boolean }) => boolean) | undefined;
     readonly onError?: ((error: Error, context: string) => void) | undefined;
 }
 
@@ -865,7 +865,7 @@ export function createVerbDispatcher<V extends TabController>(deps: DispatchDeps
                 if (deps.restoreClientKeyboard === undefined) {
                     return failure('this host cannot hand the keyboard back');
                 }
-                return { ok: true, restored: deps.restoreClientKeyboard() };
+                return { ok: true, restored: deps.restoreClientKeyboard({ ringLeft: bool(args, 'ringLeft') }) };
             }
             case 'url': {
                 const found = tabOf(args);

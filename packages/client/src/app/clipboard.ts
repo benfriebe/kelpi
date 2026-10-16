@@ -145,6 +145,135 @@ export function pasteIntoFocusedPane(deps: PasteDeps): boolean {
     return true;
 }
 
+// ── #264: a paste that types nothing ───────────────────────────────────────────────────
+
+/**
+ * What the focus-aware read needs from the page. The real one is `window` and `document`; a test
+ * passes a fake so the wait can be driven without a browser.
+ */
+export interface PasteFocusView {
+    hasFocus(): boolean;
+    addEventListener(type: 'focus', listener: () => void): void;
+    removeEventListener(type: 'focus', listener: () => void): void;
+    setTimeout(callback: () => void, ms: number): unknown;
+    clearTimeout(handle: unknown): void;
+}
+
+/** How long a refused read waits for the window to be focused before it gives up. */
+export const PASTE_FOCUS_WAIT_MS = 1000;
+
+const isNotFocusedRefusal = (error: unknown): boolean =>
+    typeof error === 'object' && error !== null && (error as { name?: unknown }).name === 'NotAllowedError';
+
+/**
+ * A paste that was waiting for focus when a later paste started waiting too. Its caller types
+ * nothing and says so: two ⌘Vs pressed while a window comes back must paste once, not twice (the
+ * person pressing again because the first "did nothing" is exactly #264's report).
+ */
+export class PasteSupersededError extends Error {
+    constructor() {
+        super('a later paste took over while this one waited for focus');
+        this.name = 'PasteSupersededError';
+    }
+}
+
+/** A paste that waited for focus while the person moved to another pane: it types nothing. */
+export class PasteTargetChangedError extends Error {
+    constructor() {
+        super('the pane changed while the clipboard waited for focus');
+        this.name = 'PasteTargetChangedError';
+    }
+}
+
+/** The one paste waiting for focus, if any: a newer one ends it (`PasteSupersededError`). */
+let waiting: (() => void) | null = null;
+
+type FocusWait = 'focused' | 'timeout' | 'superseded';
+
+/** The window's next `focus`, or the timeout, or a newer wait. The listener goes in every case. */
+function nextWindowFocus(view: PasteFocusView, ms: number): Promise<FocusWait> {
+    waiting?.();
+    return new Promise((resolve) => {
+        let timer: unknown = null;
+        const settle = (outcome: FocusWait): void => {
+            view.clearTimeout(timer);
+            view.removeEventListener('focus', onFocus);
+            if (waiting === supersede) waiting = null;
+            resolve(outcome);
+        };
+        const onFocus = (): void => settle('focused');
+        const supersede = (): void => settle('superseded');
+        waiting = supersede;
+        view.addEventListener('focus', onFocus);
+        timer = view.setTimeout(() => settle('timeout'), ms);
+    });
+}
+
+/**
+ * #264: read the clipboard's text, waiting once for the window to be focused when the read was
+ * refused for want of it.
+ *
+ * `navigator.clipboard.readText()` rejects with `NotAllowedError: Document is not focused` when
+ * the page does not have focus, and ⌘V's keydown can be handled before a window that has just
+ * been brought back has told this page so. The chord is already consumed by then, so the paste
+ * was simply lost (a toast, and nothing typed). Only that refusal, only while the page really is
+ * unfocused, only once, and for at most {@link PASTE_FOCUS_WAIT_MS}: anything else rejects
+ * exactly as before. `retried` tells the caller the target may have changed during the wait, and
+ * only one paste waits at a time: a newer one rejects the older with {@link PasteSupersededError}.
+ */
+export async function readClipboardTextOnFocus(
+    read: () => Promise<string>,
+    view: PasteFocusView,
+    waitMs: number = PASTE_FOCUS_WAIT_MS
+): Promise<{ text: string; retried: boolean }> {
+    // Sampled BEFORE the read: the refusal can land after the focus it was waiting for, and a
+    // page that has focus by then must still get its retry.
+    const focusedAtStart = view.hasFocus();
+    try {
+        return { text: await read(), retried: false };
+    } catch (error) {
+        if (!isNotFocusedRefusal(error)) throw error;
+        if (view.hasFocus()) {
+            // Focused all along: the refusal is about something else. Focused since: retry now.
+            if (focusedAtStart) throw error;
+            return { text: await read(), retried: true };
+        }
+        const outcome = await nextWindowFocus(view, waitMs);
+        if (outcome === 'superseded') throw new PasteSupersededError();
+        if (outcome === 'timeout') throw error;
+        return { text: await read(), retried: true };
+    }
+}
+
+/** Why a clipboard read failed, for {@link warnPasteTypedNothing}. Never the clipboard text. */
+export function pasteFailureDetail(error: unknown): Record<string, unknown> {
+    return { error: error instanceof Error ? `${error.name}: ${error.message}` : String(error) };
+}
+
+/** The browser's own `window` and `document`, as a {@link PasteFocusView}. */
+export function browserPasteFocusView(): PasteFocusView {
+    return {
+        hasFocus: () => document.hasFocus(),
+        addEventListener: (type, listener) => window.addEventListener(type, listener),
+        removeEventListener: (type, listener) => window.removeEventListener(type, listener),
+        setTimeout: (callback, ms) => window.setTimeout(callback, ms),
+        clearTimeout: (handle) => window.clearTimeout(handle as number)
+    };
+}
+
+/**
+ * #264: say so when a paste the app consumed (⌘V, or a middle-click falling back to the
+ * clipboard) ends with nothing typed.
+ *
+ * A warning, so the shell copies it into `shell.log` (renderer console warnings land there), and
+ * the next report of a swallowed paste comes with its reason instead of a guess. Never the text:
+ * only why, whether this page had focus, and (for an empty read) which types the clipboard held.
+ */
+export function warnPasteTypedNothing(reason: string, detail: Record<string, unknown> = {}): void {
+    const hasFocus = typeof document === 'undefined' ? null : document.hasFocus();
+    console.warn(`[paste] nothing typed: ${reason} ${JSON.stringify({ hasFocus, ...detail })}`);
+}
+
 /**
  * #382: what a paste found on the clipboard, in terminal-surface.md section 12.2's order.
  *
@@ -169,6 +298,12 @@ export interface ClipboardPasteSources {
      * `resolveClipboard`), or null where there is no shell to ask (a browser).
      */
     readonly readFiles: (() => Promise<DroppedFilesResolution>) | null;
+    /**
+     * #264: wait once for the window's focus when `readText` is refused for want of it
+     * ({@link readClipboardTextOnFocus}), or absent to read once. `stillTarget` is asked after
+     * such a wait, since the person may have moved to another pane meanwhile.
+     */
+    readonly focus?: { readonly view: PasteFocusView; readonly stillTarget: () => boolean };
 }
 
 /** ⌘V over a clipboard holding nothing a terminal can take. */
@@ -184,7 +319,9 @@ export const BROWSER_CLIPBOARD_FILE_NOTICE =
  * in this window (`App.tsx` ▸ `pasteClipboardInto`) and ⌘V or middle-click in a remote host's or
  * a plugin's pane (`app/terminal-shortcuts.tsx` ▸ `pasteIntoOwner`) both run.
  *
- * Throws when there is no clipboard API at all or `readText` is refused: the caller reports it.
+ * Throws when there is no clipboard API at all or `readText` is refused (after the wait for focus,
+ * when `focus` is given): the caller reports it. A {@link PasteSupersededError} or
+ * {@link PasteTargetChangedError} is a paste abandoned on purpose, which the caller only logs.
  * Everything after that resolves. A `read()` that throws or finds no PNG goes on to the shell
  * rather than giving up, because a pasteboard holding a file link is exactly the one the page's
  * `read()` cannot describe (one item, `types: []`, measured on Electron 43: Chromium hides the
@@ -193,7 +330,7 @@ export const BROWSER_CLIPBOARD_FILE_NOTICE =
 export async function readClipboardForPaste(sources: ClipboardPasteSources): Promise<ClipboardPaste> {
     const clipboard = sources.clipboard;
     if (clipboard === undefined || typeof clipboard.readText !== 'function') throw new Error('this browser exposes no clipboard');
-    const text = await clipboard.readText();
+    const text = sources.focus === undefined ? await clipboard.readText() : await readTextOnFocus(clipboard, sources.focus);
     if (text !== '') return { kind: 'text', text };
     // An item the page can see but not read is the signature of a file on the pasteboard.
     let opaqueItem = false;
@@ -217,4 +354,10 @@ export async function readClipboardForPaste(sources: ClipboardPasteSources): Pro
         return { kind: 'nothing', notice: files.error !== null && opaqueItem ? files.error : NOTHING_TO_PASTE_NOTICE };
     }
     return { kind: 'paths', ...resolvedDropOutcome(files, 'copied') };
+}
+
+async function readTextOnFocus(clipboard: Clipboard, focus: NonNullable<ClipboardPasteSources['focus']>): Promise<string> {
+    const read = await readClipboardTextOnFocus(() => clipboard.readText(), focus.view);
+    if (read.retried && !focus.stillTarget()) throw new PasteTargetChangedError();
+    return read.text;
 }

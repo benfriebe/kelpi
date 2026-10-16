@@ -913,6 +913,25 @@ describe('the GUI-only tab/stop/focus verbs (WEB-016 / WEB-032 / WEB-043)', () =
             ok: true,
             pane_id: WEB_PANE
         });
+        expect(rpc['args']).toEqual({});
+    });
+
+    it('passes the ring-left mark on to the host, and nothing else (#264)', () => {
+        const f = fixture();
+        const host = f.connect();
+        host.session.handleMessage(hello({ kind: 'electron', capabilities: [WEB_HOST_CAPABILITY] }));
+        const client = f.connect();
+        client.session.handleMessage(hello({ kind: 'browser' }));
+        client.session.handleMessage(
+            JSON.stringify({
+                type: 'command',
+                id: 'b1',
+                payload: { command: 'web-blur-view', pane_id: WEB_PANE, ring_left: true }
+            })
+        );
+        const rpc = host.transport.ofType('host-rpc').at(-1) as Record<string, unknown>;
+        expect(rpc['verb']).toBe('blur-view');
+        expect(rpc['args']).toEqual({ ringLeft: true });
     });
 });
 

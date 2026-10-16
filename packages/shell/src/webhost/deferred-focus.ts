@@ -47,6 +47,18 @@ export interface DeferredFocusClaim {
     readonly tabID: string;
 }
 
+/**
+ * Issue #264's candidate: the client asked for the window's keyboard back (`blur-view`) while the
+ * window was not focused, so there was no keyboard here to move and the request was refused. A
+ * web page then keeps the window's first responder across the reactivation, and the first ⌘V
+ * (page-owned, never relayed: `./keys.ts`) goes to the page. The request is kept, in the same
+ * slot, and replayed when the window is focused again (`./index.ts` ▸ `restoreViews`).
+ */
+export type ClientClaim = { readonly kind: 'client' };
+
+/** What the slot holds: a page waiting to be placed, or the client waiting for the window. */
+export type PendingKeyboardClaim = ({ readonly kind: 'view' } & DeferredFocusClaim) | ClientClaim;
+
 /** What the window can do with a keyboard right now. */
 export interface KeyboardWindowState {
     /** False for a test lane window (`../audit-window.ts`), which may never become key. */
@@ -78,12 +90,19 @@ export interface DeferredFocus {
      * whatever the outcome; a placement of any other pane leaves it alone.
      */
     placed(paneID: string, tabID: string, window: KeyboardWindowState): PlacedOutcome;
+    /**
+     * #264: a `blur-view` was refused because the window was not focused. Replaces any earlier
+     * claim (last request wins, across both kinds).
+     */
+    deferClient(): void;
+    /** The window was focused. Consumes a client claim; true when there was one to replay. */
+    windowFocused(): boolean;
     /** Something else spoke for the keyboard. Returns the claim it dropped, if any. */
-    cancel(): DeferredFocusClaim | null;
+    cancel(): PendingKeyboardClaim | null;
     /** A tab is being destroyed: drop its claim, and only its claim. */
     forgetTab(paneID: string, tabID: string): DeferredFocusClaim | null;
     /** The claim waiting right now, for logs and tests. */
-    readonly pending: DeferredFocusClaim | null;
+    readonly pending: PendingKeyboardClaim | null;
 }
 
 export interface DeferredFocusOptions {
@@ -92,9 +111,9 @@ export interface DeferredFocusOptions {
 }
 
 export function createDeferredFocus(options: DeferredFocusOptions = {}): DeferredFocus {
-    let pending: DeferredFocusClaim | null = null;
+    let pending: PendingKeyboardClaim | null = null;
 
-    const take = (): DeferredFocusClaim | null => {
+    const take = (): PendingKeyboardClaim | null => {
         const claim = pending;
         pending = null;
         return claim;
@@ -103,23 +122,34 @@ export function createDeferredFocus(options: DeferredFocusOptions = {}): Deferre
     return {
         defer(claim) {
             if (options.isActiveTab !== undefined && !options.isActiveTab(claim.paneID, claim.tabID)) return false;
-            pending = { paneID: claim.paneID, tabID: claim.tabID };
+            pending = { kind: 'view', paneID: claim.paneID, tabID: claim.tabID };
             return true;
         },
 
         placed(paneID, tabID, window) {
-            if (pending === null || pending.paneID !== paneID) return 'none';
+            if (pending === null || pending.kind !== 'view' || pending.paneID !== paneID) return 'none';
             const claim = take();
-            if (claim === null || claim.tabID !== tabID) return 'dropped-other-tab';
+            if (claim === null || claim.kind !== 'view' || claim.tabID !== tabID) return 'dropped-other-tab';
             if (window.windowMayBeKey && !window.windowIsFocused) return 'dropped-window-inactive';
             return 'focus';
+        },
+
+        deferClient() {
+            pending = { kind: 'client' };
+        },
+
+        windowFocused() {
+            if (pending === null || pending.kind !== 'client') return false;
+            take();
+            return true;
         },
 
         cancel: take,
 
         forgetTab(paneID, tabID) {
-            if (pending === null || pending.paneID !== paneID || pending.tabID !== tabID) return null;
-            return take();
+            if (pending === null || pending.kind !== 'view' || pending.paneID !== paneID || pending.tabID !== tabID) return null;
+            take();
+            return { paneID, tabID };
         },
 
         get pending() {

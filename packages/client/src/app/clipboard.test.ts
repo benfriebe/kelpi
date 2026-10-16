@@ -15,7 +15,12 @@ import {
     copySelection,
     deferredClipboardWriter,
     pasteIntoFocusedPane,
-    readClipboardForPaste
+    PasteSupersededError,
+    PasteTargetChangedError,
+    readClipboardForPaste,
+    readClipboardTextOnFocus,
+    warnPasteTypedNothing,
+    type PasteFocusView
 } from './clipboard';
 import type { DroppedFilesResolution } from './dropped-files';
 
@@ -313,5 +318,156 @@ describe('readClipboardForPaste (#382, section 12.2)', () => {
         await expect(read(undefined, null)).rejects.toThrow('this browser exposes no clipboard');
         const refused = { readText: vi.fn(async () => { throw new Error('Document is not focused.'); }) };
         await expect(read(refused, shell())).rejects.toThrow('Document is not focused.');
+    });
+});
+
+describe('#264: a clipboard read refused for want of focus', () => {
+    const notFocused = (): Error => Object.assign(new Error('Document is not focused.'), { name: 'NotAllowedError' });
+
+    /** A page whose focus the test drives, with a manual clock. */
+    function fakeView(focused = false) {
+        const listeners = new Set<() => void>();
+        let timer: (() => void) | null = null;
+        const view: PasteFocusView = {
+            hasFocus: () => focused,
+            addEventListener: (_type, fn) => { listeners.add(fn); },
+            removeEventListener: (_type, fn) => { listeners.delete(fn); },
+            setTimeout: (fn) => { timer = fn; return 1; },
+            clearTimeout: () => { timer = null; }
+        };
+        return {
+            view,
+            focus: () => { focused = true; for (const fn of [...listeners]) fn(); },
+            expire: () => timer?.(),
+            listening: () => listeners.size > 0,
+            listeners: () => listeners.size
+        };
+    }
+
+    it('waits for the window to be focused and reads again, once', async () => {
+        const page = fakeView(false);
+        const read = vi.fn().mockRejectedValueOnce(notFocused()).mockResolvedValueOnce('pasted');
+        const result = readClipboardTextOnFocus(read, page.view);
+        await vi.waitFor(() => expect(page.listening()).toBe(true));
+        page.focus();
+        await expect(result).resolves.toEqual({ text: 'pasted', retried: true });
+        expect(read).toHaveBeenCalledTimes(2);
+        expect(page.listening()).toBe(false);
+    });
+
+    it('gives up after the wait, with the original refusal and no listener left behind', async () => {
+        const page = fakeView(false);
+        const refusal = notFocused();
+        const result = readClipboardTextOnFocus(vi.fn().mockRejectedValue(refusal), page.view);
+        await vi.waitFor(() => expect(page.listening()).toBe(true));
+        page.expire();
+        await expect(result).rejects.toBe(refusal);
+        expect(page.listening()).toBe(false);
+    });
+
+    it('retries at once when the focus came back before the refusal did', async () => {
+        // The activation race the other way round: the read started unfocused and its rejection
+        // arrived after the window had been focused, so there is no focus event left to wait for.
+        const page = fakeView(false);
+        const refusal = deferred<string>();
+        const read = vi.fn().mockReturnValueOnce(refusal.promise).mockResolvedValueOnce('pasted');
+        const result = readClipboardTextOnFocus(read, page.view);
+        page.focus();
+        refusal.reject(notFocused());
+        await expect(result).resolves.toEqual({ text: 'pasted', retried: true });
+        expect(read).toHaveBeenCalledTimes(2);
+        expect(page.listening()).toBe(false);
+    });
+
+    it('does not wait when the page already has focus (the refusal is not about focus)', async () => {
+        const page = fakeView(true);
+        const read = vi.fn().mockRejectedValue(notFocused());
+        await expect(readClipboardTextOnFocus(read, page.view)).rejects.toThrow('Document is not focused.');
+        expect(read).toHaveBeenCalledTimes(1);
+        expect(page.listening()).toBe(false);
+    });
+
+    it('does not wait for any other failure', async () => {
+        const page = fakeView(false);
+        const read = vi.fn().mockRejectedValue(new Error('no clipboard'));
+        await expect(readClipboardTextOnFocus(read, page.view)).rejects.toThrow('no clipboard');
+        expect(read).toHaveBeenCalledTimes(1);
+    });
+
+    it('reads once and says so when nothing was refused', async () => {
+        await expect(readClipboardTextOnFocus(() => Promise.resolve('x'), fakeView(true).view)).resolves.toEqual({
+            text: 'x',
+            retried: false
+        });
+    });
+
+    it('two pastes refused while the window comes back paste once, the later one', async () => {
+        // The person pressed ⌘V again because the first "did nothing": one focus must not
+        // answer both, or the text lands twice.
+        const page = fakeView(false);
+        const first = vi.fn().mockRejectedValueOnce(notFocused()).mockResolvedValue('first');
+        const second = vi.fn().mockRejectedValueOnce(notFocused()).mockResolvedValue('second');
+        const one = readClipboardTextOnFocus(first, page.view);
+        await vi.waitFor(() => expect(page.listening()).toBe(true));
+        const two = readClipboardTextOnFocus(second, page.view);
+        await expect(one).rejects.toBeInstanceOf(PasteSupersededError);
+        await vi.waitFor(() => expect(page.listeners()).toBe(1));
+        page.focus();
+        await expect(two).resolves.toEqual({ text: 'second', retried: true });
+        expect(first).toHaveBeenCalledTimes(1);
+        expect(second).toHaveBeenCalledTimes(2);
+        expect(page.listening()).toBe(false);
+    });
+
+    it('a second refusal after the focus is the answer, not a loop', async () => {
+        const page = fakeView(false);
+        const read = vi.fn().mockRejectedValue(notFocused());
+        const result = readClipboardTextOnFocus(read, page.view);
+        await vi.waitFor(() => expect(page.listening()).toBe(true));
+        page.focus();
+        await expect(result).rejects.toThrow('Document is not focused.');
+        expect(read).toHaveBeenCalledTimes(2);
+    });
+
+    it('reads through the wait for focus when given one, and pastes into a pane that is still the target', async () => {
+        const page = fakeView(false);
+        const clipboard = { readText: vi.fn().mockRejectedValueOnce(notFocused()).mockResolvedValueOnce('pasted') };
+        const found = readClipboardForPaste({ clipboard: clipboard as unknown as Clipboard, readFiles: null, focus: { view: page.view, stillTarget: () => true } });
+        await vi.waitFor(() => expect(page.listening()).toBe(true));
+        page.focus();
+        await expect(found).resolves.toEqual({ kind: 'text', text: 'pasted' });
+    });
+
+    it('types nothing after the wait when the person has moved to another pane meanwhile', async () => {
+        const page = fakeView(false);
+        const clipboard = { readText: vi.fn().mockRejectedValueOnce(notFocused()).mockResolvedValueOnce('pasted') };
+        const stillTarget = vi.fn(() => false);
+        const found = readClipboardForPaste({ clipboard: clipboard as unknown as Clipboard, readFiles: null, focus: { view: page.view, stillTarget } });
+        await vi.waitFor(() => expect(page.listening()).toBe(true));
+        page.focus();
+        await expect(found).rejects.toBeInstanceOf(PasteTargetChangedError);
+        // Asked only after a wait: a read that was never refused pastes as #382 does.
+        const once = vi.fn(() => false);
+        await expect(
+            readClipboardForPaste({ clipboard: { readText: async () => 'x' } as unknown as Clipboard, readFiles: null, focus: { view: fakeView(true).view, stillTarget: once } })
+        ).resolves.toEqual({ kind: 'text', text: 'x' });
+        expect(once).not.toHaveBeenCalled();
+    });
+});
+
+describe('#264: a paste that typed nothing is said out loud', () => {
+    it('warns with the reason and the detail, never the text', () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        try {
+            warnPasteTypedNothing('the clipboard has no text and no PNG', { types: ['text/uri-list'] });
+            expect(warn).toHaveBeenCalledTimes(1);
+            const line = String(warn.mock.calls[0]?.[0]);
+            // The shell copies exactly this prefix into shell.log (`main.ts` ▸ console-message).
+            expect(line.startsWith('[paste] nothing typed: the clipboard has no text and no PNG ')).toBe(true);
+            expect(line).toContain('"types":["text/uri-list"]');
+            expect(line).toContain('"hasFocus"');
+        } finally {
+            warn.mockRestore();
+        }
     });
 });

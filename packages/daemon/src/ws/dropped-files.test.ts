@@ -7,12 +7,18 @@
  * only from the named window's own shell, and only when that shell declared the drop capability.
  * What this file adds is what differs: the answer's shape and its normalisation, the per-action
  * capability, the short timeout, and that the two kinds of answer can never settle each other.
+ *
+ * #382's `resolve-clipboard-files` rides the same answer and result frames, so it is covered here
+ * too: what differs is its own capability (checked against the PENDING request, so a drop-only
+ * shell cannot answer it), its own refusal sentence, and its shorter timeout.
  */
 
 import {
     CHOOSE_FOLDER_CAPABILITY,
+    CLIPBOARD_FILES_TIMEOUT_MS,
     DROPPED_FILES_TIMEOUT_MS,
     MAX_DROPPED_FILES,
+    RESOLVE_CLIPBOARD_FILES_CAPABILITY,
     RESOLVE_DROPPED_FILES_CAPABILITY,
     WS_CHOOSE_FOLDER_ANSWER_MESSAGE,
     WS_CHOOSE_FOLDER_RESULT_MESSAGE,
@@ -32,6 +38,7 @@ import { recordingTransport, type RecordedTransport } from './testing.js';
 const DAEMON = { version: '0.1.0', build: '42', pid: 4242 };
 const DEVICE_TOKEN = `${DEVICE_TOKEN_PREFIX}paired-phone`;
 const BOTH = [CHOOSE_FOLDER_CAPABILITY, RESOLVE_DROPPED_FILES_CAPABILITY];
+const ALL = [...BOTH, RESOLVE_CLIPBOARD_FILES_CAPABILITY];
 
 interface Peer {
     readonly session: SyncSession;
@@ -105,7 +112,7 @@ let commandCounter = 0;
 
 async function ask(
     peer: Peer,
-    action: 'resolve-dropped-files' | 'choose-folder-dialog',
+    action: 'resolve-dropped-files' | 'resolve-clipboard-files' | 'choose-folder-dialog',
     fields: Record<string, unknown>
 ): Promise<Record<string, unknown> | undefined> {
     commandCounter += 1;
@@ -117,6 +124,7 @@ async function ask(
 }
 
 const askDrop = (peer: Peer, fields: Record<string, unknown>) => ask(peer, 'resolve-dropped-files', fields);
+const askClipboard = (peer: Peer, fields: Record<string, unknown>) => ask(peer, 'resolve-clipboard-files', fields);
 
 function answer(peer: Peer, fields: Record<string, unknown>): void {
     peer.session.handleMessage(JSON.stringify({ type: WS_DROPPED_FILES_ANSWER_MESSAGE, ...fields }));
@@ -310,5 +318,76 @@ describe('every pending drop ends (#288)', () => {
         ]);
         shell.session.handleMessage(JSON.stringify({ type: WS_CHOOSE_FOLDER_ANSWER_MESSAGE, requestID: 'F1', windowID: 'WIN-1', path: '/chosen' }));
         expect(asker.transport.ofType(WS_CHOOSE_FOLDER_RESULT_MESSAGE).map((message) => message['path'])).toEqual(['/chosen']);
+    });
+});
+
+describe('copied-file paths over the same frames (#382)', () => {
+    it('broadcasts the request and routes the pasteboard’s paths to the asker alone', async () => {
+        const f = fixture();
+        const shell = f.shell('WIN-1', ALL);
+        const asker = f.connect();
+        const bystander = f.connect();
+
+        expect(await askClipboard(asker, { request_id: 'P1', window_id: 'WIN-1' })).toMatchObject({ ok: true, request_id: 'P1' });
+        expect(f.h.broadcasts).toContainEqual({ type: SHELL_ACTION_EVENT, action: 'resolve-clipboard-files', windowID: 'WIN-1', requestID: 'P1' });
+
+        answer(shell, { requestID: 'P1', windowID: 'WIN-1', paths: ['/Users/me/Shot 1.png', 'relative'], unresolved: 0 });
+        expect(results(asker)).toEqual([
+            { type: WS_DROPPED_FILES_RESULT_MESSAGE, requestID: 'P1', paths: ['/Users/me/Shot 1.png'], unresolved: 1, windowID: 'WIN-1' }
+        ]);
+        expect(results(bystander)).toEqual([]);
+    });
+
+    it('refuses at once, in its own words, when the window’s shell can read drops but not the pasteboard', async () => {
+        const f = fixture();
+        f.shell('WIN-1', BOTH);
+        const asker = f.connect();
+        const reply = await askClipboard(asker, { request_id: 'P1', window_id: 'WIN-1' });
+        expect(reply).toMatchObject({ ok: false });
+        expect(String(reply?.['error'])).toContain("copied file's path");
+        expect(f.h.broadcasts).toEqual([]);
+        expect(await askDrop(asker, { request_id: 'D1', window_id: 'WIN-1' })).toMatchObject({ ok: true });
+    });
+
+    it('refuses a paired device', async () => {
+        const f = fixture();
+        f.shell('WIN-1', ALL);
+        const phone = f.connect({ token: DEVICE_TOKEN });
+        expect(String((await askClipboard(phone, { request_id: 'P1', window_id: 'WIN-1' }))?.['error'])).toContain('owner-only');
+        expect(f.h.broadcasts).toEqual([]);
+    });
+
+    it('takes the answer only from a connection declaring the clipboard capability, though the frame is a drop’s', async () => {
+        const f = fixture();
+        const shell = f.shell('WIN-1', ALL);
+        const dropOnly = f.shell('WIN-1', BOTH);
+        const asker = f.connect();
+        await askClipboard(asker, { request_id: 'P1', window_id: 'WIN-1' });
+        answer(dropOnly, { requestID: 'P1', windowID: 'WIN-1', paths: ['/forged'], unresolved: 0 });
+        expect(results(asker)).toEqual([]);
+        answer(shell, { requestID: 'P1', windowID: 'WIN-1', paths: ['/real'], unresolved: 0 });
+        expect(results(asker).map((message) => message['paths'])).toEqual([['/real']]);
+    });
+
+    it('times out after a few seconds while a drop asked at the same moment stays open', async () => {
+        const f = fixture();
+        const shell = f.shell('WIN-1', ALL);
+        const asker = f.connect();
+        await askClipboard(asker, { request_id: 'P1', window_id: 'WIN-1' });
+        await askDrop(asker, { request_id: 'D1', window_id: 'WIN-1' });
+        f.advance(CLIPBOARD_FILES_TIMEOUT_MS + 1);
+        answer(shell, { requestID: 'P1', windowID: 'WIN-1', paths: ['/late'], unresolved: 0 });
+        expect(results(asker)).toEqual([
+            {
+                type: WS_DROPPED_FILES_RESULT_MESSAGE,
+                requestID: 'P1',
+                paths: [],
+                unresolved: 0,
+                error: 'the desktop window did not answer in time',
+                windowID: 'WIN-1'
+            }
+        ]);
+        answer(shell, { requestID: 'D1', windowID: 'WIN-1', paths: ['/dropped'], unresolved: 0 });
+        expect(results(asker).map((message) => message['paths'])).toEqual([[], ['/dropped']]);
     });
 });

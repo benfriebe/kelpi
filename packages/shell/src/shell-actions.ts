@@ -11,6 +11,7 @@ import {
     CHOOSE_FOLDER_DIALOG_ACTION,
     IMAGE_OPEN_EXTENSIONS,
     MAX_DROPPED_FILES,
+    RESOLVE_CLIPBOARD_FILES_ACTION,
     RESOLVE_DROPPED_FILES_ACTION,
     UPDATE_ACTION_SHELL_ACTION,
     isUpdateUserAction,
@@ -22,19 +23,20 @@ import {
     type WsDroppedFilesAnswerMessage
 } from '@kelpi/protocol';
 
-/** The six things a client can ask the shell to do. Anything else is ignored. */
+/** The seven things a client can ask the shell to do. Anything else is ignored. */
 export const SHELL_ACTIONS = [
     'open-file-dialog',
     'install-cli',
     'check-for-updates',
     CHOOSE_FOLDER_DIALOG_ACTION,
     RESOLVE_DROPPED_FILES_ACTION,
+    RESOLVE_CLIPBOARD_FILES_ACTION,
     UPDATE_ACTION_SHELL_ACTION
 ] as const;
 export type ShellActionName = (typeof SHELL_ACTIONS)[number];
 
 /** The actions whose answer goes back to the page that asked, by the request's id. */
-const ANSWERED_ACTIONS: readonly string[] = [CHOOSE_FOLDER_DIALOG_ACTION, RESOLVE_DROPPED_FILES_ACTION];
+const ANSWERED_ACTIONS: readonly string[] = [CHOOSE_FOLDER_DIALOG_ACTION, RESOLVE_DROPPED_FILES_ACTION, RESOLVE_CLIPBOARD_FILES_ACTION];
 
 export interface ShellActionRequest {
     readonly action: ShellActionName;
@@ -43,7 +45,8 @@ export interface ShellActionRequest {
     /** The pane that asked (the ⌘O route), so the opened file lands in its workspace. */
     readonly paneID: string | null;
     /**
-     * #283 / #288: the id a `choose-folder-dialog` or `resolve-dropped-files` answer must carry
+     * #283 / #288 / #382: the id a `choose-folder-dialog`, `resolve-dropped-files` or
+     * `resolve-clipboard-files` answer must carry
      * back so the daemon can route it to the page that asked. Always present on those actions (a
      * request without one is refused, since its answer could reach nobody) and null on every
      * other. For a drop it is also the key of the page's stash entry.
@@ -114,7 +117,8 @@ export function chooseFolderAnswer(
 }
 
 /**
- * #288: the frame that closes a `resolve-dropped-files`, sent back over the status connection.
+ * #288: the frame that closes a `resolve-dropped-files` (and #382's `resolve-clipboard-files`,
+ * whose answer has the same shape), sent back over the status connection.
  *
  * `windowID` is the request's, echoed, for the reason `chooseFolderAnswer` gives. The paths are
  * filtered to absolute ones and capped here as well as in the daemon, because this is where they

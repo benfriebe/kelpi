@@ -485,7 +485,37 @@ export const DROPPED_FILES_TIMEOUT_MS = 15_000;
 /** At most this many paths ride one answer; a drop bigger than this is truncated, not refused. */
 export const MAX_DROPPED_FILES = 256;
 
-/** Shell → daemon: what the stash entry resolved to. */
+/**
+ * #382: the third round trip, the paths of files COPIED to the clipboard (CleanShot's Copy, or
+ * any copy that leaves a file link and no text).
+ *
+ * A pasteboard holding a file link is invisible to the page: Chromium's async clipboard hides
+ * the file and, with it, the image beside it (a Finder Copy carries the file's icon too, and
+ * pasting that icon would be wrong), so `clipboard.read()` answers one item with no types. The
+ * main process reads the link directly from its own pasteboard. ⌘V then types the paths exactly
+ * as a drop of the same files does (terminal-surface.md section 12.2).
+ *
+ * The loop is #288's without the stash: the client sends `shell-action` with action
+ * `resolve-clipboard-files`, its `request_id` and `window_id`; the daemon admits it under the
+ * same rules (owner only, a shell declaring `RESOLVE_CLIPBOARD_FILES_CAPABILITY` attached for that
+ * window); the shell answers with the SAME frame a drop does, `dropped-files-answer`, and the
+ * daemon relays a `dropped-files-result`. The payload is identical (paths, unresolved, error), so
+ * the frames are shared and named for the first loop that used them.
+ *
+ * Nothing new is exposed: the asker is the owner-trusted UI page, which can already read the
+ * clipboard's text and type anything into any PTY, and any owner session can run `pbpaste`.
+ */
+export const RESOLVE_CLIPBOARD_FILES_ACTION = 'resolve-clipboard-files';
+/** The `hello` capability a shell's status connection declares when it can answer the loop. */
+export const RESOLVE_CLIPBOARD_FILES_CAPABILITY = 'resolve-clipboard-files';
+/**
+ * How long a clipboard-files request may stay unanswered. Shorter than a drop's: the shell's read
+ * is local and synchronous, and a path typed seconds after ⌘V would land in whatever the user
+ * typed since.
+ */
+export const CLIPBOARD_FILES_TIMEOUT_MS = 3_000;
+
+/** Shell → daemon: what the stash entry (or, for #382, the pasteboard) resolved to. */
 export interface WsDroppedFilesAnswerMessage {
     readonly type: typeof WS_DROPPED_FILES_ANSWER_MESSAGE;
     readonly requestID: string;
@@ -499,7 +529,7 @@ export interface WsDroppedFilesAnswerMessage {
     readonly windowID: string;
 }
 
-/** Daemon → the requesting client: the answer to its `resolve-dropped-files`. */
+/** Daemon → the requesting client: the answer to its `resolve-dropped-files` or `resolve-clipboard-files`. */
 export interface WsDroppedFilesResultMessage {
     readonly type: typeof WS_DROPPED_FILES_RESULT_MESSAGE;
     readonly requestID: string;

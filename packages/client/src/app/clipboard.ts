@@ -34,6 +34,9 @@
  * it, which is also exactly what macOS does with ⌘C and no selection.
  */
 
+import type { DroppedFilesResolution } from './dropped-files';
+import { resolvedDropOutcome } from './open-file';
+
 /** What `copySelection` needs. Every field is a seam the app fills from live state. */
 export interface CopySelectionDeps {
     /** The focused pane, or null when nothing is focused. */
@@ -140,4 +143,78 @@ export function pasteIntoFocusedPane(deps: PasteDeps): boolean {
     if (!deps.isTerminalPane(paneID)) return false;
     void deps.deliver(paneID);
     return true;
+}
+
+/**
+ * #382: what a paste found on the clipboard, in terminal-surface.md section 12.2's order.
+ *
+ * - `text`: a non-empty string, for the daemon's paste pipeline (`drop-text`);
+ * - `image`: no text but a PNG, for TERM-043's upload route (`paste-image`);
+ * - `paths`: no text and no PNG the page can see, but files on the pasteboard (CleanShot's Copy,
+ *   or any copy that puts a file link and no text there), which the window's shell read. `text` is what a drop of the same
+ *   files types, or null when none could be typed, and `notice` says what was left out;
+ * - `nothing`: none of those, with the sentence to show. Never silent for ⌘V: a dead paste
+ *   chord with no explanation is what #382 reported.
+ */
+export type ClipboardPaste =
+    | { readonly kind: 'text'; readonly text: string }
+    | { readonly kind: 'image'; readonly image: Blob }
+    | { readonly kind: 'paths'; readonly text: string | null; readonly notice: string | null }
+    | { readonly kind: 'nothing'; readonly notice: string };
+
+export interface ClipboardPasteSources {
+    readonly clipboard: Clipboard | undefined;
+    /**
+     * Ask this window's shell for the files on the pasteboard (`app/dropped-files.ts` ▸
+     * `resolveClipboard`), or null where there is no shell to ask (a browser).
+     */
+    readonly readFiles: (() => Promise<DroppedFilesResolution>) | null;
+}
+
+/** ⌘V over a clipboard holding nothing a terminal can take. */
+export const NOTHING_TO_PASTE_NOTICE = 'the clipboard holds no text, image or file to paste';
+
+/** #382: a browser cannot learn where a copied file lives, as it cannot for a dropped one. */
+export const BROWSER_CLIPBOARD_FILE_NOTICE =
+    'a browser does not reveal where a copied file lives, so there is no path to paste; ' +
+    'paste it in the Kelpi desktop app, or type the path';
+
+/**
+ * Read the clipboard for a paste into a terminal, the one copy of section 12.2's order that ⌘V
+ * in this window (`App.tsx` ▸ `pasteClipboardInto`) and ⌘V or middle-click in a remote host's or
+ * a plugin's pane (`app/terminal-shortcuts.tsx` ▸ `pasteIntoOwner`) both run.
+ *
+ * Throws when there is no clipboard API at all or `readText` is refused: the caller reports it.
+ * Everything after that resolves. A `read()` that throws or finds no PNG goes on to the shell
+ * rather than giving up, because a pasteboard holding a file link is exactly the one the page's
+ * `read()` cannot describe (one item, `types: []`, measured on Electron 43: Chromium hides the
+ * image beside a file link, since a Finder Copy's image is the file's icon).
+ */
+export async function readClipboardForPaste(sources: ClipboardPasteSources): Promise<ClipboardPaste> {
+    const clipboard = sources.clipboard;
+    if (clipboard === undefined || typeof clipboard.readText !== 'function') throw new Error('this browser exposes no clipboard');
+    const text = await clipboard.readText();
+    if (text !== '') return { kind: 'text', text };
+    // An item the page can see but not read is the signature of a file on the pasteboard.
+    let opaqueItem = false;
+    if (typeof clipboard.read === 'function') {
+        try {
+            for (const item of await clipboard.read()) {
+                if (item.types.includes('image/png')) return { kind: 'image', image: await item.getType('image/png') };
+                if (item.types.length === 0) opaqueItem = true;
+            }
+        } catch {
+            // The page could not tell what is there, so a reason the shell gives below is worth
+            // showing: it may be the only explanation for a clipboard that is not empty.
+            opaqueItem = true;
+        }
+    }
+    if (sources.readFiles === null) return { kind: 'nothing', notice: opaqueItem ? BROWSER_CLIPBOARD_FILE_NOTICE : NOTHING_TO_PASTE_NOTICE };
+    const files = await sources.readFiles();
+    if (files.paths.length === 0 && files.unresolved === 0) {
+        // The shell's or daemon's reason (an older shell, a timeout) matters only when there was
+        // something to read; over a plainly empty clipboard it would only confuse.
+        return { kind: 'nothing', notice: files.error !== null && opaqueItem ? files.error : NOTHING_TO_PASTE_NOTICE };
+    }
+    return { kind: 'paths', ...resolvedDropOutcome(files, 'copied') };
 }

@@ -34,11 +34,14 @@ import { randomUUID } from 'node:crypto';
 
 import {
     CHOOSE_FOLDER_CAPABILITY,
+    CLIPBOARD_FILES_TIMEOUT_MS,
     CHOOSE_FOLDER_DIALOG_ACTION,
     CHOOSE_FOLDER_TIMEOUT_MS,
     CSV_UPDATED_MESSAGE,
     DROPPED_FILES_TIMEOUT_MS,
     MAX_DROPPED_FILES,
+    RESOLVE_CLIPBOARD_FILES_ACTION,
+    RESOLVE_CLIPBOARD_FILES_CAPABILITY,
     RESOLVE_DROPPED_FILES_ACTION,
     RESOLVE_DROPPED_FILES_CAPABILITY,
     UPDATE_ACTION_SHELL_ACTION,
@@ -1243,20 +1246,35 @@ const MAX_DROPPED_ERROR_LENGTH = 300;
 /** The `hello` capability a shell must declare to answer each action. */
 const SHELL_ANSWER_CAPABILITY: Readonly<Record<AnsweredShellAction, string>> = {
     [CHOOSE_FOLDER_DIALOG_ACTION]: CHOOSE_FOLDER_CAPABILITY,
-    [RESOLVE_DROPPED_FILES_ACTION]: RESOLVE_DROPPED_FILES_CAPABILITY
+    [RESOLVE_DROPPED_FILES_ACTION]: RESOLVE_DROPPED_FILES_CAPABILITY,
+    [RESOLVE_CLIPBOARD_FILES_ACTION]: RESOLVE_CLIPBOARD_FILES_CAPABILITY
 };
 
-/** How long each action may stay pending: minutes for a person at a panel, seconds for a drop. */
+/**
+ * How long each action may stay pending: minutes for a person at a panel, seconds for a drop, and
+ * a few seconds for a pasteboard read (#382), whose late answer would type into whatever came next.
+ */
 const SHELL_ANSWER_TIMEOUT_MS: Readonly<Record<AnsweredShellAction, number>> = {
     [CHOOSE_FOLDER_DIALOG_ACTION]: CHOOSE_FOLDER_TIMEOUT_MS,
-    [RESOLVE_DROPPED_FILES_ACTION]: DROPPED_FILES_TIMEOUT_MS
+    [RESOLVE_DROPPED_FILES_ACTION]: DROPPED_FILES_TIMEOUT_MS,
+    [RESOLVE_CLIPBOARD_FILES_ACTION]: CLIPBOARD_FILES_TIMEOUT_MS
+};
+
+/** The actions a `dropped-files-answer` answers: a drop's paths, and (#382) the pasteboard's. */
+const FILE_ANSWER_ACTIONS: readonly AnsweredShellAction[] = [RESOLVE_DROPPED_FILES_ACTION, RESOLVE_CLIPBOARD_FILES_ACTION];
+
+/** Why a request was refused because no shell able to answer it is attached for the window. */
+const NO_ANSWERING_SHELL: Readonly<Record<AnsweredShellAction, string>> = {
+    [CHOOSE_FOLDER_DIALOG_ACTION]: 'that can show a folder panel',
+    [RESOLVE_DROPPED_FILES_ACTION]: "that can read a dropped file's path",
+    [RESOLVE_CLIPBOARD_FILES_ACTION]: "that can read a copied file's path"
 };
 
 /** A shell's answer, decoded; which one it is follows from the pending request's action. */
 type ShellAnswer =
     | { readonly kind: typeof CHOOSE_FOLDER_DIALOG_ACTION; readonly path: string | null }
     | {
-          readonly kind: typeof RESOLVE_DROPPED_FILES_ACTION;
+          readonly kind: typeof RESOLVE_DROPPED_FILES_ACTION | typeof RESOLVE_CLIPBOARD_FILES_ACTION;
           readonly paths: readonly string[];
           readonly unresolved: number;
           readonly error?: string | undefined;
@@ -1613,7 +1631,7 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             entry.session.send({ type: WS_CHOOSE_FOLDER_RESULT_MESSAGE, requestID, path, windowID: entry.windowID });
             return;
         }
-        const dropped = answer?.kind === RESOLVE_DROPPED_FILES_ACTION ? answer : null;
+        const dropped = answer !== null && answer.kind !== CHOOSE_FOLDER_DIALOG_ACTION ? answer : null;
         const error = dropped?.error ?? (dropped === null ? reason : undefined);
         entry.session.send({
             type: WS_DROPPED_FILES_RESULT_MESSAGE,
@@ -2954,7 +2972,6 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                 this.send({ type: 'command-reply', id, reply: failure(error) });
                 return null;
             };
-            const folder = action === CHOOSE_FOLDER_DIALOG_ACTION;
             if (this.pairedDevice) return refuse(`${action} is owner-only`);
             const requestID = text(payload['request_id']);
             const windowID = text(payload['window_id']);
@@ -2962,14 +2979,10 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                 return undefined;
             }
             if (!answeringShellAttached(windowID, action)) {
-                return refuse(
-                    folder
-                        ? `no desktop window ${windowID} is connected that can show a folder panel`
-                        : `no desktop window ${windowID} is connected that can read a dropped file's path`
-                );
+                return refuse(`no desktop window ${windowID} is connected ${NO_ANSWERING_SHELL[action]}`);
             }
             if (pendingShellAnswers.has(requestID)) {
-                return refuse(`${folder ? 'folder' : 'dropped-files'} request ${requestID} is already pending`);
+                return refuse(`${action} request ${requestID} is already pending`);
             }
             pendingShellAnswers.set(requestID, { session: this, windowID, action, at: now() });
             sweepShellAnswers();
@@ -3537,22 +3550,23 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
      * capability (`isAnsweringShellFor`): anyone attached heard the broadcast and could copy its
      * ids, so an answer from any other session is dropped, as is one for a request nobody is
      * waiting on (already settled, timed out, its asker gone), one naming a different window, and
-     * one of the wrong kind (a folder answer for a drop's id, or the reverse).
+     * one of the wrong kind (a folder answer for a drop's id, or the reverse). `actions` is every
+     * kind the frame may answer, and the sender must declare the capability of the PENDING one.
      */
     function pendingAnswerFor(
         sender: SessionImpl,
         message: Record<string, unknown>,
-        action: AnsweredShellAction
-    ): string | null {
+        actions: readonly AnsweredShellAction[]
+    ): { readonly requestID: string; readonly action: AnsweredShellAction } | null {
         if (closed) return null;
         sweepShellAnswers();
         const requestID = text(message['requestID']);
         if (requestID === undefined) return null;
         const entry = pendingShellAnswers.get(requestID);
-        if (entry === undefined || entry.action !== action) return null;
-        if (!isAnsweringShellFor(sender, entry.windowID, action)) return null;
+        if (entry === undefined || !actions.includes(entry.action)) return null;
+        if (!isAnsweringShellFor(sender, entry.windowID, entry.action)) return null;
         if (text(message['windowID']) !== entry.windowID) return null;
-        return requestID;
+        return { requestID, action: entry.action };
     }
 
     /**
@@ -3564,10 +3578,10 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
      * at the timeout.
      */
     function chooseFolderAnswer(sender: SessionImpl, message: Record<string, unknown>): void {
-        const requestID = pendingAnswerFor(sender, message, CHOOSE_FOLDER_DIALOG_ACTION);
-        if (requestID === null) return;
+        const pending = pendingAnswerFor(sender, message, [CHOOSE_FOLDER_DIALOG_ACTION]);
+        if (pending === null) return;
         const chosen = message['path'];
-        settleShellAnswer(requestID, {
+        settleShellAnswer(pending.requestID, {
             kind: CHOOSE_FOLDER_DIALOG_ACTION,
             path: typeof chosen === 'string' && chosen.length > 0 ? chosen : null
         });
@@ -3575,7 +3589,10 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
 
     /**
      * #288: `dropped-files-answer` from the shell → a `dropped-files-result` for the ONE session
-     * that asked, under the same rules as a folder answer (`pendingAnswerFor`).
+     * that asked, under the same rules as a folder answer (`pendingAnswerFor`). The same frames
+     * answer #382's `resolve-clipboard-files`, whose payload is identical; the capability checked
+     * is the pending request's own, so a shell that can read drops but not the pasteboard cannot
+     * answer a clipboard request.
      *
      * What is relayed is normalised rather than trusted field by field: only absolute paths
      * survive (`DOM.getFileInfo` returns nothing else for a file on disk, and the page types
@@ -3584,8 +3601,9 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
      * page hears now that nothing is coming.
      */
     function droppedFilesAnswer(sender: SessionImpl, message: Record<string, unknown>): void {
-        const requestID = pendingAnswerFor(sender, message, RESOLVE_DROPPED_FILES_ACTION);
-        if (requestID === null) return;
+        const pending = pendingAnswerFor(sender, message, FILE_ANSWER_ACTIONS);
+        if (pending === null || pending.action === CHOOSE_FOLDER_DIALOG_ACTION) return;
+        const { requestID, action: kind } = pending;
         const raw = Array.isArray(message['paths']) ? (message['paths'] as unknown[]) : [];
         const paths = raw
             .filter((entry): entry is string => typeof entry === 'string' && entry.startsWith('/') && entry.length <= MAX_DROPPED_PATH_LENGTH)
@@ -3598,7 +3616,7 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             (raw.length - paths.length);
         const error = text(message['error']);
         settleShellAnswer(requestID, {
-            kind: RESOLVE_DROPPED_FILES_ACTION,
+            kind,
             paths,
             unresolved,
             ...(error === undefined ? {} : { error: error.slice(0, MAX_DROPPED_ERROR_LENGTH) })

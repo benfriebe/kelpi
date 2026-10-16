@@ -1767,7 +1767,9 @@ the user is looking at whether or not the engine's hidden textarea has focus. It
 falls through to the Edit menu's Paste) when the focused pane has no live terminal renderer, so
 chrome fields, markdown editors, diff panes and web pages are untouched.
 
-Resolution order (`pasteClipboardInto`, `packages/client/src/App.tsx`):
+Resolution order (`readClipboardForPaste`, `packages/client/src/app/clipboard.ts`, the one copy
+of it: `pasteClipboardInto` in `packages/client/src/App.tsx` runs it for this window's panes and
+`pasteIntoOwner` in `app/terminal-shortcuts.tsx` for a remote host's or a plugin renderer's):
 
 1. Clipboard has a non-empty **string** → the text goes to the daemon over `drop-text`, which
    runs the paste pipeline (`packages/daemon/src/pty/input.ts` `sendText`): the section 9.1
@@ -1785,11 +1787,36 @@ Resolution order (`pasteClipboardInto`, `packages/client/src/App.tsx`):
    pastes a path to a PNG. (Built for agent workflows: paste an image to Claude Code.)
    The window's capture-phase `paste` listener keeps the same route for a paste event that
    arrives without the chord (a drag-drop, a Services menu, the context menu's Paste).
-3. Neither → nothing is typed.
+3. Neither, but **files on the pasteboard** (#382) → the paths are typed exactly as a drop of the
+   same files types them (section 12.4: escaped, space-separated, no Enter, through `drop-text`,
+   control-character paths left out and counted in a toast). CleanShot's Copy puts one item with
+   `public.png` and `public.file-url` on the clipboard, and a Finder Copy of a file puts its link
+   beside the file's icon. Chromium's async clipboard hides both once a file link is present
+   (`clipboard.read()` answers one item with `types: []`, measured on Electron 43), so the page
+   cannot see the image or the file, and asks this window's shell, which reads its own pasteboard
+   (`packages/shell/src/clipboard-files.ts`: the `NSFilenamesPboardType` list of every file, else
+   `public.file-url`, else `text/uri-list`). The loop is section 12.4's drop loop without the
+   stash: `shell-action` `resolve-clipboard-files`, answered with the same
+   `dropped-files-answer` / `dropped-files-result` frames, owner-only, refused at once by a
+   window whose shell predates it, and bounded at 3 s (`CLIPBOARD_FILES_TIMEOUT_MS`), since a
+   path typed long after ⌘V would land in whatever was typed since. No PNG copy is written: the
+   file already exists, and typing its own path is what dragging the same screenshot does. For a
+   remote host's pane the path names a file on this Mac, as it does for a drop. A browser has no
+   shell to ask, so a clipboard item it cannot read gets a toast saying a browser cannot learn
+   where a copied file lives.
+4. None of those → nothing is typed, and a toast says the clipboard holds no text, image or file
+   to paste. A silent ⌘V reads as a dead key. Middle-click (below) stays quiet here, because a
+   stray middle press over an empty clipboard is not a request to paste.
 
 A clipboard that cannot be read at all is reported as an error toast rather than swallowed: the
 chord is consumed before the asynchronous read resolves, so a silent failure would be a dead ⌘V
 with nothing anywhere to explain it.
+
+Not covered by step 3: the window's capture-phase `paste` listener (the Edit menu's Paste, a
+Services paste) reads only the `paste` event's own data, which is just as blind to a file link,
+so those routes still type nothing for CleanShot's clipboard. A Finder Copy also carries the
+file's NAME as text, so step 1 wins and ⌘V types the bare name (Ghostty would type the path):
+preferring a file link over text would put a shell round trip in front of every paste.
 
 Kelpi never shows a paste-confirmation dialog: the daemon's paste filter (section 9.1) does
 the unsafe-paste protection instead.
@@ -1800,7 +1827,8 @@ text last selected in any Kelpi terminal, X11's PRIMARY by another name. It come
 client's **selection buffer** (`packages/client/src/terminal/selection-buffer.ts`), not the system
 clipboard, so with `copy-on-select` off a selection can be middle-clicked somewhere without
 replacing what ⌘C copied. With nothing selected yet, it pastes the clipboard exactly as ⌘V reads it
-(text, else a PNG). Either way the text goes over the pane's own connection through `drop-text`
+(text, else a PNG, else a copied file's path), except that an empty clipboard says nothing. Either
+way the text goes over the pane's own connection through `drop-text`
 (`app/terminal-shortcuts.tsx` ▸ `pasteSelectionIntoOwner`), so the paste filter, bracketed paste
 and the sync-input mirror apply as they do to ⌘V, and a remote host's pane is pasted on that host.
 

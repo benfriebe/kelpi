@@ -127,6 +127,19 @@ describe('parseShellAction', () => {
         expect(parseShellAction({ action: 'resolve-dropped-files', windowID: 'w1' })).toBeNull();
     });
 
+    it('decodes a clipboard-files request under the same rules (#382)', () => {
+        expect(parseShellAction({ action: 'resolve-clipboard-files', windowID: 'w1', requestID: 'p1' })).toEqual({
+            action: 'resolve-clipboard-files',
+            windowID: 'w1',
+            paneID: null,
+            requestID: 'p1',
+            updateAction: null,
+            seq: null
+        });
+        expect(parseShellAction({ action: 'resolve-clipboard-files', requestID: 'p1' })).toBeNull();
+        expect(parseShellAction({ action: 'resolve-clipboard-files', windowID: 'w1' })).toBeNull();
+    });
+
     it('decodes an update-sheet button with its verb and sequence (#286)', () => {
         expect(parseShellAction({ action: 'update-action', windowID: 'w1', updateAction: 'restart' })).toEqual({
             action: 'update-action',

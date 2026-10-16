@@ -79,6 +79,11 @@ on the right; either sidebar can host either feature or a compatible plugin:
   `File`s through the daemon (`resolve-dropped-files`, #288). In a browser, a Finder drop onto a
   terminal types nothing and shows a "Drop file" toast that says why. No drop highlight is
   painted (UI-FIDELITY H20): the OS drag cursor is the feedback.
+  ⌘V of a **copied** file whose clipboard has a file link and no text (CleanShot's Copy) types
+  the same path a drop of it would. The page cannot see a file link on the clipboard, so the
+  window's shell reads it off the pasteboard through the same loop (`resolve-clipboard-files`,
+  #382; terminal-surface.md §12.2 step 3), and a browser shows a "Paste" toast that says why it
+  cannot. A Finder Copy also puts the file's name on the clipboard as text, so ⌘V types the name.
 
 ### Single-window discipline (macOS)
 

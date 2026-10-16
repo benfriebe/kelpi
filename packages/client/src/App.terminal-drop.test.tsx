@@ -235,3 +235,80 @@ describe('the other terminal drop routes (TERM-040 / TERM-041)', () => {
         expect(pageStash()?.size ?? 0).toBe(0);
     });
 });
+
+/**
+ * #382: ⌘V over a clipboard holding a file link (CleanShot's Copy: one item, `public.png` plus
+ * `public.file-url`), which the page's clipboard API shows as one item with no types. The path
+ * comes from this window's shell, like a drop's, and is typed the way a drop types it.
+ */
+describe('⌘V of a copied file (#382)', () => {
+    const original = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    const cleanShotClipboard = (): void => {
+        Object.defineProperty(navigator, 'clipboard', {
+            configurable: true,
+            value: {
+                readText: async () => '',
+                read: async () => [{ types: [], getType: async () => { throw new Error('no type'); } }],
+                writeText: async () => {}
+            }
+        });
+    };
+    afterEach(() => {
+        if (original === undefined) delete (navigator as unknown as Record<string, unknown>)['clipboard'];
+        else Object.defineProperty(navigator, 'clipboard', original);
+    });
+    const pressPaste = (): void => {
+        fireEvent.keyDown(terminalHost(), { code: 'KeyV', key: 'v', metaKey: true });
+    };
+
+    it('asks this window’s shell for the pasteboard’s files and types their paths as a drop would', async () => {
+        const h = setup(SHELL_WINDOW);
+        cleanShotClipboard();
+        pressPaste();
+        await waitFor(() => {
+            expect(h.commands('shell-action')).toEqual([
+                expect.objectContaining({ action: 'resolve-clipboard-files', window_id: SHELL_WINDOW })
+            ]);
+        });
+        const requestID = h.commands('shell-action')[0]?.['request_id'];
+        // Nothing is parked: the shell reads its own pasteboard.
+        expect(pageStash()?.size ?? 0).toBe(0);
+        h.reply('shell-action', { ok: true });
+        act(() => {
+            h.socket().emit({
+                type: 'dropped-files-result',
+                requestID,
+                paths: ['/Users/test/Library/Application Support/CleanShot/media/Shot 1.png'],
+                unresolved: 0,
+                windowID: SHELL_WINDOW
+            });
+        });
+        await waitFor(() => {
+            expect(h.commands('drop-text')).toEqual([
+                expect.objectContaining({ pane_id: PANE_A, text: '/Users/test/Library/Application\\ Support/CleanShot/media/Shot\\ 1.png' })
+            ]);
+        });
+    });
+
+    it('says the clipboard is empty instead of doing nothing', async () => {
+        const h = setup(SHELL_WINDOW);
+        cleanShotClipboard();
+        pressPaste();
+        await waitFor(() => expect(h.commands('shell-action')).toHaveLength(1));
+        const requestID = h.commands('shell-action')[0]?.['request_id'];
+        act(() => {
+            h.socket().emit({ type: 'dropped-files-result', requestID, paths: [], unresolved: 0, windowID: SHELL_WINDOW });
+        });
+        await waitFor(() => expect(document.body.textContent).toContain('the clipboard holds no text, image or file to paste'));
+        expect(h.commands('drop-text')).toEqual([]);
+    });
+
+    it('in a browser, says why a copied file has no path to paste', async () => {
+        const h = setup(null);
+        cleanShotClipboard();
+        pressPaste();
+        await waitFor(() => expect(document.body.textContent).toContain('a browser does not reveal where a copied file lives'));
+        expect(h.commands('shell-action')).toEqual([]);
+        expect(h.commands('drop-text')).toEqual([]);
+    });
+});

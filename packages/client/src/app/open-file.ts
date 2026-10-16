@@ -351,13 +351,19 @@ export interface DroppedFilesAnswer {
  * route, whose answer is simply its own paths with nothing unresolved. `error` is shown as it is:
  * every producer (`app/dropped-files.ts`, the daemon, the shell) words it as a sentence for the
  * user.
+ *
+ * #382: a ⌘V of copied files (`app/clipboard.ts` ▸ `readClipboardForPaste`) types through here too,
+ * with `verb` saying "copied" so the notice names what the user did.
  */
-export function resolvedDropOutcome(answer: DroppedFilesAnswer): { readonly text: string | null; readonly notice: string | null } {
+export function resolvedDropOutcome(
+    answer: DroppedFilesAnswer,
+    verb: 'dropped' | 'copied' = 'dropped'
+): { readonly text: string | null; readonly notice: string | null } {
     const typeable = answer.paths.filter(isTypeablePath);
     const untypeable = answer.paths.length - typeable.length;
     const leftOut = answer.unresolved + untypeable;
     const text = typeable.length === 0 ? null : terminalDropPathsText(typeable);
-    const items = (count: number): string => (count === 1 ? '1 dropped item' : `${String(count)} dropped items`);
+    const items = (count: number): string => (count === 1 ? `1 ${verb} item` : `${String(count)} ${verb} items`);
     if (text === null) {
         if (answer.error !== null && answer.paths.length === 0) return { text, notice: answer.error };
         if (untypeable > 0) return { text, notice: `${items(leftOut)} had no path that can be typed safely, so nothing was typed` };
@@ -365,8 +371,8 @@ export function resolvedDropOutcome(answer: DroppedFilesAnswer): { readonly text
             text,
             notice:
                 leftOut === 1
-                    ? 'the dropped item is not a file on disk, so there is no path to type'
-                    : 'the dropped items are not files on disk, so there is no path to type'
+                    ? `the ${verb} item is not a file on disk, so there is no path to type`
+                    : `the ${verb} items are not files on disk, so there is no path to type`
         };
     }
     if (leftOut === 0) return { text, notice: null };

@@ -237,6 +237,58 @@ describe('terminal editing shortcuts across daemon owners', () => {
         dispatchTerminalEditingShortcut(event('KeyV'), target);
         await vi.waitFor(() => expect(h.onError).toHaveBeenCalledWith('Paste', 'remote rejected paste'));
     });
+
+    it('types a copied file’s path (#382) into the remote pane, asking this window’s shell for it', async () => {
+        const primary = fixture(), remote = fixture(), c = clipboard();
+        c.readText.mockResolvedValue('');
+        // CleanShot's Copy as the page sees it: one item, no type it can read.
+        c.read.mockResolvedValue([{ types: [], getType: async () => { throw new Error('none'); } }] as never);
+        const readClipboardFiles = vi.fn(async () => ({ paths: ['/Users/me/Shot 1.png'], unresolved: 0, error: null }));
+        const h = { ...host(), readClipboardFiles };
+        const target = { runtime: remote.runtime, paneID: remote.paneID, visible: true, host: h, clipboard: c as unknown as Clipboard };
+        dispatchTerminalEditingShortcut(event('KeyV'), target);
+        await vi.waitFor(() => expect(remote.dropText).toHaveBeenCalledExactlyOnceWith({ paneID: remote.paneID, text: '/Users/me/Shot\\ 1.png' }));
+        expect(readClipboardFiles).toHaveBeenCalledOnce();
+        expect(primary.dropText).not.toHaveBeenCalled(); expect(remote.pasteImage).not.toHaveBeenCalled();
+        expect(h.onError).not.toHaveBeenCalled();
+    });
+
+    it('types nothing when the pane is closed while the shell answers', async () => {
+        type Answer = { paths: string[]; unresolved: number; error: null };
+        const remote = fixture(), c = clipboard();
+        c.readText.mockResolvedValue('');
+        let answer: ((value: Answer) => void) | null = null;
+        const h = { ...host(), readClipboardFiles: () => new Promise<Answer>(resolve => { answer = resolve; }) };
+        const press = async (): Promise<(value: Answer) => void> => {
+            answer = null;
+            dispatchTerminalEditingShortcut(event('KeyV'), { runtime: remote.runtime, paneID: remote.paneID, visible: true, host: h, clipboard: c as unknown as Clipboard });
+            await vi.waitFor(() => expect(answer).not.toBeNull());
+            return answer as unknown as (value: Answer) => void;
+        };
+        // The control: the same slow answer types into a pane that is still there.
+        (await press())({ paths: ['/tmp/on-time.png'], unresolved: 0, error: null });
+        await vi.waitFor(() => expect(remote.dropText).toHaveBeenCalledExactlyOnceWith({ paneID: remote.paneID, text: '/tmp/on-time.png' }));
+
+        const late = await press();
+        remote.runtime.store.getState().applySnapshot(2, { ...remote.runtime.store.getState().daemon.state, workspaces: [] });
+        late({ paths: ['/tmp/late.png'], unresolved: 0, error: null });
+        // A macrotask: every promise the paste chains after the answer has run by then.
+        await new Promise(resolve => setTimeout(resolve, 20));
+        expect(remote.dropText).toHaveBeenCalledOnce();
+        expect(h.onError).not.toHaveBeenCalled();
+    });
+
+    it('says so when ⌘V finds nothing, while a stray middle-click over the same clipboard stays quiet', async () => {
+        const remote = fixture(), c = clipboard();
+        c.readText.mockResolvedValue('');
+        const h = { ...host(), readClipboardFiles: vi.fn(async () => ({ paths: [], unresolved: 0, error: null })) };
+        dispatchTerminalEditingShortcut(event('KeyV'), { runtime: remote.runtime, paneID: remote.paneID, visible: true, host: h, clipboard: c as unknown as Clipboard });
+        await vi.waitFor(() => expect(h.onError).toHaveBeenCalledExactlyOnceWith('Paste', 'the clipboard holds no text, image or file to paste'));
+        resetSelectionBufferForTests();
+        await pasteSelectionIntoOwner(remote.runtime, remote.paneID, c as unknown as Clipboard, h);
+        expect(h.onError).toHaveBeenCalledOnce();
+        expect(remote.dropText).not.toHaveBeenCalled();
+    });
 });
 
 /**

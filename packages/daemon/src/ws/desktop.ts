@@ -24,7 +24,8 @@
  *                             by `choose-folder-answer` → a `choose-folder-result` sent to the
  *                             ONE connection that asked (`ws/sync.ts`); and the same loop for
  *                             `resolve-dropped-files`, answered by `dropped-files-answer` → a
- *                             `dropped-files-result` (#288)
+ *                             `dropped-files-result` (#288), and for `resolve-clipboard-files`,
+ *                             answered with the same frames (#382)
  *   shell ⇄ daemon ⇄ client   #286's update surface: the shell pushes `update-state` (its update
  *                             flow's current view) to its own window's page, and the page sends
  *                             its buttons back as `shell-action` `update-action`
@@ -56,6 +57,11 @@
  * the answer's shape and its timeout (`DROPPED_FILES_TIMEOUT_MS`, seconds) differ. The page, not
  * this channel, then types the escaped paths with `drop-text`, so a dropped path is a paste in
  * every respect a typed-by-text drop already was.
+ *
+ * `resolve-clipboard-files` (#382) asks the same question of the pasteboard instead of a drop: a
+ * file link copied by CleanShot or Finder is invisible to the page's clipboard API, so ⌘V asks the
+ * window's shell, which reads its own pasteboard. Nothing is parked, the answer and result frames
+ * are the drop's, and the timeout is `CLIPBOARD_FILES_TIMEOUT_MS` (a local read, so seconds).
  *
  * `update-action` / `update-state` (#286) are the update flow drawn in the page
  * (`protocol/src/ws/update.ts` has the whole contract). Not an answered action: the shell's flow
@@ -126,6 +132,7 @@ import path from 'node:path';
 
 import {
     CHOOSE_FOLDER_DIALOG_ACTION,
+    RESOLVE_CLIPBOARD_FILES_ACTION,
     RESOLVE_DROPPED_FILES_ACTION,
     UPDATE_ACTION_SHELL_ACTION,
     UPDATE_USER_ACTIONS,
@@ -170,16 +177,21 @@ export const SHELL_ACTIONS = [
     'check-for-updates',
     CHOOSE_FOLDER_DIALOG_ACTION,
     RESOLVE_DROPPED_FILES_ACTION,
+    RESOLVE_CLIPBOARD_FILES_ACTION,
     UPDATE_ACTION_SHELL_ACTION
 ] as const;
 export type ShellAction = (typeof SHELL_ACTIONS)[number];
 
 /**
  * The actions that come back with an answer for the page that asked (#283's folder panel, #288's
- * dropped-file paths). Each carries a `request_id` and names its window, and `ws/sync.ts` routes
+ * dropped-file paths, #382's copied-file paths). Each carries a `request_id` and names its window, and `ws/sync.ts` routes
  * the shell's answer to the asking connection by that id.
  */
-export const ANSWERED_SHELL_ACTIONS = [CHOOSE_FOLDER_DIALOG_ACTION, RESOLVE_DROPPED_FILES_ACTION] as const;
+export const ANSWERED_SHELL_ACTIONS = [
+    CHOOSE_FOLDER_DIALOG_ACTION,
+    RESOLVE_DROPPED_FILES_ACTION,
+    RESOLVE_CLIPBOARD_FILES_ACTION
+] as const;
 export type AnsweredShellAction = (typeof ANSWERED_SHELL_ACTIONS)[number];
 
 export function isAnsweredShellAction(action: unknown): action is AnsweredShellAction {

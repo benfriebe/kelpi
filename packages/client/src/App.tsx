@@ -79,7 +79,7 @@ import { renderRegisteredView } from './plugins/renderers';
 
 import { canonicalTriggerForPlatform, parseKeyTrigger, type KelpiAction } from '@kelpi/core/config';
 import { isUsingExternalEditor, wireEdgeForDropZone, type DropZone, type SplitDirection } from '@kelpi/core/layout';
-import { CHOOSE_FOLDER_DIALOG_ACTION, RESOLVE_DROPPED_FILES_ACTION, UPDATE_ACTION_SHELL_ACTION, type JsonObject, type WsOldTerminalHost } from '@kelpi/protocol';
+import { CHOOSE_FOLDER_DIALOG_ACTION, UPDATE_ACTION_SHELL_ACTION, type JsonObject, type WsOldTerminalHost } from '@kelpi/protocol';
 import {
     workspaceAgentSummary,
     layoutPaneOrder,
@@ -105,7 +105,7 @@ import { useStore } from 'zustand';
 import { ConnectionBanner, ConnectionSplash } from './app/ConnectionScreen';
 import { ContentPanePlaceholder } from './app/ContentPanePlaceholder';
 import { restartUI } from './app/reload';
-import { copySelection, deferredClipboardWriter, pasteIntoFocusedPane } from './app/clipboard';
+import { copySelection, deferredClipboardWriter, pasteIntoFocusedPane, readClipboardForPaste, type ClipboardPaste } from './app/clipboard';
 import { createLinkClickTracker, linkCaption, type LinkMenuRequest } from './app/link-click';
 import { clearFocusedScreen } from './app/clear-screen';
 import { sendLineEdit } from './app/line-editing';
@@ -1276,7 +1276,7 @@ function Shell(props: AppProps): ReactElement {
                 ? null
                 : createDroppedFilesResolver({
                       windowID: shellWindowID,
-                      send: (request) => commands.shellAction({ action: RESOLVE_DROPPED_FILES_ACTION, ...request })
+                      send: (request) => commands.shellAction(request)
                   }),
         [commands, shellWindowID]
     );
@@ -1739,47 +1739,46 @@ function Shell(props: AppProps): ReactElement {
         };
 
         /**
-         * #81: terminal-surface.md §12.2's resolution order, run against the real clipboard.
+         * #81 / #382: terminal-surface.md §12.2's resolution order, run against the real clipboard
+         * (`readClipboardForPaste`, the one copy of it, which a remote host's pane runs too).
          *
          * 1. a non-empty string goes through the daemon's paste pipeline (`drop-text`), which is
          *    where the bracketed-paste envelope and the sync-input mirror already are;
          * 2. no text but a PNG takes TERM-043's image route;
-         * 3. neither types nothing.
+         * 3. neither, but files on the pasteboard (CleanShot's Copy: a file link and no text):
+         *    this window's shell reads their paths, and they are typed as a drop of the same files
+         *    types them (#382);
+         * 4. none of those is a toast saying so.
          *
-         * A refused or unavailable clipboard is reported rather than swallowed: the chord is
-         * consumed before the read resolves, so a silent failure would be a dead paste with no
-         * explanation anywhere.
+         * A refused or unavailable clipboard is reported rather than swallowed, and so is an empty
+         * one: the chord is consumed before the read resolves, so a silent outcome would be a dead
+         * paste with no explanation anywhere.
          */
         const pasteClipboardInto = async (paneID: string): Promise<void> => {
-            const clipboard = navigator.clipboard as Clipboard | undefined;
-            if (clipboard === undefined) {
-                notifyFailure('Paste', 'this browser exposes no clipboard');
-                return;
-            }
-            let text: string;
+            const original = selectPane(store.getState(), paneID);
+            // The reads below can take a while (the shell's answer most of all): nothing is typed
+            // into a pane closed or replaced meanwhile, which may have kept its id.
+            const stillThere = (): boolean => {
+                const pane = selectPane(store.getState(), paneID);
+                return pane !== null && pane.createdAt === original?.createdAt && pane.type === original.type;
+            };
+            let found: ClipboardPaste;
             try {
-                text = await clipboard.readText();
+                found = await readClipboardForPaste({
+                    clipboard: navigator.clipboard as Clipboard | undefined,
+                    readFiles: droppedFiles === null ? null : () => droppedFiles.resolveClipboard()
+                });
             } catch (error: unknown) {
                 notifyFailure('Paste', error instanceof Error ? error.message : String(error));
                 return;
             }
-            if (text !== '') {
-                run('Paste', commands.dropText({ paneID, text }));
-                return;
-            }
-            // §12.2 step 2. `read()` is the only way to reach the bytes, and a clipboard that
-            // refuses it (or holds nothing readable) is step 3: type nothing, say nothing.
-            if (typeof clipboard.read !== 'function') return;
-            try {
-                for (const item of await clipboard.read()) {
-                    const type = item.types.find((candidate) => candidate === 'image/png');
-                    if (type === undefined) continue;
-                    uploadPastedImage(paneID, await item.getType(type));
-                    return;
-                }
-            } catch {
-                /* nothing readable on the clipboard: §12.2 step 3 types nothing */
-            }
+            if (!stillThere()) return;
+            if (found.kind === 'text') run('Paste', commands.dropText({ paneID, text: found.text }));
+            else if (found.kind === 'image') uploadPastedImage(paneID, found.image);
+            else if (found.kind === 'paths') {
+                if (found.text !== null) run('Paste', commands.dropText({ paneID, text: found.text }));
+                if (found.notice !== null) notifyFailure('Paste', found.notice);
+            } else notifyFailure('Paste', found.notice);
         };
 
         const workspacesActions = createWorkspacesActions({ store, commands, run, notifyFailure, activateWorkspaceAndReveal, setSidebarVisible, lifecycle: workspacesLifecycle });
@@ -2603,7 +2602,7 @@ function Shell(props: AppProps): ReactElement {
             },
 
         };
-    }, [activateWorkspaceAndReveal, commands, content, csv, inspectorData.refresh, notifyFailure, run, runTask, runtime, store]);
+    }, [activateWorkspaceAndReveal, commands, content, csv, droppedFiles, inspectorData.refresh, notifyFailure, run, runTask, runtime, store]);
 
     /**
      * `act` reachable from effects that must not re-subscribe when it is rebuilt (the shell's
@@ -4710,7 +4709,9 @@ function Shell(props: AppProps): ReactElement {
         <TerminalShortcutContext.Provider value={{ bindings, windowChords: terminalWindowChords(bindings),
             blocked: () => surface.blocksWindowInput() || settingsOpenRef.current || helpOpenRef.current || createSheetOpenRef.current,
             globalHotkey: terminalGlobalHotkey ? canonicalTriggerForPlatform(terminalGlobalHotkey, /Mac|iPhone|iPad/.test(navigator.platform)) : null,
-            onError: notifyFailure }}>
+            onError: notifyFailure,
+            // #382: a copied file's paths come from THIS window's shell, whichever host the pane is on.
+            readClipboardFiles: droppedFiles === null ? undefined : () => droppedFiles.resolveClipboard() }}>
         <WorkbenchProvider layout={{ ...workbench, select: selectWorkbench }} runtime={runtime} workspaceID={workspace?.id} chords={allViewChords} navigation={pluginNavigation} navigationTrustedRuntimes={navigationTrustedRuntimes(settings.remoteDaemons, remoteDaemonRuntimes)} services={uiServices} chrome={phoneActive ? null : pluginChrome}
             features={[
                 bindWorkspacesFeature({

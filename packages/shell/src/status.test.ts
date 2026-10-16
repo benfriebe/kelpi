@@ -723,3 +723,87 @@ describe('resolve-dropped-files (#288)', () => {
         expect(answers()).toEqual([]);
     });
 });
+
+describe('resolve-clipboard-files (#382)', () => {
+    let socket: FakeSocket;
+    let controller: ReturnType<typeof createStatusController>;
+    type Reader = () => { paths: string[]; unresolved: number };
+
+    function start(readClipboardFiles?: Reader): void {
+        setLogStreams({ out: { write: () => true }, err: { write: () => true } });
+        electronMock.trays.length = 0;
+        socket = createFakeSocket();
+        controller = createStatusController({
+            location: LOCATION,
+            host: { ...createHost(), ...(readClipboardFiles === undefined ? {} : { readClipboardFiles }) },
+            windowID: 'w1',
+            socketFactory: () => socket as unknown as WebSocket
+        });
+        controller.start();
+        socket.emit('open');
+        socket.emit('message', WELCOME, false);
+    }
+
+    afterEach(() => {
+        controller.stop();
+        setLogStreams({ out: process.stdout, err: process.stderr });
+    });
+
+    const request = (fields: Record<string, unknown> = {}): void => {
+        socket.emit(
+            'message',
+            JSON.stringify({ type: 'shell-action', action: 'resolve-clipboard-files', requestID: 'p1', windowID: 'w1', ...fields }),
+            false
+        );
+    };
+    // The drop's frame carries the answer: the payload is the same.
+    const answers = (): Record<string, unknown>[] =>
+        socket.sent
+            .map((raw) => JSON.parse(raw) as Record<string, unknown>)
+            .filter((message) => message['type'] === 'dropped-files-answer');
+
+    it('reads the pasteboard and answers with the paths, the id and the window', () => {
+        const reader = vi.fn<Reader>(() => ({ paths: ['/Users/me/Shot 1.png'], unresolved: 0 }));
+        start(reader);
+        request();
+        expect(reader).toHaveBeenCalledOnce();
+        expect(answers()).toEqual([
+            { type: 'dropped-files-answer', requestID: 'p1', paths: ['/Users/me/Shot 1.png'], unresolved: 0, windowID: 'w1' }
+        ]);
+    });
+
+    it('answers empty with the reason when the read throws, and when there is no reader at all', () => {
+        start(() => {
+            throw new Error('pasteboard unavailable');
+        });
+        request();
+        expect(answers()).toEqual([
+            { type: 'dropped-files-answer', requestID: 'p1', paths: [], unresolved: 0, error: 'pasteboard unavailable', windowID: 'w1' }
+        ]);
+        controller.stop();
+
+        start(undefined);
+        request();
+        expect(answers()).toMatchObject([{ requestID: 'p1', paths: [], error: "this desktop window cannot read a copied file's path" }]);
+    });
+
+    it('claims the clipboard capability only when the host can read the pasteboard', () => {
+        start(() => ({ paths: [], unresolved: 0 }));
+        const withReader = JSON.parse(socket.sent[0] ?? '{}') as { client?: Record<string, unknown> };
+        expect(withReader.client?.['capabilities']).toEqual(['choose-folder', 'resolve-clipboard-files']);
+        controller.stop();
+
+        start(undefined);
+        const without = JSON.parse(socket.sent[0] ?? '{}') as { client?: Record<string, unknown> };
+        expect(without.client?.['capabilities']).toEqual(['choose-folder']);
+    });
+
+    it('leaves a request for another window, or one with no id, alone', () => {
+        const reader = vi.fn<Reader>(() => ({ paths: ['/a'], unresolved: 0 }));
+        start(reader);
+        request({ windowID: 'w2' });
+        request({ requestID: undefined });
+        expect(reader).not.toHaveBeenCalled();
+        expect(answers()).toEqual([]);
+    });
+});

@@ -34,6 +34,7 @@ import { WebSocket } from 'ws';
 
 import {
     CHOOSE_FOLDER_CAPABILITY,
+    RESOLVE_CLIPBOARD_FILES_CAPABILITY,
     RESOLVE_DROPPED_FILES_CAPABILITY,
     UPDATE_SURFACE_CAPABILITY,
     type JsonObject,
@@ -198,6 +199,13 @@ export interface StatusHost {
      * empty answer with the reason.
      */
     resolveDroppedFiles?(requestID: string): Promise<{ paths: string[]; unresolved: number; error?: string }>;
+    /**
+     * #382: the paths of the files on the pasteboard (CleanShot's Copy: a file link and no text), which the
+     * page's clipboard API cannot see (`./clipboard-files.ts` has why). Answered with the same
+     * `dropped-files-answer` frame as a drop. Absent, the capability is not claimed and the daemon
+     * refuses the page's request at once; throwing is an empty answer with the reason.
+     */
+    readClipboardFiles?(): { paths: string[]; unresolved: number };
     /** The ••• menu's "Check for Updates…" (APP-026). */
     checkForUpdates?(): void;
     /**
@@ -540,6 +548,31 @@ export function createStatusController(options: StatusOptions): StatusController
         pending.then(send, failed);
     }
 
+    /**
+     * #382: the pasteboard's file paths for a ⌘V, sent back whatever happens, like a drop's.
+     * Synchronous: the read is local, and the page gives it only seconds.
+     */
+    function answerClipboardFiles(requestID: string | null, windowID: string | null): void {
+        if (requestID === null || windowID === null) return;
+        let result: { paths: readonly string[]; unresolved: number; error?: string };
+        const read = host.readClipboardFiles;
+        if (read === undefined) result = { paths: [], unresolved: 0, error: "this desktop window cannot read a copied file's path" };
+        else {
+            try {
+                result = read();
+            } catch (error) {
+                logError('clipboard-files read failed', error);
+                result = { paths: [], unresolved: 0, error: error instanceof Error ? error.message : String(error) };
+            }
+        }
+        if (!sendJson({ ...droppedFilesAnswer(requestID, windowID, result) }, 'clipboard-files answer')) {
+            warn(`clipboard-files answer ${requestID} not sent: the status connection is down`);
+            return;
+        }
+        // A count, never the paths: what was copied is the user's business, as with OSC 52 writes.
+        log(`clipboard-files: ${String(result.paths.length)} path(s), ${String(result.unresolved)} unresolved`);
+    }
+
     function sendJson(message: Record<string, unknown>, what: string): boolean {
         const current = socket;
         if (!ready || current === null || current.readyState !== WebSocket.OPEN) return false;
@@ -875,6 +908,8 @@ export function createStatusController(options: StatusOptions): StatusController
                                   capabilities: [
                                       CHOOSE_FOLDER_CAPABILITY,
                                       ...(host.resolveDroppedFiles === undefined ? [] : [RESOLVE_DROPPED_FILES_CAPABILITY]),
+                                      // #382: a copied file's paths, read off the pasteboard.
+                                      ...(host.readClipboardFiles === undefined ? [] : [RESOLVE_CLIPBOARD_FILES_CAPABILITY]),
                                       // #286: this connection pushes this window's update
                                       // state and takes its page's update buttons.
                                       ...(host.updateAction === undefined ? [] : [UPDATE_SURFACE_CAPABILITY])
@@ -1045,6 +1080,7 @@ export function createStatusController(options: StatusOptions): StatusController
                 else if (request.action === 'install-cli') host.installCLINow?.();
                 else if (request.action === 'choose-folder-dialog') answerChooseFolder(request.requestID, request.windowID);
                 else if (request.action === 'resolve-dropped-files') answerDroppedFiles(request.requestID, request.windowID);
+                else if (request.action === 'resolve-clipboard-files') answerClipboardFiles(request.requestID, request.windowID);
                 else if (request.action === 'update-action') {
                     // Addressed presses only (`parseShellAction` refuses an unaddressed one), and
                     // `shellActionAppliesHere` above has already matched the window.

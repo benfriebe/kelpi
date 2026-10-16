@@ -116,6 +116,7 @@ import { contentContextMenuLogLine, contentContextMenuTemplate } from './context
 import { createUnresponsiveWatchdog } from './unresponsive.js';
 import { focusWindowContents, presentWindow, presentWindowLogLine } from './window-present.js';
 import { OPEN_FILE_EXTENSIONS, isForwardableOpenPath, scriptedFolderAnswer } from './shell-actions.js';
+import { readClipboardFiles } from './clipboard-files.js';
 import { resolveDroppedFiles, serialized, type DroppedFilesResult } from './dropped-files.js';
 import { titleBarLogLine, titleBarStyleFor, trafficLightQuery, windowButtonsLogLine, windowButtonsVisible } from './titlebar.js';
 import { describeSkillRefresh, refreshBundledSkill } from './skill.js';
@@ -1954,6 +1955,8 @@ function startStatusController(): void {
                 promptChooseFolder: () => promptChooseFolder(),
                 // #288: a drop's paths, read off this window's page through its debugger.
                 resolveDroppedFiles: (requestID) => resolveDroppedFilesInWindow(requestID),
+                // #382: a copied file's paths, read off this machine's pasteboard.
+                readClipboardFiles: () => readClipboardFiles({ read: (format) => clipboard.read(format) }),
                 /**
                  * §AGNT-117's one-shot migration.
                  *

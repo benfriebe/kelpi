@@ -26,13 +26,29 @@
  *
  * The stash entry is removed whenever the request settles, whoever settled it, so a `File` never
  * outlives the drop that produced it; the shell also deletes the entry as it reads it.
+ *
+ * #382: `resolveClipboard` asks the same question of the pasteboard, for a ⌘V of a copied file
+ * (CleanShot's Copy: a file link and no text) that the page's clipboard API cannot see. Nothing is parked:
+ * the shell reads its own pasteboard (`shell/src/clipboard-files.ts`). The action is
+ * `resolve-clipboard-files`, the result frame is the drop's, and the bound is
+ * `CLIPBOARD_FILES_TIMEOUT_MS`, seconds, because a path typed long after ⌘V would land in whatever
+ * the user typed since.
  */
 
-import { DROPPED_FILES_STASH, DROPPED_FILES_TIMEOUT_MS, WS_DROPPED_FILES_RESULT_MESSAGE } from '@kelpi/protocol';
+import {
+    CLIPBOARD_FILES_TIMEOUT_MS,
+    DROPPED_FILES_STASH,
+    DROPPED_FILES_TIMEOUT_MS,
+    RESOLVE_CLIPBOARD_FILES_ACTION,
+    RESOLVE_DROPPED_FILES_ACTION,
+    WS_DROPPED_FILES_RESULT_MESSAGE
+} from '@kelpi/protocol';
 
 import { isOkReply, replyError, type CommandReply } from '../connection/commands';
 
 export interface DroppedFilesRequest {
+    /** A drop's lookup, or (#382) the pasteboard's. */
+    readonly action: typeof RESOLVE_DROPPED_FILES_ACTION | typeof RESOLVE_CLIPBOARD_FILES_ACTION;
     readonly requestID: string;
     readonly windowID: string;
 }
@@ -54,12 +70,16 @@ export interface DroppedFilesResolverOptions {
     readonly send: (request: DroppedFilesRequest) => Promise<CommandReply>;
     readonly stash?: DroppedFilesStash | undefined;
     readonly timeoutMs?: number | undefined;
+    /** #382: the bound on a pasteboard lookup (`CLIPBOARD_FILES_TIMEOUT_MS` unless a test says). */
+    readonly clipboardTimeoutMs?: number | undefined;
     readonly newID?: (() => string) | undefined;
 }
 
 export interface DroppedFilesResolver {
     /** Ask for the paths of `files`, in order. Never rejects. */
     resolve(files: readonly unknown[]): Promise<DroppedFilesResolution>;
+    /** #382: ask for the paths of the files on the pasteboard. Never rejects. */
+    resolveClipboard(): Promise<DroppedFilesResolution>;
     /** Offer every message the connection receives; true when it settled a pending request. */
     handleMessage(message: unknown): boolean;
     /** Settle every pending request as empty (the connection dropped, the page is going). */
@@ -105,8 +125,20 @@ export function droppedFilesRefusal(detail: string): string {
     return "this window can't read dropped file paths right now; try again";
 }
 
+/**
+ * #382: the same, for a ⌘V of a copied file. Besides a paired device, the refusal is a shell (or,
+ * answering "shell-action requires action ...", a daemon) from before #382, or a shell whose
+ * status connection is reconnecting; the daemon's words cannot tell those apart, so the sentence
+ * names both remedies.
+ */
+export function clipboardFilesRefusal(detail: string): string {
+    if (detail.includes('owner-only')) return 'pasting a copied file works in the Kelpi desktop app';
+    return "this window can't read a copied file's path right now; try again, or update Kelpi";
+}
+
 export function createDroppedFilesResolver(options: DroppedFilesResolverOptions): DroppedFilesResolver {
     const timeoutMs = options.timeoutMs ?? DROPPED_FILES_TIMEOUT_MS;
+    const clipboardTimeoutMs = options.clipboardTimeoutMs ?? CLIPBOARD_FILES_TIMEOUT_MS;
     const newID = options.newID ?? defaultNewID;
     const stash = (): DroppedFilesStash => options.stash ?? pageDroppedFilesStash();
     const waiting = new Map<
@@ -124,31 +156,44 @@ export function createDroppedFilesResolver(options: DroppedFilesResolverOptions)
         return true;
     };
 
+    /** One request of either kind; `files` is the drop's, parked for the shell, or null. */
+    const ask = (
+        action: DroppedFilesRequest['action'],
+        files: readonly unknown[] | null,
+        bound: number,
+        refusal: (detail: string) => string
+    ): Promise<DroppedFilesResolution> => {
+        const requestID = newID();
+        const answer = new Promise<DroppedFilesResolution>((resolve) => {
+            const timer = setTimeout(() => {
+                settle(requestID, EMPTY('the desktop window did not answer in time'));
+            }, bound);
+            waiting.set(requestID, { resolve, timer });
+        });
+        // Parked and registered BEFORE the send, so the shell can never look for an entry
+        // that is not there yet, and a result can never arrive for an id not yet known.
+        if (files !== null) stash().set(requestID, [...files]);
+        void options.send({ action, requestID, windowID: options.windowID }).then(
+            (reply) => {
+                if (isOkReply(reply)) return;
+                settle(requestID, EMPTY(refusal(replyError(reply))));
+            },
+            (error: unknown) => {
+                settle(
+                    requestID,
+                    EMPTY(`could not ask the desktop window: ${error instanceof Error ? error.message : String(error)}`)
+                );
+            }
+        );
+        return answer;
+    };
+
     return {
         resolve(files: readonly unknown[]): Promise<DroppedFilesResolution> {
-            const requestID = newID();
-            const answer = new Promise<DroppedFilesResolution>((resolve) => {
-                const timer = setTimeout(() => {
-                    settle(requestID, EMPTY('the desktop window did not answer in time'));
-                }, timeoutMs);
-                waiting.set(requestID, { resolve, timer });
-            });
-            // Parked and registered BEFORE the send, so the shell can never look for an entry
-            // that is not there yet, and a result can never arrive for an id not yet known.
-            stash().set(requestID, [...files]);
-            void options.send({ requestID, windowID: options.windowID }).then(
-                (reply) => {
-                    if (isOkReply(reply)) return;
-                    settle(requestID, EMPTY(droppedFilesRefusal(replyError(reply))));
-                },
-                (error: unknown) => {
-                    settle(
-                        requestID,
-                        EMPTY(`could not ask the desktop window: ${error instanceof Error ? error.message : String(error)}`)
-                    );
-                }
-            );
-            return answer;
+            return ask(RESOLVE_DROPPED_FILES_ACTION, files, timeoutMs, droppedFilesRefusal);
+        },
+        resolveClipboard(): Promise<DroppedFilesResolution> {
+            return ask(RESOLVE_CLIPBOARD_FILES_ACTION, null, clipboardTimeoutMs, clipboardFilesRefusal);
         },
         handleMessage(message: unknown): boolean {
             if (typeof message !== 'object' || message === null) return false;

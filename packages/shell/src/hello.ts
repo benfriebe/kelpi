@@ -28,8 +28,9 @@ export interface ShellHelloOptions {
     /**
      * `['web-pane-host']` claims the web-pane host role in the handshake (M6); the status socket
      * declares `choose-folder` (#283), which says it can answer the folder-panel loop,
-     * `resolve-dropped-files` (#288), which says it can read a drop's paths off its page, and
-     * `update-surface` (#286), which says it runs the update flow its page draws.
+     * `resolve-dropped-files` (#288), which says it can read a drop's paths off its page,
+     * `resolve-clipboard-files` (#382), which says it can read a copied file's paths off the
+     * pasteboard, and `update-surface` (#286), which says it runs the update flow its page draws.
      */
     readonly capabilities?: readonly string[] | undefined;
     /**

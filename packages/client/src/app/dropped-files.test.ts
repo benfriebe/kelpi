@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { CommandReply } from '../connection/commands';
 import {
+    clipboardFilesRefusal,
     createDroppedFilesResolver,
     droppedFilesRefusal,
     pageDroppedFilesStash,
@@ -10,7 +11,7 @@ import {
     type DroppedFilesStash
 } from './dropped-files';
 
-function setup(options: { reply?: CommandReply | Error; timeoutMs?: number } = {}) {
+function setup(options: { reply?: CommandReply | Error; timeoutMs?: number; clipboardTimeoutMs?: number } = {}) {
     const stash: DroppedFilesStash = new Map();
     const sent: DroppedFilesRequest[] = [];
     // The stash as the shell sees it at the moment the request goes out.
@@ -20,6 +21,7 @@ function setup(options: { reply?: CommandReply | Error; timeoutMs?: number } = {
         windowID: 'WIN',
         stash,
         timeoutMs: options.timeoutMs ?? 1_000,
+        clipboardTimeoutMs: options.clipboardTimeoutMs ?? 300,
         newID: () => `D${String(++counter)}`,
         send: (request) => {
             sent.push(request);
@@ -42,7 +44,7 @@ describe('createDroppedFilesResolver (#288)', () => {
         const { resolver, stash, sent, stashAtSend } = setup();
         const files = [{ name: 'a b.png' }, { name: 'dir' }];
         const answer = resolver.resolve(files);
-        expect(sent).toEqual([{ requestID: 'D1', windowID: 'WIN' }]);
+        expect(sent).toEqual([{ action: 'resolve-dropped-files', requestID: 'D1', windowID: 'WIN' }]);
         // The shell must never look for an entry that is not there yet.
         expect(stashAtSend[0]).toEqual(files);
 
@@ -121,6 +123,54 @@ describe('createDroppedFilesResolver (#288)', () => {
         await expect(a).resolves.toMatchObject({ paths: [], error: 'the connection to the daemon dropped' });
         await expect(b).resolves.toMatchObject({ paths: [] });
         expect(stash.size).toBe(0);
+    });
+});
+
+describe('resolveClipboard: the pasteboard’s files (#382)', () => {
+    it('asks with its own action and parks nothing, then settles on the same result frame', async () => {
+        const { resolver, stash, sent } = setup();
+        const answer = resolver.resolveClipboard();
+        expect(sent).toEqual([{ action: 'resolve-clipboard-files', requestID: 'D1', windowID: 'WIN' }]);
+        expect(stash.size).toBe(0);
+        resolver.handleMessage({ type: WS_DROPPED_FILES_RESULT_MESSAGE, requestID: 'D1', paths: ['/tmp/shot.png'], unresolved: 0, windowID: 'WIN' });
+        await expect(answer).resolves.toEqual({ paths: ['/tmp/shot.png'], unresolved: 0, error: null });
+    });
+
+    it('gives up after its own short bound, not the drop’s', async () => {
+        vi.useFakeTimers();
+        const { resolver } = setup({ timeoutMs: 10_000, clipboardTimeoutMs: 300 });
+        const answer = resolver.resolveClipboard();
+        await vi.advanceTimersByTimeAsync(301);
+        await expect(answer).resolves.toMatchObject({ paths: [], error: 'the desktop window did not answer in time' });
+    });
+
+    it('words a refusal for a paste, and settles with the drops when the connection drops', async () => {
+        const refused = setup({ reply: { ok: false, error: "no desktop window W is connected that can read a copied file's path" } as CommandReply });
+        await expect(refused.resolver.resolveClipboard()).resolves.toMatchObject({
+            paths: [],
+            error: "this window can't read a copied file's path right now; try again, or update Kelpi"
+        });
+        const { resolver } = setup();
+        const drop = resolver.resolve([{}]);
+        const paste = resolver.resolveClipboard();
+        resolver.cancelAll();
+        await expect(drop).resolves.toMatchObject({ error: 'the connection to the daemon dropped' });
+        await expect(paste).resolves.toMatchObject({ error: 'the connection to the daemon dropped' });
+    });
+});
+
+describe('clipboardFilesRefusal (#382)', () => {
+    it('tells a paired device where it works, and an older shell or daemon what to do', () => {
+        expect(clipboardFilesRefusal('resolve-clipboard-files is owner-only')).toBe('pasting a copied file works in the Kelpi desktop app');
+        for (const detail of [
+            "no desktop window cccccccc-0000-4000-8000-000000000382 is connected that can read a copied file's path",
+            // A daemon from before #382 does not know the action at all.
+            'shell-action requires action open-file-dialog | install-cli | check-for-updates | choose-folder-dialog | resolve-dropped-files | update-action'
+        ]) {
+            const sentence = clipboardFilesRefusal(detail);
+            expect(sentence).toBe("this window can't read a copied file's path right now; try again, or update Kelpi");
+            expect(sentence).not.toMatch(/[0-9a-f]{8}-/);
+        }
     });
 });
 

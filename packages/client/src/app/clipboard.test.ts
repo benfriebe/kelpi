@@ -9,7 +9,15 @@
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { copySelection, deferredClipboardWriter, pasteIntoFocusedPane } from './clipboard';
+import {
+    BROWSER_CLIPBOARD_FILE_NOTICE,
+    NOTHING_TO_PASTE_NOTICE,
+    copySelection,
+    deferredClipboardWriter,
+    pasteIntoFocusedPane,
+    readClipboardForPaste
+} from './clipboard';
+import type { DroppedFilesResolution } from './dropped-files';
 
 const deferred = <T,>() => {
     let resolve!: (value: T) => void, reject!: (error: unknown) => void;
@@ -236,5 +244,74 @@ describe('pasteIntoFocusedPane', () => {
             pasteIntoFocusedPane({ focusedPaneID: () => null, isTerminalPane: () => true, deliver })
         ).toBe(false);
         expect(deliver).not.toHaveBeenCalled();
+    });
+});
+
+describe('readClipboardForPaste (#382, section 12.2)', () => {
+    const png = new Blob(['png'], { type: 'image/png' });
+    /** A clipboard whose `read()` answers these items' types (or throws, given an Error). */
+    const board = (text: string, items: readonly (readonly string[])[] | Error = []) => ({
+        readText: vi.fn(async () => text),
+        read: vi.fn(async () => {
+            if (items instanceof Error) throw items;
+            return items.map((types) => ({ types, getType: async () => png }));
+        })
+    });
+    const shell = (answer: Partial<DroppedFilesResolution> = {}) =>
+        vi.fn(async (): Promise<DroppedFilesResolution> => ({ paths: [], unresolved: 0, error: null, ...answer }));
+    const read = (clipboard: unknown, readFiles: (() => Promise<DroppedFilesResolution>) | null) =>
+        readClipboardForPaste({ clipboard: clipboard as Clipboard, readFiles });
+
+    it('takes text first and asks the shell nothing', async () => {
+        const files = shell({ paths: ['/tmp/x'] });
+        await expect(read(board('hello', [['image/png']]), files)).resolves.toEqual({ kind: 'text', text: 'hello' });
+        expect(files).not.toHaveBeenCalled();
+    });
+
+    it('takes a PNG next, before any file on the pasteboard', async () => {
+        const files = shell({ paths: ['/tmp/x'] });
+        await expect(read(board('', [['image/png']]), files)).resolves.toEqual({ kind: 'image', image: png });
+        expect(files).not.toHaveBeenCalled();
+    });
+
+    it('types the copied files as a drop of them would, for CleanShot’s Copy (one item, no types the page can read)', async () => {
+        const files = shell({ paths: ['/Users/me/Library/Application Support/CleanShot/media/Shot 1.png'] });
+        await expect(read(board('', [[]]), files)).resolves.toEqual({
+            kind: 'paths',
+            text: '/Users/me/Library/Application\\ Support/CleanShot/media/Shot\\ 1.png',
+            notice: null
+        });
+    });
+
+    it('still asks the shell when read() throws, and says what it left out in a paste’s words', async () => {
+        const files = shell({ paths: ['/tmp/a', '/tmp/b\nc'], unresolved: 1 });
+        await expect(read(board('', new Error('NotAllowedError')), files)).resolves.toEqual({
+            kind: 'paths',
+            text: '/tmp/a',
+            notice: '2 copied items had no path that can be typed and were left out'
+        });
+        // A page that could not read the clipboard cannot call it empty: the shell's reason stands.
+        await expect(read(board('', new Error('NotAllowedError')), shell({ error: 'update Kelpi' }))).resolves.toEqual({
+            kind: 'nothing',
+            notice: 'update Kelpi'
+        });
+    });
+
+    it('says the clipboard is empty when nothing is anywhere, never staying silent', async () => {
+        await expect(read(board(''), shell())).resolves.toEqual({ kind: 'nothing', notice: NOTHING_TO_PASTE_NOTICE });
+        // The shell's reason only explains something there was to read.
+        await expect(read(board(''), shell({ error: 'too old' }))).resolves.toEqual({ kind: 'nothing', notice: NOTHING_TO_PASTE_NOTICE });
+        await expect(read(board('', [[]]), shell({ error: 'too old' }))).resolves.toEqual({ kind: 'nothing', notice: 'too old' });
+    });
+
+    it('tells a browser why a copied file has no path, and an empty clipboard that it is empty', async () => {
+        await expect(read(board('', [[]]), null)).resolves.toEqual({ kind: 'nothing', notice: BROWSER_CLIPBOARD_FILE_NOTICE });
+        await expect(read(board(''), null)).resolves.toEqual({ kind: 'nothing', notice: NOTHING_TO_PASTE_NOTICE });
+    });
+
+    it('throws for no clipboard API, or a refused readText, for the caller to report', async () => {
+        await expect(read(undefined, null)).rejects.toThrow('this browser exposes no clipboard');
+        const refused = { readText: vi.fn(async () => { throw new Error('Document is not focused.'); }) };
+        await expect(read(refused, shell())).rejects.toThrow('Document is not focused.');
     });
 });

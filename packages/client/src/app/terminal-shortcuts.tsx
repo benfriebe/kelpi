@@ -8,7 +8,8 @@ import type { KelpiRuntime } from '../state';
 import { paneHandle } from '../terminal/pane-registry';
 import { lastSelection } from '../terminal/selection-buffer';
 import { clearScreenAction } from './clear-screen';
-import { copySelection, deferredClipboardWriter } from './clipboard';
+import { copySelection, deferredClipboardWriter, readClipboardForPaste } from './clipboard';
+import type { DroppedFilesResolution } from './dropped-files';
 import { LINE_EDIT_BYTES } from './line-editing';
 
 const EDITING_ACTIONS = new Set<KelpiAction>(['copy', 'paste', 'kill_line_backward', 'move_to_line_start', 'move_to_line_end', 'clear_screen']);
@@ -18,6 +19,12 @@ export interface TerminalShortcutHost {
     readonly blocked?: (() => boolean) | undefined;
     readonly globalHotkey?: KeyTrigger | null | undefined;
     readonly onError?: ((title: string, message: string) => void) | undefined;
+    /**
+     * #382: ask this window's shell for the files on the pasteboard. The shell answers on the
+     * window's OWN connection while a remote pane's paste goes over the pane's, so the window
+     * provides it; absent (a browser, or no provider), a copied file has no path to paste.
+     */
+    readonly readClipboardFiles?: (() => Promise<DroppedFilesResolution>) | undefined;
 }
 /** A remote terminal uses this window's bindings and clipboard, with its own daemon target. */
 export const TerminalShortcutContext = createContext<TerminalShortcutHost | null>(null);
@@ -40,29 +47,42 @@ const ownedPane = (runtime: KelpiRuntime, paneID: string) => runtime.store.getSt
     .flatMap(workspace => workspace.panes).find(pane => pane.id === paneID);
 const isTerminal = (pane: ReturnType<typeof ownedPane>): boolean => pane !== undefined && (pane.type === 'shell' || pane.externalEditorCommand != null);
 
-/** Preserve native paste's text-then-PNG priority, always over the pane's owning connection. */
-async function pasteIntoOwner(runtime: KelpiRuntime, paneID: string, clipboard: Clipboard | undefined): Promise<void> {
+/**
+ * Section 12.2's order (`readClipboardForPaste`), always over the pane's owning connection.
+ *
+ * `quiet` is middle-click's: a stray middle press over an empty clipboard is not a request to
+ * paste, so finding nothing says nothing there, where ⌘V says so.
+ */
+async function pasteIntoOwner(
+    runtime: KelpiRuntime,
+    paneID: string,
+    clipboard: Clipboard | undefined,
+    host: TerminalShortcutHost,
+    report: (message: string) => void,
+    quiet = false
+): Promise<void> {
     const original = ownedPane(runtime, paneID);
     if (!isTerminal(original)) return;
     const stillOwned = (): boolean => {
         const pane = ownedPane(runtime, paneID);
         return isTerminal(pane) && pane?.createdAt === original?.createdAt && pane?.type === original?.type && pane?.externalEditorCommand === original?.externalEditorCommand;
     };
-    if (!clipboard || typeof clipboard.readText !== 'function') throw new Error('this browser exposes no clipboard');
-    const text = await clipboard.readText();
+    const found = await readClipboardForPaste({ clipboard, readFiles: host.readClipboardFiles ?? null });
+    // Every read above can take a while (the shell's answer most of all), and the pane may have
+    // been closed or replaced meanwhile: nothing is typed into a pane the user did not paste into.
     if (!stillOwned()) return;
-    if (text) {
-        const reply = await runtime.commands.dropText({ paneID, text });
+    if (found.kind === 'nothing') {
+        if (!quiet) report(found.notice);
+        return;
+    }
+    if (found.kind === 'paths' && found.notice !== null) report(found.notice);
+    if (found.kind === 'text' || found.kind === 'paths') {
+        if (found.text === null) return;
+        const reply = await runtime.commands.dropText({ paneID, text: found.text });
         if (!isOkReply(reply)) throw new Error(replyError(reply));
         return;
     }
-    if (typeof clipboard.read !== 'function') return;
-    let image: Blob | undefined;
-    try {
-        for (const item of await clipboard.read()) if (item.types.includes('image/png')) { image = await item.getType('image/png'); break; }
-    } catch { return; } // An empty or unreadable non-text clipboard types nothing.
-    if (!image) return;
-    const bytes = new Uint8Array(await image.arrayBuffer());
+    const bytes = new Uint8Array(await found.image.arrayBuffer());
     if (!stillOwned()) return;
     let binary = '';
     for (let offset = 0; offset < bytes.length; offset += 8192) binary += String.fromCharCode(...bytes.subarray(offset, offset + 8192));
@@ -84,9 +104,16 @@ function reportFailure(runtime: KelpiRuntime, paneID: string, host: TerminalShor
  * filter and the sync-input mirror apply as they do to ⌘V, and a remote host's pane is pasted
  * on that host.
  */
-export async function pasteSelectionIntoOwner(runtime: KelpiRuntime, paneID: string, clipboard: Clipboard | undefined): Promise<void> {
+export async function pasteSelectionIntoOwner(
+    runtime: KelpiRuntime,
+    paneID: string,
+    clipboard: Clipboard | undefined,
+    host: TerminalShortcutHost = DEFAULT_HOST
+): Promise<void> {
     const text = lastSelection();
-    if (text === null) return pasteIntoOwner(runtime, paneID, clipboard);
+    if (text === null) {
+        return pasteIntoOwner(runtime, paneID, clipboard, host, (message) => reportFailure(runtime, paneID, host, 'Paste', message), true);
+    }
     if (!isTerminal(ownedPane(runtime, paneID))) return;
     const reply = await runtime.commands.dropText({ paneID, text });
     if (!isOkReply(reply)) throw new Error(replyError(reply));
@@ -98,7 +125,7 @@ export function useMiddleClickPaste(runtime: KelpiRuntime, paneID: string): () =
     const hostRef = useRef(host);
     useEffect(() => { hostRef.current = host; });
     return useCallback(() => {
-        void pasteSelectionIntoOwner(runtime, paneID, navigator.clipboard)
+        void pasteSelectionIntoOwner(runtime, paneID, navigator.clipboard, hostRef.current)
             .catch(error => reportFailure(runtime, paneID, hostRef.current, 'Paste', error));
     }, [runtime, paneID]);
 }
@@ -171,7 +198,7 @@ export function dispatchTerminalEditingShortcut(event: KeyEventLike, options: {
             },
             writeText: typeof clipboard?.writeText === 'function' ? text => clipboard.writeText(text) : null,
             writePendingText: deferredClipboardWriter(clipboard), onError: message => report('Copy', message) });
-    } else if (action === 'paste') void pasteIntoOwner(runtime, paneID, clipboard).catch(error => report('Paste', error));
+    } else if (action === 'paste') void pasteIntoOwner(runtime, paneID, clipboard, host, message => report('Paste', message)).catch(error => report('Paste', error));
     // Cleared by the daemon that owns the pane, a remote host's included (`app/clear-screen.ts`).
     else if (action === 'clear_screen') void runtime.commands.clearPane({ paneID }).then(reply => {
         if (!isOkReply(reply)) report('Clear Screen', replyError(reply));

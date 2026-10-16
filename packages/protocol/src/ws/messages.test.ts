@@ -4,10 +4,13 @@ import {
     CHOOSE_FOLDER_CAPABILITY,
     CHOOSE_FOLDER_DIALOG_ACTION,
     CHOOSE_FOLDER_TIMEOUT_MS,
+    CLIPBOARD_FILES_TIMEOUT_MS,
     DROPPED_FILES_STASH,
     DROPPED_FILES_TIMEOUT_MS,
     MAX_DROPPED_FILES,
     RESOLVE_DROPPED_FILES_ACTION,
+    RESOLVE_CLIPBOARD_FILES_ACTION,
+    RESOLVE_CLIPBOARD_FILES_CAPABILITY,
     RESOLVE_DROPPED_FILES_CAPABILITY,
     WS_CHOOSE_FOLDER_ANSWER_MESSAGE,
     WS_CHOOSE_FOLDER_RESULT_MESSAGE,
@@ -206,6 +209,14 @@ describe('web-pane host channel (M6)', () => {
             { type: WS_DROPPED_FILES_RESULT_MESSAGE, requestID: 'R2', paths: [], unresolved: 0, error: 'no debugger' }
         ];
         for (const message of messages) expect(JSON.parse(JSON.stringify(message))).toEqual(message);
+    });
+
+    it('names the clipboard-files loop, which shares the drop frames (#382)', () => {
+        expect(RESOLVE_CLIPBOARD_FILES_ACTION).toBe('resolve-clipboard-files');
+        expect(RESOLVE_CLIPBOARD_FILES_CAPABILITY).toBe('resolve-clipboard-files');
+        // A local read answered in milliseconds: well inside a drop's bound, since a path typed
+        // long after ⌘V would land in whatever the user typed since.
+        expect(CLIPBOARD_FILES_TIMEOUT_MS).toBeLessThan(DROPPED_FILES_TIMEOUT_MS);
     });
 
     it('pins the role, event and revoke vocabularies the shell codes against', () => {

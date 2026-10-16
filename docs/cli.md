@@ -1410,7 +1410,7 @@ kelpi workspace color <name-or-id> <color> [--json]
 The sidebar's and the inspector's color picker for the terminal, so an agent can use a
 workspace's color as status (for example, turn it purple once its PR merges). The GUI and the
 plugin SDK's `workspaces.setColor` set the same color through the WebSocket-only
-`set-workspace-color` / `set-bulk-color`.
+`set-bulk-color`.
 
 - Help to stdout, exit 0. A missing `<name-or-id>` or `<color>` => usage to stderr, exit 1.
 - A dash-prefixed positional => `kelpi workspace color: unknown option <x>` + usage, exit 1. A
@@ -1433,7 +1433,8 @@ plugin SDK's `workspaces.setColor` set the same color through the WebSocket-only
 Server contract: `<name-or-id>` resolves strictly, with `workspace rename`'s errors (`workspace
 not found: <name>`, `workspace name is ambiguous: <name> (use the id)`), both exit 1. The
 daemon trims, lowercases and validates the color again, refusing a missing one with
-`workspace-color requires color: give one of <the ten>` (unlike `workspace create --color`,
+`workspace-color requires color: give one of <the ten>` and `none` / `default` / `clear` with
+`a workspace always has a color; give one of <the ten>` (unlike `workspace create --color`,
 which drops an unknown color and picks one). Setting the color the workspace already has
 succeeds and writes nothing. The change persists and syncs to every attached client. Reply
 `{ok, workspace_id, workspace_name, color, old_color}`. Group colors stay a sidebar gesture.

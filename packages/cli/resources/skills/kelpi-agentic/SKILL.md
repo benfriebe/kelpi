@@ -545,10 +545,8 @@ kelpi workspace icon <name-or-id> (<emoji> | --clear) [--json]
 # Set a workspace's color (request/response), the same as the sidebar's
 # color picker. One of red, orange, yellow, green, blue, purple, pink,
 # gray, black, white; there is no --clear (a workspace always has a
-# color). Users may give colors a meaning (e.g. purple = PR merged, ready
-# to tear down); when you own a workspace's PR, follow that convention
-# yourself instead of asking the user to recolor it. Prefer the id, as for
-# rename. Prints `<name>: color set to <color>`, or `color is already
+# color). Recolor a workspace only when the user asked you to, or told you
+# what a color means to them. Prefer the id, as for rename. Prints `<name>: color set to <color>`, or `color is already
 # <color>` when nothing changed; --json gives
 # {ok,workspace_id,workspace_name,color,old_color}. Exits non-zero, with
 # the reason on stderr, for a missing or ambiguous workspace or a color

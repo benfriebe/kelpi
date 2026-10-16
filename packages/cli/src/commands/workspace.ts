@@ -876,7 +876,8 @@ async function handleWorkspaceColor(args: string[]): Promise<void> {
     }
     const workspaceName = asString(reply['workspace_name']) ?? nameOrID;
     const color = asString(reply['color']) ?? normalized;
-    // `old_color` tells a same-color no-op from a change, as `old_icon` does for icon.
+    // `old_color` tells a same-color no-op from a change, as `old_icon` does for icon. No presence
+    // check is needed: `old_color` is never null, so a reply without it reads as a change.
     const unchanged = asString(reply['old_color']) === color;
     printLine(unchanged ? `${workspaceName}: color is already ${color}` : `${workspaceName}: color set to ${color}`);
 }

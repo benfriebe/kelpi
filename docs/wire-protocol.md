@@ -289,8 +289,7 @@ Every request carries `"command": "<verb>"`. Parsing happens in three stages:
    its own field guards (documented per command in §6): `workspace-create`,
    `workspace-list`, `workspace-move`, `workspace-delete`, `workspace-profile`,
    `workspace-label`, `workspace-mute`, `workspace-rename`, `workspace-icon`, `workspace-color`,
-   `group-list`,
-   `group-create`, `group-rename`, `group-delete`, `group-move`, `group-set-repo`,
+   `group-list`, `group-create`, `group-rename`, `group-delete`, `group-move`, `group-set-repo`,
    `group-reorder`, `group-sort`, `open`, `diff`,
    `pane-close`, `pane-list`, `pane-capture`, `graft-start`, `graft-stop`,
    `graft-status`, `ping`, `restart-old-terminals`, all `web-*` commands, `pane-sync`, `pane-sync-exclude`,
@@ -1494,9 +1493,8 @@ exit 1, as for `workspace-rename`.
 `name` (required non-empty) = workspace name-or-id (§5.8, strict); `color` = one of the ten
 `WorkspaceColor` values (`red`, `orange`, `yellow`, `green`, `blue`, `purple`, `pink`, `gray`,
 `black`, `white`), matched after trimming and lowercasing, so `" Purple "` is `purple`. The
-CLI's spelling of the sidebar's color picker (#393); the GUI keeps its WS-only
-`set-workspace-color` / `set-bulk-color`. Unlike `workspace-create`'s `color`, an unknown value is
-refused, not dropped. There is no "clear": a workspace always has a color, so an absent `color` is
+CLI's spelling of the sidebar's color picker (#393); the GUI keeps its WS-only `set-bulk-color`.
+Unlike `workspace-create`'s `color`, an unknown value is refused, not dropped. There is no "clear": a workspace always has a color, so an absent `color` is
 refused too. The color reaches every attached client through the ordinary store delta. Setting
 the color the workspace already has succeeds without writing anything; the reply's `old_color`
 then equals `color`.
@@ -1508,7 +1506,8 @@ then equals `color`.
 
 Refusals: `workspace not found: <name>` and `workspace name is ambiguous: <name> (use the
 id)` (as for `workspace-rename`), `workspace-color requires color: give one of red, orange, …,
-white` for an absent or blank `color`, and `'<x>' is not a workspace color: give one of red,
+white` for an absent or blank `color`, `a workspace always has a color; give one of red, orange,
+…, white` for `none`, `default` or `clear`, and `'<x>' is not a workspace color: give one of red,
 orange, …, white` for anything else. Group colors have no such verb.
 
 ---

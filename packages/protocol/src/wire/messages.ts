@@ -437,8 +437,8 @@ export interface WorkspaceIconMessage {
 
 /**
  * The CLI's spelling of the sidebar's colour picker (#393). The GUI keeps its WS-only
- * `set-workspace-color` and `set-bulk-color`, which address workspaces by id; this one takes a
- * name-or-id like every other `workspace-*` verb, so it resolves (and refuses) the way they do.
+ * `set-bulk-color`, which addresses workspaces by id; this one takes a name-or-id like every
+ * other `workspace-*` verb, so it resolves (and refuses) the way they do.
  */
 export interface WorkspaceColorMessage {
     command: 'workspace-color';

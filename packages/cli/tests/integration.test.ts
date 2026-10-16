@@ -2434,7 +2434,7 @@ describe('workspace color', () => {
             expect(result.stdout).toBe('');
             expect(result.stderr).toBe(`kelpi workspace color: '${bad}' is not a workspace color: give one of ${CHOICES}\n`);
         }
-        for (const argv of [['feat', '--clear'], ['--clear'], ['feat', 'none'], ['feat', 'Default']]) {
+        for (const argv of [['feat', '--clear'], ['--clear'], ['feat', 'none'], ['feat', 'Default'], ['feat', 'clear']]) {
             const result = await runCLI(['workspace', 'color', ...argv], { port: server.port });
             expect(result.code).toBe(1);
             expect(result.stderr).toBe(`kelpi workspace color: a workspace always has a color; give one of ${CHOICES}\n`);

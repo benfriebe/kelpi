@@ -125,8 +125,7 @@ resolveWorkspace(nameOrID):
 - Ambiguous names (2+ workspaces with the same exact name) return `null`. Callers that
   want to distinguish "ambiguous" from "missing" must re-check themselves (`workspace-delete`,
   `workspace-rename`, `workspace-icon` and `workspace-color` do, through one shared helper, so
-  their messages
-  match; see §6.4).
+  their messages match; see §6.4).
 
 ### 2.2 `resolveGroup(nameOrID)` — identical contract for groups
 
@@ -1419,15 +1418,16 @@ The icon reaches attached windows as a `workspace-upserted` event in the next st
 
 Inputs: `nameOrID`, `color?` (kept verbatim by the decoder, not run through
 `parseWorkspaceColor`, which would drop an unknown color to absent). Request/response, like
-`workspace-icon` (#393). The GUI's color picker stays on its WS-only `set-workspace-color` /
-`set-bulk-color`, and so does the plugin SDK's `workspaces.setColor`; all end in the same
-reducer actions. A group's color is still not settable from the CLI.
+`workspace-icon` (#393). The GUI's color picker stays on its WS-only `set-bulk-color`, and so
+does the plugin SDK's `workspaces.setColor`. A group's color is still not settable from the
+CLI.
 
 1. Strict `resolveWorkspace`, else the §6.4 pair, as in §6.8.
 2. Trim and lowercase `color`, then it must be one of the ten `WORKSPACE_COLORS`. Absent or
-   blank ⇒ `error("workspace-color requires color: give one of red, orange, …, white")`; any
-   other value ⇒ `error("'{color}' is not a workspace color: give one of red, orange, …, white")`.
-   There is no "clear": a workspace always has a color.
+   blank ⇒ `error("workspace-color requires color: give one of red, orange, …, white")`;
+   `none`, `default` or `clear` ⇒ `error("a workspace always has a color; give one of red,
+   orange, …, white")`, since there is no "clear"; any other value ⇒
+   `error("'{color}' is not a workspace color: give one of red, orange, …, white")`.
 3. If the color differs from the current one, dispatch `set-workspace-color(id, color)` and
    persist. The same color is a successful no-op that writes nothing.
 4. Reply, `color` being the color it has now and `old_color` the color before:

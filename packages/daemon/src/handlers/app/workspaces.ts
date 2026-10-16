@@ -1452,6 +1452,9 @@ function handleWorkspaceIcon(
 // workspace-color (§6.10)
 // ---------------------------------------------------------------------------
 
+/** Words that ask for "no color", which a workspace cannot have; refused with that reason. */
+const NO_COLOR_WORDS: ReadonlySet<string> = new Set(['none', 'default', 'clear']);
+
 /**
  * The sidebar's colour picker, for the CLI (#393). The colour is trimmed and lowercased, then
  * must be one of the ten `WORKSPACE_COLORS`; anything else is refused with the list, never
@@ -1473,14 +1476,17 @@ function handleWorkspaceColor(
         fail(reply, unresolvedWorkspaceError(scope, nameOrID));
         return;
     }
-    const color = parseWorkspaceColor(rawColor?.trim().toLowerCase());
+    const normalized = rawColor?.trim().toLowerCase() ?? '';
+    const color = parseWorkspaceColor(normalized);
     if (color === undefined) {
         const choices = WORKSPACE_COLORS.join(', ');
         fail(
             reply,
-            rawColor === undefined || rawColor.trim() === ''
+            normalized === ''
                 ? `workspace-color requires color: give one of ${choices}`
-                : `'${rawColor}' is not a workspace color: give one of ${choices}`
+                : NO_COLOR_WORDS.has(normalized)
+                  ? `a workspace always has a color; give one of ${choices}`
+                  : `'${rawColor ?? ''}' is not a workspace color: give one of ${choices}`
         );
         return;
     }

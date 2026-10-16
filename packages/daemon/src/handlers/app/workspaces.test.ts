@@ -1866,8 +1866,16 @@ describe('workspace-color', () => {
             ok: false,
             error: `workspace-color requires color: give one of ${choices}`
         });
-        expect(h.reply({ command: 'workspace-color', name: 'w1', color: '  ' })['ok']).toBe(false);
-        expect(h.reply({ command: 'workspace-color', name: 'w1', color: 'none' })['ok']).toBe(false);
+        expect(h.reply({ command: 'workspace-color', name: 'w1', color: '  ' })).toEqual({
+            ok: false,
+            error: `workspace-color requires color: give one of ${choices}`
+        });
+        for (const word of ['none', 'Default', 'clear']) {
+            expect(h.reply({ command: 'workspace-color', name: 'w1', color: word })).toEqual({
+                ok: false,
+                error: `a workspace always has a color; give one of ${choices}`
+            });
+        }
         expect(h.state()).toBe(before);
         expect(h.persists).toEqual([]);
     });

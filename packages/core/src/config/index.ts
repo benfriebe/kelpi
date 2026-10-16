@@ -31,6 +31,14 @@ export {
     parseKeyTrigger
 } from './keys.js';
 export type { KeyModifier, KeyTrigger } from './keys.js';
+// #245: a punctuation chord is matched by the character it types, on any layout.
+export {
+    CHARACTER_CHORD_SOURCE_CODES,
+    CHARACTER_KEYSTROKES,
+    characterChordKeystroke,
+    chordKeyIdentity
+} from './layout.js';
+export type { ChordKeyEventLike, ChordKeyIdentity } from './layout.js';
 export { MENU_BAR_ACTIONS, KELPI_ACTIONS, UNBIND_ACTION, WINDOW_ARRANGEMENT_ACTIONS, isKelpiAction } from './actions.js';
 export type { KelpiAction, UnbindAction } from './actions.js';
 // #95: the chords macOS owns, read by the shell's menu and by the client's terminal layers.

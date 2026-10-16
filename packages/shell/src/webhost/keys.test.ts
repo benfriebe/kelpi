@@ -171,6 +171,24 @@ describe('what stays with the page', () => {
     });
 });
 
+describe('keyboard layouts (#245)', () => {
+    it('takes German ⌘+ and ⌘- as the zoom chords and forwards them as the US keys', () => {
+        // German: `+` is the BracketRight key, `-` the Slash key.
+        expect(forwardedChord(input('BracketRight', { key: '+' }), DEFAULTS)).toEqual({ code: 'Equal', meta: true, ctrl: false, alt: false, shift: true });
+        expect(forwardedChord(input('Slash', { key: '-' }), DEFAULTS)).toEqual({ code: 'Minus', meta: true, ctrl: false, alt: false, shift: false });
+        // And the relay string the client replays names the US key, so it cannot become ⌘].
+        expect(chordCommand(forwardedChord(input('BracketRight', { key: '+' }), DEFAULTS)!)).toBe('web-chord:Equal:shift');
+    });
+
+    it('leaves a US keyboard, the brackets and ⌥ chords on their physical keys', () => {
+        expect(forwardedChord(input('Equal', { key: '=' }), DEFAULTS)?.code).toBe('Equal');
+        expect(forwardedChord(input('BracketRight', { key: ']' }), DEFAULTS)?.code).toBe('BracketRight');
+        expect(forwardedChord(input('BracketLeft', { key: 'ü' }), DEFAULTS)?.code).toBe('BracketLeft');
+        // ⌥⌘ on the German `+` key is `alt+meta+BracketRight`, which nothing claims.
+        expect(forwardedChord(input('BracketRight', { key: '+', alt: true }), DEFAULTS)).toBeNull();
+    });
+});
+
 describe('the set follows the config file', () => {
     it('moves a rebound action with its new trigger, and drops the old one', () => {
         const rebound = claimedChordsForLines(['super+d=unbind', 'shift+super+j=split_right']);

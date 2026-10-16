@@ -14,7 +14,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import type { KeyEventLike } from '../chrome';
+import { createKeyDispatcher, type KeyEventLike } from '../chrome';
 import {
     chromeTextIsFocused,
     createWebPanePriority,
@@ -150,6 +150,19 @@ describe('the table (WEB-152)', () => {
         expect(priority(...press(KEY.Minus))).toBe(true);
         expect(priority(...press(KEY.Zero))).toBe(true);
         expect(calls.map((call) => call.args[1])).toEqual(['in', 'in', 'out', 'reset']);
+    });
+
+    it('zooms on a German ⌘+ and ⌘-, through the dispatcher that feeds it the trigger (#245)', () => {
+        const { priority, calls } = harness();
+        const dispatch = createKeyDispatcher({ actions: {}, webPanePriority: priority });
+        const german = (code: string, key: string): KeyEventLike => ({ code, key, metaKey: true, shiftKey: false, ctrlKey: false, altKey: false });
+        // `+` is the BracketRight key (⌘] would focus the next pane), `-` the Slash key.
+        expect(dispatch(german('BracketRight', '+'))).toBe(true);
+        expect(dispatch(german('Slash', '-'))).toBe(true);
+        expect(calls).toEqual([
+            { verb: 'zoom', args: ['P', 'in'] },
+            { verb: 'zoom', args: ['P', 'out'] }
+        ]);
     });
 
     it('closes the active tab on ⌘W when there is more than one', () => {

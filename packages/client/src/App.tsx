@@ -77,7 +77,7 @@ import { renderRegisteredView } from './plugins/renderers';
  * the app" card — the pane is real daemon state either way.
  */
 
-import { canonicalTriggerForPlatform, parseKeyTrigger, type KelpiAction } from '@kelpi/core/config';
+import { canonicalTriggerForPlatform, chordKeyIdentity, parseKeyTrigger, type KelpiAction } from '@kelpi/core/config';
 import { isUsingExternalEditor, wireEdgeForDropZone, type DropZone, type SplitDirection } from '@kelpi/core/layout';
 import { CHOOSE_FOLDER_DIALOG_ACTION, RESOLVE_DROPPED_FILES_ACTION, UPDATE_ACTION_SHELL_ACTION, type JsonObject, type WsOldTerminalHost } from '@kelpi/protocol';
 import {
@@ -3538,7 +3538,9 @@ function Shell(props: AppProps): ReactElement {
     useEffect(() => {
         const bindings = clientKeyBindings(keybindLines);
         const onKeyDown = (event: KeyboardEvent): void => {
-            if (event.code !== 'Comma' || !event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+            // The key as the binding map reads it (#245), so a layout that moves `,` moves this too.
+            const identity = chordKeyIdentity(event);
+            if (identity.code !== 'Comma' || !event.metaKey || event.ctrlKey || event.altKey || identity.shiftKey) return;
             if (surface.hasActiveModal()) { event.preventDefault(); event.stopPropagation(); return; }
             const trigger = triggerFromEvent(event);
             if (trigger !== null && actionForTrigger(bindings, trigger) !== null) return;
@@ -3567,7 +3569,8 @@ function Shell(props: AppProps): ReactElement {
     useEffect(() => {
         const bindings = clientKeyBindings(keybindLines);
         const onKeyDown = (event: KeyboardEvent): void => {
-            if (event.code !== 'Slash' || !event.metaKey || event.ctrlKey || event.altKey) return;
+            // #245: German ⌘- is physically `Slash` and must not open Help; its `?` key must.
+            if (chordKeyIdentity(event).code !== 'Slash' || !event.metaKey || event.ctrlKey || event.altKey) return;
             if (surface.hasActiveModal()) { event.preventDefault(); event.stopPropagation(); return; }
             const trigger = triggerFromEvent(event);
             if (trigger !== null && actionForTrigger(bindings, trigger) !== null) return;

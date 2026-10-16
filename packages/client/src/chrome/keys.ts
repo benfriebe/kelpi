@@ -9,9 +9,14 @@
  * **Key identity.** Config files store macOS virtual key codes by name (`super+d`), which is a
  * *physical* key identity. PLAN.md's decision is to keep that as canonical storage and match
  * it against `KeyboardEvent.code` (also physical) in clients — so this module owns exactly one
- * new table: `code` → macOS keyCode. Matching on `code` (never `key`) means a binding survives
- * a non-US layout and a shifted character: `super+=` fires for ⌘⇧= on a US layout because both
- * produce `code: "Equal"`.
+ * new table: `code` → macOS keyCode. Letters, digits, the brackets and the named keys are
+ * matched on `code` alone, so `super+d` is the same key on every layout.
+ *
+ * One exception (#245): a key in a punctuation position is matched by the CHARACTER it typed,
+ * when that character belongs to one of the character keys (= - ; ' backquote , . / and
+ * backslash). On a German layout ⌘+ is physically `BracketRight` and used to focus the next
+ * pane; it now arrives as `shift+super+=`, the US keystroke for `+`. `@kelpi/core/config` ▸ `layout.ts` owns the rule,
+ * because the shell's web-page relay and the preview frame script apply the very same one.
  *
  * **One layer, not two.** The Swift app splits dispatch between an OS menu-bar layer (16
  * `MENU_BAR_ACTIONS`) and the pane-shortcut monitor, and the monitor deliberately refuses the
@@ -42,6 +47,7 @@ import {
     actionForTrigger,
     applyKeybindOverrides,
     canonicalKeyBindingsForPlatform,
+    chordKeyIdentity,
     displayTriggerForAction,
     keyTriggerDisplayStringForPlatform,
     macLikePlatform,
@@ -97,6 +103,8 @@ export const CODE_TO_KEY_CODE: ReadonlyMap<string, number> = new Map([
 /** The modifier/target surface of a `KeyboardEvent` this module actually reads. */
 export interface KeyEventLike {
     readonly code: string;
+    /** The character the key typed. Absent on a replayed chord, which is then matched by `code`. */
+    readonly key?: string | undefined;
     readonly metaKey: boolean;
     readonly ctrlKey: boolean;
     readonly altKey: boolean;
@@ -118,11 +126,21 @@ export function modifiersFromEvent(event: KeyEventLike): KeyModifier[] {
     return modifiers;
 }
 
-/** A `KeyTrigger` for an event, or null when the physical key has no config-file name. */
+/**
+ * A `KeyTrigger` for an event, or null when the key has no config-file name.
+ *
+ * The key is `chordKeyIdentity`'s (#245): the physical key, unless a punctuation key typed a
+ * character key's character, in which case it is the US keystroke for that character, with that
+ * keystroke's own Shift.
+ */
 export function triggerFromEvent(event: KeyEventLike): KeyTrigger | null {
-    const keyCode = CODE_TO_KEY_CODE.get(event.code);
+    const identity = chordKeyIdentity(event);
+    const keyCode = CODE_TO_KEY_CODE.get(identity.code);
     if (keyCode === undefined) return null;
-    return makeKeyTrigger(keyCode, modifiersFromEvent(event));
+    // Not a spread of `event`: a real KeyboardEvent's flags are prototype getters.
+    const modifiers: KeyModifier[] = modifiersFromEvent(event).filter((modifier) => modifier !== 'shift');
+    if (identity.shiftKey) modifiers.push('shift');
+    return makeKeyTrigger(keyCode, modifiers);
 }
 
 // ── binding map construction ────────────────────────────────────────────────────────

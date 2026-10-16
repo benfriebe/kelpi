@@ -593,6 +593,64 @@ describe('conditional rules', () => {
     });
 });
 
+/**
+ * #245: a chord on a punctuation key is matched by the character it typed. The events carry
+ * `key` as a German, Nordic or French keyboard reports it; `code` is still the physical key.
+ */
+describe('keyboard layouts (#245)', () => {
+    const typed = (code: string, key: string, modifiers: { meta?: boolean; shift?: boolean; alt?: boolean; ctrl?: boolean } = { meta: true }) => {
+        const event = keyEvent(code, modifiers);
+        return { ...event, key };
+    };
+
+    it('German ⌘+ and ⌘- step the text size instead of focusing a pane or opening nothing', () => {
+        const { registry, fired } = recorder();
+        const dispatch = createKeyDispatcher({ actions: registry });
+        expect(dispatch(typed('BracketRight', '+'))).toBe(true);
+        expect(dispatch(typed('Slash', '-'))).toBe(true);
+        expect(fired).toEqual(['increase_terminal_font_size', 'decrease_terminal_font_size']);
+    });
+
+    it('Nordic ⌘+ increases and French Mac ⌘- decreases, where the position said the opposite', () => {
+        const { registry, fired } = recorder();
+        const dispatch = createKeyDispatcher({ actions: registry });
+        expect(dispatch(typed('Minus', '+'))).toBe(true);
+        expect(dispatch(typed('Equal', '-'))).toBe(true);
+        expect(fired).toEqual(['increase_terminal_font_size', 'decrease_terminal_font_size']);
+    });
+
+    it('keeps the brackets, the digit row and ⌥ chords on their physical keys', () => {
+        const { registry, fired } = recorder();
+        const dispatch = createKeyDispatcher({ actions: registry });
+        // German ⌘ü is the physical `[` key: still focus-previous.
+        expect(dispatch(typed('BracketLeft', 'ü'))).toBe(true);
+        // A US keyboard's ⌘] is unchanged.
+        expect(dispatch(typed('BracketRight', ']'))).toBe(true);
+        expect(fired).toEqual(['focus_previous_pane', 'focus_next_pane']);
+        // AZERTY ⌘1 types `&` and still switches to workspace 1.
+        const switched: number[] = [];
+        const workspaces = createKeyDispatcher({ actions: workspaceSwitchHandlers((index) => { switched.push(index); }) });
+        expect(workspaces(typed('Digit1', '&'))).toBe(true);
+        expect(switched).toEqual([0]);
+    });
+
+    it('reads the character trigger in triggerFromEvent, with the US keystroke’s own Shift', () => {
+        expect(triggerFromEvent(typed('BracketRight', '+'))).toEqual({ keyCode: 24, modifiers: ['shift', 'super'] });
+        expect(triggerFromEvent(typed('Slash', '-'))).toEqual({ keyCode: 27, modifiers: ['super'] });
+        // ⌥ picks the character layer, so the key stays where it is.
+        expect(triggerFromEvent(typed('BracketRight', '+', { meta: true, alt: true }))).toEqual({ keyCode: 30, modifiers: ['alt', 'super'] });
+        // A replayed chord carries no `key` and is matched by position, as before.
+        expect(triggerFromEvent(keyEvent('Equal', { meta: true, shift: true }))).toEqual({ keyCode: 24, modifiers: ['shift', 'super'] });
+    });
+
+    it('a German ⌘+ follows an unbind of ⌘= exactly as a US ⌘⇧= does', () => {
+        const { registry, fired } = recorder();
+        const dispatch = createKeyDispatcher({ actions: registry, bindings: clientKeyBindings(['super+==unbind']) });
+        expect(dispatch(typed('BracketRight', '+'))).toBe(false);
+        expect(fired).toEqual([]);
+    });
+});
+
 describe('config overrides', () => {
     it('rebinds from `keybind` values and drops unparseable lines', () => {
         const bindings = keyBindingsFromOverrideLines(['super+d=toggle_zoom', 'nonsense', 'super+w=unbind']);

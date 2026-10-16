@@ -72,6 +72,16 @@ describe('chordKey', () => {
         expect(claimed).not.toContain('8/KeyA');
     });
 
+    it('names a character chord by the US key for its character (#245)', () => {
+        // German: `-` is the Slash key, `+` the BracketRight key.
+        expect(chordKey({ code: 'Slash', key: '-', metaKey: true })).toBe('8/Minus');
+        expect(chordKey({ code: 'BracketRight', key: '+', metaKey: true })).toBe('12/Equal');
+        // A US keyboard, a bracket, and a chord with no `key` are matched by position.
+        expect(chordKey({ code: 'Equal', key: '+', metaKey: true, shiftKey: true })).toBe('12/Equal');
+        expect(chordKey({ code: 'BracketLeft', key: 'ü', metaKey: true })).toBe('8/BracketLeft');
+        expect(chordKey({ code: 'Slash', metaKey: true })).toBe('8/Slash');
+    });
+
     it('covers both physical keys a trigger can arrive from', () => {
         // ⇧⌘Return is `toggle_zoom`, and a numpad Enter is the same macOS key code.
         expect(chordKeysForTrigger({ keyCode: 36, modifiers: ['shift', 'super'] }).sort()).toEqual([
@@ -233,6 +243,30 @@ describe('the injected script', () => {
         expect(posted.map((message) => message.kind)).toEqual(['key']);
     });
 
+    it('claims a German ⌘- and ⌘+ by the character they type (#245)', async () => {
+        toFrame({ kind: 'chords', chords: chordKeysForBindings(DEFAULT_KEYBINDINGS) });
+        await settle();
+        const minus = press({ code: 'Slash', key: '-', metaKey: true });
+        const plus = press({ code: 'BracketRight', key: '+', metaKey: true });
+        await settle();
+        expect(minus.defaultPrevented).toBe(true);
+        expect(plus.defaultPrevented).toBe(true);
+        // The message keeps the physical key and the character; the host resolves them the same way.
+        expect(posted.filter((message) => message.kind === 'key')).toMatchObject([
+            { code: 'Slash', key: '-' },
+            { code: 'BracketRight', key: '+' }
+        ]);
+    });
+
+    it('leaves a German ⌘ on a key the map does not claim by character alone', async () => {
+        toFrame({ kind: 'chords', chords: chordKeysForBindings(DEFAULT_KEYBINDINGS) });
+        await settle();
+        // ⌘⌥ on the `+` key: ⌥ chooses the character layer, so it is `alt+super+]`, unbound.
+        const event = press({ code: 'BracketRight', key: '+', metaKey: true, altKey: true });
+        await settle();
+        expect(event.defaultPrevented).toBe(false);
+    });
+
     it('cannot be fooled by an Object.prototype member', async () => {
         toFrame({ kind: 'chords', chords: [] });
         await settle();
@@ -275,6 +309,23 @@ describe('the host replay', () => {
         );
 
         expect(split).toHaveBeenCalledTimes(1);
+        off();
+    });
+
+    it('a German ⌘- relayed from a preview reaches decrease, not Help or nothing (#245)', () => {
+        const decrease = vi.fn();
+        const dispatcher = createKeyDispatcher({
+            bindings: DEFAULT_KEYBINDINGS,
+            actions: { decrease_terminal_font_size: decrease }
+        });
+        const off = installKeyDispatcher(window, dispatcher);
+        render(<ContentFrame paneID={PANE} title="markdown preview" html={BARE_DOCUMENT} claimedChords={chordKeysForBindings(DEFAULT_KEYBINDINGS)} />);
+        window.dispatchEvent(
+            new MessageEvent('message', {
+                data: { source: CONTENT_BRIDGE_SOURCE, paneID: PANE, kind: 'key', code: 'Slash', key: '-', metaKey: true, ctrlKey: false, altKey: false, shiftKey: false }
+            })
+        );
+        expect(decrease).toHaveBeenCalledTimes(1);
         off();
     });
 

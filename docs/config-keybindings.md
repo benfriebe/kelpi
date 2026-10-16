@@ -341,9 +341,9 @@ An ordinary click still selects the workspace; a completed drag suppresses its t
 ## 2. Data model summary (TS shapes)
 
 ```ts
-// A physical key combination. Matching is by PHYSICAL KEY (macOS virtual keyCode),
-// not by produced character — layout-independent. Clients map `KeyboardEvent.code`
-// onto the same codes (`CODE_TO_KEY_CODE`, packages/client/src/chrome/keys.ts).
+// A key combination. Matching is by PHYSICAL KEY (macOS virtual keyCode), except that a
+// punctuation key's chord follows the character it types (section 3.1, #245). Clients map
+// `KeyboardEvent.code` onto the same codes (`CODE_TO_KEY_CODE`, packages/client/src/chrome/keys.ts).
 interface KeyTrigger {
   keyCode: number;      // macOS virtual key code (see table, section 3.4)
   modifiers: ModSet;    // set of "super" | "shift" | "alt" | "ctrl"
@@ -402,6 +402,64 @@ equality of the remaining modifiers plus keyCode equality — `super+d` does not
 `KeyboardEvent.code` has no config-file name yields no trigger at all.
 
 Hash/equality key: `(keyCode, modifierBits)`.
+
+#### Which key a chord is (#245)
+
+The key is the PHYSICAL key (`KeyboardEvent.code`), with one exception: a key in a punctuation
+position is matched by the **character it typed**, when that character belongs to one of the
+character keys. The character is translated to the US keystroke that types it, so the map's
+vocabulary does not change, and a German ⌘+ is `shift+super+=`, the shipped twin of `super+=`.
+
+| | |
+|---|---|
+| Source keys (the character may decide) | `Equal Minus BracketLeft BracketRight Semicolon Quote Backquote Comma Period Slash Backslash` |
+| Character keys (what a character can name) | `=` `-` `;` `'` `` ` `` `,` `.` `/` `\` and their shifted characters `+` `_` `:` `"` `~` `<` `>` `?` `\|` |
+| Positional, always | letters, digits, `[` and `]`, Return, Tab, Space, Escape, Delete, arrows, F-keys, the keypad |
+
+It applies only when all of these hold, and otherwise the physical key decides, with Shift as held:
+
+- ⌥ is not held. ⌥ (and AltGr, which is ⌃⌥ off mac) chooses another character layer, so
+  translating its character and also keeping the held ⌥ would count the modifier twice;
+- `key` is a single character in the table above. A dead key, `Unidentified`, a non-Latin
+  character (`ü`, `ß`, `ю`) or no `key` at all (a replayed chord) leaves the physical key;
+- that character's US key is a DIFFERENT key from the one pressed. This is what leaves a US
+  keyboard exactly as it was, held Shift included, and also any engine that reports the
+  unshifted character under ⌘⇧.
+
+When it applies, Shift is the US keystroke's own (`+` has it, `-` does not): the layout spent
+the held Shift choosing the character. The brackets are positional because `[` / `]` name a place
+beside each other (focus previous / next pane) rather than a character. The letters and digits
+are positional because the AZERTY digit row types `&` `é` `"` and must still switch workspaces.
+
+| layout | key pressed | before #245 | now |
+|---|---|---|---|
+| German | ⌘ on the `+` key (`BracketRight`) | ⌘] focus next pane | ⌘+ increase text size |
+| German | ⌘ on the `-` key (`Slash`) | ⌘/ opened Help | ⌘- decrease text size |
+| German | ⌘ on the `ü` key (`BracketLeft`) | ⌘[ focus previous pane | unchanged |
+| Swedish / Nordic | ⌘ on the `+` key (`Minus`) | ⌘- decrease | ⌘+ increase |
+| French Mac | ⌘ on the `-` key (`Equal`) | ⌘= increase | ⌘- decrease |
+| French AZERTY | ⌘ on the `&`/`1` key (`Digit1`) | workspace 1 | unchanged |
+
+One function owns the rule, `@kelpi/core/config` ▸ `layout.ts` (`chordKeyIdentity`), and every
+place that turns a keystroke into a chord applies it: the window dispatcher and everything built
+on `triggerFromEvent` (the remote terminal and browser seams, the Settings recorder, the web-pane
+priority layer of section 7.3), the ⌘, and ⌘/ listeners, plugin command shortcuts, the preview
+frame's chord relay (its injected script carries the two tables as JSON) and the shell's
+web-page relay, which forwards the TRANSLATED key so the client's code-only replay agrees.
+
+Known limits:
+
+- On German, the `]` position now types text size, so `focus_next_pane` is reachable there
+  through ⌥⌘→ (German `]` is ⌥6, and ⌥⌘6 is `alt+super+6`).
+- On Dvorak (not "Dvorak - QWERTY ⌘"), the physical `[` and `]` keys type `/` and `=`, so ⌘ on
+  them is Help and increase, and the pane-focus brackets are reachable through ⌥⌘← / ⌥⌘→.
+- A physical key whose character translates elsewhere cannot be bound by its position any more,
+  and the recorder records the character's chord.
+- `IntlBackslash` (the ISO key beside left Shift) is not a source key.
+- Help and Settings ▸ Keybindings still label chords with the US key (⌘= for increase).
+- Plugin iframes and presenter frames claim chords by physical key, through the plugin SDK.
+- The macOS application menu matches its own shortcuts by character, so a menu row displaying
+  ⌘- (section 7.6) now meets German ⌘- exactly as it already met US ⌘-.
 
 ### 3.2 Parsing a trigger string (`KeyTrigger.parse`)
 
@@ -1025,7 +1083,8 @@ focus-previous/next-pane even inside a web pane.
 
 Modifier matching in this table: entries marked ⌘ require modifiers == exactly
 `{command}`; ⌘⇧ rows require exactly `{command, shift}`; the ⌘= row also accepts
-`{command, shift}` (so ⌘+ works on layouts where + is shift-=).
+`{command, shift}` (so ⌘+ works on layouts where + is shift-=). The key is the trigger's, which
+section 3.1 resolves by character for the zoom keys, so a German ⌘+ and ⌘- zoom too (#245).
 
 Everything not in the table is "not applicable" and proceeds to the normal binding map —
 which itself can then hit a `web_*` action (each guarded on pane.type == web).
@@ -1266,13 +1325,10 @@ moves the keypad with it, which a separate default line could not have promised.
 key-name table is unchanged: the config file still has no name for a keypad key, and did not need
 one.
 
-**A non-US layout is a known limit, and it is the whole map's, not this feature's.** Triggers are
-matched on the PHYSICAL key (section 3.1), so on a German or Nordic layout the key that types `+`
-is physically `BracketRight` (which the shipped map spends on `focus_next_pane`) and the key that
-types `-` is physically `Slash` (unbound), and ⌘+ / ⌘- therefore do not reach these actions there.
-That is true of every punctuation binding in section 5.2 and is tracked as **issue #245**; it is
-not redesigned here. The workaround in the meantime is the one the grammar already offers: a
-`keybind` line naming the physical key that carries `+` on that layout.
+**A non-US layout follows the keycap (#245).** A punctuation chord is matched by the character it
+types (section 3.1), so on a German or Nordic layout ⌘+ and ⌘- reach these actions from the keys
+that type `+` and `-`, wherever those keys are. A German ⌘+ arrives as `shift+super+=`, the
+shifted twin, so it follows an `unbind` of ⌘= exactly as a US ⌘⇧= does.
 
 **What each surface does with them:**
 

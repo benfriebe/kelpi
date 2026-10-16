@@ -78,6 +78,7 @@
 
 import {
     DEFAULT_KEYBINDINGS,
+    chordKeyIdentity,
     parseKeybindValue,
     resolveKeyBindings,
     triggerExpressibleOnPlatform,
@@ -366,17 +367,23 @@ export function forwardedChordKeys(): ReadonlySet<string> {
  *   - at least one of ⌘/⌃/⌥ (see the module header: shift alone and bare keys are the page's);
  *   - the exact (key + modifiers) pair is claimed by the set above.
  *
+ * The key is `chordKeyIdentity`'s (#245), the same one the client's dispatcher reads: on a German
+ * layout ⌘+ is physically `BracketRight`, and it is taken as `shift+meta+Equal` (the zoom-in the
+ * priority layer claims) and FORWARDED as that, so the client's code-only replay resolves it the
+ * same way rather than as ⌘] (focus the next pane).
+ *
  * `claimed` is a parameter only so the set can be tested without module state; callers pass
  * nothing and get the live one.
  */
 export function forwardedChord(input: ChordInput, claimed: ReadonlySet<string> = forwarded): ForwardedChord | null {
     if (input.type !== 'keyDown' && input.type !== 'rawKeyDown') return null;
+    const identity = chordKeyIdentity({ code: input.code, key: input.key, altKey: input.alt, shiftKey: input.shift });
     const chord = {
-        code: input.code,
+        code: identity.code,
         meta: input.meta,
         ctrl: input.control,
         alt: input.alt,
-        shift: input.shift
+        shift: identity.shiftKey
     };
     if (!chord.meta && !chord.ctrl && !chord.alt) return null;
     if (!claimed.has(chordKey(chord.code, chord))) return null;

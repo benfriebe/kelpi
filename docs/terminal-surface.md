@@ -1503,7 +1503,7 @@ ENGINE, because their fallback is not in the page at all:
 `isPlatformChord` (`packages/core/src/config/platform-chords.ts`) is the test, and the SET lives
 there rather than in this package, because the shell's application menu builds its Hide / Hide
 Others / Quit rows from the same list (`packages/shell/src/menu.ts` ▸ `platformRoleRows`). The
-match is on `event.code` (the physical key, as every Kelpi binding is), ⌘ is required, ⌥ and ⌃
+match is on `event.code` (the physical key; all five are letters, which config-keybindings.md §3.1 keeps positional), ⌘ is required, ⌥ and ⌃
 must match the chord's own exactly, and ⇧ is never tolerated: ⇧⌘M is no role's accelerator and a
 terminal keeps encoding it. That is the deliberate difference from `isSystemEditingChord`, which
 tolerates shift and refuses ctrl and alt outright.

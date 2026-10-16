@@ -49,6 +49,7 @@
  * Any future CSP on the embedder must also permit this trusted script: srcdoc inherits it.
  */
 
+import { CHARACTER_CHORD_SOURCE_CODES, CHARACTER_KEYSTROKES, chordKeyIdentity } from '@kelpi/core/config';
 import type { KelpiAction, KeyBindingMap, KeyTrigger } from '@kelpi/core/config';
 
 import { isImagePath } from '@kelpi/protocol';
@@ -287,20 +288,27 @@ export function parseBridgeMessage(data: unknown, paneID: string): ContentBridge
  * information and needs no table: the host converts its binding map into these once, the frame
  * compares against them on every keydown. Bits are `MODIFIER_ORDER`'s: ctrl 1, alt 2, shift 4,
  * super 8 — the same order `keyTriggerKey` packs, so the two stay legible side by side.
+ *
+ * The key and Shift are `chordKeyIdentity`'s (#245), so a German ⌘- (physically `Slash`, typing
+ * `-`) is `8/Minus` here exactly as it is `super+-` to the dispatcher. The frame computes the
+ * same answer from the same two tables (`contentBridgeScript`), and every claimed set is built
+ * from US keys (`chordKeysForTrigger`), so both sides compare like with like.
  */
 export function chordKey(event: {
     readonly code: string;
+    readonly key?: string | undefined;
     readonly ctrlKey?: boolean;
     readonly altKey?: boolean;
     readonly shiftKey?: boolean;
     readonly metaKey?: boolean;
 }): string {
+    const identity = chordKeyIdentity(event);
     let bits = 0;
     if (event.ctrlKey === true) bits |= 1;
     if (event.altKey === true) bits |= 2;
-    if (event.shiftKey === true) bits |= 4;
+    if (identity.shiftKey) bits |= 4;
     if (event.metaKey === true) bits |= 8;
-    return `${String(bits)}/${event.code}`;
+    return `${String(bits)}/${identity.code}`;
 }
 
 /** macOS key code → every `KeyboardEvent.code` that produces it (Enter has two: 36). */
@@ -568,6 +576,9 @@ export function contentBridgeScript(
     const id = JSON.stringify(paneID).replace(/</g, '\\u003c');
     const find = resolveFindPalette(findPalette);
     const seed = JSON.stringify(chordSeedObject(seedChords ?? []));
+    // #245's two tables, for the frame's copy of `chordKeyIdentity` (it has no imports).
+    const characterSources = JSON.stringify(Object.fromEntries(CHARACTER_CHORD_SOURCE_CODES.map((code) => [code, true])));
+    const characterKeystrokes = JSON.stringify(CHARACTER_KEYSTROKES).replace(/</g, '\\u003c');
     return `(function () {
   if (window.__kelpiContentBridge) return;
   window.__kelpiContentBridge = true;
@@ -654,13 +665,26 @@ export function contentBridgeScript(
       metaKey: !!event.metaKey
     };
   };
+  // #245: the host's \`chordKeyIdentity\`, restated. A punctuation key that typed a character
+  // key's character is matched as the US keystroke for it (German ⌘- is 8/Minus), unless ⌥ is
+  // held or the character's US key is the one pressed.
+  var characterSources = ${characterSources};
+  var characterKeystrokes = ${characterKeystrokes};
   var chordKey = function (event) {
+    var code = event.code;
+    var shift = !!event.shiftKey;
+    var key = event.key;
+    if (!event.altKey && characterSources[code] === true && typeof key === 'string' && key.length === 1 &&
+        Object.prototype.hasOwnProperty.call(characterKeystrokes, key) && characterKeystrokes[key].code !== code) {
+      shift = characterKeystrokes[key].shift;
+      code = characterKeystrokes[key].code;
+    }
     var bits = 0;
     if (event.ctrlKey) bits += 1;
     if (event.altKey) bits += 2;
-    if (event.shiftKey) bits += 4;
+    if (shift) bits += 4;
     if (event.metaKey) bits += 8;
-    return String(bits) + '/' + event.code;
+    return String(bits) + '/' + code;
   };
   // CAPTURE, on the window (N14): the relay is the app's key monitor, and the Swift's runs
   // before any responder gets the event. On \`document\` in the bubble phase a script inside the

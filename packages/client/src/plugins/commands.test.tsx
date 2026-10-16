@@ -72,3 +72,35 @@ it('rechecks stale menus, items and shortcuts synchronously and targets the expl
         expect(calls.mock.calls.some(([payload]) => payload['action'] === 'run')).toBe(false);
     } finally { cleanup(); runtime.dispose(); }
 });
+
+// #245: plugin command shortcuts are matched by the same key identity as the binding map (the
+// window listener reads `chordKey`), so a plugin's ⌃⇧- runs from the key that types `_` on a
+// German layout (physically Slash), and not from the physical `-` key, which types `?` there.
+it('matches a plugin shortcut with the binding map’s key identity', async () => {
+    const manifest = decodePluginManifest({ id: 'sample.layout', version: '1.0.0', apiVersion: 1, trust: 'full', backend: 'backend.mjs', contributes: {
+        commands: [{ id: 'sample.layout.run', title: 'Run', shortcut: 'ctrl+shift+-' }]
+    } });
+    const plugin: PluginInfo = { manifest, enabled: true, revision: 'r1', instanceID: 'i1', status: 'running', error: null };
+    const sockets = createFakeSocketFactory();
+    const runtime = createKelpiRuntime({ store: createKelpiStore(), url: 'ws://layout.test/ws', socketFactory: sockets.factory, notifications: null });
+    const daemon = createDaemonStore(emptyDaemonState('/tmp'));
+    daemon.dispatch({ type: 'create-workspace', id: 'one', paneID: 'pane-one', name: 'one', color: 'blue', now: 1 });
+    const calls = vi.spyOn(runtime.commands, 'raw').mockImplementation(async payload => ({ ok: true, result: (
+        payload['action'] === 'list' ? [plugin] : payload['action'] === 'identity' ? { daemonID: 'layout' } : payload['action'] === 'contributions' ? [] : null
+    ) as never }));
+    runtime.connect(); completeHandshake(sockets.last(), { state: JSON.parse(JSON.stringify(daemon.getState())) });
+    runtime.activateWorkspace('one');
+    try {
+        const hook = renderHook(() => usePluginCommands(runtime, []));
+        await waitFor(() => expect(hook.result.current.chords).toEqual(['5/Minus', '5/NumpadSubtract']));
+        calls.mockClear();
+        // German: `_` (⇧-) is typed on the Slash key. Matched as the US ⇧- keystroke.
+        const german = new KeyboardEvent('keydown', { code: 'Slash', key: '_', ctrlKey: true, shiftKey: true, cancelable: true });
+        act(() => { window.dispatchEvent(german); });
+        expect(german.defaultPrevented).toBe(true);
+        // The physical ⌃⇧/ on the same keyboard types `?`, a different key, and does not run it.
+        const slash = new KeyboardEvent('keydown', { code: 'Minus', key: '?', ctrlKey: true, shiftKey: true, cancelable: true });
+        act(() => { window.dispatchEvent(slash); });
+        expect(slash.defaultPrevented).toBe(false);
+    } finally { cleanup(); runtime.dispose(); }
+});

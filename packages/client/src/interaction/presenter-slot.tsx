@@ -96,10 +96,18 @@ export interface InteractionPresenterSlotProps {
     /** `App`: `!phoneActive`. False means the bundled presenter, always. */
     readonly enabled: boolean;
     /**
-     * The host's paint decision for this placement. A painted presenter owns the caret too: both
-     * surfaces are modal for as long as they are up, so there is no third state to express.
+     * The host's paint decision for this placement. A painted palette or prompts presenter owns the
+     * caret too (see `holdsCaret`): both surfaces are modal for as long as they are up.
      */
     readonly visible: boolean;
+    /**
+     * Whether a painted presenter takes the caret and keeps it inside its frame. `true` (the
+     * default) for the palette and the prompts, which are modal. `false` for the notification
+     * corner (#396): a notification does not own the window, the bundled stack takes no focus, and
+     * a presenter that did would take the keyboard off the user's terminal for as long as a notice
+     * is up and pull it back on every click elsewhere. Its frame is still painted and clickable.
+     */
+    readonly holdsCaret?: boolean | undefined;
     /**
      * This frame belongs to the bundled presenter even though one is selected - a password input.
      * The selected view stays MOUNTED and hidden, so the carve-out costs no reattachment.
@@ -313,15 +321,18 @@ export function InteractionPresenterSlot(props: InteractionPresenterSlotProps): 
     /*
      * Containment is the WRAPPER's job, not the presenter's: `ModalRequest` keeps focus by
      * refocusing its own panel, and a frame that has been given the window has to be held the same
-     * way. `PluginView` makes the initial claim itself (`armCaretClaim`) once `focused` is true.
+     * way. `PluginView` makes the initial claim itself (`armCaretClaim`) once `focused` is true. A
+     * placement that does not hold the caret (`holdsCaret`, the notification corner) is never
+     * given the window, so it is neither focused nor contained.
      *
      * It yields to a modal PEER, and it has to: a palette may be opened over Settings or Help - that
      * is the route those pages are recoverable by - so a presenter that kept pulling the caret back
      * into its own frame would make the page behind it untypable. The prompts arm never paints while
      * a peer holds the window, so the read costs it nothing.
      */
+    const holdsCaret = props.holdsCaret ?? true;
     useLayoutEffect(() => {
-        if (!painted || peerModal) return;
+        if (!painted || peerModal || !holdsCaret) return;
         props.captureFocus?.();
         /*
          * `containing` is the re-entry guard, and it is not belt and braces: without it this
@@ -346,7 +357,7 @@ export function InteractionPresenterSlot(props: InteractionPresenterSlotProps): 
         };
         window.addEventListener('focusin', onFocusIn, true);
         return () => window.removeEventListener('focusin', onFocusIn, true);
-    }, [painted, peerModal, props.captureFocus]);
+    }, [painted, peerModal, holdsCaret, props.captureFocus]);
 
     /*
      * §2.6's finer registration, for the corner placement: the painted frame says WHERE it is, so
@@ -383,7 +394,7 @@ export function InteractionPresenterSlot(props: InteractionPresenterSlotProps): 
               * browser grants follow.
               */}
             <PluginView runtime={runtime!} pluginID={selected.pluginID!} viewID={viewID}
-                visible={painted} focused={painted} claimedChords={props.chords}
+                visible={painted} focused={painted && holdsCaret} claimedChords={props.chords}
                 presenter={host!} onError={message => fail(message)} />
         </div>}
     </>;

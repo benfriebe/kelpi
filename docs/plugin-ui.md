@@ -408,7 +408,10 @@ way.
 A notification is not modal: it is a corner box over a window that stays usable, so the geometry
 is split. The host draws the frame exactly where the bundled stack sits - the window's
 bottom-right corner, 40 px up and 12 px in, at most 360 px wide - and registers the rect it covers
-so the web panes underneath park and no others do. A presenter never registers a window modal.
+so the web panes underneath park and no others do. A presenter never registers a window modal,
+and it never takes the caret: like the bundled stack, a painted notification leaves the keyboard
+where the user had it, and focus is not held inside the frame. A click on a card inside the frame
+moves the caret there, as a click anywhere does (#396).
 
 The height is the presenter's: `setNotificationBoxHeight(pixels)` declares what its own cards
 need, and the host clamps it to the smaller of two ceilings.

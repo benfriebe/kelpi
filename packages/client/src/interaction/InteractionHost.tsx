@@ -234,7 +234,9 @@ function useWindowHeight(): number {
  * only the presenter knows how tall its own cards are and only the host knows what a corner box is
  * allowed to grow to (`notificationBoxHeight`: a fraction of the window, and a ceiling per visible
  * notice, so the box cannot outgrow what it is drawing). Painted only while a notice is up: an
- * empty frame over the window would swallow clicks and park every page under it for nothing.
+ * empty frame over the window would swallow clicks and park every page under it for nothing. And
+ * never given the caret (`holdsCaret={false}`, #396), exactly as the bundled stack takes none: a
+ * notice that took the keyboard would swallow the user's typing for as long as it is up.
  *
  * The declaration is held here rather than in the model because it is the mount that paints, and it
  * is dropped the moment the slot reports a new generation or a stand-down: a reload, a Retry or a
@@ -249,7 +251,7 @@ function NotificationStack({ surface, notifications, presenters, chords }: {
     const [declared, setDeclared] = useState<number | null>(null);
     const height = notificationBoxHeight(declared, notifications.length, useWindowHeight());
     return <InteractionPresenterSlot surface={surface} placement="interaction.notifications" enabled={presenters}
-        visible={notifications.length > 0} chords={chords} overlay onBoxHeight={setDeclared}
+        visible={notifications.length > 0} holdsCaret={false} chords={chords} overlay onBoxHeight={setDeclared}
         className="fixed bottom-10 right-3 z-40 w-[min(360px,calc(100vw-24px))]" style={{ height }}>
         <Notifications requests={notifications} answer={surface.answer} />
     </InteractionPresenterSlot>;

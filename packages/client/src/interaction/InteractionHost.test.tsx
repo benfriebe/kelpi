@@ -605,6 +605,34 @@ describe('a selected notifications presenter', () => {
         expect(overlayPresenceCount()).toBe(0);
     });
 
+    /**
+     * #396: the bundled stack's rule (`keeps notifications actionable without taking focus`) holds
+     * for a presenter too. The slot used to mount it `focused` and contain focus inside it like the
+     * modal placements, so a notice took the keyboard off the user's terminal for its ten seconds,
+     * pulled it back on every click elsewhere, and swallowed ⌘, on the way.
+     */
+    it('paints a notice without taking the caret or holding it in the frame', async () => {
+        const trigger = document.createElement('button'); document.body.append(trigger); trigger.focus();
+        const { scope } = setupSelected({}, { placement: 'interaction.notifications' });
+        let notice!: Promise<unknown>;
+        await act(async () => { notice = scope.request('ui.showNotification', { message: 'Saved', actions: [{ id: 'open', label: 'Open' }] }); });
+
+        expect(box().hidden).toBe(false);
+        expect(view.current).toMatchObject({ visible: true, focused: false });
+        expect(document.activeElement).toBe(trigger);
+        // No containment: a focus moving elsewhere stays where the user put it.
+        const frame = screen.getByTitle('presenter frame');
+        const focusFrame = vi.spyOn(frame, 'focus');
+        const elsewhere = document.createElement('button'); document.body.append(elsewhere);
+        act(() => { elsewhere.focus(); elsewhere.dispatchEvent(new FocusEvent('focusin', { bubbles: true })); });
+        expect(focusFrame).not.toHaveBeenCalled();
+        expect(document.activeElement).toBe(elsewhere);
+
+        // Still actionable: the presenter settles it.
+        act(() => { view.current!.presenter!.call('ui.respondInteraction', { requestID: notices()[0]!.requestID, value: 'open' }); });
+        await expect(notice).resolves.toBe('open');
+    });
+
     it('paints the height the presenter declared, clamped by the window and by what it draws', async () => {
         const { scope } = setupSelected({}, { placement: 'interaction.notifications' });
         await act(async () => { void scope.request('ui.showNotification', { message: 'Sized by its content' }); });

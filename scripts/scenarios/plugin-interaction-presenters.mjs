@@ -135,7 +135,7 @@ const CARET_PANE = `(() => {
 })()`;
 const CARET_HTML = `(() => { const active = document.activeElement; return active === null ? '<null>' : String(active.outerHTML ?? active.nodeName).slice(0, 120); })()`;
 
-export default async function ({ page, cli, rec, d, sleep, daemon }) {
+export default async function ({ page, cli, rec, d, sleep, daemon, shell }) {
     if (!fs.existsSync(path.join(labPath, 'kelpi.plugin.json'))) {
         throw new Error(`interaction-lab is not in this checkout (${labPath}); the example has to land before this scenario can run`);
     }
@@ -242,11 +242,18 @@ export default async function ({ page, cli, rec, d, sleep, daemon }) {
     const closeChord = () => page.key('KeyW', { modifiers: 4, key: 'w', keyCode: 87 });
     const caretIn = paneID => d.settle(async () => await page.eval(CARET_PANE) === paneID, { ceilingMs: 5_000 });
 
+    /**
+     * Throws naming the step that did not happen, rather than leaving the click to report a missing
+     * target (#396 surfaced as "no element matches settings-tab-button-plugins" when it was ⌘,
+     * that never reached the window), and says where the caret was, which is the usual reason.
+     */
     const openPlugins = async () => {
         await page.key('Comma', { modifiers: 4, key: ',' });
-        await d.settleDom(page, `document.querySelector('[data-testid="settings-tab-button-plugins"]')`);
+        if (!await d.settleDom(page, `document.querySelector('[data-testid="settings-tab-button-plugins"]')`)) {
+            throw new Error(`Settings did not open on ⌘, (the caret was on ${String(await page.eval(CARET_HTML))})`);
+        }
         await page.click('[data-testid="settings-tab-button-plugins"]');
-        await d.settleDom(page, `document.querySelector('[data-testid="plugin-placements"]')`);
+        if (!await d.settleDom(page, `document.querySelector('[data-testid="plugin-placements"]')`)) throw new Error('the Plugins tab did not open');
     };
     const closeSettings = async () => {
         await page.click('[data-testid="settings-close"]');
@@ -620,6 +627,23 @@ export default async function ({ page, cli, rec, d, sleep, daemon }) {
             && JSON.stringify(Object.keys(presentedNotice.owner).sort()) === JSON.stringify(['displayName', 'ref'])
             && noticeLeaks === false && await painted(noticesView) && await page.eval(`!document.querySelector('${notice}')`),
             `notice ${JSON.stringify(presentedNotice)}, plugin id or verb name in frame: ${String(noticeLeaks)}`);
+        /*
+         * #396: a notice is not modal, so its presenter must not take the caret, and must not pull
+         * it back when the user clicks elsewhere. The slot used to mount it as the modal placements
+         * are, focused and contained, so the keyboard went into the corner for the notice's ten
+         * seconds: a later ⌘, in this scenario went into the frame and Settings never opened.
+         * Read after a dwell, because the claim it used to make was armed a frame after the paint,
+         * and before any click INTO the frame, which rightly moves the caret there.
+         */
+        await sleep(400);
+        const caretAfterNotice = await page.eval(CARET_HTML);
+        const noticeTookCaret = await page.eval(`!!document.activeElement?.closest('${noticesSlot}')`);
+        await d.focusPaneBody(page, shellPane);
+        await sleep(400);
+        const caretAfterClick = await page.eval(CARET_PANE);
+        rec.check('a presented notification leaves the caret where it was, and a click into a pane keeps it there',
+            noticeTookCaret === false && caretAfterClick === shellPane && await painted(noticesView, 1_000),
+            `after the notice painted the caret was on ${caretAfterNotice}; after a click on the shell pane it was in ${caretAfterClick || '<no pane>'} (expected ${shellPane})`);
         await shot('plugin-notification-stack', 'the corner stack is the LAB’s: a card badged "UI Lab" with an Acknowledge button in the bottom-right of the window, in the same place the bundled stack draws, with the window still usable behind it and no bundled notification card anywhere.');
         await clickFrame(noticesFrame, '[data-testid="lab-notice-action"][data-action-id="ack"]');
         rec.check('an action clicked inside the presenter returns its id to the requesting plugin',
@@ -1077,6 +1101,7 @@ export default async function ({ page, cli, rec, d, sleep, daemon }) {
             // inside the shutdown (#212) rather than a machine that was merely busy.
             const textBefore = daemon.text().length;
             const startedAt = Date.now();
+            const shellMark = shell?.lines.length ?? 0;
             await daemon.restart();
             const loggedStop = daemon.text().slice(textBefore).includes('kelpid stopped');
             const healthzMs = Date.now() - startedAt;
@@ -1086,6 +1111,14 @@ export default async function ({ page, cli, rec, d, sleep, daemon }) {
             // reconnect (a stale answer, a late failure toast, a second execution), and a negative
             // read taken in the same tick as the reconnect proves nothing.
             await sleep(2_000);
+            /*
+             * #348: the Plugins tab below is the first host-page press after the reconnect, the one
+             * #340's activation click consumed whenever the page won the race to hear the shell's
+             * "inactive" (a keyless lane window is never focused). The shell now reports a lane
+             * window active; read off its log, so the check holds whoever wins the race.
+             */
+            const reportedActive = await d.shellReportedActiveSince(shell, shellMark);
+            if (reportedActive === null) rec.note('LIMIT: not a keyless lane window (or no shell handle under --attach), so the reconnect activation report follows the real focus and is not asserted');
             const samples = JSON.parse(String(await page.eval('globalThis.__daemonTrailStop()')));
             const offline = samples.filter(sample => sample.connection !== 'connected');
             rec.note(`the daemon was replaced in ${String(healthzMs)} ms (stop ${String(daemon.lastStopMs)} ms, start to healthz ${String(daemon.lastStartMs)} ms) and the window was back in ${String(connectedMs)} ms; ${String(samples.length)} recorded states, ${String(offline.length)} of them disconnected`);
@@ -1094,9 +1127,9 @@ export default async function ({ page, cli, rec, d, sleep, daemon }) {
                 : 'the replaced daemon never logged "kelpid stopped": the SIGTERM window elapsed and the SIGKILL landed inside its shutdown, after persistence.flush() and pty.killAll() and before persistence.close() and clearRunFiles(). That is issue #212, not this handle.');
             for (const sample of samples) rec.note(`  +${String(sample.at - startedAt)} ms ${JSON.stringify({ connection: sample.connection, presenters: sample.presenters, palette: sample.palette, dialog: sample.dialog, toast: sample.toast })}`);
             rec.check('stopping the primary daemon disconnects the window, and the replacement reconnects it',
-                reconnected && offline.length > 0 && samples.at(-1)?.connection === 'connected'
+                reconnected && offline.length > 0 && samples.at(-1)?.connection === 'connected' && reportedActive !== false
                 && daemon.pid !== pidBefore && daemon.generation === generationBefore + 1,
-                `pid ${String(pidBefore)} → ${String(daemon.pid)}, generation ${String(generationBefore)} → ${String(daemon.generation)}; connection states ${JSON.stringify([...new Set(samples.map(sample => sample.connection))])}`);
+                `pid ${String(pidBefore)} → ${String(daemon.pid)}, generation ${String(generationBefore)} → ${String(daemon.generation)}; connection states ${JSON.stringify([...new Set(samples.map(sample => sample.connection))])}; the shell reported the window active after reconnecting: ${String(reportedActive)}`);
 
             const attachedAgain = await attached(paletteView, 20_000) && await attached(promptsView, 20_000) && await attached(noticesView, 20_000);
             const readyAgain = attachedAgain && await ready(paletteFrame) && await ready(promptsFrame) && await ready(noticesFrame);

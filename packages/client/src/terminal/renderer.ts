@@ -878,10 +878,16 @@ export function resolveTerminalEngine(raw?: string | null | undefined): Terminal
     return value === 'xterm' || value === 'ghostty' ? value : DEFAULT_TERMINAL_ENGINE;
 }
 
-/** `VITE_TERMINAL_ENGINE` at build time; `ghostty` unless it says otherwise. */
+/**
+ * `VITE_TERMINAL_ENGINE` at build time; `ghostty` unless it says otherwise.
+ *
+ * Written as the literal `import.meta.env.VITE_TERMINAL_ENGINE` on purpose: that exact form is
+ * the one Vite replaces at build time. Reading it through a cast of `import.meta`, or with `?.`,
+ * left the expression in the bundle unreplaced, undefined in the browser, and every build on
+ * the default engine (#353). `engine-build.test.ts` builds this file to hold that down.
+ */
 export function configuredTerminalEngine(): TerminalEngine {
-    const meta = import.meta as ImportMeta & { env?: Record<string, string | undefined> | undefined };
-    return resolveTerminalEngine(meta.env?.['VITE_TERMINAL_ENGINE']);
+    return resolveTerminalEngine(import.meta.env.VITE_TERMINAL_ENGINE);
 }
 
 // ── cell metrics ────────────────────────────────────────────────────────────────────

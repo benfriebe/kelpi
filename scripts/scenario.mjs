@@ -9,6 +9,7 @@
  *   node scripts/scenario.mjs --attach 57384 --harness ~/tmp/kelpi-x/harness.sock <name>
  *   node scripts/scenario.mjs --keep <name>                    # leave the sandbox up afterwards
  *   node scripts/scenario.mjs --window hidden <name>           # without taking the screen (#65)
+ *   VITE_TERMINAL_ENGINE=xterm node scripts/scenario.mjs <name>  # on the xterm.js engine (#353)
  *
  * `--window hidden | offscreen | onscreen` opens the harness functional lane. Unset, nothing about
  * the run changes: the shell builds the window it always built. `hidden` gives the machine's owner

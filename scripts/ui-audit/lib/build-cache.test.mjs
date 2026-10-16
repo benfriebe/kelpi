@@ -29,3 +29,29 @@ describe('plugin SDK bundle cache dependencies', () => {
         expect(cacheDecision(root, 'daemon')).toMatchObject({ cached: false, reason: 'missing companion artefact' });
     });
 });
+
+describe('the client bundle keys on its build-time environment (#353)', () => {
+    it('a VITE_* variable changes the client hash and no other bundle', () => {
+        const root = fixture();
+        write(root, 'packages/client/src/main.ts', 'export {};');
+        const plain = { PATH: '/usr/bin' };
+        const xterm = { ...plain, VITE_TERMINAL_ENGINE: 'xterm' };
+        expect(bundleHash(root, 'client', { env: xterm })).not.toBe(bundleHash(root, 'client', { env: plain }));
+        for (const bundle of ['daemon', 'cli', 'shell']) {
+            expect(bundleHash(root, bundle, { env: xterm })).toBe(bundleHash(root, bundle, { env: plain }));
+        }
+    });
+
+    it('ignores variables Vite does not substitute', () => {
+        const root = fixture();
+        expect(bundleHash(root, 'client', { env: { HOME: '/a' } })).toBe(bundleHash(root, 'client', { env: { HOME: '/b' } }));
+    });
+
+    it('a .env file next to the client invalidates it', () => {
+        const root = fixture();
+        const env = {};
+        const before = bundleHash(root, 'client', { env });
+        write(root, 'packages/client/.env.local', 'VITE_TERMINAL_ENGINE=xterm\n');
+        expect(bundleHash(root, 'client', { env })).not.toBe(before);
+    });
+});

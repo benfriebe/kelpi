@@ -30,6 +30,7 @@ export const covers = [
     'packages/shell/src/webhost/index.ts',
     'packages/shell/src/webhost/dispatch.ts',
     'packages/client/src/App.tsx',
+    'packages/client/src/webpane/WebPane.tsx',
     'packages/client/src/chrome/modal-presence.ts'
 ];
 
@@ -59,12 +60,9 @@ export default async function ({ page, harness, cli, sandbox, rec, d, sleep }) {
     try {
         // A workspace of its own (the ⌃Tab switcher's never-mind is the same hand-back, and
         // `recent-workspace-switcher.mjs` asserts it where that gesture is already driven).
-        for (const name of [`Keys-${TAG}`]) {
-            const id = JSON.parse(await cli.ok(['workspace', 'create', '--name', name, '--path', sandbox.root, '--json'])).workspace_id;
-            created.push(id);
-            await visit(id);
-        }
-        const home = created[0];
+        const home = JSON.parse(await cli.ok(['workspace', 'create', '--name', `Keys-${TAG}`, '--path', sandbox.root, '--json'])).workspace_id;
+        created.push(home);
+        await visit(home);
         const web = await openPage(`after-modal-${TAG}`, true);
         const hasKeyboard = (view) => view.eval('document.hasFocus()');
         const focusPage = async (view) => {
@@ -108,14 +106,21 @@ export default async function ({ page, harness, cli, sandbox, rec, d, sleep }) {
         // the keyboard takes it (a second placement must not steal it, nor be handed a claim).
         const second = await openPage(`after-modal-second-${TAG}`, false);
         await sleep(600);
-        rec.check('the second page opened beside the first', (await activeWorkspace()) === home);
+        // Both pages are panes of this workspace, on screen: the row below is about two views
+        // coming back from the holder, so it must not pass with the second one elsewhere.
+        const webPanes = async () =>
+            JSON.parse(await cli.ok(['pane', 'list', '--workspace', home, '--json'])).filter((pane) => pane.type === 'web').length;
+        rec.check('the second page opened beside the first', (await activeWorkspace()) === home && (await webPanes()) === 2, `${String(await webPanes())} web panes`);
+        rec.check(
+            'both pages are drawn in the window',
+            await d.settle(() => page.eval(`document.querySelectorAll('[data-testid^="web-pane-"]').length >= 2`), { ceilingMs: 3000 })
+        );
         await round('two web panes, palette ⌘W', {
             open: openPalette,
             isOpen: palette,
             close: () => page.key('KeyW', { modifiers: MOD.meta }),
             others: [second]
         });
-
     } finally {
         for (const view of pages) view.close();
         if (startingWorkspace !== null) await visit(startingWorkspace).catch(() => {});

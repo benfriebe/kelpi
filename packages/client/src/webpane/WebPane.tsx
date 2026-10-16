@@ -623,9 +623,21 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
      * still collapsed, so a press-and-drag from outside keeps the range it dragged out.
      */
     const selectOnClickIn = useRef(false);
-    const onURLMouseDown = useCallback((event: ReactMouseEvent<HTMLInputElement>) => {
-        selectOnClickIn.current = event.button === 0 && document.activeElement !== event.currentTarget;
-    }, []);
+    const onURLMouseDown = useCallback(
+        (event: ReactMouseEvent<HTMLInputElement>) => {
+            const comingIn = document.activeElement !== event.currentTarget;
+            selectOnClickIn.current = event.button === 0 && comingIn;
+            /*
+             * #351: the caret coming INTO the address bar is the client taking the keyboard, the
+             * same statement ⌘L makes above. The press itself already gave this renderer the
+             * window's keyboard; what `blurView` adds is telling the host, so a page hand-back
+             * still waiting for this pane's view to be placed (a modal that just closed) cannot
+             * take the caret back off the field a moment later.
+             */
+            if (comingIn && embedded) void commands.blurView(paneID);
+        },
+        [embedded, commands, paneID]
+    );
     // #375: the prefill becomes the user's text, and the caret moves on past it.
     const acceptCompletion = useCallback(() => {
         if (completion === '') return;

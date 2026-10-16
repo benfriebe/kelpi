@@ -7551,26 +7551,25 @@ function buildFlows(ctx) {
                      * the PANE, so the palette is proved open right before it.
                      */
                     const paletteOpen = () => page.eval(`document.querySelector('[data-testid="command-palette"]') !== null`);
+                    const pageFocused = async () => (await view.eval('document.hasFocus()')) === true;
                     for (const close of ['Escape', '⌘W']) {
                         await view.send('Page.bringToFront');
-                        await sleep(300);
+                        await settle(pageFocused, { ceilingMs: 3000 });
                         await pressBoundAction(page, 'command_palette');
                         await page.waitFor(`document.querySelector('[data-testid="command-palette"]') !== null`, {
                             timeoutMs: 8000,
                             label: 'the command palette'
                         });
-                        await sleep(400);
-                        const underPalette = await view.eval('document.hasFocus()');
+                        const underPalette = await settle(async () => !(await pageFocused()), { ceilingMs: 2000 });
                         recorder.check(
                             `the page gives the keyboard up under the palette (closed with ${close})`,
-                            underPalette === false,
-                            `page hasFocus=${String(underPalette)}`
+                            underPalette === true,
+                            `page gave it up=${String(underPalette)}`
                         );
                         if (close === 'Escape') await page.key('Escape');
                         else if ((await paletteOpen()) === true) await page.key('KeyW', { modifiers: MOD.meta });
-                        await sleep(800);
-                        const closed = (await paletteOpen()) === false;
-                        const pageHasKeyboard = await view.eval('document.hasFocus()');
+                        const closed = await settle(async () => (await paletteOpen()) === false, { ceilingMs: 3000 });
+                        const pageHasKeyboard = await settle(pageFocused, { ceilingMs: 3000 });
                         recorder.check(
                             `closing the palette with ${close} hands the keyboard back to the web page (§10.4, #351)`,
                             closed && pageHasKeyboard === true,

@@ -129,10 +129,10 @@ export type EvalOutcome =
     | { readonly ok: true; readonly value: unknown }
     | { readonly ok: false; readonly error: string };
 
-/** One live tab. `./tab.ts` is the Electron implementation; tests pass a fake. */
 /** What `TabController.focusView` did (issue #351). */
 export type FocusViewOutcome = 'focused' | 'deferred' | 'none';
 
+/** One live tab. `./tab.ts` is the Electron implementation; tests pass a fake. */
 export interface TabController {
     readonly paneID: string;
     readonly tabID: string;

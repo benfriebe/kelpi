@@ -66,8 +66,13 @@ export type PlacedOutcome =
     | 'dropped-window-inactive';
 
 export interface DeferredFocus {
-    /** A `focus-view` reached a parked view. Replaces any earlier claim. */
-    defer(claim: DeferredFocusClaim): void;
+    /**
+     * A `focus-view` reached a parked view. Replaces any earlier claim and returns true, or
+     * returns false (and leaves any earlier claim alone) for a tab that is not its pane's active
+     * one: a pane is only ever placed showing its active tab, so that claim could never be
+     * honoured, and answering "deferred" would promise a hand-back that cannot happen.
+     */
+    defer(claim: DeferredFocusClaim): boolean;
     /**
      * A view of `paneID` was just put in the window. Consumes the claim when it is for this pane,
      * whatever the outcome; a placement of any other pane leaves it alone.
@@ -81,7 +86,12 @@ export interface DeferredFocus {
     readonly pending: DeferredFocusClaim | null;
 }
 
-export function createDeferredFocus(): DeferredFocus {
+export interface DeferredFocusOptions {
+    /** Is this tab the one its pane shows? Absent means every tab is (a single-tab host). */
+    readonly isActiveTab?: ((paneID: string, tabID: string) => boolean) | undefined;
+}
+
+export function createDeferredFocus(options: DeferredFocusOptions = {}): DeferredFocus {
     let pending: DeferredFocusClaim | null = null;
 
     const take = (): DeferredFocusClaim | null => {
@@ -92,7 +102,9 @@ export function createDeferredFocus(): DeferredFocus {
 
     return {
         defer(claim) {
+            if (options.isActiveTab !== undefined && !options.isActiveTab(claim.paneID, claim.tabID)) return false;
             pending = { paneID: claim.paneID, tabID: claim.tabID };
+            return true;
         },
 
         placed(paneID, tabID, window) {

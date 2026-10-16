@@ -336,18 +336,22 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
      * that reaches a parked view waits here for the placement that brings the view back (the
      * attach hook below); `./deferred-focus.ts` has the rule and every way a claim is dropped.
      */
-    const deferredFocus = createDeferredFocus();
+    const deferredFocus = createDeferredFocus({
+        isActiveTab: (paneID, tabID) => registry.activeView(paneID)?.tabID === tabID
+    });
+
+    // A keyless test-lane window (`../audit-window.ts`) hands a view the keyboard over CDP, because
+    // `webContents.focus()` would activate the app. `./view-focus.ts` ▸ `viewKeyboardRoute`.
+    const windowMayBeKey = (): boolean => {
+        const window = options.window?.() ?? null;
+        return window === null || window.isDestroyed() || window.isFocusable();
+    };
 
     const hooks = createTabHooks({
         keyboardOwner,
         restoreKeyboard,
         deferredFocus,
-        // A keyless test-lane window (`../audit-window.ts`) hands a view the keyboard over CDP, because
-        // `webContents.focus()` would activate the app. `./view-focus.ts` ▸ `viewKeyboardRoute`.
-        windowMayBeKey: () => {
-            const window = options.window?.() ?? null;
-            return window === null || window.isDestroyed() || window.isFocusable();
-        },
+        windowMayBeKey,
         holder: holderWindow,
         sessionFor: (paneID, isPrivate) => sessions.sessionFor(paneID, isPrivate),
         viewport,
@@ -541,7 +545,7 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
                  */
                 try {
                     const outcome = deferredFocus.placed(tab.paneID, tab.tabID, {
-                        windowMayBeKey: window.isFocusable(),
+                        windowMayBeKey: windowMayBeKey(),
                         windowIsFocused: window.isFocused()
                     });
                     if (outcome === 'focus') tab.focusView?.();

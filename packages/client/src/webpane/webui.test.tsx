@@ -355,6 +355,18 @@ describe('⌘L', () => {
         expect(fake.sent.find((entry) => entry.verb === 'blurView')?.args).toEqual([PANE]);
     });
 
+    it('a click into the address bar tells the host the client has the keyboard (#351)', () => {
+        const fake = fakeCommands();
+        render(<WebPane paneID={PANE} tabs={TABS} activeTabID={TAB1} commands={fake.commands} embedded focusURLToken={0} />);
+        const input = screen.getByTestId(`web-url-${PANE}`) as HTMLInputElement;
+        fireEvent.mouseDown(input, { button: 0 });
+        expect(fake.sent.filter((entry) => entry.verb === 'blurView').map((entry) => entry.args)).toEqual([[PANE]]);
+        // A second press with the caret already there is a caret move, not a hand-over.
+        input.focus();
+        fireEvent.mouseDown(input, { button: 0 });
+        expect(fake.sent.filter((entry) => entry.verb === 'blurView')).toHaveLength(1);
+    });
+
     it('does not ask a browser client, which has no native view holding anything', () => {
         const fake = fakeCommands();
         const { rerender } = render(

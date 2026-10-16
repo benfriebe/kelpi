@@ -59,6 +59,15 @@ describe('a focus-view that reached a parked view', () => {
         expect(slot.pending).toBeNull();
     });
 
+    it("is refused for a background tab, which its pane is never placed showing", () => {
+        const slot = createDeferredFocus({ isActiveTab: (_paneID, tabID) => tabID !== 'T1' });
+        slot.defer({ paneID: 'Q', tabID: 'T9' });
+        expect(slot.defer({ paneID: 'P', tabID: 'T1' })).toBe(false);
+        // The refusal leaves the earlier claim where it was.
+        expect(slot.pending).toEqual({ paneID: 'Q', tabID: 'T9' });
+        expect(slot.defer({ paneID: 'P', tabID: 'T2' })).toBe(true);
+    });
+
     it('is honoured in a window that can never be key (the lane focuses over CDP)', () => {
         const slot = createDeferredFocus();
         slot.defer({ paneID: 'P', tabID: 'T1' });

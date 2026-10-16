@@ -1067,9 +1067,13 @@ class ElectronTab implements HostTab {
          * that line as "the page was focused".
          */
         if (!this.embedded && this.deferredFocus !== undefined) {
-            this.deferredFocus.defer({ paneID: this.paneID, tabID: this.tabID });
-            log(`web pane ${this.paneID}: page view is parked; it takes the keyboard once it is placed (tab ${this.tabID})`);
-            return 'deferred';
+            if (this.deferredFocus.defer({ paneID: this.paneID, tabID: this.tabID })) {
+                log(`web pane ${this.paneID}: page view is parked; it takes the keyboard once it is placed (tab ${this.tabID})`);
+                return 'deferred';
+            }
+            // A background tab: its pane is only ever placed showing another one.
+            log(`web pane ${this.paneID}: not focusing a background tab's page view (tab ${this.tabID})`);
+            return 'none';
         }
         // Last request wins: a focus that runs now ends any claim another view was waiting on.
         this.deferredFocus?.cancel();

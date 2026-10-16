@@ -15,7 +15,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 
-import { createGitService, resolveGitExecutable, type GitService } from '../git/index.js';
+import { createGitService, GitCommandError, resolveGitExecutable, type GitService } from '../git/index.js';
 import { breadcrumbPath, readBreadcrumb, writeBreadcrumb } from './breadcrumb.js';
 import { GraftError } from './errors.js';
 import { createGraftService, type GraftService } from './service.js';
@@ -127,11 +127,12 @@ function watchControl(): WatchControl {
 function service(
     gitService: GitService,
     watch?: WatchControl,
-    extra: { catchUpMs?: number; catchUpMax?: number } = {}
+    extra: { catchUpMs?: number; catchUpMax?: number; lockRetryDelaysMs?: readonly number[] } = {}
 ): GraftService {
     return createGraftService({
         git: gitService,
         debounceMs: 1,
+        ...(extra.lockRetryDelaysMs !== undefined ? { lockRetryDelaysMs: extra.lockRetryDelaysMs } : {}),
         ...(extra.catchUpMax !== undefined ? { catchUpMax: extra.catchUpMax } : {}),
         // Tests drive batches by hand; keep the real catch-up pass out of their way unless a
         // test asks for it, so timing assertions about "no pass happened" stay meaningful.
@@ -627,6 +628,217 @@ describe.skipIf(!HAS_GIT)('stop semantics', () => {
         const again = await graft.start(f.association);
         expect(again.status).toEqual({ kind: 'watching' });
         await graft.stop(again.id);
+    }, 60_000);
+});
+
+/** What git prints when a stash pop meets someone else's index lock before applying anything. */
+function lockedPop(cwd: string): GitCommandError {
+    return new GitCommandError({
+        command: 'git stash pop stash@{0}',
+        exitCode: 1,
+        stderr: 'error: could not write index\nThe stash entry is kept in case you need it again.',
+        cwd,
+        indexLocked: true
+    });
+}
+
+describe.skipIf(!HAS_GIT)('stop on a held index lock (#342)', () => {
+    const FAST = { lockRetryDelaysMs: [1, 1, 1] };
+
+    /** The real git service with the pop or the reset failing on the lock `n` times first. */
+    function flaky(step: 'pop' | 'reset', failures: number) {
+        const real = createGitService();
+        const calls = { pop: 0, reset: 0 };
+        let remaining = failures;
+        const git: GitService = {
+            ...real,
+            stashPopRef: async (repoPath, ref) => {
+                calls.pop += 1;
+                if (step === 'pop' && remaining > 0) {
+                    remaining -= 1;
+                    throw lockedPop(repoPath);
+                }
+                await real.stashPopRef(repoPath, ref);
+            },
+            resetHard: async (repoPath, sha) => {
+                calls.reset += 1;
+                if (step === 'reset' && remaining > 0) {
+                    remaining -= 1;
+                    throw new GitCommandError({
+                        command: `git reset --hard ${sha}`,
+                        exitCode: 128,
+                        stderr: `fatal: Unable to create '${repoPath}/.git/index.lock': File exists.`,
+                        cwd: repoPath
+                    });
+                }
+                await real.resetHard(repoPath, sha);
+            }
+        };
+        return {
+            git,
+            calls,
+            heal: () => {
+                remaining = 0;
+            }
+        };
+    }
+
+    async function grafted(f: Fixture, graft: GraftService): Promise<string> {
+        fs.writeFileSync(path.join(f.parent, 'keep.txt'), 'local edit\n');
+        fs.writeFileSync(path.join(f.worktree, 'README.md'), '# grafted\n');
+        const session = await graft.start(f.association);
+        expect(session.stashRef).not.toBeNull();
+        return session.id;
+    }
+
+    function expectRestored(f: Fixture, graft: GraftService): void {
+        expect(fs.readFileSync(path.join(f.parent, 'keep.txt'), 'utf8')).toBe('local edit\n');
+        expect(fs.readFileSync(path.join(f.parent, 'README.md'), 'utf8')).toBe('# hi\n');
+        expect(git(f.parent, 'stash', 'list').trim()).toBe('');
+        expect(fs.existsSync(breadcrumbPath(f.parent))).toBe(false);
+        expect(graft.activeSessions()).toEqual([]);
+    }
+
+    it('retries a stash pop that met the lock, and the stop then succeeds', async () => {
+        const f = fixture('lock-pop-retry');
+        const { git: flakyGit, calls } = flaky('pop', 2);
+        const graft = service(flakyGit, undefined, FAST);
+        const id = await grafted(f, graft);
+        await graft.stop(id);
+        expect(calls.pop).toBe(3);
+        expectRestored(f, graft);
+    }, 60_000);
+
+    it('retries a restore step that met the lock, and the stop then succeeds', async () => {
+        const f = fixture('lock-reset-retry');
+        const { git: flakyGit, calls } = flaky('reset', 3);
+        const graft = service(flakyGit, undefined, FAST);
+        const id = await grafted(f, graft);
+        await graft.stop(id);
+        expect(calls.reset).toBe(4);
+        expectRestored(f, graft);
+    }, 60_000);
+
+    it('keeps the session, visibly unfinished, when the lock outlasts the retries; the next stop only pops', async () => {
+        const f = fixture('lock-pop-kept');
+        const flakyGit = flaky('pop', 99);
+        const graft = service(flakyGit.git, undefined, FAST);
+        const id = await grafted(f, graft);
+        const events: string[] = [];
+        const off = graft.updates((event) => {
+            events.push(event.kind === 'stopped' ? 'stopped' : `${event.kind}:${event.session.status.kind}`);
+        });
+
+        const failure = await graft.stop(id).catch((error: unknown) => error);
+        expect(failure).toBeInstanceOf(GraftError);
+        expect((failure as GraftError).kind).toBe('stashPopConflict');
+        const stash = graft.session(id)?.stashRef as string;
+        expect((failure as GraftError).message).toBe(
+            `stop incomplete: couldn't restore the parent's stashed changes (stash ${stash}): error: could not write index. ` +
+                `Another git process held the index lock, so the stop was not finished; run \`kelpi graft stop --repo ${f.parent}\` ` +
+                "to finish it (if no git process is running, a crashed one left the lock: remove the parent's .git/index.lock first)"
+        );
+        expect(flakyGit.calls.pop).toBe(4); // the first try plus three retries
+
+        // Not "off": the session says what is unfinished, names the stash, and keeps the root.
+        const kept = graft.session(id);
+        expect(kept?.stopIncomplete).toBe(true);
+        expect(kept?.status).toEqual({ kind: 'error', message: (failure as GraftError).message });
+        expect(graft.claimedRoots()).toEqual([f.parent]);
+        expect(events).toEqual(['updated:error']);
+        expect(fs.existsSync(breadcrumbPath(f.parent))).toBe(true);
+        expect(git(f.parent, 'stash', 'list', '--format=%H').trim()).toBe(stash);
+        // The restore already ran: the parent has its own tree back, minus the stashed edit.
+        expect(fs.readFileSync(path.join(f.parent, 'README.md'), 'utf8')).toBe('# hi\n');
+        expect(fs.readFileSync(path.join(f.parent, 'keep.txt'), 'utf8')).toBe('original\n');
+
+        // The user edits the parent before retrying: the retry must not `reset --hard` it away.
+        fs.writeFileSync(path.join(f.parent, 'after.txt'), 'made after the failed stop\n');
+        flakyGit.heal();
+        await graft.stop(id);
+        off();
+        expect(flakyGit.calls.reset).toBe(1);
+        expect(fs.readFileSync(path.join(f.parent, 'after.txt'), 'utf8')).toBe('made after the failed stop\n');
+        fs.rmSync(path.join(f.parent, 'after.txt'));
+        expectRestored(f, graft);
+        expect(events.at(-1)).toBe('stopped');
+    }, 60_000);
+
+    it('finishes cleanly on the next stop when the user popped the stash by hand meanwhile', async () => {
+        const f = fixture('lock-pop-manual');
+        const flakyGit = flaky('pop', 99);
+        const graft = service(flakyGit.git, undefined, FAST);
+        const id = await grafted(f, graft);
+        await expect(graft.stop(id)).rejects.toThrow('stop incomplete');
+        git(f.parent, 'stash', 'pop');
+        flakyGit.heal();
+        await graft.stop(id);
+        expectRestored(f, graft);
+    }, 60_000);
+
+    it('never retries a pop git does not call harmless, and drops the session as before', async () => {
+        const f = fixture('lock-pop-touched');
+        const real = createGitService();
+        let pops = 0;
+        const touched: GitService = {
+            ...real,
+            stashPopRef: async (repoPath) => {
+                pops += 1;
+                // The lock message, but the pop had already changed the tree.
+                throw new GitCommandError({
+                    command: 'git stash pop stash@{0}',
+                    exitCode: 1,
+                    stderr: 'error: could not write index',
+                    cwd: repoPath,
+                    indexLocked: false
+                });
+            }
+        };
+        const graft = service(touched, undefined, FAST);
+        const id = await grafted(f, graft);
+        const failure = await graft.stop(id).catch((error: unknown) => error);
+        expect(pops).toBe(1);
+        expect((failure as GraftError).kind).toBe('stashPopConflict');
+        expect((failure as GraftError).message).not.toContain('stop incomplete');
+        expect(graft.activeSessions()).toEqual([]);
+        expect(fs.existsSync(breadcrumbPath(f.parent))).toBe(true);
+        expect(git(f.parent, 'stash', 'list').trim()).not.toBe('');
+    }, 60_000);
+
+    it('against real git: an untracked-only stash meets a held lock, stays visible, then is restored', async () => {
+        // The reported case: a clean tracked tree, one untracked file, stashed with -u at start.
+        const f = fixture('lock-real-untracked');
+        const device = path.join(f.parent, '.local', 'state', 'gh', 'device-id');
+        fs.mkdirSync(path.dirname(device), { recursive: true });
+        fs.writeFileSync(device, 'device\n');
+        const real = createGitService();
+        const lockPath = path.join(f.parent, '.git', 'index.lock');
+        // Another process takes the lock right after the restore, as the reporter's hub did.
+        let rival = true;
+        const racing: GitService = {
+            ...real,
+            stashPopRef: async (repoPath, ref) => {
+                if (rival && !fs.existsSync(lockPath)) fs.writeFileSync(lockPath, '');
+                await real.stashPopRef(repoPath, ref);
+            }
+        };
+        const graft = service(racing, undefined, FAST);
+        const session = await graft.start(f.association);
+        expect(fs.existsSync(device)).toBe(false);
+
+        const failure = await graft.stop(session.id).catch((error: unknown) => error);
+        expect(String((failure as Error).message)).toContain('could not write index');
+        expect(graft.session(session.id)?.stopIncomplete).toBe(true);
+        expect(fs.existsSync(device)).toBe(false);
+
+        // The other process lets go; the same `graft stop` again finishes the job.
+        rival = false;
+        fs.rmSync(lockPath);
+        await graft.stop(session.id);
+        expect(fs.readFileSync(device, 'utf8')).toBe('device\n');
+        expect(git(f.parent, 'stash', 'list').trim()).toBe('');
+        expect(fs.existsSync(breadcrumbPath(f.parent))).toBe(false);
+        expect(graft.activeSessions()).toEqual([]);
     }, 60_000);
 });
 

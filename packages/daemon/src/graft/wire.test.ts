@@ -13,7 +13,8 @@ const SESSION: GraftSession = {
     lastSyncAt: null,
     preGraftBranch: 'main',
     preGraftSha: 'abc',
-    worktreePreGraftSha: null
+    worktreePreGraftSha: null,
+    stopIncomplete: false
 };
 
 describe('graftSessionEntry', () => {
@@ -38,6 +39,19 @@ describe('graftSessionEntry', () => {
         expect(entry['error']).toBe('Sync failed: boom');
         expect(entry['stash_ref']).toBe('deadbeef42');
         expect(entry['last_sync']).toBe('2026-08-18T09:30:12Z');
+    });
+
+    it('flags a stop that could not finish, and only then (#342)', () => {
+        expect(graftSessionEntry(SESSION)).not.toHaveProperty('stop_incomplete');
+        const entry = graftSessionEntry({
+            ...SESSION,
+            status: { kind: 'error', message: 'stop incomplete: ...' },
+            stashRef: 'deadbeef42',
+            stopIncomplete: true
+        });
+        expect(entry['stop_incomplete']).toBe(true);
+        expect(entry['status']).toBe('error');
+        expect(entry['stash_ref']).toBe('deadbeef42');
     });
 
     it('carries each status kind through verbatim', () => {

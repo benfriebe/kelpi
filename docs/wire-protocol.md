@@ -1724,7 +1724,8 @@ by '; '>`, so the CLI's generic envelope check has something to print;
 ```
 
 `status` ∈ `starting|watching|syncing|error`; `error` (message) present when status is
-error; optional `stash_ref`, `last_sync` when known.
+error; optional `stash_ref`, `last_sync` when known; `stop_incomplete: true` only when a stop
+failed on the parent's index lock and has not finished (graft-git.md §4.4, #342).
 
 ### 6.8 `ping` (R/R)
 

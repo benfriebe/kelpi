@@ -118,6 +118,9 @@ async function handleGraftStatus(args: string[]): Promise<void> {
         const branch = asString(session['branch']) ?? '-';
         const worktreePath = asString(session['worktree_path']) ?? '-';
         const status = asString(session['status']) ?? '-';
-        printLine(`${branch} [${status}] ${worktreePath}`);
+        // An `error` row says why: a sync that failed, or a stop that could not finish and names
+        // the stash it left behind (#342). `--json` carries the same text as `error`.
+        const error = status === 'error' ? asString(session['error']) : undefined;
+        printLine(`${branch} [${status}] ${worktreePath}${error !== undefined ? `: ${error}` : ''}`);
     }
 }

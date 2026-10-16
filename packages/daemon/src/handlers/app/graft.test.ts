@@ -91,6 +91,7 @@ function session(overrides: Partial<GraftSession> = {}): GraftSession {
         preGraftBranch: 'main',
         preGraftSha: 'abc123',
         worktreePreGraftSha: null,
+        stopIncomplete: false,
         ...overrides
     };
 }

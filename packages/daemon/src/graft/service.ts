@@ -23,7 +23,7 @@
 
 import { newUUID, parseUUID } from '@kelpi/core/codec';
 
-import { describeRepoState, type GitService } from '../git/index.js';
+import { describeRepoState, isIndexLockedError, type GitService } from '../git/index.js';
 import {
     readBreadcrumb,
     removeBreadcrumb,
@@ -74,6 +74,15 @@ export const GRAFT_WATCH_CATCH_UP_MS = 1_500;
  */
 export const GRAFT_WATCH_CATCH_UP_MAX = 20;
 
+/**
+ * Backoff between attempts of a restore step or the stash pop that failed only because another
+ * git process held the parent's index lock (issue #342): an editor's or a dev server's
+ * `git status`, which on a big repo holds it for a while. 1.85 s per step; a quit whose stops
+ * outlast the shutdown grace falls back to the breadcrumb as any slow stop does. Only failures
+ * git proves harmless are retried (`isIndexLockedError`).
+ */
+export const GRAFT_LOCK_RETRY_DELAYS_MS: readonly number[] = [100, 250, 500, 1_000];
+
 /** The auto-stash message tag, so the stash is identifiable in `git stash list`. */
 export function stashMessageFor(associationID: string): string {
     return `kelpi-graft:${associationID}`;
@@ -104,8 +113,13 @@ export interface GraftService {
      * Stop + restore. Idempotent: an id the service never knew still runs the watcher/sync
      * cleanup and then returns quietly, which is what makes the unconditional `forceStop` on
      * every association-removal path safe.
+     *
+     * A stop that fails only because another git process held the index lock keeps the session
+     * (`stopIncomplete`) so `graft status` still shows it and the next stop finishes the job
+     * (#342). `dropOnFailure` is for callers that can never target the session again (an
+     * association-removal path): they drop it on any failure, leaving the breadcrumb.
      */
-    stop(associationID: string): Promise<void>;
+    stop(associationID: string, options?: GraftStopOptions): Promise<void>;
     activeSessions(): readonly GraftSession[];
     session(associationID: string): GraftSession | null;
     /** Subscribe to started/updated/stopped; returns the unsubscribe. */
@@ -122,6 +136,10 @@ export interface GraftService {
     claimedRoots(): readonly string[];
 }
 
+export interface GraftStopOptions {
+    readonly dropOnFailure?: boolean | undefined;
+}
+
 export interface CreateGraftServiceOptions {
     readonly git: GraftGit;
     /** Epoch ms clock (tests). */
@@ -135,6 +153,8 @@ export interface CreateGraftServiceOptions {
     /** Cap on catch-up passes while the watch is not yet live (tests); see `GRAFT_WATCH_CATCH_UP_MAX`. */
     readonly catchUpMax?: number | undefined;
     readonly shutdownGraceMs?: number | undefined;
+    /** Backoff for index-lock retries (tests); see `GRAFT_LOCK_RETRY_DELAYS_MS`. */
+    readonly lockRetryDelaysMs?: readonly number[] | undefined;
     /** Injected `realpath` for canonicalization (tests). */
     readonly realpath?: RealpathFn | undefined;
     readonly onError?: ((error: Error, context: string) => void) | undefined;
@@ -151,6 +171,10 @@ interface MutableSession {
     preGraftBranch: string | null;
     preGraftSha: string | null;
     worktreePreGraftSha: string | null;
+    /** A stop failed on the index lock; the next stop resumes it (#342). */
+    stopIncomplete: boolean;
+    /** That stop already restored the parent, so resuming it only pops the stash. */
+    restored: boolean;
 }
 
 interface WatcherEntry {
@@ -172,7 +196,8 @@ function snapshot(session: MutableSession): GraftSession {
         lastSyncAt: session.lastSyncAt,
         preGraftBranch: session.preGraftBranch,
         preGraftSha: session.preGraftSha,
-        worktreePreGraftSha: session.worktreePreGraftSha
+        worktreePreGraftSha: session.worktreePreGraftSha,
+        stopIncomplete: session.stopIncomplete
     };
 }
 
@@ -190,6 +215,7 @@ export function createGraftService(options: CreateGraftServiceOptions): GraftSer
     const graceMs = options.shutdownGraceMs ?? GRAFT_SHUTDOWN_GRACE_MS;
     const catchUpMs = options.catchUpMs ?? GRAFT_WATCH_CATCH_UP_MS;
     const catchUpMax = options.catchUpMax ?? GRAFT_WATCH_CATCH_UP_MAX;
+    const lockRetryDelays = options.lockRetryDelaysMs ?? GRAFT_LOCK_RETRY_DELAYS_MS;
     const report = (error: unknown, context: string): void => {
         options.onError?.(error instanceof Error ? error : new Error(String(error)), context);
     };
@@ -229,6 +255,26 @@ export function createGraftService(options: CreateGraftServiceOptions): GraftSer
         }
         return false;
     };
+
+    /**
+     * Run a parent-side git step, again after a pause each time it fails ONLY because another
+     * process held the index lock (#342). Anything else, or the last attempt, is rethrown.
+     */
+    const withLockRetry = async (step: () => Promise<void>): Promise<void> => {
+        for (let attempt = 0; ; attempt += 1) {
+            try {
+                await step();
+                return;
+            } catch (error) {
+                const pause = lockRetryDelays[attempt];
+                if (pause === undefined || !isIndexLockedError(error)) throw error;
+                await delay(pause);
+            }
+        }
+    };
+
+    const popStash = (parentRepoRoot: string, stashRef: string): Promise<void> =>
+        withLockRetry(() => git.stashPopRef(parentRepoRoot, stashRef));
 
     // ── sync ────────────────────────────────────────────────────────────────
 
@@ -345,7 +391,7 @@ export function createGraftService(options: CreateGraftServiceOptions): GraftSer
         const rollbackAfterStash = async (original: unknown): Promise<never> => {
             if (stashRef !== null) {
                 try {
-                    await git.stashPopRef(parentRepoRoot, stashRef);
+                    await popStash(parentRepoRoot, stashRef);
                 } catch (popError) {
                     // The user's uncommitted work is now only in the stash: leave a breadcrumb
                     // so the recovery banner can offer to restore it on the next launch.
@@ -440,7 +486,9 @@ export function createGraftService(options: CreateGraftServiceOptions): GraftSer
             lastSyncAt: now(),
             preGraftBranch,
             preGraftSha,
-            worktreePreGraftSha: null
+            worktreePreGraftSha: null,
+            stopIncomplete: false,
+            restored: false
         };
         // Publish + transfer the claim in one synchronous step, then register the watcher —
         // no gap a concurrent start could slip through.
@@ -470,17 +518,36 @@ export function createGraftService(options: CreateGraftServiceOptions): GraftSer
     ): Promise<void> => {
         if (preGraftSha === null || preGraftSha === '') {
             // Very old breadcrumbs predate the capture: clear working-tree drift only.
-            await git.checkoutHeadForce(parentRepoRoot);
+            await withLockRetry(() => git.checkoutHeadForce(parentRepoRoot));
             return;
         }
         // "HEAD" = the parent was detached at start; let the reset land on that position.
         if (preGraftBranch !== null && preGraftBranch !== '' && preGraftBranch !== 'HEAD') {
-            await git.checkoutBranchForce(parentRepoRoot, preGraftBranch);
+            await withLockRetry(() => git.checkoutBranchForce(parentRepoRoot, preGraftBranch));
         }
-        await git.resetHard(parentRepoRoot, preGraftSha);
+        await withLockRetry(() => git.resetHard(parentRepoRoot, preGraftSha));
     };
 
-    const performStop = async (associationID: string): Promise<void> => {
+    /** Drop a session for good: the root claim is released and every client is told. */
+    const dropSession = (associationID: string): void => {
+        sessions.delete(associationID);
+        emit({ kind: 'stopped', id: associationID });
+    };
+
+    /**
+     * #342: the stop could not finish because another process held the index lock. Keep the
+     * session (the claim, the breadcrumb, `graft status`) so the failure stays visible and the
+     * next stop can finish it, instead of reporting "off" over a half-restored parent.
+     */
+    const keepIncomplete = (session: MutableSession, failure: unknown): GraftError => {
+        const error = GraftError.stopIncomplete(failure, session.parentRepoRoot);
+        session.stopIncomplete = true;
+        session.status = { kind: 'error', message: error.message };
+        emitUpdated(session);
+        return error;
+    };
+
+    const performStop = async (associationID: string, dropOnFailure: boolean): Promise<void> => {
         // Close the documented stop-during-start window (port note 17): let a start that is
         // already in flight publish its session, so this stop tears down a real session
         // instead of leaving an ownerless one behind.
@@ -517,6 +584,7 @@ export function createGraftService(options: CreateGraftServiceOptions): GraftSer
 
         // 4. Legacy breadcrumb recovery only: rewind the worktree's checkpoint commits.
         if (
+            !session.restored &&
             session.worktreePreGraftSha !== null &&
             directoryExists(session.worktreePath)
         ) {
@@ -528,47 +596,65 @@ export function createGraftService(options: CreateGraftServiceOptions): GraftSer
             }
         }
 
-        // 5. Restore the parent.
-        try {
-            await restoreParent(
-                session.parentRepoRoot,
-                session.preGraftBranch,
-                session.preGraftSha
-            );
-        } catch (error) {
-            // LEAVE the breadcrumb: the stash is still on disk and the recovery banner is the
-            // user's way back. Drop the session so the root claim is released.
-            sessions.delete(associationID);
-            emit({ kind: 'stopped', id: associationID });
-            throw error;
+        // 5. Restore the parent, unless an earlier stop that failed on the lock already did:
+        //    re-running `reset --hard` now could wipe edits the user made since.
+        if (!session.restored) {
+            try {
+                await restoreParent(
+                    session.parentRepoRoot,
+                    session.preGraftBranch,
+                    session.preGraftSha
+                );
+            } catch (error) {
+                // A held lock (after the retries) keeps the session to be finished later. Any
+                // other failure LEAVES the breadcrumb (the stash is still on disk and the
+                // recovery banner is the user's way back) and drops the session so the root
+                // claim is released: a failure no retry can fix must not pin the root.
+                if (isIndexLockedError(error) && !dropOnFailure) throw keepIncomplete(session, error);
+                dropSession(associationID);
+                throw error;
+            }
+            session.restored = true;
         }
 
         // 6. Pop the auto-stash.
         if (session.stashRef !== null) {
             try {
-                await git.stashPopRef(session.parentRepoRoot, session.stashRef);
+                await popStash(session.parentRepoRoot, session.stashRef);
             } catch (error) {
-                sessions.delete(associationID);
-                emit({ kind: 'stopped', id: associationID });
-                throw GraftError.stashPopConflict(session.stashRef, errorText(error));
+                const failure = GraftError.stashPopConflict(session.stashRef, errorText(error));
+                // Same split as the restore. A real conflict leaves an unmerged index that makes
+                // every later pop fail too, so only a pop that provably applied nothing (git's
+                // `indexLocked`) keeps the session; the stash and the breadcrumb stay either way.
+                if (isIndexLockedError(error) && !dropOnFailure) throw keepIncomplete(session, failure);
+                dropSession(associationID);
+                throw failure;
             }
         }
 
         // 7. Clean exit.
         removeBreadcrumb(session.parentRepoRoot);
-        sessions.delete(associationID);
-        emit({ kind: 'stopped', id: associationID });
+        dropSession(associationID);
     };
 
-    const stop = (associationID: string): Promise<void> => {
+    const stop = (associationID: string, stopOptions: GraftStopOptions = {}): Promise<void> => {
+        const dropOnFailure = stopOptions.dropOnFailure === true;
         // Concurrent stops coalesce: later callers await the SAME task and get its real
         // outcome, so a second initiator never re-runs the restore + stash pop.
         const existing = stopTasks.get(associationID);
-        if (existing !== undefined) return existing;
+        if (existing !== undefined) {
+            if (!dropOnFailure) return existing;
+            // The running stop may keep the session on a lock failure, but this caller can never
+            // target it again: once that stop settles, drop whatever it kept.
+            return existing.catch((error: unknown) => {
+                if (sessions.get(associationID)?.stopIncomplete === true) dropSession(associationID);
+                throw error;
+            });
+        }
         let task!: Promise<void>;
         task = (async () => {
             try {
-                await performStop(associationID);
+                await performStop(associationID, dropOnFailure);
             } finally {
                 if (stopTasks.get(associationID) === task) stopTasks.delete(associationID);
             }
@@ -641,7 +727,7 @@ export function createGraftService(options: CreateGraftServiceOptions): GraftSer
             await restoreParent(orphan.parentRepoRoot, orphan.preGraftBranch, orphan.preGraftSha);
             if (orphan.stashRef !== null) {
                 try {
-                    await git.stashPopRef(orphan.parentRepoRoot, orphan.stashRef);
+                    await popStash(orphan.parentRepoRoot, orphan.stashRef);
                 } catch (error) {
                     throw GraftError.stashPopConflict(orphan.stashRef, errorText(error));
                 }

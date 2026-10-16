@@ -1746,6 +1746,26 @@ describe('graft', () => {
         expect(status.stderr).toContain('kelpi graft status: no response from Kelpi');
     }, 30_000);
 
+    it('prints why an error row is in error, e.g. the stash a stop could not restore (#342)', async () => {
+        const error =
+            'stop incomplete: couldn\'t restore the parent\'s stashed changes (stash c7368d8): error: could not write index. ' +
+            'Another git process held the index lock, so the stop was not finished; run "kelpi graft stop --repo /repo" to finish it';
+        server.respond(() => ({
+            lines: [
+                {
+                    ok: true,
+                    sessions: [
+                        { association_id: 'assoc-1', branch: 'feature', worktree_path: '/tmp/wt', status: 'error', error, stash_ref: 'c7368d8', stop_incomplete: true },
+                        { association_id: 'assoc-2', branch: 'other', worktree_path: '/tmp/wt2', status: 'watching' }
+                    ]
+                }
+            ]
+        }));
+        const human = await runCLI(['graft', 'status'], { port: server.port });
+        expect(human.code).toBe(0);
+        expect(human.stdout).toBe(`feature [error] /tmp/wt: ${error}\nother [watching] /tmp/wt2\n`);
+    });
+
     it('renders an empty status two ways', async () => {
         server.respond(() => ({ lines: [{ ok: true, sessions: [] }] }));
         const human = await runCLI(['graft', 'status'], { port: server.port });

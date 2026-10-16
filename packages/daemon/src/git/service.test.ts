@@ -9,7 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { GitCommandError, createGitRunner, resolveGitExecutable, longGitTimeout, MIN_LONG_GIT_TIMEOUT_MS } from './exec.js';
+import { GitCommandError, createGitRunner, isIndexLockedError, resolveGitExecutable, longGitTimeout, MIN_LONG_GIT_TIMEOUT_MS } from './exec.js';
 import {
     createGitService,
     DETACHED_HEAD,
@@ -609,5 +609,141 @@ describe('sweepGraftTempIndexes', () => {
         expect(fs.existsSync(other)).toBe(true);
         // A missing directory is not an error.
         expect(sweepGraftTempIndexes(path.join(dir, 'nope'), now)).toBe(0);
+    });
+});
+
+describe('index lock (#342)', () => {
+    it('runs the background reads with optional locks off, so they never hold index.lock', async () => {
+        const seen: { args: string[]; env: Readonly<Record<string, string>> | undefined }[] = [];
+        const service = createGitService({
+            run: async (args, options) => {
+                seen.push({ args: [...args], env: options.env });
+                return args[0] === 'status' ? ' M a.txt\n' : '';
+            }
+        });
+        await service.getStatus('/repo');
+        await service.getDiff('/repo');
+        await service.getDiff('/repo', 'a.txt', { signal: new AbortController().signal });
+        expect(seen.map((call) => call.args[0])).toEqual(['status', 'diff', 'diff', 'diff']);
+        for (const call of seen) expect(call.env).toEqual({ GIT_OPTIONAL_LOCKS: '0' });
+    });
+
+    it('marks a held lock as a harmless failure, from stderr', () => {
+        const locked = new GitCommandError({
+            command: 'git reset --hard abc',
+            exitCode: 128,
+            stderr: "fatal: Unable to create '/r/.git/index.lock': File exists.\n\nAnother git process seems to be running",
+            cwd: '/r'
+        });
+        expect(locked.indexLocked).toBe(true);
+        expect(isIndexLockedError(locked)).toBe(true);
+        const other = new GitCommandError({ command: 'git reset', exitCode: 128, stderr: 'fatal: bad revision', cwd: '/r' });
+        expect(isIndexLockedError(other)).toBe(false);
+        expect(isIndexLockedError(new Error("index.lock': File exists"))).toBe(false);
+    });
+
+    /** A writable stand-in for a checkout's git dir, for the "can git write the index" check. */
+    const fakeRepo = (): string => {
+        const dir = tmpDir('fake-repo');
+        fs.mkdirSync(path.join(dir, '.git'));
+        return dir;
+    };
+
+    /** A fake runner for `stash list` + the two status snapshots around one failed pop. */
+    function popping(stderr: string, after: string): ReturnType<typeof createGitService> {
+        let snapshots = 0;
+        return createGitService({
+            run: async (args, options) => {
+                if (args[0] === 'stash' && args[1] === 'list') return 'abc\n';
+                if (args[0] === 'rev-parse') return '.git/index\n';
+                if (args[0] === 'status') {
+                    expect(options.env).toEqual({ GIT_OPTIONAL_LOCKS: '0' });
+                    snapshots += 1;
+                    return snapshots === 1 ? '' : after;
+                }
+                throw new GitCommandError({ command: `git ${args.join(' ')}`, exitCode: 1, stderr, cwd: '/r' });
+            }
+        });
+    }
+
+    it('calls a pop retryable only when it failed on the lock before applying anything', async () => {
+        const repo = fakeRepo();
+        const clean = await popping('error: could not write index', '').stashPopRef(repo, 'abc').catch((e: unknown) => e);
+        expect(isIndexLockedError(clean)).toBe(true);
+        // The same message, but the tree changed: something was applied, a retry would re-apply.
+        const touched = await popping('error: could not write index', '?? .local/\n').stashPopRef(repo, 'abc').catch((e: unknown) => e);
+        expect(touched).toBeInstanceOf(GitCommandError);
+        expect(isIndexLockedError(touched)).toBe(false);
+        // A lock hit mid-apply says this instead, and is never retryable for a pop.
+        const midway = await popping("fatal: Unable to create '/r/.git/index.lock': File exists.", '')
+            .stashPopRef(repo, 'abc')
+            .catch((e: unknown) => e);
+        expect(isIndexLockedError(midway)).toBe(false);
+        const conflict = await popping('CONFLICT (content): Merge conflict in a.txt', '').stashPopRef(repo, 'abc').catch((e: unknown) => e);
+        expect(isIndexLockedError(conflict)).toBe(false);
+    });
+
+    it('still pops when the status snapshot cannot be taken, and then never calls a failure retryable', async () => {
+        const popped: string[][] = [];
+        const service = createGitService({
+            run: async (args) => {
+                if (args[0] === 'stash' && args[1] === 'list') return 'abc\n';
+                if (args[0] === 'status') throw new GitCommandError({ command: 'git status', exitCode: 128, stderr: 'timed out', cwd: '/r' });
+                popped.push([...args]);
+                return '';
+            }
+        });
+        await service.stashPopRef('/r', 'abc');
+        expect(popped).toEqual([['stash', 'pop', 'stash@{0}']]);
+
+        const failing = createGitService({
+            run: async (args) => {
+                if (args[0] === 'stash' && args[1] === 'list') return 'abc\n';
+                if (args[0] === 'status') throw new GitCommandError({ command: 'git status', exitCode: 128, stderr: 'timed out', cwd: '/r' });
+                throw new GitCommandError({ command: 'git stash pop', exitCode: 1, stderr: 'error: could not write index', cwd: '/r' });
+            }
+        });
+        expect(isIndexLockedError(await failing.stashPopRef('/r', 'abc').catch((e: unknown) => e))).toBe(false);
+    });
+
+    it.skipIf(!HAS_GIT || process.getuid?.() === 0)('against real git: an index directory git cannot write is no lock, so not retryable', async () => {
+        const repo = initRepo('stash-readonly');
+        fs.writeFileSync(path.join(repo, 'untracked.txt'), 'x\n');
+        const service = createGitService();
+        const ref = await service.stashPushIncludeUntracked(repo, 'kelpi-graft:test');
+        const gitDir = path.join(repo, '.git');
+        fs.chmodSync(gitDir, 0o555);
+        let failure: unknown;
+        try {
+            failure = await service.stashPopRef(repo, ref as string).catch((e: unknown) => e);
+        } finally {
+            fs.chmodSync(gitDir, 0o755);
+        }
+        expect((failure as GitCommandError).stderr).toContain('could not write index');
+        expect(isIndexLockedError(failure)).toBe(false);
+        await service.stashPopRef(repo, ref as string);
+        expect(fs.existsSync(path.join(repo, 'untracked.txt'))).toBe(true);
+    });
+
+    it.skipIf(!HAS_GIT)('against real git: an untracked-only stash pop under a held lock is retryable and keeps the stash', async () => {
+        const repo = initRepo('stash-locked');
+        fs.mkdirSync(path.join(repo, '.local', 'state', 'gh'), { recursive: true });
+        fs.writeFileSync(path.join(repo, '.local', 'state', 'gh', 'device-id'), 'id\n');
+        const service = createGitService();
+        const ref = await service.stashPushIncludeUntracked(repo, 'kelpi-graft:test');
+        expect(ref).not.toBeNull();
+        expect(fs.existsSync(path.join(repo, '.local'))).toBe(false);
+
+        const lock = path.join(repo, '.git', 'index.lock');
+        fs.writeFileSync(lock, '');
+        const failure = await service.stashPopRef(repo, ref as string).catch((e: unknown) => e);
+        expect((failure as GitCommandError).stderr).toContain('could not write index');
+        expect(isIndexLockedError(failure)).toBe(true);
+        expect(git(repo, 'stash', 'list', '--format=%H').trim()).toBe(ref);
+
+        fs.rmSync(lock);
+        await service.stashPopRef(repo, ref as string);
+        expect(fs.readFileSync(path.join(repo, '.local', 'state', 'gh', 'device-id'), 'utf8')).toBe('id\n');
+        expect(git(repo, 'stash', 'list').trim()).toBe('');
     });
 });

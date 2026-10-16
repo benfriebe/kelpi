@@ -105,6 +105,8 @@ interface GraftSession {
   preGraftSha?: string;    // parent's HEAD SHA at start
   worktreePreGraftSha?: string; // ALWAYS null for sessions created by the current
                                 // (tree-based) design; kept for legacy breadcrumbs
+  stopIncomplete: boolean; // a stop failed on the parent's index lock and has not finished
+                           // (issue #342, §4.4); wire: `stop_incomplete: true` when set
 }
 
 interface GraftOrphan {
@@ -236,15 +238,22 @@ Every operation shells out to git (`packages/daemon/src/git/exec.ts`):
 - Exit code != 0 → throw:
 
 ```ts
-class GitCommandError extends Error {   // packages/daemon/src/git/exec.ts:28-54
+class GitCommandError extends Error {   // packages/daemon/src/git/exec.ts:36-70
   kind: "commandFailed";
   command: string;      // "git " + args.join(" ")
   exitCode: number;
   stderr: string;       // trimmed, may be empty; used verbatim in user-facing error messages
   cwd: string;          // the directory git ran in
+  indexLocked: boolean; // another process held index.lock and this command changed nothing,
+                        // so running it again is safe (issue #342; see below)
   // message = stderr, or "<command> exited with code <n>" when stderr is empty
 }
 ```
+
+`indexLocked` is derived from stderr: git's `Unable to create '<...>/index.lock': File
+exists` is printed by every command that takes the lock up front, before it touches
+anything. `stashPopRef` overrides it for itself (§3.2), because a pop can meet the lock part
+way through. `isIndexLockedError(e)` tests for it.
 
 The `stderr` field is load-bearing: graft sync errors and worktree-creation alerts
 surface it directly (see `describeSyncError` §4.6 and `worktreeErrorMessage` §6.6).
@@ -284,6 +293,13 @@ null (never throws; `service.ts:253-260`).
 
 1. `git status --porcelain`; split lines, drop empties.
 2. Zero lines → `clean`.
+
+Both git calls here (and `getDiff`'s) run with `GIT_OPTIONAL_LOCKS=0`. `status` and `diff`
+otherwise take `index.lock` opportunistically to write back refreshed stat data, and these
+are the reads Kelpi runs in the background (HEAD watcher, polling backstop, inspector). With
+optional locks off, Kelpi's own refresh can never be the process that makes the user's git,
+or a graft stop's stash pop, fail on the lock (issue #342).
+
 3. Otherwise `git diff --shortstat HEAD` (note: **against HEAD**, so staged edits are
    counted too; plain `--shortstat` would miss stage-only changes). Errors here are
    swallowed (e.g. fresh repo with no HEAD) → additions/deletions 0.
@@ -384,8 +400,9 @@ differ — that difference is graft's precondition.
 
 #### `getDiff(repoPath, targetPath?) -> string`
 
-`git diff --no-color` plus `-- <targetPath>` when targetPath is non-empty. Raw patch
-text returned. (Feeds the diff pane; included here for API completeness.)
+`git diff --no-color` plus `-- <targetPath>` when targetPath is non-empty, with
+`GIT_OPTIONAL_LOCKS=0` (see `getStatus`). Raw patch text returned. (Feeds the diff pane;
+included here for API completeness.)
 
 #### `resolveHeadPath(worktreePath) -> string`
 
@@ -410,8 +427,19 @@ addressable even if other stashes land later.
 1. `git stash list --format=%H` → array of SHAs (index = stash position).
 2. Find the index whose SHA equals `stashRef`. **Not found → silently succeed**
    (user dropped the stash; the rest of the stop sequence continues).
-3. `git stash pop stash@{<index>}`. A conflict here throws (graft wraps it in
+3. Snapshot `git status --porcelain --untracked-files=all` (optional locks off).
+4. `git stash pop stash@{<index>}`. A conflict here throws (graft wraps it in
    `stashPopConflict`).
+5. On failure, the thrown `GitCommandError` is `indexLocked` only when stderr says
+   `could not write index`, a second snapshot equals the first, and the directory holding
+   the index (`git rev-parse --git-path index`) is writable. That message is stash's first
+   step (refreshing the index) failing on a lock another process holds, before anything is
+   applied; the stash is kept. A lock met later, mid-apply, prints `Unable to create ...
+   index.lock` instead and is never `indexLocked` here, since a retry would re-apply a partly
+   applied stash on top of itself (issue #342). An index directory git cannot write prints
+   the same message but is no lock, hence the writability check; it is a proxy, so a full
+   disk would still read as a lock. A snapshot that cannot be taken never blocks the pop; it
+   only makes a failure non-retryable.
 
 #### `addAllAndCommit(worktreePath, message, noVerify) -> string[]`
 
@@ -730,32 +758,79 @@ session = sessions.get(assocId); if !session: return
 
 // 4. Legacy-only: rewind the worktree if a pre-graft SHA was recorded
 //    (only true for sessions recovered from old commit-based breadcrumbs).
-//    Best-effort — failure never blocks the parent restore.
-if session.worktreePreGraftSha && dirExists(session.worktreePath):
+//    Best-effort: failure never blocks the parent restore. Skipped on a resumed stop.
+if !session.restored && session.worktreePreGraftSha && dirExists(session.worktreePath):
   try resetMixed(session.worktreePath, session.worktreePreGraftSha)
 
-// 5. Restore the parent (see §4.7).
-try restoreParent(session.parentRepoRoot, session.preGraftBranch, session.preGraftSha)
-catch e:
-  // LEAVE the breadcrumb (recovery banner picks it up next launch — the user's
-  // stash is still on disk). Drop the in-memory session so the root claim is
-  // released and the toggle reflects reality.
-  lock { sessions.delete(assocId) }; emit stopped(assocId); throw e
+// 5. Restore the parent (see §4.7; each git step retries a held lock). Skipped when an
+//    earlier stop that failed on the lock already restored it: a second `reset --hard`
+//    could wipe edits the user made since.
+if !session.restored:
+  try restoreParent(session.parentRepoRoot, session.preGraftBranch, session.preGraftSha)
+  catch e:
+    if isIndexLockedError(e) && !dropOnFailure: keepIncomplete(e)   // see below
+    // LEAVE the breadcrumb (recovery banner picks it up next launch; the user's
+    // stash is still on disk). Drop the in-memory session so the root claim is
+    // released and the toggle reflects reality.
+    lock { sessions.delete(assocId) }; emit stopped(assocId); throw e
+  session.restored = true
 
-// 6. Pop the auto-stash.
+// 6. Pop the auto-stash (with the same lock retries).
 if session.stashRef:
   try stashPopRef(session.parentRepoRoot, session.stashRef)
   catch e:
+    failure = stashPopConflict(session.stashRef, String(e))
+    if isIndexLockedError(e) && !dropOnFailure: keepIncomplete(failure)
     // Conflict: leave stash AND breadcrumb on disk; drop the session; surface
     // a typed error so the caller can tell the user.
     lock { sessions.delete(assocId) }; emit stopped(assocId)
-    throw stashPopConflict(session.stashRef, String(e))
+    throw failure
 
 // 7. Clean exit.
 removeBreadcrumb(session.parentRepoRoot)
 lock { sessions.delete(assocId) }
 emit stopped(assocId)
 ```
+
+**Lock retries and the unfinished stop (issue #342).** Every parent-side git step of the
+stop (`checkout -f`, `reset --hard`, the stash pop; also `recoverOrphan` and the start
+rollback's pop) is retried after 100, 250, 500 and 1000 ms (`GRAFT_LOCK_RETRY_DELAYS_MS`,
+1.85 s **per step**) when it failed with an `indexLocked` error, i.e. another git process (an
+editor's or a dev server's `git status`) held `index.lock` and git changed nothing. Any other
+failure is never retried. A stop whose steps all meet the lock can therefore wait about 5.5 s
+plus git's own time, longer than the §5 shutdown grace: a quit that runs out of grace leaves
+the breadcrumb, exactly as for any slow stop.
+
+When the lock outlasts the retries, `keepIncomplete(failure)` keeps the session instead of
+dropping it: `stopIncomplete = true`, `status = error(message)`, emit `updated` (not
+`stopped`), and throw `GraftError.stopIncomplete(failure, root)`: the failure's own kind
+(a pop stays `stashPopConflict` with its stash SHA), its first line, and the way out:
+
+```
+stop incomplete: couldn't restore the parent's stashed changes (stash <sha>): error: could not write index. Another git process held the index lock, so the stop was not finished; run `kelpi graft stop --repo <root>` to finish it (if no git process is running, a crashed one left the lock: remove the parent's .git/index.lock first)
+```
+
+`<root>` is shell-quoted when it needs to be (spaces, quotes), so the command pastes as is.
+The stale-lock hint matters because a lock a crashed git left behind never goes away: until
+it is removed every stop fails the same way and the session keeps the root.
+
+The watcher is already gone, so nothing syncs. The session keeps the root claimed (a new
+start gets `alreadyActive`, which `graft status` now explains), the breadcrumb stays, and the
+orphan refresh skips claimed roots, so there is no duplicate banner. The next stop resumes:
+steps 4 and 5 are skipped when `restored`, and the pop is retried; a stash the user dropped
+or applied by hand meanwhile is "not found → succeed" in `stashPopRef`. Before #342 the
+session was dropped, so `graft status` said `[]` while the parent was missing the stashed
+files and the stash was still listed.
+
+Only lock failures are kept. A genuine conflict leaves an unmerged index on which every
+later pop fails too, and any other restore failure is one a retry would hit again; keeping
+those would pin the root forever (issue #231), so they drop the session exactly as before.
+
+`stop(id, {dropOnFailure: true})` is for the association-removal paths (§8.8): once the
+association is gone neither the default-scope CLI stop nor the inspector can target the
+session, so a stop that cannot finish drops it and leaves the breadcrumb, as before #342. A
+`dropOnFailure` caller that joins a running stop drops whatever that stop kept once it
+settles.
 
 Stop-during-start: before step 1, `performStop` first awaits any in-flight `start()`
 for the same id (tracked in `startTasks`, registered by `start()` and released when
@@ -872,9 +947,9 @@ otherwise go unnoticed until the next restart.
 ```
 if orphan.worktreePreGraftSha && dirExists(orphan.worktreePath):
   try resetMixed(orphan.worktreePath, orphan.worktreePreGraftSha)   // best-effort
-restoreParent(orphan.parentRepoRoot, orphan.preGraftBranch, orphan.preGraftSha)
+restoreParent(orphan.parentRepoRoot, orphan.preGraftBranch, orphan.preGraftSha)  // lock retries
 if orphan.stashRef:
-  stashPopRef(...) — on failure throw stashPopConflict(stashRef, underlying)
+  stashPopRef(...): lock retries; on failure throw stashPopConflict(stashRef, underlying)
 removeBreadcrumb(orphan.parentRepoRoot)
 ```
 
@@ -959,6 +1034,10 @@ placeholders survive it), and replaces `orphans` wholesale. Between syncs the
   status: starting}` so the icon flips instantly, then call service `start`:
   - success → replace placeholder with the real session (`startSucceeded`);
   - failure → `startFailed` (see 6.3).
+- **Mirror session with status `error` and `stopIncomplete`** (issue #342; the daemon's
+  `stop_incomplete`) → service `stop(assoc.id)` ONLY, exactly as for a live session below:
+  the user asked for graft off, and the retry's start would stash the changes the stop just
+  gave back. The tooltip says `Graft stop didn't finish: <detail>. Click to finish stopping.`
 - **Mirror session with status `error`** → "retry" semantics: remove the mirror
   entry, then service `stop(assoc.id)` first (the errored session may still own the
   watcher/claim/breadcrumb — a placeholder from a failed start owns nothing, and
@@ -1221,11 +1300,14 @@ lost must still show up here so every `alreadyActive` rejection is explainable):
 Per-session JSON (`graftSessionEntry`, `packages/daemon/src/graft/wire.ts:14-27`):
 `status` ∈ `"starting" | "watching" | "syncing" | "error"`; when error, an `"error"`
 key carries the message. `stash_ref` and `last_sync` (ISO 8601, second precision)
-are present only when set.
+are present only when set. `stop_incomplete: true` (additive, only when set) marks an
+`error` session whose stop failed on the index lock and has not finished (§4.4), as
+opposed to a live session whose sync failed.
 
 CLI: `kelpi graft status [--json]` — `--json` prints the sessions array (sorted keys);
 otherwise `No active graft sessions.` or one line per session:
-`<branch> [<status>] <worktree_path>`.
+`<branch> [<status>] <worktree_path>`, with `: <error>` appended for an `error` row so the
+reason (and, for an unfinished stop, the stash SHA) shows without `--json`.
 
 ### 7.5 CLI command surface
 
@@ -1285,7 +1367,9 @@ Two untyped broadcasts keep every connected client's mirror current:
   per-event started/updated/stopped delta. The daemon sends it on every engine event
   (`packages/daemon/src/boot/compose.ts:967-969`); the client's reducer merges the
   list and preserves only its own `starting`/`error` placeholders
-  (`packages/client/src/state/graft.ts:107-118`).
+  (`packages/client/src/state/graft.ts`, `mergeSessions`). An `error` row marked
+  `stopIncomplete` came from the engine's list, so it is dropped like a live session once the
+  engine stops listing it: a stop finished from the CLI or another window clears it (#342).
 - `graft-orphans {type, orphans:[...]}` (`graftOrphansEvent`, `wire.ts:51-65`; entries
   carry `association_id`, `parent_repo_root`, `worktree_path`, `branch` and
   `stash_ref` when set) is sent on every change to the orphan registry
@@ -1703,7 +1787,9 @@ never loses commits; files git ignores (build output, `.env`) go with it.
 ### 8.8 Removal paths that must fire graft forceStop + HEAD-watcher stop
 
 Every path that drops associations dispatches, per removed association id, BOTH a
-`stopHeadWatcher` and a graft `forceStop` (unconditional — issue #231):
+`stopHeadWatcher` and a graft `forceStop` (unconditional, issue #231). The force-stop
+passes `dropOnFailure` (§4.4): with the association gone, a stop that cannot finish must
+fall back to the breadcrumb rather than keep a session nothing can target:
 
 - workspace delete (single, bulk multi-select, ⌘W-last-pane path, and the member deletes a
   group delete with worktree cleanup sends)
@@ -2054,3 +2140,9 @@ the deliberate divergences from the pre-port app and why they are safe:
     `origin/<default>`, and `worktreeErrorMessage` prefers the last `fatal:`/`error:`
     line because the raw first stderr line of `git worktree add` is misleading
     (`packages/daemon/src/git/names.ts`).
+21. **A stop that fails on the index lock keeps its session (issue #342).** The pre-port app
+    dropped the session on any restore or pop failure, which left `graft status` empty over a
+    half-restored parent. The daemon retries a held lock, and when it outlasts the retries
+    keeps the session as `stopIncomplete` until a later stop finishes it (§4.4). The wire
+    change is additive (`stop_incomplete`), and the `error_kind` of the failure is unchanged
+    (`stashPopConflict` for the pop).

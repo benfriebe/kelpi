@@ -1792,7 +1792,8 @@ Only VISIBLE panes resolve (parked panes are not user-addressable).
   "stopped: []" success rather than an error. `graft status` reports the service's sessions, not
   the reducer mirror. Session JSON:
   `{association_id, worktree_path, parent_repo_root, branch, status:
-  starting|watching|syncing|error, error?, stash_ref?, last_sync? (ISO 8601)}`.
+  starting|watching|syncing|error, error?, stash_ref?, last_sync? (ISO 8601),
+  stop_incomplete?: true}` (the last only for a stop that failed on the index lock, #342).
 
 ---
 

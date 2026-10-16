@@ -43,11 +43,13 @@ export {
 
 export {
     createGraftService,
+    GRAFT_LOCK_RETRY_DELAYS_MS,
     GRAFT_SHUTDOWN_GRACE_MS,
     stashMessageFor,
     type CreateGraftServiceOptions,
     type GraftGit,
-    type GraftService
+    type GraftService,
+    type GraftStopOptions
 } from './service.js';
 
 export type {

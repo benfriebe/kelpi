@@ -13,6 +13,9 @@
  *             the stash rolled back and the sync error surfaced — nothing left half-grafted.
  *   §GIT-027  a failed parent restore during stop drops the in-memory session (releasing the
  *             root claim) but KEEPS the breadcrumb, so the orphan banner is the way back.
+ *             Except (#342) when the failure is another process holding the index lock: the
+ *             session is kept as stop-incomplete, visible and claimed, and the next stop
+ *             finishes it. A removal path (`dropOnFailure`) still drops it.
  *   §GIT-032  "Restore" replays the sequence from the breadcrumb; any failure leaves the
  *             breadcrumb (and the stash) for a retry.
  *   §GIT-033  "Dismiss" deletes the breadcrumb only — the stash and the parent are untouched.
@@ -134,6 +137,8 @@ function service(gitService: GitService): Harness {
     const graft = createGraftService({
         git: gitService,
         debounceMs: 1,
+        // A planted lock is never released mid-stop here; keep the #342 retries short.
+        lockRetryDelaysMs: [5, 5],
         onError: (error, context) => {
             reported.push({ error, context });
         }
@@ -278,44 +283,93 @@ describe.skipIf(!HAS_GIT)('start rollback', () => {
 });
 
 describe.skipIf(!HAS_GIT)('stop rollback', () => {
-    it('drops the session but keeps the breadcrumb when the parent restore fails', async () => {
-        const f = fixture('restore-fail');
+    it('keeps a stop-incomplete session when the restore hits a held index lock, and the next stop finishes it', async () => {
+        const f = fixture('restore-locked');
         const { graft } = service(createGitService());
-        // Prepared before anything is locked: the rival worktree the claim test below needs.
+        // Prepared before anything is locked: the rival worktree the claim check below needs.
         const second = path.join(path.dirname(f.worktree), 'wt-other');
         git(f.parent, 'worktree', 'add', '-b', 'other', second);
 
         const session = await graft.start(f.association);
         expect(fs.readFileSync(path.join(f.parent, 'MIRROR.md'), 'utf8')).toBe('from the worktree\n');
-        expect(graft.claimedRoots()).toEqual([f.parent]);
+        const events: string[] = [];
+        const off = graft.updates((event) => {
+            events.push(event.kind);
+        });
 
-        // A crashed git's leftover lock: `checkout -f main` / `reset --hard` both refuse.
+        // Another git process holds the lock through every retry: `checkout -f` / `reset --hard`
+        // refuse before touching anything.
         const lockPath = path.join(f.parent, '.git', 'index.lock');
         fs.writeFileSync(lockPath, '');
 
         const failure = await graft.stop(session.id).catch((error: unknown) => error);
-        expect(failure).toBeInstanceOf(Error);
-        expect(String((failure as Error).message)).toContain('index.lock');
+        expect(failure).toBeInstanceOf(GraftError);
+        const message = (failure as GraftError).message;
+        expect(message).toMatch(/^stop incomplete: /);
+        expect(message).toContain('index.lock');
+        expect(message).toContain(`kelpi graft stop --repo ${f.parent}`);
 
-        // §GIT-027: the session is gone — the root claim is released so another worktree can
-        // try — but the breadcrumb (and the stash) stay, because they are the only way back.
-        expect(graft.activeSessions()).toEqual([]);
-        expect(graft.session(session.id)).toBeNull();
-        expect(graft.claimedRoots()).toEqual([]);
+        // #342: the session stays, visibly not finished, and still owns the root; `graft status`
+        // can never say "nothing is grafted" over a parent that still holds the graft.
+        const kept = graft.session(session.id);
+        expect(kept?.stopIncomplete).toBe(true);
+        expect(kept?.status).toEqual({ kind: 'error', message });
+        expect(graft.claimedRoots()).toEqual([f.parent]);
+        expect(events).toEqual(['updated']);
         expect(fs.existsSync(breadcrumbPath(f.parent))).toBe(true);
         expect(stashCount(f.parent)).toBe(1);
-        // The parent is still holding the graft's content: nothing was restored.
         expect(fs.existsSync(path.join(f.parent, 'MIRROR.md'))).toBe(true);
-
-        // The claim really is free: a second worktree may take the root while the first is
-        // stuck (the guard is derived from live sessions, and this one is no longer live).
         const contest = await graft
             .start({ id: 'ASSOC-2', worktreePath: second, branchName: 'other' })
             .catch((error: unknown) => error);
-        expect((contest as GraftError).kind).not.toBe('alreadyActive');
+        expect((contest as GraftError).kind).toBe('alreadyActive');
+
+        // The holder goes away; the next stop finishes the restore and the pop.
+        fs.rmSync(lockPath);
+        await graft.stop(session.id);
+        off();
+        expectParentUntouched(f);
+        expect(graft.activeSessions()).toEqual([]);
+        expect(graft.claimedRoots()).toEqual([]);
+        expect(fs.existsSync(breadcrumbPath(f.parent))).toBe(false);
+        expect(events.at(-1)).toBe('stopped');
+    }, 60_000);
+
+    it('drops the session but keeps the breadcrumb when the restore fails for a reason no retry fixes', async () => {
+        const f = fixture('restore-fail');
+        const real = createGitService();
+        let broken = false;
+        // Not a lock: the kind of failure a later stop would hit again, so the session must not
+        // pin the root (#231). Injected, because git offers no non-lock reset failure on a repo
+        // whose HEAD the stop itself recorded.
+        const failing: GitService = {
+            ...real,
+            resetHard: async (repoPath, sha) => {
+                if (broken) throw new Error(`fatal: Could not reset index file to revision '${sha}'.`);
+                await real.resetHard(repoPath, sha);
+            }
+        };
+        const { graft } = service(failing);
+
+        const session = await graft.start(f.association);
+        const events: string[] = [];
+        const off = graft.updates((event) => {
+            events.push(event.kind);
+        });
+        broken = true;
+        const failure = await graft.stop(session.id).catch((error: unknown) => error);
+        off();
+        expect(String((failure as Error).message)).toContain('Could not reset index file');
+
+        // §GIT-027: the session is gone (no client keeps a phantom row) and the root claim is
+        // released, but the breadcrumb (and the stash) stay, because they are the only way back.
+        expect(events.at(-1)).toBe('stopped');
+        expect(graft.activeSessions()).toEqual([]);
+        expect(graft.claimedRoots()).toEqual([]);
+        expect(fs.existsSync(breadcrumbPath(f.parent))).toBe(true);
+        expect(stashCount(f.parent)).toBe(1);
 
         // The breadcrumb picks the mess up on the next launch.
-        fs.rmSync(lockPath, { force: true });
         const relaunched = service(createGitService()).graft;
         const orphan = relaunched.detectOrphans([f.parent])[0] as GraftOrphan;
         await relaunched.recoverOrphan(orphan);
@@ -323,21 +377,74 @@ describe.skipIf(!HAS_GIT)('stop rollback', () => {
         expect(fs.existsSync(breadcrumbPath(f.parent))).toBe(false);
     }, 60_000);
 
-    it('emits `stopped` for a restore failure so no client keeps a phantom session', async () => {
-        const f = fixture('restore-fail-event');
+    it('drops a lock-blocked session on a removal path (`dropOnFailure`), leaving the breadcrumb', async () => {
+        const f = fixture('restore-locked-removed');
         const { graft } = service(createGitService());
+        const session = await graft.start(f.association);
+        const lockPath = path.join(f.parent, '.git', 'index.lock');
+        fs.writeFileSync(lockPath, '');
+
+        // Its association is gone, so nothing could ever target a kept session again.
+        await expect(graft.stop(session.id, { dropOnFailure: true })).rejects.toThrow('index.lock');
+        expect(graft.activeSessions()).toEqual([]);
+        expect(graft.claimedRoots()).toEqual([]);
+        expect(fs.existsSync(breadcrumbPath(f.parent))).toBe(true);
+
+        fs.rmSync(lockPath);
+        const relaunched = service(createGitService()).graft;
+        await relaunched.recoverOrphan(relaunched.detectOrphans([f.parent])[0] as GraftOrphan);
+        expectParentUntouched(f);
+    }, 60_000);
+
+    it('shutdown finishes a stop-incomplete session once the lock is gone, or leaves the breadcrumb', async () => {
+        const f = fixture('restore-locked-shutdown');
+        const { graft } = service(createGitService());
+        const session = await graft.start(f.association);
+        const lockPath = path.join(f.parent, '.git', 'index.lock');
+        fs.writeFileSync(lockPath, '');
+        await expect(graft.stop(session.id)).rejects.toThrow('stop incomplete');
+
+        // Still locked at quit: nothing is lost, the breadcrumb is the way back next launch.
+        await graft.shutdown();
+        expect(graft.session(session.id)?.stopIncomplete).toBe(true);
+        expect(fs.existsSync(breadcrumbPath(f.parent))).toBe(true);
+
+        // Unlocked at quit: the quit flush finishes the stop like any other session.
+        fs.rmSync(lockPath);
+        await graft.shutdown();
+        expect(graft.activeSessions()).toEqual([]);
+        expect(fs.existsSync(breadcrumbPath(f.parent))).toBe(false);
+        expectParentUntouched(f);
+    }, 60_000);
+
+    it('a removal-path stop joining a running stop drops what that stop kept', async () => {
+        const f = fixture('restore-locked-joined');
+        const { graft } = service(createGitService());
+        const session = await graft.start(f.association);
+        const lockPath = path.join(f.parent, '.git', 'index.lock');
+        fs.writeFileSync(lockPath, '');
+
         const events: string[] = [];
         const off = graft.updates((event) => {
             events.push(event.kind);
         });
-        const session = await graft.start(f.association);
-        const lockPath = path.join(f.parent, '.git', 'index.lock');
-        fs.writeFileSync(lockPath, '');
-        await graft.stop(session.id).catch(() => undefined);
+        const [user, removal] = await Promise.allSettled([
+            graft.stop(session.id),
+            graft.stop(session.id, { dropOnFailure: true })
+        ]);
         off();
-        expect(events.at(-1)).toBe('stopped');
-
-        fs.rmSync(lockPath, { force: true });
+        // The user's stop ran WITHOUT dropOnFailure, so it kept the session (`updated`); the
+        // removal path that joined it then dropped what it kept (`stopped`). Both see the same
+        // failure.
+        expect(user.status).toBe('rejected');
+        expect(removal.status).toBe('rejected');
+        const userError = (user as PromiseRejectedResult).reason as GraftError;
+        expect(userError.message).toMatch(/^stop incomplete: /);
+        expect((removal as PromiseRejectedResult).reason).toBe(userError);
+        expect(events).toEqual(['updated', 'stopped']);
+        expect(graft.activeSessions()).toEqual([]);
+        expect(fs.existsSync(breadcrumbPath(f.parent))).toBe(true);
+        fs.rmSync(lockPath);
         const relaunched = service(createGitService()).graft;
         await relaunched.recoverOrphan(relaunched.detectOrphans([f.parent])[0] as GraftOrphan);
         expectParentUntouched(f);

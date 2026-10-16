@@ -54,7 +54,9 @@ export interface CreateRepoAssociationWatchOptions {
     readonly store: AssociationStore;
     readonly git: AssociationGit;
     /** Only `stop` is used: the unconditional force-stop on every removal path. */
-    readonly graft: { stop(associationID: string): Promise<void> };
+    readonly graft: {
+        stop(associationID: string, options?: { readonly dropOnFailure?: boolean }): Promise<void>;
+    };
     /** Debounced full-state save, called when a branch label actually changed. */
     readonly persist?: (() => void) | undefined;
     /** 0 disables the backstop (tests); defaults to 30 s. */
@@ -258,7 +260,9 @@ export function createRepoAssociationWatch(
             statuses.delete(associationID);
             // §8.8: unconditional force-stop. Unknown ids are a cheap no-op; a live session
             // whose association just vanished would otherwise keep the root claimed forever.
-            void graft.stop(associationID).catch((error: unknown) => {
+            // `dropOnFailure`: nothing can target this session once its association is gone, so
+            // a stop that cannot finish falls back to the breadcrumb instead of pinning the root.
+            void graft.stop(associationID, { dropOnFailure: true }).catch((error: unknown) => {
                 report(error, `graft force-stop ${associationID}`);
             });
         }

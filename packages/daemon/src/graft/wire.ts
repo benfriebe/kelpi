@@ -20,6 +20,9 @@ export function graftSessionEntry(session: GraftSession): Record<string, unknown
         status: session.status.kind,
         ...(session.status.kind === 'error' ? { error: session.status.message } : {}),
         ...(session.stashRef !== null ? { stash_ref: session.stashRef } : {}),
+        // #342: additive, present only when set, so an `error` that means "the stop could not
+        // finish" is distinguishable from a live session whose sync failed.
+        ...(session.stopIncomplete ? { stop_incomplete: true } : {}),
         ...(session.lastSyncAt !== null
             ? { last_sync: formatWireTimestampFromDate(new Date(session.lastSyncAt)) }
             : {})

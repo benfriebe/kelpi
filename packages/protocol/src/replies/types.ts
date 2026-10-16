@@ -355,6 +355,8 @@ export interface GraftSessionEntry {
     readonly error?: string;
     readonly stash_ref?: string;
     readonly last_sync?: string;
+    /** `true` when a stop failed on the parent's index lock and has not finished yet (#342). */
+    readonly stop_incomplete?: true;
 }
 
 export interface GraftStatusReply extends ReplySuccess {

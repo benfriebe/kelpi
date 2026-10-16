@@ -30,6 +30,7 @@ function session(overrides: Partial<GraftSession> = {}): GraftSession {
         preGraftBranch: 'main',
         preGraftSha: '0'.repeat(40),
         worktreePreGraftSha: null,
+        stopIncomplete: false,
         ...overrides
     };
 }

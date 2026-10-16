@@ -208,7 +208,9 @@ export function createGraftController(options: CreateGraftControllerOptions): Gr
                 await start(target);
                 return;
             }
-            if (existing.status !== 'error') {
+            // A stop that could not finish (#342) is finished, never followed by a new start: the
+            // user asked for graft OFF, and a start would stash the changes the stop just gave back.
+            if (existing.status !== 'error' || existing.stopIncomplete === true) {
                 await stop(target);
                 return;
             }

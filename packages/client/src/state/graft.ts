@@ -34,6 +34,12 @@ export interface GraftSessionView {
     readonly error: string | null;
     /** Epoch ms of the last successful sync, or null. */
     readonly lastSyncAt: number | null;
+    /**
+     * The daemon's `stop_incomplete` (#342): a stop failed because another git process held the
+     * parent's index lock, and nothing syncs any more. Toggling it finishes the stop; it must
+     * never start a new graft the way the `.error` retry does (§GIT-037).
+     */
+    readonly stopIncomplete?: boolean;
 }
 
 export interface GraftOrphanView {
@@ -102,7 +108,9 @@ function withoutSession(state: GraftState, associationID: string): GraftState {
  *     never produced a session, or a stop that threw). It is the user's only record of it.
  *
  * Anything else the engine no longer lists has genuinely stopped — including a stop another
- * window performed, which is exactly how a second client's toggle reaches this one.
+ * window performed, which is exactly how a second client's toggle reaches this one. That goes
+ * for an `error` row marked `stopIncomplete` too (#342): it came from the engine's own list, so
+ * once the engine stops listing it, the stop was finished (by `kelpi graft stop`, or elsewhere).
  */
 export function mergeSessions(
     state: GraftState,
@@ -112,6 +120,7 @@ export function mergeSessions(
     for (const session of incoming) sessions[session.associationID] = session;
     for (const [id, session] of Object.entries(state.sessions)) {
         if (sessions[id] !== undefined) continue;
+        if (session.stopIncomplete === true) continue;
         if (session.status === 'starting' || session.status === 'error') sessions[id] = session;
     }
     return { ...state, sessions };
@@ -136,7 +145,17 @@ export function graftReducer(state: GraftState, action: GraftAction): GraftState
             // well still be running, and removing the row would strand it.
             const existing = state.sessions[action.associationID];
             if (existing === undefined) return state;
-            return withSession(state, { ...existing, status: 'error', error: action.error });
+            // Whether the engine KEPT the session as an unfinished stop (#342) is this failure's
+            // fact, not the row's history: a resumed stop that then hit a real conflict was
+            // dropped by the engine, and its row must not keep offering "click to finish".
+            const { stopIncomplete: _previous, ...rest } = existing;
+            void _previous;
+            return withSession(state, {
+                ...rest,
+                status: 'error',
+                error: action.error,
+                ...(action.error.startsWith('stop incomplete:') ? { stopIncomplete: true } : {})
+            });
         }
         case 'swap-prompt':
             return { ...state, swapPrompt: action.prompt };
@@ -187,7 +206,8 @@ export function parseGraftSession(raw: unknown): GraftSessionView | null {
         branch: text(raw['branch']),
         status,
         error: status === 'error' ? text(raw['error']) : null,
-        lastSyncAt: timestampOf(raw['last_sync'])
+        lastSyncAt: timestampOf(raw['last_sync']),
+        ...(raw['stop_incomplete'] === true ? { stopIncomplete: true } : {})
     };
 }
 
@@ -323,6 +343,11 @@ export function graftTooltip(input: {
             );
         }
         case 'error':
+            if (session.stopIncomplete === true) {
+                // The daemon's message leads with "stop incomplete:"; say it once.
+                const detail = (session.error ?? '').replace(/^stop incomplete: /, '');
+                return `Graft stop didn't finish: ${detail}. Click to finish stopping.`;
+            }
             return `Graft error: ${session.error ?? ''}`;
     }
 }

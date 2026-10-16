@@ -154,6 +154,46 @@ describe('toggle — an `.error` session is a RETRY (§GIT-037)', () => {
     });
 });
 
+describe('toggle: a stop that could not finish (#342)', () => {
+    const incomplete = (): GraftState =>
+        graftReducer(EMPTY_GRAFT_STATE, {
+            kind: 'sessions',
+            sessions: [
+                {
+                    associationID: A1,
+                    worktreePath: '/work/wt',
+                    parentRepoRoot: '/work/repo',
+                    branch: 'feature',
+                    status: 'error',
+                    error: 'stop incomplete: could not write index',
+                    lastSyncAt: null,
+                    stopIncomplete: true
+                }
+            ]
+        });
+
+    it('finishes the stop and never starts a new graft', async () => {
+        const h = harness({}, incomplete());
+        await h.controller.toggle(TARGET);
+        expect(h.calls).toEqual([`stop:${A1}`]);
+        expect(h.state().sessions[A1]).toBeUndefined();
+    });
+
+    it('stops offering "finish" once the engine dropped the session on a real conflict', async () => {
+        const h = harness({ stop: () => ({ ok: false, error: "couldn't restore the parent's stashed changes (stash abc): CONFLICT" }) }, incomplete());
+        await h.controller.toggle(TARGET);
+        expect(h.state().sessions[A1]?.status).toBe('error');
+        expect(h.state().sessions[A1]?.stopIncomplete).toBeUndefined();
+    });
+
+    it('keeps the row when the stop still cannot finish', async () => {
+        const h = harness({ stop: () => ({ ok: false, error: 'stop incomplete: still locked' }) }, incomplete());
+        await h.controller.toggle(TARGET);
+        expect(h.calls).toEqual([`stop:${A1}`]);
+        expect(h.state().sessions[A1]).toMatchObject({ status: 'error', error: 'stop incomplete: still locked', stopIncomplete: true });
+    });
+});
+
 describe('alreadyActive (§GIT-038…§GIT-040)', () => {
     const refused = { ok: false, error: 'another graft is already active for /work/repo', error_kind: 'alreadyActive', parent_repo_root: '/work/repo' };
 

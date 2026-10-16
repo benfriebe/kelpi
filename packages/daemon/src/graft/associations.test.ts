@@ -55,6 +55,7 @@ interface Harness {
     readonly watch: RepoAssociationWatchService;
     readonly headWatch: FakeHeadWatch;
     readonly forceStopped: string[];
+    readonly forceStopOptions: unknown[];
 }
 
 function harness(
@@ -81,6 +82,7 @@ function harness(
         }
     });
     const forceStopped: string[] = [];
+    const forceStopOptions: unknown[] = [];
     let changed: (id: string) => void = () => {};
     const headWatch = fakeHeadWatch((id) => {
         changed(id);
@@ -89,8 +91,9 @@ function harness(
         store,
         git: { ...stubGitService(), ...git },
         graft: {
-            stop: async (associationID) => {
+            stop: async (associationID, stopOptions) => {
                 forceStopped.push(associationID);
+                forceStopOptions.push(stopOptions);
             }
         },
         headWatch,
@@ -100,7 +103,7 @@ function harness(
     changed = (id) => {
         void service.refresh(id);
     };
-    return { store, watch: service, headWatch, forceStopped };
+    return { store, watch: service, headWatch, forceStopped, forceStopOptions };
 }
 
 function addAssociation(store: KelpiStore, id: string, worktreePath: string): void {
@@ -168,6 +171,8 @@ describe('createRepoAssociationWatch', () => {
         expect(h.headWatch.stopped).toEqual([A1]);
         // §8.8: unconditional, so a session the store never knew about is still released.
         expect(h.forceStopped).toEqual([A1]);
+        // #342: and it drops a session whose stop cannot finish; nothing could target it again.
+        expect(h.forceStopOptions).toEqual([{ dropOnFailure: true }]);
         h.watch.dispose();
     });
 

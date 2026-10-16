@@ -1797,8 +1797,9 @@ kelpi graft stop  [--workspace <name-or-uuid>] [--repo <name-or-path>]
 
 Payload `{"command":"graft-status"}`. Reply `{ok, sessions:[...]}`.
 `--json`: the sessions array unwrapped, compact sorted. Default: per session
-`<branch> [<status>] <worktree_path>` (fields fall back `-`); empty =>
-`No active graft sessions.`.
+`<branch> [<status>] <worktree_path>` (fields fall back `-`), with `: <error>` appended for an
+`error` row (a failed sync, or a stop that could not finish and names its stash, #342); empty
+=> `No active graft sessions.`.
 
 ---
 

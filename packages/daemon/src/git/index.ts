@@ -9,6 +9,7 @@ export {
     createGitRunner,
     GitCommandError,
     isGitCommandError,
+    isIndexLockedError,
     longGitTimeout,
     MIN_LONG_GIT_TIMEOUT_MS,
     resolveGitExecutable

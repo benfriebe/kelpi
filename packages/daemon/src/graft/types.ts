@@ -33,6 +33,12 @@ export interface GraftSession {
     readonly preGraftSha: string | null;
     /** Always null for sessions this design creates; set only by legacy breadcrumbs. */
     readonly worktreePreGraftSha: string | null;
+    /**
+     * A stop failed because another git process held the parent's index lock (#342). The
+     * watcher is gone and nothing syncs; the session stays (status `error`, naming the stash)
+     * until a stop finishes the restore.
+     */
+    readonly stopIncomplete: boolean;
 }
 
 export interface GraftOrphan {

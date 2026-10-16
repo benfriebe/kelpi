@@ -184,7 +184,7 @@ const SURFACES = [
             'sidebar-spring', 'sidebar-escape-clears-selection', 'sidebar-remaining',
             'panel-slide-flash', 'status-popover', 'footer-git-stats', 'repo-registry',
             'inspector-open', 'inspector-repo-status', 'inspector-worktree-create',
-            'graft-toggle', 'graft-swap-prompt', 'graft-orphan-banner', 'repo-autodetect',
+            'graft-toggle', 'graft-stop-incomplete', 'graft-swap-prompt', 'graft-orphan-banner', 'repo-autodetect',
             'pane-branch-chain', 'help-overlay', 'titlebar-menu', 'mac-chrome', 'debug-menu',
             'repo-picker-multiselect', 'search-colors', 'last-pane-close-deletes-workspace',
             // `chrome/form-factor.ts` is the phone program's one decision, and the live step is
@@ -217,6 +217,9 @@ const SURFACES = [
         steps: [
             'web-page-click-focus', 'web-focus-handoff', 'terminal-cursor-focus', 'agent-lifecycle',
             'reattach-after-relaunch', 'content-pane-keybindings', 'scratchpad-create',
+            // `app/graft.ts` is the inspector toggle's controller: what a press on each graft
+            // state does, including finishing a stop that could not finish (#342).
+            'graft-toggle', 'graft-stop-incomplete',
             // C5: `app/pane-focus.ts` holds `mayClaimPaneCaret`, the one seam that decides whether
             // the client may move the caret onto a pane surface without being asked - and on a
             // phone that decision is whether a software keyboard comes up. The step is the phone

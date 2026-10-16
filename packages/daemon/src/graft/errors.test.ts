@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { GitCommandError } from '../git/index.js';
-import { describeSyncError, errorText, GraftError, graftErrorKind, isGraftError } from './errors.js';
+import { describeSyncError, errorText, GraftError, graftErrorKind, isGraftError, shellQuote } from './errors.js';
 
 function gitFailure(stderr: string): GitCommandError {
     return new GitCommandError({ command: 'git read-tree', exitCode: 128, stderr, cwd: '/repo' });
@@ -76,5 +76,31 @@ describe('describeSyncError', () => {
             'Sync failed: repository is busy: merge in progress'
         );
         expect(describeSyncError(gitFailure(''))).toContain('Sync failed:');
+    });
+});
+
+describe('GraftError.stopIncomplete (#342)', () => {
+    it('keeps the kind and stash, one line, no doubled full stop, and a command that pastes as is', () => {
+        const pop = GraftError.stashPopConflict('c7368d8', 'error: could not write index\nThe stash entry is kept.');
+        const kept = GraftError.stopIncomplete(pop, '/Users/j/Code/Fox Code');
+        expect(kept.kind).toBe('stashPopConflict');
+        expect(kept.stashRef).toBe('c7368d8');
+        expect(kept.message).toContain("(stash c7368d8): error: could not write index. Another git process");
+        expect(kept.message).toContain("`kelpi graft stop --repo '/Users/j/Code/Fox Code'`");
+        expect(kept.message).not.toContain('\n');
+
+        const reset = GraftError.stopIncomplete(
+            gitFailure("fatal: Unable to create '/r/.git/index.lock': File exists.\n\nAnother git process seems to be running"),
+            '/r'
+        );
+        expect(reset.kind).toBe('unknown');
+        expect(reset.message).toMatch(/^stop incomplete: fatal: Unable to create '\/r\/.git\/index.lock': File exists\. Another/);
+        expect(reset.message).toContain('`kelpi graft stop --repo /r`');
+    });
+
+    it('shell-quotes only what needs it', () => {
+        expect(shellQuote('/Users/ben/code/kelpi')).toBe('/Users/ben/code/kelpi');
+        expect(shellQuote('/a b')).toBe("'/a b'");
+        expect(shellQuote("/it's")).toBe("'/it'\\''s'");
     });
 });

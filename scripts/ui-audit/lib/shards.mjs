@@ -237,6 +237,7 @@ export const STEP_MANIFEST = [
     { id: 'help-overlay', lane: 'spine', chain: null, cost: 1.6, reason: 'opens and closes the overlay; held in the spine: it did not reproduce its baseline result once the accumulated run was taken away (verify-manifest.mjs and/or a --shards 2 run diffed with compare-runs.mjs)' },
     { id: 'titlebar-menu', lane: 'free', chain: null, cost: 3.2, reason: 'opens the ••• menu and reads it' },
     { id: 'graft-toggle', lane: 'free', chain: null, cost: 5.5, reason: 'documented self-provisioning: "they exist so the four flows below can each run alone under --only"' },
+    { id: 'graft-stop-incomplete', lane: 'free', chain: null, cost: 9, reason: 'documented self-provisioning (graft helper block)' },
     { id: 'graft-swap-prompt', lane: 'free', chain: null, cost: 5.2, reason: 'documented self-provisioning (graft helper block)' },
     { id: 'graft-orphan-banner', lane: 'free', chain: null, cost: 9.3, reason: 'documented self-provisioning (graft helper block)' },
     { id: 'repo-autodetect', lane: 'spine', chain: 'firstPane', cost: 8.2, reason: 'reads state.firstPane' },

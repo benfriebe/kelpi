@@ -1720,7 +1720,8 @@ must still show up so "already active" rejections are explainable):
     "status": "watching",            // starting|watching|syncing|error
     "error": "…",                    // only when status == "error"
     "stash_ref": "stash@{0}",        // optional
-    "last_sync": "2026-08-18T02:00:00Z"  // optional, ISO 8601
+    "last_sync": "2026-08-18T02:00:00Z",  // optional, ISO 8601
+    "stop_incomplete": true          // only when a stop failed on the index lock (#342)
   }
 ]}
 ```

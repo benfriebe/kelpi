@@ -26,6 +26,13 @@ export const MIN_LONG_GIT_TIMEOUT_MS = 120_000;
 /** 64 MiB: a `git diff` of a large tree must not be truncated into a parse error. */
 const DEFAULT_MAX_BUFFER = 64 * 1024 * 1024;
 
+/**
+ * git's refusal to take `index.lock` because another process holds it. Every command that
+ * takes the lock up front fails this way BEFORE touching anything, which is what makes it safe
+ * to retry (issue #342).
+ */
+const INDEX_LOCK_HELD = /index\.lock': File exists/;
+
 export class GitCommandError extends Error {
     readonly kind = 'commandFailed' as const;
     /** `"git " + args.join(" ")` — echoed in diagnostics, never in the CLI reply. */
@@ -34,12 +41,19 @@ export class GitCommandError extends Error {
     /** Trimmed; used verbatim by `worktreeErrorMessage`. */
     readonly stderr: string;
     readonly cwd: string;
+    /**
+     * Another git process held the index lock and this command changed nothing, so running it
+     * again once the lock is free is safe. Derived from stderr unless the caller knows better:
+     * `stashPopRef` decides it for itself, because a pop can hit the lock half way through.
+     */
+    readonly indexLocked: boolean;
 
     constructor(input: {
         readonly command: string;
         readonly exitCode: number;
         readonly stderr: string;
         readonly cwd: string;
+        readonly indexLocked?: boolean | undefined;
     }) {
         super(
             input.stderr.length > 0
@@ -51,7 +65,13 @@ export class GitCommandError extends Error {
         this.exitCode = input.exitCode;
         this.stderr = input.stderr;
         this.cwd = input.cwd;
+        this.indexLocked = input.indexLocked ?? INDEX_LOCK_HELD.test(input.stderr);
     }
+}
+
+/** A git failure that changed nothing because another process held the index lock. */
+export function isIndexLockedError(value: unknown): value is GitCommandError {
+    return value instanceof GitCommandError && value.indexLocked;
 }
 
 export function isGitCommandError(value: unknown): value is GitCommandError {

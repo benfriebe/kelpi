@@ -95,10 +95,41 @@ export class GraftError extends Error {
         );
     }
 
+    /**
+     * Issue #342: a stop that could not finish because another git process held the parent's
+     * index lock. Same kind and details as the failure underneath (a pop stays
+     * `stashPopConflict`, with its stash SHA), first line only, plus the way out.
+     */
+    static stopIncomplete(failure: unknown, parentRepoRoot: string): GraftError {
+        const base = GraftError.unknown(failure);
+        // git's own first line often ends in a full stop already.
+        const firstLine = (base.message.split('\n')[0]?.trim() ?? base.message).replace(/\.$/, '');
+        return new GraftError(
+            base.kind,
+            `stop incomplete: ${firstLine}. Another git process held the index lock, so the ` +
+                `stop was not finished; run \`kelpi graft stop --repo ${shellQuote(parentRepoRoot)}\` ` +
+                'to finish it (if no git process is running, a crashed one left the lock: remove ' +
+                "the parent's .git/index.lock first)",
+            {
+                ...(base.parentRepoRoot !== undefined ? { parentRepoRoot: base.parentRepoRoot } : {}),
+                ...(base.worktreePath !== undefined ? { worktreePath: base.worktreePath } : {}),
+                ...(base.state !== undefined ? { state: base.state } : {}),
+                ...(base.stashRef !== undefined ? { stashRef: base.stashRef } : {}),
+                ...(base.underlying !== undefined ? { underlying: base.underlying } : {})
+            }
+        );
+    }
+
     static unknown(error: unknown): GraftError {
         if (error instanceof GraftError) return error;
         return new GraftError('unknown', errorText(error));
     }
+}
+
+/** A path as a shell word, so a printed command can be pasted as is (spaces, quotes). */
+export function shellQuote(value: string): string {
+    if (/^[A-Za-z0-9_@%+=:,./-]+$/.test(value)) return value;
+    return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
 export function isGraftError(value: unknown): value is GraftError {

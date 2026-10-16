@@ -16,6 +16,8 @@ import path from 'node:path';
 
 import {
     createGitRunner,
+    GitCommandError,
+    isGitCommandError,
     longGitTimeout,
     type CreateGitRunnerOptions,
     type GitRunner
@@ -36,6 +38,15 @@ import {
     type RepoState,
     type WorktreeInfo
 } from './status.js';
+
+/** Background reads run with this env (see `readGitNoLock`). */
+const NO_OPTIONAL_LOCKS: Readonly<Record<string, string>> = { GIT_OPTIONAL_LOCKS: '0' };
+
+/** Stash's first step failing on a held lock, before it applies anything (#342). */
+const STASH_INDEX_UNWRITABLE = /could not write index/;
+
+/** What a stash pop could change, compared before and after a failed one. */
+const STASH_POP_SNAPSHOT: readonly string[] = ['status', '--porcelain', '--untracked-files=all'];
 
 /** `git rev-parse --abbrev-ref HEAD` prints this literal when HEAD is detached. */
 export const DETACHED_HEAD = 'HEAD';
@@ -123,6 +134,8 @@ export interface GitService {
     /**
      * Pop the stash whose SHA is `stashRef`. A ref that is no longer in `git stash list`
      * **succeeds silently** (the user dropped it; the rest of the stop sequence must run).
+     * A failure is `indexLocked` only when another process held the index lock AND the pop
+     * provably applied nothing, so a caller may run it again (issue #342).
      */
     stashPopRef(repoPath: string, stashRef: string): Promise<void>;
     /**
@@ -239,6 +252,39 @@ export function createGitService(options: CreateGitServiceOptions = {}): GitServ
     const readGit = async (args: readonly string[], cwd: string): Promise<string> =>
         run(args, { cwd, ...(short !== undefined ? { timeoutMs: short } : {}) });
 
+    /**
+     * Read-only commands Kelpi runs in the background (sidebar status, the inspector diff).
+     * `status` and `diff` take `index.lock` opportunistically to write back refreshed stat
+     * data; with optional locks off they never do, so Kelpi's own refresh can never be the
+     * process that makes a user's git, or a graft stop's stash pop, fail on the lock (#342).
+     */
+    const readGitNoLock = async (
+        args: readonly string[],
+        cwd: string,
+        signal?: AbortSignal
+    ): Promise<string> =>
+        run(args, {
+            cwd,
+            env: NO_OPTIONAL_LOCKS,
+            ...(short !== undefined ? { timeoutMs: short } : {}),
+            ...(signal !== undefined ? { signal } : {})
+        });
+
+    /**
+     * Can git create `index.lock` next to this checkout's index at all? A proxy for "the
+     * failure was a lock someone else holds": it rules out a read-only git dir, not a full disk.
+     */
+    const indexDirectoryWritable = async (repoPath: string): Promise<boolean> => {
+        try {
+            const raw = (await readGitNoLock(['rev-parse', '--git-path', 'index'], repoPath)).trim();
+            const indexPath = path.isAbsolute(raw) ? raw : path.join(repoPath, raw);
+            fs.accessSync(path.dirname(indexPath), fs.constants.W_OK);
+            return true;
+        } catch {
+            return false;
+        }
+    };
+
     const longGit = async (args: readonly string[], cwd: string): Promise<string> =>
         run(args, { cwd, ...(long !== undefined ? { timeoutMs: long } : {}) });
 
@@ -261,13 +307,7 @@ export function createGitService(options: CreateGitServiceOptions = {}): GitServ
             // §CONT-107: a superseded diff is KILLED, not merely ignored. `git diff` over a big
             // tree is the one read here that can outlive the request that asked for it, so the
             // caller's signal rides all the way down to the child process.
-            const signal = diffOptions?.signal;
-            if (signal === undefined) return readGit(args, repoPath);
-            return run(args, {
-                cwd: repoPath,
-                ...(short !== undefined ? { timeoutMs: short } : {}),
-                signal
-            });
+            return readGitNoLock(args, repoPath, diffOptions?.signal);
         },
 
         async getRemoteURL(repoPath) {
@@ -348,7 +388,7 @@ export function createGitService(options: CreateGitServiceOptions = {}): GitServ
         // ── graft + sidebar primitives ───────────────────────────────────────────────
 
         async getStatus(repoPath) {
-            const porcelain = await readGit(['status', '--porcelain'], repoPath);
+            const porcelain = await readGitNoLock(['status', '--porcelain'], repoPath);
             const lines = porcelainLines(porcelain);
             if (lines.length === 0) return { kind: 'clean' };
             let additions = 0;
@@ -356,7 +396,7 @@ export function createGitService(options: CreateGitServiceOptions = {}): GitServ
             try {
                 // Against HEAD so STAGED edits count too; a repo without a HEAD throws here
                 // and the counts stay 0 (the file count is still right).
-                const shortstat = await readGit(['diff', '--shortstat', 'HEAD'], repoPath);
+                const shortstat = await readGitNoLock(['diff', '--shortstat', 'HEAD'], repoPath);
                 const counts = parseShortstat(shortstat);
                 additions = counts.additions;
                 deletions = counts.deletions;
@@ -403,7 +443,38 @@ export function createGitService(options: CreateGitServiceOptions = {}): GitServ
             // Dropped by the user between start and stop: nothing to pop, and refusing here
             // would strand the rest of the stop sequence.
             if (index < 0) return;
-            await readGit(['stash', 'pop', `stash@{${String(index)}}`], repoPath);
+            // A snapshot that cannot be taken only costs the retry, never the pop itself.
+            const snapshot = async (): Promise<string | null> => {
+                try {
+                    return await readGitNoLock(STASH_POP_SNAPSHOT, repoPath);
+                } catch {
+                    return null;
+                }
+            };
+            const before = await snapshot();
+            try {
+                await readGit(['stash', 'pop', `stash@{${String(index)}}`], repoPath);
+            } catch (error) {
+                if (!isGitCommandError(error)) throw error;
+                // `could not write index` is stash's FIRST step (refreshing the index) failing on
+                // a lock someone else holds: nothing has been applied and the stash is kept.
+                // The same lock hit later, mid-apply, says something else. The unchanged tree
+                // is the proof, so a pop that touched anything is never called retryable. An
+                // index directory git cannot write prints the same words but is no lock, and
+                // no retry fixes it.
+                let untouched = false;
+                if (before !== null && STASH_INDEX_UNWRITABLE.test(error.stderr)) {
+                    untouched =
+                        (await snapshot()) === before && (await indexDirectoryWritable(repoPath));
+                }
+                throw new GitCommandError({
+                    command: error.command,
+                    exitCode: error.exitCode,
+                    stderr: error.stderr,
+                    cwd: error.cwd,
+                    indexLocked: untouched
+                });
+            }
         },
 
         async writeTreeForWorktree(worktreePath) {

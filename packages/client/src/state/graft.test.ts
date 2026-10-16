@@ -118,6 +118,12 @@ describe('mergeSessions — the broadcast is authoritative, except for what it c
         expect(mergeSessions(state, []).sessions[A1]?.error).toBe('boom');
     });
 
+    it('drops an unfinished-stop row the engine no longer lists: the stop was finished elsewhere (#342)', () => {
+        const state = withSession(watching(A1, { status: 'error', error: 'stop incomplete: locked', stopIncomplete: true }));
+        expect(mergeSessions(state, [state.sessions[A1] as GraftSessionView]).sessions[A1]?.stopIncomplete).toBe(true);
+        expect(mergeSessions(state, []).sessions[A1]).toBeUndefined();
+    });
+
     it('drops a live session the engine no longer lists (another window stopped it)', () => {
         expect(mergeSessions(withSession(watching()), []).sessions[A1]).toBeUndefined();
     });
@@ -142,6 +148,13 @@ describe('wire parsing', () => {
         });
         expect(session).toMatchObject({ status: 'error', error: 'Sync blocked' });
         expect(session?.lastSyncAt).toBe(Date.parse('2026-08-20T10:00:00Z'));
+    });
+
+    it('reads `stop_incomplete` only when the daemon set it (#342)', () => {
+        expect(
+            parseGraftSession({ association_id: A1, status: 'error', error: 'x', stop_incomplete: true })?.stopIncomplete
+        ).toBe(true);
+        expect(parseGraftSession({ association_id: A1, status: 'error', error: 'x' })).not.toHaveProperty('stopIncomplete');
     });
 
     it('treats an unknown status as watching and drops an entry with no id', () => {
@@ -186,6 +199,12 @@ describe('§GIT-048 tooltips', () => {
         expect(
             graftTooltip({ session: watching(A1, { status: 'error', error: 'boom' }), branch: 'feature' })
         ).toBe('Graft error: boom');
+        expect(
+            graftTooltip({
+                session: watching(A1, { status: 'error', error: 'stop incomplete: locked', stopIncomplete: true }),
+                branch: 'feature'
+            })
+        ).toBe("Graft stop didn't finish: locked. Click to finish stopping.");
     });
 
     it('reads the last sync as a relative time, and says "Watching" before the first one', () => {

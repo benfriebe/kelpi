@@ -18283,6 +18283,114 @@ function buildFlows(ctx) {
             }
         },
         {
+            id: 'graft-stop-incomplete',
+            expect:
+                'A stop that meets another git process\u2019s index lock does not report off (#342). With `.git/index.lock` held in the parent, pressing the toggle to stop leaves the row in a red error state whose tooltip says the stop did not finish, `graft status` still lists the session as stop-incomplete, and the parent still holds the graft (nothing was lost). Once the lock is gone, ONE press finishes the stop: the mirrored file goes, the parent\u2019s uncommitted edit is back, the breadcrumb is deleted, and no new graft starts.',
+            needsEyes: true,
+            async run(recorder) {
+                const wt = graftWorktree();
+                await ensureInspector();
+                const associationID = await ensureAssociation(recorder, wt);
+                if (associationID === null) return;
+                const toggle = `[data-testid="graft-toggle-${associationID}"]`;
+                const dot = `[data-testid="graft-dot-${associationID}"]`;
+                const mirrored = path.join(repo, 'GRAFT-MARKER.md');
+                const lockPath = path.join(repo, '.git', 'index.lock');
+
+                await page.click(toggle);
+                await page.waitFor(`document.querySelector('${dot}')?.getAttribute('data-status') === 'watching'`, {
+                    timeoutMs: 30_000,
+                    label: 'the session to settle into watching'
+                });
+                recorder.check('the graft is running: the parent gained the worktree\u2019s file', fs.existsSync(mirrored), mirrored);
+
+                // Another git process holds the parent's index lock for longer than the daemon retries.
+                fs.writeFileSync(lockPath, '');
+                try {
+                    await page.click(toggle);
+                    const errored = await page
+                        .waitFor(`document.querySelector('${dot}')?.getAttribute('data-status') === 'error'`, {
+                            timeoutMs: 30_000,
+                            label: 'the stop to come back unfinished'
+                        })
+                        .then(() => true, () => false);
+                    await sleep(400);
+                    await recorder.shot(page, 'stop-incomplete');
+                    const tooltip = String(await page.eval(`document.querySelector('${toggle}')?.getAttribute('title') ?? ''`));
+                    recorder.check('the row turns red instead of reporting the graft off', errored === true);
+                    recorder.check(
+                        'its tooltip says the stop did not finish and how to finish it',
+                        tooltip.startsWith("Graft stop didn't finish:") && tooltip.endsWith('Click to finish stopping.'),
+                        tooltip.slice(0, 200)
+                    );
+                    const status = await cli.run(['graft', 'status', '--json']);
+                    let listed = [];
+                    try {
+                        listed = JSON.parse(String(status.stdout));
+                    } catch {
+                        listed = [];
+                    }
+                    recorder.note(`graft status --json while locked: ${String(status.stdout).trim().slice(0, 400)}`);
+                    recorder.check(
+                        '`graft status` still lists the session, marked stop_incomplete',
+                        Array.isArray(listed) && listed.length === 1 && listed[0]?.stop_incomplete === true && listed[0]?.status === 'error',
+                        String(status.stdout).trim().slice(0, 200)
+                    );
+                    recorder.check('nothing was lost: the parent still holds the graft and its breadcrumb', fs.existsSync(mirrored) && fs.existsSync(breadcrumbPath()));
+                } finally {
+                    fs.rmSync(lockPath, { force: true });
+                }
+
+                // The other process let go: one press finishes the stop, and does NOT graft again.
+                await page.click(toggle);
+                const cleared = await page
+                    .waitFor(`document.querySelector('${dot}') === null`, { timeoutMs: 30_000, label: 'the stop to finish' })
+                    .then(() => true, () => false);
+                await sleep(2_000);
+                await recorder.shot(page, 'finished');
+                recorder.check('one press finishes the stop', cleared === true);
+                recorder.check('and no new graft started behind it', (await page.eval(`document.querySelector('${dot}') === null`)) === true);
+                const after = await cli.run(['graft', 'status', '--json']);
+                recorder.check('`graft status` is empty', String(after.stdout).trim() === '[]', String(after.stdout).trim().slice(0, 200));
+                recorder.check('the mirrored file left the parent', !fs.existsSync(mirrored));
+                recorder.check('the breadcrumb was deleted', !fs.existsSync(breadcrumbPath()));
+                recorder.check(
+                    'the parent\u2019s own uncommitted edit came back out of the stash',
+                    fs.readFileSync(path.join(repo, 'README.md'), 'utf8').includes('Edited line.'),
+                    fs.readFileSync(path.join(repo, 'README.md'), 'utf8').trim().slice(0, 80)
+                );
+
+                // Round two: the same unfinished stop, finished the way its message says, from
+                // the CLI. The red row must clear by itself from the broadcast, with no press.
+                await page.click(toggle);
+                await page.waitFor(`document.querySelector('${dot}')?.getAttribute('data-status') === 'watching'`, {
+                    timeoutMs: 30_000,
+                    label: 'the second graft to settle into watching'
+                });
+                fs.writeFileSync(lockPath, '');
+                try {
+                    await page.click(toggle);
+                    await page.waitFor(`document.querySelector('${dot}')?.getAttribute('data-status') === 'error'`, {
+                        timeoutMs: 30_000,
+                        label: 'the second stop to come back unfinished'
+                    });
+                } finally {
+                    fs.rmSync(lockPath, { force: true });
+                }
+                const cliStop = await cli.run(['graft', 'stop', '--repo', repo]);
+                recorder.note(`kelpi graft stop --repo <parent>: code=${String(cliStop.code)} ${String(cliStop.stdout).trim()} ${String(cliStop.stderr).trim()}`.trim());
+                const clearedByCli = await page
+                    .waitFor(`document.querySelector('${dot}') === null`, { timeoutMs: 25_000, label: 'the red row to clear from the broadcast' })
+                    .then(() => true, () => false);
+                recorder.check('finishing it from the CLI, as the message says, clears the red row with no press', cliStop.code === 0 && clearedByCli === true, `stop code ${String(cliStop.code)}`);
+                recorder.check(
+                    'and the parent is whole again',
+                    !fs.existsSync(mirrored) && !fs.existsSync(breadcrumbPath()) && fs.readFileSync(path.join(repo, 'README.md'), 'utf8').includes('Edited line.')
+                );
+                recorder.eyes('does the red stop-incomplete state read as "not finished, press again" rather than as a broken graft?');
+            }
+        },
+        {
             id: 'graft-swap-prompt',
             expect:
                 'Only one worktree may graft into a parent repo at a time. Toggling a second one raises the "Already grafting into <repo>" confirmation naming both branches: "Keep existing" leaves the first running, and "Stop existing & swap" stops it and starts the second — which the parent’s working tree then proves by holding the SECOND worktree’s file (§GIT-038…§GIT-042, §GIT-050 / §WS-144).',

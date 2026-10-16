@@ -10,6 +10,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+    CORNER_ABSENT,
     CORNER_LAYER_VERSION,
     CORNER_MARGIN_PX,
     cornerCallScript,
@@ -61,8 +62,21 @@ function fakePage(version: unknown = CORNER_LAYER_VERSION) {
     const frames: Record<string, unknown>[] = [];
     let waiting: ((frame: Record<string, unknown>) => void) | null = null;
     let fail: Error | null = null;
+    let absent = false;
     return {
         calls,
+        /** The window reloaded: calls land in a document whose bridge is not there (yet). */
+        reloadWithoutBridge(): void {
+            absent = true;
+            if (waiting !== null) {
+                const resolve = waiting;
+                waiting = null;
+                resolve(CORNER_ABSENT as unknown as Record<string, unknown>);
+            }
+        },
+        bridgeBack(): void {
+            absent = false;
+        },
         push(next: Record<string, unknown>): void {
             if (waiting !== null) {
                 const resolve = waiting;
@@ -76,7 +90,8 @@ function fakePage(version: unknown = CORNER_LAYER_VERSION) {
         run(script: string): Promise<unknown> {
             calls.push(script);
             if (fail !== null) return Promise.reject(fail);
-            if (script.includes('.version')) return Promise.resolve(version);
+            if (script.includes('.version')) return Promise.resolve(absent ? null : version);
+            if (absent) return Promise.resolve(CORNER_ABSENT);
             if (script.includes('"next"')) {
                 const queued = frames.shift();
                 if (queued !== undefined) return Promise.resolve(queued);
@@ -108,7 +123,7 @@ function fakeOverlay(options: { version?: unknown; load?: boolean; renderFails?:
             if (script.includes('.version')) return Promise.resolve('version' in options ? options.version : CORNER_LAYER_VERSION);
             if (script.includes('"next"')) return click.promise;
             if (script.includes('"render"')) {
-                events.push(script.endsWith('["render"](null)') ? 'render empty' : 'render');
+                events.push(script.includes('["render"](null)') ? 'render empty' : 'render');
                 return options.renderFails === true ? Promise.reject(new Error('render threw')) : Promise.resolve(true);
             }
             return Promise.resolve(null);
@@ -217,10 +232,22 @@ describe('cornerOverlayURL', () => {
 });
 
 describe('cornerCallScript', () => {
+    const run = (script: string): unknown => (0, eval)(script) as unknown;
+
     it('embeds every argument as JSON', () => {
-        expect(cornerCallScript('__g', 'act', { kind: 'dismiss', id: '");alert(1);("' })).toBe(
-            'globalThis["__g"]["act"]({"kind":"dismiss","id":"\\");alert(1);(\\""})'
-        );
+        const received: unknown[] = [];
+        const target = globalThis as unknown as Record<string, unknown>;
+        target['__g'] = { act: (action: unknown) => received.push(action) };
+        try {
+            run(cornerCallScript('__g', 'act', { kind: 'dismiss', id: '");alert(1);("' }));
+        } finally {
+            delete target['__g'];
+        }
+        expect(received).toEqual([{ kind: 'dismiss', id: '");alert(1);("' }]);
+    });
+
+    it('answers CORNER_ABSENT instead of throwing in a document without the global', () => {
+        expect(run(cornerCallScript('__g', 'next', 3))).toBe(CORNER_ABSENT);
     });
 });
 
@@ -333,7 +360,7 @@ describe('createCornerLayer', () => {
         overlay.click({ kind: 'nonsense' });
         await settle();
         const acts = page.calls.filter((call) => call.includes('"act"'));
-        expect(acts).toEqual(['globalThis["__kelpiCorner"]["act"]({"kind":"dismiss","id":"t1"})']);
+        expect(acts).toEqual([cornerCallScript('__kelpiCorner', 'act', { kind: 'dismiss', id: 't1' })]);
     });
 
     it('when the overlay dies: the page draws again, and a fresh overlay is loaded', async () => {
@@ -364,6 +391,27 @@ describe('createCornerLayer', () => {
         }
         expect(layer.state).toBe('off');
         expect(overlay.events.filter((event) => event.startsWith('load'))).toHaveLength(4);
+    });
+
+    it('a call that lands in a reloading document without the bridge gives the stack back', async () => {
+        const page = fakePage();
+        const overlay = fakeOverlay();
+        const { layer, lines } = layerWith(page, overlay);
+        layer.pageLoaded('http://127.0.0.1:4000/');
+        await settle();
+        page.push(frame(1, { attached: true }));
+        await settle();
+        page.reloadWithoutBridge();
+        await settle();
+        expect(layer.state).toBe('off');
+        expect(overlay.events.at(-1)).toBe('hide');
+        expect(lines.some((line) => line.includes('no corner bridge'))).toBe(true);
+
+        page.bridgeBack();
+        layer.pageGone('navigation');
+        layer.pageLoaded('http://127.0.0.1:4000/');
+        await settle();
+        expect(layer.state).toBe('drawing');
     });
 
     it('a page that goes stops the loops; the next load starts them again', async () => {

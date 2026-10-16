@@ -36,6 +36,8 @@ export const CORNER_OVERLAY_GLOBAL = '__kelpiCornerOverlay';
 export const CORNER_LAYER_VERSION = 1;
 /** Served by the daemon beside the client's `index.html`. */
 export const CORNER_OVERLAY_PATH = '/overlay.html';
+/** What a call into a document without the global answers (`cornerCallScript`). */
+export const CORNER_ABSENT = '__kelpiCorner:absent';
 
 /**
  * See-through CSS px kept around the stack, so the cards' drop shadow is not cut off at the view's
@@ -166,9 +168,15 @@ export function cornerProbeScript(global: string): string {
     return `(() => { const g = globalThis[${JSON.stringify(global)}]; return typeof g === 'object' && g !== null ? g.version : null; })()`;
 }
 
-/** `globalThis[global][method](...args)`, with every argument embedded as JSON. */
+/**
+ * `globalThis[global][method](...args)`, with every argument embedded as JSON, or `CORNER_ABSENT`
+ * when the document has no such global. A call sent while the window reloads runs in the NEW
+ * document, before its bridge is installed (or in one that never installs it), and a throw there
+ * is an uncaught error in the user's page.
+ */
 export function cornerCallScript(global: string, method: string, ...args: readonly unknown[]): string {
-    return `globalThis[${JSON.stringify(global)}][${JSON.stringify(method)}](${args.map((arg) => JSON.stringify(arg)).join(', ')})`;
+    const call = `g[${JSON.stringify(method)}](${args.map((arg) => JSON.stringify(arg)).join(', ')})`;
+    return `(() => { const g = globalThis[${JSON.stringify(global)}]; return typeof g === 'object' && g !== null ? ${call} : ${JSON.stringify(CORNER_ABSENT)}; })()`;
 }
 
 /** The overlay view, as the controller drives it (`./corner-layer-view.ts`). */
@@ -235,6 +243,16 @@ export function createCornerLayer(seams: CornerLayerSeams): CornerLayer {
     /** Renders are serialized: a frame never draws over one that has not finished. */
     let queue: Promise<unknown> = Promise.resolve();
 
+    /** A bridge call. A document without the bridge rejects, as a page that cannot answer does. */
+    const present = (value: unknown): unknown => {
+        if (value === CORNER_ABSENT) throw new Error('the document has no corner bridge');
+        return value;
+    };
+    const callPage = (method: string, ...args: readonly unknown[]): Promise<unknown> =>
+        seams.runInPage(cornerCallScript(CORNER_PAGE_GLOBAL, method, ...args)).then(present);
+    const callOverlay = (method: string, ...args: readonly unknown[]): Promise<unknown> =>
+        seams.overlay.run(cornerCallScript(CORNER_OVERLAY_GLOBAL, method, ...args)).then(present);
+
     const enqueue = (task: () => Promise<boolean>): Promise<boolean> => {
         const run = queue.then(task, task);
         queue = run.catch(() => undefined);
@@ -269,23 +287,23 @@ export function createCornerLayer(seams: CornerLayerSeams): CornerLayer {
             if (placement === null) {
                 if (shown !== null) {
                     // Painted empty while still on screen, so the next show cannot flash this card.
-                    await timed(seams.overlay.run(cornerCallScript(CORNER_OVERLAY_GLOBAL, 'render', null)), renderMs);
+                    await timed(callOverlay('render', null), renderMs);
                     if (gen === generation) hideNow();
                 }
                 return true;
             }
-            const draw = cornerCallScript(CORNER_OVERLAY_GLOBAL, 'render', { frame: frame.raw, inset: placement.inset });
+            const draw = (): Promise<unknown> => callOverlay('render', { frame: frame.raw, inset: placement.inset });
             if (shown === null) {
                 // A hidden view paints nothing, so its frame would never land: show it first. It
                 // was emptied before it was hidden, so what appears for that instant is nothing.
                 seams.overlay.place(placement.bounds, placement.zoom);
                 shown = placement.bounds;
-                await timed(seams.overlay.run(draw), renderMs);
+                await timed(draw(), renderMs);
             } else {
                 // On screen: draw first and move after, so the old box never shows the new frame
                 // at the wrong offset. The cards are anchored bottom-right, so a box that has not
                 // grown yet only clips the newest card for that instant.
-                await timed(seams.overlay.run(draw), renderMs);
+                await timed(draw(), renderMs);
                 if (gen !== generation) return false;
                 seams.overlay.place(placement.bounds, placement.zoom);
                 shown = placement.bounds;
@@ -303,7 +321,7 @@ export function createCornerLayer(seams: CornerLayerSeams): CornerLayer {
         stop();
         state = 'off';
         seams.warn(`corner layer: off, the page draws its own toasts (${why})`);
-        void seams.runInPage(cornerCallScript(CORNER_PAGE_GLOBAL, 'detach')).catch(() => undefined);
+        void callPage('detach').catch(() => undefined);
     };
 
     const followFrames = async (gen: number): Promise<void> => {
@@ -311,9 +329,10 @@ export function createCornerLayer(seams: CornerLayerSeams): CornerLayer {
         while (gen === generation) {
             let raw: unknown;
             try {
-                raw = await seams.runInPage(cornerCallScript(CORNER_PAGE_GLOBAL, 'next', after));
+                raw = await callPage('next', after);
             } catch (error) {
-                // A page that is navigating or gone rejects its pending calls; `pageGone` or the
+                // A page that is navigating or gone rejects its pending calls, and a call that
+                // lands in the next document before its bridge does is absent; `pageGone` or the
                 // next `pageLoaded` is already on its way and owns what happens next.
                 if (gen === generation) giveBack(gen, `the page stopped answering: ${message(error)}`);
                 return;
@@ -332,7 +351,7 @@ export function createCornerLayer(seams: CornerLayerSeams): CornerLayer {
                 return;
             }
             if (!frame.attached) {
-                await seams.runInPage(cornerCallScript(CORNER_PAGE_GLOBAL, 'attach')).catch(() => undefined);
+                await callPage('attach').catch(() => undefined);
             }
         }
     };
@@ -341,14 +360,14 @@ export function createCornerLayer(seams: CornerLayerSeams): CornerLayer {
         while (gen === generation) {
             let raw: unknown;
             try {
-                raw = await seams.overlay.run(cornerCallScript(CORNER_OVERLAY_GLOBAL, 'next'));
+                raw = await callOverlay('next');
             } catch {
                 return;
             }
             if (gen !== generation) return;
             const action = parseCornerAction(raw);
             if (action === null) continue;
-            await seams.runInPage(cornerCallScript(CORNER_PAGE_GLOBAL, 'act', action)).catch((error: unknown) => {
+            await callPage('act', action).catch((error: unknown) => {
                 seams.warn(`corner layer: a click on the layer did not reach the page (${message(error)})`);
             });
         }
@@ -411,7 +430,7 @@ export function createCornerLayer(seams: CornerLayerSeams): CornerLayer {
             const url = pageURL;
             if (url === null) return;
             // The page is still hiding its own stack behind a layer that is no longer there.
-            void seams.runInPage(cornerCallScript(CORNER_PAGE_GLOBAL, 'detach')).catch(() => undefined);
+            void callPage('detach').catch(() => undefined);
             if (restarts >= CORNER_OVERLAY_RESTARTS) {
                 state = 'off';
                 seams.warn(`corner layer: off, the overlay died ${String(restarts + 1)} times (${reason})`);

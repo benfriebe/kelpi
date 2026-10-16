@@ -73,6 +73,11 @@ export interface WebPaneHostOptions {
      * (`?shellWindow=`). Without it the host receives geometry but can never own any of it.
      */
     readonly windowID?: string | undefined;
+    /**
+     * A page view was just added to the window, which puts it on top of every other child. The
+     * corner layer (`../corner-layer-view.ts`) has to stay above the pages, so it re-raises here.
+     */
+    readonly onViewAttached?: (() => void) | undefined;
 }
 
 export interface WebPaneHost {
@@ -139,6 +144,10 @@ export interface WebPaneHost {
      * other route (memory pressure, a GPU restart) is not reproducible in a battery.
      */
     crashPaneRenderer(paneID: string): { readonly paneID: string; readonly tabID: string } | null;
+    /** §N30's census: who holds the keyboard in the shell window right now. */
+    keyboardOwner(): KeyboardOwner;
+    /** Hand the keyboard to `owner` (never at the cost of activating the app). */
+    restoreKeyboard(owner: KeyboardOwner): boolean;
 }
 
 /**
@@ -505,6 +514,11 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
                 window.contentView.addChildView(view);
                 view.setBounds(bounds);
                 tab.setVisible(true);
+                try {
+                    options.onViewAttached?.();
+                } catch (error) {
+                    onError(error instanceof Error ? error : new Error(String(error)), 'attach-raise');
+                }
                 // The pane's rect is the viewport now: a pin left by an automation read while
                 // the view was parked is cleared, or the page keeps laying out at 1280×800 and
                 // the hole shows its clipped top-left corner at 1× (run-B L2). `setEmbedded`
@@ -1073,6 +1087,8 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
                 }
             });
             return { paneID, tabID };
-        }
+        },
+        keyboardOwner,
+        restoreKeyboard
     };
 }

@@ -157,7 +157,6 @@ import {
     useChromeTheme,
     useHoverKey,
     useModalPresence,
-    useOverlayPresence,
     withAlpha,
     workspaceSwitchHandlers,
     type ChromeAppearance,
@@ -190,7 +189,8 @@ import { createFrameTick, type FrameTick } from './app/frame-tick';
 import { createFolderChooser } from './app/folder-chooser';
 import { createUpdateSheetController, type UpdateSheetState } from './app/update-sheet';
 import { UpdateSheet } from './chrome/UpdateSheet';
-import { OldTerminalHostNotice, oldHostKey, readLaterOldHosts, writeLaterOldHosts } from './chrome/OldTerminalHostNotice';
+import { oldHostKey, readLaterOldHosts, writeLaterOldHosts } from './chrome/OldTerminalHostNotice';
+import { ToastStack } from './chrome/ToastStack';
 import { createPaneTextSizeStep, createTextSizeStep } from './app/text-size';
 import { installActivationClick } from './app/activation-click';
 import { focusPaneSurface, handCaretToPaneWhenReady, mayClaimPaneCaret, releaseFocusedPaneCaret } from './app/pane-focus';
@@ -1107,8 +1107,13 @@ function Shell(props: AppProps): ReactElement {
     // ── #372: terminals still on an older terminal host ──────────────────────────────
 
     const oldTerminalHosts = daemon.oldTerminalHosts;
-    const shownOldTerminalHosts =
-        restartingOldHosts ?? oldTerminalHosts.filter((host) => !laterOldHosts.includes(oldHostKey(host)));
+    // Memoised: the toast stack publishes it to the shell's corner layer, and an identity that
+    // changed every render would re-measure the stack on every render for nothing.
+    const oldHostsNotice = useMemo(() => {
+        const shown =
+            restartingOldHosts ?? oldTerminalHosts.filter((host) => !laterOldHosts.includes(oldHostKey(host)));
+        return shown.length === 0 ? null : { hosts: shown, restarting: restartingOldHosts !== null };
+    }, [restartingOldHosts, oldTerminalHosts, laterOldHosts]);
     const restartOldTerminals = useCallback((): void => {
         setRestartingOldHosts(oldTerminalHosts.filter((host) => !laterOldHosts.includes(oldHostKey(host))));
         void commands
@@ -1143,6 +1148,7 @@ function Shell(props: AppProps): ReactElement {
         setLaterOldHosts([]);
         writeLaterOldHosts([]);
     }, []);
+    const dismissToast = useCallback((id: string): void => store.getState().dismissToast(id), [store]);
 
     /** Fire a command and surface a failure as a toast; never throw into an event handler. */
     const run = useCallback(
@@ -1300,9 +1306,9 @@ function Shell(props: AppProps): ReactElement {
      * is a gesture, and a refused gesture is news. `web-poster` is asked for by a PANE, once per
      * menu that lands over it, and its refusals are its contract: each one means "park the way
      * you always did", which is behaviour the user already knows and must not also read as an
-     * error. Toasting it would put a "Poster" card on screen on every right-click — and park the
-     * pane a second time on the way, since a toast registers as a floating surface of its own
-     * (§N26) and parks every pane its box covers.
+     * error. Toasting it would put a "Poster" card on screen on every right-click and, wherever
+     * the page draws its own toast stack, park the pane a second time on the way, since that stack
+     * registers as a floating surface of its own (§N26) and parks every pane its box covers.
      *
      * The rejection guard stays for them: `run` was also what kept a dropped socket from
      * surfacing as an unhandled rejection, and a silent verb still must not.
@@ -4164,7 +4170,8 @@ function Shell(props: AppProps): ReactElement {
      * The toast stack in that list has since moved to the finer registration (§N26): it parks the
      * panes its corner box covers by registering its RECT, because a window modal is also what a
      * shared prompt stands down for. It parks the same panes here, where nothing is measurable,
-     * and hides nothing that is up.
+     * and hides nothing that is up. In a shell window it parks nothing at all once the shell's
+     * corner layer is drawing it above the pages (`chrome/corner-layer.ts`).
      */
     const modalOpen =
         settingsTab !== null || helpOpen || createSheetOpen || anyModalMounted;
@@ -5399,17 +5406,10 @@ function Shell(props: AppProps): ReactElement {
 
             <ToastStack
                 toasts={ui.toasts}
-                onDismiss={(id) => store.getState().dismissToast(id)}
-                notice={
-                    shownOldTerminalHosts.length === 0 ? null : (
-                        <OldTerminalHostNotice
-                            hosts={shownOldTerminalHosts}
-                            restarting={restartingOldHosts !== null}
-                            onRestart={restartOldTerminals}
-                            onLater={laterOldTerminals}
-                        />
-                    )
-                }
+                oldHosts={oldHostsNotice}
+                onDismiss={dismissToast}
+                onRestartOldHosts={restartOldTerminals}
+                onLaterOldHosts={laterOldTerminals}
             />
         </div>
         </WorkbenchProvider>
@@ -5640,68 +5640,6 @@ function NoWorkspaceSelected({ onCreate }: { readonly onCreate: () => void }): R
             >
                 Create Workspace
             </button>
-        </div>
-    );
-}
-
-interface ToastStackProps {
-    readonly toasts: readonly Toast[];
-    readonly onDismiss: (id: string) => void;
-    /** A standing notice at the bottom of the stack (#372's old terminal host), or null. */
-    readonly notice?: ReactElement | null;
-}
-
-/** The in-app fallback for a notification the browser would not (or could not) show. */
-function ToastStack({ toasts, onDismiss, notice = null }: ToastStackProps): ReactElement | null {
-    const root = useRef<HTMLDivElement | null>(null);
-    /*
-     * H1 — a toast is DOM and a web pane's page is a native view drawn over it, so an unparked
-     * page simply eats the notification: the one message that says why a gesture did nothing
-     * would be painted underneath the thing the user is looking at. `active` rather than an
-     * unconditional call because this component is always mounted and paints only when it holds
-     * something; the page is handed back the moment the last toast is dismissed or expires.
-     *
-     * §N26 — its RECT, not the window. This was `useModalPresence`, and a window modal is also
-     * what `interaction/surface.ts` stands a PROMPT down for (§2.3): a toast raised while a
-     * request was up hid the surface presenting it for the toast's whole six seconds. The
-     * presenter failure toast is where that showed — the bundled dialog re-presenting the live
-     * request was invisible for exactly as long as the toast explaining the failure was up. A
-     * corner box has no business owning the window: the notification stack beside it registers
-     * its rect for the same reason (`interaction/BundledPrompts.tsx`'s `Notifications`), and an
-     * unmeasured rect still parks every pane, so H1's guarantee above is unchanged.
-     */
-    useOverlayPresence(root, toasts.length > 0 || notice !== null);
-    if (toasts.length === 0 && notice === null) return null;
-    return (
-        <div ref={root} data-testid="toast-stack" className="absolute bottom-8 right-3 z-40 flex flex-col gap-2">
-            {toasts.map((toast) => (
-                <button
-                    key={toast.id}
-                    type="button"
-                    data-testid={`toast-${toast.id}`}
-                    className="max-w-[320px] rounded-md px-3 py-2 text-left"
-                    style={{
-                        background: chromeTokens.surfaceBackground,
-                        border: `1px solid ${chromeTokens.divider}`,
-                        boxShadow: '0 8px 24px rgba(0,0,0,0.35)'
-                    }}
-                    onClick={() => onDismiss(toast.id)}
-                >
-                    <span className="block text-[12px] font-medium" style={{ color: chromeTokens.textPrimary }}>
-                        {toast.title}
-                    </span>
-                    {/* `break-words`: a body carrying a filesystem path or a URL is one
-                        unbreakable token whose min-content width blows straight through
-                        `max-w-[320px]`, pushing the toast off the right edge of the window. */}
-                    <span
-                        className="block break-words text-[11px]"
-                        style={{ color: chromeTokens.textSecondary }}
-                    >
-                        {toast.body}
-                    </span>
-                </button>
-            ))}
-            {notice}
         </div>
     );
 }

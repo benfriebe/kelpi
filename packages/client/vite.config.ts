@@ -279,6 +279,9 @@ export default defineConfig({
       // default, which is this same file.
       input: {
         index: path.resolve(here, 'index.html'),
+        // The Electron shell's corner layer (`src/chrome/corner-layer.ts`): a second document,
+        // loaded into a see-through view above the web pages to draw the toast stack.
+        overlay: path.resolve(here, 'overlay.html'),
         [SERVICE_WORKER_CHUNK]: SERVICE_WORKER_ENTRY,
       },
       output: {

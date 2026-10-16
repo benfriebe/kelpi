@@ -165,6 +165,8 @@ import {
     writeShellSettings
 } from './settings.js';
 import { createWebPaneHost, type WebPaneHost } from './webhost/index.js';
+import { createCornerLayer, type CornerLayer } from './corner-layer.js';
+import { createCornerOverlayView, type CornerOverlayViewHandle } from './corner-layer-view.js';
 import { setWebFindPalette } from './webhost/scripts.js';
 import {
     MIN_WINDOW_HEIGHT,
@@ -187,6 +189,9 @@ let mainWindow: BrowserWindow | null = null;
 let status: StatusController | null = null;
 /** M6: the web-pane host — a third daemon connection that owns the browser views. */
 let webHost: WebPaneHost | null = null;
+/** The window's corner layer (`./corner-layer.ts`) and its view, which the web host re-raises. */
+let cornerLayer: CornerLayer | null = null;
+let cornerView: CornerOverlayViewHandle | null = null;
 let quitGate: QuitGate | null = null;
 let hotkeyAccelerator: string | null = null;
 /**
@@ -450,10 +455,13 @@ function applySecurityPolicy(window: BrowserWindow): void {
      */
     contents.on('did-navigate', () => {
         applyWindowButtons(window, false, 'navigation');
+        // The corner layer's page is gone too; the next `did-finish-load` starts it for the new one.
+        cornerLayer?.pageGone('navigation');
     });
 
     contents.on('render-process-gone', (_event, details) => {
         logError(`renderer gone (${details.reason}); reloading`);
+        cornerLayer?.pageGone('renderer gone');
         if (!window.isDestroyed()) window.reload();
     });
 
@@ -877,6 +885,9 @@ function createWindow(): BrowserWindow {
     });
     window.on('closed', () => {
         mainWindow = null;
+        cornerLayer?.dispose();
+        cornerLayer = null;
+        cornerView = null;
         // Embedded web-pane views outlive the window: back to the host's off-screen holder, or
         // the next placement would address a destroyed window (and `capture` would break for a
         // pane whose view is parented to nothing).
@@ -941,6 +952,37 @@ function createWindow(): BrowserWindow {
         const source = details.sourceId === '' ? '' : ` (${details.sourceId}:${String(details.lineNumber)})`;
         logError(`renderer console: ${details.message.split('\n', 1)[0] ?? ''}${source}`);
     });
+    /*
+     * The corner layer: the page's toast stack, drawn by this shell in a see-through view ABOVE
+     * the web pages, so a toast never takes a live page off screen (`./corner-layer.ts`).
+     */
+    const overlay = createCornerOverlayView({
+        window: () => (window.isDestroyed() ? null : window),
+        keyboardOwner: () => webHost?.keyboardOwner() ?? { kind: 'client' },
+        restoreKeyboard: (owner) => {
+            if (webHost !== null) webHost.restoreKeyboard(owner);
+            else if (!window.isDestroyed() && window.isFocused()) window.webContents.focus();
+        },
+        onGone: (reason) => cornerLayer?.overlayGone(reason)
+    });
+    cornerView = overlay;
+    cornerLayer?.dispose();
+    cornerLayer = createCornerLayer({
+        runInPage: (script) =>
+            window.isDestroyed() || window.webContents.isDestroyed()
+                ? Promise.reject(new Error('the window is gone'))
+                : window.webContents.executeJavaScript(script, false),
+        overlay,
+        metrics: () => {
+            if (window.isDestroyed()) return null;
+            const content = window.getContentBounds();
+            const scaleFactor = screen.getDisplayMatching(window.getBounds()).scaleFactor;
+            return { contentWidth: content.width, contentHeight: content.height, scaleFactor };
+        },
+        log: (line) => log(line),
+        warn: (line) => warn(line)
+    });
+
     window.webContents.on('did-finish-load', () => {
         const url = window.webContents.getURL();
         if (isStoppedPageURL(url)) {
@@ -952,6 +994,7 @@ function createWindow(): BrowserWindow {
         if (loadFailed) return;
         loadRetries = 0;
         log(`did-finish-load ${redactToken(url)}`);
+        cornerLayer?.pageLoaded(url);
         daemonWatch?.healthy();
         if (!window.isVisible() && !shownWindows.has(window)) showWindow();
     });
@@ -2077,7 +2120,8 @@ function startWebPaneHost(): void {
             // (same `windowID`) reports where it drew the page area. Looked up lazily — the
             // window is created after this, and can be closed and re-opened under it.
             window: () => mainWindow,
-            windowID: shellWindowID
+            windowID: shellWindowID,
+            onViewAttached: () => cornerView?.raise()
         });
         webHost.start();
     } else {

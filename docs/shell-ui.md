@@ -559,6 +559,20 @@ also runs against the packaged app), because neither a jsdom test nor a settled 
 can see a swap that is only wrong for two frames, and nothing that samples the CLIENT can
 see the guest page's own layout at all.
 
+**Toast-over-a-web-page requirement:** a poster is right for a menu the user opened, and
+wrong for a toast nobody asked for. A toast must not take the page away: the page under it
+stays live, scrolls, and keeps the keyboard. In the Electron shell the toast stack is drawn
+by the shell's **corner layer**, a see-through `WebContentsView` placed over the stack's box
+above every page view (`shell/src/corner-layer.ts`, `client/src/chrome/corner-layer.ts`).
+The client still lays the stack out, since it is the measurement, but neither paints it nor
+registers its box, so nothing parks. A click on the layer does what a click on the card
+does, and the layer hands the keyboard straight back to whoever held it. Wherever the layer
+is not drawing (a browser, a phone, an older shell, a layer that failed) the stack is drawn
+in the page and parks the panes it covers, poster and all, as before. Plugin notifications
+share the corner but are still drawn in the page, so they still park, and the toast layer
+draws above them where the two overlap. `scripts/scenarios/web-pane-live-under-toast.mjs`
+covers the owner's path.
+
 ### 4.3 Moving panes by drag (header drag)
 
 - Dragging a header ≥8pt starts a pane move. The source pane dims to 50%.

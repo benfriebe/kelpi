@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <!-- The Electron shell's corner layer (`src/overlay/corner.tsx`): a see-through view the shell
+         places ABOVE the web pages to draw the toast stack, so a toast never has to take a live
+         page off screen. It connects to nothing; the shell renders into it with
+         `executeJavaScript` and reads its clicks back the same way.
+
+         Everything here is see-through: the view's own background is transparent
+         (`shell/src/corner-layer-view.ts`) and so must the document be, or the box around the
+         cards would paint the window ground (`styles.css` gives `body` one) over the page. -->
+    <style>
+      html,
+      body,
+      #root {
+        background: transparent !important;
+      }
+    </style>
+    <title>Kelpi corner layer</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/overlay/corner.tsx"></script>
+  </body>
+</html>

@@ -4,7 +4,8 @@
   "type": "module",
   "packageManager": "pnpm@10.28.1",
   "engines": {
-    "node": ">=24"
+    "node": ">=24",
+    "pnpm": ">=10.28.1 <11"
   },
   "scripts": {
     "typecheck": "tsc -b packages/protocol packages/core packages/daemon packages/cli && tsc -p packages/plugin-sdk && tsc -p packages/client/tsconfig.json && tsc -p packages/shell/tsconfig.json",

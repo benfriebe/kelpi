@@ -328,13 +328,19 @@ and a Swift-owned link is never touched), and `kelpi install-hooks` migrates hoo
 
 ## Quickstart
 
-Requires Node 24 and the pnpm that `packageManager` in `package.json` names, pnpm 10.28.1; pnpm
-and corepack both honour that field and switch to it. The pin is load-bearing: pnpm 11 removed
-`onlyBuiltDependencies` in favour of `allowBuilds`, so it would leave node-pty and electron
-unbuilt, it moves the lockfile to another generation, and the report this came from has it
-refusing electron-forge's `@electron/node-gyp` git subdependency. The `ghostty-web` override is
-the one part that travels: pnpm 10 and 11 both read `overrides` from `pnpm-workspace.yaml`, which
-is why it lives there rather than in the `package.json` `pnpm` field pnpm 11 stopped reading.
+Requires Node 24 and pnpm 10.28.1. `.nvmrc` and `.node-version` name the Node, so `nvm install`
+(or fnm, mise, asdf, nodenv) picks it up. For pnpm, any pnpm from 9.7 on, pnpm 11 included, and
+corepack read `packageManager` in `package.json` and switch to 10.28.1 by themselves. Both are
+enforced: on the wrong Node, or a pnpm that did not switch, `pnpm install` stops at once with
+"Your Node version is incompatible" (or "pnpm version") and the version it expected, rather than
+installing something that breaks later.
+
+The pnpm pin is load-bearing: pnpm 11 removed `onlyBuiltDependencies` in favour of `allowBuilds`,
+so it would leave node-pty and electron unbuilt, it moves the lockfile to another generation, and
+the report this came from has it refusing electron-forge's `@electron/node-gyp` git subdependency.
+The `ghostty-web` override is the one part that travels: pnpm 10 and 11 both read `overrides` from
+`pnpm-workspace.yaml`, which is why it lives there rather than in the `package.json` `pnpm` field
+pnpm 11 stopped reading.
 
 A fresh clone or worktree needs nothing but the install below. The vendored terminal engine's
 bundle is tracked, and `pnpm vendor:build` regenerates it when the vendor source changes. The
@@ -437,6 +443,10 @@ kelpi install-hooks --dry-run     # show what would change, write nothing
 kelpi install-hooks               # merge (safe to re-run; this is what `kelpi doctor` suggests)
 kelpi install-hooks --link        # …and symlink this CLI into /usr/local/bin first
 ```
+
+**Codex asks once.** Codex CLI (0.142 or later) does not run a hook from `~/.codex/hooks.json`
+until you trust it: run `/hooks` inside `codex` after `install-hooks`, and again whenever the
+file changes. Until then Codex panes stay "idle". `install-hooks` prints the same reminder.
 
 It **merges**: your own hooks survive, kelpi-managed ones are deduped by their flag-less base
 (so an old absolute-path or `nex`-spelled install is replaced rather than left to double-fire),

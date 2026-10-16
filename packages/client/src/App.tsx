@@ -213,6 +213,7 @@ import {
 import {
     isOkReply,
     replyError,
+    replyIgnoredHistory,
     replyNumber,
     replySearchMatch,
     replyText,
@@ -2379,11 +2380,19 @@ function Shell(props: AppProps): ReactElement {
              * `markdown`, `csv` or `image` answer opened the pane on that daemon, in its own
              * workspace, which this window already shows.
              */
-            openTerminalTarget(paneID: string, row: number, col: number, via?: TerminalLinkCommands): boolean {
-                void (via ?? commands).openTerminalTarget({ paneID, row, col }).then(
+            openTerminalTarget(paneID: string, cell: TerminalCell, via?: TerminalLinkCommands): boolean {
+                void (via ?? commands).openTerminalTarget({ paneID, row: cell.row, col: cell.col, history: cell.history }).then(
                     (reply) => {
                         if (!isOkReply(reply)) {
                             notifyFailure('Open path', replyError(reply));
+                            return;
+                        }
+                        // #327: a daemon older than history clicks read its live screen's row.
+                        if (replyIgnoredHistory(reply, cell.history)) {
+                            notifyFailure(
+                                'Open link',
+                                'this pane\'s daemon is older than this window and cannot open links in history; scroll to the bottom and try again'
+                            );
                             return;
                         }
                         const opened = replyText(reply, 'opened');
@@ -2406,6 +2415,14 @@ function Shell(props: AppProps): ReactElement {
                         if (reason === 'link-not-http') {
                             const link = replyText(reply, 'link') ?? replyText(reply, 'token') ?? 'that link';
                             notifyFailure('Open link', `${link} is not an http(s) address, so nothing was opened`);
+                            return;
+                        }
+                        // #327: a click in history on a row the daemon could not find again.
+                        if (reason === 'history-moved') {
+                            notifyFailure(
+                                'Open link',
+                                'that line of history no longer lines up with the pane\'s copy of it, so nothing was opened'
+                            );
                             return;
                         }
                         if (reason === 'link-clipped') {
@@ -4344,9 +4361,14 @@ function Shell(props: AppProps): ReactElement {
         () =>
             createLinkClickTracker({
                 // #328: asked of the daemon that owns the pane (a remote workspace's, for its panes).
-                probe: async (paneID, row, col) => {
-                    const reply = await (paneHandle(paneID)?.linkCommands?.() ?? commands).probeTerminalTarget({ paneID, row, col });
-                    if (!isOkReply(reply)) return null;
+                probe: async (paneID, cell) => {
+                    const reply = await (paneHandle(paneID)?.linkCommands?.() ?? commands).probeTerminalTarget({
+                        paneID,
+                        row: cell.row,
+                        col: cell.col,
+                        history: cell.history
+                    });
+                    if (!isOkReply(reply) || replyIgnoredHistory(reply, cell.history)) return null;
                     return { opened: replyText(reply, 'opened'), url: replyText(reply, 'url') };
                 },
                 open: (request) => {
@@ -4448,7 +4470,7 @@ function Shell(props: AppProps): ReactElement {
             }
             event.preventDefault();
             event.stopPropagation();
-            act.openTerminalTarget(paneID, cell.row, cell.col, handle?.linkCommands?.());
+            act.openTerminalTarget(paneID, cell, handle?.linkCommands?.());
         },
         [act, getPaneDimensions, linkClicks]
     );

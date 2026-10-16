@@ -144,6 +144,47 @@ function rowCells(
     return chars === expected ? cells : null;
 }
 
+/** How far either side of the expected line a history click's row is looked for (#327). */
+export const HISTORY_RESYNC_ROWS = 1000;
+
+const FORMAT_CHARACTER = /\p{Cf}/u;
+
+/**
+ * A row as both ends of a history click can describe it (#327): each cell's first codepoint, an
+ * empty cell as a space, a wide character's spacer skipped, format characters (ZWSP, bidi marks)
+ * dropped, trailing spaces trimmed. Characters only, never positions, so a residual width
+ * difference between the engine and this emulator (#329's leftovers) does not read as a different
+ * row. The client builds the same string from the engine's cells (`renderer.ts` `historyRows`).
+ */
+export function rowFingerprint(line: IBufferLine | undefined, cols: number, scratch: IBufferCell): string {
+    if (line === undefined) return '';
+    let text = '';
+    const width = Math.min(cols, line.length);
+    for (let x = 0; x < width; x++) {
+        const cell = line.getCell(x, scratch);
+        if (cell === undefined) break;
+        if (cell.getWidth() === 0) continue;
+        const first = cell.getChars().codePointAt(0);
+        const char = first === undefined || first === 0 ? ' ' : String.fromCodePoint(first);
+        if (!FORMAT_CHARACTER.test(char)) text += char;
+    }
+    return text.trimEnd();
+}
+
+/**
+ * Whether `part` could be `rowFingerprint` of a row whose `translateToString` is `whole`: the
+ * fingerprint only ever drops characters from that text (a cluster's later codepoints, format
+ * characters, trailing spaces), so it is always a subsequence of it. A string walk, several times
+ * cheaper than the cell walk, which lets `locateRow` skip most rows without fingerprinting them.
+ */
+function couldFingerprint(part: string, whole: string): boolean {
+    let at = 0;
+    for (let index = 0; index < whole.length && at < part.length; index++) {
+        if (whole.charCodeAt(index) === part.charCodeAt(at)) at++;
+    }
+    return at === part.length;
+}
+
 /**
  * The column a click at `col` means (#303): the right half of a wide character is that
  * character, whose cell is the one to its left. Any other column is itself.
@@ -1200,7 +1241,7 @@ export class TerminalStateServiceImpl implements TerminalStateService {
         paneID: string,
         row: number,
         col: number,
-        options: { readonly maxRows?: number } = {}
+        options: { readonly maxRows?: number; readonly scrollOffset?: number } = {}
     ): {
         text: string;
         offset: number;
@@ -1211,9 +1252,10 @@ export class TerminalStateServiceImpl implements TerminalStateService {
         const buffer = entry.term.buffer.active;
         const cols = entry.term.cols;
         if (!Number.isFinite(row) || !Number.isFinite(col) || row < 0 || col < 0) return null;
-        const top = Math.max(0, buffer.baseY);
+        // #327: a client scrolled into history counts its rows from a viewport that far up.
+        const top = buffer.baseY - (options.scrollOffset ?? 0);
         const y = top + Math.floor(row);
-        if (y >= buffer.length) return null;
+        if (y < 0 || y >= buffer.length) return null;
 
         const maxRows = options.maxRows ?? Number.POSITIVE_INFINITY;
         // Walk back to the first row of this logical line.
@@ -1271,7 +1313,7 @@ export class TerminalStateServiceImpl implements TerminalStateService {
         paneID: string,
         row: number,
         col: number,
-        options: { readonly maxRows?: number } = {}
+        options: { readonly maxRows?: number; readonly scrollOffset?: number } = {}
     ): Promise<ReturnType<TerminalStateServiceImpl['cellText']>> {
         await this.flush(paneID);
         return this.cellText(paneID, row, col, options);
@@ -1302,8 +1344,8 @@ export class TerminalStateServiceImpl implements TerminalStateService {
      * needed or wanted: every cell of a link carries the id, so the tail row of a hard-wrapped
      * hyperlink answers the whole URI just as the head row does.
      */
-    hyperlinkAt(paneID: string, row: number, col: number): string | null {
-        return this.hyperlinkRangeAt(paneID, row, col)?.uri ?? null;
+    hyperlinkAt(paneID: string, row: number, col: number, options: { readonly scrollOffset?: number } = {}): string | null {
+        return this.hyperlinkRangeAt(paneID, row, col, options)?.uri ?? null;
     }
 
     async hyperlinkAtAsync(paneID: string, row: number, col: number): Promise<string | null> {
@@ -1325,16 +1367,18 @@ export class TerminalStateServiceImpl implements TerminalStateService {
     hyperlinkRangeAt(
         paneID: string,
         row: number,
-        col: number
+        col: number,
+        options: { readonly scrollOffset?: number } = {}
     ): { uri: string; segments: readonly TerminalCellSpan[] } | null {
         const entry = this.panes.get(paneID);
         if (!entry) return null;
         if (!Number.isFinite(row) || !Number.isFinite(col) || row < 0 || col < 0) return null;
         try {
             const buffer = entry.term.buffer.active;
-            const top = Math.max(0, buffer.baseY);
+            // #327: as `cellText`, a viewport scrolled `scrollOffset` lines into history.
+            const top = buffer.baseY - (options.scrollOffset ?? 0);
             const y = top + Math.floor(row);
-            if (y >= buffer.length) return null;
+            if (y < 0 || y >= buffer.length) return null;
             const clickedLine = buffer.getLine(y);
             const scratch = buffer.getNullCell();
             const id = linkIDAt(clickedLine, wideCharStart(clickedLine, Math.floor(col), scratch), scratch);
@@ -1371,7 +1415,7 @@ export class TerminalStateServiceImpl implements TerminalStateService {
                 return runs;
             };
             const above: TerminalCellSpan[][] = [];
-            for (let lineY = y - 1; lineY >= top; lineY--) {
+            for (let lineY = y - 1; lineY >= Math.max(0, top); lineY--) {
                 const runs = runsOn(lineY);
                 if (runs.length === 0) break;
                 above.unshift(runs);
@@ -1396,6 +1440,77 @@ export class TerminalStateServiceImpl implements TerminalStateService {
     ): Promise<{ uri: string; segments: readonly TerminalCellSpan[] } | null> {
         await this.flush(paneID);
         return this.hyperlinkRangeAt(paneID, row, col);
+    }
+
+    /**
+     * Which scroll offset a client's history click means (#327), or null when the row cannot be
+     * found.
+     *
+     * A client scrolled `scrollOffset` lines into history sends that offset with the cell, and
+     * `rowText`: the fingerprints (`rowFingerprint`) of the rows above, at and below the clicked
+     * one as it shows them. The daemon's buffer never scrolls, so the line meant is
+     * `baseY - scrollOffset + row`, IF both ends count history the same way at that moment. They
+     * may not: output can reach one before the other, and a column change reflows the engine's
+     * history and not this one (`NO_REFLOW`) until the settled-resize resync replays this buffer
+     * into the engine (`ws/streams.ts`). So the block of three rows is checked at that line, and
+     * when it does not match there it is looked for within `HISTORY_RESYNC_ROWS` lines either
+     * side, and taken only if it occurs exactly once: a row alone is not enough, because two
+     * rows that read the same can continue into different wrapped lines or carry different OSC 8
+     * addresses. Found, the answer is the offset that puts it under the clicked row; not found,
+     * or found twice, null.
+     *
+     * A neighbour the client does not have (`null`: its history ends there, and the two ends keep
+     * different amounts) is left out of the match rather than compared as a blank row, so the top
+     * row the client still holds is found as readily as any other.
+     *
+     * An offset with no `rowText` (an engine that cannot read its rows) is trusted as it is. An
+     * offset on the alternate screen, which has no history in either engine, is a race and
+     * answers null. Offset 0 is the live screen, answered 0 without a check, as it always was.
+     */
+    locateRow(
+        paneID: string,
+        row: number,
+        at: { readonly scrollOffset: number; readonly rowText?: readonly (string | null)[] | undefined }
+    ): number | null {
+        const entry = this.panes.get(paneID);
+        if (!entry || !Number.isFinite(row) || row < 0) return null;
+        const offset = Number.isFinite(at.scrollOffset) ? Math.max(0, Math.floor(at.scrollOffset)) : 0;
+        if (offset === 0) return 0;
+        const buffer = entry.term.buffer.active;
+        if (buffer.type !== 'normal') return null;
+        const texts = at.rowText;
+        if (texts === undefined) return offset;
+        const [above = null, clickedText = null, below = null] = texts;
+        const clicked = clickedText ?? '';
+        const cols = entry.term.cols;
+        const scratch = buffer.getNullCell();
+        const prints = new Map<number, string>();
+        const print = (y: number): string => {
+            if (y < 0 || y >= buffer.length) return '';
+            let known = prints.get(y);
+            if (known === undefined) {
+                known = rowFingerprint(buffer.getLine(y), cols, scratch);
+                prints.set(y, known);
+            }
+            return known;
+        };
+        const blockAt = (y: number): boolean => {
+            if (y < 0 || y >= buffer.length) return false;
+            const line = buffer.getLine(y);
+            if (line === undefined || !couldFingerprint(clicked, line.translateToString(false, 0, Math.min(cols, line.length)))) return false;
+            return print(y) === clicked && (above === null || print(y - 1) === above) && (below === null || print(y + 1) === below);
+        };
+        const clickedRow = Math.floor(row);
+        const expected = buffer.baseY - offset + clickedRow;
+        if (blockAt(expected)) return offset;
+        let found: number | null = null;
+        const last = Math.min(buffer.length - 1, expected + HISTORY_RESYNC_ROWS);
+        for (let y = Math.max(0, expected - HISTORY_RESYNC_ROWS); y <= last; y++) {
+            if (!blockAt(y)) continue;
+            if (found !== null) return null;
+            found = y;
+        }
+        return found === null ? null : buffer.baseY - (found - clickedRow);
     }
 
     /**

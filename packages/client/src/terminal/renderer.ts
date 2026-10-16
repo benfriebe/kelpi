@@ -435,7 +435,7 @@ export interface TerminalRenderer {
     setLinkUnderline(cells: readonly TerminalCellRun[] | null): boolean;
     /**
      * What these screen rows hold now, as one string to compare, or null when it cannot be read
-     * (viewport rows, 0 at the top, with the viewport at the live bottom). #303: the link hover
+     * (viewport rows as shown, 0 at the top, history rows while scrolled back, #327). #303: the link hover
      * compares it to tell output that moved a link from output that did not touch it, so it
      * carries everything a ⌘-click's answer depends on that the engine knows: each cell's
      * character, whether it carries an OSC 8 link, and the grid size (a resize moves every
@@ -443,6 +443,13 @@ export interface TerminalRenderer {
      * replaces it, so a swap under identical text is invisible here.
      */
     screenRowsKey(rows: readonly number[]): string | null;
+    /**
+     * #327: the rows above, at and below this shown row as fingerprints the daemon can find its
+     * own copy of the row by (`cellsFingerprint`), a neighbour past either end of the buffer as
+     * `null`; null on an engine that cannot read its rows (the xterm fallback), whose history
+     * clicks go unchecked.
+     */
+    historyRows(row: number): readonly [string | null, string, string | null] | null;
     /**
      * Fires after the engine has APPLIED something that can move what is on screen: output
      * (including bytes that waited behind a mount flush or a replay), a reset, a resize. Not
@@ -594,6 +601,12 @@ export interface EngineHandle {
      * One engine read for every row; the adapter keeps it until the engine next changes.
      */
     screenSnapshot?(): ScreenSnapshot | null;
+    /**
+     * #327: the fingerprints (`cellsFingerprint`) of the shown rows above, at and below `row`,
+     * history included while scrolled back, `null` for a neighbour past either end of the buffer.
+     * Only ghostty-web.
+     */
+    historyRows?(row: number): readonly [string | null, string, string | null] | null;
     /**
      * Pin the current match against the engine's buffer as it is NOW, or drop it (`null`).
      * Returns whether it was pinned: false when the needle is not where the match says, which is
@@ -1658,6 +1671,16 @@ class AdapterRenderer implements TerminalRenderer {
         return parts.join('\n');
     }
 
+    historyRows(row: number): readonly [string | null, string, string | null] | null {
+        const handle = this.handle;
+        if (handle?.historyRows === undefined || this.disposed || this.poisoned) return null;
+        let rows: readonly [string | null, string, string | null] | null = null;
+        this.swallow(() => {
+            rows = handle.historyRows?.(row) ?? null;
+        });
+        return rows;
+    }
+
     onContentChange(listener: () => void): () => void {
         this.contentListeners.add(listener);
         return () => this.contentListeners.delete(listener);
@@ -2183,6 +2206,8 @@ class AdapterRenderer implements TerminalRenderer {
             // for the snap back to the bottom that any PTY byte causes, which is the half a
             // caller cannot see coming.
             const scroll = handle.onScroll?.((offset: number): void => {
+                // #327: the screen as last read is of the rows that were shown before this.
+                this.screen = undefined;
                 for (const listener of [...this.scrollListeners]) listener(offset);
             });
             if (scroll !== undefined) this.engineDisposables.push(scroll);
@@ -2260,6 +2285,32 @@ export function createRendererFromLoader(
 
 // ── engine loaders ──────────────────────────────────────────────────────────────────
 
+/** The three fields of a ghostty-web cell the screen reads use. */
+interface GhosttyCellLike {
+    readonly codepoint: number;
+    readonly width: number;
+    readonly hyperlink_id: number;
+}
+
+const FORMAT_CHARACTER = /\p{Cf}/u;
+
+/**
+ * A row's fingerprint (#327), the daemon's `rowFingerprint` (`term/service.ts`) read off the
+ * engine's cells: each cell's first codepoint, an empty cell as a space, a wide character's
+ * spacer skipped, format characters dropped, trailing spaces trimmed. The daemon compares it with
+ * its own rows to find the line a click in history was on; it never opens anything from it.
+ */
+export function cellsFingerprint(cells: readonly { readonly codepoint: number; readonly width: number }[]): string {
+    let text = '';
+    for (const cell of cells) {
+        if (cell.width === 0) continue;
+        const code = cell.codepoint;
+        const char = code === 0 || code > 0x10ffff ? ' ' : String.fromCodePoint(code);
+        if (!FORMAT_CHARACTER.test(char)) text += char;
+    }
+    return text.trimEnd();
+}
+
 /**
  * ghostty-web. `init()` loads the shared WASM (inlined as a `data:` URI — a strict
  * `connect-src 'self'` CSP blocks it, ghostty-web#188). Imported dynamically so a client that
@@ -2287,6 +2338,22 @@ export const loadGhosttyEngine: EngineLoader = async (options) => {
         linkDetection: false
     });
     const engineTerminal = terminal as unknown as XtermLikeTerminal;
+    /**
+     * #327: a row's cells as the viewport SHOWS it (row 0 at its top), history included while
+     * scrolled back, the way the engine's own render loop reads it: the top `viewportY` rows are
+     * scrollback lines, the rest the live screen (`screen`, one `getViewport` read, which the
+     * engine reuses, so the caller takes it once). Null past either end of the buffer.
+     */
+    const shownLine = (row: number, screen: readonly GhosttyCellLike[]): readonly GhosttyCellLike[] | null => {
+        const wasm = terminal.wasmTerm;
+        if (wasm === undefined) return null;
+        const scrollback = wasm.getScrollbackLength();
+        const line = scrollback - Math.max(0, Math.floor(terminal.getViewportY())) + row;
+        if (line < 0 || line >= scrollback + terminal.rows) return null;
+        if (line < scrollback) return wasm.getScrollbackLine(line);
+        const cols = terminal.cols;
+        return screen.slice((line - scrollback) * cols, (line - scrollback + 1) * cols);
+    };
     return {
         terminal: engineTerminal,
         resetForReplay: (): void => {
@@ -2386,24 +2453,43 @@ export const loadGhosttyEngine: EngineLoader = async (options) => {
         setLinkUnderline: (cells): void => {
             terminal.setLinkUnderline(cells === null ? null : cells.map((cell) => ({ ...cell })));
         },
-        // One viewport read for the whole screen, copied: the engine reuses its cell objects.
-        // The screen rows are the live bottom, which is the only place the hover asks.
+        // One read for the whole screen as it is SHOWN, copied: the engine reuses its cell
+        // objects. Scrolled into history (#327), the top rows are history lines, read the way the
+        // engine's own render loop reads them; at the bottom it is the one viewport read.
         screenSnapshot: (): ScreenSnapshot | null => {
             const wasm = terminal.wasmTerm;
             if (wasm === undefined) return null;
             wasm.update();
-            const cells = wasm.getViewport();
             const cols = terminal.cols;
             const rows = terminal.rows;
             const codepoints = new Uint32Array(cols * rows);
             const links = new Uint32Array(cols * rows);
-            const count = Math.min(cells.length, cols * rows);
-            for (let index = 0; index < count; index++) {
-                const cell = cells[index]!;
-                codepoints[index] = cell.codepoint;
-                links[index] = cell.hyperlink_id;
-            }
+            const copy = (cells: readonly GhosttyCellLike[] | null, row: number): void => {
+                if (cells === null) return;
+                const count = Math.min(cells.length, cols);
+                for (let col = 0; col < count; col++) {
+                    const cell = cells[col]!;
+                    codepoints[row * cols + col] = cell.codepoint;
+                    links[row * cols + col] = cell.hyperlink_id;
+                }
+            };
+            const screen = wasm.getViewport();
+            for (let row = 0; row < rows; row++) copy(shownLine(row, screen), row);
             return { cols, rows, codepoints, links };
+        },
+        // #327: the rows around a click in history, as `rowFingerprint` (daemon) reads them.
+        historyRows: (row): readonly [string | null, string, string | null] | null => {
+            const wasm = terminal.wasmTerm;
+            if (wasm === undefined) return null;
+            wasm.update();
+            const screen = wasm.getViewport();
+            // A neighbour past either end of the buffer is `null`: not a blank row, a row this
+            // engine does not have, which the daemon leaves out of the match.
+            const print = (at: number): string | null => {
+                const cells = shownLine(at, screen);
+                return cells === null ? null : cellsFingerprint(cells);
+            };
+            return [print(row - 1), print(row) ?? '', print(row + 1)];
         },
         setSearchCurrent: (match): boolean => terminal.setSearchCurrent(match),
         onSearchHighlightChange: (listener): EngineDisposable =>

@@ -28,6 +28,8 @@
  *    daemon's reply means the user has moved on.
  */
 
+import type { TerminalCell } from './open-file';
+
 /** macOS's default double-click interval (`NSEvent.doubleClickInterval`, 0.5 s). */
 export const LINK_MENU_DELAY_MS = 500;
 
@@ -49,7 +51,7 @@ export interface LinkMenuRequest {
 
 export interface LinkClickInput {
     readonly paneID: string;
-    readonly cell: { readonly row: number; readonly col: number };
+    readonly cell: TerminalCell;
     readonly clientX: number;
     readonly clientY: number;
     readonly button: number;
@@ -68,7 +70,7 @@ export interface LinkProbeAnswer {
 }
 
 export interface LinkClickDeps {
-    readonly probe: (paneID: string, row: number, col: number) => Promise<LinkProbeAnswer | null>;
+    readonly probe: (paneID: string, cell: TerminalCell) => Promise<LinkProbeAnswer | null>;
     readonly open: (request: LinkMenuRequest) => void;
     readonly delayMs?: number | undefined;
     readonly setTimer?: ((run: () => void, ms: number) => unknown) | undefined;
@@ -134,7 +136,7 @@ export function createLinkClickTracker(deps: LinkClickDeps): LinkClickTracker {
                 deps.open({ paneID: input.paneID, url: answer.url, x: input.clientX, y: input.clientY });
             };
             // Asked now, about the cell as it is now; shown once the double-click window is over.
-            void deps.probe(input.paneID, input.cell.row, input.cell.col).then(
+            void deps.probe(input.paneID, input.cell).then(
                 (reply) => {
                     answer = reply;
                     settle();

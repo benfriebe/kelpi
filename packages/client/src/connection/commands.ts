@@ -158,6 +158,41 @@ export function replySearchMatch(reply: CommandReply): TerminalSearchMatch | nul
 
 type WireFields = Record<string, JsonValue | undefined>;
 
+/**
+ * #327: where a click in a pane scrolled into history was: how many lines above the live bottom
+ * the viewport is, and the shown rows above, at and below the clicked one as fingerprints
+ * (`terminal/renderer.ts` `cellsFingerprint`), which the daemon finds its own copy of the row by;
+ * `null` for a neighbour past the end of this engine's buffer. `rowText` is absent on an engine
+ * that cannot read its rows.
+ */
+export interface TerminalHistoryAt {
+    readonly scrollOffset: number;
+    readonly rowText?: readonly (string | null)[] | undefined;
+}
+
+/**
+ * #327: an answer to a question asked from history, from a daemon that did not understand the
+ * question. Such a daemon (an older paired machine, #328) ignores `scroll_offset` and reads its
+ * live screen's row, so whatever it answers is about a different line; a daemon that understood
+ * echoes `scroll_offset` back. Its answer is to be taken as no answer.
+ */
+export function replyIgnoredHistory(reply: CommandReply, history: TerminalHistoryAt | undefined): boolean {
+    if (history === undefined || history.scrollOffset <= 0 || reply['ok'] !== true) return false;
+    return typeof reply['scroll_offset'] !== 'number';
+}
+
+/** The cell of `open-terminal-target` / `probe-terminal-target`, with #327's history fields. */
+function terminalTargetFields(input: { paneID: string; row: number; col: number; history?: TerminalHistoryAt | undefined }): WireFields {
+    const history = input.history !== undefined && input.history.scrollOffset > 0 ? input.history : undefined;
+    return {
+        pane_id: input.paneID,
+        row: input.row,
+        col: input.col,
+        scroll_offset: history?.scrollOffset,
+        row_text: history?.rowText === undefined ? undefined : [...history.rowText]
+    };
+}
+
 /** Absent fields are OMITTED, never sent as null: `null` decodes as absent anyway (§2.2). */
 export function wirePayload(command: string, fields: WireFields = {}): JsonObject {
     const payload: Record<string, JsonValue> = { command };
@@ -1279,13 +1314,10 @@ export class CommandClient {
      * `none`.
      */
     openTerminalTarget(
-        input: { paneID: string; row: number; col: number },
+        input: { paneID: string; row: number; col: number; history?: TerminalHistoryAt | undefined },
         options?: SendOptions
     ): Promise<CommandReply> {
-        return this.raw(
-            wirePayload('open-terminal-target', { pane_id: input.paneID, row: input.row, col: input.col }),
-            options ?? {}
-        );
+        return this.raw(wirePayload('open-terminal-target', terminalTargetFields(input)), options ?? {});
     }
 
     /**
@@ -1296,13 +1328,10 @@ export class CommandClient {
      * older than the verb refuses it as unknown.
      */
     probeTerminalTarget(
-        input: { paneID: string; row: number; col: number },
+        input: { paneID: string; row: number; col: number; history?: TerminalHistoryAt | undefined },
         options?: SendOptions
     ): Promise<CommandReply> {
-        return this.raw(
-            wirePayload('probe-terminal-target', { pane_id: input.paneID, row: input.row, col: input.col }),
-            options ?? {}
-        );
+        return this.raw(wirePayload('probe-terminal-target', terminalTargetFields(input)), options ?? {});
     }
 
     /**

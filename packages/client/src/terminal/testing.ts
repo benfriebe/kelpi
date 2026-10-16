@@ -451,6 +451,14 @@ export class FakeRenderer implements TerminalRenderer {
         return [`${String(this.cols)}x${String(this.rows)}`, ...rows.map((row) => this.screenRows.get(row) ?? '')].join('\n');
     }
 
+    /** #327: the shown rows around `row`, from `screenRows`; null makes it an engine that cannot read them. */
+    readsHistoryRows = true;
+
+    historyRows(row: number): readonly [string | null, string, string | null] | null {
+        if (!this.readsHistoryRows) return null;
+        return [this.screenRows.get(row - 1) ?? '', this.screenRows.get(row) ?? '', this.screenRows.get(row + 1) ?? ''];
+    }
+
     onContentChange(listener: () => void): () => void {
         this.contentListeners.add(listener);
         return () => this.contentListeners.delete(listener);

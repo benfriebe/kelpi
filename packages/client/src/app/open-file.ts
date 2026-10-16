@@ -44,6 +44,8 @@
 
 import { CSV_OPEN_EXTENSIONS, IMAGE_OPEN_EXTENSIONS, isCsvPath, isImagePath } from '@kelpi/protocol';
 
+import type { TerminalHistoryAt } from '../connection';
+
 /** CONT-121 / APP-103: the drop path accepts a lowercased `.md` only — NOT `.markdown`. */
 export const DROP_MARKDOWN_EXTENSION = '.md';
 /** #324: and the csv pane's two extensions (`@kelpi/protocol` `CSV_OPEN_EXTENSIONS`). */
@@ -217,6 +219,8 @@ export function dragCarriesFile(types: readonly string[] | undefined): boolean {
 export interface TerminalCell {
     readonly row: number;
     readonly col: number;
+    /** #327: set while the pane is scrolled into history (`TerminalPaneHandle.cellAt`). */
+    readonly history?: TerminalHistoryAt | undefined;
 }
 
 export interface CellHitTest {

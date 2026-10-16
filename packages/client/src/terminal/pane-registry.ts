@@ -57,7 +57,7 @@
  * this window is a NON-owner, so a desktop window that sizes its own PTY pays for none of it.
  */
 
-import type { CommandClient } from '../connection';
+import type { CommandClient, TerminalHistoryAt } from '../connection';
 import type { TerminalKeyInit } from './renderer';
 
 /**
@@ -149,9 +149,13 @@ export interface TerminalPaneHandle {
      * The grid cell under a client point, for ⌘-click (CONT-122 / TERM-052), or null when the
      * point is off the grid. Measured against the engine's canvas and real cell size, the same
      * numbers a mouse report uses. Optional: a renderer that cannot answer leaves the app to
-     * divide the host box instead.
+     * divide the host box instead. #327: with `history` while the pane is scrolled back, which
+     * the daemon needs to find the row (its own buffer never scrolls).
      */
-    cellAt?(clientX: number, clientY: number): { readonly row: number; readonly col: number } | null;
+    cellAt?(
+        clientX: number,
+        clientY: number
+    ): { readonly row: number; readonly col: number; readonly history?: TerminalHistoryAt | undefined } | null;
     /**
      * #328 - the daemon this pane's links are resolved on, when it is not this window's own (a
      * remote workspace's pane), or undefined for this window's daemon. A live read, like

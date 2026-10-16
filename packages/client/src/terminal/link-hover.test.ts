@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { createLinkHover, linkSpanFromReply, type LinkHoverCell } from './link-hover';
+import { createLinkHover, linkSpanFromReply, probeLinkVia, type LinkHoverCell } from './link-hover';
+import type { TerminalLinkCommands } from './pane-registry';
 import type { TerminalCellRun } from './renderer';
 
 /**
@@ -333,3 +334,41 @@ describe('linkSpanFromReply (#303)', () => {
         expect(linkSpanFromReply(null)).toBeNull();
     });
 });
+
+/**
+ * #327 / #328: the hover's question asked of a pane's daemon. From history, an answer without the
+ * echoed `scroll_offset` came from a daemon older than history clicks, which read its live
+ * screen's row: no underline for it.
+ */
+describe('probeLinkVia (#327, #328)', () => {
+    const SPAN = [{ row: 3, col: 4, width: 10 }];
+    const via = (reply: Record<string, unknown>) => {
+        const asked: unknown[] = [];
+        const commands = {
+            probeTerminalTarget: async (input: unknown) => {
+                asked.push(input);
+                return reply;
+            },
+            openTerminalTarget: async () => ({ ok: true })
+        } as unknown as TerminalLinkCommands;
+        return { probe: probeLinkVia(commands), asked };
+    };
+
+    it('asks with the history and takes an answer that echoes it', async () => {
+        const { probe, asked } = via({ ok: true, opened: 'external', span: SPAN, scroll_offset: 7 });
+        const history = { scrollOffset: 7, rowText: [null, 'row', 'below'] };
+        expect(await probe('pane-1', 3, 5, history)).toEqual(SPAN);
+        expect(asked).toEqual([{ paneID: 'pane-1', row: 3, col: 5, history }]);
+    });
+
+    it('drops an answer from history that does not echo it', async () => {
+        const { probe } = via({ ok: true, opened: 'external', span: SPAN });
+        expect(await probe('pane-1', 3, 5, { scrollOffset: 7 })).toBeNull();
+    });
+
+    it('needs no echo at the live bottom', async () => {
+        const { probe } = via({ ok: true, opened: 'external', span: SPAN });
+        expect(await probe('pane-1', 3, 5)).toEqual(SPAN);
+    });
+});
+

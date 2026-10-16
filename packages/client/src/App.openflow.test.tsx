@@ -470,6 +470,52 @@ describe('⌘-click a terminal cell (CONT-122 / TERM-052)', () => {
             col: 40,
             row: 8
         });
+        // At the live bottom there is nothing to say about history (#327).
+        expect(h.lastCommand('open-terminal-target')).not.toHaveProperty('scroll_offset');
+        expect(h.lastCommand('open-terminal-target')).not.toHaveProperty('row_text');
+    });
+
+    /**
+     * #327: scrolled into history, the cell the pane hands over says where, and the daemon's
+     * `history-moved` (it could not find that row again) gets a word, like the other refusals.
+     */
+    it('sends where a ⌘-click in history is, and says why when the daemon cannot find the row', async () => {
+        const h = setup();
+        const host = await grid();
+        const own = paneHandle(PANE_A);
+        if (own === null) throw new Error('the shell pane published no handle');
+        const rowText = ['above', 'see https://example.com/old', 'below'];
+        registerTerminalPane(PANE_A, { ...own, cellAt: () => ({ row: 2, col: 6, history: { scrollOffset: 40, rowText } }) });
+        fireEvent.click(host, { metaKey: true, button: 0, clientX: 100, clientY: 100 });
+        expect(h.lastCommand('open-terminal-target')).toMatchObject({ pane_id: PANE_A, row: 2, col: 6, scroll_offset: 40, row_text: rowText });
+        await act(async () => {
+            h.reply({ opened: 'none', reason: 'history-moved', scroll_offset: 40 });
+            await Promise.resolve();
+        });
+        expect(await screen.findByText(/no longer lines up/)).toBeDefined();
+    });
+
+    /**
+     * A daemon older than history clicks ignores the two fields and reads its live screen's row,
+     * so its answer is about a different line. It echoes no `scroll_offset`, and the window opens
+     * nothing and says why rather than opening that other line's link.
+     */
+    it('opens nothing from a daemon that ignored where the click in history was', async () => {
+        const h = setup();
+        const host = await grid();
+        const open = vi.fn();
+        vi.stubGlobal('open', open);
+        const own = paneHandle(PANE_A);
+        if (own === null) throw new Error('the shell pane published no handle');
+        registerTerminalPane(PANE_A, { ...own, cellAt: () => ({ row: 2, col: 6, history: { scrollOffset: 40 } }) });
+        fireEvent.click(host, { metaKey: true, button: 0, clientX: 100, clientY: 100 });
+        await act(async () => {
+            h.reply({ opened: 'external', url: 'https://example.com/live-screen-row' });
+            await Promise.resolve();
+        });
+        expect(open).not.toHaveBeenCalled();
+        expect(await screen.findByText(/older than this window/)).toBeDefined();
+        vi.unstubAllGlobals();
     });
 
     /**

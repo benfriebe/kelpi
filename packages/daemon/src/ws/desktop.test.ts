@@ -23,9 +23,13 @@ import {
     tokenAt,
     tokenRangeAt,
     urlFromToken,
-    createProbeFileExists
+    createProbeFileExists,
+    historyPosition,
+    MAX_ROW_TEXT,
+    MAX_SCROLL_OFFSET,
+    rowLooksLinked
 } from './desktop.js';
-import type { TerminalCellSpan as TerminalCellRun } from '../term/service.js';
+import { createTerminalStateService, type TerminalCellSpan as TerminalCellRun } from '../term/service.js';
 
 const P0 = testID('D', 100);
 const NEW = testID('E', 900);
@@ -1193,3 +1197,201 @@ describe('shellEscapePath', () => {
         expect(shellEscapePath('/plain/a.png')).toBe('/plain/a.png');
     });
 });
+
+/**
+ * #327: a ⌘-click (or a probe) from a client scrolled into history.
+ *
+ * These run the handler against a REAL emulator: the stub terminal service is given the real
+ * service's reads, so the location (`locateRow`) and the reads at its offset are the shipped ones.
+ */
+describe('a click in history (#327)', () => {
+    const URL = 'https://example.com/old';
+
+    /** Bind a real emulator, fed `text`, onto a fixture's stub terminal service. */
+    async function historyFixture(text: string, cols = 40, rows = 4): Promise<Fixture & { real: ReturnType<typeof createTerminalStateService> }> {
+        const f = fixture();
+        const real = createTerminalStateService({ defaultCols: cols, defaultRows: rows });
+        real.attach(P0, cols, rows);
+        real.feed(P0, text);
+        await real.flush(P0);
+        Object.assign(f.h.term, {
+            flush: (id: string) => real.flush(id),
+            locateRow: real.locateRow.bind(real),
+            cellText: real.cellText.bind(real),
+            cellTextAsync: real.cellTextAsync.bind(real),
+            hyperlinkAt: real.hyperlinkAt.bind(real),
+            hyperlinkAtAsync: real.hyperlinkAtAsync.bind(real),
+            hyperlinkRange: undefined,
+            hyperlinkRangeAt: real.hyperlinkRangeAt.bind(real),
+            hyperlinkRangeAtAsync: real.hyperlinkRangeAtAsync.bind(real)
+        });
+        return { ...f, real };
+    }
+
+    const lines = (...rows: string[]): string => rows.map((row) => `${row}\r\n`).join('');
+    const fillers = (count: number, tag = 'filler'): string[] => Array.from({ length: count }, (_, index) => `${tag} ${String(index)}`);
+
+    /*
+     * The screen below, 4 rows: two lines, the link, ten more, and the cursor's empty line, so 14
+     * lines and `baseY` 10. Scrolled 9 lines up, the client's viewport starts at line 1 and shows
+     * the link on its row 1, between "early 1" and "filler 0".
+     */
+    const SCREEN = lines('early 0', 'early 1', `see ${URL} now`, ...fillers(10));
+    const AROUND = ['early 1', `see ${URL} now`, 'filler 0'];
+
+    it('opens the link on the row the client shows, not the live screen\'s', async () => {
+        const f = await historyFixture(SCREEN);
+        const reply = await f.channel.run('open-terminal-target', { pane_id: P0, row: 1, col: 6, scroll_offset: 9, row_text: AROUND });
+        // The offset is echoed: how a client tells this answer from an older daemon's (#328).
+        expect(reply).toMatchObject({ ok: true, opened: 'external', url: URL, scroll_offset: 9 });
+        // The live screen's row 1 is filler: the old behaviour, and still the answer at offset 0,
+        // which echoes nothing.
+        const live = await f.channel.run('open-terminal-target', { pane_id: P0, row: 1, col: 6 });
+        expect(live).toMatchObject({ ok: true, opened: 'none' });
+        expect(live).not.toHaveProperty('scroll_offset');
+    });
+
+    /**
+     * The client keeps less history than the daemon (it caps by bytes, the daemon at 10 000
+     * lines), so at its top row the row above is one it does not have: sent as `null`, it is left
+     * out of the match rather than compared as a blank row.
+     */
+    it('finds the client\'s top row when the daemon holds more history above it', async () => {
+        const f = await historyFixture(SCREEN);
+        // The client's history starts at the link: scrolled to its top, the link is row 0.
+        const reply = await f.channel.run('probe-terminal-target', {
+            pane_id: P0,
+            row: 0,
+            col: 6,
+            scroll_offset: 8,
+            row_text: [null, AROUND[1], AROUND[2]]
+        });
+        expect(reply).toMatchObject({ opened: 'external', url: URL, span: [{ row: 0, col: 4, width: URL.length }], scroll_offset: 8 });
+        // And off by a few, found nearby the same way.
+        expect(
+            await f.channel.run('open-terminal-target', { pane_id: P0, row: 0, col: 6, scroll_offset: 5, row_text: [null, AROUND[1], AROUND[2]] })
+        ).toMatchObject({ opened: 'external', url: URL });
+    });
+
+    it('answers a probe with the span in the client\'s viewport rows', async () => {
+        const f = await historyFixture(SCREEN);
+        const reply = await f.channel.run('probe-terminal-target', { pane_id: P0, row: 1, col: 6, scroll_offset: 9, row_text: AROUND });
+        expect(reply).toMatchObject({ ok: true, opened: 'external', url: URL, span: [{ row: 1, col: 4, width: URL.length }] });
+    });
+
+    it('trusts an offset sent with no row text (an engine that cannot read its rows)', async () => {
+        const f = await historyFixture(SCREEN);
+        expect(await f.channel.run('open-terminal-target', { pane_id: P0, row: 1, col: 6, scroll_offset: 9 })).toMatchObject({
+            opened: 'external',
+            url: URL
+        });
+    });
+
+    /**
+     * The client's history does not line up with the daemon's (output reached one end first, or it
+     * keeps more lines): the offset names the wrong line, the rows around the click are found
+     * nearby, once, and the span still comes back in the client's rows.
+     */
+    it('finds the row nearby when the offset is off, and answers in the client\'s rows', async () => {
+        const f = await historyFixture(SCREEN);
+        for (const offset of [6, 12, 400]) {
+            const reply = await f.channel.run('probe-terminal-target', { pane_id: P0, row: 1, col: 6, scroll_offset: offset, row_text: AROUND });
+            expect(reply).toMatchObject({ opened: 'external', url: URL, span: [{ row: 1, col: 4, width: URL.length }] });
+        }
+    });
+
+    it('refuses, saying why, when the rows are nowhere, or in two places', async () => {
+        const missing = await historyFixture(SCREEN);
+        expect(
+            await missing.channel.run('open-terminal-target', {
+                pane_id: P0,
+                row: 1,
+                col: 6,
+                scroll_offset: 9,
+                row_text: ['early 1', 'see https://example.com/elsewhere now', 'filler 0']
+            })
+        ).toEqual({ ok: true, opened: 'none', reason: 'history-moved', scroll_offset: 9 });
+
+        const twice = await historyFixture(lines(...AROUND, 'between', ...AROUND, ...fillers(6)));
+        expect(
+            await twice.channel.run('open-terminal-target', { pane_id: P0, row: 1, col: 6, scroll_offset: 2, row_text: AROUND })
+        ).toEqual({ ok: true, opened: 'none', reason: 'history-moved', scroll_offset: 2 });
+    });
+
+    it('stays quiet when the row it could not find was prose', async () => {
+        const f = await historyFixture(SCREEN);
+        expect(
+            await f.channel.run('open-terminal-target', { pane_id: P0, row: 1, col: 6, scroll_offset: 9, row_text: ['a', 'just some prose', 'b'] })
+        ).toEqual({ ok: true, opened: 'none', scroll_offset: 9 });
+    });
+
+    /**
+     * Two rows that read the same are not the same row: a URL soft-wraps into a different tail on
+     * each. The row below the click is part of the match, so the resync takes the right one.
+     */
+    it('tells two identical rows apart by the rows around them', async () => {
+        const head = 'https://example.com/' + 'a'.repeat(20); // exactly the 40-column row
+        const f = await historyFixture(lines(`${head}one`, 'gap', `${head}two`, ...fillers(8)));
+        // Off by three, the client's click on the second head row.
+        const reply = await f.channel.run('open-terminal-target', { pane_id: P0, row: 0, col: 5, scroll_offset: 3, row_text: ['gap', head, 'two'] });
+        expect(reply).toMatchObject({ opened: 'external', url: `${head}two` });
+    });
+
+    it('refuses an offset on the alternate screen, which has no history', async () => {
+        const f = await historyFixture(`${SCREEN}\x1b[?1049h\x1b[Hsee ${URL} now\r\n`);
+        expect(await f.channel.run('open-terminal-target', { pane_id: P0, row: 0, col: 6, scroll_offset: 3, row_text: ['', `see ${URL} now`, ''] })).toEqual({
+            ok: true,
+            opened: 'none',
+            reason: 'history-moved',
+            scroll_offset: 3
+        });
+    });
+
+    it('ignores malformed or out-of-range fields and reads the live row, as an older daemon does', async () => {
+        const f = await historyFixture(lines(...fillers(12), `see ${URL} now`));
+        // The link is on the live screen's row 2.
+        for (const extra of [
+            { scroll_offset: 'nine' },
+            { scroll_offset: -4 },
+            { scroll_offset: MAX_SCROLL_OFFSET + 1 },
+            { scroll_offset: 0, row_text: ['x', 'y', 'z'] }
+        ]) {
+            expect(await f.channel.run('open-terminal-target', { pane_id: P0, row: 2, col: 6, ...extra })).toMatchObject({ opened: 'external', url: URL });
+        }
+    });
+});
+
+describe('historyPosition (#327)', () => {
+    it('reads a positive offset and three row texts, a missing neighbour as null', () => {
+        expect(historyPosition({ scroll_offset: 4, row_text: ['a', 'b', 'c'] })).toEqual({ scrollOffset: 4, rowText: ['a', 'b', 'c'] });
+        expect(historyPosition({ scroll_offset: 4, row_text: [null, 'b', null] })).toEqual({ scrollOffset: 4, rowText: [null, 'b', null] });
+    });
+
+    it('drops the offset at 0, negative, past the cap or not a number', () => {
+        for (const scroll_offset of [0, -1, MAX_SCROLL_OFFSET + 1, '4', null, Number.NaN]) {
+            expect(historyPosition({ scroll_offset, row_text: ['a', 'b', 'c'] })).toBeUndefined();
+        }
+    });
+
+    it('keeps the offset but drops row text that is not three strings within the cap', () => {
+        for (const row_text of [['a', 'b'], ['a', 'b', 'c', 'd'], ['a', 2, 'c'], 'abc', ['a', 'x'.repeat(MAX_ROW_TEXT + 1), 'c']]) {
+            expect(historyPosition({ scroll_offset: 4, row_text })).toEqual({ scrollOffset: 4 });
+        }
+    });
+});
+
+describe('rowLooksLinked (#327)', () => {
+    it('is true for a row holding a URL, a link, or a path Kelpi opens', () => {
+        expect(rowLooksLinked('see https://example.com now')).toBe(true);
+        expect(rowLooksLinked('clone ssh://host/repo')).toBe(true);
+        expect(rowLooksLinked('wrote docs/notes.md')).toBe(true);
+        expect(rowLooksLinked('wrote out/sales.csv')).toBe(true);
+        expect(rowLooksLinked('saved shot.png')).toBe(true);
+    });
+
+    it('is false for prose', () => {
+        expect(rowLooksLinked('just some prose, nothing more')).toBe(false);
+        expect(rowLooksLinked('')).toBe(false);
+    });
+});
+

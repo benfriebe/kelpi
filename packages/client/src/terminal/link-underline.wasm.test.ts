@@ -18,6 +18,8 @@ import { fileURLToPath } from 'node:url';
 import { Ghostty, Terminal } from 'ghostty-web';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
+import { createTerminalStateService } from '@kelpi/daemon/term';
+
 import { createTerminalRenderer, resetEngineStartupGateForTests } from './renderer';
 
 interface Stroke {
@@ -363,3 +365,75 @@ describe('screenRowsKey and onContentChange through the adapter (#303)', () => {
         }
     });
 });
+
+/**
+ * #327: a click in history is found by the rows around it, which both ends must read the same.
+ * The engine's `historyRows`, scrolled back, against the daemon's own emulator fed the same
+ * bytes: for every shown row, the daemon's `locateRow` must find it exactly where the scroll
+ * offset says. Wide characters, emoji (one and two codepoints), a combining mark, a ZWJ family
+ * and a zero-width space are all in it, because those are where two emulators differ.
+ */
+describe('historyRows (#327)', () => {
+    const PANE = 'FFFFFFFF-0000-4000-8000-000000000327';
+
+    it('names every row of a scrolled-back screen the way the daemon reads it', async () => {
+        const host = document.createElement('div');
+        document.body.appendChild(host);
+        const renderer = createTerminalRenderer({ cols: 40, rows: 6 });
+        await renderer.open(host);
+        const daemon = createTerminalStateService({ defaultCols: 40, defaultRows: 6 });
+        daemon.attach(PANE, 40, 6);
+        try {
+            const bytes =
+                [
+                    'plain ascii line',
+                    '✅🚀 emoji https://x.example/a',
+                    '日本語 wide then text',
+                    'e\u0301 combining mark',
+                    '❤️ variation selector',
+                    '👨‍👩‍👧 family',
+                    'zero\u200bwidth space',
+                    ...Array.from({ length: 30 }, (_, i) => `filler ${String(i)}`)
+                ].join('\r\n') + '\r\n';
+            renderer.write(bytes);
+            daemon.feed(PANE, bytes);
+            await daemon.flush(PANE);
+            for (const back of [30, 25, 20]) {
+                renderer.scrollToBottom();
+                renderer.scrollLines(-back);
+                const offset = renderer.scrollOffset();
+                expect(offset).toBe(back);
+                for (let row = 0; row < 6; row++) {
+                    const rowText = renderer.historyRows(row);
+                    expect(rowText).not.toBeNull();
+                    expect({ row, back, found: daemon.locateRow(PANE, row, { scrollOffset: offset, rowText: rowText! }) }).toEqual({ row, back, found: offset });
+                }
+            }
+        } finally {
+            renderer.dispose();
+            host.remove();
+            daemon.dispose(PANE);
+        }
+    });
+
+    it('reads the shown rows into the screen key while scrolled back', async () => {
+        const host = document.createElement('div');
+        document.body.appendChild(host);
+        const renderer = createTerminalRenderer({ cols: 40, rows: 6 });
+        await renderer.open(host);
+        try {
+            renderer.write(Array.from({ length: 30 }, (_, i) => `line${String(i + 1)}`).join('\r\n') + '\r\n');
+            const bottom = renderer.screenRowsKey([0]);
+            renderer.scrollLines(-10);
+            const scrolled = renderer.screenRowsKey([0]);
+            expect(scrolled).not.toBe(bottom);
+            // 30 lines and the cursor's row through 6 rows: line26 tops the live screen, so ten
+            // lines up the top row is line16.
+            expect(scrolled?.split('\n')[1]?.startsWith(Array.from('line16', (c) => c.codePointAt(0)).join(','))).toBe(true);
+        } finally {
+            renderer.dispose();
+            host.remove();
+        }
+    });
+});
+

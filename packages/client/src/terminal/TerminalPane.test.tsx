@@ -17,6 +17,7 @@ import { PhoneKeyBar } from './PhoneKeyBar';
 import { restartUI } from '../app/reload';
 import { registerModal } from '../chrome/modal-presence';
 import { paneHandle, type TerminalLinkCommands } from './pane-registry';
+import type { TerminalHistoryAt } from '../connection';
 import { lastSelection, recordSelection, resetSelectionBufferForTests } from './selection-buffer';
 import {
     createFakePhoneWindow,
@@ -2390,9 +2391,15 @@ describe('TerminalPane: link hover (#303)', () => {
     } = {}) {
         const pty = createFakePtyApi();
         const renderers = createFakeRendererFactory({ cell: { width: 10, height: 20 } });
-        const asked: Array<{ paneID: string; row: number; col: number; answer: (cells: typeof LINK | null) => void }> = [];
-        const probeLink = (paneID: string, row: number, col: number) =>
-            new Promise<typeof LINK | null>((resolve) => asked.push({ paneID, row, col, answer: resolve }));
+        const asked: Array<{
+            paneID: string;
+            row: number;
+            col: number;
+            history: TerminalHistoryAt | undefined;
+            answer: (cells: typeof LINK | null) => void;
+        }> = [];
+        const probeLink = (paneID: string, row: number, col: number, history?: TerminalHistoryAt) =>
+            new Promise<typeof LINK | null>((resolve) => asked.push({ paneID, row, col, history, answer: resolve }));
         const original = renderers.factory;
         const factory: typeof original = (rendererOptions) => {
             const renderer = original(rendererOptions);
@@ -2466,13 +2473,49 @@ describe('TerminalPane: link hover (#303)', () => {
         expect(h.asked).toHaveLength(1);
     });
 
-    it('asks nothing while a button is held, or while the viewport is in history', async () => {
+    it('asks nothing while a button is held', async () => {
         const h = await hoverHarness();
         h.move(45, 61, 1);
         expect(h.asked).toHaveLength(0);
+    });
+
+    /**
+     * #327: scrolled into history, it asks too, saying where: how far up the viewport is and the
+     * rows around the cell, which the daemon finds its own copy of the row by. At the live bottom
+     * it says nothing, as before.
+     */
+    it('asks while the viewport is in history, with where the cell is', async () => {
+        const h = await hoverHarness();
+        h.move(45, 61);
+        expect(h.asked.at(-1)?.history).toBeUndefined();
+        await h.answer(null);
+        h.renderer.screenRows.set(2, 'above');
+        h.renderer.screenRows.set(3, 'see https://example.com/old');
         act(() => h.renderer.scrollLines(-3));
         h.move(45, 61);
-        expect(h.asked).toHaveLength(0);
+        expect(h.asked.at(-1)).toMatchObject({ row: 3, col: 4, history: { scrollOffset: 3, rowText: ['above', 'see https://example.com/old', ''] } });
+        await h.answer(LINK);
+        expect(h.renderer.linkUnderlines.at(-1)).toEqual(LINK);
+    });
+
+    it('says only how far up on an engine that cannot read its rows', async () => {
+        const h = await hoverHarness();
+        h.renderer.readsHistoryRows = false;
+        act(() => h.renderer.scrollLines(-2));
+        h.move(45, 61);
+        expect(h.asked.at(-1)?.history).toEqual({ scrollOffset: 2 });
+    });
+
+    it('publishes where a ⌘-click in history is on the cell it hands the app', async () => {
+        const h = await hoverHarness();
+        h.renderer.screenRows.set(3, 'row three');
+        expect(paneHandle('pane-1')?.cellAt?.(45, 61)).toEqual({ row: 3, col: 4 });
+        act(() => h.renderer.scrollLines(-5));
+        expect(paneHandle('pane-1')?.cellAt?.(45, 61)).toEqual({
+            row: 3,
+            col: 4,
+            history: { scrollOffset: 5, rowText: ['', 'row three', ''] }
+        });
     });
 
     it('takes the underline down when the engine scrolls under it', async () => {

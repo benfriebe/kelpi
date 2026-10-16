@@ -43,6 +43,7 @@ export {
     createCommandClient,
     isOkReply,
     replyError,
+    replyIgnoredHistory,
     replyNumber,
     replySearchMatch,
     replyText,
@@ -52,6 +53,7 @@ export {
     type CommandReply,
     type PaneScope,
     type SendOptions,
+    type TerminalHistoryAt,
     type TerminalSearchMatch
 } from './commands';
 

@@ -45,7 +45,7 @@ import { currentFormFactor, defaultFormFactorWindow, useFormFactor, type FormFac
 import { readKeyboardViewportMode } from '../chrome/keyboard-viewport';
 import { CLIENT_MAC_LIKE } from '../chrome/keys';
 import { modalPresenceCount } from '../chrome/modal-presence';
-import type { PtyStreamHandle, PtySubscription } from '../connection';
+import type { PtyStreamHandle, PtySubscription, TerminalHistoryAt } from '../connection';
 import { offerSelection } from '../state/clipboard';
 import { dispatchPaste } from './KeyBar';
 import { loadTerminalFonts, onTerminalFontsReady, terminalFontsReady } from './fonts';
@@ -460,7 +460,7 @@ export interface TerminalPaneProps {
      * anyway. Read through `latest`, so a new function per render costs nothing.
      */
     readonly probeLink?:
-        | ((paneID: string, row: number, col: number) => Promise<readonly TerminalCellRun[] | null>)
+        | ((paneID: string, row: number, col: number, history?: TerminalHistoryAt) => Promise<readonly TerminalCellRun[] | null>)
         | undefined;
     /**
      * #328: the daemon that owns this pane, when it is not this window's own. A remote workspace's
@@ -672,6 +672,18 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
      */
     const rootRef = useRef<HTMLDivElement | null>(null);
     const rendererRef = useRef<TerminalRenderer | null>(null);
+    /**
+     * #327: where a click or hover on shown `row` is, for a daemon whose buffer never scrolls:
+     * undefined at the live bottom (nothing to say), else how far up the viewport is and the
+     * rows around the cell as fingerprints the daemon finds its copy of the row by.
+     */
+    const historyAt = (row: number): TerminalHistoryAt | undefined => {
+        const renderer = rendererRef.current;
+        const scrollOffset = renderer?.scrollOffset() ?? 0;
+        if (renderer === null || scrollOffset <= 0) return undefined;
+        const rowText = renderer.historyRows(row);
+        return rowText === null ? { scrollOffset } : { scrollOffset, rowText };
+    };
     const streamRef = useRef<PtyStreamHandle | null>(null);
     const geometryRef = useRef<TerminalGeometry | null>(null);
     /**
@@ -1408,7 +1420,9 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
                 // is asked about is the cell a mouse report at the same pixel would name.
                 cellAt: (clientX, clientY) => {
                     const cell = mouseRef.current?.cellAt({ clientX, clientY }) ?? null;
-                    return cell === null ? null : { row: cell.y, col: cell.x };
+                    if (cell === null) return null;
+                    const history = historyAt(cell.y);
+                    return history === undefined ? { row: cell.y, col: cell.x } : { row: cell.y, col: cell.x, history };
                 },
                 linkCommands: () => latest.current.linkCommands,
                 // `latest` is written in a LAYOUT effect (§N35 residual (b)), so this answers with
@@ -1875,10 +1889,11 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
     // it away. The cell is the reporter's `cellAt`, so the underline is on the cell a ⌘-click at
     // the same pixel would ask about (`App.tsx` `onRootClickCapture`).
     //
-    // Nothing is asked while a button is held (a selection or a TUI drag), and nothing while the
-    // viewport is scrolled into history: the daemon reads rows from the live bottom, so the
-    // answer would be about a different line from the one under the pointer. Nor on an engine
-    // that cannot draw the underline (the xterm fallback), which would only cost round trips.
+    // Nothing is asked while a button is held (a selection or a TUI drag), nor on an engine that
+    // cannot draw the underline (the xterm fallback), which would only cost round trips. Scrolled
+    // into history, the question carries where (`historyAt`, #327), as a ⌘-click's does, because
+    // the daemon's buffer never scrolls; a scroll clears the underline, so an answer is never
+    // drawn over rows it was not about.
     // #328: a remote pane has no `probeLink` from assembly; it asks its own daemon.
     const hasLinkProbe = props.probeLink !== undefined || props.linkCommands !== undefined;
     useEffect(() => {
@@ -1890,8 +1905,9 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
         const hover = createLinkHover({
             probe: (row, col) => {
                 const { probeLink, linkCommands } = latest.current;
-                if (probeLink !== undefined) return probeLink(paneID, row, col);
-                return linkCommands === undefined ? Promise.resolve(null) : probeLinkVia(linkCommands)(paneID, row, col);
+                const history = historyAt(row);
+                if (probeLink !== undefined) return probeLink(paneID, row, col, history);
+                return linkCommands === undefined ? Promise.resolve(null) : probeLinkVia(linkCommands)(paneID, row, col, history);
             },
             snapshot: (rows) => rendererRef.current?.screenRowsKey(rows) ?? null,
             paint: (cells) => {
@@ -1907,7 +1923,7 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
             // A hover is a mouse's: a finger or a pen has none, only the moves a tap synthesises.
             if (event.pointerType === 'touch' || event.pointerType === 'pen') return;
             const current = rendererRef.current;
-            if (current === null || event.buttons !== 0 || current.scrollOffset() > 0 || !latest.current.visible) {
+            if (current === null || event.buttons !== 0 || !latest.current.visible) {
                 hover.hover(null);
                 return;
             }

@@ -59,7 +59,7 @@ describe('a plain click on a terminal link (#326)', () => {
         h.tracker.pointerDown(100, 50);
         expect(h.tracker.click(click())).toBe(true);
         // Asked now, so a TUI that redraws in answer to the click cannot change the answer.
-        expect(h.probe).toHaveBeenCalledWith('pane-1', 3, 7);
+        expect(h.probe).toHaveBeenCalledWith('pane-1', { row: 3, col: 7 });
         await h.answerProbe();
         expect(h.open).not.toHaveBeenCalled();
         vi.advanceTimersByTime(LINK_MENU_DELAY_MS);

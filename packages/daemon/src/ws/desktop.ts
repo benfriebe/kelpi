@@ -115,6 +115,22 @@
  * place the underline and the click can then differ: a plugin hook that refuses
  * `open-terminal-target` refuses the click on a link the hover underlined.
  *
+ * ## A click in history (#327)
+ *
+ * Both verbs take two optional fields from a client scrolled into history: `scroll_offset`, how
+ * many lines above the live bottom its viewport is, and `row_text`, the rows above, at and below
+ * the clicked one as it shows them (`rowFingerprint`, `term/service.ts`). The daemon's buffer
+ * never scrolls, so the row is located first (`locateRow`): checked where the offset says, and,
+ * when history differs between the two ends for a moment (output that reached one first, a resize
+ * before its resync), looked for nearby and taken only where it occurs once. Then both reads run
+ * at that offset, and a probe's `span` comes back in the client's viewport rows. A row that cannot
+ * be found answers `opened: 'none'`, with `reason: 'history-moved'` when the client's row held
+ * something link-shaped (`rowLooksLinked`), so the click says why and a click on prose stays
+ * silent. `row_text` is only ever compared and checked for that shape; nothing in it is opened.
+ * Malformed or out-of-range fields are ignored (the live row is read, as a daemon older than them
+ * does). With neither field nothing changes. Every answer to a question that carried them echoes
+ * `scroll_offset`, which is how a client tells this daemon from an older one that ignored them.
+ *
  * ## `markdown-external-editor` (CONT-081…091)
  *
  * `open` resolves `$VISUAL`/`$EDITOR` (`content/external-editor.ts`), records the launch command
@@ -266,6 +282,53 @@ function text(value: unknown): string | undefined {
 function integer(value: unknown): number | undefined {
     if (typeof value !== 'number' || !Number.isFinite(value)) return undefined;
     return Math.trunc(value);
+}
+
+/** The largest `scroll_offset` a history click may name (#327); anything else is ignored. */
+export const MAX_SCROLL_OFFSET = 1_000_000;
+/** The longest `row_text` entry a history click may send, in UTF-16 units (#327). */
+export const MAX_ROW_TEXT = 4096;
+
+/**
+ * A history click's position (#327): `scroll_offset` (lines above the live bottom) and
+ * `row_text` (three row fingerprints, above / at / below the clicked row, `null` for a
+ * neighbour past the end of the client's buffer). Either one malformed or out of range is
+ * ignored, which reads the live row exactly as a daemon older than the fields does: never a
+ * failed click. Undefined at offset 0.
+ */
+export function historyPosition(
+    payload: Record<string, unknown>
+): { readonly scrollOffset: number; readonly rowText?: readonly (string | null)[] } | undefined {
+    const offset = integer(payload['scroll_offset']);
+    if (offset === undefined || offset <= 0 || offset > MAX_SCROLL_OFFSET) return undefined;
+    const raw = payload['row_text'];
+    const rowText =
+        Array.isArray(raw) &&
+        raw.length === 3 &&
+        raw.every((entry) => entry === null || (typeof entry === 'string' && entry.length <= MAX_ROW_TEXT))
+            ? (raw as (string | null)[])
+            : undefined;
+    return rowText === undefined ? { scrollOffset: offset } : { scrollOffset: offset, rowText };
+}
+
+/**
+ * Whether a history row the daemon could not find held something a click could have been aimed
+ * at (#327): any whitespace-separated token that is a URL, a link with a scheme, or a path Kelpi
+ * opens itself. That decides only whether the refusal carries a reason (and the client a toast),
+ * as for every other refusal; nothing in the client's text is ever opened.
+ */
+export function rowLooksLinked(rowText: string): boolean {
+    return rowText
+        .split(/\s+/)
+        .some(
+            (token) =>
+                token !== '' &&
+                (urlFromToken(token) !== null ||
+                    looksLikeLink(token) ||
+                    isCsvPath(token) ||
+                    isImagePath(token) ||
+                    token.endsWith(TERMINAL_MARKDOWN_SUFFIX))
+        );
 }
 
 // ---------------------------------------------------------------------------
@@ -720,18 +783,39 @@ export function createDesktopChannel(options: DesktopChannelOptions): DesktopCha
             offset: number;
             cellsOf?: (start: number, end: number) => readonly TerminalCellSpan[] | undefined;
         };
-        type CellOptions = { readonly maxRows?: number };
+        type CellOptions = { readonly maxRows?: number; readonly scrollOffset?: number };
+        type ScrollOptions = { readonly scrollOffset?: number };
+        type LinkRange = { uri: string; segments: readonly TerminalCellSpan[] };
         const reads = ctx.term as Partial<{
+            flush(id: string): Promise<void>;
+            locateRow(id: string, r: number, at: { scrollOffset: number; rowText?: readonly (string | null)[] }): number | null;
             cellTextAsync(id: string, r: number, c: number, options?: CellOptions): Promise<CellLine | null>;
             cellText(id: string, r: number, c: number, options?: CellOptions): CellLine | null;
             hyperlinkAtAsync(id: string, r: number, c: number): Promise<string | null>;
-            hyperlinkAt(id: string, r: number, c: number): string | null;
-            hyperlinkRangeAtAsync(
-                id: string,
-                r: number,
-                c: number
-            ): Promise<{ uri: string; segments: readonly TerminalCellSpan[] } | null>;
+            hyperlinkAt(id: string, r: number, c: number, options?: ScrollOptions): string | null;
+            hyperlinkRangeAtAsync(id: string, r: number, c: number): Promise<LinkRange | null>;
+            hyperlinkRangeAt(id: string, r: number, c: number, options?: ScrollOptions): LinkRange | null;
         }>;
+
+        /*
+         * #327: a client scrolled into history says how far (`scroll_offset`) and what the rows
+         * around the click read (`row_text`). The daemon's buffer never scrolls, so the row is
+         * located first (`locateRow`), and every read below takes the offset that found it. One
+         * flush, then the location and every read with no await between them: output that lands
+         * in between would move history under the offset just checked. At offset 0 nothing here
+         * runs and the reads are the live screen's, flushed each, as they always were.
+         */
+        const history = historyPosition(payload);
+        let scrollOffset: number | undefined;
+        if (history !== undefined) {
+            await reads.flush?.(paneID);
+            const located = reads.locateRow === undefined ? history.scrollOffset : reads.locateRow(paneID, row, history);
+            if (located === null) {
+                const clicked = history.rowText?.[1] ?? '';
+                return rowLooksLinked(clicked) ? { ok: true, opened: 'none', reason: 'history-moved' } : { ok: true, opened: 'none' };
+            }
+            scrollOffset = located;
+        }
 
         /*
          * OSC 8 BEFORE the text scan (#83), because the escape sequence is the author's own
@@ -746,7 +830,16 @@ export function createDesktopChannel(options: DesktopChannelOptions): DesktopCha
          */
         let hyperlink: string | null;
         let hyperlinkSpan: readonly TerminalCellSpan[] | undefined;
-        if (probe && reads.hyperlinkRangeAtAsync !== undefined) {
+        if (scrollOffset !== undefined) {
+            // Synchronous, straight after the flush and the location above.
+            if (reads.hyperlinkRangeAt !== undefined) {
+                const range = reads.hyperlinkRangeAt(paneID, row, col, { scrollOffset });
+                hyperlink = range?.uri ?? null;
+                hyperlinkSpan = range?.segments;
+            } else {
+                hyperlink = reads.hyperlinkAt?.(paneID, row, col, { scrollOffset }) ?? null;
+            }
+        } else if (probe && reads.hyperlinkRangeAtAsync !== undefined) {
             const range = await reads.hyperlinkRangeAtAsync(paneID, row, col);
             hyperlink = range?.uri ?? null;
             hyperlinkSpan = range?.segments;
@@ -818,9 +911,12 @@ export function createDesktopChannel(options: DesktopChannelOptions): DesktopCha
         // every cell the pointer crosses, and a minified bundle or a source map is one logical
         // line of hundreds of kilobytes. A token that long is never underlined; a click still
         // reads the whole line.
-        const cellOptions: CellOptions = probe ? { maxRows: PROBE_MAX_ROWS } : {};
+        const cellOptions: CellOptions = {
+            ...(probe ? { maxRows: PROBE_MAX_ROWS } : {}),
+            ...(scrollOffset !== undefined ? { scrollOffset } : {})
+        };
         const cell =
-            reads.cellTextAsync !== undefined
+            scrollOffset === undefined && reads.cellTextAsync !== undefined
                 ? await reads.cellTextAsync(paneID, row, col, cellOptions)
                 : (reads.cellText?.(paneID, row, col, cellOptions) ?? null);
         if (cell === null) return { ok: true, opened: 'none' };
@@ -862,6 +958,17 @@ export function createDesktopChannel(options: DesktopChannelOptions): DesktopCha
             return { ok: true, opened: 'none', token, path: resolved };
         }
         return openFilePane(resolved, kind, { token }, tokenSpan);
+    };
+
+    /**
+     * #327: an answer to a question asked from history says so (`scroll_offset`, echoed), so a
+     * client can tell it from the answer of a daemon older than the fields, which reads its live
+     * screen's row instead and would underline, or open, a different line's link.
+     */
+    const answerTerminalTarget = async (payload: Record<string, unknown>, probe: boolean): Promise<JsonObject> => {
+        const reply = await openTerminalTarget(payload, probe);
+        const history = historyPosition(payload);
+        return history === undefined || reply['ok'] !== true ? reply : { ...reply, scroll_offset: history.scrollOffset };
     };
 
     /** CONT-081…091. `open` hosts the editor; `close` ends the session and returns to preview. */
@@ -1066,8 +1173,8 @@ export function createDesktopChannel(options: DesktopChannelOptions): DesktopCha
         async run(command, payload) {
             if (command === 'shell-action') return shellAction(payload);
             if (command === 'restart-control-server') return restartControlServer();
-            if (command === 'open-terminal-target') return openTerminalTarget(payload, false);
-            if (command === 'probe-terminal-target') return openTerminalTarget(payload, true);
+            if (command === 'open-terminal-target') return answerTerminalTarget(payload, false);
+            if (command === 'probe-terminal-target') return answerTerminalTarget(payload, true);
             if (command === 'paste-image') return pasteImage(payload);
             if (command === 'drop-text') return dropText(payload);
             return markdownExternalEditor(payload);

@@ -869,7 +869,8 @@ A ⌘-click on a terminal cell is a daemon round-trip (`open-terminal-target`,
 `packages/client/src/App.tsx` `onRootClickCapture`, which asks the pane for it: the mouse
 reporter's `cellAt`, measured against the engine's canvas and real cell size, with
 `cellFromPoint` only for a renderer that cannot answer). The client sends `pane_id`, `row`,
-`col`; the daemon makes **two reads at that cell, in this order**:
+`col` (and, scrolled into history, where: see **A click in history** below); the daemon makes
+**two reads at that cell, in this order**:
 
 **1. The OSC 8 hyperlink on the cell** (`hyperlinkAt`, `packages/daemon/src/term/service.ts`).
 A TUI that emits `ESC ] 8 ; ; URI ST title ST` has stated the address outright and the cells
@@ -980,6 +981,47 @@ the soft keyboard. The logic is `packages/client/src/app/link-click.ts`.
 it with the same `web-open` as the menu's "Open in Kelpi". It only changes ⌘-click: the plain
 click's menu always offers both, except in a remote workspace (below).
 
+**A click in history (#327).** The daemon's buffer never scrolls, so a row number alone names a
+row of its LIVE screen, and a ⌘-click in a pane scrolled back used to read that: usually nothing
+opened, sometimes the wrong link did. Scrolled back, the pane's `cellAt` adds where the cell is
+(`TerminalHistoryAt`): `scroll_offset`, the lines above the live bottom (the engine's
+`viewportY`), and `row_text`, the shown rows above, at and below the clicked one as fingerprints
+(each cell's first codepoint, an empty cell a space, a wide character's spacer skipped, format
+characters such as ZWSP dropped, trailing spaces trimmed: `cellsFingerprint` in `renderer.ts`,
+`rowFingerprint` in the daemon's `term/service.ts`), with `null` for a neighbour past the end of
+the engine's buffer. The same two fields go with the plain click's probe and the hover's. At the
+live bottom neither is sent and nothing changes.
+
+The daemon locates the row first (`locateRow`): the three rows at `baseY - scroll_offset + row`.
+A `null` neighbour is left out of the match: the engine keeps history by bytes and the daemon by
+lines, so the top row the engine still holds can have a row above it in the daemon only. The rows
+match unless the two ends count history differently at that moment: output can reach one
+before the other, and a column change reflows the engine's history and not the daemon's
+(`NO_REFLOW`) until the settled-resize resync (section 5.2) replays the daemon's buffer into the
+engine 150 ms later. Then the block of three
+is looked for within 1 000 lines either side and taken only where it occurs exactly once (a row
+alone is not enough: two rows that read the same can continue into different wrapped lines or
+carry different OSC 8 addresses). Found, both reads run at that offset with no await between the
+check and the reads, and a probe's `span` comes back in the client's viewport rows. Not found, or
+found twice, the answer is `opened: "none"`, with `reason: "history-moved"` when the clicked row
+held anything link-shaped, which the client turns into "that line of history no longer lines up
+with the pane's copy of it, so nothing was opened"; a click on prose stays silent. A row the
+engine made by reflowing a long line, before the resync, has no copy in the daemon, so it
+refuses. A line the daemon has already dropped from its 10 000 lines of history refuses too. An offset
+with no `row_text` (the xterm fallback cannot read its rows) is trusted; an offset on the
+alternate screen, which has no history, refuses. `row_text` is only compared and checked for
+that link shape; nothing in it is ever opened. The fields are validated (`scroll_offset` an
+integer up to 1 000 000, `row_text` three strings, or `null`, of at most 4 096 units) and ignored
+when malformed, which reads the live row exactly as a daemon older than them does.
+
+Every answer to a question that carried history echoes `scroll_offset`. A daemon older than the
+fields (a paired machine on an older build, now that a remote pane asks its own daemon) ignores
+them and answers about its live screen's row; its answer has no echo, so the client takes it as
+no answer: no underline, no menu, and a ⌘-click that opens nothing and says the pane's daemon is
+too old to open links in history (`replyIgnoredHistory`, `connection/commands.ts`). One thing it
+cannot take back: such a daemon opens a `.md`, csv or image pane for whatever path is on its live
+row before it answers.
+
 **A remote workspace's pane asks its own daemon (#328).** A remote workspace (a paired daemon's
 panes, drawn in this window by `app/RemoteWorkspaceView.tsx`, or `phone/PhoneRemoteWorkspace.tsx`)
 is not in this window's daemon, which used to answer its ⌘-click with `pane not found`. Both
@@ -1037,9 +1079,9 @@ opened and no focus moves.
   agent's spinner costs nothing; changed, it takes the underline down and asks again. Not
   visible to the key: a different OSC 8 address swapped in under identical text (the engine
   reuses the cell's link id). Leaving the grid, a scroll, a pan of a mirrored grid and the pane
-  going off screen clear it. Nothing is asked while a button is held or while the viewport is
-  scrolled into history, where the daemon's bottom-anchored rows would name a different line from
-  the one under the pointer (#327).
+  going off screen clear it. Nothing is asked while a button is held. Scrolled into history, it
+  asks as a ⌘-click there does, with where the cell is (below, #327), and the screen key reads the
+  rows shown, history included.
 - **The engine.** ghostty-web's own link detection is off (`linkDetection: false`); it
   underlined a plain hover in blue on its own rules (any scheme, one row, no paths). The
   underline is `setLinkUnderline` (`0.4.0-kelpi.18`), drawn in each cell's foreground colour as

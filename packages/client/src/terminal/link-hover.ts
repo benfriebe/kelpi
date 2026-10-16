@@ -30,6 +30,7 @@
  *   - **Leaving clears at once.** Off the link, off the grid, a scroll or a resize.
  */
 
+import { replyIgnoredHistory, type TerminalHistoryAt } from '../connection';
 import type { TerminalLinkCommands } from './pane-registry';
 import type { TerminalCellRun } from './renderer';
 
@@ -118,8 +119,13 @@ export function linkSpanFromReply(reply: unknown): readonly TerminalCellRun[] | 
  */
 export function probeLinkVia(
     commands: TerminalLinkCommands
-): (paneID: string, row: number, col: number) => Promise<readonly TerminalCellRun[] | null> {
-    return (paneID, row, col) => commands.probeTerminalTarget({ paneID, row, col }).then(linkSpanFromReply, () => null);
+): (paneID: string, row: number, col: number, history?: TerminalHistoryAt) => Promise<readonly TerminalCellRun[] | null> {
+    return (paneID, row, col, history) =>
+        commands.probeTerminalTarget({ paneID, row, col, history }).then(
+            // #327: an older daemon answered about its live screen's row; no underline for that.
+            (reply) => (replyIgnoredHistory(reply, history) ? null : linkSpanFromReply(reply)),
+            () => null
+        );
 }
 
 const defaultSchedule = (run: () => void, ms: number): (() => void) => {

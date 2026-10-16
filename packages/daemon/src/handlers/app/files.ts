@@ -5,9 +5,10 @@
  *
  * Routing is identical for the two: a known caller pane routes the open to ITS workspace,
  * otherwise the active workspace takes it, and with no active workspace the message is dropped.
- * `diff` always focuses the caller first; `open` does only when it carries `focus: true` (the
- * window's ⌘O, Finder, a drop, `kelpi open --focus`). A background `open` (#295) names the
- * caller as the split source and leaves focus alone. Only `open` honours `reuse` (`kelpi open --here`), which converts the caller's pane
+ * Both focus the caller first only when they carry `focus: true` (the window's ⌘O, Finder, a
+ * drop, its Open Diff action, `kelpi open --focus`, `kelpi diff --focus`). A background open
+ * (#295 for `open`, #298 for `diff`) names the caller as the split source and leaves focus
+ * alone. Only `open` honours `reuse` (`kelpi open --here`), which converts the caller's pane
  * in place by parking it; `diff` never reuses.
  *
  * "Known pane" deliberately means a VISIBLE pane (`workspace.panes`) — a parked source pane is
@@ -128,7 +129,9 @@ export function fileHandlerEntries(deps: AppDeps): readonly (readonly [string, A
                 msg.target_path === undefined
                     ? undefined
                     : resolveAgainstPane(state, target, msg.target_path);
-            if (target.paneID !== null) {
+            // #298: as `open` above: only a focusing diff focuses the caller first.
+            const focus = msg.focus === true;
+            if (focus && target.paneID !== null) {
                 ctx.store.dispatch({
                     type: 'focus-pane',
                     workspaceID: target.workspaceID,
@@ -141,7 +144,9 @@ export function fileHandlerEntries(deps: AppDeps): readonly (readonly [string, A
                 paneID: deps.uuid(),
                 repoPath,
                 now: deps.now(),
-                ...(targetPath !== undefined ? { targetPath } : {})
+                ...(targetPath !== undefined ? { targetPath } : {}),
+                ...(target.paneID !== null ? { sourcePaneID: target.paneID } : {}),
+                focus
             });
             refreshSyncGroup(ctx, target.workspaceID);
             deps.persist();

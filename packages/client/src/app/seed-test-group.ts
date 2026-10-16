@@ -28,13 +28,10 @@
  *    first. `Promise.all` here would be a race that is right most of the time.
  *  - **It does not steal the view.** The Swift seed never touches `activeWorkspaceID`; the user
  *    stays where they were and the group simply appears. So this deliberately does NOT go through
- *    `App.tsx`'s `runCreateWorkspace`, which activates and reveals what it creates — it calls the
- *    command client directly. That is only half of it: the DAEMON also reveals every workspace it
- *    creates (`handlers/app/workspaces.ts` ▸ `revealCreatedWorkspace`), which no caller can opt
- *    out of, so the call site in `App.tsx` puts the view back afterwards — guarded on the user
- *    still standing on one of the workspaces this seed made. The two halves together are what
- *    reproduce the Swift's end state; the audit's `debug-menu` step is where that is checked on
- *    a real window rather than asserted here.
+ *    `App.tsx`'s `runCreateWorkspace`, which activates and reveals what it creates: it calls the
+ *    command client directly, and asks for BACKGROUND creates (`focus: false`, #307), so the
+ *    daemon neither reveals them to the windows nor moves its own active workspace. The audit's
+ *    `debug-menu` step is where that is checked on a real window rather than asserted here.
  *
  * Everything here is pure over an injected `SeedCommands`, so the whole sequence — including the
  * failure paths — is testable without a window or a daemon.
@@ -46,7 +43,7 @@ export type SeedReply = Record<string, unknown>;
 /** The verbs the seed needs, narrowed so a test can hand it plain functions. */
 export interface SeedCommands {
     createGroup(input: { name: string; color?: 'gray' }): Promise<SeedReply>;
-    createWorkspace(input: { name: string; color?: 'gray'; group?: string }): Promise<SeedReply>;
+    createWorkspace(input: { name: string; color?: 'gray'; group?: string; focus?: boolean }): Promise<SeedReply>;
     /**
      * Optional, and only ever called when the create's ack carried no `group_id` — which is the
      * REAL daemon's behaviour today: `group-create` is a fire-and-forget wire verb and
@@ -63,17 +60,6 @@ export interface SeedTestGroupDeps {
     readonly commands: SeedCommands;
     /** Reported the same way every other failed verb in `App.tsx` is. */
     readonly onFailure?: ((title: string, message: string) => void) | undefined;
-    /**
-     * Called with each workspace id the instant its create is acknowledged — before the daemon's
-     * own `reveal-pane` for it can be processed, and that ordering is a guarantee rather than a
-     * hope: the handler replies first and broadcasts the reveal afterwards
-     * (`handlers/app/workspaces.ts` ▸ `handleWorkspaceCreate` → `dispatchCreate`), and this
-     * callback runs in the reply's own microtask while the broadcast is a later socket event.
-     *
-     * `App.tsx` uses it to suppress exactly those reveals, which is how the seed keeps the
-     * Swift's "the group appears, the user does not move" behaviour.
-     */
-    readonly onWorkspaceCreated?: ((workspaceID: string) => void) | undefined;
 }
 
 /**
@@ -96,42 +82,6 @@ export interface SeedTestGroupResult {
     readonly workspaceIDs: readonly string[];
     /** Present when `ok` is false: what went wrong, already human-readable. */
     readonly error?: string | undefined;
-}
-
-// ── one-shot reveal suppression ─────────────────────────────────────────────────────
-
-/**
- * How long a seeded workspace's own `reveal-pane` stays ignorable.
- *
- * Bounded rather than open-ended on purpose: if the reveal never arrives (an older daemon that
- * does not broadcast one), an unbounded entry would silently swallow a *legitimate* reveal of
- * that same workspace an hour later. Ten seconds is far longer than the gap between a reply and
- * the broadcast that follows it, and far shorter than anything a user would notice.
- */
-export const REVEAL_SUPPRESSION_MS = 10_000;
-
-/** Mark one workspace's next reveal as "this window asked for it, do not act on it". */
-export function suppressReveal(pending: Map<string, number>, workspaceID: string, now = Date.now()): void {
-    pending.set(workspaceID, now + REVEAL_SUPPRESSION_MS);
-}
-
-/**
- * Should this reveal be ignored? One shot: a suppressed id is consumed by the first reveal that
- * matches it, so a second reveal of the same workspace (a notification click, say) is honoured.
- * Expired entries are dropped rather than obeyed.
- */
-export function consumeSuppressedReveal(
-    pending: Map<string, number>,
-    workspaceID: string,
-    now = Date.now()
-): boolean {
-    for (const [id, deadline] of pending) {
-        if (deadline <= now) pending.delete(id);
-    }
-    const deadline = pending.get(workspaceID);
-    if (deadline === undefined) return false;
-    pending.delete(workspaceID);
-    return deadline > now;
 }
 
 function ok(reply: SeedReply): boolean {
@@ -213,7 +163,9 @@ export async function seedTestGroup(deps: SeedTestGroupDeps): Promise<SeedTestGr
                 // The group is addressed by id when we have one and by name otherwise — the
                 // daemon's own `resolveGroup` accepts either, and a reply without `group_id` is
                 // still a group that exists.
-                ...(groupID === undefined ? { group: TEST_GROUP_NAME } : { group: groupID })
+                ...(groupID === undefined ? { group: TEST_GROUP_NAME } : { group: groupID }),
+                // #307: the fixture appears in the sidebar; the user stays where they were.
+                focus: false
             });
             if (!ok(reply)) {
                 error = errorOf(reply);
@@ -221,10 +173,7 @@ export async function seedTestGroup(deps: SeedTestGroupDeps): Promise<SeedTestGr
                 continue;
             }
             const id = idOf(reply, 'workspace_id');
-            if (id !== undefined) {
-                workspaceIDs.push(id);
-                deps.onWorkspaceCreated?.(id);
-            }
+            if (id !== undefined) workspaceIDs.push(id);
         } catch (thrown) {
             error = thrown instanceof Error ? thrown.message : String(thrown);
             deps.onFailure?.('Seed Test Group', `${name}: ${error}`);

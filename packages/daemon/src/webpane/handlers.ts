@@ -501,6 +501,22 @@ export function webHandlerEntries(deps: AppDeps): readonly (readonly [string, Ap
                 url,
                 active: msg.make_active
             });
+            /*
+             * #298: a FOCUSING new tab (⌘T, the tab strip's "+", `kelpi web tab-new --focus`)
+             * focuses its pane first, and in that order: the client's WEB-002 rule hands a blank
+             * tab's URL bar the caret only in the pane wearing the ring, and decides when the tab
+             * arrives. A background tab (an agent's) leaves focus where it is, so its URL bar
+             * never pulls the keyboard out of the pane the user is typing in.
+             */
+            if (msg.focus === true) {
+                // Shown as well as focused, as `web-open`'s reuse does: a zoom on some other pane
+                // would hide the tab and its URL bar behind it.
+                const zoomed = target.workspace.zoomedPaneID;
+                if (zoomed !== null && zoomed !== target.paneID) {
+                    ctx.store.dispatch({ type: 'toggle-zoom', workspaceID: target.workspace.id });
+                }
+                ctx.store.dispatch({ type: 'focus-pane', workspaceID: target.workspace.id, paneID: target.paneID });
+            }
             ctx.store.dispatch({
                 type: 'web-tab-open',
                 workspaceID: target.workspace.id,

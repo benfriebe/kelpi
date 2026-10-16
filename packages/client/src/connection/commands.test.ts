@@ -142,7 +142,7 @@ describe('CommandClient RPC', () => {
         void h.client.setWorkspaceChildrenCollapsed({ workspaceID: 'W1', collapsed: true }).catch(() => undefined);
         expect(h.lastCommand()).toEqual({ command: 'set-workspace-children-collapsed', workspace_id: 'W1', collapsed: true });
         void h.client.createWorkspace({ name: 'worker', parent: 'W1' }).catch(() => undefined);
-        expect(h.lastCommand()).toEqual({ command: 'workspace-create', name: 'worker', parent: 'W1' });
+        expect(h.lastCommand()).toEqual({ command: 'workspace-create', name: 'worker', parent: 'W1', focus: true });
         // A cascading delete is GUI-only, so it rides `delete-workspace`, still under the
         // last-workspace guard (no `allow_last`).
         void h.client.deleteWorkspace({ workspace: 'W1', force: true, cascadeChildren: true }).catch(() => undefined);
@@ -197,7 +197,10 @@ describe('CommandClient RPC', () => {
         const h = harness();
 
         void h.client.movePaneToWorkspace({ paneID: PANE, workspace: 'beta', create: true });
-        expect(h.lastCommand()).toEqual({ command: 'pane-move-to-workspace', pane_id: PANE, name: 'beta', text: 'true' });
+        expect(h.lastCommand()).toEqual({ command: 'pane-move-to-workspace', pane_id: PANE, name: 'beta', text: 'true', focus: true });
+        // #298: the window's move is a gesture; a caller can still ask for a background one.
+        void h.client.movePaneToWorkspace({ paneID: PANE, workspace: 'beta', focus: false });
+        expect(h.lastCommand()).toEqual({ command: 'pane-move-to-workspace', pane_id: PANE, name: 'beta', focus: false });
 
         void h.client.labelWorkspace({ workspace: 'dev', op: 'add', values: ['a', 'b'] });
         expect(h.lastCommand()).toEqual({
@@ -254,7 +257,24 @@ describe('CommandClient RPC', () => {
         expect(h.lastCommand()).toEqual({ command: 'create-group-for-workspaces', name: 'plain', workspace_ids: [] });
 
         void h.client.createWorkspace({ name: 'dev', group: 'G1', groupDefaults: false });
-        expect(h.lastCommand()).toEqual({ command: 'workspace-create', name: 'dev', group: 'G1', group_defaults: false });
+        expect(h.lastCommand()).toEqual({ command: 'workspace-create', name: 'dev', group: 'G1', group_defaults: false, focus: true });
+    });
+
+    /**
+     * #307 / #298: on the wire an absent `focus` is a BACKGROUND create, open or move (what an
+     * agent's CLI call gets). Every caller of these builders is one of the window's gestures, so
+     * they default to `focus: true`; Seed Test Group passes false for its creates.
+     */
+    it('defaults the gesture verbs to focus: true, and lets a caller ask for the background', () => {
+        const h = harness();
+        void h.client.createWorkspace({ name: 'dev' });
+        expect(h.lastCommand()).toEqual({ command: 'workspace-create', name: 'dev', focus: true });
+        void h.client.createWorkspace({ name: 'seed', focus: false });
+        expect(h.lastCommand()).toEqual({ command: 'workspace-create', name: 'seed', focus: false });
+        void h.client.openDiff({ repoPath: '/repo', paneID: PANE });
+        expect(h.lastCommand()).toEqual({ command: 'diff', repo_path: '/repo', pane_id: PANE, focus: true });
+        void h.client.openDiff({ repoPath: '/repo', focus: false });
+        expect(h.lastCommand()).toEqual({ command: 'diff', repo_path: '/repo', focus: false });
     });
 
     it('refuses a resize with both or neither directive', async () => {

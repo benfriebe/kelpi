@@ -1290,6 +1290,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         spawn: spawnDefaults,
         liveWorkingDirectory,
         clearScreen,
+        isPaneAttended: (workspaceID, paneID) => ws?.isPaneAttended(workspaceID, paneID) ?? false,
         ...(options.now !== undefined ? { clock: options.now } : {}),
         ...(options.uuid !== undefined ? { mintPaneID: options.uuid, mintWorkspaceID: options.uuid } : {})
     };

@@ -32,6 +32,79 @@ function seeded(): DaemonState {
     return h.state();
 }
 
+/**
+ * #307: `focus: false` is a BACKGROUND create (an agent's `kelpi workspace create`). The user's
+ * workspace stays active, the new row is appended to the end of its scope, and it is still made
+ * visible: a collapsed group or parent opens so the sidebar can point at it.
+ */
+describe('background creates (#307)', () => {
+    const W4 = id('bbbbbbbb', 4);
+    const W5 = id('bbbbbbbb', 5);
+
+    function userOnW1() {
+        const h = harness();
+        h.dispatch(
+            create(W1, 'alpha'),
+            create(W2, 'beta'),
+            { type: 'create-group', id: G1, name: 'team', now: NOW },
+            { type: 'set-active-workspace', id: W1, now: NOW }
+        );
+        return h;
+    }
+
+    it('top level: the active workspace stays and the row is appended, even near-selection', () => {
+        const h = userOnW1();
+        h.dispatch(
+            create(W3, 'w1', { focus: false, placement: 'near-selection' }),
+            create(W4, 'w2', { focus: false, placement: 'near-selection' })
+        );
+        expect(h.state().lastActiveWorkspaceID).toBe(W1);
+        expect(topLevelWorkspaceIDs(h.state())).toEqual([W1, W2, W3, W4]);
+    });
+
+    it('group: a collapsed group opens, the row is appended, the active workspace stays', () => {
+        const h = userOnW1();
+        h.dispatch(
+            create(W3, 'member', { groupID: G1 }),
+            { type: 'set-active-workspace', id: W1, now: NOW },
+            { type: 'set-group-collapsed', id: G1, collapsed: true },
+            create(W4, 'w1', { focus: false, groupID: G1, placement: 'near-selection' })
+        );
+        expect(h.state().lastActiveWorkspaceID).toBe(W1);
+        expect(groupByID(h.state(), G1)?.childOrder).toEqual([W3, W4]);
+        expect(groupByID(h.state(), G1)?.isCollapsed).toBe(false);
+    });
+
+    it('nested: the collapsed parent opens, the child is appended, the active workspace stays', () => {
+        const h = userOnW1();
+        h.dispatch(
+            create(W3, 'first child', { parentID: W1 }),
+            { type: 'set-active-workspace', id: W1, now: NOW },
+            { type: 'set-workspace-children-collapsed', id: W1, collapsed: true },
+            create(W4, 'w1', { focus: false, parentID: W1, placement: 'near-selection' }),
+            create(W5, 'w2', { focus: false, parentID: W1, placement: 'near-selection' })
+        );
+        const parent = workspaceByID(h.state(), W1);
+        expect(h.state().lastActiveWorkspaceID).toBe(W1);
+        expect(parent?.childOrder).toEqual([W3, W4, W5]);
+        expect(parent?.childrenCollapsed).toBe(false);
+    });
+
+    it('with no active workspace to keep, the background create becomes active', () => {
+        const h = harness();
+        h.dispatch(create(W1, 'only', { focus: false }));
+        expect(h.state().lastActiveWorkspaceID).toBe(W1);
+    });
+
+    for (const focus of [true, undefined]) {
+        it(`focus: ${String(focus)} switches to the new workspace, as before`, () => {
+            const h = userOnW1();
+            h.dispatch(create(W3, 'w1', { focus }));
+            expect(h.state().lastActiveWorkspaceID).toBe(W3);
+        });
+    }
+});
+
 describe('workspace creation', () => {
     it('creates one shell pane, focuses it and appends to the sidebar', () => {
         const h = harness();

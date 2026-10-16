@@ -56,7 +56,7 @@ describe('browser shortcuts in replaceable chrome', () => {
         expect(remote.raw.mock.calls.map(([payload]) => payload)).toEqual([
             { command: 'web-reload', pane_id: remote.paneID, gesture: true },
             { command: 'web-back', pane_id: remote.paneID, gesture: true }, { command: 'web-forward', pane_id: remote.paneID, gesture: true },
-            { command: 'web-tab-new', pane_id: remote.paneID, url: '', make_active: true, gesture: true },
+            { command: 'web-tab-new', pane_id: remote.paneID, url: '', make_active: true, gesture: true, focus: true },
             { command: 'web-tab-close', pane_id: remote.paneID, tab: remote.tabs[1] },
             { command: 'web-tab-select', pane_id: remote.paneID, tab: remote.tabs[0] },
             { command: 'web-tab-select', pane_id: remote.paneID, tab: remote.tabs[0] },

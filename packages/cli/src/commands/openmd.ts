@@ -119,6 +119,9 @@ export async function handleOpen(args: string[]): Promise<void> {
 export async function handleDiff(args: string[]): Promise<void> {
     const cwd = process.cwd();
     const payload: JsonObject = { command: 'diff', repo_path: cwd };
+    // #298: taken out BEFORE the positional, or `kelpi diff --focus` would diff a path named
+    // `--focus`. Without it nothing is sent, and the diff opens in the background.
+    if (popSwitch('--focus', args)) payload['focus'] = true;
     const target = args.shift();
     if (target !== undefined) payload['target_path'] = path.resolve(cwd, target);
     const paneID = rawPaneID();

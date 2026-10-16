@@ -861,11 +861,20 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
             const view = item.manifest.contributes.views.find(view => view.id === viewID && view.placements.includes('pane'));
             if (!view) throw new Error('plugin pane view is not registered');
             const state = this.options.store.getState();
-            const workspaceID = text(args['workspaceID'] ?? context.workspaceID ?? state.lastActiveWorkspaceID, 'workspaceID');
+            // #298: the caller's pane (`kelpi plugin open` forwards KELPI_PANE_ID, a view its own)
+            // is where the new pane splits off, and its workspace is the default destination, so
+            // an agent's open lands beside the agent rather than in whatever the user is looking at.
+            const sourcePaneID = typeof args['paneID'] === 'string' ? args['paneID'] : context.paneID;
+            const workspaceID = text(args['workspaceID'] ?? context.workspaceID ?? (sourcePaneID ? this.paneWorkspaceID(sourcePaneID) : undefined) ?? state.lastActiveWorkspaceID, 'workspaceID');
             if (!state.workspaces.some(workspace => workspace.id === workspaceID)) throw new Error('workspace does not exist');
             const paneID = newUUID();
-            this.options.store.dispatch({ type: 'create-plugin-pane', workspaceID, paneID, title: view.title, now: Date.now(), plugin: { pluginID: id, viewID, stateVersion: view.stateVersion, state: pluginObject(args['state'] ?? {}) } });
-            this.options.broadcast({ type: 'reveal-pane', workspaceID, paneID, ...(context.windowID ? { windowID: context.windowID } : {}) });
+            // #298: background unless asked. The SDK's `openView` and the Plugins tab send
+            // `focus: true` (a click); `kelpi plugin open` sends it only with `--focus`. A
+            // background open reveals nothing and leaves the focused pane alone, so neither the
+            // keyboard nor the window's workspace moves.
+            const focus = args['focus'] === true;
+            this.options.store.dispatch({ type: 'create-plugin-pane', workspaceID, paneID, title: view.title, now: Date.now(), plugin: { pluginID: id, viewID, stateVersion: view.stateVersion, state: pluginObject(args['state'] ?? {}) }, ...(sourcePaneID !== undefined ? { sourcePaneID } : {}), focus });
+            if (focus) this.options.broadcast({ type: 'reveal-pane', workspaceID, paneID, ...(context.windowID ? { windowID: context.windowID } : {}) });
             return { paneID, workspaceID };
         }
         if (method === 'views.setState') {

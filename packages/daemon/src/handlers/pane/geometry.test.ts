@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { allPaneIDs } from '@kelpi/core/layout';
 
-import { W1, W2, harness, seedSplit, seedWorkspace, testID } from './testing.js';
+import { NOW, W1, W2, harness, seedSplit, seedWorkspace, testID } from './testing.js';
 
 const P1 = testID('1', 1);
 const P2 = testID('2', 2);
@@ -250,7 +250,7 @@ describe('pane-move-adjacent', () => {
 });
 
 describe('pane-move-to-workspace', () => {
-    it('moves the pane with the LENIENT (case-insensitive) resolver and switches the active workspace', () => {
+    it('moves the pane with the LENIENT (case-insensitive) resolver and, with focus, switches the active workspace', () => {
         const h = pair();
         seedWorkspace(h, { id: W2, name: 'Beta', paneID: P3 });
 
@@ -258,7 +258,8 @@ describe('pane-move-to-workspace', () => {
             command: 'pane-move-to-workspace',
             pane_id: P2,
             name: 'beta',
-            create: false
+            create: false,
+            focus: true
         });
 
         expect(h.workspace(W1).panes.map((pane) => pane.id)).toEqual([P1]);
@@ -292,6 +293,85 @@ describe('pane-move-to-workspace', () => {
         expect(h.pty.spawns).toEqual([]);
         // The implicitly created destination is revealed too (#52).
         expect(h.broadcasts).toEqual([{ type: 'reveal-pane', workspaceID: NEWWS, paneID: P2 }]);
+    });
+
+    /**
+     * #298: an agent's `kelpi pane move-to-workspace` (no focus) is a BACKGROUND move: the pane
+     * leaves, the user's view and ACTIVE stay, the destination keeps its own focus, and nothing
+     * is revealed. Setup: W1 holds P1 (the user's, focused) and P2 (the agent's); W1 is active.
+     */
+    describe('in the background (#298)', () => {
+        function userInP1() {
+            const h = pair();
+            seedWorkspace(h, { id: W2, name: 'Beta', paneID: P3 });
+            h.store.dispatch({ type: 'set-active-workspace', id: W1, now: NOW });
+            h.store.dispatch({ type: 'focus-pane', workspaceID: W1, paneID: P1 });
+            h.broadcasts.length = 0;
+            return h;
+        }
+
+        it('moves the agent pane without switching, focusing or revealing', () => {
+            const h = userInP1();
+            h.runSilent({ command: 'pane-move-to-workspace', pane_id: P2, name: 'beta', create: false });
+            expect(h.workspace(W2).panes.map((pane) => pane.id)).toEqual([P3, P2]);
+            expect(h.workspace(W2).focusedPaneID).toBe(P3);
+            expect(h.workspace(W1).focusedPaneID).toBe(P1);
+            expect(h.state().lastActiveWorkspaceID).toBe(W1);
+            expect(h.broadcasts).toEqual([]);
+        });
+
+        it('into a --create workspace: the arrival focuses its new home, still without a reveal', () => {
+            const h = userInP1();
+            h.runSilent({ command: 'pane-move-to-workspace', pane_id: P2, name: 'gamma', text: 'true', create: true });
+            expect(h.workspace(NEWWS).focusedPaneID).toBe(P2);
+            expect(h.state().lastActiveWorkspaceID).toBe(W1);
+            expect(h.broadcasts).toEqual([]);
+        });
+
+        it('follows the pane the user is typing in, so the keystrokes stay in its PTY', () => {
+            const h = userInP1();
+            h.runSilent({ command: 'pane-move-to-workspace', pane_id: P1, name: 'beta', create: false });
+            expect(h.workspace(W2).focusedPaneID).toBe(P1);
+            expect(h.state().lastActiveWorkspaceID).toBe(W2);
+            expect(h.broadcasts).toEqual([{ type: 'reveal-pane', workspaceID: W2, paneID: P1 }]);
+        });
+
+        /**
+         * With the windows' seam, "typing in it" is per window, not the daemon-wide ACTIVE: a
+         * second window can have made another workspace ACTIVE while the user types in P1.
+         */
+        it('follows a pane some window attends even when another workspace is ACTIVE', () => {
+            const h = harness({ minted: [NEWWS], isPaneAttended: (workspaceID, paneID) => workspaceID === W1 && paneID === P1 });
+            seedWorkspace(h, { id: W1, name: 'dev', paneID: P1 });
+            seedSplit(h, { workspaceID: W1, sourcePaneID: P1, paneID: P2, label: 'worker-1' });
+            seedWorkspace(h, { id: W2, name: 'Beta', paneID: P3 });
+            expect(h.state().lastActiveWorkspaceID).toBe(W2);
+            h.runSilent({ command: 'pane-move-to-workspace', pane_id: P1, name: 'gamma', text: 'true', create: true });
+            expect(h.state().lastActiveWorkspaceID).toBe(NEWWS);
+            expect(h.broadcasts).toContainEqual({ type: 'reveal-pane', workspaceID: NEWWS, paneID: P1 });
+        });
+
+        it('does not follow the active workspace\'s focused pane when no window attends it', () => {
+            const h = harness({ minted: [NEWWS], isPaneAttended: () => false });
+            seedWorkspace(h, { id: W1, name: 'dev', paneID: P1 });
+            seedSplit(h, { workspaceID: W1, sourcePaneID: P1, paneID: P2, label: 'worker-1' });
+            seedWorkspace(h, { id: W2, name: 'Beta', paneID: P3 });
+            h.store.dispatch({ type: 'set-active-workspace', id: W1, now: NOW });
+            h.store.dispatch({ type: 'focus-pane', workspaceID: W1, paneID: P1 });
+            h.broadcasts.length = 0;
+            h.runSilent({ command: 'pane-move-to-workspace', pane_id: P1, name: 'beta', create: false });
+            expect(h.state().lastActiveWorkspaceID).toBe(W1);
+            expect(h.broadcasts).toEqual([]);
+        });
+
+        it('does not follow a focused pane of a workspace the user is not on', () => {
+            const h = userInP1();
+            h.store.dispatch({ type: 'set-active-workspace', id: W2, now: NOW });
+            h.broadcasts.length = 0;
+            h.runSilent({ command: 'pane-move-to-workspace', pane_id: P1, name: 'gamma', text: 'true', create: true });
+            expect(h.state().lastActiveWorkspaceID).toBe(W2);
+            expect(h.broadcasts).toEqual([]);
+        });
     });
 
     it('drops when the destination is unknown and create is not set', () => {

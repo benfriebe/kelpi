@@ -292,6 +292,35 @@ describe('public SDK over Kelpi command handlers', () => {
         expect(sent.at(-1)).toMatchObject({ command: 'open', focus: true });
         expect(app.state().workspaces[0]?.panes.find(pane => pane.id === focusedPane())?.filePath).toBe('/tmp/loud.md');
     });
+    /**
+     * #307 / #298: the same rule for the helpers that create a workspace, move a pane to another
+     * one, open a diff or open a view: a gesture by default, `focus: false` for code without one.
+     */
+    it('workspace, move-to-workspace, diff and view helpers focus by default and pass focus:false through', async () => {
+        const calls: { method: string; args: JsonObject }[] = [];
+        const transport: HostCall = async (method, args) => {
+            calls.push({ method, args: args as JsonObject });
+            return method === 'command' ? { ok: true, workspace_id: W1, workspace_name: 'w', muted: false } : { paneID: 'P', workspaceID: W1 };
+        };
+        const api = createKelpiAPI(transport, () => ({ workspaceID: W1, paneID: P1 }));
+        const payload = () => (calls.at(-1)?.args['payload'] ?? calls.at(-1)?.args) as JsonObject;
+        await api.workspaces.create({ name: 'w' });
+        expect(payload()).toMatchObject({ command: 'workspace-create', focus: true });
+        await api.workspaces.create({ name: 'w', focus: false });
+        expect(payload()).toMatchObject({ command: 'workspace-create', focus: false });
+        await api.panes.moveToWorkspace(P1, W2);
+        expect(payload()).toMatchObject({ command: 'pane-move-to-workspace', focus: true });
+        await api.panes.moveToWorkspace(P1, W2, { focus: false });
+        expect(payload()).toMatchObject({ command: 'pane-move-to-workspace', focus: false });
+        await api.git.diff('/repo');
+        expect(payload()).toMatchObject({ command: 'diff', focus: true });
+        await api.git.diff('/repo', { focus: false });
+        expect(payload()).toMatchObject({ command: 'diff', focus: false });
+        await api.openView('sample.view');
+        expect(calls.at(-1)).toEqual({ method: 'views.open', args: { viewID: 'sample.view', focus: true } });
+        await api.openView('sample.view', { focus: false });
+        expect(calls.at(-1)).toEqual({ method: 'views.open', args: { viewID: 'sample.view', focus: false } });
+    });
     it('models terminal find at workspace scope and keeps its active search pane', async () => {
         const searchAsync = vi.fn(async () => [{ line: 0, col: 0, length: 3, linesFromBottom: 0 }]);
         const { api, app } = host(app => ({ search: createTerminalSearchChannel({ store: app.store, term: { searchAsync } }) }));

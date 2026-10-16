@@ -431,6 +431,52 @@ describe('tabs (§5)', () => {
         });
     });
 
+    /**
+     * #298: an agent's blank `kelpi web tab-new` in a pane the user is not in must not move the
+     * focus (the client's WEB-002 then leaves the URL bar alone). A focusing new tab (⌘T, "+",
+     * `--focus`) focuses its pane FIRST, so the ring is already there when the tab arrives.
+     */
+    describe('focus (#298)', () => {
+        function userInShell() {
+            const h = webHarness({ ids: [OTHER_TAB] });
+            h.store.dispatch({ type: 'focus-pane', workspaceID: WORKSPACE, paneID: SHELL_PANE });
+            expect(h.state().workspaces[0]?.focusedPaneID).toBe(SHELL_PANE);
+            return h;
+        }
+
+        it('without focus the tab opens and the focus stays in the user\'s pane', () => {
+            const h = userInShell();
+            h.reply({ command: 'web-tab-new', pane_id: WEB_PANE, url: '', make_active: true });
+            const workspace = h.state().workspaces[0];
+            expect(workspace?.webPanes[WEB_PANE]?.activeTabID).toBe(OTHER_TAB);
+            expect(workspace?.focusedPaneID).toBe(SHELL_PANE);
+        });
+
+        it('with focus the pane is focused before the tab arrives', () => {
+            const h = userInShell();
+            /** The focused pane at the moment the new tab first exists. */
+            let focusedWhenTabArrived: string | null | undefined;
+            const off = h.store.subscribe(() => {
+                const workspace = h.state().workspaces[0];
+                if (focusedWhenTabArrived === undefined && workspace?.webPanes[WEB_PANE]?.tabs.some((tab) => tab.id === OTHER_TAB)) {
+                    focusedWhenTabArrived = workspace.focusedPaneID;
+                }
+            });
+            h.reply({ command: 'web-tab-new', pane_id: WEB_PANE, url: '', make_active: true, gesture: true, focus: true });
+            off();
+            expect(focusedWhenTabArrived).toBe(WEB_PANE);
+        });
+
+        it('with focus, a zoom on another pane is cleared so the new tab is shown', () => {
+            const h = userInShell();
+            h.store.dispatch({ type: 'toggle-zoom', workspaceID: WORKSPACE });
+            expect(h.state().workspaces[0]?.zoomedPaneID).toBe(SHELL_PANE);
+            h.reply({ command: 'web-tab-new', pane_id: WEB_PANE, url: '', make_active: true, gesture: true, focus: true });
+            expect(h.state().workspaces[0]?.zoomedPaneID).toBeNull();
+            expect(h.state().workspaces[0]?.focusedPaneID).toBe(WEB_PANE);
+        });
+    });
+
     it('resolves a tab ref by uuid or index, with the spec error strings', () => {
         const h = webHarness({ ids: [OTHER_TAB] });
         h.reply({ command: 'web-tab-new', pane_id: WEB_PANE, url: 'b.test', make_active: false });

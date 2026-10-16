@@ -537,6 +537,38 @@ input {
 }
 
 /*
+ * #307: a workspace an agent created in the BACKGROUND. The window does not switch to it, so the
+ * sidebar points at it instead: the row is scrolled into view (§WS-100's one-shot) and wears
+ * this accent wash, fading out over `NEW_WORKSPACE_CUE_MS` (`app/new-workspace-cue.ts`). An
+ * overlay rather than the row's own background, so it composes with the active and selected
+ * fills and with §WS-008's entry animation, which owns the row's `animation`.
+ */
+[data-just-created='true']::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--kelpi-accent);
+  opacity: 0;
+  pointer-events: none;
+  animation: kelpi-sidebar-row-created 1600ms ease-out both;
+}
+
+@keyframes kelpi-sidebar-row-created {
+  0% { opacity: 0.28; }
+  60% { opacity: 0.2; }
+  100% { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* The cue stays, as a steady wash for as long as the row carries the attribute. */
+  [data-just-created='true']::after {
+    animation: none;
+    opacity: 0.2;
+  }
+}
+
+/*
  * §APP-046 — the drawn title bar IS the window's drag region.
  *
  * The shell creates its window with `titleBarStyle: 'hiddenInset'`, which removes the native

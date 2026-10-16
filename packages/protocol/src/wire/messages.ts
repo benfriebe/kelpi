@@ -225,6 +225,11 @@ export interface PaneMoveToWorkspaceMessage {
     text?: string | undefined;
     /** Decoded quirk (§6.2): `text === "true"`, a string comparison, not a boolean. */
     create: boolean;
+    /**
+     * #298: follow the pane to its new workspace. Absent (or false) moves it in the BACKGROUND
+     * (no reveal, the active workspace stays), unless it is the pane the user is typing in.
+     */
+    focus?: boolean | undefined;
 }
 
 export interface PaneListMessage {
@@ -305,6 +310,12 @@ export interface WorkspaceCreateMessage {
      * forwards `KELPI_PANE_ID`). Exclusive with `parent`.
      */
     parent_pane_id?: string | undefined;
+    /**
+     * #307: switch to the new workspace. Absent (or false) creates it in the BACKGROUND: no
+     * window is revealed to it and the daemon's active workspace does not move. The window's
+     * own gestures send `true`; `kelpi workspace create --focus` does too.
+     */
+    focus?: boolean | undefined;
 }
 
 /**
@@ -550,6 +561,8 @@ export interface DiffMessage {
     repo_path: string;
     target_path?: string | undefined;
     pane_id?: string | undefined;
+    /** #298: as on `pane-split`; absent means background. */
+    focus?: boolean | undefined;
 }
 
 // ── 6.7 Graft commands ──────────────────────────────────────────────────────────────
@@ -672,6 +685,11 @@ export interface WebTabNewMessage extends PaneTargetScope {
     make_active: boolean;
     /** #375: as on `web-navigate`. */
     gesture?: true | undefined;
+    /**
+     * #298: focus the pane first, so a blank tab's URL bar may take the caret. Absent (or
+     * false) leaves focus alone. Independent of `gesture`, which says who drives the tab.
+     */
+    focus?: boolean | undefined;
 }
 
 export interface WebTabCloseMessage extends PaneTargetScope {

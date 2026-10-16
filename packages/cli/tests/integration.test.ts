@@ -618,6 +618,12 @@ describe('fire-and-forget', () => {
         });
     });
 
+    /** #298: the move is background unless asked; `--focus` makes the view follow the pane. */
+    it('sends focus: true only with --focus on pane move-to-workspace', async () => {
+        await runCLI(['pane', 'move-to-workspace', '--to-workspace', 'beta', '--focus'], { port: server.port, paneID: PANE });
+        expect(await lastRequest()).toEqual({ command: 'pane-move-to-workspace', pane_id: PANE, name: 'beta', focus: true });
+    });
+
     it('warns but still exits 0 when the socket is dead', async () => {
         const port = await deadPort();
         const result = await runCLI(['group', 'create', 'squad'], { port });
@@ -797,6 +803,29 @@ describe('nested workspaces (app-state-core §2.9)', () => {
         expect(outside.code).toBe(1);
         expect(outside.stderr).toContain('must run inside a Kelpi pane');
         expect(server.requests).toHaveLength(0);
+    });
+
+    /**
+     * #307: `workspace create` is a BACKGROUND create unless asked. Without `--focus` the CLI
+     * sends no `focus` field (the daemon's default is background); with it, `focus: true`, on
+     * the plain and the worktree forms alike.
+     */
+    it('sends focus: true only with --focus on workspace create, and documents it', async () => {
+        const home = scratchHome();
+        server.respond(() => ({ lines: [{ ok: true, workspace_id: PANE, workspace_name: 'worker', muted: false }] }));
+
+        await runCLI(['workspace', 'create', '--name', 'worker'], { port: server.port });
+        expect(await lastRequest()).toEqual({ command: 'workspace-create', name: 'worker' });
+
+        await runCLI(['workspace', 'create', '--name', 'worker', '--focus'], { port: server.port });
+        expect(await lastRequest()).toEqual({ command: 'workspace-create', name: 'worker', focus: true });
+
+        await runCLI(['workspace', 'create', '--worktree', 'fix', '--repo', home, '--focus'], { port: server.port, cwd: home });
+        expect(await lastRequest()).toMatchObject({ command: 'workspace-create', worktree: 'fix', focus: true });
+
+        const help = await runCLI(['workspace', 'create', '--help'], { port: server.port });
+        expect(help.stdout).toContain('--focus            Switch every window to the new workspace (default: background).');
+        expect(help.stdout).toContain('background: every window stays where it is');
     });
 
     it('fails when a daemon that predates nesting created the workspace at the top level', async () => {
@@ -1127,6 +1156,24 @@ describe('open / md / diff routing', () => {
         const help = await runCLI(['open', '--help'], { port: server.port });
         expect(help.stdout).toContain('Usage: kelpi open [--here] [--focus] <path-or-url>');
         expect(help.stdout).toContain('The new pane opens in the background; --focus moves focus to it.');
+    });
+
+    /** #298: `kelpi diff` is background by default; `--focus` is taken before the positional. */
+    it('sends focus: true only with --focus on diff, never reading it as the path', async () => {
+        const home = scratchHome();
+        await runCLI(['diff'], { port: server.port, cwd: home, paneID: PANE });
+        expect(await lastRequest()).toEqual({ command: 'diff', repo_path: home, pane_id: PANE });
+
+        await runCLI(['diff', '--focus'], { port: server.port, cwd: home, paneID: PANE });
+        expect(await lastRequest()).toEqual({ command: 'diff', repo_path: home, pane_id: PANE, focus: true });
+
+        await runCLI(['diff', '--focus', 'src/app.ts'], { port: server.port, cwd: home });
+        expect(await lastRequest()).toEqual({
+            command: 'diff',
+            repo_path: home,
+            target_path: path.join(home, 'src/app.ts'),
+            focus: true
+        });
     });
 
     it('refuses a file type it has no pane for', async () => {
@@ -1482,6 +1529,20 @@ describe('web printers', () => {
             make_active: true,
             target: PANE
         });
+    });
+
+    /**
+     * #298: `--focus` focuses the pane (so a blank tab's URL bar gets the caret); without it the
+     * tab opens in the background. `--no-focus` (leave the tab inactive) contradicts it.
+     */
+    it('sends focus: true only with --focus on tab-new, and refuses it with --no-focus', async () => {
+        server.respond(() => ({ lines: [{ ok: true, pane_id: PANE }] }));
+        await runCLI(['web', 'tab-new', '--target', PANE, '--focus'], { port: server.port });
+        expect(await lastRequest()).toEqual({ command: 'web-tab-new', url: '', make_active: true, target: PANE, focus: true });
+        const both = await runCLI(['web', 'tab-new', '--target', PANE, '--focus', '--no-focus'], { port: server.port });
+        expect(both.code).toBe(1);
+        expect(both.stderr).toContain('--focus and --no-focus contradict each other');
+        expect(server.requests).toHaveLength(1);
     });
 });
 

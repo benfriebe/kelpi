@@ -334,7 +334,7 @@ describe('what the chrome tells the daemon (#375)', () => {
             { command: 'web-back', pane_id: PANE, gesture: true },
             { command: 'web-forward', pane_id: PANE, gesture: true },
             { command: 'web-reload', pane_id: PANE, gesture: true, hard: true },
-            { command: 'web-tab-new', pane_id: PANE, url: '', make_active: true, gesture: true }
+            { command: 'web-tab-new', pane_id: PANE, url: '', make_active: true, gesture: true, focus: true }
         ]);
     });
 

@@ -891,7 +891,7 @@ and the moved pane takes the focus, as every move did before #295. The window's 
 ### 9.10 `kelpi pane move-to-workspace`
 
 ```
-kelpi pane move-to-workspace --to-workspace <name-or-uuid> [--create]
+kelpi pane move-to-workspace --to-workspace <name-or-uuid> [--create] [--focus]
 ```
 
 - `requirePaneID()` first (silent exit 0 outside a pane).
@@ -903,6 +903,10 @@ kelpi pane move-to-workspace --to-workspace <name-or-uuid> [--create]
   ```
 
   `"text":"true"` (a string!) is present only when `--create` was passed.
+- **Background by default (issue #298).** Without `--focus` the pane moves in the background:
+  the window stays on its workspace and the destination keeps its own focus, unless the moved
+  pane is the one the user is typing in (the focused pane of the active workspace), which the
+  view follows. `--focus` sends `"focus":true` and the view follows the pane, as before #298.
 
 ### 9.11 `kelpi pane list`
 
@@ -1073,12 +1077,18 @@ kelpi workspace list [--group <name-or-id>] [--parent <name-or-id>] [--json] [--
 kelpi workspace create [--name "..."] [--path /dir] [--color blue]
                      [--group <name> | --parent <name-or-id> | --nested]
                      [--profile <name>] [--repo <path> | --no-repo] [--muted] [--icon <emoji>]
-                     [--json]
+                     [--focus] [--json]
 kelpi workspace create --worktree <name> [--branch <name>] [--repo <path>]
                      [--update-main | --no-update-main]
                      [--group <existing> | --parent <name-or-id> | --nested] [--muted]
-                     [--icon <emoji>] [--json]
+                     [--icon <emoji>] [--focus] [--json]
 ```
+
+- **Background by default (issue #307).** Without `--focus` nothing extra is sent and the
+  daemon creates the workspace in the background: no window switches to it (the sidebar
+  scrolls to the new row and highlights it), and ACTIVE in `workspace list` stays put. A
+  follow-up `pane create` / `pane split` must name `--workspace` (or `--target`). `--focus`
+  sends `"focus":true` and every window switches to the new workspace, as before #307.
 
 - Nesting (app-state-core.md §2.9): `--parent <name-or-id>` sends `parent`; `--nested` sends
   `parent_pane_id` = `KELPI_PANE_ID`, nesting under the caller's own workspace (an orchestrator
@@ -1747,13 +1757,17 @@ Request/response payload `{"command":"web-open","url":<url>, pane_id?, focus?}` 
 `KELPI_PANE_ID` non-empty, focus only with `--focus`), decoded via the standard envelope and printed with the basic web
 printer under the label/verb `open`: `open ok: <pane_id>[ (<url>)]`.
 
-### 13.8 `kelpi diff [<path>]`
+### 13.8 `kelpi diff [--focus] [<path>]`
 
 Fire-and-forget:
 
 ```json
-{"command":"diff","repo_path":"<cwd>","target_path":"/abs/path","pane_id":"..."}
+{"command":"diff","repo_path":"<cwd>","target_path":"/abs/path","pane_id":"...","focus":true}
 ```
+
+- **Background by default (issue #298).** `--focus` is taken out of the arguments before the
+  positional (so it is never read as a path) and sends `"focus":true`; without it no `focus`
+  is sent and the diff pane opens in the background beside the caller.
 
 - `repo_path` is always the CLI's cwd.
 - `target_path` present only when a positional was given; resolved absolute against cwd,
@@ -1887,9 +1901,14 @@ Same URL validation and `localFileURL` mapping. Payload
   Plain: header `IDX  A  TITLE                    URL` (unless `--no-header`), rows via
   format `%-3d  %@  %-24@  %@` with `*` for active (space otherwise) and title clipped at
   >24 chars to 23 + `…`.
-- `tab-new [<url>] [--no-focus]`: url optional (empty string allowed); non-empty urls go
+- `tab-new [<url>] [--no-focus | --focus]`: url optional (empty string allowed); non-empty urls go
   through `localFileURL`. Payload `{"command":"web-tab-new","url":...,
-  "make_active": !noFocus}` + scope. Basic printer.
+  "make_active": !noFocus}` + scope. Basic printer. `--no-focus` (older) leaves the new tab
+  inactive in its pane; `--focus` (issue #298) adds `"focus":true`, which makes the pane its
+  workspace's focused pane, so when that workspace is on screen a blank tab's URL bar takes
+  the caret (like `web open --focus`, it does not switch workspaces). Without `--focus` the tab opens in the background and
+  the keyboard stays where it is. The two together contradict each other and exit 1
+  (`kelpi web tab-new: --focus and --no-focus contradict each other`) before anything is sent.
 - `tab-close <ref>` / `tab-select <ref>`: one required positional; payload
   `{"command":"web-tab-close"|"web-tab-select","tab":<ref>}` + scope. Basic printer.
 
@@ -2612,7 +2631,7 @@ kelpi plugin install <directory|file.kelpi-plugin> --trust
 kelpi plugin history <plugin-id> [--json]
 kelpi plugin rollback <plugin-id> [--revision <sha256>]
 kelpi plugin enable|disable|reload|remove|logs <plugin-id>
-kelpi plugin open <plugin-id> <view-id> [--workspace <id>] [--state <json>]
+kelpi plugin open <plugin-id> <view-id> [--workspace <id>] [--pane <id>] [--state <json>] [--focus]
 kelpi plugin run <command-id> [--args <json>] [--workspace <id>] [--pane <id>]
 kelpi plugin settings <plugin-id> [--key <key> --value <json>]
 kelpi plugin services [--json]
@@ -2625,6 +2644,11 @@ Results are JSON by default; `--json` does not select a different renderer. One-
 replies print their `result` field as JSON with two-space indentation, omitting the outer
 `ok` envelope. Ordinary one-shot requests use a 35-second read timeout. Argument, package,
 transport and daemon errors exit 1. Extra positional arguments are rejected.
+
+`open` adds the view in the **background** (issue #298): it splits beside the calling pane
+(`paneID`, which defaults to `KELPI_PANE_ID` unless `--pane` names another), defaults to that
+pane's workspace when `--workspace` is absent, and neither focuses nor reveals it. `--focus`
+puts `"focus":true` in the JSON input, and the view takes the focus and is revealed, as before.
 
 ### Offline authoring
 

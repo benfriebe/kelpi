@@ -23,6 +23,8 @@ import type { WorkspacesActions } from './workspaces-actions';
 export function useWorkspacesFeatureLifecycle() {
     const [scrollToWorkspaceID, setScrollToWorkspaceID] = useState<string | null>(null);
     const [scrollToGroupID, setScrollToGroupID] = useState<string | null>(null);
+    /** #307: the row a background create just added, worn briefly (`app/new-workspace-cue.ts`). */
+    const [highlightWorkspaceID, setHighlightWorkspaceID] = useState<string | null>(null);
     const [sidebarRenameRequest, setSidebarRenameRequest] = useState<{ kind: 'workspace' | 'group'; id: string } | null>(null);
     const [sidebarCreateRequest, setSidebarCreateRequest] = useState<{ kind: 'workspace' | 'group'; groupID: string | null; seq: number } | null>(null);
     const [createSheetOpen, setCreateSheetOpen] = useState(false);
@@ -44,6 +46,7 @@ export function useWorkspacesFeatureLifecycle() {
     const onScrollHandled = useCallback(() => { setScrollToWorkspaceID(null); setScrollToGroupID(null); }, []);
     return {
         scrollToWorkspaceID, setScrollToWorkspaceID, scrollToGroupID, setScrollToGroupID,
+        highlightWorkspaceID, setHighlightWorkspaceID,
         sidebarRenameRequest, setSidebarRenameRequest, sidebarCreateRequest, setSidebarCreateRequest,
         createSheetOpen, setCreateSheetOpen, sidebarEscapeRef, sidebarSelectionRef, pendingSelectAllRef,
         onScrollHandled
@@ -180,6 +183,7 @@ export function WorkspacesFeatureView(props: WorkspacesFeatureViewProps): ReactE
         inheritGroupID={model.inheritGroupID}
         scrollToWorkspaceID={lifecycle.scrollToWorkspaceID}
         scrollToGroupID={lifecycle.scrollToGroupID}
+        highlightWorkspaceID={lifecycle.highlightWorkspaceID}
         onScrollHandled={lifecycle.onScrollHandled}
         renameRequest={lifecycle.sidebarRenameRequest}
         onRenameRequestHandled={() => lifecycle.setSidebarRenameRequest(null)}

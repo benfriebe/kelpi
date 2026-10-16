@@ -1008,7 +1008,21 @@ describe('background creates (#295)', () => {
         'open-markdown-pane': (focus: boolean | undefined) =>
             ({ type: 'open-markdown-pane', workspaceID: W1, paneID: PB, filePath: '/docs/a.md', sourcePaneID: P0, now: NOW, focus }) as const,
         'open-web-pane': (focus: boolean | undefined) =>
-            ({ type: 'open-web-pane', workspaceID: W1, paneID: PB, tabID: PC, url: 'https://example.com', sourcePaneID: P0, now: NOW, focus }) as const
+            ({ type: 'open-web-pane', workspaceID: W1, paneID: PB, tabID: PC, url: 'https://example.com', sourcePaneID: P0, now: NOW, focus }) as const,
+        // #298: `kelpi diff` and `kelpi plugin open`.
+        'open-diff-pane': (focus: boolean | undefined) =>
+            ({ type: 'open-diff-pane', workspaceID: W1, paneID: PB, repoPath: '/code/kelpi', sourcePaneID: P0, now: NOW, focus }) as const,
+        'create-plugin-pane': (focus: boolean | undefined) =>
+            ({
+                type: 'create-plugin-pane',
+                workspaceID: W1,
+                paneID: PB,
+                title: 'Board',
+                plugin: { pluginID: 'acme.board', viewID: 'board', stateVersion: 1, state: {} },
+                sourcePaneID: P0,
+                now: NOW,
+                focus
+            }) as const
     };
 
     for (const [type, build] of Object.entries(creates)) {

@@ -490,7 +490,7 @@ whose `childOrder` holds `id` (`packages/daemon/src/store/derived.ts`).
 nested itself) wins over `groupID`: the new workspace is appended to the parent's `childOrder`
 (`near-selection` puts it after the previously active workspace when that is a sibling), the
 parent is expanded, and the parent's group is expanded too, since the new workspace becomes
-active and must be visible. A missing or nested parent falls back to the normal §4.1 placement.
+active (or, created in the background, is pointed at by the sidebar) and must be visible. A missing or nested parent falls back to the normal §4.1 placement.
 
 **Order.** `visibleWorkspaceOrder` (§2.2) emits each workspace followed by its nested ones unless
 the parent's `childrenCollapsed` is set; `sidebarWorkspaceOrder` and `workspace list` always
@@ -676,12 +676,19 @@ Behavior, in order:
      - `end-of-list`: insert at end of the group's `childOrder`.
      - `near-selection`: insert after `previousActiveID`'s slot in that group's `childOrder`;
        fall back to append when the previous active workspace is not in this group.
-     - If the group is collapsed, expand it (the new workspace becomes active and must be visible).
+     - If the group is collapsed, expand it (the new workspace becomes active, or is pointed at
+       by the sidebar, and must be visible).
    - Else (no group, or group id is stale -> defensive top-level fallback):
      - `end-of-list`: append `workspace(id)` to `topLevelOrder`.
      - `near-selection`: insert after `activeWorkspaceSidebarAnchor`'s position in
        `topLevelOrder`; fall back to append when there is no anchor.
-10. `activeWorkspaceID = new id`; dismiss the new-workspace sheet
+   - **Background create (issue #307).** With `focus: false` (the socket handler's default; an
+     agent's `kelpi workspace create` without `--focus`), placement is always `end-of-list`
+     within the chosen scope (parent's children, group, or top level): the active workspace a
+     `near-selection` anchor would use never moves, so a run of background creates would
+     otherwise stack in reverse.
+10. `activeWorkspaceID = new id`, unless the create is a background one (`focus: false`) and
+    another workspace is active, in which case it stays; dismiss the new-workspace sheet
     (`isNewWorkspaceSheetPresented = false`, `pendingSheetGroupID = null`);
     `sidebarScrollTarget = workspace(new id)`.
 11. Effects:

@@ -542,7 +542,7 @@ document.body.textContent = `${snapshot.state.workspaces.length} workspaces`;
 | --- | --- |
 | `snapshot()` | Daemon state DTO with event epoch and sequence. |
 | `command(payload, context?)` | The existing CLI/UI command router, including workspace, pane, agent, git, settings, search, content, and native web-host operations. |
-| `openView(viewID, {workspaceID?, state?})` | Create this plugin's registered pane view in the specified or contextual workspace. Returns pane/workspace IDs. |
+| `openView(viewID, {workspaceID?, state?, focus?})` | Create this plugin's registered pane view in the specified or contextual workspace, beside the contextual pane when there is one. `focus` defaults to true (a click); backend code with no gesture passes `false` so the view opens in the background. Returns pane/workspace IDs. |
 | `commands.register(id, handler)` | Backend only. Handler receives JSON arguments and invocation context. |
 | `commands.execute(id, args?)` | Invoke a declared command, including another installed plugin's command. |
 | `events.on(name, listener)` / `emit(name, data?)` | Subscribe to a named event or `*`; emit an event under this plugin's namespace. Returns an unsubscribe function. |
@@ -605,8 +605,9 @@ within 256 KiB and 32 levels. The whole storage object also has the 256 KiB limi
 
 `snapshot()` provides a sequence anchor. Subscribe before taking the snapshot, then discard
 events at or before its sequence. `state.changed` contains the same serialized domain events
-as client replication. `daemon.<type>` exposes daemon broadcasts; `settings.changed` and
-`terminal.output` are plugin service events. Custom emissions are named `<plugin-id>.<name>`.
+as client replication; a background workspace create or move to another workspace (#307, #298)
+leaves the active workspace alone, so it emits no `active-workspace-changed`. `daemon.<type>`
+exposes daemon broadcasts; `settings.changed` and `terminal.output` are plugin service events. Custom emissions are named `<plugin-id>.<name>`.
 The epoch changes on every daemon restart, while daemon identity stays stable.
 
 `daemon.notification` and `daemon.attention-request` from a muted workspace still reach

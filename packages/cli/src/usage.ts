@@ -25,7 +25,7 @@ export const globalUsage = `Usage:
   kelpi pane send-key [--if-revision <n>] --target <name-or-uuid> [--workspace <name-or-uuid>] <key>
   kelpi pane move [--focus] [left|right|up|down]
   kelpi pane move --target X (--above|--below|--left-of|--right-of) Y [--focus]
-  kelpi pane move-to-workspace --to-workspace <name-or-uuid> [--create]
+  kelpi pane move-to-workspace --to-workspace <name-or-uuid> [--create] [--focus]
   kelpi pane list [--workspace <name-or-id> | --current] [--json] [--no-header]
   kelpi pane capture [--target <name-or-uuid>] [--workspace <name-or-uuid>] [--lines N] [--scrollback] [--settle <ms>] [--json]
   kelpi pane sync (on|off|toggle|status) [--workspace <name-or-uuid>] [--json]
@@ -33,8 +33,8 @@ export const globalUsage = `Usage:
   kelpi pane sync include --target <name-or-uuid> [--workspace <name-or-uuid>]
   kelpi pane id
   kelpi workspace list [--json] [--no-header]
-  kelpi workspace create [--name "..."] [--path /dir] [--color blue] [--group <name>] [--profile <name>] [--muted] [--icon <emoji>] [--json]
-  kelpi workspace create --worktree <name> [--branch <name>] [--repo <path>] [--update-main] [--group <existing>] [--muted] [--icon <emoji>]
+  kelpi workspace create [--name "..."] [--path /dir] [--color blue] [--group <name>] [--profile <name>] [--muted] [--icon <emoji>] [--focus] [--json]
+  kelpi workspace create --worktree <name> [--branch <name>] [--repo <path>] [--update-main] [--group <existing>] [--muted] [--icon <emoji>] [--focus]
   kelpi workspace move <name-or-id> (--group <name> | --top-level) [--index N]
   kelpi workspace delete <name-or-id> [<name-or-id> ...] [--force|-y] [--prune-worktree [--delete-branch]] [--json]
   kelpi workspace profile <name-or-id> (<profile> | --clear)
@@ -53,7 +53,7 @@ export const globalUsage = `Usage:
   kelpi layout select <name>
   kelpi open [--here] [--focus] <filepath>   # routes by file type: .md→markdown, .csv/.tsv→table, .html/.pdf/images→web pane
   kelpi md [--here] [--focus] <filepath>     # always opens a markdown preview pane
-  kelpi diff [<path>]
+  kelpi diff [--focus] [<path>]
   kelpi graft start [--workspace <name-or-uuid>] [--repo <name-or-path>]
   kelpi graft stop [--workspace <name-or-uuid>] [--repo <name-or-path>]
   kelpi graft status [--json]
@@ -400,13 +400,15 @@ export const workspaceCreateUsage = `Usage:
   kelpi workspace create [--name "..."] [--path /dir] [--color blue] \\
                        [--group <name> | --parent <name-or-id> | --nested] \\
                        [--profile <name>] [--repo <path> | --no-repo] \\
-                       [--muted] [--icon <emoji>] [--json]
+                       [--muted] [--icon <emoji>] [--focus] [--json]
   kelpi workspace create --worktree <name> [--branch <name>] [--repo <path>] \\
                        [--update-main | --no-update-main] \\
                        [--group <existing> | --parent <name-or-id> | --nested] [--muted] \\
-                       [--icon <emoji>] [--json]
+                       [--icon <emoji>] [--focus] [--json]
 
-Creates a new workspace and returns its id.
+Creates a new workspace and returns its id. The workspace is created in the
+background: every window stays where it is (the sidebar points at the new row)
+unless --focus is given.
 
 Options:
   --name <name>      Workspace name.
@@ -436,6 +438,7 @@ Options:
   --muted            Create the workspace with its notifications muted.
   --icon <emoji>     Give the workspace this sidebar icon (one emoji or symbol)
                      instead of its first letter.
+  --focus            Switch every window to the new workspace (default: background).
   --json             Print the structured reply (incl. the new workspace id).
   -h, --help         Show this help.
 
@@ -791,7 +794,7 @@ export const webUsage = `Usage:
   kelpi web reload   [--target <name-or-uuid>] [--workspace <name-or-uuid>] [--hard]
   kelpi web capture  [--target <name-or-uuid>] [--workspace <name-or-uuid>] [--mode meta|text|screenshot]
   kelpi web tabs        [--target <name-or-uuid>] [--workspace <name-or-uuid>] [--json] [--no-header]
-  kelpi web tab-new     [<url>] [--target <name-or-uuid>] [--workspace <name-or-uuid>] [--no-focus]
+  kelpi web tab-new     [<url>] [--target <name-or-uuid>] [--workspace <name-or-uuid>] [--no-focus | --focus]
   kelpi web tab-close   <ref> [--target <name-or-uuid>] [--workspace <name-or-uuid>]
   kelpi web tab-select  <ref> [--target <name-or-uuid>] [--workspace <name-or-uuid>]
   kelpi web console     [--target ...] [--workspace ...] [--since N] [--level log|debug|info|warn|error] [--clear] [--follow] [--json]

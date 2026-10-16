@@ -22,6 +22,7 @@ const W3 = id('aaaaaaaa', 3);
 const P1 = id('dddddddd', 1);
 const P2 = id('dddddddd', 2);
 const G1 = id('cccccccc', 1);
+const G2 = id('cccccccc', 2);
 /** A well-formed UUID that is no workspace's id. */
 const OTHER_UUID = id('eeeeeeee', 7);
 
@@ -272,15 +273,15 @@ describe('workspace-create (top level)', () => {
         });
     });
 
-    it('reveals the new workspace to every attached client', () => {
+    it('reveals a FOCUSING create to every attached client', () => {
         // run-B L3: the port's active workspace is per client, so the reducer marking the new
-        // workspace last-active only moved what `kelpi workspace list` calls ACTIVE — a
-        // `kelpi workspace create` from a terminal left every open window on the old workspace
-        // indefinitely, and the agent's next `kelpi pane create` landed somewhere invisible.
-        // A create is broadcast as a reveal, which clients already act on (ws/sync.ts).
+        // workspace last-active only moved what `kelpi workspace list` calls ACTIVE. A focusing
+        // create (the window's gestures, `--focus`) is broadcast as a reveal, which clients
+        // already act on (ws/sync.ts), so every window goes along with the daemon.
         const h = harness({ ids: [W1, P1] });
-        h.reply({ command: 'workspace-create', name: 'dev' });
+        h.reply({ command: 'workspace-create', name: 'dev', focus: true });
         expect(h.broadcasts).toContainEqual({ type: 'reveal-pane', workspaceID: W1, paneID: P1 });
+        expect(h.state().lastActiveWorkspaceID).toBe(W1);
     });
 
     it('keeps an unrecognized color out of the reply path and picks a random one', () => {
@@ -288,6 +289,79 @@ describe('workspace-create (top level)', () => {
         h.reply({ command: 'workspace-create', color: 'chartreuse' });
         expect(h.state().workspaces[0]?.color).toBe('red');
     });
+});
+
+/**
+ * #307: a `workspace-create` without `focus` (an agent's `kelpi workspace create`) is a
+ * BACKGROUND create on every one of its four paths: nothing is revealed and the daemon's active
+ * workspace does not move, so `workspace list` ACTIVE keeps matching the windows. `focus: true`
+ * switches, as every create did before.
+ */
+describe('workspace-create in the background (#307)', () => {
+    const R1 = id('dddddddd', 91);
+    const REPO = '/code/kelpi';
+
+    /** The user's workspace W2 is active; group `team` exists, with `/code/kelpi` as its repo. */
+    function userOnW2() {
+        const h = harness({
+            worktreeBasePath: '~/wt/<repo>',
+            git: stubGit({
+                worktreeAdd: async () => {},
+                resolveRepoRoot: async (directory) =>
+                    directory.startsWith(REPO) ? { worktreeRoot: REPO, parentRepoRoot: REPO } : null,
+                getCurrentBranch: async () => 'main'
+            })
+        });
+        h.dispatch(
+            { type: 'create-workspace', id: W2, paneID: P2, name: 'user', now: NOW },
+            {
+                type: 'add-repo',
+                repo: { id: R1, path: REPO, name: 'kelpi', remoteURL: null, lastAccessedAt: 1, isAutoDiscovered: false }
+            },
+            { type: 'create-group', id: G1, name: 'team', now: NOW },
+            { type: 'create-group', id: G2, name: 'plain', now: NOW },
+            { type: 'set-group-repo', id: G1, repoID: R1, createWorktree: false }
+        );
+        expect(h.state().lastActiveWorkspaceID).toBe(W2);
+        return h;
+    }
+
+    const paths: Record<string, Record<string, unknown>> = {
+        'top level': { command: 'workspace-create', name: 'worker' },
+        'group': { command: 'workspace-create', name: 'worker', group: 'plain' },
+        'group default repository': { command: 'workspace-create', name: 'worker', group: 'team' },
+        'worktree': { command: 'workspace-create', name: 'worker', worktree: 'worker', repo: REPO }
+    };
+
+    const created = (h: ReturnType<typeof userOnW2>) =>
+        h.state().workspaces.find((workspace) => workspace.name === 'worker');
+
+    for (const [label, request] of Object.entries(paths)) {
+        it(`${label}: without focus, nothing is revealed and the active workspace stays`, async () => {
+            const h = userOnW2();
+            h.send(request);
+            await flush();
+            expect(created(h)).toBeDefined();
+            expect(h.broadcasts.filter((message) => message['type'] === 'reveal-pane')).toEqual([]);
+            expect(h.state().lastActiveWorkspaceID).toBe(W2);
+            // Still pointed at in the sidebar (the daemon's scroll seam; the windows do their own).
+            expect(h.scrolled).toContainEqual({ kind: 'workspace', id: created(h)?.id });
+        });
+
+        it(`${label}: with focus, the create is revealed and becomes active`, async () => {
+            const h = userOnW2();
+            h.send({ ...request, focus: true });
+            await flush();
+            const workspace = created(h);
+            expect(workspace).toBeDefined();
+            expect(h.broadcasts).toContainEqual({
+                type: 'reveal-pane',
+                workspaceID: workspace?.id,
+                paneID: workspace?.panes[0]?.id
+            });
+            expect(h.state().lastActiveWorkspaceID).toBe(workspace?.id);
+        });
+    }
 });
 
 describe('workspace-create (group)', () => {

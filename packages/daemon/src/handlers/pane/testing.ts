@@ -252,6 +252,8 @@ export interface HarnessOptions {
     readonly liveWorkingDirectory?: PaneHandlerContext['liveWorkingDirectory'];
     /** `pane-clear`'s clear; absent = the command answers that it is not available. */
     readonly clearScreen?: PaneHandlerContext['clearScreen'];
+    /** The windows' "is the user typing in this pane" seam; absent = the active-workspace stand-in. */
+    readonly isPaneAttended?: PaneHandlerContext['isPaneAttended'];
 }
 
 export interface Harness {
@@ -300,7 +302,8 @@ export function harness(options: HarnessOptions = {}): Harness {
         profiles: () => [],
         spawn: { helpersDir: '/opt/kelpi/helpers', inheritedPath: '/usr/bin', cols: 80, rows: 24 },
         ...(options.liveWorkingDirectory !== undefined ? { liveWorkingDirectory: options.liveWorkingDirectory } : {}),
-        ...(options.clearScreen !== undefined ? { clearScreen: options.clearScreen } : {})
+        ...(options.clearScreen !== undefined ? { clearScreen: options.clearScreen } : {}),
+        ...(options.isPaneAttended !== undefined ? { isPaneAttended: options.isPaneAttended } : {})
     };
 
     const dispatch = (msg: WireMessage, reply: ReplyHandle | null): void => {

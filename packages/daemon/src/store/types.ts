@@ -222,7 +222,21 @@ export type NewWorkspacePlacement = 'end-of-list' | 'near-selection';
 export type RestoredAgentState = Pick<Pane, 'status' | 'agentSessionID' | 'agentStartedAt' | 'backgroundTaskCount'>;
 
 export type DomainAction =
-    | { readonly type: 'create-plugin-pane'; readonly workspaceID: string; readonly paneID: string; readonly title: string; readonly plugin: import('@kelpi/protocol').PluginPaneDescriptor; readonly now: number }
+    | {
+          readonly type: 'create-plugin-pane';
+          readonly workspaceID: string;
+          readonly paneID: string;
+          readonly title: string;
+          readonly plugin: import('@kelpi/protocol').PluginPaneDescriptor;
+          readonly now: number;
+          /**
+           * #298: the pane to split beside (`kelpi plugin open` names the caller). Absent, or
+           * not a visible pane, splits the focused pane as always.
+           */
+          readonly sourcePaneID?: string | undefined;
+          /** #298: false opens the pane in the background; see `create-pane`. */
+          readonly focus?: boolean | undefined;
+      }
     | { readonly type: 'set-plugin-pane-state'; readonly paneID: string; readonly plugin: import('@kelpi/protocol').PluginPaneDescriptor }
     // ── boot / wholesale ────────────────────────────────────────────────────
     | { readonly type: 'replace-state'; readonly state: DaemonState }
@@ -248,6 +262,14 @@ export type DomainAction =
           readonly labels?: readonly string[] | undefined;
           readonly placement?: NewWorkspacePlacement | undefined;
           readonly repoAssociations?: readonly RepoAssociation[] | undefined;
+          /**
+           * #307: false creates the workspace in the BACKGROUND: `lastActiveWorkspaceID` stays
+           * where it is, and the new row is appended to the end of its scope whatever
+           * `placement` says (a "near selection" anchor that never moves would stack a run of
+           * agent creates in reverse). Absent means switch, which is what every internal
+           * dispatcher has always meant; only the wire handler passes false.
+           */
+          readonly focus?: boolean | undefined;
       }
     | { readonly type: 'delete-workspace'; readonly id: string }
     | { readonly type: 'delete-workspaces'; readonly ids: readonly string[] }
@@ -496,6 +518,12 @@ export type DomainAction =
           readonly type: 'move-pane-to-workspace';
           readonly paneID: string;
           readonly toWorkspaceID: string;
+          /**
+           * #298: false moves the pane in the BACKGROUND: `lastActiveWorkspaceID` stays, and the
+           * destination keeps its own focused pane (an empty destination still focuses the
+           * arrival). Absent follows the pane, as always; only the wire handler passes false.
+           */
+          readonly focus?: boolean | undefined;
       }
     | {
           readonly type: 'resize-pane';
@@ -552,6 +580,13 @@ export type DomainAction =
           readonly now: number;
           readonly targetPath?: string | null | undefined;
           readonly reusePaneID?: string | undefined;
+          /**
+           * #298: the pane to split beside. Absent (or not a visible pane) splits the focused
+           * pane, as always; a background `diff` names the caller instead of focusing it first.
+           */
+          readonly sourcePaneID?: string | undefined;
+          /** #298: false opens the pane in the background; see `create-pane`. */
+          readonly focus?: boolean | undefined;
       }
     | {
           readonly type: 'create-scratchpad';

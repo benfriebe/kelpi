@@ -342,13 +342,21 @@ async function webTabs(args: string[]): Promise<void> {
 async function webTabNew(args: string[]): Promise<void> {
     const target = parseFlag('--target', args);
     const workspace = parseFlag('--workspace', args);
+    // `--no-focus` is the old name for "leave the new tab inactive"; `--focus` (#298) is the
+    // CLI-wide "take the keyboard": the pane is focused, so a blank tab's URL bar gets the caret.
     const noFocus = popSwitch('--no-focus', args);
+    const focus = popSwitch('--focus', args);
+    if (focus && noFocus) {
+        errLine('kelpi web tab-new: --focus and --no-focus contradict each other');
+        exit(1);
+    }
     const url = args.shift() ?? '';
     const payload: JsonObject = {
         command: 'web-tab-new',
         url: url.length === 0 ? url : resolveWebArg(url),
         make_active: !noFocus
     };
+    if (focus) payload['focus'] = true;
     attachWebTargetScope(payload, target, workspace, 'tab-new');
     await printBasicWebReply(payload, 'tab-new');
 }

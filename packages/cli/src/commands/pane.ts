@@ -569,13 +569,15 @@ async function handlePaneMoveToWorkspace(args: string[]): Promise<void> {
     const paneID = requirePaneID();
     const destination = parseFlag('--to-workspace', args);
     if (destination === null) {
-        errLine('Usage: kelpi pane move-to-workspace --to-workspace <name-or-uuid> [--create]');
+        errLine('Usage: kelpi pane move-to-workspace --to-workspace <name-or-uuid> [--create] [--focus]');
         exit(1);
     }
     // Legacy field names, kept exactly: `name` for the destination and the STRING "true" for
     // --create (cli.md port note 4).
     const payload: JsonObject = { command: 'pane-move-to-workspace', pane_id: paneID, name: destination };
     if (popSwitch('--create', args)) payload['text'] = 'true';
+    // #298: without --focus the move is background (unless it is the pane the user is in).
+    if (popSwitch('--focus', args)) payload['focus'] = true;
     await sendJSON(payload);
 }
 

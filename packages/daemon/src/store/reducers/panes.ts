@@ -480,11 +480,16 @@ function openDiffPane(
     });
 
     if (action.reusePaneID !== undefined) {
-        const reused = reuseBranch(workspace, action.reusePaneID, pane, undefined);
+        const reused = reuseBranch(workspace, action.reusePaneID, pane, action.focus);
         if (reused !== null) return reused;
     }
 
-    const sourceID = workspace.focusedPaneID; // no allPaneIDs fallback here (§7.5)
+    // #298: a background diff names the caller as its source rather than focusing it first.
+    const named =
+        action.sourcePaneID !== undefined && findVisiblePane(workspace, action.sourcePaneID) !== null
+            ? action.sourcePaneID
+            : null;
+    const sourceID = named ?? workspace.focusedPaneID; // no allPaneIDs fallback here (§7.5)
     const base = sourceID === null ? workspace : restoreZoomIfNeeded(workspace);
     const next: WorkspaceState = {
         ...appendPane(base, pane),
@@ -494,7 +499,7 @@ function openDiffPane(
                 : splitting(base.layout, sourceID, 'horizontal', pane.id).layout,
         currentLayoutIndex: null
     };
-    return setFocus(next, pane.id);
+    return focusCreatedPane(next, pane.id, action.focus);
 }
 
 function createScratchpad(
@@ -630,7 +635,7 @@ function movePaneToWorkspace(
             webPanes: { ...nextTarget.webPanes, [action.paneID]: sidecar }
         };
     }
-    nextTarget = setFocus(nextTarget, action.paneID);
+    nextTarget = focusCreatedPane(nextTarget, action.paneID, action.focus);
 
     return {
         ...state,
@@ -639,7 +644,8 @@ function movePaneToWorkspace(
             if (workspace.id === nextTarget.id) return nextTarget;
             return workspace;
         }),
-        lastActiveWorkspaceID: action.toWorkspaceID
+        // #298: a background move leaves the user on the workspace they were on.
+        lastActiveWorkspaceID: action.focus === false ? state.lastActiveWorkspaceID : action.toWorkspaceID
     };
 }
 
@@ -753,9 +759,11 @@ export function reducePaneAction(state: DaemonState, action: DomainAction): Daem
             return updateWorkspace(state, action.workspaceID, workspace => {
                 if (workspace.panes.some(pane => pane.id === action.paneID)) return workspace;
                 const base = restoreZoomIfNeeded(workspace);
-                const sourceID = base.focusedPaneID ?? allPaneIDs(base.layout)[0] ?? null;
+                // #298: a background open (`kelpi plugin open`) splits beside its caller.
+                const named = action.sourcePaneID !== undefined && findVisiblePane(base, action.sourcePaneID) !== null ? action.sourcePaneID : null;
+                const sourceID = named ?? base.focusedPaneID ?? allPaneIDs(base.layout)[0] ?? null;
                 const pane: Pane = { ...newPane({ id: action.paneID, workingDirectory: state.homeDirectory, nowMillis: action.now, type: 'plugin', label: action.title }), plugin: action.plugin };
-                return setFocus({ ...appendPane(base, pane), layout: sourceID === null ? leaf(pane.id) : splitting(base.layout, sourceID, 'horizontal', pane.id).layout, currentLayoutIndex: null }, pane.id);
+                return focusCreatedPane({ ...appendPane(base, pane), layout: sourceID === null ? leaf(pane.id) : splitting(base.layout, sourceID, 'horizontal', pane.id).layout, currentLayoutIndex: null }, pane.id, action.focus);
             });
         case 'set-plugin-pane-state':
             return { ...state, workspaces: state.workspaces.map(workspace => {

@@ -2429,11 +2429,12 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
          * The per-connection value and the daemon's persisted `lastActiveWorkspaceID` are
          * updated INDEPENDENTLY, and that separation is the fix for the audit's
          * "daemon and window disagree indefinitely" (run-B L3). The daemon's last-active is
-         * moved by other things too — `workspace-create` from the CLI marks the new workspace
-         * active — so this connection's own value being unchanged says nothing about whether
-         * the global one still agrees with it. Returning early on `this.activeWorkspaceID ===
-         * workspaceID` (as this used to) meant a client re-asserting the workspace it was
-         * already showing could never pull the daemon's answer back, and
+         * moved by other things too (`workspace-create --focus` from the CLI marks the new
+         * workspace active; since #307 a plain one no longer does), so this connection's own
+         * value being unchanged says nothing about whether the global one still agrees with
+         * it. Returning early on `this.activeWorkspaceID === workspaceID` (as this used to) meant
+         * a client re-asserting the workspace it was already showing could never pull the
+         * daemon's answer back, and
          * `kelpi workspace list`'s ACTIVE column stayed wrong for the rest of the session.
          *
          * So: the last activation from ANY source wins, and a client re-assert is a real

@@ -12,6 +12,20 @@ const P1 = id('dddddddd', 1);
 const P2 = id('dddddddd', 2);
 const PNEW = id('ffffffff', 1);
 
+/**
+ * #295: the user is typing in P3 while an agent in P1 runs `kelpi open notes.md` (or, #298,
+ * `kelpi diff`). The new pane lands beside P1 (the caller, named as the split source rather
+ * than focused first), and P3 keeps the focus and its history.
+ */
+function userTypingInP3() {
+    const P3 = id('dddddddd', 3);
+    const h = harness({ initial: seeded(1), ids: [PNEW] });
+    h.dispatch({ type: 'split-pane', workspaceID: W1, paneID: P3, direction: 'horizontal', sourcePaneID: P1, now: NOW });
+    const before = h.state().workspaces[0];
+    expect(before?.focusedPaneID).toBe(P3);
+    return { h, P3, history: before?.focusHistory };
+}
+
 // ---------------------------------------------------------------------------
 // layout-cycle / layout-select
 // ---------------------------------------------------------------------------
@@ -85,20 +99,6 @@ describe('open', () => {
         expect(workspace?.focusedPaneID).toBe(PNEW);
         expect(workspace?.parkedPanes).toEqual([]);
     });
-
-    /**
-     * #295: the user is typing in P3 while an agent in P1 runs `kelpi open notes.md`. The preview
-     * lands beside P1 (the caller, named as the split source rather than focused first), and
-     * P3 keeps the focus and its history.
-     */
-    function userTypingInP3() {
-        const P3 = id('dddddddd', 3);
-        const h = harness({ initial: seeded(1), ids: [PNEW] });
-        h.dispatch({ type: 'split-pane', workspaceID: W1, paneID: P3, direction: 'horizontal', sourcePaneID: P1, now: NOW });
-        const before = h.state().workspaces[0];
-        expect(before?.focusedPaneID).toBe(P3);
-        return { h, P3, history: before?.focusHistory };
-    }
 
     it('in the background (no focus field) lands beside the caller and leaves focus alone', () => {
         const { h, P3, history } = userTypingInP3();
@@ -272,6 +272,35 @@ describe('diff', () => {
             label: 'kelpi',
             title: 'diff: kelpi'
         });
+    });
+    /**
+     * #298: the user is typing in P3 while an agent in P1 runs `kelpi diff`. The diff pane lands
+     * beside P1 (named as the split source, not focused first) and P3 keeps the focus.
+     */
+    it('in the background (no focus field) lands beside the caller and leaves focus alone', () => {
+        const { h, P3, history } = userTypingInP3();
+        h.send({ command: 'diff', repo_path: '/code/kelpi', pane_id: P1 });
+        const workspace = h.state().workspaces[0];
+        expect(allPaneIDs(workspace?.layout ?? { kind: 'empty' })).toEqual([P1, PNEW, P3]);
+        expect(workspace?.panes.find((pane) => pane.id === PNEW)?.type).toBe('diff');
+        expect(workspace?.focusedPaneID).toBe(P3);
+        expect(workspace?.focusHistory).toEqual(history);
+    });
+
+    it('with focus: true lands in the same place and takes the focus', () => {
+        const { h } = userTypingInP3();
+        h.send({ command: 'diff', repo_path: '/code/kelpi', pane_id: P1, focus: true });
+        const workspace = h.state().workspaces[0];
+        expect(allPaneIDs(workspace?.layout ?? { kind: 'empty' })).toEqual([P1, PNEW, id('dddddddd', 3)]);
+        expect(workspace?.focusedPaneID).toBe(PNEW);
+    });
+
+    it('without a caller pane, a background diff splits the focused pane and keeps its focus', () => {
+        const { h, P3 } = userTypingInP3();
+        h.send({ command: 'diff', repo_path: '/code/kelpi' });
+        const workspace = h.state().workspaces[0];
+        expect(allPaneIDs(workspace?.layout ?? { kind: 'empty' })).toEqual([P1, P3, PNEW]);
+        expect(workspace?.focusedPaneID).toBe(P3);
     });
 });
 

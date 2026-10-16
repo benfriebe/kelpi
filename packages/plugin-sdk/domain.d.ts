@@ -57,6 +57,12 @@ export interface WorkspaceCreateOptions {
      * child follows its parent's group, so it cannot be combined with `groupID`.
      */
     parentID?: string;
+    /**
+     * Switch to the new workspace. Defaults to true: the helper assumes a user gesture. Code that
+     * runs WITHOUT one (a backend reacting to events, timers or services) must pass `focus:
+     * false`, or every window jumps to the workspace while the user is typing elsewhere.
+     */
+    focus?: boolean;
 }
 export interface WorkspaceCreated extends WorkspaceIdentity {
     group?: string; worktreePath?: string; branch?: string;
@@ -123,7 +129,7 @@ export interface GroupsAPI {
 export interface PanesAPI {
     list(options?: PaneListOptions): Promise<PaneInfo[]>;
     /**
-     * `focus` defaults to true for `create`, `split`, `move` and `moveAdjacent`: the helpers
+     * `focus` defaults to true for `create`, `split`, `move`, `moveAdjacent` and `moveToWorkspace`: the helpers
      * assume a user gesture (a click in a view) and focus the pane. Code that runs WITHOUT a
      * gesture (a backend reacting to events, timers or services) must pass `focus: false`, or the
      * pane takes the keyboard from whatever the user is typing into.
@@ -135,7 +141,7 @@ export interface PanesAPI {
     resize(pane: PaneTarget, options: { ratio: number; delta?: never } | { delta: number; ratio?: never }): Promise<PaneResize>;
     moveAdjacent(pane: PaneTarget, anchor: string, zone: DropZone, options?: { focus?: boolean }): Promise<PaneMutation & { anchorID: string; zone: DropZone }>;
     move(paneID: string, direction: MoveDirection, options?: { focus?: boolean }): Promise<void>;
-    moveToWorkspace(paneID: string, workspaceID: string, options?: { create?: boolean }): Promise<void>;
+    moveToWorkspace(paneID: string, workspaceID: string, options?: { create?: boolean; focus?: boolean }): Promise<void>;
     reopen(workspaceID: string): Promise<PanePlacement & { type: PaneType }>;
     scratchpad(workspaceID: string): Promise<PanePlacement>;
 }
@@ -278,7 +284,8 @@ export interface GitAPI {
     associate(workspaceID: string, path: string): Promise<RepositoryAssociation>;
     dissociate(workspaceID: string, associationID: string, options?: { deleteWorktree?: boolean }): Promise<{ workspaceID: string; associationID: string; worktreePath: string; worktreeDeleted: boolean }>;
     addWorktree(workspaceID: string, options: WorktreeOptions): Promise<{ workspaceID: string; repoID: string; worktreePath: string; branch: string; association: RepositoryAssociation }>;
-    diff(repoPath: string, options?: { targetPath?: string; paneID?: string; workspaceID?: string }): Promise<void>;
+    /** `focus` defaults to true, as on `panes.create`; pass false from code with no gesture. */
+    diff(repoPath: string, options?: { targetPath?: string; paneID?: string; workspaceID?: string; focus?: boolean }): Promise<void>;
     graft: {
         status(): Promise<GraftSession[]>;
         start(options?: GraftScope): Promise<{ started: { associationID: string; worktreePath: string; branch: string; parentRepoRoot: string }[]; partialError?: string }>;

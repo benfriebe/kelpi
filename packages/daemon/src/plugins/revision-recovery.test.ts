@@ -361,6 +361,41 @@ describe('plugin revision recovery', () => {
     });
 });
 
+/**
+ * #298: `kelpi plugin open` from an agent's pane opens the view in the BACKGROUND, beside the
+ * agent's pane: the user's focused pane keeps the focus and nothing is revealed. `focus: true`
+ * (the SDK's `openView`, the Plugins tab, `--focus`) focuses and reveals the pane, as before.
+ */
+describe('plugin open in the background (#298)', () => {
+    async function agentBesideUser() {
+        const h = harness();
+        await h.service.install(h.source, true);
+        const agent = h.store.getState().workspaces[0]!.panes[0]!.id, user = nextPaneID();
+        h.store.dispatch({ type: 'split-pane', workspaceID: W1, paneID: user, direction: 'horizontal', sourcePaneID: agent, now: Date.now() });
+        expect(h.store.getState().workspaces[0]!.focusedPaneID).toBe(user);
+        h.broadcast.mockClear();
+        return { ...h, agent, user };
+    }
+    const reveals = (broadcast: ReturnType<typeof vi.fn>) => broadcast.mock.calls.filter(([message]) => pluginObject(message)['type'] === 'reveal-pane');
+
+    it('without focus lands beside the caller, keeps the user\'s focus and reveals nothing', async () => {
+        const h = await agentBesideUser();
+        const opened = pluginObject(await h.service.request('open', { pluginID: ID, viewID: VIEW, paneID: h.agent }));
+        const workspace = h.store.getState().workspaces[0]!;
+        expect(opened['workspaceID']).toBe(W1);
+        expect(workspace.layout).toMatchObject({ first: { kind: 'split', first: { paneID: h.agent }, second: { paneID: opened['paneID'] } } });
+        expect(workspace.focusedPaneID).toBe(h.user);
+        expect(reveals(h.broadcast)).toEqual([]);
+    });
+
+    it('with focus takes the focus and reveals the pane', async () => {
+        const h = await agentBesideUser();
+        const opened = pluginObject(await h.service.request('open', { pluginID: ID, viewID: VIEW, paneID: h.agent, focus: true }));
+        expect(h.store.getState().workspaces[0]!.focusedPaneID).toBe(opened['paneID']);
+        expect(reveals(h.broadcast)).toEqual([[{ type: 'reveal-pane', workspaceID: W1, paneID: opened['paneID'] }]]);
+    });
+});
+
 describe('persisted plugin revision records', () => {
     it('bounds history, keeps selected revisions first and retains original install timestamps', () => {
         const manifest = decodePluginManifest({ id: ID, version: '1.0.0', apiVersion: 1, trust: 'full' });

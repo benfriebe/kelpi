@@ -705,7 +705,15 @@ false: issue #295). Implemented in `packages/daemon/src/handlers/pane/geometry.t
 
 ### 4.11 `pane-move-to-workspace` → inline (fire-and-forget, no reply)
 
-Inputs: `paneID` (required), `toWorkspace` (string), `create` (bool).
+Inputs: `paneID` (required), `toWorkspace` (string), `create` (bool), `focus` (bool, default
+false: issue #298).
+
+**Background by default (issue #298).** `follow = focus || (paneID == sourceWS.focusedPaneID &&
+sourceWS.id == lastActiveWorkspaceID)`. Without `focus` the move is a background move: the
+destination keeps its own focused pane, the daemon's active workspace stays, and nothing is
+revealed. The one exception is the pane the user is typing in (the focused pane of the active
+workspace): leaving the view behind would hand the keyboard to another terminal, so the view
+follows it and the keystrokes stay in its PTY. The window's "Move to workspace" sends `true`.
 
 ```
 sourceWS = workspace whose panes contain paneID; if none: drop.
@@ -750,17 +758,21 @@ ADD to target:
   else:
     anchor = target.focusedPaneID ?? target layout's first leaf
     layout = layout.splitting(anchor, direction: horizontal, newPaneID: paneID)
-  setFocus(paneID); currentLayoutIndex = null
-  activeWorkspaceID = targetWSID                        // the app switches to the destination
+  focusCreatedPane(paneID, focus); currentLayoutIndex = null  // #298: background keeps the
+                                                              // target's own focus (an empty
+                                                              // target still focuses the arrival)
+  if follow: activeWorkspaceID = targetWSID             // the app switches to the destination
 
 FINALLY:
   push fresh sync-group snapshots for BOTH source and target to the
   keystroke-broadcast layer (the direct state mutation bypasses the
   per-workspace bookkeeping that normally does this)
-  broadcast reveal-pane { workspaceID: targetWSID, paneID }   // the port's active workspace is
+  if follow:
+    broadcast reveal-pane { workspaceID: targetWSID, paneID }   // the port's active workspace is
                                                               // per client, so "the app switches"
                                                               // is this untargeted fan-out, exactly
-                                                              // as workspace-create (§6.2); #52
+                                                              // as a focusing workspace-create
+                                                              // (§6.2); #52
   persist state
 ```
 
@@ -920,10 +932,12 @@ focused pane's own renderer is not on the alternate screen (`client/src/app/clea
 - **sidebarScrollTarget**: the Swift recorded a workspace or group created over the socket
   as the sidebar scroll target so the GUI scrolled the new row into view (issue #187). The
   daemon has no sidebar, so the port reaches clients two different ways (issue #57 sh-13):
-  - `workspace-create` broadcasts `reveal-pane` to EVERY attached client
-    (`handlers/app/workspaces.ts:207`), and each client's reveal handler activates the
-    workspace and queues the scroll (`packages/client/src/App.tsx:450`). A create has an
-    obvious destination and later commands land there, so every window follows.
+  - A FOCUSING `workspace-create` (`focus: true`: a window gesture or `--focus`) broadcasts
+    `reveal-pane` to EVERY attached client (`revealCreatedWorkspace`,
+    `handlers/app/workspaces.ts`), and each client's reveal handler activates the workspace
+    and queues the scroll. A BACKGROUND create (no `focus`, issue #307) is not revealed: each
+    client notices the new workspace arrive in its mirror and scrolls its sidebar to the row,
+    with a short highlight, without activating it (`packages/client/src/app/new-workspace-cue.ts`).
   - `group-create` scrolls only the client that issued the request, off the reply's
     `group_id` (`packages/client/src/App.tsx:1225`). A new group is an empty header that
     activates nothing, so other windows are left where they are. The `deps.scrollTarget`
@@ -1135,13 +1149,23 @@ Pre-mint the id, **reply immediately** —
 — then dispatch workspace creation with `name`, `color`, `workingDirectory = path`,
 `profileName = profile`, and the pre-minted id (that action appends the workspace with one
 pane, spawns its surface, activates it, persists). After every successful branch of this
-command the handler also broadcasts `{type: "reveal-pane", workspaceID, paneID}` to the
-attached clients (`revealCreatedWorkspace`, `handlers/app/workspaces.ts:207`): the active
-workspace is per client, and the reducer's `lastActiveWorkspaceID` moves only what
-`workspace list` calls active, so without the reveal a create issued from a terminal would
-leave every open window on the old workspace. Clients treat it as "activate the workspace,
-then focus the pane"; the issuing client reveals itself from the reply as well, and arriving
+command, when the request carries `focus: true`, the handler also broadcasts
+`{type: "reveal-pane", workspaceID, paneID}` to the attached clients
+(`revealCreatedWorkspace`, `handlers/app/workspaces.ts`): the active workspace is per client,
+and the reducer's `lastActiveWorkspaceID` moves only what `workspace list` calls active, so
+without the reveal the user's other windows would stay on the old workspace. Clients treat it
+as "activate the workspace, then focus the pane"; the issuing client activates from the reply
+as well (so for a gesture the broadcast is the backstop for the OTHER windows), and arriving
 twice is idempotent.
+
+**Background by default (issue #307), every branch.** Without `focus: true` the action carries
+`focus: false`: the reducer leaves `lastActiveWorkspaceID` where it was (unless no workspace is
+active at all, when the new one takes it), appends the row to the end of its scope (parent's
+children, group, or top level) regardless of `new-workspace-placement`, still un-collapses the
+destination group or parent, and no `reveal-pane` is broadcast. The daemon and the windows
+keep agreeing by moving neither. That replaces run-B L3's "move both" (a CLI create used to
+move ACTIVE without moving the windows, and an agent's follow-up `kelpi pane create` landed
+somewhere the user could not see); an agent now names `--workspace` for its follow-ups.
 
 #### (c) Group branch (no worktree, non-blank `group`)
 
@@ -1596,10 +1620,13 @@ came. The `kelpi` CLI absolutises before it sends, so this chain only affects ra
 clients and the shell's `open-file` forward, which would otherwise resolve against the
 daemon's own cwd.
 
-### 8.2 `diff` → openDiff(repoPath, targetPath?, paneID?)
+### 8.2 `diff` → openDiff(repoPath, targetPath?, paneID?, focus?)
 
-Same routing shape: with a known `paneID`, focus it and open the diff pane in its
-workspace; else the active workspace. `repoPath` is the repo to diff, `targetPath` the
+Same routing shape: with a known `paneID`, open the diff pane in its workspace, split beside
+it (`sourcePaneID = paneID`); else the active workspace, splitting its focused pane. Issue
+#298: like `open`, the diff is a **background** open unless the message carries `focus: true`;
+only a focusing diff focuses the caller first and leaves the diff pane focused (the window's
+Open Diff action and the inspector send `true`; the CLI only with `--focus`). `repoPath` is the repo to diff, `targetPath` the
 optional path scope. Never reuses a pane. Both `repo_path` and `target_path` go through the
 same relative-path resolution as `open` (`files.ts:100`), and the sync group is refreshed
 afterwards (`files.ts:120`).
@@ -1782,7 +1809,11 @@ web-pane subsystem (see its spec): `web-open`, `web-navigate`, `web-url`, `web-b
 `web-inspect-result`, `web-private`, `web-cookies-list`, `web-cookies-clear`,
 `web-cookies-delete`, `web-click`, `web-type`, `web-q-text`, `web-q-attr`, `web-q-count`,
 `web-q-exists`, `web-q-dom`, `web-wait`, `web-select`, `web-scroll`, `web-hover`, `web-key`,
-`web-exec` (handler table in `packages/daemon/src/webpane/handlers.ts`). All of them (except
+`web-exec` (handler table in `packages/daemon/src/webpane/handlers.ts`). `web-tab-new` with
+`focus: true` (issue #298: ⌘T, the tab strip's "+", `kelpi web tab-new --focus`) dispatches
+`focus-pane` for its pane BEFORE `web-tab-open`, so the pane wears the ring when the tab
+arrives and the client's WEB-002 rule may hand a blank tab's URL bar the caret; without it the
+workspace's focus is untouched. All of them (except
 `web-open`, which takes only `paneID`/`url`/`isPrivate`) scope their target via the tuple
 `{paneID?, target?, workspaceFilter?}` with resolution semantics analogous to
 `resolvePaneTarget` but restricted to web panes.

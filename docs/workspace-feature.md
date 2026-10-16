@@ -477,10 +477,13 @@ A brand-new workspace always has exactly one shell pane.
 The `create-workspace` action (`packages/daemon/src/store/types.ts`, reduced in
 `packages/daemon/src/store/reducers/workspaces.ts`) carries the pre-minted workspace and
 pane ids plus optional `workingDirectory`, `color`, `profileName`, `muted`, `groupID`,
-`labels`, `placement` and `repoAssociations`. The first pane's cwd is `workingDirectory`
+`labels`, `placement`, `repoAssociations` and `focus`. The first pane's cwd is `workingDirectory`
 when it is non-empty, else the home directory; `profileName` goes through
 `normalizedAssignment` (3.4); `muted` defaults to `false`, and a create that carries it is
-muted from its first frame; `labels` and `repoAssociations` default to empty. Group membership and sidebar
+muted from its first frame; `labels` and `repoAssociations` default to empty. `focus: false`
+(issue #307: the wire handler's background create) leaves `lastActiveWorkspaceID` alone and
+appends the row whatever `placement` says; absent switches to the new workspace, as every
+internal dispatcher always has (app-state-core.md §4.1). Group membership and sidebar
 placement are app-state-core.md's domain.
 
 Color choice for an appended workspace (`nextRandomColor` in
@@ -980,7 +983,7 @@ content service's `setFontSize`.
 
 ### 7.5 Diff panes
 
-**openDiffPane(repoPath, targetPath?: string, reusePaneID?: string)**
+**openDiffPane(repoPath, targetPath?: string, reusePaneID?: string, sourcePaneID?: string, focus?: boolean)**
 
 ```
 id = newUUID()
@@ -994,9 +997,12 @@ branchEffect = none here: the branch reconciler (7.11) resolves repoPath
 reuse branch: identical to openMarkdownFile's reuse branch (park the source).
 
 split branch:
-  guard sourceID = focusedPaneID else layout = leaf(id)   // NO allPaneIDs fallback here
+  guard sourceID = (sourcePaneID if it is a visible pane) ?? focusedPaneID
+        else layout = leaf(id)                            // NO allPaneIDs fallback here
   if sourceID: restoreZoomIfNeeded(); layout = splitting(layout, sourceID, "horizontal", id)
-panes.push(pane); setFocus(id); currentLayoutIndex = null
+panes.push(pane); currentLayoutIndex = null
+focusCreatedPane(id, focus)   // issue #298: focus false keeps the user's focus (a background
+                              // `kelpi diff`, which names the caller as sourcePaneID)
 return branchEffect
 ```
 
@@ -1657,8 +1663,10 @@ socket-handlers.md §4.11)
   on it; if it was the zoomed pane, un-zoom onto `savedLayout` minus the pane.
 - Target: append the pane; split the focused pane (falling back to the first in layout
   order) horizontally with the moved pane second, or make it the root leaf of an empty
-  layout; restore the sidecar; `currentLayoutIndex = null`; `setFocus(paneID)`.
-- `lastActiveWorkspaceID = toWorkspaceID`.
+  layout; restore the sidecar; `currentLayoutIndex = null`; `setFocus(paneID)`, or with
+  `focus: false` (issue #298, a background move) `focusCreatedPane`, which keeps the
+  target's own focused pane unless it has none.
+- `lastActiveWorkspaceID = toWorkspaceID`, unless `focus: false`, which leaves it alone.
 
 **resizePane(paneID, share)** (`resize-pane`; `kelpi pane resize`,
 `packages/daemon/src/handlers/pane/geometry.ts`)

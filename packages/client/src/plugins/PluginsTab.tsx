@@ -105,7 +105,7 @@ export function PluginsTab(props: { runtime: KelpiRuntime }): ReactElement {
             <code>{plugin.manifest.id}</code>
             {plugin.error ? <p role="alert">{plugin.error}</p> : null}
             <div className="flex flex-wrap gap-3">{[plugin.enabled ? 'disable' : 'enable', 'reload', 'logs', 'remove'].map(action => <button key={action} disabled={busy} onClick={() => void run(action, { pluginID: plugin.manifest.id })}>{action[0]!.toUpperCase() + action.slice(1)}</button>)}</div>
-            {plugin.manifest.contributes.views.filter(view => view.placements.includes('pane')).map(view => <button key={view.id} className="self-start" disabled={!plugin.enabled || busy} onClick={() => void run('open', { pluginID: plugin.manifest.id, viewID: view.id })}>Open {view.title}</button>)}
+            {plugin.manifest.contributes.views.filter(view => view.placements.includes('pane')).map(view => <button key={view.id} className="self-start" disabled={!plugin.enabled || busy} onClick={() => void run('open', { pluginID: plugin.manifest.id, viewID: view.id, focus: true })}>Open {view.title}</button>)}
             <PluginRevisions plugin={plugin} runtime={props.runtime} busy={busy} selectRevision={revision => run('rollback', { pluginID: plugin.manifest.id, revision })} />
             <PluginSettings plugin={plugin} runtime={props.runtime} report={report} />
             <PluginShortcuts plugin={plugin} runtime={props.runtime} />

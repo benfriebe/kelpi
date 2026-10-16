@@ -456,6 +456,26 @@ describe('pane commands', () => {
         }
     });
 
+    /**
+     * #307 / #298: the rest of the agent-facing verbs that used to move focus or the view. Same
+     * rule as #295: absent is BACKGROUND, `true` is the window's gestures and `--focus`.
+     */
+    it('decodes focus on workspace-create, diff, pane-move-to-workspace and web-tab-new, absent meaning background', () => {
+        const verbs: readonly Record<string, unknown>[] = [
+            { command: 'workspace-create', name: 'worker' },
+            { command: 'diff', repo_path: '/repo' },
+            { command: 'pane-move-to-workspace', pane_id: PANE, name: 'elsewhere' },
+            { command: 'web-tab-new', pane_id: PANE, url: '' }
+        ];
+        for (const payload of verbs) {
+            expect(ok(payload)).toMatchObject({ focus: false });
+            expect(ok({ ...payload, focus: false })).toMatchObject({ focus: false });
+            expect(ok({ ...payload, focus: true })).toMatchObject({ focus: true });
+            expect(ok({ ...payload, focus: null })).toMatchObject({ focus: false });
+            expect(rejected({ ...payload, focus: 'true' })).toMatchObject({ field: 'focus' });
+        }
+    });
+
     it('decodes focus on pane-move and pane-move-adjacent, absent meaning background (#295)', () => {
         const moves: readonly Record<string, unknown>[] = [
             { command: 'pane-move', pane_id: PANE, direction: 'left' },
@@ -562,7 +582,8 @@ describe('pane commands', () => {
             pane_id: PANE_UPPER,
             name: 'scratch',
             text: 'true',
-            create: true
+            create: true,
+            focus: false
         });
         expect(ok({ command: 'pane-move-to-workspace', pane_id: PANE, name: 'scratch' })).toMatchObject({
             create: false
@@ -678,7 +699,8 @@ describe('workspace and group commands', () => {
             repo: undefined,
             muted: false,
             icon: undefined,
-            group_defaults: true
+            group_defaults: true,
+            focus: false
         });
         expect(ok({ command: 'workspace-create', muted: true })).toMatchObject({ muted: true });
         // Verbatim, for the handler to validate (workspace-icon's rule).
@@ -1016,7 +1038,8 @@ describe('layout, file and graft commands', () => {
             command: 'diff',
             repo_path: '/repo',
             target_path: undefined,
-            pane_id: PANE_UPPER
+            pane_id: PANE_UPPER,
+            focus: false
         });
         expect(rejected({ command: 'diff' }).field).toBe('repo_path');
     });

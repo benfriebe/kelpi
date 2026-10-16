@@ -198,24 +198,42 @@ export const handlePaneMoveToWorkspace: CommandHandler<PaneHandlerContext> = (ms
     if (targetID === null || targetID === source.id) return;
     if (workspaceByID(ctx.store.getState(), targetID) === null) return;
 
+    /*
+     * #298: background unless asked (the window's "Move to workspace" sends `focus: true`), with
+     * one exception: the pane the user is typing in, i.e. one some visible window shows as its
+     * focused pane. Leaving the view behind would hand the keyboard to some other terminal and
+     * the rest of the user's line would land there, so the view follows the pane and the
+     * keystrokes stay in the same PTY. Without the window seam (a handler test) the focused
+     * pane of the active workspace stands in for it.
+     */
+    const typingIn =
+        ctx.isPaneAttended !== undefined
+            ? ctx.isPaneAttended(source.id, msg.pane_id)
+            : source.focusedPaneID === msg.pane_id && state.lastActiveWorkspaceID === source.id;
+    const follow = msg.focus === true || typingIn;
+
     ctx.store.dispatch({
         type: 'move-pane-to-workspace',
         paneID: msg.pane_id,
-        toWorkspaceID: targetID
+        toWorkspaceID: targetID,
+        focus: follow
     });
 
     // The move mutates two workspaces at once, so BOTH broadcast groups are refreshed (§5).
     refreshSyncGroup(ctx, source.id);
     refreshSyncGroup(ctx, targetID);
 
-    // §4.11 "the app switches to the destination" (#52). The reducer's `lastActiveWorkspaceID`
-    // only moves what `kelpi workspace list` calls ACTIVE: the port's active workspace is PER
-    // CLIENT (the client selector prefers its own `ui.activeWorkspaceID`), so without this an
-    // attached window stayed on the source workspace and the pane the user just moved vanished
-    // from view. Same fan-out `workspace-create` uses for the same reason (`workspaces.ts`,
-    // run-B L3): untargeted `reveal-pane`, which clients implement as "activate the workspace,
-    // then focus the pane". Skipped if the reducer declined the move, so nothing is revealed
-    // that did not actually arrive.
+    // §4.11 "the app switches to the destination" (#52), for a move that FOLLOWS its pane
+    // (#298: a gesture, `--focus`, or the pane the user is typing in). The reducer's
+    // `lastActiveWorkspaceID` only moves what `kelpi workspace list` calls ACTIVE: the port's
+    // active workspace is PER CLIENT (the client selector prefers its own
+    // `ui.activeWorkspaceID`), so without this an attached window stayed on the source workspace
+    // and the pane the user just moved vanished from view. Same fan-out a focusing
+    // `workspace-create` uses for the same reason (`workspaces.ts`, run-B L3): untargeted
+    // `reveal-pane`, which clients implement as "activate the workspace, then focus the pane".
+    // A background move reveals nothing, and the reducer left ACTIVE alone to match. Skipped if
+    // the reducer declined the move, so nothing is revealed that did not actually arrive.
+    if (!follow) return;
     const landed = workspaceByID(ctx.store.getState(), targetID);
     if (landed === null || !landed.panes.some((pane) => pane.id === msg.pane_id)) return;
     ctx.broadcast({ type: 'reveal-pane', workspaceID: targetID, paneID: msg.pane_id });

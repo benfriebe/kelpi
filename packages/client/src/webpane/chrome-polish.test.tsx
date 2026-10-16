@@ -625,9 +625,11 @@ function BlankHarness(props: {
     readonly onFocus: (paneID: string) => void;
     /** §N35: the daemon's `hasSnapshot`. Defaults to "already attached", as the hook does. */
     readonly attached?: boolean;
+    /** #295 / #298: the pane wearing the ring; absent leaves the gate off. */
+    readonly focusedPaneID?: string | null;
 }): ReactElement {
     const [targets, setTargets] = useState<readonly BlankURLTarget[]>([]);
-    useBlankWebPaneURLFocus(targets, props.onFocus, props.attached ?? true);
+    useBlankWebPaneURLFocus(targets, props.onFocus, props.attached ?? true, props.focusedPaneID);
     return (
         <div>
             <button type="button" data-testid="add-blank" onClick={() => setTargets([{ paneID: PANE, activeTabID: TAB1, activeURL: '', tabIDs: [TAB1] }])}>
@@ -697,6 +699,25 @@ describe('a blank web pane claims the URL bar (WEB-002)', () => {
         render(<BlankHarness onFocus={(paneID) => focused.push(paneID)} />);
         fireEvent.click(screen.getByTestId('add-blank'));
         fireEvent.click(screen.getByTestId('url-arrives'));
+        expect(focused).toEqual([PANE]);
+    });
+
+    /**
+     * #298: an agent's blank `kelpi web tab-new` in a web pane the user is NOT in leaves the
+     * caret where it is; the same tab in the focused pane (⌘T, "+", whose pane the daemon
+     * focuses first) still claims the URL bar.
+     */
+    it('does not bump for a blank new tab in a pane without the ring, and does in the focused one', () => {
+        const focused: string[] = [];
+        render(<BlankHarness focusedPaneID="USER" onFocus={(paneID) => focused.push(paneID)} />);
+        fireEvent.click(screen.getByTestId('add-loaded'));
+        fireEvent.click(screen.getByTestId('add-blank-tab'));
+        expect(focused).toEqual([]);
+
+        cleanup();
+        render(<BlankHarness focusedPaneID={PANE} onFocus={(paneID) => focused.push(paneID)} />);
+        fireEvent.click(screen.getByTestId('add-loaded'));
+        fireEvent.click(screen.getByTestId('add-blank-tab'));
         expect(focused).toEqual([PANE]);
     });
 

@@ -10,14 +10,11 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
-    REVEAL_SUPPRESSION_MS,
     SEED_TEST_GROUP_COMMAND,
     TEST_FIXTURE_COLOR,
     TEST_GROUP_NAME,
     TEST_WORKSPACE_NAMES,
-    consumeSuppressedReveal,
     seedTestGroup,
-    suppressReveal,
     type SeedCommands,
     type SeedReply
 } from './seed-test-group';
@@ -68,8 +65,8 @@ describe('the fixture', () => {
         expect(result.ok).toBe(true);
         expect(bound.calls).toEqual([
             { verb: 'group-create', input: { name: 'Test Group', color: 'gray' } },
-            { verb: 'workspace-create', input: { name: 'Test Monitor 1', color: 'gray', group: 'GROUP-1' } },
-            { verb: 'workspace-create', input: { name: 'Test Monitor 2', color: 'gray', group: 'GROUP-1' } }
+            { verb: 'workspace-create', input: { name: 'Test Monitor 1', color: 'gray', group: 'GROUP-1', focus: false } },
+            { verb: 'workspace-create', input: { name: 'Test Monitor 2', color: 'gray', group: 'GROUP-1', focus: false } }
         ]);
         expect(result.groupID).toBe('GROUP-1');
         expect(result.workspaceIDs).toEqual(['WS-1', 'WS-2']);
@@ -210,55 +207,12 @@ describe('failures are reported, never thrown', () => {
 });
 
 describe('keeping the view where it was', () => {
-    it('announces each workspace id as its create is acknowledged, in order', async () => {
-        const seen: string[] = [];
+    it('asks for BACKGROUND creates, so the daemon reveals neither workspace (#307)', async () => {
         const bound = recorder({});
-        await seedTestGroup({
-            commands: bound.commands,
-            onWorkspaceCreated: (id) => seen.push(id)
-        });
-        // Both, in creation order — this is what the call site suppresses reveals for, and a
-        // missed id is a window that jumps to a workspace nobody asked for.
-        expect(seen).toEqual(['WS-1', 'WS-2']);
-    });
-
-    it('announces nothing for a create that failed or answered without an id', async () => {
-        const seen: string[] = [];
-        const bound = recorder({
-            workspace: (name, index) =>
-                name === 'Test Monitor 1' ? { ok: false, error: 'nope' } : { ok: true, ...(index < 0 ? {} : {}) }
-        });
-        await seedTestGroup({ commands: bound.commands, onWorkspaceCreated: (id) => seen.push(id) });
-        expect(seen).toEqual([]);
-    });
-
-    it('suppresses exactly one reveal per id, and only inside its window', () => {
-        const pending = new Map<string, number>();
-        const now = 1_000_000;
-        suppressReveal(pending, 'WS-1', now);
-
-        // A different workspace's reveal is untouched…
-        expect(consumeSuppressedReveal(pending, 'OTHER', now + 5)).toBe(false);
-        // …the seeded one is swallowed once…
-        expect(consumeSuppressedReveal(pending, 'WS-1', now + 5)).toBe(true);
-        // …and a LATER reveal of the same workspace (a notification click) is honoured.
-        expect(consumeSuppressedReveal(pending, 'WS-1', now + 6)).toBe(false);
-    });
-
-    it('expires rather than swallowing a reveal an hour later', () => {
-        const pending = new Map<string, number>();
-        const now = 1_000_000;
-        suppressReveal(pending, 'WS-1', now);
-        expect(consumeSuppressedReveal(pending, 'WS-1', now + REVEAL_SUPPRESSION_MS + 1)).toBe(false);
-        expect(pending.size).toBe(0);
-    });
-
-    it('prunes stale entries as it goes, so a daemon that never reveals cannot leak them', () => {
-        const pending = new Map<string, number>();
-        suppressReveal(pending, 'GHOST-1', 0);
-        suppressReveal(pending, 'GHOST-2', 0);
-        consumeSuppressedReveal(pending, 'SOMETHING-ELSE', REVEAL_SUPPRESSION_MS + 1);
-        expect(pending.size).toBe(0);
+        await seedTestGroup({ commands: bound.commands });
+        const creates = bound.calls.filter((call) => call.verb === 'workspace-create');
+        expect(creates).toHaveLength(2);
+        for (const call of creates) expect(call.input['focus']).toBe(false);
     });
 });
 

@@ -626,16 +626,20 @@ export class CommandClient {
         );
     }
 
-    /** The create flag rides the wire as the literal string `"true"` (§6.2 quirk). */
+    /**
+     * The create flag rides the wire as the literal string `"true"` (§6.2 quirk). #298: the pane
+     * menu's "Move to workspace" is a gesture, so the view follows the pane; see `splitPane`.
+     */
     movePaneToWorkspace(
-        input: { paneID: string; workspace: string; create?: boolean },
+        input: { paneID: string; workspace: string; create?: boolean; focus?: boolean },
         options?: SendOptions
     ): Promise<CommandReply> {
         return this.raw(
             wirePayload('pane-move-to-workspace', {
                 pane_id: input.paneID,
                 name: input.workspace,
-                ...(input.create === true ? { text: 'true' } : {})
+                ...(input.create === true ? { text: 'true' } : {}),
+                focus: input.focus ?? true
             }),
             options ?? {}
         );
@@ -710,6 +714,14 @@ export class CommandClient {
              * session reads it before the wire decode, and the CLI has no way to send it.
              */
             requestID?: string;
+            /**
+             * #307: switch to the new workspace. Defaults to true HERE, and only here: on the wire
+             * an absent `focus` is a background create (an agent's `kelpi workspace create`), but
+             * every caller of this builder is one of the window's own gestures (the sheet, the
+             * sidebar, the palette, the menus, the phone view), and a workspace the user just
+             * asked for is where they go. Debug ▸ Seed Test Group passes false.
+             */
+            focus?: boolean;
         } = {},
         options?: SendOptions
     ): Promise<CommandReply> {
@@ -729,7 +741,8 @@ export class CommandClient {
                 repo: input.repo,
                 muted: input.muted,
                 group_defaults: input.groupDefaults,
-                parent: input.parent
+                parent: input.parent,
+                focus: input.focus ?? true
             }),
             {
                 ...(timeout !== undefined ? { timeoutMs: timeout } : {}),
@@ -983,15 +996,17 @@ export class CommandClient {
         );
     }
 
+    /** #298: a gesture's diff (Open Diff, the inspector), so it focuses by default; see `splitPane`. */
     openDiff(
-        input: { repoPath: string; targetPath?: string; paneID?: string },
+        input: { repoPath: string; targetPath?: string; paneID?: string; focus?: boolean },
         options?: SendOptions
     ): Promise<CommandReply> {
         return this.raw(
             wirePayload('diff', {
                 repo_path: input.repoPath,
                 target_path: input.targetPath,
-                pane_id: input.paneID
+                pane_id: input.paneID,
+                focus: input.focus ?? true
             }),
             options ?? {}
         );

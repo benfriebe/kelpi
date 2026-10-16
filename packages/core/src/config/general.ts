@@ -111,7 +111,9 @@ export interface GeneralSettings {
     readonly worktreeBasePath: string;
     /**
      * §13's "New workspace placement" (SET-013) and "New group placement" (SET-014), default
-     * `end-of-list` for both. `near-selection` inserts after the active workspace's slot.
+     * `end-of-list` for both. `near-selection` inserts after the active workspace's slot. A
+     * workspace created in the background (#307: an agent's `kelpi workspace create` without
+     * `--focus`) always appends, since the active workspace it would anchor on never moves.
      */
     readonly newWorkspacePlacement: 'end-of-list' | 'near-selection';
     readonly newGroupPlacement: 'end-of-list' | 'near-selection';

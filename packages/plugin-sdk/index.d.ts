@@ -44,7 +44,8 @@ export interface KelpiAPI {
     snapshot(): Promise<Snapshot>;
     /** Same payload and reply as Kelpi's CLI/UI command protocol. */
     command(payload: Data, context?: Partial<Context>): Promise<Data>;
-    openView(viewID: string, options?: { workspaceID?: string; state?: Data }): Promise<{ paneID: string; workspaceID: string }>;
+    /** `focus` defaults to true, as on `panes.create`; pass false from code with no gesture. */
+    openView(viewID: string, options?: { workspaceID?: string; state?: Data; focus?: boolean }): Promise<{ paneID: string; workspaceID: string }>;
     emit(name: string, data?: Json): Promise<Event>;
     events: { on(name: string, listener: (event: Event) => void | Promise<void>): Dispose };
     commands: { execute<T = Json>(id: string, args?: Data): Promise<T> };

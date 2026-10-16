@@ -104,7 +104,8 @@ third-party runtime dependencies:
 | `browser` | Native page attachment, tabs and navigation with Kelpi-owned browser sessions. |
 
 While dev runs, use another terminal to open a pane template with
-`kelpi_test plugin open example.my-pane example.my-pane.home`.
+`kelpi_test plugin open --focus example.my-pane example.my-pane.home` (without `--focus` the
+pane opens in the background, beside the terminal you ran it from).
 Choose sidebars through Settings → Plugins → Workbench views. For document and browser
 templates, open a native pane and choose the replacement in Settings or its renderer picker
 (a Scratchpad has a renderer button in its header instead).

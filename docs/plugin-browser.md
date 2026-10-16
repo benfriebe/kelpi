@@ -125,6 +125,9 @@ The [public declarations](../packages/plugin-sdk/browser-pane.d.ts) describe the
 | State | `get`, `watch`, `unwatch` |
 | Navigation | `navigate`, `url`, `back`, `forward`, `reload`, `stop`, `focus`, `blur` |
 | Tabs and storage session | `tabs.open/select/close/reorder`, `setPrivate` |
+
+`tabs.open` follows the `web-tab-new` wire default (#298): it never focuses the pane, so a blank
+tab's URL bar takes the caret only when its pane is already the focused one.
 | Page tools | `find`, `zoom`, `toggleDevTools`, `capture`, `exec`, `console` |
 | Shared favourites | `favourites.list/toggle/remove/rename/move` |
 | Cookies | `cookies.list/clear/delete/set` |

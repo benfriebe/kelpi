@@ -88,7 +88,9 @@ export function createKelpiAPI(transport, getContext = () => ({}), on = undefine
             name: options.name, path: options.path, color: options.color, group: options.groupID,
             profile: options.profile, worktree: options.worktree, branch: options.branch,
             update_main: options.updateMain, repo: options.repo, muted: options.muted, icon: options.icon,
-            parent,
+            // #307: the wire's absent `focus` is a background create (the CLI/agent default); the
+            // helper assumes a gesture and switches to the workspace unless told `focus: false`.
+            parent, focus: options.focus ?? true,
         }));
         // The workspace exists either way; `details` carries it so the caller can move or remove it.
         if (parent !== undefined && result.parentLost === true) {
@@ -163,7 +165,8 @@ export function createKelpiAPI(transport, getContext = () => ({}), on = undefine
         // #295: like create/split, the move helpers keep focusing the moved pane by default.
         moveAdjacent: (pane, anchor, zone, options = {}) => run('pane-move-adjacent', { ...target(pane), anchor, zone, focus: options.focus ?? true }),
         move: (paneID, direction, options = {}) => done('pane-move', { pane_id: paneID, direction, focus: options.focus ?? true }),
-        moveToWorkspace: (paneID, workspaceID, options = {}) => done('pane-move-to-workspace', { pane_id: paneID, name: workspaceID, text: options.create ? 'true' : 'false' }),
+        // #298: as create/split above, the view follows the moved pane by default.
+        moveToWorkspace: (paneID, workspaceID, options = {}) => done('pane-move-to-workspace', { pane_id: paneID, name: workspaceID, text: options.create ? 'true' : 'false', focus: options.focus ?? true }),
         reopen: workspaceID => run('reopen-closed-pane', { workspace_id: workspaceID }),
         scratchpad: workspaceID => run('create-scratchpad', { workspace_id: workspaceID }),
     });
@@ -220,7 +223,9 @@ export function createKelpiAPI(transport, getContext = () => ({}), on = undefine
     return Object.freeze({
         call, command,
         snapshot: () => call('state.snapshot'),
-        openView: (viewID, options = {}) => call('views.open', clean({ viewID, ...options })),
+        // #298: `views.open` is background unless asked (`kelpi plugin open`); a plugin's own
+        // open usually follows a click, so the helper focuses the view unless `focus: false`.
+        openView: (viewID, options = {}) => call('views.open', clean({ viewID, ...options, focus: options.focus ?? true })),
         emit: (name, data = null) => call('events.emit', { name, data }),
         commands: Object.freeze({ execute: (command, args = {}) => call('commands.execute', { command, args }) }),
         storage: Object.freeze({ get: key => call('storage.get', { key }), set: async (key, value) => { await call('storage.set', { key, value }); } }),
@@ -387,7 +392,7 @@ export function createKelpiAPI(transport, getContext = () => ({}), on = undefine
             associate: async (workspaceID, path) => (await run('add-repo-association', { workspace_id: workspaceID, path })).association,
             dissociate: (workspaceID, associationID, options = {}) => run('remove-repo-association', { workspace_id: workspaceID, association_id: associationID, delete_worktree: options.deleteWorktree ?? false }),
             addWorktree: (workspaceID, options) => run('workspace-add-worktree', { workspace_id: workspaceID, repo_id: options.repoID, repo_path: options.repoPath, name: options.name, branch: options.branch, update_main: options.updateMain ?? false }),
-            diff: async (repoPath, options = {}) => done('diff', { repo_path: repoPath, target_path: options.targetPath, pane_id: await sourcePane(options, 'diff') }),
+            diff: async (repoPath, options = {}) => done('diff', { repo_path: repoPath, target_path: options.targetPath, pane_id: await sourcePane(options, 'diff'), focus: options.focus ?? true }),
             graft: Object.freeze({
                 status: () => list('graft-status', 'sessions'),
                 start: async (options = {}) => run('graft-start', graftScope(options, 'graft-start')),

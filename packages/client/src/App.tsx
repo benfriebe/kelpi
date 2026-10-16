@@ -199,12 +199,8 @@ import { RemoteWorkspaceView } from './app/RemoteWorkspaceView';
 import { defaultFormFactorWindow, useFormFactor, type FormFactorWindow } from './chrome/form-factor';
 import { PhoneShell, phoneVisiblePaneIDs, usePhoneView } from './phone';
 import { createSearchNeedleScheduler, type SearchNeedleScheduler } from './app/search-needle';
-import {
-    SEED_TEST_GROUP_COMMAND,
-    consumeSuppressedReveal,
-    seedTestGroup,
-    suppressReveal
-} from './app/seed-test-group';
+import { SEED_TEST_GROUP_COMMAND, seedTestGroup } from './app/seed-test-group';
+import { createNewWorkspaceCue, useNewWorkspaceArrivals } from './app/new-workspace-cue';
 import {
     CLOSE_PANE_CHORD_COMMAND,
     createShellCloseBridge,
@@ -516,7 +512,7 @@ function Shell(props: AppProps): ReactElement {
      */
     const [restartingOldHosts, setRestartingOldHosts] = useState<readonly WsOldTerminalHost[] | null>(null);
     const workspacesLifecycle = useWorkspacesFeatureLifecycle();
-    const { setScrollToWorkspaceID, createSheetOpen, sidebarEscapeRef } = workspacesLifecycle;
+    const { setScrollToWorkspaceID, setHighlightWorkspaceID, createSheetOpen, sidebarEscapeRef } = workspacesLifecycle;
     /**
      * §APP-037's second half: the forced `git status` a workspace switch owes.
      *
@@ -729,12 +725,6 @@ function Shell(props: AppProps): ReactElement {
      * being taken to - and unmount cancels whatever is left.
      */
     const revealHandoff = useRef<(() => void) | null>(null);
-    /**
-     * §APP-028: workspace ids whose next `reveal-pane` this window should ignore, each with a
-     * deadline (see `suppressReveal`). Exactly one gesture writes here — Debug ▸ Seed Test Group,
-     * which creates workspaces the user did not ask to be taken to.
-     */
-    const suppressedReveals = useRef(new Map<string, number>());
 
     // ── §WS-001: the sidebar's show/hide slide ──────────────────────────────────────
     //
@@ -972,14 +962,12 @@ function Shell(props: AppProps): ReactElement {
         const off = runtime.connection.on('message', (message) => {
             const target = parseRevealMessage(message);
             if (target === null || !revealAppliesHere(target, shellWindowID)) return;
-            // §APP-028: one reveal this window asked the daemon NOT to act on — see
-            // `suppressReveal` and the Seed Test Group branch below.
-            if (consumeSuppressedReveal(suppressedReveals.current, target.workspaceID)) return;
             // §WS-100: the SOCKET creation paths reach the sidebar here. The daemon reveals
-            // every `workspace create` (and every notification "Open") to its clients, and this
-            // is the client's `setActiveWorkspace` for that message — so it queues the reveal
-            // like the rest, which is what makes `kelpi workspace create` from a terminal scroll
-            // the new row into view in an already-scrolled sidebar.
+            // every FOCUSING `workspace create` (`--focus` or a gesture in another window; #307)
+            // and every notification "Open" to its clients, and this is the client's
+            // `setActiveWorkspace` for that message, so it queues the reveal like the rest. A
+            // background create never arrives here: `app/new-workspace-cue.ts` points the
+            // sidebar at it instead, without activating it.
             activateWorkspaceAndReveal(target.workspaceID);
             const timer = setTimeout(() => {
                 timers.delete(timer);
@@ -1529,6 +1517,19 @@ function Shell(props: AppProps): ReactElement {
     // #295: and only for a pane that arrives wearing the ring. A background `kelpi web open`
     // lands blank too, and must leave the caret in the pane the user is typing in.
     useBlankWebPaneURLFocus(blankURLTargets, webAct.focusURLBar, daemon.hasSnapshot, focusedPaneID);
+
+    /*
+     * #307: a workspace created in the background (an agent's `kelpi workspace create`) is not
+     * revealed, so the sidebar points at it instead: its row scrolls into view and wears a short
+     * highlight, and nothing is activated or focused. See `app/new-workspace-cue.ts`.
+     */
+    const workspaceIDs = useMemo(() => daemon.state.workspaces.map((workspace) => workspace.id), [daemon.state.workspaces]);
+    const newWorkspaceCue = useMemo(() => createNewWorkspaceCue(setHighlightWorkspaceID), [setHighlightWorkspaceID]);
+    useEffect(() => () => newWorkspaceCue.dispose(), [newWorkspaceCue]);
+    useNewWorkspaceArrivals(workspaceIDs, daemon.hasSnapshot, (workspaceID) => {
+        setScrollToWorkspaceID(workspaceID);
+        if (workspaceID !== selectActiveWorkspaceID(store.getState())) newWorkspaceCue.show(workspaceID);
+    });
 
     /**
      * §7.3's tri-state layer, behind a ref so the key dispatcher (rebuilt only on a keybinding
@@ -3662,22 +3663,11 @@ function Shell(props: AppProps): ReactElement {
              * build (`shell/src/menu.ts` ▸ `debugMenuSection`). The fixture is composed out of
              * the ordinary create verbs (`app/seed-test-group.ts`).
              *
-             * …and the view stays put, which needs a word. The Swift seed appends reducer state
-             * directly and never touches `activeWorkspaceID`: the group appears and the user
-             * stays where they were. Composing it out of `workspace-create` cannot inherit that,
-             * because the daemon deliberately broadcasts a REVEAL for every workspace it creates
-             * (`handlers/app/workspaces.ts` ▸ `revealCreatedWorkspace`, the run-B L3 fix, so a
-             * `kelpi workspace create` from a terminal cannot leave the window behind).
-             *
-             * So the two reveals this gesture is about to cause are declined BEFORE they arrive
-             * rather than undone afterwards — undoing loses the race, since the create's reply
-             * is sent before its broadcast and an "activate what I came from" written in the
-             * reply's own microtask is simply overwritten by the reveal that follows it. The
-             * suppression is one-shot, expires, and is keyed on the exact workspace ids this
-             * seed made, so nothing else's reveal can be swallowed by it.
+             * …and the view stays put: the seed's creates are BACKGROUND creates
+             * (`focus: false`, #307), so the daemon reveals neither and the user stays where
+             * they were, as the Swift seed's reducer append leaves them.
              */
             else if (command === SEED_TEST_GROUP_COMMAND) {
-                const pendingReveals = suppressedReveals.current;
                 void seedTestGroup({
                     commands: {
                         createGroup: (input) => commands.createGroup(input),
@@ -3686,9 +3676,6 @@ function Shell(props: AppProps): ReactElement {
                         // `{ok:true}` (`ws/sync.ts`), so the group's id is read back rather than
                         // assumed — see the module note.
                         listGroups: () => commands.listGroups()
-                    },
-                    onWorkspaceCreated: (workspaceID) => {
-                        suppressReveal(pendingReveals, workspaceID);
                     },
                     onFailure: (title, message) => notifyFailureRef.current(title, message)
                 });

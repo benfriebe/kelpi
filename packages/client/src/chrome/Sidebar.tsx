@@ -979,6 +979,8 @@ interface WorkspaceRowProps {
     readonly entering?: boolean | undefined;
     /** L15: this insertion is a SPRING-LOAD reveal, so the entry runs on the 100ms ease. */
     readonly enterFast?: boolean | undefined;
+    /** #307: created in the background a moment ago; wears `[data-just-created]`'s highlight. */
+    readonly justCreated?: boolean | undefined;
     readonly groupCaption: string | null;
     readonly onActivate: (workspaceID: string, event: React.MouseEvent) => void;
     readonly onContextMenu: (workspaceID: string, event: React.MouseEvent) => void;
@@ -1200,6 +1202,7 @@ export const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps)
             data-drag-hidden={hidden ? 'true' : undefined}
             data-guide={props.guideColor === undefined ? undefined : 'true'}
             data-entering={props.entering === true ? 'true' : undefined}
+            data-just-created={props.justCreated === true ? 'true' : undefined}
             /* §WS-008: the reorder channel this row is displaced on, so an audit can tell a
                spring-driven sidebar from a transition-driven one without reading the source. */
             data-reorder="spring"
@@ -1833,6 +1836,11 @@ export interface SidebarProps extends SidebarCallbacks {
      * assembly clears both fields with it.
      */
     readonly scrollToGroupID?: string | null | undefined;
+    /**
+     * #307: a workspace an agent created in the background, worn as a short highlight so the
+     * user can see where it went without being taken there. Never activates or focuses it.
+     */
+    readonly highlightWorkspaceID?: string | null | undefined;
     readonly onScrollHandled?: (() => void) | undefined;
     /** §WS-102's 0.22s reveal; overridable so a test does not have to wait it out. */
     readonly revealMs?: number | undefined;
@@ -5086,6 +5094,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
                             // tint. Both are the Swift's — see the note above `WorkspaceRow`.
                             entering={entering.has(row.key)}
                             enterFast={enteringFast}
+                            justCreated={props.highlightWorkspaceID === workspace.id && workspace.id !== props.activeWorkspaceID}
                             onActivate={onActivate}
                             onContextMenu={onWorkspaceContextMenu}
                             onDragStart={dragStartWorkspace}

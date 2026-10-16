@@ -29,6 +29,17 @@ describe('bundled plugin CLI', () => {
         expect(result.code).toBe(0); expect(JSON.parse(result.stdout)).toEqual({ answer: 42 });
         expect(JSON.parse(String(server.requests[0]?.['text']))).toEqual({ command: 'sample.board.run', args: { text: '$(literal) `literal`' }, workspaceID: 'workspace' });
     });
+    /** #298: `plugin open` is background by default, beside the calling pane; `--focus` opts in. */
+    it('opens a view in the background beside the caller, and sends focus only with --focus', async () => {
+        const caller = '9C2B9A2E-1111-2222-3333-444455556666';
+        server.respond(() => ({ lines: [{ ok: true, result: { paneID: 'P', workspaceID: 'W' } }] }));
+        await runCLI(['plugin', 'open', 'sample.board', 'sample.board.view'], { port: server.port, cwd: home, paneID: caller });
+        expect(JSON.parse(String(server.requests[0]?.['text']))).toEqual({ pluginID: 'sample.board', viewID: 'sample.board.view', state: {}, paneID: caller });
+        await runCLI(['plugin', 'open', '--focus', 'sample.board', 'sample.board.view'], { port: server.port, cwd: home });
+        expect(JSON.parse(String(server.requests[1]?.['text']))).toEqual({ pluginID: 'sample.board', viewID: 'sample.board.view', state: {}, focus: true });
+        const help = await runCLI(['plugin', '--help'], { port: server.port, cwd: home });
+        expect(help.stdout).toContain('open <plugin-id> <view-id> [--workspace <id>] [--pane <id>] [--state <json>] [--focus]');
+    });
     it('rejects incomplete installation and invalid JSON before connecting', async () => {
         for (const args of [['install', '--trust'], ['run', 'sample.board.run', '--args', '[1]'], ['settings', 'sample.board', '--key', 'title'], ['service-call', 'sample.service', 'read', '--version', '0'], ['service-select', 'sample.service'], ['service-call', 'sample.service', 'read', '--args', '[]'], ['init', '--unknown', '--id', 'example.starter']]) {
             expect((await runCLI(['plugin', ...args], { port: server.port, cwd: home })).code).toBe(1);

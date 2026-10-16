@@ -158,7 +158,17 @@ function createWorkspace(
     });
 
     const previousActiveID = state.lastActiveWorkspaceID;
-    const placement = action.placement ?? 'end-of-list';
+    // #307: a background create appends, see the action's `focus` note.
+    const background = action.focus === false;
+    const placement = background ? 'end-of-list' : (action.placement ?? 'end-of-list');
+    /**
+     * The active workspace after the create: the new one, unless it was made in the background
+     * while another workspace was active. With none active there is nothing to keep, so the new
+     * workspace takes it, as `focusCreatedPane` does for an empty workspace's first pane.
+     */
+    const keepsActive =
+        background && previousActiveID !== null && state.workspaces.some((candidate) => candidate.id === previousActiveID);
+    const activeID = keepsActive ? previousActiveID : workspace.id;
     let next: DaemonState = { ...state, workspaces: [...state.workspaces, workspace] };
 
     // §2.9: a nested create lands in the parent's children and wins over any group. The parent
@@ -181,10 +191,11 @@ function createWorkspace(
             childOrder,
             childrenCollapsed: false
         }));
-        // The new workspace becomes active, so it must be visible: open the parent's group too.
+        // The new workspace must be visible, whether it became active or (#307) was made in
+        // the background and the sidebar is pointing at it instead: open the parent's group too.
         const parentGroup = groupOfWorkspace(next, parent.id);
         if (parentGroup !== null) next = expandGroup(next, parentGroup.id);
-        return { ...next, lastActiveWorkspaceID: workspace.id };
+        return { ...next, lastActiveWorkspaceID: activeID };
     }
 
     const group =
@@ -220,7 +231,7 @@ function createWorkspace(
         };
     }
 
-    return { ...next, lastActiveWorkspaceID: workspace.id };
+    return { ...next, lastActiveWorkspaceID: activeID };
 }
 
 function deleteWorkspaces(state: DaemonState, ids: readonly string[]): DaemonState {

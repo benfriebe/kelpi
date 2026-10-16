@@ -133,8 +133,8 @@ async function order(socketPath: string): Promise<string[]> {
  * `end-of-list`.
  */
 async function seed(socketPath: string): Promise<void> {
-    await request(socketPath, { command: 'workspace-create', name: 'alpha' });
-    await request(socketPath, { command: 'workspace-create', name: 'beta' });
+    await request(socketPath, { command: 'workspace-create', name: 'alpha', focus: true });
+    await request(socketPath, { command: 'workspace-create', name: 'beta', focus: true });
     await notify(socketPath, { command: 'workspace-move', name: 'beta', index: 0 });
 }
 
@@ -144,7 +144,7 @@ describe('§WS-104 new-workspace placement, config to sidebar', () => {
         await seed(socketPath);
         expect(await order(socketPath)).toEqual(['beta', 'Default', 'alpha']);
 
-        await request(socketPath, { command: 'workspace-create', name: 'gamma' });
+        await request(socketPath, { command: 'workspace-create', name: 'gamma', focus: true });
         expect(await order(socketPath)).toEqual(['beta', 'gamma', 'Default', 'alpha']);
     }, 30_000);
 
@@ -153,14 +153,14 @@ describe('§WS-104 new-workspace placement, config to sidebar', () => {
         await seed(socketPath);
         expect(await order(socketPath)).toEqual(['beta', 'Default', 'alpha']);
 
-        await request(socketPath, { command: 'workspace-create', name: 'gamma' });
+        await request(socketPath, { command: 'workspace-create', name: 'gamma', focus: true });
         expect(await order(socketPath)).toEqual(['beta', 'Default', 'alpha', 'gamma']);
     }, 30_000);
 
     it('appends with an explicit `end-of-list` in the config', async () => {
         const { socketPath } = await boot('new-workspace-placement = end-of-list\n');
         await seed(socketPath);
-        await request(socketPath, { command: 'workspace-create', name: 'gamma' });
+        await request(socketPath, { command: 'workspace-create', name: 'gamma', focus: true });
         expect(await order(socketPath)).toEqual(['beta', 'Default', 'alpha', 'gamma']);
     }, 30_000);
 
@@ -178,7 +178,7 @@ describe('§WS-104 new-workspace placement, config to sidebar', () => {
         h.dispatch({ type: 'create-workspace', id: id('aaaaaaaa', 2), paneID: id('dddddddd', 2), name: 'beta', now: NOW });
         h.dispatch({ type: 'set-active-workspace', id: id('aaaaaaaa', 1), now: NOW });
 
-        h.reply({ command: 'workspace-create', name: 'end' });
+        h.reply({ command: 'workspace-create', name: 'end', focus: true });
         expect(h.state().topLevelOrder.map((entry) => entry.id).slice(-1)[0]).toBe(
             h.state().workspaces.find((workspace) => workspace.name === 'end')?.id
         );
@@ -187,10 +187,29 @@ describe('§WS-104 new-workspace placement, config to sidebar', () => {
         // otherwise "after the active workspace" and "the tail" are the same slot again.
         placement = 'near-selection';
         h.dispatch({ type: 'set-active-workspace', id: id('aaaaaaaa', 1), now: NOW });
-        h.reply({ command: 'workspace-create', name: 'near' });
+        h.reply({ command: 'workspace-create', name: 'near', focus: true });
         const near = h.state().workspaces.find((workspace) => workspace.name === 'near')?.id;
         const order = h.state().topLevelOrder.map((entry) => entry.id);
         // Straight after alpha — the workspace that was active when the create landed.
         expect(order.indexOf(near ?? '')).toBe(order.indexOf(id('aaaaaaaa', 1)) + 1);
+    });
+
+    /**
+     * #307: a BACKGROUND create (an agent's, no `focus`) never moves the active workspace, so
+     * "after the active workspace" would be the same slot every time and a run of agent creates
+     * would stack in reverse. They append instead, in the order they were made.
+     */
+    it('appends background creates in order even under near-selection', () => {
+        const h = harness({ placement: () => 'near-selection' });
+        h.dispatch({ type: 'create-workspace', id: id('aaaaaaaa', 1), paneID: id('dddddddd', 1), name: 'alpha', now: NOW });
+        h.dispatch({ type: 'create-workspace', id: id('aaaaaaaa', 2), paneID: id('dddddddd', 2), name: 'beta', now: NOW });
+        h.dispatch({ type: 'set-active-workspace', id: id('aaaaaaaa', 1), now: NOW });
+
+        for (const name of ['w1', 'w2', 'w3']) h.reply({ command: 'workspace-create', name });
+        const names = h.state().topLevelOrder.map(
+            (entry) => h.state().workspaces.find((workspace) => workspace.id === entry.id)?.name
+        );
+        expect(names).toEqual(['alpha', 'beta', 'w1', 'w2', 'w3']);
+        expect(h.state().lastActiveWorkspaceID).toBe(id('aaaaaaaa', 1));
     });
 });

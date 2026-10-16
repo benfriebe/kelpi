@@ -273,6 +273,11 @@ interface CreateInput {
     readonly parentID: string | undefined;
     readonly workspaceID: string;
     readonly repoAssociations: readonly RepoAssociation[] | undefined;
+    /**
+     * #307: switch to the new workspace (`focus: true` on the wire: the window's own gestures,
+     * `kelpi workspace create --focus`). False creates it in the background.
+     */
+    readonly focus: boolean;
 }
 
 function dispatchCreate(ctx: AppContext, deps: AppDeps, input: CreateInput): void {
@@ -292,18 +297,27 @@ function dispatchCreate(ctx: AppContext, deps: AppDeps, input: CreateInput): voi
         ...(input.profile !== undefined ? { profileName: input.profile } : {}),
         ...(input.muted ? { muted: true } : {}),
         ...(input.icon !== null ? { icon: input.icon } : {}),
-        ...(input.repoAssociations !== undefined ? { repoAssociations: input.repoAssociations } : {})
+        ...(input.repoAssociations !== undefined ? { repoAssociations: input.repoAssociations } : {}),
+        focus: input.focus
     });
     deps.scrollTarget(workspaceSidebarID(input.workspaceID));
     spawnFirstPane(ctx, deps, input.workspaceID);
     refreshSyncGroup(ctx, input.workspaceID);
     deps.persist();
-    revealCreatedWorkspace(ctx, input.workspaceID, paneID);
+    // #307: only a focusing create is revealed. A background one (an agent's `kelpi workspace
+    // create`) leaves every window, and the daemon's active workspace, where they were; the
+    // windows point their sidebar at the new row instead (`app/new-workspace-cue.ts`).
+    if (input.focus) revealCreatedWorkspace(ctx, input.workspaceID, paneID);
 }
 
 /**
  * "Creating a workspace switches to it" — the Swift app's behaviour, made to work for a
- * client that did not issue the command (run-B L3).
+ * client that did not issue the command (run-B L3). Since #307 this is the FOCUSING create
+ * only (`focus: true`: the window's own gestures and `kelpi workspace create --focus`). A
+ * background create keeps the daemon and the windows in agreement the other way round: the
+ * reducer leaves `lastActiveWorkspaceID` alone and nothing is revealed, so neither moves. For a
+ * gesture the issuing window already activates from the reply, so this broadcast is the
+ * backstop that takes the user's OTHER windows along, as it always has.
  *
  * The port's active workspace is **per client** (PLAN.md), so the reducer marking the new
  * workspace `lastActiveWorkspaceID` moves what `kelpi workspace list` calls ACTIVE and nothing
@@ -575,6 +589,7 @@ function handleWorktreeCreate(
                 groupID,
                 parentID: parentLost === null ? parentID : undefined,
                 workspaceID,
+                focus: msg.focus === true,
                 repoAssociations: [
                     {
                         id: deps.uuid(),
@@ -684,6 +699,7 @@ function handleCreateWithRepo(
                 groupID,
                 parentID,
                 workspaceID,
+                focus: msg.focus === true,
                 repoAssociations: [association]
             });
             const created = workspaceByID(ctx.store.getState(), workspaceID);
@@ -779,6 +795,7 @@ function handleWorkspaceCreate(
             groupID: undefined,
             parentID,
             workspaceID,
+            focus: msg.focus === true,
             repoAssociations: undefined
         });
         return;
@@ -818,6 +835,7 @@ function handleWorkspaceCreate(
         groupID,
         parentID: undefined,
         workspaceID,
+        focus: msg.focus === true,
         repoAssociations: undefined
     });
 }

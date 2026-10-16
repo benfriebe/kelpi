@@ -513,13 +513,13 @@ carry `"command"`.
 | `pane-clear` | R/R | one of `pane_id`/`target` | `workspace` |
 | `pane-move` | F&F | `pane_id`, `direction` | — |
 | `pane-move-adjacent` | R/R | `target`, `anchor`, `zone` | `pane_id`, `workspace` |
-| `pane-move-to-workspace` | F&F | `pane_id`, `name` | `text` (`"true"` = create) |
+| `pane-move-to-workspace` | F&F | `pane_id`, `name` | `text` (`"true"` = create), `focus` |
 | `pane-list` | R/R | — | `pane_id`, `workspace`, `scope` |
 | `pane-capture` | R/R | one of `pane_id`/`target` | `workspace`, `lines`, `scrollback`, `settle_ms` |
 | `pane-sync` | R/R | `action` | `pane_id`, `workspace` |
 | `pane-sync-exclude` | R/R | `target`, `excluded` | `pane_id`, `workspace` |
 | `workspace-list` | R/R | — | `group`, `parent` |
-| `workspace-create` | R/R | — | `name`, `path`, `color`, `group`, `profile`, `worktree`, `branch`, `update_main`, `repo`, `muted`, `icon`, `group_defaults`, `parent`, `parent_pane_id` |
+| `workspace-create` | R/R | — | `name`, `path`, `color`, `group`, `profile`, `worktree`, `branch`, `update_main`, `repo`, `muted`, `icon`, `group_defaults`, `parent`, `parent_pane_id`, `focus` |
 | `workspace-move` | F&F | `name` | `group`, `index` |
 | `workspace-nest` | R/R | `name`, `parent` | `index` |
 | `workspace-delete` | R/R | `name` | `force`, `cascade`, `worktree_paths`, `force_worktree_paths`, `prune_worktrees`, `delete_branches`, `batch_ids` |
@@ -540,7 +540,7 @@ carry `"command"`.
 | `layout-cycle` | F&F | `pane_id` | — |
 | `layout-select` | F&F | `pane_id`, `name` | — |
 | `open` | F&F | `path` | `pane_id`, `reuse`, `focus`, `as` |
-| `diff` | F&F | `repo_path` | `target_path`, `pane_id` |
+| `diff` | F&F | `repo_path` | `target_path`, `pane_id`, `focus` |
 | `graft-start` | R/R | — | `workspace`, `repo`, `pane_id` |
 | `graft-stop` | R/R | — | `workspace`, `repo`, `pane_id` |
 | `graft-status` | R/R | — | — |
@@ -555,7 +555,7 @@ carry `"command"`.
 | `web-reload` | R/R | pane-target* | `hard`, `gesture` |
 | `web-capture` | R/R | pane-target* | `mode` |
 | `web-tabs` | R/R | pane-target* | — |
-| `web-tab-new` | R/R | pane-target* | `url`, `make_active`, `gesture` |
+| `web-tab-new` | R/R | pane-target* | `url`, `make_active`, `gesture`, `focus` |
 | `web-tab-close` | R/R | pane-target*; `tab` | — |
 | `web-tab-select` | R/R | pane-target*; `tab` | — |
 | `web-console` | R/R | pane-target* | `since`, `level`, `clear`, `follow` |
@@ -968,7 +968,12 @@ Move the caller pane to another workspace. `pane_id` required; destination
 workspace name-or-id rides in **`name`** (required non-empty). **Quirk:** the
 "create the workspace if missing" flag rides in the **`text`** field as the literal
 string `"true"` (anything else, or absent, = false). The destination is resolved with the
-lenient resolver (§5.8; `packages/daemon/src/handlers/pane/geometry.ts:187-190`).
+lenient resolver (§5.8; `packages/daemon/src/handlers/pane/geometry.ts:187-190`). `focus`
+(bool, default false, issue #298): absent moves the pane in the **background**, so no window
+is revealed to the destination and the daemon's active workspace stays; `true` (the window's
+"Move to workspace", `kelpi pane move-to-workspace --focus`) follows the pane there. One
+exception: when the moved pane is the focused pane of the active workspace (the pane the user
+is typing in), the move follows it even without `focus`, so the keystrokes stay in its PTY.
 
 ```json
 {"command":"pane-move-to-workspace","pane_id":"1B4E…","name":"scratch","text":"true"}
@@ -1166,6 +1171,17 @@ repository, then to `path`, and only when all are absent or blank →
 `{"ok":false,"error":"--worktree requires a source repo (pass --repo <path>)"}`). The `kelpi`
 CLI sends `repo` whenever `--repo` is given; with `--group` and no `--repo` it sends its cwd
 as `path` instead, so the group's repository is preferred and the cwd is the fallback.
+
+Focus (issue #307): `focus` (bool, default false). Absent creates the workspace in the
+**background**: no window is revealed to it and the daemon's `lastActiveWorkspaceID` (what
+`workspace-list` calls ACTIVE) does not move, so the daemon and the windows keep agreeing by
+moving neither. The new row is appended to the end of its scope (the parent's children, the
+group, or the top level) whatever `new-workspace-placement` says, and a collapsed group or
+parent still opens so the row is visible; the windows scroll their sidebar to it and highlight
+it briefly. When no workspace is active at all, the new one becomes active anyway. `true` (the
+window's own gestures, `kelpi workspace create --focus`) switches as before: the new workspace
+becomes active and a `reveal-pane` is broadcast to every window. This applies on every branch
+(plain, group, repository, worktree).
 
 Group defaults (app-state-core.md §5.5): `group_defaults` (bool, default true) applies the
 group's default repository to whatever the request leaves unsaid, for a group that already
@@ -1663,7 +1679,10 @@ originating pane was the focused one (then the preview inherits it).
 ```
 
 **`diff`** — open a git-diff pane. `repo_path` required non-empty; `target_path`
-optional file/dir scope (empty → absent); `pane_id` optional.
+optional file/dir scope (empty → absent); `pane_id` optional; `focus` (bool, default false,
+issue #298) = take the focus. Without it the diff pane opens in the background beside the
+originating pane, as `open` does; the window's Open Diff action and inspector, and
+`kelpi diff --focus`, send `true`.
 
 ```json
 {"command":"diff","repo_path":"/Users/ben/code/kelpi","target_path":"packages/daemon","pane_id":"1B4E…"}
@@ -1796,7 +1815,12 @@ workspace, otherwise in the active workspace (no workspace at all →
 visible pane of the routed workspace and otherwise ignores the anchor
 (`webpane/handlers.ts:190-200`). Only the GUI sends them; the CLI never does. `web-open` also
 takes `focus` (bool, default false, issue #295): absent opens the pane in the background, and
-the GUI's globe, context menu and ⌘⇧O send `true`, as does `kelpi web open --focus`. Reply payload
+the GUI's globe, context menu and ⌘⇧O send `true`, as does `kelpi web open --focus`.
+`web-tab-new` takes `focus` too (bool, default false, issue #298): `true` focuses the pane
+before the tab is added, so a blank tab's URL bar can take the caret (WEB-002); absent leaves
+the workspace's focus alone. ⌘T, the tab strip's "+" and the palette send `true`, as does
+`kelpi web tab-new --focus`. It is independent of `gesture` (#375), which says who drives the
+tab, and of `make_active`, which says whether the new tab becomes the pane's active one. Reply payload
 details are specified in the web-pane subsystem doc; every reply follows the `{"ok":true,…}` /
 `{"ok":false,"error":…}` convention on a single line + EOF, except the
 `web-console --follow` stream (§2.4). Request shapes:
@@ -1970,7 +1994,7 @@ other key is ignored. (A known key with the wrong type poisons the whole message
 | `group_defaults` | bool | `workspace-create` |
 | `parent` | string | `workspace-create`, `workspace-nest`, `workspace-list` (workspace name-or-id, app-state-core.md §2.9) |
 | `parent_pane_id` | string (UUID) | `workspace-create` (nest under the workspace holding this pane, §2.9) |
-| `focus` | bool | `pane-split`, `pane-create`, `open`, `web-open`, `pane-move`, `pane-move-adjacent` (absent = background, #295) |
+| `focus` | bool | `pane-split`, `pane-create`, `open`, `web-open`, `pane-move`, `pane-move-adjacent` (absent = background, #295); `workspace-create` (#307), `diff`, `pane-move-to-workspace`, `web-tab-new` (#298), all absent = background |
 | `gesture` | bool | `web-open`, `web-navigate`, `web-back`, `web-forward`, `web-reload`, `web-tab-new` (the GUI's mark for a navigation the user made; only those pages enter the browsing history, #375; the CLI never sends it) |
 | `typed` | bool | `web-navigate` (the URL bar's submit or a picked suggestion, ranked as typed in the browsing history, #375) |
 | `settle_ms` | int | `pane-capture` (wait for that much quiet before reading, capped at 10000, #390) |
@@ -2196,3 +2220,35 @@ saved state keep working:
     and a new daemon seeds its counter from the clock (milliseconds since the epoch at start),
     past any value an earlier daemon could plausibly have issued, so a stale revision from before a
     restart is refused with `SCREEN_CHANGED`, never reissued for a different screen.
+
+21. **Workspace creation, diffs, moves to another workspace and new web tabs work in the
+    background by default (issues #307 and #298).** Item 17's rule, extended to the verbs it
+    left out: `workspace-create` used to reveal the new workspace to every window and make it
+    the daemon's active one, `diff` focused its caller and then the diff pane,
+    `pane-move-to-workspace` made the destination active and revealed it, and `web-tab-new`
+    let a blank tab's URL bar take the caret in a pane the user was not in. Each now takes the
+    optional `focus` bool: absent (or `false`) is **background**, `true` restores the old
+    behaviour. `pane-move-to-workspace` follows the pane without `focus` in one case: when it
+    moves the focused pane of the active workspace (the pane the user is typing in).
+    `web-tab-new`'s `focus` focuses the pane before the tab is added and is independent of
+    `gesture` (#375). The plugin `views.open` method (`kelpi plugin open`) follows the same
+    rule through its JSON `focus` argument. Compatibility, in each direction:
+    - **Old CLI or agent, new daemon:** its creates, diffs, moves and new tabs happen in the
+      background. As in item 17, this is the deliberate behaviour change. A script that ran
+      `kelpi workspace create` and then relied on the new workspace being ACTIVE (a
+      `kelpi pane create` with no `--workspace`, say) now lands in the user's workspace and must
+      name `--workspace`, or pass `--focus`.
+    - **New CLI, old daemon:** `focus` is ignored as an unknown field (§2.2), so `--focus` is
+      a no-op and every one of these switches or focuses, as that daemon always did.
+    - **Old window client, new daemon:** a window client that predates the field sends its
+      creates, Open Diff, "Move to workspace" and ⌘T without `focus`, so until it reloads they
+      happen in the background. The issuing window still activates a workspace it created
+      from the create's reply, so only the user's OTHER windows stay put.
+    For a focusing `workspace-create` the daemon's `reveal-pane` broadcast is a backstop, not
+    the mechanism: the issuing window activates the new workspace from the reply, and the
+    broadcast only takes the user's other windows along. Because a background create or move
+    leaves `lastActiveWorkspaceID` alone, the `active-workspace-changed` domain event (a
+    window's delta, a plugin's `state.changed`) no longer fires for one; a consumer that waited
+    for it after a create should read the create's reply instead. The plugin SDK's `workspaces.create`, `panes.moveToWorkspace`,
+    `git.diff` and `openView` helpers send `focus: true` unless the plugin passes
+    `focus: false`, as item 17's pane helpers do.

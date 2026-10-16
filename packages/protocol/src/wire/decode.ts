@@ -345,7 +345,15 @@ function decodeCommand(
             const name = fields.nonEmpty('name');
             if (name === undefined) return guard(command, 'pane-move-to-workspace requires name', 'name');
             const text = fields.rawText('text');
-            return { command, pane_id: paneId as string, name, text, create: text === 'true' };
+            return {
+                command,
+                pane_id: paneId as string,
+                name,
+                text,
+                create: text === 'true',
+                // #298: absent is BACKGROUND, the default for every caller but the window.
+                focus: fields.flag('focus', false)
+            };
         }
         case 'pane-list':
             return {
@@ -401,7 +409,9 @@ function decodeCommand(
                 group_defaults: fields.flag('group_defaults', true),
                 parent: fields.text('parent'),
                 // Verbatim: a malformed id must fail the create (no such pane), not silently un-nest it.
-                parent_pane_id: fields.text('parent_pane_id')
+                parent_pane_id: fields.text('parent_pane_id'),
+                // #307: absent is BACKGROUND, the default for every caller but the window.
+                focus: fields.flag('focus', false)
             };
         case 'workspace-move': {
             const name = fields.nonEmpty('name');
@@ -569,7 +579,13 @@ function decodeCommand(
         case 'diff': {
             const repoPath = fields.nonEmpty('repo_path');
             if (repoPath === undefined) return guard(command, 'diff requires repo_path', 'repo_path');
-            return { command, repo_path: repoPath, target_path: fields.text('target_path'), pane_id: paneId };
+            return {
+                command,
+                repo_path: repoPath,
+                target_path: fields.text('target_path'),
+                pane_id: paneId,
+                focus: fields.flag('focus', false)
+            };
         }
 
         // ── 6.7 graft ────────────────────────────────────────────────────────────────
@@ -655,7 +671,8 @@ function decodeCommand(
                 ...scope(),
                 url: fields.rawText('url') ?? '',
                 make_active: fields.flag('make_active', true),
-                ...gesture()
+                ...gesture(),
+                focus: fields.flag('focus', false)
             };
         }
         case 'web-tab-close':

@@ -241,8 +241,8 @@ scratchpad do). Minor asymmetry, preserved on purpose (`openMarkdownPane` in
 
 Entry points:
 
-1. **CLI**: `kelpi diff [<path>]` — repoPath = CLI cwd, targetPath = optional scope.
-   Wire: `{"command":"diff","repo_path":"...","target_path":"...?" ,"pane_id":"...?"}`.
+1. **CLI**: `kelpi diff [--focus] [<path>]`: repoPath = CLI cwd, targetPath = optional scope.
+   Wire: `{"command":"diff","repo_path":"...","target_path":"...?" ,"pane_id":"...?","focus":true?}`.
 2. **Keybinding** `open_diff` (default unbound) — opens a diff for the focused pane's
    repo context.
 3. **GUI**: "plusminus" button next to a repo association in the workspace inspector.
@@ -256,8 +256,13 @@ newPane = { label: scopeName, type: "diff", title: `diff: ${scopeName}`,
 ```
 
 - Same `--here` park/replace branch (identical to markdown).
-- Non-reuse branch: splits the focused pane horizontally **after restoring any zoomed
-  layout**; if no focused pane, layout becomes a single leaf.
+- Non-reuse branch: splits the source pane (the caller, when it is a visible pane, else the
+  focused pane) horizontally **after restoring any zoomed layout**; if neither, layout becomes
+  a single leaf.
+- **Background by default (issue #298).** Like `open`, a `diff` without `focus: true` opens the
+  pane in the background: the caller is not focused first and the user's focused pane keeps
+  the focus. The keybinding and the inspector button are gestures and send `focus: true`, as
+  does `kelpi diff --focus`.
 - Same async git-branch detection, run against `repoPath`.
 
 ### 2.3 Scratchpad — `createScratchpad`

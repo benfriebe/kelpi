@@ -187,8 +187,10 @@ kelpi pane move --target <name-or-uuid> (--above|--below|--left-of|--right-of) <
 # Also background by default; --focus focuses the calling pane.
 kelpi pane move [--focus] <left|right|up|down>
 
-# Move a pane to another workspace (creates it with --create).
-kelpi pane move-to-workspace --to-workspace <name-or-uuid> [--create]
+# Move a pane to another workspace (creates it with --create). Background:
+# the user's view stays put (unless you move the pane they are typing in);
+# --focus makes the view follow the pane.
+kelpi pane move-to-workspace --to-workspace <name-or-uuid> [--create] [--focus]
 
 # List workspace groups and their ordered member workspaces
 kelpi group list [--json] [--no-header]
@@ -203,15 +205,23 @@ kelpi pane id
 ### New panes open in the background (never take the user's focus)
 
 The user is often typing in another pane while you work. Every pane you
-create (`pane split`, `pane create`, `web open`, `open`, `md`) opens in
-the **background**: it appears in the layout, but the focused pane and
-the keyboard stay exactly where the user left them, and your own pane is
-not focused either. So spawning workers never sends the user's
-keystrokes into the wrong pane.
+create (`pane split`, `pane create`, `web open`, `open`, `md`, `diff`,
+`plugin open`, `web tab-new`) opens in the **background**: it appears in
+the layout, but the focused pane and the keyboard stay exactly where the
+user left them, and your own pane is not focused either. So spawning
+workers never sends the user's keystrokes into the wrong pane. The same
+goes for workspaces: `workspace create` and `pane move-to-workspace` leave
+every window, and ACTIVE in `workspace list`, where they were (the sidebar
+scrolls to and highlights the new row instead).
 
 - **Do not pass `--focus`** unless the user asked to be taken to the new
-  pane ("open it and put me there"). `--focus` moves focus and the
-  keyboard to the new pane, interrupting whatever the user is typing.
+  pane or workspace ("open it and put me there"). `--focus` moves focus
+  and the keyboard (or every window) there, interrupting whatever the user
+  is typing.
+- **Name the workspace in follow-ups.** A new workspace does not become
+  ACTIVE, so after `workspace create` pass `--workspace <id>` (or
+  `--target`) to `pane create` / `pane split`; a bare `pane create` from
+  outside that workspace lands in the user's workspace.
 - **Place panes with `--target`**, not with focus. `pane split` splits
   your own pane unless `--target` names another; nothing you do moves
   focus, so there is no "split the focused pane" trick to rely on. Use
@@ -506,7 +516,11 @@ to these verbs with `--agent codex`. `pane list --json` then reports an
 # does a parent deleted while a --worktree create ran (the workspace is then
 # made at the top level, and the message says so). An empty --parent is
 # refused before anything is created.
-kelpi workspace create [--name "..."] [--path /dir] [--color blue|green|red|yellow|purple|orange|pink|gray] [--group <name> | --nested | --parent <ws>] [--profile <name>] [--muted] [--icon <emoji>] [--worktree <name> [--branch <name>] [--repo <path>] [--update-main]] [--json]
+# Background by default: no window switches to the new workspace and ACTIVE
+# stays put (the sidebar points at it). Capture its id and pass --workspace
+# to follow-ups. --focus switches every window to it: only when the user
+# asked to be taken there.
+kelpi workspace create [--name "..."] [--path /dir] [--color blue|green|red|yellow|purple|orange|pink|gray] [--group <name> | --nested | --parent <ws>] [--profile <name>] [--muted] [--icon <emoji>] [--worktree <name> [--branch <name>] [--repo <path>] [--update-main]] [--focus] [--json]
 
 # Nest an existing workspace under another (or reorder it among the parent's
 # nested workspaces with --index); request/response, so a refusal (the parent
@@ -682,8 +696,8 @@ kelpi document csv-edit <pane-uuid> --generation <gen> \
   --ops '[{"op":"set-cell","row":1,"column":0,"value":"done"}]'
 
 # Open a git diff pane for the cwd repo (or scoped to <path>). Refreshes
-# on focus and via the header refresh button.
-kelpi diff [<path>]
+# on focus and via the header refresh button. Background by default.
+kelpi diff [--focus] [<path>]
 ```
 
 So a worker that just wrote `report.html` can `kelpi open report.html`
@@ -741,7 +755,7 @@ kelpi web capture --target <name-or-uuid> --mode meta|text|screenshot
 
 # Multi-tab
 kelpi web tabs       --target <name-or-uuid> [--json] [--no-header]
-kelpi web tab-new    --target <name-or-uuid> [<url>] [--no-focus]
+kelpi web tab-new    --target <name-or-uuid> [<url>] [--no-focus | --focus]   # --no-focus: leave tab inactive
 kelpi web tab-close  --target <name-or-uuid> <ref>   # UUID or numeric index
 kelpi web tab-select --target <name-or-uuid> <ref>
 
@@ -1148,6 +1162,9 @@ its own web pane), spawn the workers as workspaces nested under the
 orchestrator's. The user sees them grouped under the orchestrator in the
 sidebar and can collapse them; a collapsed orchestrator row still shows when
 a worker is running or waiting for input.
+
+Workers are created in the background, so the user stays where they are;
+address each one by the id you captured, never by assuming it is active.
 
 ```bash
 # In the orchestrator's pane. Capture each worker's workspace id.

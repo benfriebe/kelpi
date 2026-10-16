@@ -152,4 +152,11 @@ export interface PaneHandlerContext
      * answers that it is not available.
      */
     readonly clearScreen?: ScreenClearer | undefined;
+    /**
+     * #298: is some VISIBLE window showing this pane as its focused pane (the WS server's
+     * `isPaneAttended`, the notification-suppression rule)? That is "the user is typing in it",
+     * per window, which the daemon-wide `lastActiveWorkspaceID` cannot say. Unset, as in a handler
+     * test, `pane-move-to-workspace` falls back to the focused pane of the active workspace.
+     */
+    readonly isPaneAttended?: ((workspaceID: string, paneID: string) => boolean) | undefined;
 }

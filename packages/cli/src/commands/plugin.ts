@@ -2,6 +2,7 @@ import path from 'node:path';
 import { packPlugin, pluginPackageReport, readPluginPackage } from '@kelpi/core/plugin-package';
 import { pluginObject, pluginRecord, type JsonObject, type JsonValue } from '@kelpi/protocol';
 import { parseFlag, popSwitch } from '../args.js';
+import { rawPaneID } from '../env.js';
 import { printLine, errLine, exit } from '../io.js';
 import { decodeReply, parseReplyOrExit } from '../reply.js';
 import { sendJSONAndReadReply, streamJSON, printTransportFailure } from '../transport.js';
@@ -19,7 +20,7 @@ export const pluginUsage = `Usage: kelpi plugin <action>
   history <plugin-id> [--json]
   rollback <plugin-id> [--revision <sha256>]
   enable|disable|reload|remove|logs <plugin-id>
-  open <plugin-id> <view-id> [--workspace <id>] [--state <json>]
+  open <plugin-id> <view-id> [--workspace <id>] [--pane <id>] [--state <json>] [--focus]
   run <command-id> [--args <json>] [--workspace <id>] [--pane <id>]
   settings <plugin-id> [--key <key> --value <json>]
   services [--json]
@@ -29,6 +30,8 @@ export const pluginUsage = `Usage: kelpi plugin <action>
 
 Install trusted local code only. Backends run with your account's access.
 Results are JSON; watch and dev emit JSON lines. See docs/plugin-development.md.
+open adds the view in the background, beside the calling pane: focus stays where
+it is unless --focus is given.
 validate also reports a plugin's kelpi verbs (contributes.cli). Once installed,
 each runs as kelpi <verb> [args...] and kelpi --help lists them.
 `;
@@ -123,7 +126,13 @@ export async function handlePlugin(args: string[]): Promise<void> {
             }
         }
         else if (action === 'run') { input['args'] = json('--args'); input['command'] = args.shift() ?? ''; }
-        else if (action === 'open') { input['state'] = json('--state'); input['pluginID'] = args.shift() ?? ''; input['viewID'] = args.shift() ?? ''; }
+        else if (action === 'open') {
+            // #298: flags first, then the two positionals. Without --focus the view opens in the
+            // background, beside the calling pane (KELPI_PANE_ID) unless --pane names another.
+            if (popSwitch('--focus', args)) input['focus'] = true;
+            if (input['paneID'] === undefined) { const caller = rawPaneID(); if (caller !== undefined) input['paneID'] = caller; }
+            input['state'] = json('--state'); input['pluginID'] = args.shift() ?? ''; input['viewID'] = args.shift() ?? '';
+        }
         else if (action === 'settings') {
             const key = parseFlag('--key', args); const value = parseFlag('--value', args);
             if ((key === null) !== (value === null)) throw new Error('--key and --value must be provided together');

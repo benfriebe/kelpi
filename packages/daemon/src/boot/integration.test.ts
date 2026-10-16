@@ -193,7 +193,8 @@ describe('kelpid end to end', () => {
             workspace_name: 'agents',
             label: 'worker-1',
             status: 'idle',
-            is_active_workspace: true
+            // #307: a CLI create without --focus is a background create; Default stays active.
+            is_active_workspace: false
         });
         expect(typeof worker?.['created_at']).toBe('string');
         expect(worker?.['created_at']).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);

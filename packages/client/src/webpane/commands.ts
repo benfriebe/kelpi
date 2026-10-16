@@ -212,8 +212,10 @@ export function createWebPaneCommands(sender: WebCommandSender): WebPaneCommands
         forward: (paneID) => sender.raw({ command: 'web-forward', pane_id: paneID, gesture: true }),
         reload: (paneID, hard = false) =>
             sender.raw({ command: 'web-reload', pane_id: paneID, gesture: true, ...(hard ? { hard: true } : {}) }),
+        // #298: ⌘T, the tab strip's "+" and the palette are the user's own: the pane takes the
+        // focus (so a blank tab's URL bar can take the caret). `gesture` says who drives the tab.
         newTab: (paneID, url = '') =>
-            sender.raw({ command: 'web-tab-new', pane_id: paneID, url, make_active: true, gesture: true }),
+            sender.raw({ command: 'web-tab-new', pane_id: paneID, url, make_active: true, gesture: true, focus: true }),
         selectTab: (paneID, tabRef) =>
             sender.raw({ command: 'web-tab-select', pane_id: paneID, tab: tabRef }),
         closeTab: (paneID, tabRef) => sender.raw({ command: 'web-tab-close', pane_id: paneID, tab: tabRef }),

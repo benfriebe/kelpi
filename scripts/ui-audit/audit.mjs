@@ -4322,33 +4322,46 @@ function buildFlows(ctx) {
         {
             id: 'workspace-create-cli',
             expect:
-                '`kelpi workspace create` adds a workspace AND the window follows it — the new workspace becomes the one you are looking at, the way it does when you create one from the sidebar.',
+                '`kelpi workspace create` adds a workspace in the BACKGROUND (#307): the new row appears in the sidebar and the window and the daemon both stay on the workspace you were looking at. With `--focus` the window follows the new workspace, the way it does when you create one from the sidebar.',
             needsEyes: true,
             async run(recorder) {
                 const before = await page.eval(`document.querySelectorAll('${PAGE.workspaceRows}').length`);
+                const identity = async () =>
+                    String(await page.eval(`(document.querySelector('[data-testid="top-bar-identity"]')?.innerText ?? '').split('\\n')[0].trim()`));
+                const daemonActiveName = async () => (await cli.json(['workspace', 'list', '--json'])).find((workspace) => workspace.is_active)?.name ?? null;
+                const shownBefore = await identity();
+                const activeBefore = await daemonActiveName();
                 const reply = await cli.json(['workspace', 'create', '--name', 'Audit CLI', '--json']);
                 recorder.note(`create reply: ${JSON.stringify(reply)}`);
                 await sleep(2500);
                 await recorder.shot(page);
                 const after = await page.eval(`document.querySelectorAll('${PAGE.workspaceRows}').length`);
                 recorder.check('the new workspace appears in the sidebar', after === before + 1, `${String(before)} → ${String(after)}`);
+                const shownAfter = await identity();
+                const activeAfter = await daemonActiveName();
+                recorder.note(`background create: window "${shownBefore}" → "${shownAfter}" · daemon active ${String(activeBefore)} → ${String(activeAfter)}`);
+                recorder.check('the window stays on the workspace it was showing', shownAfter === shownBefore, `"${shownBefore}" → "${shownAfter}"`);
+                recorder.check(
+                    'the daemon keeps its active workspace, so it and the window still agree',
+                    activeAfter === activeBefore && activeAfter !== 'Audit CLI' && shownAfter.includes(String(activeAfter)),
+                    `daemon ${String(activeBefore)} → ${String(activeAfter)}, window shows "${shownAfter}"`
+                );
 
-                // Poll both sides: the question is whether they AGREE, not whether either moved.
+                // --focus: both sides move, and they AGREE.
+                await cli.json(['workspace', 'create', '--name', 'Audit CLI Focus', '--focus', '--json']);
                 let daemonActive = null;
                 let uiIdentity = '';
                 for (let attempt = 0; attempt < 8; attempt++) {
-                    const list = await cli.json(['workspace', 'list', '--json']);
-                    daemonActive = list.find((workspace) => workspace.is_active)?.name ?? null;
-                    uiIdentity = String(
-                        await page.eval(`(document.querySelector('[data-testid="top-bar-identity"]')?.innerText ?? '').split('\\n')[0].trim()`)
-                    );
-                    if (daemonActive === 'Audit CLI' && uiIdentity.includes('Audit CLI')) break;
+                    daemonActive = await daemonActiveName();
+                    uiIdentity = await identity();
+                    if (daemonActive === 'Audit CLI Focus' && uiIdentity.includes('Audit CLI Focus')) break;
                     await sleep(600);
                 }
-                recorder.note(`after ~5s: daemon active=${String(daemonActive)} · window shows="${uiIdentity}"`);
-                recorder.check('the daemon made the new workspace active', daemonActive === 'Audit CLI', String(daemonActive));
+                await recorder.shot(page, 'focus');
+                recorder.note(`--focus: daemon active=${String(daemonActive)} · window shows="${uiIdentity}"`);
+                recorder.check('with --focus the daemon made the new workspace active', daemonActive === 'Audit CLI Focus', String(daemonActive));
                 recorder.check(
-                    'the window is showing the workspace the daemon calls active',
+                    'with --focus the window is showing the workspace the daemon calls active',
                     uiIdentity.includes(String(daemonActive)),
                     `window shows "${uiIdentity}" while the daemon calls "${String(daemonActive)}" active`
                 );
@@ -4359,6 +4372,7 @@ function buildFlows(ctx) {
                     `panes showing "terminal renderer failed to start": ${JSON.stringify(failedCLI)}`
                 );
                 // Leave the audit where the later flows expect it.
+                await cli.run(['workspace', 'delete', 'Audit CLI Focus', '--force']);
                 await cli.run(['workspace', 'delete', 'Audit CLI', '--force']);
                 await sleep(1500);
             }

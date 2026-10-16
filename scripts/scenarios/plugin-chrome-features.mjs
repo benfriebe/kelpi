@@ -6,7 +6,7 @@ import { makeSandbox, startDaemon, waitForHealthz, makeCli, PROTOCOL_VERSION, WS
 import { daemonIDFromSandbox, openPlacementSettings, phoneToLanding, restoreBundledSlots } from '../ui-audit/lib/workbench.mjs';
 
 export const covers = ['examples/plugins/chrome-lab/', 'packages/plugin-sdk/', 'packages/client/src/features/',
-    'packages/client/src/plugins/', 'packages/client/src/interaction/', 'packages/client/src/App.tsx', 'packages/client/src/chrome/'];
+    'packages/client/src/plugins/', 'packages/client/src/interaction/', 'packages/client/src/App.tsx', 'packages/client/src/chrome/', 'examples/plugins/agent-board/', 'examples/plugins/ui-lab/'];
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const pluginID = 'example.chrome-lab', packagePath = path.join(repoRoot, 'examples/plugins/chrome-lab');
 const toolbar = '[data-workbench-slot="topbar"] iframe', status = '[data-workbench-slot="statusbar"] iframe';

@@ -108,7 +108,7 @@ export const covers = ['examples/plugins/interaction-lab/', 'packages/client/src
     'packages/client/src/App.tsx', 'packages/client/src/chrome/', 'packages/client/src/phone/', 'packages/client/src/settings/',
     // Check 11 is a real disconnect and reconnect of the primary daemon, so the socket's status
     // machine and its backoff are things this scenario would now catch a regression in.
-    'packages/client/src/connection/'];
+    'packages/client/src/connection/', 'examples/plugins/ui-lab/'];
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const labID = 'example.interaction-lab', uiID = 'example.ui-lab';

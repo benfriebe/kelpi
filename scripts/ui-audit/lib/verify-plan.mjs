@@ -68,12 +68,22 @@ export function coversPath(entry, file) {
 }
 
 /**
+ * The surface-map entry that owns a file: the FIRST whose `prefix` it starts with and, when the
+ * entry names one, whose `suffix` it ends with (`{ prefix: 'examples/plugins/', suffix: '.md' }`
+ * is every example's documentation, wherever it sits). First match wins, so the map lists the
+ * narrow entries before the broad ones. `verify.mjs` and the rule below both read it from here.
+ */
+export function surfaceFor(file, surfaces = []) {
+    return surfaces.find((entry) => file.startsWith(entry.prefix) && (entry.suffix === undefined || file.endsWith(entry.suffix)));
+}
+
+/**
  * Is this file a UI surface? The surface map gets the first word, because it already knows which
  * paths are documentation and which are the harness itself: neither is ever UI, and the harness
  * exemption is what keeps this module from demanding a scenario for the scenario runner.
  */
 export function isUiFile(file, { surfaces = [], uiPrefixes = UI_PREFIXES } = {}) {
-    const surface = surfaces.find((entry) => file.startsWith(entry.prefix));
+    const surface = surfaceFor(file, surfaces);
     if (surface?.ui === true) return true;
     if (surface?.skip === true || surface?.harness === true) return false;
     return uiPrefixes.some((prefix) => file.startsWith(prefix));
@@ -114,8 +124,11 @@ export function planScenarios({
     // can say "Sidebar.tsx: confirm-dialog-keys" and a reader can check the claim.
     const coverage = {};
     const run = new Set();
+    // Documentation never needs a run, so it never selects a scenario either, even when a
+    // scenario's `covers` names its whole directory (`packages/plugin-sdk/` holds its README).
+    const runnable = changed.filter((file) => surfaceFor(file, surfaces)?.skip !== true);
     for (const scenario of scenarios) {
-        const hits = changed.filter((file) => (scenario.covers ?? []).some((entry) => coversPath(entry, file)));
+        const hits = runnable.filter((file) => (scenario.covers ?? []).some((entry) => coversPath(entry, file)));
         if (hits.length === 0) continue;
         run.add(scenario.name);
         for (const file of hits) coverage[file] = [...(coverage[file] ?? []), scenario.name];

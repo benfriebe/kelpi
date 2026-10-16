@@ -30,7 +30,8 @@ export const covers = [
     'packages/client/src/plugins/PluginView.tsx',
     'packages/plugin-sdk/browser.js',
     'packages/shell/src/webhost/keys.ts',
-    'packages/shell/src/webhost/index.ts'
+    'packages/shell/src/webhost/index.ts',
+    'examples/plugins/ui-lab/'
 ];
 
 export default async function ({ page, cli, sandbox, rec, d, sleep }) {

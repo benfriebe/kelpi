@@ -118,7 +118,7 @@ export const covers = ['examples/plugins/search-lab/', 'packages/client/src/pane
     'packages/client/src/connection/', 'packages/client/src/terminal/',
     'packages/client/src/content/', 'packages/client/src/webpane/',
     'packages/client/src/chrome/', 'packages/client/src/pane-chrome/',
-    'packages/client/src/phone/', 'packages/daemon/src/ws/search.ts'];
+    'packages/client/src/phone/', 'packages/daemon/src/ws/search.ts', 'examples/plugins/pane-lab/', 'examples/plugins/ui-lab/'];
 
 /**
  * The lowest lane this can be trusted at.

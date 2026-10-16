@@ -7,7 +7,7 @@ import { phoneToLanding } from '../ui-audit/lib/workbench.mjs';
 export const covers = ['packages/client/src/app/RemoteWorkspaceView.tsx', 'packages/client/src/phone/PhoneRemoteWorkspace.tsx', 'packages/client/src/plugins/', 'packages/daemon/src/plugins/',
     'packages/client/src/settings/RemoteTab.tsx', 'packages/client/src/settings/SettingsOverlay.tsx', 'packages/client/src/settings/sections.ts',
     'packages/client/src/settings/search-navigation.ts', 'packages/client/src/app/remote-daemons.ts',
-    'packages/core/src/config/remote-daemons.ts'];
+    'packages/core/src/config/remote-daemons.ts', 'examples/plugins/agent-board/'];
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const pluginID = 'example.agent-board', viewID = `${pluginID}.board`;
 

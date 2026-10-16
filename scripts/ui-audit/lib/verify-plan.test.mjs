@@ -11,9 +11,13 @@
  * outside the suite entirely; widening either of them would have pulled 1.8 MB of audit source
  * into a jsdom or node project that has no reason to load it.
  */
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
 import { describe, expect, it } from 'vitest';
 
-import { coversPath, isUiFile, planScenarios } from './verify-plan.mjs';
+import { coversPath, isUiFile, planScenarios, surfaceFor } from './verify-plan.mjs';
 
 /** A cut-down `SURFACES`, in the shape `verify.mjs` passes: order matters, longest prefix first. */
 const SURFACES = [
@@ -177,4 +181,81 @@ describe('covers selects the scenarios the scoped tier runs', () => {
         expect(result.uncovered).toEqual(['packages/client/src/chrome/Inspector.tsx']);
         expect(result.run).toEqual(['confirm-dialog-keys']);
     });
+
+    it('never selects a scenario for documentation, even under a directory a scenario covers (#409)', () => {
+        const surfaces = [{ prefix: 'packages/core/src/config/README.md', skip: true }, ...SURFACES];
+        const docOnly = planScenarios({ changed: ['packages/core/src/config/README.md'], scenarios: SCENARIOS, surfaces });
+        expect(docOnly.run).toEqual([]);
+        expect(docOnly.coverage).toEqual({});
+        // The source beside it still selects the scenario that covers the directory.
+        const withSource = planScenarios({
+            changed: ['packages/core/src/config/README.md', 'packages/core/src/config/bindings.ts'],
+            scenarios: SCENARIOS,
+            surfaces
+        });
+        expect(withSource.run).toEqual(['menu-accelerators-follow-rebinding']);
+    });
+});
+
+describe('surfaceFor', () => {
+    const surfaces = [
+        { prefix: 'examples/plugins/', suffix: '.md', skip: true },
+        { prefix: 'examples/plugins/', tests: ['packages/plugin-sdk/tests'] },
+        { prefix: 'packages/plugin-sdk/tests/', tests: ['packages/plugin-sdk/tests'] },
+        { prefix: 'packages/plugin-sdk/', escalate: 'the plugin contract' }
+    ];
+
+    it('takes the first entry whose prefix, and suffix if it names one, both match', () => {
+        expect(surfaceFor('examples/plugins/agent-board/README.md', surfaces)?.skip).toBe(true);
+        expect(surfaceFor('examples/plugins/markdown-scratchpad/ui/vendor/README.md', surfaces)?.skip).toBe(true);
+        expect(surfaceFor('examples/plugins/agent-board/backend.mjs', surfaces)?.tests).toEqual(['packages/plugin-sdk/tests']);
+        expect(surfaceFor('packages/plugin-sdk/tests/api.test.ts', surfaces)?.escalate).toBeUndefined();
+        expect(surfaceFor('packages/plugin-sdk/api.js', surfaces)?.escalate).toBe('the plugin contract');
+        expect(surfaceFor('examples/other/x.mjs', surfaces)).toBeUndefined();
+    });
+
+    it('lets a suffix entry keep its documentation out of scenario selection (#409)', () => {
+        const scenarios = [{ name: 'plugin-workbench', file: 'scripts/scenarios/plugin-workbench.mjs', covers: ['examples/plugins/agent-board/'] }];
+        expect(planScenarios({ changed: ['examples/plugins/agent-board/README.md'], scenarios, surfaces }).run).toEqual([]);
+        expect(planScenarios({ changed: ['examples/plugins/agent-board/backend.mjs'], scenarios, surfaces }).run).toEqual(['plugin-workbench']);
+    });
+});
+
+/*
+ * A scenario that drives an example plugin says so in its `covers` (#409). `verify.mjs` scopes an
+ * example plugin's diff to the scenarios whose `covers` claim it, so a scenario that installs
+ * `examples/plugins/ui-lab` as a fixture without claiming it would never run for a ui-lab change,
+ * and the break would surface only at the next full battery. This reads each scenario's source for
+ * the examples it names and fails on any it does not cover.
+ */
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
+const scenariosDir = path.join(repoRoot, 'scripts', 'scenarios');
+
+/** `examples/plugins/<name>` and `'examples', 'plugins', '<name>'`, the two ways a scenario spells one. */
+function examplesNamed(source) {
+    const names = new Set();
+    for (const match of source.matchAll(/examples\/plugins\/([a-z0-9-]+)/g)) names.add(match[1]);
+    for (const match of source.matchAll(/'examples',\s*'plugins',\s*'([a-z0-9-]+)'/g)) names.add(match[1]);
+    return [...names].sort();
+}
+
+describe('examplesNamed', () => {
+    it('finds both spellings, once each', () => {
+        const source = `path.join(root, 'examples/plugins/ui-lab'); path.join(repoRoot, 'examples', 'plugins', 'agent-board'); '../../examples/plugins/ui-lab/'`;
+        expect(examplesNamed(source)).toEqual(['agent-board', 'ui-lab']);
+    });
+});
+
+describe('every scenario covers the example plugins it drives', async () => {
+    const files = fs.readdirSync(scenariosDir).filter((file) => file.endsWith('.mjs')).sort();
+    for (const file of files) {
+        const named = examplesNamed(fs.readFileSync(path.join(scenariosDir, file), 'utf8'));
+        if (named.length === 0) continue;
+        it(file, async () => {
+            const { covers = [] } = await import(pathToFileURL(path.join(scenariosDir, file)).href);
+            const missing = named.filter((name) => !covers.some((entry) => coversPath(entry, `examples/plugins/${name}/kelpi.plugin.json`)));
+            expect(missing, `add these to ${file}'s covers: ${missing.map((name) => `'examples/plugins/${name}/'`).join(', ')}`).toEqual([]);
+        });
+    }
 });

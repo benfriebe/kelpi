@@ -6,7 +6,7 @@ export const covers = [
     'packages/client/src/chrome/Sidebar.tsx', 'packages/client/src/chrome/Inspector.tsx',
     'packages/client/src/app/RemoteWorkspaceView.tsx', 'packages/client/src/grid/PaneHeader.tsx',
     'packages/daemon/src/plugins/', 'packages/daemon/src/ws/sync.ts', 'packages/daemon/src/db/',
-    'packages/cli/src/commands/plugin.ts', 'packages/plugin-sdk/'
+    'packages/cli/src/commands/plugin.ts', 'packages/plugin-sdk/', 'examples/plugins/agent-board/'
 ];
 const packagePath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../examples/plugins/agent-board');
 const pluginID = 'example.agent-board', viewID = `${pluginID}.board`;

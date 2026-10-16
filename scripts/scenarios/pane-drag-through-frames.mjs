@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 
-export const covers = ['packages/client/src/grid/PaneGrid.tsx', 'packages/client/src/grid/PaneHeader.tsx'];
+export const covers = ['packages/client/src/grid/PaneGrid.tsx', 'packages/client/src/grid/PaneHeader.tsx', 'examples/plugins/agent-board/'];
 
 export default async function ({ page, cli, sandbox, rec, d, repoRoot }) {
     await page.watchFrames();

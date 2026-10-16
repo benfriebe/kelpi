@@ -60,7 +60,7 @@ import {
     writeRetryHistory
 } from './ui-audit/lib/battery.mjs';
 import { buildAll } from './ui-audit/lib/stack.mjs';
-import { SCENARIO_PREFIX, planScenarios } from './ui-audit/lib/verify-plan.mjs';
+import { SCENARIO_PREFIX, planScenarios, surfaceFor } from './ui-audit/lib/verify-plan.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
@@ -78,6 +78,9 @@ const value = (flag) => {
 // from two entries only: `skip` (documentation) and `harness` (this tooling) are never UI, and
 // everything else falls through to `verify-plan.mjs` ▸ UI_PREFIXES, which is the client's and the
 // shell's whole source tree. An entry may add `ui: true` to claim a path outside those two trees.
+// `skip` also keeps a file from selecting scenarios through `covers`: documentation never needs a
+// run, even under a directory a scenario claims. An entry may narrow its `prefix` with a `suffix`;
+// the first entry that matches wins (`verify-plan.mjs` ▸ `surfaceFor`).
 
 const SURFACES = [
     // Pure documentation never needs a run.
@@ -287,7 +290,28 @@ const SURFACES = [
         smokes: ['smoke:web']
     },
 
+    /*
+     * The example plugins (#409). No product source imports one and nothing bundles one into the
+     * app, so a change here reaches only the unit suites that read their files: the example
+     * backends' own tests beside the SDK's, the client's lab suites under `features/` and
+     * `plugins/`, and the daemon's UI Lab test. Their scenarios are picked through `covers`, as
+     * for any other file. Not `ui: true`: an example with no scenario is not a product surface.
+     */
+    // Their READMEs are documentation: nothing in the app reads a plugin's README.
+    { prefix: 'examples/plugins/', suffix: '.md', skip: true },
+    {
+        prefix: 'examples/plugins/',
+        tests: ['packages/plugin-sdk/tests', 'packages/client/src/features', 'packages/client/src/plugins', 'packages/daemon/tests/ui-lab.test.ts']
+    },
+    // The SDK's tests and its README, ahead of the SDK itself (the first matching prefix wins).
+    { prefix: 'packages/plugin-sdk/tests/', tests: ['packages/plugin-sdk/tests'] },
+    { prefix: 'packages/plugin-sdk/README.md', skip: true },
+
     // Shared surfaces: full battery, no exceptions. The comments say why.
+    {
+        prefix: 'packages/plugin-sdk/',
+        escalate: 'the plugin contract: the daemon runs api.js, the client inlines browser.js and ui.js, and both implement its .d.ts'
+    },
     { prefix: 'packages/client/src/styles.css', escalate: 'the unlayered/base CSS reaches every control (S1)' },
     { prefix: 'packages/client/src/connection/', escalate: 'every byte of every stream crosses it' },
     { prefix: 'packages/client/src/App.tsx', escalate: 'the composition root wires every surface' },
@@ -310,7 +334,7 @@ const changed = has('--full')
 
 const plan = { tests: new Set(), steps: new Set(), smokes: new Set(), escalations: [], harness: [], skipped: [] };
 for (const file of changed) {
-    const surface = SURFACES.find((entry) => file.startsWith(entry.prefix));
+    const surface = surfaceFor(file, SURFACES);
     if (surface === undefined) {
         plan.escalations.push(`${file} (no surface mapping — unmapped source escalates)`);
     } else if (surface.skip) {

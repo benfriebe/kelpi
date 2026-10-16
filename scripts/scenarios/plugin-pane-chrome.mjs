@@ -100,7 +100,7 @@ export const covers = ['examples/plugins/pane-lab/', 'packages/client/src/pane-c
     'packages/client/src/terminal/', 'packages/client/src/webpane/', 'packages/client/src/chrome/',
     'packages/client/src/phone/',
     // Check 10 is a real disconnect and reconnect of the primary daemon.
-    'packages/client/src/connection/'];
+    'packages/client/src/connection/', 'examples/plugins/ui-lab/'];
 
 /**
  * The lowest lane this can be trusted at.

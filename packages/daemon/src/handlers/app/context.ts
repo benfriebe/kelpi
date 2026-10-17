@@ -36,13 +36,20 @@ import type {
     NewWorkspacePlacement
 } from '../../store/index.js';
 import {
+    createGitRunner,
     createGitService,
     DEFAULT_WORKTREE_BASE_PATH,
+    performPullRequestCheckout,
+    worktreeGitOps,
     type GitService,
     type BundledWorktreeOps,
     createWorktreeAddGuard,
+    type PullRequestCheckoutHooks,
+    type PullRequestCheckoutRequest,
+    type PullRequestCheckoutResult,
     type WorktreeAddHooks,
-    type WorktreeAddRequest
+    type WorktreeAddRequest,
+    type WorktreeGitOps
 } from '../../git/index.js';
 import { createGraftService, type GraftService } from '../../graft/index.js';
 import { createWebPaneService, type WebPaneService } from '../../webpane/service.js';
@@ -96,8 +103,7 @@ export interface WorktreeCreateRun {
  * and per-(repo, branch) guard (`createWorktreeAddGuard`). A second create for the same worktree
  * path or branch while one runs is refused at once with `WorktreeBusyError`.
  */
-function guardedCreator(inner: WorktreeCreator): WorktreeCreator {
-    const guard = createWorktreeAddGuard();
+function guardedCreator(inner: WorktreeCreator, guard: ReturnType<typeof createWorktreeAddGuard>): WorktreeCreator {
     return {
         begin() {
             const run = inner.begin();
@@ -371,6 +377,14 @@ export interface AppHandlerOptions {
      * the integrations service.
      */
     readonly tickets?: TicketService | undefined;
+    /**
+     * The git a create from a ticket runs DIRECTLY, never through the `kelpi.git` provider
+     * contract (graft-git.md §8.5.3): a pull request's checkout, the ticket file's tracked check,
+     * remote and branch reads. Absent = bundled git (`worktreeGitOps(createGitRunner())`, what
+     * boot's own worktree creates run). A pull request's checkout is refused while
+     * `worktrees.begin()` answers `detailed: false` (a plugin provider owns `kelpi.git`).
+     */
+    readonly ticketGit?: WorktreeGitOps | undefined;
 }
 
 export interface AppDeps {
@@ -398,6 +412,9 @@ export interface AppDeps {
     readonly log: (message: string) => void;
     readonly agentLauncher: AgentLauncher;
     readonly tickets: TicketService;
+    readonly ticketGit: WorktreeGitOps;
+    /** `performPullRequestCheckout` on `ticketGit`, behind the same per-path/per-branch guard as `worktrees`. */
+    readonly checkoutPullRequest: (request: PullRequestCheckoutRequest, hooks: PullRequestCheckoutHooks) => Promise<PullRequestCheckoutResult>;
 }
 
 const noop = (): void => {};
@@ -407,10 +424,15 @@ export function resolveAppDeps(options: AppHandlerOptions = {}): AppDeps {
     const cols = options.defaultCols ?? 80;
     const rows = options.defaultRows ?? 24;
     const git = options.git ?? createGitService();
+    // One guard for both kinds of worktree create: a pull request's checkout and a plain create
+    // must not race for the same path or branch either.
+    const guard = createWorktreeAddGuard();
+    const ticketGit = options.ticketGit ?? worktreeGitOps(createGitRunner());
     return {
         git,
         worktrees: guardedCreator(
-            options.worktrees ?? { begin: () => ({ detailed: false, run: (request) => git.worktreeAdd(request) }) }
+            options.worktrees ?? { begin: () => ({ detailed: false, run: (request) => git.worktreeAdd(request) }) },
+            guard
         ),
         bundledWorktrees: options.bundledWorktrees ?? (() => null),
         // Nothing spawns or watches until a `graft-start` actually runs, so the default is
@@ -470,7 +492,16 @@ export function resolveAppDeps(options: AppHandlerOptions = {}): AppDeps {
             (() => ({ provider: BUNDLED_PERMISSIONS_PROVIDER, result: Promise.resolve({ behavior: 'abstain' }) })),
         log: options.log ?? noop,
         agentLauncher: options.agentLauncher ?? INERT_AGENT_LAUNCHER,
-        tickets: options.tickets ?? INERT_TICKET_SERVICE
+        tickets: options.tickets ?? INERT_TICKET_SERVICE,
+        ticketGit,
+        async checkoutPullRequest(request, hooks) {
+            const release = guard.acquire(request);
+            try {
+                return await performPullRequestCheckout(ticketGit, request, hooks);
+            } finally {
+                release();
+            }
+        }
     };
 }
 

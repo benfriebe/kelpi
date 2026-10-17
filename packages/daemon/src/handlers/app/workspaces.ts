@@ -29,7 +29,7 @@
 
 import path from 'node:path';
 
-import { describeAgentSummary, normalizeAgentPrompt } from '@kelpi/core/agent';
+import { describeAgentSummary, normalizeAgentPrompt, type AgentKind } from '@kelpi/core/agent';
 import {
     formatIconString,
     iconRefusal,
@@ -47,12 +47,26 @@ import {
     type WorkspaceScope
 } from '@kelpi/core/resolve';
 import {
+    isSafeBranchName,
+    parseTicketRef,
+    prLocalBranchName,
+    prWorktreeName,
+    renderTicketFile,
+    replaceGitHubRemoteRepo,
+    ticketPromptVars,
+    withoutTicketFileReference,
+    type GitHubTicketRef,
+    type LocalBranchFact,
+    type TicketPromptVars
+} from '@kelpi/core/tickets';
+import {
     WORKSPACE_COLORS,
     buildWorkspaceListEntry,
     parseStartAgent,
     parseWorkspaceColor,
     unknownStartAgentError,
     type JsonObject,
+    type WorkspaceCheckoutMode,
     type WorkspaceColor,
     type WorkspaceCreateMessage,
     type WorkspaceDeleteMessage,
@@ -73,16 +87,24 @@ import {
     withNestedChildren,
     workspaceByID,
     workspaceContainingPane,
+    workspaceTicketOf,
     type DaemonState,
     type Repo,
     type RepoAssociation,
     type WorkspaceGroup,
-    type WorkspaceState
+    type WorkspaceState,
+    type WorkspaceTicket
 } from '../../store/index.js';
 import {
+    branchTracksPullRequest,
     createStepTracker,
     describeWorktreeSkip,
+    isPathInside,
+    listRemotes,
+    matchTicketRemotes,
     planWorktreeCleanup,
+    readLocalBranch,
+    refExists,
     removeWorktrees,
     sanitizedGitName,
     serializeWorktreeProgress,
@@ -91,11 +113,28 @@ import {
     worktreeKey,
     worktreePathFor,
     worktreeStepsFor,
+    writeTicketFile,
+    WorktreeCreateCancelledError,
+    type PullRequestCheckoutRequest,
+    type PullRequestIdentity,
+    type TicketFileOutcome,
     type WorktreeCleanupResult,
-    type WorktreeCleanupRow
+    type WorktreeCleanupRow,
+    type WorktreeStepID,
+    type WorktreeStepTracker
 } from '../../git/index.js';
+import { ensureRegisteredRepo, findRepoByPath } from '../../git/registry.js';
 import { forCommand, listedWorkspaceIDs, refreshSyncGroup, uuidOut, wireTimestamp } from './common.js';
-import { fail, ok, type AppContext, type AppDeps, type AppHandler } from './context.js';
+import {
+    fail,
+    ok,
+    ticketCreateFailure,
+    TicketServiceError,
+    type AppContext,
+    type AppDeps,
+    type AppHandler,
+    type ResolvedTicket
+} from './context.js';
 import { associationFor, groupRepo, registeredRepo, resolveRepo, type RepoResolution } from './repos.js';
 
 const DEFAULT_WORKSPACE_NAME = 'Workspace';
@@ -298,6 +337,8 @@ interface CreateInput {
     readonly focus: boolean;
     /** `start_agent`: started in the first pane once it has spawned. */
     readonly agent: AgentStart | undefined;
+    /** The ticket it is created from (`ticket`); absent = none. */
+    readonly ticket?: WorkspaceTicket | undefined;
 }
 
 function dispatchCreate(ctx: AppContext, deps: AppDeps, input: CreateInput): void {
@@ -318,6 +359,7 @@ function dispatchCreate(ctx: AppContext, deps: AppDeps, input: CreateInput): voi
         ...(input.muted ? { muted: true } : {}),
         ...(input.icon !== null ? { icon: input.icon } : {}),
         ...(input.repoAssociations !== undefined ? { repoAssociations: input.repoAssociations } : {}),
+        ...(input.ticket !== undefined ? { ticket: input.ticket } : {}),
         focus: input.focus
     });
     deps.scrollTarget(workspaceSidebarID(input.workspaceID));
@@ -379,51 +421,80 @@ export const AGENT_FIELDS_NEED_START_AGENT_ERROR = 'agent_prompt and send_prompt
 /** §6.2 "Starting an agent", check 4: the prefix of the error a failed prompt-file write gives. */
 export const PROMPT_FILE_WRITE_ERROR_PREFIX = 'could not write the prompt file: ';
 
+/** A create's agent fields, checked (§6.2 "Starting an agent", checks 1 to 3), no file written yet. */
+interface CheckedAgent {
+    readonly kind: AgentKind;
+    /** The normalized `agent_prompt`; null when absent or blank. */
+    readonly prompt: string | null;
+    /** `agent_prompt` was present, even blank: a ticket's rendered prompt never replaces it. */
+    readonly promptGiven: boolean;
+    readonly send: boolean;
+}
+
 /**
  * §6.2 "Starting an agent" (wire-protocol.md §6.3): the agent fields, checked in the contract's
  * order before anything else the create does, on every branch:
  *
  *   1. an unknown `start_agent` (a typo must not quietly start the wrong agent);
  *   2. `agent_prompt` (even empty) or `send_prompt: true` without an agent;
- *   3. the prompt's normalization (a NUL, or too long);
- *   4. writing the prompt file, for a prompt that is not blank.
+ *   3. the prompt's normalization (a NUL, or too long).
  *
- * Returns undefined when no agent was asked for, null when the request was refused (the reply
- * has been sent), and the launch request otherwise.
+ * Check 4, writing the prompt file, is `writeAgentPromptFile`: at once for a plain create, and
+ * after the ticket has resolved for a create from a ticket (its rendered prompt is the default).
+ */
+function checkAgentFields(
+    msg: WorkspaceCreateMessage
+): { readonly ok: true; readonly agent: CheckedAgent | undefined } | { readonly ok: false; readonly error: string } {
+    const raw = msg.start_agent;
+    const kind = raw === undefined ? undefined : parseStartAgent(raw);
+    if (raw !== undefined && kind === undefined) return { ok: false, error: unknownStartAgentError(raw) };
+    if (kind === undefined) {
+        if (msg.agent_prompt !== undefined || msg.send_prompt) return { ok: false, error: AGENT_FIELDS_NEED_START_AGENT_ERROR };
+        return { ok: true, agent: undefined };
+    }
+    const normalized = normalizeAgentPrompt(msg.agent_prompt ?? '');
+    if (!normalized.ok) return { ok: false, error: normalized.error };
+    return { ok: true, agent: { kind, prompt: normalized.prompt, promptGiven: msg.agent_prompt !== undefined, send: msg.send_prompt } };
+}
+
+/** Check 4: write `prompt` (already normalized) to a prompt file when it is not blank. */
+function writeAgentPromptFile(
+    agent: CheckedAgent,
+    prompt: string | null,
+    deps: AppDeps
+): { readonly ok: true; readonly request: AgentLaunchRequest } | { readonly ok: false; readonly error: string } {
+    let promptFile: string | null = null;
+    if (prompt !== null) {
+        try {
+            promptFile = deps.agentLauncher.preparePromptFile(prompt);
+        } catch (error) {
+            return { ok: false, error: `${PROMPT_FILE_WRITE_ERROR_PREFIX}${error instanceof Error ? error.message : String(error)}` };
+        }
+    }
+    return { ok: true, request: { kind: agent.kind, prompt, send: agent.send, promptFile } };
+}
+
+/**
+ * Checks 1 to 4 for a create without a ticket. Returns undefined when no agent was asked for, null
+ * when the request was refused (the reply has been sent), and the launch request otherwise.
  */
 function prepareAgentLaunch(
     msg: WorkspaceCreateMessage,
     reply: ReplyHandle | null,
     deps: AppDeps
 ): AgentLaunchRequest | null | undefined {
-    const raw = msg.start_agent;
-    const kind = raw === undefined ? undefined : parseStartAgent(raw);
-    if (raw !== undefined && kind === undefined) {
-        fail(reply, unknownStartAgentError(raw));
+    const checked = checkAgentFields(msg);
+    if (!checked.ok) {
+        fail(reply, checked.error);
         return null;
     }
-    if (kind === undefined) {
-        if (msg.agent_prompt !== undefined || msg.send_prompt) {
-            fail(reply, AGENT_FIELDS_NEED_START_AGENT_ERROR);
-            return null;
-        }
-        return undefined;
-    }
-    const normalized = normalizeAgentPrompt(msg.agent_prompt ?? '');
-    if (!normalized.ok) {
-        fail(reply, normalized.error);
+    if (checked.agent === undefined) return undefined;
+    const written = writeAgentPromptFile(checked.agent, checked.agent.prompt, deps);
+    if (!written.ok) {
+        fail(reply, written.error);
         return null;
     }
-    let promptFile: string | null = null;
-    if (normalized.prompt !== null) {
-        try {
-            promptFile = deps.agentLauncher.preparePromptFile(normalized.prompt);
-        } catch (error) {
-            fail(reply, `${PROMPT_FILE_WRITE_ERROR_PREFIX}${error instanceof Error ? error.message : String(error)}`);
-            return null;
-        }
-    }
-    return { kind, prompt: normalized.prompt, send: msg.send_prompt, promptFile };
+    return written.request;
 }
 
 /**
@@ -433,17 +504,25 @@ function prepareAgentLaunch(
  * whichever branch's check refused (one wrapper rather than a discard beside each of them).
  * Progress, cancellation and the origin session pass straight through. A null request handle (no
  * reply wanted) still gets a wrapper, so a failure still removes the file.
+ *
+ * `current` is read when the reply goes out: a create from a ticket writes its prompt file only
+ * after the ticket has resolved (null until then: nothing to echo or remove), and may replace it
+ * once it knows whether the ticket file was written.
  */
-function agentReply(reply: ReplyHandle | null, request: AgentLaunchRequest, deps: AppDeps): ReplyHandle {
-    const echo = { start_agent: request.kind, ...(request.promptFile !== null ? { prompt_file: request.promptFile } : {}) };
+function agentReply(reply: ReplyHandle | null, current: () => AgentLaunchRequest | null, deps: AppDeps): ReplyHandle {
     let closed = false;
     return {
         send(payload) {
+            const request = current();
             if (payload['ok'] === true) {
+                const echo =
+                    request === null
+                        ? {}
+                        : { start_agent: request.kind, ...(request.promptFile !== null ? { prompt_file: request.promptFile } : {}) };
                 reply?.send({ ...payload, ...echo });
                 return;
             }
-            if (request.promptFile !== null) deps.agentLauncher.discardPromptFile(request.promptFile);
+            if (request !== null && request.promptFile !== null) deps.agentLauncher.discardPromptFile(request.promptFile);
             reply?.send(payload);
         },
         close() {
@@ -538,6 +617,30 @@ function parentGroup(state: DaemonState, parentID: string | undefined): Workspac
     if (parentID === undefined) return null;
     const groupID = groupIDForWorkspace(state, parentID);
     return groupID === null ? null : groupByID(state, groupID);
+}
+
+/**
+ * §GIT-103 and §4.1 step 7: the repository a worktree was made from is registered when new (with
+ * its `origin` URL, so a ticket can later be matched to it) and kept (promoted out of
+ * auto-discovered) when it was already there. Its id was minted before the git work (`repoID`),
+ * so a registration racing this one keeps its own row instead of adding a second.
+ *
+ * The Swift sets `isAutoDiscovered = false` UNCONDITIONALLY on `worktreeCreated`
+ * (`AppReducer+RepoGit.swift:156-157`): a repo auto-detect had already registered stayed
+ * auto-discovered after the user deliberately built a worktree from it, and §GIT-081's GC would
+ * then collect the registry row the moment its auto association lapsed.
+ */
+async function registerWorktreeSource(ctx: AppContext, deps: AppDeps, repoPath: string, repoID: string): Promise<Repo> {
+    return ensureRegisteredRepo(
+        {
+            store: ctx.store,
+            uuid: () => repoID,
+            now: deps.now,
+            getRemoteURL: (candidate) => deps.git.getRemoteURL(candidate)
+        },
+        repoPath,
+        { promote: true }
+    );
 }
 
 function handleWorktreeCreate(
@@ -657,14 +760,14 @@ function handleWorktreeCreate(
             },
             { ...(signal !== undefined ? { signal } : {}), steps }
         )
-        .then(() => {
+        .then(async () => {
             /*
              * §8.5.2: once the worktree exists the create COMPLETES, even if a cancel arrives
-             * now. Everything below is synchronous store work that cannot be half-done, and
-             * rolling a finished worktree back would destroy a checkout the user may already be
-             * looking at in the reply's reveal; completing is the simpler of the two safe
-             * answers. (`performWorktreeAdd` checks the signal after git returns, so a cancel
-             * that raced git's exit is still honoured there.)
+             * now. Everything below is store work that cannot be half-done (and one quick read of
+             * the new repo's `origin`), and rolling a finished worktree back would destroy a
+             * checkout the user may already be looking at in the reply's reveal; completing is the
+             * simpler of the two safe answers. (`performWorktreeAdd` checks the signal after git
+             * returns, so a cancel that raced git's exit is still honoured there.)
              */
             steps?.running('create-workspace');
             /*
@@ -674,40 +777,7 @@ function handleWorktreeCreate(
              * the caller to mistake a missing `parent_id` for a daemon that predates nesting.
              */
             const parentLost = lostParent(ctx.store.getState(), parentID, parentName);
-            if (existingRepo !== undefined) {
-                /*
-                 * §GIT-103, the half the insert-skip used to swallow.
-                 *
-                 * The Swift sets `state.repoRegistry[id: repoID]?.isAutoDiscovered = false`
-                 * UNCONDITIONALLY on `worktreeCreated` (`AppReducer+RepoGit.swift:156-157`) —
-                 * it does not care whether the repo was already in the registry. The port only
-                 * marked the repo manual on the INSERT, so a repo auto-detect had already
-                 * registered (`isAutoDiscovered: true`) stayed auto-discovered after the user
-                 * deliberately built a worktree from it, and §GIT-081's GC would then collect
-                 * the registry row the moment its auto association lapsed — taking the user's
-                 * own worktree's parent out of the registry with it.
-                 */
-                if (existingRepo.isAutoDiscovered) {
-                    ctx.store.dispatch({
-                        type: 'set-repo-auto-discovered',
-                        id: repoID,
-                        isAutoDiscovered: false
-                    });
-                }
-            } else {
-                ctx.store.dispatch({
-                    type: 'add-repo',
-                    repo: {
-                        id: repoID,
-                        path: repoPath,
-                        name: path.basename(repoPath),
-                        remoteURL: null,
-                        lastAccessedAt: deps.now() / 1000,
-                        // A worktree flow promotes the repo to "kept" (§4.1 step 7).
-                        isAutoDiscovered: false
-                    }
-                });
-            }
+            const repo = await registerWorktreeSource(ctx, deps, repoPath, repoID);
             dispatchCreate(ctx, deps, {
                 name: workspaceName,
                 workingDirectory: seed.path,
@@ -722,7 +792,7 @@ function handleWorktreeCreate(
                 repoAssociations: [
                     {
                         id: deps.uuid(),
-                        repoID,
+                        repoID: repo.id,
                         worktreePath: seed.path,
                         branchName: seed.branchName,
                         isAutoDetected: false
@@ -851,6 +921,663 @@ function handleCreateWithRepo(
         });
 }
 
+// ---------------------------------------------------------------------------
+// workspace-create from a ticket (§6.2 "Starting from a ticket", docs/integrations.md §8)
+// ---------------------------------------------------------------------------
+
+/** No credential for the ticket's provider (`not-connected`). */
+export const TICKET_NOT_CONNECTED_ERROR = 'GitHub is not connected: connect it in Settings ▸ Integrations';
+
+/** A pull request is checked out on its head, never on a new branch off the default one. */
+export const PR_UPDATE_MAIN_ERROR =
+    'a pull request is checked out on its own head branch, so update main does not apply: leave it off';
+
+/** A pull request's checkout runs Kelpi's own git (graft-git.md §8.5.3). */
+export const PR_NEEDS_BUNDLED_GIT_ERROR =
+    "a plugin provides kelpi.git, so Kelpi cannot check out a pull request's head here: create the workspace without a worktree, or switch the plugin off";
+
+function badTicketRefError(raw: string): string {
+    const shown = raw.trim().replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 200);
+    return `'${shown}' is not a GitHub issue or pull request: paste its URL, or owner/name#number`;
+}
+
+function ticketNeedsRepoError(repo: string): string {
+    return `no registered repository has a remote for ${repo}: add its clone in Settings ▸ Repositories, or name one (--repo)`;
+}
+
+function prRepoMismatchError(repoPath: string, repo: string): string {
+    return `${repoPath} has no remote for ${repo}: a pull request is checked out only in a clone of its own repository`;
+}
+
+/** A create from a ticket the handler refuses after the resolve, before any effect. */
+class TicketCreateRefusal extends Error {
+    constructor(message: string) {
+        super(message);
+        this.name = 'TicketCreateRefusal';
+    }
+}
+
+/** Where a ticket create's workspace goes, decided once the ticket has resolved. */
+type TicketPlan =
+    | {
+          readonly mode: 'worktree';
+          readonly checkout: Exclude<WorkspaceCheckoutMode, 'existing-checkout'>;
+          readonly repoPath: string;
+          readonly folderName: string;
+          readonly branch: string;
+          readonly updateMain: boolean;
+          /** The remote an issue's update main fetches from (the ticket's base remote). */
+          readonly remote: string | undefined;
+          readonly pullRequest: Omit<PullRequestCheckoutRequest, 'repoPath' | 'worktreePath' | 'branchName'> | null;
+          readonly groupID: string | undefined;
+          readonly groupName: string | undefined;
+      }
+    | {
+          readonly mode: 'repo';
+          /** A path to resolve (an explicit `repo`, or where the defaults' branch is checked out), or a registered row. */
+          readonly source: { readonly path: string } | { readonly repo: Repo };
+      };
+
+/** The prompt variables the ticket's default prompt was rendered with (`ticketCreateDefaults`). */
+function ticketVarsOf(resolved: ResolvedTicket): TicketPromptVars {
+    const summary = resolved.summary;
+    return ticketPromptVars({
+        kind: summary.kind,
+        number: summary.number,
+        key: summary.key,
+        title: summary.title,
+        url: summary.url,
+        repo: summary.repo,
+        branch: resolved.defaults.branch ?? resolved.pullRequest?.headRef ?? null,
+        base: resolved.pullRequest?.baseRef ?? null,
+        author: summary.author,
+        labels: summary.labels
+    });
+}
+
+/** `readLocalBranch` as the one PR branch rule reads it (`prLocalBranchName`). */
+async function prBranchFact(
+    deps: AppDeps,
+    repoPath: string,
+    name: string,
+    identity: PullRequestIdentity
+): Promise<LocalBranchFact> {
+    if (!isSafeBranchName(name)) return { exists: false };
+    const state = await readLocalBranch(deps.ticketGit, repoPath, name);
+    return state.exists ? { exists: true, tracksPullRequest: branchTracksPullRequest(state, identity), checkedOutAt: state.checkedOutAt } : { exists: false };
+}
+
+/**
+ * Decide the create (wire-protocol.md §6.3, graft-git.md §8.5.3): which repository, worktree or
+ * not, which branch, which checkout. Reads git (remotes, branches) but changes nothing; a refusal
+ * is a `TicketCreateRefusal`, sent before any effect.
+ *
+ * Repository, by precedence: an explicit `repo`, then the group's default repository, then (with
+ * `ticket_defaults`) the registered repository the ticket matched. A pull request's worktree is
+ * refused in a repository with no remote for the ticket's repository; an issue's is not. A nested
+ * create (`parentID`, app-state-core.md §2.9) takes its group defaults from the parent's group, as
+ * a create without a ticket does; it never names a group of its own (`resolveCreateParent`).
+ */
+async function planTicketCreate(
+    msg: WorkspaceCreateMessage,
+    resolved: ResolvedTicket,
+    parentID: string | undefined,
+    ctx: AppContext,
+    deps: AppDeps,
+    detailedGit: boolean
+): Promise<TicketPlan> {
+    const state = ctx.store.getState();
+    const home = state.homeDirectory;
+    const summary = resolved.summary;
+    const defaults = msg.ticket_defaults ? resolved.defaults : null;
+    const trimmedGroup = msg.group?.trim() ?? '';
+    const scope = resolveStateOf(state);
+    const group = trimmedGroup === '' ? null : resolveGroupStrict(scope, trimmedGroup);
+    // §2.9: a nested create takes its defaults from the parent's group.
+    const groupRow = parentID !== undefined ? parentGroup(state, parentID) : group === null ? null : groupByID(state, group.id);
+    const groupDefault = msg.group_defaults && groupRow !== null ? groupRepo(state, groupRow) : null;
+    const matchedRepo = resolved.repoID === null ? null : (state.repos.find((repo) => repo.id === resolved.repoID) ?? null);
+
+    let target: { readonly path: string; readonly matched: boolean; readonly source: { path: string } | { repo: Repo } } | null = null;
+    if (msg.repo !== undefined && msg.repo.trim() !== '') {
+        const repoPath = standardizePath(msg.repo, home);
+        target = { path: repoPath, matched: matchedRepo !== null && findRepoByPath(state, repoPath)?.id === matchedRepo.id, source: { path: msg.repo } };
+    } else if (groupDefault !== null) {
+        target = { path: groupDefault.path, matched: groupDefault.id === matchedRepo?.id, source: { repo: groupDefault } };
+    } else if (defaults !== null && matchedRepo !== null) {
+        target = { path: matchedRepo.path, matched: true, source: { repo: matchedRepo } };
+    }
+
+    const explicitWorktree = msg.worktree !== undefined && msg.worktree !== '' ? msg.worktree : undefined;
+    if (explicitWorktree === undefined) {
+        // The defaults' branch is already checked out: the workspace opens there (no worktree).
+        if (defaults !== null && defaults.checkout === 'existing-checkout' && resolved.checkedOutAt !== null && (target === null || target.matched)) {
+            return { mode: 'repo', source: { path: resolved.checkedOutAt } };
+        }
+        if (defaults === null) {
+            if (target === null) throw new TicketCreateRefusal(ticketNeedsRepoError(summary.repo));
+            return { mode: 'repo', source: target.source };
+        }
+        if (defaults.branch === null) {
+            throw new TicketCreateRefusal(defaults.warnings[0] ?? `${summary.key} gives no branch to check out: name one`);
+        }
+    }
+    if (target === null) throw new TicketCreateRefusal(ticketNeedsRepoError(summary.repo));
+
+    // The worktree path never creates a group (a failed add would orphan it), as without a ticket.
+    if (trimmedGroup !== '' && group === null) {
+        throw new TicketCreateRefusal(
+            groupsMatchingName(scope, trimmedGroup).length > 0 ? ambiguousGroupError(trimmedGroup) : unknownWorktreeGroupError(trimmedGroup)
+        );
+    }
+    const groupID = group?.id;
+    const groupName = group?.name;
+    const repoPath = target.path;
+
+    if (summary.kind === 'pr') {
+        const pr = resolved.pullRequest;
+        if (pr === null) throw new TicketCreateRefusal(`pull request ${summary.key} has no head to check out`);
+        if (msg.update_main === true) throw new TicketCreateRefusal(PR_UPDATE_MAIN_ERROR);
+        if (!detailedGit) throw new TicketCreateRefusal(PR_NEEDS_BUNDLED_GIT_ERROR);
+        let baseRemote: string;
+        let headRemote: string | null;
+        let headPushURL: string | null;
+        if (target.matched && resolved.baseRemote !== null) {
+            baseRemote = resolved.baseRemote;
+            headRemote = pr.headRemote;
+            headPushURL = pr.headPushURL;
+        } else {
+            const remotes = await listRemotes(deps.ticketGit, repoPath).catch(() => []);
+            const match = matchTicketRemotes(remotes, summary.repo, pr.crossRepository ? pr.headRepo : null);
+            if (match.base === null) throw new TicketCreateRefusal(prRepoMismatchError(repoPath, summary.repo));
+            baseRemote = match.base.name;
+            headRemote = pr.crossRepository ? (match.head?.name ?? null) : null;
+            const [owner, name] = (pr.headRepo ?? '').split('/');
+            headPushURL =
+                pr.crossRepository && headRemote === null && pr.maintainerCanModify && owner !== undefined && name !== undefined && name !== ''
+                    ? replaceGitHubRemoteRepo(match.base.url, owner, name)
+                    : null;
+        }
+        const identity: PullRequestIdentity = {
+            number: summary.number,
+            headRef: pr.headRef,
+            crossRepository: pr.crossRepository,
+            headRepo: pr.headRepo,
+            baseRemote,
+            headRemote,
+            headPushURL
+        };
+        let branch: string;
+        if (msg.branch !== undefined && msg.branch !== '') {
+            // Renaming the local branch is allowed; it is used raw, so it must be a branch name as is.
+            if (!isSafeBranchName(msg.branch)) throw new TicketCreateRefusal(`"${msg.branch}" isn't a usable branch name`);
+            branch = msg.branch;
+        } else {
+            const candidates = [pr.headRef, ...(pr.headOwner !== null ? [`${pr.headOwner}/${pr.headRef}`] : []), `pr-${summary.number}`];
+            const facts = new Map<string, LocalBranchFact>();
+            for (const candidate of candidates) facts.set(candidate, await prBranchFact(deps, repoPath, candidate, identity).catch((): LocalBranchFact => ({ exists: false })));
+            const decision = prLocalBranchName({
+                number: summary.number,
+                headRef: pr.headRef,
+                headOwner: pr.headOwner,
+                baseDefaultBranch: pr.baseDefaultBranch,
+                localBranch: (name) => facts.get(name) ?? { exists: false }
+            });
+            if (!decision.ok) throw new TicketCreateRefusal(decision.error);
+            branch = decision.branch;
+        }
+        const worktreeName = explicitWorktree ?? prWorktreeName(branch, summary.number);
+        const folderName = sanitizedGitName(worktreeName);
+        if (folderName === null) throw new TicketCreateRefusal(`"${worktreeName}" isn't a usable worktree name`);
+        return {
+            mode: 'worktree',
+            checkout: 'pr-head',
+            repoPath,
+            folderName,
+            branch,
+            updateMain: false,
+            remote: undefined,
+            pullRequest: {
+                number: summary.number,
+                headRef: pr.headRef,
+                headSha: pr.headSha,
+                crossRepository: pr.crossRepository,
+                maintainerCanModify: pr.maintainerCanModify,
+                headRepo: pr.headRepo,
+                baseRemote,
+                headRemote,
+                headPushURL
+            },
+            groupID,
+            groupName
+        };
+    }
+
+    // An issue: a worktree on `418-<slug>`, or the name the request gave.
+    const worktreeName = explicitWorktree ?? defaults?.worktree ?? defaults?.branch ?? '';
+    const folderName = sanitizedGitName(worktreeName);
+    if (folderName === null) throw new TicketCreateRefusal(`"${worktreeName}" isn't a usable worktree name`);
+    const requestedBranch = msg.branch !== undefined && msg.branch !== '' ? msg.branch : (defaults?.branch ?? worktreeName);
+    const branch = sanitizedGitName(requestedBranch);
+    if (branch === null) throw new TicketCreateRefusal(`"${requestedBranch}" isn't a usable branch name`);
+    let remote: string | undefined;
+    if (target.matched && resolved.baseRemote !== null) {
+        remote = resolved.baseRemote;
+    } else {
+        const remotes = await listRemotes(deps.ticketGit, repoPath).catch(() => []);
+        remote = matchTicketRemotes(remotes, summary.repo, null).base?.name;
+    }
+    const exists = await refExists(deps.ticketGit, repoPath, `refs/heads/${branch}`).catch(() => false);
+    // With the ticket's defaults, update main follows the branch: a new one comes off the latest
+    // default branch, an existing one (the issue was started before) is attached as it is.
+    const updateMain = msg.update_main ?? (defaults !== null ? !exists : groupRow?.createWorktree === true && msg.group_defaults);
+    return {
+        mode: 'worktree',
+        checkout: !updateMain && exists ? 'attach-branch' : 'new-branch',
+        repoPath,
+        folderName,
+        branch,
+        updateMain,
+        remote,
+        pullRequest: null,
+        groupID,
+        groupName
+    };
+}
+
+/** What becomes of the ticket file and the agent's prompt once the checkout exists. */
+interface TicketFinish {
+    readonly fields: JsonObject;
+    readonly warnings: readonly string[];
+}
+
+/**
+ * Write the ticket file into `directory` (inside `checkout`), then, when it could not be written,
+ * take every reference to it out of the agent's prompt (`withoutTicketFileReference`) and rewrite
+ * the prompt file: an agent is never pointed at a file Kelpi did not write.
+ */
+async function finishTicketCheckout(
+    deps: AppDeps,
+    resolved: ResolvedTicket,
+    directory: string,
+    checkout: string,
+    headSha: string | null,
+    home: string,
+    agent: { request: AgentLaunchRequest | null }
+): Promise<TicketFinish> {
+    const warnings: string[] = [];
+    let outcome: TicketFileOutcome;
+    if (!isPathInside(directory, checkout, home)) {
+        outcome = { ok: false, error: 'the first pane does not open inside the checkout, so Kelpi did not write a ticket file' };
+    } else {
+        outcome = await writeTicketFile(deps.ticketGit, {
+            directory,
+            number: resolved.summary.number,
+            content: renderTicketFile(resolved.file),
+            headSha
+        });
+    }
+    const request = agent.request;
+    if (!outcome.ok && request !== null && request.prompt !== null) {
+        const prompt = withoutTicketFileReference(request.prompt, resolved.summary.kind, ticketVarsOf(resolved));
+        if (prompt !== request.prompt) {
+            if (request.promptFile !== null) deps.agentLauncher.discardPromptFile(request.promptFile);
+            try {
+                agent.request = { ...request, prompt, promptFile: deps.agentLauncher.preparePromptFile(prompt) };
+            } catch (error) {
+                agent.request = { ...request, prompt: null, promptFile: null };
+                warnings.push(`${PROMPT_FILE_WRITE_ERROR_PREFIX}${error instanceof Error ? error.message : String(error)}; the agent starts without a prompt`);
+            }
+        }
+    }
+    return { fields: outcome.ok ? { ticket_file: outcome.path } : { ticket_file_error: outcome.error }, warnings };
+}
+
+/** The reply fields every success of a ticket create carries (wire-protocol.md §6.3). */
+function ticketReplyFields(
+    resolved: ResolvedTicket,
+    checkout: WorkspaceCheckoutMode,
+    finish: TicketFinish,
+    extraWarnings: readonly string[]
+): JsonObject {
+    const warnings = [...new Set([...resolved.warnings, ...extraWarnings, ...finish.warnings])];
+    return {
+        ticket: { ...workspaceTicketOf(resolved.summary) },
+        checkout,
+        ...finish.fields,
+        ...(warnings.length > 0 ? { warnings } : {})
+    };
+}
+
+/**
+ * `workspace-create` with `ticket` (wire-protocol.md §6.3, docs/integrations.md §8). Before any
+ * effect: the icon and the parent (`handleWorkspaceCreate`, as for every create), then phase 1's
+ * agent checks (without the prompt file), the reference (`bad-ref`), the credential
+ * (`not-connected`), the group's ambiguity; then the resolve, reported as the `ticket` step and
+ * cancellable; then the plan (`planTicketCreate`). Only then is anything written: the prompt file
+ * (its text may be the ticket's rendered prompt), the worktree or the pull request's checkout, the
+ * ticket file, and the workspace, which keeps the ticket, its icon, its parent (§2.9) and, only
+ * with `focus`, becomes the active one (#307).
+ */
+function handleTicketCreate(
+    msg: WorkspaceCreateMessage,
+    rawTicket: string,
+    icon: IconRef | null,
+    parentID: string | undefined,
+    ctx: AppContext,
+    request: ReplyHandle | null,
+    deps: AppDeps
+): void {
+    const checked = checkAgentFields(msg);
+    if (!checked.ok) {
+        fail(request, checked.error);
+        return;
+    }
+    const ref = parseTicketRef(rawTicket);
+    if (ref === null) {
+        fail(request, badTicketRefError(rawTicket), { ticket_error: 'bad-ref' });
+        return;
+    }
+    if (!deps.tickets.connected(ref.provider)) {
+        const { ok: _ok, error, ...extra } = ticketCreateFailure(new TicketServiceError('not-connected', TICKET_NOT_CONNECTED_ERROR));
+        fail(request, error, extra);
+        return;
+    }
+    const trimmedGroup = msg.group?.trim() ?? '';
+    if (trimmedGroup !== '') {
+        const scope = resolveStateOf(ctx.store.getState());
+        if (resolveGroupStrict(scope, trimmedGroup) === null && groupsMatchingName(scope, trimmedGroup).length > 0) {
+            fail(request, ambiguousGroupError(trimmedGroup));
+            return;
+        }
+    }
+
+    const agent: { request: AgentLaunchRequest | null } = { request: null };
+    const reply = checked.agent === undefined ? request : agentReply(request, () => agent.request, deps);
+    const progress = reply?.progress?.bind(reply);
+    // A first guess at the steps (the kind a URL names); `replan` corrects it once the ticket answers.
+    let steps: WorktreeStepTracker | null =
+        progress === undefined
+            ? null
+            : createStepTracker({
+                  steps: worktreeStepsFor({ ticket: true, checkout: ref.kind === 'pr' ? 'pr-head' : 'new-branch', updateMain: ref.kind !== 'pr' }),
+                  emit: (snapshot) => progress(serializeWorktreeProgress(snapshot))
+              });
+    const signal = reply?.signal;
+    // Read now, so a parent deleted or renamed while the ticket resolves is still named (§2.9).
+    const parentName = parentID === undefined ? '' : (workspaceByID(ctx.store.getState(), parentID)?.name ?? '');
+
+    void runTicketCreate({ msg, ref, icon, parentID, parentName, ctx, deps, reply, agent, checked: checked.agent, signal, steps: () => steps, dropSteps: () => {
+        steps?.flush();
+        steps = null;
+    } }).catch((error: unknown) => {
+        if (error instanceof TicketServiceError) {
+            steps?.failUnfinished(error.message);
+            steps?.flush();
+            const { ok: _ok, error: message, ...extra } = ticketCreateFailure(error);
+            fail(reply, message, extra);
+            return;
+        }
+        const message = worktreeErrorMessage(error);
+        steps?.failUnfinished(message);
+        steps?.flush();
+        fail(reply, message);
+    });
+}
+
+interface TicketCreateRun {
+    readonly msg: WorkspaceCreateMessage;
+    readonly ref: GitHubTicketRef;
+    /** Checked up front (`requestedIcon`); null = the letter avatar. */
+    readonly icon: IconRef | null;
+    /** §2.9: nest under this workspace, resolved up front (`resolveCreateParent`). */
+    readonly parentID: string | undefined;
+    /** The parent's name when the request arrived, for `lostParent`'s reason. */
+    readonly parentName: string;
+    readonly ctx: AppContext;
+    readonly deps: AppDeps;
+    readonly reply: ReplyHandle | null;
+    readonly agent: { request: AgentLaunchRequest | null };
+    readonly checked: CheckedAgent | undefined;
+    readonly signal: AbortSignal | undefined;
+    readonly steps: () => WorktreeStepTracker | null;
+    /** A create whose git cannot report steps (a plugin owns `kelpi.git`): stop reporting them. */
+    readonly dropSteps: () => void;
+}
+
+async function runTicketCreate(run: TicketCreateRun): Promise<void> {
+    const { msg, ref, ctx, deps, reply, agent, signal } = run;
+    const cancelled = (step: WorktreeStepID): never => {
+        run.steps()?.cancelled(step);
+        throw new WorktreeCreateCancelledError(step);
+    };
+
+    // 1. The ticket (cancellable: the lookup can take seconds).
+    run.steps()?.running('ticket', `${ref.repo}#${ref.number}`);
+    let resolved: ResolvedTicket;
+    try {
+        resolved = await deps.tickets.resolve(ref, signal ?? new AbortController().signal);
+    } catch (error) {
+        if (signal?.aborted) cancelled('ticket');
+        throw error;
+    }
+    if (signal?.aborted) cancelled('ticket');
+    const summary = resolved.summary;
+    run.steps()?.done('ticket', `${summary.key} ${summary.title}`.slice(0, 120));
+
+    // 2. The plan: everything that can refuse, before any effect.
+    const creation = deps.worktrees.begin();
+    let plan: TicketPlan;
+    try {
+        plan = await planTicketCreate(msg, resolved, run.parentID, ctx, deps, creation.detailed);
+    } catch (error) {
+        if (error instanceof TicketCreateRefusal) {
+            run.steps()?.failUnfinished(error.message);
+            run.steps()?.flush();
+            fail(reply, error.message);
+            return;
+        }
+        throw error;
+    }
+    const checkout: WorkspaceCheckoutMode = plan.mode === 'worktree' ? plan.checkout : 'existing-checkout';
+    run.steps()?.replan(
+        worktreeStepsFor({ ticket: true, checkout, updateMain: plan.mode === 'worktree' && plan.updateMain }),
+        checkout
+    );
+    if (signal?.aborted) cancelled(plan.mode === 'worktree' ? (plan.updateMain ? 'resolve-default-branch' : plan.checkout === 'pr-head' ? 'fetch' : 'worktree-add') : 'create-workspace');
+
+    // 3. The prompt file: the request's prompt, else (with the defaults) the ticket's rendered one.
+    if (run.checked !== undefined) {
+        const rendered = normalizeAgentPrompt(resolved.defaults.prompt);
+        const prompt = run.checked.promptGiven || !msg.ticket_defaults ? run.checked.prompt : rendered.ok ? rendered.prompt : null;
+        const written = writeAgentPromptFile(run.checked, prompt, deps);
+        if (!written.ok) {
+            run.steps()?.failUnfinished(written.error);
+            run.steps()?.flush();
+            fail(reply, written.error);
+            return;
+        }
+        agent.request = written.request;
+    }
+    const agentStart = (): AgentStart | undefined =>
+        agent.request === null ? undefined : { request: agent.request, originClientID: reply?.originClientID };
+    const state = ctx.store.getState();
+    const workspaceName = msg.name ?? (msg.ticket_defaults ? resolved.defaults.name : DEFAULT_WORKSPACE_NAME);
+    const ticket = workspaceTicketOf(summary);
+
+    if (plan.mode === 'repo') {
+        await createTicketWorkspaceWithRepo(run, resolved, plan.source, workspaceName, ticket, agentStart);
+        return;
+    }
+
+    // 4. The worktree: an issue's (`performWorktreeAdd`), or a pull request's head.
+    const repoPath = plan.repoPath;
+    const repoID = findRepoByPath(state, repoPath)?.id ?? deps.uuid();
+    const worktreePath = worktreePathFor({ template: deps.worktreeBasePath, repoPath, home: state.homeDirectory, folderName: plan.folderName });
+    const workspaceID = deps.uuid();
+    if (!creation.detailed) {
+        // As without a ticket (graft-git.md §8.5.1): no steps and no cancel past this point.
+        reply?.uncancellable?.();
+        run.dropSteps();
+        reply?.progress?.(serializeWorktreeProgress({ steps: [], detailed: false }));
+    }
+    const gitSignal = creation.detailed ? signal : undefined;
+    const steps = run.steps();
+    const hooks = { ...(gitSignal !== undefined ? { signal: gitSignal } : {}), steps };
+    const warnings: string[] = [];
+    if (plan.pullRequest !== null) {
+        const result = await deps.checkoutPullRequest({ ...plan.pullRequest, repoPath, worktreePath, branchName: plan.branch }, hooks);
+        warnings.push(...result.warnings);
+    } else {
+        await creation.run(
+            {
+                repoPath,
+                worktreePath,
+                branchName: plan.branch,
+                updateMain: plan.updateMain,
+                ...(plan.remote !== undefined ? { remote: plan.remote } : {})
+            },
+            hooks
+        );
+    }
+
+    // 5. The worktree exists: the create completes (§8.5.2). Ticket file, then the workspace.
+    steps?.running('create-workspace');
+    // §2.9: the parent may have gone (or been nested) while the ticket resolved and git ran. The
+    // worktree exists, so the create completes at the top level and says so, as without a ticket.
+    const parentLost = lostParent(ctx.store.getState(), run.parentID, run.parentName);
+    const finish = await finishTicketCheckout(
+        deps,
+        resolved,
+        worktreePath,
+        worktreePath,
+        plan.pullRequest?.headSha ?? null,
+        state.homeDirectory,
+        agent
+    );
+    const repo = await registerWorktreeSource(ctx, deps, repoPath, repoID);
+    dispatchCreate(ctx, deps, {
+        name: workspaceName,
+        workingDirectory: worktreePath,
+        color: msg.color,
+        profile: msg.profile,
+        muted: msg.muted === true,
+        icon: run.icon,
+        groupID: plan.groupID,
+        parentID: parentLost === null ? run.parentID : undefined,
+        workspaceID,
+        focus: msg.focus === true,
+        repoAssociations: [{ id: deps.uuid(), repoID: repo.id, worktreePath, branchName: plan.branch, isAutoDetected: false }],
+        agent: agentStart(),
+        ticket
+    });
+    const created = workspaceByID(ctx.store.getState(), workspaceID);
+    steps?.done('create-workspace', created?.name ?? workspaceName);
+    steps?.flush();
+    ok(reply, {
+        workspace_id: uuidOut(workspaceID),
+        workspace_name: created?.name ?? workspaceName,
+        worktree_path: worktreePath,
+        branch: plan.branch,
+        update_main: plan.updateMain,
+        repo_path: repoPath,
+        muted: created?.muted ?? false,
+        ...iconEcho(created?.icon ?? null),
+        ...(plan.groupName !== undefined ? { group: plan.groupName } : {}),
+        ...parentEcho(ctx.store.getState(), workspaceID),
+        ...(parentLost !== null ? { parent_lost: true, parent_lost_reason: parentLost } : {}),
+        ...ticketReplyFields(resolved, plan.checkout, finish, warnings)
+    });
+}
+
+/**
+ * A ticket create with no worktree (§6.2 (d) with a ticket): the request's `repo`, the group's
+ * repository, or the checkout where the defaults' branch already is (`existing-checkout`). The
+ * ticket file goes where the first pane opens.
+ */
+async function createTicketWorkspaceWithRepo(
+    run: TicketCreateRun,
+    resolved: ResolvedTicket,
+    source: { readonly path: string } | { readonly repo: Repo },
+    workspaceName: string,
+    ticket: WorkspaceTicket,
+    agentStart: () => AgentStart | undefined
+): Promise<void> {
+    const { msg, ctx, deps, reply } = run;
+    const steps = run.steps();
+    // Past this point nothing is cancellable: the rest is quick, and registers a repository.
+    reply?.uncancellable?.();
+    steps?.running('create-workspace');
+    const resolution = 'repo' in source ? registeredRepo(ctx, source.repo) : await resolveRepo(ctx, deps, source.path);
+    if (!resolution.ok) {
+        steps?.failUnfinished(resolution.error);
+        steps?.flush();
+        fail(reply, resolution.error);
+        return;
+    }
+    const association = await associationFor(deps, resolution);
+    // §2.9: the parent may have gone while the ticket resolved. Nothing has been created yet, so
+    // the create fails whole, before the ticket file (the registry may have gained the repo, which
+    // is kept and saved), as a create with a repository and no ticket does.
+    const parentLost = lostParent(ctx.store.getState(), run.parentID, run.parentName);
+    if (parentLost !== null) {
+        deps.persist();
+        steps?.failUnfinished(parentLost);
+        steps?.flush();
+        fail(reply, parentLost);
+        return;
+    }
+    const trimmedGroup = msg.group?.trim() ?? '';
+    let groupID: string | undefined;
+    if (trimmedGroup !== '') {
+        const scope = resolveStateOf(ctx.store.getState());
+        const existing = resolveGroupStrict(scope, trimmedGroup);
+        if (existing === null && groupsMatchingName(scope, trimmedGroup).length > 0) {
+            deps.persist();
+            steps?.failUnfinished(ambiguousGroupError(trimmedGroup));
+            steps?.flush();
+            fail(reply, ambiguousGroupError(trimmedGroup));
+            return;
+        }
+        groupID = existing?.id;
+        if (groupID === undefined) {
+            groupID = deps.uuid();
+            ctx.store.dispatch({ type: 'create-group', id: groupID, name: trimmedGroup, now: deps.now() });
+        }
+    }
+    const workingDirectory = msg.path ?? association.worktreePath;
+    const finish = await finishTicketCheckout(deps, resolved, workingDirectory, association.worktreePath, null, ctx.store.getState().homeDirectory, run.agent);
+    const workspaceID = deps.uuid();
+    dispatchCreate(ctx, deps, {
+        name: workspaceName,
+        workingDirectory,
+        color: msg.color,
+        profile: msg.profile,
+        muted: msg.muted === true,
+        icon: run.icon,
+        groupID,
+        parentID: run.parentID,
+        workspaceID,
+        focus: msg.focus === true,
+        repoAssociations: [association],
+        agent: agentStart(),
+        ticket
+    });
+    const created = workspaceByID(ctx.store.getState(), workspaceID);
+    steps?.done('create-workspace', created?.name ?? workspaceName);
+    steps?.flush();
+    ok(reply, {
+        workspace_id: uuidOut(workspaceID),
+        workspace_name: created?.name ?? workspaceName,
+        muted: created?.muted ?? msg.muted === true,
+        ...iconEcho(created?.icon ?? null),
+        repo_path: resolution.repo.path,
+        ...(trimmedGroup !== '' ? { group: trimmedGroup } : {}),
+        ...parentEcho(ctx.store.getState(), workspaceID),
+        ...ticketReplyFields(resolved, 'existing-checkout', finish, [])
+    });
+}
+
 function handleWorkspaceCreate(
     msg: WorkspaceCreateMessage,
     ctx: AppContext,
@@ -874,13 +1601,21 @@ function handleWorkspaceCreate(
     }
     const parentID = nesting.parentID;
 
+    // §6.2 "Starting from a ticket": its own flow, after the two pure checks above (so a ticket
+    // create is refused for a bad icon or parent exactly as any create is). It checks the agent
+    // fields itself and writes the prompt file only once the ticket has resolved.
+    if (msg.ticket !== undefined) {
+        handleTicketCreate(msg, msg.ticket, icon, parentID, ctx, request, deps);
+        return;
+    }
+
     // §6.2 "Starting an agent": checked after the two pure checks above (the last of its own
     // checks writes the prompt file) and before ANY branch's own checks, mutations or git work.
     const prepared = prepareAgentLaunch(msg, request, deps);
     if (prepared === null) return;
     const agent: AgentStart | undefined =
         prepared === undefined ? undefined : { request: prepared, originClientID: request?.originClientID };
-    const reply = prepared === undefined ? request : agentReply(request, prepared, deps);
+    const reply = prepared === undefined ? request : agentReply(request, () => prepared, deps);
 
     const worktreeName = msg.worktree;
     if (worktreeName !== undefined && worktreeName !== '') {

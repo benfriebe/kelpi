@@ -208,7 +208,7 @@ import { focusPaneSurface, handCaretToPaneWhenReady, mayClaimPaneCaret, releaseF
 import { navigationTrustedRuntimes, useRemoteDaemons, type RemoteRuntimeFactory } from './app/remote-daemons';
 import { RemoteWorkspaceView } from './app/RemoteWorkspaceView';
 import { defaultFormFactorWindow, useFormFactor, type FormFactorWindow } from './chrome/form-factor';
-import { PhoneShell, phoneVisiblePaneIDs, usePhoneView } from './phone';
+import { PhoneShell, phoneVisiblePaneIDs, usePhoneView, type QrCamera } from './phone';
 import { createSearchNeedleScheduler, type SearchNeedleScheduler } from './app/search-needle';
 import {
     SEED_TEST_GROUP_COMMAND,
@@ -341,6 +341,8 @@ export interface AppProps {
     /** The phone shell's two test seams (`phone/PhoneShell.tsx`): the host list's storage and how a host is dialled. */
     readonly phoneHostStorage?: StorageLike | null | undefined;
     readonly phoneRuntimeFactory?: RemoteRuntimeFactory | undefined;
+    /** The camera the phone's Add host scans a pairing code with; a test hands in a fake. */
+    readonly phoneQrCamera?: QrCamera | undefined;
 }
 
 /**
@@ -4883,6 +4885,7 @@ function Shell(props: AppProps): ReactElement {
                     formFactorWindow={props.formFactorWindow}
                     hostStorage={props.phoneHostStorage}
                     remoteRuntimeFactory={props.phoneRuntimeFactory}
+                    qrCamera={props.phoneQrCamera}
                 />
             ) : (
             <>

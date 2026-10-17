@@ -87,6 +87,7 @@ import { PhonePromptSheet } from './PhonePromptSheet';
 import { PhoneRemoteWorkspace, remoteShownPane } from './PhoneRemoteWorkspace';
 import { PhoneWebCard, phoneWebCardTab } from './PhoneWebCard';
 import { PhoneWorkspaceDrawer } from './PhoneWorkspaceDrawer';
+import type { QrCamera } from './qr-camera';
 import { useSheetHistory, type SheetHistoryLike } from './sheet-history';
 import { PHONE_ROW_MIN_PX, PHONE_SAFE_AREA, PhoneButton, statusDotColor } from './ui';
 import { usePhoneHostExpansion, type PhoneView } from './view';
@@ -144,9 +145,12 @@ export interface PhoneShellProps {
     readonly location?: { readonly hostname: string } | null | undefined;
     /** The history the sheets own an entry in (`sheet-history.ts`); a test hands in a fake. */
     readonly sheetHistory?: SheetHistoryLike | null | undefined;
+    /** The camera Add host scans a pairing code with (`qr-camera.ts`); a test hands in a fake. */
+    readonly qrCamera?: QrCamera | undefined;
 }
 
-type Sheet = 'none' | 'workspaces' | 'panes' | 'menu' | 'host' | 'rename' | 'new-workspace';
+/** `host-scan` is the Add host sheet opened straight onto its camera. */
+type Sheet = 'none' | 'workspaces' | 'panes' | 'menu' | 'host' | 'host-scan' | 'rename' | 'new-workspace';
 
 const ZERO_RECT = { x: 0, y: 0, width: 0, height: 0 } as const;
 const EMPTY_IDS: readonly string[] = [];
@@ -727,11 +731,16 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
                     )}
                 </button>
                 {/* The landing page has no workspace on screen, so it has neither a view to
-                    toggle nor panes to list; Add host takes their place. */}
+                    toggle nor panes to list; Scan and Add host take their place. */}
                 {atLanding ? (
-                    <PhoneButton testID="phone-landing-add-host-header" ariaLabel="Add host" onClick={() => setSheet('host')}>
-                        <ChromeIcon name="plus" size={16} />
-                    </PhoneButton>
+                    <>
+                        <PhoneButton testID="phone-landing-scan-host-header" ariaLabel="Scan pairing code" onClick={() => setSheet('host-scan')}>
+                            <ChromeIcon name="scan" size={16} />
+                        </PhoneButton>
+                        <PhoneButton testID="phone-landing-add-host-header" ariaLabel="Add host" onClick={() => setSheet('host')}>
+                            <ChromeIcon name="plus" size={16} />
+                        </PhoneButton>
+                    </>
                 ) : (
                     <>
                         <PhoneButton
@@ -819,7 +828,9 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
             />
             <PhoneMenuSheet open={sheet === 'menu'} title={paneTitle ?? workspaceLabel} items={menuItems} onClose={closeSheet} />
             <PhoneHostSheet
-                open={sheet === 'host'}
+                open={sheet === 'host' || sheet === 'host-scan'}
+                scanOnOpen={sheet === 'host-scan'}
+                camera={props.qrCamera}
                 existingNames={hosts.map((host) => host.name)}
                 onAdd={(name, url) => {
                     phoneHosts.add(name, url);

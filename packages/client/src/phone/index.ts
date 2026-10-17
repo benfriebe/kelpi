@@ -14,6 +14,8 @@
  *   `PhonePaneSheet.tsx`       the current workspace's panes
  *   `PhoneRemoteWorkspace.tsx` a remote host's workspace, one pane or the grid
  *   `PhoneWebCard.tsx`         a web pane on a phone (MOBILE-PLAN.md §9)
+ *   `PhoneQrScanSheet.tsx`     Add host's camera, reading the pairing code the Mac draws
+ *   `qr-camera.ts`             the camera and the QR reader behind it
  *   `ui.tsx`                   the sheet, the thumb button, the safe-area insets
  *   `testing.ts`               a fake phone window for jsdom
  */
@@ -93,6 +95,15 @@ export { PhoneWebCard, phoneWebCardTab, type PhoneWebCardProps, type PhoneWebCar
 export { PhoneWorkspaceDrawer, type PhoneWorkspaceDrawerProps } from './PhoneWorkspaceDrawer';
 export { PhonePaneSheet, paneGlyph, type PhonePaneSheetProps } from './PhonePaneSheet';
 export { PhoneHostSheet, type PhoneHostSheetProps } from './PhoneHostSheet';
+export { NOT_A_PAIRING_CODE, PhoneQrScanSheet, type PhoneQrScanSheetProps } from './PhoneQrScanSheet';
+export {
+    QR_CAMERA_MESSAGES,
+    QrCameraError,
+    defaultQrCamera,
+    qrCameraError,
+    type QrCamera,
+    type QrCameraErrorKind
+} from './qr-camera';
 export { PhoneMenuSheet, type PhoneMenuItem, type PhoneMenuSheetProps } from './PhoneMenuSheet';
 export { PhonePromptSheet, type PhonePromptSheetProps } from './PhonePromptSheet';
 export { PHONE_ROW_MIN_PX, PHONE_SAFE_AREA, PhoneButton, PhoneRow, PhoneSheet, PhoneSheetHeader, statusDotColor } from './ui';

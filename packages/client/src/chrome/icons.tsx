@@ -47,6 +47,8 @@ export type ChromeIconName =
     | 'bolt'
     | 'ellipsis'
     | 'gear'
+    // The phone's "scan a pairing code": a viewfinder's four corners round a code's square.
+    | 'scan'
     // A muted workspace (agent-lifecycle §7.6): the SF `bell.slash` at this grid.
     | 'bell-slash'
     // The six status-bar metric glyphs — `SystemStatKind.systemImage`'s SF Symbols (`cpu`,
@@ -174,6 +176,13 @@ const PATHS: Record<ChromeIconName, ReactElement> = {
         <>
             <circle cx="6" cy="6" r="2" />
             <path d="M6 1.4v1.6M6 9v1.6M1.4 6h1.6M9 6h1.6M2.8 2.8l1.1 1.1M8.1 8.1l1.1 1.1M9.2 2.8 8.1 3.9M3.9 8.1 2.8 9.2" />
+        </>
+    ),
+    /** `qrcode.viewfinder`: four corner brackets and the code they frame. */
+    scan: (
+        <>
+            <path d="M1.6 4V2.4a.8.8 0 0 1 .8-.8H4M8 1.6h1.6a.8.8 0 0 1 .8.8V4M10.4 8v1.6a.8.8 0 0 1-.8.8H8M4 10.4H2.4a.8.8 0 0 1-.8-.8V8" />
+            <rect x="4.2" y="4.2" width="3.6" height="3.6" rx="0.4" />
         </>
     ),
     /** `bell.slash`: a bell with its clapper, struck through corner to corner. */

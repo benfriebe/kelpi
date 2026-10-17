@@ -22,7 +22,9 @@ import {
     PHONE_HOSTS_KEY,
     PHONE_PLACE_KEY,
     PHONE_SHEET_HISTORY_STATE,
-    PHONE_VIEW_MODE_KEY
+    PHONE_VIEW_MODE_KEY,
+    QrCameraError,
+    type QrCamera
 } from './phone';
 import { createFakePhoneWindow } from './phone/testing';
 import { createKelpiRuntime, createKelpiStore, type KelpiRuntime } from './state';
@@ -188,7 +190,14 @@ interface Harness {
  * `emulatePhone` seeds it. `landing: true` is the first-open case, which the B7 block drives.
  */
 function setup(
-    options: { phone?: boolean; snapshot?: boolean; storage?: Record<string, string>; landing?: boolean; everyPaneType?: boolean } = {}
+    options: {
+        phone?: boolean;
+        snapshot?: boolean;
+        storage?: Record<string, string>;
+        landing?: boolean;
+        everyPaneType?: boolean;
+        qrCamera?: QrCamera;
+    } = {}
 ): Harness {
     const sockets = createFakeSocketFactory();
     const store = createKelpiStore();
@@ -221,6 +230,7 @@ function setup(
             formFactorWindow={options.phone === false ? undefined : createFakePhoneWindow()}
             phoneHostStorage={hostStorage}
             phoneRuntimeFactory={factory}
+            phoneQrCamera={options.qrCamera}
         />
     );
 
@@ -908,6 +918,122 @@ describe('the landing page', () => {
         // phone and writes none of a phone's memory.
         expect(h.hostStorage.map.size).toBe(0);
         expect(h.hostStorage.map.has(PHONE_HOST_EXPANSION_KEY)).toBe(false);
+    });
+});
+
+/** A camera that reads whatever the test holds up to it. */
+function fakeQrCamera(options: { refuse?: QrCameraError } = {}): {
+    camera: QrCamera;
+    show(text: string): void;
+    live(): boolean;
+    stops(): number;
+} {
+    let onText: ((text: string) => void) | null = null;
+    let stops = 0;
+    const camera: QrCamera = {
+        start(_video, report) {
+            if (options.refuse !== undefined) return Promise.reject(options.refuse);
+            onText = report;
+            return Promise.resolve(() => {
+                stops += 1;
+                onText = null;
+            });
+        }
+    };
+    return {
+        camera,
+        show(text) {
+            act(() => onText?.(text));
+        },
+        live: () => onText !== null,
+        stops: () => stops
+    };
+}
+
+describe('scanning a pairing code', () => {
+    it('reads the code into Add host from its Scan button, stops the camera, and adds the host', async () => {
+        const qr = fakeQrCamera();
+        const h = setup({ qrCamera: qr.camera });
+        tap('phone-open-workspaces');
+        tap('phone-add-host');
+        tap('phone-host-scan');
+        expect(screen.getByTestId('phone-qr-sheet')).toBeTruthy();
+        await waitFor(() => expect(qr.live()).toBe(true));
+
+        qr.show(PAIRING_URL);
+        expect(screen.queryByTestId('phone-qr-sheet')).toBeNull();
+        expect(qr.stops()).toBe(1);
+        expect((screen.getByTestId('phone-host-url') as HTMLInputElement).value).toBe(PAIRING_URL);
+
+        fireEvent.submit(screen.getByTestId('phone-host-form'));
+        expect(h.remotes.has(PAIRING_URL)).toBe(true);
+        expect(within(screen.getByTestId(/^phone-host-phone:/)).getByText('studio')).toBeTruthy();
+    });
+
+    it('opens straight onto the camera from the landing page', async () => {
+        const qr = fakeQrCamera();
+        const h = setup({ landing: true, qrCamera: qr.camera });
+        tap('phone-landing-scan-host-header');
+        expect(screen.getByTestId('phone-host-sheet')).toBeTruthy();
+        expect(screen.getByTestId('phone-qr-sheet')).toBeTruthy();
+        await waitFor(() => expect(qr.live()).toBe(true));
+
+        qr.show(PAIRING_URL);
+        fireEvent.submit(screen.getByTestId('phone-host-form'));
+        expect(h.remotes.has(PAIRING_URL)).toBe(true);
+        expect(screen.queryByTestId('phone-host-sheet')).toBeNull();
+        expect(screen.getByTestId(/^phone-landing-host-phone:/)).toBeTruthy();
+    });
+
+    it('says so and keeps looking when the code is not a pairing link', async () => {
+        const qr = fakeQrCamera();
+        setup({ qrCamera: qr.camera });
+        tap('phone-open-workspaces');
+        tap('phone-add-host');
+        tap('phone-host-scan');
+        await waitFor(() => expect(qr.live()).toBe(true));
+
+        // A URL with no token is a web page, not a pairing link; plain text is neither.
+        qr.show('https://example.test/menu');
+        expect(screen.getByTestId('phone-qr-hint').textContent).toBe('that code is not a Kelpi pairing link');
+        qr.show('WIFI:S:cafe;;');
+        expect(screen.getByTestId('phone-qr-sheet')).toBeTruthy();
+        expect(qr.live()).toBe(true);
+
+        qr.show(PAIRING_URL);
+        expect(screen.queryByTestId('phone-qr-sheet')).toBeNull();
+        expect((screen.getByTestId('phone-host-url') as HTMLInputElement).value).toBe(PAIRING_URL);
+    });
+
+    it('shows why the camera did not start, with the URL field still behind it', async () => {
+        const qr = fakeQrCamera({ refuse: new QrCameraError('denied') });
+        setup({ qrCamera: qr.camera });
+        tap('phone-open-workspaces');
+        tap('phone-add-host');
+        tap('phone-host-scan');
+        await waitFor(() => expect(screen.getByTestId('phone-qr-error').textContent).toBe('camera access was refused - allow it in the browser settings, or paste the link'));
+
+        tap('phone-qr-sheet-header-close');
+        expect(screen.queryByTestId('phone-qr-sheet')).toBeNull();
+        expect(screen.getByTestId('phone-host-url')).toBeTruthy();
+    });
+
+    it('stops the camera when the scanner, or the sheet under it, closes', async () => {
+        const qr = fakeQrCamera();
+        setup({ qrCamera: qr.camera });
+        tap('phone-open-workspaces');
+        tap('phone-add-host');
+        tap('phone-host-scan');
+        await waitFor(() => expect(qr.live()).toBe(true));
+        tap('phone-qr-sheet-header-close');
+        expect(qr.stops()).toBe(1);
+        expect(screen.getByTestId('phone-host-sheet')).toBeTruthy();
+
+        tap('phone-host-scan');
+        await waitFor(() => expect(qr.live()).toBe(true));
+        tap('phone-host-sheet-header-close');
+        expect(qr.stops()).toBe(2);
+        expect(screen.queryByTestId('phone-qr-sheet')).toBeNull();
     });
 });
 

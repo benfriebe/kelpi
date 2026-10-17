@@ -1,13 +1,17 @@
 /**
  * "Add host": a name and a pasted pairing URL (`phone/hosts.ts` explains why the list is the
  * phone's own). The URL field is the whole gesture; Paste reads the clipboard inside the tap so
- * the person does not have to long-press into the field.
+ * the person does not have to long-press into the field, and Scan reads the code the Mac draws
+ * (`PhoneQrScanSheet.tsx`) into the same field.
  */
 
 import { useEffect, useRef, useState, type FormEvent, type ReactElement } from 'react';
 
+import { ChromeIcon } from '../chrome/icons';
 import { tokens } from '../chrome/tokens';
 import { parsePairingURL, suggestedHostName } from './hosts';
+import { PhoneQrScanSheet } from './PhoneQrScanSheet';
+import type { QrCamera } from './qr-camera';
 import { PHONE_ROW_MIN_PX, PhoneButton, PhoneSheet, PhoneSheetHeader } from './ui';
 
 export interface PhoneHostSheetProps {
@@ -17,6 +21,10 @@ export interface PhoneHostSheetProps {
     readonly onClose: () => void;
     /** Injected for tests; the app reads `navigator.clipboard`. */
     readonly readClipboard?: (() => Promise<string>) | undefined;
+    /** Open straight onto the camera (the landing page's Scan button), not the URL field. */
+    readonly scanOnOpen?: boolean | undefined;
+    /** Injected for tests; the app uses the device camera. */
+    readonly camera?: QrCamera | undefined;
 }
 
 async function defaultReadClipboard(): Promise<string> {
@@ -31,6 +39,7 @@ export function PhoneHostSheet(props: PhoneHostSheetProps): ReactElement | null 
     const [name, setName] = useState('');
     const [url, setUrl] = useState('');
     const [error, setError] = useState<string | null>(null);
+    const [scanning, setScanning] = useState(false);
     const urlRef = useRef<HTMLInputElement | null>(null);
 
     useEffect(() => {
@@ -38,8 +47,13 @@ export function PhoneHostSheet(props: PhoneHostSheetProps): ReactElement | null 
         setName('');
         setUrl('');
         setError(null);
+        const scan = props.scanOnOpen === true;
+        setScanning(scan);
+        // Not under the camera: a focused field would raise the keyboard over the viewfinder.
+        if (scan) return;
         const frame = requestAnimationFrame(() => urlRef.current?.focus());
         return () => cancelAnimationFrame(frame);
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- `scanOnOpen` is read as the sheet opens, not watched
     }, [props.open]);
 
     const fieldStyle = {
@@ -100,6 +114,9 @@ export function PhoneHostSheet(props: PhoneHostSheetProps): ReactElement | null 
                         <PhoneButton testID="phone-host-paste" onClick={paste}>
                             Paste
                         </PhoneButton>
+                        <PhoneButton testID="phone-host-scan" ariaLabel="Scan pairing code" onClick={() => setScanning(true)}>
+                            <ChromeIcon name="scan" size={18} />
+                        </PhoneButton>
                     </span>
                 </label>
                 <label className="flex flex-col gap-1 text-[13px]" style={{ color: tokens.textSecondary }}>
@@ -117,7 +134,7 @@ export function PhoneHostSheet(props: PhoneHostSheetProps): ReactElement | null 
                     />
                 </label>
                 <span className="text-[12px]" style={{ color: tokens.textTertiary }}>
-                    On that Mac: Settings ▸ Remote ▸ Pair a device, then copy the link here. The token stays on this phone.
+                    On that Mac: Settings ▸ Remote ▸ Pair a device, then scan its code or copy the link here. The token stays on this phone.
                 </span>
                 {error === null ? null : (
                     <span data-testid="phone-host-error" role="alert" className="text-[13px]" style={{ color: '#E5484D' }}>
@@ -133,6 +150,16 @@ export function PhoneHostSheet(props: PhoneHostSheetProps): ReactElement | null 
                     Add host
                 </button>
             </form>
+            <PhoneQrScanSheet
+                open={props.open && scanning}
+                camera={props.camera}
+                onScan={(scanned) => {
+                    setUrl(scanned);
+                    setError(null);
+                    setScanning(false);
+                }}
+                onClose={() => setScanning(false)}
+            />
         </PhoneSheet>
     );
 }

@@ -45,6 +45,7 @@ import { createPaneStreamHub, type PaneStreamHub } from './streams.js';
 import { WS_PROTOCOL_VERSION, type WsOldTerminalHostsMessage, type WsTransportStatus } from '@kelpi/protocol';
 
 import { type RemoteChannel } from './remote.js';
+import type { IntegrationsChannel } from './integrations.js';
 import {
     createSyncHub,
     type AgentChannel,
@@ -110,6 +111,8 @@ export interface WsServerOptions {
     readonly remote?: RemoteChannel | undefined;
     /** Phone push (`push/service.ts`): the `push-*` verbs and the notification fan-out. */
     readonly push?: SyncHubOptions['push'];
+    /** GitHub tickets (`ws/integrations.ts`, docs/integrations.md); absent = no `welcome.integrations`, verbs `unavailable`. */
+    readonly integrations?: IntegrationsChannel | undefined;
     /** M9 workspace inspector: the repo registry + association verbs (`ws/repos.ts`). */
     readonly repos?: RepoChannel | undefined;
     /** The inspector's graft toggle + orphan banner verbs (`ws/graft.ts`). */
@@ -348,6 +351,7 @@ export function createWsServer(options: WsServerOptions): WsServer {
         agents: options.agents,
         remote: options.remote,
         push: options.push,
+        integrations: options.integrations,
         repos: options.repos,
         graftUi: options.graftUi,
         oldTerminalHosts: options.oldTerminalHosts,

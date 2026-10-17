@@ -26,6 +26,7 @@ Kelpi is a ground-up port of the Nex terminal multiplexer (macOS SwiftUI + libgh
 │  ├─ Terminal state (headless VT + ring buffer per pane)                  │
 │  ├─ Domain store (workspaces, groups, panes, layout, agents, labels)     │
 │  ├─ Persistence (SQLite)                                                 │
+│  ├─ Integrations (GitHub link, ticket search + resolve; 0600 token)      │
 │  ├─ Control listener: versioned Unix socket (+ optional TCP)             │
 │  │    └─ existing kelpi CLI protocol, byte-compatible                    │
 │  └─ HTTP+WS listener: 127.0.0.1:<port> (+ tailnet bind)                  │
@@ -215,3 +216,4 @@ CLI and daemon; browser code does not import that subpath.
 | Terminal render | ghostty-web | libghostty-vt fidelity + xterm-compatible API. Each terminal has its own WASM instance and heap; the compiled module and key encoder are shared. Disposing a terminal releases its engine references. See [vendor provenance](vendor/ghostty-web-patched/PROVENANCE.md) and [related merged fixes](docs/plugin-roadmap.md#completed-and-merged). |
 | UI delivery | daemon-served, shell loads URL | atomic UI+daemon updates; remote browsers version-matched; thin shell |
 | Remote access | bind tailnet + `tailscale serve` | zero auth code; matches existing SSH-tunnel philosophy |
+| Ticket integrations | the daemon owns the GitHub credential (`integrations.json`, 0600) and polls the device flow itself; WS-only verbs, owner-only management | the token never reaches a client, a plugin view, a frame or a log; a link survives the window closing and works from a phone; no CLI verb to keep compatible forever ([integrations](docs/integrations.md)) |

@@ -16,6 +16,8 @@ Where things live:
 | the create flow's seam (`TicketService`, `ResolvedTicket`) | `packages/daemon/src/handlers/app/context.ts` |
 | what a workspace remembers (`WorkspaceState.ticket`) | `packages/daemon/src/store/types.ts`, persisted as `workspace.ticketJSON` ([persistence.md](persistence.md) §2.1) |
 | the service (credential store, GitHub API, device flow, search, resolve) | `packages/daemon/src/integrations/` (§9) |
+| read-only git facts a resolve needs (every remote, branch config, worktrees) | `packages/daemon/src/git/repo-facts.ts` (§9.6) |
+| the verbs' routing and who may call them | `packages/daemon/src/ws/integrations.ts`, `packages/daemon/src/ws/sync.ts` (§9.7) |
 
 ## 1. Status
 
@@ -142,7 +144,7 @@ reads either form; a client treats a code it does not know as the generic case.
 | `bad-ref` | not a GitHub issue or pull request reference | |
 | `bad-request` | a malformed verb request (a missing or unknown `provider`, …) | |
 | `forbidden` | a management verb from a paired device or a plugin view | |
-| `unavailable` | the device flow is not offered (no OAuth client ID, or GitHub has it disabled for the app); link a token instead | |
+| `unavailable` | the device flow is not offered (no OAuth client ID, or GitHub has it disabled for the app); link a token instead. Also: the daemon is stopping, Kelpi could not write its credential file, or the session that asked went away | |
 | `missing-scope` | a classic token without the `repo` scope | |
 
 `sso_url` and `settings_url` are dropped by the reader unless they are GitHub's own pages.
@@ -267,13 +269,260 @@ The checkout and ticket-file rules are [graft-git.md](graft-git.md) §8.5's.
 
 ## 9. The service
 
-The integrations service (`packages/daemon/src/integrations/`) is specified here as it is built:
-the credential store (`integrations.json` beside the database, 0600, written atomically,
-[persistence.md](persistence.md) §7.4), the GitHub HTTP client (timeouts, headers, the status and
-error mapping of §2.2), the device flow (polled by the daemon; `authorization_pending`,
-`slow_down`, `expired_token`, `access_denied`, `device_flow_disabled`), search (§6) and resolve
-(GraphQL, repository matching on `origin`, `upstream` and any other remote), and how
-`ws/sync.ts` routes the verbs and sends the status.
+The integrations service (`packages/daemon/src/integrations/`) owns the credential and everything
+done with it. `boot/compose.ts` builds ONE instance and hands it to two callers: the create flow
+gets it as `tickets` (the `TicketService` seam, §8), and the sync hub gets it as its
+`IntegrationsChannel` (§9.7). So a create from the New Workspace sheet reuses the resolve the
+sheet just made instead of asking GitHub again.
+
+| file | what it does |
+|---|---|
+| `config.ts` | where the credential lives and which GitHub to talk to (§9.1) |
+| `store.ts` | `integrations.json` (§9.1) |
+| `http.ts` | every request: headers, the timeout, the meaning of every failure (§9.2) |
+| `device-flow.ts` | GitHub's device flow, polled by the daemon (§9.3) |
+| `github.ts` | the GraphQL documents and REST calls, and their parsing (§9.4, §9.5) |
+| `matching.ts` | which registered repository a ticket belongs to, and what its branches say (§9.6) |
+| `service.ts` | the service: status, linking, search, resolve, caches, the change feed |
+
+### 9.1 Configuration and the credential store
+
+Read once at boot from the daemon's environment:
+
+| variable | meaning | default |
+|---|---|---|
+| `KELPID_INTEGRATIONS_PATH` | the credential file | `<dirname(dbPath)>/integrations.json`; memory only for a `:memory:` database |
+| `KELPI_GITHUB_CLIENT_ID` | the OAuth App's client ID; overrides the build constant; empty turns the device flow off (`available: false`) | the build constant `GITHUB_OAUTH_CLIENT_ID`, empty until the app is registered |
+| `KELPI_GITHUB_API_URL` | the REST and GraphQL base | `https://api.github.com` |
+| `KELPI_GITHUB_WEB_URL` | the device flow's base (`/login/device/code`, `/login/oauth/access_token`) | `https://github.com` |
+
+The two URL overrides exist for tests and end-to-end scenarios against a fake GitHub. The
+credential is sent to whatever they name, so an override must be `https://`, or `http://` to a
+loopback host (`127.0.0.1`, `localhost`, `::1`); anything else is ignored, and the daemon logs
+which overrides are in effect. Links a client opens are NOT rebased onto the web override: the
+verification page, a ticket's URL and an SSO or settings link must stay `https://github.com/…`
+(`isGitHubWebURL`), so a fake GitHub returns GitHub's own spelling for them. A client ID that is
+not `[A-Za-z0-9._-]{1,64}` is ignored (the device flow is then off).
+
+`integrations.json` ([persistence.md](persistence.md) §7.4) is modelled on the paired-device
+registry (`lifecycle/devices.ts`), with the differences a secret that must be USED forces:
+
+- the daemon is its only writer, and every write is synchronous, so writes are serialised;
+- the directory is created 0700 and the file 0600: a write goes to a temp file opened `wx` at
+  0600 and `fchmod`ed past the umask, is fsynced, renamed over the file, and the directory is
+  fsynced. A file found wider than 0600 is narrowed back when read;
+- a file that cannot be read or parsed, that has an account it cannot trust whole, or that a
+  newer daemon wrote (`v` above 1) FAILS CLOSED: the status says `problem: 'unreadable'`, nothing
+  is connected and nothing is sent anywhere. The file is left alone until the next link (or
+  unlink), which renames it `integrations.json.unreadable-<epoch ms>` (still 0600) and writes a
+  fresh one;
+- a 401 for the stored credential is persisted as `problem: 'revoked'`;
+- an account of a provider this daemon does not know (a later daemon's Linear link) is kept
+  verbatim across rewrites.
+
+Shape, version 1:
+
+```json
+{ "v": 1, "accounts": [ { "provider": "github", "host": "github.com", "login": "octocat",
+    "how": "oauth", "scopes": ["repo"], "createdAt": "2026-10-07T00:00:00.000Z",
+    "credential": { "accessToken": "…", "tokenType": "bearer", "expiresAt": null,
+                    "refreshToken": null, "refreshTokenExpiresAt": null } } ] }
+```
+
+`scopes` is absent for a fine-grained token; `problem` is absent or `"revoked"`. The three
+refresh fields are RESERVED: GitHub OAuth App tokens do not expire, so phase 2 has no refresher
+and writes them as null. A provider whose tokens expire (Linear) adds a single-flight refresher
+that persists the new pair before using it; a file with the fields set already reads back.
+
+### 9.2 HTTP
+
+Every request goes through one client (`http.ts`), with `fetch` injected (Node's global by
+default; tests pass a fake that returns `Response`s, so no test reaches the network):
+
+- bounded: `AbortSignal.any([caller, AbortSignal.timeout(10 s)])`. The caller's abort rejects
+  with the caller's own reason (a cancelled create); the timeout is `timeout`; anything else
+  the network throws is `unreachable` (naming at most the error code, `ENOTFOUND`);
+- headers: `User-Agent: Kelpi/<version>`; to the API `Accept: application/vnd.github+json`,
+  `X-GitHub-Api-Version: 2022-11-28` and `Authorization: Bearer <token>`; to `github.com/login/*`
+  `Accept: application/json` (without it GitHub answers form-encoded) and no credential;
+- redirects are refused, so the `Authorization` header never follows one;
+- a failure is a `TicketServiceError` whose message is ready to show and never carries a
+  header, the token or a URL. Its log line names the method, the path, the status and
+  `x-github-request-id`, nothing else.
+
+| GitHub answered | code |
+|---|---|
+| 401 | `unauthorized`; for the stored credential the service also marks it `revoked`, drops its caches and broadcasts |
+| 403 or 429 with `x-ratelimit-remaining: 0`, `retry-after`, or a rate-limit message | `rate-limited`, `retry_after_s` from `retry-after` or `x-ratelimit-reset` |
+| any status with `X-GitHub-SSO: required; url=…` | `sso-required`, `sso_url` only when it is an `https://github.com/…` page |
+| 403 "OAuth App access restrictions" | `org-restricted`; for an OAuth link `settings_url` is `https://github.com/settings/connections/applications/<client id>` |
+| other 403 | `github-error` |
+| 404 | `not-found` |
+| 422, 5xx, anything else, a body that is not JSON | `github-error` |
+
+GraphQL answers 200 with `errors[]`, often beside partial `data`. The client returns both; the
+caller decides what is fatal, and maps the errors: `RATE_LIMITED` is `rate-limited`; a
+`FORBIDDEN` naming OAuth App access restrictions is `org-restricted`, one naming SAML is
+`sso-required`, any other `FORBIDDEN` and `NOT_FOUND` are `not-found`; anything else is
+`github-error`. A 200 with `X-GitHub-SSO: partial-results; organizations=…` (SAML hid some
+organizations' results) is not an error: search turns it into a warning.
+
+### 9.3 The device flow
+
+Polled by the DAEMON, so a link survives the Settings window closing and a phone can link the
+desktop's daemon:
+
+1. `integration-link-start`: `POST /login/device/code` with `client_id` and `scope=repo`. The
+   `device_code` stays in the flow's closure; `user_code` and `verification_uri` (which must
+   pass `isGitHubWebURL`) are answered once, to the session that asked, with a new `flow_id`.
+   `device_flow_disabled` or an unknown client here is `unavailable`. A start replaces any
+   pending flow: the first window sees the new `flowID` in `integrations-changed` and resets.
+2. Every `interval` seconds (at least 5), `POST /login/oauth/access_token` with `client_id`,
+   `device_code` and `grant_type=urn:ietf:params:oauth:grant-type:device_code`. GitHub answers
+   HTTP 200 with `error` until it is done:
+
+   | `error` | then |
+   |---|---|
+   | `authorization_pending` | poll again after `interval` |
+   | `slow_down` | poll less often: the `interval` it returned, else 5 s more |
+   | `expired_token` | `failed`, `expired` |
+   | `access_denied` | `failed`, `denied` |
+   | `device_flow_disabled` | `failed`, `disabled` |
+   | `incorrect_client_credentials`, `incorrect_device_code`, `unsupported_grant_type`, anything else | `failed`, `error` |
+
+   A transport failure, a timeout or a 5xx is retried up to 3 times in a row, the wait doubling
+   each time, then the flow fails (`error`). The code's own deadline ends the flow as `expired`
+   without asking again.
+3. A token is verified with `GET /user` (the login and `x-oauth-scopes`; a grant without `repo`
+   fails the flow with `missing-scope`'s message), stored as `how: 'oauth'`, and broadcast.
+
+`integration-link-cancel` cancels the pending flow, or only the one its `flow_id` names
+(`cancelled: false` for any other); a cancel naming a failed flow clears the failure from the
+status. A pasted token or an unlink also ends a pending flow. Daemon stop and handoff DROP the
+flow: its device code lives only in that process, and the client resets its code display when it
+reconnects to the successor.
+
+A pasted token (`integration-link-token`) is verified the same way: a classic token (GitHub sends
+`x-oauth-scopes`) without `repo` is refused with `missing-scope` and nothing is stored; a token
+GitHub reports no scopes for (fine-grained) is accepted with a `warnings` entry; a token GitHub
+refuses is `unauthorized`, and nothing already stored is touched.
+
+### 9.4 Search
+
+`ticket-search` (§6) asks GitHub ONE GraphQL request:
+
+- an empty query: the three `@me` lists as aliased searches `s0`, `s1`, `s2` (20 rows each);
+- typed text: one `results` search (20 rows), scoped by `buildTicketSearchQueries` to the
+  distinct owners of every registered repository's GitHub remotes (all remotes, §9.6). Which
+  owners are organizations (`org:`) and which are users (`user:`) is asked once per owner with
+  a `repositoryOwner` lookup and remembered for the daemon's life; an owner GitHub does not know
+  is left out.
+
+The document's shape is constant: only alias and variable names Kelpi numbers itself vary, and
+every value (the search text, an owner's login) travels as a GraphQL variable. A list GitHub
+answered with an error is left out with a warning (the others still come back); when every list
+fails, the mapped error is the reply. SAML-hidden organizations and owners left out of a query
+that would pass 256 characters are warnings too.
+
+Each row becomes a `TicketSummary`: every string cleaned (`untrustedLine`; titles at 200, labels
+and logins at 60), the URL built by Kelpi (`https://github.com/<repo>/(pull|issues)/<n>`, never
+taken from the answer), `repo_id` from §9.6's match.
+
+An answer is reused for 30 s, keyed by login and query. At most 20 searches a minute reach GitHub;
+past that, and while a GitHub rate limit has not reset, a search is refused at once with
+`rate-limited` and `retry_after_s`, without a request.
+
+### 9.5 Resolve
+
+`ticket-resolve` and a create from a ticket both resolve through `TicketService.resolve(ref,
+signal)`, which answers the whole `ResolvedTicket` (`handlers/app/context.ts`):
+
+1. GitHub's half, one GraphQL request (`repository(owner, name) { defaultBranchRef,
+   issueOrPullRequest(number) }`, owner, name and number as variables): the row's fields, the
+   body, the last 10 comments (with a pull request's review summaries merged in by time), and for
+   a pull request `baseRefName`, `headRefName`, `headRefOid` (40 or 64 hex), `isCrossRepository`,
+   `maintainerCanModify`, `headRepositoryOwner`, `headRepository` and the comments of its
+   unresolved `reviewThreads` (the first 50 threads, 5 comments each). A deleted fork has a null
+   head owner and repository. A missing repository or number is `not-found`. This half is reused
+   for 5 minutes, keyed by `ticketIdentity`, so the create that follows the sheet's resolve does
+   not ask GitHub again (`resolvedAt` says when it was asked).
+2. The local half, recomputed every time (it changes as the user works): the matched repository
+   and base remote (§9.6), for a fork's pull request the head remote or push URL (§9.6), the
+   matched repository's local branches, `ticketCreateDefaults` (§7), and the workspaces already
+   open for the ticket: those created from it (`ticketIdentity` of `WorkspaceState.ticket`,
+   reason `ticket`), then those with an association to the matched repository on the default
+   branch (reason `branch`).
+3. Warnings: the defaults' own, a repository that is not registered, a ticket that is not open,
+   a deleted fork (checked out, never pushed back), a fork whose maintainers may not push.
+
+The summary's strings are cleaned as in §9.4. The ticket file's content (`file`) is GitHub's raw
+text; `renderTicketFile` cleans and caps it. The resolve honours its `signal`: an abort rejects
+with the signal's reason, and the git reads stop waiting.
+
+### 9.6 Repository matching
+
+`git/repo-facts.ts` reads, per registered repository and without the network: every remote with
+its fetch and push URL (`git remote -v`, so `insteadOf` rewrites apply), every local branch with
+its `branch.<b>.remote`, `merge` and `pushRemote`, `git worktree list --porcelain` (where each
+branch is checked out; a prunable worktree does not count), and whether the registered path is
+the repository's own root. Every call has a 5 s timeout, runs with `GIT_TERMINAL_PROMPT=0` and
+`GIT_OPTIONAL_LOCKS=0`, and a repository git cannot read simply has no facts. Remotes and the
+root check are cached 30 s, branches 2 s. These are direct git reads, never through the
+`kelpi.git` plugin provider (whose contract has no such methods).
+
+A registered repository matches a ticket when ANY of its remotes points at the ticket's
+`owner/name` (compared case-insensitively): `origin` in a plain clone, `upstream` in a fork clone,
+any name anyone uses. Ties go to, in order: a match on `origin`, then `upstream`, then any other
+remote; a repository added by hand over an auto-discovered one; the repository's root over a
+subfolder row or a linked worktree row; the most recently accessed; registry order. The matching
+remote is `baseRemote`: base fetches, `refs/pull/<n>/head` and an issue's update main use it, not
+a hard-coded `origin`.
+
+For a fork's pull request, `headRemote` is a remote of the matched repository that already points
+at the head repository (the user's own fork, usually `origin` in a fork clone); the head is then
+fetched from it and tracked, as `gh pr checkout` does. Without one, and only when the fork still
+exists and its maintainers may push, `headPushURL` is the base remote's push URL with
+`owner/name` swapped (`replaceGitHubRemoteRepo`), so an SSH host alias such as
+`git@github.com-work:` carries over.
+
+The local-branch facts `ticketCreateDefaults` decides with: a branch tracks THIS pull request when
+its config merges `refs/pull/<n>/head` from the base repository, or `refs/heads/<head>` from the
+repository the head lives in (a remote name or a URL), or, for a same-repository pull request
+only, when it has no upstream at all. An issue's branches never track anything.
+
+A registered repository whose `remoteURL` is null gets its `origin` URL filled in
+(`set-repo-remote-url`, then a save) the first time a search or resolve reads it, once per daemon
+life (auto-detection refreshes only auto-discovered rows).
+
+### 9.7 Routing, the status and teardown
+
+`ws/sync.ts` sends every `isIntegrationCommand` payload to `ws/integrations.ts` before the wire
+decode, and BEFORE the plugin operation-hook interception: the family is never plugin-hookable,
+so not even a wildcard (`'*'`) hook sees a pasted token. Authorization comes first, on the raw
+verb name: the four management verbs answer `forbidden` unless the session is an owner session
+(no `kd_` device token) running a window's command (not a plugin view's `executeCommand`, whose
+internal session would otherwise count as the owner). Search, resolve and status are open to
+every session. A request still waiting on GitHub when its session goes away is aborted.
+
+`welcome.integrations` is the service's status list and `welcome.integrationsManageable` is
+`true` for an owner session; every change (a link, an unlink, a flow starting, failing, being
+replaced or cancelled, a 401 turning a credential revoked) reaches every ready session as one
+`integrations-changed` frame with the whole list, sent straight to the sessions rather than
+through `broadcast`, so a plugin's `observe` never sees it.
+
+`stop()` and `handoff()` dispose the service first: every request in flight is aborted, the
+device flow is dropped, and anything asked afterwards answers `unavailable`.
+
+### 9.8 Owner notes
+
+- The OAuth App must be registered with Device Flow enabled; until then the build constant is
+  empty and only personal access tokens link.
+- An organization that restricts OAuth App access hides its results silently and answers a
+  resolve `FORBIDDEN` (`org-restricted`): its owner must approve Kelpi, or the user links a
+  personal access token, which OAuth App restrictions do not apply to.
+- Unlinking cannot revoke the grant on GitHub (that needs the client secret); a client links to
+  `https://github.com/settings/applications` for that.
+- Node's `fetch` ignores `HTTPS_PROXY` unless the daemon runs with `NODE_USE_ENV_PROXY=1`.
 
 ## 10. Security
 

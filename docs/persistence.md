@@ -697,8 +697,8 @@ id may persist and be resumed (known limitation).
 
 ### 7.4 Sibling state files beside the database
 
-Two daemon-owned state files live in the database's directory (`dirname(dbPath)`), so they
-follow a `KELPID_DB_PATH` override; a `:memory:` daemon keeps both in memory only
+Three daemon-owned state files live in the database's directory (`dirname(dbPath)`), so they
+follow a `KELPID_DB_PATH` override; a `:memory:` daemon keeps all three in memory only
 (`packages/daemon/src/boot/compose.ts:327-329`, `424-432`):
 
 - `pane-geometry.json` (`packages/daemon/src/pty/geometry.ts:58`): the last-rendered cols/rows
@@ -708,8 +708,17 @@ follow a `KELPID_DB_PATH` override; a `:memory:` daemon keeps both in memory onl
 - `favourites.json` (`packages/daemon/src/webpane/favourites.ts`): web-pane favourites, kept in
   the legacy app's `[{id, url, title, createdAt}]` payload shape rather than in an `appState`
   row.
+- `integrations.json` (`packages/daemon/src/integrations/store.ts`): the linked GitHub account
+  and its access token (`{v: 1, accounts: [{provider, host, login, how, scopes?, createdAt,
+  problem?, credential: {accessToken, tokenType, expiresAt, refreshToken,
+  refreshTokenExpiresAt}}]}`), [integrations.md](integrations.md) §9.1. `KELPID_INTEGRATIONS_PATH`
+  overrides its location (even for a `:memory:` daemon). The daemon is its only writer: 0700
+  directory, 0600 file, written temp → fsync → rename → directory fsync on every link, unlink and
+  revoke. A file it cannot read or parse, or one with `v` above 1, fails closed (`problem:
+  'unreadable'`, nothing connected) and is renamed `integrations.json.unreadable-<epoch ms>` by
+  the next link or unlink. Never in the snapshot, the database, a frame or a log.
 
-Neither file is part of the SQLite schema, the migration ledger or the save transaction.
+None of these files is part of the SQLite schema, the migration ledger or the save transaction.
 
 ### 7.5 Plugin installations and revision recovery
 

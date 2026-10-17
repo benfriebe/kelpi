@@ -565,3 +565,56 @@ describe('icon buttons (§WS-150)', () => {
         expect(button.style.background).toBe(before);
     });
 });
+
+describe('the ticket a workspace was created from (docs/integrations.md)', () => {
+    const TICKET = {
+        provider: 'github' as const,
+        kind: 'pr' as const,
+        repo: 'acme/api',
+        number: 418,
+        key: '#418',
+        url: 'https://github.com/acme/api/pull/418',
+        title: 'Retry login on 401'
+    };
+
+    it('draws nothing for a workspace made from nothing', () => {
+        render(<Inspector workspace={workspace()} />);
+        expect(screen.queryByTestId('inspector-workspace-ticket')).toBeNull();
+        cleanup();
+        render(<Inspector workspace={workspace({ ticket: null })} />);
+        expect(screen.queryByTestId('inspector-workspace-ticket')).toBeNull();
+    });
+
+    it('links "↗ #418 title" in the Workspace section, opening the GitHub page', () => {
+        const onOpenTicket = vi.fn();
+        render(<Inspector workspace={workspace({ ticket: TICKET })} onOpenTicket={onOpenTicket} />);
+        const link = screen.getByTestId('inspector-workspace-ticket');
+        expect(within(screen.getByTestId('inspector-workspace')).getByTestId('inspector-workspace-ticket')).toBe(link);
+        expect(link.textContent).toBe('↗#418Retry login on 401');
+        expect(link.getAttribute('title')).toBe(TICKET.url);
+        fireEvent.click(link);
+        expect(onOpenTicket).toHaveBeenCalledWith(TICKET.url);
+    });
+
+    it('opens it in the system browser by default', () => {
+        const open = vi.fn();
+        vi.stubGlobal('open', open);
+        try {
+            render(<Inspector workspace={workspace({ ticket: TICKET })} />);
+            fireEvent.click(screen.getByTestId('inspector-workspace-ticket'));
+            expect(open).toHaveBeenCalledWith(TICKET.url, '_blank', 'noopener,noreferrer');
+        } finally {
+            vi.unstubAllGlobals();
+        }
+    });
+
+    it('shows a ticket whose link is not a GitHub page as text, never as a link', () => {
+        const onOpenTicket = vi.fn();
+        render(<Inspector workspace={workspace({ ticket: { ...TICKET, url: 'https://evil.example/pull/418' } })} onOpenTicket={onOpenTicket} />);
+        const row = screen.getByTestId('inspector-workspace-ticket');
+        expect(row.tagName).toBe('DIV');
+        expect(row.textContent).toBe('#418Retry login on 401');
+        fireEvent.click(row);
+        expect(onOpenTicket).not.toHaveBeenCalled();
+    });
+});

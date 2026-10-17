@@ -16,6 +16,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { Sidebar } from './index';
+import { fakeTicketSource } from './ticket-fixtures';
 import type { ChromePane, ChromeRepo, ChromeSidebarEntry, ChromeWorkspace } from './types';
 
 afterEach(cleanup);
@@ -376,5 +377,70 @@ describe('the New Group sheet (§WS-082/§WS-083)', () => {
         fireEvent.click(screen.getByTestId('new-group-color-orange'));
         fireEvent.submit(screen.getByTestId('new-group-form'));
         expect(onCreateGroup).toHaveBeenCalledWith('New Group', 'orange');
+    });
+});
+
+describe('From ticket in the sidebar\'s sheet (docs/integrations.md)', () => {
+    it('leads the Tab loop with From ticket… when the host offers tickets, and wraps to it', () => {
+        openWorkspaceForm({ ticketSource: fakeTicketSource() });
+        const name = screen.getByLabelText('New workspace name');
+        fireEvent.change(name, { target: { value: 'ws' } });
+        name.focus();
+        fireEvent.keyDown(name, { key: 'Tab', shiftKey: true });
+        expect(document.activeElement).toBe(screen.getByTestId('new-workspace-from-ticket'));
+        fireEvent.keyDown(document.activeElement as Element, { key: 'Tab', shiftKey: true });
+        expect(document.activeElement).toBe(screen.getByTestId('new-workspace-submit'));
+        fireEvent.keyDown(document.activeElement as Element, { key: 'Tab' });
+        expect(document.activeElement).toBe(screen.getByTestId('new-workspace-from-ticket'));
+        fireEvent.keyDown(document.activeElement as Element, { key: 'Tab' });
+        expect(document.activeElement).toBe(name);
+    });
+
+    it('offers nothing on the New Group sheet', () => {
+        render(<Sidebar {...base()} entries={entries()} ticketSource={fakeTicketSource()} onCreateGroup={vi.fn()} />);
+        openGroupForm();
+        expect(screen.queryByTestId('new-workspace-from-ticket')).toBeNull();
+    });
+
+    it('opens with the picker up for a fromTicket request (⌥⌘N), and plain for ⌘N\'s', async () => {
+        const onCreateRequestHandled = vi.fn();
+        const { rerender } = render(
+            <Sidebar
+                {...base()}
+                entries={entries()}
+                ticketSource={fakeTicketSource()}
+                createRequest={{ kind: 'workspace', groupID: null, fromTicket: true }}
+                onCreateRequestHandled={onCreateRequestHandled}
+            />
+        );
+        await waitFor(() => expect(screen.getByTestId('new-workspace-ticket-picker-layer')).toBeTruthy());
+        fireEvent.click(screen.getByTestId('new-workspace-cancel'));
+        rerender(
+            <Sidebar
+                {...base()}
+                entries={entries()}
+                ticketSource={fakeTicketSource()}
+                createRequest={{ kind: 'workspace', groupID: null }}
+                onCreateRequestHandled={onCreateRequestHandled}
+            />
+        );
+        await waitFor(() => expect(screen.getByTestId('new-workspace-sheet')).toBeTruthy());
+        expect(screen.queryByTestId('new-workspace-ticket-picker-layer')).toBeNull();
+    });
+
+    it('hands the linked ticket to the create, and keeps the sheet up on a ticket refusal', async () => {
+        const source = fakeTicketSource();
+        const onCreateWorkspace = openWorkspaceForm({ ticketSource: source, repos: REPOS });
+        onCreateWorkspace.mockResolvedValueOnce({ error: 'GitHub is not connected', ticket: { error: 'GitHub is not connected', code: 'not-connected' } });
+        fireEvent.click(screen.getByTestId('new-workspace-from-ticket'));
+        await waitFor(() => expect(screen.getByTestId('ticket-picker-row-acme/api#12')).toBeTruthy());
+        fireEvent.click(screen.getByTestId('ticket-picker-row-acme/api#12'));
+        await waitFor(() => expect(screen.getByTestId('new-workspace-ticket')).toBeTruthy());
+        fireEvent.click(screen.getByTestId('new-workspace-submit'));
+        await waitFor(() => expect(screen.getByTestId('new-workspace-ticket-problem')).toBeTruthy());
+        const [, , worktree, extras] = onCreateWorkspace.mock.calls[0] as unknown[];
+        expect(worktree).toMatchObject({ repoID: 'r1', name: '12-ticket', branch: '12-ticket', updateMain: true });
+        expect(extras).toMatchObject({ ticket: { ref: 'https://github.com/acme/api/issues/12' } });
+        expect(screen.getByTestId('new-workspace-sheet')).toBeTruthy();
     });
 });

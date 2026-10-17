@@ -39,6 +39,7 @@ export {
     CommandError,
     CommandTimeoutError,
     DEFAULT_COMMAND_TIMEOUT_MS,
+    TICKET_COMMAND_TIMEOUT_MS,
     WORKTREE_COMMAND_TIMEOUT_MS,
     createCommandClient,
     isOkReply,

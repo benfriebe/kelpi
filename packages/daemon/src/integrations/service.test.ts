@@ -658,6 +658,28 @@ describe('resolve', () => {
         expect(await f.service.ticketSearch('github', '', signal())).toMatchObject({ ok: false, code: 'unavailable' });
     });
 
+    it('answers a verb its session dropped without reporting an error', async () => {
+        const errors: string[] = [];
+        const gh = fakeGitHub();
+        gh.graphql(() => new Promise<Response>(() => {}));
+        const credentials = createCredentialStore({ path: null });
+        credentials.save(ACCOUNT);
+        const service = createIntegrationsService({
+            store: storeHarness(emptyDaemonState(HOME)).store,
+            version: '1',
+            config: CONFIG,
+            credentials,
+            fetch: gh.fetch,
+            timeoutSignal: () => new AbortController().signal,
+            onError: (error) => errors.push(error.message)
+        });
+        const controller = new AbortController();
+        const pending = service.ticketResolve('acme/api#418', controller.signal);
+        controller.abort(new Error('command caller disconnected'));
+        expect(await pending).toEqual({ ok: false, error: 'the request was cancelled', code: 'unavailable' });
+        expect(errors).toEqual([]);
+    });
+
     it("stops waiting when the caller's signal aborts", async () => {
         const f = fixture();
         f.gh.graphql(() => new Promise<Response>(() => {}));

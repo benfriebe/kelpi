@@ -323,9 +323,11 @@ export function createIntegrationsService(options: CreateIntegrationsServiceOpti
         }
     });
 
-    const failureOf = (error: unknown): IntegrationFailure => {
+    /** A verb's failure reply. `signal` is the verb's own: a request its session dropped is not an error to report. */
+    const failureOf = (error: unknown, signal?: AbortSignal): IntegrationFailure => {
         if (error instanceof TicketServiceError) return integrationFailure(error);
         if (lifetime.signal.aborted) return integrationFailure(stopping());
+        if (signal?.aborted === true) return { ok: false, error: 'the request was cancelled', code: 'unavailable' };
         report(error, 'integrations');
         return { ok: false, error: 'the request failed', code: 'github-error' };
     };
@@ -592,7 +594,7 @@ export function createIntegrationsService(options: CreateIntegrationsServiceOpti
                     interval: started.interval
                 };
             } catch (error) {
-                return failureOf(error);
+                return failureOf(error, signal);
             }
         },
 
@@ -609,7 +611,7 @@ export function createIntegrationsService(options: CreateIntegrationsServiceOpti
                 emit();
                 return { ok: true, integrations: statuses(), ...(warnings.length === 0 ? {} : { warnings }) };
             } catch (error) {
-                return failureOf(error);
+                return failureOf(error, signal);
             }
         },
 
@@ -637,7 +639,7 @@ export function createIntegrationsService(options: CreateIntegrationsServiceOpti
             try {
                 return await search(query, signal);
             } catch (error) {
-                return failureOf(error);
+                return failureOf(error, signal);
             }
         },
 
@@ -657,7 +659,7 @@ export function createIntegrationsService(options: CreateIntegrationsServiceOpti
                     ...(resolved.warnings.length === 0 ? {} : { warnings: resolved.warnings })
                 };
             } catch (error) {
-                return failureOf(error);
+                return failureOf(error, signal);
             }
         },
 

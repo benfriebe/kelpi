@@ -39,6 +39,11 @@ const PANE_WEB = 'DDDDDDDD-0000-4000-8000-000000000004';
 const WEB_TAB = 'CCCCCCCC-0000-4000-8000-000000000001';
 const REMOTE_WS = 'AAAAAAAA-0000-4000-8000-000000000099';
 const REMOTE_PANE = 'DDDDDDDD-0000-4000-8000-000000000099';
+const REMOTE_NEW_WS = 'AAAAAAAA-0000-4000-8000-000000000098';
+const W2 = 'AAAAAAAA-0000-4000-8000-000000000002';
+const PANE_W2 = 'DDDDDDDD-0000-4000-8000-000000000005';
+const G1 = 'BBBBBBBB-0000-4000-8000-000000000001';
+const R1 = '99999999-0000-4000-8000-000000000001';
 const NOW = 1_755_500_000_000;
 const PAIRING_URL = 'https://studio.tail.ts.net/?token=kd_secret';
 
@@ -61,6 +66,29 @@ function everyPaneTypeState(): JsonObject {
     store.dispatch({ type: 'focus-pane', workspaceID: W1, paneID: PANE_A });
     return store.getState() as unknown as JsonObject;
 }
+
+/**
+ * The New workspace fixture: `dev` (on screen) in the `Client` group, whose default repository is
+ * `app` with its worktree switch on, and `docs` at top level.
+ */
+function groupedState(): JsonObject {
+    const store = createDaemonStore(emptyDaemonState('/Users/test'));
+    store.dispatch({ type: 'create-workspace', id: W1, paneID: PANE_A, name: 'dev', color: 'blue', now: NOW });
+    store.dispatch({ type: 'create-workspace', id: W2, paneID: PANE_W2, name: 'docs', color: 'green', now: NOW });
+    store.dispatch({ type: 'create-group', id: G1, name: 'Client', now: NOW, initialWorkspaceIDs: [W1] });
+    store.dispatch({
+        type: 'add-repo',
+        repo: { id: R1, path: '/Users/test/app', name: 'app', remoteURL: null, lastAccessedAt: 1, isAutoDiscovered: false }
+    });
+    store.dispatch({ type: 'set-group-repo', id: G1, repoID: R1, createWorktree: true });
+    store.dispatch({ type: 'set-active-workspace', id: W1, now: NOW });
+    return store.getState() as unknown as JsonObject;
+}
+
+const REGISTRY_REPLY: JsonObject = {
+    ok: true,
+    repos: [{ id: R1, name: 'app', path: '/Users/test/app', worktree_base: '/Users/test/worktrees' }]
+};
 
 function memoryStorage(initial: Record<string, string> = {}): StorageLike & { readonly map: Map<string, string> } {
     const map = new Map(Object.entries(initial));
@@ -149,6 +177,11 @@ function fakeRemoteRuntime(target: string): { runtime: KelpiRuntime; calls: stri
                 return Promise.resolve({ ok: true });
             }),
             setGroupCollapsed: vi.fn(() => Promise.resolve({ ok: true })),
+            listRepos: vi.fn(() => Promise.resolve({ ok: true, repos: [] })),
+            createWorkspace: vi.fn((input: JsonObject) => {
+                calls.push(`workspace-create:${JSON.stringify(input)}`);
+                return Promise.resolve({ ok: true, workspace_id: REMOTE_NEW_WS });
+            }),
             setPaneFontSize: vi.fn((input: { paneID: string; size: number | null }) => {
                 calls.push(`font-size:${input.paneID}:${String(input.size)}`);
                 return Promise.resolve({ ok: true });
@@ -182,6 +215,8 @@ interface Harness {
     sent(): Record<string, unknown>[];
     commands(): Record<string, unknown>[];
     lastOfType(type: string): Record<string, unknown> | undefined;
+    /** Answer the last command of a given name, the way the daemon's async verbs do. */
+    answer(command: string, reply: JsonObject): void;
 }
 
 /**
@@ -196,6 +231,7 @@ function setup(
         storage?: Record<string, string>;
         landing?: boolean;
         everyPaneType?: boolean;
+        state?: JsonObject;
         qrCamera?: QrCamera;
     } = {}
 ): Harness {
@@ -236,7 +272,9 @@ function setup(
 
     if (options.snapshot !== false) {
         act(() => {
-            completeHandshake(sockets.last(), { state: options.everyPaneType === true ? everyPaneTypeState() : snapshotState() });
+            completeHandshake(sockets.last(), {
+                state: options.state ?? (options.everyPaneType === true ? everyPaneTypeState() : snapshotState())
+            });
         });
     }
 
@@ -252,7 +290,16 @@ function setup(
             sent()
                 .filter((message) => message['type'] === 'command')
                 .map((message) => message['payload'] as Record<string, unknown>),
-        lastOfType: (type) => [...sent()].reverse().find((message) => message['type'] === type)
+        lastOfType: (type) => [...sent()].reverse().find((message) => message['type'] === type),
+        answer(command, reply) {
+            const message = [...sent()]
+                .reverse()
+                .find((entry) => entry['type'] === 'command' && (entry['payload'] as Record<string, unknown>)['command'] === command);
+            if (message === undefined) throw new Error(`no ${command} command was sent`);
+            act(() => {
+                sockets.last().emit({ type: 'command-reply', id: message['id'] as string, reply });
+            });
+        }
     };
 }
 
@@ -522,15 +569,155 @@ describe('the workspace drawer', () => {
         expect(screen.queryByTestId('phone-workspace-drawer')).toBeNull();
     });
 
-    it('offers New workspace through a one-field prompt', () => {
-        const h = setup();
+    it('offers New workspace from its foot, as a sheet on the host on screen', () => {
+        setup();
         tap('phone-open-workspaces');
         tap('phone-new-workspace');
         expect(screen.queryByTestId('phone-workspace-drawer')).toBeNull();
-        fireEvent.change(screen.getByTestId('phone-prompt-field'), { target: { value: 'api' } });
-        fireEvent.submit(screen.getByTestId('phone-prompt-submit').closest('form') as HTMLFormElement);
-        expect(screen.queryByTestId('phone-prompt')).toBeNull();
-        expect(h.commands().some((command) => command['command'] === 'workspace-create' && command['name'] === 'api')).toBe(true);
+        expect(screen.getByTestId('phone-new-workspace-sheet')).toBeTruthy();
+        // One host: where it goes needs no saying.
+        expect(screen.queryByTestId('phone-new-workspace-host')).toBeNull();
+    });
+});
+
+describe('New workspace', () => {
+    function openSheet(): void {
+        tap('phone-open-workspaces');
+        tap('phone-new-workspace');
+    }
+
+    function created(h: Harness): Record<string, unknown> | undefined {
+        return h.commands().find((command) => command['command'] === 'workspace-create');
+    }
+
+    function submit(): void {
+        fireEvent.submit(screen.getByTestId('phone-new-workspace-form'));
+    }
+
+    /** The registry reply resolves a promise, so the sheet re-renders a tick after it lands. */
+    async function answerRegistry(h: Harness): Promise<HTMLSelectElement> {
+        h.answer('repo-registry', REGISTRY_REPLY);
+        return waitFor(() => screen.getByTestId('phone-new-workspace-repo') as HTMLSelectElement);
+    }
+
+    it('creates by name on the origin, switches to it and closes', async () => {
+        const h = setup();
+        openSheet();
+        const create = screen.getByTestId('phone-new-workspace-create') as HTMLButtonElement;
+        expect(create.disabled).toBe(true);
+        fireEvent.change(screen.getByTestId('phone-new-workspace-name'), { target: { value: 'api' } });
+        expect(create.disabled).toBe(false);
+        submit();
+        expect(created(h)).toMatchObject({ name: 'api', group_defaults: false, focus: true });
+        expect(created(h)).not.toHaveProperty('group');
+        expect(created(h)).not.toHaveProperty('parent');
+        expect(screen.getByTestId('phone-new-workspace-create').textContent).toBe('Creating…');
+        h.answer('workspace-create', { ok: true, workspace_id: W1 });
+        await waitFor(() => {
+            expect(screen.queryByTestId('phone-new-workspace-sheet')).toBeNull();
+        });
+    });
+
+    it('keeps the sheet open with the host’s refusal', async () => {
+        const h = setup();
+        openSheet();
+        fireEvent.change(screen.getByTestId('phone-new-workspace-name'), { target: { value: 'api' } });
+        submit();
+        h.answer('workspace-create', { ok: false, error: 'a workspace named api already exists' });
+        expect((await screen.findByTestId('phone-new-workspace-error')).textContent).toBe('a workspace named api already exists');
+        expect((screen.getByTestId('phone-new-workspace-create') as HTMLButtonElement).disabled).toBe(false);
+        // The refusal answered the draft that was sent; editing the draft clears it.
+        fireEvent.change(screen.getByTestId('phone-new-workspace-name'), { target: { value: 'api2' } });
+        expect(screen.queryByTestId('phone-new-workspace-error')).toBeNull();
+    });
+
+    it('opens in the on-screen workspace’s group, with the group’s repository and worktree switch, and the names following', async () => {
+        const h = setup({ state: groupedState() });
+        openSheet();
+        const placement = screen.getByTestId('phone-new-workspace-placement') as HTMLSelectElement;
+        expect(placement.value).toBe(`group:${G1}`);
+        // Every group, and every workspace that can take a child.
+        expect([...placement.options].map((option) => option.textContent)).toEqual(['No group', 'Client', 'docs', 'dev (Client)']);
+        // The registry arrives after the sheet opened; the group's defaults land with it.
+        expect((await answerRegistry(h)).value).toBe(R1);
+        expect((screen.getByTestId('phone-new-workspace-worktree') as HTMLInputElement).checked).toBe(true);
+        expect((screen.getByTestId('phone-new-workspace-update-main') as HTMLInputElement).checked).toBe(true);
+
+        fireEvent.change(screen.getByTestId('phone-new-workspace-name'), { target: { value: 'Fix Login' } });
+        expect((screen.getByTestId('phone-new-workspace-worktree-name') as HTMLInputElement).value).toBe('fix-login');
+        expect((screen.getByTestId('phone-new-workspace-branch') as HTMLInputElement).value).toBe('fix-login');
+        fireEvent.change(screen.getByTestId('phone-new-workspace-branch'), { target: { value: 'ben/fix-login' } });
+        expect(screen.getByTestId('phone-new-workspace-preview').textContent).toContain('/Users/test/worktrees/fix-login');
+        submit();
+        expect(created(h)).toMatchObject({
+            name: 'Fix Login',
+            group: G1,
+            repo: '/Users/test/app',
+            worktree: 'fix-login',
+            branch: 'ben/fix-login',
+            update_main: true,
+            group_defaults: false
+        });
+    });
+
+    it('nests under a workspace with no group of its own, and takes the parent group’s defaults', async () => {
+        const h = setup({ state: groupedState() });
+        openSheet();
+        await answerRegistry(h);
+        fireEvent.change(screen.getByTestId('phone-new-workspace-placement'), { target: { value: `parent:${W2}` } });
+        // `docs` is at top level, so nothing is prefilled.
+        expect((screen.getByTestId('phone-new-workspace-repo') as HTMLSelectElement).value).toBe('');
+        expect(screen.queryByTestId('phone-new-workspace-worktree')).toBeNull();
+        fireEvent.change(screen.getByTestId('phone-new-workspace-placement'), { target: { value: `parent:${W1}` } });
+        expect((screen.getByTestId('phone-new-workspace-repo') as HTMLSelectElement).value).toBe(R1);
+        fireEvent.change(screen.getByTestId('phone-new-workspace-name'), { target: { value: 'child' } });
+        submit();
+        expect(created(h)).toMatchObject({ name: 'child', parent: W1, worktree: 'child' });
+        expect(created(h)).not.toHaveProperty('group');
+    });
+
+    it('starts in a chosen repository without a worktree, and associates it once the workspace exists', async () => {
+        const h = setup({ state: groupedState() });
+        openSheet();
+        await answerRegistry(h);
+        fireEvent.change(screen.getByTestId('phone-new-workspace-placement'), { target: { value: 'top' } });
+        fireEvent.change(screen.getByTestId('phone-new-workspace-repo'), { target: { value: R1 } });
+        expect((screen.getByTestId('phone-new-workspace-worktree') as HTMLInputElement).checked).toBe(false);
+        expect(screen.queryByTestId('phone-new-workspace-worktree-fields')).toBeNull();
+        fireEvent.change(screen.getByTestId('phone-new-workspace-name'), { target: { value: 'notes' } });
+        submit();
+        expect(created(h)).toMatchObject({ name: 'notes', path: '/Users/test/app' });
+        expect(created(h)).not.toHaveProperty('worktree');
+        h.answer('workspace-create', { ok: true, workspace_id: W2 });
+        await waitFor(() => {
+            expect(h.commands().find((command) => command['command'] === 'add-repo-association')).toMatchObject({
+                workspace_id: W2,
+                path: '/Users/test/app'
+            });
+        });
+    });
+
+    it('creates on the remote host on screen, without moving that host’s own window, and shows it', async () => {
+        const h = setup({
+            storage: {
+                [PHONE_HOSTS_KEY]: JSON.stringify([{ id: 'h1', name: 'studio', url: PAIRING_URL }]),
+                [PHONE_PLACE_KEY]: JSON.stringify({ host: 'phone:h1', workspaceID: REMOTE_WS })
+            }
+        });
+        openSheet();
+        expect(screen.getByTestId('phone-new-workspace-host').textContent).toBe('On studio');
+        const placement = screen.getByTestId('phone-new-workspace-placement') as HTMLSelectElement;
+        expect([...placement.options].map((option) => option.textContent)).toEqual(['No group', 'remote-ws']);
+        fireEvent.change(screen.getByTestId('phone-new-workspace-name'), { target: { value: 'remote-api' } });
+        submit();
+        await waitFor(() => {
+            expect(screen.queryByTestId('phone-new-workspace-sheet')).toBeNull();
+        });
+        const calls = h.remotes.get(PAIRING_URL)?.calls ?? [];
+        const create = calls.find((call) => call.startsWith('workspace-create:'));
+        expect(JSON.parse(create?.slice('workspace-create:'.length) ?? '{}')).toEqual({ name: 'remote-api', groupDefaults: false, focus: false });
+        expect(created(h)).toBeUndefined();
+        expect(JSON.parse(h.hostStorage.map.get(PHONE_PLACE_KEY) ?? '{}')).toMatchObject({ host: 'phone:h1', workspaceID: REMOTE_NEW_WS });
     });
 });
 

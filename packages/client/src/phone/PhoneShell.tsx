@@ -30,7 +30,7 @@
  *   header   hosts button · workspaces button · "host · workspace ▸ pane" title · agent dot ·
  *            view toggle · panes button · overflow
  *   sheets   the workspace drawer (hosts and their workspaces), the pane sheet, the overflow
- *            menu, the add-host form, the rename prompt
+ *            menu, the add-host form, the rename prompt, the New workspace form
  *
  * Hosts: the origin (this page's daemon), the origin's configured `remote-daemon` peers (already
  * dialled by assembly, §1.7), and the phone's own list (`phone/hosts.ts`), each with its own
@@ -67,7 +67,7 @@ import type { ChromeBucket } from '../chrome/theme';
 import { tokens } from '../chrome/tokens';
 import type { ChromeWorkspace } from '../chrome/types';
 import { PaneGrid, paneDisplayTitle, type PaneGridProps, type RenderPane } from '../grid';
-import type { KelpiRuntime, KelpiState } from '../state';
+import { selectGroupForWorkspace, type KelpiRuntime, type KelpiState } from '../state';
 import {
     PhoneKeyBar,
     mirrorClipPhrase,
@@ -82,11 +82,13 @@ import { ORIGIN_HOST_KEY, type PhoneHostModel, type PhoneWorkspaceSelection } fr
 import { PhoneHostSheet } from './PhoneHostSheet';
 import { PhoneLanding } from './PhoneLanding';
 import { PhoneMenuSheet, type PhoneMenuItem } from './PhoneMenuSheet';
+import { PhoneNewWorkspaceSheet } from './PhoneNewWorkspaceSheet';
 import { PhonePaneSheet } from './PhonePaneSheet';
 import { PhonePromptSheet } from './PhonePromptSheet';
 import { PhoneRemoteWorkspace, remoteShownPane } from './PhoneRemoteWorkspace';
 import { PhoneWebCard, phoneWebCardTab } from './PhoneWebCard';
 import { PhoneWorkspaceDrawer } from './PhoneWorkspaceDrawer';
+import { TOP_PLACEMENT, type PhonePlacement } from './new-workspace';
 import type { QrCamera } from './qr-camera';
 import { useSheetHistory, type SheetHistoryLike } from './sheet-history';
 import { PHONE_ROW_MIN_PX, PHONE_SAFE_AREA, PhoneButton, statusDotColor } from './ui';
@@ -95,8 +97,6 @@ import { usePhoneHostExpansion, type PhoneView } from './view';
 /** The origin's verbs the shell needs, bound by assembly to its `act`. */
 export interface PhoneShellActions {
     activateWorkspace(workspaceID: string): void;
-    /** Create a workspace named by the phone's prompt (the desktop's form is a sidebar's). */
-    createWorkspace(name: string): void;
     focusPane(paneID: string): void;
     closePane(paneID: string): void;
     renamePane(paneID: string, name: string): void;
@@ -335,6 +335,18 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
         },
         [view, actions]
     );
+
+    /*
+     * New workspace is made on the host on screen, beside the workspace the person is looking at,
+     * with that host's groups, workspaces and repositories to choose from (`new-workspace.ts`).
+     * The picker opens on that workspace's group under §SET-011, as the desktop's sheet does.
+     */
+    const createHost = remoteHost ?? hosts[0] ?? { key: ORIGIN_HOST_KEY, name: '', kind: 'origin', runtime: props.runtime, removable: false };
+    let newWorkspacePlacement: PhonePlacement = TOP_PLACEMENT;
+    if (sheet === 'new-workspace' && props.state.settings.value.general.inheritGroupOnNewWorkspace && selection?.host === createHost.key) {
+        const group = selectGroupForWorkspace(createHost.runtime.store.getState(), selection.workspaceID);
+        if (group !== null) newWorkspacePlacement = { kind: 'group', groupID: group.id };
+    }
 
     // ── the overflow menu ───────────────────────────────────────────────────────────
 
@@ -842,15 +854,15 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
                     else setSheet('workspaces');
                 }}
             />
-            <PhonePromptSheet
-                open={sheet === 'new-workspace'}
-                title="New workspace"
-                initial=""
-                placeholder="workspace name"
-                submitLabel="Create"
-                onSubmit={actions.createWorkspace}
-                onClose={closeSheet}
-            />
+            {sheet === 'new-workspace' ? (
+                <PhoneNewWorkspaceSheet
+                    host={createHost}
+                    showHostName={hosts.length > 1}
+                    defaultPlacement={newWorkspacePlacement}
+                    onCreated={(workspaceID) => onSelectWorkspace({ host: createHost.key, workspaceID })}
+                    onClose={closeSheet}
+                />
+            ) : null}
             <PhonePromptSheet
                 open={sheet === 'rename'}
                 title="Rename pane"

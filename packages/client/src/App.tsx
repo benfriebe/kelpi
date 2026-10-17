@@ -1020,7 +1020,6 @@ function Shell(props: AppProps): ReactElement {
     const workspace = useMemo(() => selectActiveWorkspace(kelpi), [kelpi]);
     const focusedPaneID = useMemo(() => selectFocusedPaneID(kelpi), [kelpi]);
     const workspacesModel = useWorkspacesFeatureModel(kelpi);
-    const inheritGroupID = workspacesModel.inheritGroupID;
     const agentSummary = useMemo(() => selectAgentSummary(kelpi), [kelpi]);
     const inspectorData = useInspectorFeature({
         commands,
@@ -4881,9 +4880,6 @@ function Shell(props: AppProps): ReactElement {
                     }}
                     actions={{
                         activateWorkspace: act.activateWorkspace,
-                        // The desktop's ⌘N opens the sidebar's form (§APP-018); the phone has no
-                        // sidebar, so its prompt collects the one field and creates outright.
-                        createWorkspace: (name) => act.createWorkspace(name, inheritGroupID, {}),
                         focusPane: act.focusPane,
                         closePane: act.closePane,
                         renamePane: act.renamePane,

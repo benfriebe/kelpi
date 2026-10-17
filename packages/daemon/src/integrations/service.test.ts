@@ -590,6 +590,24 @@ describe('resolve', () => {
         expect(resolved.defaults.branch).toBe('418-fix-aws-credentials-now-please');
     });
 
+    it("finds the workspaces open for a ticket under GitHub's current name for a renamed repository", async () => {
+        const f = fixture();
+        const opened = id('aaaaaaaa', 60);
+        f.store.dispatch({
+            type: 'create-workspace',
+            id: opened,
+            paneID: id('dddddddd', 60),
+            name: '#418 Retry login on 401',
+            color: 'blue',
+            now: NOW,
+            ticket: { provider: 'github', kind: 'issue', repo: 'acme/api-v2', number: 418, key: '#418', url: 'https://github.com/acme/api-v2/issues/418', title: 'Retry login on 401' }
+        });
+        answerResolve(f.gh, issueNode(), 'acme/api-v2');
+        const resolved = await f.service.resolve(ref('acme/api#418'), signal());
+        expect(resolved.summary.repo).toBe('acme/api-v2');
+        expect(resolved.existing).toEqual([{ workspaceID: opened, reason: 'ticket' }]);
+    });
+
     it('resolves an unregistered repository with no repository and a warning', async () => {
         const f = fixture();
         answerResolve(f.gh, issueNode());

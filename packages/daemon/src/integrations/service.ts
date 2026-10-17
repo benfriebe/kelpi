@@ -556,7 +556,9 @@ export function createIntegrationsService(options: CreateIntegrationsServiceOpti
             repoID: summary.repo_id,
             baseRemote: match?.remote.name ?? null,
             defaults,
-            existing: existingFor(identity, summary.repo_id, defaults.branch),
+            // GitHub's own name for the repository, not the reference as typed: a renamed or
+            // transferred repository still finds the workspaces created under its current name.
+            existing: existingFor(ticketIdentity(summary), summary.repo_id, defaults.branch),
             checkedOutAt: defaults.checkedOutAt,
             warnings,
             file,

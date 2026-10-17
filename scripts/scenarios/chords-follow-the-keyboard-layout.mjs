@@ -57,7 +57,7 @@ export default async function ({ page, cli, rec, d, sleep }) {
     };
 
     try {
-        const created = JSON.parse(await cli.ok(['workspace', 'create', '--name', `Layouts-${TAG}`, '--json']));
+        const created = JSON.parse(await cli.ok(['workspace', 'create', '--focus', '--name', `Layouts-${TAG}`, '--json']));
         const workspaceID = created.workspace_id ?? created.id;
         rec.check('a workspace of its own to press in', typeof workspaceID === 'string', JSON.stringify(created));
         if (typeof workspaceID !== 'string') return;

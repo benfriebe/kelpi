@@ -60,7 +60,7 @@ export default async function ({ page, harness, cli, sandbox, rec, d, sleep }) {
     try {
         // A workspace of its own (the ⌃Tab switcher's never-mind is the same hand-back, and
         // `recent-workspace-switcher.mjs` asserts it where that gesture is already driven).
-        const home = JSON.parse(await cli.ok(['workspace', 'create', '--name', `Keys-${TAG}`, '--path', sandbox.root, '--json'])).workspace_id;
+        const home = JSON.parse(await cli.ok(['workspace', 'create', '--focus', '--name', `Keys-${TAG}`, '--path', sandbox.root, '--json'])).workspace_id;
         created.push(home);
         await visit(home);
         const web = await openPage(`after-modal-${TAG}`, true);

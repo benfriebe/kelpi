@@ -69,7 +69,7 @@ export default async function ({ page, harness, cli, sandbox, rec, d, sleep }) {
     try {
         execFileSync('sips', ['-s', 'format', 'png', ICON, '--out', shot], { stdio: 'ignore' });
 
-        const created = JSON.parse(await cli.ok(['workspace', 'create', '--name', `Paste-${TAG}`, '--path', sandbox.root, '--json']));
+        const created = JSON.parse(await cli.ok(['workspace', 'create', '--focus', '--name', `Paste-${TAG}`, '--path', sandbox.root, '--json']));
         workspaceID = created.workspace_id ?? created.id;
         const paneID = JSON.parse(await cli.ok(['pane', 'list', '--workspace', workspaceID, '--json']))[0].id;
         const root = `[data-pane-id="${paneID}"][data-terminal-status]`;

@@ -120,6 +120,7 @@ export default async function ({ page, harness, cli, sandbox, rec, d, sleep }) {
 
             // ── one Codex-shaped pane on each daemon ────────────────────────────────────
             const startPane = async (run, root, label) => {
+                // A background create: each lane opens its workspace's row itself before it reads the pane.
                 const created = JSON.parse(await run(['workspace', 'create', '--name', `${label}-${TAG}`, '--path', root, '--json']));
                 const workspaceID = created.workspace_id ?? created.id;
                 const paneID = JSON.parse(await run(['pane', 'list', '--workspace', workspaceID, '--json']))[0].id;

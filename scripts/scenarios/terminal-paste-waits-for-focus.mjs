@@ -34,7 +34,7 @@ export default async function ({ page, harness, cli, shell, rec, d, sleep }) {
         JSON.parse(await cli.ok(['workspace', 'list', '--json'])).find((w) => w.is_active === true)?.id ?? null;
     let workspaceID = null;
     try {
-        workspaceID = JSON.parse(await cli.ok(['workspace', 'create', '--name', `Paste-${TAG}`, '--json'])).workspace_id;
+        workspaceID = JSON.parse(await cli.ok(['workspace', 'create', '--focus', '--name', `Paste-${TAG}`, '--json'])).workspace_id;
         await d.settleDom(page, `document.querySelector('[data-workspace-id="${workspaceID}"]')`, { ceilingMs: 10_000 });
         await d.settle(async () => (await d.domPaneIDs(page)).length === 1, { ceilingMs: 15_000, intervalMs: 200 });
         const pane = (await d.domPaneIDs(page))[0];

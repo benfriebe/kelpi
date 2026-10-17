@@ -49,6 +49,7 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, repoRoot, ha
             await harness.menuClick({ path: ['View', 'Toggle Sidebar'] });
         }
         await waitForHealthz(remote.base);
+        // No window is attached to the remote daemon yet, so there is nothing to focus: the row is clicked below.
         const workspace = (await json(['workspace', 'create', '--name', 'Remote links', '--json'])).workspace_id;
         const shell = (await json(['pane', 'list', '--workspace', workspace, '--json'])).find((pane) => pane.type === 'shell');
         rec.check('the remote workspace has a shell pane', shell !== undefined);

@@ -93,6 +93,7 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, repoRoot }) 
         await waitForHealthz(remote.base);
         const token = fs.readFileSync(path.join(remote.runDir, `daemon-v${PROTOCOL_VERSION}.token`), 'utf8').trim();
         const localToken = fs.readFileSync(path.join(sandbox.runDir, `daemon-v${PROTOCOL_VERSION}.token`), 'utf8').trim();
+        // No window is attached to the remote daemon yet, so there is nothing to focus: the row is clicked below.
         const created = JSON.parse(await remoteCLI.ok(['workspace', 'create', '--name', 'Remote text size', '--json']));
         const remoteWorkspace = created.workspace_id ?? created.id;
         const remotePanes = JSON.parse(await remoteCLI.ok(['pane', 'list', '--workspace', remoteWorkspace, '--json']));
@@ -102,7 +103,7 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, repoRoot }) 
         const remotePaneSize = async () => (await snapshotPane(remote.base, token, remotePane))?.terminalFontSize;
 
         // ── a local terminal to compare against, and to prove the local daemon untouched ───
-        const local = JSON.parse(await cli.ok(['workspace', 'create', '--name', 'Local text size', '--json']));
+        const local = JSON.parse(await cli.ok(['workspace', 'create', '--focus', '--name', 'Local text size', '--json']));
         const localWorkspace = local.workspace_id ?? local.id;
         await d.settleDom(page, `document.querySelector('[data-workspace-id="${localWorkspace}"]')`, { ceilingMs: 10_000 });
         await d.settle(async () => (await d.domPaneIDs(page)).length === 1, { ceilingMs: 15_000, intervalMs: 200 });

@@ -24410,12 +24410,12 @@ function buildFlows(ctx) {
                             await cli.run(['group', 'create', group]);
                             const name = `Spring Sweep ${String(sweepPads.length + 1)}`;
                             sweepPads.push(name);
-                            await cli.ok(['workspace', 'create', '--name', name, '--group', group]);
+                            await cli.ok(['workspace', 'create', '--focus', '--name', name, '--group', group]);
                         }
                         for (let n = 0; n < 3; n++) {
                             const name = `Spring Sweep ${String(sweepPads.length + 1)}`;
                             sweepPads.push(name);
-                            await cli.ok(['workspace', 'create', '--name', name]);
+                            await cli.ok(['workspace', 'create', '--focus', '--name', name]);
                         }
                         const groups = await cli.json(['group', 'list', '--json']);
                         sweepGroups = {

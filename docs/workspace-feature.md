@@ -398,6 +398,7 @@ interface WorkspaceState {
   labels: string[];                  // ordered, case-sensitively deduped tags
   isSyncInputActive: boolean;        // TRANSIENT; default false
   syncInputExcluded: Set<string>;    // TRANSIENT; default empty
+  pullRequests: WorkspacePullRequest[]; // TRANSIENT; default []; see 1.11 and section 11
 }
 ```
 
@@ -454,6 +455,35 @@ function activeAgentCount(s: WorkspaceState): number {
   return [...s.panes, ...s.parkedPanes].filter(p => p.status !== "idle").length;
 }
 ```
+
+### 1.11 WorkspacePullRequest
+
+The GitHub pull requests found for a workspace's association branches (section 11). The
+type and the aggregate live in `packages/core/src/git/pull-requests.ts`, shared by the
+daemon and every client.
+
+```ts
+type PullRequestState = "open" | "draft" | "merged" | "closed";
+
+interface WorkspacePullRequest {
+  number: number;
+  title: string;          // clipped to 300 characters
+  url: string;            // the PR on GitHub; always https
+  state: PullRequestState; // "draft" is an open PR marked as a draft
+  repoID: string;         // the association the PR was found for, so the
+  associationID: string;  // inspector lists it under that row
+  branch: string;
+}
+```
+
+`pullRequests` is TRANSIENT: never written to the snapshot, `[]` on restore and on a new
+workspace, and filled again by the first lookup after the daemon starts. It is sorted by
+aggregate rank (open, draft, merged, closed) and then newest first. The same PR found for
+two associations of one workspace is listed once. A client that receives no field (a daemon
+older than this one) reads `[]`.
+
+**Aggregate.** `aggregatePullRequestState(prs)` is the state a row shows for the whole list:
+the highest-ranked state present (open > draft > merged > closed), or null for none.
 
 ---
 
@@ -1682,6 +1712,15 @@ updates one association's `branchName` in place. Both belong to other specs
 (app-state-core.md and graft-git.md's HEAD-watcher refresh respectively; see 10.10) and
 are listed here only so the action set on `WorkspaceState` is complete.
 
+### 7.17 Pull request status
+
+**setWorkspacePullRequests(id, pullRequests)** (`set-workspace-pull-requests`;
+dispatched only by the PR poller, section 11)
+- Replace `pullRequests` with the given list. A list equal to the current one, field by
+  field and in order, is a no-op that returns the same state (no event), so an idle poll
+  emits nothing. Unknown ids no-op.
+- The field rides `workspace-upserted`, like the rest of the workspace envelope.
+
 ---
 
 ## 8. Invariants
@@ -1840,3 +1879,94 @@ is not obvious from the rules above.
     the git worktree flows live in app-state-core.md, socket-handlers.md and
     graft-git.md. This reducer only ever sees already-resolved pane/workspace UUIDs;
     all name-or-id and label resolution happens upstream.
+
+---
+
+## 11. Pull request status
+
+Issue #2. Each workspace shows the state of the GitHub pull requests for its branches: one
+glyph on the sidebar row and a link per PR in the inspector (shell-ui.md 5.3 and 6). The
+daemon looks them up with the `gh` CLI (`packages/daemon/src/github/`) and stores the
+answer as the TRANSIENT `pullRequests` field (1.11), which reaches every client, local and
+remote, through `workspace-upserted`. A remote daemon looks up its own workspaces with its
+own `gh`, and its rows show that daemon's answer.
+
+This is core rather than a plugin because a plugin has nowhere to draw it: the plugin
+placements (`PLUGIN_PLACEMENTS`, `packages/protocol/src/plugins.ts`) include no per-row slot
+and no inspector section.
+
+### 11.1 What is looked up
+
+- **Keys.** One per (repo, branch): every repo association with a `branchName` that is set,
+  not `HEAD` (detached) and not the repo's default branch, whose repo is in the registry.
+  Two workspaces on the same branch share one lookup.
+- **The remote.** `git remote get-url origin`, read by the poller and cached per repo for an
+  hour. `Repo.remoteURL` is not used: a repo registered by a worktree create is stored
+  without one. The parser (`github/remote.ts`) reads https, `ssh://`, `git://` and
+  scp-like (`git@host:owner/name`) URLs, drops any userinfo (a token in the URL never
+  survives the parse) and a trailing `.git`. Remote URLs are never logged.
+- **The host.** github.com (any spelling of it), or any host `gh auth status` reports as
+  logged in (GitHub Enterprise). An SSH alias host (`git@github-work:...`) is skipped.
+- **The default branch.** `origin/HEAD`, then `git ls-remote --symref`, then `main`, cached
+  per repo for an hour, failures included. The branch it names is never looked up.
+- **The query.** `gh pr list --repo=<host>/<owner>/<name> --head=<branch> --state=all
+  --limit=20 --json=...`. Then:
+  - a PR whose head repository is not origin's owner/name is dropped (`--head` matches a
+    branch NAME, so a fork's branch of the same name would otherwise match);
+  - a merged or closed PR must be shown to be ours, because branch names get reused. Its
+    head commit counts when it is on the local branch or on `origin/<branch>`, or descends
+    from the local tip (GitHub's Update branch or a web commit, then a fetch). A head this
+    repo has never fetched counts only for a PR this daemon already saw open on this
+    branch; one known here but on another line of work never counts. Open and draft PRs
+    always count;
+  - a URL that is not https is dropped.
+
+### 11.2 The gh contract
+
+- Resolution: `KELPI_GH` alone when set; otherwise `gh` on PATH, then `/opt/homebrew/bin`,
+  then `/usr/local/bin` (the daemon's PATH is often LaunchServices' bare one).
+- Always `execFile` with an argument array, never a shell; a 15 s timeout; the environment
+  gains `GH_PROMPT_DISABLED=1`, `GH_NO_UPDATE_NOTIFIER=1`, `NO_COLOR=1` and friends. gh's
+  stderr is classified, never logged.
+- **Unavailable.** A missing binary, or a `gh` that is not logged in (`auth status` names no
+  host; a lookup exits 4 or asks for `gh auth login`), clears every workspace's
+  `pullRequests`, logs one line, and looks again after 10 minutes. Logging in or
+  installing gh later starts working without a restart.
+- **The hourly recheck.** A working `gh` is asked `auth status` again every hour. That call
+  checks the token against GitHub, so offline or timed out it names no host either; then
+  the hosts it had are kept and the recheck comes round again in 5 minutes. Only gh saying
+  it is not logged in stands it down.
+- **Rate limit.** A lookup that fails with a rate-limit error pauses every lookup for 15
+  minutes and keeps what is shown. The GitHub budget is per user and shared with every
+  `gh` an agent runs.
+- **Any other failure** (network, timeout, unparseable output) keeps the key's last answer
+  until its next turn.
+- Nothing is spawned for a repo that is not on GitHub, and no `gh` at all when no workspace
+  has a GitHub branch.
+
+### 11.3 Schedule
+
+- The active workspace's keys every minute; every other key every 5 minutes; a key whose
+  PRs are all merged or closed every 15 minutes.
+- At most two `gh` processes at once, stalest key first.
+- A change to the key set (a branch switch, a new or removed association, a workspace
+  deleted) drops what no longer applies at once and looks up new keys after a 2 s
+  debounce. A new key is never looked up before its debounce ends, so a quick run of
+  checkouts never asks about the branches passed through. The association watcher's 30 s
+  status reads are not a trigger.
+- An answer that arrives after its key changed or vanished, or after lookups were turned
+  off, is discarded.
+- `setWorkspacePullRequests` is dispatched only when a workspace's list actually changed.
+
+### 11.4 The setting
+
+`workspace-pr-status` (config-keybindings.md; Settings ▸ General ▸ Repositories "Show pull
+request status"), default true; only `false` turns it off. Read at every decision point:
+off clears every row at once and spawns nothing; on looks up every key at once, except
+during a rate-limit pause, which holds until it ends.
+
+### 11.5 Not covered
+
+PRs on an upstream repository when `origin` is a fork; GitLab and Bitbucket; checks and
+review state; the phone shell's rows; the inspector for a remote daemon's workspace (the
+inspector is the primary daemon's only).

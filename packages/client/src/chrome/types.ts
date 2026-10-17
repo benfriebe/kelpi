@@ -13,7 +13,7 @@
  * falls back to client-local state) until the daemon grows them.
  */
 
-import type { Pane, WorkspaceColor, WorkspaceGroup, WorkspaceState } from '@kelpi/daemon/store';
+import type { Pane, WorkspaceColor, WorkspaceGroup, WorkspacePullRequest, WorkspaceState } from '@kelpi/daemon/store';
 import type { WorktreeStepID, WorktreeStepStatus } from '@kelpi/daemon/git';
 import type { WorktreeCleanupChoice } from './WorktreeCleanupList';
 
@@ -71,6 +71,12 @@ export type ChromeWorkspace = Pick<WorkspaceState, 'id' | 'name' | 'color' | 'ic
      */
     readonly childOrder?: readonly string[] | undefined;
     readonly childrenCollapsed?: boolean | undefined;
+    /**
+     * workspace-feature.md §11: the GitHub PRs for this workspace's branches, as the daemon
+     * last found them; the row's trailing glyph and the inspector's links. Optional for the
+     * same reason as `profileName`; absent reads as none.
+     */
+    readonly pullRequests?: readonly WorkspacePullRequest[] | undefined;
 };
 
 /**

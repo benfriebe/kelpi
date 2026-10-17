@@ -251,6 +251,18 @@ export async function makeSandbox(repoRoot, { label = 'audit', clientDir, auditW
         { mode: 0o755 }
     );
 
+    // workspace-feature.md §11: the daemon's `gh`, so no sandbox ever reaches GitHub. Unscripted
+    // it is a logged-out gh (no PR glyphs anywhere); `driver.scriptGh` gives it answers. Outside
+    // `helpers/` on purpose: that directory is on every pane's PATH, and a pane's `gh` is real.
+    const ghStubDir = path.join(root, 'gh-stub');
+    fs.mkdirSync(ghStubDir, { recursive: true });
+    const ghStub = path.join(ghStubDir, 'gh');
+    fs.writeFileSync(
+        ghStub,
+        `#!/bin/sh\nexec "${process.execPath}" "${path.join(repoRoot, 'scripts', 'ui-audit', 'fixtures', 'gh-stub.mjs')}" "$@"\n`,
+        { mode: 0o755 }
+    );
+
     const env = {
         PATH: process.env.PATH ?? '/usr/bin:/bin',
         HOME: home,
@@ -264,6 +276,8 @@ export async function makeSandbox(repoRoot, { label = 'audit', clientDir, auditW
         KELPID_HTTP_HOST: '127.0.0.1',
         KELPID_ENTRY: path.join(repoRoot, 'packages', 'daemon', 'dist', 'kelpid.js'),
         KELPID_HELPERS_DIR: helpersDir,
+        KELPI_GH: ghStub,
+        KELPI_AUDIT_GH_CONTROL: path.join(root, 'gh-control.json'),
         // Plain shells, not login shells (#280): a login shell's `path_helper` would put
         // /usr/local/bin (often the installed app's `kelpi`) ahead of this repo's CLI above. The
         // sandbox already inherits the full PATH, so it loses nothing.

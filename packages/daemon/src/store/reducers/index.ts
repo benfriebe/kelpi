@@ -50,6 +50,7 @@ const ROUTES = {
     'add-repo-association': 'workspace',
     'remove-repo-association': 'workspace',
     'set-repo-association-branch': 'workspace',
+    'set-workspace-pull-requests': 'workspace',
 
     'create-group': 'group',
     'rename-group': 'group',

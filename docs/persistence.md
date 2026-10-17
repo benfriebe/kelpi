@@ -664,7 +664,8 @@ marker, the snapshot version.
 Workspace: `focusHistory`, parked built-in panes (PTY included; plugin panes persist),
 `recentlyClosedPanes`, `zoomedPaneID` + `savedLayout` (the un-zoomed tree is what gets saved),
 search state (`searchingPaneID`, needle, counts), `currentLayoutIndex` (predefined-layout cycle
-position), `isSyncInputActive` + `syncInputExcluded` (sync-input always starts off).
+position), `isSyncInputActive` + `syncInputExcluded` (sync-input always starts off),
+`pullRequests` (looked up again with `gh` after the restart, workspace-feature.md §11).
 
 Pane: `title` (live terminal/web title), `gitBranch` (re-detected), `isEditing` (recomputed:
 scratchpad → true; a csv pane comes back in grid mode), `externalEditorCommand`, `markdownFontSize` (resets to 14),

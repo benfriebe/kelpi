@@ -29,12 +29,14 @@
  * register one — while "New Worktree" is the item that dims, since it genuinely needs a repo.
  */
 
+import type { WorkspacePullRequest } from '@kelpi/core/git';
 import { useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 
 import { ContextMenu, menuAnchorFromEvent, type MenuItemSpec } from './ContextMenu';
 import { GraftOrphanBanner, GraftSwapDialog, GraftToggleButton } from './GraftControls';
 import { ChromeIcon, iconGlyph, type ChromeIconName } from './icons';
+import { PullRequestLinks } from './PullRequestGlyph';
 import { useModalPresence } from './modal-presence';
 import { RepoPicker, type RepoPickerEntry } from './RepoPicker';
 import { resolveLabelStyle, withAlpha, workspaceColorHex, type ChromeBucket } from './theme';
@@ -307,6 +309,16 @@ export function Inspector(props: InspectorProps): ReactElement {
     const [addMenu, setAddMenu] = useState<{ x: number; y: number } | null>(null);
 
     const groups = useMemo(() => groupAssociations(associations), [associations]);
+    /** workspace-feature.md §11: each PR under the association it was found for. */
+    const pullRequestsByAssociation = useMemo(() => {
+        const map = new Map<string, WorkspacePullRequest[]>();
+        for (const pullRequest of workspace.pullRequests ?? []) {
+            const list = map.get(pullRequest.associationID);
+            if (list === undefined) map.set(pullRequest.associationID, [pullRequest]);
+            else list.push(pullRequest);
+        }
+        return map;
+    }, [workspace.pullRequests]);
 
     /** Repos this workspace already points at: dimmed "Added" rows in the picker (§GIT-073). */
     const associatedRepoIDs = useMemo(
@@ -559,6 +571,12 @@ export function Inspector(props: InspectorProps): ReactElement {
                                             : { onOpenTerminal: props.onOpenTerminal })}
                                     />
                                 )}
+                                {group.main === null ? null : (
+                                    <PullRequestLinks
+                                        pullRequests={pullRequestsByAssociation.get(group.main.id) ?? EMPTY_PULL_REQUESTS}
+                                        bucket={bucket}
+                                    />
+                                )}
                                 {group.worktrees.map((association) => (
                                     <div key={association.id} className="pl-3">
                                         <AssociationRow
@@ -582,6 +600,10 @@ export function Inspector(props: InspectorProps): ReactElement {
                                             {...(props.onOpenTerminal === undefined
                                                 ? {}
                                                 : { onOpenTerminal: props.onOpenTerminal })}
+                                        />
+                                        <PullRequestLinks
+                                            pullRequests={pullRequestsByAssociation.get(association.id) ?? EMPTY_PULL_REQUESTS}
+                                            bucket={bucket}
                                         />
                                     </div>
                                 ))}
@@ -1333,5 +1355,6 @@ const EMPTY_GRAFT_SESSIONS: Readonly<Record<string, GraftSessionView>> = {};
 const EMPTY_GRAFT_ORPHANS: readonly GraftOrphanView[] = [];
 const EMPTY_ASSOCIATIONS: readonly InspectorAssociation[] = [];
 const EMPTY_REPOS: readonly InspectorRepo[] = [];
+const EMPTY_PULL_REQUESTS: readonly WorkspacePullRequest[] = [];
 const EMPTY_PRESETS: readonly ChromeLabelPreset[] = [];
 const EMPTY_PICKED: readonly RepoPickerEntry[] = [];

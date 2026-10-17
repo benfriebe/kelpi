@@ -1147,7 +1147,11 @@ reports its parent's group), `parent_id`/`parent_name` (the workspace it is nest
 app-state-core.md §2.9; absent when not nested), `repos` (the
 workspace's repo associations in stored order, each `{"repo_id", "repo_name", "repo_path",
 "worktree_path", "branch"}` with `repo_name`/`repo_path` absent when the repo left the
-registry and `branch` absent when unknown; the whole field is absent when there are none).
+registry and `branch` absent when unknown; the whole field is absent when there are none),
+`pull_requests` (the GitHub PRs for those branches, workspace-feature.md §11, each
+`{"number", "title", "url", "state", "repo_id", "branch"}` with `state` one of `open`,
+`draft`, `merged`, `closed`, open first; absent when there are none, when
+`workspace-pr-status` is off, or when `gh` is unavailable).
 
 #### `workspace-create` (R/R)
 

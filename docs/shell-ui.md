@@ -760,6 +760,17 @@ from the left (applied outside the background so the selection ring indents too)
   tooltip and accessible name "Notifications muted" (`data-testid="workspace-muted-<id>"`).
   The avatar's status dot is unaffected, so a muted workspace still shows that its agents
   are waiting. Remote rows show it too, from the remote daemon's mirror.
+- **Pull request glyph** (Kelpi addition, workspace-feature.md §11): one 11pt mark before
+  the muted bell, shown while the workspace has any PRs, in the aggregate state (open >
+  draft > merged > closed): open green, draft tertiary, merged purple, closed red (the
+  workspace palette's green, purple and red for the bucket). Each state has its own drawing
+  (`pull-request`, `-draft`, `-merged`, `-closed`), so the state never rests on colour alone.
+  A 10pt monospace count follows the mark when there is more than one PR. Tooltip and
+  accessible name: "Pull request #412 open", or "3 pull requests: 1 open, 2 merged"
+  (`data-testid="workspace-pr-<id>"`, `data-pr-state`). Not clickable: a click on it selects
+  the row like anywhere else. It is a `shrink-0` sibling on the row's one line, never a
+  second line, so the row height is unchanged. Remote rows show their own daemon's answer.
+  `packages/client/src/chrome/PullRequestGlyph.tsx`.
 - **Backgrounds** (rounded 7):
   - selected (multi-select): `selectionFill` fill + `selectionStroke` @ 0.7 1px outline.
   - active: `selectionFill` @ 0.7 fill + `selectionStroke` 1.5px outline (drawn on top
@@ -1118,6 +1129,11 @@ is in flight (`Inspector.tsx:358-362`).
     "Remove & Delete Worktree" (also deletes the git worktree).
   - When a repo group has worktrees but no main association, a non-interactive repo
     header anchors them.
+  - **Pull requests** (workspace-feature.md §11): under each association row that has any,
+    one line per PR, indented, in the workspace's order (open first): the state's mark in its
+    colour, `#412` (monospace, tertiary) and the title (truncated), the whole line a link
+    (`data-testid="inspector-pr-link"`, `target="_blank"`) that the desktop shell opens in
+    the system browser. Tooltip: the full title, number and state.
 - **Add menu** (borderless "+ Add", always enabled; `packages/client/src/chrome/Inspector.tsx:25-29`,
   `:597-604`): "Add Repository…" → a sheet with a path field (in the Electron shell a
   "Choose…" beside it opens the native folder panel through the daemon's `choose-folder-dialog`

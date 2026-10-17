@@ -130,6 +130,7 @@ export default async function ({ page, cli, sandbox, rec, d, sleep }) {
         // unscripted (logged-out) stub for its ten minutes; off and on asks gh again at once.
         await setPrStatus(false);
         await setPrStatus(true);
+        // No --focus: the glyph is on the row whether or not it is active, and the inspector step clicks the row itself.
         const created = JSON.parse(
             await cli.ok(['workspace', 'create', '--name', `PR status ${TAG}`, '--path', repo, '--repo', repo, '--json'])
         );

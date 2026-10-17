@@ -41,8 +41,9 @@
     <link rel="icon" type="image/png" sizes="64x64" href="/favicon.png" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <!-- The web app manifest, built by `src/pwa/manifest.ts` and emitted by vite.config.ts.
-         Its `start_url` is bare `/`: the token stays out of URLs and caches, and an installed
-         app finds it in the origin's localStorage where `app/config.ts` put it.
+         Its `start_url` is bare `/`: the token stays out of URLs and caches. An installed app
+         on Android finds it in the localStorage it shares with the browser; on iOS the app has
+         its own storage, so the user pastes the pairing link once on the connection screen.
 
          Everything from here down is an owner-directed divergence from the shipped Swift app,
          which has no phone UI at all to be faithful to (see src/pwa/manifest.ts). -->

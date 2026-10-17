@@ -105,9 +105,11 @@ export function buildWebManifest(): WebAppManifest {
         name: 'Kelpi',
         short_name: 'Kelpi',
         // Guardrail 3 of the phone program: THE TOKEN STAYS OUT OF URLS AND CACHES. `start_url`
-        // is bare `/` with no token and no query string, ever. A Home Screen app shares the
-        // origin's `localStorage`, where `app/config.ts` already put the token on first sight,
-        // so it reconnects without one in the URL; a `?token=` here would instead write the
+        // is bare `/` with no token and no query string, ever. On Android the installed app
+        // shares the browser's `localStorage`, where `app/config.ts` already put the token on
+        // first sight. iOS gives a Home Screen app its OWN storage, so there it opens refused
+        // and the user pastes the pairing link once into the connection screen
+        // (`rememberPairing`). Either way a `?token=` here would instead write the
         // secret into the installed app's own metadata, the browser's manifest cache and every
         // screenshot of the Home Screen. `scope` is `/` for the same shape: the whole origin,
         // no query.

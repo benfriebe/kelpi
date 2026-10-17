@@ -12,7 +12,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { overlayPresenceCount } from '../chrome/modal-presence';
 import type { KelpiRuntime } from '../state';
-import type { DaemonTarget } from './config';
+import { rememberPairing, TOKEN_STORAGE_KEY, type DaemonTarget, type StorageLike } from './config';
 import { ConnectionBanner, ConnectionSplash } from './ConnectionScreen';
 
 afterEach(cleanup);
@@ -118,6 +118,62 @@ describe('ConnectionSplash', () => {
             expect(runtime.connects).toBe(1);
             cleanup();
         }
+    });
+
+    it('takes a pasted pairing link on a refusal, remembers its token and re-boots', () => {
+        splash('closed');
+        expect(screen.queryByTestId('connection-pair')).toBeNull();
+        cleanup();
+
+        localStorage.removeItem(TOKEN_STORAGE_KEY);
+        let paired = 0;
+        render(
+            <ConnectionSplash
+                runtime={fakeRuntime()}
+                state={{ ui: { connection: 'rejected', connectionError: null } }}
+                target={ORIGIN_TARGET}
+                onPaired={() => (paired += 1)}
+            />
+        );
+        const input = screen.getByLabelText('Pairing link or token');
+        fireEvent.change(input, { target: { value: 'https://mac.tail.ts/?foo=1' } });
+        fireEvent.submit(screen.getByTestId('connection-pair'));
+        expect(paired).toBe(0);
+
+        fireEvent.change(input, { target: { value: ' https://mac.tail.ts/?token=kd_abc ' } });
+        fireEvent.submit(screen.getByTestId('connection-pair'));
+        expect(paired).toBe(1);
+        expect(localStorage.getItem(TOKEN_STORAGE_KEY)).toBe('kd_abc');
+        localStorage.removeItem(TOKEN_STORAGE_KEY);
+    });
+});
+
+describe('rememberPairing', () => {
+    function memory(): StorageLike & { map: Map<string, string> } {
+        const map = new Map<string, string>();
+        return {
+            map,
+            getItem: (key) => map.get(key) ?? null,
+            setItem: (key, value) => void map.set(key, value),
+            removeItem: (key) => void map.delete(key)
+        };
+    }
+
+    it('reads a token from a full link, a bare query or the raw token', () => {
+        for (const [input, token] of [
+            ['https://mac.tail.ts/?token=kd_1', 'kd_1'],
+            ['/?token=kd_2', 'kd_2'],
+            ['kd_3', 'kd_3']
+        ] as const) {
+            const storage = memory();
+            expect(rememberPairing(input, storage)).toBe(true);
+            expect(storage.map.get(TOKEN_STORAGE_KEY)).toBe(token);
+        }
+    });
+
+    it('refuses input with no token in it', () => {
+        expect(rememberPairing('   ', memory())).toBe(false);
+        expect(rememberPairing('https://mac.tail.ts/', memory())).toBe(false);
     });
 });
 

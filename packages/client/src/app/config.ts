@@ -132,6 +132,26 @@ export function resolveDaemonTarget(options: ResolveTargetOptions = {}): DaemonT
 }
 
 /**
+ * Remember a pairing link or a bare token typed into the connection screen; true when it held a
+ * token.
+ *
+ * This exists for iOS: a Home Screen web app gets its own `localStorage`, NOT Safari's, so the
+ * token Safari remembered from the pairing link is not there, and the installed app opens at a
+ * bare `/` with nothing to send. Pasting the link once runs it through the same
+ * `resolveDaemonTarget` a `?token=` URL does, so it is remembered the same way. Only the link's
+ * query is read - its origin is ignored, since the installed app is already on the right one.
+ */
+export function rememberPairing(input: string, storage: StorageLike | null = defaultStorage()): boolean {
+    const text = input.trim();
+    if (text.length === 0) return false;
+    const query = text.indexOf('?');
+    // A link with no query has no token in it; anything without a `/` is the bare token.
+    if (query === -1 && text.includes('/')) return false;
+    const search = query === -1 ? `?${new URLSearchParams({ [TOKEN_PARAM]: text }).toString()}` : text.slice(query);
+    return resolveDaemonTarget({ search, storage }).token !== undefined;
+}
+
+/**
  * The query string with the connection parameters removed, ready for `history.replaceState`.
  * Returns `''` when nothing is left, so the address bar ends up clean rather than with a bare
  * `?`. Any other parameter is preserved untouched.

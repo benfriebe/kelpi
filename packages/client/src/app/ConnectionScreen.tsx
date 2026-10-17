@@ -13,12 +13,12 @@
  * ids, same copy, same props.
  */
 
-import { useRef, type ReactElement } from 'react';
+import { useRef, useState, type ReactElement } from 'react';
 
 import { useOverlayPresence } from '../chrome/modal-presence';
 import { tokens as chromeTokens } from '../chrome/tokens';
 import type { KelpiRuntime } from '../state';
-import { describeTarget, type DaemonTarget } from './config';
+import { describeTarget, rememberPairing, type DaemonTarget } from './config';
 
 const SPLASH_TITLE: Readonly<Record<string, string>> = {
     idle: 'Connecting to kelpid…',
@@ -44,13 +44,25 @@ export interface ConnectionSplashProps {
     readonly runtime: KelpiRuntime;
     readonly state: { readonly ui: { readonly connection: string; readonly connectionError: string | null } };
     readonly target: DaemonTarget;
+    /**
+     * Runs once a pasted link or token is remembered. A reload, because `main.tsx` reads the
+     * token once at boot for both the socket and the pane-asset credential; going through boot
+     * again is the one path that updates both.
+     */
+    readonly onPaired?: () => void;
 }
 
 /** Full-cover state for a client that has never had a snapshot: there is nothing to show yet. */
-export function ConnectionSplash({ runtime, state, target }: ConnectionSplashProps): ReactElement {
+export function ConnectionSplash({
+    runtime,
+    state,
+    target,
+    onPaired = () => location.reload()
+}: ConnectionSplashProps): ReactElement {
     const status = state.ui.connection;
     const rejected = status === 'rejected';
     const retryable = status === 'closed' || rejected;
+    const [pairing, setPairing] = useState('');
     return (
         <div
             data-testid="connection-splash"
@@ -97,6 +109,48 @@ export function ConnectionSplash({ runtime, state, target }: ConnectionSplashPro
                     >
                         Try again
                     </button>
+                ) : null}
+                {rejected ? (
+                    // An installed iOS app has no address bar to open a `kelpid url` link in, and
+                    // no access to the token Safari remembered (`rememberPairing`). This is the
+                    // only way in for it, and harmless everywhere else.
+                    <form
+                        data-testid="connection-pair"
+                        className="mt-2 flex w-full flex-col gap-1"
+                        onSubmit={(event) => {
+                            event.preventDefault();
+                            if (rememberPairing(pairing)) onPaired();
+                        }}
+                    >
+                        <input
+                            type="text"
+                            aria-label="Pairing link or token"
+                            placeholder="Paste the pairing link or token"
+                            autoCapitalize="off"
+                            autoCorrect="off"
+                            spellCheck={false}
+                            value={pairing}
+                            onChange={(event) => setPairing(event.target.value)}
+                            className="w-full rounded px-2 py-1 font-mono text-[16px]"
+                            style={{
+                                background: chromeTokens.windowBackground,
+                                color: chromeTokens.textPrimary,
+                                border: `1px solid ${chromeTokens.divider}`
+                            }}
+                        />
+                        <button
+                            type="submit"
+                            disabled={pairing.trim().length === 0}
+                            className="rounded px-3 py-1 text-[12px]"
+                            style={{
+                                background: chromeTokens.headerBackground,
+                                color: chromeTokens.textPrimary,
+                                border: `1px solid ${chromeTokens.divider}`
+                            }}
+                        >
+                            Connect
+                        </button>
+                    </form>
                 ) : null}
             </div>
         </div>

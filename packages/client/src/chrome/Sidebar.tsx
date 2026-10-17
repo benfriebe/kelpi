@@ -57,6 +57,7 @@ import {
 } from './WorktreeCleanupList';
 import { NewEntrySheet, type NewWorkspaceAgentChoice } from './NewWorkspaceSheet';
 import { PullRequestGlyph } from './PullRequestGlyph';
+import type { TicketSource } from './TicketPicker';
 import {
     ChromeIcon,
     CURATED_EMOJI,
@@ -111,6 +112,7 @@ import { tokens } from './tokens';
 import {
     DEFAULT_PROFILE_NAME,
     WORKSPACE_COLORS,
+    isTicketCreateFailure,
     type ChromeGroup,
     type ChromeLabelPreset,
     type ChromeRepo,
@@ -1933,9 +1935,19 @@ export interface SidebarProps extends SidebarCallbacks {
      * missing/null one lets §SET-011's inheritance choose, exactly as the footer button does.
      */
     readonly createRequest?:
-        | { readonly kind: 'workspace' | 'group'; readonly groupID?: string | null | undefined }
+        | {
+              readonly kind: 'workspace' | 'group';
+              readonly groupID?: string | null | undefined;
+              /** ⌥⌘N (docs/integrations.md): open the workspace sheet with its ticket picker up. */
+              readonly fromTicket?: boolean | undefined;
+          }
         | null
         | undefined;
+    /**
+     * docs/integrations.md: the create sheet's From ticket (GitHub issues and pull requests).
+     * Absent = a daemon that cannot link GitHub, and the sheet offers none.
+     */
+    readonly ticketSource?: TicketSource | undefined;
     readonly onCreateRequestHandled?: (() => void) | undefined;
     /**
      * "The create SHEET is up" — published because a modal is a whole-window fact, not a sidebar
@@ -2266,6 +2278,8 @@ export function Sidebar(props: SidebarProps): ReactElement {
     const [newForm, setNewForm] = useState<{
         kind: 'workspace' | 'group';
         groupID: string | null;
+        /** ⌥⌘N: the sheet opens with its ticket picker up. */
+        fromTicket?: boolean;
         /** Present for the bulk "Group N Workspaces…" flow: the members to create it around. */
         workspaceIDs?: readonly string[];
         /** §2.9: "New Nested Workspace…": the workspace the new one nests under. */
@@ -3995,7 +4009,11 @@ export function Sidebar(props: SidebarProps): ReactElement {
     const onCreateRequestHandled = props.onCreateRequestHandled;
     useEffect(() => {
         if (createRequest === null) return;
-        setNewForm({ kind: createRequest.kind, groupID: createRequest.groupID ?? null });
+        setNewForm({
+            kind: createRequest.kind,
+            groupID: createRequest.groupID ?? null,
+            ...(createRequest.fromTicket === true ? { fromTicket: true } : {})
+        });
         onCreateRequestHandled?.();
     }, [createRequest, onCreateRequestHandled]);
 
@@ -5604,6 +5622,10 @@ export function Sidebar(props: SidebarProps): ReactElement {
                     {...(props.defaultAgent === undefined ? {} : { defaultAgent: props.defaultAgent })}
                     {...(props.defaultSendPrompt === undefined ? {} : { defaultSendPrompt: props.defaultSendPrompt })}
                     {...(props.canStartAgent === undefined ? {} : { canStartAgent: props.canStartAgent })}
+                    // docs/integrations.md: From ticket, and ⌥⌘N's picker already up.
+                    {...(newForm.kind === 'workspace' && props.ticketSource !== undefined
+                        ? { tickets: props.ticketSource, openTicketPicker: newForm.fromTicket === true }
+                        : {})}
                     onCancel={() => {
                         setNewForm(null);
                     }}
@@ -5648,12 +5670,15 @@ export function Sidebar(props: SidebarProps): ReactElement {
                                 ...(draft.muted ? { muted: true } : {}),
                                 ...(parentID === undefined ? {} : { parentID }),
                                 // shell-ui.md §10.1: only an agent actually chosen travels.
-                                ...(draft.agent === null ? {} : { agent: draft.agent })
+                                ...(draft.agent === null ? {} : { agent: draft.agent }),
+                                // …and the ticket the sheet linked, when it did.
+                                ...(draft.ticket === null ? {} : { ticket: draft.ticket })
                             }
                         );
                         // §WS-079: a failed worktree create keeps the SHEET open, with the
-                        // daemon's message inline under the fields.
-                        if (typeof result === 'string') return result;
+                        // daemon's message inline under the fields (and, refused because of its
+                        // ticket, that failure's way out).
+                        if (typeof result === 'string' || isTicketCreateFailure(result)) return result;
                         setNewForm(null);
                         return null;
                     }}

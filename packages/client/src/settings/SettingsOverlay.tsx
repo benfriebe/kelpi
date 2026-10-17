@@ -65,6 +65,7 @@ import { GeneralTab } from './GeneralTab';
 import { KeybindingsTab } from './KeybindingsTab';
 import { LabelsTab } from './LabelsTab';
 import { ProfilesTab } from './ProfilesTab';
+import { IntegrationsTab, type IntegrationsTabProps } from './IntegrationsTab';
 import { RemoteTab, type RemoteTabActions } from './RemoteTab';
 import { RepositoriesTab, type RepositoryEntry } from './RepositoriesTab';
 import { DEFAULT_SETTINGS_TAB, SETTINGS_TABS, type SettingsTabIcon, type SettingsTabID } from './catalog';
@@ -75,6 +76,7 @@ import {
     GearGlyph,
     GlobeGlyph,
     GridGlyph,
+    LinkGlyph,
     PaintbrushGlyph,
     PersonBadgeKeyGlyph,
     TagGlyph
@@ -146,6 +148,13 @@ export interface SettingsOverlayProps {
      * Absent = the tab still renders and each verb answers "not available".
      */
     readonly remote?: RemoteTabActions | undefined;
+    /**
+     * Settings ▸ Integrations (docs/integrations.md): the integrations slice, the four management
+     * verbs, the registry (for the searchable-repositories list) and the session key a device code
+     * is dropped on. Like `remote`, daemon state reached by WS-only verbs rather than config-file
+     * settings. Absent = the tab still renders, and says integrations are unavailable here.
+     */
+    readonly integrations?: IntegrationsTabProps | undefined;
     /**
      * B5 - the window the form-factor signal is read from. Defaults to the page's own, which is
      * what assembly passes (nothing). It exists so a jsdom test can hand in a phone: jsdom has no
@@ -564,6 +573,17 @@ export function SettingsOverlay(props: SettingsOverlayProps): ReactElement | nul
                     actions={props.web?.actions ?? NO_WEB_ACTIONS}
                     {...(props.web?.path === undefined ? {} : { path: props.web.path })}
                 />
+            ) : null}
+            {tab === 'integrations' ? (
+                props.integrations === undefined ? (
+                    <div data-testid="settings-tab-integrations">
+                        <p className="text-[12px]" style={{ color: tokens.textSecondary }}>
+                            Integrations are unavailable here.
+                        </p>
+                    </div>
+                ) : (
+                    <IntegrationsTab {...props.integrations} />
+                )
             ) : null}
             {tab === 'remote' ? (
                 <RemoteTab
@@ -1066,7 +1086,8 @@ const RAIL_GLYPH: Readonly<Record<SettingsTabIcon, (props: { readonly size: numb
     command: CommandGlyph,
     globe: GlobeGlyph,
     'square.grid.2x2': GridGlyph,
-    'antenna.radiowaves': AntennaGlyph
+    'antenna.radiowaves': AntennaGlyph,
+    link: LinkGlyph
 };
 
 /** The size the note above argues for. */

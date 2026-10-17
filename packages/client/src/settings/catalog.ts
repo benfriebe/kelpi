@@ -213,6 +213,10 @@ export const SETTINGS_TABS = [
     { id: 'workspaces', label: 'Workspaces', icon: 'square.grid.2x2' },
     // Port-only too: the `kelpid pair`/`devices`/`url --tailnet` flow, in-app (`RemoteTab`).
     { id: 'remote', label: 'Remote', icon: 'antenna.radiowaves' },
+    // Port-only: linking GitHub for workspaces made from tickets (`IntegrationsTab`,
+    // docs/integrations.md). Beside Remote, the other tab about what reaches this daemon from
+    // outside, and before Plugins, which stays last as the rail's open-ended entry.
+    { id: 'integrations', label: 'Integrations', icon: 'link' },
     { id: 'plugins', label: 'Plugins', icon: 'square.grid.2x2' }
 ] as const;
 

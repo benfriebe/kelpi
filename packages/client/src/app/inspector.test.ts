@@ -81,8 +81,29 @@ describe('parsing', () => {
         expect(parseAssociations({ ok: true })).toEqual([]);
         expect(parseAssociations({ ok: true, associations: ['nope', { repo_id: 'x' }] })).toEqual([]);
         expect(parseRepos({ ok: true, repos: [{ id: 'r1', name: 'app', path: '/p', worktree_base: '/b' }] })).toEqual(
-            [{ id: 'r1', name: 'app', path: '/p', worktreeBase: '/b' }]
+            [{ id: 'r1', name: 'app', path: '/p', worktreeBase: '/b', remoteURL: null }]
         );
+    });
+
+    // docs/integrations.md: Settings ▸ Integrations lists the GitHub repositories a ticket search
+    // covers from the registry's `remote_url`, which this reader used to drop.
+    it('keeps the registry row\'s remote URL, and reads a missing or empty one as null', () => {
+        expect(
+            parseRepos({
+                ok: true,
+                repos: [
+                    { id: 'r1', name: 'api', path: '/src/api', worktree_base: '/b', remote_url: 'git@github.com:acme/api.git' },
+                    { id: 'r2', name: 'notes', path: '/src/notes', worktree_base: '/b', remote_url: null },
+                    { id: 'r3', name: 'blank', path: '/src/blank', worktree_base: '/b', remote_url: '' },
+                    { id: 'r4', name: 'odd', path: '/src/odd', worktree_base: '/b', remote_url: 42 }
+                ]
+            }).map((repo) => [repo.id, repo.remoteURL])
+        ).toEqual([
+            ['r1', 'git@github.com:acme/api.git'],
+            ['r2', null],
+            ['r3', null],
+            ['r4', null]
+        ]);
     });
 });
 

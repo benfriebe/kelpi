@@ -11,9 +11,11 @@ export interface SettingsSearchDestination {
 /** Host-only availability, kept separate from the immutable, navigation-only catalog. */
 export function settingsSearchDestination(
     entry: SettingsIndexEntry,
-    context: Pick<SettingsOverlayProps, 'settings' | 'transport' | 'domain' | 'onBrowseForFolder' | 'web'>
+    context: Pick<SettingsOverlayProps, 'settings' | 'transport' | 'domain' | 'onBrowseForFolder' | 'web'> &
+        Partial<Pick<SettingsOverlayProps, 'integrations'>>
 ): SettingsSearchDestination {
     const { settings } = context;
+    if (entry.sectionID === 'integrations') return integrationsDestination(entry, context.integrations);
     if (entry.testID === 'tcp-port' && settings.general.tcpPort <= 0)
         return { testID: 'tcp-listener-row', message: 'Enable TCP listener to choose a port.' };
     if (entry.testID === 'tcp-bind-error' && tcpBindError(settings.general.tcpPort, context.transport) === null)
@@ -51,4 +53,38 @@ export function settingsSearchDestination(
     // Remote collections load in their own tab; their entries deliberately point at the collection
     // and explain which device/daemon to select, rather than promising a nonexistent instance.
     return { testID: entry.testID };
+}
+
+/**
+ * Settings ▸ Integrations draws its rows from the daemon's status and from who this session is,
+ * so a hit lands on the row when it is drawn and on the status otherwise, saying why.
+ */
+function integrationsDestination(
+    entry: SettingsIndexEntry,
+    integrations: SettingsOverlayProps['integrations']
+): SettingsSearchDestination {
+    const slice = integrations?.integrations;
+    const status = slice?.providers.find((candidate) => candidate.provider === 'github');
+    if (slice === undefined || !slice.supported || status === undefined) {
+        return { testID: 'settings-tab-integrations', message: 'GitHub cannot be linked on this daemon.' };
+    }
+    const owner = slice.manageable;
+    const fallback = (message: string): SettingsSearchDestination => ({ testID: 'integrations-github-status', message });
+    switch (entry.testID) {
+        case 'integrations-github-connect':
+            if (!owner) return fallback('Only the owner of this daemon can connect GitHub.');
+            if (!status.available) return fallback('Browser sign-in is not available in this build. Connect with a personal access token instead.');
+            if (status.connected) return fallback('GitHub is already connected. Disconnect first to sign in as someone else.');
+            return { testID: entry.testID };
+        case 'integrations-github-disconnect': {
+            if (!owner) return fallback('Only the owner of this daemon can disconnect GitHub.');
+            const stored = status.connected || status.problem !== undefined || status.login !== undefined;
+            return stored ? { testID: entry.testID } : fallback('GitHub is not connected, so there is nothing to disconnect.');
+        }
+        case 'integrations-github-token-row':
+        case 'integrations-github-token-input':
+            return owner ? { testID: entry.testID } : fallback('Only the owner of this daemon can connect GitHub.');
+        default:
+            return { testID: entry.testID };
+    }
 }

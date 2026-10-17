@@ -19,7 +19,7 @@ import type { ReactElement } from 'react';
 import { withAlpha } from './theme';
 import { tokens } from './tokens';
 import type { WorktreeCreateProgress, WorktreeCreateStep } from './types';
-import { formatElapsed, WORKTREE_STEP_LABELS } from './worktree';
+import { formatElapsed, worktreeStepLabel } from './worktree';
 
 export type WorktreeCreatePhase = 'running' | 'cancelling' | 'failed' | 'cancelled' | 'done';
 
@@ -78,13 +78,26 @@ function StepIcon({ step }: { readonly step: WorktreeCreateStep }): ReactElement
     }
 }
 
-/** Only the two git steps can take long enough to deserve a moving bar without a meter. */
+/**
+ * Only the two git steps and the ticket lookup (a few GitHub requests) can take long enough to
+ * deserve a moving bar without a meter.
+ */
 function hasBar(step: WorktreeCreateStep): boolean {
-    return step.status === 'running' && (step.percent !== undefined || step.id === 'fetch' || step.id === 'worktree-add');
+    return (
+        step.status === 'running' &&
+        (step.percent !== undefined || step.id === 'fetch' || step.id === 'worktree-add' || step.id === 'ticket')
+    );
 }
 
-function StepRow({ step }: { readonly step: WorktreeCreateStep }): ReactElement {
-    const label = WORKTREE_STEP_LABELS[step.id];
+function StepRow({
+    step,
+    checkout
+}: {
+    readonly step: WorktreeCreateStep;
+    readonly checkout: WorktreeCreateProgress['checkout'];
+}): ReactElement {
+    // A create from a ticket names its checkout: a pull request's fetch is not "the latest main".
+    const label = worktreeStepLabel(step.id, checkout);
     const tone =
         step.status === 'pending' || step.status === 'skipped'
             ? tokens.textTertiary
@@ -224,7 +237,7 @@ export function WorktreeCreateProgressPanel(props: WorktreeCreateProgressProps):
             </div>
             <ol className="flex flex-col gap-1.5">
                 {progress.steps.map((step) => (
-                    <StepRow key={step.id} step={step} />
+                    <StepRow key={step.id} step={step} checkout={props.progress.checkout} />
                 ))}
             </ol>
             {props.closeHint && (phase === 'running' || phase === 'cancelling') ? (

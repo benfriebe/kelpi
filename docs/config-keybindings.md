@@ -1843,10 +1843,11 @@ stranding the injected `KELPI_SOCKET` (`compose.ts:752-757`).
 
 Settings is an in-client modal overlay (`packages/client/src/settings/SettingsOverlay.tsx`:
 Escape or a backdrop click closes it, Tab is trapped inside it, width
-`clamp(560px, 92%, 880px)`, height `min(620px, 90%)`) with nine tabs (`SETTINGS_TABS`,
-`packages/client/src/settings/catalog.ts:174-184`): the shipped seven, General,
+`clamp(560px, 92%, 880px)`, height `min(620px, 90%)`) with eleven tabs (`SETTINGS_TABS`,
+`packages/client/src/settings/catalog.ts:202-220`): the shipped seven, General,
 Appearance, Repositories, Labels, Profiles, Keybindings, Web, in that order, then the
-Kelpi-only **Workspaces** and **Remote** appended at the end of the rail. Every settings
+Kelpi-only **Workspaces**, **Remote**, **Integrations** and **Plugins** appended at the end of
+the rail. Every settings
 control persists to `~/.config/kelpi/config` or, for Appearance's terminal keys, to
 `~/.config/ghostty/config` (the Repositories, Labels and Web tabs edit daemon-owned
 registries instead); nothing persists to a per-app preferences store.
@@ -1923,6 +1924,34 @@ registries instead); nothing persists to a per-app preferences store.
    cannot disagree about what the file says.
 9. **Remote** (Kelpi-only): device pairing (`kelpid pair` / `devices` / `url --tailnet`
    in-app) and the section 1.7 daemon registry.
+10. **Integrations** (Kelpi-only; `packages/client/src/settings/IntegrationsTab.tsx`;
+   docs/integrations.md): the daemon's link to GitHub, which the New Workspace sheet's From
+   ticket and `kelpi workspace create --from` use. Nothing here is a config-file setting: the
+   credential lives with the daemon (`integrations.json`, 0600), and the tab reads the status
+   the daemon sends on `welcome` and `integrations-changed`.
+   - *GitHub*: the status (connected as `@login`, signed in with GitHub or a personal access
+     token, its scopes or "a fine-grained token" when GitHub reports none, or why a saved
+     credential cannot be used: revoked, or `integrations.json` unreadable). **Connect…** starts
+     GitHub's device flow: the one-time code is shown large with Copy, a separate **Open
+     GitHub** button opens the verification page (only ever a `https://github.com/` page), a
+     countdown runs to the code's expiry, and Cancel abandons that flow by its id. The daemon
+     waits for GitHub itself, so Settings may close meanwhile; the code is dropped when the link
+     lands, when the flow fails (with GitHub's reason), when another window starts a new
+     sign-in, when it expires, and when the connection to the daemon is reset. **Disconnect**
+     forgets the credential and links to github.com/settings/applications, because Kelpi
+     cannot revoke GitHub's own grant. The section says that paired devices search and open the
+     owner's private issues and pull requests through this link.
+   - *Other ways to connect*: a masked personal-access-token field and **Connect with token**
+     (the daemon checks it with GitHub first; a classic token needs the `repo` scope; warnings
+     such as a fine-grained token's are shown). A build with no GitHub OAuth app offers only
+     this path and says so.
+   - *Searchable repositories*: the registered repositories with a GitHub remote (from the
+     registry's `remote_url`), each GitHub repository once with the registry rows that point at
+     it, and the ones not searched for want of a GitHub remote.
+   - A paired device's session sees the status read-only (no Connect, Disconnect or token
+     field) with a line saying only the daemon's owner can change it; a daemon that predates
+     integrations gets one line saying it cannot link GitHub.
+11. **Plugins** (Kelpi-only): plugin management and workbench views.
 
 ### 13.1 Keybindings tab
 

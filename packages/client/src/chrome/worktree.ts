@@ -14,6 +14,7 @@
  */
 
 import { sanitizedGitName } from '@kelpi/core/git';
+import { WORKSPACE_CHECKOUT_MODES, type WorkspaceCheckoutMode } from '@kelpi/protocol';
 
 import type {
     WorktreeCreateProgress,
@@ -73,10 +74,14 @@ export function worktreePreview(draft: WorktreeDraft): WorktreePreview {
 
 // ── #294: a worktree create's steps ───────────────────────────────────────────────────────
 
-const STEP_IDS: readonly WorktreeCreateStepID[] = ['resolve-default-branch', 'fetch', 'worktree-add', 'create-workspace'];
+const STEP_IDS: readonly WorktreeCreateStepID[] = ['ticket', 'resolve-default-branch', 'fetch', 'worktree-add', 'create-workspace'];
 const STEP_STATUSES: readonly WorktreeCreateStepStatus[] = ['pending', 'running', 'done', 'skipped', 'failed'];
 
-/** What each step is called in the sheet's checklist (graft-git.md §8.5.1). */
+/**
+ * What each step is called in the sheet's checklist (graft-git.md §8.5.1), for a plain create (a
+ * new branch). `worktreeStepLabel` is the reader: a create from a ticket names its checkout mode,
+ * and two steps mean something else under it.
+ */
 export const WORKTREE_STEP_LABELS: Readonly<Record<WorktreeCreateStepID, string>> = {
     ticket: 'Look up the ticket',
     'resolve-default-branch': 'Find the default branch',
@@ -86,16 +91,77 @@ export const WORKTREE_STEP_LABELS: Readonly<Record<WorktreeCreateStepID, string>
 };
 
 /**
- * The checklist the sheet shows the moment Create is pressed, before the daemon's first frame:
- * the steps this create will run, the first one running. Without update main there is nothing
- * to resolve or fetch, exactly the daemon's `worktreeStepsFor`.
+ * A step's label for the create's checkout mode (`WorktreeCreateProgress.checkout`, absent for a
+ * plain create): a pull request's fetch brings its head, not main; attaching an existing branch
+ * makes a worktree ON it; and opening an existing checkout makes no worktree at all.
  */
-export function initialWorktreeProgress(updateMain: boolean): WorktreeCreateProgress {
-    const ids: readonly WorktreeCreateStepID[] = updateMain ? STEP_IDS : ['worktree-add', 'create-workspace'];
+export function worktreeStepLabel(id: WorktreeCreateStepID, checkout?: WorkspaceCheckoutMode | undefined): string {
+    if (checkout === 'pr-head') {
+        if (id === 'fetch') return 'Fetch the pull request';
+        if (id === 'worktree-add') return 'Check out the pull request';
+    }
+    if (checkout === 'attach-branch' && id === 'worktree-add') return 'Create the worktree on the existing branch';
+    return WORKTREE_STEP_LABELS[id];
+}
+
+/** What decides a create's steps: the client's copy of the daemon's `WorktreeStepPlan`. */
+export interface WorktreeProgressPlan {
+    /** How it checks out; absent = `new-branch`, a plain create. */
+    readonly checkout?: WorkspaceCheckoutMode | undefined;
+    /** `new-branch` only: fetch the default branch and branch off it. */
+    readonly updateMain?: boolean | undefined;
+    /** The create names a ticket: `ticket` runs first. */
+    readonly ticket?: boolean | undefined;
+}
+
+/**
+ * The steps a create runs, the daemon's `worktreeStepsFor` (`git/worktree-steps.ts`) restated
+ * rather than imported (that module's package index is node-side), and pinned to it by a test:
+ *
+ *   new-branch, update main     resolve-default-branch, fetch, worktree-add, create-workspace
+ *   new-branch / attach-branch  worktree-add, create-workspace
+ *   pr-head                     fetch, worktree-add, create-workspace
+ *   existing-checkout           create-workspace
+ *
+ * …each preceded by `ticket` for a create from a ticket.
+ */
+export function worktreeProgressSteps(plan: WorktreeProgressPlan): readonly WorktreeCreateStepID[] {
+    let steps: readonly WorktreeCreateStepID[];
+    switch (plan.checkout ?? 'new-branch') {
+        case 'new-branch':
+            steps =
+                plan.updateMain === true
+                    ? ['resolve-default-branch', 'fetch', 'worktree-add', 'create-workspace']
+                    : ['worktree-add', 'create-workspace'];
+            break;
+        case 'attach-branch':
+            steps = ['worktree-add', 'create-workspace'];
+            break;
+        case 'pr-head':
+            steps = ['fetch', 'worktree-add', 'create-workspace'];
+            break;
+        case 'existing-checkout':
+            steps = ['create-workspace'];
+            break;
+    }
+    return plan.ticket === true ? ['ticket', ...steps] : steps;
+}
+
+/**
+ * The checklist the sheet shows the moment Create is pressed, before the daemon's first frame:
+ * the steps this create will run, the first one running. The boolean form is the plain create's
+ * (update main or not); a create from a ticket passes its plan, so the list starts with the
+ * lookup and is labelled for the checkout the sheet expects (the daemon's frames then say which
+ * one it is doing).
+ */
+export function initialWorktreeProgress(plan: boolean | WorktreeProgressPlan): WorktreeCreateProgress {
+    const resolved: WorktreeProgressPlan = typeof plan === 'boolean' ? { updateMain: plan } : plan;
+    const ids = worktreeProgressSteps(resolved);
     return {
         steps: ids.map((id, index) => ({ id, status: index === 0 ? 'running' : 'pending' })),
         cancelled: false,
-        detailed: true
+        detailed: true,
+        ...(resolved.checkout !== undefined ? { checkout: resolved.checkout } : {})
     };
 }
 
@@ -133,7 +199,17 @@ export function parseWorktreeProgress(raw: unknown): WorktreeCreateProgress | nu
             ...(error !== undefined ? { error } : {})
         });
     }
-    return { steps, cancelled: record['cancelled'] === true, detailed: record['detailed'] !== false };
+    const checkout = record['checkout'];
+    return {
+        steps,
+        cancelled: record['cancelled'] === true,
+        detailed: record['detailed'] !== false,
+        // A create from a ticket names how it checks out once the ticket has answered; an unknown
+        // mode (a later daemon) is dropped and the steps keep their plain labels.
+        ...(typeof checkout === 'string' && (WORKSPACE_CHECKOUT_MODES as readonly string[]).includes(checkout)
+            ? { checkout: checkout as WorkspaceCheckoutMode }
+            : {})
+    };
 }
 
 /** `3.4 s` under ten seconds, `12 s` after, `1:05` past a minute: the sheet's elapsed clock. */

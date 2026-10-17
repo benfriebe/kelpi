@@ -127,6 +127,8 @@ describe('the tab list', () => {
             'workspaces',
             // Port-only too: the pair/devices/tailnet flow (RemoteTab).
             'remote',
+            // Port-only: GitHub for workspaces made from tickets (IntegrationsTab).
+            'integrations',
             'plugins'
         ]);
     });

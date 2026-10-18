@@ -680,6 +680,16 @@ describe('resolve', () => {
         expect(f.persisted).toEqual([1]);
     });
 
+    it('fills it with the GitHub spelling when insteadOf rewrites origin onto a mirror, as the registry keeps it', async () => {
+        const repo = gitRepo({ origin: 'https://github.com/acme/api.git' });
+        git(repo, 'config', 'url./srv/mirror/api.git.insteadOf', 'https://github.com/acme/api.git');
+        const row = repoRow(repo, { remoteURL: null });
+        const f = fixture({ repos: [row] });
+        answerResolve(f.gh, issueNode());
+        await f.service.resolve(ref('acme/api#418'), signal());
+        expect(f.store.state().repos.find((entry) => entry.id === row.id)?.remoteURL).toBe('https://github.com/acme/api.git');
+    });
+
     it('fills it without a token that rides in the URL, since the registry reaches every client', async () => {
         const repo = gitRepo({ origin: 'https://octocat:ghp_SECRET@github.com/acme/api.git' });
         const row = repoRow(repo, { remoteURL: null });

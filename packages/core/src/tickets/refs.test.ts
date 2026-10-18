@@ -8,6 +8,7 @@ import {
     isGitHubRepoName,
     parseGitHubRemote,
     parseTicketRef,
+    registryRemoteURL,
     replaceGitHubRemoteRepo,
     sameGitHubRepo,
     ticketIdentity
@@ -126,6 +127,19 @@ describe('parseGitHubRemote', () => {
         ]) {
             expect(parseGitHubRemote(url), url).toBeNull();
         }
+    });
+});
+
+describe('registryRemoteURL', () => {
+    it('keeps the URL git uses, unless only the one as written names GitHub', () => {
+        // insteadOf rewrites a GitHub URL onto a mirror: only the spelling as written names GitHub.
+        expect(registryRemoteURL('/srv/mirror/api.git', 'https://github.com/acme/api.git')).toBe('https://github.com/acme/api.git');
+        // An alias that names GitHub once rewritten: the URL git uses.
+        expect(registryRemoteURL('git@github.com:acme/api', 'gh:acme/api')).toBe('git@github.com:acme/api');
+        // Neither, or nothing written: the URL git uses, as main stored it.
+        expect(registryRemoteURL('https://gitlab.com/acme/api.git', 'https://gitlab.com/acme/api.git')).toBe('https://gitlab.com/acme/api.git');
+        expect(registryRemoteURL('/srv/git/api.git', null)).toBe('/srv/git/api.git');
+        expect(registryRemoteURL('https://github.com/acme/api.git', 'https://github.com/acme/api.git')).toBe('https://github.com/acme/api.git');
     });
 });
 

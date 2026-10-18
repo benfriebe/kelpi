@@ -40,6 +40,7 @@ import {
     gitHubTicketKey,
     gitHubTicketURL,
     parseTicketRef,
+    registryRemoteURL,
     serializeTicketDefaults,
     TICKET_TITLE_MAX_LENGTH,
     ticketCreateDefaults,
@@ -376,7 +377,12 @@ export function createIntegrationsService(options: CreateIntegrationsServiceOpti
             const origin = remotes.find((remote) => remote.name === 'origin');
             if (origin === undefined) continue;
             // The registry reaches every client: never a token from the URL's userinfo.
-            options.store.dispatch({ type: 'set-repo-remote-url', id: repo.id, remoteURL: remoteURLWithoutSecrets(origin.fetchURL) });
+            options.store.dispatch({
+                type: 'set-repo-remote-url',
+                id: repo.id,
+                // The spelling that names GitHub, as `getRemoteURL` picks it (`registryRemoteURL`).
+                remoteURL: remoteURLWithoutSecrets(registryRemoteURL(origin.fetchURL, origin.configuredFetchURL))
+            });
             changed = true;
         }
         if (changed) options.persist?.();

@@ -22,6 +22,7 @@ export {
     isGitHubRepoName,
     parseGitHubRemote,
     parseTicketRef,
+    registryRemoteURL,
     replaceGitHubRemoteRepo,
     sameGitHubRepo,
     ticketIdentity

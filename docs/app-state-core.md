@@ -250,7 +250,7 @@ interface Repo {
   id: UUID;
   path: string;             // absolute path of the main repository checkout
   name: string;             // defaults to last path component of path
-  remoteURL: string | null; // `git remote get-url origin`, resolved async, without a URL's userinfo
+  remoteURL: string | null; // origin's URL, resolved async (`getRemoteURL`, §7.2), without a URL's userinfo
   lastAccessedAt: Date;
   isAutoDiscovered: boolean; // true = created by auto-link; eligible for GC (see 7.6)
 }
@@ -1149,8 +1149,12 @@ gray)` for every label they introduce, so a CLI-applied label is never an orphan
 - If a repo with this exact `path` exists: when it is `isAutoDiscovered`, promote it
   (`isAutoDiscovered = false`, persist) - a manual add "keeps" a previously auto-discovered repo;
   otherwise no-op.
-- Else mint an id, resolve `remoteURL` async (`git remote get-url origin`, null on failure/empty),
-  then `repoAdded(repo)` appends to the registry and persists. (`name` defaults to the last path
+- Else mint an id, resolve `remoteURL` async (`git remote get-url origin`, null on failure/empty;
+  but when only `remote.origin.url` as written names a GitHub repository, as when a repo-local
+  `url.<base>.insteadOf` rewrites a GitHub URL onto a mirror, that spelling: `registryRemoteURL`,
+  `@kelpi/core/tickets`, the same either-spelling rule the ticket matching uses, so the
+  Integrations tab's searchable repositories agree with the daemon's search and resolve), then
+  `repoAdded(repo)` appends to the registry and persists. (`name` defaults to the last path
   component.) The registry reaches every client, so the URL is stored without the secret a
   userinfo can carry (`remoteURLWithoutSecrets`, `@kelpi/core/git`): an `https://<token>@…` or
   `https://user:<token>@…` URL loses its whole userinfo, an SSH URL keeps its user and loses only a

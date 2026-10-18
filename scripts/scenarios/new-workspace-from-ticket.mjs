@@ -449,10 +449,17 @@ export default async function ({ page, cli, sandbox, daemon, harness, rec, d, sl
         await page.click('[data-testid="settings-tab-button-integrations"]');
         rec.check('Settings ▸ Integrations opens', await d.settleDom(page, `document.querySelector('[data-testid="settings-tab-integrations"]') !== null`, { ceilingMs: 3_000 }));
         rec.check('GitHub is not connected', (await textOf(testID('integrations-github-status-line'))) === 'Not connected', String(await textOf(testID('integrations-github-status-line'))));
-        // Not a check: the list reads the registry's `remote_url` (`git remote get-url origin`, after
-        // insteadOf), so a GitHub remote rewritten onto a mirror is listed as not searched, while
-        // search and resolve DO match it (step 2 sees `org:acme`). Recorded for the reader.
-        rec.note(`Searchable repositories: ${String(await textOf(testID('integrations-repos'))).replace(/\s+/g, ' ')}`);
+        // The registry keeps origin's GitHub spelling when only that names GitHub (insteadOf
+        // rewrites it onto the bare repository here), so the list agrees with the daemon's search
+        // (`org:acme`, step 2) and resolve: acme/api is searchable through "api".
+        const reposText = String(await textOf(testID('integrations-repos'))).replace(/\s+/g, ' ');
+        rec.check(
+            'Searchable repositories lists acme/api (through the clone "api") and nothing as not searched',
+            (await exists(testID('integrations-repo-acme/api'))) &&
+                String(await textOf(testID('integrations-repo-acme/api'))).includes('api') &&
+                !(await exists(testID('integrations-repos-other'))),
+            reposText
+        );
         rec.check('Connect… is offered (the build has a client ID: the fake’s)', await exists(testID('integrations-github-connect-button')));
         await page.click(testID('integrations-github-connect-button'));
         const codeShown = await d.settleDom(page, `document.querySelector('[data-testid="integrations-github-user-code"]')?.textContent === ${JSON.stringify(fake.userCode)}`, { ceilingMs: 10_000 });

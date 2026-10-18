@@ -73,7 +73,7 @@ interface Repo {
   id: string;              // UUID
   path: string;            // parent repo root (main checkout)
   name: string;            // defaults to last path component of path
-  remoteURL?: string;      // `git remote get-url origin`
+  remoteURL?: string;      // origin's URL (`getRemoteURL`, §3)
   lastAccessedAt: Date;
   isAutoDiscovered: boolean; // true when created by pane-cwd auto-detection; GC'd when unused
 }
@@ -281,7 +281,11 @@ Depth-first from `rootPath` (depth 0), up to `maxDepth` levels (`REPO_SCAN_MAX_D
 #### `getRemoteURL(repoPath) -> string | null`
 
 `git remote get-url origin`. Trim; empty or any failure → null (never throws;
-`packages/daemon/src/git/service.ts:278-285`).
+`packages/daemon/src/git/service.ts`). When that URL names no GitHub repository but
+`remote.origin.url` as written does (a GitHub URL a `url.<base>.insteadOf` rewrites onto a mirror or
+a local path), the URL as written instead (`registryRemoteURL`, `@kelpi/core/tickets`): the
+registry is where a client reads which repositories are on GitHub, and the ticket matching counts
+both spellings (docs/integrations.md §9.6). A non-GitHub remote keeps git's URL, as before.
 
 #### `getCurrentBranch(path) -> string | null`
 

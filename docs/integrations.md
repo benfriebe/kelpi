@@ -538,7 +538,8 @@ never track anything.
 
 A registered repository whose `remoteURL` is null gets its `origin` URL filled in
 (`set-repo-remote-url`, then a save) the first time a search or resolve reads it, once per daemon
-life (auto-detection refreshes only auto-discovered rows). The registry reaches every client, so
+life (auto-detection refreshes only auto-discovered rows), in the spelling `getRemoteURL` would
+pick (`registryRemoteURL`: git's URL, unless only the one as written names GitHub). The registry reaches every client, so
 the URL is stored without its userinfo's secret (`remoteURLWithoutSecrets`, app-state-core.md
 §7.2): `https://user:ghp_…@github.com/o/r` is kept as `https://github.com/o/r`. The token in such a
 URL is never sent anywhere by Kelpi either way; this only keeps it out of the registry.

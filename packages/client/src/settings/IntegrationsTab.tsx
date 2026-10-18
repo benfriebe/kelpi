@@ -23,7 +23,9 @@
  *      only this path, and says why.
  *   3. **Searchable repositories**: the registered repositories with a GitHub remote, read from
  *      the registry's `remote_url`, because a ticket can only start a workspace in a repository
- *      Kelpi knows, and typed searches are scoped to their owners.
+ *      Kelpi knows, and typed searches are scoped to their owners. The daemon keeps that URL in
+ *      the spelling that names GitHub when only the one as written does (`registryRemoteURL`), so
+ *      this list agrees with the daemon's own matching for a remote `insteadOf` rewrites.
  *
  * Which device code is still worth showing is decided by the flow id (plan P10): the code stays
  * while the status names no flow yet (the reply can beat the frame) or names OURS as pending; a

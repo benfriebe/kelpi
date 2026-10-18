@@ -1947,8 +1947,10 @@ registries instead); nothing persists to a per-app preferences store.
      such as a fine-grained token's are shown). A build with no GitHub OAuth app offers only
      this path and says so.
    - *Searchable repositories*: the registered repositories with a GitHub remote (from the
-     registry's `remote_url`), each GitHub repository once with the registry rows that point at
-     it, and the ones not searched for want of a GitHub remote.
+     registry's `remote_url`, which the daemon keeps in the spelling that names GitHub when only the
+     one as written does, so a GitHub remote `insteadOf` rewrites onto a mirror is listed, as the
+     daemon's search and resolve match it), each GitHub repository once with the registry rows that
+     point at it, and the ones not searched for want of a GitHub remote.
    - A paired device's session sees the status read-only (no Connect, Disconnect or token
      field) with a line saying only the daemon's owner can change it; a daemon that predates
      integrations gets one line saying it cannot link GitHub.

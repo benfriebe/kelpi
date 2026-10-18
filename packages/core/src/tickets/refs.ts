@@ -187,6 +187,19 @@ export function parseGitHubRemote(url: string): GitHubRemote | null {
 }
 
 /**
+ * The URL the repository registry keeps for a remote (`repo.remoteURL`): the one git uses
+ * (`git remote get-url`, `url.<base>.insteadOf` applied), unless only the one as written in the
+ * config names a GitHub repository (a GitHub URL that `insteadOf` rewrites onto a mirror or a local
+ * path), then that one. The same either-spelling rule the daemon matches tickets by
+ * (`remoteFetchesFrom`), so every reader of the registry (the Integrations tab's searchable
+ * repositories) agrees with the daemon about which repository is on GitHub.
+ */
+export function registryRemoteURL(asUsed: string, asWritten: string | null): string {
+    if (parseGitHubRemote(asUsed) !== null || asWritten === null) return asUsed;
+    return parseGitHubRemote(asWritten) !== null ? asWritten : asUsed;
+}
+
+/**
  * The same remote URL pointed at another repository: only `owner/name` changes, so the scheme, the
  * user, an SSH host alias and a `.git` suffix all carry over (a fork's push URL is built this way
  * from the base remote's, so it authenticates exactly as the base remote does). Null when `url`

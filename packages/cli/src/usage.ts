@@ -481,8 +481,9 @@ head branch for a pull request, and, with --agent but no prompt, a prompt
 pointing the agent at the ticket. It writes the ticket's text to
 .kelpi/ticket-<n>.md in the checkout and prints the checkout mode and that
 file. A pull request is checked out on its own head branch, so a /pull/
-URL with --branch or --update-main is refused; <owner>/<name>#<n> does not
-say which kind it is, so for it the daemon decides.
+URL with --update-main is refused (<owner>/<name>#<n> does not say which
+kind it is, so for it the daemon decides); --branch names the local branch
+the head is checked out on.
 
 Examples:
   kelpi workspace create --worktree eng-123 --agent claude --prompt "Fix the login timeout"

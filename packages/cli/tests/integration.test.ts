@@ -2516,20 +2516,27 @@ describe('workspace create / label / mute', () => {
             });
         });
 
-        it('refuses --branch and --update-main for a pull request URL, and a reference that does not parse', async () => {
-            const branch = await runCLI(['workspace', 'create', '--from', `${PR_URL}/files`, '--branch', 'mine'], { port: server.port });
-            expect(branch.code).toBe(1);
-            expect(branch.stdout).toBe('');
-            expect(branch.stderr).toBe(
-                "workspace create can't take --branch with a pull request: it is checked out on its own head branch\n"
-            );
+        it('sends --branch with a pull request URL (it renames the local branch), refuses --update-main for one, and a reference that does not parse', async () => {
+            // graft-git.md §8.5.3: the head is checked out on the branch the request names, so the
+            // URL form behaves as `owner/name#n --branch` does.
+            server.respond(ticketDaemon);
+            const branch = await runCLI(['workspace', 'create', '--from', `${PR_URL}/files`, '--branch', 'review'], { port: server.port });
+            expect(branch.stderr).toBe('');
+            expect(branch.code).toBe(0);
+            expect(await lastRequest()).toEqual({ command: 'workspace-create', ticket: `${PR_URL}/files`, branch: 'review' });
+
             const updateMain = await runCLI(['workspace', 'create', '--from', PR_URL, '--worktree', 'x', '--update-main'], {
                 port: server.port
             });
             expect(updateMain.code).toBe(1);
+            expect(updateMain.stdout).toBe('');
             expect(updateMain.stderr).toBe(
                 "workspace create can't take --update-main with a pull request: it is checked out on its own head branch\n"
             );
+            // --branch with --update-main: the update main refusal, nothing sent.
+            const both = await runCLI(['workspace', 'create', '--from', PR_URL, '--branch', 'review', '--update-main'], { port: server.port });
+            expect(both.code).toBe(1);
+            expect(both.stderr).toContain("can't take --update-main with a pull request");
 
             for (const ref of ['', '  ', 'acme/api', 'https://gitlab.com/acme/api/issues/7', 'acme/api#0', 'github.com/acme/api/pulls']) {
                 // Before stdin is read, like every other refusal.
@@ -2545,7 +2552,8 @@ describe('workspace create / label / mute', () => {
             // `--from` with no value is left over, like any flag in final position.
             const dangling = await runCLI(['workspace', 'create', '--from'], { port: server.port });
             expect(dangling.code).toBe(1);
-            expect(server.requests).toHaveLength(0);
+            // Only the --branch create reached the daemon: every refusal sent nothing.
+            expect(server.requests).toHaveLength(1);
         });
 
         it('prints the worktree, branch, ticket, checkout and ticket file, with warnings on stderr', async () => {

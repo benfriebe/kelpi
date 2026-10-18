@@ -25,8 +25,10 @@
  * wire-protocol.md §6.3, integrations.md): the daemon resolves it with its own credential and
  * fills whatever the command leaves unsaid (name, repository, worktree, branch, the agent's
  * prompt). So the CLI never sends its cwd as the source repo for it, and refuses locally only what
- * it can know without GitHub: a reference that does not parse, and `--branch`/`--update-main` for
- * a pull request URL (an `owner/name#n` does not say which it is, so the daemon judges those).
+ * it can know without GitHub: a reference that does not parse, and `--update-main` for a pull
+ * request URL (an `owner/name#n` does not say which it is, so the daemon judges those). `--branch`
+ * is sent for either: it names the local branch a pull request's head is checked out on
+ * (graft-git.md §8.5.3 allows renaming it), as the daemon accepts for `owner/name#n` too.
  */
 
 import fs from 'node:fs';
@@ -252,14 +254,13 @@ async function handleWorkspaceCreate(args: string[]): Promise<void> {
             );
             exit(1);
         }
-        // A pull request is checked out on its own head. Only a `/pull/` URL says it is one;
-        // for `owner/name#n` the daemon finds out and judges these itself.
-        if (ref.kind === 'pr') {
-            const misfit = branch !== null ? '--branch' : updateMain ? '--update-main' : null;
-            if (misfit !== null) {
-                errLine(`workspace create can't take ${misfit} with a pull request: it is checked out on its own head branch`);
-                exit(1);
-            }
+        // A pull request is checked out on its own head, so update main (a new branch off the
+        // default branch) does not apply. Only a `/pull/` URL says it is one; for `owner/name#n`
+        // the daemon finds out and judges it itself. `--branch` is fine for both: it only names
+        // the local branch the head is checked out on (graft-git.md §8.5.3).
+        if (ref.kind === 'pr' && updateMain) {
+            errLine("workspace create can't take --update-main with a pull request: it is checked out on its own head branch");
+            exit(1);
         }
     }
     // Read last, after every refusal above, so a doomed command never waits on stdin.

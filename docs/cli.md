@@ -1139,11 +1139,13 @@ kelpi workspace create --from <url|owner/name#n> [--name "..."] [--repo <path> |
   sent, exit 1): a `--from` that `parseTicketRef` (`@kelpi/core/tickets`, the parser the daemon
   uses) cannot read => `kelpi workspace create: '<ref>' is not a GitHub issue or pull request
   (expected its URL or <owner>/<name>#<n>)` (an empty value too, which the wire would read as no
-  ticket at all); a pull request URL (`/pull/<n>`) with `--branch` or `--update-main` =>
-  `workspace create can't take <flag> with a pull request: it is checked out on its own head
-  branch`. `<owner>/<name>#<n>` does not say whether it names an issue or a pull request, so with
-  it both flags are sent and the daemon decides (the CLI refuses only what it can know without
-  GitHub).
+  ticket at all); a pull request URL (`/pull/<n>`) with `--update-main` => `workspace create
+  can't take --update-main with a pull request: it is checked out on its own head branch`.
+  `<owner>/<name>#<n>` does not say whether it names an issue or a pull request, so with it the
+  flag is sent and the daemon decides (the CLI refuses only what it can know without GitHub).
+  `--branch` is sent with either form: for a pull request it names the local branch the head is
+  checked out on (graft-git.md §8.5.3 allows renaming it), so `--from <pull URL> --branch review`
+  and `--from <owner>/<name>#<n> --branch review` do the same thing.
 - `--prompt-file` is read by the CLI, not the daemon (which may be on another host): a path
   relative to the CLI's cwd, decoded as UTF-8, `-` meaning stdin to EOF (a file named `-` is
   `./-`). Unreadable => `kelpi workspace create: cannot read --prompt-file '<path>': <reason>`

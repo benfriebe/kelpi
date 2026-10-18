@@ -808,17 +808,15 @@ export default async function ({ page, cli, sandbox, daemon, harness, rec, d, sl
                 !prSteps.some((entry) => entry.id === 'resolve-default-branch'),
             JSON.stringify(prSteps.map((entry) => [entry.id, entry.status, entry.label]))
         );
-        /*
-         * KNOWN (reported, not yet fixed): the daemon's FIRST frame for a ticket create carries no
-         * `checkout` (`handlers/app/workspaces.ts` ▸ `handleTicketCreate` builds its tracker without
-         * the guessed mode), so for a pull request the sheet relabels its rows "Fetch the latest
-         * main" / "Create the worktree" until the re-plan frame puts the pull request's labels back.
-         * Make this a check once the first frame names its guess.
-         */
+        // The daemon's FIRST frame names its guessed mode (`pr-head` for a /pull/ URL), so the rows
+        // never flicker to a plain create's labels before the re-plan frame.
         const mislabelled = ['Fetch the latest main', 'Create the worktree'].filter((label) => prSteps.some((entry) => entry.label === label));
-        rec.note(
-            `pull request rows' labels, in order: fetch ${JSON.stringify(labelsOf(prSteps, 'fetch'))}, worktree-add ${JSON.stringify(labelsOf(prSteps, 'worktree-add'))}` +
-                (mislabelled.length === 0 ? '' : ` (KNOWN: briefly drawn with a plain create's labels: ${mislabelled.join(', ')})`)
+        rec.check(
+            'the pull request’s rows never show a plain create’s labels, not even before the ticket answers',
+            mislabelled.length === 0 &&
+                labelsOf(prSteps, 'fetch').every((label) => label === 'Fetch the pull request') &&
+                labelsOf(prSteps, 'worktree-add').every((label) => label === 'Check out the pull request'),
+            `fetch ${JSON.stringify(labelsOf(prSteps, 'fetch'))}, worktree-add ${JSON.stringify(labelsOf(prSteps, 'worktree-add'))}`
         );
         const prWorkspace = await workspaceNamed(PR_NAME);
         rec.check('the workspace "#8 Retry on 401" exists', prWorkspace !== undefined, JSON.stringify((await listed()).map((workspace) => workspace.name)));

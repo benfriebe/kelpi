@@ -1615,8 +1615,10 @@ frame is the WHOLE list (`serializeWorktreeProgress`, `git/worktree-steps.ts`):
   can take seconds and can be cancelled like any step (a cancel answers
   `{ok:false, error:"worktree create cancelled"}` with the `ticket` step `failed`/`cancelled`).
   Only once the ticket has answered does the create know how it checks out, so the list is
-  re-planned then (`tracker.replan`) and every later frame names it as `checkout`
-  (`WorkspaceCheckoutMode`), so a client labels each step for what it does:
+  re-planned then (`tracker.replan`). Until then the frames carry a first guess from what the
+  reference names (`pr-head` for a `/pull/` URL, else `new-branch`), and every frame, the first
+  included, names its mode as `checkout` (`WorkspaceCheckoutMode`), so a client labels each step
+  for what it does and a pull request's rows never show a plain create's labels:
 
   | `checkout` | steps after `ticket` |
   |---|---|

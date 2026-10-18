@@ -473,6 +473,8 @@ describe.skipIf(!HAS_GIT)('workspace-create from an issue', { timeout: 30_000 },
         expect(answer).toMatchObject({ ok: true, repo_path: fx.work, checkout: 'existing-checkout', ticket_file: issueFile(fx.work) });
         const frames = reply.events.filter((event) => event.kind === 'progress').map((event) => event.payload);
         expect((frames[0] as { steps: unknown[] }).steps[0]).toEqual({ id: 'ticket', status: 'running', detail: 'acme/api#418' });
+        // An issue URL's first guess is a new branch, named as such until the plan says otherwise.
+        expect((frames[0] as { checkout?: string }).checkout).toBe('new-branch');
         expect(frames.at(-1)).toEqual({
             kind: 'worktree-create',
             steps: [
@@ -535,7 +537,11 @@ describe.skipIf(!HAS_GIT)('workspace-create from a pull request', { timeout: 30_
         expect(git(wt, 'rev-parse', 'HEAD')).toBe(head);
         expect(tryGit(fx.work, 'config', '--get', 'branch.feat/login.merge')).toBe('refs/heads/feat/login');
         const frames = reply.events.filter((event) => event.kind === 'progress').map((event) => event.payload as { steps: { id: string; status: string }[]; checkout?: string });
-        expect(frames.at(-1)?.checkout).toBe('pr-head');
+        // Every frame names the pull request's mode, the first included (before the ticket has
+        // answered), so a client never labels its rows as a plain create's.
+        expect(frames.length).toBeGreaterThan(1);
+        expect(frames.map((frame) => frame.checkout)).toEqual(frames.map(() => 'pr-head'));
+        expect(frames[0]?.steps.map((step) => step.id)).toEqual(['ticket', 'fetch', 'worktree-add', 'create-workspace']);
         expect(frames.at(-1)?.steps.map((step) => [step.id, step.status])).toEqual([
             ['ticket', 'done'],
             ['fetch', 'done'],

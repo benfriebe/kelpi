@@ -1332,11 +1332,15 @@ function handleTicketCreate(
     const reply = checked.agent === undefined ? request : agentReply(request, () => agent.request, deps);
     const progress = reply?.progress?.bind(reply);
     // A first guess at the steps (the kind a URL names); `replan` corrects it once the ticket answers.
+    // The guess is named in every frame from the first, so a client labels the rows for it (a pull
+    // request's "Fetch the pull request") rather than a plain create's until the re-plan.
+    const guess: WorkspaceCheckoutMode = ref.kind === 'pr' ? 'pr-head' : 'new-branch';
     let steps: WorktreeStepTracker | null =
         progress === undefined
             ? null
             : createStepTracker({
-                  steps: worktreeStepsFor({ ticket: true, checkout: ref.kind === 'pr' ? 'pr-head' : 'new-branch', updateMain: ref.kind !== 'pr' }),
+                  steps: worktreeStepsFor({ ticket: true, checkout: guess, updateMain: ref.kind !== 'pr' }),
+                  checkout: guess,
                   emit: (snapshot) => progress(serializeWorktreeProgress(snapshot))
               });
     const signal = reply?.signal;

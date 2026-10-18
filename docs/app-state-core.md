@@ -1154,8 +1154,11 @@ gray)` for every label they introduce, so a CLI-applied label is never an orphan
   component.) The registry reaches every client, so the URL is stored without the secret a
   userinfo can carry (`remoteURLWithoutSecrets`, `@kelpi/core/git`): an `https://<token>@…` or
   `https://user:<token>@…` URL loses its whole userinfo, an SSH URL keeps its user and loses only a
-  password, and an scp-like `git@host:o/r` is kept as is. Auto-link's remote refresh and the
-  ticket resolve's backfill store it the same way.
+  password, and an scp-like `git@host:o/r` is kept as is. Every write of a remote URL into the
+  registry goes through it (`readRemoteURL` in `git/registry.ts`, or the helper itself): Settings
+  ▸ Repositories' Add and Scan Directory (`repo-add`, `repo-scan`), a repository a create
+  registers (`ensureRegisteredRepo`), auto-link's remote refresh and the ticket resolve's
+  backfill.
 
 ### 7.3 removeRepo(id)
 

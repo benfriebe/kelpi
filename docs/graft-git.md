@@ -2034,7 +2034,8 @@ spellings of one repo never register twice.
   can never collect a repo the user asked for by hand; already registered and manual
   → `ok` with the existing row, unchanged; new → registered with `name ?? basename`,
   `remoteURL` from a best-effort `getRemoteURL` without its userinfo's secret
-  (`remoteURLWithoutSecrets`), `isAutoDiscovered: false`. The path
+  (`readRemoteURL` in `git/registry.ts`, which applies `remoteURLWithoutSecrets`),
+  `isAutoDiscovered: false`. The path
   is deliberately not required to be a checkout (a directory picker can pick
   anything; the row is honest about being remote-less). Reply:
   `{ok:true, repo_id, promoted, already_registered, repo}`.
@@ -2047,7 +2048,8 @@ spellings of one repo never register twice.
 - `repo-scan {path, max_depth?}` (`repos.ts:616-667`): `scanForRepos` (§3.2) from the
   standardized `path` (depth 3 unless `max_depth` is a finite number); every find not
   already in the registry is added (`isAutoDiscovered: false`, remote URL read
-  best-effort), already-registered finds are reported rather than dropped. Reply:
+  best-effort and without its userinfo's secret, `readRemoteURL` as for `repo-add`),
+  already-registered finds are reported rather than dropped. Reply:
   `{ok:true, root, scanned, added:[repos], skipped:[paths]}`.
 
 Promotion out of auto-discovered status also happens on the two worktree-creation

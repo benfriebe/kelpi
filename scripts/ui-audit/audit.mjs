@@ -20453,14 +20453,20 @@ function buildFlows(ctx) {
                  * The expected order is DERIVED from what is on screen rather than hard-coded:
                  * whether a repo is registered by the time this flow runs depends on the run's
                  * shape, and a sequence that silently shortens is not an assertion. What is
-                 * fixed is the ORDER (`NewWorkspaceSheet.swift:378-399`).
+                 * fixed is the ORDER (`NewWorkspaceSheet.swift:378-399`). A daemon that reports
+                 * GitHub (any current one) gives the title row From ticket…, which leads the loop,
+                 * with a linked ticket's ✕ and Switch after it (shell-ui.md §10.1).
                  */
                 const expectedStops = JSON.parse(
                     String(
                         await page.eval(
                             `(() => {
                                 const has = (id) => document.querySelector('[data-testid="' + id + '"]') !== null;
-                                const order = ['New workspace name', 'new-workspace-colors'];
+                                const order = [];
+                                for (const id of ['new-workspace-from-ticket', 'new-workspace-ticket-clear', 'new-workspace-ticket-switch']) {
+                                    if (has(id)) order.push(id);
+                                }
+                                order.push('New workspace name', 'new-workspace-colors');
                                 if (has('new-workspace-group')) order.push('new-workspace-group');
                                 order.push('new-workspace-profile');
                                 // Kelpi's one stop the Swift never had (agent-lifecycle §7.6).
@@ -20508,8 +20514,10 @@ function buildFlows(ctx) {
                     await sleep(90);
                     walked.push(await focusedStop());
                 }
-                // Starting on the name field, `n` tabs visit stops 1…n-1 and then wrap to 0.
-                const expectedWalk = [...expectedStops.slice(1), expectedStops[0]];
+                // Starting on the name field, `n` tabs visit every stop after it, wrap, and end
+                // back on the name.
+                const fromName = expectedStops.indexOf('New workspace name');
+                const expectedWalk = [...expectedStops.slice(fromName + 1), ...expectedStops.slice(0, fromName + 1)];
                 recorder.note(`tab walk: ${JSON.stringify(walked)}`);
                 recorder.check(
                     'Tab walks the Swift’s Field order and wraps — Cancel and Create at the end (§WS-077)',

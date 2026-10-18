@@ -173,15 +173,28 @@ jobs:
         env:
           DMG: ${{ steps.artifacts.outputs.dmg }}
         run: |
+          # `stapler validate` and `spctl` look the ticket up at api.apple-cloudkit.com, and the
+          # runner's connection to it drops ("The network connection was lost.", error 68): v0.2.20
+          # failed here twice in a row on artifacts that were notarized. The same four tries as the
+          # DMG step; a ticket that is really missing still fails, three minutes later.
+          retry() {
+            local attempt=1
+            until "$@"; do
+              [ "$attempt" -lt 4 ] || return 1
+              echo "::warning::$1 $2 failed (attempt $attempt of 4); retrying in $((attempt * 30))s"
+              sleep $((attempt * 30))
+              attempt=$((attempt + 1))
+            done
+          }
           codesign --verify --deep --strict --verbose=2 "$APP"
-          xcrun stapler validate "$APP"
-          spctl --assess --type execute --verbose=4 "$APP"
-          xcrun stapler validate "$DMG"
-          spctl --assess --type open --context context:primary-signature --verbose=4 "$DMG"
+          retry xcrun stapler validate "$APP"
+          retry spctl --assess --type execute --verbose=4 "$APP"
+          retry xcrun stapler validate "$DMG"
+          retry spctl --assess --type open --context context:primary-signature --verbose=4 "$DMG"
           # Squirrel installs from the ZIP, so the app inside it must carry the ticket too.
           ditto -x -k release/*.zip "$RUNNER_TEMP/unzipped"
-          xcrun stapler validate "$RUNNER_TEMP/unzipped/Kelpi.app"
-          spctl --assess --type execute --verbose=4 "$RUNNER_TEMP/unzipped/Kelpi.app"
+          retry xcrun stapler validate "$RUNNER_TEMP/unzipped/Kelpi.app"
+          retry spctl --assess --type execute --verbose=4 "$RUNNER_TEMP/unzipped/Kelpi.app"
 
       - name: Upload the artifacts
         uses: actions/upload-artifact@v4

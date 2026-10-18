@@ -631,3 +631,74 @@ describe('createDaemon', () => {
         expect(second['url']).toMatch(loopbackURL(fallbackInfo.httpPort));
     }, 30_000);
 });
+
+/*
+ * agent-lifecycle.md §6.5, wired end to end: a WS window's create with `start_agent` gets its
+ * echo and a private prompt file, and a launch still waiting when the daemon stops is reported
+ * to THAT window (not broadcast), with its prompt, before the stop closes the WS server (R3).
+ */
+describe('starting an agent in a new workspace', () => {
+    it('reports a launch still waiting at stop to the window that asked, before the socket closes', async () => {
+        const paths = scratch();
+        const logs: string[] = [];
+        const daemon = daemonFor(paths, { onLog: (message) => logs.push(message) });
+        const info = await daemon.start();
+        const token = readToken(daemon.paths) ?? '';
+        const socket = new WebSocket(`ws://127.0.0.1:${String(info.httpPort)}/ws?token=${token}`);
+        cleanups.push(() => socket.close());
+        const messages: Record<string, unknown>[] = [];
+        socket.on('message', (data) => {
+            messages.push(JSON.parse(String(data)) as Record<string, unknown>);
+        });
+        const next = async (predicate: (m: Record<string, unknown>) => boolean): Promise<Record<string, unknown>> => {
+            const deadline = Date.now() + 10_000;
+            for (;;) {
+                const hit = messages.find(predicate);
+                if (hit !== undefined) return hit;
+                if (Date.now() > deadline) throw new Error('timed out');
+                await new Promise((resolve) => setTimeout(resolve, 10));
+            }
+        };
+        await new Promise<void>((resolve, reject) => {
+            socket.once('open', () => resolve());
+            socket.once('error', reject);
+        });
+        socket.send(JSON.stringify({ type: 'hello', protocolVersion: WS_PROTOCOL_VERSION, token }));
+        await next((m) => m['type'] === 'welcome');
+
+        socket.send(
+            JSON.stringify({
+                type: 'command',
+                id: 'create',
+                payload: { command: 'workspace-create', name: 'ENG-1', start_agent: 'claude', agent_prompt: 'Fix the login' }
+            })
+        );
+        const reply = (await next((m) => m['type'] === 'command-reply' && m['id'] === 'create'))['reply'] as Record<string, unknown>;
+        expect(reply).toMatchObject({ ok: true, start_agent: 'claude' });
+        const promptFile = String(reply['prompt_file']);
+        expect(path.dirname(promptFile)).toBe(path.join(path.dirname(paths.dbPath), 'prompts'));
+        expect(fs.readFileSync(promptFile, 'utf8')).toBe('Fix the login');
+        expect(fs.statSync(promptFile).mode & 0o777).toBe(0o600);
+        expect(fs.statSync(path.dirname(promptFile)).mode & 0o777).toBe(0o700);
+
+        // An attached window makes the first spawn wait for its geometry, which this one never
+        // sends: the pane has printed nothing, so the line has not been typed when the stop comes.
+        const stopped = daemon.stop();
+        const frame = await next((m) => m['type'] === 'agent-launch');
+        await stopped;
+        expect(frame).toMatchObject({
+            type: 'agent-launch',
+            workspaceID: reply['workspace_id'],
+            agent: 'claude',
+            outcome: 'failed',
+            reason: 'daemon-stopping',
+            prompt: 'Fix the login',
+            promptFile
+        });
+        expect(frame).not.toHaveProperty('broadcast');
+        expect(messages.filter((m) => m['type'] === 'agent-launch')).toHaveLength(1);
+        // The log names the file, never the prompt.
+        expect(logs.some((line) => line.includes('failed (daemon-stopping)') && line.includes(promptFile))).toBe(true);
+        expect(logs.join('\n')).not.toContain('Fix the login');
+    }, 20_000);
+});

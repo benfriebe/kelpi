@@ -192,6 +192,14 @@ export interface Toast {
     readonly paneID: string | null;
     readonly workspaceID: string | null;
     readonly createdAt: number;
+    /**
+     * Text a click on the toast puts on the clipboard, before it dismisses (`state/agent-launch.ts`:
+     * a prompt the daemon could not deliver to a new workspace's agent). The click is what makes
+     * the write possible where the page cannot write on its own (a phone, an unfocused window):
+     * it is a user gesture. Absent = a click only dismisses, as every other toast's does. Never
+     * logged and never mirrored anywhere else.
+     */
+    readonly copyText?: string | undefined;
 }
 
 export interface FocusEcho {
@@ -231,6 +239,27 @@ export interface SettingsSlice {
     readonly loaded: boolean;
     /** The last `hotkey-status` the daemon relayed from a shell (§SET-200/§SET-201). */
     readonly hotkeyStatus: HotkeyStatus | null;
+    /**
+     * Can this daemon start an agent in a new workspace (wire-protocol.md §6.3 `start_agent`)?
+     *
+     * Read off the RAW payload, because `value` cannot answer it: `hydrateSettings` fills a
+     * missing `newWorkspaceAgent` with the shipped `none`, so an older daemon's snapshot and a
+     * current one with nothing configured hydrate to the same value. The field's presence is the
+     * tell: the daemon that sends it is the one that understands `start_agent`. False until a
+     * payload says otherwise (a daemon that sends no settings at all is older still), and the New
+     * Workspace sheet draws no Agent row while it is false (plan R8).
+     */
+    readonly agentStart: boolean;
+}
+
+/**
+ * Does a settings payload come from a daemon that can start agents? See `SettingsSlice.agentStart`:
+ * the `newWorkspaceAgent` field is present, as a string, exactly when it does.
+ */
+export function settingsOfferAgentStart(raw: unknown): boolean {
+    if (!isRecord(raw)) return false;
+    const general = raw['general'];
+    return isRecord(general) && typeof general['newWorkspaceAgent'] === 'string';
 }
 
 /**
@@ -338,6 +367,34 @@ export interface KelpiState extends KelpiActions {
 
 export const MAX_TOASTS = 5;
 
+/**
+ * The stack after `pushed` was added to the end of `toasts`: at most `MAX_TOASTS`, the OLDEST
+ * going first, with two exceptions that may leave it longer.
+ *
+ *   - **A toast holding `copyText` is never evicted.** It is a prompt the daemon could not deliver
+ *     to a new workspace's agent (`./agent-launch.ts`), sticky because it is the user's only easy
+ *     way back to text they wrote; five ordinary notifications arriving after it must not take it
+ *     away. It leaves when the user clicks or dismisses it.
+ *   - **The toast just pushed is never evicted**, or a stack full of undelivered prompts would
+ *     swallow every later notification unseen; the next push evicts it in turn.
+ *
+ * So the stack can only outgrow the cap by its undelivered prompts, plus one.
+ */
+function capToasts(toasts: readonly Toast[]): Toast[] {
+    const kept = [...toasts];
+    let excess = kept.length - MAX_TOASTS;
+    let index = 0;
+    while (excess > 0 && index < kept.length - 1) {
+        if (kept[index]?.copyText === undefined) {
+            kept.splice(index, 1);
+            excess -= 1;
+        } else {
+            index += 1;
+        }
+    }
+    return kept;
+}
+
 function initialDaemonSlice(): DaemonSlice {
     return {
         state: emptyDaemonState(),
@@ -353,7 +410,7 @@ function initialDaemonSlice(): DaemonSlice {
 }
 
 function initialSettingsSlice(): SettingsSlice {
-    return { value: DEFAULT_WS_SETTINGS, loaded: false, hotkeyStatus: null };
+    return { value: DEFAULT_WS_SETTINGS, loaded: false, hotkeyStatus: null, agentStart: false };
 }
 
 function textOrNull(value: unknown): string | null {
@@ -447,6 +504,10 @@ export function hydrateSettings(raw: unknown): WsSettingsSnapshot | null {
         value === 'ask' || value === 'remove' || value === 'keep' ? value : fallback;
     const nullableNum = (value: unknown): number | null =>
         typeof value === 'number' && Number.isFinite(value) ? value : null;
+    const nonBlankText = (value: unknown, fallback: string): string =>
+        typeof value === 'string' && value.trim() !== '' ? value : fallback;
+    const agentChoice = (value: unknown, fallback: 'none' | 'claude' | 'codex'): 'none' | 'claude' | 'codex' =>
+        value === 'none' || value === 'claude' || value === 'codex' ? value : fallback;
 
     return {
         keybindLines: array(raw['keybindLines']).filter((line): line is string => typeof line === 'string'),
@@ -546,7 +607,15 @@ export function hydrateSettings(raw: unknown): WsSettingsSnapshot | null {
             copyOnSelect: bool(general['copyOnSelect'], fallbackGeneral.copyOnSelect),
             // Middle-click paste, additive in the same way: an older daemon sends nothing and the
             // shipped default (ON) stands.
-            middleClickPaste: bool(general['middleClickPaste'], fallbackGeneral.middleClickPaste)
+            middleClickPaste: bool(general['middleClickPaste'], fallbackGeneral.middleClickPaste),
+            // wire-protocol.md §6.3's agent start. Additive like the rest: a daemon that predates
+            // them sends nothing and the shipped defaults stand. A blank command is the default,
+            // as the daemon's own parse says. (A daemon that predates them also cannot start an
+            // agent, which the create reply's missing `start_agent` echo tells a caller.)
+            agentClaudeCommand: nonBlankText(general['agentClaudeCommand'], fallbackGeneral.agentClaudeCommand),
+            agentCodexCommand: nonBlankText(general['agentCodexCommand'], fallbackGeneral.agentCodexCommand),
+            newWorkspaceAgent: agentChoice(general['newWorkspaceAgent'], fallbackGeneral.newWorkspaceAgent),
+            newWorkspaceSendPrompt: bool(general['newWorkspaceSendPrompt'], fallbackGeneral.newWorkspaceSendPrompt)
         },
         // Chrome styling + status-bar settings. A daemon that predates the field sends nothing
         // and the shipped palette / gauge set stands — the same additive rule the rest of this
@@ -746,12 +815,14 @@ export function kelpiStateCreator(set: SetState, get: GetState): KelpiState {
             const value = hydrateSettings(raw);
             if (value === null) return;
             const settings = get().settings;
+            // Read before hydration can hide it: see `SettingsSlice.agentStart`.
+            const agentStart = settingsOfferAgentStart(raw);
             // Identity stability matters: every consumer of this slice is a memo dependency,
             // and a fresh object per broadcast would rebuild the key dispatcher for nothing.
-            if (settings.loaded && sameSettings(settings.value, value)) return;
+            if (settings.loaded && settings.agentStart === agentStart && sameSettings(settings.value, value)) return;
             // The hotkey report is carried over: it comes from the shell on its own schedule
             // and has nothing to do with a config-file change (§SET-200).
-            set({ settings: { value, loaded: true, hotkeyStatus: settings.hotkeyStatus } });
+            set({ settings: { value, loaded: true, hotkeyStatus: settings.hotkeyStatus, agentStart } });
         },
 
         applyHotkeyStatus(raw) {
@@ -885,9 +956,15 @@ export function kelpiStateCreator(set: SetState, get: GetState): KelpiState {
         pushToast(toast) {
             const ui = get().ui;
             // Replace-by-id: the daemon's `kelpi-<paneID>` dedupe identity applies to the in-app
-            // fallback exactly as it does to a Web Notification's `tag`.
-            const kept = ui.toasts.filter((existing) => existing.id !== toast.id);
-            const toasts = [...kept, toast].slice(-MAX_TOASTS);
+            // fallback exactly as it does to a Web Notification's `tag`. A replacement takes the
+            // place of the toast it replaces, so a toast that only changes its words (an
+            // undelivered prompt's "click to copy it" becoming "copied") does not jump to the end
+            // of the stack, nor look newer than it is to the eviction below.
+            const at = ui.toasts.findIndex((existing) => existing.id === toast.id);
+            const toasts =
+                at < 0
+                    ? capToasts([...ui.toasts, toast])
+                    : ui.toasts.flatMap((existing, index) => (index === at ? [toast] : existing.id === toast.id ? [] : [existing]));
             set({ ui: { ...ui, toasts } });
         },
 

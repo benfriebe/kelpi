@@ -45,6 +45,7 @@ interface ReplyHandle {                          // packages/daemon/src/seams.ts
   progress?(payload: object): void;   // #294, WS only: an interim frame to THIS requester
   readonly signal?: AbortSignal;      // #294, WS only: aborted by `workspace-create-cancel`
   uncancellable?(): void;             // #294, WS only: a later cancel answers cancelled:false
+  readonly originClientID?: string;   // WS only: the session a later `agent-launch` frame goes to
 }
 ```
 
@@ -1003,7 +1004,8 @@ Entry shape (timestamps plain ISO 8601):
 
 Inputs: `name?`, `path?`, `color?`, `group?`, `profile?`, `worktree?`, `branch?`,
 `updateMain?` (bool; absent is not false, see (a) step 2), `repo?`, `muted` (bool, default
-false), `groupDefaults` (bool, default true; app-state-core.md §5.5). `workspaceName = name ??
+false), `groupDefaults` (bool, default true; app-state-core.md §5.5), `startAgent?` (the raw
+string), `agentPrompt?`, `sendPrompt` (bool, default false). `workspaceName = name ??
 "Workspace"`. All three branches carry `muted` on the `create-workspace` action itself, so a
 muted workspace is muted from its first frame and its first pane never notifies (§6.7), and
 all three success replies echo `muted`, the state the workspace was created in, so a caller
@@ -1036,6 +1038,31 @@ being created` (or `… changed while …: <nestingRefusal>`), saving any repo i
 its worktree on disk, so, like a cancel that arrives after git (graft-git.md §8.5.2), it completes
 at the top level and the reply carries `parent_lost: true` and `parent_lost_reason` instead of
 `parent_id`.
+
+**Starting an agent** (`startAgent`, `agentPrompt`, `sendPrompt`; the wire contract is
+wire-protocol.md §6.3, what happens in the pane is agent-lifecycle.md §6.5). Checked FIRST, before
+any branch's own checks, mutations or git work (`prepareAgentLaunch`,
+`packages/daemon/src/handlers/app/workspaces.ts`), in this order:
+
+1. `startAgent` present but not `claude` / `codex` (case-insensitive, `parseStartAgent`) →
+   `error("unknown agent '<value>' (expected claude or codex)")`;
+2. `agentPrompt` present (even empty) or `sendPrompt` true without `startAgent` →
+   `error("agent_prompt and send_prompt need start_agent")`;
+3. `normalizeAgentPrompt(agentPrompt ?? "")`: a NUL or more than 100000 bytes is its error;
+4. a non-blank normalized prompt is written to a prompt file (`deps.agentLauncher.preparePromptFile`)
+   → on failure `error("could not write the prompt file: <reason>")`.
+
+A refusal mints no id and changes nothing (no workspace, group, repo row or git command). After
+that, on every branch: the reply handle is wrapped (`agentReply`) so that every success reply
+echoes `start_agent` (the lowercase kind) and, when a file was written, `prompt_file`, and every
+failure reply (any branch's own refusal, a git failure) first removes the prompt file; and
+`dispatchCreate` hands the id of the pane `spawnFirstPane` actually spawned to
+`deps.agentLauncher.start({ paneID, workspaceID, request, originClientID: reply.originClientID })`
+right after the spawn is asked for. The launcher reports the outcome later, as an `agent-launch`
+frame (agent-lifecycle.md §6.5.6). Reply-before-effect is unchanged: on (b) and (c) the reply,
+echo included, still goes out before the workspace exists. A handler table built without an
+`agentLauncher` gets `INERT_AGENT_LAUNCHER`, which starts nothing and refuses any prompt
+(`could not write the prompt file: agent launch is not available`).
 
 Four branches, checked in this order ((d) is checked before (b) and (c)):
 

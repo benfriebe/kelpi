@@ -351,7 +351,15 @@ export function buildSettingsSnapshot(
             // Copy-on-select: client-side too. The pane's engine reads it at every copy.
             copyOnSelect: general.copyOnSelect,
             // …and middle-click paste, which the pane handles itself.
-            middleClickPaste: general.middleClickPaste
+            middleClickPaste: general.middleClickPaste,
+            // wire-protocol.md §6.3 `start_agent`: the two commands are DAEMON-side (the launcher
+            // reads them off this snapshot when it types, so a Settings edit governs the next
+            // create) and ride here because Settings renders them; the sheet's two defaults are
+            // read by the client alone.
+            agentClaudeCommand: general.agentClaudeCommand,
+            agentCodexCommand: general.agentCodexCommand,
+            newWorkspaceAgent: general.newWorkspaceAgent,
+            newWorkspaceSendPrompt: general.newWorkspaceSendPrompt
         },
         appearance: {
             // §APP-014: the theme's own background when the config names none — the "resolved

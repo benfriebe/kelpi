@@ -16,7 +16,7 @@
  */
 
 import { createStore as createDaemonStore, emptyDaemonState } from '@kelpi/daemon/store';
-import { decodePluginManifest, type JsonObject, type PluginInfo } from '@kelpi/protocol';
+import { DEFAULT_WS_SETTINGS, decodePluginManifest, type JsonObject, type PluginInfo } from '@kelpi/protocol';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -57,7 +57,7 @@ const plugin: PluginInfo = {
     enabled: true, status: 'running', instanceID: 'i1', revision: 'r1', error: null
 };
 
-function setup(options: { readonly workspaces?: boolean } = {}) {
+function setup(options: { readonly workspaces?: boolean; readonly echoAgent?: boolean } = {}) {
     // Favicon painting is unrelated here and jsdom has no canvas backend.
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
     const daemon = createDaemonStore(emptyDaemonState('/Users/test'));
@@ -69,7 +69,16 @@ function setup(options: { readonly workspaces?: boolean } = {}) {
         notifications: null, tokenStorage: null, heartbeatIntervalMs: 0 });
     const request = vi.spyOn(runtime.commands, 'raw').mockImplementation(async payload => {
         // The daemon names the workspace it created; §WS-123's activation rides the reply.
-        if (payload['command'] === 'workspace-create') return { ok: true, workspace_id: CREATED, workspace_name: String(payload['name'] ?? '') } as never;
+        if (payload['command'] === 'workspace-create') {
+            return {
+                ok: true,
+                workspace_id: CREATED,
+                workspace_name: String(payload['name'] ?? ''),
+                // wire-protocol.md §6.3: a current daemon echoes the agent it will start; one
+                // that predates it (`echoAgent: false`) drops the field and echoes nothing.
+                ...(options.echoAgent !== false && typeof payload['start_agent'] === 'string' ? { start_agent: payload['start_agent'] } : {})
+            } as never;
+        }
         if (payload['command'] !== 'plugin') return { ok: true };
         if (payload['action'] === 'list') return { ok: true, result: [plugin] as never };
         if (payload['action'] === 'identity') return { ok: true, result: { daemonID: 'sidebar-host-daemon' } };
@@ -84,7 +93,16 @@ function setup(options: { readonly workspaces?: boolean } = {}) {
         menu: (command: string) => { act(() => { sockets.last().emit({ type: 'menu-command', command }); }); },
         /** A fresh mirror, the way the daemon pushes one after a create. */
         push: () => { act(() => { sockets.last().emit({ type: 'snapshot', seq: 1, state: daemon.getState() as unknown as JsonObject }); }); },
-        sheets: () => screen.queryAllByTestId('new-workspace-form')
+        sheets: () => screen.queryAllByTestId('new-workspace-form'),
+        /** A settings snapshot from a daemon that can start agents, with these two defaults. */
+        agentSettings: (newWorkspaceAgent: 'none' | 'claude' | 'codex', newWorkspaceSendPrompt = false) => {
+            act(() => {
+                sockets.last().emit({
+                    type: 'settings-changed',
+                    settings: { ...DEFAULT_WS_SETTINGS, general: { ...DEFAULT_WS_SETTINGS.general, newWorkspaceAgent, newWorkspaceSendPrompt } }
+                } as never);
+            });
+        }
     };
 }
 
@@ -105,7 +123,12 @@ const chooseSidebarView = (viewID: string): Promise<void> => chooseViews(['sideb
 /** Rows drawn by the native `Sidebar`, wherever it happens to be mounted. */
 const rows = (): HTMLElement[] => screen.queryAllByTestId('workspace-row');
 
-afterEach(() => { cleanup(); localStorage.clear(); vi.restoreAllMocks(); });
+afterEach(() => {
+    cleanup();
+    localStorage.clear();
+    vi.restoreAllMocks();
+    Reflect.deleteProperty(globalThis.navigator, 'clipboard');
+});
 
 describe('the New Workspace sheet, whatever occupies the sidebar (issue #201)', () => {
     it('draws the sheet for the menu row and for ⌘N while a plugin view replaces Workspaces', async () => {
@@ -247,5 +270,79 @@ describe('the New Workspace sheet, whatever occupies the sidebar (issue #201)', 
         expect(screen.getByLabelText('New workspace name')).toBeTruthy();
         // Still the sheet, not a bare create: §APP-018 is a form, not a command.
         expect(h.creates()).toHaveLength(0);
+    });
+
+    /*
+     * shell-ui.md §10.1's Agent row: the host sheet opens on the same two defaults the sidebar's
+     * own sheet does, and forwards the agent to the create exactly as the sidebar's does.
+     */
+    it('forwards the Agent row to the create, opening on the daemon\'s defaults', async () => {
+        const h = setup();
+        h.agentSettings('claude');
+        await chooseSidebarView(VIEW);
+        await waitFor(() => { expect(screen.getByTestId('plugin-sidebar-view')).toBeTruthy(); });
+
+        h.menu('new-workspace');
+        const form = await screen.findByTestId('new-workspace-form');
+        expect((screen.getByTestId('new-workspace-agent') as HTMLSelectElement).value).toBe('claude');
+        fireEvent.change(screen.getByLabelText('New workspace name'), { target: { value: 'agentic' } });
+        fireEvent.change(screen.getByTestId('new-workspace-agent-prompt'), { target: { value: 'Fix ENG-123' } });
+        fireEvent.submit(form);
+
+        await waitFor(() => { expect(h.creates()).toHaveLength(1); });
+        expect(h.creates()[0]).toMatchObject({ command: 'workspace-create', name: 'agentic', start_agent: 'claude', agent_prompt: 'Fix ENG-123' });
+        expect(h.creates()[0]).not.toHaveProperty('send_prompt');
+        await waitFor(() => { expect(h.sheets()).toHaveLength(0); });
+        // The daemon echoed the agent, so nothing is said.
+        expect(h.runtime.store.getState().ui.toasts).toEqual([]);
+    });
+
+    it('offers no Agent row over a daemon whose settings predate it', async () => {
+        const h = setup();
+        // No settings at all on the handshake (an older daemon): the row is not drawn.
+        await chooseSidebarView(VIEW);
+        await waitFor(() => { expect(screen.getByTestId('plugin-sidebar-view')).toBeTruthy(); });
+        h.menu('new-workspace');
+        await screen.findByTestId('new-workspace-form');
+        expect(screen.queryByTestId('new-workspace-agent')).toBeNull();
+        fireEvent.keyDown(window, { key: 'Escape' });
+        await waitFor(() => { expect(h.sheets()).toHaveLength(0); });
+
+        // The same daemon, upgraded: its next settings broadcast carries the field.
+        h.agentSettings('none');
+        h.menu('new-workspace');
+        await screen.findByTestId('new-workspace-form');
+        expect((screen.getByTestId('new-workspace-agent') as HTMLSelectElement).value).toBe('none');
+    });
+
+    /*
+     * Plan R8's backstop, end to end: the reply carries no `start_agent` echo, so the user is told
+     * and offered the prompt; and the toast's click is what copies it (inside the gesture), before
+     * it dismisses.
+     */
+    it('says so when the daemon did not start the agent, and a click on the toast copies the prompt', async () => {
+        const writeText = vi.fn((_text: string): Promise<void> => Promise.reject(new Error('Document is not focused.')));
+        Object.defineProperty(globalThis.navigator, 'clipboard', { value: { writeText }, configurable: true });
+        const h = setup({ echoAgent: false });
+        h.agentSettings('codex', true);
+        h.menu('new-workspace');
+        const form = await screen.findByTestId('new-workspace-form');
+        expect((screen.getByTestId('new-workspace-agent-send') as HTMLInputElement).checked).toBe(true);
+        fireEvent.change(screen.getByLabelText('New workspace name'), { target: { value: 'agentic' } });
+        fireEvent.change(screen.getByTestId('new-workspace-agent-prompt'), { target: { value: 'Ship it' } });
+        fireEvent.submit(form);
+
+        await waitFor(() => { expect(h.creates()).toHaveLength(1); });
+        expect(h.creates()[0]).toMatchObject({ start_agent: 'codex', agent_prompt: 'Ship it', send_prompt: true });
+        const toast = await screen.findByTestId('toast-agent-start-unsupported');
+        // The automatic copy was refused (an unfocused window), so the title asks for a click.
+        await waitFor(() => { expect(writeText).toHaveBeenCalledTimes(1); });
+        expect(toast.textContent).toContain('This daemon is too old to start agents: click to copy the prompt');
+
+        writeText.mockImplementation(() => Promise.resolve());
+        fireEvent.click(toast);
+        expect(writeText).toHaveBeenCalledTimes(2);
+        expect(writeText).toHaveBeenLastCalledWith('Ship it');
+        await waitFor(() => { expect(screen.queryByTestId('toast-agent-start-unsupported')).toBeNull(); });
     });
 });

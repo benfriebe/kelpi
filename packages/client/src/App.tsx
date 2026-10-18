@@ -253,6 +253,7 @@ import {
     type SettingsTabID
 } from './settings';
 import {
+    activateToast,
     isAppActive,
     selectActiveWorkspace,
     selectActiveWorkspaceID,
@@ -1157,7 +1158,18 @@ function Shell(props: AppProps): ReactElement {
         setLaterOldHosts([]);
         writeLaterOldHosts([]);
     }, []);
-    const dismissToast = useCallback((id: string): void => store.getState().dismissToast(id), [store]);
+    /*
+     * A click on toast `id`, in this page's stack or relayed from the shell's corner layer. A plain
+     * toast is dismissed; one holding an undelivered agent prompt (`copyText`) is copied first and
+     * dismissed once the write lands (`activateToast`).
+     */
+    const clickToast = useCallback(
+        (id: string): void => {
+            const toast = store.getState().ui.toasts.find((candidate) => candidate.id === id);
+            if (toast !== undefined) activateToast(store, toast);
+        },
+        [store]
+    );
 
     /** Fire a command and surface a failure as a toast; never throw into an event handler. */
     const run = useCallback(
@@ -5502,7 +5514,7 @@ function Shell(props: AppProps): ReactElement {
             <ToastStack
                 toasts={ui.toasts}
                 oldHosts={oldHostsNotice}
-                onDismiss={dismissToast}
+                onDismiss={clickToast}
                 onRestartOldHosts={restartOldTerminals}
                 onLaterOldHosts={laterOldTerminals}
             />

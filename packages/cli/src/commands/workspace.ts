@@ -14,12 +14,19 @@
  * never forcing, so a dirty or locked worktree is kept and reported as a warning. Only a daemon that
  * predates the field (its reply has no `worktrees`) falls back to the old CLI-side prune of the
  * reply's `path`.
+ *
+ * `create --agent` asks the daemon to start an agent in the first pane (`start_agent`,
+ * wire-protocol.md §6.3). The CLI reads `--prompt-file` itself (the daemon may be on another
+ * host) and ships the text raw: normalising and the size limit are the daemon's. The reply never
+ * waits for the agent, so the CLI can only report what the daemon accepted; how the launch went
+ * reaches Kelpi windows as an `agent-launch` frame.
  */
 
+import fs from 'node:fs';
 import path from 'node:path';
 
 import { iconRefusal } from '@kelpi/core/codec';
-import { WORKSPACE_COLORS, parseWorkspaceColor } from '@kelpi/protocol';
+import { WORKSPACE_COLORS, parseStartAgent, parseWorkspaceColor, unknownStartAgentError } from '@kelpi/protocol';
 
 import {
     absoluteUserPath,
@@ -157,6 +164,10 @@ async function handleWorkspaceCreate(args: string[]): Promise<void> {
     const iconFlag = parseFlag('--icon', args);
     const parent = parseFlag('--parent', args);
     const nested = popSwitch('--nested', args);
+    const agentRaw = parseFlag('--agent', args);
+    const prompt = parseFlag('--prompt', args);
+    const promptFile = parseFlag('--prompt-file', args);
+    const send = popSwitch('--send', args);
     const asJSON = popSwitch('--json', args);
     const focus = popSwitch('--focus', args);
     rejectLeftoverArgs(args, 'kelpi workspace create', { usage: (write) => write(workspaceCreateUsage) });
@@ -185,6 +196,27 @@ async function handleWorkspaceCreate(args: string[]): Promise<void> {
         exit(1);
     }
     const nesting = parent !== null || nested;
+    if (prompt !== null && promptFile !== null) {
+        errLine("workspace create can't take both --prompt and --prompt-file");
+        exit(1);
+    }
+    if (agentRaw === null) {
+        // The daemon refuses these too, but only after a round trip; naming the flag is kinder.
+        const orphan = prompt !== null ? '--prompt' : promptFile !== null ? '--prompt-file' : send ? '--send' : null;
+        if (orphan !== null) {
+            errLine(`workspace create can't take ${orphan} without --agent`);
+            exit(1);
+        }
+    }
+    // Refused here with the daemon's own wording (`unknownStartAgentError`), so a typo reads the
+    // same whichever side catches it, and fails before `--prompt-file -` has consumed stdin.
+    const agent = agentRaw === null ? null : parseStartAgent(agentRaw);
+    if (agent === undefined) {
+        errLine(`kelpi workspace create: ${unknownStartAgentError(agentRaw ?? '')}`);
+        exit(1);
+    }
+    // Read last, after every refusal above, so a doomed command never waits on stdin.
+    const agentPrompt = promptFile !== null ? await readPromptFile(promptFile) : prompt;
 
     const payload: JsonObject = { command: 'workspace-create' };
     if (name !== null) payload['name'] = name;
@@ -225,6 +257,13 @@ async function handleWorkspaceCreate(args: string[]): Promise<void> {
             }
         }
     }
+    if (agent !== null) {
+        payload['start_agent'] = agent;
+        // Sent even when empty: the daemon reads a blank prompt as "start the agent, nothing more".
+        if (agentPrompt !== null) payload['agent_prompt'] = agentPrompt;
+        // Explicit either way: without --send the CLI prefills, as the New Workspace sheet does.
+        payload['send_prompt'] = send;
+    }
 
     // `git worktree add` (plus a network fetch with --update-main) runs well past the 5s
     // default, and a slow-but-succeeding create must not read as a failure. A create that
@@ -236,14 +275,25 @@ async function handleWorkspaceCreate(args: string[]): Promise<void> {
     );
     const workspaceName = asString(reply['workspace_name']) ?? name ?? 'Workspace';
     const workspaceID = asString(reply['workspace_id']) ?? '?';
-    // A daemon that predates `muted` drops the field and creates the workspace unmuted, which is
-    // the one outcome a conductor spawning quiet children must not miss: say so and fail.
+    // A daemon that predates a field drops it and creates the workspace without it: unmuted for
+    // `muted`, with no agent for `start_agent` (a success echoes it). Either is an outcome the
+    // caller must not miss, so say so (the workspace exists either way) and fail.
+    const notApplied: string[] = [];
     if (muted && asBool(reply['muted']) !== true) {
-        if (asJSON) printLine(stableStringify(reply));
-        errLine(
-            `kelpi workspace create: the daemon did not apply --muted; restart it on this build ` +
+        notApplied.push(
+            `the daemon did not apply --muted; restart it on this build ` +
                 `(workspace ${workspaceName} (${workspaceID}) was created unmuted)`
         );
+    }
+    if (agent !== null && asString(reply['start_agent']) === undefined) {
+        notApplied.push(
+            `the daemon is too old to start agents; restart it on this build ` +
+                `(workspace ${workspaceName} (${workspaceID}) was created without an agent)`
+        );
+    }
+    if (notApplied.length > 0) {
+        if (asJSON) printLine(stableStringify(reply));
+        for (const line of notApplied) errLine(`kelpi workspace create: ${line}`);
         exit(1);
     }
     // The same for `icon`: an older daemon ignores the key and leaves the first letter.
@@ -292,11 +342,44 @@ async function handleWorkspaceCreate(args: string[]): Promise<void> {
         printLine(
             `created workspace ${workspaceName} (${workspaceID})${inGroup} with worktree ${worktreePath} on branch ${resolvedBranch}${fromMain}`
         );
-        return;
+    } else {
+        const repoPath = asString(reply['repo_path']);
+        const withRepo = repoPath !== undefined ? ` with repo ${repoPath}` : '';
+        printLine(`created workspace ${workspaceName} (${workspaceID})${inGroup}${withRepo}`);
     }
-    const repoPath = asString(reply['repo_path']);
-    const withRepo = repoPath !== undefined ? ` with repo ${repoPath}` : '';
-    printLine(`created workspace ${workspaceName} (${workspaceID})${inGroup}${withRepo}`);
+    // The daemon's copy of the prompt. A prefill that falls back is reported only to Kelpi
+    // windows, and with none attached this path is where the text still is.
+    const promptPath = asString(reply['prompt_file']);
+    if (promptPath !== undefined) printLine(`  prompt file: ${promptPath}`);
+}
+
+/**
+ * `--prompt-file <path>`, or stdin for `-`, decoded as UTF-8. Unreadable input fails here, before
+ * anything is sent; what the text may contain is the daemon's call.
+ */
+async function readPromptFile(file: string): Promise<string> {
+    if (file === '-') {
+        try {
+            const chunks: Buffer[] = [];
+            for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
+            return Buffer.concat(chunks).toString('utf8');
+        } catch (error) {
+            errLine(`kelpi workspace create: cannot read the prompt from stdin: ${readErrorReason(error)}`);
+            exit(1);
+        }
+    }
+    try {
+        return fs.readFileSync(file, 'utf8');
+    } catch (error) {
+        errLine(`kelpi workspace create: cannot read --prompt-file '${file}': ${readErrorReason(error)}`);
+        exit(1);
+    }
+}
+
+/** Node's `ENOENT: no such file or directory, open '/x'` without the syscall tail. */
+function readErrorReason(error: unknown): string {
+    if (!(error instanceof Error)) return String(error);
+    return error.message.replace(/, [a-z]+(?: '.*')?$/, '');
 }
 
 async function handleWorkspaceMove(args: string[]): Promise<void> {

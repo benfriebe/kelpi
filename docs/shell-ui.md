@@ -1363,7 +1363,58 @@ Fields, top to bottom:
    asks the daemon to start fetching that repo's default branch (`repo-prefetch`), once per
    repo per opening. Nothing about it is shown; a create moments later reuses it
    (graft-git.md §8.5.1).
-8. **Progress** (Kelpi addition, issue #294; `WorktreeCreateProgress.tsx`), a worktree create
+8. **Agent** (Kelpi addition; wire-protocol.md §6.3 `start_agent`): an "Agent" dropdown, None /
+   Claude Code / Codex, opening on the `new-workspace-agent` setting (default None;
+   config-keybindings.md §1.2). Choosing an agent reveals, indented under it, a **Prompt** text
+   area (4 rows, the user may drag it taller, optional, placeholder "Optional: what to ask
+   <agent>") and a **Send immediately** checkbox (opening on `new-workspace-send-prompt`, default
+   off), with a tertiary caption saying what the box decides: on, the agent starts with the prompt
+   and runs it at once; off, the prompt is pasted into the agent's input for the user to edit and
+   send. Going back to None hides both and keeps what was typed. The create sends only the kind
+   (`start_agent`), the prompt as typed (`agent_prompt`, omitted when blank) and `send_prompt:
+   true` when ticked; the command typed into the pane is the daemon's own
+   (`agent-claude-command` / `agent-codex-command`). The agent starts in the first pane the create
+   opens: the worktree for a worktree create, the one repo's directory for a single-repo create,
+   else home. The sheet "New Nested Workspace…" opens (app-state-core.md §2.9) has the same row,
+   and its agent starts in the nested workspace's first pane. The row is not drawn at all when
+   the daemon's settings snapshot lacks `newWorkspaceAgent` (a daemon that predates agent starts
+   would drop `start_agent` and make a plain workspace); and should a create that asked for an
+   agent come back without the `start_agent` echo anyway, a toast says "This daemon is too old to
+   start agents" and offers the prompt to copy. Not on the New Group sheet (§10.4), and the phone
+   shell's New workspace sheet has no such row and does not apply the default.
+   **Prompt not delivered** (the `agent-launch` frame, `packages/client/src/state/agent-launch.ts`):
+   a launch that worked (`launched`, `sent`, `prefilled`) shows nothing. A `fallback` (the agent
+   started, the prompt was not pasted) or a `failed` (no agent started) raises a sticky toast,
+   one per pane (`agent-launch-<paneID>`), whose body names the reason in plain words and which
+   holds the prompt. In the window that sent the create, and only within a minute of it sending
+   the create (`AGENT_LAUNCH_AUTO_COPY_MS`; the window notes when it sent each create that asked
+   for an agent, by the workspace id the reply names), the prompt is also copied to the clipboard
+   at once. A frame broadcast to every window (a CLI create, or a window since closed), one that
+   arrives later than that (a trust dialog can hold a launch for up to ten minutes, and by then
+   the clipboard holds whatever the user copied since), and any `daemon-stopping` frame copy
+   nothing on their own. The title says which: "Prompt not delivered to Claude Code: copied
+   to the clipboard", or "...: click to copy it" when the copy was not made or was refused (a
+   phone, an unfocused window). Clicking the toast copies the prompt (the click is the user
+   gesture a browser asks for) and dismisses it; if even that write is refused, the toast stays,
+   shows the prompt's opening and no longer offers a copy. In the Electron shell the click lands
+   on the corner layer (§4.2's toast-over-a-web-page requirement), which relays it to the page as
+   the toast's `dismiss`: only a `copy` mark crosses to the layer, never the prompt, and the page
+   makes the write itself once the layer has handed the keyboard back, without a gesture of its
+   own (so the browser may refuse it, as above, when a web page rather than Kelpi held the
+   keyboard). A page with no clipboard API at all
+   (plain HTTP off localhost) shows the prompt's first 240 characters and the path of the
+   daemon's copy instead. A toast that holds a prompt is never pushed out by the toast stack's
+   cap of five (`MAX_TOASTS`, `capToasts` in `packages/client/src/state/store.ts`: the oldest
+   ordinary toast goes instead, and the newest is always shown), and a toast that is replaced
+   (its title turning from "click to copy it" to "copied") keeps its place in the stack.
+   **A create that fails** (Kelpi addition): a plain create closes the sheet when it is sent, so
+   when its reply is a failure (or never comes) a prompt typed into the Prompt box is no longer
+   on screen. If there was one, the failure is reported by a sticky toast, "Workspace not
+   created: prompt copied to the clipboard" (or "...: click to copy the prompt"), whose body is
+   the daemon's error and which holds the prompt the same way (`offerPromptOfFailedCreate`), in
+   place of the usual timed failure toast. A worktree create keeps the sheet open on a failure,
+   prompt and all.
+9. **Progress** (Kelpi addition, issue #294; `WorktreeCreateProgress.tsx`), a worktree create
    only: from the moment Create is pressed, a compact bordered panel under the fields with a
    headline ("Creating the workspace…", "Cancelling…", "Cancelled", "The workspace was not
    created"), the elapsed time on the right (tabular, `3.4 s` / `12 s` / `1:05`), and one row
@@ -1384,10 +1435,10 @@ Fields, top to bottom:
    Escape or a backdrop click does NOT close the sheet: a hint under the steps says to press
    Cancel, and that the sheet closes by itself when done (closing over a running create would
    leave it running with nothing on screen).
-9. Error line (red caption) when an async worktree creation failed: the daemon's message
+10. Error line (red caption) when an async worktree creation failed: the daemon's message
    (e.g. `branch 'x' already exists, …`), or "Create cancelled: nothing it made was kept."
    after a cancel. The sheet stays open for retry, with the form re-enabled.
-10. Cancel / **Create**. Create is disabled while a worktree submission is in flight
+11. Cancel / **Create**. Create is disabled while a worktree submission is in flight
    (double-submit guard) and reads "Creating…". While a worktree create runs, Cancel CANCELS
    it (`workspace-create-cancel` for the request id the sheet minted; the daemon kills git
    and removes the partial worktree and branch, graft-git.md §8.5.2) and reads
@@ -1399,10 +1450,17 @@ Fields, top to bottom:
 
 Keyboard: Tab / Shift-Tab cycle through every *visible* control in reading order
 (name → color → group → profile → mute → repo removes → add-repo → worktree toggle →
-worktree fields → cancel → create), wrapping; the Create stop is omitted while disabled,
-and while a worktree create runs Cancel is the only stop (and takes focus).
-Return submits from anywhere in the sheet, not only from a text field
-(`NewWorkspaceSheet.tsx:297-314`).
+worktree fields → agent → prompt → send immediately → cancel → create), wrapping; the Create
+stop is omitted while disabled, the prompt and send stops exist only while an agent is chosen
+(Tab moves out of the prompt rather than typing a tab), and while a worktree create runs Cancel
+is the only stop (and takes focus).
+Return submits from anywhere in the sheet, not only from a text field, with one exception: in
+the Prompt text area Return inserts a newline, and ⌘Return (Ctrl+Return off a Mac) submits. A
+Return that ends an IME composition (`isComposing`, or WebKit's keyCode 229) submits nothing in
+any field (`onFormKeyDown`, `packages/client/src/chrome/NewWorkspaceSheet.tsx`). Likewise an
+Escape that cancels an IME composition (the same two tests) is left to the input method: the
+sheet's capture-phase Escape handler ignores it, so it cannot close the sheet and discard what was
+typed.
 
 ### 10.2 Rename Workspace (300 wide)
 

@@ -3,6 +3,7 @@
  * Spec: docs/config-keybindings.md §1.2, §10, §11, §12, §8.1.
  */
 
+import { agentLaunchCommand, DEFAULT_AGENT_COMMANDS } from '../agent/launch.js';
 import { parseConfigLines } from './lines.js';
 import { parseKeyTrigger } from './keys.js';
 import type { KeyTrigger } from './keys.js';
@@ -219,6 +220,30 @@ export interface GeneralSettings {
      * `false` turns it off.
      */
     readonly middleClickPaste: boolean;
+    /**
+     * `agent-claude-command` / `agent-codex-command`, defaults `claude` / `codex`: the shell text
+     * the DAEMON types into a new workspace's first pane when a create asks for that agent
+     * (wire-protocol.md §6.3 `start_agent`). Stored as written (trimmed), so a wrapper, an alias
+     * or extra flags all work; a blank value means the default, so neither is ever blank here.
+     *
+     * Resume and restart keep their own `claude --resume <id>` / `codex resume <id>` lines
+     * (agent-lifecycle.md §6); these keys do not reach them yet.
+     */
+    readonly agentClaudeCommand: string;
+    readonly agentCodexCommand: string;
+    /**
+     * `new-workspace-agent`, default `none`: the agent the New Workspace sheet preselects.
+     * `claude` or `codex` (lowercased); any other value keeps the prior one. A CLIENT-side rule
+     * like SET-011: the wire verb starts an agent only when a request names one, so
+     * `kelpi workspace create` without `--agent` starts nothing whatever this says.
+     */
+    readonly newWorkspaceAgent: 'none' | 'claude' | 'codex';
+    /**
+     * `new-workspace-send-prompt`, default **false**: whether the sheet's "Send immediately"
+     * starts checked. Strict like `clipboard-write`: only the literal `true` turns it on, because
+     * sending submits the prompt with no chance to edit it.
+     */
+    readonly newWorkspaceSendPrompt: boolean;
 }
 
 /** `SettingsFeature.State.worktreeBasePath`'s shipped default. */
@@ -248,7 +273,11 @@ export const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
     clipboardWrite: false,
     macosOptionAsAlt: false,
     copyOnSelect: true,
-    middleClickPaste: true
+    middleClickPaste: true,
+    agentClaudeCommand: DEFAULT_AGENT_COMMANDS.claude,
+    agentCodexCommand: DEFAULT_AGENT_COMMANDS.codex,
+    newWorkspaceAgent: 'none',
+    newWorkspaceSendPrompt: false
 };
 
 const INTEGER = /^[+-]?\d+$/;
@@ -370,6 +399,21 @@ export function parseGeneralSettings(contents: string): GeneralSettings {
                 break;
             case 'middle-click-paste':
                 settings = { ...settings, middleClickPaste: lowered !== 'false' };
+                break;
+            case 'agent-claude-command':
+                // Case preserved (it is shell text); blank is the default, not "type nothing".
+                settings = { ...settings, agentClaudeCommand: agentLaunchCommand('claude', value) };
+                break;
+            case 'agent-codex-command':
+                settings = { ...settings, agentCodexCommand: agentLaunchCommand('codex', value) };
+                break;
+            case 'new-workspace-agent':
+                if (lowered === 'none' || lowered === 'claude' || lowered === 'codex') {
+                    settings = { ...settings, newWorkspaceAgent: lowered };
+                }
+                break;
+            case 'new-workspace-send-prompt':
+                settings = { ...settings, newWorkspaceSendPrompt: lowered === 'true' };
                 break;
             default:
                 break;

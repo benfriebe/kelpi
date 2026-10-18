@@ -2157,6 +2157,236 @@ describe('workspace create / label / mute', () => {
         expect(unmuted.code).toBe(0);
     });
 
+    describe('starting an agent (wire-protocol §6.3)', () => {
+        const PROMPT_FILE = '/kelpid/prompts/1f0e.txt';
+        /** A current daemon: echoes the kind, and names a prompt file for a non-blank prompt. */
+        const agentDaemon = (request: Record<string, unknown>): ServerReply => {
+            const reply: Record<string, unknown> = { ok: true, workspace_id: PANE, workspace_name: 'eng-123', muted: false };
+            if (typeof request['start_agent'] === 'string') reply['start_agent'] = request['start_agent'];
+            const prompt = request['agent_prompt'];
+            if (typeof prompt === 'string' && prompt.trim() !== '') reply['prompt_file'] = PROMPT_FILE;
+            return { lines: [reply] };
+        };
+
+        it('sends the kind, the prompt and the delivery mode, prefilling unless --send', async () => {
+            server.respond(agentDaemon);
+            const bare = await runCLI(['workspace', 'create', '--name', 'eng-123', '--agent', 'claude'], {
+                port: server.port
+            });
+            expect(bare.code).toBe(0);
+            expect(bare.stdout).toBe(`created workspace eng-123 (${PANE})\n`);
+            expect(await lastRequest()).toEqual({
+                command: 'workspace-create',
+                name: 'eng-123',
+                start_agent: 'claude',
+                send_prompt: false
+            });
+
+            // The kind is matched case-insensitively and sent lowercase, as the daemon echoes it.
+            await runCLI(['workspace', 'create', '--agent', 'Codex', '--prompt', 'Fix the login timeout'], {
+                port: server.port
+            });
+            expect(await lastRequest()).toEqual({
+                command: 'workspace-create',
+                start_agent: 'codex',
+                agent_prompt: 'Fix the login timeout',
+                send_prompt: false
+            });
+
+            await runCLI(['workspace', 'create', '--agent', 'claude', '--prompt', 'Ship it', '--send'], {
+                port: server.port
+            });
+            expect(await lastRequest()).toEqual({
+                command: 'workspace-create',
+                start_agent: 'claude',
+                agent_prompt: 'Ship it',
+                send_prompt: true
+            });
+
+            // --send with nothing to send, and an empty prompt, are the daemon's to read as
+            // "start the agent, nothing more": both pass through untouched.
+            await runCLI(['workspace', 'create', '--agent', 'claude', '--send'], { port: server.port });
+            expect(await lastRequest()).toEqual({ command: 'workspace-create', start_agent: 'claude', send_prompt: true });
+            await runCLI(['workspace', 'create', '--agent', 'claude', '--prompt', ''], { port: server.port });
+            expect(await lastRequest()).toEqual({
+                command: 'workspace-create',
+                start_agent: 'claude',
+                agent_prompt: '',
+                send_prompt: false
+            });
+
+            // Composes with a worktree create; a prompt that starts with `-` is still a value.
+            const home = scratchHome();
+            await runCLI(['workspace', 'create', '--worktree', 'eng-123', '--agent', 'claude', '--prompt', '-v please'], {
+                port: server.port,
+                cwd: home
+            });
+            expect(await lastRequest()).toEqual({
+                command: 'workspace-create',
+                worktree: 'eng-123',
+                repo: home,
+                start_agent: 'claude',
+                agent_prompt: '-v please',
+                send_prompt: false
+            });
+        });
+
+        it('reads --prompt-file from the CLI’s cwd, and stdin for `-`, verbatim', async () => {
+            server.respond(agentDaemon);
+            const home = scratchHome();
+            const text = 'Fix ENG-123: the login times out\r\n\tafter 30 s (café ✓)\n';
+            fs.writeFileSync(path.join(home, 'prompt.md'), text);
+            const fromFile = await runCLI(['workspace', 'create', '--agent', 'claude', '--prompt-file', 'prompt.md'], {
+                port: server.port,
+                cwd: home
+            });
+            expect(fromFile.code).toBe(0);
+            // Raw: CRLF, TAB and the trailing newline are the daemon's to normalize.
+            expect(await lastRequest()).toEqual({
+                command: 'workspace-create',
+                start_agent: 'claude',
+                agent_prompt: text,
+                send_prompt: false
+            });
+
+            const fromStdin = await runCLI(['workspace', 'create', '--agent', 'codex', '--prompt-file', '-', '--send'], {
+                port: server.port,
+                stdin: text
+            });
+            expect(fromStdin.code).toBe(0);
+            expect(await lastRequest()).toEqual({
+                command: 'workspace-create',
+                start_agent: 'codex',
+                agent_prompt: text,
+                send_prompt: true
+            });
+        });
+
+        it('fails an unreadable --prompt-file before sending anything', async () => {
+            const home = scratchHome();
+            const missing = await runCLI(['workspace', 'create', '--agent', 'claude', '--prompt-file', 'nope.md'], {
+                port: server.port,
+                cwd: home
+            });
+            expect(missing.code).toBe(1);
+            expect(missing.stdout).toBe('');
+            expect(missing.stderr).toBe(
+                "kelpi workspace create: cannot read --prompt-file 'nope.md': ENOENT: no such file or directory\n"
+            );
+
+            const directory = await runCLI(['workspace', 'create', '--agent', 'claude', '--prompt-file', home], {
+                port: server.port
+            });
+            expect(directory.code).toBe(1);
+            expect(directory.stderr).toContain(`cannot read --prompt-file '${home}': EISDIR`);
+            expect(server.requests).toHaveLength(0);
+        });
+
+        it('refuses contradictory, agentless and unknown-agent flags before sending', async () => {
+            const both = await runCLI(
+                ['workspace', 'create', '--agent', 'claude', '--prompt', 'x', '--prompt-file', 'p.md'],
+                { port: server.port }
+            );
+            expect(both.code).toBe(1);
+            expect(both.stderr).toBe("workspace create can't take both --prompt and --prompt-file\n");
+
+            for (const flags of [['--prompt', 'x'], ['--prompt-file', '-'], ['--send']]) {
+                const orphan = await runCLI(['workspace', 'create', '--name', 'n', ...flags], { port: server.port });
+                expect(orphan.code).toBe(1);
+                expect(orphan.stderr).toBe(`workspace create can't take ${flags[0] ?? ''} without --agent\n`);
+            }
+
+            // The daemon's own wording (`unknownStartAgentError`), caught before the round trip.
+            const unknown = await runCLI(['workspace', 'create', '--agent', 'gemini', '--prompt', 'x'], {
+                port: server.port
+            });
+            expect(unknown.code).toBe(1);
+            expect(unknown.stderr).toBe("kelpi workspace create: unknown agent 'gemini' (expected claude or codex)\n");
+            expect(server.requests).toHaveLength(0);
+        });
+
+        it('prints the prompt file the daemon kept, in the human and --json output', async () => {
+            server.respond(agentDaemon);
+            const human = await runCLI(['workspace', 'create', '--name', 'eng-123', '--agent', 'claude', '--prompt', 'Fix it'], {
+                port: server.port
+            });
+            expect(human.code).toBe(0);
+            expect(human.stdout).toBe(`created workspace eng-123 (${PANE})\n  prompt file: ${PROMPT_FILE}\n`);
+
+            const json = await runCLI(
+                ['workspace', 'create', '--name', 'eng-123', '--agent', 'claude', '--prompt', 'Fix it', '--json'],
+                { port: server.port }
+            );
+            expect(json.code).toBe(0);
+            expect(JSON.parse(json.stdout)).toEqual({
+                ok: true,
+                workspace_id: PANE,
+                workspace_name: 'eng-123',
+                muted: false,
+                start_agent: 'claude',
+                prompt_file: PROMPT_FILE
+            });
+
+            // Also under a worktree line.
+            server.respond(() => ({
+                lines: [
+                    {
+                        ok: true,
+                        workspace_id: PANE,
+                        workspace_name: 'eng-123',
+                        worktree_path: '/tmp/wt/eng-123',
+                        branch: 'eng-123',
+                        start_agent: 'claude',
+                        prompt_file: PROMPT_FILE
+                    }
+                ]
+            }));
+            const worktree = await runCLI(
+                ['workspace', 'create', '--worktree', 'eng-123', '--agent', 'claude', '--prompt', 'Fix it'],
+                { port: server.port, cwd: scratchHome() }
+            );
+            expect(worktree.stdout).toBe(
+                `created workspace eng-123 (${PANE}) with worktree /tmp/wt/eng-123 on branch eng-123\n  prompt file: ${PROMPT_FILE}\n`
+            );
+        });
+
+        it('fails when an older daemon created the workspace without starting the agent', async () => {
+            // A daemon that predates `start_agent` ignores it: a plain create, no echo.
+            server.respond(() => ({ lines: [{ ok: true, workspace_id: PANE, workspace_name: 'eng-123', muted: false }] }));
+            const human = await runCLI(['workspace', 'create', '--name', 'eng-123', '--agent', 'claude', '--prompt', 'Fix it'], {
+                port: server.port
+            });
+            expect(human.code).toBe(1);
+            expect(human.stdout).toBe('');
+            expect(human.stderr).toBe(
+                `kelpi workspace create: the daemon is too old to start agents; restart it on this build (workspace eng-123 (${PANE}) was created without an agent)\n`
+            );
+
+            // --json still prints the reply for a script to read, and still fails.
+            const json = await runCLI(['workspace', 'create', '--name', 'eng-123', '--agent', 'claude', '--json'], {
+                port: server.port
+            });
+            expect(json.code).toBe(1);
+            expect(JSON.parse(json.stdout)).toEqual({ ok: true, workspace_id: PANE, workspace_name: 'eng-123', muted: false });
+            expect(json.stderr).toContain('too old to start agents');
+
+            // A daemon that predates both fields gets both lines.
+            server.respond(() => ({ lines: [{ ok: true, workspace_id: PANE, workspace_name: 'eng-123' }] }));
+            const both = await runCLI(['workspace', 'create', '--name', 'eng-123', '--muted', '--agent', 'claude'], {
+                port: server.port
+            });
+            expect(both.code).toBe(1);
+            expect(both.stderr.split('\n').filter((line) => line !== '')).toEqual([
+                `kelpi workspace create: the daemon did not apply --muted; restart it on this build (workspace eng-123 (${PANE}) was created unmuted)`,
+                `kelpi workspace create: the daemon is too old to start agents; restart it on this build (workspace eng-123 (${PANE}) was created without an agent)`
+            ]);
+
+            // Without --agent the same reply is simply a success.
+            const plain = await runCLI(['workspace', 'create', '--name', 'eng-123'], { port: server.port });
+            expect(plain.code).toBe(0);
+        });
+    });
+
     it('mutes by default, unmutes with --off and toggles with --toggle', async () => {
         server.respond((request) => ({
             lines: [

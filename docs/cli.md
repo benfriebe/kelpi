@@ -1086,6 +1086,7 @@ kelpi workspace create --worktree <name> [--branch <name>] [--repo <path>]
                      [--update-main | --no-update-main]
                      [--group <existing> | --parent <name-or-id> | --nested] [--muted]
                      [--icon <emoji>] [--focus] [--json]
+kelpi workspace create ... --agent claude|codex [--prompt "..." | --prompt-file <path|->] [--send]
 ```
 
 - **Background by default (issue #307).** Without `--focus` nothing extra is sent and the
@@ -1120,6 +1121,21 @@ kelpi workspace create --worktree <name> [--branch <name>] [--repo <path>]
   `--repo` with `--no-repo`, => an error line, exit 1, nothing sent. An `--icon` that is not
   one emoji => the §10.9 error (`kelpi workspace create: '<x>' is not a usable icon: give one
   emoji or symbol`), exit 1, nothing sent.
+- Agent flags, checked in this order, each => an error line, exit 1, nothing read from stdin and
+  nothing sent: `--prompt` with `--prompt-file` => `workspace create can't take both --prompt
+  and --prompt-file`; `--prompt`, `--prompt-file` or `--send` without `--agent` =>
+  `workspace create can't take <flag> without --agent`; an `--agent` other than `claude` or
+  `codex` (case-insensitive) => `kelpi workspace create: unknown agent '<value>' (expected
+  claude or codex)`, the daemon's own `unknownStartAgentError` wording, so a typo reads the
+  same whichever side refuses it.
+- `--prompt-file` is read by the CLI, not the daemon (which may be on another host): a path
+  relative to the CLI's cwd, decoded as UTF-8, `-` meaning stdin to EOF (a file named `-` is
+  `./-`). Unreadable => `kelpi workspace create: cannot read --prompt-file '<path>': <reason>`
+  (stdin: `cannot read the prompt from stdin: <reason>`), exit 1, nothing sent. The text is
+  shipped raw: normalizing (which also drops trailing whitespace, such as the newline an editor
+  saves at the end of a file, so a prefill and `--send` deliver the same text) and the
+  100000-byte limit are the daemon's (wire-protocol.md §6.3), and its refusal is the usual
+  `ok:false` line.
 - Payload: `{"command":"workspace-create", name?, path?, color?, group?, profile?}` (`path`
   made absolute against the CLI's cwd; `~` is left for the daemon), plus
   `muted: true` only when `--muted` was passed (§10.7), `icon: "emoji:<emoji>"` only when
@@ -1132,6 +1148,20 @@ kelpi workspace create --worktree <name> [--branch <name>] [--repo <path>]
   with `--group` (and no `--no-repo`), no `repo` at all and the CLI's cwd as `path` unless
   `--path` was given, so the daemon's order is the group's repository, then `--path`, then the
   cwd; else (no `--group`) the cwd as `repo`, as it always was.
+  With `--agent`, additionally: `start_agent` (the lowercase kind), `agent_prompt` when
+  `--prompt` or `--prompt-file` was given (even empty: the daemon then starts the agent and
+  nothing more), and `send_prompt` always, `true` for `--send`, else `false`.
+- Agent semantics (wire-protocol.md §6.3, agent-lifecycle.md §6.5): the daemon types the
+  command its own settings name for the agent (`agent-claude-command` /
+  `agent-codex-command`) into the first pane once its shell is ready, with or without
+  `--focus` and `--parent`/`--nested` (a background workspace's first pane spawns all the
+  same). Without `--send` the prompt is a prefill, as in the New Workspace sheet: pasted
+  unsubmitted into the agent's input once the agent is ready. With `--send` it rides on the
+  launch line and the agent submits it at once. The reply never waits for the agent, so the
+  CLI reports only what the daemon accepted: how the launch went arrives as an `agent-launch`
+  frame in Kelpi windows (a prompt that could not be delivered is broadcast to every window,
+  since the CLI has no session), never on the control socket. The exit code says nothing about
+  the launch.
 - Request/response. Read timeout 120 seconds when `--worktree` present (worktree add plus
   optional `git fetch`), 30 seconds with `--repo` or `--group` (a repo association reads
   git), default otherwise.
@@ -1145,12 +1175,21 @@ kelpi workspace create --worktree <name> [--branch <name>] [--repo <path>]
   `kelpi workspace create: the daemon did not apply --icon; restart it on this build
   (workspace <name> (<id>) was created without an icon)`, exit 1; `--json` still prints the
   reply first.
+- `--agent` confirmation (the same shape): when `--agent` was passed and the reply has no
+  `start_agent` echo, the daemon predates the field and created a plain workspace with no agent,
+  so stderr gets `kelpi workspace create: the daemon is too old to start agents; restart it on
+  this build (workspace <name> (<id>) was created without an agent)` and the exit code is 1;
+  `--json` still prints the reply first. A daemon that dropped both `muted` and
+  `start_agent` gets both lines.
 - Default output variants (from reply fields; name falls back to the `--name` argument or
   `"Workspace"`, id to `?`):
   - worktree: `created workspace <name> (<id>)[ in group <g>] with worktree <path> on branch <branch>[ off the latest main]`
     (branch falls back to `?`; the suffix when the reply says `update_main: true`).
   - plain: `created workspace <name> (<id>)[ in group <g>][ with repo <repo_path>]` (the
     repo when the reply names one).
+  - then, when the reply carries `prompt_file` (the daemon's copy of a non-blank prompt, kept
+    for a day), a second line `  prompt file: <path>`, so the text is at hand if a prefill
+    falls back with no window attached to show it. `--json` has it as `prompt_file`.
 
 Server contract highlights: `--group` creates the group if missing UNLESS `--worktree` is
 present (then the group must already exist; unknown/ambiguous => `ok:false`, avoiding an

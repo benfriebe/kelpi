@@ -18,6 +18,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { createTerminalStateService } from '../term/service.js';
 import { createPtyManager, type KelpiPtyManager } from './manager.js';
 import { ZSHENV, ZSH_ZDOTDIR_ENV, installShellIntegration, type ShellIntegration } from './shell-integration.js';
+import { nodePtySpawner } from './spawner.js';
 import type { PtyProcessHandle, PtySpawnRequest, PtySpawner } from './types.js';
 
 const INTEGRATION: ShellIntegration = { zshDir: '/data/shell-integration/zsh' };
@@ -277,6 +278,80 @@ describe.skipIf(!existsSync(ZSH))('a real zsh under the integration', () => {
             await waitFor(() => shell.output().includes(`ENV[read] RC[read] ZD[${shell.rcDir}]`));
         } finally {
             shell.dispose();
+        }
+    });
+});
+
+/**
+ * The agent launcher's half (agent-lifecycle.md §6.5.1): the FIRST report a shell sends is the
+ * `precmd` one, right before its first real prompt, because `chpwd` stays quiet until a prompt
+ * has been drawn. A `cd` in `.zshrc` would otherwise report while the rc files are still running.
+ *
+ * Built from scratch, like the launcher's real-PTY suite: the shell sees no inherited variable
+ * (so nothing in it can reach a Kelpi daemon this suite may run under), only a fake HOME whose
+ * `.zshrc` `cd`s twice, and the integration's own `ZDOTDIR`.
+ */
+describe.skipIf(!existsSync(ZSH))('the first report under the integration', () => {
+    const managers: KelpiPtyManager[] = [];
+    const roots: string[] = [];
+
+    afterEach(async () => {
+        await Promise.all(managers.splice(0).map((manager) => manager.killAll()));
+        for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+    });
+
+    it('is the first prompt, not a cd made by an rc file', { timeout: 30_000 }, async () => {
+        const root = mkdtempSync(join(tmpdir(), 'kelpi-zsh-first-'));
+        roots.push(root);
+        const home = join(root, 'home');
+        const early = join(root, 'early');
+        const settled = join(root, 'settled');
+        for (const dir of [home, early, settled]) mkdirSync(dir, { recursive: true });
+        writeFileSync(join(home, '.zshrc'), `cd ${JSON.stringify(early)}\ncd ${JSON.stringify(settled)}\nPROMPT='% '\n`);
+
+        const integration = installShellIntegration(join(root, 'data', 'shell-integration'));
+        const manager = createPtyManager({
+            loginShell: false,
+            shellIntegration: integration,
+            spawner: (request) =>
+                nodePtySpawner({
+                    ...request,
+                    env: {
+                        HOME: home,
+                        ZDOTDIR: request.env['ZDOTDIR'] ?? '',
+                        PATH: '/usr/bin:/bin:/usr/sbin:/sbin',
+                        TERM: 'xterm-256color',
+                        LANG: 'en_US.UTF-8',
+                        HISTFILE: '/dev/null'
+                    }
+                })
+        });
+        managers.push(manager);
+        const reports: string[] = [];
+        const term = createTerminalStateService({
+            onDirectoryChange: (_paneID, directory) => {
+                reports.push(directory);
+            }
+        });
+        term.attach(PANE, 120, 30);
+        manager.onData((_paneID, data) => {
+            term.feed(PANE, data);
+        });
+        try {
+            manager.spawn({ paneID: PANE, cwd: root, env: [], cols: 120, rows: 30, shell: ZSH });
+            const deadline = Date.now() + 10_000;
+            while (reports.length === 0 && Date.now() < deadline) await delay(20);
+            await delay(300);
+            expect(reports[0]).toBe(settled);
+            expect(reports).not.toContain(early);
+
+            // After the first prompt a cd reports at once, as before.
+            manager.write(PANE, `cd ${JSON.stringify(early)}\r`);
+            const after = Date.now() + 10_000;
+            while (!reports.includes(early) && Date.now() < after) await delay(20);
+            expect(reports).toContain(early);
+        } finally {
+            term.disposeAll();
         }
     });
 });

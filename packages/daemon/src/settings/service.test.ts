@@ -466,6 +466,39 @@ describe('createSettingsService (write-through)', () => {
         expect(f.service.setGeneralSetting('middle-click-paste', 'true').general.middleClickPaste).toBe(true);
     });
 
+    /**
+     * wire-protocol.md §6.3's agent start. The two commands are what the launcher TYPES, so the
+     * round trip and the one-line rule matter most for them: a line break in a command would be a
+     * second line typed into a shell, and a blank one has to mean the default, never nothing.
+     */
+    it('round-trips the agent commands and the sheet defaults, refusing a command that spans lines', () => {
+        const f = fixture({ config: PRESERVED });
+        expect(f.service.snapshot.general).toMatchObject({
+            agentClaudeCommand: 'claude',
+            agentCodexCommand: 'codex',
+            newWorkspaceAgent: 'none',
+            newWorkspaceSendPrompt: false
+        });
+
+        expect(
+            f.service.setGeneralSetting('agent-claude-command', 'env A=1 claude --model opus').general.agentClaudeCommand
+        ).toBe('env A=1 claude --model opus');
+        expect(f.read() ?? '').toContain('agent-claude-command = env A=1 claude --model opus');
+        expect(f.read() ?? '').toContain('keybind = super+d=split_down');
+        expect(f.service.setGeneralSetting('agent-codex-command', '  ').general.agentCodexCommand).toBe('codex');
+        expect(f.service.setGeneralSetting('new-workspace-agent', 'codex').general.newWorkspaceAgent).toBe('codex');
+        expect(f.service.setGeneralSetting('new-workspace-send-prompt', 'true').general.newWorkspaceSendPrompt).toBe(
+            true
+        );
+
+        const before = f.read();
+        expect(() => f.service.setGeneralSetting('agent-claude-command', 'claude\nrm -rf ~')).toThrow(
+            /line break or control character/
+        );
+        expect(f.read()).toBe(before);
+        expect(f.service.snapshot.general.agentClaudeCommand).toBe('env A=1 claude --model opus');
+    });
+
     it('creates the config file (and its directory) when there is none', () => {
         const root = tmpRoot();
         const configPath = path.join(root, 'nested', 'deeper', 'config');

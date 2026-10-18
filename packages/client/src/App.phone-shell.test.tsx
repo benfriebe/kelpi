@@ -6,7 +6,7 @@
  * jsdom test; the first block pins that a desktop window renders the tree it always has.
  */
 
-import type { JsonObject } from '@kelpi/protocol';
+import { DEFAULT_WS_SETTINGS, type JsonObject } from '@kelpi/protocol';
 import { createStore as createDaemonStore, emptyDaemonState } from '@kelpi/daemon/store';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -718,6 +718,31 @@ describe('New workspace', () => {
         expect(JSON.parse(create?.slice('workspace-create:'.length) ?? '{}')).toEqual({ name: 'remote-api', groupDefaults: false, focus: false });
         expect(created(h)).toBeUndefined();
         expect(JSON.parse(h.hostStorage.map.get(PHONE_PLACE_KEY) ?? '{}')).toMatchObject({ host: 'phone:h1', workspaceID: REMOTE_NEW_WS });
+    });
+
+    /*
+     * shell-ui.md §10.1's Agent row is the desktop sheet's: the phone's sheet has none, and the
+     * `new-workspace-agent` default is NOT applied on its behalf (owner decision, phase 1).
+     */
+    it('starts no agent, whatever new-workspace-agent says', () => {
+        const h = setup();
+        act(() => {
+            h.socket().emit({
+                type: 'settings-changed',
+                settings: {
+                    ...DEFAULT_WS_SETTINGS,
+                    general: { ...DEFAULT_WS_SETTINGS.general, newWorkspaceAgent: 'claude', newWorkspaceSendPrompt: true }
+                }
+            } as never);
+        });
+        expect(h.runtime.store.getState().settings.agentStart).toBe(true);
+        openSheet();
+        expect(screen.queryByTestId('new-workspace-agent')).toBeNull();
+        fireEvent.change(screen.getByTestId('phone-new-workspace-name'), { target: { value: 'api' } });
+        submit();
+        const create = created(h);
+        expect(create?.['name']).toBe('api');
+        expect(Object.keys(create ?? {}).filter((key) => /agent|prompt/.test(key))).toEqual([]);
     });
 });
 

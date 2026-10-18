@@ -163,6 +163,26 @@ export interface WsGeneralSettings {
      * pane handles the click and the daemon only round-trips the value for Settings ▸ Workspaces.
      */
     readonly middleClickPaste: boolean;
+    /**
+     * `agent-claude-command` / `agent-codex-command` (config-keybindings.md §1.2), defaults
+     * `claude` / `codex`: what the DAEMON types into a new workspace's first pane to start that
+     * agent (wire-protocol.md §6.3 `start_agent`). Shell text, typed as is, so a wrapper, an
+     * alias or extra flags all work. A blank value parses as the default, so these are never
+     * blank on a snapshot. Here so Settings can render and edit them; a client never sends a
+     * command, only the agent kind.
+     */
+    readonly agentClaudeCommand: string;
+    readonly agentCodexCommand: string;
+    /**
+     * `new-workspace-agent`, default `none`: the New Workspace sheet's preselected agent. A
+     * CLIENT-side rule like SET-011: a create starts an agent only when its request names one.
+     */
+    readonly newWorkspaceAgent: 'none' | 'claude' | 'codex';
+    /**
+     * `new-workspace-send-prompt`, default **false**: whether the sheet's "Send immediately"
+     * starts checked (send the prompt on the launch line, rather than prefill it). CLIENT-side.
+     */
+    readonly newWorkspaceSendPrompt: boolean;
 }
 
 /**
@@ -462,7 +482,11 @@ export const DEFAULT_WS_SETTINGS: WsSettingsSnapshot = {
         clipboardWrite: false,
         macosOptionAsAlt: false,
         copyOnSelect: true,
-        middleClickPaste: true
+        middleClickPaste: true,
+        agentClaudeCommand: 'claude',
+        agentCodexCommand: 'codex',
+        newWorkspaceAgent: 'none',
+        newWorkspaceSendPrompt: false
     },
     appearance: {
         backgroundColor: DEFAULT_SETTINGS_BACKGROUND,
@@ -594,7 +618,15 @@ export const WS_WRITABLE_GENERAL_KEYS = [
     // engine enforces it, the daemon only stores it.
     'copy-on-select',
     // Its partner, and a Kelpi key outright: ghostty has no switch for middle-click paste.
-    'middle-click-paste'
+    'middle-click-paste',
+    // Starting an agent in a new workspace (wire-protocol.md §6.3 `start_agent`): the two
+    // commands the daemon types, and the New Workspace sheet's two defaults. Settings ▸ General
+    // ▸ Agents writes all four. No new power: a client that can write these could already type
+    // into any pane, and `requireSingleLine` keeps a command to one line.
+    'agent-claude-command',
+    'agent-codex-command',
+    'new-workspace-agent',
+    'new-workspace-send-prompt'
 ] as const;
 export type WsWritableGeneralKey = (typeof WS_WRITABLE_GENERAL_KEYS)[number];
 

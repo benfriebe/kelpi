@@ -7,7 +7,7 @@ import {
 } from '@kelpi/daemon/store';
 import { describe, expect, it } from 'vitest';
 
-import { createKelpiStore, hydrateDomainEvents, hydrateSnapshotState, recentlyClosedCount } from './store';
+import { MAX_TOASTS, createKelpiStore, hydrateDomainEvents, hydrateSnapshotState, recentlyClosedCount } from './store';
 
 const HOME = '/Users/test';
 const W1 = 'aaaaaaaa-0000-4000-8000-000000000001';
@@ -308,5 +308,51 @@ describe('ui slice', () => {
 
         client.getState().clearToasts();
         expect(client.getState().ui.toasts).toEqual([]);
+    });
+
+    it('replaces a toast in its own place, not at the end of the stack', () => {
+        const client = createKelpiStore();
+        const push = (id: string, title: string) =>
+            client.getState().pushToast({ id, kind: 'info', title, body: '', paneID: null, workspaceID: null, createdAt: 1 });
+        push('a', 'A');
+        push('b', 'B');
+        push('c', 'C');
+        // "click to copy it" becoming "copied to the clipboard" is the same toast, where it was.
+        push('a', 'A, copied');
+        expect(client.getState().ui.toasts.map((entry) => `${entry.id}:${entry.title}`)).toEqual(['a:A, copied', 'b:B', 'c:C']);
+    });
+
+    it('caps the stack at MAX_TOASTS, evicting the oldest, but never an undelivered prompt', () => {
+        const client = createKelpiStore();
+        const push = (id: string, copyText?: string) =>
+            client.getState().pushToast({
+                id,
+                kind: copyText === undefined ? 'agent-waiting' : 'agent-error',
+                title: id,
+                body: '',
+                paneID: null,
+                workspaceID: null,
+                createdAt: 1,
+                ...(copyText !== undefined ? { copyText } : {})
+            });
+        const ids = (): string[] => client.getState().ui.toasts.map((entry) => entry.id);
+
+        push('prompt-1', 'Fix the login timeout');
+        for (let i = 1; i <= MAX_TOASTS; i += 1) push(`n${String(i)}`);
+        // The sixth toast evicted the oldest ORDINARY one; the prompt, older still, stays.
+        expect(ids()).toEqual(['prompt-1', 'n2', 'n3', 'n4', 'n5']);
+        push('n6');
+        expect(ids()).toEqual(['prompt-1', 'n3', 'n4', 'n5', 'n6']);
+
+        // A stack of nothing but undelivered prompts still shows the newest notification...
+        const full = createKelpiStore();
+        for (let i = 1; i <= MAX_TOASTS; i += 1) {
+            full.getState().pushToast({ id: `p${String(i)}`, kind: 'agent-error', title: '', body: '', paneID: null, workspaceID: null, createdAt: 1, copyText: 'x' });
+        }
+        full.getState().pushToast({ id: 'late', kind: 'info', title: '', body: '', paneID: null, workspaceID: null, createdAt: 1 });
+        expect(full.getState().ui.toasts.map((entry) => entry.id)).toEqual(['p1', 'p2', 'p3', 'p4', 'p5', 'late']);
+        // ...until the next one replaces it.
+        full.getState().pushToast({ id: 'later', kind: 'info', title: '', body: '', paneID: null, workspaceID: null, createdAt: 1 });
+        expect(full.getState().ui.toasts.map((entry) => entry.id)).toEqual(['p1', 'p2', 'p3', 'p4', 'p5', 'later']);
     });
 });

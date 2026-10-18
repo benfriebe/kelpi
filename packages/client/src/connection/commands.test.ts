@@ -258,6 +258,20 @@ describe('CommandClient RPC', () => {
 
         void h.client.createWorkspace({ name: 'dev', group: 'G1', groupDefaults: false });
         expect(h.lastCommand()).toEqual({ command: 'workspace-create', name: 'dev', group: 'G1', group_defaults: false, focus: true });
+
+        // wire-protocol.md §6.3: the agent start rides the same create, in the wire's spelling,
+        // and an absent field is absent (a stray `agent_prompt` without `start_agent` is refused).
+        void h.client.createWorkspace({ name: 'dev', startAgent: 'codex', agentPrompt: 'fix it\nplease', sendPrompt: true });
+        expect(h.lastCommand()).toEqual({
+            command: 'workspace-create',
+            name: 'dev',
+            start_agent: 'codex',
+            agent_prompt: 'fix it\nplease',
+            send_prompt: true,
+            focus: true
+        });
+        void h.client.createWorkspace({ name: 'dev', startAgent: 'claude' });
+        expect(h.lastCommand()).toEqual({ command: 'workspace-create', name: 'dev', start_agent: 'claude', focus: true });
     });
 
     /**

@@ -137,6 +137,7 @@
 
 import { useCallback, useEffect, useRef, useState, type ReactElement, type RefObject } from 'react';
 
+import { linkCaption } from '../app/link-click';
 import { readKeyboardViewportMode, watchKeyboardViewportMode } from '../chrome/keyboard-viewport';
 import { tokens } from '../chrome/tokens';
 import { onClipboardOffer } from '../state/clipboard';
@@ -836,14 +837,17 @@ export function KeyBar({
      *
      * `seq` is what re-arms the timer: two copies of the same text are two offers, and a
      * value-equal object alone would leave the first one's countdown running.
+     *
+     * `url` is a link a tap landed on (`state/clipboard.ts` `offerLink`): the same pill, with an
+     * Open beside the Copy.
      */
-    const [offer, setOffer] = useState<{ text: string; bytes: number; seq: number } | null>(null);
+    const [offer, setOffer] = useState<{ text: string; bytes: number; seq: number; url: string | undefined } | null>(null);
     useEffect(() => {
         let seq = 0;
         return onClipboardOffer((incoming) => {
             if (incoming.paneID !== paneID) return;
             seq += 1;
-            setOffer({ text: incoming.text, bytes: incoming.bytes, seq });
+            setOffer({ text: incoming.text, bytes: incoming.bytes, seq, url: incoming.url });
         });
     }, [paneID]);
 
@@ -862,6 +866,9 @@ export function KeyBar({
         // pane's own output could not, and a browser that still refuses is not worth a modal.
         void write?.(text).catch(() => undefined);
     }, [offer, writeClipboard]);
+
+    /** The link pill's Open is a plain link, so the browser opens it; this only takes the pill down. */
+    const dropOffer = useCallback((): void => setOffer(null), []);
 
     // ── the keyboard toggle's state (device rounds 3 and 6) ─────────────────────────
     //
@@ -1018,27 +1025,73 @@ export function KeyBar({
                     data-testid={`terminal-copy-pill-${paneID}`}
                     {...{ [COPY_PILL_ATTR]: '' }}
                     role="status"
-                    className="absolute right-2 left-2 z-10 flex items-center justify-center"
+                    className="absolute right-2 left-2 z-10 flex items-center justify-center gap-2"
                     style={{ bottom: KEY_BAR_HEIGHT_PX + 8 }}
                 >
-                    <button
-                        type="button"
-                        data-testid={`terminal-copy-pill-button-${paneID}`}
-                        aria-label={`Copy ${String(offer.bytes)} bytes to the clipboard`}
-                        title="A program in this pane copied text; tap to put it on this phone's clipboard"
-                        onPointerDown={suppressFocus}
-                        onMouseDown={suppressFocus}
-                        onClick={takeOffer}
-                        className="flex items-center justify-center rounded-full px-4 text-sm font-medium whitespace-nowrap shadow-lg"
-                        style={{
-                            height: KEY_BAR_KEY_SIZE_PX,
-                            border: `1px solid ${tokens.divider}`,
-                            backgroundColor: tokens.accent,
-                            color: tokens.windowBackground
-                        }}
-                    >
-                        {`Copy ${String(offer.bytes)} bytes`}
-                    </button>
+                    {offer.url !== undefined ? (
+                        <>
+                            {/*
+                             * A plain link rather than `window.open` from a handler: the tap on
+                             * it is the gesture a phone browser opens a tab for, and it opens in
+                             * this phone's browser, not on the daemon's machine.
+                             */}
+                            <a
+                                href={offer.url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                data-testid={`terminal-link-pill-open-${paneID}`}
+                                aria-label={`Open ${offer.url}`}
+                                onPointerDown={suppressFocus}
+                                onMouseDown={suppressFocus}
+                                onClick={dropOffer}
+                                className="flex min-w-0 items-center justify-center overflow-hidden rounded-full px-4 text-sm font-medium text-ellipsis whitespace-nowrap no-underline shadow-lg"
+                                style={{
+                                    height: KEY_BAR_KEY_SIZE_PX,
+                                    border: `1px solid ${tokens.divider}`,
+                                    backgroundColor: tokens.accent,
+                                    color: tokens.windowBackground
+                                }}
+                            >
+                                {`Open ${linkCaption(offer.url, 28)}`}
+                            </a>
+                            <button
+                                type="button"
+                                data-testid={`terminal-copy-pill-button-${paneID}`}
+                                aria-label="Copy the link to the clipboard"
+                                onPointerDown={suppressFocus}
+                                onMouseDown={suppressFocus}
+                                onClick={takeOffer}
+                                className="flex shrink-0 items-center justify-center rounded-full px-4 text-sm font-medium whitespace-nowrap shadow-lg"
+                                style={{
+                                    height: KEY_BAR_KEY_SIZE_PX,
+                                    border: `1px solid ${tokens.divider}`,
+                                    backgroundColor: tokens.headerBackground,
+                                    color: tokens.textPrimary
+                                }}
+                            >
+                                Copy link
+                            </button>
+                        </>
+                    ) : (
+                        <button
+                            type="button"
+                            data-testid={`terminal-copy-pill-button-${paneID}`}
+                            aria-label={`Copy ${String(offer.bytes)} bytes to the clipboard`}
+                            title="A program in this pane copied text; tap to put it on this phone's clipboard"
+                            onPointerDown={suppressFocus}
+                            onMouseDown={suppressFocus}
+                            onClick={takeOffer}
+                            className="flex items-center justify-center rounded-full px-4 text-sm font-medium whitespace-nowrap shadow-lg"
+                            style={{
+                                height: KEY_BAR_KEY_SIZE_PX,
+                                border: `1px solid ${tokens.divider}`,
+                                backgroundColor: tokens.accent,
+                                color: tokens.windowBackground
+                            }}
+                        >
+                            {`Copy ${String(offer.bytes)} bytes`}
+                        </button>
+                    )}
                 </div>
             ) : null}
             {pasteFieldOpen ? (

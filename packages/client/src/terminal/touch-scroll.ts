@@ -56,9 +56,14 @@
  *   - the momentum tail reports only while it is moving, and nothing when it comes to rest;
  *   - a TAP - a press that never passed the slop - is the ONE gesture reported as a click,
  *     because an application that turned mouse reporting on asked to be told about clicks;
- *   - a LONG PRESS does not run C3's word selection and Copy pill here. The application asked for
- *     the press, and it gets it (as the same click); C3's selection is what a long press means
- *     only where nothing asked.
+ *   - a LONG PRESS is C3's word selection and Copy pill here too, and the application is told
+ *     nothing about it: no press, no release. #123 first gave it to the application as the same
+ *     click a tap is, and that left a phone with no way to copy anything out of a pane that
+ *     reports the mouse. The owner, 2026-10-18, with Claude Code set to `"tui": "fullscreen"`
+ *     (which reports the mouse in every Claude pane): *"copying on mobile no longer seems to
+ *     work, you cant long hold press anymore"*. A desktop gets past an application's mouse
+ *     reporting with Shift; a phone has no Shift, and the long press is the gesture it has. A
+ *     press held still for half a second is not something a TUI loses: it was a slow click.
  *
  * WHICH MODE A GESTURE IS IN IS LATCHED AT ITS START, and held for the whole of it, momentum
  * included. An application that turns reporting off mid-flick must not have the tail it is
@@ -151,12 +156,17 @@ export interface TouchScrollHost {
     /** The cell's height in CSS px - the pixels-to-lines divisor. Zero suspends the gesture. */
     cellHeight(): number;
     /**
-     * A contact that stayed inside the slop for {@link LONG_PRESS_MS}.
-     *
-     * Never called while {@link reportsMouse} says an application is reporting: there, the press
-     * belongs to the application (#123).
+     * A contact that stayed inside the slop for {@link LONG_PRESS_MS}, in both modes: while an
+     * application is reporting the mouse it is told nothing about this contact (see the header).
      */
     onLongPress?(point: TouchPointLike): void;
+    /**
+     * A tap, in both modes, at its ORIGIN: a contact that never passed the slop and lifted before
+     * it became a long press. Called after {@link reportClick}, and it decides nothing about the
+     * event: a tap is still the engine's (or the application's) whatever this does with it. The
+     * pane asks the daemon whether a link is under it (`TerminalPane`'s link offer).
+     */
+    onTap?(point: TouchPointLike): void;
     /**
      * Is an application reporting the mouse right now? Read ONCE, at the start of each gesture,
      * and held for the whole of it including its momentum tail - see the header.
@@ -396,9 +406,9 @@ export function createTouchScroll(host: TouchScrollHost, options: TouchScrollOpt
             lastX = point.clientX;
             lastY = point.clientY;
             sample(now(), point.clientY);
-            // No long press while the application is reporting: the press is the application's
-            // (#123), and C3's word selection would be a second meaning for the same contact.
-            if (host.onLongPress !== undefined && !reporting) {
+            // In both modes: a long press is C3's word selection even over an application that
+            // reports the mouse, which is told nothing about it (see the header).
+            if (host.onLongPress !== undefined) {
                 cancelPress = timer(() => {
                     cancelPress = null;
                     // Still a press, still under the slop: this is the gesture the platform would
@@ -466,22 +476,24 @@ export function createTouchScroll(host: TouchScrollHost, options: TouchScrollOpt
             const wasPress = gesture === 'press';
             const wasPressed = pressed;
             if (!wasScrolling) {
+                const wasReporting = reporting;
                 gesture = 'none';
                 pressed = false;
-                if (reporting && wasPress) {
-                    // #123: THE ONE GESTURE AN APPLICATION IS TOLD IS A CLICK. A contact that
-                    // never passed the slop is a tap (or a long press, which over a reporting
-                    // application is the same thing held longer), and an application that turned
-                    // mouse reporting on asked to be told about clicks. A drag - the other branch
-                    // - is told nothing here, which is the whole fix.
-                    reporting = false;
-                    host.reportClick?.({ clientX: originX, clientY: originY });
-                    return true;
-                }
+                reporting = false;
+                // A long press is ours in both modes, because the word it selected must not be
+                // cleared by the tap that made it - and an application is told nothing about it.
+                if (wasPressed) return true;
+                if (!wasPress) return false;
+                const origin = { clientX: originX, clientY: originY };
+                // #123: THE ONE GESTURE AN APPLICATION IS TOLD IS A CLICK. A contact that never
+                // passed the slop is a tap, and an application that turned mouse reporting on
+                // asked to be told about clicks. A drag - the other branch - is told nothing
+                // here, which is the whole fix.
+                if (wasReporting) host.reportClick?.(origin);
+                host.onTap?.(origin);
                 // A plain tap is the ENGINE's (it focuses the textarea, which raises the
-                // keyboard); a long press is ours, because the word it selected must not be
-                // cleared by the tap that made it.
-                return wasPressed;
+                // keyboard); a reported one was consumed from its `touchstart`.
+                return wasReporting;
             }
             const last = only(event.changedTouches);
             const time = now();

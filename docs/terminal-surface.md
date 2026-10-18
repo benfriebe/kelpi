@@ -976,6 +976,17 @@ scroll or a window blur closes it (or drops a pending one) without consuming the
 still history and Escape still reaches an agent. Not on the phone layout, where a tap belongs to
 the soft keyboard. The logic is `packages/client/src/app/link-click.ts`.
 
+**A tap on a link on a phone** asks the same `probe-terminal-target` at the tapped cell, in both
+mouse modes, after the tap has done what it always did (raised the keyboard, or reached a
+mouse-reporting application as its click). For an `external` answer the key bar's pill offers
+**Open**, a plain `target="_blank"` link, so the phone's browser opens it in answer to that tap
+(it is never sent to the daemon's machine), and **Copy link**. A pill rather than an immediate
+open because the answer arrives after the tap, and a phone browser opens a tab or writes the
+clipboard only inside a gesture. A long press is the word selection and Copy pill in both modes:
+over an application that reports the mouse (Claude Code's fullscreen renderer) it is sent nothing
+for it, which is the phone's counterpart to Shift on a desktop. The gestures are
+`packages/client/src/terminal/touch-scroll.ts`; the offer is `state/clipboard.ts` `offerLink`.
+
 **Where a ⌘-click opens a link** is the `open-links-in` setting (Settings ▸ General ▸ Links):
 `browser`, the default, hands an `external` answer to the system opener as above; `kelpi` opens
 it with the same `web-open` as the menu's "Open in Kelpi". It only changes ⌘-click: the plain

@@ -43,6 +43,8 @@ interface Harness {
     readonly wheels: { lines: number; point: TouchPointLike }[];
     /** #123 - every `reportClick`, in order. */
     readonly clicks: TouchPointLike[];
+    /** Every `onTap`, in order, with whether the click had been reported first. */
+    readonly taps: { point: TouchPointLike; afterClicks: number }[];
     offset(): number;
     /** Advance the clock; run the pending frame if one is due. */
     tick(ms: number): void;
@@ -66,6 +68,7 @@ function harness({ cell = CELL, cap = 1_000, offset = 0, reporting = false } = {
     const presses: TouchPointLike[] = [];
     const wheels: { lines: number; point: TouchPointLike }[] = [];
     const clicks: TouchPointLike[] = [];
+    const taps: { point: TouchPointLike; afterClicks: number }[] = [];
 
     const scroller = createTouchScroll(
         {
@@ -79,7 +82,8 @@ function harness({ cell = CELL, cap = 1_000, offset = 0, reporting = false } = {
             onLongPress: (point) => presses.push(point),
             reportsMouse: () => reports,
             reportWheel: (lines, point) => wheels.push({ lines, point }),
-            reportClick: (point) => clicks.push(point)
+            reportClick: (point) => clicks.push(point),
+            onTap: (point) => taps.push({ point, afterClicks: clicks.length })
         },
         {
             now: () => time,
@@ -104,6 +108,7 @@ function harness({ cell = CELL, cap = 1_000, offset = 0, reporting = false } = {
         presses,
         wheels,
         clicks,
+        taps,
         offset: () => viewport,
         frames: () => frameCount,
         report(on: boolean): void {
@@ -316,6 +321,45 @@ describe('the touch gesture: the long press', () => {
 });
 
 /**
+ * The tap the pane asks the daemon about, to offer a link under it (2026-10-18: "you also can't
+ * click a link to open it"). Announced in both modes, and it decides nothing about the event.
+ */
+describe('the touch gesture: a tap is announced', () => {
+    it('at its ORIGIN, and is still left to the engine', () => {
+        const h = harness();
+        h.scroller.start(one(at(400, 100)));
+        h.scroller.move(one(at(400 + TOUCH_SLOP_PX, 100)));
+        expect(h.scroller.end(one(at(400 + TOUCH_SLOP_PX, 100), { down: false }))).toBe(false);
+        expect(h.taps).toEqual([{ point: { clientX: 100, clientY: 400 }, afterClicks: 0 }]);
+    });
+
+    it('after the click an application that reports the mouse is sent', () => {
+        const h = harness({ reporting: true });
+        h.scroller.start(one(at(400)));
+        expect(h.scroller.end(one(at(400), { down: false }))).toBe(true);
+        expect(h.clicks).toEqual([{ clientX: 100, clientY: 400 }]);
+        expect(h.taps).toEqual([{ point: { clientX: 100, clientY: 400 }, afterClicks: 1 }]);
+    });
+
+    it('never for a long press, a drag, a cancel or an end with no start', () => {
+        const h = harness();
+        h.scroller.start(one(at(400)));
+        h.hold(LONG_PRESS_MS);
+        h.scroller.end(one(at(400), { down: false }));
+
+        h.scroller.start(one(at(400)));
+        h.scroller.move(one(at(460)));
+        h.scroller.end(one(at(460), { down: false }));
+
+        h.scroller.start(one(at(400)));
+        h.scroller.cancel();
+        h.scroller.end(one(at(400), { down: false }));
+
+        expect(h.taps).toEqual([]);
+    });
+});
+
+/**
  * #123 - the same machine over an application that reports the mouse.
  *
  * The owner's report is one sentence: on a Claude Code tab, "scrolling down ... can scroll into
@@ -389,17 +433,30 @@ describe('the touch gesture over an application that reports the mouse (#123)', 
         expect(h.clicks).toEqual([{ clientX: 100, clientY: 400 }]);
     });
 
-    it('a LONG PRESS is the application-s press, not C3-s word selection', () => {
+    it('a LONG PRESS is C3-s word selection here too, and the application is told nothing', () => {
+        const h = harness({ reporting: true });
+        // Consumed from the first event, as every reported contact is.
+        expect(h.scroller.start(one(at(400)))).toBe(true);
+        h.hold(LONG_PRESS_MS);
+        // The owner, 2026-10-18: with Claude Code reporting the mouse, handing it the press left
+        // a phone with no way to copy anything out of the pane.
+        expect(h.presses).toEqual([{ clientX: 100, clientY: 400 }]);
+        expect(h.scroller.pressed).toBe(true);
+        expect(h.scroller.end(one(at(400), { down: false }))).toBe(true);
+        // No press, no release: a slow click is nothing a TUI loses.
+        expect(h.clicks).toEqual([]);
+        expect(h.wheels).toEqual([]);
+        expect(h.taps).toEqual([]);
+    });
+
+    it('a long press that then drags is a wheel, still with no click', () => {
         const h = harness({ reporting: true });
         h.scroller.start(one(at(400)));
         h.hold(LONG_PRESS_MS);
-        // No timer was ever armed: the application asked for the press, so there is no second
-        // meaning for the same contact and no Copy pill to raise.
-        expect(h.presses).toEqual([]);
-        expect(h.scroller.pressed).toBe(false);
-        h.scroller.end(one(at(400), { down: false }));
-        // It reaches the application as the same click a shorter tap does.
-        expect(h.clicks).toEqual([{ clientX: 100, clientY: 400 }]);
+        h.scroller.move(one(at(460)));
+        h.scroller.end(one(at(460), { down: false }));
+        expect(h.wheels).toEqual([{ lines: -3, point: { clientX: 100, clientY: 460 } }]);
+        expect(h.clicks).toEqual([]);
     });
 
     it('the momentum tail reports while it moves and reports NOTHING at rest', () => {

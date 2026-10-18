@@ -276,6 +276,7 @@ import {
     terminalFontStack,
     terminalPaletteCssVars,
     terminalThemePreset,
+    probeLinkURLVia,
     probeLinkVia,
     visiblePaneIDs,
     type TerminalGeometry,
@@ -4500,6 +4501,8 @@ function Shell(props: AppProps): ReactElement {
      * their own daemon (`linkCommands`, #328).
      */
     const probeTerminalLink = useMemo(() => probeLinkVia(commands), [commands]);
+    /** The same question for a phone's tap on a link, answered with the URL it would open. */
+    const probeTerminalLinkURL = useMemo(() => probeLinkURLVia(commands), [commands]);
 
     const renderPane = useCallback<RenderPane>(
         (paneID, _frame, focused, renderState) => {
@@ -4678,6 +4681,8 @@ function Shell(props: AppProps): ReactElement {
                             search={search}
                             // #303: the hover underline asks the daemon a ⌘-click here goes to.
                             probeLink={probeTerminalLink}
+                            // A phone's tap on a link asks the same daemon, to offer it.
+                            probeLinkURL={probeTerminalLinkURL}
                             createRenderer={createRenderer}
                         />
                     );
@@ -4715,6 +4720,7 @@ function Shell(props: AppProps): ReactElement {
             onTerminalFocus,
             onDimensionsChange,
             probeTerminalLink,
+            probeTerminalLinkURL,
             createRenderer,
             webCommands,
             webGeometry,

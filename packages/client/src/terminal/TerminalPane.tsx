@@ -46,7 +46,7 @@ import { readKeyboardViewportMode } from '../chrome/keyboard-viewport';
 import { CLIENT_MAC_LIKE } from '../chrome/keys';
 import { modalPresenceCount } from '../chrome/modal-presence';
 import type { PtyStreamHandle, PtySubscription, TerminalHistoryAt } from '../connection';
-import { offerSelection } from '../state/clipboard';
+import { offerLink, offerSelection } from '../state/clipboard';
 import { dispatchPaste } from './KeyBar';
 import { loadTerminalFonts, onTerminalFontsReady, terminalFontsReady } from './fonts';
 import { createTerminalIngest } from './ingest';
@@ -60,7 +60,7 @@ import {
     watchSoftKeyboardMotion
 } from './keyboard-inset';
 import { createKittyKeyboard, sanitizeKittyFlags, type KittyKeyboard } from './kitty-keyboard';
-import { createLinkHover, probeLinkVia, type LinkHover } from './link-hover';
+import { createLinkHover, probeLinkURLVia, probeLinkVia, type LinkHover } from './link-hover';
 import { notifyTerminalPanes, registerTerminalPane, type TerminalLinkCommands, type TerminalMirrorClip } from './pane-registry';
 import {
     PHONE_TERMINAL_POSTER_BUDGET_BYTES,
@@ -461,6 +461,15 @@ export interface TerminalPaneProps {
      */
     readonly probeLink?:
         | ((paneID: string, row: number, col: number, history?: TerminalHistoryAt) => Promise<readonly TerminalCellRun[] | null>)
+        | undefined;
+    /**
+     * The same question as {@link probeLink}, answered with the URL a ⌘-click would hand to a
+     * browser: what a phone's TAP asks, so it can offer the link (`state/clipboard.ts`
+     * `offerLink`). Falls back to `linkCommands` as `probeLink` does; with neither, a tap offers
+     * nothing.
+     */
+    readonly probeLinkURL?:
+        | ((paneID: string, row: number, col: number, history?: TerminalHistoryAt) => Promise<string | null>)
         | undefined;
     /**
      * #328: the daemon that owns this pane, when it is not this window's own. A remote workspace's
@@ -1988,10 +1997,15 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
     //     └ press        └ 12 motion reports            └ release, on the LAST ROW of 50
     //
     // Now the gesture machine sees EVERY contact in both modes, recognises the gesture first, and
-    // reports only what the gesture earned: a drag is wheel reports at the finger, a tap (and a
-    // long press, which is a tap held) is the one click, and a drag's end is nothing at all. The
-    // rule, the reason and the rest of the measurement are in `touch-scroll.ts`'s header;
-    // `PointerLike` is structural, so a `Touch` is one and the reporter needs no new entry point.
+    // reports only what the gesture earned: a drag is wheel reports at the finger, a tap is the
+    // one click, and a drag's end is nothing at all. A long press is the word selection and the
+    // Copy pill in both modes, and reports nothing (2026-10-18: a Claude Code pane reports the
+    // mouse, and handing it the press left a phone no way to copy out of one). The rule, the
+    // reason and the rest of the measurement are in `touch-scroll.ts`'s header; `PointerLike` is
+    // structural, so a `Touch` is one and the reporter needs no new entry point.
+    //
+    // A tap, in either mode, also asks the daemon whether it landed on a link, and offers one on
+    // the same pill (`onTap` below, `state/clipboard.ts` `offerLink`).
     //
     // Capture on the host, exactly as the mouse and the kitty interceptors are, so a consumed
     // event never reaches the engine's canvas listeners BELOW it - which is what stops a scroll
@@ -2065,6 +2079,24 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
                 // Copy pill IS the tap that has one, and this reuses it rather than growing a
                 // second surface (`state/clipboard.ts`).
                 offerSelection(paneID, text);
+            },
+            /*
+             * A tap on a link offers it: the owner, 2026-10-18, "you also can't click a link to
+             * open it". The question is the plain-click menu's (`probe-terminal-target`, no side
+             * effects), asked of the daemon that owns the pane, about the cell a mouse report at
+             * the same point would name, with the history fields a scrolled-back pane needs
+             * (#327). Asked AT the tap, as the menu does, so a TUI that redraws in answer to the
+             * click cannot change what it reads. A tap that lands on no link offers nothing.
+             */
+            onTap: (point) => {
+                const { probeLinkURL, linkCommands } = latest.current;
+                const probe = probeLinkURL ?? (linkCommands === undefined ? undefined : probeLinkURLVia(linkCommands));
+                if (probe === undefined) return;
+                const cell = mouseRef.current?.cellAt(point) ?? null;
+                if (cell === null) return;
+                void probe(paneID, cell.y, cell.x, historyAt(cell.y)).then((url) => {
+                    if (url !== null) offerLink(paneID, url);
+                });
             }
         });
 

@@ -96,6 +96,11 @@ export interface ClipboardOffer {
     readonly text: string;
     /** The DECODED byte count the daemon measured, for the pill's label. */
     readonly bytes: number;
+    /**
+     * A link a tap landed on ({@link offerLink}): the pill offers to open it as well as copy it,
+     * and `text` is the same URL. Absent for a copy.
+     */
+    readonly url?: string | undefined;
 }
 
 const offerListeners = new Set<(offer: ClipboardOffer) => void>();
@@ -129,6 +134,28 @@ export function resetClipboardOffersForTests(): void {
 export function offerSelection(paneID: string, text: string): void {
     if (paneID === '' || text === '') return;
     publishOffer({ paneID, text, bytes: new TextEncoder().encode(text).length });
+}
+
+/**
+ * Offer a link a TAP landed on: the phone's way to open a terminal link (2026-10-18).
+ *
+ * The owner: *"you also can't click a link to open it"*. A desktop opens one with ⌘-click or the
+ * plain-click menu (`app/link-click.ts`), and neither exists under a thumb: there is no ⌘, and a
+ * tap is the soft keyboard's (or, under mouse reporting, the application's click). So the pane
+ * asks the daemon what is under a tap (`probe-terminal-target`, the menu's own question) and,
+ * for a link a ⌘-click would open in a browser, offers it here.
+ *
+ * The pill again, and for the clipboard's reason: the answer comes back after the tap, and a
+ * phone browser opens a tab (or writes the clipboard) only inside a gesture it recognises. The
+ * pill's Open is a plain link, so the tap on it is the gesture. It opens in THIS phone's browser,
+ * not on the daemon's machine, which is where `open-terminal-target` would have opened it.
+ *
+ * **Owner-directed divergence from the shipped Swift app**: there is no Swift phone UI. See
+ * `chrome/form-factor.ts` for the program-wide note.
+ */
+export function offerLink(paneID: string, url: string): void {
+    if (paneID === '' || url === '') return;
+    publishOffer({ paneID, text: url, bytes: new TextEncoder().encode(url).length, url });
 }
 
 function publishOffer(offer: ClipboardOffer): void {

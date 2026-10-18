@@ -32220,7 +32220,7 @@ function buildFlows(ctx) {
         {
             id: 'phone-touch-mouse-reporting',
             expect:
-                'Under a 390x844 phone viewport, over an application that has asked for the mouse (`?1049h ?1000h ?1002h ?1006h`, which is what Claude Code asks for), a one-finger drag reaches the application as WHEEL reports at the finger - SGR button 64 dragging down the glass, 65 dragging up, one per line of travel - and as no press and no release, so a drag that ends over the bottom rows does not arrive there as a click on whatever the TUI draws at the bottom. A flick reports while its momentum is moving and stops reporting when it comes to rest. A TAP is the one gesture reported as a click: a press and a release at the point, no wheel. A long press is reported the same way and raises no Copy pill, because the application asked for the press. The pane scrolls no scrollback of its own in any of it (`data-terminal-scroll` stays 0). With the same fixture asking for NO modes, the same gestures put not one byte on the wire, which is the spike’s rule and C3’s behaviour unchanged. With the fixture gone the pane reports `data-terminal-mouse=none` again and is back at a prompt.',
+                'Under a 390x844 phone viewport, over an application that has asked for the mouse (`?1049h ?1000h ?1002h ?1006h`, which is what Claude Code asks for), a one-finger drag reaches the application as WHEEL reports at the finger - SGR button 64 dragging down the glass, 65 dragging up, one per line of travel - and as no press and no release, so a drag that ends over the bottom rows does not arrive there as a click on whatever the TUI draws at the bottom. A flick reports while its momentum is moving and stops reporting when it comes to rest. A TAP is the one gesture reported as a click: a press and a release at the point, no wheel. A long press is C3’s even here: it selects the word under the finger and raises the Copy pill, and the application is sent nothing for it - no press, no release (the owner, 2026-10-18: with Claude Code reporting the mouse, the long press was the only way to copy out of a pane, and it had been handed to the application). The pane scrolls no scrollback of its own in any of it (`data-terminal-scroll` stays 0). With the same fixture asking for NO modes, the same gestures put not one byte on the wire, which is the spike’s rule and C3’s behaviour unchanged. With the fixture gone the pane reports `data-terminal-mouse=none` again and is back at a prompt.',
             needsEyes: true,
             async run(recorder) {
                 // `reattach-after-relaunch` replaces the CDP session, and this step is after it.
@@ -32491,21 +32491,28 @@ function buildFlows(ctx) {
                         `press at ${JSON.stringify(tapPress[0] ?? null)}, release at ${JSON.stringify(tapRelease[0] ?? null)}`
                     );
 
-                    // ── a LONG PRESS: the application's, not C3's ───────────────────────
-                    await view.longPress({ x, y: tapY });
+                    // ── a LONG PRESS: C3's in this mode too, and nothing on the wire ─────
+                    // On the fixture's first row, two cells in: `MOUSE-REPORT-PROBE ready` is
+                    // the one row it always draws, so there is a word under the finger.
+                    const [cellWidth] = String(start.cell ?? '0x0')
+                        .split('x')
+                        .map((part) => Number.parseFloat(part));
+                    const wordPoint = { x: Math.round(box.left + 2.5 * cellWidth), y: Math.round(box.top + 0.5 * cellHeight) };
+                    await view.longPress(wordPoint);
                     await sleep(700);
                     const held = summarize(since());
                     const afterPress = await readPane();
                     recorder.block('a long press, over the same application', held.bytes || '(nothing)');
                     recorder.check(
-                        'a long press over a mouse-reporting application is the application’s press, not C3’s word selection: no Copy pill and no highlight',
-                        afterPress.pills === 0 && afterPress.selection === '0',
+                        'a long press over a mouse-reporting application is still C3’s word selection: the word is highlighted and offered on the Copy pill',
+                        afterPress.pills === 1 && Number.parseInt(String(afterPress.selection ?? '0'), 10) > 0,
                         `${String(afterPress.pills)} pills, data-terminal-selection=${String(afterPress.selection)}`
                     );
+                    await recorder.shot(view, 'long-press-over-mouse-reporting');
                     recorder.check(
-                        'and it reaches the application as the click it asked for',
-                        held.press === 1 && held.release === 1 && held.wheel === 0,
-                        `${String(held.press)} presses, ${String(held.release)} releases, ${String(held.wheel)} wheel reports`
+                        'and the application is sent nothing for it: no press, no release, no wheel',
+                        held.total === 0 && held.bytes === '',
+                        held.bytes === '' ? 'nothing on the wire' : `bytes arrived: ${held.bytes}`
                     );
 
                     // ── the pane scrolled NOTHING of its own through any of it ───────────

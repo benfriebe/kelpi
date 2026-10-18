@@ -1153,13 +1153,15 @@ kelpi workspace create ... --agent claude|codex [--prompt "..." | --prompt-file 
   nothing more), and `send_prompt` always, `true` for `--send`, else `false`.
 - Agent semantics (wire-protocol.md §6.3, agent-lifecycle.md §6.5): the daemon types the
   command its own settings name for the agent (`agent-claude-command` /
-  `agent-codex-command`) into the first pane once its shell is ready. Without `--send` the
-  prompt is a prefill, as in the New Workspace sheet: pasted unsubmitted into the agent's input
-  once the agent is ready. With `--send` it rides on the launch line and the agent submits it at
-  once. The reply never waits for the agent, so the CLI reports only what the daemon accepted:
-  how the launch went arrives as an `agent-launch` frame in Kelpi windows (a prompt that could
-  not be delivered is broadcast to every window, since the CLI has no session), never on the
-  control socket. The exit code says nothing about the launch.
+  `agent-codex-command`) into the first pane once its shell is ready, with or without
+  `--focus` and `--parent`/`--nested` (a background workspace's first pane spawns all the
+  same). Without `--send` the prompt is a prefill, as in the New Workspace sheet: pasted
+  unsubmitted into the agent's input once the agent is ready. With `--send` it rides on the
+  launch line and the agent submits it at once. The reply never waits for the agent, so the
+  CLI reports only what the daemon accepted: how the launch went arrives as an `agent-launch`
+  frame in Kelpi windows (a prompt that could not be delivered is broadcast to every window,
+  since the CLI has no session), never on the control socket. The exit code says nothing about
+  the launch.
 - Request/response. Read timeout 120 seconds when `--worktree` present (worktree add plus
   optional `git fetch`), 30 seconds with `--repo` or `--group` (a repo association reads
   git), default otherwise.

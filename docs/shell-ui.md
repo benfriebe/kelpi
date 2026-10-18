@@ -1370,12 +1370,13 @@ Fields, top to bottom:
    true` when ticked; the command typed into the pane is the daemon's own
    (`agent-claude-command` / `agent-codex-command`). The agent starts in the first pane the create
    opens: the worktree for a worktree create, the one repo's directory for a single-repo create,
-   else home. The row is not drawn at all when the daemon's settings snapshot lacks
-   `newWorkspaceAgent` (a daemon that predates agent starts would drop `start_agent` and make a
-   plain workspace); and should a create that asked for an agent come back without the
-   `start_agent` echo anyway, a toast says "This daemon is too old to start agents" and offers the
-   prompt to copy. Not on the New Group sheet (§10.4), and the phone shell's New workspace sheet
-   has no such row and does not apply the default.
+   else home. The sheet "New Nested Workspace…" opens (app-state-core.md §2.9) has the same row,
+   and its agent starts in the nested workspace's first pane. The row is not drawn at all when
+   the daemon's settings snapshot lacks `newWorkspaceAgent` (a daemon that predates agent starts
+   would drop `start_agent` and make a plain workspace); and should a create that asked for an
+   agent come back without the `start_agent` echo anyway, a toast says "This daemon is too old to
+   start agents" and offers the prompt to copy. Not on the New Group sheet (§10.4), and the phone
+   shell's New workspace sheet has no such row and does not apply the default.
    **Prompt not delivered** (the `agent-launch` frame, `packages/client/src/state/agent-launch.ts`):
    a launch that worked (`launched`, `sent`, `prefilled`) shows nothing. A `fallback` (the agent
    started, the prompt was not pasted) or a `failed` (no agent started) raises a sticky toast,

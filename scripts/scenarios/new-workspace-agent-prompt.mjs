@@ -45,6 +45,8 @@ export const covers = [
     'packages/client/src/state/store.ts',
     'packages/client/src/state/index.ts',
     'packages/client/src/App.tsx',
+    'packages/client/src/chrome/ToastStack.tsx',
+    'packages/client/src/chrome/corner-layer.ts',
     'packages/daemon/src/agent-launch/',
     'packages/daemon/src/handlers/app/workspaces.ts',
     'packages/daemon/src/pty/foreground.ts',

@@ -43,7 +43,7 @@ import {
 import { createPortal } from 'react-dom';
 
 import { ContextMenu, menuAnchorFromEvent, type MenuAvoidRect, type MenuItemSpec } from './ContextMenu';
-import { hoverFill, useHoverKey } from './hover';
+import { hoverFill, hoverText, useHoverKey } from './hover';
 import { useModalPresence } from './modal-presence';
 import { GroupRepoSheet } from './GroupRepoSheet';
 import {
@@ -1488,6 +1488,11 @@ interface GroupHeaderRowProps {
     readonly onCommitRename: (groupID: string, name: string) => void;
     readonly onCancelRename: () => void;
     readonly registerRow: (key: string, element: HTMLElement | null) => void;
+    /**
+     * The hover "+" beside the chevron: the group menu's "New Workspace", scoped to this group.
+     * Absent (a surface with no create sheet) draws no "+".
+     */
+    readonly onNewWorkspace?: ((groupID: string) => void) | undefined;
     /** §WS-008: the entry animation, as for a workspace row. The reorder is the FLIP spring. */
     readonly entering?: boolean | undefined;
     /** L15: this insertion is a SPRING-LOAD reveal, so the entry runs on the 100ms ease. */
@@ -1533,6 +1538,9 @@ export const GroupHeaderRow = memo(function GroupHeaderRow(props: GroupHeaderRow
                 ? 'outlined'
                 : 'filled'
             : null;
+    // The "+" is drawn only while the pointer is over the band, as a native hover affordance.
+    const [hovered, setHovered] = useState(false);
+    const [plusHovered, setPlusHovered] = useState(false);
     return (
         <div
             ref={(element) => {
@@ -1610,6 +1618,13 @@ export const GroupHeaderRow = memo(function GroupHeaderRow(props: GroupHeaderRow
             }}
             onContextMenu={(event) => {
                 props.onContextMenu(group.id, event);
+            }}
+            onMouseEnter={() => {
+                setHovered(true);
+            }}
+            onMouseLeave={() => {
+                setHovered(false);
+                setPlusHovered(false);
             }}
         >
             {/*
@@ -1718,6 +1733,40 @@ export const GroupHeaderRow = memo(function GroupHeaderRow(props: GroupHeaderRow
              * the whole row — a click-drag inside it selects text — and a collapse control
              * sitting beside a live editor is a way to lose the edit by half a pixel.
              */}
+            {props.renaming || !hovered || props.onNewWorkspace === undefined ? null : (
+                <button
+                    type="button"
+                    aria-label={`New Workspace in ${group.name}`}
+                    title="New Workspace"
+                    data-testid="group-new-workspace"
+                    className="shrink-0"
+                    /*
+                     * The chevron's hit box (S46: 21 × 21 target, 11 × 11 margin box). Hovered, the
+                     * glyph takes the ••• toggle's hover ink (`hoverText`); no box is drawn.
+                     */
+                    data-hovered={plusHovered ? 'true' : 'false'}
+                    style={{
+                        color: hoverText(plusHovered, tokens.textTertiary),
+                        padding: 5,
+                        margin: -5
+                    }}
+                    onMouseEnter={() => {
+                        setPlusHovered(true);
+                    }}
+                    onMouseLeave={() => {
+                        setPlusHovered(false);
+                    }}
+                    onClick={(event) => {
+                        event.stopPropagation();
+                        props.onNewWorkspace?.(group.id);
+                    }}
+                    onMouseDown={(event) => {
+                        event.stopPropagation();
+                    }}
+                >
+                    <ChromeIcon name="plus" size={11} strokeWidth={1.6} />
+                </button>
+            )}
             {props.renaming ? null : (
                 <button
                     type="button"
@@ -2682,6 +2731,11 @@ export function Sidebar(props: SidebarProps): ReactElement {
     );
 
     // ── collapse ────────────────────────────────────────────────────────────────
+    /** A group header's hover "+": the group menu's "New Workspace", so the sheet preselects the group. */
+    const openNewWorkspaceInGroup = useCallback((groupID: string): void => {
+        setNewForm({ kind: 'workspace', groupID });
+    }, []);
+
     const toggleCollapse = useCallback(
         (groupID: string): void => {
             const group = groups.find((candidate) => candidate.id === groupID);
@@ -4999,6 +5053,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
                                 onDragStart={dragStartGroup}
                                 onCommitRename={commitGroupRename}
                                 onCancelRename={cancelRename}
+                                onNewWorkspace={openNewWorkspaceInGroup}
                                 registerRow={registerRow}
                                 entering={entering.has(row.key)}
                                 enterFast={enteringFast}

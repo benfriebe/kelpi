@@ -396,6 +396,25 @@ describe('the group the sheet opens on (§WS-076, `pendingSheetGroupID`)', () =>
         expect((screen.getByTestId('new-workspace-group') as HTMLSelectElement).value).toBe(G1);
     });
 
+    it('the header’s hover "+" opens the same scoped sheet, without collapsing the group', () => {
+        renderSidebar({ inheritGroupID: null });
+        const header = screen.getByTestId('group-header');
+        expect(screen.queryByTestId('group-new-workspace')).toBeNull();
+        fireEvent.mouseEnter(header);
+        const plus = screen.getByTestId('group-new-workspace');
+        expect(plus.getAttribute('data-hovered')).toBe('false');
+        fireEvent.mouseEnter(plus);
+        expect(plus.getAttribute('data-hovered')).toBe('true');
+        fireEvent.click(plus);
+        expect((screen.getByTestId('new-workspace-group') as HTMLSelectElement).value).toBe(G1);
+        expect(header.getAttribute('data-collapsed')).toBe('false');
+        fireEvent.mouseLeave(header);
+        expect(screen.queryByTestId('group-new-workspace')).toBeNull();
+        // Leaving the band clears the "+"'s own hover, so it never reappears already lit.
+        fireEvent.mouseEnter(header);
+        expect(screen.getByTestId('group-new-workspace').getAttribute('data-hovered')).toBe('false');
+    });
+
     it('falls back to the inherited group when nothing scoped it', () => {
         openSheet({ inheritGroupID: G1 });
         expect((screen.getByTestId('new-workspace-group') as HTMLSelectElement).value).toBe(G1);

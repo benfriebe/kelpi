@@ -780,7 +780,7 @@ A full-width pill "band" (rounded 8): fill = group color (or neutral tertiary wh
 colorless) at `groupBandOpacity × intensity` (or the user's `groupFill` override), plus an
 optional border (`groupStroke`). Same height as a workspace row.
 
-Contents: `[icon 22×22] [name 13pt bold] [repo indicator] …spacer… [chevron]`.
+Contents: `[icon 22×22] [name 13pt bold] [repo indicator] …spacer… [+ on hover] [chevron]`.
 
 - **Repo indicator** (Kelpi addition, app-state-core.md §5.5): only for a group with a
   default repository the registry lists, a small branch glyph and the repo's name at 10pt in
@@ -796,6 +796,12 @@ Contents: `[icon 22×22] [name 13pt bold] [repo indicator] …spacer… [chevron
   colored); or emoji (native palette). Same pulsing status dot on the icon corner,
   aggregated over the group's children (waiting > running).
 - Chevron: right when collapsed, down when expanded.
+- **Hover "+"** (Kelpi addition): while the pointer is over the band (and it is not being
+  renamed), a `+` in the chevron's ink and 21×21 hit box sits to its left. Under the pointer
+  the glyph takes the ••• toggle's hover ink (primary); no box is drawn. Clicking it does exactly
+  what the context menu's "New Workspace" does: opens the New Workspace sheet scoped to the
+  group (§10.1, so the group's repository/worktree defaults apply); it does not toggle
+  collapse. Remote daemons' group headers have no create sheet and show no `+`.
 - Click header → toggle collapse. Right-click → group context menu (§5.7).
 - **Inline rename**: initiated from the context menu. The name becomes a text field
   (auto-focused; focus assignment is deferred a tick so it reliably lands). Enter with a

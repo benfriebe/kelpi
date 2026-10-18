@@ -1534,7 +1534,12 @@ Fields, top to bottom:
    Create waits). Every ticket create shows the progress panel (item 9), starting with "Look up
    the ticket" and labelled for its checkout ("Fetch the pull request", "Check out the pull
    request", "Create the worktree on the existing branch"; the daemon's frames name the mode,
-   `checkout`), and Cancel cancels it during the lookup too. On success the sheet closes; a
+   `checkout`, and its first frame is a guess it re-plans once the ticket has answered, so the
+   list may change mid-create and the sheet follows it), and Cancel cancels it during the lookup
+   too (a create with no worktree cannot be cancelled once the lookup is done). The daemon fills
+   nothing for the sheet (`ticket_defaults: false`), so the sheet sends the name, the checkout,
+   and the prompt in its box as the agent's own; a refusal after the lookup (a name, a group, a
+   repository that does not match a pull request) carries no `ticket_error` and is a plain error. On success the sheet closes; a
    reply with `ticket_file_error` or `warnings` leaves one sticky toast, "Created from #418, with
    notes", and a reply with no `ticket` echo (a daemon that predates tickets made a plain
    workspace) says so in a toast.

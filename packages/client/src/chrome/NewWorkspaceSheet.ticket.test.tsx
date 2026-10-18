@@ -327,6 +327,62 @@ describe('creating', () => {
         expect(screen.getByTestId('new-workspace-step-worktree-add').textContent).toContain('Check out the pull request');
     });
 
+    it('follows the daemon when it re-plans the steps once the ticket has answered', async () => {
+        const { drafts } = mount({ submit: () => new Promise(() => {}) });
+        await pick('ticket-picker-row-acme/api#12');
+        fireEvent.click(screen.getByTestId('new-workspace-submit'));
+        await flush();
+        // The sheet's own guess: a new branch off latest main.
+        expect(screen.getAllByRole('listitem').map((row) => row.getAttribute('data-testid'))).toEqual([
+            'new-workspace-step-ticket',
+            'new-workspace-step-resolve-default-branch',
+            'new-workspace-step-fetch',
+            'new-workspace-step-worktree-add',
+            'new-workspace-step-create-workspace'
+        ]);
+        // The daemon found the branch already there: its frame names another checkout and list.
+        act(() => {
+            drafts[0]?.worktree?.onProgress?.({
+                steps: [
+                    { id: 'ticket', status: 'done' },
+                    { id: 'worktree-add', status: 'running' },
+                    { id: 'create-workspace', status: 'pending' }
+                ],
+                cancelled: false,
+                detailed: true,
+                checkout: 'attach-branch'
+            });
+        });
+        expect(screen.getAllByRole('listitem').map((row) => row.getAttribute('data-testid'))).toEqual([
+            'new-workspace-step-ticket',
+            'new-workspace-step-worktree-add',
+            'new-workspace-step-create-workspace'
+        ]);
+        expect(screen.getByTestId('new-workspace-step-worktree-add').textContent).toContain('Create the worktree on the existing branch');
+    });
+
+    it('sends the prompt it shows as the agent\'s own, since the daemon fills nothing for the sheet', async () => {
+        const { drafts } = mount({ props: { defaultAgent: 'claude' } });
+        await pick('ticket-picker-row-acme/api#12');
+        fireEvent.click(screen.getByTestId('new-workspace-submit'));
+        await flush();
+        expect(drafts[0]?.agent).toEqual({
+            kind: 'claude',
+            prompt: 'Work on #12: Crash on start (https://github.com/acme/api/issues/12).',
+            send: false
+        });
+        expect(drafts[0]?.name).toBe('#12 Crash on start');
+    });
+
+    it('shows a refusal after the lookup that carries no ticket_error as a plain create error', async () => {
+        mount({ submit: async () => 'a group named "squad" is ambiguous' });
+        await pick('ticket-picker-row-acme/api#12');
+        fireEvent.click(screen.getByTestId('new-workspace-submit'));
+        await flush();
+        expect(screen.getByTestId('new-workspace-error').textContent).toBe('a group named "squad" is ambiguous');
+        expect(screen.queryByTestId('new-workspace-ticket-problem')).toBeNull();
+    });
+
     it('gives a ticket create with no worktree the lookup and the open steps, and Cancel cancels it', async () => {
         const onCancelCreate = vi.fn();
         const { drafts } = mount({ submit: () => new Promise(() => {}), props: { onCancelCreate } });

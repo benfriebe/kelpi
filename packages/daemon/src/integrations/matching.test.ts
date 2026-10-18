@@ -21,10 +21,10 @@ function remote(name: string, fetchURL: string, extra: Partial<RemoteFact> = {})
     };
 }
 
-function branches(config: Record<string, Partial<BranchConfigFact>>, checkedOut: Record<string, string> = {}): BranchFacts {
+function branches(config: Record<string, Partial<BranchConfigFact>>, checkedOut: Record<string, string> = {}, stale: Record<string, string> = {}): BranchFacts {
     const map = new Map<string, BranchConfigFact>();
     for (const [name, value] of Object.entries(config)) map.set(name, { remote: null, merge: null, pushRemote: null, ...value });
-    return { branches: map, worktrees: [], checkedOutAt: (name) => checkedOut[name] ?? null };
+    return { branches: map, worktrees: [], checkedOutAt: (name) => checkedOut[name] ?? null, staleCheckoutAt: (name) => stale[name] ?? null };
 }
 
 const SAME: BranchLookupTarget = {
@@ -60,11 +60,11 @@ describe('localBranchLookup', () => {
             remotes,
             SAME
         );
-        expect(lookup('feat/login')).toEqual({ exists: true, tracksPullRequest: true, checkedOutAt: '/code/api' });
-        expect(lookup('pr-7')).toEqual({ exists: true, tracksPullRequest: true, checkedOutAt: null });
-        expect(lookup('acme/feat/login')).toEqual({ exists: true, tracksPullRequest: false, checkedOutAt: null });
+        expect(lookup('feat/login')).toEqual({ exists: true, tracksPullRequest: true, checkedOutAt: '/code/api', staleCheckoutAt: null });
+        expect(lookup('pr-7')).toEqual({ exists: true, tracksPullRequest: true, checkedOutAt: null, staleCheckoutAt: null });
+        expect(lookup('acme/feat/login')).toEqual({ exists: true, tracksPullRequest: false, checkedOutAt: null, staleCheckoutAt: null });
         // No upstream at all: the author's own branch of a same-repository pull request.
-        expect(lookup('mine')).toEqual({ exists: true, tracksPullRequest: true, checkedOutAt: null });
+        expect(lookup('mine')).toEqual({ exists: true, tracksPullRequest: true, checkedOutAt: null, staleCheckoutAt: null });
         expect(lookup('missing')).toEqual({ exists: false });
         // An issue's branches never track anything.
         expect(localBranchLookup(branches({ x: {} }), remotes, { ...SAME, kind: 'issue' })('x')).toMatchObject({ tracksPullRequest: false });
@@ -81,6 +81,13 @@ describe('localBranchLookup', () => {
         });
         expect(viaURL('fix')).toMatchObject({ tracksPullRequest: true });
         expect(localBranchLookup(branches({ fix: { remote: 'origin', merge: 'refs/heads/fix' } }), remotes, fork)('fix')).toMatchObject({ tracksPullRequest: false });
+    });
+});
+
+describe('a branch a folder-gone worktree still holds', () => {
+    it('is reported as busy (staleCheckoutAt), never as checked out where a workspace could open', () => {
+        const lookup = localBranchLookup(branches({ 'feat/login': {} }, {}, { 'feat/login': '/wt/gone' }), [], SAME);
+        expect(lookup('feat/login')).toEqual({ exists: true, tracksPullRequest: true, checkedOutAt: null, staleCheckoutAt: '/wt/gone' });
     });
 });
 

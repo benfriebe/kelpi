@@ -26,6 +26,8 @@ import type { TicketKind, TicketPromptVariant, TicketResolveDefaults, WorkspaceC
 import {
     issueBranchName,
     prLocalBranchName,
+    staleCheckoutOf,
+    staleCheckoutWarning,
     ticketWorkspaceName,
     ticketWorktreeName,
     type LocalBranchFact,
@@ -106,6 +108,9 @@ export function ticketCreateDefaults(input: TicketDefaultsInput): TicketCreateDe
         if (decision.ok) {
             branch = decision.branch;
             where = checkedOutAt(decision.fact);
+            // The head's own name was passed over because a folder-gone worktree holds it: say so.
+            const headStale = pr === null || decision.branch === pr.headRef ? null : staleCheckoutOf(input.localBranch(pr.headRef));
+            if (pr !== null && headStale !== null) warnings.push(`${staleCheckoutWarning(pr.headRef, headStale)}; using "${decision.branch}" instead`);
         } else {
             branch = null;
             warnings.push(decision.error);
@@ -117,6 +122,9 @@ export function ticketCreateDefaults(input: TicketDefaultsInput): TicketCreateDe
         where = checkedOutAt(fact);
         checkout = where !== null ? 'existing-checkout' : fact.exists ? 'attach-branch' : 'new-branch';
         updateMain = checkout === 'new-branch';
+        // An issue's branch has no other name to take: attaching it fails until it is pruned.
+        const staleAt = staleCheckoutOf(fact);
+        if (staleAt !== null) warnings.push(staleCheckoutWarning(branch, staleAt));
     }
 
     const worktree = checkout === 'existing-checkout' || branch === null ? null : ticketWorktreeName(input.kind, input.number, branch);

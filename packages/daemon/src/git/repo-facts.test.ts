@@ -239,6 +239,9 @@ describe('createRepoFacts against real repositories', () => {
         expect(branches.checkedOutAt('main')).toBe(dir);
         expect(branches.checkedOutAt('pr-head')).toBe(fs.realpathSync(linked));
         expect(branches.checkedOutAt('old')).toBeNull();
+        // ...but git still holds the branch there until it is pruned: busy, not free.
+        expect(branches.staleCheckoutAt('old')).toBe(path.join(fs.realpathSync(worktrees), 'gone'));
+        expect(branches.staleCheckoutAt('pr-head')).toBeNull();
         expect(branches.checkedOutAt('octo/feature.v2')).toBeNull();
         expect(branches.checkedOutAt('missing')).toBeNull();
     });

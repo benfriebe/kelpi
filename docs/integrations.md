@@ -185,7 +185,13 @@ the create call it:
 `prLocalBranchName` is the one place a pull request's local branch is chosen. Candidates, in
 order: the head's own name; `<head owner>/<head>` (skipped when the fork was deleted); `pr-<n>`. A
 candidate is taken when it is the base repository's default branch (a fork's `main` must not check
-out as ours) or an existing local branch that does not track this pull request. The head name must
+out as ours), an existing local branch that does not track this pull request, or a branch a
+worktree whose folder is gone still holds (`staleCheckoutAt`: listed `prunable`, never `git worktree
+prune`d; git refuses to check it out anywhere else, and no workspace can open there). Passing over
+the head's own name for that adds a warning (``branch "<b>" is still held by a worktree whose folder
+is gone (<path>): run `git worktree prune` in the repository to free it; using "<other>"
+instead``), and a refusal because every candidate is taken says the same for each stale one. The
+head name must
 pass `isSafeBranchName` (git's `check-ref-format --branch` rules, judged strictly, plus: never
 starting with `-`, never holding an invisible or bidi character); the daemon also runs git's own
 check before using it.
@@ -233,7 +239,10 @@ field it is not told, and what `ticket-resolve` proposes:
 
 A create that names another `branch` or `update_main: true` (the CLI sends both with `--from` even
 without `--worktree`) never takes the `existing-checkout` row: it gets a worktree, under that row's
-own rules (socket-handlers.md §6.2).
+own rules (socket-handlers.md §6.2). "Checked out somewhere" means a live checkout: a branch held
+only by a worktree whose folder is gone never opens there; a pull request takes another name for it
+(§4), and an issue keeps its row (`attach-branch`, which git refuses until the stale worktree is
+pruned) with a warning saying to run `git worktree prune`.
 
 The prompt is rendered by the daemon, never the client (`packages/core/src/tickets/template.ts`):
 
@@ -483,7 +492,8 @@ with the signal's reason, and the git reads stop waiting.
 its fetch and push URL as git uses them (`git remote -v`, so `insteadOf` rewrites apply) AND as
 written in the config (`remote.<name>.url` / `.pushurl`), every local branch with its
 `branch.<b>.remote`, `merge` and `pushRemote`, `git worktree list --porcelain` (where each branch is
-checked out; a prunable worktree does not count), and whether the registered path is the
+checked out; a prunable worktree does not count as checked out, and is reported apart as the
+branch's `staleCheckoutAt`, since git still holds the branch there), and whether the registered path is the
 repository's own root. Every call has a 5 s timeout, runs with `GIT_TERMINAL_PROMPT=0` and
 `GIT_OPTIONAL_LOCKS=0`, and a repository git cannot read simply has no facts. Remotes and the
 root check are cached 30 s, branches 2 s. These are direct git reads, never through the

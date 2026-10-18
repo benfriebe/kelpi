@@ -659,6 +659,39 @@ describe.skipIf(!HAS_GIT)('workspace-create from a pull request', { timeout: 30_
         expect(git(fx.work, 'rev-parse', 'feat/login')).toBe(head);
     });
 
+    it("a head branch held by a folder-gone worktree: the resolve proposes another name and the create checks it out there", async () => {
+        const fx = pullRequestFixture();
+        const head = sameRepoPullRequest(fx, 7, 'feat/login');
+        git(fx.work, 'fetch', '-q', 'origin');
+        const gone = path.join(fx.root, 'wt', 'feat-login-old');
+        git(fx.work, 'worktree', 'add', '-q', '--track', '-b', 'feat/login', gone, 'origin/feat/login');
+        fs.rmSync(gone, { recursive: true, force: true });
+        const read = (args: readonly string[]): Promise<string> => realOps.read(args, fx.work);
+        const localBranch = localBranchLookup(await readBranchFacts(read), await readRemoteFacts(read), {
+            kind: 'pr',
+            number: 7,
+            repo: 'acme/api',
+            headRef: 'feat/login',
+            headRepo: 'acme/api',
+            crossRepository: false,
+            baseRemote: 'origin',
+            headRemote: null,
+            headPushURL: null
+        });
+        const proposed = prTicket(head, { localBranch });
+        // Not the existing checkout (its folder is gone), and not the branch git would refuse.
+        expect(proposed.defaults).toMatchObject({ checkout: 'pr-head', branch: 'acme/feat/login', checkedOutAt: null });
+        const h = ticketHarness(fx, { tickets: fakeTickets(() => proposed) });
+        h.send({ command: 'workspace-create', ticket: PR });
+        expect(await settle(h)).toMatchObject({
+            ok: true,
+            branch: 'acme/feat/login',
+            checkout: 'pr-head',
+            warnings: [expect.stringContaining('run `git worktree prune`') as unknown as string]
+        });
+        expect(git(fx.work, 'rev-parse', 'acme/feat/login')).toBe(head);
+    });
+
     it("is refused through a group whose repository has no remote for it, and an unknown group is refused before git", async () => {
         const fx = pullRequestFixture();
         const head = sameRepoPullRequest(fx, 7, 'feat/login');

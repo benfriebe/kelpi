@@ -224,6 +224,19 @@ describe.skipIf(!HAS_GIT)('performPullRequestCheckout against real git', { timeo
         expect(tryGit(fx.work, 'rev-parse', 'refs/remotes/origin/feat/login')).toBe(before);
     });
 
+    it('a branch a folder-gone worktree still holds is refused before any fetch, saying how to free it', async () => {
+        const fx = pullRequestFixture();
+        const head = sameRepoPullRequest(fx, 7, 'feat/login');
+        git(fx.work, 'fetch', '-q', 'origin');
+        const gone = path.join(fx.root, 'wt', 'gone');
+        git(fx.work, 'worktree', 'add', '-q', '--track', '-b', 'feat/login', gone, 'origin/feat/login');
+        fs.rmSync(gone, { recursive: true, force: true });
+        await expect(performPullRequestCheckout(ops(), request(fx, { headSha: head, worktreePath: path.join(fx.root, 'wt', 'again') }))).rejects.toThrow(
+            `branch 'feat/login' is still held by a worktree whose folder is gone ('${gone}'): run \`git worktree prune\` in ${fx.work} to free it`
+        );
+        expect(fs.existsSync(path.join(fx.root, 'wt', 'again'))).toBe(false);
+    });
+
     it('a local branch of that name that is not this pull request is refused', async () => {
         const fx = pullRequestFixture();
         const head = forkPullRequest(fx, 8, 'fix');

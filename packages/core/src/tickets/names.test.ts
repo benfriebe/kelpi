@@ -130,6 +130,19 @@ describe('prLocalBranchName (integrations.md §4)', () => {
         });
     });
 
+    it('passes over a branch a folder-gone worktree still holds, even one that tracks this pull request', () => {
+        const stale = { exists: true, tracksPullRequest: true, checkedOutAt: null, staleCheckoutAt: '/wt/gone' } as const;
+        expect(prLocalBranchName({ ...base, localBranch: facts({ 'fix/login': stale }) })).toMatchObject({ ok: true, branch: 'octocat/fix/login' });
+        // A live checkout wins over a stale entry: that is the existing checkout.
+        const live = { exists: true, tracksPullRequest: true, checkedOutAt: '/code/api', staleCheckoutAt: '/wt/gone' } as const;
+        expect(prLocalBranchName({ ...base, localBranch: facts({ 'fix/login': live }) })).toEqual({ ok: true, branch: 'fix/login', fact: live });
+        // Every candidate taken: the refusal says how to free the stale one.
+        const other = { exists: true, tracksPullRequest: false, checkedOutAt: null } as const;
+        const refused = prLocalBranchName({ ...base, localBranch: facts({ 'fix/login': stale, 'octocat/fix/login': other, 'pr-418': other }) });
+        expect(refused.ok).toBe(false);
+        expect(!refused.ok && refused.error).toContain('"fix/login" is still held by a worktree whose folder is gone (/wt/gone): run `git worktree prune`');
+    });
+
     it('refuses a head name git or Kelpi will not take, naming it safely', () => {
         const refused = prLocalBranchName({ ...base, headRef: '-x\u202e' });
         expect(refused.ok).toBe(false);

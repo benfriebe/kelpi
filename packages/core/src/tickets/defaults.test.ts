@@ -50,6 +50,22 @@ describe('ticketCreateDefaults', () => {
         expect(defaults).toMatchObject({ checkout: 'attach-branch', updateMain: false, worktree: '418-retry-login-on-401' });
     });
 
+    it("takes another branch name for a pull request whose head's is held by a folder-gone worktree, and says why", () => {
+        const stale = { exists: true, tracksPullRequest: true, checkedOutAt: null, staleCheckoutAt: '/wt/fix-login' } as const;
+        const defaults = ticketCreateDefaults({ ...PR, localBranch: lookup({ 'fix/login': stale }) });
+        expect(defaults).toMatchObject({ checkout: 'pr-head', branch: 'octocat/fix/login', checkedOutAt: null });
+        expect(defaults.warnings).toEqual([
+            'branch "fix/login" is still held by a worktree whose folder is gone (/wt/fix-login): run `git worktree prune` in the repository to free it; using "octocat/fix/login" instead'
+        ]);
+    });
+
+    it("warns that an issue's branch held by a folder-gone worktree must be pruned, and never opens there", () => {
+        const stale = { exists: true, tracksPullRequest: false, checkedOutAt: null, staleCheckoutAt: '/wt/418' } as const;
+        const defaults = ticketCreateDefaults({ ...ISSUE, localBranch: lookup({ '418-retry-login-on-401': stale }) });
+        expect(defaults).toMatchObject({ checkout: 'attach-branch', checkedOutAt: null });
+        expect(defaults.warnings).toEqual(['branch "418-retry-login-on-401" is still held by a worktree whose folder is gone (/wt/418): run `git worktree prune` in the repository to free it']);
+    });
+
     it('opens at the checkout that already has the branch, with no worktree', () => {
         const fact = { exists: true, tracksPullRequest: false, checkedOutAt: '/Users/ben/code/api' } as const;
         expect(ticketCreateDefaults({ ...ISSUE, localBranch: lookup({ '418-retry-login-on-401': fact }) })).toMatchObject({

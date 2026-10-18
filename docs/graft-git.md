@@ -1762,7 +1762,12 @@ remote names must be remotes of the repository. Then, before any fetch:
 
 - a branch checked out anywhere (the main clone included) is an error naming the path
   (`branch '<b>' is already checked out at '<path>': open a workspace there, or choose another
-  branch name`); the resolve has usually already turned that case into `existing-checkout`;
+  branch name`); the resolve has usually already turned that case into `existing-checkout`. A
+  branch held only by a worktree whose folder is gone (git lists it `prunable` and refuses the
+  branch just the same) is refused with ``branch '<b>' is still held by a worktree whose folder is
+  gone ('<path>'): run `git worktree prune` in <repo> to free it, or choose another branch name``;
+  the defaults never propose such a branch (docs/integrations.md §4), so this is reached only with
+  a `branch` the request named;
 - an existing local branch that does not track this pull request is an error. Both are read with
   `readBranchFacts` and `readRemoteFacts` (strict: an unreadable repository is git's error) and
   judged by `@kelpi/core/tickets`' `tracksPullRequest`, the rule the resolve proposed the branch

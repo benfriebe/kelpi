@@ -172,7 +172,7 @@ export function localBranchLookup(branches: BranchFacts | null, remotes: readonl
         if (config === undefined) return { exists: false };
         const tracks =
             target.kind === 'pr' && tracksPullRequest(config, { number: target.number, headRef: target.headRef, crossRepository: target.crossRepository }, pointsAt);
-        return { exists: true, tracksPullRequest: tracks, checkedOutAt: branches.checkedOutAt(name) };
+        return { exists: true, tracksPullRequest: tracks, checkedOutAt: branches.checkedOutAt(name), staleCheckoutAt: branches.staleCheckoutAt(name) };
     };
 }
 

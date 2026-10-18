@@ -113,11 +113,31 @@ export function isSafeBranchName(name: string): boolean {
  *     all (the author's own branch, before or without `push -u`). Always false for an issue lookup;
  *   - `checkedOutAt`: the checkout it is checked out in (the repository itself or a linked
  *     worktree), or null. A branch can be checked out in only one place, so a new worktree of it
- *     is impossible and the defaults open a workspace at that checkout instead.
+ *     is impossible and the defaults open a workspace at that checkout instead;
+ *   - `staleCheckoutAt`: a worktree git still lists for the branch although its folder is gone
+ *     (`prunable`: deleted, never `git worktree prune`d), or null (absent = null). No workspace can
+ *     open there, and git refuses to check the branch out anywhere else until it is pruned, so the
+ *     branch is BUSY: a pull request's checkout takes another name (`prLocalBranchName`), and an
+ *     issue's defaults say to prune.
  */
 export type LocalBranchFact =
     | { readonly exists: false }
-    | { readonly exists: true; readonly tracksPullRequest: boolean; readonly checkedOutAt: string | null };
+    | {
+          readonly exists: true;
+          readonly tracksPullRequest: boolean;
+          readonly checkedOutAt: string | null;
+          readonly staleCheckoutAt?: string | null | undefined;
+      };
+
+/** The folder-gone worktree that holds a branch no live checkout has (`LocalBranchFact`), or null. */
+export function staleCheckoutOf(fact: LocalBranchFact): string | null {
+    return fact.exists && fact.checkedOutAt === null ? (fact.staleCheckoutAt ?? null) : null;
+}
+
+/** What a create says about a branch a folder-gone worktree still holds. */
+export function staleCheckoutWarning(branch: string, staleAt: string): string {
+    return `branch "${untrustedLine(branch, 100)}" is still held by a worktree whose folder is gone (${untrustedLine(staleAt, 200)}): run \`git worktree prune\` in the repository to free it`;
+}
 
 /** Synchronous, so the daemon reads the branches once (`for-each-ref` + `worktree list`) and answers from that. */
 export type LocalBranchLookup = (name: string) => LocalBranchFact;
@@ -143,8 +163,9 @@ export type PrLocalBranchDecision =
 /**
  * THE local branch name for a pull request's checkout (docs/integrations.md §4). Candidates in order: the head's own
  * name; `<head owner>/<head>` (skipped for a deleted fork); `pr-<n>`. A candidate is taken when it
- * is the base repository's default branch (a fork's `main`), or an existing local branch that does
- * not track this pull request (`tracksPullRequest`); the first candidate that is free, or already
+ * is the base repository's default branch (a fork's `main`), an existing local branch that does
+ * not track this pull request (`tracksPullRequest`), or a branch a folder-gone worktree still holds
+ * (`staleCheckoutAt`, which git refuses to check out); the first candidate that is free, or already
  * this pull request's, wins. A head name `isSafeBranchName` refuses, or every candidate taken, is
  * an error ready to show.
  */
@@ -158,15 +179,25 @@ export function prLocalBranchName(input: PrLocalBranchInput): PrLocalBranchDecis
     const candidates = [input.headRef];
     if (input.headOwner !== null && isGitHubOwner(input.headOwner)) candidates.push(`${input.headOwner}/${input.headRef}`);
     candidates.push(`pr-${input.number}`);
+    const stale: string[] = [];
     for (const candidate of candidates) {
         if (!isSafeBranchName(candidate) || candidate === input.baseDefaultBranch) continue;
         const fact = input.localBranch(candidate);
+        // Held by a worktree whose folder is gone: git would refuse it, so it is taken too.
+        const staleAt = staleCheckoutOf(fact);
+        if (staleAt !== null) {
+            stale.push(staleCheckoutWarning(candidate, staleAt));
+            continue;
+        }
         if (fact.exists && !fact.tracksPullRequest) continue;
         return { ok: true, branch: candidate, fact };
     }
     return {
         ok: false,
-        error: `local branches ${candidates.map((name) => `"${untrustedLine(name, 100)}"`).join(', ')} already exist and none of them tracks pull request #${input.number}: rename or delete one`
+        error: [
+            `local branches ${candidates.map((name) => `"${untrustedLine(name, 100)}"`).join(', ')} already exist and none of them tracks pull request #${input.number}: rename or delete one`,
+            ...stale
+        ].join('; ')
     };
 }
 

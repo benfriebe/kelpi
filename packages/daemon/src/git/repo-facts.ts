@@ -96,6 +96,12 @@ export interface BranchFacts {
      * directory is gone, so a workspace cannot open there.
      */
     checkedOutAt(branch: string): string | null;
+    /**
+     * A PRUNABLE worktree (its directory gone, never pruned) that still holds `branch`, or null.
+     * Git refuses to check the branch out anywhere else until `git worktree prune`, so it is busy
+     * even though no workspace can open there (`LocalBranchFact.staleCheckoutAt`).
+     */
+    staleCheckoutAt(branch: string): string | null;
 }
 
 export interface RepoLayoutFact {
@@ -249,11 +255,18 @@ function branchFacts(names: readonly string[], config: ReadonlyMap<string, Branc
     const branches = new Map<string, BranchConfigFact>();
     for (const name of names) branches.set(name, config.get(name) ?? { remote: null, merge: null, pushRemote: null });
     const checkedOut = new Map<string, string>();
+    const stale = new Map<string, string>();
     for (const worktree of worktrees) {
-        if (worktree.branch === null || worktree.prunable || worktree.bare) continue;
-        if (!checkedOut.has(worktree.branch)) checkedOut.set(worktree.branch, worktree.path);
+        if (worktree.branch === null || worktree.bare) continue;
+        const into = worktree.prunable ? stale : checkedOut;
+        if (!into.has(worktree.branch)) into.set(worktree.branch, worktree.path);
     }
-    return { branches, worktrees, checkedOutAt: (branch) => checkedOut.get(branch) ?? null };
+    return {
+        branches,
+        worktrees,
+        checkedOutAt: (branch) => checkedOut.get(branch) ?? null,
+        staleCheckoutAt: (branch) => stale.get(branch) ?? null
+    };
 }
 
 /** What a repository git cannot read has. */

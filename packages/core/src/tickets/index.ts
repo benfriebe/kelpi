@@ -36,6 +36,8 @@ export {
     issueBranchName,
     prLocalBranchName,
     prWorktreeName,
+    staleCheckoutOf,
+    staleCheckoutWarning,
     ticketSlug,
     ticketWorkspaceName,
     ticketWorktreeName

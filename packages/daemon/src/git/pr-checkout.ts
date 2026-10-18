@@ -127,6 +127,8 @@ interface LocalBranchState {
     readonly exists: boolean;
     /** The checkout it is checked out in (the repository itself, a linked worktree, or one whose directory is gone), or null. */
     readonly checkedOutAt: string | null;
+    /** `checkedOutAt` is a worktree whose directory is gone (prunable). */
+    readonly checkedOutGone: boolean;
     /** `branch.<b>.*`; all null for a branch with none, or none at all. */
     readonly config: BranchConfigFact;
     readonly tracksPullRequest: boolean;
@@ -168,8 +170,12 @@ async function readLocalBranch(
     const facts = await readBranchFacts(readIn(ops, request.repoPath, signal));
     const branch = request.branchName;
     const config = facts.branches.get(branch);
-    const checkedOutAt = facts.worktrees.find((worktree) => worktree.branch === branch && !worktree.bare)?.path ?? null;
-    if (config === undefined) return { exists: false, checkedOutAt, config: { remote: null, merge: null, pushRemote: null }, tracksPullRequest: false };
+    // A live checkout first; else one whose folder is gone, which git refuses just the same.
+    const live = facts.checkedOutAt(branch);
+    const gone = live === null ? facts.staleCheckoutAt(branch) : null;
+    const checkedOutAt = live ?? gone;
+    const checkedOutGone = gone !== null;
+    if (config === undefined) return { exists: false, checkedOutAt, checkedOutGone, config: { remote: null, merge: null, pushRemote: null }, tracksPullRequest: false };
     const pointsAt = pullRequestUpstreamPointsAt(remotes, {
         baseRepo: request.baseRepo,
         headRepo: request.crossRepository ? request.headRepo : request.baseRepo,
@@ -181,6 +187,7 @@ async function readLocalBranch(
     return {
         exists: true,
         checkedOutAt,
+        checkedOutGone,
         config,
         tracksPullRequest: tracksPullRequest(config, { number: request.number, headRef: request.headRef, crossRepository: request.crossRepository }, pointsAt)
     };
@@ -308,7 +315,11 @@ export async function performPullRequestCheckout(
         const local = await readLocalBranch(ops, request, checked.remotes, headPushURL, signal);
         bail();
         if (local.checkedOutAt !== null) {
-            throw new PullRequestCheckoutError(`branch '${branch}' is already checked out at '${local.checkedOutAt}': open a workspace there, or choose another branch name`);
+            throw new PullRequestCheckoutError(
+                local.checkedOutGone
+                    ? `branch '${branch}' is still held by a worktree whose folder is gone ('${local.checkedOutAt}'): run \`git worktree prune\` in ${repoPath} to free it, or choose another branch name`
+                    : `branch '${branch}' is already checked out at '${local.checkedOutAt}': open a workspace there, or choose another branch name`
+            );
         }
         if (local.exists && !local.tracksPullRequest) {
             throw new PullRequestCheckoutError(`a local branch '${branch}' already exists and does not track pull request #${number}: choose another branch name`);

@@ -1071,8 +1071,11 @@ echo included, still goes out before the workspace exists. A handler table built
 instead of the four branches below, through the handler table's `deps.tickets`
 (`TicketService`: `connected(provider)` and `resolve(ref, signal)`; a table built without one
 gets `INERT_TICKET_SERVICE`, which is never connected) and `deps.ticketGit` (bundled git, run
-directly: remote and branch reads, the ticket file's checks, the pull request's checkout). In
-order, refusals first and nothing changed by any of them:
+directly: remote and branch reads, the ticket file's checks, the pull request's checkout). It
+starts after the two checks every create makes first, `icon?` and then the nesting `parent?` /
+`parentPaneID?` (above), so a ticket create with a bad icon or parent is refused with their
+errors before its reference is parsed. Then, in order, refusals first and nothing changed by any
+of them:
 
 1. "Starting an agent" checks 1 to 3 (check 4, the prompt file, waits for step 6);
 2. `parseTicketRef(ticket)` → `error("'<ticket>' is not a GitHub issue or pull request: paste its
@@ -1085,7 +1088,8 @@ order, refusals first and nothing changed by any of them:
    `ticketCreateFailure(error)`: `{ok:false, error, ticket_error: <code>, retry_after_s?,
    sso_url?, settings_url?}`;
 6. the plan: the repository is `repo`, else the group's default repository, else (with
-   `ticketDefaults`) the registered repository the ticket matched; with `ticketDefaults`, every
+   `ticketDefaults`) the registered repository the ticket matched (a nested create's group
+   repository and worktree switch are its parent's group's, as above); with `ticketDefaults`, every
    omitted field comes from `resolved.defaults` (name, worktree, branch, and update main, which
    is on exactly when the issue's branch does not exist yet; an existing branch is attached). A
    defaults branch that is already checked out opens the workspace there, with no worktree
@@ -1105,10 +1109,14 @@ Then the effects: the worktree (`performWorktreeAdd` with the matched remote, or
 (graft-git.md §8.5.4), and when it was not written the prompt file is rewritten with the
 ticket's URL in place of the file; the repository registered with `ensureRegisteredRepo`
 (remote URL included); `dispatchCreate` with `ticket: workspaceTicketOf(resolved.summary)`, so the
-workspace keeps the ticket and the launcher starts only now, with the file in place. The reply
-is (a)'s or (d)'s plus `ticket`, `checkout`, `ticket_file` or `ticket_file_error`, and
-`warnings` when there are any (wire-protocol.md §6.3). Every refusal after step 6 removes the
-prompt file, as on the other branches.
+workspace keeps the ticket and the launcher starts only now, with the file in place. The icon,
+the parent and `focus` ride the same `dispatchCreate` as on the other branches; the parent is
+checked again first (`lostParent`, above), since the resolve and the git work both ran after it
+was resolved: without a worktree the create fails whole before the ticket file is written, with
+one it completes at the top level with `parent_lost`. The reply is (a)'s or (d)'s (`icon`,
+`parent_id` / `parent_name` or `parent_lost` included) plus `ticket`, `checkout`, `ticket_file`
+or `ticket_file_error`, and `warnings` when there are any (wire-protocol.md §6.3). Every refusal
+after step 6 removes the prompt file, as on the other branches.
 
 Four branches, checked in this order ((d) is checked before (b) and (c)):
 

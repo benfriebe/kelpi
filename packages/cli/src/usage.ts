@@ -415,7 +415,8 @@ export const workspaceCreateUsage = `Usage:
   kelpi workspace create ... --agent claude|codex \\
                        [--prompt "..." | --prompt-file <path|->] [--send]
   kelpi workspace create --from <url|owner/name#n> [--name "..."] [--repo <path>] \\
-                       [--group <name>] [--worktree <name>] [--branch <name>] \\
+                       [--group <name> | --parent <name-or-id> | --nested] \\
+                       [--worktree <name>] [--branch <name>] [--icon <emoji>] [--focus] \\
                        [--agent claude|codex ...] [--json]
 
 Creates a new workspace and returns its id. The workspace is created in the

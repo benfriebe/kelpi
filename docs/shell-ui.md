@@ -1344,7 +1344,8 @@ Fields, top to bottom:
 
 1. Title "New Workspace", with **From ticket…** on the row's trailing edge (Kelpi addition,
    docs/integrations.md) whenever the daemon reports a GitHub integration (`welcome.integrations`),
-   on the desktop shell only: the phone shell's create is name-only, and a daemon that predates
+   on the desktop shell only: the phone shell's own New workspace sheet (`phone/new-workspace.ts`)
+   has no From ticket, and a daemon that predates
    integrations shows no button. It opens the ticket picker (item 12) as a sub-sheet; ⌥⌘N
    (`new_workspace_from_ticket`) and the palette's "New Workspace from Ticket…" open the sheet
    with the picker already up (over a daemon with no GitHub integration they open the plain

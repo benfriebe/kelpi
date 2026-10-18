@@ -3158,7 +3158,8 @@ function Shell(props: AppProps): ReactElement {
     /*
      * docs/integrations.md: the New Workspace sheet's From ticket, over this daemon's GitHub
      * integration. Undefined (no From ticket at all) for a daemon that does not report one; the
-     * phone shell never gets it either (its create is name-only). The status rides the store, so
+     * phone shell never gets it either (its own sheet, `phone/new-workspace.ts`, has no From
+     * ticket). The status rides the store, so
      * the picker sees a link made while it is up; the replies are read with the protocol's own
      * readers, and a command that throws (a timeout, a dropped connection) is a failure the picker
      * can show like any other.
@@ -3981,7 +3982,7 @@ function Shell(props: AppProps): ReactElement {
         // #372: the palette row that brings the old-terminal-host notice back after "Later".
         showOldTerminalHosts,
         // docs/integrations.md: New Workspace from Ticket, desktop only and over a daemon that can
-        // link GitHub (the phone's create is name-only).
+        // link GitHub (the phone's own New workspace sheet has no From ticket).
         fromTicket: !phoneActive && ticketSource !== undefined,
         // Desktop only: the phone shell draws no root band, so there is nothing to arrange.
         arrangement: phoneActive ? null : {

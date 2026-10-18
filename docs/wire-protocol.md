@@ -1364,8 +1364,9 @@ repository whose remotes point at the ticket's repository), `worktree` and `bran
 and, when `start_agent` is present without `agent_prompt`, the prompt (`ticketCreateDefaults`,
 `packages/core/src/tickets/defaults.ts`). The CLI leaves it on; the New Workspace sheet sends
 `"ticket_defaults":false`, because it has already shown those defaults (from `ticket-resolve`) and
-sends the user's final choice. After phase 1's agent checks above, and still BEFORE any effect,
-the handler refuses a `ticket` that does not parse (`bad-ref`), a provider with no usable
+sends the user's final choice. After the `icon` and `parent` checks and phase 1's agent checks
+above (so a bad icon or parent is refused before the ticket is even parsed), and still BEFORE any
+effect, the handler refuses a `ticket` that does not parse (`bad-ref`), a provider with no usable
 credential (`not-connected`) and any ticket the resolve cannot read; every such refusal carries
 `ticket_error`, one of the codes in integrations.md, beside `error`, plus that code's extras
 (`retry_after_s`, `sso_url`, `settings_url`):
@@ -1385,7 +1386,10 @@ A pull request is checked out on its head, never on a new branch: with `worktree
 `pr-head` create, and `update_main: true` is refused. A ticket create left with neither a `repo`
 nor a `worktree` (after the defaults, when `ticket_defaults` applies them) is refused before
 anything is created: a ticket always lands in a checkout. Every success reply to a request that
-carried `ticket` echoes it, and says what the create did:
+carried `ticket` echoes it, and says what the create did. Otherwise a ticket create is any
+create: `icon`, `parent`/`parent_pane_id` (Nesting, below: the group defaults are then the
+parent's group's, and a parent lost while the ticket resolves or git runs is handled as on the
+repository and worktree branches) and `focus` (absent = background) apply, with the same echoes.
 
 | reply field | meaning |
 |---|---|

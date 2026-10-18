@@ -2419,6 +2419,35 @@ describe('workspace create / label / mute', () => {
             return { lines: [reply] };
         };
 
+        it('nests, sets the icon and focuses a ticket create like any create, and says where it went', async () => {
+            const PARENT = 'AAAAAAAA-0000-4000-8000-0000000000AA';
+            server.respond((request) => ({
+                lines: [{ ...ticketReply, icon: request['icon'], parent_id: PARENT, parent_name: 'orchestrator' }]
+            }));
+            const home = scratchHome();
+            const nested = await runCLI(['workspace', 'create', '--from', PR_URL, '--parent', 'orchestrator', '--icon', '🐛', '--focus'], {
+                port: server.port,
+                cwd: home
+            });
+            expect(nested.code).toBe(0);
+            expect(await lastRequest()).toEqual({
+                command: 'workspace-create',
+                ticket: PR_URL,
+                parent: 'orchestrator',
+                icon: 'emoji:🐛',
+                focus: true
+            });
+            expect(nested.stdout).toContain('nested under orchestrator');
+
+            // A parent the daemon lost while it resolved the ticket and made the worktree.
+            server.respond(() => ({
+                lines: [{ ...ticketReply, parent_lost: true, parent_lost_reason: "parent 'orchestrator' was deleted while the workspace was being created" }]
+            }));
+            const lost = await runCLI(['workspace', 'create', '--from', PR_URL, '--parent', 'orchestrator'], { port: server.port, cwd: home });
+            expect(lost.code).toBe(1);
+            expect(lost.stderr).toContain("parent 'orchestrator' was deleted while the workspace was being created");
+        });
+
         it('sends the ticket raw and never the cwd as the source, composing with the other flags', async () => {
             server.respond(ticketDaemon);
             const home = scratchHome();

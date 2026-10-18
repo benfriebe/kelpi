@@ -86,7 +86,8 @@ export interface PaletteFeatureHost {
     readonly showOldTerminalHosts?: (() => void) | undefined;
     /**
      * docs/integrations.md: offer New Workspace from Ticket. True only over a daemon that reports
-     * a GitHub integration, on the desktop shell (the phone's create is name-only). Absent = false.
+     * a GitHub integration, on the desktop shell (the phone's own New workspace sheet has no From
+     * ticket). Absent = false.
      */
     readonly fromTicket?: boolean | undefined;
 }

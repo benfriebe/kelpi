@@ -162,6 +162,30 @@ describe('a ticket create with a worktree', () => {
     });
 });
 
+// app-state-core.md §2.9: "New Nested Workspace…" raises the same sheet, From ticket included.
+describe('a nested ticket create', () => {
+    it('sends the parent with or without a worktree, and never a group', async () => {
+        const h = setup();
+        expect(
+            await h.actions.createWorkspaceFromTicket('#12 Crash on start', null, { ref: URL, repoPath: '/src/api' }, { parentID: 'P1' })
+        ).toBeNull();
+        expect(h.sent()).toMatchObject({ repo: '/src/api', parent: 'P1', ticket: URL, ticketDefaults: false });
+        expect(h.sent()).not.toHaveProperty('group');
+
+        expect(
+            await h.actions.createWorkspaceWithWorktree(
+                '#12 Crash on start',
+                null,
+                { repoID: 'r1', name: '12-crash', branch: '12-crash', updateMain: true },
+                '/src/api',
+                { parentID: 'P1', ticket: { ref: URL } }
+            )
+        ).toBeNull();
+        expect(h.sent()).toMatchObject({ worktree: '12-crash', parent: 'P1', ticket: URL, ticketDefaults: false });
+        expect(h.sent()).not.toHaveProperty('group');
+    });
+});
+
 describe('what a ticket create leaves behind', () => {
     it('raises one sticky toast for a missing ticket file and the warnings', async () => {
         const h = setup({

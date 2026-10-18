@@ -640,3 +640,131 @@ describe('workspace-create --worktree registers a new repository with its remote
         expect(h.state().repos).toEqual([expect.objectContaining({ path: '/code/api', remoteURL: 'git@github.com:acme/api.git', isAutoDiscovered: false })]);
     });
 });
+
+// ---------------------------------------------------------------------------
+// Icon, parent and focus: a ticket create is any create (app-state-core.md §2.9, #307)
+// ---------------------------------------------------------------------------
+
+const PARENT_ID = '0000000D-0000-4000-8000-000000000001';
+const PARENT_PANE_ID = '0000000D-0000-4000-8000-000000000002';
+const BUG = 'emoji:🐛';
+
+/** A ticket harness that already holds the active workspace `orchestrator`, the parent below. */
+function withParent(fx: PullRequestFixture | null, options: HarnessOptions & { registered?: boolean } = {}): Harness {
+    const h = fx === null ? harness(options) : ticketHarness(fx, options);
+    h.dispatch({ type: 'create-workspace', id: PARENT_ID, paneID: PARENT_PANE_ID, name: 'orchestrator', now: NOW });
+    return h;
+}
+
+const childOrderOfParent = (h: Harness): readonly string[] | undefined =>
+    h.state().workspaces.find((workspace) => workspace.id === PARENT_ID)?.childOrder;
+
+describe('workspace-create with a ticket: icon, parent and focus, as any create', () => {
+    it('refuses a bad icon, then a bad parent, before any ticket check: nothing resolves and no prompt file is written', () => {
+        const tickets = fakeTickets(() => issueTicket());
+        const launcher = recordingLauncher();
+        const h = withParent(null, { tickets, agentLauncher: launcher, git: stubGitService() });
+        h.dispatch({ type: 'create-group', id: '0000000C-0000-4000-8000-000000000001', name: 'team', now: NOW });
+
+        // A bad reference too: the icon is checked first, so it is the icon that is refused.
+        expect(h.reply({ command: 'workspace-create', ticket: 'not a ticket', icon: 'nope', start_agent: 'claude', agent_prompt: 'Go' })).toEqual({
+            ok: false,
+            error: "'nope' is not an icon: give emoji:<emoji> or system:<symbol>"
+        });
+        const unknownParent = h.reply({ command: 'workspace-create', ticket: 'not a ticket', parent: 'nobody', start_agent: 'claude' });
+        expect(unknownParent).toMatchObject({ ok: false, error: expect.stringMatching(/^parent /) });
+        expect(unknownParent).not.toHaveProperty('ticket_error');
+        expect(h.reply({ command: 'workspace-create', ticket: ISSUE, parent: 'orchestrator', group: 'team' })).toEqual({
+            ok: false,
+            error: "a nested workspace follows its parent's group: pass a parent or a group, not both"
+        });
+        // Past the two pure checks, the ticket's own refusals follow in their order.
+        expect(h.reply({ command: 'workspace-create', ticket: 'not a ticket', parent: 'orchestrator', icon: BUG })).toMatchObject({
+            ok: false,
+            ticket_error: 'bad-ref'
+        });
+        expect(tickets.calls).toEqual([]);
+        expect(launcher.written).toEqual([]);
+        expect(h.state().workspaces.map((workspace) => workspace.id)).toEqual([PARENT_ID]);
+    });
+
+    it.skipIf(!HAS_GIT)('without a worktree: nested under the parent with its icon, in the background unless asked', { timeout: 30_000 }, async () => {
+        const fx = pullRequestFixture();
+        const h = withParent(fx, { tickets: fakeTickets(() => issueTicket()) });
+        h.send({ command: 'workspace-create', ticket: ISSUE, ticket_defaults: false, name: 'worker', repo: fx.work, parent: 'orchestrator', icon: BUG });
+        const reply = await settle(h);
+        const created = h.state().workspaces.find((workspace) => workspace.name === 'worker');
+        expect(reply).toMatchObject({
+            ok: true,
+            workspace_id: created?.id,
+            icon: BUG,
+            parent_id: PARENT_ID,
+            parent_name: 'orchestrator',
+            checkout: 'existing-checkout',
+            ticket: expect.objectContaining({ key: '#418' })
+        });
+        expect(created?.icon).toEqual({ kind: 'emoji', grapheme: '🐛' });
+        expect(created?.ticket).toMatchObject({ key: '#418' });
+        expect(childOrderOfParent(h)).toEqual([created?.id]);
+        // #307: no focus, so nothing moved.
+        expect(h.state().lastActiveWorkspaceID).toBe(PARENT_ID);
+        expect(h.broadcasts.filter((message) => message['type'] === 'reveal-pane')).toEqual([]);
+
+        const focused = withParent(fx, { tickets: fakeTickets(() => issueTicket()), registered: false });
+        focused.send({ command: 'workspace-create', ticket: ISSUE, ticket_defaults: false, name: 'front', repo: fx.work, focus: true });
+        expect(await settle(focused)).toMatchObject({ ok: true });
+        const front = focused.state().workspaces.find((workspace) => workspace.name === 'front');
+        expect(focused.state().lastActiveWorkspaceID).toBe(front?.id);
+        expect(focused.broadcasts).toContainEqual({ type: 'reveal-pane', workspaceID: front?.id, paneID: front?.panes[0]?.id });
+    });
+
+    it.skipIf(!HAS_GIT)("with a worktree: nested, and its source is the parent's group repository", { timeout: 30_000 }, async () => {
+        const fx = pullRequestFixture();
+        const groupID = '0000000C-0000-4000-8000-000000000003';
+        // The ticket matched no repository, so only the parent's group can supply one.
+        const h = ticketHarness(fx, { tickets: fakeTickets(() => issueTicket({ repoID: null })) });
+        h.dispatch({ type: 'create-group', id: groupID, name: 'team', now: NOW, repoID: REPO_ID });
+        h.dispatch({ type: 'create-workspace', id: PARENT_ID, paneID: PARENT_PANE_ID, name: 'orchestrator', now: NOW, groupID });
+        h.send({ command: 'workspace-create', ticket: ISSUE, parent: 'orchestrator', icon: BUG, focus: true });
+        const reply = await settle(h);
+        const wt = path.join(fx.root, 'wt', '418-retry-login-on-401');
+        const created = h.state().workspaces.find((workspace) => workspace.name === '#418 Retry login on 401');
+        expect(reply).toMatchObject({ ok: true, repo_path: fx.work, worktree_path: wt, checkout: 'new-branch', icon: BUG, parent_id: PARENT_ID, parent_name: 'orchestrator' });
+        expect(reply).not.toHaveProperty('group');
+        expect(reply).not.toHaveProperty('parent_lost');
+        expect(childOrderOfParent(h)).toEqual([created?.id]);
+        expect(h.state().lastActiveWorkspaceID).toBe(created?.id);
+    });
+
+    it.skipIf(!HAS_GIT)('a parent deleted while the ticket resolves: a worktree create completes at the top level, a checkout create is refused whole', { timeout: 30_000 }, async () => {
+        const fx = pullRequestFixture();
+        let deleteParent = (): void => {};
+        const tickets = fakeTickets(() => {
+            deleteParent();
+            return issueTicket();
+        });
+
+        const launcher = recordingLauncher();
+        const plain = withParent(fx, { tickets, agentLauncher: launcher });
+        deleteParent = () => plain.dispatch({ type: 'delete-workspace', id: PARENT_ID });
+        plain.send({ command: 'workspace-create', ticket: ISSUE, ticket_defaults: false, name: 'here', repo: fx.work, parent: 'orchestrator', start_agent: 'claude', agent_prompt: 'Go' });
+        expect(await settle(plain)).toEqual({ ok: false, error: "parent 'orchestrator' was deleted while the workspace was being created" });
+        expect(plain.state().workspaces).toEqual([]);
+        // Refused after its prompt file was written: the file goes with the refusal.
+        expect(launcher.discarded).toEqual([promptFile(1)]);
+        expect(fs.existsSync(issueFile(fx.work))).toBe(false);
+
+        const worktree = withParent(fx, { tickets, registered: false });
+        deleteParent = () => worktree.dispatch({ type: 'delete-workspace', id: PARENT_ID });
+        worktree.send({ command: 'workspace-create', ticket: ISSUE, ticket_defaults: false, repo: fx.work, worktree: 'orphan', parent: 'orchestrator' });
+        const reply = await settle(worktree);
+        expect(reply).toMatchObject({
+            ok: true,
+            parent_lost: true,
+            parent_lost_reason: "parent 'orchestrator' was deleted while the workspace was being created",
+            ticket_file: issueFile(path.join(fx.root, 'wt', 'orphan'))
+        });
+        expect(reply).not.toHaveProperty('parent_id');
+        expect(worktree.state().workspaces.map((workspace) => workspace.name)).toEqual(['Workspace']);
+    });
+});

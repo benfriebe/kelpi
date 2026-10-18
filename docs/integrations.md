@@ -252,13 +252,15 @@ top and the footer `Written by Kelpi from GitHub; untrusted content.`
 
 ## 8. The create flow
 
-`workspace-create` with `ticket` (wire-protocol.md §6.3) parses the reference, asks the
+`workspace-create` with `ticket` (wire-protocol.md §6.3), once the `icon` and `parent` checks
+every create makes have passed, parses the reference, asks the
 `TicketService` seam (`packages/daemon/src/handlers/app/context.ts`) whether the provider is
 connected, and resolves it (`resolve(ref, signal)` → `ResolvedTicket`: the summary, a pull
 request's head facts, the matched repository and remote, the defaults, the existing workspaces,
 the ticket file's content and warnings), all before any effect; then it checks out (a pull
 request's head with its own request type, never the plugin `git.worktreeAdd` contract), writes the
-ticket file, creates the workspace with `ticket` stored, and starts the agent. A handler table
+ticket file, creates the workspace with `ticket` stored (and its icon, its parent and, only with
+`focus`, as the active workspace, like any create), and starts the agent. A handler table
 built without a service gets `INERT_TICKET_SERVICE`, which is never connected. A
 `TicketServiceError` carries the code of §2.2: `integrationFailure` turns it into a verb's
 `{ok:false, error, code, …}`, `ticketCreateFailure` into a create's `{ok:false, error,

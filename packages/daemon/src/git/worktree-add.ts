@@ -13,8 +13,14 @@
  *      moments ago (reused);
  *   4. `worktree-add`: `git worktree add -b <branch> <path> <remote>/<default>`.
  *
- * Without update main it is the one `worktree-add` step: attach to an existing branch, falling
- * back to `-b <branch>` off the current HEAD.
+ * Without update main it is the one `worktree-add` step, decided BEFORE git runs from what exists
+ * (`decidePlainWorktreeAdd`), never from git's error text, which follows the daemon's locale: an
+ * existing local branch is attached; else a name that already names a commit (a tag, a SHA,
+ * `origin/<b>`) is checked out detached at it, as `git worktree add <path> <name>` always did; else
+ * a branch of that name on exactly one remote (or on `checkout.defaultRemote`) is branched from it
+ * the way git's own DWIM would (its upstream left to `branch.autoSetupMerge`, as git leaves it);
+ * else the branch is created with `-b <branch>` off the current HEAD. Whatever git then says is
+ * the error.
  *
  * Cancellation (§8.5.2) kills the running git child (and its children: the runner kills the
  * whole process group) and then removes what THIS request created, and nothing else:
@@ -218,6 +224,133 @@ export async function resolveDefaultBranchFromRemote(
     return null;
 }
 
+/**
+ * Whether `ref` (a full name, `refs/heads/<b>`) exists: `git show-ref --verify --quiet`, whose exit
+ * code answers (0 yes, 1 no) in every locale. Any other failure (not a repository, git missing)
+ * and an abort propagate: an unreadable repository is never read as "no such branch".
+ */
+export async function refExists(ops: WorktreeGitOps, repoPath: string, ref: string, signal?: AbortSignal): Promise<boolean> {
+    try {
+        await ops.read(['show-ref', '--verify', '--quiet', ref], repoPath, signal !== undefined ? { signal } : {});
+        return true;
+    } catch (error) {
+        if (!signal?.aborted && isGitCommandError(error) && error.exitCode === 1) return false;
+        throw error;
+    }
+}
+
+/** What the plain (no update main) path runs, decided from the refs that exist (module note). */
+export type PlainWorktreeAdd =
+    /** `refs/heads/<b>` exists: `git worktree add <path> <b>`. */
+    | { readonly kind: 'attach' }
+    /**
+     * Not a local branch, but `<b>` already names a commit (a tag, a SHA, `origin/<b>`):
+     * `git worktree add --detach <path> <commit>`, no branch made.
+     */
+    | { readonly kind: 'detach'; readonly commit: string }
+    /**
+     * Only a remote has it: `git worktree add -b <b> <path> <remoteRef>`, with no `--track`, so the
+     * user's `branch.autoSetupMerge` decides whether it gets an upstream (git's default does).
+     */
+    | { readonly kind: 'remote-branch'; readonly remote: string; readonly remoteRef: string }
+    /** Nobody has it: `git worktree add -b <b> <path>`, off HEAD. */
+    | { readonly kind: 'new' };
+
+/**
+ * The commit `<name>` resolves to under git's own ref lookup (`<name>`, `refs/tags/<name>`,
+ * `refs/heads/<name>`, `refs/remotes/<name>`, `refs/remotes/<name>/HEAD`, or an object name), or
+ * null when it names none. `rev-parse --verify --quiet` exits 1 for "no such commit" in every
+ * locale (an ambiguous short SHA and a blob's SHA included); any other failure (not a repository)
+ * and an abort propagate.
+ */
+async function commitNamedBy(ops: WorktreeGitOps, repoPath: string, name: string, signal?: AbortSignal): Promise<string | null> {
+    // Every name that reaches here is a sanitized or `check-ref-format`-checked branch name, which
+    // never starts with '-'; refuse one that does rather than hand rev-parse an option.
+    if (name.startsWith('-')) return null;
+    try {
+        const out = (await ops.read(['rev-parse', '--verify', '--quiet', `${name}^{commit}`], repoPath, signal !== undefined ? { signal } : {})).trim();
+        return out === '' ? null : out;
+    } catch (error) {
+        if (!signal?.aborted && isGitCommandError(error) && error.exitCode === 1) return null;
+        throw error;
+    }
+}
+
+/**
+ * The plain path's choice (graft-git.md §8.3), made from git's refs instead of from the stderr of
+ * a failed `worktree add <path> <b>` (git prints that in the daemon's locale, so a German
+ * "ungültige Referenz" would never match an English pattern). It is git's own
+ * `worktree add <path> <b>` rule, spelled out, in git's order:
+ *
+ *   1. `refs/heads/<b>` exists: attach it.
+ *   2. `<b>` already names a commit (a tag, a SHA, `origin/<b>`, `<remote>`'s HEAD): check that
+ *      commit out detached, which is what `git worktree add <path> <b>` itself does. Creating
+ *      `-b <b>` here would put HEAD's content in the worktree and make `<b>` ambiguous repo-wide
+ *      (a `refs/heads/v1` beside `refs/tags/v1`, a `refs/heads/origin/x` that git's lookup prefers
+ *      to `refs/remotes/origin/x`). Only a name that resolves can shadow anything, so this is the
+ *      whole rule: `ben/fix-login` in a repository with a remote named `ben` (and no
+ *      `ben/fix-login` there) is an ordinary new branch.
+ *   3. A remote-tracking `refs/remotes/<remote>/<b>` on exactly one remote, or on the remote
+ *      `checkout.defaultRemote` names when several have it: branch from it (git's DWIM, which git
+ *      also only tries for a name that is not a commit), without `--track`, so the user's
+ *      `branch.autoSetupMerge` decides the upstream as it does for git's own DWIM.
+ *   4. Otherwise a new branch off HEAD.
+ */
+export async function decidePlainWorktreeAdd(
+    ops: WorktreeGitOps,
+    repoPath: string,
+    branch: string,
+    signal?: AbortSignal
+): Promise<PlainWorktreeAdd> {
+    if (await refExists(ops, repoPath, `refs/heads/${branch}`, signal)) return { kind: 'attach' };
+    const commit = await commitNamedBy(ops, repoPath, branch, signal);
+    if (commit !== null) return { kind: 'detach', commit };
+    const opts = signal !== undefined ? { signal } : {};
+    const remotes = (await ops.read(['remote'], repoPath, opts))
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line !== '');
+    if (remotes.length === 0) return { kind: 'new' };
+    const tracking = new Set(
+        (await ops.read(['for-each-ref', '--format=%(refname)', 'refs/remotes/'], repoPath, opts))
+            .split('\n')
+            .map((line) => line.trim())
+            .filter((line) => line !== '')
+    );
+    const having = remotes.filter((remote) => tracking.has(`refs/remotes/${remote}/${branch}`));
+    let chosen: string | undefined;
+    if (having.length === 1) {
+        chosen = having[0];
+    } else if (having.length > 1) {
+        let preferred = '';
+        try {
+            preferred = (await ops.read(['config', '--get', 'checkout.defaultRemote'], repoPath, opts)).trim();
+        } catch (error) {
+            if (signal?.aborted) throw error;
+        }
+        if (having.includes(preferred)) chosen = preferred;
+    }
+    return chosen === undefined ? { kind: 'new' } : { kind: 'remote-branch', remote: chosen, remoteRef: `refs/remotes/${chosen}/${branch}` };
+}
+
+/** The `git worktree add` arguments for a plain-path decision. */
+export function plainWorktreeAddArgs(decision: PlainWorktreeAdd, worktreePath: string, branch: string): string[] {
+    switch (decision.kind) {
+        case 'attach':
+            return ['worktree', 'add', worktreePath, branch];
+        case 'detach':
+            // The commit, not the name: what was decided is what is checked out, even if a ref
+            // of that name moves (or a branch of that name appears) between the read and the add.
+            return ['worktree', 'add', '--detach', worktreePath, decision.commit];
+        case 'remote-branch':
+            // No `--track`: git's DWIM (`git worktree add <path> <b>`) leaves the upstream to
+            // `branch.autoSetupMerge` too.
+            return ['worktree', 'add', '-b', branch, worktreePath, decision.remoteRef];
+        case 'new':
+            return ['worktree', 'add', '-b', branch, worktreePath];
+    }
+}
+
 /** `fatal: couldn't find remote ref refs/heads/<b>`: the branch is gone from the remote. */
 export function isMissingRemoteRef(error: unknown): boolean {
     return isGitCommandError(error) && /couldn't find remote ref/i.test(error.stderr);
@@ -382,7 +515,8 @@ export interface WorktreeAddSnapshot {
     readonly branchExisted: boolean;
     /**
      * Every commit the add could have created the branch at: the base ref with update main;
-     * HEAD or git's DWIM `origin/<branch>` without it.
+     * HEAD, `origin/<branch>` or the remote-tracking ref the plain path decided to branch from
+     * without it.
      */
     readonly possibleTips: ReadonlySet<string>;
 }
@@ -422,7 +556,7 @@ async function probeRef(ops: WorktreeGitOps, repoPath: string, ref: string): Pro
 
 /**
  * @param refs every ref whose commit the add could create the branch at: the base ref on the
- *   update-main path; HEAD and git's DWIM `origin/<branch>` on the plain path.
+ *   update-main path; HEAD, `origin/<branch>` and the decided remote-tracking ref on the plain path.
  */
 async function snapshotBeforeAdd(
     ops: WorktreeGitOps,
@@ -618,20 +752,23 @@ export async function performWorktreeAdd(
         bail();
         if (!request.updateMain) {
             steps?.running('worktree-add', request.branchName);
-            // Only a cancellable add needs the snapshot (it is the cleanup's authority), so an
-            // uncancellable one (the CLI, the inspector) runs exactly the git it always ran.
-            before = signal !== undefined ? await snapshotBeforeAdd(ops, request, ['HEAD', `refs/remotes/${remote}/${request.branchName}`]) : null;
+            // Decided from the refs, never from a failed attach's stderr (module note), so the
+            // one `worktree add` below is the only one, and its error is the one reported.
+            const decision = await decidePlainWorktreeAdd(ops, request.repoPath, request.branchName, signal);
             bail();
-            const add = (args: readonly string[]): Promise<string> =>
-                withProgress((extra) => ops.long(args, request.repoPath, { ...callOptions('worktree-add'), ...extra }), onProgress('worktree-add'));
-            try {
-                await add(['worktree', 'add', request.worktreePath, request.branchName]);
-            } catch (error) {
-                if (signal?.aborted) throw error;
-                // The branch does not exist yet: create it off current HEAD. The FALLBACK's
-                // error is what propagates (its stderr is the actionable one).
-                await add(['worktree', 'add', '-b', request.branchName, request.worktreePath]);
-            }
+            // Only a cancellable add needs the snapshot (it is the cleanup's authority).
+            const tips = ['HEAD', `refs/remotes/${remote}/${request.branchName}`];
+            if (decision.kind === 'remote-branch' && !tips.includes(decision.remoteRef)) tips.push(decision.remoteRef);
+            before = signal !== undefined ? await snapshotBeforeAdd(ops, request, tips) : null;
+            bail();
+            await withProgress(
+                (extra) =>
+                    ops.long(plainWorktreeAddArgs(decision, request.worktreePath, request.branchName), request.repoPath, {
+                        ...callOptions('worktree-add'),
+                        ...extra
+                    }),
+                onProgress('worktree-add')
+            );
             bail();
             steps?.done('worktree-add');
             return;

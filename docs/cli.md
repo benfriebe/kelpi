@@ -1159,8 +1159,13 @@ orphaned group on worktree-add failure). Ambiguous `--group` name => `ok:false`
 workspace muted from its first frame, so a conductor can spawn children that never notify
 (it composes with `--worktree`, `--group` and `--profile`). `--icon` likewise gives the
 workspace its sidebar icon from its first frame, and a refused icon creates nothing. Worktree path is
-`resolvedWorktreeBasePath/<sanitized-name>`; `--branch` defaults to the worktree name;
-`--update-main` fetches the default branch (only that branch, no tags) and branches off
+`resolvedWorktreeBasePath/<sanitized-name>`; `--branch` defaults to the worktree name.
+Without `--update-main` the branch is decided from the refs that exist (graft-git.md §8.3): an
+existing local branch is checked out; a name that already names a commit (a tag, a SHA,
+`origin/<b>`) is checked out detached at it, and no branch is made; a branch only one remote has
+is branched from it (tracking it unless git's `branch.autoSetupMerge` is `false`); anything else is
+a new branch off the current HEAD. Git's own error is the one reported, in whatever language git
+speaks. `--update-main` fetches the default branch (only that branch, no tags) and branches off
 `origin/<default>`; the default branch is the local `origin/HEAD` when it is set, else asked of
 the remote (`git ls-remote --symref`), else `main`. A fetch the New Workspace sheet prefetched
 under a minute ago is reused, so the CLI create skips it (graft-git.md §8.5.1). Every success reply carries `muted`, and

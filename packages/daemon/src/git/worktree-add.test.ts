@@ -2,13 +2,16 @@
  * `performWorktreeAdd` (issue #294): the default-branch order, the single-branch fetch, step
  * reporting, prefetch reuse, and cancellation's cleanup, first against a scripted git, then
  * against real repos with a bare origin (the `group-default-repo` scenario's fixture shape).
+ * Last, the plain (no update main) path's choice from the refs that exist, for every kind of name:
+ * scripted, under a German locale, and against real git.
  *
  * The cancel tests slow git down with the repo's OWN configuration, never a product seam: an
  * `uploadpack` wrapper that sleeps holds a fetch open, and a `post-checkout` hook that sleeps
  * holds `git worktree add` open after it has made the branch and the directory.
  */
 
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -786,5 +789,462 @@ describe.skipIf(!HAS_GIT)('performWorktreeAdd against real git', { timeout: 30_0
         expect(removed).toEqual([]);
         expect(tryGit(fx.work, 'rev-parse', '--verify', '--quiet', 'refs/heads/raced')).not.toBeNull();
         expect(logs.some((line) => line.includes('left branch raced alone'))).toBe(true);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// The plain path decides from refs, never from git's (localized) stderr
+// ---------------------------------------------------------------------------
+
+describe('performWorktreeAdd plain path, scripted', () => {
+    const PLAIN = { repoPath: '/repo', worktreePath: '/wt/x', branchName: 'x', updateMain: false } as const;
+    const exit = (code: number, stderr = ''): never => {
+        throw new GitCommandError({ command: 'git', exitCode: code, stderr, cwd: '/repo' });
+    };
+
+    it('creates a branch nobody has off HEAD without first trying (and failing) to attach it', async () => {
+        const { ops, calls } = scripted((args) => {
+            if (args[0] === 'show-ref') return exit(1);
+            if (args[0] === 'rev-parse') return exit(1);
+            if (args[0] === 'remote') return 'origin\n';
+            if (args[0] === 'for-each-ref') return 'refs/remotes/origin/main\nrefs/remotes/origin/HEAD\n';
+            return '';
+        });
+        await performWorktreeAdd(ops, PLAIN);
+        expect(calls.map((call) => call.args)).toEqual([
+            ['show-ref', '--verify', '--quiet', 'refs/heads/x'],
+            ['rev-parse', '--verify', '--quiet', 'x^{commit}'],
+            ['remote'],
+            ['for-each-ref', '--format=%(refname)', 'refs/remotes/'],
+            ['worktree', 'add', '-b', 'x', '/wt/x']
+        ]);
+    });
+
+    it('checks a name that already names a commit out detached at that commit, before any remote is read', async () => {
+        const { ops, calls } = scripted((args) => {
+            if (args[0] === 'show-ref') return exit(1);
+            if (args[0] === 'rev-parse') return `${SHA}\n`;
+            return '';
+        });
+        await performWorktreeAdd(ops, PLAIN);
+        expect(calls.map((call) => call.args)).toEqual([
+            ['show-ref', '--verify', '--quiet', 'refs/heads/x'],
+            ['rev-parse', '--verify', '--quiet', 'x^{commit}'],
+            ['worktree', 'add', '--detach', '/wt/x', SHA]
+        ]);
+    });
+
+    it("makes an ordinary new branch of a name under a remote's name that names no commit, as main did", async () => {
+        // `<user>/<topic>` where a remote is named after the user, and an `origin/<b>` origin does
+        // not have: nothing of that name resolves, so nothing is shadowed and nothing is refused.
+        for (const branchName of ['ben/fix-login', 'origin/not-there']) {
+            const { ops, calls } = scripted((args) => {
+                if (args[0] === 'show-ref' || args[0] === 'rev-parse') return exit(1);
+                if (args[0] === 'remote') return 'origin\nben\n';
+                if (args[0] === 'for-each-ref') return 'refs/remotes/origin/main\nrefs/remotes/ben/main\n';
+                return '';
+            });
+            await performWorktreeAdd(ops, { ...PLAIN, branchName });
+            expect(calls.at(-1)?.args).toEqual(['worktree', 'add', '-b', branchName, '/wt/x']);
+        }
+    });
+
+    it('never reads a commit lookup that failed for another reason as "names no commit"', async () => {
+        const { ops, calls } = scripted((args) => {
+            if (args[0] === 'show-ref') return exit(1);
+            if (args[0] === 'rev-parse') return exit(128, 'fatal: not a git repository');
+            return '';
+        });
+        await expect(performWorktreeAdd(ops, PLAIN)).rejects.toMatchObject({ exitCode: 128 });
+        expect(calls.some((call) => call.args[0] === 'worktree')).toBe(false);
+    });
+
+    it("propagates git's own error for an existing branch, in whatever language, instead of retrying with -b", async () => {
+        const german = "fatal: 'x' ist bereits unter '/elsewhere' ausgecheckt";
+        const { ops, calls } = scripted((args) => {
+            if (args[0] === 'worktree') return exit(128, `Bereite Arbeitsverzeichnis vor (Checke Branch 'x' aus)\n${german}`);
+            return '';
+        });
+        await expect(performWorktreeAdd(ops, PLAIN)).rejects.toMatchObject({ stderr: expect.stringContaining(german) as unknown as string });
+        expect(calls.filter((call) => call.args[0] === 'worktree').map((call) => call.args)).toEqual([['worktree', 'add', '/wt/x', 'x']]);
+    });
+
+    it("creates a new branch for a name git calls an invalid reference in German, without parsing git's words", async () => {
+        // A git that answers in German: attaching a name that is no branch fails with "ungültige
+        // Referenz", which a retry keyed on git's English "invalid reference" would never match.
+        // The lookups answer with exit codes only, so the one `worktree add` is `-b`.
+        const { ops, calls } = scripted((args) => {
+            if (args[0] === 'show-ref' || args[0] === 'rev-parse') return exit(1);
+            if (args[0] === 'remote') return '';
+            if (args[0] === 'worktree' && !args.includes('-b')) return exit(128, "Bereite Arbeitsverzeichnis vor\nfatal: ungültige Referenz: x");
+            return '';
+        });
+        await performWorktreeAdd(ops, PLAIN);
+        expect(calls.filter((call) => call.args[0] === 'worktree').map((call) => call.args)).toEqual([['worktree', 'add', '-b', 'x', '/wt/x']]);
+    });
+
+    it('branches from a branch only one remote has, without --track, and asks checkout.defaultRemote when several do', async () => {
+        const one = scripted((args) => {
+            if (args[0] === 'show-ref' || args[0] === 'rev-parse') return exit(1);
+            if (args[0] === 'remote') return 'origin\nupstream\n';
+            if (args[0] === 'for-each-ref') return 'refs/remotes/upstream/x\nrefs/remotes/origin/main\n';
+            return '';
+        });
+        await performWorktreeAdd(one.ops, PLAIN);
+        expect(one.calls.at(-1)?.args).toEqual(['worktree', 'add', '-b', 'x', '/wt/x', 'refs/remotes/upstream/x']);
+
+        const several = (defaultRemote: string | null) =>
+            scripted((args) => {
+                if (args[0] === 'show-ref' || args[0] === 'rev-parse') return exit(1);
+                if (args[0] === 'remote') return 'origin\nupstream\n';
+                if (args[0] === 'for-each-ref') return 'refs/remotes/upstream/x\nrefs/remotes/origin/x\n';
+                if (args[0] === 'config') return defaultRemote === null ? exit(1) : `${defaultRemote}\n`;
+                return '';
+            });
+        const preferred = several('origin');
+        await performWorktreeAdd(preferred.ops, PLAIN);
+        expect(preferred.calls.at(-1)?.args).toEqual(['worktree', 'add', '-b', 'x', '/wt/x', 'refs/remotes/origin/x']);
+        // Ambiguous and no preference: git would refuse its DWIM too, so the branch is new off HEAD.
+        const ambiguous = several(null);
+        await performWorktreeAdd(ambiguous.ops, PLAIN);
+        expect(ambiguous.calls.at(-1)?.args).toEqual(['worktree', 'add', '-b', 'x', '/wt/x']);
+    });
+
+    it('never reads an unreadable repository as "no such branch"', async () => {
+        const { ops, calls } = scripted((args) => (args[0] === 'show-ref' ? exit(128, 'fatal: not a git repository') : ''));
+        await expect(performWorktreeAdd(ops, PLAIN)).rejects.toMatchObject({ exitCode: 128 });
+        expect(calls.some((call) => call.args[0] === 'worktree')).toBe(false);
+    });
+});
+
+/**
+ * Real git with no global or system config: the repository's own config and git's defaults only,
+ * so a developer's `branch.autoSetupMerge` or `checkout.defaultRemote` cannot change the outcome.
+ */
+function defaultsOps(extra: Readonly<Record<string, string>> = {}): WorktreeGitOps {
+    const env = { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', ...extra };
+    const inner = realOps();
+    return {
+        read: (args, cwd, options) => inner.read(args, cwd, { ...options, env: { ...env, ...(options?.env ?? {}) } }),
+        long: (args, cwd, options) => inner.long(args, cwd, { ...options, env: { ...env, ...(options?.env ?? {}) } })
+    };
+}
+
+/** A locale that is installed and not English, or null (then the locale suite is skipped). */
+const GERMAN_LOCALE = (() => {
+    try {
+        const installed = execFileSync('locale', ['-a'], { encoding: 'utf8' }).split('\n').map((line) => line.trim());
+        return installed.find((name) => /^de_DE\.(UTF-8|utf8)$/i.test(name)) ?? null;
+    } catch {
+        return null;
+    }
+})();
+
+describe.skipIf(!HAS_GIT || GERMAN_LOCALE === null)('performWorktreeAdd plain path under a German locale', { timeout: 30_000 }, () => {
+    /**
+     * Every git call runs with the locale a German user's daemon would hand it. A git built with
+     * gettext then answers in German; one built without it (Apple's) still answers in English, so
+     * the scripted German stderr above is what pins the words, and this pins the outcomes.
+     */
+    const germanOps = (): WorktreeGitOps => defaultsOps({ LC_ALL: GERMAN_LOCALE ?? '', LANG: GERMAN_LOCALE ?? '', LANGUAGE: 'de' });
+
+    it('creates a new branch off HEAD, attaches an existing one, and branches a remote-only one from the remote', async () => {
+        const fx = fixture();
+        const ops = germanOps();
+        const head = git(fx.work, 'rev-parse', 'HEAD');
+
+        await performWorktreeAdd(ops, { repoPath: fx.work, worktreePath: path.join(fx.root, 'wt', 'neu'), branchName: 'neu', updateMain: false });
+        expect(git(path.join(fx.root, 'wt', 'neu'), 'rev-parse', '--abbrev-ref', 'HEAD')).toBe('neu');
+        expect(git(fx.work, 'rev-parse', 'neu')).toBe(head);
+
+        commit(fx.work, 'local.txt', 'x\n', 'local only');
+        git(fx.work, 'branch', 'vorhanden');
+        const tip = git(fx.work, 'rev-parse', 'vorhanden');
+        await performWorktreeAdd(ops, { repoPath: fx.work, worktreePath: path.join(fx.root, 'wt', 'vorhanden'), branchName: 'vorhanden', updateMain: false });
+        expect(git(path.join(fx.root, 'wt', 'vorhanden'), 'rev-parse', 'HEAD')).toBe(tip);
+
+        git(fx.seed, 'checkout', '-q', '-b', 'entfernt');
+        const remoteTip = commit(fx.seed, 'remote.txt', 'r\n', 'remote branch');
+        git(fx.seed, 'push', '-q', 'origin', 'entfernt');
+        git(fx.work, 'fetch', '-q', 'origin');
+        await performWorktreeAdd(ops, { repoPath: fx.work, worktreePath: path.join(fx.root, 'wt', 'entfernt'), branchName: 'entfernt', updateMain: false });
+        expect(git(fx.work, 'rev-parse', 'entfernt')).toBe(remoteTip);
+        // git's default branch.autoSetupMerge: the branch tracks the remote one.
+        expect(git(fx.work, 'config', '--get', 'branch.entfernt.remote')).toBe('origin');
+        expect(git(fx.work, 'config', '--get', 'branch.entfernt.merge')).toBe('refs/heads/entfernt');
+    });
+
+    it("reports git's real error for a branch checked out elsewhere, and makes no second branch", async () => {
+        const fx = fixture();
+        const ops = germanOps();
+        git(fx.work, 'worktree', 'add', '-q', path.join(fx.root, 'wt', 'first'), '-b', 'busy');
+        const branchesBefore = git(fx.work, 'branch', '--list');
+        const failure = performWorktreeAdd(ops, { repoPath: fx.work, worktreePath: path.join(fx.root, 'wt', 'second'), branchName: 'busy', updateMain: false });
+        await expect(failure).rejects.toBeInstanceOf(GitCommandError);
+        // The old fallback retried with -b and surfaced "a branch named 'busy' already exists".
+        await expect(failure).rejects.toMatchObject({ stderr: expect.stringContaining(path.join(fx.root, 'wt', 'first')) as unknown as string });
+        expect(git(fx.work, 'branch', '--list')).toBe(branchesBefore);
+        expect(fs.existsSync(path.join(fx.root, 'wt', 'second'))).toBe(false);
+    });
+
+    it('checks a tag out detached at the tag, and makes no branch of its name', async () => {
+        const fx = fixture();
+        commit(fx.work, 'tagged.txt', 't\n', 'tagged');
+        git(fx.work, 'tag', 'v1');
+        const tagged = git(fx.work, 'rev-parse', 'v1^{commit}');
+        git(fx.work, 'reset', '-q', '--hard', 'HEAD~1');
+        const worktreePath = path.join(fx.root, 'wt', 'v1');
+        await performWorktreeAdd(germanOps(), { repoPath: fx.work, worktreePath, branchName: 'v1', updateMain: false });
+        expect(tryGit(worktreePath, 'symbolic-ref', '-q', 'HEAD')).toBeNull();
+        expect(git(worktreePath, 'rev-parse', 'HEAD')).toBe(tagged);
+        expect(tryGit(fx.work, 'rev-parse', '--verify', '--quiet', 'refs/heads/v1')).toBeNull();
+    });
+});
+
+/** A 6-hex prefix two blobs written to `repo` share, so git calls `<prefix>` ambiguous. */
+function ambiguousBlobPrefix(repo: string): string {
+    const seen = new Map<string, string>();
+    for (let i = 0; ; i++) {
+        const content = `blob ${String(i)}\n`;
+        const sha = createHash('sha1').update(`blob ${String(Buffer.byteLength(content))}\0${content}`).digest('hex');
+        const prefix = sha.slice(0, 6);
+        const other = seen.get(prefix);
+        if (other !== undefined) {
+            for (const text of [other, content]) execFileSync(GIT, ['hash-object', '-w', '--stdin'], { cwd: repo, input: text, env: GIT_ENV });
+            return prefix;
+        }
+        seen.set(prefix, content);
+    }
+}
+
+describe.skipIf(!HAS_GIT)('performWorktreeAdd plain path, every kind of name, against real git', { timeout: 30_000 }, () => {
+    const plain = (fx: { work: string; root: string }, branchName: string, folder = branchName.replace(/\//g, '-')) => ({
+        repoPath: fx.work,
+        worktreePath: path.join(fx.root, 'wt', folder),
+        branchName,
+        updateMain: false
+    });
+    /** Every local branch, so a test can prove the create made none. */
+    const localBranches = (repo: string): string => git(repo, 'for-each-ref', '--format=%(refname)', 'refs/heads/');
+    const detachedAt = (worktreePath: string): string | null => (tryGit(worktreePath, 'symbolic-ref', '-q', 'HEAD') === null ? git(worktreePath, 'rev-parse', 'HEAD') : null);
+    /** A second bare remote, `upstream`, cloned from origin, so a branch can live on both. */
+    const addUpstream = (fx: { root: string; origin: string; work: string }): string => {
+        const upstream = path.join(fx.root, 'upstream.git');
+        git(fx.root, 'clone', '-q', '--bare', fx.origin, upstream);
+        git(fx.work, 'remote', 'add', 'upstream', upstream);
+        return upstream;
+    };
+    /** Push a new branch `<name>` with one commit of its own to `bare`, through a scratch clone. */
+    const pushBranch = (fx: { root: string }, bare: string, name: string): string => {
+        const scratch = path.join(fx.root, `push-${path.basename(bare)}-${name}`);
+        git(fx.root, 'clone', '-q', bare, scratch);
+        git(scratch, 'checkout', '-q', '-b', name);
+        const tip = commit(scratch, `${name}-${path.basename(bare)}.txt`, `${bare}\n`, `${name} on ${path.basename(bare)}`);
+        git(scratch, 'push', '-q', 'origin', name);
+        return tip;
+    };
+
+    it('an existing local branch is attached where it is, even with a tag of the same name', async () => {
+        const fx = fixture();
+        git(fx.work, 'branch', 'existing');
+        const tip = git(fx.work, 'rev-parse', 'existing');
+        commit(fx.work, 'later.txt', 'l\n', 'later');
+        git(fx.work, 'tag', 'existing');
+        const request = plain(fx, 'existing');
+        await performWorktreeAdd(defaultsOps(), request);
+        expect(git(request.worktreePath, 'symbolic-ref', 'HEAD')).toBe('refs/heads/existing');
+        expect(git(request.worktreePath, 'rev-parse', 'HEAD')).toBe(tip);
+    });
+
+    it('a plain new name is a new branch off HEAD, with no upstream', async () => {
+        const fx = fixture();
+        const head = commit(fx.work, 'local.txt', 'l\n', 'local only');
+        const request = plain(fx, 'fresh');
+        await performWorktreeAdd(defaultsOps(), request);
+        expect(git(request.worktreePath, 'symbolic-ref', 'HEAD')).toBe('refs/heads/fresh');
+        expect(git(fx.work, 'rev-parse', 'refs/heads/fresh')).toBe(head);
+        expect(tryGit(fx.work, 'config', '--get', 'branch.fresh.remote')).toBeNull();
+    });
+
+    it("a name with '/' that is not under a remote's name is a new branch off HEAD", async () => {
+        const fx = fixture();
+        const head = commit(fx.work, 'local.txt', 'l\n', 'local only');
+        const request = plain(fx, 'feat/new-thing');
+        await performWorktreeAdd(defaultsOps(), request);
+        expect(git(request.worktreePath, 'symbolic-ref', 'HEAD')).toBe('refs/heads/feat/new-thing');
+        expect(git(fx.work, 'rev-parse', 'refs/heads/feat/new-thing')).toBe(head);
+        expect(tryGit(fx.work, 'config', '--get', 'branch.feat/new-thing.remote')).toBeNull();
+    });
+
+    it("a tag is checked out detached at the tag's commit, not as a new branch off HEAD beside the tag", async () => {
+        const fx = fixture();
+        const tagged = commit(fx.work, 'tagged.txt', 't\n', 'tagged');
+        git(fx.work, 'tag', '-a', 'v1.0', '-m', 'release');
+        git(fx.work, 'reset', '-q', '--hard', 'HEAD~1');
+        const before = localBranches(fx.work);
+        const request = plain(fx, 'v1.0');
+        await performWorktreeAdd(defaultsOps(), request);
+        expect(detachedAt(request.worktreePath)).toBe(tagged);
+        expect(fs.existsSync(path.join(request.worktreePath, 'tagged.txt'))).toBe(true);
+        expect(localBranches(fx.work)).toBe(before);
+        // `v1.0` still means only the tag: git does not call the name ambiguous.
+        const lookup = spawnSync(GIT, ['rev-parse', 'v1.0^{commit}'], { cwd: fx.work, encoding: 'utf8', env: GIT_ENV });
+        expect(lookup.stdout.trim()).toBe(tagged);
+        expect(lookup.stderr).not.toMatch(/ambiguous/i);
+    });
+
+    it('a SHA is checked out detached at that commit', async () => {
+        const fx = fixture();
+        const older = git(fx.work, 'rev-parse', 'HEAD');
+        commit(fx.work, 'newer.txt', 'n\n', 'newer');
+        const before = localBranches(fx.work);
+        const request = plain(fx, older.slice(0, 12), 'by-sha');
+        await performWorktreeAdd(defaultsOps(), request);
+        expect(detachedAt(request.worktreePath)).toBe(older);
+        expect(fs.existsSync(path.join(request.worktreePath, 'newer.txt'))).toBe(false);
+        expect(localBranches(fx.work)).toBe(before);
+    });
+
+    it('a short SHA that is ambiguous, or that names a blob, names no commit: a new branch off HEAD, as main made', async () => {
+        const fx = fixture();
+        const head = git(fx.work, 'rev-parse', 'HEAD');
+        const ambiguous = ambiguousBlobPrefix(fx.work);
+        expect(spawnSync(GIT, ['rev-parse', ambiguous], { cwd: fx.work, encoding: 'utf8', env: GIT_ENV }).stderr).toMatch(/ambiguous/i);
+        const blob = execFileSync(GIT, ['hash-object', '-w', '--stdin'], { cwd: fx.work, input: 'just a blob\n', encoding: 'utf8', env: GIT_ENV }).trim().slice(0, 10);
+        for (const name of [ambiguous, blob]) {
+            const request = plain(fx, name);
+            await performWorktreeAdd(defaultsOps(), request);
+            expect(git(request.worktreePath, 'symbolic-ref', 'HEAD')).toBe(`refs/heads/${name}`);
+            expect(git(fx.work, 'rev-parse', `refs/heads/${name}`)).toBe(head);
+        }
+    });
+
+    it("origin/<b> is checked out detached at origin's commit and never shadowed by a local refs/heads/origin/<b>", async () => {
+        const fx = fixture();
+        git(fx.seed, 'checkout', '-q', '-b', 'feature-x');
+        const remoteTip = commit(fx.seed, 'feature.txt', 'f\n', 'feature');
+        git(fx.seed, 'push', '-q', 'origin', 'feature-x');
+        git(fx.work, 'fetch', '-q', 'origin');
+        const before = localBranches(fx.work);
+        const request = plain(fx, 'origin/feature-x');
+        await performWorktreeAdd(defaultsOps(), request);
+        expect(detachedAt(request.worktreePath)).toBe(remoteTip);
+        expect(localBranches(fx.work)).toBe(before);
+        expect(tryGit(fx.work, 'rev-parse', '--verify', '--quiet', 'refs/heads/origin/feature-x')).toBeNull();
+        expect(git(fx.work, 'rev-parse', 'origin/feature-x')).toBe(remoteTip);
+    });
+
+    it('an origin/<b> that origin does not have is a new branch off HEAD, as main made it', async () => {
+        const fx = fixture();
+        const head = commit(fx.work, 'local.txt', 'l\n', 'local only');
+        const request = plain(fx, 'origin/not-there');
+        await performWorktreeAdd(defaultsOps(), request);
+        expect(git(request.worktreePath, 'symbolic-ref', 'HEAD')).toBe('refs/heads/origin/not-there');
+        expect(git(fx.work, 'rev-parse', 'refs/heads/origin/not-there')).toBe(head);
+    });
+
+    it("a name under a remote's name that names nothing is a new branch off HEAD (<user>/<topic> with a remote named <user>)", async () => {
+        const fx = fixture();
+        git(fx.work, 'remote', 'add', 'ben', fx.origin);
+        git(fx.work, 'fetch', '-q', 'ben');
+        const head = commit(fx.work, 'local.txt', 'l\n', 'local only');
+        const request = plain(fx, 'ben/fix-login');
+        await performWorktreeAdd(defaultsOps(), request);
+        expect(git(request.worktreePath, 'symbolic-ref', 'HEAD')).toBe('refs/heads/ben/fix-login');
+        expect(git(fx.work, 'rev-parse', 'refs/heads/ben/fix-login')).toBe(head);
+    });
+
+    it("a branch only one remote has is branched from it, and git's branch.autoSetupMerge decides its upstream (git's DWIM)", async () => {
+        const fx = fixture();
+        git(fx.seed, 'checkout', '-q', '-b', 'remote-only');
+        const remoteTip = commit(fx.seed, 'remote.txt', 'r\n', 'remote branch');
+        git(fx.seed, 'push', '-q', 'origin', 'remote-only');
+        git(fx.work, 'fetch', '-q', 'origin');
+        // git's default (branch.autoSetupMerge unset, so true): it tracks the remote branch.
+        const request = plain(fx, 'remote-only');
+        await performWorktreeAdd(defaultsOps(), request);
+        expect(git(request.worktreePath, 'symbolic-ref', 'HEAD')).toBe('refs/heads/remote-only');
+        expect(git(fx.work, 'rev-parse', 'refs/heads/remote-only')).toBe(remoteTip);
+        expect(git(fx.work, 'config', '--get', 'branch.remote-only.remote')).toBe('origin');
+        expect(git(fx.work, 'config', '--get', 'branch.remote-only.merge')).toBe('refs/heads/remote-only');
+
+        // branch.autoSetupMerge=false: the same create, with no upstream, as main left it.
+        git(fx.seed, 'checkout', '-q', '-b', 'no-upstream');
+        const otherTip = commit(fx.seed, 'other.txt', 'o\n', 'another remote branch');
+        git(fx.seed, 'push', '-q', 'origin', 'no-upstream');
+        git(fx.work, 'fetch', '-q', 'origin');
+        git(fx.work, 'config', 'branch.autoSetupMerge', 'false');
+        const untracked = plain(fx, 'no-upstream');
+        await performWorktreeAdd(defaultsOps(), untracked);
+        expect(git(untracked.worktreePath, 'symbolic-ref', 'HEAD')).toBe('refs/heads/no-upstream');
+        expect(git(fx.work, 'rev-parse', 'refs/heads/no-upstream')).toBe(otherTip);
+        expect(tryGit(fx.work, 'config', '--get', 'branch.no-upstream.remote')).toBeNull();
+        expect(tryGit(fx.work, 'config', '--get', 'branch.no-upstream.merge')).toBeNull();
+    });
+
+    it('a branch two remotes have is a new branch off HEAD unless checkout.defaultRemote picks one, as git decides', async () => {
+        const fx = fixture();
+        const upstream = addUpstream(fx);
+        pushBranch(fx, fx.origin, 'shared');
+        pushBranch(fx, upstream, 'shared');
+        git(fx.work, 'fetch', '-q', 'origin');
+        git(fx.work, 'fetch', '-q', 'upstream');
+        const head = git(fx.work, 'rev-parse', 'HEAD');
+
+        // Ambiguous, no preference: git's DWIM gives up, so the branch is new off HEAD.
+        const ambiguous = plain(fx, 'shared');
+        await performWorktreeAdd(defaultsOps(), ambiguous);
+        expect(git(ambiguous.worktreePath, 'symbolic-ref', 'HEAD')).toBe('refs/heads/shared');
+        expect(git(fx.work, 'rev-parse', 'refs/heads/shared')).toBe(head);
+        expect(tryGit(fx.work, 'config', '--get', 'branch.shared.remote')).toBeNull();
+
+        // checkout.defaultRemote names one of them: branched from that remote's branch.
+        const originTip = pushBranch(fx, fx.origin, 'picked');
+        const pickedTip = pushBranch(fx, upstream, 'picked');
+        git(fx.work, 'fetch', '-q', 'origin');
+        git(fx.work, 'fetch', '-q', 'upstream');
+        git(fx.work, 'config', 'checkout.defaultRemote', 'upstream');
+        const preferred = plain(fx, 'picked');
+        await performWorktreeAdd(defaultsOps(), preferred);
+        expect(git(preferred.worktreePath, 'symbolic-ref', 'HEAD')).toBe('refs/heads/picked');
+        expect(git(fx.work, 'rev-parse', 'refs/heads/picked')).toBe(pickedTip);
+        expect(pickedTip).not.toBe(originTip);
+        expect(git(fx.work, 'config', '--get', 'branch.picked.remote')).toBe('upstream');
+    });
+
+    it('a cancel of a detached add removes its worktree and leaves every branch as it was', async () => {
+        const fx = fixture();
+        git(fx.work, 'tag', 'v2');
+        const before = localBranches(fx.work);
+        const marker = path.join(fx.root, 'checkout-started');
+        slowCheckoutHook(fx.work, marker);
+        const controller = new AbortController();
+        const request = plain(fx, 'v2');
+        const pending = performWorktreeAdd(defaultsOps(), request, { signal: controller.signal });
+        await waitFor(() => fs.existsSync(marker));
+        controller.abort();
+        await expect(pending).rejects.toBeInstanceOf(WorktreeCreateCancelledError);
+        expect(fs.existsSync(request.worktreePath)).toBe(false);
+        expect(localBranches(fx.work)).toBe(before);
+    });
+
+    it("a cancel of an add that branched from another remote's branch deletes the branch it made", async () => {
+        const fx = fixture();
+        const upstream = addUpstream(fx);
+        const upstreamTip = pushBranch(fx, upstream, 'from-upstream');
+        git(fx.work, 'fetch', '-q', 'upstream');
+        const marker = path.join(fx.root, 'checkout-started');
+        slowCheckoutHook(fx.work, marker);
+        const controller = new AbortController();
+        const request = plain(fx, 'from-upstream');
+        const pending = performWorktreeAdd(defaultsOps(), request, { signal: controller.signal });
+        await waitFor(() => fs.existsSync(marker));
+        // The branch exists at upstream's commit, which is not HEAD or origin's: only the decided
+        // remote-tracking ref accounts for it.
+        expect(git(fx.work, 'rev-parse', 'refs/heads/from-upstream')).toBe(upstreamTip);
+        controller.abort();
+        await expect(pending).rejects.toBeInstanceOf(WorktreeCreateCancelledError);
+        expect(tryGit(fx.work, 'rev-parse', '--verify', '--quiet', 'refs/heads/from-upstream')).toBeNull();
+        expect(fs.existsSync(request.worktreePath)).toBe(false);
     });
 });

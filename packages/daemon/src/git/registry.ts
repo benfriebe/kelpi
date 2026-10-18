@@ -12,6 +12,8 @@
 
 import path from 'node:path';
 
+import { remoteURLWithoutSecrets } from '@kelpi/core/git';
+
 import { canonicalizeUserPath } from '../graft/paths.js';
 import type { DomainStore } from '../seams.js';
 import type { DaemonState, DomainAction, DomainEvent, Repo } from '../store/types.js';
@@ -76,7 +78,9 @@ export async function ensureRegisteredRepo(
     if (existing !== undefined) return keep(existing);
     let remoteURL: string | null = null;
     try {
-        remoteURL = await deps.getRemoteURL(repoPath);
+        const raw = await deps.getRemoteURL(repoPath);
+        // The registry reaches every client: never a token from the URL's userinfo.
+        remoteURL = raw === null ? null : remoteURLWithoutSecrets(raw);
     } catch {
         remoteURL = null;
     }

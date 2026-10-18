@@ -250,7 +250,7 @@ interface Repo {
   id: UUID;
   path: string;             // absolute path of the main repository checkout
   name: string;             // defaults to last path component of path
-  remoteURL: string | null; // `git remote get-url origin`, resolved async
+  remoteURL: string | null; // `git remote get-url origin`, resolved async, without a URL's userinfo
   lastAccessedAt: Date;
   isAutoDiscovered: boolean; // true = created by auto-link; eligible for GC (see 7.6)
 }
@@ -1151,7 +1151,11 @@ gray)` for every label they introduce, so a CLI-applied label is never an orphan
   otherwise no-op.
 - Else mint an id, resolve `remoteURL` async (`git remote get-url origin`, null on failure/empty),
   then `repoAdded(repo)` appends to the registry and persists. (`name` defaults to the last path
-  component.)
+  component.) The registry reaches every client, so the URL is stored without the secret a
+  userinfo can carry (`remoteURLWithoutSecrets`, `@kelpi/core/git`): an `https://<token>@…` or
+  `https://user:<token>@…` URL loses its whole userinfo, an SSH URL keeps its user and loses only a
+  password, and an scp-like `git@host:o/r` is kept as is. Auto-link's remote refresh and the
+  ticket resolve's backfill store it the same way.
 
 ### 7.3 removeRepo(id)
 

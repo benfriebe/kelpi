@@ -33,6 +33,7 @@
  * status, a reply, an error, a log line, a store action or a git call.
  */
 
+import { remoteURLWithoutSecrets } from '@kelpi/core/git';
 import {
     buildTicketSearchQueries,
     gitHubOwnersFromRemotes,
@@ -374,7 +375,8 @@ export function createIntegrationsService(options: CreateIntegrationsServiceOpti
             backfilled.add(repo.id);
             const origin = remotes.find((remote) => remote.name === 'origin');
             if (origin === undefined) continue;
-            options.store.dispatch({ type: 'set-repo-remote-url', id: repo.id, remoteURL: origin.fetchURL });
+            // The registry reaches every client: never a token from the URL's userinfo.
+            options.store.dispatch({ type: 'set-repo-remote-url', id: repo.id, remoteURL: remoteURLWithoutSecrets(origin.fetchURL) });
             changed = true;
         }
         if (changed) options.persist?.();

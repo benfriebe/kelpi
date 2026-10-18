@@ -1150,7 +1150,8 @@ Four branches, checked in this order ((d) is checked before (b) and (c)):
    an already-registered source repo is marked manually kept (`isAutoDiscovered = false`)
    so the registry GC can never collect the parent of a worktree the user built on purpose;
    a new repo is registered the same way, with its `origin` URL as `remoteURL` so a ticket can
-   later be matched to it (`ensureRegisteredRepo`, `git/registry.ts`; §GIT-103).
+   later be matched to it, minus any secret in the URL's userinfo (`remoteURLWithoutSecrets`;
+   `ensureRegisteredRepo`, `git/registry.ts`; §GIT-103).
 5. `worktreePath = resolvedWorktreeBasePath(repoPath) + "/" + folderName`. The base path
    setting expands `~` and a `<repo>` placeholder (`<repo>` at the start ⇒ the full repo
    path; elsewhere ⇒ the repo's directory name).

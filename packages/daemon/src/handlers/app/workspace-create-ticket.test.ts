@@ -763,6 +763,15 @@ describe('workspace-create --worktree registers a new repository with its remote
         expect(await settle(h)).toMatchObject({ ok: true });
         expect(h.state().repos).toEqual([expect.objectContaining({ path: '/code/api', remoteURL: 'git@github.com:acme/api.git', isAutoDiscovered: false })]);
     });
+
+    it('never registers a token that rides in the URL: the registry reaches every client', async () => {
+        const git: GitService = stubGitService({ getRemoteURL: async () => 'https://x-access-token:ghp_SECRET@github.com/acme/api.git' });
+        const h = harness({ git });
+        h.send({ command: 'workspace-create', name: 'x', worktree: 'x', repo: '/code/api' });
+        expect(await settle(h)).toMatchObject({ ok: true });
+        expect(h.state().repos).toEqual([expect.objectContaining({ path: '/code/api', remoteURL: 'https://github.com/acme/api.git' })]);
+        expect(JSON.stringify(h.state())).not.toContain('ghp_SECRET');
+    });
 });
 
 // ---------------------------------------------------------------------------

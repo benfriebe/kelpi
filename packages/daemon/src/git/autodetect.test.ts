@@ -114,6 +114,17 @@ describe('isPathInside (§GIT-076/§GIT-080)', () => {
 });
 
 describe('auto-link (§GIT-075…§GIT-079)', () => {
+    it('registers the origin URL without a token that rides in it', async () => {
+        const h = harness({
+            resolveRepoRoot: async () => ({ worktreeRoot: '/work/wt', parentRepoRoot: '/work/repo' }),
+            getRemoteURL: async () => 'https://ghp_SECRET@github.com/acme/repo.git'
+        });
+        setPaneDirectory(h.store, P1, '/work/wt/src');
+        h.detect.paneDirectoryChanged({ workspaceID: W1, paneID: P1, directory: '/work/wt/src' });
+        await h.settle();
+        expect(h.store.getState().repos[0]).toMatchObject({ path: '/work/repo', remoteURL: 'https://github.com/acme/repo.git' });
+    });
+
     it('links the resolved worktree after the debounce, registering the parent as auto-discovered', async () => {
         const h = harness({
             resolveRepoRoot: async () => ({ worktreeRoot: '/work/wt', parentRepoRoot: '/work/repo' }),

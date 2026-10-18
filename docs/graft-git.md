@@ -2033,7 +2033,8 @@ spellings of one repo never register twice.
   `packages/daemon/src/store/types.ts:316-325`) and persisted, so the auto-unlink GC
   can never collect a repo the user asked for by hand; already registered and manual
   → `ok` with the existing row, unchanged; new → registered with `name ?? basename`,
-  `remoteURL` from a best-effort `getRemoteURL`, `isAutoDiscovered: false`. The path
+  `remoteURL` from a best-effort `getRemoteURL` without its userinfo's secret
+  (`remoteURLWithoutSecrets`), `isAutoDiscovered: false`. The path
   is deliberately not required to be a checkout (a directory picker can pick
   anything; the row is honest about being remote-less). Reply:
   `{ok:true, repo_id, promoted, already_registered, repo}`.

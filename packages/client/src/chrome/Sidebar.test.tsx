@@ -174,6 +174,20 @@ describe('rendering', () => {
         expect(within(alpha).getByTestId('status-dot').dataset['status']).toBe('waiting');
     });
 
+    it('counts a workspace’s hand-set status into its dot and a collapsed group’s (agent-lifecycle §5.10)', () => {
+        const flagged = entries({ collapsed: true });
+        flagged[1] = { kind: 'workspace', workspace: workspace(W4, 'delta', { status: 'running' }) };
+        const group = flagged[2];
+        if (group?.kind !== 'group') throw new Error('fixture: squad is the third entry');
+        flagged[2] = { ...group, workspaces: [workspace(W2, 'beta', { status: 'waitingForInput' }), workspace(W3, 'gamma')] };
+        render(<Sidebar {...noopProps()} entries={flagged} />);
+        const delta = screen.getAllByTestId('workspace-row')[1] as HTMLElement;
+        expect(within(delta).getByTestId('status-dot').dataset['status']).toBe('running');
+        expect(within(screen.getAllByTestId('workspace-row')[0] as HTMLElement).queryByTestId('status-dot')).toBeNull();
+        // beta is hidden in the collapsed group, so the group's own dot answers for it.
+        expect(within(screen.getByTestId('group-header')).getByTestId('status-dot').dataset['status']).toBe('waiting');
+    });
+
     it('activates a workspace on click', () => {
         const onActivateWorkspace = vi.fn();
         render(<Sidebar {...noopProps()} entries={entries()} onActivateWorkspace={onActivateWorkspace} />);
@@ -739,6 +753,47 @@ describe('context menus (portal-based)', () => {
 
         fireEvent.keyDown(document, { key: 'Escape' });
         expect(screen.queryByTestId('context-menu')).toBeNull();
+    });
+
+    // ── agent-lifecycle §5.10: a workspace's Status ▸ ─────────────────────────────
+
+    it('offers the pane menu’s three statuses after Labels, ticking the current one', () => {
+        const onSetWorkspaceStatus = vi.fn();
+        const flagged = entries();
+        flagged[1] = { kind: 'workspace', workspace: workspace(W4, 'delta', { status: 'waitingForInput' }) };
+        render(<Sidebar {...noopProps()} entries={flagged} onSetWorkspaceStatus={onSetWorkspaceStatus} />);
+        fireEvent.contextMenu(screen.getAllByTestId('workspace-row')[1] as HTMLElement);
+        const order = topLevel(screen.getByTestId('context-menu'));
+        expect(order.slice(order.indexOf('labels'), order.indexOf('labels') + 3)).toEqual(['labels', 'status', 'move']);
+        expect(strayDividers(order)).toEqual([]);
+
+        fireEvent.mouseEnter(screen.getByText('Status'));
+        const submenu = screen.getByTestId('context-submenu');
+        expect(menuLabels(submenu)).toEqual(['Idle', 'Running', 'Awaiting Input']);
+        expect(submenu.querySelector('[data-menu-item="status:waitingForInput"]')?.getAttribute('data-checked')).toBe('true');
+        fireEvent.click(within(submenu).getByText('Running'));
+        expect(onSetWorkspaceStatus).toHaveBeenCalledWith(W4, 'running');
+    });
+
+    it('ticks Idle for a workspace that carries no status (an older daemon’s mirror)', () => {
+        render(<Sidebar {...noopProps()} entries={entries()} onSetWorkspaceStatus={vi.fn()} />);
+        fireEvent.contextMenu(screen.getAllByTestId('workspace-row')[0] as HTMLElement);
+        fireEvent.mouseEnter(screen.getByText('Status'));
+        const submenu = screen.getByTestId('context-submenu');
+        expect(submenu.querySelector('[data-menu-item="status:idle"]')?.getAttribute('data-checked')).toBe('true');
+    });
+
+    it('keeps Status out of the multi-selection menu and hides it with no handler', () => {
+        render(<Sidebar {...noopProps()} entries={entries()} onSetWorkspaceStatus={vi.fn()} />);
+        fireEvent.click(screen.getAllByTestId('workspace-row')[0] as HTMLElement, { metaKey: true });
+        fireEvent.click(screen.getAllByTestId('workspace-row')[1] as HTMLElement, { metaKey: true });
+        fireEvent.contextMenu(screen.getAllByTestId('workspace-row')[0] as HTMLElement);
+        expect(topLevel(screen.getByTestId('context-menu'))).not.toContain('status');
+        cleanup();
+
+        render(<Sidebar {...noopProps()} entries={entries()} />);
+        fireEvent.contextMenu(screen.getAllByTestId('workspace-row')[0] as HTMLElement);
+        expect(topLevel(screen.getByTestId('context-menu'))).not.toContain('status');
     });
 
     it('hides Mute Notifications when assembly wired no handler', () => {

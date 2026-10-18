@@ -13,6 +13,7 @@
  * falls back to client-local state) until the daemon grows them.
  */
 
+import type { PaneStatus } from '@kelpi/core/layout';
 import type { Pane, WorkspaceColor, WorkspaceGroup, WorkspaceState } from '@kelpi/daemon/store';
 import type { WorktreeStepID, WorktreeStepStatus } from '@kelpi/daemon/git';
 import type { WorktreeCleanupChoice } from './WorktreeCleanupList';
@@ -64,6 +65,11 @@ export type ChromeWorkspace = Pick<WorkspaceState, 'id' | 'name' | 'color' | 'ic
      * for the same reason as `profileName`; absent reads as unmuted.
      */
     readonly muted?: boolean | undefined;
+    /**
+     * The row menu's hand-set Status (agent-lifecycle §5.10), counted into the avatar's dot as
+     * one more pane would be. Optional for the same reason as `profileName`; absent reads as idle.
+     */
+    readonly status?: PaneStatus | undefined;
     /**
      * app-state-core.md §2.9: the workspaces nested under this one, in sidebar order, and
      * whether they are collapsed. Optional for the same reason as `profileName`; absent reads as
@@ -350,6 +356,8 @@ export interface SidebarCallbacks {
     readonly onSetWorkspaceProfile?: ((workspaceID: string, profile: string | null) => void) | undefined;
     /** The row menu's "Mute Notifications" (agent-lifecycle §7.6); `muted` is the new state. */
     readonly onSetWorkspaceMuted?: ((workspaceID: string, muted: boolean) => void) | undefined;
+    /** The row menu's "Status ▸" (agent-lifecycle §5.10), the pane menu's three statuses. */
+    readonly onSetWorkspaceStatus?: ((workspaceID: string, status: PaneStatus) => void) | undefined;
     /** §WS-065's "Color ▸". `null` is the submenu's "None": a group's colour is optional. */
     readonly onSetGroupColor?: ((groupID: string, color: WorkspaceColor | null) => void) | undefined;
     /** app-state-core.md §5.5's repository sheet: the group's default repo and worktree switch. */

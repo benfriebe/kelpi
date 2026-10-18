@@ -239,6 +239,13 @@ export const MIGRATIONS: readonly Migration[] = [
             addColumn(db, 'workspace', 'childOrderJSON', 'TEXT');
             addColumn(db, 'workspace', 'childrenCollapsed', 'BOOLEAN NOT NULL DEFAULT 0');
         }
+    },
+    {
+        // Kelpi-only: a workspace's hand-set status (agent-lifecycle.md §5.10), the pane
+        // vocabulary in the same text encoding as `pane.status`. Every existing workspace reads
+        // back as idle, which is how every row drew before the menu existed.
+        identifier: 'v27_workspace_status',
+        apply: (db) => addColumn(db, 'workspace', 'status', `TEXT NOT NULL DEFAULT 'idle'`)
     }
 ];
 
@@ -258,7 +265,8 @@ export const DAEMON_ONLY_MIGRATIONS: readonly string[] = [
     'v23_pane_csv_header_row',
     'v24_pane_terminal_font_size',
     'v25_pane_scratchpad_wrap',
-    'v26_workspace_nesting'
+    'v26_workspace_nesting',
+    'v27_workspace_status'
 ];
 
 export function ensureMigrationsTable(db: SqlDatabase): void {

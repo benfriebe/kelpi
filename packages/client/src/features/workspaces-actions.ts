@@ -1,4 +1,5 @@
 /** Workspaces feature commands. Retained callbacks resolve the current mirror on invocation. */
+import type { PaneStatus } from '@kelpi/core/layout';
 import type { WorkspaceColor } from '@kelpi/daemon/store';
 import type { Dispatch, SetStateAction } from 'react';
 import { DEFAULT_PROFILE_NAME, defaultGroupName, type GroupRepoChange, type NewGroupRepo, type WorkspaceWorktreeRequest } from '../chrome';
@@ -11,7 +12,7 @@ import type { WorkspacesFeatureLifecycle } from './workspaces';
 
 export interface WorkspacesActionHost {
     readonly store: KelpiStoreApi;
-    readonly commands: Pick<CommandClient, 'addRepoAssociation' | 'cancelWorkspaceCreate' | 'prefetchRepo' | 'createGroup' | 'createGroupForWorkspaces' | 'createWorkspace' | 'deleteGroup' | 'deleteWorkspace' | 'labelWorkspace' | 'moveGroup' | 'moveWorkspace' | 'moveWorkspaces' | 'nestWorkspaces' | 'renameGroup' | 'renameWorkspace' | 'setBulkColor' | 'setBulkLabel' | 'setGroupCollapsed' | 'setGroupColor' | 'setGroupIcon' | 'setGroupRepo' | 'setWorkspaceChildrenCollapsed' | 'setWorkspaceIcon' | 'setWorkspaceMuted' | 'setWorkspaceProfile'>;
+    readonly commands: Pick<CommandClient, 'addRepoAssociation' | 'cancelWorkspaceCreate' | 'prefetchRepo' | 'createGroup' | 'createGroupForWorkspaces' | 'createWorkspace' | 'deleteGroup' | 'deleteWorkspace' | 'labelWorkspace' | 'moveGroup' | 'moveWorkspace' | 'moveWorkspaces' | 'nestWorkspaces' | 'renameGroup' | 'renameWorkspace' | 'setBulkColor' | 'setBulkLabel' | 'setGroupCollapsed' | 'setGroupColor' | 'setGroupIcon' | 'setGroupRepo' | 'setWorkspaceChildrenCollapsed' | 'setWorkspaceIcon' | 'setWorkspaceMuted' | 'setWorkspaceProfile' | 'setWorkspaceStatus'>;
     readonly run: (label: string, command: Promise<CommandReply>) => boolean;
     readonly notifyFailure: (label: string, message: string) => void;
     readonly activateWorkspaceAndReveal: (workspaceID: string) => void;
@@ -567,6 +568,11 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
         },
 
         setWorkspaceMuted,
+
+        /** The row menu's "Status ▸" (agent-lifecycle §5.10). */
+        setWorkspaceStatus(workspaceID: string, status: PaneStatus): boolean {
+            return run('Set workspace status', commands.setWorkspaceStatus({ workspaceID, status }));
+        },
 
         async createWorkspaceWithWorktree(
             name: string,

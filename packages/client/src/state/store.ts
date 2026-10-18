@@ -62,8 +62,9 @@ function array(value: unknown): unknown[] {
 }
 
 /**
- * The undo stack never crosses the wire; only its size does (`recentlyClosedCount`). `muted` is
- * normalized so a mirror of an older daemon, which never sends it, still holds a boolean.
+ * The undo stack never crosses the wire; only its size does (`recentlyClosedCount`). `muted` and
+ * `status` are normalized so a mirror of an older daemon, which never sends them, still holds a
+ * boolean and a status.
  */
 function hydrateWorkspace(raw: unknown): unknown {
     if (!isRecord(raw)) return raw;
@@ -71,9 +72,11 @@ function hydrateWorkspace(raw: unknown): unknown {
     const childOrder = Array.isArray(raw['childOrder'])
         ? raw['childOrder'].filter((id): id is string => typeof id === 'string')
         : [];
+    const status = raw['status'];
     return {
         ...raw,
         muted: raw['muted'] === true,
+        status: status === 'running' || status === 'waitingForInput' ? status : 'idle',
         childOrder,
         childrenCollapsed: raw['childrenCollapsed'] === true,
         recentlyClosedPanes: []

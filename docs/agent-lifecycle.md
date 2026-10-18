@@ -587,6 +587,35 @@ Two refinements to the triggers above:
 These colors are user-overridable chrome theme tokens; the tray icon and menu are
 pushed the *resolved* colors so all surfaces agree (`packages/shell/src/icon.ts`).
 
+### 5.10 Workspace status (Kelpi addition)
+
+The sidebar row menu's **Status ▸** sets the pane vocabulary (Idle / Running / Awaiting
+Input) on a whole workspace by hand, as a reminder to come back to it. It is the §5.7
+override and the §5.8 acknowledgment, addressed to a workspace instead of a pane:
+
+- **State.** `WorkspaceState.status`, default `idle`, carried on the `workspace-upserted`
+  envelope. Persisted (`workspace.status`, migration `v27_workspace_status`,
+  persistence.md §2.1) and **not** reset by §6.1: it describes no PTY, so a restart has
+  nothing to invalidate.
+- **Set.** The WS-only `set-workspace-status {workspace_id, status}` dispatches
+  `set-workspace-status`, which stores the status as given. Any workspace, any status; an
+  unknown workspace or status is an error reply.
+- **Clear.** `clear-workspace-status {workspace_id}` dispatches `clear-workspace-status`:
+  `waitingForInput` becomes `idle`, anything else is untouched (the §5.8 rule). The client
+  sends it from the same `useFocusDwell` timer as §5.8, keyed on the window's active workspace
+  rather than its focused pane (`packages/client/src/App.tsx`): 600 ms after a switch to the
+  workspace or an activation with it showing, never on the status change itself (so
+  Awaiting Input set on the workspace the user is in stays until they leave and come back),
+  and only while this window shows it (not while a remote daemon's workspace is selected, nor
+  on the phone's host list).
+- **Display.** The status counts into the sidebar's `agentCounts` as one more pane would, so
+  the avatar's status dot, a collapsed parent's rollup, a collapsed group's dot and the
+  phone's host summary and header dot show it exactly as they show a waiting or running
+  agent. Nothing else reads it: no pane header badge, footer count, dock badge, tray,
+  notification or quit/delete gate.
+- **Scope.** The single-row menu on the primary daemon only: the bulk menu, remote daemon
+  rows, the CLI and the plugin SDK have no spelling for it yet.
+
 ---
 
 ## 6. Session binding, restart reset, and resume

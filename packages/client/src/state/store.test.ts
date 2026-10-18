@@ -105,6 +105,21 @@ describe('snapshot hydration', () => {
         expect(events[0]).toMatchObject({ workspace: { muted: false } });
     });
 
+    it('normalizes a workspace status, so an older daemon\'s mirror reads as idle (agent-lifecycle §5.10)', () => {
+        const { store } = seededDaemon();
+        const wire = serializeState(store.getState()) as Record<string, unknown>;
+        const workspaces = wire['workspaces'] as Record<string, unknown>[];
+        const legacy = { ...wire, workspaces: workspaces.map(({ status: _status, ...rest }) => rest) };
+        expect(hydrateSnapshotState(legacy).workspaces[0]?.status).toBe('idle');
+        const junk = { ...wire, workspaces: workspaces.map((workspace) => ({ ...workspace, status: 'exploded' })) };
+        expect(hydrateSnapshotState(junk).workspaces[0]?.status).toBe('idle');
+
+        store.dispatch({ type: 'set-workspace-status', id: W1, status: 'waitingForInput' });
+        expect(hydrateSnapshotState(serializeState(store.getState())).workspaces[0]?.status).toBe('waitingForInput');
+        const events = hydrateDomainEvents([{ kind: 'workspace-upserted', id: W1, workspace: { id: W1, name: 'x' } }]);
+        expect(events[0]).toMatchObject({ workspace: { status: 'idle' } });
+    });
+
     it('survives a junk payload rather than blanking the app', () => {
         expect(hydrateSnapshotState(null).workspaces).toEqual([]);
         expect(hydrateSnapshotState({ workspaces: 'nope' }).workspaces).toEqual([]);

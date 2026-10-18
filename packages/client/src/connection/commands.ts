@@ -1110,6 +1110,25 @@ export class CommandClient {
     }
 
     /**
+     * The sidebar row menu's Status submenu (agent-lifecycle.md §5.10): the pane menu's three
+     * statuses, set on the whole workspace.
+     */
+    setWorkspaceStatus(
+        input: { workspaceID: string; status: 'idle' | 'running' | 'waitingForInput' },
+        options?: SendOptions
+    ): Promise<CommandReply> {
+        return this.raw(
+            wirePayload('set-workspace-status', { workspace_id: input.workspaceID, status: input.status }),
+            options ?? {}
+        );
+    }
+
+    /** §5.10: a visit's 600 ms acknowledgment, the workspace twin of `clearPaneStatus`. */
+    clearWorkspaceStatus(input: { workspaceID: string }, options?: SendOptions): Promise<CommandReply> {
+        return this.raw(wirePayload('clear-workspace-status', { workspace_id: input.workspaceID }), options ?? {});
+    }
+
+    /**
      * §2.9: nest workspaces under `parentID` at its post-remove `index`, in ONE change (a drag of
      * a whole selection, like `moveWorkspaces`). The daemon answers with why when it refuses.
      */
@@ -1198,7 +1217,7 @@ export class CommandClient {
     }
 
     /**
-     * The pane context menu's Status submenu (agent-lifecycle.md §5.10 / TERM-107). The daemon's
+     * The pane context menu's Status submenu (agent-lifecycle.md §5.7 / TERM-107). The daemon's
      * state machine owns the whole rule — shell panes only, the elapsed clock arms on a FRESH
      * transition into running, the background count is zeroed — so this only names the target
      * status, and a non-shell pane comes back unchanged rather than as an error.

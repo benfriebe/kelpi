@@ -233,7 +233,7 @@ import {
     type FontSizeStep
 } from './content';
 import { createCsvClient, csvRawUnavailableReason, flushCsvPane } from './content/csv';
-import { PaneGrid, PaneSearchOverlay, paneDisplayTitle, type PaneModel, type RenderPane } from './grid';
+import { PaneGrid, PaneSearchOverlay, paneDisplayTitle, useFocusDwell, type PaneModel, type RenderPane } from './grid';
 import type { PaneChromeItemDescriptor } from './pane-chrome';
 import {
     isPaneSearchKind,
@@ -2066,6 +2066,11 @@ function Shell(props: AppProps): ReactElement {
                 return run('Clear pane status', commands.clearPaneStatus({ paneID }));
             },
 
+            /** The same acknowledgment for a workspace's hand-set status (§5.10), on a visit. */
+            dwellClearWorkspace(workspaceID: string): boolean {
+                return run('Clear workspace status', commands.clearWorkspaceStatus({ workspaceID }));
+            },
+
             // ── terminal search (TERM-113…TERM-120) ─────────────────────────────────
             //
             // The daemon owns everything a person reads off the overlay: which pane hosts the
@@ -2672,6 +2677,19 @@ function Shell(props: AppProps): ReactElement {
      */
     const actRef = useRef(act);
     actRef.current = act;
+
+    /*
+     * agent-lifecycle §5.10: visiting a workspace acknowledges its hand-set Awaiting Input, on
+     * the pane's own timer (§5.8) keyed on the active workspace instead of the focused pane. So
+     * it arms on a switch or an activation, never on the status change itself, and only while
+     * this window is showing that workspace: not a remote daemon's, not the phone's host list.
+     */
+    useFocusDwell({
+        paneID: workspace?.id ?? null,
+        status: workspace?.status ?? null,
+        onDwellClear: act.dwellClearWorkspace,
+        enabled: isAppActive(ui) && remoteSelection === null && !(phoneActive && (phoneAtLanding || phoneRemoteSelected))
+    });
 
     // ⌃Tab (docs/config-keybindings.md §7.8). The activation
     // sequence breaks same-second ties in the daemon's `lastAccessedAt`. Built once per store and
@@ -3985,7 +4003,7 @@ function Shell(props: AppProps): ReactElement {
             { id: 'new-web', label: 'New Web Pane', onSelect: () => act.newWebPane(paneID) }
         ];
 
-        // §5.10: status is a shell-only concept, so the submenu is too — the daemon's state
+        // §5.7: status is a shell-only concept, so the submenu is too — the daemon's state
         // machine no-ops for anything else and an inert submenu would be a lie.
         if (pane.type === 'shell') {
             items.push(

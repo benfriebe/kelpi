@@ -968,6 +968,11 @@ Labels ▸                         → every preset with a real-color swatch dot
                                    (checkmark drawn inside when applied); click toggles.
                                    Then any applied free-form labels (checkmark, click
                                    removes). Then "Manage Labels…" → Settings ▸ Labels.
+Status ▸                         → Idle / Running / Awaiting Input, the pane menu's three
+                                   (current one ticked); lights the avatar's status dot
+                                   as one more pane would, and a visit clears Awaiting
+                                   Input (Kelpi addition, agent-lifecycle.md §5.10).
+                                   Primary daemon rows only, and not in the bulk menu
 Move to Group ▸                  → "Remove from Group" (when grouped) / each group
                                    (current disabled) / "New Group…" (creates a group
                                    seeded with this workspace, placeholder name,

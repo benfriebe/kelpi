@@ -25,6 +25,7 @@
 
 import { workspaceAgentDeleteWarning, type WorkspaceAgentSummary } from '@kelpi/core/agent';
 import { firstGrapheme } from '@kelpi/core/codec';
+import type { PaneStatus } from '@kelpi/core/layout';
 import type { IconRef, WorkspaceColor } from '@kelpi/daemon/store';
 import {
     memo,
@@ -526,11 +527,23 @@ export function groupGuideColor(color: WorkspaceColor | null, bucket: ChromeBuck
     return color === null ? tokens.divider : withAlpha(workspaceColorHex(color, bucket), 0.55);
 }
 
-/** Exported for the remote-daemon sections (§1.7): identical badges, one implementation. */
+/** The row menu's Status ▸, in the pane menu's order and words (agent-lifecycle §5.10). */
+const WORKSPACE_STATUS_ITEMS: readonly (readonly [PaneStatus, string])[] = [
+    ['idle', 'Idle'],
+    ['running', 'Running'],
+    ['waitingForInput', 'Awaiting Input']
+];
+
+/**
+ * Exported for the remote-daemon sections (§1.7): identical badges, one implementation. A
+ * workspace's own hand-set status (agent-lifecycle §5.10) counts as one more pane would.
+ */
 export function agentCounts(workspaces: readonly ChromeWorkspace[]): AgentCounts {
     let running = 0;
     let waiting = 0;
     for (const workspace of workspaces) {
+        if (workspace.status === 'running') running += 1;
+        else if (workspace.status === 'waitingForInput') waiting += 1;
         for (const pane of workspace.panes) {
             if (pane.status === 'running') running += 1;
             else if (pane.status === 'waitingForInput') waiting += 1;
@@ -4385,6 +4398,27 @@ export function Sidebar(props: SidebarProps): ReactElement {
                               ])
                     ]
                 },
+                // Agent-lifecycle §5.10: the pane menu's Status ▸, set on the whole workspace as a
+                // reminder to come back to it. Its dot is the avatar's, so Awaiting Input reads
+                // exactly as a waiting agent would, and a visit clears it the way focus does.
+                ...(props.onSetWorkspaceStatus === undefined
+                    ? []
+                    : [
+                          {
+                              id: 'status',
+                              label: 'Status',
+                              submenu: WORKSPACE_STATUS_ITEMS.map(
+                                  ([status, label]): MenuItemSpec => ({
+                                      id: `status:${status}`,
+                                      label,
+                                      checked: (workspace.status ?? 'idle') === status,
+                                      onSelect: () => {
+                                          props.onSetWorkspaceStatus?.(workspaceID, status);
+                                      }
+                                  })
+                              )
+                          } satisfies MenuItemSpec
+                      ]),
                 {
                     id: 'move',
                     label: 'Move to Group',

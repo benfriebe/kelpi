@@ -253,6 +253,13 @@ describe('applyLoadReset', () => {
         expect(workspace?.panes.find((pane) => pane.id === PA)?.agentKind).toBe('codex');
     });
 
+    it('keeps a workspace’s hand-set status through a restart, unlike a pane’s (agent-lifecycle §5.10)', () => {
+        const h = harness(seededState());
+        h.dispatch({ type: 'set-workspace-status', id: W1, status: 'waitingForInput' });
+        const { state } = applyLoadReset(reload(h.state()));
+        expect(workspaceByID(state, W1)?.status).toBe('waitingForInput');
+    });
+
     it('is a no-op (identical state) when nothing needs clearing', () => {
         const loaded = reload(seededState());
         const { state, resumeTuples } = applyLoadReset(loaded);

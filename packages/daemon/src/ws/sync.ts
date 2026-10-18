@@ -400,6 +400,8 @@ function parseClientInfo(value: unknown): WsClientInfo {
  *   set-workspace-children-collapsed `workspace_id`, `collapsed` → the same action (§2.9)
  *   clear-pane-status    `pane_id`                       → pane-agent-event(clearPaneStatus)
  *   set-pane-status      `pane_id`, `status`             → pane-agent-event(setPaneStatus)
+ *   set-workspace-status `workspace_id`, `status`        → set-workspace-status (agent-lifecycle §5.10)
+ *   clear-workspace-status `workspace_id`                → clear-workspace-status (§5.10)
  *   add-label-preset     `name`, `color?`, `text_color?` → add-label-preset (+ text colour)
  *   update-label-preset  `id`, `name?`, `color`, `text_color?` → update-label-preset (+ text colour)
  *   remove-label-preset  `id`                            → remove-label-preset
@@ -446,6 +448,8 @@ export const WS_ONLY_COMMANDS = [
     'set-bulk-label',
     'clear-pane-status',
     'set-pane-status',
+    'set-workspace-status',
+    'clear-workspace-status',
     'add-label-preset',
     'update-label-preset',
     'remove-label-preset',
@@ -863,7 +867,7 @@ export function handleWsOnlyCommand(
         }
         const found = findPaneAnywhere(state, paneID);
         if (found === null) return failure(`no pane matches '${paneID}'`);
-        // The pane header's Status submenu (agent-lifecycle.md §5.10 / TERM-107). The whole
+        // The pane header's Status submenu (agent-lifecycle.md §5.7 / TERM-107). The whole
         // rule — shell-only, the elapsed clock arms only on a FRESH transition into running,
         // and the background count is zeroed so no stale "N running" lingers — lives in
         // `core/src/agent/machine.ts`; this is pure routing, and a non-shell pane is a complete
@@ -881,6 +885,29 @@ export function handleWsOnlyCommand(
             pane_id: paneID,
             workspace_id: found.workspaceID,
             status: after?.pane.status ?? 'idle'
+        };
+    }
+
+    if (command === 'set-workspace-status' || command === 'clear-workspace-status') {
+        // The sidebar row's Status submenu and its visit acknowledgment (agent-lifecycle.md
+        // §5.10): the pane pair above, addressed to a workspace. The clear's only-`waitingForInput`
+        // rule lives in the reducer, as the pane's lives in the state machine.
+        const workspaceID = text(payload['workspace_id']);
+        if (workspaceID === undefined) return failure(`${command} requires workspace_id`);
+        if (workspaceByID(state, workspaceID) === null) return failure(`no workspace matches '${workspaceID}'`);
+        if (command === 'set-workspace-status') {
+            const status = text(payload['status']);
+            if (status !== 'idle' && status !== 'running' && status !== 'waitingForInput') {
+                return failure("set-workspace-status requires status 'idle', 'running' or 'waitingForInput'");
+            }
+            store.dispatch({ type: 'set-workspace-status', id: workspaceID, status });
+        } else {
+            store.dispatch({ type: 'clear-workspace-status', id: workspaceID });
+        }
+        return {
+            ok: true,
+            workspace_id: workspaceID,
+            status: workspaceByID(store.getState(), workspaceID)?.status ?? 'idle'
         };
     }
 

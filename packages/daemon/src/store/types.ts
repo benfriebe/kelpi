@@ -133,6 +133,12 @@ export interface WorkspaceState {
     readonly profileName: string | null;
     /** Muted: the workspace's agents raise no attention signals (agent-lifecycle §7.6). */
     readonly muted: boolean;
+    /**
+     * agent-lifecycle §5.10: the row menu's Status, a pane's three statuses set by hand on the
+     * whole workspace. Persisted, unlike a pane's: it describes no PTY, so a restart has nothing
+     * to reset it for. Only a visit clears it, and only `waitingForInput`.
+     */
+    readonly status: PaneStatus;
     /** Visible panes, append order. */
     readonly panes: readonly Pane[];
     /** TRANSIENT: off-layout panes whose PTYs stay alive (`kelpi open --here` sources). */
@@ -282,6 +288,8 @@ export type DomainAction =
           readonly profileName: string | null;
       }
     | { readonly type: 'set-workspace-muted'; readonly id: string; readonly muted: boolean }
+    | { readonly type: 'set-workspace-status'; readonly id: string; readonly status: PaneStatus }
+    | { readonly type: 'clear-workspace-status'; readonly id: string }
     | {
           readonly type: 'workspace-labels';
           readonly id: string;
@@ -916,6 +924,7 @@ export interface NewWorkspaceFields {
     readonly icon?: IconRef | null | undefined;
     readonly profileName?: string | null | undefined;
     readonly muted?: boolean | undefined;
+    readonly status?: PaneStatus | undefined;
     readonly labels?: readonly string[] | undefined;
     readonly panes?: readonly Pane[] | undefined;
     readonly layout?: PaneLayout | undefined;
@@ -937,6 +946,7 @@ export function makeWorkspaceState(fields: NewWorkspaceFields): WorkspaceState {
         icon: fields.icon ?? null,
         profileName: fields.profileName ?? null,
         muted: fields.muted ?? false,
+        status: fields.status ?? 'idle',
         panes: fields.panes ?? [],
         parkedPanes: [],
         layout: fields.layout ?? { kind: 'empty' },

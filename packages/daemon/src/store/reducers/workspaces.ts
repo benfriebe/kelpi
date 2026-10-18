@@ -509,6 +509,16 @@ export function reduceWorkspaceAction(state: DaemonState, action: DomainAction):
                 ...workspace,
                 muted: action.muted
             }));
+        case 'set-workspace-status':
+            return updateWorkspace(state, action.id, (workspace) =>
+                workspace.status === action.status ? workspace : { ...workspace, status: action.status }
+            );
+        case 'clear-workspace-status':
+            // agent-lifecycle §5.10: the visit acknowledges `waitingForInput` and nothing else,
+            // as a pane's focus dwell does (§5.8).
+            return updateWorkspace(state, action.id, (workspace) =>
+                workspace.status === 'waitingForInput' ? { ...workspace, status: 'idle' } : workspace
+            );
         case 'workspace-labels':
             return applyLabels(state, action);
         case 'set-active-workspace': {

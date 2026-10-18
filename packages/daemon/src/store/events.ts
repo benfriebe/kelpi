@@ -7,7 +7,7 @@
  * foundation of the WS state sync (WP2.7): snapshot once, then stream batches.
  *
  * Ownership (disjoint, so a field is never described by two event kinds):
- *   workspace-upserted → workspace meta (name/slug/color/icon/profile/muted/labels/
+ *   workspace-upserted → workspace meta (name/slug/color/icon/profile/muted/status/labels/
  *                        repoAssociations/recentlyClosed/webPanes/search/timestamps/
  *                        childOrder/childrenCollapsed)
  *   layout-changed     → layout + zoomedPaneID + savedLayout + currentLayoutIndex
@@ -45,6 +45,7 @@ function envelopeOf(workspace: WorkspaceState): WorkspaceEnvelope {
         icon: workspace.icon,
         profileName: workspace.profileName,
         muted: workspace.muted,
+        status: workspace.status,
         repoAssociations: workspace.repoAssociations,
         recentlyClosedPanes: workspace.recentlyClosedPanes,
         webPanes: workspace.webPanes,
@@ -68,6 +69,7 @@ function envelopeChanged(before: WorkspaceState, after: WorkspaceState): boolean
         before.icon !== after.icon ||
         before.profileName !== after.profileName ||
         before.muted !== after.muted ||
+        before.status !== after.status ||
         before.repoAssociations !== after.repoAssociations ||
         before.recentlyClosedPanes !== after.recentlyClosedPanes ||
         before.webPanes !== after.webPanes ||

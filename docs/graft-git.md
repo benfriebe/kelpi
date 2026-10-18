@@ -1817,12 +1817,18 @@ first, then the file, each to a temporary name opened `wx` and renamed into plac
 link at the target is replaced, never followed); the file is 0600. It is SKIPPED, and the reason
 becomes the reply's `ticket_file_error`, when:
 
-- the checkout tracks anything under `.kelpi` (`git ls-files -- .kelpi`), or, in `pr-head` mode,
-  the pull request's head commit has one (`git cat-file -e <head>:./.kelpi`; a head commit that
-  is not present cannot be checked and also skips): whatever is there came from the pull
-  request's author;
+- the checkout tracks anything under `.kelpi` in ANY letter case (`git ls-files -- ':(icase).kelpi'`),
+  or, in `pr-head` mode, the pull request's head commit has an entry named `.kelpi` in any case at
+  `<dir>` (`git ls-tree --name-only -z <head>` run in `<dir>`, names compared lowercased; a head
+  commit that is not present cannot be checked and also skips, and so does a failed `ls-tree`):
+  whatever is there came from the pull request's author. Any case, because on a case-insensitive
+  file system (macOS's default APFS) `.Kelpi/` IS `.kelpi/`: a fork tracking `.Kelpi/` would pass
+  a case-sensitive check, Kelpi would write into its tracked folder (dirtying tracked files), and
+  a `git commit -a` would push the ticket text to the fork;
 - `.kelpi` is a symbolic link or not a folder, or resolves outside the checkout (`lstat` +
-  `realpath`);
+  `fs.realpathSync.native`, which returns the case the file system stores, where `realpathSync`
+  keeps the case asked for), or is an untracked folder spelled in another case (`the checkout has
+  .Kelpi, which this file system takes for .kelpi, so Kelpi did not write a ticket file there`);
 - the first pane does not open inside the checkout, or any read or write fails.
 
 The create still succeeds. The agent's prompt then names only the ticket's URL

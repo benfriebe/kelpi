@@ -10,10 +10,16 @@
  * at a file it did not write. So the file is SKIPPED, with the reason as the reply's
  * `ticket_file_error`, when:
  *
- *   - the checkout tracks anything under `.kelpi` (`git ls-files`), or, for a pull request, its head
- *     commit has a `.kelpi` (`git cat-file -e <head>:./.kelpi`): whatever is there came from the
- *     pull request's author;
- *   - `.kelpi` is a symbolic link or not a folder, or resolves outside the checkout;
+ *   - the checkout tracks anything under `.kelpi` in ANY letter case (`git ls-files --
+ *     ':(icase).kelpi'`), or, for a pull request, its head commit's tree has an entry whose name is
+ *     `.kelpi` in any case (`git ls-tree --name-only <head>`, compared lowercased): whatever is
+ *     there came from the pull request's author. Any case, because on a case-insensitive file
+ *     system (macOS's default APFS) `.Kelpi/` IS `.kelpi/`: a fork tracking `.Kelpi/` would
+ *     otherwise pass a case-sensitive check, Kelpi would write into its tracked folder, and a
+ *     `git commit -a` would push the ticket text to the fork;
+ *   - `.kelpi` is a symbolic link or not a folder, or resolves outside the checkout, or is spelled
+ *     on disk in another case (`fs.realpathSync.native`, which, unlike `fs.realpathSync`, returns
+ *     the case the file system stores, so an untracked `.Kelpi/` is not taken for Kelpi's own);
  *   - any read or write fails.
  *
  * Both files are written to a temporary name (`wx`, so nothing existing is followed) and renamed
@@ -79,10 +85,16 @@ function reason(error: unknown): string {
     return String(error);
 }
 
-/** Why git says the checkout (or the pull request) owns `.kelpi`, or null when it does not. */
+/** The first path component of a path git listed: the folder's name as the checkout spells it. */
+function topComponent(listed: string): string {
+    return listed.split('/')[0] ?? listed;
+}
+
+/** Why git says the checkout (or the pull request) owns `.kelpi` in any case, or null when it does not. */
 async function trackedKelpi(ops: WorktreeGitOps, directory: string, headSha: string | null): Promise<string | null> {
-    const tracked = (await ops.read(['ls-files', '-z', '--', TICKET_FILE_DIRECTORY], directory)).replace(/\0/g, '');
-    if (tracked !== '') return `the checkout tracks ${TICKET_FILE_DIRECTORY}, so Kelpi did not write a ticket file there`;
+    const tracked = (await ops.read(['ls-files', '-z', '--', `:(icase)${TICKET_FILE_DIRECTORY}`], directory)).split('\0').filter((entry) => entry !== '');
+    const first = tracked[0];
+    if (first !== undefined) return `the checkout tracks ${topComponent(first)}, so Kelpi did not write a ticket file there`;
     if (headSha === null) return null;
     try {
         await ops.read(['cat-file', '-e', `${headSha}^{commit}`], directory);
@@ -90,14 +102,11 @@ async function trackedKelpi(ops: WorktreeGitOps, directory: string, headSha: str
         if (isGitCommandError(error)) return `could not read the pull request's head commit to check its ${TICKET_FILE_DIRECTORY}`;
         throw error;
     }
-    try {
-        await ops.read(['cat-file', '-e', `${headSha}:./${TICKET_FILE_DIRECTORY}`], directory);
-        return `the pull request tracks ${TICKET_FILE_DIRECTORY}, so Kelpi did not write a ticket file there`;
-    } catch (error) {
-        // The commit is here (checked above), so a failure means the path is not in it.
-        if (isGitCommandError(error)) return null;
-        throw error;
-    }
+    // Run in `directory`, `ls-tree` lists the head's entries at that folder (a monorepo subfolder
+    // included). A failure here is not "absent": it propagates, and nothing is written.
+    const entries = (await ops.read(['ls-tree', '--name-only', '-z', headSha], directory)).split('\0');
+    const owned = entries.find((name) => name.toLowerCase() === TICKET_FILE_DIRECTORY);
+    return owned === undefined ? null : `the pull request tracks ${owned}, so Kelpi did not write a ticket file there`;
 }
 
 /** Write the ticket file (module note). Never throws. */
@@ -107,7 +116,8 @@ export async function writeTicketFile(ops: WorktreeGitOps, input: TicketFileWrit
         const owned = await trackedKelpi(ops, input.directory, input.headSha ?? null);
         if (owned !== null) return { ok: false, error: owned };
 
-        const root = fs.realpathSync(input.directory);
+        // `.native`: the path as the file system stores it, case included (module note).
+        const root = fs.realpathSync.native(input.directory);
         const folder = path.join(input.directory, TICKET_FILE_DIRECTORY);
         let stat: fs.Stats | null = null;
         try {
@@ -121,7 +131,14 @@ export async function writeTicketFile(ops: WorktreeGitOps, input: TicketFileWrit
         }
         if (stat.isSymbolicLink()) return { ok: false, error: `${TICKET_FILE_DIRECTORY} in the checkout is a symbolic link, so Kelpi did not write a ticket file there` };
         if (!stat.isDirectory()) return { ok: false, error: `${TICKET_FILE_DIRECTORY} in the checkout is not a folder, so Kelpi did not write a ticket file there` };
-        if (fs.realpathSync(folder) !== path.join(root, TICKET_FILE_DIRECTORY)) {
+        const real = fs.realpathSync.native(folder);
+        if (real !== path.join(root, TICKET_FILE_DIRECTORY)) {
+            if (path.dirname(real) === root && path.basename(real).toLowerCase() === TICKET_FILE_DIRECTORY) {
+                return {
+                    ok: false,
+                    error: `the checkout has ${path.basename(real)}, which this file system takes for ${TICKET_FILE_DIRECTORY}, so Kelpi did not write a ticket file there`
+                };
+            }
             return { ok: false, error: `${TICKET_FILE_DIRECTORY} resolves outside the checkout, so Kelpi did not write a ticket file there` };
         }
 

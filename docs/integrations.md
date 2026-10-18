@@ -231,6 +231,10 @@ field it is not told, and what `ticket-resolve` proposes:
 | pull request | `pr-head` | `prWorktreeName` | off |
 | branch already checked out somewhere | `existing-checkout` (opens at `checked_out_at`) | none | off |
 
+A create that names another `branch` or `update_main: true` (the CLI sends both with `--from` even
+without `--worktree`) never takes the `existing-checkout` row: it gets a worktree, under that row's
+own rules (socket-handlers.md §6.2).
+
 The prompt is rendered by the daemon, never the client (`packages/core/src/tickets/template.ts`):
 
 - issue: `Work on issue {{key}}: {{title}} ({{url}}). Read @{{ticketFile}} first, it has the full issue.`

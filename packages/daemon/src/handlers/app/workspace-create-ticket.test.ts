@@ -625,6 +625,61 @@ describe.skipIf(!HAS_GIT)('workspace-create from a pull request', { timeout: 30_
         expect(workspace?.repoAssociations).toEqual([expect.objectContaining({ repoID: REPO_ID, worktreePath: fx.work, branchName: 'feat/login' })]);
         expect(git(fx.work, 'worktree', 'list', '--porcelain').match(/^worktree /gm)).toHaveLength(1);
     });
+
+    it('opens at the existing checkout only when the request asks for nothing else: another branch is a worktree, update main is refused', async () => {
+        const fx = pullRequestFixture();
+        const head = sameRepoPullRequest(fx, 7, 'feat/login');
+        git(fx.work, 'fetch', '-q', 'origin');
+        git(fx.work, 'checkout', '-q', '--track', 'origin/feat/login');
+        const lookup: LocalBranchLookup = (name) => (name === 'feat/login' ? { exists: true, tracksPullRequest: true, checkedOutAt: fx.work } : { exists: false });
+        const launcher = recordingLauncher();
+        const h = ticketHarness(fx, { tickets: fakeTickets(() => prTicket(head, { localBranch: lookup })), agentLauncher: launcher });
+
+        // What `--from <pr> --branch review` sends (no worktree, defaults on): the head on `review`.
+        h.send({ command: 'workspace-create', ticket: PR, branch: 'review' });
+        const wt = path.join(fx.root, 'wt', 'review');
+        expect(await settle(h)).toMatchObject({ ok: true, checkout: 'pr-head', branch: 'review', worktree_path: wt });
+        expect(git(wt, 'rev-parse', 'HEAD')).toBe(head);
+        expect(git(wt, 'symbolic-ref', 'HEAD')).toBe('refs/heads/review');
+
+        // `--update-main` through `owner/name#n`: the pull request's refusal, nothing made.
+        h.send({ command: 'workspace-create', ticket: 'acme/api#7', update_main: true, start_agent: 'claude' });
+        expect(await settle(h, 1)).toEqual({ ok: false, error: PR_UPDATE_MAIN_ERROR });
+        expect(launcher.written).toEqual([]);
+
+        // The defaults' own branch, or update main off, asks for nothing new: the existing checkout.
+        h.send({ command: 'workspace-create', ticket: PR, branch: 'feat/login' });
+        expect(await settle(h, 2)).toMatchObject({ ok: true, checkout: 'existing-checkout', repo_path: fx.work });
+        h.send({ command: 'workspace-create', ticket: PR, update_main: false });
+        expect(await settle(h, 3)).toMatchObject({ ok: true, checkout: 'existing-checkout', repo_path: fx.work });
+        expect(h.state().workspaces).toHaveLength(3);
+        expect(git(fx.work, 'worktree', 'list', '--porcelain').match(/^worktree /gm)).toHaveLength(2);
+    });
+});
+
+describe.skipIf(!HAS_GIT)("workspace-create from an issue whose branch is already checked out", { timeout: 30_000 }, () => {
+    it('opens there by default, makes a worktree for another branch, and refuses update main on the existing branch', async () => {
+        const fx = pullRequestFixture();
+        const branch = '418-retry-login-on-401';
+        git(fx.work, 'checkout', '-q', '-b', branch);
+        const lookup: LocalBranchLookup = (name) => (name === branch ? { exists: true, tracksPullRequest: false, checkedOutAt: fx.work } : { exists: false });
+        const h = ticketHarness(fx, { tickets: fakeTickets(() => issueTicket({ localBranch: lookup })) });
+
+        h.send({ command: 'workspace-create', ticket: ISSUE });
+        expect(await settle(h)).toMatchObject({ ok: true, checkout: 'existing-checkout', repo_path: fx.work });
+        // The same branch, typed so that it only sanitizes to it, is still the defaults' own.
+        h.send({ command: 'workspace-create', ticket: ISSUE, branch: '418 retry login on 401' });
+        expect(await settle(h, 1)).toMatchObject({ ok: true, checkout: 'existing-checkout' });
+
+        h.send({ command: 'workspace-create', ticket: ISSUE, branch: 'other' });
+        expect(await settle(h, 2)).toMatchObject({ ok: true, checkout: 'new-branch', branch: 'other', update_main: true });
+        expect(git(fx.work, 'rev-parse', 'refs/heads/other')).toBe(fx.main);
+
+        h.send({ command: 'workspace-create', ticket: ISSUE, update_main: true });
+        const refused = await settle(h, 3);
+        expect(refused).toMatchObject({ ok: false, error: expect.stringContaining(`branch '${branch}' already exists, and update main always creates a new branch`) as unknown as string });
+        expect(h.state().workspaces).toHaveLength(3);
+    });
 });
 
 // ---------------------------------------------------------------------------

@@ -995,6 +995,15 @@ function ticketVarsOf(resolved: ResolvedTicket): TicketPromptVars {
     });
 }
 
+/**
+ * Whether a requested `branch` is the defaults' own: raw for a pull request (its local branch is
+ * used as given), sanitized for an issue (its worktree branch always is, below).
+ */
+function sameTicketBranch(requested: string, defaultsBranch: string | null, kind: 'issue' | 'pr'): boolean {
+    if (defaultsBranch === null) return false;
+    return requested === defaultsBranch || (kind === 'issue' && sanitizedGitName(requested) === defaultsBranch);
+}
+
 /** `readLocalBranch` as the one PR branch rule reads it (`prLocalBranchName`). */
 async function prBranchFact(
     deps: AppDeps,
@@ -1049,9 +1058,23 @@ async function planTicketCreate(
     }
 
     const explicitWorktree = msg.worktree !== undefined && msg.worktree !== '' ? msg.worktree : undefined;
+    const explicitBranch = msg.branch !== undefined && msg.branch !== '' ? msg.branch : undefined;
     if (explicitWorktree === undefined) {
-        // The defaults' branch is already checked out: the workspace opens there (no worktree).
-        if (defaults !== null && defaults.checkout === 'existing-checkout' && resolved.checkedOutAt !== null && (target === null || target.matched)) {
+        // The defaults' branch is already checked out: the workspace opens there (no worktree),
+        // but only when the request asks for nothing that checkout is not. The CLI sends `branch`
+        // and `update_main` with a ticket even without `worktree`, so another branch, or update
+        // main (always a NEW branch off the default one), plans a worktree instead and meets that
+        // path's own rules (a pull request refuses update main; an issue's existing branch with
+        // update main is §8.5's refusal), never a silent open on the defaults' branch.
+        // `update_main: false` asks for nothing new, so it keeps the existing checkout.
+        if (
+            defaults !== null &&
+            defaults.checkout === 'existing-checkout' &&
+            resolved.checkedOutAt !== null &&
+            (target === null || target.matched) &&
+            msg.update_main !== true &&
+            (explicitBranch === undefined || sameTicketBranch(explicitBranch, defaults.branch, summary.kind))
+        ) {
             return { mode: 'repo', source: { path: resolved.checkedOutAt } };
         }
         if (defaults === null) {
@@ -1111,10 +1134,10 @@ async function planTicketCreate(
             headPushURL
         };
         let branch: string;
-        if (msg.branch !== undefined && msg.branch !== '') {
+        if (explicitBranch !== undefined) {
             // Renaming the local branch is allowed; it is used raw, so it must be a branch name as is.
-            if (!isSafeBranchName(msg.branch)) throw new TicketCreateRefusal(`"${msg.branch}" isn't a usable branch name`);
-            branch = msg.branch;
+            if (!isSafeBranchName(explicitBranch)) throw new TicketCreateRefusal(`"${explicitBranch}" isn't a usable branch name`);
+            branch = explicitBranch;
         } else {
             const candidates = [pr.headRef, ...(pr.headOwner !== null ? [`${pr.headOwner}/${pr.headRef}`] : []), `pr-${summary.number}`];
             const facts = new Map<string, LocalBranchFact>();
@@ -1160,7 +1183,7 @@ async function planTicketCreate(
     const worktreeName = explicitWorktree ?? defaults?.worktree ?? defaults?.branch ?? '';
     const folderName = sanitizedGitName(worktreeName);
     if (folderName === null) throw new TicketCreateRefusal(`"${worktreeName}" isn't a usable worktree name`);
-    const requestedBranch = msg.branch !== undefined && msg.branch !== '' ? msg.branch : (defaults?.branch ?? worktreeName);
+    const requestedBranch = explicitBranch ?? defaults?.branch ?? worktreeName;
     const branch = sanitizedGitName(requestedBranch);
     if (branch === null) throw new TicketCreateRefusal(`"${requestedBranch}" isn't a usable branch name`);
     let remote: string | undefined;

@@ -1093,7 +1093,13 @@ of them:
    omitted field comes from `resolved.defaults` (name, worktree, branch, and update main, which
    is on exactly when the issue's branch does not exist yet; an existing branch is attached). A
    defaults branch that is already checked out opens the workspace there, with no worktree
-   (`existing-checkout`, as (d) with that checkout's path). A pull request with a worktree is
+   (`existing-checkout`, as (d) with that checkout's path), but only when the request names no
+   `worktree`, no `update_main: true` and no `branch` other than the defaults' (an issue's
+   compared sanitized): the CLI sends `branch` and `update_main` with a ticket even without
+   `--worktree`, so such a request plans a worktree instead and meets that path's rules (a pull
+   request's head on the named branch, or its update main refusal; an issue's new branch, or
+   §8.5's refusal of update main on its existing branch), never a silent open at the defaults'
+   checkout. `update_main: false` keeps the existing checkout. A pull request with a worktree is
    `pr-head` (graft-git.md §8.5.3: `update_main: true`, a repository with no remote for it, and
    a plugin-owned `kelpi.git` are refused; a different `branch` is a rename and allowed). A
    ticket left with neither a repository nor a worktree → `error("no registered repository has

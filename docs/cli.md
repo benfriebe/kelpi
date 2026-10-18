@@ -1175,7 +1175,9 @@ kelpi workspace create --from <url|owner/name#n> [--name "..."] [--repo <path> |
   `--prompt-file`, the prompt from the ticket (wire-protocol.md §6.3, integrations.md §7). So the
   CLI never sends its cwd for a ticket: not as `repo`, and not as the `path` fallback of a
   `--group --worktree` create. `--branch`, `--update-main` and `--no-update-main` are sent with
-  `--from` even without `--worktree` (the worktree the defaults choose takes them), and every
+  `--from` even without `--worktree` (the worktree the defaults choose takes them; when the
+  ticket's branch is already checked out, a `--branch` naming another branch, or `--update-main`,
+  makes a worktree instead of opening at that checkout, socket-handlers.md §6.2), and every
   other flag composes as for any create: `--name`, `--repo` (the source, which wins over the
   ticket's matched repository; for a pull request, a repository whose remotes do not include the
   ticket's is the daemon's refusal), `--no-repo`, `--group`, `--parent` / `--nested` (the

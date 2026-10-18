@@ -358,6 +358,10 @@ describe('the readers', () => {
         expect(statusProblem(null)?.code).toBe('unavailable');
         expect(statusProblem({ provider: 'github', available: true, connected: true })).toBeNull();
         expect(statusProblem({ provider: 'github', available: false, connected: false, problem: 'unreadable' })?.code).toBe('not-connected');
+        expect(statusProblem({ provider: 'github', available: true, connected: false, problem: 'endpoint-mismatch' })).toEqual({
+            error: 'The saved GitHub credential is for another GitHub address than this daemon uses.',
+            code: 'not-connected'
+        });
     });
 
     it('lists each failure\'s buttons in drawing order', () => {

@@ -10,9 +10,11 @@
  *   KELPI_GITHUB_API_URL       the REST and GraphQL base (`https://api.github.com`)
  *   KELPI_GITHUB_WEB_URL       the device flow's base (`https://github.com`, `/login/…`)
  *
- * The two URL overrides exist for tests and end-to-end scenarios against a fake GitHub. The
- * credential is sent to whatever they name, so a non-HTTPS override is accepted only for a
- * loopback host, and the daemon says in its log when either is in effect. Links a client opens
+ * The two URL overrides exist for tests and end-to-end scenarios against a fake GitHub. A link
+ * sends the new credential to whatever they name, so a non-HTTPS override is accepted only for a
+ * loopback host, and the daemon says in its log when either is in effect. A STORED credential is
+ * bound to the endpoints it was linked against (`store.ts`): a daemon booted with other endpoints
+ * (an inherited override) never sends it, and reports `problem: 'endpoint-mismatch'` instead. Links a client opens
  * (the verification page, a ticket's page, an SSO or settings link) are NOT rebased onto the web
  * override: they must stay `https://github.com/…` (`isGitHubWebURL`), and a fake GitHub returns
  * GitHub's own spelling for them.

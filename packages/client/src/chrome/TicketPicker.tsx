@@ -149,6 +149,9 @@ export function statusProblem(status: WsIntegrationStatus | null): IntegrationFa
     if (status.problem === 'unreadable') {
         return { error: 'Kelpi could not read its saved GitHub credential.', code: 'not-connected' };
     }
+    if (status.problem === 'endpoint-mismatch') {
+        return { error: 'The saved GitHub credential is for another GitHub address than this daemon uses.', code: 'not-connected' };
+    }
     return { error: 'No GitHub account is connected to this daemon.', code: 'not-connected' };
 }
 

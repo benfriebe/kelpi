@@ -710,8 +710,11 @@ follow a `KELPID_DB_PATH` override; a `:memory:` daemon keeps all three in memor
   row.
 - `integrations.json` (`packages/daemon/src/integrations/store.ts`): the linked GitHub account
   and its access token (`{v: 1, accounts: [{provider, host, login, how, scopes?, createdAt,
-  problem?, credential: {accessToken, tokenType, expiresAt, refreshToken,
-  refreshTokenExpiresAt}}]}`), [integrations.md](integrations.md) §9.1. `KELPID_INTEGRATIONS_PATH`
+  problem?, endpoints: {api, web}, credential: {accessToken, tokenType, expiresAt, refreshToken,
+  refreshTokenExpiresAt}}]}`), [integrations.md](integrations.md) §9.1. `endpoints` binds the
+  token to the GitHub API and web bases it was linked against: a daemon started with others
+  (`KELPI_GITHUB_API_URL` / `KELPI_GITHUB_WEB_URL`) never sends it (`problem:
+  'endpoint-mismatch'`); an account without the field reads as linked against the defaults. `KELPID_INTEGRATIONS_PATH`
   overrides its location (even for a `:memory:` daemon). The daemon is its only writer: 0700
   directory, 0600 file, written temp → fsync → rename → directory fsync on every link, unlink and
   revoke. A file it cannot read or parse, or one with `v` above 1, fails closed (`problem:

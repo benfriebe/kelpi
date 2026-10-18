@@ -21,8 +21,16 @@
  *
  *   { "v": 1, "accounts": [ { "provider": "github", "host": "github.com", "login": "octocat",
  *       "how": "oauth" | "token", "scopes": ["repo"]?, "createdAt": "<ISO>", "problem": "revoked"?,
+ *       "endpoints": { "api": "https://api.github.com", "web": "https://github.com" },
  *       "credential": { "accessToken": "…", "tokenType": "bearer", "expiresAt": null,
  *                       "refreshToken": null, "refreshTokenExpiresAt": null } } ] }
+ *
+ * `endpoints` are the GitHub API and web bases the credential was linked against (the defaults,
+ * or `KELPI_GITHUB_API_URL` / `KELPI_GITHUB_WEB_URL` in effect at the link). The service never
+ * sends the credential anywhere else: a daemon started with other endpoints reports
+ * `problem: 'endpoint-mismatch'` and makes no request with it. An account written before the
+ * field existed reads as linked against the defaults (`github.com`), the only bases a credential
+ * was linked against outside tests; a malformed value makes the file unreadable.
  *
  * `scopes` is absent for a fine-grained token (GitHub reports none). The three refresh fields are
  * RESERVED: GitHub OAuth App tokens do not expire, so phase 2 registers no refresher and writes
@@ -36,6 +44,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { INTEGRATION_AUTH_METHODS, isIntegrationProvider, type IntegrationAuthMethod, type IntegrationProvider } from '@kelpi/protocol';
+
+import { DEFAULT_GITHUB_API_URL, DEFAULT_GITHUB_WEB_URL, endpointOverride, type GitHubEndpoints } from './config.js';
 
 export const INTEGRATIONS_FILE_VERSION = 1;
 
@@ -61,6 +71,8 @@ export interface StoredAccount {
     readonly createdAt: string;
     /** Set when GitHub answered 401 for this credential; kept across restarts. */
     readonly revoked: boolean;
+    /** The API and web bases it was linked against: the only ones it is ever sent to (module note). */
+    readonly endpoints: GitHubEndpoints;
     readonly credential: StoredCredential;
 }
 
@@ -100,8 +112,19 @@ function nullableString(value: unknown, field: string): string | null {
     return value;
 }
 
+/** `endpoints` as stored; absent = the defaults (module note). Each must be a base `endpointOverride` accepts, as written. */
+function parseEndpoints(raw: unknown): GitHubEndpoints {
+    if (raw === undefined) return { api: DEFAULT_GITHUB_API_URL, web: DEFAULT_GITHUB_WEB_URL };
+    if (!isRecord(raw)) throw new UnreadableFileError('an account has malformed endpoints');
+    const base = (value: unknown): string => {
+        if (typeof value !== 'string' || endpointOverride(value) !== value) throw new UnreadableFileError('an account has a malformed endpoint');
+        return value;
+    };
+    return { api: base(raw['api']), web: base(raw['web']) };
+}
+
 function parseAccount(raw: Record<string, unknown>): StoredAccount {
-    const { provider, host, login, how, scopes, createdAt, problem, credential } = raw;
+    const { provider, host, login, how, scopes, createdAt, problem, endpoints, credential } = raw;
     if (!isIntegrationProvider(provider)) throw new UnreadableFileError('an account has an unknown provider');
     if (host !== 'github.com') throw new UnreadableFileError('an account has an unknown host');
     if (typeof login !== 'string' || login === '') throw new UnreadableFileError('an account has no login');
@@ -125,6 +148,7 @@ function parseAccount(raw: Record<string, unknown>): StoredAccount {
         scopes: scopes === undefined ? null : (scopes as string[]),
         createdAt,
         revoked: problem === 'revoked',
+        endpoints: parseEndpoints(endpoints),
         credential: {
             accessToken,
             tokenType: typeof tokenType === 'string' && tokenType !== '' ? tokenType : 'bearer',
@@ -191,6 +215,7 @@ function serializeAccount(account: StoredAccount): Record<string, unknown> {
         ...(account.scopes === null ? {} : { scopes: [...account.scopes] }),
         createdAt: account.createdAt,
         ...(account.revoked ? { problem: 'revoked' } : {}),
+        endpoints: { api: account.endpoints.api, web: account.endpoints.web },
         credential: {
             accessToken: account.credential.accessToken,
             tokenType: account.credential.tokenType,

@@ -89,6 +89,7 @@ const ACCOUNT: StoredAccount = {
     scopes: ['repo'],
     createdAt: '2026-10-07T00:00:00.000Z',
     revoked: false,
+    endpoints: { api: 'https://api.github.com', web: 'https://github.com' },
     credential: { accessToken: 'gho_STORED', tokenType: 'bearer', expiresAt: null, refreshToken: null, refreshTokenExpiresAt: null }
 };
 
@@ -265,6 +266,26 @@ describe('status and linking', () => {
         expect(f.service.unlink('github')).toEqual({ ok: true, integrations: [{ provider: 'github', available: true, connected: false }] });
         expect(f.changes).toHaveLength(1);
         expect(f.service.connected('github')).toBe(false);
+    });
+
+    it('never sends a credential to endpoints other than the ones it was linked against (an inherited KELPI_GITHUB_API_URL)', async () => {
+        const elsewhere = { api: 'https://ghe.example.com/api/v3', web: 'https://ghe.example.com' };
+        const f = fixture({ config: { endpoints: elsewhere } });
+        f.gh.graphql(() => json({ data: {} }));
+        f.gh.on('GET', '/api/v3/user', () => userResponse('me', 'repo'));
+        expect(f.service.statuses()).toEqual([
+            { provider: 'github', available: true, connected: false, login: 'me', how: 'oauth', scopes: ['repo'], problem: 'endpoint-mismatch' }
+        ]);
+        expect(f.service.connected('github')).toBe(false);
+        expect(f.lines.some((line) => line.includes('linked against https://api.github.com, and this daemon uses https://ghe.example.com/api/v3'))).toBe(true);
+        expect(await f.service.ticketSearch('github', '', signal())).toMatchObject({ ok: false, code: 'not-connected', error: expect.stringContaining('will not send it') as unknown as string });
+        await expect(f.service.resolve(ref('acme/api#1'), signal())).rejects.toMatchObject({ code: 'not-connected' });
+        expect(f.gh.requests).toEqual([]);
+
+        // A link made against these endpoints replaces it, and is bound to them.
+        expect(await f.service.linkToken('github', 'ghp_HERE', signal())).toMatchObject({ ok: true, integrations: [{ connected: true }] });
+        expect(f.service.statuses()[0]?.problem).toBeUndefined();
+        expect(f.gh.requests.map((request) => request.headers['authorization'])).toEqual(['Bearer ghp_HERE']);
     });
 
     it('marks the stored credential revoked on a 401, broadcasts, and then reports not-connected', async () => {

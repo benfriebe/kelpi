@@ -9,7 +9,8 @@
  * the tab is a status board plus three verbs:
  *
  *   1. **GitHub**: who the daemon is linked as and how (an OAuth sign-in or a personal access
- *      token, with the token's scopes), or why it cannot be used (`revoked`, `unreadable`).
+ *      token, with the token's scopes), or why it cannot be used (`revoked`, `unreadable`,
+ *      `endpoint-mismatch`).
  *      Connect starts GitHub's device flow: the code is shown large with a Copy button, a
  *      SEPARATE Open GitHub button opens the verification page (a user gesture, which Safari
  *      requires, and only after `isGitHubWebURL` says it is github.com), a countdown runs to the
@@ -110,6 +111,7 @@ function statusLine(status: WsIntegrationStatus): string {
     if (status.connected) return status.login === undefined ? 'Connected' : `Connected as @${status.login}`;
     if (status.problem === 'revoked') return 'Not connected: GitHub no longer accepts the saved credential';
     if (status.problem === 'unreadable') return 'Not connected: the saved credential could not be read';
+    if (status.problem === 'endpoint-mismatch') return 'Not connected: the saved credential is for another GitHub address';
     return 'Not connected';
 }
 
@@ -131,6 +133,10 @@ function statusDetail(status: WsIntegrationStatus, showingCode: boolean): string
         lines.push('The token was revoked or has expired. Connect again to replace it.');
     } else if (status.problem === 'unreadable') {
         lines.push('Kelpi could not read integrations.json, so it refuses to guess. Connect again to replace it.');
+    } else if (status.problem === 'endpoint-mismatch') {
+        lines.push(
+            'It was linked against other GitHub addresses than this daemon now uses (KELPI_GITHUB_API_URL or KELPI_GITHUB_WEB_URL), so Kelpi will not send it there. Connect again to link an account here, or start the daemon without that setting.'
+        );
     }
     if (!showingCode && status.linking?.state === 'pending') {
         lines.push('A sign-in is waiting for GitHub (started in another window).');

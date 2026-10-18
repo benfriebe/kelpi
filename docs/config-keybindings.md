@@ -1931,7 +1931,8 @@ registries instead); nothing persists to a per-app preferences store.
    the daemon sends on `welcome` and `integrations-changed`.
    - *GitHub*: the status (connected as `@login`, signed in with GitHub or a personal access
      token, its scopes or "a fine-grained token" when GitHub reports none, or why a saved
-     credential cannot be used: revoked, or `integrations.json` unreadable). **Connect…** starts
+     credential cannot be used: revoked, `integrations.json` unreadable, or linked against other
+     GitHub endpoints than the daemon now uses). **Connect…** starts
      GitHub's device flow: the one-time code is shown large with Copy, a separate **Open
      GitHub** button opens the verification page (only ever a `https://github.com/` page), a
      countdown runs to the code's expiry, and Cancel abandons that flow by its id. The daemon

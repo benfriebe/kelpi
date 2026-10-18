@@ -32,6 +32,7 @@ const ACCOUNT: StoredAccount = {
     scopes: ['repo'],
     createdAt: '2026-10-07T00:00:00.000Z',
     revoked: false,
+    endpoints: { api: 'https://api.github.com', web: 'https://github.com' },
     credential: { accessToken: 'gho_secret', tokenType: 'bearer', expiresAt: null, refreshToken: null, refreshTokenExpiresAt: null }
 };
 
@@ -57,10 +58,22 @@ describe('credential store', () => {
                     how: 'oauth',
                     scopes: ['repo'],
                     createdAt: '2026-10-07T00:00:00.000Z',
+                    endpoints: { api: 'https://api.github.com', web: 'https://github.com' },
                     credential: { accessToken: 'gho_secret', tokenType: 'bearer', expiresAt: null, refreshToken: null, refreshTokenExpiresAt: null }
                 }
             ]
         });
+    });
+
+    it('keeps the endpoints an account was linked against, and reads one written before them as github.com', () => {
+        const file = path.join(tmpDir(), 'integrations.json');
+        const fake = { api: 'http://127.0.0.1:4010/api', web: 'http://127.0.0.1:4010' };
+        createCredentialStore({ path: file }).save({ ...ACCOUNT, endpoints: fake });
+        expect(createCredentialStore({ path: file }).account('github')?.endpoints).toEqual(fake);
+
+        const { endpoints: _endpoints, revoked: _revoked, ...older } = ACCOUNT;
+        fs.writeFileSync(file, JSON.stringify({ v: 1, accounts: [older] }), { mode: 0o600 });
+        expect(createCredentialStore({ path: file }).account('github')?.endpoints).toEqual({ api: 'https://api.github.com', web: 'https://github.com' });
     });
 
     it('reads back what it wrote, a fine-grained token without scopes, and the revoked mark', () => {
@@ -85,7 +98,9 @@ describe('credential store', () => {
         ['not JSON', '{"v":1,'],
         ['a newer version', JSON.stringify({ v: 2, accounts: [] })],
         ['an account without a token', JSON.stringify({ v: 1, accounts: [{ ...ACCOUNT, credential: {} }] })],
-        ['an unknown method', JSON.stringify({ v: 1, accounts: [{ provider: 'github', host: 'github.com', login: 'x', how: 'magic', createdAt: '', credential: { accessToken: 't' } }] })]
+        ['an unknown method', JSON.stringify({ v: 1, accounts: [{ provider: 'github', host: 'github.com', login: 'x', how: 'magic', createdAt: '', credential: { accessToken: 't' } }] })],
+        ['a plain-http endpoint off loopback', JSON.stringify({ v: 1, accounts: [{ ...ACCOUNT, endpoints: { api: 'http://api.example.com', web: 'https://github.com' } }] })],
+        ['an endpoint that is not a string', JSON.stringify({ v: 1, accounts: [{ ...ACCOUNT, endpoints: { api: 'https://api.github.com' } }] })]
     ])('fails closed on %s, and leaves the file alone until the next link moves it aside', (_label, text) => {
         const dir = tmpDir();
         const file = path.join(dir, 'integrations.json');

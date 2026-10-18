@@ -105,10 +105,15 @@ export type IntegrationAuthMethod = (typeof INTEGRATION_AUTH_METHODS)[number];
 
 /**
  * A linked provider that cannot be used: `revoked` (GitHub answered 401 for the stored token, so
- * the user revoked it or it expired) or `unreadable` (the daemon could not read or parse
- * `integrations.json`, and refuses to guess: it fails closed until the next link replaces it).
+ * the user revoked it or it expired), `unreadable` (the daemon could not read or parse
+ * `integrations.json`, and refuses to guess: it fails closed until the next link replaces it), or
+ * `endpoint-mismatch` (the credential was linked against other GitHub endpoints than the daemon
+ * now uses, `KELPI_GITHUB_API_URL` / `KELPI_GITHUB_WEB_URL`: it is never sent to them; a link
+ * against the current endpoints, or a daemon started without the override, uses it again). A
+ * client that predates a value reads it as no problem at all, so the provider is simply not
+ * connected there.
  */
-export const INTEGRATION_PROBLEMS = ['revoked', 'unreadable'] as const;
+export const INTEGRATION_PROBLEMS = ['revoked', 'unreadable', 'endpoint-mismatch'] as const;
 export type IntegrationProblem = (typeof INTEGRATION_PROBLEMS)[number];
 
 /**

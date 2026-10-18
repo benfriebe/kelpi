@@ -177,6 +177,22 @@ export function createIntegrationsService(options: CreateIntegrationsServiceOpti
     if (credentials.unreadable) {
         log(`integrations: ${credentials.path ?? 'integrations.json'} is unreadable (${credentials.unreadableReason ?? 'unknown'}); GitHub stays disconnected until it is linked again`);
     }
+    /**
+     * Whether the stored credential may be sent to the endpoints this daemon uses: only to the ones
+     * it was linked against (store.ts), so an inherited `KELPI_GITHUB_API_URL` never receives a
+     * github.com token. A mismatch is `problem: 'endpoint-mismatch'` and no request is made.
+     */
+    const linkedHere = (account: StoredAccount): boolean =>
+        account.endpoints.api === config.endpoints.api && account.endpoints.web === config.endpoints.web;
+    {
+        const stored = credentials.account(PROVIDER);
+        if (stored !== null && !linkedHere(stored)) {
+            log(
+                `integrations: the github credential was linked against ${stored.endpoints.api}, and this daemon uses ${config.endpoints.api} ` +
+                    `(web ${stored.endpoints.web} / ${config.endpoints.web}); it will not be sent there, so GitHub stays disconnected until it is linked again`
+            );
+        }
+    }
     const facts = options.repoFacts ?? createRepoFacts();
     const http: GitHubHttp = createGitHubHttp({
         endpoints: config.endpoints,
@@ -205,10 +221,16 @@ export function createIntegrationsService(options: CreateIntegrationsServiceOpti
             {
                 provider: PROVIDER,
                 available: config.clientID !== '',
-                connected: account !== null && !account.revoked,
+                connected: account !== null && !account.revoked && linkedHere(account),
                 ...(account === null ? {} : { login: account.login, how: account.how }),
                 ...(account === null || account.scopes === null ? {} : { scopes: [...account.scopes] }),
-                ...(credentials.unreadable ? { problem: 'unreadable' as const } : account?.revoked === true ? { problem: 'revoked' as const } : {}),
+                ...(credentials.unreadable
+                    ? { problem: 'unreadable' as const }
+                    : account !== null && !linkedHere(account)
+                      ? { problem: 'endpoint-mismatch' as const }
+                      : account?.revoked === true
+                        ? { problem: 'revoked' as const }
+                        : {}),
                 ...(linking === undefined ? {} : { linking })
             }
         ];
@@ -243,6 +265,12 @@ export function createIntegrationsService(options: CreateIntegrationsServiceOpti
     const usableAccount = (): StoredAccount => {
         if (lifetime.signal.aborted) throw stopping();
         const account = credentials.account(PROVIDER);
+        if (account !== null && !linkedHere(account)) {
+            throw new TicketServiceError(
+                'not-connected',
+                `The saved GitHub credential was linked for ${account.endpoints.api}, and this daemon uses ${config.endpoints.api}, so Kelpi will not send it: link GitHub again in Settings ▸ Integrations`
+            );
+        }
         if (account === null || account.revoked) {
             throw new TicketServiceError(
                 'not-connected',
@@ -300,6 +328,8 @@ export function createIntegrationsService(options: CreateIntegrationsServiceOpti
                 scopes: viewer.scopes,
                 createdAt: new Date(now()).toISOString(),
                 revoked: false,
+                // Bound to the endpoints it was verified against (`linkedHere`).
+                endpoints: { api: config.endpoints.api, web: config.endpoints.web },
                 credential: { accessToken: token, tokenType, expiresAt: null, refreshToken: null, refreshTokenExpiresAt: null }
             });
         } catch (error) {
@@ -575,7 +605,7 @@ export function createIntegrationsService(options: CreateIntegrationsServiceOpti
         connected(provider: TicketProvider) {
             if (provider !== PROVIDER || lifetime.signal.aborted) return false;
             const account = credentials.account(PROVIDER);
-            return account !== null && !account.revoked;
+            return account !== null && !account.revoked && linkedHere(account);
         },
 
         resolve: resolveTicket,

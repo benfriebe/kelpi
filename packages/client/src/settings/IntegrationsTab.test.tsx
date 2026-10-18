@@ -108,6 +108,14 @@ describe('Settings ▸ Integrations: status', () => {
             <IntegrationsTab {...props({ integrations: slice({ provider: 'github', available: true, connected: false, problem: 'unreadable' }) })} />
         );
         expect(screen.getByTestId('integrations-github-status').textContent).toContain('integrations.json');
+        view.rerender(
+            <IntegrationsTab
+                {...props({ integrations: slice({ provider: 'github', available: true, connected: false, login: 'o', how: 'oauth', problem: 'endpoint-mismatch' }) })}
+            />
+        );
+        expect(screen.getByTestId('integrations-github-status-line').textContent).toContain('another GitHub address');
+        expect(screen.getByTestId('integrations-github-status').textContent).toContain('KELPI_GITHUB_API_URL');
+        expect(screen.getByTestId('integrations-github-connect-button')).toBeTruthy();
     });
 
     it('tells everyone that paired devices search the owner’s private tickets', () => {

@@ -33,7 +33,7 @@ interface WsIntegrationStatus {
   login?: string;
   how?: 'oauth' | 'token';
   scopes?: string[];      // absent for a fine-grained token
-  problem?: 'revoked' | 'unreadable';
+  problem?: 'revoked' | 'unreadable' | 'endpoint-mismatch';
   linking?: { state: 'pending'; flowID: string; expiresAt: number }   // epoch ms, daemon clock
           | { state: 'failed'; flowID: string; reason: 'expired' | 'denied' | 'disabled' | 'error'; message: string };
 }
@@ -302,10 +302,17 @@ Read once at boot from the daemon's environment:
 | `KELPI_GITHUB_API_URL` | the REST and GraphQL base | `https://api.github.com` |
 | `KELPI_GITHUB_WEB_URL` | the device flow's base (`/login/device/code`, `/login/oauth/access_token`) | `https://github.com` |
 
-The two URL overrides exist for tests and end-to-end scenarios against a fake GitHub. The
-credential is sent to whatever they name, so an override must be `https://`, or `http://` to a
-loopback host (`127.0.0.1`, `localhost`, `::1`); anything else is ignored, and the daemon logs
-which overrides are in effect. Links a client opens are NOT rebased onto the web override: the
+The two URL overrides exist for tests and end-to-end scenarios against a fake GitHub. A link
+sends the new credential to whatever they name, so an override must be `https://`, or `http://`
+to a loopback host (`127.0.0.1`, `localhost`, `::1`); anything else is ignored, and the daemon
+logs which overrides are in effect. A STORED credential is bound to the endpoints it was linked
+against: `integrations.json` keeps them with the account (`endpoints`), and a daemon whose
+endpoints differ (an override inherited from the environment it was started in, or one dropped)
+never sends it: the status says `problem: 'endpoint-mismatch'`, `connected` is false, every
+search and resolve is `not-connected` (`The saved GitHub credential was linked for <api>, and
+this daemon uses <api>, so Kelpi will not send it: …`), no request is made, and the daemon logs
+both bases once at boot. A link made under the current endpoints replaces it (and is bound to
+them); a daemon started with the original endpoints uses it again. Links a client opens are NOT rebased onto the web override: the
 verification page, a ticket's URL and an SSO or settings link must stay `https://github.com/…`
 (`isGitHubWebURL`), so a fake GitHub returns GitHub's own spelling for them. A client ID that is
 not `[A-Za-z0-9._-]{1,64}` is ignored (the device flow is then off).
@@ -331,11 +338,15 @@ Shape, version 1:
 ```json
 { "v": 1, "accounts": [ { "provider": "github", "host": "github.com", "login": "octocat",
     "how": "oauth", "scopes": ["repo"], "createdAt": "2026-10-07T00:00:00.000Z",
+    "endpoints": { "api": "https://api.github.com", "web": "https://github.com" },
     "credential": { "accessToken": "…", "tokenType": "bearer", "expiresAt": null,
                     "refreshToken": null, "refreshTokenExpiresAt": null } } ] }
 ```
 
-`scopes` is absent for a fine-grained token; `problem` is absent or `"revoked"`. The three
+`scopes` is absent for a fine-grained token; `problem` is absent or `"revoked"`. `endpoints` are
+the API and web bases the credential was linked against (above); an account written before the
+field existed reads as linked against the defaults, and a value that is not a base an override
+could name (`https://`, or `http://` to loopback, no trailing slash) makes the file unreadable. The three
 refresh fields are RESERVED: GitHub OAuth App tokens do not expire, so phase 2 has no refresher
 and writes them as null. A provider whose tokens expire (Linear) adds a single-flight refresher
 that persists the new pair before using it; a file with the fields set already reads back.

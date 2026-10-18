@@ -281,11 +281,18 @@ export default async function ({ page, harness, cli, sandbox, rec, d, sleep }) {
     const beforePlain = await harness.counters();
     const point = at(12, 10);
     await page.clickAt(point.x, point.y);
-    const reported = await d.settle(async () => readLog().length > 0, { ceilingMs: 4_000, intervalMs: 100 });
+    // SGR 1006: ESC [ < button ; col ; row M for the press, lowercase m for the release.
+    const pressReport = /\x1b\[<0;(\d+);(\d+)M/;
+    // Settled on the WHOLE press report, not on the first byte: the fixture records with
+    // `dd bs=1`, one write per byte, so a read under load can land mid-report. The full battery
+    // of 2026-10-18 caught exactly that, `ESC [ < 0 ; 11 ; 13` with the `M` still on its way.
+    const reported = await d.settle(async () => pressReport.test(readLog().toString('latin1')), {
+        ceilingMs: 4_000,
+        intervalMs: 100
+    });
     const bytes = readLog().toString('latin1');
     rec.note(`plain click delivered: ${JSON.stringify(bytes)}`);
-    // SGR 1006: ESC [ < button ; col ; row M for the press, lowercase m for the release.
-    const sgr = /\x1b\[<0;(\d+);(\d+)M/.exec(bytes);
+    const sgr = pressReport.exec(bytes);
     rec.check('a PLAIN click still reaches the TUI as an SGR mouse report', reported && sgr !== null, JSON.stringify(bytes));
     if (sgr !== null) {
         // 1-based in the report; the title sits on screen row 13, and the click was at 0-based

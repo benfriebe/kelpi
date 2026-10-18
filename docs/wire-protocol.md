@@ -1448,7 +1448,11 @@ created`, or `parent '<name>' changed while the workspace was being created: <re
 worktree branch already has its worktree, so (like a cancel that arrives after git, graft-git.md
 §8.5.2) it completes, at the top level, and the reply adds `"parent_lost": true` and
 `parent_lost_reason` (the same sentence) in place of `parent_id`. The CLI exits non-zero with
-that sentence, and the plugin SDK rejects with `PARENT_LOST`.
+that sentence, and the plugin SDK rejects with `PARENT_LOST`. A create from a `ticket` without a
+worktree is the repository branch with one step more: it checks the parent before it registers
+anything, and fails whole then; a parent that goes while its ticket file is being written (the
+repository registered and the file on disk by then) gets `parent_lost` as the worktree branch
+does (socket-handlers.md §6.2).
 
 ```json
 {"command":"workspace-create","name":"worker-1","parent":"orchestrator"}

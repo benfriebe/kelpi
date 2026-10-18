@@ -1120,9 +1120,20 @@ ticket's URL in place of the file; the repository registered with `ensureRegiste
 (remote URL included); `dispatchCreate` with `ticket: workspaceTicketOf(resolved.summary)`, so the
 workspace keeps the ticket and the launcher starts only now, with the file in place. The icon,
 the parent and `focus` ride the same `dispatchCreate` as on the other branches; the parent is
-checked again first (`lostParent`, above), since the resolve and the git work both ran after it
-was resolved: without a worktree the create fails whole before the ticket file is written, with
-one it completes at the top level with `parent_lost`. The reply is (a)'s or (d)'s (`icon`,
+checked again (`lostParent`, above), since the resolve (seconds) and the git work both ran after
+it was resolved:
+
+- without a worktree, the checkout is first only READ (`readRepoSource`: its top level, its
+  registry row or the remote URL a new one would get, and its branch), then the parent and the
+  group's ambiguity are checked, and only then is anything changed (`commitRepoSource` registers
+  or promotes the repository, the group is created, the ticket file written). So a parent lost by
+  then fails the create whole with nothing registered, promoted or saved, unlike (d) without a
+  ticket, which registers before its own check and saves the registry when it then refuses;
+- with a worktree, the worktree exists, so the create completes at the top level with
+  `parent_lost`. The check is the last thing before `dispatchCreate`, after the ticket file and
+  the registration, so a parent deleted during either is caught too; and the same holds without
+  a worktree for a parent deleted while the ticket file is being written (the one await left after
+  the effects begin): that create also completes at the top level with `parent_lost`. The reply is (a)'s or (d)'s (`icon`,
 `parent_id` / `parent_name` or `parent_lost` included) plus `ticket`, `checkout`, `ticket_file`
 or `ticket_file_error`, and `warnings` when there are any (wire-protocol.md §6.3). Every refusal
 after step 6 removes the prompt file, as on the other branches.

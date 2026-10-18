@@ -904,4 +904,70 @@ describe('workspace-create with a ticket: icon, parent and focus, as any create'
         expect(reply).not.toHaveProperty('parent_id');
         expect(worktree.state().workspaces.map((workspace) => workspace.name)).toEqual(['Workspace']);
     });
+
+    it.skipIf(!HAS_GIT)('a checkout create refused for a lost parent has registered, promoted and saved nothing', { timeout: 30_000 }, async () => {
+        const fx = pullRequestFixture();
+        let deleteParent = (): void => {};
+        const tickets = fakeTickets(() => {
+            deleteParent();
+            return issueTicket();
+        });
+
+        // A repository the registry lacks: nothing is registered for the refused create.
+        const fresh = withParent(fx, { tickets, registered: false });
+        deleteParent = () => fresh.dispatch({ type: 'delete-workspace', id: PARENT_ID });
+        const persistsBefore = fresh.persists.length;
+        fresh.send({ command: 'workspace-create', ticket: ISSUE, ticket_defaults: false, name: 'here', repo: fx.work, parent: 'orchestrator' });
+        expect(await settle(fresh)).toEqual({ ok: false, error: "parent 'orchestrator' was deleted while the workspace was being created" });
+        expect(fresh.state().repos).toEqual([]);
+        expect(fresh.persists.length).toBe(persistsBefore);
+        expect(fs.existsSync(issueFile(fx.work))).toBe(false);
+
+        // An auto-discovered row stays auto-discovered: a refused create promotes nothing.
+        const auto = withParent(fx, { tickets, registered: false });
+        auto.dispatch({
+            type: 'add-repo',
+            repo: { id: REPO_ID, path: fx.work, name: 'work', remoteURL: null, lastAccessedAt: 1, isAutoDiscovered: true }
+        });
+        deleteParent = () => auto.dispatch({ type: 'delete-workspace', id: PARENT_ID });
+        auto.send({ command: 'workspace-create', ticket: ISSUE, ticket_defaults: false, name: 'here', repo: fx.work, parent: 'orchestrator', group: 'new-team' });
+        expect(await settle(auto)).toMatchObject({ ok: false });
+        expect(auto.state().repos).toEqual([expect.objectContaining({ id: REPO_ID, isAutoDiscovered: true })]);
+        expect(auto.state().groups).toEqual([]);
+    });
+
+    it.skipIf(!HAS_GIT)('a parent lost while the ticket file is written: the create completes at the top level and says so, with or without a worktree', { timeout: 30_000 }, async () => {
+        const fx = pullRequestFixture();
+        let onTicketFile = (): void => {};
+        // The ticket file's first git read (its tracked check) is where the parent goes.
+        const deleting: typeof realOps = {
+            read: (args, cwd, options) => {
+                if (args[0] === 'ls-files') onTicketFile();
+                return realOps.read(args, cwd, options);
+            },
+            long: (args, cwd, options) => realOps.long(args, cwd, options)
+        };
+        for (const worktree of [undefined, 'late']) {
+            const h = withParent(fx, { tickets: fakeTickets(() => issueTicket()), ticketGit: deleting });
+            onTicketFile = () => h.dispatch({ type: 'delete-workspace', id: PARENT_ID });
+            h.send({
+                command: 'workspace-create',
+                ticket: ISSUE,
+                ticket_defaults: false,
+                name: 'late-child',
+                repo: fx.work,
+                parent: 'orchestrator',
+                ...(worktree === undefined ? {} : { worktree })
+            });
+            const reply = await settle(h);
+            expect(reply).toMatchObject({
+                ok: true,
+                parent_lost: true,
+                parent_lost_reason: "parent 'orchestrator' was deleted while the workspace was being created"
+            });
+            expect(reply).not.toHaveProperty('parent_id');
+            expect(h.state().workspaces.map((workspace) => workspace.name)).toEqual(['late-child']);
+            fs.rmSync(path.join(fx.work, '.kelpi'), { recursive: true, force: true });
+        }
+    });
 });

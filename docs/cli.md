@@ -1114,7 +1114,8 @@ kelpi workspace create --from <url|owner/name#n> [--name "..."] [--repo <path> |
   `--worktree` and no `--repo`, a nested create defers the source repo to the parent's group
   exactly as `--group` does (cwd as `path`). Timeout 30 s, as with `--group`.
 - A reply with `parent_lost: true` (the parent was deleted, or nested, while a `--worktree`
-  create's git work ran; the workspace was made at the top level) exits 1 with
+  create's git work ran, or while a `--from` create wrote its ticket file; the workspace was made
+  at the top level) exits 1 with
   `kelpi workspace create: <parent_lost_reason> (workspace <name> (<id>) was created at the top
   level)`. A reply with neither `parent_id` nor `parent_lost` is a daemon that predates nesting,
   and exits 1 with the `restart it on this build` message.

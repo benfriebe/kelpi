@@ -133,7 +133,17 @@ import {
     type AppHandler,
     type ResolvedTicket
 } from './context.js';
-import { associationFor, groupRepo, registeredRepo, resolveRepo, type RepoResolution } from './repos.js';
+import {
+    associationFor,
+    associationWith,
+    commitRepoSource,
+    currentBranchOf,
+    groupRepo,
+    readRepoSource,
+    registeredRepo,
+    resolveRepo,
+    type RepoResolution
+} from './repos.js';
 
 const DEFAULT_WORKSPACE_NAME = 'Workspace';
 
@@ -1469,9 +1479,6 @@ async function runTicketCreate(run: TicketCreateRun): Promise<void> {
 
     // 5. The worktree exists: the create completes (§8.5.2). Ticket file, then the workspace.
     steps?.running('create-workspace');
-    // §2.9: the parent may have gone (or been nested) while the ticket resolved and git ran. The
-    // worktree exists, so the create completes at the top level and says so, as without a ticket.
-    const parentLost = lostParent(ctx.store.getState(), run.parentID, run.parentName);
     const finish = await finishTicketCheckout(
         deps,
         resolved,
@@ -1482,6 +1489,11 @@ async function runTicketCreate(run: TicketCreateRun): Promise<void> {
         agent
     );
     const repo = await registerWorktreeSource(ctx, deps, repoPath, repoID);
+    // §2.9: the parent may have gone (or been nested) while the ticket resolved, git ran, the
+    // ticket file was written or the repository registered. The worktree exists, so the create
+    // completes at the top level and says so, as without a ticket. Checked after the last await,
+    // so the dispatch below never nests under a parent that is already gone.
+    const parentLost = lostParent(ctx.store.getState(), run.parentID, run.parentName);
     dispatchCreate(ctx, deps, {
         name: workspaceName,
         workingDirectory: worktreePath,
@@ -1520,6 +1532,17 @@ async function runTicketCreate(run: TicketCreateRun): Promise<void> {
  * A ticket create with no worktree (§6.2 (d) with a ticket): the request's `repo`, the group's
  * repository, or the checkout where the defaults' branch already is (`existing-checkout`). The
  * ticket file goes where the first pane opens.
+ *
+ * Every check comes before every effect. The repository is READ first (`readRepoSource`, and
+ * the checkout's branch), then the parent is checked again (§2.9: it may have been deleted, or
+ * nested, while the ticket resolved, which takes seconds) and the group's ambiguity, and only then
+ * is anything changed: the repository registered or promoted (`commitRepoSource`), the group
+ * created, the ticket file written, the workspace dispatched. So a parent lost by then fails the
+ * create whole with nothing registered and nothing saved. (A create with a repository and no
+ * ticket, `handleCreateWithRepo`, still registers before its parent check, as it always has, and
+ * saves the registry when it then refuses.) The ticket file's write is the one await left between
+ * the effects and the dispatch: a parent lost during it gets the worktree path's answer, the
+ * workspace at the top level with `parent_lost`, since the repository and the file now exist.
  */
 async function createTicketWorkspaceWithRepo(
     run: TicketCreateRun,
@@ -1531,48 +1554,45 @@ async function createTicketWorkspaceWithRepo(
 ): Promise<void> {
     const { msg, ctx, deps, reply } = run;
     const steps = run.steps();
+    const refuse = (message: string): void => {
+        steps?.failUnfinished(message);
+        steps?.flush();
+        fail(reply, message);
+    };
     // Past this point nothing is cancellable: the rest is quick, and registers a repository.
     reply?.uncancellable?.();
     steps?.running('create-workspace');
-    const resolution = 'repo' in source ? registeredRepo(ctx, source.repo) : await resolveRepo(ctx, deps, source.path);
-    if (!resolution.ok) {
-        steps?.failUnfinished(resolution.error);
-        steps?.flush();
-        fail(reply, resolution.error);
+    // 1. Reads only.
+    const pending = await readRepoSource(ctx, deps, source);
+    if (!pending.ok) {
+        refuse(pending.error);
         return;
     }
-    const association = await associationFor(deps, resolution);
-    // §2.9: the parent may have gone while the ticket resolved. Nothing has been created yet, so
-    // the create fails whole, before the ticket file (the registry may have gained the repo, which
-    // is kept and saved), as a create with a repository and no ticket does.
+    const branchName = await currentBranchOf(deps, pending.worktreeRoot);
+    // 2. The checks, with nothing changed yet (so nothing to save on a refusal).
     const parentLost = lostParent(ctx.store.getState(), run.parentID, run.parentName);
     if (parentLost !== null) {
-        deps.persist();
-        steps?.failUnfinished(parentLost);
-        steps?.flush();
-        fail(reply, parentLost);
+        refuse(parentLost);
         return;
     }
     const trimmedGroup = msg.group?.trim() ?? '';
-    let groupID: string | undefined;
-    if (trimmedGroup !== '') {
-        const scope = resolveStateOf(ctx.store.getState());
-        const existing = resolveGroupStrict(scope, trimmedGroup);
-        if (existing === null && groupsMatchingName(scope, trimmedGroup).length > 0) {
-            deps.persist();
-            steps?.failUnfinished(ambiguousGroupError(trimmedGroup));
-            steps?.flush();
-            fail(reply, ambiguousGroupError(trimmedGroup));
-            return;
-        }
-        groupID = existing?.id;
-        if (groupID === undefined) {
-            groupID = deps.uuid();
-            ctx.store.dispatch({ type: 'create-group', id: groupID, name: trimmedGroup, now: deps.now() });
-        }
+    const scope = resolveStateOf(ctx.store.getState());
+    const existingGroup = trimmedGroup === '' ? null : resolveGroupStrict(scope, trimmedGroup);
+    if (trimmedGroup !== '' && existingGroup === null && groupsMatchingName(scope, trimmedGroup).length > 0) {
+        refuse(ambiguousGroupError(trimmedGroup));
+        return;
+    }
+    // 3. The effects, synchronous up to the ticket file.
+    const resolution = commitRepoSource(ctx, deps, pending);
+    const association = associationWith(deps, resolution, branchName);
+    let groupID: string | undefined = existingGroup?.id;
+    if (trimmedGroup !== '' && groupID === undefined) {
+        groupID = deps.uuid();
+        ctx.store.dispatch({ type: 'create-group', id: groupID, name: trimmedGroup, now: deps.now() });
     }
     const workingDirectory = msg.path ?? association.worktreePath;
     const finish = await finishTicketCheckout(deps, resolved, workingDirectory, association.worktreePath, null, ctx.store.getState().homeDirectory, run.agent);
+    const lostSince = lostParent(ctx.store.getState(), run.parentID, run.parentName);
     const workspaceID = deps.uuid();
     dispatchCreate(ctx, deps, {
         name: workspaceName,
@@ -1582,7 +1602,7 @@ async function createTicketWorkspaceWithRepo(
         muted: msg.muted === true,
         icon: run.icon,
         groupID,
-        parentID: run.parentID,
+        parentID: lostSince === null ? run.parentID : undefined,
         workspaceID,
         focus: msg.focus === true,
         repoAssociations: [association],
@@ -1600,6 +1620,7 @@ async function createTicketWorkspaceWithRepo(
         repo_path: resolution.repo.path,
         ...(trimmedGroup !== '' ? { group: trimmedGroup } : {}),
         ...parentEcho(ctx.store.getState(), workspaceID),
+        ...(lostSince !== null ? { parent_lost: true, parent_lost_reason: lostSince } : {}),
         ...ticketReplyFields(resolved, 'existing-checkout', finish, [])
     });
 }

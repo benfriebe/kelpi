@@ -13,7 +13,7 @@ import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 
 import { createGitRunner, resolveGitExecutable, type GitRunner } from './exec.js';
-import { createRepoFacts, parseBranchConfig, parseRemoteVerbose, parseWorktreePorcelain } from './repo-facts.js';
+import { createRepoFacts, parseBranchConfig, parseRemoteConfig, parseRemoteVerbose, parseWorktreePorcelain, readBranchFacts, readRemoteFacts } from './repo-facts.js';
 
 const GIT = resolveGitExecutable();
 const roots: string[] = [];
@@ -77,9 +77,30 @@ describe('parsers', () => {
                 ].join('\n')
             )
         ).toEqual([
-            { name: 'origin', fetchURL: 'git@github.com:me/api.git', pushURL: 'git@github.com:me/api.git' },
-            { name: 'upstream', fetchURL: 'https://github.com/acme/api.git', pushURL: 'git@github.com-work:acme/api.git' }
+            { name: 'origin', fetchURL: 'git@github.com:me/api.git', pushURL: 'git@github.com:me/api.git', configuredFetchURL: null, configuredPushURL: null, fetchURLs: ['git@github.com:me/api.git'] },
+            {
+                name: 'upstream',
+                fetchURL: 'https://github.com/acme/api.git',
+                pushURL: 'git@github.com-work:acme/api.git',
+                configuredFetchURL: null,
+                configuredPushURL: null,
+                fetchURLs: ['https://github.com/acme/api.git']
+            }
         ]);
+    });
+
+    it('reads the URLs as written by remote (dotted names, the first of a repeated url) and keeps both spellings', () => {
+        const written = parseRemoteConfig(
+            ['remote.origin.url\ngh:acme/api', 'remote.my.fork.url\ngit@github.com:me/api.git', 'remote.my.fork.url\nsecond', 'remote.my.fork.pushurl\ngh:me/api', ''].join('\0')
+        );
+        expect(written.get('origin')).toEqual({ url: 'gh:acme/api', pushURL: null });
+        expect(written.get('my.fork')).toEqual({ url: 'git@github.com:me/api.git', pushURL: 'gh:me/api' });
+        const [origin, fork] = parseRemoteVerbose(
+            ['origin\tgit@github.com:acme/api (fetch)', 'origin\tgit@github.com:acme/api (push)', 'my.fork\tgit@github.com:me/api.git (fetch)', 'my.fork\tgit@github.com:me/api (push)'].join('\n'),
+            written
+        );
+        expect(origin).toMatchObject({ fetchURL: 'git@github.com:acme/api', configuredFetchURL: 'gh:acme/api', fetchURLs: ['git@github.com:acme/api', 'gh:acme/api'] });
+        expect(fork).toMatchObject({ configuredPushURL: 'gh:me/api', fetchURLs: ['git@github.com:me/api.git'] });
     });
 
     it('reads branch config by the last segment, so dotted and slashed branch names survive', () => {
@@ -138,9 +159,54 @@ describe('createRepoFacts against real repositories', () => {
         git(dir, 'remote', 'set-url', '--push', 'upstream', 'git@github.com:acme/api.git');
         const facts = createRepoFacts({ run: isolatedRunner() });
         expect(await facts.remotes(dir)).toEqual([
-            { name: 'origin', fetchURL: 'git@github.com:me/api.git', pushURL: 'git@github.com:me/api.git' },
-            { name: 'upstream', fetchURL: 'https://github.com/acme/api.git', pushURL: 'git@github.com:acme/api.git' }
+            {
+                name: 'origin',
+                fetchURL: 'git@github.com:me/api.git',
+                pushURL: 'git@github.com:me/api.git',
+                configuredFetchURL: 'git@github.com:me/api.git',
+                configuredPushURL: null,
+                fetchURLs: ['git@github.com:me/api.git']
+            },
+            {
+                name: 'upstream',
+                fetchURL: 'https://github.com/acme/api.git',
+                pushURL: 'git@github.com:acme/api.git',
+                configuredFetchURL: 'https://github.com/acme/api.git',
+                configuredPushURL: 'git@github.com:acme/api.git',
+                fetchURLs: ['https://github.com/acme/api.git']
+            }
         ]);
+    });
+
+    it('keeps a URL as git rewrites it (insteadOf) AND as written, both ways round, with no network', async () => {
+        const dir = repo();
+        // An alias that only names GitHub once rewritten: `gh:acme/api` -> `git@github.com:acme/api`.
+        git(dir, 'remote', 'add', 'upstream', 'gh:acme/api');
+        git(dir, 'config', 'url.git@github.com:.insteadOf', 'gh:');
+        // A GitHub URL rewritten onto a mirror: only the spelling as written names GitHub.
+        git(dir, 'remote', 'add', 'origin', 'https://github.com/me/api.git');
+        git(dir, 'config', 'url./srv/mirror/me-api.git.insteadOf', 'https://github.com/me/api.git');
+        const remotes = await readRemoteFacts((args) => isolatedRunner()(args, { cwd: dir }));
+        expect(remotes.find((remote) => remote.name === 'upstream')).toMatchObject({
+            fetchURL: 'git@github.com:acme/api',
+            configuredFetchURL: 'gh:acme/api',
+            fetchURLs: ['git@github.com:acme/api', 'gh:acme/api']
+        });
+        expect(remotes.find((remote) => remote.name === 'origin')).toMatchObject({
+            fetchURL: '/srv/mirror/me-api.git',
+            configuredFetchURL: 'https://github.com/me/api.git',
+            fetchURLs: ['/srv/mirror/me-api.git', 'https://github.com/me/api.git']
+        });
+        // The cached reader answers the same.
+        expect(await createRepoFacts({ run: isolatedRunner() }).remotes(dir)).toEqual(remotes);
+    });
+
+    it('the strict readers reject a path git cannot read, where the cached ones answer nothing', async () => {
+        const plain = tmpDir('strict');
+        const read = (args: readonly string[]): Promise<string> => isolatedRunner()(args, { cwd: plain });
+        await expect(readRemoteFacts(read)).rejects.toThrow();
+        await expect(readBranchFacts(read)).rejects.toThrow();
+        expect(await createRepoFacts({ run: isolatedRunner() }).remotes(plain)).toEqual([]);
     });
 
     it('reads local branches, their config and where each is checked out', async () => {

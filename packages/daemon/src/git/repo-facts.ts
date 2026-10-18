@@ -10,6 +10,14 @@
  * reads, never routed through a plugin provider; a pull request checkout is refused while a
  * plugin owns `kelpi.git` anyway.
  *
+ * It is the ONE reader of a repository's remotes, branches and worktrees for everything a ticket
+ * does: the resolve reads through the cache below (`createRepoFacts`); the create's plan and the
+ * pull request checkout read the same facts uncached and strict (`readRemoteFacts`,
+ * `readBranchFacts`), since they decide right before git changes something. A remote carries its
+ * URLs as git uses them (`git remote -v`, `url.<base>.insteadOf` applied) AND as written in the
+ * config: a `gh:acme/api` alias only names GitHub once rewritten, a GitHub URL rewritten onto a
+ * mirror only as written, and the ticket rules (`@kelpi/core/tickets` tracking.ts) count both.
+ *
  * Contract:
  *
  *   - read-only and offline: `git remote -v`, `git config --get-regexp`, `git for-each-ref`,
@@ -43,12 +51,19 @@ const READ_ONLY_ENV: Readonly<Record<string, string>> = {
     GIT_OPTIONAL_LOCKS: '0'
 };
 
-/** One remote, as `git remote -v` prints it (so `url.<base>.insteadOf` rewrites are applied). */
+/** One remote: its URLs as git uses them, and as written in the config (module note). */
 export interface RemoteFact {
     readonly name: string;
+    /** Where it fetches from, as `git remote -v` prints it (`url.<base>.insteadOf` applied). */
     readonly fetchURL: string;
-    /** The push URL; the fetch URL when the remote has no `pushurl`. */
+    /** The push URL, the same way; the fetch URL when the remote has no `pushurl`. */
     readonly pushURL: string;
+    /** `remote.<name>.url` as written, before any rewrite; null when unset or unread. */
+    readonly configuredFetchURL: string | null;
+    /** `remote.<name>.pushurl` as written; null when unset or unread. */
+    readonly configuredPushURL: string | null;
+    /** Every URL it fetches from: `fetchURL`, then `configuredFetchURL` when that differs (`TicketRemote`). */
+    readonly fetchURLs: readonly string[];
 }
 
 /** `branch.<name>.*`, as configured; null where the key is absent. */
@@ -114,8 +129,34 @@ export interface CreateRepoFactsOptions {
     readonly timeoutMs?: number | undefined;
 }
 
-/** `git remote -v` → one fact per remote, in the order git lists them. */
-export function parseRemoteVerbose(text: string): RemoteFact[] {
+/** What `remote.<name>.url` / `.pushurl` say as written, by remote. */
+export type ConfiguredRemoteURLs = ReadonlyMap<string, { readonly url: string | null; readonly pushURL: string | null }>;
+
+/**
+ * `git config -z --get-regexp '^remote\..*\.(url|pushurl)$'` → the URLs as written, by remote.
+ * Each record is `key\nvalue\0`; git lowercases the variable (`pushurl`) and keeps the remote's
+ * name (which may hold dots) as written. The FIRST value of a repeated key is the one git fetches
+ * from, so it is the one kept.
+ */
+export function parseRemoteConfig(text: string): Map<string, { url: string | null; pushURL: string | null }> {
+    const config = new Map<string, { url: string | null; pushURL: string | null }>();
+    for (const record of text.split('\0')) {
+        const newline = record.indexOf('\n');
+        if (newline <= 0) continue;
+        const match = /^remote\.(.+)\.(url|pushurl)$/.exec(record.slice(0, newline));
+        const value = record.slice(newline + 1).trim();
+        if (match === null || value === '') continue;
+        const name = match[1] as string;
+        const entry = config.get(name) ?? { url: null, pushURL: null };
+        if (match[2] === 'url') entry.url ??= value;
+        else entry.pushURL ??= value;
+        config.set(name, entry);
+    }
+    return config;
+}
+
+/** `git remote -v` → one fact per remote, in the order git lists them, with what the config wrote. */
+export function parseRemoteVerbose(text: string, configured: ConfiguredRemoteURLs = new Map()): RemoteFact[] {
     const byName = new Map<string, { fetchURL: string | null; pushURL: string | null }>();
     for (const line of text.split('\n')) {
         const tab = line.indexOf('\t');
@@ -135,7 +176,16 @@ export function parseRemoteVerbose(text: string): RemoteFact[] {
     for (const [name, entry] of byName) {
         const fetchURL = entry.fetchURL ?? entry.pushURL;
         if (fetchURL === null) continue;
-        remotes.push({ name, fetchURL, pushURL: entry.pushURL ?? fetchURL });
+        const written = configured.get(name);
+        const configuredFetchURL = written?.url ?? null;
+        remotes.push({
+            name,
+            fetchURL,
+            pushURL: entry.pushURL ?? fetchURL,
+            configuredFetchURL,
+            configuredPushURL: written?.pushURL ?? null,
+            fetchURLs: configuredFetchURL !== null && configuredFetchURL !== fetchURL ? [fetchURL, configuredFetchURL] : [fetchURL]
+        });
     }
     return remotes;
 }
@@ -209,6 +259,44 @@ function branchFacts(names: readonly string[], config: ReadonlyMap<string, Branc
 /** What a repository git cannot read has. */
 export const NO_BRANCH_FACTS: BranchFacts = branchFacts([], new Map(), []);
 
+/** One git read in the repository: the arguments in, stdout out; a failure rejects with git's error. */
+export type GitRead = (args: readonly string[]) => Promise<string>;
+
+/** A config read whose "nothing configured" exit (1) is an empty answer, not a failure. */
+async function readConfig(read: GitRead, args: readonly string[]): Promise<string> {
+    try {
+        return await read(args);
+    } catch (error) {
+        if ((error as { exitCode?: unknown }).exitCode === 1) return '';
+        throw error;
+    }
+}
+
+/**
+ * Every remote of the repository `read` runs in, uncached and STRICT: a repository git cannot
+ * read rejects (with git's error) instead of answering "no remotes". What the create's plan and
+ * the pull request checkout read, right before git changes something; the cache below reads the
+ * same way.
+ */
+export async function readRemoteFacts(read: GitRead): Promise<RemoteFact[]> {
+    const [verbose, written] = await Promise.all([read(['remote', '-v']), readConfig(read, ['config', '-z', '--get-regexp', '^remote\\..*\\.(url|pushurl)$'])]);
+    return parseRemoteVerbose(verbose, parseRemoteConfig(written));
+}
+
+/** Every local branch, its config and the worktrees, uncached and strict (`readRemoteFacts`). */
+export async function readBranchFacts(read: GitRead): Promise<BranchFacts> {
+    const [refs, config, worktrees] = await Promise.all([
+        read(['for-each-ref', '--format=%(refname)', 'refs/heads/']),
+        readConfig(read, ['config', '-z', '--get-regexp', '^branch\\.']),
+        read(['worktree', 'list', '--porcelain'])
+    ]);
+    const names = refs
+        .split('\n')
+        .filter((line) => line.startsWith('refs/heads/'))
+        .map((line) => line.slice('refs/heads/'.length));
+    return branchFacts(names, parseBranchConfig(config), parseWorktreePorcelain(worktrees));
+}
+
 function realpathOrSelf(value: string): string {
     try {
         return fs.realpathSync(value);
@@ -277,15 +365,6 @@ export function createRepoFacts(options: CreateRepoFactsOptions = {}): RepoFacts
     const branchesCache = createCache<BranchFacts>(options.branchesTTLms ?? REPO_FACTS_BRANCHES_TTL_MS, now);
 
     const read = (args: readonly string[], cwd: string): Promise<string> => run(args, { cwd, env: READ_ONLY_ENV, timeoutMs });
-    /** A read whose "nothing configured" exit (1) is an empty answer, not a failure. */
-    const readConfig = async (args: readonly string[], cwd: string): Promise<string> => {
-        try {
-            return await read(args, cwd);
-        } catch (error) {
-            if ((error as { exitCode?: unknown }).exitCode === 1) return '';
-            throw error;
-        }
-    };
     const isDirectory = (value: string): boolean => {
         try {
             return fs.statSync(value).isDirectory();
@@ -294,10 +373,11 @@ export function createRepoFacts(options: CreateRepoFactsOptions = {}): RepoFacts
         }
     };
 
+    // The cached reads are the strict ones made lenient: one broken registry row never fails a search.
     const loadRemotes = async (repoPath: string): Promise<readonly RemoteFact[]> => {
         if (!isDirectory(repoPath)) return [];
         try {
-            return parseRemoteVerbose(await read(['remote', '-v'], repoPath));
+            return await readRemoteFacts((args) => read(args, repoPath));
         } catch {
             return [];
         }
@@ -306,16 +386,7 @@ export function createRepoFacts(options: CreateRepoFactsOptions = {}): RepoFacts
     const loadBranches = async (repoPath: string): Promise<BranchFacts> => {
         if (!isDirectory(repoPath)) return NO_BRANCH_FACTS;
         try {
-            const [refs, config, worktrees] = await Promise.all([
-                read(['for-each-ref', '--format=%(refname)', 'refs/heads/'], repoPath),
-                readConfig(['config', '-z', '--get-regexp', '^branch\\.'], repoPath),
-                read(['worktree', 'list', '--porcelain'], repoPath)
-            ]);
-            const names = refs
-                .split('\n')
-                .filter((line) => line.startsWith('refs/heads/'))
-                .map((line) => line.slice('refs/heads/'.length));
-            return branchFacts(names, parseBranchConfig(config), parseWorktreePorcelain(worktrees));
+            return await readBranchFacts((args) => read(args, repoPath));
         } catch {
             return NO_BRANCH_FACTS;
         }

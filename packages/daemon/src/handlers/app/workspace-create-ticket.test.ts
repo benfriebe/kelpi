@@ -28,6 +28,8 @@ import {
     type GitService
 } from '../../git/index.js';
 import { commit, forkPullRequest, git, HAS_GIT, mapGitHubURL, pullRequestFixture, removeTmpDirs, sameRepoPullRequest, tryGit, type PullRequestFixture } from '../../git/pr-testing.js';
+import { readBranchFacts, readRemoteFacts } from '../../git/repo-facts.js';
+import { localBranchLookup } from '../../integrations/matching.js';
 import { stubGitService } from '../../git/testing.js';
 import type { ReplyHandle } from '../../seams.js';
 import { TicketServiceError, type ResolvedTicket, type TicketService, type WorktreeCreator } from './context.js';
@@ -251,6 +253,18 @@ async function sendDecoded(h: Harness, reply: ProgressReply, object: Record<stri
         await new Promise((resolve) => setTimeout(resolve, 10));
     }
     return reply.events.find((event) => event.kind === 'send')?.payload as Record<string, unknown>;
+}
+
+/** A ticket test's git with the alias remote `upstream` sent to `bare`, and nothing else that could reach the network. */
+function offlineArgs(args: readonly string[], bare: string): readonly string[] {
+    const command = args[0];
+    if (command === 'push' || command === 'pull' || command === 'clone' || command === 'submodule' || (command === 'remote' && args[1] === 'update')) {
+        throw new Error(`a ticket test ran git ${command}, which could reach the network`);
+    }
+    if (command !== 'fetch' && command !== 'ls-remote') return args;
+    const mapped = args.map((arg) => (arg === 'upstream' ? bare : arg));
+    if (!mapped.includes(bare)) throw new Error(`a ticket test fetched from something other than the local base: ${args.join(' ')}`);
+    return mapped;
 }
 
 const ISSUE = 'https://github.com/acme/api/issues/418';
@@ -588,6 +602,61 @@ describe.skipIf(!HAS_GIT)('workspace-create from a pull request', { timeout: 30_
         expect(tryGit(other, 'config', '--get', 'branch.fix.remote')).toBe('git@github.com-work:octo/api.git');
         expect(tryGit(other, 'config', '--get', 'branch.fix.pushRemote')).toBe('git@github.com-work:octo/api.git');
         expect(tryGit(other, 'config', '--get', 'branch.fix.merge')).toBe('refs/heads/fix');
+    });
+
+    it("is planned on a remote spelled with an insteadOf alias, in a clone the resolve did not match (no network)", async () => {
+        const fx = pullRequestFixture();
+        const head = sameRepoPullRequest(fx, 7, 'feat/login');
+        const other = path.join(fx.root, 'other');
+        git(fx.root, 'clone', '-q', fx.origin, other);
+        git(other, 'remote', 'rename', 'origin', 'upstream');
+        // `gh:acme/api` names GitHub only once git rewrites it (`git remote -v`).
+        git(other, 'remote', 'set-url', 'upstream', 'gh:acme/api');
+        git(other, 'config', 'url.git@github.com:.insteadOf', 'gh:');
+        // Every fetch through the alias remote is sent to the local base instead, so nothing here
+        // can reach GitHub: the remote's name becomes the base's path, and anything else that
+        // could touch the network is refused.
+        const offline: typeof realOps = {
+            read: (args, cwd, options) => realOps.read(offlineArgs(args, fx.origin), cwd, options),
+            long: (args, cwd, options) => realOps.long(offlineArgs(args, fx.origin), cwd, options)
+        };
+        const h = ticketHarness(fx, { tickets: fakeTickets(() => prTicket(head)), ticketGit: offline });
+        h.send({ command: 'workspace-create', ticket: PR, repo: other, worktree: 'via-alias' });
+        expect(await settle(h)).toMatchObject({ ok: true, repo_path: other, branch: 'feat/login', checkout: 'pr-head' });
+        expect(git(path.join(fx.root, 'wt', 'via-alias'), 'rev-parse', 'HEAD')).toBe(head);
+        expect(tryGit(other, 'config', '--get', 'branch.feat/login.remote')).toBe('upstream');
+    });
+
+    it("a branch tracking another remote of the base repository is the one the resolve proposes AND the one the create checks out", async () => {
+        const fx = pullRequestFixture();
+        sameRepoPullRequest(fx, 7, 'feat/login');
+        git(fx.work, 'remote', 'add', 'upstream', 'https://github.com/acme/api.git');
+        mapGitHubURL('acme/api', fx.work, fx.origin);
+        git(fx.work, 'fetch', '-q', 'upstream');
+        git(fx.work, 'branch', '--track', 'feat/login', 'upstream/feat/login');
+        git(fx.seed, 'checkout', '-q', 'feat/login');
+        const head = commit(fx.seed, 'more.txt', 'more\n', 'more');
+        git(fx.seed, 'push', '-q', 'origin', 'feat/login');
+        git(fx.seed, 'checkout', '-q', 'main');
+        // What the resolve proposes, decided exactly as it decides: the one reader, the one rule.
+        const read = (args: readonly string[]): Promise<string> => realOps.read(args, fx.work);
+        const localBranch = localBranchLookup(await readBranchFacts(read), await readRemoteFacts(read), {
+            kind: 'pr',
+            number: 7,
+            repo: 'acme/api',
+            headRef: 'feat/login',
+            headRepo: 'acme/api',
+            crossRepository: false,
+            baseRemote: 'origin',
+            headRemote: null,
+            headPushURL: null
+        });
+        const proposed = prTicket(head, { localBranch });
+        expect(proposed.defaults).toMatchObject({ branch: 'feat/login', checkout: 'pr-head' });
+        const h = ticketHarness(fx, { tickets: fakeTickets(() => proposed) });
+        h.send({ command: 'workspace-create', ticket: PR });
+        expect(await settle(h)).toMatchObject({ ok: true, branch: 'feat/login', checkout: 'pr-head' });
+        expect(git(fx.work, 'rev-parse', 'feat/login')).toBe(head);
     });
 
     it("is refused through a group whose repository has no remote for it, and an unknown group is refused before git", async () => {

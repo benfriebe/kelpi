@@ -15,19 +15,13 @@ import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 
 import { createGitRunner } from './exec.js';
-import {
-    branchTracksPullRequest,
-    listRemotes,
-    matchTicketRemotes,
-    performPullRequestCheckout,
-    PullRequestCheckoutError,
-    type PullRequestCheckoutRequest
-} from './pr-checkout.js';
+import { performPullRequestCheckout, PullRequestCheckoutError, type PullRequestCheckoutRequest } from './pr-checkout.js';
 import {
     commit,
     forkPullRequest,
     git,
     HAS_GIT,
+    mapGitHubURL,
     pullRequestFixture,
     removeTmpDirs,
     sameRepoPullRequest,
@@ -51,6 +45,7 @@ function request(fx: PullRequestFixture, overrides: Partial<PullRequestCheckoutR
         headRef: 'feat/login',
         crossRepository: false,
         maintainerCanModify: true,
+        baseRepo: 'acme/api',
         headRepo: 'acme/api',
         baseRemote: 'origin',
         headRemote: null,
@@ -74,32 +69,6 @@ async function waitFor(check: () => boolean, ms = 10_000): Promise<void> {
         await new Promise((resolve) => setTimeout(resolve, 25));
     }
 }
-
-describe('matchTicketRemotes', () => {
-    it('prefers origin, then upstream, and matches owner/name case-insensitively', () => {
-        const remotes = [
-            { name: 'mine', url: 'git@github.com:me/api.git' },
-            { name: 'upstream', url: 'https://github.com/Acme/API.git' },
-            { name: 'origin', url: 'git@github.com-work:acme/api.git' }
-        ];
-        expect(matchTicketRemotes(remotes, 'acme/api', 'me/api')).toEqual({ base: remotes[2], head: remotes[0] });
-        expect(matchTicketRemotes(remotes, 'other/api', null)).toEqual({ base: null, head: null });
-    });
-});
-
-describe('branchTracksPullRequest', () => {
-    const identity = { number: 7, headRef: 'fix', crossRepository: true, headRepo: 'octo/api', baseRemote: 'origin', headRemote: null, headPushURL: 'git@github.com:octo/api.git' };
-    it("reads gh's configurations as this pull request's, and nothing else", () => {
-        const state = (remote: string | null, merge: string | null) => ({ exists: true, checkedOutAt: null, remote, merge });
-        expect(branchTracksPullRequest(state('origin', 'refs/pull/7/head'), identity)).toBe(true);
-        expect(branchTracksPullRequest(state('git@github.com:octo/api.git', 'refs/heads/fix'), identity)).toBe(true);
-        expect(branchTracksPullRequest(state('https://github.com/octo/api.git', 'refs/heads/fix'), identity)).toBe(true);
-        expect(branchTracksPullRequest(state('origin', 'refs/heads/fix'), identity)).toBe(false);
-        expect(branchTracksPullRequest(state(null, null), identity)).toBe(false);
-        // The author's own branch of a same-repository pull request, never pushed with -u.
-        expect(branchTracksPullRequest(state(null, null), { ...identity, crossRepository: false })).toBe(true);
-    });
-});
 
 describe.skipIf(!HAS_GIT)('performPullRequestCheckout against real git', { timeout: 30_000 }, () => {
     it('same repository, no local branch: a new branch tracking the head, at the head', async () => {
@@ -331,16 +300,33 @@ describe.skipIf(!HAS_GIT)('performPullRequestCheckout against real git', { timeo
         expect(git(fx.work, 'worktree', 'list', '--porcelain')).not.toContain('/wt/fix');
     });
 
-    it('lists remotes with their URLs, and none for a repository without', async () => {
+    it("takes a branch tracking ANOTHER remote of the base repository as this pull request's, as the resolve does", async () => {
+        // origin is the remote the create matched; upstream points at the same repository (by its
+        // GitHub URL, which `insteadOf` maps onto the local base). The resolve's lookup has always
+        // called such a branch this pull request's; the checkout used to refuse it.
         const fx = pullRequestFixture();
-        git(fx.work, 'remote', 'add', 'my.fork', 'git@github.com:me/api.git');
-        git(fx.work, 'remote', 'set-url', '--push', 'my.fork', 'git@github.com-work:me/api.git');
-        expect(await listRemotes(ops(), fx.work)).toEqual([
-            { name: 'origin', url: fx.origin },
-            { name: 'my.fork', url: 'git@github.com:me/api.git', pushURL: 'git@github.com-work:me/api.git' }
-        ]);
-        git(fx.work, 'remote', 'remove', 'origin');
-        git(fx.work, 'remote', 'remove', 'my.fork');
-        expect(await listRemotes(ops(), fx.work)).toEqual([]);
+        const first = sameRepoPullRequest(fx, 7, 'feat/login');
+        git(fx.work, 'remote', 'add', 'upstream', 'https://github.com/acme/api.git');
+        mapGitHubURL('acme/api', fx.work, fx.origin);
+        git(fx.work, 'fetch', '-q', 'upstream');
+        git(fx.work, 'branch', '--track', 'feat/login', 'upstream/feat/login');
+        git(fx.seed, 'checkout', '-q', 'feat/login');
+        const head = commit(fx.seed, 'more.txt', 'more\n', 'more');
+        git(fx.seed, 'push', '-q', 'origin', 'feat/login');
+        git(fx.seed, 'checkout', '-q', 'main');
+        const result = await performPullRequestCheckout(ops(), request(fx, { headSha: head }));
+        expect(result).toEqual({ warnings: [], branchExisted: true, source: 'head-branch' });
+        expect(git(fx.work, 'rev-parse', 'feat/login')).toBe(head);
+        expect(first).not.toBe(head);
+        // Its configuration is left as it was.
+        expect(config(fx.work, 'branch.feat/login.remote')).toBe('upstream');
+
+        // A remote for ANOTHER repository is still not the pull request's.
+        git(fx.work, 'worktree', 'remove', '--force', path.join(fx.root, 'wt', 'feat-login'));
+        git(fx.work, 'remote', 'add', 'elsewhere', 'https://github.com/other/api.git');
+        git(fx.work, 'config', 'branch.feat/login.remote', 'elsewhere');
+        await expect(performPullRequestCheckout(ops(), request(fx, { headSha: head, worktreePath: path.join(fx.root, 'wt', 'again') }))).rejects.toThrow(
+            "a local branch 'feat/login' already exists and does not track pull request #7"
+        );
     });
 });

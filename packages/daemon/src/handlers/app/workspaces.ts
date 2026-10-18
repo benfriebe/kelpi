@@ -47,16 +47,15 @@ import {
     type WorkspaceScope
 } from '@kelpi/core/resolve';
 import {
+    bestRemoteFor,
     isSafeBranchName,
     parseTicketRef,
     prLocalBranchName,
     prWorktreeName,
     renderTicketFile,
-    replaceGitHubRemoteRepo,
     ticketPromptVars,
     withoutTicketFileReference,
     type GitHubTicketRef,
-    type LocalBranchFact,
     type TicketPromptVars
 } from '@kelpi/core/tickets';
 import {
@@ -96,15 +95,12 @@ import {
     type WorkspaceTicket
 } from '../../store/index.js';
 import {
-    branchTracksPullRequest,
     createStepTracker,
     describeWorktreeSkip,
     isPathInside,
-    listRemotes,
-    matchTicketRemotes,
     planWorktreeCleanup,
-    readLocalBranch,
-    refExists,
+    readBranchFacts,
+    readRemoteFacts,
     removeWorktrees,
     sanitizedGitName,
     serializeWorktreeProgress,
@@ -115,8 +111,9 @@ import {
     worktreeStepsFor,
     writeTicketFile,
     WorktreeCreateCancelledError,
+    type GitRead,
     type PullRequestCheckoutRequest,
-    type PullRequestIdentity,
+    type RemoteFact,
     type TicketFileOutcome,
     type WorktreeCleanupResult,
     type WorktreeCleanupRow,
@@ -124,6 +121,7 @@ import {
     type WorktreeStepTracker
 } from '../../git/index.js';
 import { ensureRegisteredRepo, findRepoByPath } from '../../git/registry.js';
+import { headRemoteFor, localBranchLookup } from '../../integrations/matching.js';
 import { forCommand, listedWorkspaceIDs, refreshSyncGroup, uuidOut, wireTimestamp } from './common.js';
 import {
     fail,
@@ -1004,16 +1002,13 @@ function sameTicketBranch(requested: string, defaultsBranch: string | null, kind
     return requested === defaultsBranch || (kind === 'issue' && sanitizedGitName(requested) === defaultsBranch);
 }
 
-/** `readLocalBranch` as the one PR branch rule reads it (`prLocalBranchName`). */
-async function prBranchFact(
-    deps: AppDeps,
-    repoPath: string,
-    name: string,
-    identity: PullRequestIdentity
-): Promise<LocalBranchFact> {
-    if (!isSafeBranchName(name)) return { exists: false };
-    const state = await readLocalBranch(deps.ticketGit, repoPath, name);
-    return state.exists ? { exists: true, tracksPullRequest: branchTracksPullRequest(state, identity), checkedOutAt: state.checkedOutAt } : { exists: false };
+/**
+ * `deps.ticketGit` in `repoPath`, for `git/repo-facts.ts`' readers: the one reader of remotes and
+ * branches the resolve uses too (docs/integrations.md §9.6). The plan reads leniently (a failed
+ * read is "none"), since the checkout re-reads strictly right before git changes anything.
+ */
+function ticketGitIn(deps: AppDeps, repoPath: string): GitRead {
+    return (args) => deps.ticketGit.read(args, repoPath);
 }
 
 /**
@@ -1102,6 +1097,8 @@ async function planTicketCreate(
         if (pr === null) throw new TicketCreateRefusal(`pull request ${summary.key} has no head to check out`);
         if (msg.update_main === true) throw new TicketCreateRefusal(PR_UPDATE_MAIN_ERROR);
         if (!detailedGit) throw new TicketCreateRefusal(PR_NEEDS_BUNDLED_GIT_ERROR);
+        const read = ticketGitIn(deps, repoPath);
+        const remotes = await readRemoteFacts(read).catch((): RemoteFact[] => []);
         let baseRemote: string;
         let headRemote: string | null;
         let headPushURL: string | null;
@@ -1110,44 +1107,38 @@ async function planTicketCreate(
             headRemote = pr.headRemote;
             headPushURL = pr.headPushURL;
         } else {
-            const remotes = await listRemotes(deps.ticketGit, repoPath).catch(() => []);
-            const match = matchTicketRemotes(remotes, summary.repo, pr.crossRepository ? pr.headRepo : null);
-            if (match.base === null) throw new TicketCreateRefusal(prRepoMismatchError(repoPath, summary.repo));
-            baseRemote = match.base.name;
-            headRemote = pr.crossRepository ? (match.head?.name ?? null) : null;
-            const [owner, name] = (pr.headRepo ?? '').split('/');
-            headPushURL =
-                pr.crossRepository && headRemote === null && pr.maintainerCanModify && owner !== undefined && name !== undefined && name !== ''
-                    ? // The base remote's push URL when it has one (as the resolve does), so a
-                      // push to the fork authenticates the way a push to the base would.
-                      (replaceGitHubRemoteRepo(match.base.pushURL ?? match.base.url, owner, name) ??
-                      replaceGitHubRemoteRepo(match.base.url, owner, name))
-                    : null;
+            // Matched exactly as the resolve matches a registered row (`bestRemoteFor`,
+            // `headRemoteFor`), so an `insteadOf` alias counts here too.
+            const base = bestRemoteFor(remotes, summary.repo);
+            if (base === null) throw new TicketCreateRefusal(prRepoMismatchError(repoPath, summary.repo));
+            baseRemote = base.name;
+            ({ headRemote, headPushURL } = headRemoteFor(pr, remotes, base));
         }
-        const identity: PullRequestIdentity = {
-            number: summary.number,
-            headRef: pr.headRef,
-            crossRepository: pr.crossRepository,
-            headRepo: pr.headRepo,
-            baseRemote,
-            headRemote,
-            headPushURL
-        };
         let branch: string;
         if (explicitBranch !== undefined) {
             // Renaming the local branch is allowed; it is used raw, so it must be a branch name as is.
             if (!isSafeBranchName(explicitBranch)) throw new TicketCreateRefusal(`"${explicitBranch}" isn't a usable branch name`);
             branch = explicitBranch;
         } else {
-            const candidates = [pr.headRef, ...(pr.headOwner !== null ? [`${pr.headOwner}/${pr.headRef}`] : []), `pr-${summary.number}`];
-            const facts = new Map<string, LocalBranchFact>();
-            for (const candidate of candidates) facts.set(candidate, await prBranchFact(deps, repoPath, candidate, identity).catch((): LocalBranchFact => ({ exists: false })));
+            // The resolve's own lookup (`localBranchLookup`, `tracksPullRequest`), on a fresh read,
+            // with the remotes this plan matched: the sheet and the CLI pick the same name.
+            const branches = await readBranchFacts(read).catch(() => null);
             const decision = prLocalBranchName({
                 number: summary.number,
                 headRef: pr.headRef,
                 headOwner: pr.headOwner,
                 baseDefaultBranch: pr.baseDefaultBranch,
-                localBranch: (name) => facts.get(name) ?? { exists: false }
+                localBranch: localBranchLookup(branches, remotes, {
+                    kind: 'pr',
+                    number: summary.number,
+                    repo: summary.repo,
+                    headRef: pr.headRef,
+                    headRepo: pr.headRepo,
+                    crossRepository: pr.crossRepository,
+                    baseRemote,
+                    headRemote,
+                    headPushURL
+                })
             });
             if (!decision.ok) throw new TicketCreateRefusal(decision.error);
             branch = decision.branch;
@@ -1169,6 +1160,7 @@ async function planTicketCreate(
                 headSha: pr.headSha,
                 crossRepository: pr.crossRepository,
                 maintainerCanModify: pr.maintainerCanModify,
+                baseRepo: summary.repo,
                 headRepo: pr.headRepo,
                 baseRemote,
                 headRemote,
@@ -1186,14 +1178,14 @@ async function planTicketCreate(
     const requestedBranch = explicitBranch ?? defaults?.branch ?? worktreeName;
     const branch = sanitizedGitName(requestedBranch);
     if (branch === null) throw new TicketCreateRefusal(`"${requestedBranch}" isn't a usable branch name`);
+    const read = ticketGitIn(deps, repoPath);
     let remote: string | undefined;
     if (target.matched && resolved.baseRemote !== null) {
         remote = resolved.baseRemote;
     } else {
-        const remotes = await listRemotes(deps.ticketGit, repoPath).catch(() => []);
-        remote = matchTicketRemotes(remotes, summary.repo, null).base?.name;
+        remote = bestRemoteFor(await readRemoteFacts(read).catch((): RemoteFact[] => []), summary.repo)?.name;
     }
-    const exists = await refExists(deps.ticketGit, repoPath, `refs/heads/${branch}`).catch(() => false);
+    const exists = (await readBranchFacts(read).catch(() => null))?.branches.has(branch) ?? false;
     // With the ticket's defaults, update main follows the branch: a new one comes off the latest
     // default branch, an existing one (the issue was started before) is attached as it is.
     const updateMain = msg.update_main ?? (defaults !== null ? !exists : groupRow?.createWorktree === true && msg.group_defaults);

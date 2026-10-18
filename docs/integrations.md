@@ -468,33 +468,51 @@ with the signal's reason, and the git reads stop waiting.
 ### 9.6 Repository matching
 
 `git/repo-facts.ts` reads, per registered repository and without the network: every remote with
-its fetch and push URL (`git remote -v`, so `insteadOf` rewrites apply), every local branch with
-its `branch.<b>.remote`, `merge` and `pushRemote`, `git worktree list --porcelain` (where each
-branch is checked out; a prunable worktree does not count), and whether the registered path is
-the repository's own root. Every call has a 5 s timeout, runs with `GIT_TERMINAL_PROMPT=0` and
+its fetch and push URL as git uses them (`git remote -v`, so `insteadOf` rewrites apply) AND as
+written in the config (`remote.<name>.url` / `.pushurl`), every local branch with its
+`branch.<b>.remote`, `merge` and `pushRemote`, `git worktree list --porcelain` (where each branch is
+checked out; a prunable worktree does not count), and whether the registered path is the
+repository's own root. Every call has a 5 s timeout, runs with `GIT_TERMINAL_PROMPT=0` and
 `GIT_OPTIONAL_LOCKS=0`, and a repository git cannot read simply has no facts. Remotes and the
 root check are cached 30 s, branches 2 s. These are direct git reads, never through the
 `kelpi.git` plugin provider (whose contract has no such methods).
 
-A registered repository matches a ticket when ANY of its remotes points at the ticket's
-`owner/name` (compared case-insensitively): `origin` in a plain clone, `upstream` in a fork clone,
-any name anyone uses. Ties go to, in order: a match on `origin`, then `upstream`, then any other
+It is the ONE reader of remotes, branches and worktrees for a ticket: the create's plan
+(`planTicketCreate`) and the pull request checkout (graft-git.md §8.5.3) read the same facts with
+its uncached, strict readers (`readRemoteFacts`, `readBranchFacts`: a repository git cannot read
+is an error there, not "nothing"), and every rule below lives once, in `@kelpi/core/tickets`
+(`tracking.ts`: `bestRemoteFor`, `tracksPullRequest`, `pullRequestUpstreamPointsAt`) and
+`integrations/matching.ts` (`localBranchLookup`, `headRemoteFor`), so the resolve (the sheet's
+prefill) and the create never disagree about a repository.
+
+A remote FETCHES from a repository when any URL it fetches from names it: as git uses it (so a
+`gh:acme/api` alias that `url.git@github.com:.insteadOf` rewrites counts) or as written (so a
+GitHub URL that `insteadOf` rewrites onto a mirror counts too). Where it pushes does not count: a
+triangular clone's `pushurl` names the user's fork. A registered repository matches a ticket when
+ANY of its remotes fetches from the ticket's `owner/name` (compared case-insensitively): `origin`
+in a plain clone, `upstream` in a fork clone, any name anyone uses. Ties go to, in order: a match on `origin`, then `upstream`, then any other
 remote; a repository added by hand over an auto-discovered one; the repository's root over a
 subfolder row or a linked worktree row; the most recently accessed; registry order. The matching
 remote is `baseRemote`: base fetches, `refs/pull/<n>/head` and an issue's update main use it, not
 a hard-coded `origin`.
 
-For a fork's pull request, `headRemote` is a remote of the matched repository that already points
-at the head repository (the user's own fork, usually `origin` in a fork clone); the head is then
-fetched from it and tracked, as `gh pr checkout` does. Without one, and only when the fork still
-exists and its maintainers may push, `headPushURL` is the base remote's push URL with
-`owner/name` swapped (`replaceGitHubRemoteRepo`), so an SSH host alias such as
-`git@github.com-work:` carries over.
+For a fork's pull request, `headRemote` is a remote of the matched repository that already
+fetches from the head repository (the user's own fork, usually `origin` in a fork clone); the head
+is then fetched from it and tracked, as `gh pr checkout` does. Without one, and only when the fork
+still exists and its maintainers may push, `headPushURL` is the base remote's URL with
+`owner/name` swapped (`forkPushURL`: its push URL as git uses it, then as written, then its fetch
+URL the same way; `replaceGitHubRemoteRepo`), so an SSH host alias such as `git@github.com-work:`
+carries over.
 
-The local-branch facts `ticketCreateDefaults` decides with: a branch tracks THIS pull request when
-its config merges `refs/pull/<n>/head` from the base repository, or `refs/heads/<head>` from the
-repository the head lives in (a remote name or a URL), or, for a same-repository pull request
-only, when it has no upstream at all. An issue's branches never track anything.
+The local-branch facts `ticketCreateDefaults` decides with, and the checkout refuses by
+(`tracksPullRequest`): a branch tracks THIS pull request when its config merges
+`refs/pull/<n>/head` from the base repository, or `refs/heads/<head>` from the repository the head
+lives in (the base for a same-repository pull request), or, for a same-repository pull request
+only, when it has no upstream at all. Its `branch.<b>.remote` points at a repository when it is
+the remote matched to it (`baseRemote`, `headRemote`), the fork URL the create configures
+(`headPushURL`), ANY remote that fetches from it (a clone with both `origin` and `upstream` on the
+base repository), or a URL that names it; a `.` (local) upstream never does. An issue's branches
+never track anything.
 
 A registered repository whose `remoteURL` is null gets its `origin` URL filled in
 (`set-repo-remote-url`, then a save) the first time a search or resolve reads it, once per daemon

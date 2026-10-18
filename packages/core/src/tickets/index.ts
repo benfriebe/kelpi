@@ -10,6 +10,7 @@
  *   ticket-file.ts  the `.kelpi/ticket-<n>.md` an agent reads first
  *   search.ts       the picker's GitHub search queries
  *   defaults.ts     what a create does with every field it is not told
+ *   tracking.ts     which remote is a ticket's repository, and which branch is a pull request's
  */
 
 export {
@@ -67,3 +68,5 @@ export { DEFAULT_TICKET_SEARCHES, GITHUB_SEARCH_QUERY_MAX_LENGTH, buildTicketSea
 export type { TicketSearchOwner, TicketSearchPlan, TicketSearchQuery } from './search.js';
 export { serializeTicketDefaults, ticketCreateDefaults } from './defaults.js';
 export type { TicketCreateDefaults, TicketDefaultsInput, TicketDefaultsPullRequest } from './defaults.js';
+export { bestRemoteFor, pullRequestUpstreamPointsAt, remoteFetchesFrom, remoteRank, tracksPullRequest } from './tracking.js';
+export type { BranchUpstream, PullRequestRemotes, TicketRemote, TrackedPullRequest, UpstreamPointsAt } from './tracking.js';

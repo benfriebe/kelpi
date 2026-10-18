@@ -3,10 +3,14 @@
  * request (docs/integrations.md §9.6).
  *
  * A ticket names `owner/name`; a registered repository is a folder whose remotes point somewhere.
- * A repository matches when ANY of its remotes points at the ticket's repository: `origin` in a
+ * A repository matches when ANY of its remotes fetches from the ticket's repository: `origin` in a
  * plain clone, `upstream` in a fork clone (origin = the user's fork, upstream = the base), any other
- * name anyone uses. The remotes are read with `git remote -v` (`git/repo-facts.ts`), so
- * `insteadOf` rewrites are applied, not just the registry's `remoteURL` (which is origin's).
+ * name anyone uses. The remotes are read by `git/repo-facts.ts` (the one reader the create's plan
+ * and the pull request checkout use too), each with its URL as git uses it (`git remote -v`, so an
+ * `insteadOf` alias is resolved) and as written (so a GitHub URL rewritten onto a mirror still
+ * counts), never just the registry's `remoteURL` (which is origin's). Which remote is a
+ * repository's and which branch is a pull request's are decided by `@kelpi/core/tickets`
+ * (tracking.ts), the same functions the create uses.
  *
  * Several registered rows can match one repository (two clones, a monorepo's subfolder rows,
  * linked worktrees registered by hand). Ties are broken in this order (P10):
@@ -24,10 +28,13 @@
 
 import {
     NO_LOCAL_BRANCHES,
+    bestRemoteFor,
     gitHubRepoKey,
     parseGitHubRemote,
+    pullRequestUpstreamPointsAt,
+    remoteRank,
     replaceGitHubRemoteRepo,
-    sameGitHubRepo,
+    tracksPullRequest,
     type LocalBranchLookup
 } from '@kelpi/core/tickets';
 import type { TicketKind } from '@kelpi/protocol';
@@ -60,12 +67,6 @@ export interface RepoIndex {
     readonly remotesByRepo: ReadonlyMap<string, readonly RemoteFact[]>;
 }
 
-function remoteRank(name: string): number {
-    if (name === 'origin') return 0;
-    if (name === 'upstream') return 1;
-    return 2;
-}
-
 async function mapBounded<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
     const results: R[] = new Array<R>(items.length);
     let next = 0;
@@ -92,16 +93,18 @@ export async function buildRepoIndex(repos: readonly Repo[], facts: RepoFacts, s
     const remotesByRepo = new Map<string, readonly RemoteFact[]>();
     for (const { repo, order, remotes } of read) {
         remotesByRepo.set(repo.id, remotes);
-        // A repository's best remote per GitHub repository: origin, then upstream, then git's order.
+        // A repository's best remote per GitHub repository it fetches from (`bestRemoteFor`'s
+        // order: origin, then upstream, then git's order).
         const best = new Map<string, RemoteFact>();
         remotes.forEach((remote) => {
-            remoteURLs.push(remote.fetchURL);
-            if (remote.pushURL !== remote.fetchURL) remoteURLs.push(remote.pushURL);
-            const parsed = parseGitHubRemote(remote.fetchURL);
-            if (parsed === null) return;
-            const key = gitHubRepoKey(parsed.repo);
-            const current = best.get(key);
-            if (current === undefined || remoteRank(remote.name) < remoteRank(current.name)) best.set(key, remote);
+            for (const url of new Set([...remote.fetchURLs, remote.pushURL])) remoteURLs.push(url);
+            for (const url of remote.fetchURLs) {
+                const parsed = parseGitHubRemote(url);
+                if (parsed === null) continue;
+                const key = gitHubRepoKey(parsed.repo);
+                const current = best.get(key);
+                if (current === undefined || remoteRank(remote.name) < remoteRank(current.name)) best.set(key, remote);
+            }
         });
         for (const [key, remote] of best) {
             const list = byKey.get(key) ?? [];
@@ -130,17 +133,6 @@ export async function buildRepoIndex(repos: readonly Repo[], facts: RepoFacts, s
     };
 }
 
-/** Whether a `branch.<b>.remote` value (a remote name or a URL) points at `repo`. */
-function pointsAt(value: string | null, remotes: readonly RemoteFact[], repo: string | null): boolean {
-    if (value === null || value === '' || value === '.' || repo === null) return false;
-    const named = remotes.find((remote) => remote.name === value);
-    const urls = named === undefined ? [value] : [named.fetchURL, named.pushURL];
-    return urls.some((url) => {
-        const parsed = parseGitHubRemote(url);
-        return parsed !== null && sameGitHubRepo(parsed.repo, repo);
-    });
-}
-
 export interface BranchLookupTarget {
     readonly kind: TicketKind;
     readonly number: number;
@@ -150,27 +142,36 @@ export interface BranchLookupTarget {
     readonly headRef: string | null;
     readonly headRepo: string | null;
     readonly crossRepository: boolean;
+    /** Pull requests: the remote matched to the base repository, and the head's remote or push URL (`headRemoteFor`). */
+    readonly baseRemote: string | null;
+    readonly headRemote: string | null;
+    readonly headPushURL: string | null;
 }
 
 /**
- * The `LocalBranchLookup` `ticketCreateDefaults` decides with, from one read of the matched
- * repository (`@kelpi/core/tickets`' `LocalBranchFact` has the rule): a branch tracks THIS pull
- * request when its config merges `refs/pull/<n>/head` from the base repository, or
- * `refs/heads/<head>` from the repository the head lives in, or (same-repository pull request
- * only) when it has no upstream at all. An issue's branches never "track" anything.
+ * The `LocalBranchLookup` `ticketCreateDefaults` and `prLocalBranchName` decide with, from one read
+ * of a repository: whether a branch exists, where it is checked out, and whether it already is
+ * THIS pull request's, by `@kelpi/core/tickets`' `tracksPullRequest` (its config merges
+ * `refs/pull/<n>/head` from the base repository, or `refs/heads/<head>` from the repository the
+ * head lives in, or, same-repository only, it has no upstream at all). The resolve (through the
+ * cache) and the create's plan (uncached) both build it here, and the checkout applies the same
+ * rule, so they cannot pick different branch names. An issue's branches never "track" anything.
  */
 export function localBranchLookup(branches: BranchFacts | null, remotes: readonly RemoteFact[], target: BranchLookupTarget): LocalBranchLookup {
     if (branches === null) return NO_LOCAL_BRANCHES;
-    const headRepo = target.crossRepository ? target.headRepo : target.repo;
+    const pointsAt = pullRequestUpstreamPointsAt(remotes, {
+        baseRepo: target.repo,
+        headRepo: target.crossRepository ? target.headRepo : target.repo,
+        crossRepository: target.crossRepository,
+        baseRemote: target.baseRemote,
+        headRemote: target.headRemote,
+        headPushURL: target.headPushURL
+    });
     return (name) => {
         const config = branches.branches.get(name);
         if (config === undefined) return { exists: false };
-        let tracks = false;
-        if (target.kind === 'pr') {
-            if (config.remote === null && config.merge === null) tracks = !target.crossRepository;
-            else if (config.merge === `refs/pull/${target.number}/head`) tracks = pointsAt(config.remote, remotes, target.repo);
-            else if (target.headRef !== null && config.merge === `refs/heads/${target.headRef}`) tracks = pointsAt(config.remote, remotes, headRepo);
-        }
+        const tracks =
+            target.kind === 'pr' && tracksPullRequest(config, { number: target.number, headRef: target.headRef, crossRepository: target.crossRepository }, pointsAt);
         return { exists: true, tracksPullRequest: tracks, checkedOutAt: branches.checkedOutAt(name) };
     };
 }
@@ -181,10 +182,25 @@ export interface HeadRemoteDecision {
 }
 
 /**
- * For a fork's pull request: a remote of the matched repository that already points at the head
- * repository (preferring `origin`, the usual fork clone), else, when the fork exists and its
- * maintainers may push, the base remote's push URL with owner/name swapped (so an SSH host alias
- * carries over). Same-repository pull requests need neither.
+ * Where a fork's branch is pushed when no remote points at the fork: the base remote's URL with
+ * owner/name swapped, so an SSH host alias (or an `insteadOf` alias's target) carries over and the
+ * push authenticates exactly as a push to the base would. The push URL first (as git uses it, then
+ * as written), then the fetch URL the same way; null when none is a GitHub remote.
+ */
+export function forkPushURL(baseRemote: RemoteFact, owner: string, name: string): string | null {
+    for (const url of [baseRemote.pushURL, baseRemote.configuredPushURL, baseRemote.fetchURL, baseRemote.configuredFetchURL]) {
+        if (url === null) continue;
+        const swapped = replaceGitHubRemoteRepo(url, owner, name);
+        if (swapped !== null) return swapped;
+    }
+    return null;
+}
+
+/**
+ * For a fork's pull request: a remote of the repository that already fetches from the head
+ * repository (`bestRemoteFor`: `origin`, the usual fork clone, first), else, when the fork exists
+ * and its maintainers may push, `forkPushURL` of the base remote. Same-repository pull requests
+ * need neither. The resolve and the create's plan both decide with this.
  */
 export function headRemoteFor(
     pullRequest: { readonly crossRepository: boolean; readonly headRepo: string | null; readonly maintainerCanModify: boolean },
@@ -192,16 +208,9 @@ export function headRemoteFor(
     baseRemote: RemoteFact | null
 ): HeadRemoteDecision {
     if (!pullRequest.crossRepository || pullRequest.headRepo === null) return { headRemote: null, headPushURL: null };
-    const pointing = remotes
-        .filter((remote) => {
-            const parsed = parseGitHubRemote(remote.fetchURL);
-            return parsed !== null && sameGitHubRepo(parsed.repo, pullRequest.headRepo as string);
-        })
-        .sort((a, b) => remoteRank(a.name) - remoteRank(b.name));
-    const found = pointing[0];
-    if (found !== undefined) return { headRemote: found.name, headPushURL: null };
+    const found = bestRemoteFor(remotes, pullRequest.headRepo);
+    if (found !== null) return { headRemote: found.name, headPushURL: null };
     if (!pullRequest.maintainerCanModify || baseRemote === null) return { headRemote: null, headPushURL: null };
     const [owner, name] = pullRequest.headRepo.split('/') as [string, string];
-    const pushURL = replaceGitHubRemoteRepo(baseRemote.pushURL, owner, name) ?? replaceGitHubRemoteRepo(baseRemote.fetchURL, owner, name);
-    return { headRemote: null, headPushURL: pushURL };
+    return { headRemote: null, headPushURL: forkPushURL(baseRemote, owner, name) };
 }

@@ -1745,25 +1745,31 @@ remote (the remote whose URL matched the ticket's repository), a remote already 
 fork (`headRemote`) and, for a fork with no such remote whose maintainers may push, its push URL
 (`headPushURL`: the base remote's URL with owner/name swapped, so an SSH host alias carries
 over). A request whose `repo` (or group repository) is not the matched repository has these
-recomputed from that repository's own remotes (`listRemotes`, `matchTicketRemotes`: `origin`,
-then `upstream`, then config order; the fork's push URL from the base remote's `pushurl`, else
-its `url`, as the resolve builds it); a repository with no remote for the ticket's repository is
-refused (`<path> has no remote for owner/name: a pull request is checked out only in a clone of
+recomputed from that repository's own remotes, read and matched exactly as the resolve does
+(`readRemoteFacts`, `bestRemoteFor`, `headRemoteFor`, docs/integrations.md §9.6: `origin`, then
+`upstream`, then git's order, each remote's URLs counted as git uses them and as written, so an
+`insteadOf` alias matches; the fork's push URL from the base remote's push URL, else its fetch
+URL); a repository with no remote for the ticket's repository is refused (`<path> has no remote for owner/name: a pull request is checked out only in a clone of
 its own repository`). `update_main: true` is refused (`a pull request is checked out on its own
 head branch, so update main does not apply: leave it off`).
 
 The local branch is `prLocalBranchName`'s (the head's name, else `<owner>/<head>`, else
-`pr-<n>`, docs/integrations.md §4), read against the repository's branches at create time, or
-the name the request gave (renaming is allowed). Head and local branch names are used RAW, never
+`pr-<n>`, docs/integrations.md §4), read against the repository's branches at create time with the
+resolve's own lookup (`readBranchFacts`, `localBranchLookup`), or the name the request gave
+(renaming is allowed). Head and local branch names are used RAW, never
 `sanitizedGitName`, and must pass both `isSafeBranchName` and `git check-ref-format --branch`;
 remote names must be remotes of the repository. Then, before any fetch:
 
 - a branch checked out anywhere (the main clone included) is an error naming the path
   (`branch '<b>' is already checked out at '<path>': open a workspace there, or choose another
   branch name`); the resolve has usually already turned that case into `existing-checkout`;
-- an existing local branch that does not track this pull request (`branchTracksPullRequest`:
-  `refs/pull/<n>/head`, or the head branch from the remote or URL it is fetched from, or, for a
-  same-repository pull request, no upstream at all) is an error.
+- an existing local branch that does not track this pull request is an error. Both are read with
+  `readBranchFacts` and `readRemoteFacts` (strict: an unreadable repository is git's error) and
+  judged by `@kelpi/core/tickets`' `tracksPullRequest`, the rule the resolve proposed the branch
+  with (docs/integrations.md §9.6: `refs/pull/<n>/head` from the base repository, or the head
+  branch from the repository it lives in, through the matched remote, the fork URL, any other
+  remote of that repository or a URL naming it; or, for a same-repository pull request, no
+  upstream at all), so a branch the sheet prefilled is never refused here.
 
 ```
 head reachable through a remote (same repository: the base remote; a fork: headRemote)

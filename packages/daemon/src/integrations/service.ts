@@ -518,7 +518,10 @@ export function createIntegrationsService(options: CreateIntegrationsServiceOpti
                 repo: summary.repo,
                 headRef: pr?.headRef ?? null,
                 headRepo: pr?.headRepo ?? null,
-                crossRepository: pr?.crossRepository ?? false
+                crossRepository: pr?.crossRepository ?? false,
+                baseRemote: match?.remote.name ?? null,
+                headRemote: pullRequest?.headRemote ?? null,
+                headPushURL: pullRequest?.headPushURL ?? null
             })
         });
         const warnings = [...defaults.warnings];

@@ -30,7 +30,10 @@
  *
  * It never falls back to `-b <b>` off HEAD: a pull request's worktree is on its head or nowhere.
  * A branch checked out anywhere (the main clone included) is an error naming that path; a local
- * branch of the chosen name that does not track this pull request is an error too. Head and local
+ * branch of the chosen name that does not track this pull request is an error too. Both are read
+ * with `git/repo-facts.ts`' strict readers and judged by `@kelpi/core/tickets`' `tracksPullRequest`,
+ * the reader and the rule the resolve and the create's plan use, so a branch the sheet prefilled
+ * as this pull request's is never refused here as someone else's. Head and local
  * branch names are used RAW (never `sanitizedGitName`, which would push to another branch) but must
  * pass `isSafeBranchName` and `git check-ref-format --branch`, and remote names must be remotes of
  * the repository.
@@ -41,17 +44,16 @@
  * upstream) is not cancellable.
  */
 
-import { isSafeBranchName, parseGitHubRemote, sameGitHubRepo } from '@kelpi/core/tickets';
+import { isSafeBranchName, parseGitHubRemote, pullRequestUpstreamPointsAt, tracksPullRequest } from '@kelpi/core/tickets';
 
 import { isGitCommandError } from './exec.js';
 import { worktreeErrorMessage } from './names.js';
 import type { GitProgress } from './progress.js';
-import { parseWorktreeList } from './status.js';
+import { readBranchFacts, readRemoteFacts, type BranchConfigFact, type GitRead, type RemoteFact } from './repo-facts.js';
 import {
     cleanupCancelledWorktreeAdd,
     pathExists,
     probeRef,
-    refExists,
     seconds,
     snapshotBeforeAdd,
     withProgress,
@@ -76,6 +78,8 @@ export interface PullRequestCheckoutRequest {
     readonly headSha: string;
     readonly crossRepository: boolean;
     readonly maintainerCanModify: boolean;
+    /** `owner/name` of the pull request's (base) repository: the ticket's. */
+    readonly baseRepo: string;
     /** `owner/name` of the head repository; null when the fork was deleted. */
     readonly headRepo: string | null;
     /** The remote of `repoPath` that points at the pull request's base repository. */
@@ -106,95 +110,22 @@ export class PullRequestCheckoutError extends Error {
 export type PullRequestCheckoutHooks = Pick<WorktreeAddHooks, 'signal' | 'steps' | 'log'>;
 
 // ---------------------------------------------------------------------------
-// Reads shared with the create flow
+// Reads (the one reader and the one rule: module note)
 // ---------------------------------------------------------------------------
 
-export interface GitRemote {
-    readonly name: string;
-    /** `remote.<name>.url`: where it fetches from. */
-    readonly url: string;
-    /** `remote.<name>.pushurl`, when set: where it pushes to. */
-    readonly pushURL?: string | undefined;
-}
-
-/** Every remote of `repoPath` that has a URL, with its push URL when one is set, in config order. */
-export async function listRemotes(ops: WorktreeGitOps, repoPath: string, signal?: AbortSignal): Promise<GitRemote[]> {
-    let out: string;
-    try {
-        out = await ops.read(['config', '--get-regexp', '^remote\\..*\\.(url|pushurl)$'], repoPath, signal !== undefined ? { signal } : {});
-    } catch (error) {
-        // Exit 1: no remote has a URL.
-        if (!signal?.aborted && isGitCommandError(error) && error.exitCode === 1) return [];
-        throw error;
-    }
-    const urls = new Map<string, string>();
-    const pushURLs = new Map<string, string>();
-    for (const line of out.split('\n')) {
-        // Keys come back lowercased (`pushurl`); the remote's name keeps its case.
-        const match = /^remote\.(.+)\.(url|pushurl) (.+)$/.exec(line.trim());
-        if (match === null) continue;
-        const [, name, key, value] = match as unknown as [string, string, string, string];
-        const target = key === 'url' ? urls : pushURLs;
-        if (!target.has(name)) target.set(name, value.trim());
-    }
-    return [...urls].map(([name, url]) => {
-        const pushURL = pushURLs.get(name);
-        return pushURL === undefined ? { name, url } : { name, url, pushURL };
-    });
-}
-
-/**
- * The remotes of a repository that point at a ticket's repository (`base`) and at a fork's head
- * repository (`head`): `origin` first, then `upstream`, then config order. Null when none does.
- */
-export function matchTicketRemotes(
-    remotes: readonly GitRemote[],
-    repo: string,
-    headRepo: string | null
-): { readonly base: GitRemote | null; readonly head: GitRemote | null } {
-    const rank = (remote: GitRemote): number => (remote.name === 'origin' ? 0 : remote.name === 'upstream' ? 1 : 2);
-    const pointingAt = (target: string): GitRemote | null => {
-        const found = remotes.filter((remote) => {
-            const parsed = parseGitHubRemote(remote.url);
-            return parsed !== null && sameGitHubRepo(parsed.repo, target);
-        });
-        found.sort((a, b) => rank(a) - rank(b));
-        return found[0] ?? null;
-    };
-    return { base: pointingAt(repo), head: headRepo === null ? null : pointingAt(headRepo) };
-}
-
 /** What a local branch is to this repository right now. */
-export interface LocalBranchState {
+interface LocalBranchState {
     readonly exists: boolean;
-    /** The checkout it is checked out in (the repository itself or a linked worktree), or null. */
+    /** The checkout it is checked out in (the repository itself, a linked worktree, or one whose directory is gone), or null. */
     readonly checkedOutAt: string | null;
-    /** `branch.<b>.remote` and `branch.<b>.merge`, or null when unset. */
-    readonly remote: string | null;
-    readonly merge: string | null;
+    /** `branch.<b>.*`; all null for a branch with none, or none at all. */
+    readonly config: BranchConfigFact;
+    readonly tracksPullRequest: boolean;
 }
 
-async function configValue(ops: WorktreeGitOps, repoPath: string, key: string, signal?: AbortSignal): Promise<string | null> {
-    try {
-        const out = (await ops.read(['config', '--get', key], repoPath, signal !== undefined ? { signal } : {})).trim();
-        return out === '' ? null : out;
-    } catch (error) {
-        if (!signal?.aborted && isGitCommandError(error) && error.exitCode === 1) return null;
-        throw error;
-    }
-}
-
-/** `branch` in `repoPath`: does it exist, where is it checked out, what does it track. */
-export async function readLocalBranch(ops: WorktreeGitOps, repoPath: string, branch: string, signal?: AbortSignal): Promise<LocalBranchState> {
-    const exists = await refExists(ops, repoPath, `refs/heads/${branch}`, signal);
-    const list = await ops.read(['worktree', 'list', '--porcelain'], repoPath, signal !== undefined ? { signal } : {});
-    const checkedOutAt = parseWorktreeList(list).find((entry) => entry.branch === branch)?.path ?? null;
-    return {
-        exists,
-        checkedOutAt,
-        remote: await configValue(ops, repoPath, `branch.${branch}.remote`, signal),
-        merge: await configValue(ops, repoPath, `branch.${branch}.merge`, signal)
-    };
+/** `ops.read` in `repoPath`, as `repo-facts.ts`' strict readers take it. */
+function readIn(ops: WorktreeGitOps, repoPath: string, signal?: AbortSignal): GitRead {
+    return (args) => ops.read(args, repoPath, signal !== undefined ? { signal } : {});
 }
 
 /**
@@ -213,27 +144,37 @@ export async function isUsableBranchName(ops: WorktreeGitOps, repoPath: string, 
 }
 
 /**
- * Whether an existing local branch already belongs to this pull request: it pulls
- * `refs/pull/<n>/head`, or the head branch from the remote (or URL) the head is fetched from, or,
- * for a pull request from the same repository, it tracks nothing at all (the author's own branch,
- * never pushed with `-u`).
+ * `branch` in the request's repository: does it exist, where is it checked out (any worktree git
+ * lists, so git's own "already used by worktree" never surfaces first), and whether it already is
+ * this pull request's (`tracksPullRequest` with what the request matched: its base remote, a
+ * fork's remote or push URL, and every remote that fetches from either repository).
  */
-/** The fields of a checkout request that decide which remote branches are "this pull request's". */
-export type PullRequestIdentity = Pick<
-    PullRequestCheckoutRequest,
-    'number' | 'headRef' | 'crossRepository' | 'headRepo' | 'baseRemote' | 'headRemote' | 'headPushURL'
->;
-
-export function branchTracksPullRequest(state: LocalBranchState, request: PullRequestIdentity): boolean {
-    if (state.merge === `refs/pull/${request.number}/head`) return true;
-    if (state.merge === `refs/heads/${request.headRef}` && state.remote !== null) {
-        const fetchRemote = request.crossRepository ? request.headRemote : request.baseRemote;
-        if (state.remote === fetchRemote || state.remote === request.headPushURL) return true;
-        const asURL = parseGitHubRemote(state.remote);
-        const repo = request.crossRepository ? request.headRepo : null;
-        if (asURL !== null && repo !== null && sameGitHubRepo(asURL.repo, repo)) return true;
-    }
-    return !request.crossRepository && state.merge === null && state.remote === null;
+async function readLocalBranch(
+    ops: WorktreeGitOps,
+    request: PullRequestCheckoutRequest,
+    remotes: readonly RemoteFact[],
+    headPushURL: string | null,
+    signal?: AbortSignal
+): Promise<LocalBranchState> {
+    const facts = await readBranchFacts(readIn(ops, request.repoPath, signal));
+    const branch = request.branchName;
+    const config = facts.branches.get(branch);
+    const checkedOutAt = facts.worktrees.find((worktree) => worktree.branch === branch && !worktree.bare)?.path ?? null;
+    if (config === undefined) return { exists: false, checkedOutAt, config: { remote: null, merge: null, pushRemote: null }, tracksPullRequest: false };
+    const pointsAt = pullRequestUpstreamPointsAt(remotes, {
+        baseRepo: request.baseRepo,
+        headRepo: request.crossRepository ? request.headRepo : request.baseRepo,
+        crossRepository: request.crossRepository,
+        baseRemote: request.baseRemote,
+        headRemote: request.headRemote,
+        headPushURL
+    });
+    return {
+        exists: true,
+        checkedOutAt,
+        config,
+        tracksPullRequest: tracksPullRequest(config, { number: request.number, headRef: request.headRef, crossRepository: request.crossRepository }, pointsAt)
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -246,7 +187,7 @@ async function validate(
     ops: WorktreeGitOps,
     request: PullRequestCheckoutRequest,
     signal: AbortSignal | undefined
-): Promise<{ readonly headPushURL: string | null; readonly warnings: string[] }> {
+): Promise<{ readonly headPushURL: string | null; readonly warnings: string[]; readonly remotes: readonly RemoteFact[] }> {
     const warnings: string[] = [];
     if (!Number.isSafeInteger(request.number) || request.number <= 0) throw new PullRequestCheckoutError(`'${String(request.number)}' is not a pull request number`);
     if (!SHA_PATTERN.test(request.headSha)) throw new PullRequestCheckoutError(`pull request #${request.number} has no usable head commit`);
@@ -256,9 +197,10 @@ async function validate(
     if (!(await isUsableBranchName(ops, request.repoPath, request.branchName, signal))) {
         throw new PullRequestCheckoutError(`"${request.branchName}" isn't a usable branch name`);
     }
-    const remotes = new Set((await listRemotes(ops, request.repoPath, signal)).map((remote) => remote.name));
-    if (!remotes.has(request.baseRemote)) throw new PullRequestCheckoutError(`${request.repoPath} has no remote named '${request.baseRemote}'`);
-    if (request.headRemote !== null && !remotes.has(request.headRemote)) {
+    const remotes = await readRemoteFacts(readIn(ops, request.repoPath, signal));
+    const names = new Set(remotes.map((remote) => remote.name));
+    if (!names.has(request.baseRemote)) throw new PullRequestCheckoutError(`${request.repoPath} has no remote named '${request.baseRemote}'`);
+    if (request.headRemote !== null && !names.has(request.headRemote)) {
         throw new PullRequestCheckoutError(`${request.repoPath} has no remote named '${request.headRemote}'`);
     }
     let headPushURL = request.headPushURL;
@@ -266,7 +208,7 @@ async function validate(
         warnings.push(`the fork's push address for pull request #${request.number} is not a GitHub remote, so the branch was not set to push there`);
         headPushURL = null;
     }
-    return { headPushURL, warnings };
+    return { headPushURL, warnings, remotes };
 }
 
 /** Exit 2 from `ls-remote --exit-code`: the remote has no such branch (any other answer: unknown). */
@@ -322,12 +264,12 @@ export async function performPullRequestCheckout(
         const checked = await validate(ops, request, signal);
         const warnings = checked.warnings;
         const headPushURL = checked.headPushURL;
-        const local = await readLocalBranch(ops, repoPath, branch, signal);
+        const local = await readLocalBranch(ops, request, checked.remotes, headPushURL, signal);
         bail();
         if (local.checkedOutAt !== null) {
             throw new PullRequestCheckoutError(`branch '${branch}' is already checked out at '${local.checkedOutAt}': open a workspace there, or choose another branch name`);
         }
-        if (local.exists && !branchTracksPullRequest(local, request)) {
+        if (local.exists && !local.tracksPullRequest) {
             throw new PullRequestCheckoutError(`a local branch '${branch}' already exists and does not track pull request #${number}: choose another branch name`);
         }
 
@@ -411,7 +353,7 @@ export async function performPullRequestCheckout(
             }
         }
         const upstream: { remote: string; merge: string; pushRemote: boolean } | null =
-            local.merge !== null
+            local.config.merge !== null
                 ? null
                 : source === 'head-branch'
                   ? local.exists

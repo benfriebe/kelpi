@@ -1095,7 +1095,10 @@ async function planTicketCreate(
             const [owner, name] = (pr.headRepo ?? '').split('/');
             headPushURL =
                 pr.crossRepository && headRemote === null && pr.maintainerCanModify && owner !== undefined && name !== undefined && name !== ''
-                    ? replaceGitHubRemoteRepo(match.base.url, owner, name)
+                    ? // The base remote's push URL when it has one (as the resolve does), so a
+                      // push to the fork authenticates the way a push to the base would.
+                      (replaceGitHubRemoteRepo(match.base.pushURL ?? match.base.url, owner, name) ??
+                      replaceGitHubRemoteRepo(match.base.url, owner, name))
                     : null;
         }
         const identity: PullRequestIdentity = {

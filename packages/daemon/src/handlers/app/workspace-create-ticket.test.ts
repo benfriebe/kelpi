@@ -27,7 +27,7 @@ import {
     worktreeGitOps,
     type GitService
 } from '../../git/index.js';
-import { commit, git, HAS_GIT, mapGitHubURL, pullRequestFixture, removeTmpDirs, sameRepoPullRequest, tryGit, type PullRequestFixture } from '../../git/pr-testing.js';
+import { commit, forkPullRequest, git, HAS_GIT, mapGitHubURL, pullRequestFixture, removeTmpDirs, sameRepoPullRequest, tryGit, type PullRequestFixture } from '../../git/pr-testing.js';
 import { stubGitService } from '../../git/testing.js';
 import type { ReplyHandle } from '../../seams.js';
 import { TicketServiceError, type ResolvedTicket, type TicketService, type WorktreeCreator } from './context.js';
@@ -36,7 +36,7 @@ import { PR_NEEDS_BUNDLED_GIT_ERROR, PR_UPDATE_MAIN_ERROR, TICKET_NOT_CONNECTED_
 
 afterAll(removeTmpDirs);
 
-const REPO_ID = '0000000R-0000-4000-8000-000000000001'.replace('R', 'A');
+const REPO_ID = '0000000A-0000-4000-8000-000000000001';
 const TITLE = 'Retry login on 401';
 
 // ---------------------------------------------------------------------------
@@ -131,17 +131,18 @@ function issueTicket(options: { repoID?: string | null; number?: number; localBr
     };
 }
 
-function prTicket(headSha: string, options: { number?: number; headRef?: string; localBranch?: LocalBranchLookup } = {}): ResolvedTicket {
+function prTicket(headSha: string, options: { number?: number; headRef?: string; localBranch?: LocalBranchLookup; fork?: boolean } = {}): ResolvedTicket {
     const number = options.number ?? 7;
     const headRef = options.headRef ?? 'feat/login';
     const row = summary('pr', number, REPO_ID);
+    const fork = options.fork === true;
     const pullRequest = {
         headRef,
         headSha,
-        crossRepository: false,
+        crossRepository: fork,
         maintainerCanModify: true,
-        headOwner: 'acme',
-        headRepo: 'acme/api',
+        headOwner: fork ? 'octo' : 'acme',
+        headRepo: fork ? 'octo/api' : 'acme/api',
         baseRef: 'main',
         baseDefaultBranch: 'main',
         headRemote: null,
@@ -169,7 +170,7 @@ function prTicket(headSha: string, options: { number?: number; headRef?: string;
             labels: [],
             baseRef: 'main',
             headRef,
-            headRepo: 'acme/api',
+            headRepo: pullRequest.headRepo,
             body: 'Retries once.',
             comments: []
         },
@@ -265,8 +266,8 @@ describe('workspace-create with a ticket: refusals before any effect', () => {
         const tickets = fakeTickets(() => issueTicket());
         const launcher = recordingLauncher();
         const h = harness({ tickets, agentLauncher: launcher, git: stubGitService() });
-        h.dispatch({ type: 'create-group', id: '0000000G-0000-4000-8000-000000000001'.replace('G', 'C'), name: 'team', now: NOW });
-        h.dispatch({ type: 'create-group', id: '0000000G-0000-4000-8000-000000000002'.replace('G', 'C'), name: 'team', now: NOW });
+        h.dispatch({ type: 'create-group', id: '0000000C-0000-4000-8000-000000000001', name: 'team', now: NOW });
+        h.dispatch({ type: 'create-group', id: '0000000C-0000-4000-8000-000000000002', name: 'team', now: NOW });
 
         expect(h.reply({ command: 'workspace-create', ticket: 'not a ticket', start_agent: 'gemini' })).toEqual({
             ok: false,
@@ -311,6 +312,13 @@ describe('workspace-create with a ticket: refusals before any effect', () => {
         expect(await settle(h)).toEqual({ ok: false, error: 'Authorize Kelpi for acme', ticket_error: 'sso-required', sso_url: 'https://github.com/orgs/acme/sso' });
         expect(tickets.calls).toEqual([{ provider: 'github', owner: 'acme', name: 'api', repo: 'acme/api', number: 418, kind: null }]);
         expect(launcher.written).toEqual([]);
+        expect(h.state().workspaces).toEqual([]);
+    });
+
+    it('a service that is stopping answers unavailable, which the create passes on', async () => {
+        const h = harness({ tickets: fakeTickets(() => Promise.reject(new TicketServiceError('unavailable', 'Kelpi is stopping'))) });
+        h.send({ command: 'workspace-create', ticket: ISSUE });
+        expect(await settle(h)).toEqual({ ok: false, error: 'Kelpi is stopping', ticket_error: 'unavailable' });
         expect(h.state().workspaces).toEqual([]);
     });
 
@@ -563,6 +571,44 @@ describe.skipIf(!HAS_GIT)('workspace-create from a pull request', { timeout: 30_
         h.send({ command: 'workspace-create', ticket: PR, repo: other, worktree: 'from-other' });
         expect(await settle(h, 1)).toMatchObject({ ok: true, repo_path: other, checkout: 'pr-head' });
         expect(tryGit(other, 'config', '--get', 'branch.feat/login.remote')).toBe('upstream');
+    });
+
+    it("a fork checked out in another clone pushes to the fork through the base remote's push URL", async () => {
+        const fx = pullRequestFixture();
+        const head = forkPullRequest(fx, 8, 'fix');
+        const other = path.join(fx.root, 'other');
+        git(fx.root, 'clone', '-q', fx.origin, other);
+        git(other, 'remote', 'set-url', 'origin', 'https://github.com/acme/api.git');
+        git(other, 'remote', 'set-url', '--push', 'origin', 'git@github.com-work:acme/api.git');
+        mapGitHubURL('acme/api', other, fx.origin);
+        const h = ticketHarness(fx, { tickets: fakeTickets(() => prTicket(head, { number: 8, headRef: 'fix', fork: true })) });
+        h.send({ command: 'workspace-create', ticket: 'https://github.com/acme/api/pull/8', repo: other });
+        expect(await settle(h)).toMatchObject({ ok: true, repo_path: other, branch: 'fix', checkout: 'pr-head' });
+        expect(git(other, 'rev-parse', 'fix')).toBe(head);
+        expect(tryGit(other, 'config', '--get', 'branch.fix.remote')).toBe('git@github.com-work:octo/api.git');
+        expect(tryGit(other, 'config', '--get', 'branch.fix.pushRemote')).toBe('git@github.com-work:octo/api.git');
+        expect(tryGit(other, 'config', '--get', 'branch.fix.merge')).toBe('refs/heads/fix');
+    });
+
+    it("is refused through a group whose repository has no remote for it, and an unknown group is refused before git", async () => {
+        const fx = pullRequestFixture();
+        const head = sameRepoPullRequest(fx, 7, 'feat/login');
+        const other = path.join(fx.root, 'other');
+        git(fx.root, 'clone', '-q', fx.origin, other);
+        const h = ticketHarness(fx, { tickets: fakeTickets(() => prTicket(head)) });
+        const OTHER_ID = '0000000A-0000-4000-8000-000000000002';
+        const GROUP_ID = '0000000D-0000-4000-8000-000000000001';
+        h.dispatch(
+            { type: 'add-repo', repo: { id: OTHER_ID, path: other, name: 'other', remoteURL: null, lastAccessedAt: 1, isAutoDiscovered: false } },
+            { type: 'create-group', id: GROUP_ID, name: 'team', now: NOW },
+            { type: 'set-group-repo', id: GROUP_ID, repoID: OTHER_ID }
+        );
+        h.send({ command: 'workspace-create', ticket: PR, group: 'team' });
+        expect(await settle(h)).toEqual({ ok: false, error: `${other} has no remote for acme/api: a pull request is checked out only in a clone of its own repository` });
+        h.send({ command: 'workspace-create', ticket: PR, group: 'nobody' });
+        expect(await settle(h, 1)).toMatchObject({ ok: false, error: expect.stringContaining('unknown group: nobody') as unknown as string });
+        expect(h.state().workspaces).toEqual([]);
+        expect(tryGit(fx.work, 'rev-parse', '--verify', '--quiet', 'refs/heads/feat/login')).toBeNull();
     });
 
     it('opens a workspace where the branch is already checked out (no worktree)', async () => {

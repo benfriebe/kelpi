@@ -334,9 +334,10 @@ describe.skipIf(!HAS_GIT)('performPullRequestCheckout against real git', { timeo
     it('lists remotes with their URLs, and none for a repository without', async () => {
         const fx = pullRequestFixture();
         git(fx.work, 'remote', 'add', 'my.fork', 'git@github.com:me/api.git');
+        git(fx.work, 'remote', 'set-url', '--push', 'my.fork', 'git@github.com-work:me/api.git');
         expect(await listRemotes(ops(), fx.work)).toEqual([
             { name: 'origin', url: fx.origin },
-            { name: 'my.fork', url: 'git@github.com:me/api.git' }
+            { name: 'my.fork', url: 'git@github.com:me/api.git', pushURL: 'git@github.com-work:me/api.git' }
         ]);
         git(fx.work, 'remote', 'remove', 'origin');
         git(fx.work, 'remote', 'remove', 'my.fork');

@@ -55,7 +55,8 @@ command's id to the connection that sent it (never a broadcast, never after the 
 `signal` is aborted by a `workspace-create-cancel` naming the create's `request_id` from the same
 connection. The control socket's handle has neither, so a handler reports progress as
 `reply?.progress?.(…)` and the CLI still gets exactly one line. Only the worktree
-`workspace-create` uses them (§6.2 (a)). The plugin-hook wrapper (`boot/dispatch.ts`) forwards both.
+`workspace-create` (§6.2 (a)) and a `workspace-create` from a ticket, with or without a worktree
+(§6.2 "Starting from a ticket"), use them. The plugin-hook wrapper (`boot/dispatch.ts`) forwards both.
 
 The transport implementation is `createReplyHandle` in `packages/daemon/src/control/reply.ts:43`.
 `onDisconnect` registers a callback the transport fires exactly once when the client
@@ -1005,8 +1006,8 @@ Entry shape (timestamps plain ISO 8601):
 Inputs: `name?`, `path?`, `color?`, `group?`, `profile?`, `worktree?`, `branch?`,
 `updateMain?` (bool; absent is not false, see (a) step 2), `repo?`, `muted` (bool, default
 false), `groupDefaults` (bool, default true; app-state-core.md §5.5), `startAgent?` (the raw
-string), `agentPrompt?`, `sendPrompt` (bool, default false). `workspaceName = name ??
-"Workspace"`. All three branches carry `muted` on the `create-workspace` action itself, so a
+string), `agentPrompt?`, `sendPrompt` (bool, default false), `ticket?` (the raw string) and
+`ticketDefaults` (bool, default true). `workspaceName = name ?? "Workspace"`. All three branches carry `muted` on the `create-workspace` action itself, so a
 muted workspace is muted from its first frame and its first pane never notifies (§6.7), and
 all three success replies echo `muted`, the state the workspace was created in, so a caller
 can tell a daemon that predates the field (it drops it and creates the workspace unmuted).
@@ -1064,6 +1065,51 @@ echo included, still goes out before the workspace exists. A handler table built
 `agentLauncher` gets `INERT_AGENT_LAUNCHER`, which starts nothing and refuses any prompt
 (`could not write the prompt file: agent launch is not available`).
 
+**Starting from a ticket** (`ticket`, `ticketDefaults`; the wire contract is wire-protocol.md
+§6.3, the git is graft-git.md §8.5.3/§8.5.4, the service docs/integrations.md §8). A create with
+`ticket` takes its own path (`handleTicketCreate`, `packages/daemon/src/handlers/app/workspaces.ts`)
+instead of the four branches below, through the handler table's `deps.tickets`
+(`TicketService`: `connected(provider)` and `resolve(ref, signal)`; a table built without one
+gets `INERT_TICKET_SERVICE`, which is never connected) and `deps.ticketGit` (bundled git, run
+directly: remote and branch reads, the ticket file's checks, the pull request's checkout). In
+order, refusals first and nothing changed by any of them:
+
+1. "Starting an agent" checks 1 to 3 (check 4, the prompt file, waits for step 6);
+2. `parseTicketRef(ticket)` → `error("'<ticket>' is not a GitHub issue or pull request: paste its
+   URL, or owner/name#number")` with `ticket_error: "bad-ref"`;
+3. `tickets.connected` false → `error("GitHub is not connected: connect it in Settings ▸
+   Integrations")` with `ticket_error: "not-connected"`;
+4. an ambiguous `group` → the ambiguity error of (c);
+5. `tickets.resolve(ref, reply.signal)`, reported as the `ticket` step (graft-git.md §8.5.1) and
+   cancellable through `workspace-create-cancel`; a `TicketServiceError` is the refusal
+   `ticketCreateFailure(error)`: `{ok:false, error, ticket_error: <code>, retry_after_s?,
+   sso_url?, settings_url?}`;
+6. the plan: the repository is `repo`, else the group's default repository, else (with
+   `ticketDefaults`) the registered repository the ticket matched; with `ticketDefaults`, every
+   omitted field comes from `resolved.defaults` (name, worktree, branch, and update main, which
+   is on exactly when the issue's branch does not exist yet; an existing branch is attached). A
+   defaults branch that is already checked out opens the workspace there, with no worktree
+   (`existing-checkout`, as (d) with that checkout's path). A pull request with a worktree is
+   `pr-head` (graft-git.md §8.5.3: `update_main: true`, a repository with no remote for it, and
+   a plugin-owned `kelpi.git` are refused; a different `branch` is a rename and allowed). A
+   ticket left with neither a repository nor a worktree → `error("no registered repository has
+   a remote for <owner/name>: add its clone in Settings ▸ Repositories, or name one (--repo)")`;
+   name, branch and group errors are the ones (a) and (d) give. The step list is re-planned for
+   the checkout mode;
+7. the prompt file, from `agentPrompt` when present, else (with `ticketDefaults`) the ticket's
+   rendered prompt (`resolved.defaults.prompt`), else none: a write failure is the error of
+   "Starting an agent" check 4, still before any git work.
+
+Then the effects: the worktree (`performWorktreeAdd` with the matched remote, or
+`deps.checkoutPullRequest`), or, without one, the checkout resolved as in (d); the ticket file
+(graft-git.md §8.5.4), and when it was not written the prompt file is rewritten with the
+ticket's URL in place of the file; the repository registered with `ensureRegisteredRepo`
+(remote URL included); `dispatchCreate` with `ticket: workspaceTicketOf(resolved.summary)`, so the
+workspace keeps the ticket and the launcher starts only now, with the file in place. The reply
+is (a)'s or (d)'s plus `ticket`, `checkout`, `ticket_file` or `ticket_file_error`, and
+`warnings` when there are any (wire-protocol.md §6.3). Every refusal after step 6 removes the
+prompt file, as on the other branches.
+
 Four branches, checked in this order ((d) is checked before (b) and (c)):
 
 #### (a) Worktree branch (`worktree` non-null, non-empty) — issue #222
@@ -1089,7 +1135,8 @@ Four branches, checked in this order ((d) is checked before (b) and (c)):
    `Repo{ id: uuid(), path, name: lastPathComponent }` (registered on success). On success
    an already-registered source repo is marked manually kept (`isAutoDiscovered = false`)
    so the registry GC can never collect the parent of a worktree the user built on purpose;
-   a new repo is registered the same way (`handlers/app/workspaces.ts:300`, §GIT-103).
+   a new repo is registered the same way, with its `origin` URL as `remoteURL` so a ticket can
+   later be matched to it (`ensureRegisteredRepo`, `git/registry.ts`; §GIT-103).
 5. `worktreePath = resolvedWorktreeBasePath(repoPath) + "/" + folderName`. The base path
    setting expands `~` and a `<repo>` placeholder (`<repo>` at the start ⇒ the full repo
    path; elsewhere ⇒ the repo's directory name).

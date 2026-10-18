@@ -111,26 +111,36 @@ export type PullRequestCheckoutHooks = Pick<WorktreeAddHooks, 'signal' | 'steps'
 
 export interface GitRemote {
     readonly name: string;
+    /** `remote.<name>.url`: where it fetches from. */
     readonly url: string;
+    /** `remote.<name>.pushurl`, when set: where it pushes to. */
+    readonly pushURL?: string | undefined;
 }
 
-/** Every remote of `repoPath` with its fetch URL (`remote.<name>.url`), in config order. */
+/** Every remote of `repoPath` that has a URL, with its push URL when one is set, in config order. */
 export async function listRemotes(ops: WorktreeGitOps, repoPath: string, signal?: AbortSignal): Promise<GitRemote[]> {
     let out: string;
     try {
-        out = await ops.read(['config', '--get-regexp', '^remote\\..*\\.url$'], repoPath, signal !== undefined ? { signal } : {});
+        out = await ops.read(['config', '--get-regexp', '^remote\\..*\\.(url|pushurl)$'], repoPath, signal !== undefined ? { signal } : {});
     } catch (error) {
         // Exit 1: no remote has a URL.
         if (!signal?.aborted && isGitCommandError(error) && error.exitCode === 1) return [];
         throw error;
     }
-    const remotes: GitRemote[] = [];
+    const urls = new Map<string, string>();
+    const pushURLs = new Map<string, string>();
     for (const line of out.split('\n')) {
-        const match = /^remote\.(.+)\.url (.+)$/.exec(line.trim());
+        // Keys come back lowercased (`pushurl`); the remote's name keeps its case.
+        const match = /^remote\.(.+)\.(url|pushurl) (.+)$/.exec(line.trim());
         if (match === null) continue;
-        remotes.push({ name: match[1] as string, url: (match[2] as string).trim() });
+        const [, name, key, value] = match as unknown as [string, string, string, string];
+        const target = key === 'url' ? urls : pushURLs;
+        if (!target.has(name)) target.set(name, value.trim());
     }
-    return remotes;
+    return [...urls].map(([name, url]) => {
+        const pushURL = pushURLs.get(name);
+        return pushURL === undefined ? { name, url } : { name, url, pushURL };
+    });
 }
 
 /**

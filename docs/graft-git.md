@@ -1801,6 +1801,16 @@ a fork with no remote, or a head branch that is gone (merged and deleted)
   create and makes no branch.
 - **Existing configuration is never rewritten**: `branch.<b>.*` is written only when
   `branch.<b>.merge` is unset, exactly as gh does; no named remote is ever added.
+- **A fork's tracked hooks never run.** A RELATIVE `core.hooksPath` (`.githooks`, husky's
+  `.husky/_`) names a folder of the checkout, and git runs the fast-forward's `post-merge` from
+  the new worktree's own copy (`worktree add`'s `post-checkout` from the main checkout's on git
+  2.50, but that lookup is git's choice): for a fork's pull request, scripts its author wrote. So
+  for a cross-repository pull request whose `core.hooksPath` is relative (not `/`, `~` or
+  `%(prefix)/`), the `worktree add` and the `merge --ff-only` run with `git -c
+  core.hooksPath=/dev/null`, and the reply warns `git hooks did not run for pull request #<n>'s
+  checkout: core.hooksPath (<value>) is inside the checkout, which holds the fork's files`. The
+  default `.git/hooks`, an absolute hooks path and every same-repository pull request keep the
+  user's hooks; the user's configuration is never changed.
 - **Cancel.** The snapshot is taken BEFORE the fetch (the `refs/pull` fetch can create the
   branch), and the commit the fetch arrived at counts as a tip this create could have made, so a
   cancel removes a branch the fetch made and nothing else (§8.5.2). The fast-forward and the

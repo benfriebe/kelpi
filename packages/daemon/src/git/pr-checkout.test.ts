@@ -300,6 +300,85 @@ describe.skipIf(!HAS_GIT)('performPullRequestCheckout against real git', { timeo
         expect(git(fx.work, 'worktree', 'list', '--porcelain')).not.toContain('/wt/fix');
     });
 
+    /**
+     * The user's own hooks under a relative `core.hooksPath`, as husky generates `.husky/_` in each
+     * checkout. A fast-forward inside the new worktree runs the WORKTREE's copy (for a fork, the
+     * fork's tracked script); `worktree add` runs the main checkout's copy on git 2.50, but where
+     * git looks it up is its own choice, so the checkout guards both.
+     */
+    function userRelativeHooks(dir: string, marker: string): void {
+        fs.mkdirSync(path.join(dir, '.githooks'), { recursive: true });
+        for (const hook of ['post-checkout', 'post-merge']) {
+            fs.writeFileSync(path.join(dir, '.githooks', hook), `#!/bin/sh\ntouch '${marker}-${hook}'\n`, { mode: 0o755 });
+        }
+        git(dir, 'config', 'core.hooksPath', '.githooks');
+    }
+
+    /** Hooks a head commit tracks under `.githooks`, each marking that it ran. */
+    function trackedHooks(seed: string, marker: string): void {
+        fs.mkdirSync(path.join(seed, '.githooks'), { recursive: true });
+        for (const hook of ['post-checkout', 'post-merge']) {
+            fs.writeFileSync(path.join(seed, '.githooks', hook), `#!/bin/sh\ntouch '${marker}-${hook}'\n`, { mode: 0o755 });
+        }
+    }
+
+    it("never runs a fork's own tracked hooks through a relative core.hooksPath, on the checkout or the fast-forward", async () => {
+        const fx = pullRequestFixture();
+        const forkMarker = path.join(fx.root, 'fork-hook-ran');
+        userRelativeHooks(fx.work, path.join(fx.root, 'user-hook-ran'));
+        const first = forkPullRequest(fx, 8, 'fix', (seed) => trackedHooks(seed, forkMarker));
+        git(fx.work, 'remote', 'add', 'octo', fx.fork);
+        git(fx.work, 'fetch', '-q', 'octo');
+        git(fx.work, 'branch', '--track', 'fix', 'octo/fix');
+        // The fork moves on, so the attached branch is fast-forwarded (`merge --ff-only`) too.
+        git(fx.seed, 'checkout', '-q', 'fork-fix');
+        const head = commit(fx.seed, 'next.txt', 'next\n', 'next');
+        git(fx.seed, 'push', '-q', 'fork', 'fork-fix:refs/heads/fix');
+        git(fx.seed, 'checkout', '-q', 'main');
+        expect(first).not.toBe(head);
+        const result = await performPullRequestCheckout(
+            ops(),
+            request(fx, { number: 8, headRef: 'fix', branchName: 'fix', headSha: head, crossRepository: true, headRepo: 'octo/api', headRemote: 'octo' })
+        );
+        expect(git(fx.work, 'rev-parse', 'fix')).toBe(head);
+        expect(fs.existsSync(path.join(fx.root, 'wt', 'fix', '.githooks', 'post-merge'))).toBe(true);
+        expect(fs.existsSync(`${forkMarker}-post-checkout`)).toBe(false);
+        expect(fs.existsSync(`${forkMarker}-post-merge`)).toBe(false);
+        expect(result.warnings).toEqual(["git hooks did not run for pull request #8's checkout: core.hooksPath (.githooks) is inside the checkout, which holds the fork's files"]);
+        // Nothing of the user's configuration changed.
+        expect(config(fx.work, 'core.hooksPath')).toBe('.githooks');
+    });
+
+    it("keeps the user's hooks otherwise: an absolute hooks path for a fork, a relative one for the same repository", async () => {
+        const fx = pullRequestFixture();
+        const userHooks = path.join(fx.root, 'user-hooks');
+        const userMarker = path.join(fx.root, 'user-hook-ran');
+        fs.mkdirSync(userHooks);
+        fs.writeFileSync(path.join(userHooks, 'post-checkout'), `#!/bin/sh\ntouch '${userMarker}'\n`, { mode: 0o755 });
+        git(fx.work, 'config', 'core.hooksPath', userHooks);
+        const forkHead = forkPullRequest(fx, 8, 'fix');
+        const fork = await performPullRequestCheckout(
+            ops(),
+            request(fx, { number: 8, headRef: 'fix', branchName: 'fix', headSha: forkHead, crossRepository: true, headRepo: 'octo/api' })
+        );
+        expect(fs.existsSync(userMarker)).toBe(true);
+        expect(fork.warnings.some((warning) => warning.includes('hooks did not run'))).toBe(false);
+
+        // A same-repository pull request is the base repository's own content: its hooks run.
+        const sameMarker = path.join(fx.root, 'same-repo-hook-ran');
+        userRelativeHooks(fx.work, path.join(fx.root, 'user-relative-hook-ran'));
+        git(fx.seed, 'checkout', '-q', '-B', 'feat/login', 'main');
+        trackedHooks(fx.seed, sameMarker);
+        const head = commit(fx.seed, 'hooks.txt', 'h\n', 'hooks');
+        git(fx.seed, 'push', '-q', '-f', 'origin', 'feat/login:refs/heads/feat/login');
+        git(fx.seed, 'checkout', '-q', 'main');
+        git(fx.origin, 'update-ref', 'refs/pull/7/head', head);
+        const same = await performPullRequestCheckout(ops(), request(fx, { headSha: head }));
+        // Hooks ran: the main checkout's copy (git 2.50) or the head's, whichever this git picks.
+        expect(fs.existsSync(path.join(fx.root, 'user-relative-hook-ran-post-checkout')) || fs.existsSync(`${sameMarker}-post-checkout`)).toBe(true);
+        expect(same.warnings).toEqual([]);
+    });
+
     it("takes a branch tracking ANOTHER remote of the base repository as this pull request's, as the resolve does", async () => {
         // origin is the remote the create matched; upstream points at the same repository (by its
         // GitHub URL, which `insteadOf` maps onto the local base). The resolve's lookup has always

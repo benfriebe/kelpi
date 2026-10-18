@@ -38,6 +38,15 @@
  * pass `isSafeBranchName` and `git check-ref-format --branch`, and remote names must be remotes of
  * the repository.
  *
+ * Hooks: a RELATIVE `core.hooksPath` (`.githooks`, husky's `.husky/_`) names a folder of the
+ * checkout. The fast-forward runs IN the new worktree, so its `post-merge` is the worktree's own
+ * copy: for a fork's pull request, the fork's tracked script. `worktree add` runs `post-checkout`
+ * in the new worktree too; git 2.50 looks the hook up from where it was started (the main
+ * checkout), but where that lookup happens is git's choice, not ours. So for a cross-repository
+ * pull request with a relative `core.hooksPath`, both calls run with `-c core.hooksPath=/dev/null`
+ * and the reply says so; an absolute (or `~`) hooks path, the default `.git/hooks`, and every
+ * same-repository pull request keep the user's hooks (`hooksGuard`).
+ *
  * Cancellation follows §8.5.2: a snapshot taken BEFORE the fetch (the pull-ref fetch can create the
  * branch), with the commit the fetch arrived at counted as a tip this create could have made; a
  * cancel once `worktree add` has returned is too late, and what follows (the fast-forward, the
@@ -211,6 +220,37 @@ async function validate(
     return { headPushURL, warnings, remotes };
 }
 
+/** A hooks path git resolves without the working tree: absolute, home-relative, or under git's runtime prefix. */
+function hooksPathOutsideCheckout(value: string): boolean {
+    return value.startsWith('/') || value.startsWith('~') || value.startsWith('%(prefix)/');
+}
+
+/**
+ * The `git -c` arguments the checkout's `worktree add` and `merge` run with (module note): none,
+ * unless the pull request is a fork's and `core.hooksPath` is relative, so it would name a folder
+ * of the fork's own checkout; then hooks are off for those two calls, and `warning` says so.
+ */
+async function hooksGuard(
+    ops: WorktreeGitOps,
+    request: PullRequestCheckoutRequest,
+    signal: AbortSignal | undefined
+): Promise<{ readonly args: readonly string[]; readonly warning: string | null }> {
+    if (!request.crossRepository) return { args: [], warning: null };
+    let value: string;
+    try {
+        value = (await ops.read(['config', '--get', 'core.hooksPath'], request.repoPath, signal !== undefined ? { signal } : {})).trim();
+    } catch (error) {
+        // Exit 1: unset, so git's own `.git/hooks`, which a checkout cannot write.
+        if (!signal?.aborted && isGitCommandError(error) && error.exitCode === 1) return { args: [], warning: null };
+        throw error;
+    }
+    if (value === '' || hooksPathOutsideCheckout(value)) return { args: [], warning: null };
+    return {
+        args: ['-c', 'core.hooksPath=/dev/null'],
+        warning: `git hooks did not run for pull request #${request.number}'s checkout: core.hooksPath (${value}) is inside the checkout, which holds the fork's files`
+    };
+}
+
 /** Exit 2 from `ls-remote --exit-code`: the remote has no such branch (any other answer: unknown). */
 async function headBranchGone(ops: WorktreeGitOps, repoPath: string, remote: string, headRef: string, signal?: AbortSignal): Promise<boolean> {
     try {
@@ -263,6 +303,7 @@ export async function performPullRequestCheckout(
         bail();
         const checked = await validate(ops, request, signal);
         const warnings = checked.warnings;
+        const guard = await hooksGuard(ops, request, signal);
         const headPushURL = checked.headPushURL;
         const local = await readLocalBranch(ops, request, checked.remotes, headPushURL, signal);
         bail();
@@ -327,10 +368,12 @@ export async function performPullRequestCheckout(
 
         current = 'worktree-add';
         steps?.running('worktree-add', branch);
-        const args =
-            source === 'head-branch' && !local.exists
+        const args = [
+            ...guard.args,
+            ...(source === 'head-branch' && !local.exists
                 ? ['worktree', 'add', '--track', '-b', branch, request.worktreePath, fetchedRef]
-                : ['worktree', 'add', request.worktreePath, branch];
+                : ['worktree', 'add', request.worktreePath, branch])
+        ];
         await withProgress((extra) => ops.long(args, repoPath, { ...callOptions('worktree-add'), ...extra }), onProgress('worktree-add'));
         bail();
 
@@ -341,7 +384,7 @@ export async function performPullRequestCheckout(
                 const behind = await isAncestor(ops, repoPath, localTip, fetchedTip);
                 if (behind === true) {
                     try {
-                        await ops.long(['merge', '--ff-only', '--quiet', fetchedTip], request.worktreePath);
+                        await ops.long([...guard.args, 'merge', '--ff-only', '--quiet', fetchedTip], request.worktreePath);
                     } catch (error) {
                         warnings.push(`could not fast-forward '${branch}' to pull request #${number}'s head: ${worktreeErrorMessage(error)}`);
                     }
@@ -385,6 +428,10 @@ export async function performPullRequestCheckout(
                             : 'its fork does not let maintainers push to it';
                 warnings.push(`pull request #${number} cannot be pushed back (${why}): the branch pulls refs/pull/${number}/head from ${request.baseRemote}`);
             }
+        }
+        if (guard.warning !== null) {
+            log(`pr-checkout: ${guard.warning}`);
+            warnings.push(guard.warning);
         }
         steps?.done('worktree-add', branch);
         return { warnings, branchExisted: local.exists, source };

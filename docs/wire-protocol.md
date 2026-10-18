@@ -1397,7 +1397,7 @@ repository and worktree branches) and `focus` (absent = background) apply, with 
 | `checkout` | `new-branch`, `pr-head`, `attach-branch` (a new worktree on a local branch that already existed) or `existing-checkout` (no worktree: the workspace opens at a checkout that already exists) |
 | `ticket_file` | the file Kelpi wrote for the agent, `<checkout>/.kelpi/ticket-<number>.md` (absolute), beside a `.kelpi/.gitignore` of `*` |
 | `ticket_file_error` | why no ticket file was written (a `.kelpi` that is tracked or a symlink, a failed write); the create still succeeded |
-| `warnings` | things that did not stop the create (a pull request head that could not be fast-forwarded onto the existing local branch, a fork that no longer exists) |
+| `warnings` | things that did not stop the create (a pull request head that could not be fast-forwarded onto the existing local branch, a fork that no longer exists, a fork's checkout made with git hooks off because `core.hooksPath` is inside the checkout, graft-git.md §8.5.3) |
 
 When no ticket file was written, the prompt the daemon renders itself names only the ticket's URL,
 and a prompt the request carried has every mention of the file replaced by that URL

@@ -1069,12 +1069,18 @@ Four branches, checked in this order ((d) is checked before (b) and (c)):
 6. Pre-mint the workspace id. Then **asynchronously** (`deps.worktrees.add`, which boot
    binds to `performWorktreeAdd` in `packages/daemon/src/git/worktree-add.ts` with the shared
    prefetch cache, graft-git.md §8.3; a table built without it uses `git.worktreeAdd`):
-   - `updateMain == false`: first try `git worktree add <worktreePath> <safeBranch>`, which
-     attaches the worktree to an already-existing local branch of that name; only if that
-     fails, `git worktree add -b <safeBranch> <worktreePath>` off current HEAD
-     (`service.ts:312`). It is this second command's stderr that feeds
-     `worktreeErrorMessage`. Net effect: a pre-existing branch named like the worktree is
-     reused rather than failing with "a branch named ... already exists".
+   - `updateMain == false`: decided from refs before git runs, never from git's (localized)
+     stderr (`decidePlainWorktreeAdd`, graft-git.md §8.3): a local branch `<safeBranch>`
+     (`git show-ref --verify --quiet refs/heads/<safeBranch>`) is attached with
+     `git worktree add <worktreePath> <safeBranch>`; a name that already names a commit (a tag,
+     a SHA, `origin/<b>`: `rev-parse --verify --quiet <safeBranch>^{commit}`) is checked out
+     detached at it (`--detach`), no branch made; a branch only one remote has (or the one
+     `checkout.defaultRemote` names) is branched from it
+     (`-b <safeBranch> <worktreePath> refs/remotes/<r>/<b>`, with no `--track`, so
+     `branch.autoSetupMerge` decides its upstream); anything else is
+     `git worktree add -b <safeBranch> <worktreePath>` off current HEAD. The one command's
+     stderr feeds `worktreeErrorMessage`, so a branch checked out elsewhere reports exactly
+     that, not "a branch named ... already exists".
    - `updateMain == true`: resolve the repo's default branch (the local
      `refs/remotes/origin/HEAD` first, `git ls-remote --symref` only when that is not usable,
      then `main`); refuse a `safeBranch` that already exists locally

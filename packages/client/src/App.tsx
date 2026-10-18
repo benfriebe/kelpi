@@ -3164,6 +3164,7 @@ function Shell(props: AppProps): ReactElement {
      * can show like any other.
      */
     const githubStatus = integrationStatusOf(kelpi.integrations, 'github');
+    const daemonClientID = kelpi.daemon.clientID;
     const integrationsSupported = kelpi.integrations.supported;
     const ticketSource = useMemo<TicketSource | undefined>(() => {
         if (!integrationsSupported || githubStatus === null) return undefined;
@@ -3186,9 +3187,11 @@ function Shell(props: AppProps): ReactElement {
                 store.getState().daemon.state.workspaces.find((candidate) => candidate.id === workspaceID)?.name ?? null,
             switchToWorkspace: (workspaceID) => {
                 activateWorkspaceAndReveal(workspaceID);
-            }
+            },
+            // A reconnect fails what was in flight; the picker asks again (see `TicketSource`).
+            sessionKey: daemonClientID
         };
-    }, [integrationsSupported, githubStatus, commands, openSettings, store, activateWorkspaceAndReveal]);
+    }, [integrationsSupported, githubStatus, commands, openSettings, store, activateWorkspaceAndReveal, daemonClientID]);
 
     /*
      * Settings ▸ Integrations' verbs. A link or unlink reply echoes the new status list, applied

@@ -274,11 +274,14 @@ export function IntegrationsTab(props: IntegrationsTabProps): ReactElement {
                         return;
                     }
                     const failure = parseIntegrationFailure(reply);
+                    // `unavailable` covers more than "no device flow": the daemon stopping, a
+                    // cancelled request, a credential it could not write. So the daemon's words
+                    // lead, and the token path is offered as a way round, not as the diagnosis.
                     setNotice({
                         tone: 'error',
                         text:
                             failure?.code === 'unavailable'
-                                ? `${failure.error} Connect with a personal access token below instead.`
+                                ? `${failure.error} If browser sign-in stays unavailable, a personal access token below is the other way to connect.`
                                 : (failure?.error ?? 'The sign-in could not be started.')
                     });
                     return;

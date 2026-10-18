@@ -92,6 +92,12 @@ export interface TicketSource {
     workspaceName(workspaceID: string): string | null;
     /** The banner's Switch to it. */
     switchToWorkspace(workspaceID: string): void;
+    /**
+     * This connection's identity (the welcome's client id), which changes on every reconnect. A
+     * dropped connection fails whatever was in flight, so when it changes the picker asks again
+     * for a search or lookup that was out or failed in transit. Absent = never re-asks.
+     */
+    readonly sessionKey?: string | null | undefined;
 }
 
 /** A thrown command (a timeout, a dropped connection) as a failure the states can show. */
@@ -218,7 +224,10 @@ export function ticketProblemView(failure: IntegrationFailureInfo, options: { re
                 buttons
             };
         case 'unavailable':
-            return { title: 'GitHub is not available', body: failure.error, buttons };
+            // Not only "no device flow": the daemon stopping, a cancelled request, a credential
+            // it could not write. The daemon's words say which; trying again is often enough.
+            retry();
+            return { title: 'GitHub is not available right now', body: failure.error, buttons };
         case 'not-found':
             return { title: 'Ticket not found', body: failure.error, buttons };
         case 'bad-ref':
@@ -377,7 +386,10 @@ export function TicketPicker(props: TicketPickerProps): ReactElement {
         [source]
     );
 
+    /** The last pick, so a reconnect can ask for it again. */
+    const lastResolve = useRef<{ readonly ref: string; readonly label: string } | null>(null);
     const resolve = (ref: string, label: string): void => {
+        lastResolve.current = { ref, label };
         if (timer.current !== null) {
             clearTimeout(timer.current);
             timer.current = null;
@@ -415,6 +427,33 @@ export function TicketPicker(props: TicketPickerProps): ReactElement {
     useEffect(() => {
         input.current?.focus();
     }, []);
+
+    /*
+     * A reconnect (the daemon restarted, or the network blinked): every request that was out was
+     * failed by the connection, so ask again for the one the user is waiting on, a lookup first,
+     * else a search. A failure GitHub itself gave (a code) is left standing; only one that never
+     * got an answer (no code: a timeout, a dropped connection) or one still out is re-asked.
+     */
+    const sessionKey = source.sessionKey;
+    const seenSession = useRef(sessionKey);
+    const resolveRef = useRef(resolve);
+    resolveRef.current = resolve;
+    const pendingRef = useRef({ resolving, resolveFailure, search });
+    pendingRef.current = { resolving, resolveFailure, search };
+    useEffect(() => {
+        if (seenSession.current === sessionKey) return;
+        seenSession.current = sessionKey;
+        if (!connected) return;
+        const pending = pendingRef.current;
+        const last = lastResolve.current;
+        if (last !== null && (pending.resolving !== null || (pending.resolveFailure !== null && pending.resolveFailure.code === null))) {
+            resolveRef.current(last.ref, last.label);
+            return;
+        }
+        if (pending.search.kind === 'loading' || (pending.search.kind === 'failed' && pending.search.failure.code === null)) {
+            runSearch(lastSearched.current ?? '');
+        }
+    }, [sessionKey, connected, runSearch]);
 
     const typedRef = parseTicketRef(query.trim());
     const onChange = (next: string): void => {

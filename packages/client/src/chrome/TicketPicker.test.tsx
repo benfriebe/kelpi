@@ -306,6 +306,40 @@ describe('failures, each with its way out', () => {
     });
 });
 
+describe('a reconnect', () => {
+    it('asks again for a search the dropped connection failed, and leaves GitHub\'s own answers alone', async () => {
+        const source = fakeTicketSource();
+        source.search.mockRejectedValueOnce(new Error("connection lost before 'ticket-search' was answered"));
+        const onResolved = vi.fn();
+        const props = { onResolved, onCancel: vi.fn(), onOpenSettings: vi.fn() };
+        const { rerender } = render(<TicketPicker source={{ ...source, sessionKey: 'client-1' }} {...props} />);
+        await flush();
+        expect(screen.getByTestId('ticket-picker-problem')).toBeTruthy();
+        rerender(<TicketPicker source={{ ...source, sessionKey: 'client-2' }} {...props} />);
+        await flush();
+        expect(source.search).toHaveBeenCalledTimes(2);
+        expect(screen.queryByTestId('ticket-picker-problem')).toBeNull();
+
+        // A lookup GitHub refused (a code) is not re-asked on the next reconnect…
+        source.resolve.mockResolvedValueOnce({ ok: false, failure: { error: 'gone', code: 'not-found' } });
+        fireEvent.click(screen.getByTestId('ticket-picker-row-acme/api#418'));
+        await flush();
+        rerender(<TicketPicker source={{ ...source, sessionKey: 'client-3' }} {...props} />);
+        await flush();
+        expect(source.resolve).toHaveBeenCalledTimes(1);
+
+        // …but one the connection dropped is, and its answer lands.
+        source.resolve.mockRejectedValueOnce(new Error("connection lost before 'ticket-resolve' was answered"));
+        fireEvent.click(screen.getByTestId('ticket-picker-row-acme/api#418'));
+        await flush();
+        rerender(<TicketPicker source={{ ...source, sessionKey: 'client-4' }} {...props} />);
+        await flush();
+        expect(source.resolve).toHaveBeenCalledTimes(3);
+        expect(source.resolve).toHaveBeenLastCalledWith('https://github.com/acme/api/pull/418');
+        expect(onResolved).toHaveBeenCalledTimes(1);
+    });
+});
+
 describe('the readers', () => {
     it('reads a search or resolve reply with the protocol\'s readers, and a failure as one', () => {
         expect(readTicketSearch({ ok: true, sections: [{ id: 'results', items: [ticket(3)] }] })).toMatchObject({ ok: true });

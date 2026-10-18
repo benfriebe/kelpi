@@ -546,6 +546,14 @@ function ambiguousGroupError(name: string): string {
     return `group name is ambiguous: ${name} (use the id or rename an existing group)`;
 }
 
+/**
+ * The ticket path's own unknown-group refusal: a ticket create that makes a worktree never creates
+ * a group either, but the user may not have typed `--worktree` (the ticket's defaults chose it).
+ */
+function unknownTicketGroupError(name: string): string {
+    return `unknown group: ${name}: a create from a ticket that makes a worktree only goes into an existing group; create it first (\`kelpi group create\`) or leave out --group`;
+}
+
 function unknownWorktreeGroupError(name: string): string {
     return `unknown group: ${name} — --worktree only supports existing groups; create it first (\`kelpi group create\`) or omit --group`;
 }
@@ -1085,7 +1093,7 @@ async function planTicketCreate(
     // The worktree path never creates a group (a failed add would orphan it), as without a ticket.
     if (trimmedGroup !== '' && group === null) {
         throw new TicketCreateRefusal(
-            groupsMatchingName(scope, trimmedGroup).length > 0 ? ambiguousGroupError(trimmedGroup) : unknownWorktreeGroupError(trimmedGroup)
+            groupsMatchingName(scope, trimmedGroup).length > 0 ? ambiguousGroupError(trimmedGroup) : unknownTicketGroupError(trimmedGroup)
         );
     }
     const groupID = group?.id;

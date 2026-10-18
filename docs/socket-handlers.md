@@ -1104,8 +1104,11 @@ of them:
    a plugin-owned `kelpi.git` are refused; a different `branch` is a rename and allowed). A
    ticket left with neither a repository nor a worktree → `error("no registered repository has
    a remote for <owner/name>: add its clone in Settings ▸ Repositories, or name one (--repo)")`;
-   name, branch and group errors are the ones (a) and (d) give. The step list is re-planned for
-   the checkout mode;
+   name, branch and group errors are the ones (a) and (d) give, except that an unknown group for
+   a create that makes a worktree has its own wording, since the request may never have named
+   `--worktree` (``unknown group: <name>: a create from a ticket that makes a worktree only goes
+   into an existing group; create it first (`kelpi group create`) or leave out --group``). The
+   step list is re-planned for the checkout mode;
 7. the prompt file, from `agentPrompt` when present, else (with `ticketDefaults`) the ticket's
    rendered prompt (`resolved.defaults.prompt`), else none: a write failure is the error of
    "Starting an agent" check 4, still before any git work.

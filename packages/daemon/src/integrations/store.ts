@@ -7,9 +7,12 @@
  *
  *   - the daemon is the only writer, and every write is synchronous, so writes are serialised by
  *     construction (no CLI writes this file);
- *   - the directory is created 0700, the file 0600, and a write goes temp file (opened `wx` at
- *     0600, fchmod'd past the umask) → fsync → rename → directory fsync, so a crash leaves the
- *     old file or the new one, never half of either, and never a moment at a wider mode;
+ *   - the file is 0600, and a write goes temp file (opened `wx` at 0600, fchmod'd past the umask)
+ *     → fsync → rename → directory fsync, so a crash leaves the old file or the new one, never half
+ *     of either, and never a moment at a wider mode. A directory this store creates for it is 0700;
+ *     an existing one (the data directory, or wherever `KELPID_INTEGRATIONS_PATH` points) keeps its
+ *     mode, since it is not this store's to narrow: the file's own 0600 is what keeps the token
+ *     private;
  *   - a file that cannot be read or parsed, or one a newer daemon wrote (`v` above 1), FAILS
  *     CLOSED: every provider reports `problem: 'unreadable'` and nothing is sent anywhere. The
  *     file is left untouched until the next link (or unlink), which moves it aside as

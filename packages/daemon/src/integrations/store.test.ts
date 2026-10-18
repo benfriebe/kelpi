@@ -76,6 +76,15 @@ describe('credential store', () => {
         expect(createCredentialStore({ path: file }).account('github')?.endpoints).toEqual({ api: 'https://api.github.com', web: 'https://github.com' });
     });
 
+    it('leaves an existing directory at its own mode, and still writes the file 0600', () => {
+        const dir = tmpDir();
+        fs.chmodSync(dir, 0o755);
+        const file = path.join(dir, 'integrations.json');
+        createCredentialStore({ path: file }).save(ACCOUNT);
+        expect(mode(dir)).toBe(0o755);
+        expect(mode(file)).toBe(0o600);
+    });
+
     it('reads back what it wrote, a fine-grained token without scopes, and the revoked mark', () => {
         const file = path.join(tmpDir(), 'integrations.json');
         const first = createCredentialStore({ path: file });

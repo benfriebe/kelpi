@@ -675,7 +675,11 @@ describe.skipIf(!HAS_GIT)('workspace-create from a pull request', { timeout: 30_
         h.send({ command: 'workspace-create', ticket: PR, group: 'team' });
         expect(await settle(h)).toEqual({ ok: false, error: `${other} has no remote for acme/api: a pull request is checked out only in a clone of its own repository` });
         h.send({ command: 'workspace-create', ticket: PR, group: 'nobody' });
-        expect(await settle(h, 1)).toMatchObject({ ok: false, error: expect.stringContaining('unknown group: nobody') as unknown as string });
+        // Its own message: this create never named --worktree (the ticket's defaults chose one).
+        expect(await settle(h, 1)).toEqual({
+            ok: false,
+            error: 'unknown group: nobody: a create from a ticket that makes a worktree only goes into an existing group; create it first (`kelpi group create`) or leave out --group'
+        });
         expect(h.state().workspaces).toEqual([]);
         expect(tryGit(fx.work, 'rev-parse', '--verify', '--quiet', 'refs/heads/feat/login')).toBeNull();
     });

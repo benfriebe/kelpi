@@ -715,9 +715,11 @@ follow a `KELPID_DB_PATH` override; a `:memory:` daemon keeps all three in memor
   token to the GitHub API and web bases it was linked against: a daemon started with others
   (`KELPI_GITHUB_API_URL` / `KELPI_GITHUB_WEB_URL`) never sends it (`problem:
   'endpoint-mismatch'`); an account without the field reads as linked against the defaults. `KELPID_INTEGRATIONS_PATH`
-  overrides its location (even for a `:memory:` daemon). The daemon is its only writer: 0700
-  directory, 0600 file, written temp → fsync → rename → directory fsync on every link, unlink and
-  revoke. A file it cannot read or parse, or one with `v` above 1, fails closed (`problem:
+  overrides its location (even for a `:memory:` daemon). The daemon is its only writer: a 0600
+  file, written temp → fsync → rename → directory fsync on every link, unlink and revoke. A
+  directory the daemon creates for it is 0700; an existing one (the database's directory, or
+  wherever the override points) keeps its own mode, as the database's parent does (§1), so the
+  file's 0600 is what keeps the token private. A file it cannot read or parse, or one with `v` above 1, fails closed (`problem:
   'unreadable'`, nothing connected) and is renamed `integrations.json.unreadable-<epoch ms>` by
   the next link or unlink. Never in the snapshot, the database, a frame or a log.
 

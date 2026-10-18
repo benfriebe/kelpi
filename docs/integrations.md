@@ -321,9 +321,10 @@ not `[A-Za-z0-9._-]{1,64}` is ignored (the device flow is then off).
 registry (`lifecycle/devices.ts`), with the differences a secret that must be USED forces:
 
 - the daemon is its only writer, and every write is synchronous, so writes are serialised;
-- the directory is created 0700 and the file 0600: a write goes to a temp file opened `wx` at
-  0600 and `fchmod`ed past the umask, is fsynced, renamed over the file, and the directory is
-  fsynced. A file found wider than 0600 is narrowed back when read;
+- the file is 0600: a write goes to a temp file opened `wx` at 0600 and `fchmod`ed past the
+  umask, is fsynced, renamed over the file, and the directory is fsynced. A file found wider than
+  0600 is narrowed back when read. A directory the daemon creates for it is 0700; an existing one
+  keeps its own mode (it is the data directory, or wherever `KELPID_INTEGRATIONS_PATH` points);
 - a file that cannot be read or parsed, that has an account it cannot trust whole, or that a
   newer daemon wrote (`v` above 1) FAILS CLOSED: the status says `problem: 'unreadable'`, nothing
   is connected and nothing is sent anywhere. The file is left alone until the next link (or

@@ -145,6 +145,9 @@ export interface TerminalInput {
   sendText(paneID: string, text: string, opts: { bare: boolean; mirror?: boolean }): void;
   /** Named keys per wire-protocol.md §5.6; arrows consult live DECCKM state. */
   sendNamedKey(paneID: string, key: string): void;
+  /** One printable character typed as a keypress: no paste envelope and no Enter, so a TUI menu
+   *  that acts on a key (an agent's `1. Yes`) sees a key rather than a paste. */
+  sendKeystroke(paneID: string, key: string): void;
 }
 
 // ---------------------------------------------------------------------------

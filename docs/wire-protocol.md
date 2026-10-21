@@ -400,7 +400,11 @@ dropped.
 
 Validated (after lowercasing) against:
 `enter, return, tab, escape, esc, space, backspace, up, down, left, right, ctrl-c`.
-Unknown → `{"ok":false,"error":"unknown key '<key>' (valid: <comma-joined list>)"}`.
+A `key` that is none of those but is exactly ONE printable ASCII character (`!` to `~`) is a key
+too, typed as itself: the phone's quick replies answer an agent's menu with its hotkey (`1`, `y`),
+which `pane-send` would deliver inside a bracketed-paste envelope. Anything else →
+`{"ok":false,"error":"unknown key '<key>' (valid: <comma-joined list>)"}`, which is also what a
+daemon from before single-character keys answers for one.
 
 ### 5.7 Pane target resolution (`pane_id` / `target` / `workspace` triple)
 
@@ -832,7 +836,8 @@ validation error.
 
 #### `pane-send-key` (R/R)
 
-Deliver one named keystroke (§5.6) outside any bracketed-paste envelope. Key name is
+Deliver one named keystroke, or one printable character (§5.6), outside any bracketed-paste
+envelope. Key name is
 lowercased then validated **before** target resolution. Byte-mapped keys
 (enter/tab/escape/space/backspace/ctrl-c) are injected as their raw byte through the
 key-event path (so ctrl-c → `0x03` → SIGINT); arrow keys are translated per terminal

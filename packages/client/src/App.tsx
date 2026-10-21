@@ -462,6 +462,8 @@ function Shell(props: AppProps): ReactElement {
      * selection (`activateWorkspaceAndReveal`); a vanished daemon clears it below.
      */
     const remoteDaemonRuntimes = useRemoteDaemons(settings.remoteDaemons);
+    /** The phone shell's configured hosts, as one array that only changes when the runtimes do. */
+    const configuredDaemonList = useMemo(() => [...remoteDaemonRuntimes.values()], [remoteDaemonRuntimes]);
     const { selection: remoteSelection, select: setRemoteSelection, activeRemote } = useRemoteWorkspaceSelection(remoteDaemonRuntimes);
     const remoteSelectionRef = useRef(remoteSelection);
     remoteSelectionRef.current = remoteSelection;
@@ -4868,7 +4870,7 @@ function Shell(props: AppProps): ReactElement {
                     view={phoneView}
                     bucket={bucket}
                     homeDirectory={daemonHome}
-                    configuredDaemons={[...remoteDaemonRuntimes.values()]}
+                    configuredDaemons={configuredDaemonList}
                     renderPane={renderPane}
                     grid={{
                         renderPaneOverlay,

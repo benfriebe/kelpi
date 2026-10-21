@@ -24,7 +24,7 @@ export const covers = [
     'packages/client/src/phone/PhoneNewWorkspaceSheet.tsx',
     'packages/client/src/phone/new-workspace.ts',
     'packages/client/src/phone/PhoneShell.tsx',
-    'packages/client/src/phone/PhoneWorkspaceDrawer.tsx',
+    'packages/client/src/phone/PhonePicker.tsx',
     'packages/daemon/src/handlers/app/workspaces.ts'
 ];
 
@@ -115,7 +115,7 @@ export default async function ({ page, cli, sandbox, rec, d, sleep }) {
             )
         );
     const openSheet = async () => {
-        await page.tap(sel('phone-open-workspaces'));
+        await page.tap(sel('phone-bar-workspace'));
         await d.settleDom(page, `document.querySelector('${sel('phone-new-workspace')}') !== null`, { ceilingMs: 5_000 });
         await page.tap(sel('phone-new-workspace'));
         return d.settleDom(page, `document.querySelector('${sel('phone-new-workspace-sheet')}') !== null`, { ceilingMs: 5_000 });
@@ -233,10 +233,10 @@ export default async function ({ page, cli, sandbox, rec, d, sleep }) {
             child && (childRow?.parent_id ?? '').toUpperCase() === String(docs.workspace_id).toUpperCase() && (childRow?.group_name ?? null) === null && (childRow?.repos?.length ?? 0) === 0,
             JSON.stringify(childRow)
         );
-        await page.tap(sel('phone-open-workspaces'));
+        await page.tap(sel('phone-bar-workspace'));
         await sleep(400);
         await rec.shot(page, 'phone-drawer-after');
-        await page.tap(sel('phone-workspace-drawer-header-close'));
+        await page.key('Escape');
     } finally {
         await page.send('Emulation.setTouchEmulationEnabled', { enabled: false, maxTouchPoints: 1 });
         await page.send('Emulation.clearDeviceMetricsOverride');

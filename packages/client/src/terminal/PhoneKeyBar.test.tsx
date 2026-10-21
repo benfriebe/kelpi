@@ -117,6 +117,7 @@ function ContentRow(props: {
     pty: ReturnType<typeof createFakePtyApi>;
     renderers: ReturnType<typeof createFakeRendererFactory>;
     reserve?: boolean | undefined;
+    belowPx?: number | undefined;
 }): ReactElement {
     const row = useRef<HTMLDivElement | null>(null);
     const focused = props.panes.find((pane) => pane.focused === true) ?? null;
@@ -146,6 +147,7 @@ function ContentRow(props: {
                 formFactorWindow={props.win}
                 // The shell reserves for a TERMINAL pane only (`PhoneShell.tsx`); this mirrors it.
                 reserve={props.reserve === true && focused !== null && focused.terminal !== false}
+                belowPx={props.belowPx}
                 measure={(element) => ({
                     width: WINDOW.width,
                     height: props.win.innerHeight - Number.parseFloat(element.style.paddingBottom || '0')
@@ -155,12 +157,12 @@ function ContentRow(props: {
     );
 }
 
-async function mount(panes: Pane[], { coarse = true, reserve = false } = {}): Promise<Harness> {
+async function mount(panes: Pane[], { coarse = true, reserve = false, belowPx = 0 } = {}): Promise<Harness> {
     const win = createFakePhoneWindow({ ...WINDOW, coarse });
     const pty = createFakePtyApi();
     const renderers = createFakeRendererFactory({ cell: CELL });
     const element = (next: Pane[]): ReactElement => (
-        <ContentRow panes={next} win={win} pty={pty} renderers={renderers} reserve={reserve} />
+        <ContentRow panes={next} win={win} pty={pty} renderers={renderers} reserve={reserve} belowPx={belowPx} />
     );
     const view = render(element(panes));
     await settle();
@@ -577,6 +579,26 @@ describe('the software keyboard moves the box the bar and the grid share', () =>
         for (const id of ['left', 'right']) {
             expect(h.root(id).getAttribute('data-terminal-resizes')).toBe(String(h.stream(id).resizes.length));
         }
+    });
+
+    /*
+     * The phone shell's strip and location bar sit UNDER the content row. A keyboard rising from
+     * the window's bottom edge covers them first, so the row gives up only what reaches past them,
+     * and the bar lands on the keyboard's top edge rather than a strip's height above it.
+     */
+    it('leaves out what sits under the row: the keyboard covers that first', async () => {
+        const h = await mount([{ id: 'left', focused: true }], { belowPx: 120 });
+        act(() => {
+            h.win.raiseKeyboard(100, 1);
+        });
+        // All of it under the strip and the bar: the row does not move.
+        expect(h.padding()).toBe(KEY_BAR_HEIGHT_PX);
+        expect(h.row().getAttribute(PHONE_KEYBOARD_INSET_ATTR)).toBe('0');
+        act(() => {
+            h.win.raiseKeyboard(KEYBOARD_HEIGHT, 1);
+        });
+        expect(h.padding()).toBe(KEY_BAR_HEIGHT_PX + KEYBOARD_HEIGHT - 120);
+        expect((h.slot() as HTMLElement).style.bottom).toBe(`${String(KEYBOARD_HEIGHT - 120)}px`);
     });
 
     it('publishes the same inset on every pane as the row applied', async () => {

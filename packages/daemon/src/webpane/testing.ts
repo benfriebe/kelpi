@@ -258,7 +258,8 @@ export function webHarness(options: WebHarnessOptions = {}): WebHarness {
         sendText: (paneID, text, opts) => {
             pasted.push({ paneID, text, bare: opts.bare });
         },
-        sendNamedKey: () => {}
+        sendNamedKey: () => {},
+        sendKeystroke: () => {}
     };
 
     const service = createWebPaneService({

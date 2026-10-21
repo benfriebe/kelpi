@@ -16,6 +16,7 @@ import { parseNamedKey, unknownNamedKeyError } from '@kelpi/protocol';
 
 import type { CommandHandler, ReplyHandle } from '../../seams.js';
 import type { ScreenCursor } from '../../term/service.js';
+import { isKeystroke } from '../../pty/input.js';
 import type { PaneHandlerContext } from './context.js';
 import {
     labelField,
@@ -56,9 +57,12 @@ export const handlePaneSend: CommandHandler<PaneHandlerContext> = (msg, ctx, rep
 
 export const handlePaneSendKey: CommandHandler<PaneHandlerContext> = (msg, ctx, reply) => {
     if (msg.command !== 'pane-send-key') return;
-    // Validation FIRST (§4.6): an unknown key must never resolve (or touch) a pane.
+    // Validation FIRST (§4.6): an unknown key must never resolve (or touch) a pane. Besides the
+    // named keys, one printable character is a key too: the phone's quick replies answer an
+    // agent's menu with its hotkey, which `pane-send` would deliver as a paste.
     const named = parseNamedKey(msg.key);
-    if (named === undefined) {
+    const keystroke = named === undefined && isKeystroke(msg.key) ? msg.key : undefined;
+    if (named === undefined && keystroke === undefined) {
         sendError(reply, unknownNamedKeyError(msg.key));
         return;
     }
@@ -79,12 +83,13 @@ export const handlePaneSendKey: CommandHandler<PaneHandlerContext> = (msg, ctx, 
         pane_id: paneID,
         workspace_id: workspace.id,
         workspace_name: workspace.name,
-        key: named,
+        key: named ?? keystroke,
         ...guard.ack,
         ...labelField(pane.label)
     });
 
-    ctx.input.sendNamedKey(paneID, named);
+    if (named !== undefined) ctx.input.sendNamedKey(paneID, named);
+    else if (keystroke !== undefined) ctx.input.sendKeystroke(paneID, keystroke);
 };
 
 type RevisionGuard =

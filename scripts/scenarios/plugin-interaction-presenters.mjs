@@ -87,7 +87,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { phoneToLanding } from '../ui-audit/lib/workbench.mjs';
+import { phoneRevealWorkspace, phoneToLanding } from '../ui-audit/lib/workbench.mjs';
 
 /*
  * `examples/plugins/interaction-lab/` is the example this drives; `interaction/` is the surface and
@@ -948,6 +948,8 @@ export default async function ({ page, cli, rec, d, sleep, daemon, shell }) {
         await page.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
         await page.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
         const phoneRow = `[data-testid="phone-shell"] [data-workspace-id="${workspaceID}"]`;
+        // Home shows one host's workspaces: page it to the host that holds this one.
+        await phoneRevealWorkspace(page, d, workspaceID);
         if (await d.settleDom(page, `document.querySelector(${JSON.stringify(phoneRow)})`, { ceilingMs: 10_000 })) await clickHost(phoneRow);
         await openPalette();
         const phonePalette = await d.settleDom(page, `document.querySelector('${bundledPalette} [data-testid="command-palette"]')`, { ceilingMs: 8_000 });

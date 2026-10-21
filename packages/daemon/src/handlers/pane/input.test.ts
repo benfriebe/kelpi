@@ -205,6 +205,23 @@ describe('pane-send-key', () => {
         expect(h.input.keys).toEqual([]);
     });
 
+    it('types one printable character as a keypress, guarded like any key, and nothing longer', () => {
+        const h = seeded();
+        h.term.revisions.set(P2, 5);
+        expect(h.run({ command: 'pane-send-key', target: P2, key: '1', if_revision: 5 }).only()).toMatchObject({ ok: true, key: '1', revision: 5 });
+        expect(h.input.keystrokes).toEqual([{ paneID: P2, key: '1' }]);
+        expect(h.input.keys).toEqual([]);
+        // A stale screen refuses it exactly as it refuses a named key.
+        const stale = stubReply();
+        handlePaneSendKey({ command: 'pane-send-key', target: P2, key: 'y', if_revision: 4 }, h.ctx, stale);
+        expect(stale.only()).toMatchObject({ ok: false, code: 'SCREEN_CHANGED' });
+        // Two characters, a space or a control byte is not a key.
+        for (const key of ['12', ' ', '\u001b', 'é']) {
+            expect(h.run({ command: 'pane-send-key', target: P2, key }).only()).toMatchObject({ ok: false });
+        }
+        expect(h.input.keystrokes).toEqual([{ paneID: P2, key: '1' }]);
+    });
+
     it('accepts every key in the §5.6 vocabulary', () => {
         const h = seeded();
         for (const key of NAMED_KEYS) {

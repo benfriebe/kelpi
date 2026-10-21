@@ -152,7 +152,7 @@ export async function restoreBundledSlots(page, d, slots, { daemonID = null, att
 }
 
 /**
- * Put the phone shell back on its landing page, while it is still mounted.
+ * Put the phone shell back on its landing page (Home), while it is still mounted.
  *
  * `phone/place.ts` remembers `{host, workspaceID}` in `localStorage` for whatever workspace the
  * phone last had on screen, and a remembered place means the NEXT phone window opens THERE instead
@@ -198,7 +198,7 @@ export async function restoreBundledSlots(page, d, slots, { daemonID = null, att
  * inside that round's ceiling, and counting those would report a phone that was merely slow as a
  * phone whose taps were being swallowed: two different faults, one of which is not a fault. The
  * count is therefore incremented at the `page.click` and nowhere else, and the sentence names the
- * cause this guard exists for (a sheet's scrim over the Hosts button) as the known one rather than
+ * cause this guard exists for (a sheet's scrim over the header's Home button) as the known one rather than
  * asserting it was observed, since from here a swallowed tap and a tap that reached a button which
  * did nothing look identical.
  *
@@ -228,10 +228,43 @@ export async function phoneToLanding(page, d, { note = null } = {}) {
         const landingMs = left(LANDING_ROUND_MS[round]);
         if (landingMs > 0 && await d.settleDom(page, `document.querySelector('[data-testid="phone-landing"]')`, { ceilingMs: landingMs })) {
             if (taps > 1) {
-                note?.(`the phone took ${String(taps)} taps to reach its landing page; the earlier ones reached the Hosts button and did nothing, which is what a sheet's scrim over it looks like from here`);
+                note?.(`the phone took ${String(taps)} taps to reach its landing page; the earlier ones reached the Home button and did nothing, which is what a sheet's scrim over it looks like from here`);
             }
             return true;
         }
+    }
+    return false;
+}
+
+/**
+ * Put a workspace's tile on the phone's Home, wherever it lives, and say whether it is there.
+ *
+ * Home draws the workspaces of ONE host - the one its pager is on, which the phone remembers - so a
+ * scenario that wants `[data-testid="phone-shell"] [data-workspace-id="…"]` on screen has to move
+ * the pager to the host that holds it first. This walks the host cards in order until the tile
+ * appears. The card's own click is dispatched in the page rather than as a touch, because a card
+ * off the side of the pager has no on-screen centre to touch.
+ */
+export async function phoneRevealWorkspace(page, d, workspaceID, { ceilingMs = 8_000 } = {}) {
+    const tile = `[data-testid="phone-shell"] [data-testid^="phone-home-workspace-"][data-workspace-id="${workspaceID}"]`;
+    const has = `document.querySelector(${JSON.stringify(tile)}) !== null`;
+    // Under the thumb once found: Home's grid can run past the fold, where a touch goes nowhere.
+    const found = async () => {
+        await page.eval(`document.querySelector(${JSON.stringify(tile)})?.scrollIntoView({ block: 'center' })`);
+        return true;
+    };
+    // A phone that reopened inside a workspace is one tap from Home (a no-op when it is there).
+    if (!await d.settleDom(page, `document.querySelector('[data-testid="phone-landing-hosts"]') !== null`, { ceilingMs: 2_000 })) {
+        await phoneToLanding(page, d);
+    }
+    if (!await d.settleDom(page, `document.querySelector('[data-testid="phone-landing-hosts"]') !== null`, { ceilingMs })) return false;
+    if (await d.settleDom(page, has, { ceilingMs: 1_500 })) return found();
+    const cards = JSON.parse(String(await page.eval(
+        `JSON.stringify(Array.from(document.querySelectorAll('[data-host-card]')).map((el) => el.getAttribute('data-host-card')))`
+    )));
+    for (const key of cards) {
+        await page.eval(`document.querySelector('[data-host-card=' + ${JSON.stringify(JSON.stringify(key))} + ']')?.click()`);
+        if (await d.settleDom(page, has, { ceilingMs: 3_000 })) return found();
     }
     return false;
 }

@@ -88,7 +88,7 @@ describe('remote phone documents', () => {
         act(() => { stageDocumentDraft(h.runtime, FIRST, 'Unapplied remote input', 'source:1', 'custom.editor'); });
         h.showSecond();
         await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('Second document'));
-        // PhonePaneSheet can close any listed pane, including one whose body is unmounted.
+        // The pane's actions can close a pane whose body is unmounted.
         await expect(h.runtime.commands.closePane({ paneID: FIRST })).rejects.toThrow('unapplied local edits');
         h.view.unmount();
         await expect(h.runtime.commands.closePane({ paneID: FIRST })).rejects.toThrow('unapplied local edits');

@@ -66,3 +66,31 @@ export function writeStoredPlace(place: PhonePlace | null, storage: StorageLike 
         // Convenience only; the screen still holds for this page's life.
     }
 }
+
+/*
+ * Which host Home's pager was on, beside the place and for the same reason: it names a host in the
+ * phone's list, so it goes through the same store. Going Home clears the place (rule 1), so without
+ * this a phone put down on a remote host's Home would reopen on the origin's.
+ */
+
+/** Where Home's host is remembered. */
+export const PHONE_HOME_HOST_KEY = 'kelpi.phone.home-host';
+
+export function readStoredHomeHost(storage: StorageLike | null | undefined = undefined): string | null {
+    try {
+        const store = storage === undefined ? defaultStorage() : storage;
+        const value = store?.getItem(PHONE_HOME_HOST_KEY);
+        return value === null || value === undefined || value.length === 0 ? null : value;
+    } catch {
+        return null;
+    }
+}
+
+export function writeStoredHomeHost(hostKey: string, storage: StorageLike | null | undefined = undefined): void {
+    try {
+        const store = storage === undefined ? defaultStorage() : storage;
+        store?.setItem(PHONE_HOME_HOST_KEY, hostKey);
+    } catch {
+        // Convenience only.
+    }
+}

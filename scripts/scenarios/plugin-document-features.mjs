@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { spawnDesktopHelper } from '../ui-audit/lib/desktop-lifecycle.mjs';
 import { fileURLToPath } from 'node:url';
 import { makeSandbox, startDaemon, waitForHealthz, makeCli, PROTOCOL_VERSION } from '../ui-audit/lib/stack.mjs';
-import { daemonIDFromSandbox, phoneToLanding, restoreBundledSlots } from '../ui-audit/lib/workbench.mjs';
+import { daemonIDFromSandbox, phoneRevealWorkspace, phoneToLanding, restoreBundledSlots } from '../ui-audit/lib/workbench.mjs';
 
 export const covers = ['examples/plugins/document-lab/', 'packages/plugin-sdk/', 'packages/client/src/features/',
     'packages/client/src/plugins/', 'packages/client/src/content/', 'packages/client/src/app/RemoteWorkspaceView.tsx',
@@ -185,6 +185,8 @@ export default async function ({ page, cli, sandbox, rec, d }) {
         await page.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
         await page.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
         const phoneRow = `[data-testid="phone-shell"] [data-workspace-id="${remoteWorkspace.workspace_id}"]`;
+        // Home shows one host's workspaces: page it to the host that holds this one.
+        await phoneRevealWorkspace(page, d, remoteWorkspace.workspace_id);
         if (await d.settleDom(page, `document.querySelector(${JSON.stringify(phoneRow)})`)) await page.click(phoneRow);
         await page.click('[data-testid="phone-title"]');
         await d.settleDom(page, `document.querySelector('[data-testid="phone-pane-show-${remotePane.id}"]')`);

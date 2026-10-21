@@ -104,6 +104,15 @@ export function filterPasteText(text: string): string {
         .replace(CONTROL_PATTERN, '');
 }
 
+/**
+ * One printable ASCII character, the only thing `pane-send-key` takes besides a named key. A key
+ * that is not a control, a space or a multi-byte sequence cannot smuggle anything into a pane, and
+ * is exactly what a TUI menu's hotkey is (`1`, `y`, `a`).
+ */
+export function isKeystroke(key: string): boolean {
+    return /^[\x21-\x7e]$/.test(key);
+}
+
 /** §9.1: envelope only when the foreground app asked for bracketed paste. */
 export function encodePasteText(text: string, modes: VtModes): string {
     const filtered = filterPasteText(text);
@@ -153,6 +162,11 @@ class TerminalInputImpl implements TerminalInput {
         const named = parseNamedKey(key);
         if (named === undefined) throw new UnknownNamedKeyError(key);
         this.pty.writeDirect(paneID, encodeNamedKey(named, this.modesFor(paneID)));
+    }
+
+    sendKeystroke(paneID: string, key: string): void {
+        if (!isKeystroke(key)) throw new UnknownNamedKeyError(key);
+        this.pty.writeDirect(paneID, key);
     }
 
     /** A pane whose VT state is gone must still accept input; fall back to mode defaults. */

@@ -563,9 +563,13 @@ export class CommandClient {
         return this.raw(wirePayload('pane-clear', scopeFields(input)), options ?? {});
     }
 
-    /** `bare` suppresses the trailing Enter (compose with `sendKey`). */
+    /**
+     * `bare` suppresses the trailing Enter (compose with `sendKey`). `ifRevision` (#390) writes
+     * only while the pane's screen is still the one a `capturePane` reported, and is refused with
+     * `SCREEN_CHANGED` otherwise; a daemon from before #390 ignores it and writes anyway.
+     */
     sendText(
-        input: PaneScope & { target: string; text: string; bare?: boolean },
+        input: PaneScope & { target: string; text: string; bare?: boolean; ifRevision?: number },
         options?: SendOptions
     ): Promise<CommandReply> {
         return this.raw(
@@ -573,15 +577,16 @@ export class CommandClient {
                 ...scopeFields(input),
                 target: input.target,
                 text: input.text,
-                bare: input.bare ?? false
+                bare: input.bare ?? false,
+                if_revision: input.ifRevision
             }),
             options ?? {}
         );
     }
 
-    sendKey(input: PaneScope & { target: string; key: NamedKey | string }, options?: SendOptions): Promise<CommandReply> {
+    sendKey(input: PaneScope & { target: string; key: NamedKey | string; ifRevision?: number }, options?: SendOptions): Promise<CommandReply> {
         return this.raw(
-            wirePayload('pane-send-key', { ...scopeFields(input), target: input.target, key: input.key }),
+            wirePayload('pane-send-key', { ...scopeFields(input), target: input.target, key: input.key, if_revision: input.ifRevision }),
             options ?? {}
         );
     }

@@ -1150,7 +1150,7 @@ function AddRepositorySheet(props: {
                         border: `1px solid ${paths.length === 0 || busy ? 'transparent' : tokens.accent}`,
                         background:
                             paths.length === 0 || busy ? withAlpha(tokens.textPrimary, 0.08) : tokens.accent,
-                        color: paths.length === 0 || busy ? tokens.textTertiary : '#fff'
+                        color: paths.length === 0 || busy ? tokens.textTertiary : tokens.onAccent
                     }}
                     onClick={() => void submit()}
                 >

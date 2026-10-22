@@ -116,7 +116,7 @@ This generation uses protocol 2 and `kelpi-v2.db`; see the
 
 The workspace from the tour, three ways, each a preset paired with the terminal theme of the same
 name. In Settings ▸ Appearance, a preset theme (Dracula, Nord, Gruvbox Dark, Tokyo Night,
-Catppuccin Mocha, Solarized Light or Gruvbox Light) recolours the sidebar, title bar, status bar
+Catppuccin Mocha, Monochrome, Solarized Light or Gruvbox Light) recolours the sidebar, title bar, status bar
 and agent dots in one click and switches between light and dark to suit. The terminal theme
 beside it picks one of ten built-in palettes, saved as `theme = <name>` in
 `~/.config/ghostty/config` and read from Ghostty's theme files. Your own colours can be saved and

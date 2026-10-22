@@ -1330,7 +1330,7 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
                             style={{
                                 background: canSubmit ? tokens.accent : withAlpha(tokens.textPrimary, 0.08),
                                 borderColor: canSubmit ? tokens.accent : 'transparent',
-                                color: canSubmit ? '#fff' : tokens.textTertiary
+                                color: canSubmit ? tokens.onAccent : tokens.textTertiary
                             }}
                         >
                             {busy ? 'Creating…' : 'Create'}

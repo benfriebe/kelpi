@@ -350,7 +350,7 @@ export function PhoneNewWorkspaceSheet(props: PhoneNewWorkspaceSheetProps): Reac
                         style={{
                             minHeight: `${String(PHONE_ROW_MIN_PX)}px`,
                             background: tokens.accent,
-                            color: '#fff',
+                            color: tokens.onAccent,
                             opacity: canSubmit || busy ? 1 : 0.4
                         }}
                     >

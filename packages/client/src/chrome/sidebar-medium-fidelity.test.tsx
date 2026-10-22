@@ -411,7 +411,8 @@ describe('M9 — Create is the sheet’s default action', () => {
         // accent push button.
         expect(submit.getAttribute('data-default-action')).toBe('true');
         expect(submit.style.background).toContain('--kelpi-accent');
-        expect(submit.style.color).toBe('rgb(255, 255, 255)');
+        // White on the shipped accents, near-black on a white one (Monochrome).
+        expect(submit.style.color).toContain('--kelpi-on-accent');
         // Cancel stays the plain bordered button it always was — the two must not read alike.
         expect(cancel.style.background).toBe('');
         expect(submit.style.background).not.toBe(cancel.style.background);

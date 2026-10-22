@@ -1375,7 +1375,7 @@ export const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps)
                 <span
                     data-testid="drag-count"
                     className="pointer-events-none absolute top-1/2 -translate-y-1/2 rounded-full px-1.5 py-[2px] font-mono text-[10px] font-semibold"
-                    style={{ right: 4, background: tokens.accent, color: '#fff' }}
+                    style={{ right: 4, background: tokens.accent, color: tokens.onAccent }}
                 >
                     +{props.dragExtra}
                 </span>

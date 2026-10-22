@@ -155,6 +155,7 @@ interface ChromeTheme {
   selectionFill: Color;      // sidebar selected/active row fill (accent @ ~0.16/0.24)
   selectionStroke: Color;    // sidebar selected/active row outline
   accent: Color;             // sidebar highlight + global tint
+  onAccent: Color;           // text/glyphs on an accent fill (filled buttons, checked boxes)
   paneFocus: Color;          // focused-pane border (independently themable)
   // semantic status
   statusRunning: Color;
@@ -179,6 +180,7 @@ interface ChromeTheme {
 | selectionFill | `#5E8AC4` @ 0.16 | `#5276B8` @ 0.24 |
 | selectionStroke | `#5E8AC4` | `#5276B8` |
 | accent | `#5E8AC4` | `#6F9BD8` |
+| onAccent | `#FFFFFF` | `#FFFFFF` |
 | paneFocus | `#5E8AC4` | `#6F9BD8` |
 | statusRunning | `#4FA46B` | `#5FBE89` |
 | statusWaiting | `#5E8AC4` | `#6F9BD8` |
@@ -192,7 +194,9 @@ User overrides exist for: `windowBackground`, `sidebarBackground`, `footerBackgr
 `headerBackground`, `surfaceBackground`, `accent`, `paneFocus`, `divider`,
 `statusRunning`, `statusWaiting`, `statusInactive` (the last three form a separate
 "Agent status" settings section). Overriding `accent` ALSO rewrites `selectionStroke`
-(same value) and `selectionFill` (accent @ 0.18). `textPrimary/Secondary/Tertiary`,
+(same value), `selectionFill` (accent @ 0.18) and `onAccent` (`#0A0A0C` when the accent's
+perceived luminance is above 0.8, so a white accent keeps its button labels; white otherwise,
+which every shipped preset gets). `textPrimary/Secondary/Tertiary`,
 `activeAgent`, and `groupBandOpacity` are not user-overridable. Overrides are stored per
 concrete bucket (`light:` / `dark:`) — a color picked in dark mode never leaks into
 light mode.
@@ -227,8 +231,9 @@ Effective opacity is always `min(1, value * intensity)`.
 
 A preset gallery the user can apply in one click (writes the palette into the matching
 bucket's overrides and switches Light/Dark to suit; the terminal theme is untouched).
-Seven presets: **Dracula, Nord, Gruvbox Dark, Tokyo Night, Catppuccin Mocha** (dark) and
-**Solarized Light, Gruvbox Light** (light). Each specifies the 11 overridable colors
+Eight presets: **Dracula, Nord, Gruvbox Dark, Tokyo Night, Catppuccin Mocha, Monochrome**
+(dark) and **Solarized Light, Gruvbox Light** (light). Monochrome is Kelpi's own: a black
+ground with white accents, and greys for the running and inactive agent dots. Each specifies the 11 overridable colors
 (the exact hex tables are `BUILT_IN_CHROME_THEMES` in `packages/client/src/chrome/presets.ts`).
 
 ### Theme sharing
@@ -1005,7 +1010,7 @@ The mute row's checkbox is `MenuItemSpec.control: 'checkbox'`
 leading tick (Profile's list, the label menus' `–` for mixed). It renders as
 `role="menuitemcheckbox"` with `aria-checked`. The empty state is an outlined box in the
 secondary text colour, legible in both themes and over the row highlight. The checked state is
-an accent-filled box with a white check. It is a stop in the keyboard walk like any row.
+an accent-filled box with a check in `onAccent` (white, or near-black on a white accent). It is a stop in the keyboard walk like any row.
 
 Selecting a checkbox row (click, Return or Space) toggles it without closing the menu, so the
 new state is seen and can be flipped straight back; the keyboard stays on the row. The box is

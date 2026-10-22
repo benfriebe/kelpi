@@ -39,6 +39,8 @@ export interface ChromeTheme {
     readonly selectionFill: string;
     readonly selectionStroke: string;
     readonly accent: string;
+    /** Text and glyphs drawn ON an accent fill: a filled default button, a checked box. */
+    readonly onAccent: string;
     readonly paneFocus: string;
     readonly statusRunning: string;
     readonly statusWaiting: string;
@@ -66,6 +68,7 @@ export const LIGHT_CHROME_THEME: ChromeTheme = {
     selectionFill: 'rgba(94, 138, 196, 0.16)',
     selectionStroke: '#5E8AC4',
     accent: '#5E8AC4',
+    onAccent: '#FFFFFF',
     paneFocus: '#5E8AC4',
     statusRunning: '#4FA46B',
     statusWaiting: '#5E8AC4',
@@ -88,6 +91,7 @@ export const DARK_CHROME_THEME: ChromeTheme = {
     selectionFill: 'rgba(82, 118, 184, 0.24)',
     selectionStroke: '#5276B8',
     accent: '#6F9BD8',
+    onAccent: '#FFFFFF',
     paneFocus: '#6F9BD8',
     statusRunning: '#5FBE89',
     statusWaiting: '#6F9BD8',
@@ -225,6 +229,17 @@ export function autoTextColor(background: string): string {
     return perceivedLuminance(background) > 0.6 ? '#000000' : '#FFFFFF';
 }
 
+/**
+ * Text on an accent FILL: white, as every filled button has always drawn it, until the accent is
+ * light enough to swallow white (Monochrome's white accent, a pale custom pick), then near-black.
+ *
+ * Stricter than `autoTextColor`'s 0.6 on purpose: the shipped dark presets' accents sit between
+ * 0.58 and 0.73, and switching at 0.6 would turn five of them to black-on-accent buttons.
+ */
+export function onAccentColor(accent: string): string {
+    return perceivedLuminance(accent) > 0.8 ? '#0A0A0C' : '#FFFFFF';
+}
+
 // ── resolution ──────────────────────────────────────────────────────────────────────
 
 export interface ChromeThemeInput {
@@ -242,8 +257,8 @@ export function chromeBucket(appearance: ChromeAppearance, systemDark: boolean):
 
 /**
  * §2 resolution algorithm: preset for the resolved bucket, then every valid `<bucket>:<key>`
- * override applied on top. Overriding `accent` ALSO rewrites `selectionStroke` (same value)
- * and `selectionFill` (accent @ 0.18).
+ * override applied on top. Overriding `accent` ALSO rewrites `selectionStroke` (same value),
+ * `selectionFill` (accent @ 0.18) and `onAccent` (`onAccentColor`).
  */
 export function resolveChromeTheme(input: ChromeThemeInput = {}): ChromeTheme {
     const appearance = input.appearance ?? 'system';
@@ -262,6 +277,7 @@ export function resolveChromeTheme(input: ChromeThemeInput = {}): ChromeTheme {
         if (key === 'accent') {
             resolved['selectionStroke'] = hex;
             resolved['selectionFill'] = withAlpha(hex, 0.18);
+            resolved['onAccent'] = onAccentColor(hex);
         }
     }
     return resolved as unknown as ChromeTheme;
@@ -287,6 +303,7 @@ export const CHROME_CSS_VARS: Readonly<Record<keyof ChromeTheme, string>> = {
     selectionFill: '--kelpi-selection-fill',
     selectionStroke: '--kelpi-selection-stroke',
     accent: '--kelpi-accent',
+    onAccent: '--kelpi-on-accent',
     paneFocus: '--kelpi-pane-focus',
     statusRunning: '--kelpi-status-running',
     statusWaiting: '--kelpi-status-waiting',

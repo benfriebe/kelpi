@@ -486,7 +486,7 @@ export function AppearanceTab(props: AppearanceTabProps): ReactElement {
         <div className="flex flex-col gap-4" data-testid="settings-tab-appearance">
             <SettingsSection
                 title="Preset themes"
-                hint="One-click chrome palettes based on popular editor themes. Each recolours the sidebar, title bar, status bar and agent dots, and switches Light/Dark to suit. Your terminal theme is unchanged; tweak any colour below afterwards."
+                hint="One-click chrome palettes, most based on popular editor themes. Each recolours the sidebar, title bar, status bar and agent dots, and switches Light/Dark to suit. Your terminal theme is unchanged; tweak any colour below afterwards."
                 testID="appearance-presets"
             >
                 <div className="grid gap-2.5" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(132px, 1fr))' }}>

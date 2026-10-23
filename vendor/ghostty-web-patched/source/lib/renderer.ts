@@ -211,6 +211,8 @@ export class CanvasRenderer {
     style: 'block' | 'underline' | 'bar';
     focused: boolean;
   } = { x: 0, y: 0, drawn: false, style: 'block', focused: true };
+  /** The last frame's cursor could show at all (DECTCEM visible, not scrolled back). */
+  private cursorShowable = true;
   /**
    * Paint is SUSPENDED — the canvas is a frozen frame, not a live surface (vendor
    * 0.4.0-kelpi.6). See `setPaintSuspended`.
@@ -244,6 +246,12 @@ export class CanvasRenderer {
   private selectionManager?: SelectionManager;
   // vendor 0.4.0-kelpi.16: every visible search match, and the current one (`search-highlight.ts`)
   private searchHighlighter = new SearchHighlighter();
+  /**
+   * Told whenever something that changes the next frame happened (vendor 0.4.0-kelpi.25). The
+   * terminal's render loop runs on demand rather than every frame, and every public setter here
+   * — the embedder calls several directly — plus the blink timer wakes it through this.
+   */
+  private invalidateListener: (() => void) | null = null;
   private searchHighlightListener: ((spans: readonly ISearchHighlightSpan[]) => void) | null =
     null;
   // Cached selection coordinates for current render pass (viewport-relative)
@@ -354,7 +362,16 @@ export class CanvasRenderer {
   /**
    * Remeasure font metrics (call after font loads or changes)
    */
+  public setInvalidateListener(listener: (() => void) | null): void {
+    this.invalidateListener = listener;
+  }
+
+  private invalidate(): void {
+    this.invalidateListener?.();
+  }
+
   public remeasureFont(): void {
+    this.invalidate();
     this.metrics = this.measureFont();
   }
 
@@ -445,6 +462,7 @@ export class CanvasRenderer {
    * `false` and nothing else sets it.
    */
   public setPaintSuspended(suspended: boolean): void {
+    this.invalidate();
     this.paintSuspended = suspended;
   }
 
@@ -457,6 +475,7 @@ export class CanvasRenderer {
    * Resize canvas to fit terminal dimensions
    */
   public resize(cols: number, rows: number): void {
+    this.invalidate();
     const cssWidth = cols * this.metrics.width;
     const cssHeight = rows * this.metrics.height;
 
@@ -824,6 +843,7 @@ export class CanvasRenderer {
       this.renderScrollbar(scrollbarViewportY, scrollbackLength, dims.rows, scrollbarOpacity);
     }
 
+    this.cursorShowable = viewportY === 0 && cursor.visible;
     this.paintedCursor = {
       x: cursor.x,
       y: cursor.y,
@@ -1262,6 +1282,9 @@ export class CanvasRenderer {
       // vendor 0.4.0-kelpi.24: `render()` sees the phase change through `paintedCursor`, so a
       // toggle repaints the cursor line once, and a hidden or scrolled-back cursor not at all.
       this.cursorVisible = !this.cursorVisible;
+      // vendor 0.4.0-kelpi.25: a toggle the cursor cannot show (hidden by the app, or the view
+      // scrolled back) needs no frame.
+      if (this.cursorShowable) this.invalidate();
     }, 530);
   }
 
@@ -1281,6 +1304,7 @@ export class CanvasRenderer {
    * Update theme colors
    */
   public setTheme(theme: ITheme): void {
+    this.invalidate();
     this.theme = { ...DEFAULT_THEME, ...theme };
     // Kept in step with the background the palette below is derived from, so a theme change
     // cannot leave `isDefaultCellBackground` matching the PREVIOUS background's components.
@@ -1321,6 +1345,7 @@ export class CanvasRenderer {
    * numbers. See `liveThemeColor` for what the renderer does with them.
    */
   public setTerminalDefaultColors(background: number | null, foreground: number | null): void {
+    this.invalidate();
     this.terminalDefaultBackgroundRGB = CanvasRenderer.rgbFromInt(background);
     this.terminalDefaultForegroundRGB = CanvasRenderer.rgbFromInt(foreground);
   }
@@ -1329,6 +1354,7 @@ export class CanvasRenderer {
    * Update font size
    */
   public setFontSize(size: number): void {
+    this.invalidate();
     this.fontSize = size;
     this.metrics = this.measureFont();
   }
@@ -1337,6 +1363,7 @@ export class CanvasRenderer {
    * Update font family
    */
   public setFontFamily(family: string): void {
+    this.invalidate();
     this.fontFamily = family;
     this.metrics = this.measureFont();
   }
@@ -1345,6 +1372,7 @@ export class CanvasRenderer {
    * Update cursor style
    */
   public setCursorStyle(style: 'block' | 'underline' | 'bar'): void {
+    this.invalidate();
     this.cursorStyle = style;
   }
 
@@ -1352,6 +1380,7 @@ export class CanvasRenderer {
    * Enable/disable cursor blinking
    */
   public setCursorBlink(enabled: boolean): void {
+    this.invalidate();
     if (enabled && !this.cursorBlink) {
       this.cursorBlink = true;
       // An unfocused terminal shows a steady outline; its timer starts when it takes focus.
@@ -1377,6 +1406,7 @@ export class CanvasRenderer {
    * embedder that never calls this keeps upstream's always-focused behaviour.
    */
   public setFocused(focused: boolean): void {
+    this.invalidate();
     if (this.focused === focused) return;
     this.focused = focused;
     // The cursor cell is repainted by the next `render()`, which sees the new treatment
@@ -1458,6 +1488,7 @@ export class CanvasRenderer {
    * Set selection manager (for rendering selection)
    */
   public setSelectionManager(manager: SelectionManager): void {
+    this.invalidate();
     this.selectionManager = manager;
   }
 
@@ -1467,6 +1498,7 @@ export class CanvasRenderer {
 
   /** Highlight every visible occurrence of a needle, or nothing (`null`). Drops the current one. */
   public setSearchHighlight(query: ISearchHighlight | null): void {
+    this.invalidate();
     this.searchHighlighter.setQuery(query);
   }
 
@@ -1480,6 +1512,7 @@ export class CanvasRenderer {
     buffer: IRenderable,
     scrollbackProvider: IScrollbackProvider | undefined
   ): boolean {
+    this.invalidate();
     const query = this.searchHighlighter.getQuery();
     const anchor =
       match === null || query === null
@@ -1585,6 +1618,7 @@ export class CanvasRenderer {
    * Set the currently hovered hyperlink ID for rendering underlines
    */
   public setHoveredHyperlinkId(hyperlinkId: number): void {
+    this.invalidate();
     this.hoveredHyperlinkId = hyperlinkId;
   }
 
@@ -1593,6 +1627,7 @@ export class CanvasRenderer {
    * or none. The rows of the old and the new underline are repainted on the next frame.
    */
   public setLinkUnderline(segments: readonly ILinkUnderlineSegment[] | null): void {
+    this.invalidate();
     const rows = this.linkUnderlineRows;
     if (this.linkUnderline !== null) this.linkUnderline.forEach((segment) => rows.add(segment.row));
     if (segments !== null) segments.forEach((segment) => rows.add(segment.row));
@@ -1621,6 +1656,7 @@ export class CanvasRenderer {
       endY: number;
     } | null
   ): void {
+    this.invalidate();
     this.hoveredLinkRange = range;
   }
 
@@ -1642,6 +1678,7 @@ export class CanvasRenderer {
    * Clear entire canvas
    */
   public clear(): void {
+    this.invalidate();
     this.paintDefaultBackground(0, 0, this.canvas.width, this.canvas.height);
   }
 

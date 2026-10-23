@@ -40,6 +40,8 @@ export declare class CanvasRenderer {
      * it (`CSI ?25l` dirties no row, so before this the old cursor stayed painted).
      */
     private paintedCursor;
+    /** The last frame's cursor could show at all (DECTCEM visible, not scrolled back). */
+    private cursorShowable;
     /**
      * Paint is SUSPENDED — the canvas is a frozen frame, not a live surface (vendor
      * 0.4.0-kelpi.6). See `setPaintSuspended`.
@@ -66,6 +68,12 @@ export declare class CanvasRenderer {
     private currentBuffer;
     private selectionManager?;
     private searchHighlighter;
+    /**
+     * Told whenever something that changes the next frame happened (vendor 0.4.0-kelpi.25). The
+     * terminal's render loop runs on demand rather than every frame, and every public setter here
+     * — the embedder calls several directly — plus the blink timer wakes it through this.
+     */
+    private invalidateListener;
     private searchHighlightListener;
     private currentSelectionCoords;
     private hoveredHyperlinkId;
@@ -79,6 +87,8 @@ export declare class CanvasRenderer {
     /**
      * Remeasure font metrics (call after font loads or changes)
      */
+    setInvalidateListener(listener: (() => void) | null): void;
+    private invalidate;
     remeasureFont(): void;
     private rgbToCSS;
     /**
@@ -1981,10 +1991,15 @@ export declare class Terminal implements ITerminalCore {
     private isOpen;
     private isDisposed;
     private animationFrameId?;
+    /** Frames rendered since the last wake (vendor 0.4.0-kelpi.25, see `requestRender`). */
+    private idleFrames;
+    private renderHeartbeat?;
     private addons;
     private customKeyEventHandler?;
     private currentTitle;
-    viewportY: number;
+    private _viewportY;
+    get viewportY(): number;
+    set viewportY(value: number);
     private targetViewportY;
     private scrollAnimationStartTime?;
     private scrollAnimationStartY?;
@@ -1995,7 +2010,9 @@ export declare class Terminal implements ITerminalCore {
     private scrollbarDragStart;
     private scrollbarDragStartViewportY;
     private scrollbarVisible;
-    private scrollbarOpacity;
+    private _scrollbarOpacity;
+    private get scrollbarOpacity();
+    private set scrollbarOpacity(value);
     private scrollbarHideTimeout?;
     private readonly SCROLLBAR_HIDE_DELAY_MS;
     private readonly SCROLLBAR_FADE_DURATION_MS;
@@ -2258,7 +2275,23 @@ export declare class Terminal implements ITerminalCore {
     /**
      * Start the render loop
      */
+    /**
+     * vendor 0.4.0-kelpi.25: the loop runs ON DEMAND. Upstream chained `requestAnimationFrame`
+     * unconditionally, so an idle terminal still woke the page, the GPU process and the window
+     * server every display frame (120 Hz on ProMotion) — per open terminal. Now anything that
+     * changes the next frame calls `requestRender()`: output (`writeInternal`), every renderer
+     * setter and the blink timer (`setInvalidateListener`), scrolling and the scrollbar fade (the
+     * `viewportY` / `scrollbarOpacity` accessors), selection changes, and pointer / key / IME
+     * events on the element. A wake runs `RENDER_TAIL_FRAMES` frames, so state that settles over
+     * a frame or two (the scrollbar strip restore, the search layer) still lands, then stops.
+     */
+    private static readonly RENDER_TAIL_FRAMES;
+    private static readonly WAKE_EVENTS;
+    private static readonly RENDER_HEARTBEAT_MS;
+    private requestRender;
+    private renderLoopFrame;
     private startRenderLoop;
+    private renderFrame;
     /**
      * Recompute the cursor cell's box and, if it moved or resized, move the IME onto it.
      *

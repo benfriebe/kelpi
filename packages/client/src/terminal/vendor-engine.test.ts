@@ -45,7 +45,7 @@ const repoRoot = path.resolve(here, '..', '..', '..', '..');
 const vendorRoot = path.join(repoRoot, 'vendor', 'ghostty-web-patched');
 
 /** The version the audit evidence and PROVENANCE.md were written against. */
-const EXPECTED_VERSION = '0.4.0-kelpi.24';
+const EXPECTED_VERSION = '0.4.0-kelpi.25';
 
 /** Markers of the caret-anchored IME, in the built ESM bundle the client imports. */
 const CARET_MARKERS = ['data-ime-preedit', 'data-ime-caret', 'syncImeCaret'];

@@ -28,18 +28,18 @@ export declare class CanvasRenderer {
     private palette;
     private cursorVisible;
     private cursorBlinkInterval?;
-    private lastCursorPosition;
     /** See `RendererOptions.focused`. */
     private focused;
     /**
-     * The cursor's TREATMENT changed (focus flipped) without the cursor moving.
+     * The cursor as the last frame left it on the canvas (vendor 0.4.0-kelpi.24).
      *
-     * Filled-block ↔ hollow-outline is a repaint of the cursor cell that nothing else asks for:
-     * the row is not dirty (no bytes arrived), the cursor did not move, and with `cursorBlink`
-     * off the per-frame "redraw the cursor line" branch is not taken either. Without this flag a
-     * pane that lost focus while idle keeps its filled block painted until the next keystroke.
+     * `render()` compares this frame's cursor against it and, on any difference, repaints the
+     * old and new cursor rows and draws the cursor; with no difference it touches neither. That
+     * one comparison covers every way the cursor's pixels change without its row going dirty: a
+     * move, a blink toggle, a focus flip (filled ↔ hollow), a style change, and DECTCEM hiding
+     * it (`CSI ?25l` dirties no row, so before this the old cursor stayed painted).
      */
-    private cursorStateDirty;
+    private paintedCursor;
     /**
      * Paint is SUSPENDED — the canvas is a frozen frame, not a live surface (vendor
      * 0.4.0-kelpi.6). See `setPaintSuspended`.

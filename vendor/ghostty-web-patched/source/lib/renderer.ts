@@ -193,18 +193,24 @@ export class CanvasRenderer {
   // Cursor blinking state
   private cursorVisible: boolean = true;
   private cursorBlinkInterval?: number;
-  private lastCursorPosition: { x: number; y: number } = { x: 0, y: 0 };
   /** See `RendererOptions.focused`. */
   private focused: boolean;
   /**
-   * The cursor's TREATMENT changed (focus flipped) without the cursor moving.
+   * The cursor as the last frame left it on the canvas (vendor 0.4.0-kelpi.24).
    *
-   * Filled-block ↔ hollow-outline is a repaint of the cursor cell that nothing else asks for:
-   * the row is not dirty (no bytes arrived), the cursor did not move, and with `cursorBlink`
-   * off the per-frame "redraw the cursor line" branch is not taken either. Without this flag a
-   * pane that lost focus while idle keeps its filled block painted until the next keystroke.
+   * `render()` compares this frame's cursor against it and, on any difference, repaints the
+   * old and new cursor rows and draws the cursor; with no difference it touches neither. That
+   * one comparison covers every way the cursor's pixels change without its row going dirty: a
+   * move, a blink toggle, a focus flip (filled ↔ hollow), a style change, and DECTCEM hiding
+   * it (`CSI ?25l` dirties no row, so before this the old cursor stayed painted).
    */
-  private cursorStateDirty: boolean = false;
+  private paintedCursor: {
+    x: number;
+    y: number;
+    drawn: boolean;
+    style: 'block' | 'underline' | 'bar';
+    focused: boolean;
+  } = { x: 0, y: 0, drawn: false, style: 'block', focused: true };
   /**
    * Paint is SUSPENDED — the canvas is a frozen frame, not a live surface (vendor
    * 0.4.0-kelpi.6). See `setPaintSuspended`.
@@ -598,28 +604,37 @@ export class CanvasRenderer {
       }
     }
 
-    // Check if cursor position changed, or if the cursor's look changed under it (a blink
-    // toggle or a focus flip — see `cursorStateDirty`): both need the cursor line redrawn so
-    // the previous frame's cursor is erased before this one's is painted. vendor 0.4.0-kelpi.24:
-    // NOT `this.cursorBlink` — that is the setting, true even with the timer stopped, and
-    // testing it repainted every terminal's cursor line on every frame (~120 composites/s each).
-    const cursorMoved =
-      cursor.x !== this.lastCursorPosition.x || cursor.y !== this.lastCursorPosition.y;
-    if (cursorMoved || this.cursorStateDirty) {
-      // Mark cursor lines as needing redraw
+    // vendor 0.4.0-kelpi.24: compare the cursor this frame would draw against the one on the
+    // canvas (`paintedCursor`), and redraw the cursor lines only when they differ, so the
+    // previous cursor is erased before this one is painted. Upstream redrew the line whenever
+    // `this.cursorBlink` was set: that is the setting, true even with the timer stopped, so
+    // every terminal's cursor line was repainted on every frame (~120 composites/s each).
+    //
+    // The blink PHASE only gates a focused cursor. Unfocused, ghostty shows the hollow box
+    // "always" (`src/renderer/cursor.zig:58-60`) — the terminal's own visibility (DECTCEM,
+    // `cursor.visible`) still hides it, exactly as the `!state.cursor.visible` check that runs
+    // one line earlier over there does. Only drawn at the bottom, not scrolled back.
+    const cursorDrawn =
+      viewportY === 0 && cursor.visible && (this.cursorVisible || !this.focused);
+    const painted = this.paintedCursor;
+    const cursorMoved = cursor.x !== painted.x || cursor.y !== painted.y;
+    const cursorChanged =
+      cursorMoved ||
+      cursorDrawn !== painted.drawn ||
+      (cursorDrawn && (this.cursorStyle !== painted.style || this.focused !== painted.focused));
+    if (cursorChanged) {
       if (!forceAll && !buffer.isRowDirty(cursor.y)) {
-        // Need to redraw cursor line
         const line = buffer.getLine(cursor.y);
         if (line) {
           this.renderLine(line, cursor.y, dims.cols);
         }
       }
-      if (cursorMoved && this.lastCursorPosition.y !== cursor.y) {
+      if (painted.y !== cursor.y) {
         // Also redraw old cursor line if cursor moved to different line
-        if (!forceAll && !buffer.isRowDirty(this.lastCursorPosition.y)) {
-          const line = buffer.getLine(this.lastCursorPosition.y);
+        if (!forceAll && !buffer.isRowDirty(painted.y)) {
+          const line = buffer.getLine(painted.y);
           if (line) {
-            this.renderLine(line, this.lastCursorPosition.y, dims.cols);
+            this.renderLine(line, painted.y, dims.cols);
           }
         }
       }
@@ -795,13 +810,10 @@ export class CanvasRenderer {
 
     // Link underlines are drawn during cell rendering (see renderCell)
 
-    // Render cursor (only if we're at the bottom, not scrolled).
-    //
-    // The blink PHASE only gates a focused cursor. Unfocused, ghostty shows the hollow box
-    // "always" (`src/renderer/cursor.zig:58-60`) — the terminal's own visibility (DECTCEM,
-    // `cursor.visible`) still hides it, exactly as the `!state.cursor.visible` check that runs
-    // one line earlier over there does.
-    if (viewportY === 0 && cursor.visible && (this.cursorVisible || !this.focused)) {
+    // Render cursor (see `cursorDrawn` above). vendor 0.4.0-kelpi.24: only when it changed or
+    // a row walk just painted over its cell; an untouched cursor is already on the canvas, and
+    // drawing it anyway touched every canvas on every frame.
+    if (cursorDrawn && (cursorChanged || rowsToRender.has(cursor.y))) {
       this.renderCursor(cursor.x, cursor.y);
     }
 
@@ -812,10 +824,13 @@ export class CanvasRenderer {
       this.renderScrollbar(scrollbarViewportY, scrollbackLength, dims.rows, scrollbarOpacity);
     }
 
-    // Update last cursor position
-    this.lastCursorPosition = { x: cursor.x, y: cursor.y };
-    // The focus flip has been painted.
-    this.cursorStateDirty = false;
+    this.paintedCursor = {
+      x: cursor.x,
+      y: cursor.y,
+      drawn: cursorDrawn,
+      style: this.cursorStyle,
+      focused: this.focused,
+    };
 
     // ALWAYS clear dirty flags after rendering, regardless of forceAll.
     // This is critical - if we don't clear after a full redraw, the dirty
@@ -1244,9 +1259,9 @@ export class CanvasRenderer {
   private startCursorBlink(): void {
     // xterm.js uses ~530ms blink interval
     this.cursorBlinkInterval = window.setInterval(() => {
+      // vendor 0.4.0-kelpi.24: `render()` sees the phase change through `paintedCursor`, so a
+      // toggle repaints the cursor line once, and a hidden or scrolled-back cursor not at all.
       this.cursorVisible = !this.cursorVisible;
-      // vendor 0.4.0-kelpi.24: one cursor-line repaint per toggle, not one per frame.
-      this.cursorStateDirty = true;
     }, 530);
   }
 
@@ -1364,8 +1379,8 @@ export class CanvasRenderer {
   public setFocused(focused: boolean): void {
     if (this.focused === focused) return;
     this.focused = focused;
-    // The cursor cell has to be repainted even though nothing in the buffer changed.
-    this.cursorStateDirty = true;
+    // The cursor cell is repainted by the next `render()`, which sees the new treatment
+    // through `paintedCursor` even though nothing in the buffer changed.
     if (focused) {
       this.cursorVisible = true;
       if (this.cursorBlink && this.cursorBlinkInterval === undefined) this.startCursorBlink();

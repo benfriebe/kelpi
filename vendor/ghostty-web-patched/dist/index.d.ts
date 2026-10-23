@@ -85,10 +85,14 @@ export declare class CanvasRenderer {
     constructor(canvas: HTMLCanvasElement, options?: RendererOptions);
     private measureFont;
     /**
-     * Remeasure font metrics (call after font loads or changes)
+     * Called whenever the next frame would differ (vendor 0.4.0-kelpi.25): every public setter
+     * and the blink timer call it, so the terminal's on-demand render loop wakes.
      */
     setInvalidateListener(listener: (() => void) | null): void;
     private invalidate;
+    /**
+     * Remeasure font metrics (call after font loads or changes)
+     */
     remeasureFont(): void;
     private rgbToCSS;
     /**
@@ -2272,9 +2276,10 @@ export declare class Terminal implements ITerminalCore {
      * Dispose terminal and clean up resources
      */
     dispose(): void;
-    /**
-     * Start the render loop
-     */
+    /** Frames a wake renders before the loop stops: about 80 ms at 120 Hz. */
+    private static readonly RENDER_TAIL_FRAMES;
+    private static readonly WAKE_EVENTS;
+    private static readonly RENDER_HEARTBEAT_MS;
     /**
      * vendor 0.4.0-kelpi.25: the loop runs ON DEMAND. Upstream chained `requestAnimationFrame`
      * unconditionally, so an idle terminal still woke the page, the GPU process and the window
@@ -2285,9 +2290,6 @@ export declare class Terminal implements ITerminalCore {
      * events on the element. A wake runs `RENDER_TAIL_FRAMES` frames, so state that settles over
      * a frame or two (the scrollbar strip restore, the search layer) still lands, then stops.
      */
-    private static readonly RENDER_TAIL_FRAMES;
-    private static readonly WAKE_EVENTS;
-    private static readonly RENDER_HEARTBEAT_MS;
     private requestRender;
     private renderLoopFrame;
     private startRenderLoop;

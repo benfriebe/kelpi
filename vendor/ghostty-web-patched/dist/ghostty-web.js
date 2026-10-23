@@ -1660,7 +1660,8 @@ class S {
     return { width: E, height: D, baseline: i };
   }
   /**
-   * Remeasure font metrics (call after font loads or changes)
+   * Called whenever the next frame would differ (vendor 0.4.0-kelpi.25): every public setter
+   * and the blink timer call it, so the terminal's on-demand render loop wakes.
    */
   setInvalidateListener(A) {
     this.invalidateListener = A;
@@ -1669,6 +1670,9 @@ class S {
     var A;
     (A = this.invalidateListener) == null || A.call(this);
   }
+  /**
+   * Remeasure font metrics (call after font loads or changes)
+   */
   remeasureFont() {
     this.invalidate(), this.metrics = this.measureFont();
   }
@@ -2864,6 +2868,7 @@ const v = class P {
    * Request a render update (triggers selection overlay redraw)
    */
   requestRender() {
+    this.terminal.requestRender();
   }
 };
 v.AUTO_SCROLL_SPEED = 3;

@@ -1493,19 +1493,7 @@ export class Terminal implements ITerminalCore {
   // Private Methods
   // ==========================================================================
 
-  /**
-   * Start the render loop
-   */
-  /**
-   * vendor 0.4.0-kelpi.25: the loop runs ON DEMAND. Upstream chained `requestAnimationFrame`
-   * unconditionally, so an idle terminal still woke the page, the GPU process and the window
-   * server every display frame (120 Hz on ProMotion) — per open terminal. Now anything that
-   * changes the next frame calls `requestRender()`: output (`writeInternal`), every renderer
-   * setter and the blink timer (`setInvalidateListener`), scrolling and the scrollbar fade (the
-   * `viewportY` / `scrollbarOpacity` accessors), selection changes, and pointer / key / IME
-   * events on the element. A wake runs `RENDER_TAIL_FRAMES` frames, so state that settles over
-   * a frame or two (the scrollbar strip restore, the search layer) still lands, then stops.
-   */
+  /** Frames a wake renders before the loop stops: about 80 ms at 120 Hz. */
   private static readonly RENDER_TAIL_FRAMES = 10;
   private static readonly WAKE_EVENTS = [
     'mousedown',
@@ -1524,6 +1512,16 @@ export class Terminal implements ITerminalCore {
   // 2s (a no-op when nothing is). Add the missing source to `requestRender` if it ever fires work.
   private static readonly RENDER_HEARTBEAT_MS = 2000;
 
+  /**
+   * vendor 0.4.0-kelpi.25: the loop runs ON DEMAND. Upstream chained `requestAnimationFrame`
+   * unconditionally, so an idle terminal still woke the page, the GPU process and the window
+   * server every display frame (120 Hz on ProMotion) — per open terminal. Now anything that
+   * changes the next frame calls `requestRender()`: output (`writeInternal`), every renderer
+   * setter and the blink timer (`setInvalidateListener`), scrolling and the scrollbar fade (the
+   * `viewportY` / `scrollbarOpacity` accessors), selection changes, and pointer / key / IME
+   * events on the element. A wake runs `RENDER_TAIL_FRAMES` frames, so state that settles over
+   * a frame or two (the scrollbar strip restore, the search layer) still lands, then stops.
+   */
   private requestRender = (): void => {
     if (this.isDisposed || !this.isOpen || !this.renderer || !this.wasmTerm) return;
     this.idleFrames = 0;

@@ -360,7 +360,8 @@ export class CanvasRenderer {
   }
 
   /**
-   * Remeasure font metrics (call after font loads or changes)
+   * Called whenever the next frame would differ (vendor 0.4.0-kelpi.25): every public setter
+   * and the blink timer call it, so the terminal's on-demand render loop wakes.
    */
   public setInvalidateListener(listener: (() => void) | null): void {
     this.invalidateListener = listener;
@@ -370,6 +371,9 @@ export class CanvasRenderer {
     this.invalidateListener?.();
   }
 
+  /**
+   * Remeasure font metrics (call after font loads or changes)
+   */
   public remeasureFont(): void {
     this.invalidate();
     this.metrics = this.measureFont();

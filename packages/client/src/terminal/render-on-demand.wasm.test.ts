@@ -114,6 +114,45 @@ describe('the render loop runs on demand (0.4.0-kelpi.25)', () => {
         expect(queue.size).toBe(0);
     });
 
+    it('wakes for a selection drag that has left the pane', () => {
+        // Outside the pane only the selection manager's document listeners see the pointer, so
+        // its own requestRender() has to wake the loop, or the highlight waits for the release.
+        const host = document.createElement('div');
+        document.body.appendChild(host);
+        const term = new Terminal({ ghostty, cols: 40, rows: 6, cursorBlink: true });
+        term.open(host);
+        try {
+            term.write('the quick brown fox jumps over\r\n$ ');
+            drainFrames();
+            const canvas = term.renderer!.getCanvas();
+            const { width, height } = term.renderer!.getMetrics();
+            canvas.getBoundingClientRect = () =>
+                ({ left: 0, top: 0, x: 0, y: 0, right: 40 * width, bottom: 6 * height, width: 40 * width, height: 6 * height, toJSON() {} }) as DOMRect;
+            const press = new MouseEvent('mousedown', { button: 0, bubbles: true, clientX: 4 * width, clientY: height / 2, detail: 1 });
+            Object.defineProperty(press, 'offsetX', { value: 4 * width });
+            Object.defineProperty(press, 'offsetY', { value: height / 2 });
+            canvas.dispatchEvent(press);
+            drainFrames();
+
+            // Past the right edge, same row.
+            document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 40 * width + 50, clientY: height / 2 }));
+            expect(term.getSelection()).toBe('quick brown fox jumps over');
+            expect(queue.size).toBe(1);
+            drainFrames();
+
+            // …and down a row, still outside.
+            document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 40 * width + 80, clientY: 1.5 * height }));
+            expect(term.getSelection()).toBe('quick brown fox jumps over\n$');
+            expect(queue.size).toBe(1);
+
+            document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0, clientX: 40 * width + 80, clientY: 1.5 * height }));
+            drainFrames();
+        } finally {
+            term.dispose();
+            host.remove();
+        }
+    });
+
     it('goes idle at a fractional device pixel ratio', () => {
         // 40 cols x 8 px x 1.37 = 438.4 device px, which `canvas.width` truncates to 438. An
         // unrounded size check resized on every frame, and the resize woke the loop again: a

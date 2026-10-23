@@ -81,12 +81,16 @@ count is reached the loop stops scheduling. The tail covers state that settles o
   `setTerminalDefaultColors`, `setFontSize`, `setFontFamily`, `setCursorStyle`, `setCursorBlink`,
   `setFocused`, `setSelectionManager`, `setSearchHighlight`, `setSearchCurrent`,
   `setHoveredHyperlinkId`, `setLinkUnderline`, `setHoveredLinkRange`, `clear`) and the blink timer,
-  through `setInvalidateListener`. These are in the renderer, not the terminal, because Kelpi
+  through `setInvalidateListener`. The blink timer wakes the loop only while the cursor can show
+  (DECTCEM visible, view not scrolled back), so a focused pane whose app hides the cursor stays idle. These are in the renderer, not the terminal, because Kelpi
   calls `setTheme`, `clear` and `remeasureFont` on the renderer directly;
 - `viewportY` and `scrollbarOpacity`, now accessors whose setters wake the loop, so the fifteen
   scroll paths (wheel, smooth scroll, scrollbar drag, auto-scroll, the `-kelpi.11` pin) and the
   scrollbar fade need no call of their own;
-- selection changes (`onSelectionChange`);
+- selection changes: `SelectionManager.requestRender()`, which upstream left empty ("the render loop
+  picks it up at 60fps"), now calls the terminal's. Every selection path goes through it, including
+  a drag that has left the pane, which only the manager's `document` listeners see, and the
+  auto-scroll tick at the live bottom, where `viewportY` cannot move;
 - `mousedown`, `mousemove`, `mouseup`, `mouseleave`, `wheel`, `keydown`, the three `composition*`
   events, `focusin` and `focusout` on the terminal element, passive and in the capture phase.
 
@@ -113,11 +117,12 @@ TypeScript only; the WASM is unchanged from `-kelpi.17`. Rebuilt with
 vite-plugin-dts 4.5.4 and typescript 5.9.3; the declaration step printed the four pre-existing
 `Bun` / `fs/promises` errors in `lib/ghostty.ts` and the build went on. pnpm refused the scratch
 install over ignored build scripts (`@biomejs/biome`, `esbuild`), so the build ran with
-`pnpm_config_strict_dep_builds=false`. `dist/ghostty-web.js` is 743,544 bytes and
-`dist/ghostty-web.umd.cjs` 669,484 bytes; the embedded-WASM check passes for both bundles and the
+`pnpm_config_strict_dep_builds=false`. `dist/ghostty-web.js` is 743,854 bytes and
+`dist/ghostty-web.umd.cjs` 669,535 bytes; the embedded-WASM check passes for both bundles and the
 installed copy. Covered by `packages/client/src/terminal/render-on-demand.wasm.test.ts` (an idle
 terminal leaves no frame pending; a write, `renderer.setFocused` and a `viewportY` set each schedule
-one; `dispose` leaves none; a terminal at a 1.37 DPR goes idle). The upstream loop fails it: its
+one; a selection drag outside the pane schedules one per move; `dispose` leaves none; a terminal at
+a 1.37 DPR goes idle). The upstream loop fails it: its
 frame queue never empties.
 
 ## Kelpi adaptation: the cursor line is repainted when it changes (`0.4.0-kelpi.24`, 2026-10-23)

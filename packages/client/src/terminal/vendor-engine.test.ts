@@ -501,6 +501,19 @@ describe('vendored ghostty-web engine', () => {
         expect(rendererSource).toContain('cursorDrawn !== painted.drawn ||');
     });
 
+    it('runs the render loop on demand, woken by every frame-changing source (§-kelpi.25)', () => {
+        // Take a future npm release wholesale and every open terminal chains
+        // requestAnimationFrame forever again, keeping the GPU process and WindowServer awake.
+        const bundle = read(path.join(vendorRoot, 'dist', 'ghostty-web.js'));
+        expect(bundle).toContain('RENDER_TAIL_FRAMES');
+        expect(bundle).toContain('setInvalidateListener');
+        const terminalSource = read(path.join(vendorRoot, 'source', 'lib', 'terminal.ts'));
+        expect(terminalSource).toContain('if (++this.idleFrames < Terminal.RENDER_TAIL_FRAMES) {');
+        // The selection manager's own wake: a drag outside the pane reaches no element listener.
+        const selectionSource = read(path.join(vendorRoot, 'source', 'lib', 'selection-manager.ts'));
+        expect(selectionSource).toContain("this.terminal['requestRender']();");
+    });
+
     it('keeps the snapshotted source in step with the bundle', () => {
         // `dist/` is gitignored, so `source/` is the only copy of the fork that survives a
         // clean clone. A bundle rebuilt from a tree that was never snapshotted is a fork

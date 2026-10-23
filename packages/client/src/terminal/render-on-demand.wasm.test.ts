@@ -113,4 +113,25 @@ describe('the render loop runs on demand (0.4.0-kelpi.25)', () => {
         }
         expect(queue.size).toBe(0);
     });
+
+    it('goes idle at a fractional device pixel ratio', () => {
+        // 40 cols x 8 px x 1.37 = 438.4 device px, which `canvas.width` truncates to 438. An
+        // unrounded size check resized on every frame, and the resize woke the loop again: a
+        // phone's page hung the moment a terminal opened.
+        const ratio = Object.getOwnPropertyDescriptor(window, 'devicePixelRatio');
+        Object.defineProperty(window, 'devicePixelRatio', { configurable: true, value: 1.37 });
+        const host = document.createElement('div');
+        document.body.appendChild(host);
+        const term = new Terminal({ ghostty, cols: 40, rows: 6 });
+        term.open(host);
+        try {
+            expect(drainFrames()).toBeGreaterThan(0);
+            expect(queue.size).toBe(0);
+        } finally {
+            term.dispose();
+            host.remove();
+            if (ratio) Object.defineProperty(window, 'devicePixelRatio', ratio);
+            else delete (window as unknown as Record<string, unknown>)['devicePixelRatio'];
+        }
+    });
 });

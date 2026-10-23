@@ -585,9 +585,13 @@ export class CanvasRenderer {
     this.scrollbarWasPainted = scrollbarPainted;
 
     // Resize canvas if dimensions changed
+    // vendor 0.4.0-kelpi.25: compare against what `resize` actually stores. `canvas.width`
+    // truncates, so at a fractional cell-width x DPR product (a 2.6 DPR phone) the unrounded
+    // compare never matched, and every frame resized, redrew every row and, now that
+    // `resize` wakes the render loop, kept the loop from ever going idle.
     const needsResize =
-      this.canvas.width !== dims.cols * this.metrics.width * this.devicePixelRatio ||
-      this.canvas.height !== dims.rows * this.metrics.height * this.devicePixelRatio;
+      this.canvas.width !== Math.floor(dims.cols * this.metrics.width * this.devicePixelRatio) ||
+      this.canvas.height !== Math.floor(dims.rows * this.metrics.height * this.devicePixelRatio);
 
     if (needsResize) {
       this.resize(dims.cols, dims.rows);

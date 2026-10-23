@@ -96,6 +96,13 @@ heartbeat is ever seen doing work, the missing source belongs in `requestRender`
 and the frame callback do nothing without a renderer and a VT. Some test fixtures fake
 `isOpen: true` around a bare `SelectionManager`, and a wake there must not schedule a frame.
 
+`render()`'s canvas-size check now compares against `Math.floor` of the device-pixel size, which
+is what `resize` actually stores, since `canvas.width` truncates. Upstream compared against the
+unrounded product, so whenever cell width × DPR was fractional (a 2.6 DPR Android phone, for
+example) every frame resized the canvas and redrew every row. Upstream's endless loop hid that
+cost. Here, `resize` wakes the loop, so the loop never went idle and a phone's page stopped
+responding as soon as a terminal opened.
+
 Measured after the fix, same dev instance, five idle shells, window visible: renderer 0.4%, GPU
 process 0.9%. In the installed app with agent panes open and nobody typing, the renderer averaged
 2.0% and the GPU process 1.9% over 20 s, against about 15% and 12% for `-kelpi.23`; that run had
@@ -106,11 +113,12 @@ TypeScript only; the WASM is unchanged from `-kelpi.17`. Rebuilt with
 vite-plugin-dts 4.5.4 and typescript 5.9.3; the declaration step printed the four pre-existing
 `Bun` / `fs/promises` errors in `lib/ghostty.ts` and the build went on. pnpm refused the scratch
 install over ignored build scripts (`@biomejs/biome`, `esbuild`), so the build ran with
-`pnpm_config_strict_dep_builds=false`. `dist/ghostty-web.js` is 743,520 bytes and
-`dist/ghostty-web.umd.cjs` 669,460 bytes; the embedded-WASM check passes for both bundles and the
+`pnpm_config_strict_dep_builds=false`. `dist/ghostty-web.js` is 743,544 bytes and
+`dist/ghostty-web.umd.cjs` 669,484 bytes; the embedded-WASM check passes for both bundles and the
 installed copy. Covered by `packages/client/src/terminal/render-on-demand.wasm.test.ts` (an idle
 terminal leaves no frame pending; a write, `renderer.setFocused` and a `viewportY` set each schedule
-one; `dispose` leaves none). The upstream loop fails it: its frame queue never empties.
+one; `dispose` leaves none; a terminal at a 1.37 DPR goes idle). The upstream loop fails it: its
+frame queue never empties.
 
 ## Kelpi adaptation: the cursor line is repainted when it changes (`0.4.0-kelpi.24`, 2026-10-23)
 

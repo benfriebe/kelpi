@@ -1792,7 +1792,7 @@ class S {
     const D = A.getCursor(), i = A.getDimensions(), o = E ? E.getScrollbackLength() : 0;
     (R = A.needsFullRedraw) != null && R.call(A) && (Q = !0);
     const s = !!E && C > 0;
-    this.scrollbarWasPainted && !s && (Q = !0), this.scrollbarWasPainted = s, (this.canvas.width !== i.cols * this.metrics.width * this.devicePixelRatio || this.canvas.height !== i.rows * this.metrics.height * this.devicePixelRatio) && (this.resize(i.cols, i.rows), Q = !0), B !== this.lastViewportY && (Q = !0, this.lastViewportY = B);
+    this.scrollbarWasPainted && !s && (Q = !0), this.scrollbarWasPainted = s, (this.canvas.width !== Math.floor(i.cols * this.metrics.width * this.devicePixelRatio) || this.canvas.height !== Math.floor(i.rows * this.metrics.height * this.devicePixelRatio)) && (this.resize(i.cols, i.rows), Q = !0), B !== this.lastViewportY && (Q = !0, this.lastViewportY = B);
     let a = null;
     if (this.searchHighlighter.isActive()) {
       let M = Q;

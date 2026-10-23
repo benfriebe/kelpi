@@ -1801,7 +1801,7 @@ class R {
       (c.spansChanged || a.size > 0) && U !== null && U(this.searchHighlighter.getSpans());
     }
     const e = D.x !== this.lastCursorPosition.x || D.y !== this.lastCursorPosition.y;
-    if (e || this.cursorBlink || this.cursorStateDirty) {
+    if (e || this.cursorStateDirty) {
       if (!Q && !A.isRowDirty(D.y)) {
         const M = A.getLine(D.y);
         M && this.renderLine(M, D.y, o.cols);
@@ -2098,7 +2098,7 @@ class R {
   // ==========================================================================
   startCursorBlink() {
     this.cursorBlinkInterval = window.setInterval(() => {
-      this.cursorVisible = !this.cursorVisible;
+      this.cursorVisible = !this.cursorVisible, this.cursorStateDirty = !0;
     }, 530);
   }
   stopCursorBlink() {

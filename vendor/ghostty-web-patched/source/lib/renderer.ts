@@ -598,12 +598,14 @@ export class CanvasRenderer {
       }
     }
 
-    // Check if cursor position changed, if blinking, or if the cursor's TREATMENT changed
-    // under it (focus flipped — see `cursorStateDirty`): all three need the cursor line
-    // redrawn so the previous frame's cursor is erased before this one's is painted.
+    // Check if cursor position changed, or if the cursor's look changed under it (a blink
+    // toggle or a focus flip — see `cursorStateDirty`): both need the cursor line redrawn so
+    // the previous frame's cursor is erased before this one's is painted. vendor 0.4.0-kelpi.24:
+    // NOT `this.cursorBlink` — that is the setting, true even with the timer stopped, and
+    // testing it repainted every terminal's cursor line on every frame (~120 composites/s each).
     const cursorMoved =
       cursor.x !== this.lastCursorPosition.x || cursor.y !== this.lastCursorPosition.y;
-    if (cursorMoved || this.cursorBlink || this.cursorStateDirty) {
+    if (cursorMoved || this.cursorStateDirty) {
       // Mark cursor lines as needing redraw
       if (!forceAll && !buffer.isRowDirty(cursor.y)) {
         // Need to redraw cursor line
@@ -1243,7 +1245,8 @@ export class CanvasRenderer {
     // xterm.js uses ~530ms blink interval
     this.cursorBlinkInterval = window.setInterval(() => {
       this.cursorVisible = !this.cursorVisible;
-      // Note: Render loop should redraw cursor line automatically
+      // vendor 0.4.0-kelpi.24: one cursor-line repaint per toggle, not one per frame.
+      this.cursorStateDirty = true;
     }, 530);
   }
 

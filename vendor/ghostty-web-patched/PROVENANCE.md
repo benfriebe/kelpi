@@ -1,11 +1,11 @@
-# ghostty-web 0.4.0-kelpi.23 (vendored)
+# ghostty-web 0.4.0-kelpi.24 (vendored)
 
 **Version labels.** These versions were tagged `-nex.N` before the Nex to Kelpi rename and were
 relabelled `-kelpi.N` on 2026-10-03 with the same numbering, so an older commit, log or audit
 record that says `0.4.0-nex.N` means the same build as `0.4.0-kelpi.N`.
 
 A build of `ghostty-web` v0.4.0 carrying two open upstream PRs — applied after a line-by-line
-review in the orchestrating session and explicit user authorization to integrate both, plus twenty-two
+review in the orchestrating session and explicit user authorization to integrate both, plus twenty-three
 Kelpi-authored adaptations on top of them (`-kelpi.2`: the caret-anchored IME; `-kelpi.3`: an
 `allowTransparency` that does something; `-kelpi.4`: a cursor that knows whether its surface has
 focus; `-kelpi.5`: a `write()` that survives zero bytes; `-kelpi.6`: a paint that can be suspended;
@@ -23,7 +23,7 @@ line and drags by lines, and a drag scrolls only once the pointer leaves the ter
 view scrolled to a fractional offset paints every row, so no line shows twice; `-kelpi.21`:
 copy-on-select can be turned off; `-kelpi.22`: a click selects nothing; `-kelpi.23`: a drag selects
 from the pressed cell to the cell under the pointer, both included, once it leaves a dead zone
-around the press).
+around the press; `-kelpi.24`: the cursor line is repainted when the blink toggles, not every frame).
 
 **`-kelpi.13` is the first adaptation that is NOT TypeScript-only.** Every version up to `-kelpi.12`
 shipped `ghostty-vt.wasm` byte-identical to the npm `ghostty-web@0.4.0` package; `-kelpi.13`
@@ -57,6 +57,34 @@ reproduces the `0.4.0` wasm BYTE-IDENTICALLY when run without the patch, is in
 | `0.4.0-kelpi.21` | `copyOnSelect: false` keeps a selection off the clipboard: a drag's release and a `dblclick` still select and announce, but do not copy; read at every copy, so it can be changed at runtime |
 | `0.4.0-kelpi.22` | a single press selects nothing; a drag from it selects with Ghostty's threshold rule (a cell counts once the drag crosses 60% of it; replaced in `-kelpi.23`), so a click, or a press that wobbles over a cell boundary, neither selects nor copies; `hasSelection()` counts a single dragged cell |
 | `0.4.0-kelpi.23` | a single-click drag selects from the pressed cell to the cell under the pointer, both included, once the pointer is 60% of a cell width from the press point in either axis; a selection that starts on a wide glyph's second half starts on its first (#404) |
+| `0.4.0-kelpi.24` | the cursor line is repainted when the cursor moves, its blink toggles or its focus treatment changes, not on every frame while `cursorBlink` is set |
+
+## Kelpi adaptation: the cursor line is repainted when it changes (`0.4.0-kelpi.24`, 2026-10-23)
+
+**The defect.** `render()` redrew the cursor's line on every frame when
+`cursorMoved || this.cursorBlink || this.cursorStateDirty` held. `cursorBlink` is the SETTING, not
+the timer. It stays true when `setFocused(false)` stops the blink (`-kelpi.4`), so every terminal
+with blink enabled, focused or not, repainted that row 120 times a second while looking still.
+Kelpi turns blink on by default (`packages/client/src/terminal/renderer.ts`), so every mounted
+terminal did it. Each repaint is a canvas update Chromium has to composite and hand to macOS
+WindowServer. On the reporting machine that was a constant share of WindowServer's ~45% CPU.
+
+**The fix.** The blink timer sets `cursorStateDirty` when it toggles `cursorVisible`, and the
+condition drops `this.cursorBlink`. The cursor line is redrawn when the cursor moves, its blink
+toggles (about twice a second, focused terminals only) or its focus treatment changes. Measured:
+a dev instance with five idle shells ran its renderer at 8.3% of a core against 15% for the
+installed `-kelpi.23` app (pane counts differed, so this is indicative). The GPU process stayed
+busy (16%) because the frame loop itself still runs every frame.
+
+TypeScript only; the WASM is unchanged from `-kelpi.17`. Rebuilt with
+`TMPDIR=<scratch> pnpm vendor:build` under Node 24.18.0 / pnpm 10.28.1, which resolved vite 4.5.14,
+vite-plugin-dts 4.5.4 and typescript 5.9.3; the declaration step printed the four pre-existing
+`Bun` / `fs/promises` errors in `lib/ghostty.ts` and the build went on. pnpm refused the scratch
+install over ignored build scripts (`@biomejs/biome`, `esbuild`), so the build ran with
+`pnpm_config_strict_dep_builds=false`. `dist/ghostty-web.js` is 741,545 bytes and
+`dist/ghostty-web.umd.cjs` 667,575 bytes; the embedded-WASM check passes for both bundles and the
+installed copy. Covered by the existing renderer and terminal suites, which pass unchanged. No test
+asserts the per-frame repaint is gone.
 
 ## Kelpi adaptation: a drag includes the cell under the pointer (`0.4.0-kelpi.23`, 2026-10-15)
 

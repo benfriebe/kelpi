@@ -1169,10 +1169,11 @@ export class SelectionManager {
    * Request a render update (triggers selection overlay redraw)
    */
   private requestRender(): void {
-    // The render loop will automatically pick up the new selection state
-    // and redraw the affected lines. This happens at 60fps.
-    //
-    // Note: When clearSelection() is called, it adds dirty rows to dirtySelectionRows
-    // which the renderer can use to know which lines to redraw.
+    // vendor 0.4.0-kelpi.25: the render loop runs on demand, so a selection change has to wake
+    // it. A drag outside the pane is seen only by this manager's document listeners, never by
+    // the terminal element's wake events. The next frame redraws the selected rows (and, after
+    // clearSelection(), the rows it left in dirtySelectionRows). Element access because the
+    // terminal keeps `requestRender` private to its embedders.
+    this.terminal['requestRender']();
   }
 }

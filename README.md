@@ -821,7 +821,10 @@ each, and the workspaces of the one you are on. Inside a workspace, the bar at t
 `host › workspace › pane`, and each part opens a picker at its level, including New pane (a
 terminal, Claude, Codex, a web page, a scratchpad, a diff or a plugin view) and Add a host (scan
 the Mac's pairing code from Settings → Remote, or paste its URL). Add it to the home screen to
-use it full-screen. [`docs/phone-ui.md`](docs/phone-ui.md) has the details.
+use it full-screen. Turn on **Notifications** (tap the host name in the bar) and every host you
+added pushes its notifications to the phone while Kelpi is closed or in the background; on an
+iPhone that needs Kelpi on the home screen (iOS 16.4 or later).
+[`docs/phone-ui.md`](docs/phone-ui.md) has the details.
 
 #### Voice dictation records on the machine the session runs on (#268)
 

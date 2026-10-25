@@ -207,7 +207,7 @@ import { installActivationClick } from './app/activation-click';
 import { focusPaneSurface, handCaretToPaneWhenReady, mayClaimPaneCaret, releaseFocusedPaneCaret } from './app/pane-focus';
 import { navigationTrustedRuntimes, useRemoteDaemons, type RemoteRuntimeFactory } from './app/remote-daemons';
 import { RemoteWorkspaceView } from './app/RemoteWorkspaceView';
-import { defaultFormFactorWindow, useFormFactor, type FormFactorWindow } from './chrome/form-factor';
+import { currentFormFactor, defaultFormFactorWindow, useFormFactor, type FormFactorWindow } from './chrome/form-factor';
 import { PhoneShell, phoneVisiblePaneIDs, usePhoneView, type QrCamera } from './phone';
 import { createSearchNeedleScheduler, type SearchNeedleScheduler } from './app/search-needle';
 import { SEED_TEST_GROUP_COMMAND, seedTestGroup } from './app/seed-test-group';
@@ -832,15 +832,19 @@ function Shell(props: AppProps): ReactElement {
     }, [runtime]);
 
     // Browsers only grant notification permission from a user gesture, so the first click in
-    // the window is the prompt (agent-lifecycle.md §7 client half).
+    // the window is the prompt (agent-lifecycle.md §7 client half). Not on a phone: there the
+    // prompt comes from the Notifications sheet's own button, which says what it is for
+    // (§7.8, `pwa/push.ts`); an unexplained prompt on the first tap is how push gets refused.
     useEffect(() => {
         const ask = (): void => {
+            // Still listening on a phone: a window that is phone-shaped now may not be at the next tap.
+            if (currentFormFactor(props.formFactorWindow ?? defaultFormFactorWindow()) === 'phone') return;
             window.removeEventListener('pointerdown', ask);
             void runtime.notifications?.request();
         };
         window.addEventListener('pointerdown', ask);
         return () => window.removeEventListener('pointerdown', ask);
-    }, [runtime]);
+    }, [runtime, props.formFactorWindow]);
 
     // ── web panes ───────────────────────────────────────────────────────────────────
 

@@ -86,6 +86,7 @@ import { paneHandlers, spawnEnvVars, spawnPaneIfShell, type PaneHandlerContext, 
 import {
     clearRunFiles,
     createAssetCredentialGate,
+    createCredentialFingerprintGate,
     createDeviceValidator,
     ensureRunDir,
     ensureToken,
@@ -95,6 +96,7 @@ import {
     writePidRecord,
     type RunPaths
 } from '../lifecycle/index.js';
+import { createPushService, resolvePushPath, type PushService } from '../push/service.js';
 import {
     DEFAULT_SPAWN_DEFER_TIMEOUT_MS,
     GEOMETRY_FILE_NAME,
@@ -2491,6 +2493,22 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         process.on('SIGUSR2', onHandoff);
     };
 
+    /**
+     * The phone push registry, made on first use. A registration remembers the fingerprint of the
+     * credential that made it, and this gate admits the owner's or a live device's, so a revoked
+     * device's phone stops being pushed to.
+     */
+    let push: PushService | undefined;
+    const pushService = (token: string): PushService => {
+        push ??= createPushService({
+            file: resolvePushPath(env),
+            credentialValid: createCredentialFingerprintGate(resolveDevicesPath(env), token),
+            log,
+            onError: (error, context) => report(error, context)
+        });
+        return push;
+    };
+
     const startWs = async (token: string): Promise<WsServer> => {
         const preferred = options.httpPort ?? parsePortEnv(env[HTTP_PORT_ENV]) ?? readPortFile(paths) ?? 0;
         const build = (port: number): WsServer =>
@@ -2528,6 +2546,10 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
                 // it configured `tailscale serve --bg 0`, a proxy to nothing (#130).
                 remote: createRemoteChannel({ env, runDir: paths.dir,
                     port: () => ws?.port, host: () => ws?.addresses[0]?.host }),
+                // Phone push: the subscriptions a paired phone registers, and the fan-out of
+                // every notification to the phones not looking at Kelpi (`push/service.ts`).
+                // Built once per daemon, not per bind attempt, so a port fallback keeps them.
+                push: pushService(token),
                 // ⇧⌘T reopen-closed-pane, ⇧⌘N scratchpad, and the context menu's Open in
                 // Finder. All three need the pane handler context (a PTY to spawn into, a
                 // `TerminalInput` for the reopened agent's resume command, the broadcast seam),
@@ -2693,6 +2715,11 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
                 const cut = ws?.sync.revalidateSessions() ?? 0;
                 if (cut > 0) {
                     log(`devices: registry changed — cut ${String(cut)} revoked session${cut === 1 ? '' : 's'}`);
+                }
+                // …and a revoked device's phone stops being pushed to (its VAPID key goes too).
+                const forgotten = push?.prune() ?? 0;
+                if (forgotten > 0) {
+                    log(`push: forgot ${String(forgotten)} subscription${forgotten === 1 ? '' : 's'} of revoked devices`);
                 }
             },
             onError: (error, context) => report(error, context)

@@ -9,12 +9,76 @@ import { act, cleanup, render } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { App } from './App';
+import type { FormFactorWindow } from './chrome/form-factor';
 import { createFakeSocketFactory } from './connection';
+import { createFakePhoneWindow } from './phone/testing';
 import { createKelpiRuntime, createKelpiStore, createNotificationManager, type NotificationApi } from './state';
 import { createFakeRendererFactory } from './terminal/testing';
 
+function countingRuntime(): { runtime: ReturnType<typeof createKelpiRuntime>; requests: () => number } {
+    let requests = 0;
+    const api: NotificationApi = {
+        permission: 'default',
+        requestPermission: () => {
+            requests += 1;
+            return Promise.resolve('granted');
+        },
+        create: () => ({ onclick: null, close: () => undefined })
+    };
+    const runtime = createKelpiRuntime({
+        url: 'ws://daemon.test/ws',
+        token: 'tok',
+        socketFactory: createFakeSocketFactory().factory,
+        store: createKelpiStore(),
+        notifications: createNotificationManager({ api }),
+        tokenStorage: null,
+        heartbeatIntervalMs: 0
+    });
+    return { runtime, requests: () => requests };
+}
+
 describe('notification permission (agent-lifecycle.md §7.5)', () => {
     afterEach(cleanup);
+
+    it('never asks on a phone: the Notifications sheet does (§7.8)', async () => {
+        const { runtime, requests } = countingRuntime();
+        render(<App runtime={runtime} autoConnect={false} createRenderer={createFakeRendererFactory().factory} formFactorWindow={createFakePhoneWindow()} />);
+        await act(async () => {
+            window.dispatchEvent(new Event('pointerdown'));
+        });
+        expect(requests()).toBe(0);
+    });
+
+    it('keeps listening on a phone, so a window that stops being phone-shaped is still asked once', async () => {
+        const { runtime, requests } = countingRuntime();
+        const shape = { width: 390, coarse: true };
+        const win: FormFactorWindow = {
+            get innerWidth() {
+                return shape.width;
+            },
+            innerHeight: 844,
+            matchMedia: () => ({
+                get matches() {
+                    return shape.coarse;
+                },
+                addEventListener: () => undefined,
+                removeEventListener: () => undefined
+            })
+        };
+        render(<App runtime={runtime} autoConnect={false} createRenderer={createFakeRendererFactory().factory} formFactorWindow={win} />);
+        await act(async () => {
+            window.dispatchEvent(new Event('pointerdown'));
+        });
+        expect(requests()).toBe(0);
+        // A tablet window un-snapped, a keyboard and trackpad attached.
+        shape.width = 1400;
+        shape.coarse = false;
+        await act(async () => {
+            window.dispatchEvent(new Event('pointerdown'));
+            window.dispatchEvent(new Event('pointerdown'));
+        });
+        expect(requests()).toBe(1);
+    });
 
     it('asks on the first pointerdown in the window, and only once', async () => {
         let requests = 0;

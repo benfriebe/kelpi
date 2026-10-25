@@ -52,6 +52,7 @@ import {
     type KelpiDomainStore,
     type SettingsChannel,
     type SyncHub,
+    type SyncHubOptions,
     type SyncPresence,
     type WebPaneChannel
 } from './sync.js';
@@ -107,6 +108,8 @@ export interface WsServerOptions {
     readonly agents?: AgentChannel | undefined;
     /** Settings ▸ Remote: pair/revoke/status (`ws/remote.ts`); absent = "not available". */
     readonly remote?: RemoteChannel | undefined;
+    /** Phone push (`push/service.ts`): the `push-*` verbs and the notification fan-out. */
+    readonly push?: SyncHubOptions['push'];
     /** M9 workspace inspector: the repo registry + association verbs (`ws/repos.ts`). */
     readonly repos?: RepoChannel | undefined;
     /** The inspector's graft toggle + orphan banner verbs (`ws/graft.ts`). */
@@ -344,6 +347,7 @@ export function createWsServer(options: WsServerOptions): WsServer {
         transport: options.transport,
         agents: options.agents,
         remote: options.remote,
+        push: options.push,
         repos: options.repos,
         graftUi: options.graftUi,
         oldTerminalHosts: options.oldTerminalHosts,

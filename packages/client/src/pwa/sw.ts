@@ -5,12 +5,13 @@
  * hash and no `import` statement in its output, and served by the daemon with
  * `Service-Worker-Allowed: /` and `Cache-Control: no-cache` (`daemon/src/ws/http.ts`).
  *
- * What it exists for, and the only thing it promises: **an installed Kelpi opens.** Tap the
+ * What it exists for, first: **an installed Kelpi opens.** Tap the
  * Home Screen icon with the Mac asleep and the app paints its own connection screen and starts
  * retrying, instead of Safari's "cannot connect to the server" page, which is a dead end with
  * no retry, no branding and no way to tell a sleeping Mac from a revoked pairing. Everything
  * past that first paint needs the daemon, and this worker never pretends otherwise: there is no
- * offline mode, no queued command, no cached pane content.
+ * offline mode, no queued command, no cached pane content. Second, since phone push: it shows
+ * the notifications a host pushes while Kelpi is closed, and opens the pane on a tap.
  *
  * The decision of what to do with a request is `sw-routing.ts`, two pure functions with their
  * own tests, because this file runs in a global vitest cannot mount. Read the guardrail there:
@@ -39,6 +40,16 @@
  * rather than a reload nobody wrote.
  */
 
+import {
+    PUSH_OPEN_CACHE,
+    PUSH_OPEN_MESSAGE,
+    PUSH_OPEN_RECORD_PATH,
+    openTargetOf,
+    parsePushPayload,
+    pushOpenHash,
+    pushOpenRecord,
+    type PushDisplay
+} from './push-payload';
 import { SHELL_PATH, networkAnswer, rootPrecachePaths, routeRequest } from './sw-routing';
 
 // ── the worker global, declared narrowly ────────────────────────────────────────────
@@ -63,13 +74,33 @@ interface FetchEventLike extends ExtendableEventLike {
     respondWith(response: Response | Promise<Response>): void;
 }
 
+interface PushEventLike extends ExtendableEventLike {
+    readonly data: { text(): string } | null;
+}
+
+interface NotificationClickEventLike extends ExtendableEventLike {
+    readonly notification: { readonly data: unknown; close(): void };
+}
+
+interface WindowClientLike {
+    focus(): Promise<unknown>;
+    postMessage(message: unknown): void;
+}
+
 interface ServiceWorkerGlobalScopeLike {
     readonly location: { readonly origin: string };
-    readonly clients: { claim(): Promise<void> };
+    readonly clients: {
+        claim(): Promise<void>;
+        matchAll(options: { type: 'window'; includeUncontrolled: boolean }): Promise<readonly WindowClientLike[]>;
+        openWindow(url: string): Promise<unknown>;
+    };
+    readonly registration: { showNotification(title: string, options: PushDisplay['options']): Promise<void> };
     skipWaiting(): Promise<void>;
     addEventListener(type: 'install', listener: (event: ExtendableEventLike) => void): void;
     addEventListener(type: 'activate', listener: (event: ExtendableEventLike) => void): void;
     addEventListener(type: 'fetch', listener: (event: FetchEventLike) => void): void;
+    addEventListener(type: 'push', listener: (event: PushEventLike) => void): void;
+    addEventListener(type: 'notificationclick', listener: (event: NotificationClickEventLike) => void): void;
 }
 
 const worker = self as unknown as ServiceWorkerGlobalScopeLike;
@@ -160,6 +191,58 @@ worker.addEventListener('activate', (event) => {
                     .map(async (name) => caches.delete(name))
             );
             await worker.clients.claim();
+        })()
+    );
+});
+
+// ── push (agent-lifecycle.md §7.8) ──────────────────────────────────────────────────
+
+/*
+ * The second thing this worker exists for: a host decided to notify, this phone was not looking
+ * at Kelpi, and the host pushed the notification here (`daemon/src/push/service.ts`). Every push
+ * is shown, whatever it says: iOS withdraws the subscription of a web app that takes pushes
+ * without showing them, and a push only ever comes from a host this phone registered with.
+ */
+worker.addEventListener('push', (event) => {
+    let text: string | null = null;
+    try {
+        text = event.data?.text() ?? null;
+    } catch {
+        // An undecodable body is shown as the generic notification.
+    }
+    const display = parsePushPayload(text);
+    event.waitUntil(worker.registration.showNotification(display.title, display.options));
+});
+
+/*
+ * A tap opens Kelpi on the pane. It is written down first (`PUSH_OPEN_CACHE`, which the page takes
+ * on load and on coming back on screen), then a window already open (in the background, on iOS a
+ * suspended one, or one iOS is still launching) is focused and told where to go; with none, a
+ * fresh one opens on a fragment the phone shell reads once (`push-payload.ts`). The token is never
+ * in any of them: the page has its own.
+ */
+worker.addEventListener('notificationclick', (event) => {
+    event.notification.close();
+    const target = openTargetOf(event.notification.data);
+    event.waitUntil(
+        (async () => {
+            if (target !== null) {
+                try {
+                    const records = await caches.open(PUSH_OPEN_CACHE);
+                    await records.put(PUSH_OPEN_RECORD_PATH, new Response(pushOpenRecord(target, Date.now()), { headers: { 'content-type': 'application/json' } }));
+                } catch {
+                    // The message and the fragment still carry it.
+                }
+            }
+            const windows = await worker.clients.matchAll({ type: 'window', includeUncontrolled: true });
+            const open = windows[0];
+            if (open !== undefined) {
+                // Told first: a browser that refuses the focus must not cost the page its pane.
+                if (target !== null) open.postMessage({ type: PUSH_OPEN_MESSAGE, ...target });
+                await open.focus().catch(() => undefined);
+                return;
+            }
+            await worker.clients.openWindow(target === null ? '/' : `/${pushOpenHash(target)}`).catch(() => undefined);
         })()
     );
 });

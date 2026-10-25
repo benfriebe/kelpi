@@ -9,7 +9,9 @@ import {
     DEVICES_PATH_ENV,
     createAssetCredentialGate,
     createAssetCredentialValidator,
+    createCredentialFingerprintGate,
     createDeviceValidator,
+    credentialFingerprint,
     deleteDevice,
     hashDeviceToken,
     loadDevices,
@@ -229,6 +231,20 @@ describe('createDeviceValidator', () => {
         revokeDevice(file, minted.device.id);
         expect(gate(credential)).toBe(false);
         expect(gate(hashDeviceToken('owner-token'))).toBe(true);
+    });
+
+    it('a credential fingerprint tells a live credential from a revoked one, and admits nothing itself', () => {
+        const minted = mintDevice(file, 'phone');
+        const gate = createCredentialFingerprintGate(file, 'owner-token');
+        expect(gate(credentialFingerprint('owner-token'))).toBe(true);
+        expect(gate(credentialFingerprint(minted.token))).toBe(true);
+        // What push.json keeps is not the asset credential, and the asset credential is not a fingerprint.
+        expect(createAssetCredentialGate(file, 'owner-token')(credentialFingerprint(minted.token))).toBe(false);
+        expect(createAssetCredentialGate(file, 'owner-token')(credentialFingerprint('owner-token'))).toBe(false);
+        expect(gate(hashDeviceToken(minted.token))).toBe(false);
+        revokeDevice(file, minted.device.id);
+        expect(gate(credentialFingerprint(minted.token))).toBe(false);
+        expect(gate('')).toBe(false);
     });
 
     it('fails closed on a missing or corrupt registry', () => {

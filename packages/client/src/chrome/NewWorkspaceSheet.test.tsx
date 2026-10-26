@@ -415,6 +415,33 @@ describe('the group the sheet opens on (§WS-076, `pendingSheetGroupID`)', () =>
         expect(screen.getByTestId('group-new-workspace').getAttribute('data-hovered')).toBe('false');
     });
 
+    it('the "+" never rides a drag: not on the group ghost, not on a header the drag crosses', () => {
+        renderSidebar();
+        const header = screen.getByTestId('group-header');
+        // A group drag starts under the pointer, so the source header is drawing its "+".
+        fireEvent.mouseEnter(header);
+        expect(screen.getByTestId('group-new-workspace')).toBeTruthy();
+        fireEvent.mouseDown(header, { clientY: 30 });
+        fireEvent.mouseMove(window, { clientY: 90 });
+        const ghost = document.querySelector('[data-testid="sidebar-drag-ghost"]');
+        expect(ghost).not.toBeNull();
+        expect(ghost?.querySelector('[title="New Workspace"]')).toBeNull();
+        fireEvent.mouseUp(window, { clientY: 90 });
+        fireEvent.mouseLeave(header);
+
+        // A workspace dragged across the header: the ghost is `pointer-events: none`, so the
+        // header sees the pointer arrive, and must not answer it with a "+".
+        const alpha = screen.getAllByTestId('workspace-row').find((row) => row.dataset['workspaceId'] === W1);
+        if (alpha === undefined) throw new Error('no alpha row');
+        fireEvent.mouseDown(alpha, { clientY: 10 });
+        fireEvent.mouseMove(window, { clientY: 60 });
+        fireEvent.mouseEnter(header);
+        expect(screen.queryByTestId('group-new-workspace')).toBeNull();
+        fireEvent.mouseUp(window, { clientY: 60 });
+        // Dropped with the pointer still on the band: the "+" is back.
+        expect(screen.getByTestId('group-new-workspace')).toBeTruthy();
+    });
+
     it('falls back to the inherited group when nothing scoped it', () => {
         openSheet({ inheritGroupID: G1 });
         expect((screen.getByTestId('new-workspace-group') as HTMLSelectElement).value).toBe(G1);

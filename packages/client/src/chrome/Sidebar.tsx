@@ -1490,7 +1490,7 @@ interface GroupHeaderRowProps {
     readonly registerRow: (key: string, element: HTMLElement | null) => void;
     /**
      * The hover "+" beside the chevron: the group menu's "New Workspace", scoped to this group.
-     * Absent (a surface with no create sheet) draws no "+".
+     * Absent (a surface with no create sheet, or a drag in flight) draws no "+".
      */
     readonly onNewWorkspace?: ((groupID: string) => void) | undefined;
     /** §WS-008: the entry animation, as for a workspace row. The reorder is the FLIP spring. */
@@ -1728,11 +1728,6 @@ export const GroupHeaderRow = memo(function GroupHeaderRow(props: GroupHeaderRow
                     </span>
                 )}
             </span>
-            {/*
-             * §WS-041: the chevron is HIDDEN while the header is being renamed. The field wants
-             * the whole row — a click-drag inside it selects text — and a collapse control
-             * sitting beside a live editor is a way to lose the edit by half a pixel.
-             */}
             {props.renaming || !hovered || props.onNewWorkspace === undefined ? null : (
                 <button
                     type="button"
@@ -1767,6 +1762,11 @@ export const GroupHeaderRow = memo(function GroupHeaderRow(props: GroupHeaderRow
                     <ChromeIcon name="plus" size={11} strokeWidth={1.6} />
                 </button>
             )}
+            {/*
+             * §WS-041: the chevron is HIDDEN while the header is being renamed. The field wants
+             * the whole row — a click-drag inside it selects text — and a collapse control
+             * sitting beside a live editor is a way to lose the edit by half a pixel.
+             */}
             {props.renaming ? null : (
                 <button
                     type="button"
@@ -3001,16 +3001,23 @@ export function Sidebar(props: SidebarProps): ReactElement {
             if (source === undefined || body === undefined || body === null) return;
             const ghost = source.cloneNode(true) as HTMLElement;
             /*
-             * The one thing the photograph must NOT bring with it, taken out before the
-             * sanitiser strips the `data-testid` that names it: §WS-007's guide rail, because
+             * What the photograph must NOT bring with it, taken out before the sanitiser
+             * strips the `data-testid` that names it. First, §WS-007's guide rail, because
              * `styleDragGhost` owns the rail from here on and re-mints it per resolved
              * container rather than inheriting one.
              *
              * (§WS-088's insertion line used to need a second line here for the same reason —
              * it marks a slot in the LIST and would have ridden the cursor as a stray accent
              * rule. The line no longer exists, so neither does the guard.)
+             *
+             * The header's hover "+" goes too: the pointer is over the header when its drag
+             * starts, so the source still draws it, and the ghost is the header at rest.
              */
-            for (const part of ghost.querySelectorAll('[data-testid="group-guide"]')) part.remove();
+            for (const part of ghost.querySelectorAll(
+                '[data-testid="group-guide"], [data-testid="group-new-workspace"]'
+            )) {
+                part.remove();
+            }
             sanitizeGhost(ghost);
             ghost.setAttribute('data-testid', 'sidebar-drag-ghost');
             ghost.setAttribute('aria-hidden', 'true');
@@ -5053,7 +5060,9 @@ export function Sidebar(props: SidebarProps): ReactElement {
                                 onDragStart={dragStartGroup}
                                 onCommitRename={commitGroupRename}
                                 onCancelRename={cancelRename}
-                                onNewWorkspace={openNewWorkspaceInGroup}
+                                // No "+" while a drag is live: the ghost is `pointer-events: none`,
+                                // so every header the pointer crosses would light one up.
+                                onNewWorkspace={dragActive ? undefined : openNewWorkspaceInGroup}
                                 registerRow={registerRow}
                                 entering={entering.has(row.key)}
                                 enterFast={enteringFast}

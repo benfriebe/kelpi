@@ -56,6 +56,7 @@ import {
     type WorktreeCleanupTarget
 } from './WorktreeCleanupList';
 import { NewEntrySheet } from './NewWorkspaceSheet';
+import { PullRequestGlyph } from './PullRequestGlyph';
 import {
     ChromeIcon,
     CURATED_EMOJI,
@@ -1418,6 +1419,11 @@ export const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps)
                     <ChromeIcon name={childrenHidden ? 'chevron-right' : 'chevron-down'} size={11} strokeWidth={1.6} />
                 </button>
             ) : null}
+            {/*
+             * workspace-feature.md §11: the workspace's PR status, one trailing glyph on the same
+             * line (not a metadata line, so §H5 stands). A `shrink-0` sibling like the bell below.
+             */}
+            <PullRequestGlyph workspaceID={workspace.id} pullRequests={workspace.pullRequests} bucket={props.bucket} />
             {/*
              * Agent-lifecycle §7.6: a muted workspace says so on its row, beside the ⌘N badge, so
              * the silence is never a surprise. The status dot on the avatar still reports the

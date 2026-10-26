@@ -1059,7 +1059,10 @@ kelpi workspace list [--group <name-or-id>] [--parent <name-or-id>] [--json] [--
   parent's group), optional `parent_id`/`parent_name` (both absent unless nested), optional
   `repos` (the repo
   associations: `repo_id`, `repo_name?`, `repo_path?`, `worktree_path`, `branch?`; absent
-  when there are none; `--json` only). Timestamps ISO 8601.
+  when there are none; `--json` only), optional `pull_requests` (the GitHub PRs for those
+  branches, workspace-feature.md §11: `number`, `title`, `url`, `state` (`open`, `draft`,
+  `merged` or `closed`), `repo_id`, `branch`; open first; absent when there are none;
+  `--json` only). Timestamps ISO 8601.
 - `--group` scoping an unknown/ambiguous group is an `ok:false` error (distinct from an
   empty group => empty list, exit 0).
 - `--json`: the array unwrapped, compact, sorted keys.

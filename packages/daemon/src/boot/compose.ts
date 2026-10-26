@@ -77,6 +77,7 @@ import {
     type GraftService,
     type RepoAssociationWatchService
 } from '../graft/index.js';
+import { createGhRunner, createPullRequestGit, createPullRequestPoller } from '../github/index.js';
 import { createAppHandlers, type WorktreeCreator } from '../handlers/app/index.js';
 // §TERM-050: the OSC desktop-notification sink, the sibling of the agent-event path.
 import { createOscNotificationSink } from '../handlers/app/osc-notifications.js';
@@ -1373,6 +1374,23 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
     });
 
     /**
+     * Pull request status on each workspace (workspace-feature.md §11), looked up with `gh`.
+     * Gated on `workspace-pr-status` at every decision point, and told about every settings
+     * change so turning it off clears the rows at once (and turning it on looks at once).
+     */
+    const prPoller = createPullRequestPoller({
+        store,
+        gh: createGhRunner({ env }),
+        git: createPullRequestGit(createGitRunner()),
+        enabled: () => settings.snapshot.general.workspacePrStatus,
+        log: (message) => log(message),
+        ...(onError !== undefined ? { onError } : {})
+    });
+    const offPrSettings = settings.subscribe(() => {
+        prPoller.settingsChanged();
+    });
+
+    /**
      * One OSC 7 report: the pane's working directory moves (which is what `pane list`'s CWD
      * column, the footer and `--prune-worktree` read), and auto-detect sees the move through
      * its store subscription. The store is the single writer, so a client sees the change as
@@ -2241,6 +2259,8 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         branchWatch.dispose();
         // Stop background Git discovery before the provider-backed graft unwind.
         autoDetect.stop();
+        offPrSettings();
+        prPoller.dispose();
     };
 
     /**
@@ -2715,6 +2735,8 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         // Issue #48 (graft-git.md §8.9, app-state-core.md §7.7): auto-link every restored pane
         // sitting in a checkout, then link on creation / unlink on close as the pane set moves.
         autoDetect.start();
+        // workspace-feature.md §11: PR lookups for every association branch, once state is in.
+        prPoller.start();
         // persistence.md §6.2 step 9 / app-state-core.md §6.5: the one-shot legacy-label →
         // preset back-fill, one launch only. Runs AFTER `ensureDefaultWorkspace` above, so the
         // fresh-install path reaches it too and sets the marker with nothing to migrate —

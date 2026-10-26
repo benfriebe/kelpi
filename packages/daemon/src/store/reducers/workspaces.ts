@@ -7,6 +7,7 @@
  */
 
 import { groupSidebarID, workspaceSidebarID, type SidebarID } from '@kelpi/core/codec';
+import { samePullRequests } from '@kelpi/core/git';
 import { normalizedAssignment } from '@kelpi/core/env';
 import { leaf } from '@kelpi/core/layout';
 import { makeSlug, normalizeLabel } from '@kelpi/core/resolve';
@@ -733,6 +734,12 @@ export function reduceWorkspaceAction(state: DaemonState, action: DomainAction):
                         : assoc
                 )
             }));
+        case 'set-workspace-pull-requests':
+            return updateWorkspace(state, action.id, (workspace) =>
+                samePullRequests(workspace.pullRequests, action.pullRequests)
+                    ? workspace
+                    : { ...workspace, pullRequests: action.pullRequests }
+            );
         default:
             return state;
     }

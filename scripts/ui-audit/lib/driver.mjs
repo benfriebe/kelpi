@@ -772,6 +772,40 @@ export function scriptUpdater(sandbox, control) {
     }
     fs.writeFileSync(file, `${JSON.stringify(control)}\n`);
 }
+
+/**
+ * workspace-feature.md §11: the sandbox daemon's `gh` (`fixtures/gh-stub.mjs`, named by the
+ * `KELPI_GH` every sandbox carries). With no control file it is logged out. Written, it answers
+ * `gh auth status` and `gh pr list --head=<branch>` from `{ loggedIn, pulls: { <branch>: [...] } }`.
+ */
+export const GH_CONTROL_FILE = 'gh-control.json';
+
+export function ghControlPath(sandbox) {
+    return path.join(sandbox.root, GH_CONTROL_FILE);
+}
+
+/** Script the stub's answers, or remove them with null (a logged-out gh again). */
+export function scriptGh(sandbox, control) {
+    const file = ghControlPath(sandbox);
+    if (control === null) {
+        fs.rmSync(file, { force: true });
+        return;
+    }
+    fs.writeFileSync(file, `${JSON.stringify(control)}\n`);
+}
+
+/** Every argument list the stub has been called with, oldest first. */
+export function ghCalls(sandbox) {
+    try {
+        return fs
+            .readFileSync(`${ghControlPath(sandbox)}.calls`, 'utf8')
+            .split('\n')
+            .filter((line) => line.trim() !== '')
+            .map((line) => JSON.parse(line));
+    } catch {
+        return [];
+    }
+}
 /** What `windowPlacement` reports when no placement was asked for: the shell's own choice. */
 export const SHIPPED_WINDOW_PLACEMENT = 'default';
 

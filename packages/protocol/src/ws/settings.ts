@@ -106,6 +106,12 @@ export interface WsGeneralSettings {
      */
     readonly autoDetectRepos: boolean;
     /**
+     * workspace-feature.md §11: the daemon looks up GitHub pull requests for each workspace's
+     * branches with `gh` (default true; only a literal `false` disables). Settings ▸ General ▸
+     * Repositories renders it, so it rides the snapshot like the auto-detect gate above.
+     */
+    readonly workspacePrStatus: boolean;
+    /**
      * §13 Settings ▸ General ▸ Worktrees "Base path" (SET-008), default
      * `~/kelpi/worktrees/<repo>`. `<repo>` and `~` expand daemon-side at create time (SET-009),
      * so this is the raw TEMPLATE — what the text field edits and the file stores.
@@ -454,6 +460,7 @@ export const DEFAULT_WS_SETTINGS: WsSettingsSnapshot = {
         globalHotkey: null,
         globalHotkeyHideOnRepress: true,
         autoDetectRepos: true,
+        workspacePrStatus: true,
         worktreeBasePath: '~/kelpi/worktrees/<repo>',
         newWorkspacePlacement: 'end-of-list',
         newGroupPlacement: 'end-of-list',
@@ -572,6 +579,8 @@ export const WS_WRITABLE_GENERAL_KEYS = [
     // Additive, same reasoning again: §13's Repositories auto-detect toggle is UserDefaults in
     // the Swift app and daemon behaviour here, so the daemon has to be able to read it back.
     'auto-detect-repos',
+    // workspace-feature.md §11: the PR status lookups, a kelpi key with no Swift counterpart.
+    'workspace-pr-status',
     // §13's General tab, same UserDefaults→config-key move: the worktree base-path template
     // and the two sidebar placement pickers (SET-008 / SET-013 / SET-014).
     'worktree-base-path',

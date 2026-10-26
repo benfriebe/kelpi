@@ -9,7 +9,7 @@
  * Ownership (disjoint, so a field is never described by two event kinds):
  *   workspace-upserted → workspace meta (name/slug/color/icon/profile/muted/status/labels/
  *                        repoAssociations/recentlyClosed/webPanes/search/timestamps/
- *                        childOrder/childrenCollapsed)
+ *                        childOrder/childrenCollapsed/pullRequests)
  *   layout-changed     → layout + zoomedPaneID + savedLayout + currentLayoutIndex
  *   focus-changed      → focusedPaneID + focusHistory
  *   sync-changed       → isSyncInputActive + syncInputExcluded (+ derived syncedPaneIDs)
@@ -57,7 +57,8 @@ function envelopeOf(workspace: WorkspaceState): WorkspaceEnvelope {
         lastAccessedAt: workspace.lastAccessedAt,
         labels: workspace.labels,
         childOrder: workspace.childOrder,
-        childrenCollapsed: workspace.childrenCollapsed
+        childrenCollapsed: workspace.childrenCollapsed,
+        pullRequests: workspace.pullRequests
     };
 }
 
@@ -81,7 +82,8 @@ function envelopeChanged(before: WorkspaceState, after: WorkspaceState): boolean
         before.lastAccessedAt !== after.lastAccessedAt ||
         before.labels !== after.labels ||
         before.childOrder !== after.childOrder ||
-        before.childrenCollapsed !== after.childrenCollapsed
+        before.childrenCollapsed !== after.childrenCollapsed ||
+        before.pullRequests !== after.pullRequests
     );
 }
 

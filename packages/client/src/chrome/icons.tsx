@@ -51,6 +51,12 @@ export type ChromeIconName =
     | 'scan'
     // A muted workspace (agent-lifecycle §7.6): the SF `bell.slash` at this grid.
     | 'bell-slash'
+    // A workspace's pull request (workspace-feature.md §11), one drawing per state so the state
+    // never rests on colour alone: GitHub's open, draft, merged and closed marks at this grid.
+    | 'pull-request'
+    | 'pull-request-draft'
+    | 'pull-request-merged'
+    | 'pull-request-closed'
     // The six status-bar metric glyphs — `SystemStatKind.systemImage`'s SF Symbols (`cpu`,
     // `memorychip`, `gauge.with.dots.needle.33percent`, `network`,
     // `externaldrive.badge.timemachine`, `internaldrive`) redrawn at this file's 12×12 grid.
@@ -191,6 +197,38 @@ const PATHS: Record<ChromeIconName, ReactElement> = {
             <path d="M3.2 8.2h5.6l-.8-1.1V5.3a2 2 0 0 0-4 0v1.8z" />
             <path d="M6 2.4v.9M5 9.4a1 1 0 0 0 2 0" />
             <path d="M2 2l8 8" />
+        </>
+    ),
+    'pull-request': (
+        <>
+            <circle cx="3" cy="2.8" r="1.2" />
+            <circle cx="3" cy="9.2" r="1.2" />
+            <circle cx="9" cy="9.2" r="1.2" />
+            <path d="M3 4v4M9 8V5.2c0-1-.6-1.6-1.6-1.6H5.4M6.6 2.4 5.4 3.6l1.2 1.2" />
+        </>
+    ),
+    'pull-request-draft': (
+        <>
+            <circle cx="3" cy="2.8" r="1.2" />
+            <circle cx="3" cy="9.2" r="1.2" />
+            <circle cx="9" cy="9.2" r="1.2" />
+            <path d="M3 4v4M9 6.4v.4M9 3.6v.4" />
+        </>
+    ),
+    'pull-request-merged': (
+        <>
+            <circle cx="3" cy="2.8" r="1.2" />
+            <circle cx="3" cy="9.2" r="1.2" />
+            <circle cx="9" cy="6.4" r="1.2" />
+            <path d="M3 4v4M3 4c0 1.5 1.1 2.4 2.6 2.4h2.2" />
+        </>
+    ),
+    'pull-request-closed': (
+        <>
+            <circle cx="3" cy="2.8" r="1.2" />
+            <circle cx="3" cy="9.2" r="1.2" />
+            <circle cx="9" cy="9.2" r="1.2" />
+            <path d="M3 4v4M9 6.6V8M7.8 2.4l2.4 2.4M10.2 2.4 7.8 4.8" />
         </>
     ),
     /** A die with pins — the SF `cpu` silhouette at 12px. */

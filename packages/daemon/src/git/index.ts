@@ -41,6 +41,9 @@ export {
 export {
     cleanupCancelledWorktreeAdd,
     createWorktreeAddGuard,
+    decidePlainWorktreeAdd,
+    plainWorktreeAddArgs,
+    refExists,
     fetchWithRenameFallback,
     isMissingRemoteRef,
     resolveDefaultBranchFromRemote,
@@ -57,6 +60,7 @@ export type {
     DefaultBranchFetches,
     DefaultBranchSource,
     FetchForCreateOutcome,
+    PlainWorktreeAdd,
     ResolvedDefaultBranch,
     WorktreeAddHooks,
     WorktreeAddSnapshot,

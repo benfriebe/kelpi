@@ -282,7 +282,11 @@ describe.skipIf(!HAS_GIT)('GitService', () => {
             branchName: 'b',
             updateMain: false
         });
-        expect(calls).toEqual([['worktree', 'add', '/wt', 'b']]);
+        // The branch's existence is read first (exit 0 here: it exists), then it is attached.
+        expect(calls).toEqual([
+            ['show-ref', '--verify', '--quiet', 'refs/heads/b'],
+            ['worktree', 'add', '/wt', 'b']
+        ]);
     });
 
     it('fetches before branching off the resolved default on the update-main path', async () => {

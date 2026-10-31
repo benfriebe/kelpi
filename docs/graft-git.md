@@ -1438,9 +1438,42 @@ if updateMain:
   git fetch --no-tags origin +refs/heads/<def>:refs/remotes/origin/<def>
       (or none: a running prefetch is joined, a recent one reused, §8.5.1)
   git worktree add -b <branch> <worktreePath> origin/<def>
-else:
-  createWorktree(repoPath, worktreePath, branch)           // existing-branch-first fallback
+else:                                                      // decided from refs, never from stderr
+  refs/heads/<b> exists        → git worktree add <worktreePath> <b>
+  <b>^{commit} resolves        → git worktree add --detach <worktreePath> <commit>  // a tag, a SHA, origin/<b>
+  refs/remotes/<r>/<b> on one remote (or on checkout.defaultRemote when several have it)
+                               → git worktree add -b <b> <worktreePath> refs/remotes/<r>/<b>
+                                 // no --track: branch.autoSetupMerge decides the upstream
+  otherwise                    → git worktree add -b <b> <worktreePath>        // off HEAD
 ```
+
+**The plain path reads refs, not stderr.** It used to try `git worktree add <path> <b>` and, on
+ANY failure, retry with `-b <b>`, so a real error (the branch checked out in another worktree)
+surfaced as the retry's `a branch named '<b>' already exists`, and the only alternative, keying
+the retry on git's `invalid reference`, would break for every user whose daemon runs git in
+another language (git prints its messages in the inherited locale). So `decidePlainWorktreeAdd`
+(`packages/daemon/src/git/worktree-add.ts`) asks first: `git show-ref --verify --quiet
+refs/heads/<b>` (exit 0 or 1 in every locale), then `git rev-parse --verify --quiet <b>^{commit}`
+(exit 1 for "no" in every locale), then `git remote` and the remote-tracking refs for git's own
+DWIM rule (exactly one remote has `<b>`, or `checkout.defaultRemote` picks one), and runs one
+`worktree add`; whatever it says is the error. Any other failure of a lookup (not a repository)
+stops the create with that error instead of being read as "no".
+
+**A name that already means something keeps its meaning.** The rule is git's own `worktree add
+<path> <b>`, in git's order, so the decision never makes a branch that changes what an existing name
+resolves to. A name that is not a local branch but already names a commit (a tag, a SHA,
+`origin/<b>`, a remote's `HEAD`) is checked out DETACHED at that commit, which is what the old first
+attempt did too: a `-b <b>` there would put HEAD's content in the worktree and make the name
+ambiguous repo-wide (`refs/heads/v1` beside `refs/tags/v1`; `refs/heads/origin/x`, which git's ref
+lookup tries before `refs/remotes/origin/x`, so `origin/x` would mean the local branch in every
+command). The worktree is added at the commit the lookup returned, not the name, so what was
+decided is what is checked out. Only a name that resolves can be shadowed, so that is the whole
+rule: a name that resolves to nothing is an ordinary new branch, whatever it looks like
+(`ben/fix-login` in a repository with a remote named `ben`, an `origin/x` that `origin` does not
+have, a short SHA that is ambiguous or names a blob), exactly as the old fallback made it. Git's
+remote DWIM is only tried for a name that is not a commit, as git itself only tries it then, and
+without `--track`: git's own DWIM leaves the upstream to `branch.autoSetupMerge` (on by default, so
+the branch tracks `<r>/<b>`; a user who set it to `false` gets no upstream), and so does this.
 
 **One branch, no tags.** A full `git fetch origin` fetched every branch and tag (2.8 s on
 an up-to-date repo with 95 remote branches). The explicit refspec fetches only the default
@@ -1545,7 +1578,7 @@ refuses with `branch '<b>' already exists, and update main always creates a new 
 origin/<default>: choose another worktree or branch name, or turn off update main to check
 out the existing branch` (`WorktreeBranchExistsError`, `packages/daemon/src/git/worktree-add.ts`,
 re-exported from `service.ts`; the step list marks it against `worktree-add`).
-Without update main, an existing branch is attached as before. Only a LOCAL branch counts: a
+Without update main, an existing branch is attached (§8.3's ref check). Only a LOCAL branch counts: a
 name that exists solely as the remote branch `origin/<b>` passes the check, and the worktree
 gets a new local `<b>` off `origin/<default>` that does not track `origin/<b>`.
 
@@ -1641,8 +1674,10 @@ created and nothing else, using a snapshot taken just before `worktree add`:
   `git worktree prune`, which would drop the user's other stale entries), only when the path
   did not exist before; a pre-existing directory is left exactly as it is (logged);
 - the branch (`git branch -D`), only when it did not exist before AND its tip is one of
-  the commits this add could have created it at (the base ref, HEAD, or a DWIM
-  `origin/<branch>`); a branch someone else made or moved is left (logged);
+  the commits this add could have created it at (the base ref, HEAD, `origin/<branch>`, or the
+  remote-tracking ref §8.3's plain path decided to branch from, whichever remote that is); a
+  branch someone else made or moved is left (logged). A detached checkout (§8.3) makes no
+  branch, so its cancel removes only the worktree;
 - a cancel during the resolve or the fetch has nothing to remove (a fetch only moves
   `origin/<default>`).
 

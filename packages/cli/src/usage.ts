@@ -35,6 +35,7 @@ export const globalUsage = `Usage:
   kelpi workspace list [--json] [--no-header]
   kelpi workspace create [--name "..."] [--path /dir] [--color blue] [--group <name>] [--profile <name>] [--muted] [--icon <emoji>] [--focus] [--json]
   kelpi workspace create --worktree <name> [--branch <name>] [--repo <path>] [--update-main] [--group <existing>] [--muted] [--icon <emoji>] [--focus]
+  kelpi workspace create ... --agent claude|codex [--prompt "..." | --prompt-file <path|->] [--send]
   kelpi workspace move <name-or-id> (--group <name> | --top-level) [--index N]
   kelpi workspace delete <name-or-id> [<name-or-id> ...] [--force|-y] [--prune-worktree [--delete-branch]] [--json]
   kelpi workspace profile <name-or-id> (<profile> | --clear)
@@ -411,6 +412,8 @@ export const workspaceCreateUsage = `Usage:
                        [--update-main | --no-update-main] \\
                        [--group <existing> | --parent <name-or-id> | --nested] [--muted] \\
                        [--icon <emoji>] [--focus] [--json]
+  kelpi workspace create ... --agent claude|codex \\
+                       [--prompt "..." | --prompt-file <path|->] [--send]
 
 Creates a new workspace and returns its id. The workspace is created in the
 background: every window stays where it is (the sidebar points at the new row)
@@ -445,10 +448,30 @@ Options:
   --icon <emoji>     Give the workspace this sidebar icon (one emoji or symbol)
                      instead of its first letter.
   --focus            Switch every window to the new workspace (default: background).
-  --json             Print the structured reply (incl. the new workspace id).
+  --agent <agent>    Start claude or codex in the first pane, with the command
+                     the Kelpi host's settings name for it.
+  --prompt <text>    Text for the agent. By default it is pasted into the
+                     agent's input once the agent is ready, unsubmitted, for
+                     you to edit and send.
+  --prompt-file <path>
+                     Read the prompt from a file (UTF-8); \`-\` reads stdin.
+  --send             Submit the prompt at launch instead of pasting it.
+  --json             Print the structured reply (incl. the new workspace id
+                     and, with a prompt, prompt_file).
   -h, --help         Show this help.
 
-Exit codes: 0 on success, non-zero on failure.
+--prompt, --prompt-file and --send need --agent. The command returns once
+the workspace exists, without waiting for the agent: a prompt that could
+not be delivered is reported in Kelpi windows, not here. The daemon keeps a
+copy of the prompt for a day and the command prints its path
+("prompt file: <path>").
+
+Examples:
+  kelpi workspace create --worktree eng-123 --agent claude --prompt "Fix the login timeout"
+  gh issue view 42 | kelpi workspace create --name issue-42 --agent codex --prompt-file - --send
+
+Exit codes: 0 on success, non-zero on failure; 1 also when the daemon
+predates --muted or --agent and created the workspace without it.
 
 `;
 

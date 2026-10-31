@@ -147,6 +147,50 @@ describe('parseGeneralSettings', () => {
         expect(parseGeneralSettings('middle-click-paste = false\nmiddle-click-paste = true').middleClickPaste).toBe(true);
     });
 
+    /**
+     * wire-protocol.md §6.3's agent start. The two commands are shell text the DAEMON types, so
+     * case and inner spacing survive, and blank means the default rather than "type nothing".
+     */
+    it('reads the agent commands verbatim, with blank meaning the default', () => {
+        expect(parseGeneralSettings('').agentClaudeCommand).toBe('claude');
+        expect(parseGeneralSettings('').agentCodexCommand).toBe('codex');
+        const custom = parseGeneralSettings(
+            'agent-claude-command = CLAUDE_CONFIG_DIR=~/.claude-work claude --model opus\n' +
+                "agent-codex-command = ~/bin/codex-wrapper  --profile 'my work'"
+        );
+        expect(custom.agentClaudeCommand).toBe('CLAUDE_CONFIG_DIR=~/.claude-work claude --model opus');
+        expect(custom.agentCodexCommand).toBe("~/bin/codex-wrapper  --profile 'my work'");
+        // The first `=` splits the line, so an `=` inside the command is kept.
+        expect(parseGeneralSettings('agent-claude-command = env A=b claude').agentClaudeCommand).toBe('env A=b claude');
+        expect(parseGeneralSettings('agent-claude-command =').agentClaudeCommand).toBe('claude');
+        expect(parseGeneralSettings('agent-codex-command =   ').agentCodexCommand).toBe('codex');
+        // Later lines win, a blank one included: it resets to the default.
+        expect(
+            parseGeneralSettings('agent-claude-command = my-claude\nagent-claude-command =').agentClaudeCommand
+        ).toBe('claude');
+    });
+
+    it('takes new-workspace-agent from its three values and keeps the prior one otherwise', () => {
+        expect(parseGeneralSettings('').newWorkspaceAgent).toBe('none');
+        expect(parseGeneralSettings('new-workspace-agent = claude').newWorkspaceAgent).toBe('claude');
+        expect(parseGeneralSettings('new-workspace-agent = CODEX').newWorkspaceAgent).toBe('codex');
+        expect(parseGeneralSettings('new-workspace-agent = gemini').newWorkspaceAgent).toBe('none');
+        expect(
+            parseGeneralSettings('new-workspace-agent = codex\nnew-workspace-agent = gemini').newWorkspaceAgent
+        ).toBe('codex');
+        expect(
+            parseGeneralSettings('new-workspace-agent = codex\nnew-workspace-agent = none').newWorkspaceAgent
+        ).toBe('none');
+    });
+
+    it('ships new-workspace-send-prompt OFF and turns it on only for the literal "true"', () => {
+        expect(parseGeneralSettings('').newWorkspaceSendPrompt).toBe(false);
+        expect(parseGeneralSettings('new-workspace-send-prompt = true').newWorkspaceSendPrompt).toBe(true);
+        expect(parseGeneralSettings('new-workspace-send-prompt = TRUE').newWorkspaceSendPrompt).toBe(true);
+        expect(parseGeneralSettings('new-workspace-send-prompt = yes').newWorkspaceSendPrompt).toBe(false);
+        expect(parseGeneralSettings('new-workspace-send-prompt =').newWorkspaceSendPrompt).toBe(false);
+    });
+
     it('clamps the delay at 0 and ignores non-integers', () => {
         expect(parseGeneralSettings('focus-follows-mouse-delay = -20').focusFollowsMouseDelay).toBe(0);
         expect(parseGeneralSettings('focus-follows-mouse-delay = abc').focusFollowsMouseDelay).toBe(

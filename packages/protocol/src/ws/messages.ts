@@ -831,6 +831,93 @@ export interface WsCommandProgressMessage {
     readonly progress: JsonObject;
 }
 
+export const WS_AGENT_LAUNCH_MESSAGE = 'agent-launch';
+
+/**
+ * What became of a `workspace-create` that asked for `start_agent` (wire-protocol.md §6.3):
+ *
+ *   - `launched`: the launch line was typed and there was no prompt to deliver;
+ *   - `sent`: send mode, the launch line carried the prompt, so the agent submits it itself;
+ *   - `prefilled`: the prompt was pasted into the agent's input, unsubmitted;
+ *   - `fallback`: the agent was launched but the prompt was NOT delivered (`reason` says why);
+ *   - `failed`: the launch line was never typed, so no agent started (`reason` says why).
+ *
+ * The first three are success and only ever go to the window that asked.
+ */
+export const WS_AGENT_LAUNCH_OUTCOMES = ['launched', 'sent', 'prefilled', 'fallback', 'failed'] as const;
+export type WsAgentLaunchOutcome = (typeof WS_AGENT_LAUNCH_OUTCOMES)[number];
+
+/**
+ * Why a launch ended in `fallback` or `failed`:
+ *
+ *   - `timeout`: the agent did not become ready in time (`AGENT_READY_TIMEOUT_MS`, paused while
+ *     a trust dialog is on screen, and `AGENT_READY_MAX_WAIT_MS` in all, pauses included); as
+ *     `failed`, either the pane printed nothing for 30 s after the create, or 10 s after its first
+ *     output something other than the shell had the terminal, so the launch line was never typed;
+ *   - `no-session-start`: Claude Code had the terminal for the whole budget but its SessionStart
+ *     hook never reached Kelpi, the one signal Claude's readiness waits for (hooks not installed:
+ *     `kelpi install-hooks`); codex's readiness is read off the screen and never says this;
+ *   - `pane-exited`: the pane exited or was closed first (`failed` when that was before the
+ *     launch line was typed, `fallback` after);
+ *   - `agent-exited`: the agent quit, or never got going, and the shell has the pane again;
+ *   - `user-typed`: someone typed into the pane: after the launch line a paste would have
+ *     interleaved with them (`fallback`); before it, the line would have been appended to their
+ *     input (`failed`);
+ *   - `no-bracketed-paste`: the agent never turned bracketed paste on, and an unframed paste
+ *     would submit at its first newline;
+ *   - `unsupported-shell`: send mode needs a shell that runs `"$(command cat '<file>')"`
+ *     (`failed`: nothing was typed);
+ *   - `predicate-error`: the readiness check threw;
+ *   - `daemon-stopping`: the daemon stopped or handed off while the launch was pending.
+ */
+export const WS_AGENT_LAUNCH_REASONS = [
+    'timeout',
+    'no-session-start',
+    'pane-exited',
+    'agent-exited',
+    'user-typed',
+    'no-bracketed-paste',
+    'unsupported-shell',
+    'predicate-error',
+    'daemon-stopping'
+] as const;
+export type WsAgentLaunchReason = (typeof WS_AGENT_LAUNCH_REASONS)[number];
+
+/**
+ * `agent-launch`: the outcome of starting an agent in a new workspace's first pane.
+ *
+ * It needs a frame of its own because a plain create replies BEFORE its first pane spawns (the
+ * reply handle is closed by then, so it cannot carry `command-progress`), and the agent becomes
+ * ready seconds later. Exactly one frame per launch, or none when the daemon crashed first.
+ *
+ * Routed to the session that sent the create (`ReplyHandle.originClientID`; a plugin view's
+ * create routes to the window hosting the view). When there is none (the control socket, so the
+ * CLI) or it has gone away, only `fallback` / `failed` are sent, to EVERY client, with
+ * `broadcast: true`: a success needs nobody's attention, and a prompt that was not delivered
+ * should still reach a human. A client auto-copies `prompt` to its clipboard only for a frame
+ * WITHOUT `broadcast`, so one undelivered prompt is not written by every attached window.
+ *
+ * `prompt` (the normalized text) and `promptFile` (the daemon-written copy, kept for a day) ride
+ * only on `fallback` / `failed`, and only when the request carried a non-blank prompt. Nothing on
+ * either side logs `prompt`.
+ *
+ * Additive: a client that predates it ignores an unknown frame type, exactly as a create that
+ * started no agent would look to it.
+ */
+export interface WsAgentLaunchMessage {
+    readonly type: typeof WS_AGENT_LAUNCH_MESSAGE;
+    readonly workspaceID: string;
+    readonly paneID: string;
+    readonly agent: AgentKind;
+    readonly outcome: WsAgentLaunchOutcome;
+    /** Present exactly when `outcome` is `fallback` or `failed`. */
+    readonly reason?: WsAgentLaunchReason;
+    readonly prompt?: string;
+    readonly promptFile?: string;
+    /** The originating session was absent or gone, so this went to every client. */
+    readonly broadcast?: true;
+}
+
 export const WS_NOTIFICATION_KINDS = ['agent-waiting', 'agent-error', 'agent-notification', 'osc'] as const;
 export type WsNotificationKind = (typeof WS_NOTIFICATION_KINDS)[number];
 
@@ -1106,6 +1193,7 @@ export type WsServerMessage =
     | WsDeltaMessage
     | WsCommandReplyMessage
     | WsCommandProgressMessage
+    | WsAgentLaunchMessage
     | WsSizeControlMessage
     | WsOldTerminalHostsMessage
     | WsNotificationMessage

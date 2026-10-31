@@ -320,6 +320,13 @@ export interface SyncHub {
     /** The `HandlerContext.broadcast` seam: fan a daemon event out to attached clients. */
     broadcast(event: Record<string, unknown>): void;
     /**
+     * One message to one session, by its client id: today the `agent-launch` frame of a create
+     * that session sent (`ReplyHandle.originClientID`, wire-protocol.md §6.3). False when no such
+     * session is open and ready (it disconnected, never finished its hello, or the hub has
+     * closed), so the caller can fall back to a broadcast.
+     */
+    sendToClient(clientID: string, message: JsonObject): boolean;
+    /**
      * Re-check every open session's credential against the hello validator and CUT the ones
      * it no longer accepts (`kelpid devices revoke` while a session is connected — the device
      * registry watcher in `boot/compose.ts` calls this on every registry change). Returns how
@@ -1496,10 +1503,16 @@ class WsReplyHandle implements ReplyHandle {
     private readonly cancel = new AbortController();
     private cancellable = true;
 
+    /**
+     * @param originClientID the session that should hear what becomes of this request after
+     *   its reply (`ReplyHandle.originClientID`): the requesting session's id, or for a plugin
+     *   view's request (an internal session) the id of the window session hosting that view.
+     */
     constructor(
         private readonly transport: SyncTransport,
         private readonly id: string,
-        private readonly release: (handle: WsReplyHandle) => void
+        private readonly release: (handle: WsReplyHandle) => void,
+        readonly originClientID: string
     ) {}
 
     send(payload: Record<string, unknown>): void {
@@ -2592,6 +2605,15 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             }
         }
 
+        /**
+         * Who hears about this session's requests after their replies (`WsReplyHandle`): the
+         * session itself, or, for the internal session a plugin view's command runs on (which no
+         * window is attached to), the window session that hosts the view.
+         */
+        private get originClientID(): string {
+            return this.originatingClientID ?? this.clientID;
+        }
+
         internalCommand(payload: JsonObject, context: PluginContext): void {
             this.clearHelloTimer();
             this.ready = true;
@@ -2646,7 +2668,7 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             if (isRecord(payload)) {
                 const name = text(payload['command']);
                 if (name === 'plugin') {
-                    const handle = new WsReplyHandle(this.transport, id, h => this.handles.delete(h));
+                    const handle = new WsReplyHandle(this.transport, id, h => this.handles.delete(h), this.originClientID);
                     this.handles.add(handle);
                     try {
                         if (!options.plugins) throw new Error('plugins are not available');
@@ -2795,7 +2817,7 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                         if (requestID !== undefined && this.cancellableCreates.get(requestID) === h) {
                             this.cancellableCreates.delete(requestID);
                         }
-                    });
+                    }, this.originClientID);
                     this.handles.add(handle);
                     if (requestID !== undefined) this.cancellableCreates.set(requestID, handle);
                 }
@@ -2959,7 +2981,7 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             const worktreePaths = stringList(payload['worktree_paths']);
             const forcePaths = stringList(payload['force_worktree_paths']);
             const batchIDs = stringList(payload['batch_ids']);
-            const handle = new WsReplyHandle(this.transport, id, (h) => this.handles.delete(h));
+            const handle = new WsReplyHandle(this.transport, id, (h) => this.handles.delete(h), this.originClientID);
             this.handles.add(handle);
             try {
                 dispatcher(
@@ -4027,6 +4049,17 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                 if (suppressible && session.attends(workspaceID, paneID)) continue;
                 session.send(message);
             }
+        },
+        sendToClient(clientID, message) {
+            if (closed) return false;
+            for (const session of sessions) {
+                if (session.clientID !== clientID) continue;
+                // A closed session has already left the set; one mid-handshake cannot take frames.
+                if (!session.ready) return false;
+                session.send(message);
+                return true;
+            }
+            return false;
         },
         revalidateSessions() {
             const validate = options.validateToken;

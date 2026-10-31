@@ -28,6 +28,7 @@ import {
     type WsWritableGhosttyKey
 } from '@kelpi/protocol';
 
+import { AGENT_DISPLAY_NAMES } from '../chrome/types';
 import { ACTION_CATALOG, SETTINGS_TABS, VISIBLE_CATEGORIES } from './catalog';
 import {
     settingsGroupDescriptor,
@@ -126,6 +127,19 @@ export const SETTINGS_GROUPS: readonly SettingsGroupDescriptor[] = Object.freeze
                 title: 'Workspaces',
                 hint: null,
                 testID: 'general-workspaces'
+            },
+            {
+                /*
+                 * shell-ui.md §10.1's Agent row, and what the daemon types for it (wire-protocol.md
+                 * §6.3 `start_agent`; config-keybindings.md §1.2's four agent keys).
+                 */
+                id: 'general-agents',
+                sectionID: 'general',
+                title: 'Agents',
+                hint: "New Workspace can start Claude Code or Codex in the new workspace's first pane: once its shell is ready, Kelpi types the agent's command, then hands the agent your prompt. Resuming or restarting an agent does not use these commands yet.",
+                // Phrase aliases preserve the projection rule: no bare writable config key.
+                keywords: ['claude', 'codex', 'prompt', 'start agent'],
+                testID: 'general-agents'
             },
             {
                 id: 'general-network',
@@ -433,6 +447,13 @@ const FONT_SIZE_SCOPE_CHOICES: readonly SettingsChoice[] = Object.freeze([
     Object.freeze({ value: 'all', label: 'All panes' })
 ]);
 
+/** `new-workspace-agent`'s three values, named as the New Workspace sheet's Agent picker names them. */
+const NEW_WORKSPACE_AGENT_CHOICES: readonly SettingsChoice[] = Object.freeze([
+    Object.freeze({ value: 'none', label: 'None' }),
+    Object.freeze({ value: 'claude', label: AGENT_DISPLAY_NAMES.claude }),
+    Object.freeze({ value: 'codex', label: AGENT_DISPLAY_NAMES.codex })
+]);
+
 const DELETE_WORKTREE_CHOICES: readonly SettingsChoice[] = Object.freeze([
     Object.freeze({ value: 'ask', label: 'Ask' }),
     Object.freeze({ value: 'remove', label: 'Remove clean Kelpi worktrees' }),
@@ -533,6 +554,72 @@ export const SETTINGS_FIELD_DEFINITIONS: readonly SettingsFieldDefinition[] = Ob
         choices: PLACEMENT_CHOICES,
         read: (settings) => settings.general.newGroupPlacement,
         encode: (value) => value
+    },
+    /*
+     * Agents (shell-ui.md §10.1). The two sheet defaults first, then the two commands: the
+     * defaults are what most people change, the commands are for a wrapper or a flag. The
+     * commands are the daemon's to type; a client only ever names the kind (wire-protocol.md
+     * §6.3), so these rows are the one place a command line is written from the UI.
+     */
+    {
+        id: 'general.newWorkspaceAgent',
+        sectionID: 'general',
+        groupID: 'general-agents',
+        kind: 'select',
+        label: 'Agent for new workspaces',
+        detail: "Preselected in the New Workspace sheet's Agent picker; you can still choose another, or None, each time. The CLI and the phone start an agent only when asked.",
+        testID: 'new-workspace-agent-default',
+        target: { file: 'kelpi', key: 'new-workspace-agent' },
+        default: 'none',
+        choices: NEW_WORKSPACE_AGENT_CHOICES,
+        read: (settings) => settings.general.newWorkspaceAgent,
+        encode: (value) => value
+    },
+    {
+        id: 'general.newWorkspaceSendPrompt',
+        sectionID: 'general',
+        groupID: 'general-agents',
+        kind: 'toggle',
+        label: 'Send the prompt immediately',
+        detail: "Whether the sheet's Send immediately starts ticked. On, the agent runs your prompt as it starts. Off, the prompt is pasted into the agent's input for you to edit and send.",
+        testID: 'new-workspace-send-prompt-toggle',
+        rowTestID: 'new-workspace-send-prompt-row',
+        target: { file: 'kelpi', key: 'new-workspace-send-prompt' },
+        default: false,
+        read: (settings) => settings.general.newWorkspaceSendPrompt,
+        encode: BOOLEAN
+    },
+    {
+        id: 'general.agentClaudeCommand',
+        sectionID: 'general',
+        groupID: 'general-agents',
+        kind: 'text',
+        label: 'Claude Code command',
+        detail: 'Typed into the pane to start Claude Code: an alias, a wrapper script or extra flags all work (claude --model opus). Blank means claude.',
+        testID: 'agent-claude-command',
+        target: { file: 'kelpi', key: 'agent-claude-command' },
+        default: 'claude',
+        placeholder: 'claude',
+        maxLength: 1024,
+        read: (settings) => settings.general.agentClaudeCommand,
+        // Blank is the default on both ends (the daemon's parse treats an empty value that way),
+        // as `worktree-base-path` above. One line only: the daemon refuses a line break.
+        encode: (value) => value.trim()
+    },
+    {
+        id: 'general.agentCodexCommand',
+        sectionID: 'general',
+        groupID: 'general-agents',
+        kind: 'text',
+        label: 'Codex command',
+        detail: 'Typed into the pane to start Codex, the same way. Blank means codex.',
+        testID: 'agent-codex-command',
+        target: { file: 'kelpi', key: 'agent-codex-command' },
+        default: 'codex',
+        placeholder: 'codex',
+        maxLength: 1024,
+        read: (settings) => settings.general.agentCodexCommand,
+        encode: (value) => value.trim()
     },
     {
         /*

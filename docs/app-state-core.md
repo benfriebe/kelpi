@@ -695,6 +695,12 @@ Behavior, in order:
 11. Effects:
     - Create the terminal surface (PTY) for the first pane with the workspace profile's resolved
       env (`profileName ?? "default"`).
+    - When the create asked for an agent (`start_agent`, wire-protocol.md §6.3): hand that first
+      pane to the agent launcher right after its surface is asked for, with the prompt the handler
+      already validated and wrote to a file before step 1 (socket-handlers.md §6.2 "Starting an
+      agent"). The launcher waits for the shell's prompt, types the agent's launch command and,
+      for a prefill, pastes the prompt once the agent is ready (agent-lifecycle.md §6.5). Not a
+      state change: nothing about it is stored on the workspace or the pane.
     - Persist state.
     - For each association created in step 7: start a HEAD watcher (section 7.8).
     - If `worktree` present: also `refreshGitStatus` immediately (so dirty/ahead badges do not lag
@@ -728,10 +734,16 @@ Inputs: `name, color?, repo, worktreeName, branchName, updateMain=false, groupID
      (graft-git.md §8.3, §8.5.1). The New Workspace sheet shows the steps while they run and
      can cancel them (§8.5.2).
 5. On success: dispatch `createWorkspace(name, color, groupID, profileName, id,
-   worktree={path, branchName: sanitizedBranch})` (i.e. all of 4.1 runs with the worktree seed).
+   worktree={path, branchName: sanitizedBranch})` (i.e. all of 4.1 runs with the worktree seed,
+   including handing the worktree's first pane to the agent launcher when the create asked for an
+   agent).
 6. On failure: `worktreeCreationFailed(workspaceID: null, error: worktreeErrorMessage(err))` ->
    sets `worktreeCreationError`; the new-workspace sheet observes it, shows the message, and stays
-   open for a retry.
+   open for a retry. A prompt file the create wrote is removed (socket-handlers.md §6.2).
+
+An agent request (`start_agent`, `agent_prompt`, `send_prompt`) is checked before step 1, before
+any of the git work above: an unknown agent or a malformed prompt is refused with no worktree
+made (socket-handlers.md §6.2 "Starting an agent").
 
 #### 4.2.1 sanitizedGitName(name)
 

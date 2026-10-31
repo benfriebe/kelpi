@@ -216,6 +216,25 @@ describe('ToastStack', () => {
         expect(onDismiss).toHaveBeenCalledTimes(2);
     });
 
+    /*
+     * An undelivered agent prompt's toast (`state/agent-launch.ts`): both documents mark the card
+     * that copies, but only the mark crosses to the layer. The text stays in the page, which does
+     * the copy when the click comes back as `dismiss`.
+     */
+    it('marks a toast that copies on both documents, without sending its text to the layer', async () => {
+        installCornerBridge(target);
+        const prompt = { ...TOAST, id: 'agent-launch-p1', title: 'Prompt not delivered', copyText: 'Fix the login timeout' };
+        render(<ToastStack toasts={[TOAST, prompt]} oldHosts={null} onDismiss={noop} onRestartOldHosts={noop} onLaterOldHosts={noop} />);
+        const frame = await bridge().next(-1);
+        expect(frame.content?.toasts).toEqual([
+            { id: 't1', title: 'Removed worktree', body: '/tmp/repo-wt' },
+            { id: 'agent-launch-p1', title: 'Prompt not delivered', body: '/tmp/repo-wt', copy: true }
+        ]);
+        expect(JSON.stringify(frame)).not.toContain('Fix the login timeout');
+        expect(screen.getByTestId('toast-agent-launch-p1').dataset['copy']).toBe('true');
+        expect(screen.getByTestId('toast-t1').dataset['copy']).toBeUndefined();
+    });
+
     it('publishes an empty frame once the last toast goes', async () => {
         installCornerBridge(target);
         const { rerender } = render(

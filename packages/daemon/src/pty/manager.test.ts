@@ -147,6 +147,26 @@ describe('PtyManager registry (§1.2)', () => {
         expect(manager.paneIDs()).toEqual(['pane-a']);
     });
 
+    it('remembers which shell it spawned for each pane, the fallback included', () => {
+        const spawned: PtySpawnRequest[] = [];
+        const manager = createPtyManager({
+            spawner: (request) => {
+                spawned.push(request);
+                if (request.file === '/no/such/zsh') throw new Error('ENOENT');
+                return new StubPty(request);
+            }
+        });
+        manager.spawn({ ...spawnOpts('zsh'), shell: '/bin/zsh' });
+        manager.spawn({ ...spawnOpts('broken'), shell: '/no/such/zsh' });
+        manager.adopt('kept', new StubPty({ file: '/bin/zsh', args: [], cwd: '/', env: {}, cols: 80, rows: 24, name: DEFAULT_TERM }));
+        expect(manager.shell('zsh')).toBe('/bin/zsh');
+        // `$SHELL` failed and `/bin/sh` runs instead: that is what the pane's shell is.
+        expect(manager.shell('broken')).toBe(FALLBACK_SHELL);
+        // A terminal the host kept across a restart: this daemon did not choose its program.
+        expect(manager.shell('kept')).toBeUndefined();
+        expect(manager.shell('nothing')).toBeUndefined();
+    });
+
     it('drops the pane from the registry when the child exits on its own', () => {
         const { spawner, spawned } = stubSpawner();
         const manager = createPtyManager({ spawner });

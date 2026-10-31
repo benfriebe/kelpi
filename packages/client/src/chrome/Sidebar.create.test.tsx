@@ -322,6 +322,9 @@ describe('the Tab loop (§WS-077)', () => {
         expect(step()).toBe(screen.getByTestId('new-workspace-repo-remove-r1'));
         expect(step()).toBe(screen.getByTestId('new-workspace-add-repo'));
         expect(step()).toBe(screen.getByTestId('new-workspace-worktree-toggle'));
+        // Kelpi's other addition: the Agent picker (shell-ui.md §10.1), the last stop before
+        // Cancel. With "None" chosen its prompt and send box are not drawn, so not stops.
+        expect(step()).toBe(screen.getByTestId('new-workspace-agent'));
         // `NewWorkspaceSheet.swift:394-397`: Cancel, then Create.
         expect(step()).toBe(screen.getByTestId('new-workspace-cancel'));
         expect(step()).toBe(screen.getByTestId('new-workspace-submit'));
@@ -344,6 +347,9 @@ describe('the Tab loop (§WS-077)', () => {
         // …mute…
         fireEvent.keyDown(document.activeElement as Element, { key: 'Tab' });
         expect(document.activeElement).toBe(screen.getByTestId('new-workspace-muted'));
+        // …the Agent picker…
+        fireEvent.keyDown(document.activeElement as Element, { key: 'Tab' });
+        expect(document.activeElement).toBe(screen.getByTestId('new-workspace-agent'));
         // …then Cancel, which is always reachable — a sheet whose only way out is the mouse is
         // the defect the Swift's own `.cancel` stop exists to prevent…
         fireEvent.keyDown(document.activeElement as Element, { key: 'Tab' });

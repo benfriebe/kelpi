@@ -411,7 +411,12 @@ function decodeCommand(
                 // Verbatim: a malformed id must fail the create (no such pane), not silently un-nest it.
                 parent_pane_id: fields.text('parent_pane_id'),
                 // #307: absent is BACKGROUND, the default for every caller but the window.
-                focus: fields.flag('focus', false)
+                focus: fields.flag('focus', false),
+                // Raw on purpose (§6.3): `parseAgentKind` would turn a typo
+                // into `claude`, and the handler has to be able to refuse it before any effect.
+                start_agent: fields.text('start_agent'),
+                agent_prompt: fields.rawText('agent_prompt'),
+                send_prompt: fields.flag('send_prompt', false)
             };
         case 'workspace-move': {
             const name = fields.nonEmpty('name');

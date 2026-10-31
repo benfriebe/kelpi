@@ -147,6 +147,8 @@ export interface HarnessOptions extends AppHandlerOptions {
     readonly initial?: DaemonState | undefined;
     /** UUIDs handed out in order; exhausted → a counted fallback. */
     readonly ids?: readonly string[] | undefined;
+    /** The WS session every request "comes from" (`ReplyHandle.originClientID`); absent = CLI. */
+    readonly originClientID?: string | undefined;
 }
 
 export function harness(options: HarnessOptions = {}): Harness {
@@ -239,7 +241,8 @@ export function harness(options: HarnessOptions = {}): Harness {
             get closed() {
                 return closed;
             },
-            onDisconnect: () => {}
+            onDisconnect: () => {},
+            ...(options.originClientID !== undefined ? { originClientID: options.originClientID } : {})
         };
         table.get(message.command)?.(message, ctx, wantsReply ? handle : null);
         if (wantsReply) {

@@ -266,6 +266,9 @@ export function withSpawnGate(pty: KelpiPtyManager, gate: PaneSpawnGate): KelpiP
         pid(paneID: string): number | undefined {
             return pty.pid(paneID);
         },
+        shell(paneID: string): string | undefined {
+            return pty.shell(paneID);
+        },
         count(): number {
             return pty.count();
         },

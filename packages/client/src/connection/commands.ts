@@ -817,6 +817,17 @@ export class CommandClient {
              * asked for is where they go. Debug ▸ Seed Test Group passes false.
              */
             focus?: boolean;
+            /**
+             * wire-protocol.md §6.3: start this agent in the first pane the create spawns. The
+             * KIND only: the command typed is the daemon's own `agent-claude-command` /
+             * `agent-codex-command`. A success reply echoes it; no echo = a daemon that predates
+             * it made a plain workspace. The outcome arrives later, on an `agent-launch` frame.
+             */
+            startAgent?: 'claude' | 'codex';
+            /** Text for the agent, sent verbatim (the daemon normalizes). Needs `startAgent`. */
+            agentPrompt?: string;
+            /** true = on the launch line, submitted at once; absent/false = prefilled. Needs `startAgent`. */
+            sendPrompt?: boolean;
         } = {},
         options?: SendOptions
     ): Promise<CommandReply> {
@@ -837,7 +848,10 @@ export class CommandClient {
                 muted: input.muted,
                 group_defaults: input.groupDefaults,
                 parent: input.parent,
-                focus: input.focus ?? true
+                focus: input.focus ?? true,
+                start_agent: input.startAgent,
+                agent_prompt: input.agentPrompt,
+                send_prompt: input.sendPrompt
             }),
             {
                 ...(timeout !== undefined ? { timeoutMs: timeout } : {}),

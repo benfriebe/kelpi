@@ -211,6 +211,19 @@ export interface WorkspaceCreateReply extends ReplySuccess {
      */
     readonly parent_lost?: boolean;
     readonly parent_lost_reason?: string;
+    /**
+     * The agent the daemon will start in the first pane, echoed whenever the request carried
+     * `start_agent`. A daemon that predates it drops the unknown request field and creates a
+     * plain workspace, so a caller that asked for an agent and finds no echo knows the workspace
+     * WAS created but no agent will start (wire-protocol.md §6.3).
+     */
+    readonly start_agent?: AgentKind;
+    /**
+     * The daemon-written file holding the normalized prompt, present beside `start_agent`
+     * whenever the request carried a non-blank `agent_prompt` (either delivery mode). The CLI
+     * prints it so the text is at hand if a prefill falls back with no window to show it.
+     */
+    readonly prompt_file?: string;
 }
 
 export interface WorkspaceDeleteReply extends ReplySuccess {

@@ -207,14 +207,14 @@ names are listed per command below). Rules:
 - Many optional string fields are normalized: **empty string → treated as absent**
   (documented per command; applies to `target`, `workspace`, `group`, `profile`,
   `worktree`, `branch`, `repo`, `scope`, `level`, `send_to`, `domain`, `selector` (for
-  `web-key`), `url_match`, `for`, `mode`, `block`, `behavior`, `target_path`). Not `parent` or
+  `web-key`), `url_match`, `for`, `mode`, `block`, `behavior`, `target_path`, `start_agent`). Not `parent` or
   `parent_pane_id` (app-state-core.md §2.9): an empty one is an unset variable far more often
   than a choice, and "no parent" would create a top-level workspace or list every workspace, so
   the handlers refuse it (`parent must name a workspace (got an empty value)`).
 - `pane_id` must be a syntactically valid UUID string; an invalid UUID makes
   `pane_id` behave as absent (for commands where it's optional) or drops the message (for
   commands where it's required). UUID parsing is `normalizeUuid`
-  (`packages/protocol/src/wire/vocab.ts:144`): case-insensitive, canonical 8-4-4-4-12 hex
+  (`packages/protocol/src/wire/vocab.ts:160`): case-insensitive, canonical 8-4-4-4-12 hex
   form. UUIDs in replies are emitted **uppercase**.
 
 ### 2.3 Reply framing
@@ -376,6 +376,10 @@ Values: `"claude"`, `"codex"`. Matching is **case-insensitive**; absent or unrec
 `claude` (so an old CLI without the field keeps pre-Codex behavior). Appears on `start`
 and `session-start` (and rides along on any message for the dual-fire, §3.1).
 
+`start_agent` on `workspace-create` (§6.3) takes the same two values, also case-insensitively,
+but is NOT this field and does not share its fallback: an unrecognized value is an error, never
+`claude` (`parseStartAgent`, `packages/protocol/src/wire/vocab.ts`).
+
 ### 5.2 Split direction (`direction` on `pane-split`)
 
 `"horizontal"` (side-by-side) | `"vertical"` (stacked). Any other value → parsed as
@@ -523,7 +527,7 @@ carry `"command"`.
 | `pane-sync` | R/R | `action` | `pane_id`, `workspace` |
 | `pane-sync-exclude` | R/R | `target`, `excluded` | `pane_id`, `workspace` |
 | `workspace-list` | R/R | — | `group`, `parent` |
-| `workspace-create` | R/R | — | `name`, `path`, `color`, `group`, `profile`, `worktree`, `branch`, `update_main`, `repo`, `muted`, `icon`, `group_defaults`, `parent`, `parent_pane_id`, `focus` |
+| `workspace-create` | R/R | — | `name`, `path`, `color`, `group`, `profile`, `worktree`, `branch`, `update_main`, `repo`, `muted`, `icon`, `group_defaults`, `parent`, `parent_pane_id`, `focus`, `start_agent`, `agent_prompt`, `send_prompt` |
 | `workspace-move` | F&F | `name` | `group`, `index` |
 | `workspace-nest` | R/R | `name`, `parent` | `index` |
 | `workspace-delete` | R/R | `name` | `force`, `cascade`, `worktree_paths`, `force_worktree_paths`, `prune_worktrees`, `delete_branches`, `batch_ids` |
@@ -1247,6 +1251,105 @@ after removing the partial worktree and branch (graft-git.md §8.5.2). A second 
 worktree path or branch that another create of the same repository is still making fails at once
 with `another create is already making …` (any transport). A client that predates
 either ignores the unknown frame type and gets the reply as before.
+
+Starting an agent (`start_agent`, `agent_prompt`, `send_prompt`; additive, every create flow):
+`start_agent` (`"claude"` or `"codex"`, case-insensitive, empty string = absent) asks the daemon
+to start that agent in the first pane the create spawns, by typing the command the daemon's own
+config names for it (`agent-claude-command` / `agent-codex-command`, config-keybindings.md §1.2).
+A request names only the kind; it never carries a command. `agent_prompt` (string, read verbatim)
+is text for the agent, and `send_prompt` (bool, default false) chooses how it is delivered:
+`true` puts it on the launch line, so the agent submits it at once ("send"); `false` pastes it,
+unsubmitted, into the agent's input once the agent is ready for it ("prefill"). The decoder keeps
+`start_agent` as the raw string (it never goes through §5.1's fallback to `claude`), so the
+handler can refuse a typo. The agent starts the same way on every branch (plain, group,
+repository, worktree, nested) and whether the create is focused or in the background (`focus`
+absent): the first pane spawns either way. The handler checks, in this order, after the
+request's `icon` and `parent` checks (which make nothing either) and BEFORE any effect (no
+workspace, group, repo registration or git work happens on a refusal):
+
+1. `start_agent` other than `claude`/`codex` → `{"ok":false,"error":"unknown agent '<value>'
+   (expected claude or codex)"}` (`unknownStartAgentError`);
+2. `agent_prompt` present (even empty) or `send_prompt: true` without `start_agent` →
+   `{"ok":false,"error":"agent_prompt and send_prompt need start_agent"}`;
+3. the prompt is normalized once, for both modes (`normalizeAgentPrompt`,
+   `packages/core/src/agent/launch.ts`): CRLF and lone CR become LF; C0 controls other than TAB
+   and LF, and DEL, are dropped (so no escape sequence survives); trailing whitespace, newlines
+   included, is dropped (send mode's command substitution would drop trailing newlines anyway,
+   and a prefill that kept them would deliver different text: Claude Code shows a paste ending in
+   a newline as a pasted-lines chip, the same text as an argument inline); a NUL →
+   `{"ok":false,"error":"agent_prompt may not contain a NUL character"}`; more than 100000 UTF-8
+   bytes after normalization → `{"ok":false,"error":"agent_prompt is too long (<n> bytes; the
+   limit is 100000)"}`. A prompt that is empty or whitespace-only after normalization is no
+   prompt: the agent is started and nothing else;
+4. a prompt is written to a file the daemon owns (`<database directory>/prompts/<uuid>.txt`,
+   directory 0700, file 0600, created exclusively, swept once a day old; a temporary directory
+   for an in-memory database), in both modes → on failure `{"ok":false,"error":"could not write
+   the prompt file: <reason>"}`. If the create itself then fails, the file is removed.
+
+Every success reply to such a request echoes `start_agent` (the lowercase kind) and, when a
+prompt file was written, `prompt_file` (its absolute path). A daemon that predates these fields
+ignores them and creates a plain workspace, so a caller that sent `start_agent` and finds no echo
+knows the workspace WAS created and that no agent will start. The CLI prints `prompt_file`, so
+the text stays at hand when a prefill falls back with no window attached to show it.
+
+```json
+{"command":"workspace-create","name":"ENG-123","start_agent":"claude","agent_prompt":"Fix the login timeout"}
+→ {"ok":true,"workspace_id":"<uuid>","workspace_name":"ENG-123","muted":false,"start_agent":"claude",
+   "prompt_file":"/Users/ben/Library/Application Support/kelpid/prompts/<uuid>.txt"}
+```
+
+The reply never waits for the agent (a plain create still answers before its first pane even
+spawns). The daemon types the launch line once the pane's shell is at its prompt (for zsh under
+Kelpi's shell integration, the integration's first OSC 7 report, which it sends from `precmd`
+right before the first real prompt, followed by zle's own `CSI ? 2004 h` as it starts reading,
+or 250 ms after the report without one; bracketed paste on, for any other
+zsh and fish; bracketed paste or 2 s without output, for any other shell; never before the pane
+has printed anything). 10 s after the pane's first output with no such sign it types the line
+only if the shell is the terminal's foreground process group, and otherwise gives up (`failed`,
+`timeout`) rather than type into whatever program has the terminal (agent-lifecycle.md §6.5.1).
+What became of the request arrives later, as
+ONE `agent-launch` frame on the WS sync socket (never on the control socket;
+`WsAgentLaunchMessage`, `packages/protocol/src/ws/messages.ts`):
+`{"type":"agent-launch","workspaceID","paneID","agent","outcome","reason"?,"prompt"?,"promptFile"?,"broadcast"?}`.
+
+| `outcome` | meaning |
+|---|---|
+| `launched` | the launch line was typed; there was no prompt |
+| `sent` | send mode: the launch line carried the prompt, `<command>[ --] "$(command cat '<prompt file>') "` (`--` when the prompt starts with `-`; the space inside the quotes means the argument never equals a bare word, so a prompt such as `logout` or `update` is text, never the agent's subcommand of that name, and the agent gets the prompt with one trailing space) |
+| `prefilled` | the prompt was pasted, bracketed and unsubmitted, into the ready agent's input |
+| `fallback` | the agent was launched but the prompt was NOT delivered |
+| `failed` | the launch line was never typed, so no agent started |
+
+`reason` is present exactly on `fallback` and `failed`:
+
+| `reason` | meaning |
+|---|---|
+| `timeout` | `fallback`: the agent was not ready within 10 s of the launch line, a clock that is paused while a trust dialog is on screen, or 10 minutes after the line in all, pauses included. `failed`: the pane printed nothing for 30 s after the create, or 10 s after its first output something other than the shell had the terminal, so the line was never typed |
+| `no-session-start` | `fallback`: Claude Code had the terminal for the whole 10 s but its SessionStart hook never reached Kelpi (hooks not installed, `kelpi install-hooks`), and that hook is how Claude's readiness is known; codex's readiness is read off the screen, so codex never gets this |
+| `pane-exited` | the pane exited or was closed |
+| `agent-exited` | the agent quit or never got going, and the shell has the terminal again |
+| `user-typed` | someone typed into the pane (a keystroke mirrored into it by sync input included): before the launch line, `failed`, since the line would have been appended to their input; after it, `fallback` |
+| `no-bracketed-paste` | the agent never asked for framed pastes |
+| `unsupported-shell` | send mode in a shell other than zsh, bash, sh, dash, ksh or fish: `failed`, nothing typed |
+| `predicate-error` | the readiness check threw, or the foreground check could not answer right before the paste |
+| `daemon-stopping` | the daemon stopped or handed off while the launch was pending |
+
+A client must treat a reason it does not know as the generic case. `prompt` (the normalized
+text) and `promptFile` ride on `fallback` and `failed` whenever there was a prompt. A prefill is
+never typed into a shell: the daemon pastes only once the agent reports ready
+(agent-lifecycle.md §6.5) and only while the shell is not the terminal's foreground process.
+Nothing is retried. The only Enter the daemon sends is the one that runs the launch line in the
+shell; the prefill is one bracketed paste with no Enter, so it is never submitted, and nothing
+is written to the pane while a trust dialog is on screen.
+
+The frame goes to the WS session that sent the create (for a create made by a plugin view, the
+session of the window hosting it). When there is none (a control-socket create, i.e. the CLI) or
+it has gone, `fallback` and `failed` are sent to EVERY client with `"broadcast":true`, and a
+success is not sent at all. A window copies `prompt` to the clipboard by itself only for a frame
+without `broadcast`, only within a minute of it sending the create, and never for
+`daemon-stopping`; otherwise it offers the copy on a click (shell-ui.md §10.1).
+The plugin SDK's `createWorkspace` does not forward these three fields yet. A client that
+predates the frame ignores the unknown type.
 
 Names are sanitized before any git work: an unusable `worktree` →
 `{"ok":false,"error":"\"<name>\" isn't a usable worktree name"}`, an unusable `branch` →
@@ -2004,6 +2107,8 @@ other key is ignored. (A known key with the wrong type poisons the whole message
 | `group_defaults` | bool | `workspace-create` |
 | `parent` | string | `workspace-create`, `workspace-nest`, `workspace-list` (workspace name-or-id, app-state-core.md §2.9) |
 | `parent_pane_id` | string (UUID) | `workspace-create` (nest under the workspace holding this pane, §2.9) |
+| `start_agent`, `agent_prompt` | string | `workspace-create` (`start_agent` decoded raw, §6.3) |
+| `send_prompt` | bool | `workspace-create` |
 | `focus` | bool | `pane-split`, `pane-create`, `open`, `web-open`, `pane-move`, `pane-move-adjacent` (absent = background, #295); `workspace-create` (#307), `diff`, `pane-move-to-workspace`, `web-tab-new` (#298), all absent = background |
 | `gesture` | bool | `web-open`, `web-navigate`, `web-back`, `web-forward`, `web-reload`, `web-tab-new` (the GUI's mark for a navigation the user made; only those pages enter the browsing history, #375; the CLI never sends it) |
 | `typed` | bool | `web-navigate` (the URL bar's submit or a picked suggestion, ranked as typed in the browsing history, #375) |

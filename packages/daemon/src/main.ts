@@ -222,6 +222,7 @@ Environment:
                      that silently stops persisting loses a day of work.
   KELPID_CONFIG_PATH   Config file (default: ~/.config/kelpi/config)
   KELPID_DEVICES_PATH  Paired-devices registry (default: <data dir>/devices.json)
+  KELPID_PUSH_PATH     Phone push subscriptions (default: <data dir>/push.json)
   KELPID_CLIENT_DIR    Directory holding the built web client
   KELPID_LOG_FILE      Append the detached daemon's stdout/stderr here
                      (Kelpi.app sets ~/Library/Application Support/Kelpi/logs/kelpid.log)

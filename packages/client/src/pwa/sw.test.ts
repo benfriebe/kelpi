@@ -26,9 +26,13 @@ describe('the worker, as source', () => {
      * responses arriving here are the proxy's 502 pages, and a `put` anywhere in a strategy
      * would quietly persist one under `/` or `/icon-192.png`. Nothing would notice until an
      * installed app opened to a Bad Gateway page it was serving to itself.
+     *
+     * The one `put` there is goes to another cache and holds no response from anywhere: the tap
+     * on a notification, written down for the page to take (`push-payload.ts` `PUSH_OPEN_CACHE`).
      */
     it('writes to the cache exactly once, in install, and never puts', () => {
-        expect(source).not.toMatch(/\.put\s*\(/);
+        expect(source.match(/\.put\s*\(/g)).toHaveLength(1);
+        expect(source).toMatch(/const records = await caches\.open\(PUSH_OPEN_CACHE\);\s*await records\.put\(PUSH_OPEN_RECORD_PATH, new Response\(pushOpenRecord\(/);
         expect(source.match(/\.addAll\s*\(/g)).toHaveLength(1);
         const install = source.slice(source.indexOf("addEventListener('install'"), source.indexOf("addEventListener('activate'"));
         expect(install).toMatch(/\.addAll\s*\(/);

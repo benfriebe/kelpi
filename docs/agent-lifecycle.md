@@ -787,7 +787,8 @@ like an agent notification. Unknown pane → ignored.
   (`packages/client/src/state/bridge.ts:390-391`).
 - **Permission**: the browser client asks on the first `pointerdown` in the window
   (browsers grant only from a user gesture; `packages/client/src/App.tsx:619-627`) and
-  posts in-app toasts until granted. The Electron shell needs no permission request:
+  posts in-app toasts until granted. Not on a phone, which asks from its Notifications
+  sheet instead (§7.8). The Electron shell needs no permission request:
   `Notification.isSupported()` is the only gate (`notify.ts:26-30`).
 - Suppression is decided in the daemon (`packages/core/src/agent/notifications.ts`,
   fed by client focus/visibility reports), which simply does not broadcast a
@@ -887,6 +888,57 @@ plugin that answers an event by calling `agents.notify` loops.
   `message`.
 
 ---
+
+### 7.8 Phone push (Web Push)
+
+A phone whose page is closed, in the background or locked has no socket to hear a
+`notification` on, so the daemon also pushes each one to the phones registered with it
+(`packages/daemon/src/push/`). The client half is phone-ui.md "Notifications".
+
+- **What is pushed.** Exactly the `notification` broadcasts that leave `ws/sync.ts`
+  `broadcast` with a pane and a workspace: after the §7.1 to §7.4 matrix and after §7.6's
+  mute rule, so a muted workspace pushes nothing and an `attention-request` is never pushed.
+  The payload is `{ v: 1, kind, title, body, tag, host, workspaceID, paneID }`, where `tag` is
+  the `kelpi-<paneID>` dedupe key (the phone replaces per pane, as §7.5 does) and `host` is the
+  phone's own key for this host, echoed from its registration. A long body is cut to fit one
+  4 KB record; the routing never is.
+- **Who is skipped.** A phone whose connection to this daemon is open, has said its page is on
+  screen (`push-presence`, or `push-subscribe`'s `visible`) and has sent anything in the last
+  45 s. The silence rule is for iOS, which keeps a suspended web app's TCP connection open with
+  nothing behind it. Everyone else registered gets the push, including while the Mac's window
+  is in front: only a client showing that very pane suppresses a notification (§7.1). A phone
+  skipped this way is looked at again 30 s later: if none of its connections has said anything
+  since (a phone locked before its "hidden" report got out), it gets the push then. A page
+  really on screen repeats its presence every 20 s, so it never does.
+- **Registration.** WS-only verbs, open to paired devices (a phone is one):
+  `push-subscribe {endpoint, p256dh, auth, vapid_public_key, vapid_private_key, host,
+  visible?}`, `push-unsubscribe {endpoint}`, and `push-test` (a test notification to this
+  connection's subscription, now, whoever is looking). The fire-and-forget
+  `push-presence {visible}` message carries the page's visibility. A phone sends
+  `push-subscribe` on every connect, which is also how the daemon learns which connection is
+  that phone's.
+- **The VAPID key is the phone's.** A subscription is bound to one application server key and
+  a phone shows several hosts, so the phone mints the pair and gives every host the same one.
+  The private key lets a host push to that phone's subscription and nothing else.
+- **Storage.** `<data dir>/push.json` (`KELPID_PUSH_PATH`), 0600, written only by the daemon.
+  Each entry keeps a fingerprint of the credential its session presented (a hash of the asset
+  credential, so the file admits nothing itself); revoking that device drops the entry (on the
+  registry change, and again before any send). A push service's 404 or 410 drops it too. Keys
+  are checked to the byte when registered (an uncompressed P-256 point, a 16-byte secret, a
+  VAPID pair that signs), so nothing that could never be sent to is stored.
+- **Delivery.** RFC 8291 `aes128gcm` encryption and an RFC 8292 VAPID JWT (`sub` is the
+  project page, which Apple requires), on `node:crypto` (`push/webpush.ts`, checked against
+  RFC 8291 Appendix A). `Urgency: high`, a 4 h TTL, and a `Topic` derived from the tag so a
+  push service holding messages for an offline phone keeps only the newest per pane. Failures
+  are logged with the push service's origin only: an endpoint URL is a capability. Redirects
+  are refused, and one VAPID header is reused per push service for an hour (Apple asks for no
+  more often).
+- **Pacing.** A PTY can print OSC 9 in a loop, so each phone has a queue: one push in flight,
+  the newest per pane, a pane's next push at least 5 s after its last, and everything held for
+  a 429's or 503's `Retry-After` (30 s when it names none).
+- **Not done.** Nothing is withdrawn from a phone when a pane stops waiting elsewhere (a
+  silent push would cost an iOS subscription); the phone clears a pane's notifications when it
+  shows that pane.
 
 ## 8. External indicators (menu bar + dock)
 

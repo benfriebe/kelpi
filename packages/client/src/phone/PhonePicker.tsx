@@ -2,7 +2,8 @@
  * The picker: one card above the location bar, three levels of the same place.
  *
  *   Hosts       every host with its reachability and its waiting count; tapping one goes to Home on
- *               that host. Add a host (Scan code, Paste URL) and Settings sit at the foot.
+ *               that host. Add a host (Scan code, Paste URL), Notifications and Settings sit
+ *               at the foot.
  *   Workspaces  the host's workspaces in sidebar order, its groups folding as the daemon has them;
  *               tapping one opens it. New workspace at the foot.
  *   Panes       the workspace's panes; tapping one shows it (by focusing it, `phone/view.ts`). The
@@ -57,6 +58,10 @@ export interface PhonePickerProps {
     readonly onScanHost: () => void;
     readonly onPasteHost: () => void;
     readonly onSettings: () => void;
+    /** The Notifications sheet (`PhoneNotificationsSheet`); absent = no row (a test that does not care). */
+    readonly onNotifications?: (() => void) | undefined;
+    /** Whether push is on for this phone, for the row's value. */
+    readonly notificationsOn?: boolean | undefined;
     readonly onWorkspace: (workspaceID: string) => void;
     readonly onNewWorkspace: () => void;
     readonly onPane: (paneID: string) => void;
@@ -220,6 +225,24 @@ function HostsLevel(props: PhonePickerProps): ReactElement {
                     Paste URL
                 </button>
             </div>
+            {props.onNotifications !== undefined ? (
+                <button
+                    type="button"
+                    data-testid="phone-picker-notifications"
+                    className="flex min-h-[48px] items-center gap-3 border-t px-[10px] text-left text-[15px]"
+                    style={{ borderColor: phoneStyle.raisedBorder, color: tokens.textPrimary }}
+                    onClick={props.onNotifications}
+                >
+                    <PhoneGlyph name="bell" size={18} />
+                    <span className="flex-1">Notifications</span>
+                    <span className="text-[13px]" style={{ color: tokens.textSecondary }}>
+                        {props.notificationsOn === true ? 'On' : 'Off'}
+                    </span>
+                    <span style={{ color: tokens.textTertiary }}>
+                        <PhoneGlyph name="chevron-right" size={16} />
+                    </span>
+                </button>
+            ) : null}
             <button
                 type="button"
                 data-testid="phone-picker-settings"

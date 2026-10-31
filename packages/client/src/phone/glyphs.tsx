@@ -34,6 +34,7 @@ export type PhoneGlyphName =
     | 'ellipsis'
     | 'layout'
     | 'folder'
+    | 'bell'
     | 'bell-off'
     | 'retry'
     | 'pencil'
@@ -66,6 +67,7 @@ const PATHS: Readonly<Record<PhoneGlyphName, string>> = {
     ellipsis: 'M5 12h.01M12 12h.01M19 12h.01',
     layout: 'M4 4h16v16H4zM12 4v16M12 12h8',
     folder: 'M3 6h6l2 2h10v11H3z',
+    bell: 'M9 19a3 3 0 0 0 6 0M6 9a6 6 0 0 1 12 0v5l2 3H4l2-3z',
     'bell-off': 'M9 19a3 3 0 0 0 6 0M6 9a6 6 0 0 1 9.5-4.9M18 11v3l2 3H8M3 3l18 18',
     retry: 'M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7',
     pencil: 'M4 20h4L19 9l-4-4L4 16zM13.5 6.5l4 4',

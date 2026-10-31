@@ -71,6 +71,7 @@ import { ChromeIcon } from '../chrome/icons';
 import type { ChromeBucket } from '../chrome/theme';
 import { tokens } from '../chrome/tokens';
 import { PaneGrid, homeAbbreviated, paneDisplayTitle, type PaneGridProps, type RenderPane } from '../grid';
+import { pushDevice as defaultPushDevice, readPushOpenHash, readPushOpenMessage, takePushOpenRecord, type PushDevice, type PushOpenTarget } from '../pwa/push';
 import { selectGroupForWorkspace, type KelpiRuntime, type KelpiState } from '../state';
 import {
     PhoneKeyBar,
@@ -88,6 +89,7 @@ import { useWindowKeyboard } from './keyboard';
 import { ORIGIN_HOST_KEY, type PhoneHostModel, type PhoneWorkspaceSelection } from './model';
 import { openPhonePane, openPhonePluginView, type PhoneNewPaneKind } from './new-pane';
 import { forgetPrompts } from './prompt-capture';
+import { sendPushTests, turnPushOff, unregisterPushHost, useHostsDocumentVisibility, usePushDeviceState, usePushHosts } from './push-hosts';
 import { PhoneHome } from './PhoneHome';
 import { PhoneHostSheet } from './PhoneHostSheet';
 import { PhoneJumpSheet } from './PhoneJumpSheet';
@@ -95,6 +97,7 @@ import { PhoneLocationBar, type PhonePickerLevel } from './PhoneLocationBar';
 import { PhoneMenuSheet, type PhoneMenuItem } from './PhoneMenuSheet';
 import { PhoneNeedsYouSheet } from './PhoneNeedsYouSheet';
 import { PhoneNewWorkspaceSheet } from './PhoneNewWorkspaceSheet';
+import { PhoneNotificationsSheet } from './PhoneNotificationsSheet';
 import { PhonePaneHeader, PhonePaneStrip } from './PhonePaneChrome';
 import { PhonePicker } from './PhonePicker';
 import { PhonePromptSheet } from './PhonePromptSheet';
@@ -162,10 +165,12 @@ export interface PhoneShellProps {
     readonly sheetHistory?: SheetHistoryLike | null | undefined;
     /** The camera Add host scans a pairing code with (`qr-camera.ts`); a test hands in a fake. */
     readonly qrCamera?: QrCamera | undefined;
+    /** This phone's push (`pwa/push.ts`); a test hands in a fake browser behind one. */
+    readonly pushDevice?: PushDevice | undefined;
 }
 
 /** `host-scan` is the Add host sheet opened straight onto its camera; `picker` is at `pickerLevel`. */
-type Sheet = 'none' | 'picker' | 'needs' | 'jump' | 'menu' | 'host' | 'host-scan' | 'rename' | 'new-workspace';
+type Sheet = 'none' | 'picker' | 'needs' | 'jump' | 'menu' | 'host' | 'host-scan' | 'rename' | 'new-workspace' | 'notifications';
 
 
 const ZERO_RECT = { x: 0, y: 0, width: 0, height: 0 } as const;
@@ -248,13 +253,20 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
     if (!sameHosts) lastHosts.current = builtHosts;
     const hosts = lastHosts.current;
 
+    /** This phone's push (`pwa/push.ts`, §7.8 below); a desktop never mounts any of it. */
+    const push = props.pushDevice ?? defaultPushDevice();
+
     /** Forget one of the phone's OWN hosts; the origin and the configured peers are not the phone's to drop. */
     const removeHost = useCallback(
         (hostKey: string): void => {
             const entry = phoneHosts.hosts.find((candidate) => `phone:${candidate.id}` === hostKey);
-            if (entry !== undefined) phoneHosts.remove(entry.id);
+            if (entry === undefined) return;
+            // It stops pushing here first: a host the phone forgets would otherwise keep the subscription.
+            const host = hosts.find((candidate) => candidate.key === hostKey);
+            if (host !== undefined) void unregisterPushHost(host, push);
+            phoneHosts.remove(entry.id);
         },
-        [phoneHosts]
+        [phoneHosts, hosts, push]
     );
 
     const remoteHost = view.remote === null ? null : (hosts.find((host) => host.key === view.remote?.host) ?? null);
@@ -694,6 +706,120 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
         [closeSheet, openPane]
     );
 
+    // ── push (agent-lifecycle.md §7.8) ──────────────────────────────────────────────
+
+    /*
+     * This phone's push subscription, registered with every host (`push-hosts.ts`), and a tap on
+     * a notification opening its pane. `pwa/push.ts` owns the device; a desktop never mounts it.
+     */
+    const pushState = usePushDeviceState(push);
+    const pushStatuses = usePushHosts(hosts, push);
+    useHostsDocumentVisibility(hosts);
+    useEffect(() => {
+        void push.refresh();
+        // Coming back from the phone's own Settings, where a blocked permission is changed.
+        const onVisible = (): void => {
+            if (document.visibilityState === 'visible') void push.refresh();
+        };
+        document.addEventListener('visibilitychange', onVisible);
+        return () => document.removeEventListener('visibilitychange', onVisible);
+    }, [push]);
+
+    /*
+     * Where a tapped notification goes: the fragment a fresh window opened on (read once, then
+     * taken off the address), the message the worker posts to a window already open, or the tap
+     * the worker wrote down, taken on load and on coming back on screen (on iOS a cold start gets
+     * neither of the others). It waits for its host to be dialled and its workspace to arrive,
+     * which on a cold start is a while.
+     */
+    const [pendingOpen, setPendingOpen] = useState<PushOpenTarget | null>(() => readPushOpenHash(globalThis.location?.hash ?? ''));
+    useEffect(() => {
+        const loc = globalThis.location;
+        if (loc === undefined || readPushOpenHash(loc.hash) === null) return;
+        try {
+            // `window.history`: `history` in here is the sheets' own (`useSheetHistory`).
+            window.history.replaceState(window.history.state, '', `${loc.pathname}${loc.search}`);
+        } catch {
+            // The fragment stays; it is read only on this mount.
+        }
+    }, []);
+    useEffect(() => {
+        const container = (globalThis as { navigator?: Navigator }).navigator?.serviceWorker;
+        if (container === undefined) return;
+        const onMessage = (event: MessageEvent): void => {
+            const target = readPushOpenMessage(event.data);
+            if (target === null) return;
+            setPendingOpen(target);
+            // The same tap, written down: taken now so a later look does not open it again.
+            void takePushOpenRecord();
+        };
+        container.addEventListener('message', onMessage);
+        return () => container.removeEventListener('message', onMessage);
+    }, []);
+    useEffect(() => {
+        let live = true;
+        const take = (): void => {
+            if (document.visibilityState === 'hidden') return;
+            void takePushOpenRecord().then((target) => {
+                if (live && target !== null) setPendingOpen(target);
+            });
+        };
+        take();
+        document.addEventListener('visibilitychange', take);
+        return () => {
+            live = false;
+            document.removeEventListener('visibilitychange', take);
+        };
+    }, []);
+    // A target that never opens (its workspace closed since the push, its host gone) is given up on.
+    useEffect(() => {
+        if (pendingOpen === null) return;
+        const timer = setTimeout(() => setPendingOpen(null), 20_000);
+        return () => clearTimeout(timer);
+    }, [pendingOpen]);
+    useEffect(() => {
+        if (pendingOpen === null) return;
+        // The origin's configured peers are only known from its welcome; until then an unknown
+        // host may be one of them.
+        if (props.ready && !knownHostKeys.has(pendingOpen.host)) {
+            setPendingOpen(null);
+            return;
+        }
+        // Not dialled yet: the host list changes when it is, and this runs again.
+        const host = hosts.find((entry) => entry.key === pendingOpen.host);
+        if (host === undefined) return;
+        const target = pendingOpen;
+        const hostStore = host.runtime.store;
+        const tryOpen = (): boolean => {
+            if (!hostStore.getState().daemon.state.workspaces.some((entry) => entry.id === target.workspaceID)) return false;
+            setPendingOpen(null);
+            closeSheet();
+            openPane(target.host, target.workspaceID, target.paneID);
+            return true;
+        };
+        if (tryOpen()) return;
+        const unsubscribe = hostStore.subscribe(() => {
+            if (tryOpen()) unsubscribe();
+        });
+        return unsubscribe;
+    }, [pendingOpen, props.ready, hosts, knownHostKeys, openPane, closeSheet]);
+
+    /*
+     * The pane on screen acknowledges its notification (§7.5 removal, as `bridge.ts` `focusPane`
+     * does for the in-page ones): the banner a push left in the notification centre goes.
+     */
+    const pushShownHost = atLanding ? null : (onScreenHost?.key ?? null);
+    useEffect(() => {
+        if (pushShownHost === null || shownPaneID === null || pushState.availability !== 'available') return;
+        const close = (): void => {
+            if (document.visibilityState === 'hidden') return;
+            void push.closeNotifications((data) => data.host === pushShownHost && data.paneID === shownPaneID);
+        };
+        close();
+        document.addEventListener('visibilitychange', close);
+        return () => document.removeEventListener('visibilitychange', close);
+    }, [push, pushShownHost, shownPaneID, pushState.availability]);
+
     /** Home on a host: the picker's host rows, and nothing else, go here. */
     const goHome = useCallback(
         (hostKey: string): void => {
@@ -997,6 +1123,8 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
                     onRetryHost={retryHost}
                     onScanHost={() => setSheet('host-scan')}
                     onPasteHost={() => setSheet('host')}
+                    onNotifications={() => setSheet('notifications')}
+                    notificationsOn={pushState.wanted && pushState.registration !== null}
                     onSettings={() => {
                         closeSheet();
                         actions.openSettings();
@@ -1051,6 +1179,16 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
                 onAdd={(name, url) => {
                     phoneHosts.add(name, url);
                 }}
+                onClose={closeSheet}
+            />
+            <PhoneNotificationsSheet
+                open={sheet === 'notifications'}
+                state={pushState}
+                hosts={hosts}
+                statuses={pushStatuses}
+                onEnable={() => void push.enable()}
+                onDisable={() => void turnPushOff(hosts, push)}
+                onTest={() => sendPushTests(hosts, pushStatuses)}
                 onClose={closeSheet}
             />
             {sheet === 'new-workspace' ? (

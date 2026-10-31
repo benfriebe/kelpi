@@ -457,6 +457,60 @@ export class CommandClient {
         return this.raw({ command: 'remote-delete', target }, options ?? {});
     }
 
+    // ── phone push (`daemon push/service.ts`; WS-only, open to paired devices) ──────
+
+    /**
+     * Register this phone's push subscription with the daemon, under the phone's own key for
+     * this host (echoed in every push so a tap opens the right one). Idempotent: the phone sends
+     * it on every connect, which is also what tells the daemon this connection is that phone's.
+     */
+    pushSubscribe(
+        registration: {
+            readonly endpoint: string;
+            readonly p256dh: string;
+            readonly auth: string;
+            readonly vapidPublicKey: string;
+            readonly vapidPrivateKey: string;
+        },
+        host: string,
+        visible: boolean,
+        options?: SendOptions
+    ): Promise<CommandReply> {
+        return this.raw(
+            {
+                command: 'push-subscribe',
+                visible,
+                endpoint: registration.endpoint,
+                p256dh: registration.p256dh,
+                auth: registration.auth,
+                vapid_public_key: registration.vapidPublicKey,
+                vapid_private_key: registration.vapidPrivateKey,
+                host
+            },
+            options ?? {}
+        );
+    }
+
+    /** Forget a push subscription on the daemon. */
+    pushUnsubscribe(endpoint: string, options?: SendOptions): Promise<CommandReply> {
+        return this.raw({ command: 'push-unsubscribe', endpoint }, options ?? {});
+    }
+
+    /**
+     * Tell the daemon whether this phone's page is on screen: while it is, the daemon pushes this
+     * phone nothing (the app shows what waits). Only sent on a live connection, so a stale report
+     * can never be flushed after the `push-subscribe` that carries the current one.
+     */
+    reportPushPresence(visible: boolean): void {
+        if (this.connection.status !== 'connected') return;
+        this.connection.send({ type: 'push-presence', visible });
+    }
+
+    /** Ask the daemon to push a test notification to this connection's subscription, now. */
+    pushTest(options?: SendOptions): Promise<CommandReply> {
+        return this.raw({ command: 'push-test' }, options ?? { timeoutMs: 20_000 });
+    }
+
     /**
      * Which panes this client actually renders + whether its document is visible. Drives
      * notification suppression and the daemon's "app is active" answer.

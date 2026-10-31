@@ -306,6 +306,28 @@ export function createAssetCredentialValidator(file: string): (credential: strin
 }
 
 /**
+ * What a record that outlives the session keeps of its credential (`push/service.ts`): the hash
+ * of the asset credential. It tells whether the credential is still live, and presented anywhere
+ * it admits nothing, not even the pane assets (which the asset credential itself would).
+ */
+export function credentialFingerprint(token: string): string {
+    return hashDeviceToken(hashDeviceToken(token));
+}
+
+/** Is a `credentialFingerprint` the owner's or a live device's? */
+export function createCredentialFingerprintGate(file: string, ownerToken: string): (fingerprint: string) => boolean {
+    const read = createLiveHashReader(file);
+    const owner = Buffer.from(credentialFingerprint(ownerToken), 'base64url');
+    return (fingerprint: string): boolean => {
+        if (fingerprint.length === 0) return false;
+        const candidate = Buffer.from(fingerprint, 'base64url');
+        if (candidate.length === owner.length && timingSafeEqual(candidate, owner)) return true;
+        const fingerprints = read().map((hash) => Buffer.from(hashDeviceToken(hash.toString('base64url')), 'base64url'));
+        return matchesAnyHash(fingerprints, candidate);
+    };
+}
+
+/**
  * The full pane-assets gate: the owner's derived credential, or any live device's.
  * (`boot/compose.ts` hands this to `createPaneAssetsRoute` whenever an owner token exists.)
  */

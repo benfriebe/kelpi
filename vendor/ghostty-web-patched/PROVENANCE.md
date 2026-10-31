@@ -1,11 +1,11 @@
-# ghostty-web 0.4.0-kelpi.23 (vendored)
+# ghostty-web 0.4.0-kelpi.25 (vendored)
 
 **Version labels.** These versions were tagged `-nex.N` before the Nex to Kelpi rename and were
 relabelled `-kelpi.N` on 2026-10-03 with the same numbering, so an older commit, log or audit
 record that says `0.4.0-nex.N` means the same build as `0.4.0-kelpi.N`.
 
 A build of `ghostty-web` v0.4.0 carrying two open upstream PRs — applied after a line-by-line
-review in the orchestrating session and explicit user authorization to integrate both, plus twenty-two
+review in the orchestrating session and explicit user authorization to integrate both, plus twenty-four
 Kelpi-authored adaptations on top of them (`-kelpi.2`: the caret-anchored IME; `-kelpi.3`: an
 `allowTransparency` that does something; `-kelpi.4`: a cursor that knows whether its surface has
 focus; `-kelpi.5`: a `write()` that survives zero bytes; `-kelpi.6`: a paint that can be suspended;
@@ -23,7 +23,8 @@ line and drags by lines, and a drag scrolls only once the pointer leaves the ter
 view scrolled to a fractional offset paints every row, so no line shows twice; `-kelpi.21`:
 copy-on-select can be turned off; `-kelpi.22`: a click selects nothing; `-kelpi.23`: a drag selects
 from the pressed cell to the cell under the pointer, both included, once it leaves a dead zone
-around the press).
+around the press; `-kelpi.24`: the cursor is repainted when it changes, not every frame;
+`-kelpi.25`: the render loop runs only when something has changed).
 
 **`-kelpi.13` is the first adaptation that is NOT TypeScript-only.** Every version up to `-kelpi.12`
 shipped `ghostty-vt.wasm` byte-identical to the npm `ghostty-web@0.4.0` package; `-kelpi.13`
@@ -57,6 +58,112 @@ reproduces the `0.4.0` wasm BYTE-IDENTICALLY when run without the patch, is in
 | `0.4.0-kelpi.21` | `copyOnSelect: false` keeps a selection off the clipboard: a drag's release and a `dblclick` still select and announce, but do not copy; read at every copy, so it can be changed at runtime |
 | `0.4.0-kelpi.22` | a single press selects nothing; a drag from it selects with Ghostty's threshold rule (a cell counts once the drag crosses 60% of it; replaced in `-kelpi.23`), so a click, or a press that wobbles over a cell boundary, neither selects nor copies; `hasSelection()` counts a single dragged cell |
 | `0.4.0-kelpi.23` | a single-click drag selects from the pressed cell to the cell under the pointer, both included, once the pointer is 60% of a cell width from the press point in either axis; a selection that starts on a wide glyph's second half starts on its first (#404) |
+| `0.4.0-kelpi.24` | the cursor lines are repainted and the cursor drawn only when the cursor as drawn differs from the last painted one (position, shown or hidden, style, focus treatment), not on every frame while `cursorBlink` is set; a DECTCEM hide now erases the cursor |
+| `0.4.0-kelpi.25` | the render loop runs on demand: output, renderer setters, the blink timer, scrolling, the scrollbar fade, selection and input events wake it for a ten-frame tail, then it stops; a 2 s heartbeat renders anything still dirty |
+
+## Kelpi adaptation: the render loop runs on demand (`0.4.0-kelpi.25`, 2026-10-23)
+
+**The defect.** Upstream's `startRenderLoop` chained `requestAnimationFrame` unconditionally, one
+chain per open terminal, stopped only by `dispose()` (`terminal/mount-policy.ts` already said so).
+Each frame called `render()`, which with `-kelpi.24` paints nothing on an idle terminal. But the
+callback still kept Chromium producing frames at the display rate (120 Hz on a ProMotion panel),
+so the renderer, the GPU process and macOS WindowServer all woke every frame for terminals showing
+nothing new. Measured in a dev instance with five idle shells, the window visible: the renderer at
+8.3% of a core and the GPU process at 16.3%; hiding the window took WindowServer down by 4–5 points.
+
+**The fix.** `requestRender()` schedules a frame only if none is pending. Each frame it runs counts
+toward `RENDER_TAIL_FRAMES` (10, about 80 ms at 120 Hz). Any wake resets the count, and when the
+count is reached the loop stops scheduling. The tail covers state that settles over a frame or two
+(the scrollbar strip restore from `-kelpi.8`, the search layer from `-kelpi.16`). The wake sources:
+
+- output: `writeInternal`, plus `clear()` (which writes to the VT directly) and `resetForReplay()`;
+- every public `CanvasRenderer` setter (`remeasureFont`, `setPaintSuspended`, `resize`, `setTheme`,
+  `setTerminalDefaultColors`, `setFontSize`, `setFontFamily`, `setCursorStyle`, `setCursorBlink`,
+  `setFocused`, `setSelectionManager`, `setSearchHighlight`, `setSearchCurrent`,
+  `setHoveredHyperlinkId`, `setLinkUnderline`, `setHoveredLinkRange`, `clear`) and the blink timer,
+  through `setInvalidateListener`. The blink timer wakes the loop only while the cursor can show
+  (DECTCEM visible, view not scrolled back), so a focused pane whose app hides the cursor stays idle. These are in the renderer, not the terminal, because Kelpi
+  calls `setTheme`, `clear` and `remeasureFont` on the renderer directly;
+- `viewportY` and `scrollbarOpacity`, now accessors whose setters wake the loop, so the fifteen
+  scroll paths (wheel, smooth scroll, scrollbar drag, auto-scroll, the `-kelpi.11` pin) and the
+  scrollbar fade need no call of their own;
+- selection changes: `SelectionManager.requestRender()`, which upstream left empty ("the render loop
+  picks it up at 60fps"), now calls the terminal's. Every selection path goes through it, including
+  a drag that has left the pane, which only the manager's `document` listeners see, and the
+  auto-scroll tick at the live bottom, where `viewportY` cannot move;
+- `mousedown`, `mousemove`, `mouseup`, `mouseleave`, `wheel`, `keydown`, the three `composition*`
+  events, `focusin` and `focusout` on the terminal element, passive and in the capture phase.
+
+A missed wake source would leave a stale frame, so a 2 s heartbeat calls `renderFrame()` while no
+frame is pending. It is a no-op on a clean terminal, since `render()` paints only dirty rows. If the
+heartbeat is ever seen doing work, the missing source belongs in `requestRender`. `requestRender`
+and the frame callback do nothing without a renderer and a VT. Some test fixtures fake
+`isOpen: true` around a bare `SelectionManager`, and a wake there must not schedule a frame.
+
+`render()`'s canvas-size check now compares against `Math.floor` of the device-pixel size, which
+is what `resize` actually stores, since `canvas.width` truncates. Upstream compared against the
+unrounded product, so whenever cell width × DPR was fractional (a 2.6 DPR Android phone, for
+example) every frame resized the canvas and redrew every row. Upstream's endless loop hid that
+cost. Here, `resize` wakes the loop, so the loop never went idle and a phone's page stopped
+responding as soon as a terminal opened.
+
+Measured after the fix, same dev instance, five idle shells, window visible: renderer 0.4%, GPU
+process 0.9%. In the installed app with agent panes open and nobody typing, the renderer averaged
+2.0% and the GPU process 1.9% over 20 s, against about 15% and 12% for `-kelpi.23`; that run had
+macOS Reduce Motion on, which also stops the sidebar's breathing agent dot.
+
+TypeScript only; the WASM is unchanged from `-kelpi.17`. Rebuilt with
+`TMPDIR=<scratch> pnpm vendor:build` under Node 24.18.0 / pnpm 10.28.1, which resolved vite 4.5.14,
+vite-plugin-dts 4.5.4 and typescript 5.9.3; the declaration step printed the four pre-existing
+`Bun` / `fs/promises` errors in `lib/ghostty.ts` and the build went on. pnpm refused the scratch
+install over ignored build scripts (`@biomejs/biome`, `esbuild`), so the build ran with
+`pnpm_config_strict_dep_builds=false`. `dist/ghostty-web.js` is 743,854 bytes and
+`dist/ghostty-web.umd.cjs` 669,535 bytes; the embedded-WASM check passes for both bundles and the
+installed copy. Covered by `packages/client/src/terminal/render-on-demand.wasm.test.ts` (an idle
+terminal leaves no frame pending; a write, `renderer.setFocused` and a `viewportY` set each schedule
+one; a selection drag outside the pane schedules one per move; `dispose` leaves none; a terminal at
+a 1.37 DPR goes idle). The upstream loop fails it: its
+frame queue never empties.
+
+## Kelpi adaptation: the cursor line is repainted when it changes (`0.4.0-kelpi.24`, 2026-10-23)
+
+**The defect.** `render()` redrew the cursor's line on every frame when
+`cursorMoved || this.cursorBlink || this.cursorStateDirty` held. `cursorBlink` is the SETTING, not
+the timer. It stays true when `setFocused(false)` stops the blink (`-kelpi.4`), so every terminal
+with blink enabled, focused or not, repainted that row 120 times a second while looking still.
+Kelpi turns blink on by default (`packages/client/src/terminal/renderer.ts`), so every mounted
+terminal did it. Each repaint is a canvas update Chromium has to composite and hand to macOS
+WindowServer. On the reporting machine that was a constant share of WindowServer's ~45% CPU.
+
+**The fix.** `render()` keeps `paintedCursor`, a snapshot of the cursor as the last frame left it
+on the canvas: position, whether it was drawn (DECTCEM visibility, blink phase, scrolled back or
+not), style and focus treatment. When this frame's cursor differs, the old and new cursor rows are
+repainted and the cursor is drawn. When it doesn't, neither happens. The cursor is also drawn when
+a row walk painted over its cell. One comparison replaces the separate triggers, and covers the
+cases the per-frame repaint had been hiding:
+
+- DECTCEM hide (`CSI ?25l`) marks no row dirty (checked on the shipped WASM: dirty state 0, cursor
+  unmoved, `visible` 0), so the previous cursor stayed painted, in an unfocused pane until its row
+  was written and in a focused one until the next blink toggle;
+- `renderCursor()` ran on every frame, touching every canvas even when nothing else changed;
+- `setCursorStyle()` painted the new shape over the old one;
+- a blink toggle on a hidden or scrolled-back cursor repainted the row for nothing.
+
+`cursorStateDirty` and `lastCursorPosition` are gone. Measured on the first version of this fix
+(which still drew the cursor every frame): a dev instance with five idle shells ran its renderer at
+8.3% of a core against 15% for the installed `-kelpi.23` app (pane counts differed, so this is
+indicative). The GPU process stayed busy (16%) because the frame loop itself still runs every frame.
+
+TypeScript only; the WASM is unchanged from `-kelpi.17`. Rebuilt with
+`TMPDIR=<scratch> pnpm vendor:build` under Node 24.18.0 / pnpm 10.28.1, which resolved vite 4.5.14,
+vite-plugin-dts 4.5.4 and typescript 5.9.3; the declaration step printed the four pre-existing
+`Bun` / `fs/promises` errors in `lib/ghostty.ts` and the build went on. pnpm refused the scratch
+install over ignored build scripts (`@biomejs/biome`, `esbuild`), so the build ran with
+`pnpm_config_strict_dep_builds=false`. `dist/ghostty-web.js` is 741,539 bytes and
+`dist/ghostty-web.umd.cjs` 667,516 bytes; the embedded-WASM check passes for both bundles and the
+installed copy. Covered by `packages/client/src/terminal/cursor-repaint.wasm.test.ts` (on the real
+engine: an idle frame paints nothing; a focus flip, a style change, a DECTCEM hide and show each
+repaint once) and a `vendor-engine.test.ts` marker that fails if the per-frame check comes back.
 
 ## Kelpi adaptation: a drag includes the cell under the pointer (`0.4.0-kelpi.23`, 2026-10-15)
 

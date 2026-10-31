@@ -19,6 +19,7 @@
  * daemon's derived helpers usable verbatim.
  */
 
+import { pullRequestsFrom } from '@kelpi/core/git';
 import { applyDomainEvents, type DaemonState, type DomainEvent } from '@kelpi/daemon/store';
 import {
     DEFAULT_WS_CHROME_SETTINGS,
@@ -62,8 +63,9 @@ function array(value: unknown): unknown[] {
 }
 
 /**
- * The undo stack never crosses the wire; only its size does (`recentlyClosedCount`). `muted` is
- * normalized so a mirror of an older daemon, which never sends it, still holds a boolean.
+ * The undo stack never crosses the wire; only its size does (`recentlyClosedCount`). `muted` and
+ * `status` are normalized so a mirror of an older daemon, which never sends them, still holds a
+ * boolean and a status.
  */
 function hydrateWorkspace(raw: unknown): unknown {
     if (!isRecord(raw)) return raw;
@@ -71,11 +73,15 @@ function hydrateWorkspace(raw: unknown): unknown {
     const childOrder = Array.isArray(raw['childOrder'])
         ? raw['childOrder'].filter((id): id is string => typeof id === 'string')
         : [];
+    const status = raw['status'];
     return {
         ...raw,
         muted: raw['muted'] === true,
+        status: status === 'running' || status === 'waitingForInput' ? status : 'idle',
         childOrder,
         childrenCollapsed: raw['childrenCollapsed'] === true,
+        // A daemon older than PR status (workspace-feature.md §11) sends no list: none to draw.
+        pullRequests: pullRequestsFrom(raw['pullRequests']),
         recentlyClosedPanes: []
     };
 }
@@ -567,6 +573,7 @@ export function hydrateSettings(raw: unknown): WsSettingsSnapshot | null {
             // §GIT-074's gate. A daemon that predates the field sends nothing and the shipped
             // default (on) stands — the same additive rule every field above follows.
             autoDetectRepos: bool(general['autoDetectRepos'], fallbackGeneral.autoDetectRepos),
+            workspacePrStatus: bool(general['workspacePrStatus'], fallbackGeneral.workspacePrStatus),
             // SET-008/013/014. A blank template falls back to the default rather than pointing
             // worktree creation at the filesystem root.
             worktreeBasePath:

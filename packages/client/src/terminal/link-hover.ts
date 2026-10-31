@@ -128,6 +128,30 @@ export function probeLinkVia(
         );
 }
 
+/**
+ * The URL of a `probe-terminal-target` reply that a ⌘-click would hand to a browser
+ * (`opened: 'external'`), or null: a path, a refusal, anything malformed. The phone's link tap
+ * (`TerminalPane`) offers only these, as the plain-click menu does.
+ */
+export function linkURLFromReply(reply: unknown): string | null {
+    if (typeof reply !== 'object' || reply === null) return null;
+    const record = reply as Record<string, unknown>;
+    if (record['ok'] !== true || record['opened'] !== 'external') return null;
+    const url = record['url'];
+    return typeof url === 'string' && url !== '' ? url : null;
+}
+
+/** {@link probeLinkVia}'s question, answered with the URL rather than the cells to underline. */
+export function probeLinkURLVia(
+    commands: TerminalLinkCommands
+): (paneID: string, row: number, col: number, history?: TerminalHistoryAt) => Promise<string | null> {
+    return (paneID, row, col, history) =>
+        commands.probeTerminalTarget({ paneID, row, col, history }).then(
+            (reply) => (replyIgnoredHistory(reply, history) ? null : linkURLFromReply(reply)),
+            () => null
+        );
+}
+
 const defaultSchedule = (run: () => void, ms: number): (() => void) => {
     const timer = setTimeout(run, ms);
     return () => clearTimeout(timer);

@@ -139,7 +139,8 @@ function fakeTerm(disposed: string[]): TerminalStateService {
 
 const fakeInput: TerminalInput = {
     sendText: () => {},
-    sendNamedKey: () => {}
+    sendNamedKey: () => {},
+    sendKeystroke: () => {}
 };
 
 export interface HarnessOptions extends AppHandlerOptions {

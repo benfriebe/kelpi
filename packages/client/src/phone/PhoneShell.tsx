@@ -14,9 +14,10 @@
  *
  * ## Three top-level states, one value (`phone/view.ts` `screen`)
  *
- *   `landing`  the host tree full-screen (`PhoneLanding`): every host with its workspaces under
- *              it. Where the phone starts when nothing is remembered, and where the header's
- *              Hosts button goes back to. Not a sheet, so it registers no modal presence.
+ *   `landing`  Home (`PhoneHome`): what needs the person on every host, a pager of hosts, and the
+ *              workspaces on the host it is on. Where the phone starts when nothing is
+ *              remembered, and where picking a host in the location bar goes. Not a sheet, so it
+ *              registers no modal presence.
  *   `pane`     one pane filling the content box (`phone/view.ts` says why the focused one)
  *   `layout`   the workspace's `PaneGrid`, at phone size
  *
@@ -25,12 +26,17 @@
  * grid's cell and back, rather than being destroyed and rebuilt on every tap of the toggle. The
  * `slot` block below carries the measurement and the reason.
  *
- * What is on screen in the last two:
+ * What is on screen in the last two (`PhonePaneChrome.tsx`, `PhoneLocationBar.tsx`):
  *
- *   header   hosts button · workspaces button · "host · workspace ▸ pane" title · agent dot ·
- *            view toggle · panes button · overflow
- *   sheets   the workspace drawer (hosts and their workspaces), the pane sheet, the overflow
- *            menu, the add-host form, the rename prompt, the New workspace form
+ *   header   the pane's name and status · view toggle · ⋯ for the pane's actions
+ *   strip    previous / next pane · the attention pill when anything waits on any host
+ *   bar      `host › workspace › pane`, each segment opening the picker at its level
+ *   sheets   the picker (`PhonePicker.tsx`), Needs you, Jump to…, the pane's actions, the
+ *            add-host form, the rename prompt, the New workspace form
+ *
+ * Home keeps the bar (the host segment and Jump to…) and drops the header and the strip. While
+ * the software keyboard is up the strip and the bar step aside (`keyboard.ts`): the terminal and
+ * its key bar are what the person is using then.
  *
  * Hosts: the origin (this page's daemon), the origin's configured `remote-daemon` peers (already
  * dialled by assembly, §1.7), and the phone's own list (`phone/hosts.ts`), each with its own
@@ -51,7 +57,7 @@
  * content pane on screen leaves the bar off and gives its 45 px back to the pane.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactElement, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactElement, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useStore } from 'zustand';
 
@@ -60,13 +66,12 @@ import { layoutPaneOrder, type WorkspaceState } from '@kelpi/daemon/store';
 import type { DaemonTarget, StorageLike } from '../app/config';
 import { ConnectionSplash } from '../app/ConnectionScreen';
 import { useRemoteDaemons, type RemoteDaemonRuntime, type RemoteRuntimeFactory } from '../app/remote-daemons';
-import { type FormFactorWindow } from '../chrome/form-factor';
+import { defaultFormFactorWindow, type FormFactorWindow } from '../chrome/form-factor';
 import { ChromeIcon } from '../chrome/icons';
-import { agentCounts } from '../chrome/Sidebar';
 import type { ChromeBucket } from '../chrome/theme';
 import { tokens } from '../chrome/tokens';
-import type { ChromeWorkspace } from '../chrome/types';
-import { PaneGrid, paneDisplayTitle, type PaneGridProps, type RenderPane } from '../grid';
+import { PaneGrid, homeAbbreviated, paneDisplayTitle, type PaneGridProps, type RenderPane } from '../grid';
+import { pushDevice as defaultPushDevice, readPushOpenHash, readPushOpenMessage, takePushOpenRecord, type PushDevice, type PushOpenTarget } from '../pwa/push';
 import { selectGroupForWorkspace, type KelpiRuntime, type KelpiState } from '../state';
 import {
     PhoneKeyBar,
@@ -76,23 +81,36 @@ import {
     terminalPanesVersion,
     type TerminalRendererFactory
 } from '../terminal';
+import { noteWaiting, phoneAttention, workspaceKey, type PhoneAttentionItem } from './attention';
+import { usePhoneFleet } from './fleet';
 import { usePhoneHosts } from './hosts';
 import { originHostName } from './hosts';
+import { useWindowKeyboard } from './keyboard';
 import { ORIGIN_HOST_KEY, type PhoneHostModel, type PhoneWorkspaceSelection } from './model';
+import { openPhonePane, openPhonePluginView, type PhoneNewPaneKind } from './new-pane';
+import { forgetPrompts } from './prompt-capture';
+import { sendPushTests, turnPushOff, unregisterPushHost, useHostsDocumentVisibility, usePushDeviceState, usePushHosts } from './push-hosts';
+import { PhoneHome } from './PhoneHome';
 import { PhoneHostSheet } from './PhoneHostSheet';
-import { PhoneLanding } from './PhoneLanding';
+import { PhoneJumpSheet } from './PhoneJumpSheet';
+import { PhoneLocationBar, type PhonePickerLevel } from './PhoneLocationBar';
 import { PhoneMenuSheet, type PhoneMenuItem } from './PhoneMenuSheet';
+import { PhoneNeedsYouSheet } from './PhoneNeedsYouSheet';
 import { PhoneNewWorkspaceSheet } from './PhoneNewWorkspaceSheet';
-import { PhonePaneSheet } from './PhonePaneSheet';
+import { PhoneNotificationsSheet } from './PhoneNotificationsSheet';
+import { PhonePaneHeader, PhonePaneStrip } from './PhonePaneChrome';
+import { PhonePicker } from './PhonePicker';
 import { PhonePromptSheet } from './PhonePromptSheet';
 import { PhoneRemoteWorkspace, remoteShownPane } from './PhoneRemoteWorkspace';
 import { PhoneWebCard, phoneWebCardTab } from './PhoneWebCard';
-import { PhoneWorkspaceDrawer } from './PhoneWorkspaceDrawer';
 import { TOP_PLACEMENT, type PhonePlacement } from './new-workspace';
+import { paneTypeGlyph, phonePaneTitle } from './parts';
+import { phoneThemeVars } from './style';
 import type { QrCamera } from './qr-camera';
 import { useSheetHistory, type SheetHistoryLike } from './sheet-history';
-import { PHONE_ROW_MIN_PX, PHONE_SAFE_AREA, PhoneButton, statusDotColor } from './ui';
-import { usePhoneHostExpansion, type PhoneView } from './view';
+import { PHONE_SAFE_AREA, PhoneButton } from './ui';
+import type { PhoneView } from './view';
+import { readStoredHomeHost, writeStoredHomeHost } from './place';
 
 /** The origin's verbs the shell needs, bound by assembly to its `act`. */
 export interface PhoneShellActions {
@@ -147,10 +165,13 @@ export interface PhoneShellProps {
     readonly sheetHistory?: SheetHistoryLike | null | undefined;
     /** The camera Add host scans a pairing code with (`qr-camera.ts`); a test hands in a fake. */
     readonly qrCamera?: QrCamera | undefined;
+    /** This phone's push (`pwa/push.ts`); a test hands in a fake browser behind one. */
+    readonly pushDevice?: PushDevice | undefined;
 }
 
-/** `host-scan` is the Add host sheet opened straight onto its camera. */
-type Sheet = 'none' | 'workspaces' | 'panes' | 'menu' | 'host' | 'host-scan' | 'rename' | 'new-workspace';
+/** `host-scan` is the Add host sheet opened straight onto its camera; `picker` is at `pickerLevel`. */
+type Sheet = 'none' | 'picker' | 'needs' | 'jump' | 'menu' | 'host' | 'host-scan' | 'rename' | 'new-workspace' | 'notifications';
+
 
 const ZERO_RECT = { x: 0, y: 0, width: 0, height: 0 } as const;
 const EMPTY_IDS: readonly string[] = [];
@@ -163,6 +184,7 @@ function defaultLocation(): { readonly hostname: string } | null {
 export function PhoneShell(props: PhoneShellProps): ReactElement {
     const { view, actions } = props;
     const [sheet, setSheet] = useState<Sheet>('none');
+    const [pickerLevel, setPickerLevel] = useState<PhonePickerLevel>('panes');
     /*
      * The sheets own one history entry between them (`sheet-history.ts`): opening pushes it, the
      * phone's back gesture pops it and closes whatever is open, and a Close/scrim/row tap pops
@@ -193,7 +215,7 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
     );
     const phoneRuntimes = useRemoteDaemons(phoneEntries, props.remoteRuntimeFactory);
 
-    const hosts = useMemo<readonly PhoneHostModel[]>(() => {
+    const builtHosts = useMemo<readonly PhoneHostModel[]>(() => {
         const origin: PhoneHostModel = {
             key: ORIGIN_HOST_KEY,
             name: originHostName(props.location === undefined ? defaultLocation() : props.location),
@@ -216,25 +238,69 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
         }
         return [origin, ...configured, ...own];
     }, [props.location, props.runtime, props.configuredDaemons, phoneHosts.hosts, phoneRuntimes]);
+    /*
+     * The same list, kept by identity while nothing in it has changed. Every host surface reads
+     * through `usePhoneFleet`, which subscribes per host: a new array would resubscribe them all
+     * and rebuild every reading, so a rebuild that says the same thing hands back the last one.
+     */
+    const lastHosts = useRef<readonly PhoneHostModel[]>(builtHosts);
+    const sameHosts =
+        lastHosts.current.length === builtHosts.length &&
+        lastHosts.current.every((host, index) => {
+            const next = builtHosts[index];
+            return next !== undefined && host.key === next.key && host.name === next.name && host.runtime === next.runtime && host.removable === next.removable;
+        });
+    if (!sameHosts) lastHosts.current = builtHosts;
+    const hosts = lastHosts.current;
+
+    /** This phone's push (`pwa/push.ts`, §7.8 below); a desktop never mounts any of it. */
+    const push = props.pushDevice ?? defaultPushDevice();
 
     /** Forget one of the phone's OWN hosts; the origin and the configured peers are not the phone's to drop. */
     const removeHost = useCallback(
         (hostKey: string): void => {
             const entry = phoneHosts.hosts.find((candidate) => `phone:${candidate.id}` === hostKey);
-            if (entry !== undefined) phoneHosts.remove(entry.id);
+            if (entry === undefined) return;
+            // It stops pushing here first: a host the phone forgets would otherwise keep the subscription.
+            const host = hosts.find((candidate) => candidate.key === hostKey);
+            if (host !== undefined) void unregisterPushHost(host, push);
+            phoneHosts.remove(entry.id);
         },
-        [phoneHosts]
+        [phoneHosts, hosts, push]
     );
 
     const remoteHost = view.remote === null ? null : (hosts.find((host) => host.key === view.remote?.host) ?? null);
+
     /*
-     * B9 - which host sections are open in the ONE hierarchy the drawer and the landing page both
-     * draw (`phone/PhoneHostTree.tsx`). Held here, above both surfaces, so they are looking at one
-     * value: a host opened on the landing page is open in the drawer, which is the claim B9 makes.
-     * It goes through the host list's storage seam because it names hosts in that list
-     * (`phone/place.ts`'s rule, word for word).
+     * Every host read as one value, and what waits on each (`fleet.ts`, `attention.ts`). Home, the
+     * picker, the Needs-you sheet and the pill all read these, so they agree on every count.
      */
-    const hostExpansion = usePhoneHostExpansion(props.hostStorage);
+    const fleet = usePhoneFleet(hosts);
+    const attention = useMemo(() => phoneAttention(fleet), [fleet]);
+    useEffect(() => {
+        noteWaiting(attention.waiting, Date.now());
+        // A prompt is read once per wait (`prompt-capture.ts`); a pane that stopped waiting
+        // drops its reading, so its next wait reads the screen afresh.
+        forgetPrompts(new Set(attention.waiting.map((item) => item.key)));
+    }, [attention]);
+    const waitingHosts = attention.waitingByHost.size;
+
+    /*
+     * The host Home's pager is on. Client-local like everything about the screen: it starts on the
+     * host whose workspace was last on screen, a swipe moves it, and picking a host in the bar
+     * moves it and goes Home. It names a host in the lists, so a host that goes away takes it back
+     * to the origin.
+     */
+    const [homeHostKeyState, setHomeHostKeyState] = useState<string>(() => view.remote?.host ?? readStoredHomeHost(props.hostStorage) ?? ORIGIN_HOST_KEY);
+    const setHomeHostKey = useCallback(
+        (hostKey: string): void => {
+            setHomeHostKeyState(hostKey);
+            writeStoredHomeHost(hostKey, props.hostStorage);
+        },
+        [props.hostStorage]
+    );
+    const homeHost = hosts.find((host) => host.key === homeHostKeyState) ?? hosts[0] ?? null;
+    const homeHostKey = homeHost?.key ?? ORIGIN_HOST_KEY;
 
     /*
      * The host keys this phone KNOWS about, read straight from the lists rather than from the
@@ -273,7 +339,7 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
     );
     const remoteEcho = useStore(activeStore, (state) => state.ui.focusEcho);
 
-    const workspace = remoteHost === null ? props.workspace : remoteWorkspace;
+    const workspace = view.remote !== null ? remoteWorkspace : props.workspace;
     const shownPaneID =
         remoteHost === null
             ? view.shownPaneID
@@ -282,8 +348,12 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
               : remoteShownPane(remoteWorkspace, remoteEcho);
     const panes = workspace?.panes ?? [];
     const shownPane = shownPaneID === null ? null : (panes.find((pane) => pane.id === shownPaneID) ?? null);
-    const counts = useMemo(() => agentCounts(workspace === null ? [] : [workspace as unknown as ChromeWorkspace]), [workspace]);
-    const agentDot = counts.waiting > 0 ? tokens.statusWaiting : counts.running > 0 ? tokens.statusRunning : null;
+    /*
+     * The host on screen. While a remembered remote host is still being dialled there is none: the
+     * origin's workspace is NOT what is on screen then ("Connecting…" is), so nothing acts on it.
+     */
+    const dialling = view.remote !== null && remoteHost === null;
+    const onScreenHost = dialling ? null : (remoteHost ?? hosts[0] ?? null);
 
     const selection: PhoneWorkspaceSelection | null =
         remoteHost !== null && remoteWorkspaceID !== null
@@ -341,9 +411,10 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
      * with that host's groups, workspaces and repositories to choose from (`new-workspace.ts`).
      * The picker opens on that workspace's group under §SET-011, as the desktop's sheet does.
      */
-    const createHost = remoteHost ?? hosts[0] ?? { key: ORIGIN_HOST_KEY, name: '', kind: 'origin', runtime: props.runtime, removable: false };
+    const createHost = (view.atLanding ? homeHost : onScreenHost) ?? { key: ORIGIN_HOST_KEY, name: '', kind: 'origin' as const, runtime: props.runtime, removable: false };
     let newWorkspacePlacement: PhonePlacement = TOP_PLACEMENT;
-    if (sheet === 'new-workspace' && props.state.settings.value.general.inheritGroupOnNewWorkspace && selection?.host === createHost.key) {
+    // From Home nothing on screen names a group, so a new workspace goes to the top level there.
+    if (sheet === 'new-workspace' && !view.atLanding && props.state.settings.value.general.inheritGroupOnNewWorkspace && selection?.host === createHost.key) {
         const group = selectGroupForWorkspace(createHost.runtime.store.getState(), selection.workspaceID);
         if (group !== null) newWorkspacePlacement = { kind: 'group', groupID: group.id };
     }
@@ -386,13 +457,20 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
         // The landing page has no workspace and no pane, so it offers only what the whole app
         // has: the palette and Settings.
         if (workspace !== null && !atLanding) {
-            items.push({ id: 'new-pane', label: 'New pane', onSelect: verbs.createPane });
+            items.push({ id: 'new-pane', label: 'New terminal', glyph: 'plus', detail: 'A terminal beside this pane', onSelect: verbs.createPane });
             if (shownPane !== null) {
-                items.push({ id: 'rename-pane', label: 'Rename pane', onSelect: () => setSheet('rename') });
+                items.push({ id: 'rename-pane', label: 'Rename', glyph: 'pencil', opensSheet: true, onSelect: () => setSheet('rename') });
             }
             if (remoteHost === null) {
                 const on = workspace.isSyncInputActive;
-                items.push({ id: 'sync-input', label: on ? 'Stop syncing input' : 'Sync input to all panes', onSelect: actions.toggleSyncInput });
+                items.push({
+                    id: 'sync-input',
+                    label: 'Sync input',
+                    glyph: 'sync',
+                    detail: `Type into every pane in ${workspace.name}`,
+                    value: on ? 'On' : 'Off',
+                    onSelect: actions.toggleSyncInput
+                });
             }
             /*
              * #166 - the phone's route to size control, and the only one it has.
@@ -415,12 +493,15 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
                     // #178: with the count when there is one, which is what the desktop chip's
                     // tooltip says and a phone cannot be shown.
                     label: takeSizeControlLabel,
+                    glyph: 'resize',
+                    detail: 'Fit the terminal to this phone',
+                    value: 'Desktop',
                     onSelect: () => props.runtime.commands.takeSizeControl()
                 });
             }
         }
-        items.push({ id: 'palette', label: 'Command palette', onSelect: actions.openPalette });
-        items.push({ id: 'settings', label: 'Settings', onSelect: actions.openSettings });
+        items.push({ id: 'palette', label: 'Command palette', glyph: 'palette', onSelect: actions.openPalette });
+        items.push({ id: 'settings', label: 'Settings', glyph: 'gear', onSelect: actions.openSettings });
         if (shownPane !== null && !atLanding) {
             items.push({ id: 'close-pane', label: 'Close pane', danger: true, onSelect: () => verbs.closePane(shownPane.id) });
         }
@@ -576,21 +657,285 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
      */
     const keyBarReserve = keyBarPane !== null && (keyBarPane.type === 'shell' || keyBarPane.externalEditorCommand !== null);
 
-    const paneTitle = shownPane === null ? null : paneDisplayTitle(shownPane, props.homeDirectory);
-    const hostLabel = remoteHost === null ? null : remoteHost.name;
+    /** The home directory paths are abbreviated against: the host on screen's own. */
+    const screenHome = onScreenHost === null ? props.homeDirectory : onScreenHost.runtime.store.getState().daemon.state.homeDirectory;
+    const paneTitle = shownPane === null ? null : phonePaneTitle(shownPane, screenHome);
     const workspaceLabel = workspace?.name ?? (props.ready ? 'No workspace' : 'Kelpi');
+    // `keyboard.ts`: a keyboard that shrinks the WINDOW takes the strip and the bar with it, unless
+    // a sheet is up (the sheet is what the keyboard is for, and the layout under it holds still).
+    const windowKeyboard = useWindowKeyboard(props.formFactorWindow ?? defaultFormFactorWindow(), true);
+    const keyboardUp = windowKeyboard && sheet === 'none';
+
+    /*
+     * How much of the window is under the content row (the strip, the bar and the home-indicator
+     * inset), for the key bar to leave out of the keyboard's padding (`PhoneKeyBar`'s `belowPx`).
+     * Measured after layout, and only written when it changes.
+     */
+    const shellRef = useRef<HTMLDivElement | null>(null);
+    const [belowPx, setBelowPx] = useState(0);
+    useLayoutEffect(() => {
+        const shell = shellRef.current;
+        const content = contentRef.current;
+        if (shell === null || content === null) return;
+        const below = Math.max(0, Math.round(shell.getBoundingClientRect().bottom - content.getBoundingClientRect().bottom));
+        if (below !== belowPx) setBelowPx(below);
+    });
+
+    // ── moving around ───────────────────────────────────────────────────────────────
+
+    const openPicker = useCallback((level: PhonePickerLevel): void => {
+        setPickerLevel(level);
+        setSheet('picker');
+    }, []);
+
+    /** Open a workspace on any host and show one of its panes there. */
+    const openPane = useCallback(
+        (hostKey: string, workspaceID: string, paneID: string): void => {
+            const host = hosts.find((entry) => entry.key === hostKey);
+            if (host === undefined) return;
+            onSelectWorkspace({ host: hostKey, workspaceID });
+            host.runtime.focusPane(workspaceID, paneID);
+        },
+        [hosts, onSelectWorkspace]
+    );
+    const openWaiting = useCallback(
+        (item: PhoneAttentionItem): void => {
+            closeSheet();
+            openPane(item.hostKey, item.workspaceID, item.paneID);
+        },
+        [closeSheet, openPane]
+    );
+
+    // ── push (agent-lifecycle.md §7.8) ──────────────────────────────────────────────
+
+    /*
+     * This phone's push subscription, registered with every host (`push-hosts.ts`), and a tap on
+     * a notification opening its pane. `pwa/push.ts` owns the device; a desktop never mounts it.
+     */
+    const pushState = usePushDeviceState(push);
+    const pushStatuses = usePushHosts(hosts, push);
+    useHostsDocumentVisibility(hosts);
+    useEffect(() => {
+        void push.refresh();
+        // Coming back from the phone's own Settings, where a blocked permission is changed.
+        const onVisible = (): void => {
+            if (document.visibilityState === 'visible') void push.refresh();
+        };
+        document.addEventListener('visibilitychange', onVisible);
+        return () => document.removeEventListener('visibilitychange', onVisible);
+    }, [push]);
+
+    /*
+     * Where a tapped notification goes: the fragment a fresh window opened on (read once, then
+     * taken off the address), the message the worker posts to a window already open, or the tap
+     * the worker wrote down, taken on load and on coming back on screen (on iOS a cold start gets
+     * neither of the others). It waits for its host to be dialled and its workspace to arrive,
+     * which on a cold start is a while.
+     */
+    const [pendingOpen, setPendingOpen] = useState<PushOpenTarget | null>(() => readPushOpenHash(globalThis.location?.hash ?? ''));
+    useEffect(() => {
+        const loc = globalThis.location;
+        if (loc === undefined || readPushOpenHash(loc.hash) === null) return;
+        try {
+            // `window.history`: `history` in here is the sheets' own (`useSheetHistory`).
+            window.history.replaceState(window.history.state, '', `${loc.pathname}${loc.search}`);
+        } catch {
+            // The fragment stays; it is read only on this mount.
+        }
+    }, []);
+    useEffect(() => {
+        const container = (globalThis as { navigator?: Navigator }).navigator?.serviceWorker;
+        if (container === undefined) return;
+        const onMessage = (event: MessageEvent): void => {
+            const target = readPushOpenMessage(event.data);
+            if (target === null) return;
+            setPendingOpen(target);
+            // The same tap, written down: taken now so a later look does not open it again.
+            void takePushOpenRecord();
+        };
+        container.addEventListener('message', onMessage);
+        return () => container.removeEventListener('message', onMessage);
+    }, []);
+    useEffect(() => {
+        let live = true;
+        const take = (): void => {
+            if (document.visibilityState === 'hidden') return;
+            void takePushOpenRecord().then((target) => {
+                if (live && target !== null) setPendingOpen(target);
+            });
+        };
+        take();
+        document.addEventListener('visibilitychange', take);
+        return () => {
+            live = false;
+            document.removeEventListener('visibilitychange', take);
+        };
+    }, []);
+    // A target that never opens (its workspace closed since the push, its host gone) is given up on.
+    useEffect(() => {
+        if (pendingOpen === null) return;
+        const timer = setTimeout(() => setPendingOpen(null), 20_000);
+        return () => clearTimeout(timer);
+    }, [pendingOpen]);
+    useEffect(() => {
+        if (pendingOpen === null) return;
+        // The origin's configured peers are only known from its welcome; until then an unknown
+        // host may be one of them.
+        if (props.ready && !knownHostKeys.has(pendingOpen.host)) {
+            setPendingOpen(null);
+            return;
+        }
+        // Not dialled yet: the host list changes when it is, and this runs again.
+        const host = hosts.find((entry) => entry.key === pendingOpen.host);
+        if (host === undefined) return;
+        const target = pendingOpen;
+        const hostStore = host.runtime.store;
+        const tryOpen = (): boolean => {
+            if (!hostStore.getState().daemon.state.workspaces.some((entry) => entry.id === target.workspaceID)) return false;
+            setPendingOpen(null);
+            closeSheet();
+            openPane(target.host, target.workspaceID, target.paneID);
+            return true;
+        };
+        if (tryOpen()) return;
+        const unsubscribe = hostStore.subscribe(() => {
+            if (tryOpen()) unsubscribe();
+        });
+        return unsubscribe;
+    }, [pendingOpen, props.ready, hosts, knownHostKeys, openPane, closeSheet]);
+
+    /*
+     * The pane on screen acknowledges its notification (§7.5 removal, as `bridge.ts` `focusPane`
+     * does for the in-page ones): the banner a push left in the notification centre goes.
+     */
+    const pushShownHost = atLanding ? null : (onScreenHost?.key ?? null);
+    useEffect(() => {
+        if (pushShownHost === null || shownPaneID === null || pushState.availability !== 'available') return;
+        const close = (): void => {
+            if (document.visibilityState === 'hidden') return;
+            void push.closeNotifications((data) => data.host === pushShownHost && data.paneID === shownPaneID);
+        };
+        close();
+        document.addEventListener('visibilitychange', close);
+        return () => document.removeEventListener('visibilitychange', close);
+    }, [push, pushShownHost, shownPaneID, pushState.availability]);
+
+    /** Home on a host: the picker's host rows, and nothing else, go here. */
+    const goHome = useCallback(
+        (hostKey: string): void => {
+            setHomeHostKey(hostKey);
+            view.showLanding();
+            closeSheet();
+        },
+        [view, closeSheet]
+    );
+
+    const retryHost = useCallback(
+        (hostKey: string): void => {
+            hosts.find((host) => host.key === hostKey)?.runtime.connect();
+        },
+        [hosts]
+    );
+
+    const paneOrder = useMemo(() => (workspace === null ? [] : layoutPaneOrder(workspace)), [workspace]);
+    const paneIndex = shownPaneID === null ? -1 : paneOrder.indexOf(shownPaneID);
+    const stepPane = useCallback(
+        (delta: 1 | -1): void => {
+            if (paneOrder.length < 2) return;
+            const next = paneOrder[(Math.max(paneIndex, 0) + delta + paneOrder.length) % paneOrder.length];
+            if (next !== undefined) verbs.focusPane(next);
+        },
+        [paneOrder, paneIndex, verbs]
+    );
+
+    /** A phone action the daemon refused, as the same toast the desktop's commands raise. */
+    const reportProblem = useCallback(
+        (title: string, body: string): void => {
+            props.runtime.store.getState().pushToast({ id: `phone-${String(Date.now())}`, kind: 'info', title, body, paneID: null, workspaceID: null, createdAt: Date.now() });
+        },
+        [props.runtime]
+    );
+
+    const newPane = useCallback(
+        (kind: PhoneNewPaneKind): void => {
+            closeSheet();
+            if (onScreenHost === null || workspace === null) return;
+            void openPhonePane(
+                { runtime: onScreenHost.runtime, workspaceID: workspace.id, anchorPaneID: shownPaneID, repoPath: shownPane?.workingDirectory ?? null },
+                kind
+            ).then((problem) => {
+                if (problem !== null) reportProblem('Could not open the pane', problem);
+            });
+        },
+        [closeSheet, onScreenHost, workspace, shownPaneID, shownPane?.workingDirectory, reportProblem]
+    );
+    const newPluginPane = useCallback(
+        (pluginID: string, viewID: string): void => {
+            closeSheet();
+            if (onScreenHost === null || workspace === null) return;
+            void openPhonePluginView({ runtime: onScreenHost.runtime, workspaceID: workspace.id, anchorPaneID: shownPaneID, repoPath: null }, pluginID, viewID).then((problem) => {
+                if (problem !== null) reportProblem('Could not open the view', problem);
+            });
+        },
+        [closeSheet, onScreenHost, workspace, shownPaneID, reportProblem]
+    );
+
+    const shownWaiting = shownPane !== null && shownPane.status === 'waitingForInput' && workspace !== null && !workspace.muted;
+    const paneStatus =
+        shownPane === null
+            ? null
+            : shownWaiting
+              ? { text: 'waiting', waitingKey: `${onScreenHost?.key ?? ORIGIN_HOST_KEY}/${shownPane.id}` }
+              : shownPane.status === 'running'
+                ? { text: 'running', waitingKey: null }
+                : null;
+    const paneSubtitle =
+        shownPane === null
+            ? null
+            : [
+                  shownPane.workingDirectory === null || shownPane.workingDirectory.length === 0 ? null : homeAbbreviated(shownPane.workingDirectory, screenHome),
+                  shownPane.backgroundTaskCount > 0
+                      ? `${String(shownPane.backgroundTaskCount)} background task${shownPane.backgroundTaskCount === 1 ? '' : 's'}`
+                      : null
+              ]
+                  .filter((part) => part !== null && part !== paneTitle)
+                  .join(' · ') || null;
+
+    const replyTarget = useMemo(
+        () =>
+            shownWaiting && shownPane !== null && onScreenHost !== null
+                ? { key: `${onScreenHost.key}/${shownPane.id}`, runtime: onScreenHost.runtime, paneID: shownPane.id }
+                : null,
+        [shownWaiting, shownPane?.id, onScreenHost]
+    );
+
+    // The pill counts what waits ELSEWHERE: the pane on screen is left out, and so is its host when
+    // that pane is the only thing waiting there.
+    const shownHostKey = onScreenHost?.key ?? ORIGIN_HOST_KEY;
+    const pillHosts = shownWaiting && (attention.waitingByHost.get(shownHostKey) ?? 0) === 1 ? waitingHosts - 1 : waitingHosts;
+
+    const barHost = atLanding ? homeHost : onScreenHost;
+    const barReading = fleet.find((reading) => reading.host.key === barHost?.key);
+    const workspaceWaiting =
+        workspace !== null && (attention.waitingByWorkspace.get(workspaceKey(onScreenHost?.key ?? ORIGIN_HOST_KEY, workspace.id)) ?? 0) > 0;
 
     let content: ReactNode;
     if (atLanding) {
         content = (
-            <PhoneLanding
-                hosts={hosts}
-                selection={selection}
+            <PhoneHome
+                fleet={fleet}
+                attention={attention}
                 bucket={props.bucket}
-                expansion={hostExpansion}
-                onSelect={onSelectWorkspace}
-                onAddHost={() => setSheet('host')}
-                onRemoveHost={removeHost}
+                homeHostKey={homeHostKey}
+                onHomeHost={setHomeHostKey}
+                onOpenWaiting={openWaiting}
+                onSeeAll={() => setSheet('needs')}
+                onWorkspace={(hostKey, workspaceID) => onSelectWorkspace({ host: hostKey, workspaceID })}
+                onGroup={() => openPicker('workspaces')}
+                onNewWorkspace={() => setSheet('new-workspace')}
+                onAddHost={() => setSheet('host-scan')}
+                onRetryHost={retryHost}
+                onMenu={() => setSheet('menu')}
             />
         );
     } else if (view.remote !== null && remoteHost === null) {
@@ -665,6 +1010,7 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
 
     return (
         <div
+            ref={shellRef}
             data-testid="phone-shell"
             data-phone-mode={view.mode}
             // B7's third top-level state, read as one value by the audit: `landing`, `pane` or
@@ -673,108 +1019,21 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
             data-phone-screen={view.screen}
             data-phone-host={remoteHost?.key ?? ORIGIN_HOST_KEY}
             className="flex min-h-0 flex-1 flex-col"
-            style={{ paddingLeft: PHONE_SAFE_AREA.left, paddingRight: PHONE_SAFE_AREA.right, paddingBottom: PHONE_SAFE_AREA.bottom }}
+            // The phone's own light/dark rules (`style.ts`), for everything under it, sheets included.
+            style={{ ...phoneThemeVars(props.bucket), paddingLeft: PHONE_SAFE_AREA.left, paddingRight: PHONE_SAFE_AREA.right, paddingBottom: PHONE_SAFE_AREA.bottom }}
         >
-            <div
-                data-testid="phone-header"
-                className="flex shrink-0 items-center border-b"
-                style={{
-                    background: tokens.headerBackground,
-                    borderColor: tokens.divider,
-                    minHeight: `${String(PHONE_ROW_MIN_PX)}px`,
-                    paddingTop: PHONE_SAFE_AREA.top
-                }}
-            >
-                {/* B7 - the way back to the landing page, one tap from anywhere. B9 took the
-                    drawer's `All hosts` row away, because the drawer IS all hosts now, so this is
-                    the one way; on the landing page itself it is not drawn, since there is nowhere
-                    to go back to. */}
-                {atLanding ? null : (
-                    <PhoneButton testID="phone-open-landing" ariaLabel="Hosts" onClick={view.showLanding}>
-                        <ChromeIcon name="network" size={16} />
-                    </PhoneButton>
-                )}
-                {atLanding ? null : (
-                    <PhoneButton testID="phone-open-workspaces" ariaLabel="Workspaces" ariaExpanded={sheet === 'workspaces'} onClick={() => setSheet('workspaces')}>
-                        <ChromeIcon name="sidebar" size={16} />
-                    </PhoneButton>
-                )}
-                <button
-                    type="button"
-                    data-testid="phone-title"
-                    className="flex min-w-0 flex-1 items-center gap-2 px-1 text-left"
-                    style={{ minHeight: `${String(PHONE_ROW_MIN_PX)}px`, color: tokens.textPrimary }}
-                    onClick={() => {
-                        if (!atLanding) setSheet('panes');
-                    }}
-                >
-                    <span className="flex min-w-0 flex-col">
-                        <span className="truncate text-[12px]" style={{ color: tokens.textTertiary }} data-testid="phone-title-workspace">
-                            {atLanding ? 'Hosts' : hostLabel === null ? workspaceLabel : `${hostLabel} · ${workspaceLabel}`}
-                        </span>
-                        {atLanding || shownPane === null ? null : (
-                            <span
-                                className="truncate text-[14px] font-semibold"
-                                data-testid={`pane-header-${shownPane.id}`}
-                                data-focused="true"
-                            >
-                                {paneTitle}
-                            </span>
-                        )}
-                    </span>
-                    {atLanding || agentDot === null ? null : (
-                        <span
-                            aria-label={`${String(counts.waiting)} waiting, ${String(counts.running)} running`}
-                            data-testid="phone-agent-dot"
-                            data-waiting={counts.waiting}
-                            data-running={counts.running}
-                            className="h-[8px] w-[8px] shrink-0 rounded-full"
-                            style={{ background: agentDot }}
-                        />
-                    )}
-                    {atLanding || shownPane === null ? null : statusDotColor(shownPane.status) === null ? null : (
-                        <span
-                            aria-hidden
-                            data-testid="phone-pane-status"
-                            data-status={shownPane.status}
-                            className="h-[6px] w-[6px] shrink-0 rounded-full"
-                            style={{ background: statusDotColor(shownPane.status) ?? undefined }}
-                        />
-                    )}
-                </button>
-                {/* The landing page has no workspace on screen, so it has neither a view to
-                    toggle nor panes to list; Scan and Add host take their place. */}
-                {atLanding ? (
-                    <>
-                        <PhoneButton testID="phone-landing-scan-host-header" ariaLabel="Scan pairing code" onClick={() => setSheet('host-scan')}>
-                            <ChromeIcon name="scan" size={16} />
-                        </PhoneButton>
-                        <PhoneButton testID="phone-landing-add-host-header" ariaLabel="Add host" onClick={() => setSheet('host')}>
-                            <ChromeIcon name="plus" size={16} />
-                        </PhoneButton>
-                    </>
-                ) : (
-                    <>
-                        <PhoneButton
-                            testID="phone-view-toggle"
-                            ariaLabel={view.mode === 'pane' ? 'Show full layout' : 'Show one pane'}
-                            onClick={view.toggleMode}
-                            className={view.mode === 'layout' ? 'opacity-100' : 'opacity-70'}
-                        >
-                            <ChromeIcon name="layout" size={16} filled={view.mode === 'layout'} />
-                        </PhoneButton>
-                        <PhoneButton testID="phone-open-panes" ariaLabel="Panes" ariaExpanded={sheet === 'panes'} onClick={() => setSheet('panes')}>
-                            <ChromeIcon name="stack" size={16} />
-                            <span className="text-[12px]" data-testid="phone-pane-count">
-                                {panes.length}
-                            </span>
-                        </PhoneButton>
-                    </>
-                )}
-                <PhoneButton testID="phone-more" ariaLabel="More" ariaExpanded={sheet === 'menu'} onClick={() => setSheet('menu')}>
-                    <ChromeIcon name="ellipsis" size={16} />
-                </PhoneButton>
-            </div>
+            {atLanding ? null : (
+                <PhonePaneHeader
+                    title={paneTitle ?? workspaceLabel}
+                    status={paneStatus}
+                    subtitle={paneSubtitle}
+                    layout={view.mode === 'layout'}
+                    onToggleLayout={view.toggleMode}
+                    menuOpen={sheet === 'menu'}
+                    onMenu={() => setSheet('menu')}
+                    onHome={() => goHome(onScreenHost?.key ?? ORIGIN_HOST_KEY)}
+                />
+            )}
 
             <div ref={contentRef} data-testid="phone-content" className="relative min-h-0 flex-1">
                 {content}
@@ -811,34 +1070,107 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
                     contentRow={contentRef}
                     reserve={keyBarReserve}
                     formFactorWindow={props.formFactorWindow}
+                    belowPx={belowPx}
                 />
             </div>
 
-            <PhoneWorkspaceDrawer
-                open={sheet === 'workspaces'}
-                hosts={hosts}
-                selection={selection}
+            {/* Under a keyboard that shrinks the window, the strip and the bar step aside (`keyboard.ts`). */}
+            {keyboardUp || atLanding ? null : (
+                <PhonePaneStrip
+                    paneCount={paneOrder.length}
+                    paneIndex={paneIndex}
+                    onStep={stepPane}
+                    waiting={attention.waiting.length - (shownWaiting ? 1 : 0)}
+                    waitingHosts={pillHosts}
+                    onAttention={() => setSheet('needs')}
+                    replyTarget={replyTarget}
+                />
+            )}
+            {keyboardUp && !atLanding ? null : (
+                <PhoneLocationBar
+                    hostName={barHost?.name ?? 'Kelpi'}
+                    hostStatus={barReading?.connection ?? 'connecting'}
+                    home={atLanding}
+                    workspace={workspace}
+                    workspaceLabel={workspaceLabel}
+                    workspaceWaiting={workspaceWaiting}
+                    pane={shownPane === null || paneTitle === null ? null : { title: paneTitle, glyph: paneTypeGlyph(shownPane), paneID: shownPane.id }}
+                    bucket={props.bucket}
+                    open={sheet === 'picker' ? pickerLevel : null}
+                    raised={sheet === 'picker'}
+                    onPick={(level) => {
+                        if (sheet === 'picker' && pickerLevel === level) closeSheet();
+                        else openPicker(level);
+                    }}
+                    onJump={() => setSheet('jump')}
+                />
+            )}
+
+            {barHost === null ? null : (
+                <PhonePicker
+                    open={sheet === 'picker'}
+                    level={pickerLevel}
+                    onLevel={setPickerLevel}
+                    fleet={fleet}
+                    attention={attention}
+                    bucket={props.bucket}
+                    host={barHost}
+                    workspace={atLanding ? null : workspace}
+                    shownPaneID={shownPaneID}
+                    homeDirectory={screenHome}
+                    onHost={goHome}
+                    onRemoveHost={removeHost}
+                    onRetryHost={retryHost}
+                    onScanHost={() => setSheet('host-scan')}
+                    onPasteHost={() => setSheet('host')}
+                    onNotifications={() => setSheet('notifications')}
+                    notificationsOn={pushState.wanted && pushState.registration !== null}
+                    onSettings={() => {
+                        closeSheet();
+                        actions.openSettings();
+                    }}
+                    onWorkspace={(workspaceID) => {
+                        onSelectWorkspace({ host: barHost.key, workspaceID });
+                        closeSheet();
+                    }}
+                    onNewWorkspace={() => setSheet('new-workspace')}
+                    onPane={(paneID) => {
+                        verbs.focusPane(paneID);
+                        closeSheet();
+                    }}
+                    onNewPane={newPane}
+                    onPluginView={newPluginPane}
+                    onClose={closeSheet}
+                />
+            )}
+            <PhoneNeedsYouSheet open={sheet === 'needs'} fleet={fleet} attention={attention} onOpen={openWaiting} onClose={closeSheet} />
+            <PhoneJumpSheet
+                open={sheet === 'jump'}
+                fleet={fleet}
                 bucket={props.bucket}
-                currentHostKey={remoteHost?.key ?? ORIGIN_HOST_KEY}
-                expansion={hostExpansion}
-                onSelect={onSelectWorkspace}
-                onNewWorkspace={() => setSheet('new-workspace')}
-                onAddHost={() => setSheet('host')}
-                onRemoveHost={removeHost}
+                onWorkspace={(hostKey, workspaceID) => {
+                    closeSheet();
+                    onSelectWorkspace({ host: hostKey, workspaceID });
+                }}
+                onPane={(hostKey, workspaceID, paneID) => {
+                    closeSheet();
+                    openPane(hostKey, workspaceID, paneID);
+                }}
                 onClose={closeSheet}
             />
-            <PhonePaneSheet
-                open={sheet === 'panes'}
-                workspaceName={workspace?.name ?? null}
-                panes={panes}
-                shownPaneID={shownPaneID}
-                homeDirectory={props.homeDirectory}
-                onShow={verbs.focusPane}
-                onNewPane={workspace === null ? null : verbs.createPane}
-                onClosePane={workspace === null ? null : verbs.closePane}
+            <PhoneMenuSheet
+                open={sheet === 'menu'}
+                title={atLanding ? 'Kelpi' : (paneTitle ?? workspaceLabel)}
+                subtitle={atLanding ? undefined : [workspace?.name, onScreenHost?.name].filter((part) => part !== undefined).join(' · ')}
+                glyph={atLanding || shownPane === null ? 'gear' : paneTypeGlyph(shownPane)}
+                items={menuItems}
+                note={
+                    !atLanding && remoteHost === null && shownPane !== null
+                        ? 'Panes on this host share focus with its desktop: showing one here moves the focus ring there too.'
+                        : undefined
+                }
                 onClose={closeSheet}
             />
-            <PhoneMenuSheet open={sheet === 'menu'} title={paneTitle ?? workspaceLabel} items={menuItems} onClose={closeSheet} />
             <PhoneHostSheet
                 open={sheet === 'host' || sheet === 'host-scan'}
                 scanOnOpen={sheet === 'host-scan'}
@@ -847,12 +1179,17 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
                 onAdd={(name, url) => {
                     phoneHosts.add(name, url);
                 }}
-                // Back where it was opened from: the drawer, or the landing page (which is a
-                // screen, so closing the sheet is all there is to do).
-                onClose={() => {
-                    if (atLanding) closeSheet();
-                    else setSheet('workspaces');
-                }}
+                onClose={closeSheet}
+            />
+            <PhoneNotificationsSheet
+                open={sheet === 'notifications'}
+                state={pushState}
+                hosts={hosts}
+                statuses={pushStatuses}
+                onEnable={() => void push.enable()}
+                onDisable={() => void turnPushOff(hosts, push)}
+                onTest={() => sendPushTests(hosts, pushStatuses)}
+                onClose={closeSheet}
             />
             {sheet === 'new-workspace' ? (
                 <PhoneNewWorkspaceSheet

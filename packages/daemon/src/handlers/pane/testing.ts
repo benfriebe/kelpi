@@ -190,6 +190,12 @@ export class StubTerminalInput implements TerminalInput {
     sendNamedKey(paneID: string, key: string): void {
         this.keys.push({ paneID, key });
     }
+
+    readonly keystrokes: { paneID: string; key: string }[] = [];
+
+    sendKeystroke(paneID: string, key: string): void {
+        this.keystrokes.push({ paneID, key });
+    }
 }
 
 export interface TestReply extends ReplyHandle {

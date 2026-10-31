@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { makeSandbox, startDaemon, waitForHealthz, makeCli, PROTOCOL_VERSION } from '../ui-audit/lib/stack.mjs';
-import { phoneToLanding } from '../ui-audit/lib/workbench.mjs';
+import { phoneRevealWorkspace, phoneToLanding } from '../ui-audit/lib/workbench.mjs';
 
 export const covers = ['packages/client/src/app/RemoteWorkspaceView.tsx', 'packages/client/src/phone/PhoneRemoteWorkspace.tsx', 'packages/client/src/plugins/', 'packages/daemon/src/plugins/',
     'packages/client/src/settings/RemoteTab.tsx', 'packages/client/src/settings/SettingsOverlay.tsx', 'packages/client/src/settings/sections.ts',
@@ -145,6 +145,8 @@ export default async function ({ page, cli, sandbox, rec, d }) {
         await page.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
         await page.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
         const phoneRow = `[data-testid="phone-shell"] [data-workspace-id="${workspace.workspace_id}"]`;
+        // Home shows one host's workspaces: page it to the host that holds this one.
+        await phoneRevealWorkspace(page, d, workspace.workspace_id);
         rec.check('the phone host picker includes the plugin workspace', await d.settleDom(page, `document.querySelector(${JSON.stringify(phoneRow)})`, { ceilingMs: 8_000 }));
         await page.click(phoneRow);
         await page.click('[data-testid="phone-title"]');

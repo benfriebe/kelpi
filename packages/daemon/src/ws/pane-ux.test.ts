@@ -274,7 +274,7 @@ describe('reopen-closed-pane / create-scratchpad / reveal-path over the socket',
                     modes: () => ({ applicationCursorKeys: false, bracketedPaste: false }),
                     dispose: () => {}
                 },
-                input: { sendText: () => {}, sendNamedKey: () => {} },
+                input: { sendText: () => {}, sendNamedKey: () => {}, sendKeystroke: () => {} },
                 version: { version: '0.1.0', build: '1', protocol: 1 },
                 broadcast: (event) => broadcasts.push(event)
             }

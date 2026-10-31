@@ -27,18 +27,19 @@ import {
 import { OVERRIDABLE_CHROME_KEYS, normalizeHexColor } from './theme';
 
 describe('BUILT_IN_CHROME_THEMES', () => {
-    it('is the seven presets, dark-first then light', () => {
+    it('is the eight presets, dark-first then light', () => {
         expect(BUILT_IN_CHROME_THEMES.map((entry) => entry.name)).toEqual([
             'Dracula',
             'Nord',
             'Gruvbox Dark',
             'Tokyo Night',
             'Catppuccin Mocha',
+            'Monochrome',
             'Solarized Light',
             'Gruvbox Light'
         ]);
-        expect(BUILT_IN_CHROME_THEMES.slice(0, 5).every((entry) => entry.appearance === 'dark')).toBe(true);
-        expect(BUILT_IN_CHROME_THEMES.slice(5).every((entry) => entry.appearance === 'light')).toBe(true);
+        expect(BUILT_IN_CHROME_THEMES.slice(0, 6).every((entry) => entry.appearance === 'dark')).toBe(true);
+        expect(BUILT_IN_CHROME_THEMES.slice(6).every((entry) => entry.appearance === 'light')).toBe(true);
     });
 
     /**

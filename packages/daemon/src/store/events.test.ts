@@ -2,7 +2,13 @@ import { describe, expect, it } from 'vitest';
 import { applyDomainEvents } from './events.js';
 import { createStore } from './store.js';
 import { harness, HOME, id, NOW, seededState, W1, W2 } from './testing.js';
-import { emptyDaemonState, type DaemonState, type DomainAction, type DomainEvent } from './types.js';
+import {
+    emptyDaemonState,
+    type DaemonState,
+    type DomainAction,
+    type DomainEvent,
+    type WorkspacePullRequest
+} from './types.js';
 
 const P0 = id('dddddddd', 100);
 const P1 = id('dddddddd', 200);
@@ -10,6 +16,15 @@ const PA = id('eeeeeeee', 1);
 const PB = id('eeeeeeee', 2);
 const PC = id('eeeeeeee', 3);
 const G1 = id('cccccccc', 1);
+const PR: WorkspacePullRequest = {
+    number: 12,
+    title: 'Add widgets',
+    url: 'https://github.com/acme/widgets/pull/12',
+    state: 'open',
+    repoID: 'r1',
+    associationID: 'a1',
+    branch: 'feat-x'
+};
 
 /** The full port script: every family of action, applied to a mirror via events alone. */
 const SCRIPT: readonly DomainAction[] = [
@@ -21,6 +36,7 @@ const SCRIPT: readonly DomainAction[] = [
     { type: 'pane-title-changed', paneID: PA, title: 'claude', now: NOW + 1_000 },
     { type: 'pane-directory-changed', paneID: PA, directory: '/repo', now: NOW + 2_000 },
     { type: 'pane-branch-changed', paneID: PA, branch: 'main' },
+    { type: 'set-workspace-pull-requests', id: W1, pullRequests: [PR] },
     {
         type: 'pane-agent-event',
         paneID: PA,
@@ -311,6 +327,22 @@ describe('event precision', () => {
         expect(batch[0]).toMatchObject({ workspace: { muted: true } });
         h.dispatch({ type: 'set-workspace-muted', id: W1, muted: true });
         expect(h.events).toHaveLength(before + 1);
+    });
+
+    it('a PR list change upserts the envelope carrying it, and the same list again emits nothing', () => {
+        const h = harness(seededState());
+        const before = h.events.length;
+        h.dispatch({ type: 'set-workspace-pull-requests', id: W1, pullRequests: [PR] });
+        const batch = h.events.slice(before);
+        expect(kinds(batch)).toEqual(['workspace-upserted']);
+        expect(batch[0]).toMatchObject({ workspace: { pullRequests: [PR] } });
+        const state = h.state();
+        h.dispatch({ type: 'set-workspace-pull-requests', id: W1, pullRequests: [{ ...PR }] });
+        h.dispatch({ type: 'set-workspace-pull-requests', id: 'ghost', pullRequests: [PR] });
+        expect(h.events).toHaveLength(before + 1);
+        expect(h.state()).toBe(state);
+        h.dispatch({ type: 'set-workspace-pull-requests', id: W1, pullRequests: [] });
+        expect(h.state().workspaces[0]?.pullRequests).toEqual([]);
     });
 
     it('a focus change emits only focus-changed', () => {

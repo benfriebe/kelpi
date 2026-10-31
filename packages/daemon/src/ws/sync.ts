@@ -119,7 +119,8 @@ import {
     type PaneLifecycleChannel,
     type PaneLifecycleCommand
 } from './panes.js';
-import { DEVICE_TOKEN_PREFIX } from '../lifecycle/devices.js';
+import { DEVICE_TOKEN_PREFIX, credentialFingerprint } from '../lifecycle/devices.js';
+import { isPushCommand, type PushCommand, type PushService } from '../push/service.js';
 import { isRemoteCommand, type RemoteChannel, type RemoteCommand } from './remote.js';
 import { handleRepoCommand, isOwnerOnlyRepoCommand, isRepoCommand, type RepoChannel, type RepoCommand } from './repos.js';
 import {
@@ -229,6 +230,12 @@ export interface SyncHubOptions {
     readonly agents?: AgentChannel | undefined;
     /** Settings ▸ Remote: pair/revoke/delete/status (`ws/remote.ts`). Absent = "not available". */
     readonly remote?: RemoteChannel | undefined;
+    /**
+     * Phone push (`push/service.ts`): the `push-*` verbs, and the fan-out every `notification`
+     * broadcast also takes to the phones not looking at Kelpi. Absent = the verbs answer "not
+     * available" and nothing is pushed.
+     */
+    readonly push?: Pick<PushService, 'subscribe' | 'unsubscribe' | 'deliver' | 'test'> | undefined;
     /**
      * M9 workspace inspector: the repo registry + association verbs (`ws/repos.ts`). Absent =
      * they answer "repo commands are not available", which is what a daemon booted without a
@@ -407,6 +414,8 @@ function parseClientInfo(value: unknown): WsClientInfo {
  *   set-workspace-children-collapsed `workspace_id`, `collapsed` → the same action (§2.9)
  *   clear-pane-status    `pane_id`                       → pane-agent-event(clearPaneStatus)
  *   set-pane-status      `pane_id`, `status`             → pane-agent-event(setPaneStatus)
+ *   set-workspace-status `workspace_id`, `status`        → set-workspace-status (agent-lifecycle §5.10)
+ *   clear-workspace-status `workspace_id`                → clear-workspace-status (§5.10)
  *   add-label-preset     `name`, `color?`, `text_color?` → add-label-preset (+ text colour)
  *   update-label-preset  `id`, `name?`, `color`, `text_color?` → update-label-preset (+ text colour)
  *   remove-label-preset  `id`                            → remove-label-preset
@@ -453,6 +462,8 @@ export const WS_ONLY_COMMANDS = [
     'set-bulk-label',
     'clear-pane-status',
     'set-pane-status',
+    'set-workspace-status',
+    'clear-workspace-status',
     'add-label-preset',
     'update-label-preset',
     'remove-label-preset',
@@ -493,6 +504,22 @@ export function isWsOnlyCommand(command: string): command is WsOnlyCommand {
 function failure(error: string): JsonObject {
     return { ok: false, error };
 }
+
+/**
+ * How long a connection may stay silent and still count as a phone LOOKING at Kelpi, for the
+ * push fan-out. A visible phone repeats `push-presence` every 20 s (`client/src/phone/push-hosts.ts`;
+ * the socket's own ping is skipped while the daemon keeps sending, so it cannot be the signal), so
+ * a socket quiet for this long belongs to a page the OS suspended before its "hidden" report got
+ * out: iOS keeps the TCP connection of a backgrounded web app open with nothing behind it.
+ */
+const PUSH_WATCH_SILENCE_MS = 45_000;
+/**
+ * A phone skipped because it counted as looking gets the push after all if none of its
+ * connections has spoken this long after the notification: the page was frozen with its "hidden"
+ * report unsent (lock the phone right after sending a prompt). A page that really was on screen
+ * repeats its presence every 20 s, so it speaks well inside this window.
+ */
+const PUSH_RECHECK_MS = 30_000;
 
 const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
 
@@ -870,7 +897,7 @@ export function handleWsOnlyCommand(
         }
         const found = findPaneAnywhere(state, paneID);
         if (found === null) return failure(`no pane matches '${paneID}'`);
-        // The pane header's Status submenu (agent-lifecycle.md §5.10 / TERM-107). The whole
+        // The pane header's Status submenu (agent-lifecycle.md §5.7 / TERM-107). The whole
         // rule — shell-only, the elapsed clock arms only on a FRESH transition into running,
         // and the background count is zeroed so no stale "N running" lingers — lives in
         // `core/src/agent/machine.ts`; this is pure routing, and a non-shell pane is a complete
@@ -888,6 +915,29 @@ export function handleWsOnlyCommand(
             pane_id: paneID,
             workspace_id: found.workspaceID,
             status: after?.pane.status ?? 'idle'
+        };
+    }
+
+    if (command === 'set-workspace-status' || command === 'clear-workspace-status') {
+        // The sidebar row's Status submenu and its visit acknowledgment (agent-lifecycle.md
+        // §5.10): the pane pair above, addressed to a workspace. The clear's only-`waitingForInput`
+        // rule lives in the reducer, as the pane's lives in the state machine.
+        const workspaceID = text(payload['workspace_id']);
+        if (workspaceID === undefined) return failure(`${command} requires workspace_id`);
+        if (workspaceByID(state, workspaceID) === null) return failure(`no workspace matches '${workspaceID}'`);
+        if (command === 'set-workspace-status') {
+            const status = text(payload['status']);
+            if (status !== 'idle' && status !== 'running' && status !== 'waitingForInput') {
+                return failure("set-workspace-status requires status 'idle', 'running' or 'waitingForInput'");
+            }
+            store.dispatch({ type: 'set-workspace-status', id: workspaceID, status });
+        } else {
+            store.dispatch({ type: 'clear-workspace-status', id: workspaceID });
+        }
+        return {
+            ok: true,
+            workspace_id: workspaceID,
+            status: workspaceByID(store.getState(), workspaceID)?.status ?? 'idle'
         };
     }
 
@@ -1552,6 +1602,11 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
     const sessions = new Set<SessionImpl>();
     let seq = 0;
     let closed = false;
+    /** Pending `PUSH_RECHECK_MS` looks at phones a push skipped. */
+    const pushRechecks = new Set<ReturnType<typeof setTimeout>>();
+    /** The latest notification per dedupe tag, by sequence: a late push never follows a newer one for its pane. */
+    const latestPushNotice = new Map<string, number>();
+    let pushNoticeSeq = 0;
     /**
      * Size control (terminal-surface.md §5.1): PTY geometry follows exactly ONE client — two
      * attached UIs with different windows must not fight over cols/rows. Ownership is claimed
@@ -1724,6 +1779,20 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
         focusedPaneID: string | null = null;
         visiblePaneIDs: ReadonlySet<string> = new Set<string>();
         documentVisible = false;
+        /**
+         * The push subscription this connection's phone registered (`push-subscribe`, sent on
+         * every connect). While the phone says it is looking at Kelpi and the connection is alive,
+         * the push fan-out skips it: the app is open, and its own surfaces show what waits.
+         */
+        private pushEndpoint: string | null = null;
+        /**
+         * Is the phone's page on screen? Its own report (`push-presence`, and `push-subscribe`'s
+         * `visible`), NOT `documentVisible`: that one rides the workspace visibility report, which
+         * a phone sends a host only once it has opened one of that host's workspaces.
+         */
+        private pushVisible = false;
+        /** When this connection last sent anything (`PUSH_WATCH_SILENCE_MS`). */
+        private lastHeardAt = now();
         private disposed = false;
         private readonly operationReplies = new Map<string, (reply: JsonObject) => void>();
         private readonly pendingHookCommands = new Set<string>();
@@ -1834,6 +1903,7 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
 
         handleMessage(raw: string): void {
             if (this.disposed) return;
+            this.lastHeardAt = now();
             let parsed: unknown;
             try {
                 parsed = JSON.parse(raw);
@@ -1963,6 +2033,10 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                     this.send({ type: 'pong', id: id ?? '' });
                     return;
                 }
+                case 'push-presence':
+                    // The phone's page went on or off screen (`client/src/phone/push-hosts.ts`).
+                    this.pushVisible = parsed['visible'] === true;
+                    return;
                 case 'host-register':
                     this.registerHost(text(parsed['name']), text(parsed['windowID']));
                     return;
@@ -2631,6 +2705,10 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                     this.remoteCommand(id, name, payload);
                     return;
                 }
+                if (name !== undefined && isPushCommand(name)) {
+                    this.pushCommand(id, name, payload);
+                    return;
+                }
                 if (name !== undefined && isWsSettingsCommand(name)) {
                     const channel = options.settings;
                     let reply: JsonObject;
@@ -3125,6 +3203,100 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                     return;
                 }
             }
+        }
+
+        /**
+         * Phone push (`push/service.ts`). Open to paired devices: a phone is one, and the
+         * subscription it registers is its own. The registration remembers this session's
+         * `credentialFingerprint`, so revoking the device stops its pushes too.
+         *
+         *   push-subscribe    `endpoint`, `p256dh`, `auth`, `vapid_public_key`,
+         *                     `vapid_private_key`, `host`, `visible?` → stored, and this
+         *                     connection is the phone's (a `push-presence` report from it now
+         *                     gates that phone's pushes)
+         *   push-unsubscribe  `endpoint` → forgotten
+         *   push-test         → a test notification to this connection's subscription, now
+         */
+        private pushCommand(id: string, command: PushCommand, payload: Record<string, unknown>): void {
+            const channel = options.push;
+            if (channel === undefined) {
+                this.contentReply(id, failure('push notifications are not available'));
+                return;
+            }
+            switch (command) {
+                case 'push-subscribe': {
+                    const fields = ['endpoint', 'p256dh', 'auth', 'vapid_public_key', 'vapid_private_key', 'host'] as const;
+                    const missing = fields.find((field) => text(payload[field]) === undefined);
+                    if (missing !== undefined) {
+                        this.contentReply(id, failure(`push-subscribe requires ${missing}`));
+                        return;
+                    }
+                    const endpoint = text(payload['endpoint']) ?? '';
+                    try {
+                        channel.subscribe(
+                            {
+                                endpoint,
+                                p256dh: text(payload['p256dh']) ?? '',
+                                auth: text(payload['auth']) ?? '',
+                                vapidPublicKey: text(payload['vapid_public_key']) ?? '',
+                                vapidPrivateKey: text(payload['vapid_private_key']) ?? '',
+                                host: text(payload['host']) ?? ''
+                            },
+                            this.credential === null ? null : credentialFingerprint(this.credential)
+                        );
+                    } catch (error) {
+                        this.contentReply(id, failure(toError(error).message));
+                        return;
+                    }
+                    this.pushEndpoint = endpoint;
+                    this.pushVisible = payload['visible'] !== false;
+                    this.contentReply(id, { ok: true });
+                    return;
+                }
+                case 'push-unsubscribe': {
+                    const endpoint = text(payload['endpoint']);
+                    if (endpoint === undefined) {
+                        this.contentReply(id, failure('push-unsubscribe requires endpoint'));
+                        return;
+                    }
+                    channel.unsubscribe(endpoint);
+                    if (this.pushEndpoint === endpoint) this.pushEndpoint = null;
+                    this.contentReply(id, { ok: true });
+                    return;
+                }
+                case 'push-test': {
+                    const endpoint = this.pushEndpoint;
+                    if (endpoint === null) {
+                        this.contentReply(id, failure('this connection has not registered for push'));
+                        return;
+                    }
+                    channel.test(endpoint).then(
+                        (result) =>
+                            this.contentReply(
+                                id,
+                                result.ok ? { ok: true, status: result.status } : failure(result.status === 0 ? 'the push service could not be reached' : `the push service refused it (HTTP ${String(result.status)})`)
+                            ),
+                        (error: unknown) => this.contentReply(id, failure(toError(error).message))
+                    );
+                    return;
+                }
+            }
+        }
+
+        /**
+         * The push subscription of a phone that is looking at Kelpi through this connection right
+         * now, or null. Visible, alive, and registered: anything less and the phone needs a push.
+         */
+        watchingPushEndpoint(at: number): string | null {
+            if (!this.ready || this.disposed || !this.pushVisible || this.pushEndpoint === null) return null;
+            const silence = at - this.lastHeardAt;
+            // Negative: the wall clock stepped back, and how long it has really been is unknown. Push.
+            return silence < 0 || silence > PUSH_WATCH_SILENCE_MS ? null : this.pushEndpoint;
+        }
+
+        /** Has this connection, registered for `endpoint`, spoken since `at`? (`PUSH_RECHECK_MS`) */
+        pushHeardSince(endpoint: string, at: number): boolean {
+            return this.pushEndpoint === endpoint && this.lastHeardAt > at;
         }
 
         /** Release this pane's subscription (if any) and return the new epoch. */
@@ -3841,6 +4013,37 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             const workspaceID = typeof event['workspaceID'] === 'string' ? (event['workspaceID'] as string) : undefined;
             const paneID = typeof event['paneID'] === 'string' ? (event['paneID'] as string) : undefined;
             const suppressible = type === 'notification' && workspaceID !== undefined && paneID !== undefined;
+            // The same notification, pushed to every phone that is not looking at Kelpi (a
+            // phone that is gets it over its socket below, like any client).
+            if (suppressible && options.push !== undefined) {
+                const push = options.push;
+                const at = now();
+                const watching = new Map<string, SessionImpl[]>();
+                for (const session of sessions) {
+                    const endpoint = session.watchingPushEndpoint(at);
+                    if (endpoint !== null) watching.set(endpoint, [...(watching.get(endpoint) ?? []), session]);
+                }
+                const field = (key: string): string => (typeof event[key] === 'string' ? (event[key] as string) : '');
+                const notice = { kind: field('kind'), title: field('title'), body: field('body'), dedupeKey: field('dedupeKey'), paneID, workspaceID };
+                const tag = notice.dedupeKey.length > 0 ? notice.dedupeKey : `kelpi-${paneID}`;
+                const seq = (pushNoticeSeq += 1);
+                latestPushNotice.set(tag, seq);
+                push.deliver(notice, new Set(watching.keys())).catch((error: unknown) => report(error, 'push'));
+                if (watching.size > 0) {
+                    const timer = setTimeout(() => {
+                        pushRechecks.delete(timer);
+                        // A newer notification for the pane has gone out (or has its own look coming): this one would replace it with older news.
+                        if (closed || latestPushNotice.get(tag) !== seq) return;
+                        // Its connections then, and any it has opened since (a reload).
+                        const missed = new Set(
+                            [...watching].filter(([endpoint, then]) => ![...then, ...sessions].some((session) => session.pushHeardSince(endpoint, at))).map(([endpoint]) => endpoint)
+                        );
+                        if (missed.size > 0) push.deliver(notice, new Set(), missed).catch((error: unknown) => report(error, 'push'));
+                    }, PUSH_RECHECK_MS);
+                    timer.unref?.();
+                    pushRechecks.add(timer);
+                }
+            }
             for (const session of sessions) {
                 if (!session.ready) continue;
                 if (suppressible && session.attends(workspaceID, paneID)) continue;
@@ -3890,6 +4093,8 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
         close() {
             if (closed) return;
             closed = true;
+            for (const timer of pushRechecks) clearTimeout(timer);
+            pushRechecks.clear();
             unsubscribe();
             for (const session of [...sessions]) session.shutdown();
             sessions.clear();

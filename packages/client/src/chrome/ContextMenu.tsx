@@ -416,7 +416,7 @@ function MenuCheckbox({ checked }: { readonly checked: boolean }): ReactElement 
                     <path
                         d="M1.4 4.1 3.2 5.9 6.6 2.3"
                         fill="none"
-                        stroke="#fff"
+                        stroke={tokens.onAccent}
                         strokeWidth={1.5}
                         strokeLinecap="round"
                         strokeLinejoin="round"

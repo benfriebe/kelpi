@@ -172,6 +172,7 @@ export function WorkspacesFeatureView(props: WorkspacesFeatureViewProps): ReactE
         onSetGroupIcon={actions.setGroupIcon}
         onSetWorkspaceProfile={actions.setWorkspaceProfile}
         onSetWorkspaceMuted={actions.setWorkspaceMuted}
+        onSetWorkspaceStatus={actions.setWorkspaceStatus}
         onSetGroupColor={actions.setGroupColor}
         onSetGroupRepo={actions.setGroupRepo}
         {...(props.onBrowseForFolder === undefined ? {} : { onBrowseForFolder: props.onBrowseForFolder })}

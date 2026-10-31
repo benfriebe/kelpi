@@ -55,6 +55,7 @@ function workspaceRow(overrides: Partial<Record<string, unknown>> = {}): SqlRow 
         labelsJSON: '["frontend","wip"]',
         icon: 'system:star.fill',
         profileName: 'work',
+        status: 'waitingForInput',
         ...overrides
     } as SqlRow;
 }
@@ -137,8 +138,15 @@ describe('workspace row decoding', () => {
             lastAccessedAt: 1_755_500_100.5,
             labels: ['frontend', 'wip'],
             childOrder: [],
-            childrenCollapsed: false
+            childrenCollapsed: false,
+            status: 'waitingForInput'
         } satisfies Omit<PersistedWorkspace, 'panes' | 'repoAssociations'>);
+    });
+
+    it('reads a missing or unknown workspace status as idle (agent-lifecycle §5.10)', () => {
+        expect(decodeWorkspaceRow(workspaceRow({ status: undefined }))?.workspace.status).toBe('idle');
+        expect(decodeWorkspaceRow(workspaceRow({ status: 'exploded' }))?.workspace.status).toBe('idle');
+        expect(decodeWorkspaceRow(workspaceRow({ status: 'running' }))?.workspace.status).toBe('running');
     });
 
     it('skips a row whose id is not a UUID (§9.5)', () => {

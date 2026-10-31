@@ -177,6 +177,17 @@ export interface PhoneKeyBarProps {
      * element, and the clamp below is arithmetic on a real height.
      */
     readonly measure?: ((element: HTMLElement) => { width: number; height: number }) | undefined;
+    /**
+     * How much of the window sits UNDER the content row, in CSS px: the phone shell's pane strip and
+     * location bar, and the home-indicator inset below them.
+     *
+     * A software keyboard rises from the window's bottom edge, so it covers that strip first and
+     * reaches the content row only past it. The row is padded by the part of the keyboard that is
+     * over the row and no more: the bar then sits on the keyboard's top edge, and the strip and the
+     * bar wait under the keyboard rather than stepping aside mid-animation. Zero (the default, and
+     * the desktop's row) keeps the keyboard's whole inset.
+     */
+    readonly belowPx?: number | undefined;
 }
 
 export function PhoneKeyBar({
@@ -185,7 +196,8 @@ export function PhoneKeyBar({
     formFactorWindow,
     keyboardSettleMs,
     measure,
-    reserve
+    reserve,
+    belowPx
 }: PhoneKeyBarProps): ReactElement | null {
     const win = formFactorWindow ?? defaultFormFactorWindow();
     const phone = useFormFactor(win) === 'phone';
@@ -239,6 +251,9 @@ export function PhoneKeyBar({
     /** The measurement seam, read at apply time for the same reason. */
     const measureRef = useRef(measure);
     measureRef.current = measure;
+    /** What sits under the row, read at apply time: the shell measures it after the bar has laid out. */
+    const belowRef = useRef(belowPx ?? 0);
+    belowRef.current = belowPx ?? 0;
 
     /**
      * The row's box, at the viewport's clock.
@@ -279,7 +294,8 @@ export function PhoneKeyBar({
             const applied = insetRef.current;
             const box = measureRef.current?.(row) ?? { width: row.clientWidth, height: row.clientHeight };
             const capacity = box.height + applied;
-            const next = inset > 0 ? keyboardBoxInset(capacity, inset, targetRef.current?.cellHeight() ?? 0) : 0;
+            const overRow = Math.max(0, inset - belowRef.current);
+            const next = overRow > 0 ? keyboardBoxInset(capacity, overRow, targetRef.current?.cellHeight() ?? 0) : 0;
             if (next === applied) return;
             insetRef.current = next;
             writeRowBox();

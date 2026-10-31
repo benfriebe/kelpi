@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { createLinkHover, linkSpanFromReply, probeLinkVia, type LinkHoverCell } from './link-hover';
+import { createLinkHover, linkSpanFromReply, linkURLFromReply, probeLinkURLVia, probeLinkVia, type LinkHoverCell } from './link-hover';
 import type { TerminalLinkCommands } from './pane-registry';
 import type { TerminalCellRun } from './renderer';
 
@@ -372,3 +372,46 @@ describe('probeLinkVia (#327, #328)', () => {
     });
 });
 
+
+/** The phone's tap on a link (2026-10-18): the same question, answered with the URL. */
+describe('linkURLFromReply and probeLinkURLVia', () => {
+    it('reads the URL of an answer a browser would open, and nothing else', () => {
+        expect(linkURLFromReply({ ok: true, opened: 'external', url: 'https://example.com/a' })).toBe('https://example.com/a');
+        expect(linkURLFromReply({ ok: true, opened: 'markdown', path: '/tmp/notes.md' })).toBeNull();
+        expect(linkURLFromReply({ ok: true, opened: 'none', reason: 'link-not-http' })).toBeNull();
+        expect(linkURLFromReply({ ok: true, opened: 'external', url: '' })).toBeNull();
+        expect(linkURLFromReply({ ok: false, error: 'unknown command: probe-terminal-target' })).toBeNull();
+        expect(linkURLFromReply(null)).toBeNull();
+    });
+
+    it('asks with the history, and drops an answer from history that does not echo it', async () => {
+        const replies = [
+            { ok: true, opened: 'external', url: 'https://example.com/a', scroll_offset: 7 },
+            { ok: true, opened: 'external', url: 'https://example.com/a' }
+        ];
+        const asked: unknown[] = [];
+        const commands = {
+            probeTerminalTarget: async (input: unknown) => {
+                asked.push(input);
+                return replies.shift();
+            },
+            openTerminalTarget: async () => ({ ok: true })
+        } as unknown as TerminalLinkCommands;
+        const probe = probeLinkURLVia(commands);
+        const history = { scrollOffset: 7 };
+        expect(await probe('pane-1', 3, 5, history)).toBe('https://example.com/a');
+        expect(await probe('pane-1', 3, 5, history)).toBeNull();
+        expect(asked).toEqual([
+            { paneID: 'pane-1', row: 3, col: 5, history },
+            { paneID: 'pane-1', row: 3, col: 5, history }
+        ]);
+    });
+
+    it('reads a failed probe as no link', async () => {
+        const commands = {
+            probeTerminalTarget: () => Promise.reject(new Error('socket closed')),
+            openTerminalTarget: async () => ({ ok: true })
+        } as unknown as TerminalLinkCommands;
+        expect(await probeLinkURLVia(commands)('pane-1', 0, 0)).toBeNull();
+    });
+});

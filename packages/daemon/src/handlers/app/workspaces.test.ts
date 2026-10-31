@@ -1102,6 +1102,25 @@ describe('workspace-create (group default repository)', () => {
         expect(entries[0]?.['repos']).toEqual([
             { repo_id: R1, repo_name: 'kelpi', repo_path: REPO, worktree_path: REPO, branch: 'main' }
         ]);
+        // workspace-feature.md §11: no PRs, no key; the poller's PRs, in the snake_case shape.
+        expect(entries[0]).not.toHaveProperty('pull_requests');
+        h.store.dispatch({
+            type: 'set-workspace-pull-requests',
+            id: workspace?.id ?? '',
+            pullRequests: [{
+                number: 12,
+                title: 'Add widgets',
+                url: 'https://github.com/acme/widgets/pull/12',
+                state: 'merged',
+                repoID: R1,
+                associationID: workspace?.repoAssociations[0]?.id ?? '',
+                branch: 'main'
+            }]
+        });
+        const listed = h.reply({ command: 'workspace-list' })['workspaces'] as Record<string, unknown>[];
+        expect(listed[0]?.['pull_requests']).toEqual([
+            { number: 12, title: 'Add widgets', url: 'https://github.com/acme/widgets/pull/12', state: 'merged', repo_id: R1, branch: 'main' }
+        ]);
     });
 
     it('keeps an explicit path for the first pane', async () => {

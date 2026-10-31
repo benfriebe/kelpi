@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { connect, listTargets } from '../ui-audit/lib/cdp.mjs';
 import { PROTOCOL_VERSION } from '../ui-audit/lib/stack.mjs';
 import { startBrowserFixture } from '../fixtures/plugin-browser.mjs';
-import { daemonIDFromSandbox, phoneToLanding, restoreBundledSlots } from '../ui-audit/lib/workbench.mjs';
+import { daemonIDFromSandbox, phoneRevealWorkspace, phoneToLanding, restoreBundledSlots } from '../ui-audit/lib/workbench.mjs';
 
 export const covers = ['examples/plugins/browser-lab/', 'packages/plugin-sdk/', 'packages/client/src/features/',
     'packages/client/src/plugins/', 'packages/client/src/webpane/', 'packages/client/src/App.tsx',
@@ -336,6 +336,8 @@ export default async function ({ page, cli, sandbox, rec, d, harness, shell, sle
         await page.send('Emulation.setDeviceMetricsOverride',{width:390,height:844,deviceScaleFactor:1,mobile:true});
         await page.send('Emulation.setTouchEmulationEnabled',{enabled:true,maxTouchPoints:5});
         const phoneRow = `[data-testid="phone-shell"] [data-workspace-id="${remotePane.workspaceID}"]`;
+        // Home shows one host's workspaces: page it to the host that holds this one.
+        await phoneRevealWorkspace(page, d, remotePane.workspaceID);
         if (await d.settleDom(page,`document.querySelector(${JSON.stringify(phoneRow)})`)) await page.click(phoneRow);
         rec.check('phone Browser Lab controls remain available with an explicit native-display limit', await ready(remotePane.paneID) && await check(remotePane.paneID,'!browserLab.presentation.available') && await sameState(remoteNative,remoteBeforePhone));
         rec.check('phone browser controls fit the viewport and do not mount a terminal key bar', await check(remotePane.paneID,'document.documentElement.scrollWidth <= document.documentElement.clientWidth') && !await page.eval(`!!document.querySelector('[data-testid="terminal-key-ctrl-${remotePane.paneID}"]')`));

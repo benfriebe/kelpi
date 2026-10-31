@@ -670,7 +670,7 @@ describe('the batch panel', () => {
         // Send names the count it is about to dispatch, and is FILLED as the default action.
         expect(send.textContent?.replace(/\s+/g, ' ').trim()).toBe('Send 2');
         expect((send as HTMLButtonElement).style.background).not.toBe('');
-        expect((send as HTMLButtonElement).style.color).toBe('rgb(255, 255, 255)');
+        expect((send as HTMLButtonElement).style.color).toContain('--kelpi-on-accent');
     });
 
     /**

@@ -105,6 +105,44 @@ describe('snapshot hydration', () => {
         expect(events[0]).toMatchObject({ workspace: { muted: false } });
     });
 
+    it('normalizes a workspace status, so an older daemon\'s mirror reads as idle (agent-lifecycle §5.10)', () => {
+        const { store } = seededDaemon();
+        const wire = serializeState(store.getState()) as Record<string, unknown>;
+        const workspaces = wire['workspaces'] as Record<string, unknown>[];
+        const legacy = { ...wire, workspaces: workspaces.map(({ status: _status, ...rest }) => rest) };
+        expect(hydrateSnapshotState(legacy).workspaces[0]?.status).toBe('idle');
+        const junk = { ...wire, workspaces: workspaces.map((workspace) => ({ ...workspace, status: 'exploded' })) };
+        expect(hydrateSnapshotState(junk).workspaces[0]?.status).toBe('idle');
+
+        store.dispatch({ type: 'set-workspace-status', id: W1, status: 'waitingForInput' });
+        expect(hydrateSnapshotState(serializeState(store.getState())).workspaces[0]?.status).toBe('waitingForInput');
+        const events = hydrateDomainEvents([{ kind: 'workspace-upserted', id: W1, workspace: { id: W1, name: 'x' } }]);
+        expect(events[0]).toMatchObject({ workspace: { status: 'idle' } });
+    });
+
+    it('carries the PR list, and reads a daemon older than it as having none', () => {
+        const { store } = seededDaemon();
+        const pullRequest = {
+            number: 12,
+            title: 'Add widgets',
+            url: 'https://github.com/acme/widgets/pull/12',
+            state: 'open',
+            repoID: 'r1',
+            associationID: 'a1',
+            branch: 'feat-x'
+        } as const;
+        store.dispatch({ type: 'set-workspace-pull-requests', id: W1, pullRequests: [pullRequest] });
+        expect(hydrateSnapshotState(serializeState(store.getState())).workspaces[0]?.pullRequests).toEqual([pullRequest]);
+        const wire = serializeState(store.getState()) as Record<string, unknown>;
+        const workspaces = wire['workspaces'] as Record<string, unknown>[];
+        const legacy = { ...wire, workspaces: workspaces.map(({ pullRequests: _pullRequests, ...rest }) => rest) };
+        expect(hydrateSnapshotState(legacy).workspaces[0]?.pullRequests).toEqual([]);
+        const events = hydrateDomainEvents([
+            { kind: 'workspace-upserted', id: W1, workspace: { id: W1, name: 'x', pullRequests: [pullRequest, { ...pullRequest, url: 'file:///etc' }] } }
+        ]);
+        expect(events[0]).toMatchObject({ workspace: { pullRequests: [pullRequest] } });
+    });
+
     it('survives a junk payload rather than blanking the app', () => {
         expect(hydrateSnapshotState(null).workspaces).toEqual([]);
         expect(hydrateSnapshotState({ workspaces: 'nope' }).workspaces).toEqual([]);

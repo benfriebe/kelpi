@@ -1,9 +1,9 @@
 /**
  * Which panes get a live renderer (WP3.2, terminal-surface.md §4).
  *
- * A renderer is expensive in a way pane state is not: ghostty-web's canvas render loop is an
- * unconditional `requestAnimationFrame` chain per open terminal (it can be stopped only by
- * `dispose()`), each engine holds a canvas + a WASM terminal, and browsers cap live GPU-backed
+ * A renderer is expensive in a way pane state is not: each engine holds a canvas + a WASM
+ * terminal (its render loop, unconditional upstream, runs only on demand since the vendored
+ * `0.4.0-kelpi.25`, so an idle one no longer costs frames), and browsers cap live GPU-backed
  * canvases per page (the WebGL context limit that shaped this decision in the stack research —
  * ~16 in Chrome, oldest context gets killed silently past it). A workspace with 20 panes must
  * therefore NOT open 20 engines.

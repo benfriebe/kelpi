@@ -314,7 +314,7 @@ export function GroupRepoSheet(props: GroupRepoSheetProps): ReactElement | null 
                         style={{
                             background: canSave ? tokens.accent : withAlpha(tokens.textPrimary, 0.08),
                             borderColor: canSave ? tokens.accent : 'transparent',
-                            color: canSave ? '#fff' : tokens.textTertiary
+                            color: canSave ? tokens.onAccent : tokens.textTertiary
                         }}
                         onClick={() => {
                             save();

@@ -207,7 +207,7 @@ import { installActivationClick } from './app/activation-click';
 import { focusPaneSurface, handCaretToPaneWhenReady, mayClaimPaneCaret, releaseFocusedPaneCaret } from './app/pane-focus';
 import { navigationTrustedRuntimes, useRemoteDaemons, type RemoteRuntimeFactory } from './app/remote-daemons';
 import { RemoteWorkspaceView } from './app/RemoteWorkspaceView';
-import { defaultFormFactorWindow, useFormFactor, type FormFactorWindow } from './chrome/form-factor';
+import { currentFormFactor, defaultFormFactorWindow, useFormFactor, type FormFactorWindow } from './chrome/form-factor';
 import { PhoneShell, phoneVisiblePaneIDs, usePhoneView, type QrCamera } from './phone';
 import { createSearchNeedleScheduler, type SearchNeedleScheduler } from './app/search-needle';
 import { SEED_TEST_GROUP_COMMAND, seedTestGroup } from './app/seed-test-group';
@@ -233,7 +233,7 @@ import {
     type FontSizeStep
 } from './content';
 import { createCsvClient, csvRawUnavailableReason, flushCsvPane } from './content/csv';
-import { PaneGrid, PaneSearchOverlay, paneDisplayTitle, type PaneModel, type RenderPane } from './grid';
+import { PaneGrid, PaneSearchOverlay, paneDisplayTitle, useFocusDwell, type PaneModel, type RenderPane } from './grid';
 import type { PaneChromeItemDescriptor } from './pane-chrome';
 import {
     isPaneSearchKind,
@@ -277,6 +277,7 @@ import {
     terminalFontStack,
     terminalPaletteCssVars,
     terminalThemePreset,
+    probeLinkURLVia,
     probeLinkVia,
     visiblePaneIDs,
     type TerminalGeometry,
@@ -462,6 +463,8 @@ function Shell(props: AppProps): ReactElement {
      * selection (`activateWorkspaceAndReveal`); a vanished daemon clears it below.
      */
     const remoteDaemonRuntimes = useRemoteDaemons(settings.remoteDaemons);
+    /** The phone shell's configured hosts, as one array that only changes when the runtimes do. */
+    const configuredDaemonList = useMemo(() => [...remoteDaemonRuntimes.values()], [remoteDaemonRuntimes]);
     const { selection: remoteSelection, select: setRemoteSelection, activeRemote } = useRemoteWorkspaceSelection(remoteDaemonRuntimes);
     const remoteSelectionRef = useRef(remoteSelection);
     remoteSelectionRef.current = remoteSelection;
@@ -830,15 +833,19 @@ function Shell(props: AppProps): ReactElement {
     }, [runtime]);
 
     // Browsers only grant notification permission from a user gesture, so the first click in
-    // the window is the prompt (agent-lifecycle.md §7 client half).
+    // the window is the prompt (agent-lifecycle.md §7 client half). Not on a phone: there the
+    // prompt comes from the Notifications sheet's own button, which says what it is for
+    // (§7.8, `pwa/push.ts`); an unexplained prompt on the first tap is how push gets refused.
     useEffect(() => {
         const ask = (): void => {
+            // Still listening on a phone: a window that is phone-shaped now may not be at the next tap.
+            if (currentFormFactor(props.formFactorWindow ?? defaultFormFactorWindow()) === 'phone') return;
             window.removeEventListener('pointerdown', ask);
             void runtime.notifications?.request();
         };
         window.addEventListener('pointerdown', ask);
         return () => window.removeEventListener('pointerdown', ask);
-    }, [runtime]);
+    }, [runtime, props.formFactorWindow]);
 
     // ── web panes ───────────────────────────────────────────────────────────────────
 
@@ -2077,6 +2084,11 @@ function Shell(props: AppProps): ReactElement {
                 return run('Clear pane status', commands.clearPaneStatus({ paneID }));
             },
 
+            /** The same acknowledgment for a workspace's hand-set status (§5.10), on a visit. */
+            dwellClearWorkspace(workspaceID: string): boolean {
+                return run('Clear workspace status', commands.clearWorkspaceStatus({ workspaceID }));
+            },
+
             // ── terminal search (TERM-113…TERM-120) ─────────────────────────────────
             //
             // The daemon owns everything a person reads off the overlay: which pane hosts the
@@ -2683,6 +2695,19 @@ function Shell(props: AppProps): ReactElement {
      */
     const actRef = useRef(act);
     actRef.current = act;
+
+    /*
+     * agent-lifecycle §5.10: visiting a workspace acknowledges its hand-set Awaiting Input, on
+     * the pane's own timer (§5.8) keyed on the active workspace instead of the focused pane. So
+     * it arms on a switch or an activation, never on the status change itself, and only while
+     * this window is showing that workspace: not a remote daemon's, not the phone's host list.
+     */
+    useFocusDwell({
+        paneID: workspace?.id ?? null,
+        status: workspace?.status ?? null,
+        onDwellClear: act.dwellClearWorkspace,
+        enabled: isAppActive(ui) && remoteSelection === null && !(phoneActive && (phoneAtLanding || phoneRemoteSelected))
+    });
 
     // ⌃Tab (docs/config-keybindings.md §7.8). The activation
     // sequence breaks same-second ties in the daemon's `lastAccessedAt`. Built once per store and
@@ -3996,7 +4021,7 @@ function Shell(props: AppProps): ReactElement {
             { id: 'new-web', label: 'New Web Pane', onSelect: () => act.newWebPane(paneID) }
         ];
 
-        // §5.10: status is a shell-only concept, so the submenu is too — the daemon's state
+        // §5.7: status is a shell-only concept, so the submenu is too — the daemon's state
         // machine no-ops for anything else and an inert submenu would be a lie.
         if (pane.type === 'shell') {
             items.push(
@@ -4512,6 +4537,8 @@ function Shell(props: AppProps): ReactElement {
      * their own daemon (`linkCommands`, #328).
      */
     const probeTerminalLink = useMemo(() => probeLinkVia(commands), [commands]);
+    /** The same question for a phone's tap on a link, answered with the URL it would open. */
+    const probeTerminalLinkURL = useMemo(() => probeLinkURLVia(commands), [commands]);
 
     const renderPane = useCallback<RenderPane>(
         (paneID, _frame, focused, renderState) => {
@@ -4690,6 +4717,8 @@ function Shell(props: AppProps): ReactElement {
                             search={search}
                             // #303: the hover underline asks the daemon a ⌘-click here goes to.
                             probeLink={probeTerminalLink}
+                            // A phone's tap on a link asks the same daemon, to offer it.
+                            probeLinkURL={probeTerminalLinkURL}
                             createRenderer={createRenderer}
                         />
                     );
@@ -4727,6 +4756,7 @@ function Shell(props: AppProps): ReactElement {
             onTerminalFocus,
             onDimensionsChange,
             probeTerminalLink,
+            probeTerminalLinkURL,
             createRenderer,
             webCommands,
             webGeometry,
@@ -4856,7 +4886,7 @@ function Shell(props: AppProps): ReactElement {
                     view={phoneView}
                     bucket={bucket}
                     homeDirectory={daemonHome}
-                    configuredDaemons={[...remoteDaemonRuntimes.values()]}
+                    configuredDaemons={configuredDaemonList}
                     renderPane={renderPane}
                     grid={{
                         renderPaneOverlay,

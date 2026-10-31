@@ -24,3 +24,5 @@ export function sanitizedGitName(name: string): string | null {
     slug = slug.replace(/^[-/._ ]+/, '').replace(/[-/._ ]+$/, '');
     return slug === '' ? null : slug;
 }
+
+export * from './pull-requests.js';

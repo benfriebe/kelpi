@@ -25,7 +25,7 @@ const bigSource = () => {
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { phoneToLanding } from '../ui-audit/lib/workbench.mjs';
+import { phoneRevealWorkspace, phoneToLanding } from '../ui-audit/lib/workbench.mjs';
 
 /** The source this presses (ui-audit/README.md ▸ The rule). */
 export const covers = [
@@ -238,6 +238,8 @@ export default async function ({ page, cli, sandbox, rec, d, sleep }) {
             await d.settleDom(page, `document.querySelector('[data-testid="phone-shell"]') !== null`, { ceilingMs: 8_000 });
             // The phone opens on its landing page: pick this workspace, then its pane list.
             const phoneRow = `[data-testid="phone-shell"] [data-workspace-id="${String(ownID)}"]`;
+            // Home shows one host's workspaces: page it to the host that holds this one.
+            await phoneRevealWorkspace(page, d, String(ownID));
             if (await d.settleDom(page, `document.querySelector(${JSON.stringify(phoneRow)}) !== null`, { ceilingMs: 6_000 })) await page.click(phoneRow);
             if (await d.settleDom(page, `document.querySelector('[data-testid="phone-title"]') !== null`, { ceilingMs: 6_000 })) await page.click('[data-testid="phone-title"]');
             const show = `[data-testid="phone-pane-show-${paneID}"]`;

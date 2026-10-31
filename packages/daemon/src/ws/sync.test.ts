@@ -614,6 +614,38 @@ describe('WS-only commands', () => {
         expect(reply['error']).toContain('nope');
     });
 
+    it('sets and clears a workspace status, the pane pair addressed to a workspace (agent-lifecycle §5.10)', () => {
+        const f = fixture();
+        const status = (): string | undefined => f.store.state().workspaces[0]?.status;
+
+        expect(send(f, { command: 'set-workspace-status', workspace_id: W1, status: 'waitingForInput' })).toEqual({
+            ok: true,
+            workspace_id: W1,
+            status: 'waitingForInput'
+        });
+        expect(status()).toBe('waitingForInput');
+        expect(send(f, { command: 'clear-workspace-status', workspace_id: W1 })).toEqual({
+            ok: true,
+            workspace_id: W1,
+            status: 'idle'
+        });
+
+        // The clear never touches `running`, and answers with what is left.
+        send(f, { command: 'set-workspace-status', workspace_id: W1, status: 'running' });
+        expect(send(f, { command: 'clear-workspace-status', workspace_id: W1 })).toMatchObject({ status: 'running' });
+        expect(status()).toBe('running');
+    });
+
+    it('refuses a workspace status with no workspace, an unknown one or a bad status', () => {
+        const f = fixture();
+        expect(send(f, { command: 'set-workspace-status', status: 'running' })['error']).toContain('requires workspace_id');
+        expect(send(f, { command: 'clear-workspace-status', workspace_id: 'ghost' })['error']).toContain('ghost');
+        const bad = send(f, { command: 'set-workspace-status', workspace_id: W1, status: 'exploded' });
+        expect(bad['ok']).toBe(false);
+        expect(bad['error']).toContain("'idle', 'running' or 'waitingForInput'");
+        expect(f.store.state().workspaces[0]?.status).toBe('idle');
+    });
+
     it('collapses and expands a group', () => {
         const f = fixture();
         f.store.dispatch({ type: 'create-group', id: G1, name: 'projects', now: 1 });

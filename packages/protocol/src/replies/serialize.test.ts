@@ -149,6 +149,22 @@ describe('workspace-list entry construction', () => {
         expect(entry).not.toHaveProperty('agent_session_id');
     });
 
+    it('emits pull_requests only when there are some', () => {
+        expect(buildWorkspaceListEntry({ ...base, pull_requests: [] })).not.toHaveProperty('pull_requests');
+        const pullRequest = {
+            number: 12,
+            title: 'Add widgets',
+            url: 'https://github.com/acme/widgets/pull/12',
+            state: 'merged',
+            repo_id: 'R',
+            branch: 'feat-x'
+        } as const;
+        expect(buildWorkspaceListEntry({ ...base, pull_requests: [pullRequest] })).toEqual({
+            ...base,
+            pull_requests: [pullRequest]
+        });
+    });
+
     it('emits the group pair together', () => {
         const entry = buildWorkspaceListEntry({
             ...base,

@@ -155,6 +155,7 @@ interface ChromeTheme {
   selectionFill: Color;      // sidebar selected/active row fill (accent @ ~0.16/0.24)
   selectionStroke: Color;    // sidebar selected/active row outline
   accent: Color;             // sidebar highlight + global tint
+  onAccent: Color;           // text/glyphs on an accent fill (filled buttons, checked boxes)
   paneFocus: Color;          // focused-pane border (independently themable)
   // semantic status
   statusRunning: Color;
@@ -179,6 +180,7 @@ interface ChromeTheme {
 | selectionFill | `#5E8AC4` @ 0.16 | `#5276B8` @ 0.24 |
 | selectionStroke | `#5E8AC4` | `#5276B8` |
 | accent | `#5E8AC4` | `#6F9BD8` |
+| onAccent | `#FFFFFF` | `#FFFFFF` |
 | paneFocus | `#5E8AC4` | `#6F9BD8` |
 | statusRunning | `#4FA46B` | `#5FBE89` |
 | statusWaiting | `#5E8AC4` | `#6F9BD8` |
@@ -192,7 +194,9 @@ User overrides exist for: `windowBackground`, `sidebarBackground`, `footerBackgr
 `headerBackground`, `surfaceBackground`, `accent`, `paneFocus`, `divider`,
 `statusRunning`, `statusWaiting`, `statusInactive` (the last three form a separate
 "Agent status" settings section). Overriding `accent` ALSO rewrites `selectionStroke`
-(same value) and `selectionFill` (accent @ 0.18). `textPrimary/Secondary/Tertiary`,
+(same value), `selectionFill` (accent @ 0.18) and `onAccent` (`#0A0A0C` when the accent's
+perceived luminance is above 0.8, so a white accent keeps its button labels; white otherwise,
+which every shipped preset gets). `textPrimary/Secondary/Tertiary`,
 `activeAgent`, and `groupBandOpacity` are not user-overridable. Overrides are stored per
 concrete bucket (`light:` / `dark:`) — a color picked in dark mode never leaks into
 light mode.
@@ -227,8 +231,9 @@ Effective opacity is always `min(1, value * intensity)`.
 
 A preset gallery the user can apply in one click (writes the palette into the matching
 bucket's overrides and switches Light/Dark to suit; the terminal theme is untouched).
-Seven presets: **Dracula, Nord, Gruvbox Dark, Tokyo Night, Catppuccin Mocha** (dark) and
-**Solarized Light, Gruvbox Light** (light). Each specifies the 11 overridable colors
+Eight presets: **Dracula, Nord, Gruvbox Dark, Tokyo Night, Catppuccin Mocha, Monochrome**
+(dark) and **Solarized Light, Gruvbox Light** (light). Monochrome is Kelpi's own: a black
+ground with white accents, and greys for the running and inactive agent dots. Each specifies the 11 overridable colors
 (the exact hex tables are `BUILT_IN_CHROME_THEMES` in `packages/client/src/chrome/presets.ts`).
 
 ### Theme sharing
@@ -760,6 +765,17 @@ from the left (applied outside the background so the selection ring indents too)
   tooltip and accessible name "Notifications muted" (`data-testid="workspace-muted-<id>"`).
   The avatar's status dot is unaffected, so a muted workspace still shows that its agents
   are waiting. Remote rows show it too, from the remote daemon's mirror.
+- **Pull request glyph** (Kelpi addition, workspace-feature.md §11): one 11pt mark before
+  the muted bell, shown while the workspace has any PRs, in the aggregate state (open >
+  draft > merged > closed): open green, draft tertiary, merged purple, closed red (the
+  workspace palette's green, purple and red for the bucket). Each state has its own drawing
+  (`pull-request`, `-draft`, `-merged`, `-closed`), so the state never rests on colour alone.
+  A 10pt monospace count follows the mark when there is more than one PR. Tooltip and
+  accessible name: "Pull request #412 open", or "3 pull requests: 1 open, 2 merged"
+  (`data-testid="workspace-pr-<id>"`, `data-pr-state`). Not clickable: a click on it selects
+  the row like anywhere else. It is a `shrink-0` sibling on the row's one line, never a
+  second line, so the row height is unchanged. Remote rows show their own daemon's answer.
+  `packages/client/src/chrome/PullRequestGlyph.tsx`.
 - **Backgrounds** (rounded 7):
   - selected (multi-select): `selectionFill` fill + `selectionStroke` @ 0.7 1px outline.
   - active: `selectionFill` @ 0.7 fill + `selectionStroke` 1.5px outline (drawn on top
@@ -780,7 +796,7 @@ A full-width pill "band" (rounded 8): fill = group color (or neutral tertiary wh
 colorless) at `groupBandOpacity × intensity` (or the user's `groupFill` override), plus an
 optional border (`groupStroke`). Same height as a workspace row.
 
-Contents: `[icon 22×22] [name 13pt bold] [repo indicator] …spacer… [chevron]`.
+Contents: `[icon 22×22] [name 13pt bold] [repo indicator] …spacer… [+ on hover] [chevron]`.
 
 - **Repo indicator** (Kelpi addition, app-state-core.md §5.5): only for a group with a
   default repository the registry lists, a small branch glyph and the repo's name at 10pt in
@@ -796,6 +812,12 @@ Contents: `[icon 22×22] [name 13pt bold] [repo indicator] …spacer… [chevron
   colored); or emoji (native palette). Same pulsing status dot on the icon corner,
   aggregated over the group's children (waiting > running).
 - Chevron: right when collapsed, down when expanded.
+- **Hover "+"** (Kelpi addition): while the pointer is over the band (and it is not being
+  renamed), a `+` in the chevron's ink and 21×21 hit box sits to its left. Under the pointer
+  the glyph takes the ••• toggle's hover ink (primary); no box is drawn. Clicking it does exactly
+  what the context menu's "New Workspace" does: opens the New Workspace sheet scoped to the
+  group (§10.1, so the group's repository/worktree defaults apply); it does not toggle
+  collapse. Remote daemons' group headers have no create sheet and show no `+`.
 - Click header → toggle collapse. Right-click → group context menu (§5.7).
 - **Inline rename**: initiated from the context menu. The name becomes a text field
   (auto-focused; focus assignment is deferred a tick so it reliably lands). Enter with a
@@ -968,6 +990,11 @@ Labels ▸                         → every preset with a real-color swatch dot
                                    (checkmark drawn inside when applied); click toggles.
                                    Then any applied free-form labels (checkmark, click
                                    removes). Then "Manage Labels…" → Settings ▸ Labels.
+Status ▸                         → Idle / Running / Awaiting Input, the pane menu's three
+                                   (current one ticked); lights the avatar's status dot
+                                   as one more pane would, and a visit clears Awaiting
+                                   Input (Kelpi addition, agent-lifecycle.md §5.10).
+                                   Primary daemon rows only, and not in the bulk menu
 Move to Group ▸                  → "Remove from Group" (when grouped) / each group
                                    (current disabled) / "New Group…" (creates a group
                                    seeded with this workspace, placeholder name,
@@ -1000,7 +1027,7 @@ The mute row's checkbox is `MenuItemSpec.control: 'checkbox'`
 leading tick (Profile's list, the label menus' `–` for mixed). It renders as
 `role="menuitemcheckbox"` with `aria-checked`. The empty state is an outlined box in the
 secondary text colour, legible in both themes and over the row highlight. The checked state is
-an accent-filled box with a white check. It is a stop in the keyboard walk like any row.
+an accent-filled box with a check in `onAccent` (white, or near-black on a white accent). It is a stop in the keyboard walk like any row.
 
 Selecting a checkbox row (click, Return or Space) toggles it without closing the menu, so the
 new state is seen and can be flipped straight back; the keyboard stays on the row. The box is
@@ -1118,6 +1145,11 @@ is in flight (`Inspector.tsx:358-362`).
     "Remove & Delete Worktree" (also deletes the git worktree).
   - When a repo group has worktrees but no main association, a non-interactive repo
     header anchors them.
+  - **Pull requests** (workspace-feature.md §11): under each association row that has any,
+    one line per PR, indented, in the workspace's order (open first): the state's mark in its
+    colour, `#412` (monospace, tertiary) and the title (truncated), the whole line a link
+    (`data-testid="inspector-pr-link"`, `target="_blank"`) that the desktop shell opens in
+    the system browser. Tooltip: the full title, number and state.
 - **Add menu** (borderless "+ Add", always enabled; `packages/client/src/chrome/Inspector.tsx:25-29`,
   `:597-604`): "Add Repository…" → a sheet with a path field (in the Electron shell a
   "Choose…" beside it opens the native folder panel through the daemon's `choose-folder-dialog`

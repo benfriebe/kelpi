@@ -139,6 +139,28 @@ describe('workspace creation', () => {
         expect(h.state()).toBe(before);
     });
 
+    it('creates idle, sets any status by hand, and a clear acknowledges only waitingForInput (agent-lifecycle §5.10)', () => {
+        const h = harness();
+        h.dispatch(create(W1, 'alpha'));
+        expect(workspaceByID(h.state(), W1)?.status).toBe('idle');
+
+        h.dispatch({ type: 'set-workspace-status', id: W1, status: 'running' });
+        h.dispatch({ type: 'clear-workspace-status', id: W1 });
+        expect(workspaceByID(h.state(), W1)?.status).toBe('running');
+
+        h.dispatch({ type: 'set-workspace-status', id: W1, status: 'waitingForInput' });
+        expect(workspaceByID(h.state(), W1)?.status).toBe('waitingForInput');
+        h.dispatch({ type: 'clear-workspace-status', id: W1 });
+        expect(workspaceByID(h.state(), W1)?.status).toBe('idle');
+
+        // No-ops keep the state's identity, so no delta goes out.
+        const before = h.state();
+        h.dispatch({ type: 'clear-workspace-status', id: W1 });
+        h.dispatch({ type: 'set-workspace-status', id: W1, status: 'idle' });
+        h.dispatch({ type: 'set-workspace-status', id: 'ghost', status: 'running' });
+        expect(h.state()).toBe(before);
+    });
+
     it('places near the previously active workspace when asked', () => {
         const h = harness(seeded());
         h.dispatch({ type: 'set-active-workspace', id: W1, now: NOW });

@@ -100,6 +100,13 @@ export interface GeneralSettings {
      */
     readonly autoDetectRepos: boolean;
     /**
+     * workspace-feature.md §11: look up GitHub pull requests for each workspace's association
+     * branches with the `gh` CLI, and show their state on the row and in the inspector. Default
+     * **true**; it costs nothing without `gh` or a GitHub remote. Only the literal `false` turns
+     * it off, and off means no `gh` process is ever spawned.
+     */
+    readonly workspacePrStatus: boolean;
+    /**
      * §13's Settings ▸ General ▸ Worktrees "Base path" (SET-008), default
      * `~/kelpi/worktrees/<repo>`. `<repo>` expands to the full repo path at the START of the
      * template and to the repo's directory NAME elsewhere; `~` expands too
@@ -265,6 +272,7 @@ export const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
     confirmQuitWhenActive: true,
     autoUpdate: false,
     autoDetectRepos: true,
+    workspacePrStatus: true,
     worktreeBasePath: DEFAULT_WORKTREE_BASE_PATH_TEMPLATE,
     newWorkspacePlacement: 'end-of-list',
     newGroupPlacement: 'end-of-list',
@@ -362,6 +370,9 @@ export function parseGeneralSettings(contents: string): GeneralSettings {
                 break;
             case 'auto-detect-repos':
                 settings = { ...settings, autoDetectRepos: lowered !== 'false' };
+                break;
+            case 'workspace-pr-status':
+                settings = { ...settings, workspacePrStatus: lowered !== 'false' };
                 break;
             case 'worktree-base-path':
                 // A blank value means "the default", not "the filesystem root".

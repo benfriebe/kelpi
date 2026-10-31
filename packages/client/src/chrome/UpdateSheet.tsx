@@ -332,7 +332,7 @@ export function UpdateSheet(props: UpdateSheetProps): ReactElement | null {
                                 data-testid={primary.testID}
                                 data-default-action="true"
                                 className="rounded border px-3 py-1 text-[12px] font-medium"
-                                style={{ background: tokens.accent, borderColor: tokens.accent, color: '#fff' }}
+                                style={{ background: tokens.accent, borderColor: tokens.accent, color: tokens.onAccent }}
                                 onClick={() => props.onAction(primary.action)}
                             >
                                 {primary.label}

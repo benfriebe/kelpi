@@ -42,6 +42,7 @@ function richSnapshot(): PersistedSnapshot {
                 muted: false,
                 childOrder: [],
                 childrenCollapsed: false,
+                status: 'waitingForInput',
                 layout: {
                     kind: 'split',
                     direction: 'horizontal',
@@ -141,6 +142,7 @@ function richSnapshot(): PersistedSnapshot {
                 muted: true,
                 childOrder: [],
                 childrenCollapsed: false,
+                status: 'idle',
                 layout: { kind: 'leaf', paneID: P_WEB },
                 focusedPaneID: null,
                 createdAt: 1_755_400_000,

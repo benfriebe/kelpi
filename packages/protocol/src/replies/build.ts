@@ -5,7 +5,12 @@
  */
 
 import type { AgentKind, PaneStatus, PaneType } from '../wire/vocab.js';
-import type { PaneListEntry, WorkspaceListEntry, WorkspaceListRepo } from './types.js';
+import type {
+    PaneListEntry,
+    WorkspaceListEntry,
+    WorkspaceListPullRequest,
+    WorkspaceListRepo
+} from './types.js';
 
 export interface GroupRef {
     readonly id: string;
@@ -84,6 +89,7 @@ export interface WorkspaceListEntryInput {
     /** app-state-core.md §2.9: the workspace this one is nested under. */
     readonly parent?: GroupRef | undefined;
     readonly repos?: readonly WorkspaceListRepo[] | undefined;
+    readonly pull_requests?: readonly WorkspaceListPullRequest[] | undefined;
 }
 
 export function buildWorkspaceListEntry(input: WorkspaceListEntryInput): WorkspaceListEntry {
@@ -108,6 +114,9 @@ export function buildWorkspaceListEntry(input: WorkspaceListEntryInput): Workspa
         ...(input.parent !== undefined ? { parent_id: input.parent.id, parent_name: input.parent.name } : {}),
         // Elided when empty, like every other optional field, so an entry for a workspace with
         // no repository is byte-identical to what it always was.
-        ...(input.repos !== undefined && input.repos.length > 0 ? { repos: input.repos } : {})
+        ...(input.repos !== undefined && input.repos.length > 0 ? { repos: input.repos } : {}),
+        ...(input.pull_requests !== undefined && input.pull_requests.length > 0
+            ? { pull_requests: input.pull_requests }
+            : {})
     };
 }

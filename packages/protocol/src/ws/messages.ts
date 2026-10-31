@@ -149,6 +149,17 @@ export interface WsPingMessage {
     readonly id: string;
 }
 
+/**
+ * Phone push (agent-lifecycle.md §7.8): this phone's page went on or off screen. While it is on
+ * screen the daemon pushes the phone nothing. Its own report rather than `documentVisible`,
+ * which rides the workspace visibility report a phone sends a host only once it has opened one
+ * of that host's workspaces. Additive: a daemon that predates it ignores an unknown type.
+ */
+export interface WsPushPresenceMessage {
+    readonly type: 'push-presence';
+    readonly visible: boolean;
+}
+
 /** A rectangle in the reporting client's own coordinate space. */
 export interface WsRect {
     readonly x: number;
@@ -549,6 +560,7 @@ export type WsClientMessage =
     | WsVisibilityReportMessage
     | WsCommandMessage
     | WsPingMessage
+    | WsPushPresenceMessage
     | WsWebGeometryReportMessage
     | WsRevealRequestMessage
     | WsHostRegisterMessage

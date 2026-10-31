@@ -26,6 +26,8 @@ const ROUTES = {
     'set-workspace-icon': 'workspace',
     'set-workspace-profile': 'workspace',
     'set-workspace-muted': 'workspace',
+    'set-workspace-status': 'workspace',
+    'clear-workspace-status': 'workspace',
     'workspace-labels': 'workspace',
     'set-active-workspace': 'workspace',
     'move-workspace': 'workspace',
@@ -50,6 +52,7 @@ const ROUTES = {
     'add-repo-association': 'workspace',
     'remove-repo-association': 'workspace',
     'set-repo-association-branch': 'workspace',
+    'set-workspace-pull-requests': 'workspace',
 
     'create-group': 'group',
     'rename-group': 'group',

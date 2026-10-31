@@ -7,6 +7,7 @@
  */
 
 import { groupSidebarID, workspaceSidebarID, type SidebarID } from '@kelpi/core/codec';
+import { samePullRequests } from '@kelpi/core/git';
 import { normalizedAssignment } from '@kelpi/core/env';
 import { leaf } from '@kelpi/core/layout';
 import { makeSlug, normalizeLabel } from '@kelpi/core/resolve';
@@ -509,6 +510,16 @@ export function reduceWorkspaceAction(state: DaemonState, action: DomainAction):
                 ...workspace,
                 muted: action.muted
             }));
+        case 'set-workspace-status':
+            return updateWorkspace(state, action.id, (workspace) =>
+                workspace.status === action.status ? workspace : { ...workspace, status: action.status }
+            );
+        case 'clear-workspace-status':
+            // agent-lifecycle §5.10: the visit acknowledges `waitingForInput` and nothing else,
+            // as a pane's focus dwell does (§5.8).
+            return updateWorkspace(state, action.id, (workspace) =>
+                workspace.status === 'waitingForInput' ? { ...workspace, status: 'idle' } : workspace
+            );
         case 'workspace-labels':
             return applyLabels(state, action);
         case 'set-active-workspace': {
@@ -723,6 +734,12 @@ export function reduceWorkspaceAction(state: DaemonState, action: DomainAction):
                         : assoc
                 )
             }));
+        case 'set-workspace-pull-requests':
+            return updateWorkspace(state, action.id, (workspace) =>
+                samePullRequests(workspace.pullRequests, action.pullRequests)
+                    ? workspace
+                    : { ...workspace, pullRequests: action.pullRequests }
+            );
         default:
             return state;
     }

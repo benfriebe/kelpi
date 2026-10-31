@@ -500,6 +500,20 @@ export const SETTINGS_FIELD_DEFINITIONS: readonly SettingsFieldDefinition[] = Ob
         encode: BOOLEAN
     },
     {
+        id: 'general.workspacePrStatus',
+        sectionID: 'general',
+        groupID: 'general-repositories',
+        kind: 'toggle',
+        label: 'Show pull request status',
+        detail: "Look up the GitHub pull requests for each workspace's branches with the gh CLI, and show their state on the workspace row and in the inspector. Needs gh installed and logged in.",
+        testID: 'workspace-pr-status-toggle',
+        rowTestID: 'workspace-pr-status-row',
+        target: { file: 'kelpi', key: 'workspace-pr-status' },
+        default: true,
+        read: (settings) => settings.general.workspacePrStatus,
+        encode: BOOLEAN
+    },
+    {
         id: 'general.inheritGroupOnNewWorkspace',
         sectionID: 'general',
         groupID: 'general-workspaces',

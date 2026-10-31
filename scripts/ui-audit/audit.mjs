@@ -1281,19 +1281,19 @@ const PHONE_VIEWPORT = { width: 390, height: 844, deviceScaleFactor: 3 };
 const PHONE_PLACE_KEY = 'kelpi.phone.last-place';
 
 /**
- * The phone's OWN host list, and which host sections it has open (B9).
+ * The phone's OWN host list, and which host its Home is on.
  *
  * `kelpi.phone.hosts` is a paired device's list of daemons, each with its pairing URL; the shell
- * dials every entry. A step that wants a SECOND host in the tree seeds one here, because the lane
- * only ever has the origin - there is one daemon under an audit run - and "the host you are in is
- * open, the others are shut" cannot be measured against a list of one. `kelpi.phone.expanded-hosts`
- * is which sections a person opened by hand (`packages/client/src/phone/view.ts`).
+ * dials every entry. A step that wants a SECOND host in the picker seeds one here, because the lane
+ * only ever has the origin - there is one daemon under an audit run - and "the host on screen, and
+ * another one out of reach" cannot be measured against a list of one. `kelpi.phone.home-host` is
+ * the host Home's pager was last on (`packages/client/src/phone/place.ts`).
  *
  * Both are cleared by `clearPhoneEmulation`, with the place, so nothing a phone step seeds leaks
  * into the next step - phone or desktop.
  */
 const PHONE_HOSTS_KEY = 'kelpi.phone.hosts';
-const PHONE_HOST_EXPANSION_KEY = 'kelpi.phone.expanded-hosts';
+const PHONE_HOME_HOST_KEY = 'kelpi.phone.home-host';
 
 async function seedPhoneHosts(page, hosts) {
     await page.eval(
@@ -1301,7 +1301,7 @@ async function seedPhoneHosts(page, hosts) {
             try {
                 if (${hosts === null ? 'true' : 'false'}) {
                     localStorage.removeItem(${JSON.stringify(PHONE_HOSTS_KEY)});
-                    localStorage.removeItem(${JSON.stringify(PHONE_HOST_EXPANSION_KEY)});
+                    localStorage.removeItem(${JSON.stringify(PHONE_HOME_HOST_KEY)});
                     return 'cleared';
                 }
                 localStorage.setItem(${JSON.stringify(PHONE_HOSTS_KEY)}, ${JSON.stringify(JSON.stringify(hosts ?? []))});
@@ -30201,7 +30201,7 @@ function buildFlows(ctx) {
         {
             id: 'phone-keyboard-inset',
             expect:
-                'Under a 390x844 phone viewport, faking a 300 px software keyboard through the live `visualViewport` takes 300 px off the CONTENT AREA - the box the pane grid and the window\'s one key bar share (C9) - so every terminal pane gets shorter, the rows each one tells the daemon are the rows its own box can paint, and each costs the daemon exactly ONE resize message however many viewport events the animation fires; the area\'s box follows every frame of that animation in the frame it arrives, the panes ride it, and the daemon hears nothing until it stops; removing the fake restores the rows in exactly one more. At rest the area is padded by the key bar and by nothing else. The app never scrolls for any of it: the served page asks for `interactive-widget=resizes-content`, the pane root starts where it started on every frame, the document has no overflow for a browser to scroll, and the client names the mode it is in (`resizes-visual` for the visual-viewport fake, `resizes-content` when the window shrinks with it, and neither the area nor a pane then takes a padding of its own).',
+                'Under a 390x844 phone viewport, faking a 300 px software keyboard through the live `visualViewport` takes the 300 px, less the pane strip and location bar the keyboard covers first, off the CONTENT AREA - the box the pane grid and the window\'s one key bar share (C9) - so every terminal pane gets shorter, the rows each one tells the daemon are the rows its own box can paint, and each costs the daemon exactly ONE resize message however many viewport events the animation fires; the area\'s box follows every frame of that animation in the frame it arrives, the panes ride it, and the daemon hears nothing until it stops; removing the fake restores the rows in exactly one more. At rest the area is padded by the key bar and by nothing else. The app never scrolls for any of it: the served page asks for `interactive-widget=resizes-content`, the pane root starts where it started on every frame, the document has no overflow for a browser to scroll, and the client names the mode it is in (`resizes-visual` for the visual-viewport fake, `resizes-content` when the window shrinks with it, and neither the area nor a pane then takes a padding of its own).',
             async run(recorder) {
                 // `reattach-after-relaunch` replaces the CDP session, and this step is after it.
                 const view = runtime.page ?? page;
@@ -30249,12 +30249,17 @@ function buildFlows(ctx) {
                                     const box = area.getBoundingClientRect();
                                     const padding = Number.parseFloat(getComputedStyle(area).paddingBottom || '0');
                                     const bar = document.querySelector('[data-terminal-key-bar]');
+                                    const shell = document.querySelector('[data-testid="phone-shell"]');
                                     return JSON.stringify({
                                         height: Math.round(box.height),
                                         padding: Math.round(padding),
                                         content: Math.round(box.height - padding),
                                         inset: Number(area.getAttribute('data-phone-keyboard-inset') ?? '-1'),
-                                        bar: bar === null ? 0 : Math.round(bar.getBoundingClientRect().height)
+                                        bar: bar === null ? 0 : Math.round(bar.getBoundingClientRect().height),
+                                        // The phone shell's strip and location bar (and the home
+                                        // indicator) sit UNDER the area: a keyboard covers them
+                                        // first and reaches the area only past them.
+                                        below: shell === null ? 0 : Math.max(0, Math.round(shell.getBoundingClientRect().bottom - box.bottom))
                                     });
                                 })()`
                             )
@@ -30366,10 +30371,12 @@ function buildFlows(ctx) {
                                         if (el === null) return null;
                                         const box = el.getBoundingClientRect();
                                         const padding = Number.parseFloat(getComputedStyle(el).paddingBottom || '0');
+                                        const shell = document.querySelector('[data-testid="phone-shell"]');
                                         return {
                                             padding: Math.round(padding),
                                             content: Math.round(box.height - padding),
-                                            inset: Number(el.getAttribute('data-phone-keyboard-inset') ?? '-1')
+                                            inset: Number(el.getAttribute('data-phone-keyboard-inset') ?? '-1'),
+                                            below: shell === null ? 0 : Math.max(0, Math.round(shell.getBoundingClientRect().bottom - box.bottom))
                                         };
                                     };
                                     // C7: everything a browser can move the app by without resizing it.
@@ -30451,13 +30458,19 @@ function buildFlows(ctx) {
                      * statement about the animation rather than about its end.
                      */
                     const restArea = raised.restArea ?? null;
+                    /*
+                     * The part of each frame's keyboard that reaches the area: the phone shell's
+                     * strip and bar sit under the area, so the keyboard covers them first and the
+                     * area gives up only what is left (`PhoneKeyBar`'s `belowPx`).
+                     */
+                    const overArea = (px) => Math.max(0, px - (restArea?.below ?? 0));
                     const areaOff = (raised.frames ?? []).filter(
                         (frame) =>
                             frame.area === null ||
                             restArea === null ||
-                            frame.area.inset !== frame.px ||
-                            Math.abs(frame.area.padding - (restArea.padding + frame.px)) > 1 ||
-                            Math.abs(restArea.content - frame.area.content - frame.px) > 1
+                            frame.area.inset !== overArea(frame.px) ||
+                            Math.abs(frame.area.padding - (restArea.padding + overArea(frame.px))) > 1 ||
+                            Math.abs(restArea.content - frame.area.content - overArea(frame.px)) > 1
                     );
                     recorder.check(
                         `the content area's box followed all ${String(FRAMES)} frames of the animation, in the frame each one arrived`,
@@ -30478,8 +30491,15 @@ function buildFlows(ctx) {
                             }))
                             // The pane publishes the frame's keyboard, and its box has given up
                             // what the content area gave up - which for a pane the grid gives the
-                            // full height to is the whole of it, and never more than it.
-                            .filter((pane) => pane.inset !== pane.frame || pane.shrank <= 0 || pane.shrank > pane.frame + 1)
+                            // full height to is the whole of the keyboard over the area, and
+                            // never more than it.
+                            .filter(
+                                (pane) =>
+                                    pane.inset !== pane.frame ||
+                                    pane.shrank < 0 ||
+                                    (overArea(pane.frame) > 0 && pane.shrank <= 0) ||
+                                    pane.shrank > overArea(pane.frame) + 1
+                            )
                     );
                     recorder.check(
                         `every pane rode all ${String(FRAMES)} frames with it, and none gave up more than the keyboard`,
@@ -30558,11 +30578,11 @@ function buildFlows(ctx) {
                     const areaUp = await readArea();
                     recorder.note(`content area with the keyboard up: ${JSON.stringify(areaUp)} (was ${JSON.stringify(areaBefore)})`);
                     recorder.check(
-                        'the keyboard came off the CONTENT AREA once, whole: 300 px of grid, taken where the keyboard is',
+                        'the keyboard came off the CONTENT AREA once, whole: the 300 px less what sits under the area, taken where the keyboard is',
                         areaBefore !== null &&
                             areaUp !== null &&
-                            areaUp.inset === FAKE_KEYBOARD_PX &&
-                            Math.abs(areaBefore.content - areaUp.content - FAKE_KEYBOARD_PX) <= 1,
+                            areaUp.inset === Math.max(0, FAKE_KEYBOARD_PX - areaBefore.below) &&
+                            Math.abs(areaBefore.content - areaUp.content - Math.max(0, FAKE_KEYBOARD_PX - areaBefore.below)) <= 1,
                         `${String(areaBefore?.content)} px of grid -> ${String(areaUp?.content)} px, ` +
                             `padding ${String(areaBefore?.padding)} -> ${String(areaUp?.padding)} (bar ${String(areaUp?.bar)} px)`
                     );
@@ -32227,7 +32247,7 @@ function buildFlows(ctx) {
         {
             id: 'phone-touch-mouse-reporting',
             expect:
-                'Under a 390x844 phone viewport, over an application that has asked for the mouse (`?1049h ?1000h ?1002h ?1006h`, which is what Claude Code asks for), a one-finger drag reaches the application as WHEEL reports at the finger - SGR button 64 dragging down the glass, 65 dragging up, one per line of travel - and as no press and no release, so a drag that ends over the bottom rows does not arrive there as a click on whatever the TUI draws at the bottom. A flick reports while its momentum is moving and stops reporting when it comes to rest. A TAP is the one gesture reported as a click: a press and a release at the point, no wheel. A long press is reported the same way and raises no Copy pill, because the application asked for the press. The pane scrolls no scrollback of its own in any of it (`data-terminal-scroll` stays 0). With the same fixture asking for NO modes, the same gestures put not one byte on the wire, which is the spike’s rule and C3’s behaviour unchanged. With the fixture gone the pane reports `data-terminal-mouse=none` again and is back at a prompt.',
+                'Under a 390x844 phone viewport, over an application that has asked for the mouse (`?1049h ?1000h ?1002h ?1006h`, which is what Claude Code asks for), a one-finger drag reaches the application as WHEEL reports at the finger - SGR button 64 dragging down the glass, 65 dragging up, one per line of travel - and as no press and no release, so a drag that ends over the bottom rows does not arrive there as a click on whatever the TUI draws at the bottom. A flick reports while its momentum is moving and stops reporting when it comes to rest. A TAP is the one gesture reported as a click: a press and a release at the point, no wheel. A long press is C3’s even here: it selects the word under the finger and raises the Copy pill, and the application is sent nothing for it - no press, no release (the owner, 2026-10-18: with Claude Code reporting the mouse, the long press was the only way to copy out of a pane, and it had been handed to the application). The pane scrolls no scrollback of its own in any of it (`data-terminal-scroll` stays 0). With the same fixture asking for NO modes, the same gestures put not one byte on the wire, which is the spike’s rule and C3’s behaviour unchanged. With the fixture gone the pane reports `data-terminal-mouse=none` again and is back at a prompt.',
             needsEyes: true,
             async run(recorder) {
                 // `reattach-after-relaunch` replaces the CDP session, and this step is after it.
@@ -32498,21 +32518,28 @@ function buildFlows(ctx) {
                         `press at ${JSON.stringify(tapPress[0] ?? null)}, release at ${JSON.stringify(tapRelease[0] ?? null)}`
                     );
 
-                    // ── a LONG PRESS: the application's, not C3's ───────────────────────
-                    await view.longPress({ x, y: tapY });
+                    // ── a LONG PRESS: C3's in this mode too, and nothing on the wire ─────
+                    // On the fixture's first row, two cells in: `MOUSE-REPORT-PROBE ready` is
+                    // the one row it always draws, so there is a word under the finger.
+                    const [cellWidth] = String(start.cell ?? '0x0')
+                        .split('x')
+                        .map((part) => Number.parseFloat(part));
+                    const wordPoint = { x: Math.round(box.left + 2.5 * cellWidth), y: Math.round(box.top + 0.5 * cellHeight) };
+                    await view.longPress(wordPoint);
                     await sleep(700);
                     const held = summarize(since());
                     const afterPress = await readPane();
                     recorder.block('a long press, over the same application', held.bytes || '(nothing)');
                     recorder.check(
-                        'a long press over a mouse-reporting application is the application’s press, not C3’s word selection: no Copy pill and no highlight',
-                        afterPress.pills === 0 && afterPress.selection === '0',
+                        'a long press over a mouse-reporting application is still C3’s word selection: the word is highlighted and offered on the Copy pill',
+                        afterPress.pills === 1 && Number.parseInt(String(afterPress.selection ?? '0'), 10) > 0,
                         `${String(afterPress.pills)} pills, data-terminal-selection=${String(afterPress.selection)}`
                     );
+                    await recorder.shot(view, 'long-press-over-mouse-reporting');
                     recorder.check(
-                        'and it reaches the application as the click it asked for',
-                        held.press === 1 && held.release === 1 && held.wheel === 0,
-                        `${String(held.press)} presses, ${String(held.release)} releases, ${String(held.wheel)} wheel reports`
+                        'and the application is sent nothing for it: no press, no release, no wheel',
+                        held.total === 0 && held.bytes === '',
+                        held.bytes === '' ? 'nothing on the wire' : `bytes arrived: ${held.bytes}`
                     );
 
                     // ── the pane scrolled NOTHING of its own through any of it ───────────
@@ -33049,7 +33076,10 @@ function buildFlows(ctx) {
                                         area: area === null ? null : {
                                             ...box(area),
                                             padding: Math.round(Number.parseFloat(getComputedStyle(area).paddingBottom || '0')),
-                                            inset: Number(area.getAttribute('data-phone-keyboard-inset') ?? '-1')
+                                            inset: Number(area.getAttribute('data-phone-keyboard-inset') ?? '-1'),
+                                            // What sits under the area (the shell's strip and bar),
+                                            // which the keyboard covers before it reaches the area.
+                                            below: (() => { const shell = document.querySelector('[data-testid="phone-shell"]'); return shell === null ? 0 : Math.max(0, Math.round(shell.getBoundingClientRect().bottom - area.getBoundingClientRect().bottom)); })()
                                         },
                                         panes: Array.from(document.querySelectorAll('[data-pane-id][data-terminal-status="live"]')).map((el) => ({
                                             id: el.getAttribute('data-pane-id'),
@@ -33289,15 +33319,15 @@ function buildFlows(ctx) {
                         .map((pane) => ({ before: pane, after: (withKeyboard.panes ?? []).find((other) => other.id === pane.id) }))
                         .filter((pair) => pair.after !== undefined);
                     recorder.check(
-                        'the keyboard came out of the CONTENT AREA, once, and the bar rode it up',
+                        'the keyboard came out of the CONTENT AREA, once, and the bar rode it up to the keyboard\'s top edge',
                         raised.ok === true &&
                             withKeyboard.area !== null &&
                             beforeKeyboard.area !== null &&
-                            withKeyboard.area.inset === FAKE_KEYBOARD_PX &&
-                            Math.abs(withKeyboard.area.padding - (beforeKeyboard.area.padding + FAKE_KEYBOARD_PX)) <= 1 &&
+                            withKeyboard.area.inset === Math.max(0, FAKE_KEYBOARD_PX - beforeKeyboard.area.below) &&
+                            Math.abs(withKeyboard.area.padding - (beforeKeyboard.area.padding + Math.max(0, FAKE_KEYBOARD_PX - beforeKeyboard.area.below))) <= 1 &&
                             withKeyboard.bar !== null &&
                             beforeKeyboard.bar !== null &&
-                            Math.abs(beforeKeyboard.bar.bottom - withKeyboard.bar.bottom - FAKE_KEYBOARD_PX) <= 1,
+                            Math.abs(beforeKeyboard.bar.bottom - withKeyboard.bar.bottom - Math.max(0, FAKE_KEYBOARD_PX - beforeKeyboard.area.below)) <= 1,
                         `area padding ${String(beforeKeyboard.area?.padding)} -> ${String(withKeyboard.area?.padding)}, ` +
                             `bar bottom ${String(beforeKeyboard.bar?.bottom)} -> ${String(withKeyboard.bar?.bottom)}`
                     );
@@ -34382,7 +34412,7 @@ function buildFlows(ctx) {
         {
             id: 'phone-shell',
             expect:
-                'Under a 390x844 phone viewport the desktop chrome (title bar, sidebar, pane grid, status footer) is gone and the phone shell is on screen: a 44 px header whose controls are all at least 44 px tall, naming the active workspace and the focused pane, and exactly ONE pane body - the focused pane\'s - filling the content box. The view toggle switches to the full layout (the workspace\'s own pane grid with every pane body) and back to one pane, remembering the choice. The workspace drawer opens by button (never by an edge swipe, which is the phone\'s own back gesture) and is the phone\'s WHOLE host tree (B9): the origin open with the active workspace row marked active, a second, unreachable host shut to a 44 px header that still carries its name and how to reach it, Add host at the end and no `All hosts` row; one tap opens the shut host without shutting the other, and the phone remembers that. It closes on its scrim. The pane sheet lists every pane of the workspace with the shown one marked; tapping a sibling row focuses it (the sibling\'s body replaces the shown one, the header renames) and the daemon zooms nothing. With the emulation cleared the desktop tree is back and the roster, the focused pane and the active workspace are exactly what they were.',
+                'Under a 390x844 phone viewport the desktop chrome (title bar, sidebar, pane grid, status footer) is gone and the phone shell is on screen: a pane header whose controls are all at least 44 px tall, a location bar at the bottom naming the active workspace and the focused pane, and exactly ONE pane body - the focused pane\'s - filling the content box. The view toggle switches to the full layout (the workspace\'s own pane grid with every pane body) and back to one pane, remembering the choice. The bar\'s host segment opens the picker at its Hosts level (never an edge swipe, which is the phone\'s own back gesture): a card above the bar listing the origin as the current host and a second, unreachable host that says how to reach it, each row at least 44 px, with Scan code and Paste URL under them. It closes on its scrim. The bar\'s pane segment opens the picker at its Panes level, listing every pane of the workspace with the shown one marked; tapping a sibling row focuses it (the sibling\'s body replaces the shown one, the bar renames) and the daemon zooms nothing. With the emulation cleared the desktop tree is back and the roster, the focused pane and the active workspace are exactly what they were.',
             async run(recorder) {
                 // `reattach-after-relaunch` replaces the CDP session, and this step is after it.
                 const view = runtime.page ?? page;
@@ -34426,10 +34456,10 @@ function buildFlows(ctx) {
                                         controls,
                                         bodies,
                                         title: (document.querySelector('[data-testid="phone-title-workspace"]')?.textContent ?? '').trim(),
-                                        paneTitle: (document.querySelector('[data-testid="phone-title"] [data-testid^="pane-header-"]')?.textContent ?? '').trim(),
-                                        headerPane: document.querySelector('[data-testid="phone-title"] [data-testid^="pane-header-"]')?.getAttribute('data-testid')?.slice('pane-header-'.length) ?? '',
-                                        drawer: document.querySelector('[data-testid="phone-workspace-drawer"]') !== null,
-                                        paneSheet: document.querySelector('[data-testid="phone-pane-sheet"]') !== null,
+                                        paneTitle: (document.querySelector('[data-testid="phone-bar-pane-title"]')?.textContent ?? '').trim(),
+                                        headerPane: document.querySelector('[data-testid="phone-bar-pane-title"]')?.getAttribute('data-pane-id') ?? '',
+                                        picker: document.querySelector('[data-testid="phone-picker"]') !== null,
+                                        paneSheet: document.querySelector('[data-testid="phone-picker"]') !== null,
                                         contentBox: (() => { const el = document.querySelector('[data-testid="phone-content"]'); if (el === null) return null; const b = el.getBoundingClientRect(); return { x: Math.round(b.x), y: Math.round(b.y), w: Math.round(b.width), h: Math.round(b.height) }; })()
                                     });
                                 })()`
@@ -34501,13 +34531,13 @@ function buildFlows(ctx) {
                         `mode=${String(opened.mode)} host=${String(opened.host)} bodies=${opened.bodies.join(',')}`
                     );
                     recorder.check(
-                        'the header names the active workspace and the shown pane',
+                        'the location bar names the active workspace and the shown pane',
                         opened.title === rosterBefore.workspaceName || (opened.title.length > 0 && opened.headerPane === paneID),
                         `title=${JSON.stringify(opened.title)} headerPane=${String(opened.headerPane)} paneTitle=${JSON.stringify(opened.paneTitle)}`
                     );
                     recorder.check(
                         'every header control is at least 44x44 CSS px',
-                        opened.controls.length >= 5 && opened.controls.every((control) => control.h >= 44 && control.w >= 44),
+                        opened.controls.length >= 3 && opened.controls.every((control) => control.h >= 44 && control.w >= 44),
                         opened.controls.map((control) => `${String(control.id)}:${String(control.w)}x${String(control.h)}`).join(' ')
                     );
                     recorder.check(
@@ -34545,125 +34575,92 @@ function buildFlows(ctx) {
                         `mode=${String(back.mode)} bodies=${back.bodies.join(',')}`
                     );
 
-                    // ── the workspace drawer, by button ────────────────────────────────
-                    await view.tap('[data-testid="phone-open-workspaces"]');
-                    await view.waitFor(`document.querySelector('[data-testid="phone-workspace-drawer"]') !== null`, {
+                    // ── the picker at its Hosts level, from the bar's host segment ─────
+                    await view.tap('[data-testid="phone-bar-host"]');
+                    await view.waitFor(`document.querySelector('[data-testid="phone-picker"]') !== null`, {
                         timeoutMs: 8000,
-                        label: 'the workspace drawer'
+                        label: 'the picker'
                     });
-                    /**
-                     * B9 - the drawer is the phone's ONE hierarchy, so it is read as a tree: each
-                     * host section, whether it is open, what its header says about it, and the
-                     * rows under it.
-                     */
-                    const readDrawer = async () =>
+                    const readPicker = async () =>
                         JSON.parse(
                             String(
                                 await view.eval(
                                     `(() => {
-                                        const panel = document.querySelector('[data-testid="phone-workspace-drawer-panel"]');
+                                        const panel = document.querySelector('[data-testid="phone-picker-panel"]');
+                                        const bar = document.querySelector('[data-testid="phone-location-bar"]');
                                         const box = panel.getBoundingClientRect();
                                         const read = (key) => {
                                             const el = document.querySelector('[data-testid="phone-host-' + key + '"]');
                                             if (el === null) return null;
-                                            const header = el.querySelector('[data-testid="phone-host-toggle-' + key + '"]');
+                                            const row = el.querySelector('[data-testid="phone-picker-host-' + key + '"]');
                                             return {
                                                 kind: el.getAttribute('data-host-kind'),
-                                                expanded: el.getAttribute('data-expanded'),
-                                                status: el.querySelector('[data-testid="phone-host-status-' + key + '"]')?.getAttribute('data-status') ?? '',
-                                                summary: (el.querySelector('[data-testid="phone-host-summary-' + key + '"]')?.textContent ?? '').trim(),
-                                                rows: el.querySelectorAll('[data-testid="workspace-row"]').length,
-                                                active: el.querySelector('[data-testid="workspace-row"][data-active="true"]')?.getAttribute('data-workspace-id') ?? '',
-                                                h: header === null ? 0 : Math.round(header.getBoundingClientRect().height)
+                                                status: el.getAttribute('data-status') ?? '',
+                                                current: row?.getAttribute('data-current') ?? '',
+                                                text: (row?.textContent ?? '').trim(),
+                                                h: row === null ? 0 : Math.round(row.getBoundingClientRect().height)
                                             };
                                         };
                                         return JSON.stringify({
-                                            panel: { x: Math.round(box.x), y: Math.round(box.y), w: Math.round(box.width), h: Math.round(box.height) },
+                                            level: document.querySelector('[data-testid="phone-picker-tabs"]')?.getAttribute('data-level') ?? '',
+                                            panel: { x: Math.round(box.x), y: Math.round(box.y), w: Math.round(box.width), h: Math.round(box.height), bottom: Math.round(box.bottom) },
+                                            barTop: bar === null ? null : Math.round(bar.getBoundingClientRect().top),
                                             origin: read('origin'),
                                             second: read('phone:audit-2'),
-                                            allHostsRow: document.querySelector('[data-testid="phone-drawer-landing"]') !== null,
-                                            addHost: document.querySelector('[data-testid="phone-add-host"]') !== null,
-                                            expansion: localStorage.getItem('kelpi.phone.expanded-hosts') ?? '(none)',
+                                            scan: document.querySelector('[data-testid="phone-picker-scan"]') !== null,
+                                            paste: document.querySelector('[data-testid="phone-add-host"]') !== null,
                                             modal: document.activeElement === panel
                                         });
                                     })()`
                                 )
                             )
                         );
-                    const drawer = await readDrawer();
-                    recorder.note(`the drawer: ${JSON.stringify(drawer)}`);
+                    const picker = await readPicker();
+                    recorder.note(`the picker: ${JSON.stringify(picker)}`);
                     await recorder.shot(view, 'phone-shell-drawer');
                     recorder.check(
-                        'the drawer sits at the leading edge, full height, and lists the origin daemon with the active workspace marked',
-                        drawer.panel.x === 0 && drawer.panel.h === PHONE_VIEWPORT.height && drawer.origin !== null && drawer.origin.active === rosterBefore.workspace && drawer.origin.rows >= 1 && drawer.addHost === true,
-                        JSON.stringify(drawer)
+                        'the picker floats above the location bar at its Hosts level, the origin marked current, with Scan code and Paste URL',
+                        picker.level === 'hosts' &&
+                            picker.barTop !== null &&
+                            picker.panel.bottom <= picker.barTop &&
+                            picker.origin !== null &&
+                            picker.origin.current === 'true' &&
+                            picker.origin.h >= 44 &&
+                            picker.scan === true &&
+                            picker.paste === true,
+                        JSON.stringify(picker)
                     );
                     /*
-                     * B9 (owner, device round 11: "It does look weird with one sidebar showing all
-                     * hosts, and one showing only workspaces from one host"). The drawer IS all
-                     * hosts: the host on screen open with its workspaces, the seeded second one
-                     * shut to its header, and the `All hosts` row that used to lead back to the
-                     * landing page gone, because there is nowhere else it could take you.
-                     *
-                     * The second host's word is `reconnecting…`, not `unreachable`: a socket whose
-                     * dial fails schedules another with backoff (`connection/socket.ts`
-                     * `scheduleReconnect`) and sits in `reconnecting` between the attempts, so all
-                     * four not-reachable words are allowed and a COUNT is what would fail this.
+                     * The seeded second host refuses instantly, so it sits in `reconnecting`
+                     * between dials (`connection/socket.ts` `scheduleReconnect`); every
+                     * not-reachable word is allowed and a COUNT is what would fail this.
                      */
                     const notReachable = ['unreachable', 'connecting…', 'reconnecting…', 'refused'];
                     recorder.check(
-                        'the drawer is the whole tree: the host on screen open with its rows, the other shut to a header that still says how to reach it, no All hosts row',
-                        drawer.origin.expanded === 'true' &&
-                            drawer.second !== null &&
-                            drawer.second.expanded === 'false' &&
-                            drawer.second.rows === 0 &&
-                            notReachable.includes(drawer.second.summary) &&
-                            drawer.second.h >= 44 &&
-                            drawer.allHostsRow === false,
-                        JSON.stringify({ origin: drawer.origin, second: drawer.second, allHostsRow: drawer.allHostsRow })
+                        'the unreachable host is listed, not current, and says how to reach it',
+                        picker.second !== null &&
+                            picker.second.current === 'false' &&
+                            picker.second.kind === 'phone' &&
+                            notReachable.some((word) => picker.second.text.includes(word)) &&
+                            picker.second.h >= 44,
+                        JSON.stringify(picker.second)
                     );
-                    /*
-                     * One tap on a shut host's header opens it, and the phone remembers that.
-                     *
-                     * Scrolled under the thumb first: the origin's section is open above it, and
-                     * with 14 workspaces and 6 groups in that section (measured in the full audit
-                     * of 2026-09-08) the second host's header sits past the bottom of a 844 px
-                     * panel, where a tap at its centre is dispatched off-screen and hits nothing.
-                     */
-                    const tapped = await tapPhoneTarget(
-                        view,
-                        recorder,
-                        '[data-testid="phone-host-toggle-phone:audit-2"]',
-                        "the second host's header"
-                    );
-                    if (tapped) {
-                        await view.waitFor(`document.querySelector('[data-testid="phone-host-phone:audit-2"]')?.getAttribute('data-expanded') === 'true'`, {
-                            timeoutMs: 8000,
-                            label: 'the second host to open'
-                        });
-                    }
-                    const opened2 = await readDrawer();
-                    recorder.note(`after opening the second host: ${JSON.stringify(opened2)}`);
-                    recorder.check(
-                        'tapping a shut host opens it without shutting the one you are in, and the choice is remembered on the phone',
-                        opened2.second.expanded === 'true' && opened2.origin.expanded === 'true' && opened2.expansion.includes('"phone:audit-2":true'),
-                        `second=${String(opened2.second.expanded)} origin=${String(opened2.origin.expanded)} stored=${String(opened2.expansion)}`
-                    );
-                    recorder.check('the drawer took focus, so Escape and the keyboard are its own', drawer.modal === true, `activeElement is the panel: ${String(drawer.modal)}`);
-                    await view.tap('[data-testid="phone-workspace-drawer-scrim"]');
-                    await view.waitFor(`document.querySelector('[data-testid="phone-workspace-drawer"]') === null`, {
+                    recorder.check('the picker took focus, so Escape and the keyboard are its own', picker.modal === true, `activeElement is the panel: ${String(picker.modal)}`);
+                    // Escape rather than a scrim tap: the card can cover the scrim's centre, where a tap lands.
+                    await view.key('Escape');
+                    await view.waitFor(`document.querySelector('[data-testid="phone-picker"]') === null`, {
                         timeoutMs: 8000,
-                        label: 'the drawer to close on its scrim'
+                        label: 'the picker to close on its scrim'
                     });
 
                     // No edge swipe: on the owner's phone the edge is the system's back gesture
-                    // (device round, 2026-09-08), so the button is the drawer's only opener and a
+                    // (device round, 2026-09-08), so the bar is the picker's only opener and a
                     // swipe from the edge is left to the OS.
-                    // ── the pane sheet, and a switch to a sibling ──────────────────────
-                    await view.tap('[data-testid="phone-open-panes"]');
-                    await view.waitFor(`document.querySelector('[data-testid="phone-pane-sheet"]') !== null`, {
+                    // ── the picker at its Panes level, and a switch to a sibling ───────
+                    await view.tap('[data-testid="phone-title"]');
+                    await view.waitFor(`document.querySelector('[data-testid="phone-pane-list"]') !== null`, {
                         timeoutMs: 8000,
-                        label: 'the pane sheet'
+                        label: 'the picker at its Panes level'
                     });
                     const sheet = JSON.parse(
                         String(
@@ -34678,7 +34675,7 @@ function buildFlows(ctx) {
                     recorder.note(`the pane sheet: ${JSON.stringify(sheet)}`);
                     await recorder.shot(view, 'phone-shell-pane-sheet');
                     recorder.check(
-                        'the pane sheet lists every pane of the workspace, the shown one marked, every row at least 44 px',
+                        'the picker lists every pane of the workspace, the shown one marked, every row at least 44 px',
                         [...sheet.rows.map((row) => row.id)].sort().join(',') === [...workspacePanes].sort().join(',') &&
                             sheet.rows.filter((row) => row.shown === 'true').map((row) => row.id).join(',') === paneID &&
                             sheet.heights.every((height) => height >= 44),
@@ -34687,10 +34684,11 @@ function buildFlows(ctx) {
 
                     if (sibling === null) {
                         recorder.note('no sibling pane on screen to switch to; the switch is covered by the jsdom suite');
-                        await view.tap('[data-testid="phone-pane-sheet-header-close"]');
+                        // Escape rather than a scrim tap: the card can cover the scrim's centre, where a tap lands.
+                        await view.key('Escape');
                     } else {
-                        // Under the thumb first: the sheet is a scrolling list, and a workspace
-                        // with more panes than fit its 75vh puts a row past the fold.
+                        // Under the thumb first: the list scrolls, and a workspace with more
+                        // panes than fit the card puts a row past the fold.
                         await tapPhoneTarget(view, recorder, `[data-testid="phone-pane-show-${sibling}"]`, "the sibling pane's row");
                         await view.waitFor(`document.querySelector('[data-testid="pane-body-${sibling}"]') !== null && document.querySelector('[data-testid="pane-body-${paneID}"]') === null`, {
                             timeoutMs: 8000,
@@ -34738,11 +34736,11 @@ function buildFlows(ctx) {
                             switched.bodies.length === 1 && switched.bodies[0] === sibling && switched.headerPane === sibling && switched.paneSheet === false && zoomed === 0,
                             `bodies=${switched.bodies.join(',')} headerPane=${String(switched.headerPane)} sheet=${String(switched.paneSheet)} zoomed=${String(zoomed)}`
                         );
-                        // …and back, through the same sheet, so the roster reads as it did.
-                        await view.tap('[data-testid="phone-open-panes"]');
+                        // …and back, through the same picker, so the roster reads as it did.
+                        await view.tap('[data-testid="phone-title"]');
                         await view.waitFor(`document.querySelector('[data-testid="phone-pane-show-${paneID}"]') !== null`, {
                             timeoutMs: 8000,
-                            label: 'the pane sheet again'
+                            label: 'the picker again'
                         });
                         await tapPhoneTarget(view, recorder, `[data-testid="phone-pane-show-${paneID}"]`, "the borrowed pane's row");
                         await view.waitFor(`document.querySelector('[data-testid="pane-body-${paneID}"]') !== null`, {
@@ -35032,7 +35030,7 @@ function buildFlows(ctx) {
         {
             id: 'phone-landing',
             expect:
-                'A phone with nothing remembered opens on the LANDING page: no pane on screen, and the phone\'s whole host tree (B9) - one section per host, its header carrying the host name, a reachability dot and its workspace and agent counts, every section open with that host\'s workspaces under it, and Add host at the end. Tapping a workspace opens it in one move, and the phone remembers host and workspace in localStorage so a reopen lands there. The drawer over that workspace draws the SAME hierarchy - the same hosts in the same order, the same headers, the same rows - which is the whole of B9. The pane sheet then lists EVERY pane of the workspace with its own type glyph, and switching to each works: a markdown pane renders the desktop\'s own preview, a web pane renders a card that says the phone cannot host the page (never the desktop browser chrome), and the key bar is on screen for the terminal and gone for both of the others. The full layout shows all three at once with the web pane still a card. The header\'s Hosts button returns to the landing page and forgets the place. With the emulation cleared the desktop tree is back and the roster is what it was.',
+                'A phone with nothing remembered opens on HOME: no pane on screen; Needs you (or All clear) at the top; a pager card per host carrying its name, reachability and workspace count, with Add a host after the pager dots; the workspaces of the host the pager is on as tiles; and the location bar showing that host and Jump to…. Tapping a workspace tile opens it in one move, and the phone remembers host and workspace in localStorage so a reopen lands there. The picker\'s Hosts level lists the same hosts as Home\'s pager, in the same order. The picker\'s Panes level lists EVERY pane of the workspace with its own type glyph, and switching to each works: a markdown pane renders the desktop\'s own preview, a web pane renders a card that says the phone cannot host the page (never the desktop browser chrome), and the key bar is on screen for the terminal and gone for both of the others. The full layout shows all three at once with the web pane still a card. The header\'s Home button returns to Home and forgets the place. With the emulation cleared the desktop tree is back and the roster is what it was.',
             needsEyes: true,
             async run(recorder) {
                 // `reattach-after-relaunch` replaces the CDP session, and this step is after it.
@@ -35127,60 +35125,51 @@ function buildFlows(ctx) {
                         landing.screen === 'landing' && landing.landing === true && landing.bodies.length === 0 && landing.keyBar === false,
                         `screen=${String(landing.screen)} bodies=${landing.bodies.join(',')} keyBar=${String(landing.keyBar)}`
                     );
-                    /**
-                     * B9 - whatever tree is on screen, read the way a person reads it: every host
-                     * section, whether it is open, what its header says, and the rows under it.
-                     * The drawer and the landing page are read by the SAME function on purpose -
-                     * proving they draw one hierarchy is the whole of B9.
-                     */
-                    const readTree = async () =>
+                    /** Home as a person reads it: the host cards in pager order, and the tiles under them. */
+                    const readHome = async () =>
                         JSON.parse(
                             String(
                                 await view.eval(
-                                    `JSON.stringify(Array.from(document.querySelectorAll('[data-testid][data-host-kind]')).map((el) => {
-                                        const key = (el.getAttribute('data-testid') ?? '').replace(/^phone-(?:landing-)?host-/, '');
-                                        const header = el.querySelector('[data-testid$="-toggle-' + key + '"]');
-                                        return {
-                                            key,
+                                    `JSON.stringify({
+                                        hosts: Array.from(document.querySelectorAll('[data-testid^="phone-landing-host-"][data-host-kind]')).map((el) => ({
+                                            key: (el.getAttribute('data-testid') ?? '').slice('phone-landing-host-'.length),
                                             kind: el.getAttribute('data-host-kind'),
-                                            expanded: el.getAttribute('data-expanded'),
-                                            status: el.querySelector('[data-testid$="-status-' + key + '"]')?.getAttribute('data-status') ?? '',
-                                            summary: (el.querySelector('[data-testid$="-summary-' + key + '"]')?.textContent ?? '').trim(),
-                                            rows: Array.from(el.querySelectorAll('[data-testid="workspace-row"]')).map((row) => row.getAttribute('data-workspace-id')),
-                                            remove: el.querySelector('[data-testid$="-remove-' + key + '"]') !== null,
-                                            h: header === null ? 0 : Math.round(header.getBoundingClientRect().height)
-                                        };
-                                    }))`
+                                            status: el.getAttribute('data-status') ?? '',
+                                            text: (el.textContent ?? '').trim(),
+                                            h: Math.round(el.getBoundingClientRect().height)
+                                        })),
+                                        tiles: Array.from(document.querySelectorAll('[data-testid^="phone-home-workspace-"]')).map((el) => (el.getAttribute('data-testid') ?? '').slice('phone-home-workspace-'.length)),
+                                        attention: document.querySelector('[data-testid="phone-home-needs-you"], [data-testid="phone-home-all-clear"]') !== null,
+                                        addHost: document.querySelector('[data-testid="phone-landing-add-host"]') !== null,
+                                        bar: document.querySelector('[data-testid="phone-location-bar"]')?.getAttribute('data-phone-bar') ?? '(none)'
+                                    })`
                                 )
                             )
                         );
-                    const onLanding = await readTree();
-                    const addHostOnLanding = String(
-                        await view.eval(`String(document.querySelector('[data-testid="phone-landing-add-host"]') !== null)`)
-                    );
-                    recorder.note(`the landing tree: ${JSON.stringify(onLanding)} addHost=${addHostOnLanding}`);
-                    const originOnLanding = onLanding.find((host) => host.key === 'origin') ?? null;
+                    const onLanding = await readHome();
+                    recorder.note(`Home: ${JSON.stringify(onLanding)}`);
+                    const originOnLanding = onLanding.hosts.find((host) => host.key === 'origin') ?? null;
                     recorder.check(
-                        'the landing page is the whole tree: the origin as a section header (reachable, its workspace count on it, at the thumb floor, no Remove - it is the page), its workspaces under it without a drill-in, and Add host at the end',
+                        'Home leads with what needs you, has a card for the origin (reachable, its workspace count on it, at the thumb floor), its workspaces as tiles, Add a host, and the bar on its host and Jump to…',
                         originOnLanding !== null &&
                             originOnLanding.kind === 'origin' &&
                             originOnLanding.status === 'connected' &&
-                            originOnLanding.expanded === 'true' &&
-                            /workspace/.test(String(originOnLanding.summary)) &&
-                            originOnLanding.rows.includes(workspaceID) &&
+                            /workspace/.test(String(originOnLanding.text)) &&
                             originOnLanding.h >= 44 &&
-                            originOnLanding.remove === false &&
-                            addHostOnLanding === 'true',
-                        JSON.stringify({ origin: originOnLanding, addHost: addHostOnLanding })
+                            onLanding.tiles.includes(workspaceID) &&
+                            onLanding.attention === true &&
+                            onLanding.addHost === true &&
+                            onLanding.bar === 'home',
+                        JSON.stringify({ origin: originOnLanding, tiles: onLanding.tiles.length, attention: onLanding.attention, addHost: onLanding.addHost, bar: onLanding.bar })
                     );
 
                     /*
                      * ── pick the workspace, straight off the page ───────────────────────
                      *
-                     * Scrolled under the thumb first: the landing tree lists every workspace on the
-                     * host, and this one sat below the fold of a 844 px screen in the full audit of
-                     * 2026-09-08 (14 workspaces, the target inside the last group), where a tap at
-                     * its centre goes off-screen and hits nothing.
+                     * Scrolled under the thumb first: Home's grid holds every workspace on the host,
+                     * and in a full audit (14 workspaces on 2026-09-08) the target sits below the
+                     * fold of a 844 px screen, where a tap at its centre goes off-screen and hits
+                     * nothing.
                      *
                      * The wait is deliberately pane-type-agnostic: what the tap causes is the
                      * landing page giving way to a workspace, and what the workspace then shows is
@@ -35193,8 +35182,8 @@ function buildFlows(ctx) {
                     await tapPhoneTarget(
                         view,
                         recorder,
-                        `[data-testid="phone-landing"] [data-testid="workspace-row"][data-workspace-id="${workspaceID}"]`,
-                        "the target workspace's row"
+                        `[data-testid="phone-home-workspace-${workspaceID}"]`,
+                        "the target workspace's tile"
                     );
                     await view.waitFor(
                         `document.querySelector('[data-testid="phone-landing"]') === null &&
@@ -35216,18 +35205,18 @@ function buildFlows(ctx) {
                         `screen=${String(opened.screen)} bodies=${opened.bodies.join(',')} place=${String(opened.place)}`
                     );
 
-                    // ── every pane type in the sheet, with its own glyph ────────────────
-                    await view.tap('[data-testid="phone-open-panes"]');
-                    await view.waitFor(`document.querySelector('[data-testid="phone-pane-sheet"]') !== null`, {
+                    // ── every pane type in the picker, with its own glyph ───────────────
+                    await view.tap('[data-testid="phone-title"]');
+                    await view.waitFor(`document.querySelector('[data-testid="phone-pane-list"]') !== null`, {
                         timeoutMs: 8000,
-                        label: 'the pane sheet'
+                        label: 'the picker at its Panes level'
                     });
                     const sheet = JSON.parse(
                         String(
                             await view.eval(
                                 `JSON.stringify(Array.from(document.querySelectorAll('[data-testid^="phone-pane-row-"]')).map((el) => ({
                                     id: el.getAttribute('data-testid').slice('phone-pane-row-'.length),
-                                    glyph: el.querySelector('svg[data-icon]')?.getAttribute('data-icon') ?? ''
+                                    glyph: el.querySelector('svg[data-glyph]')?.getAttribute('data-glyph') ?? ''
                                 })))`
                             )
                         )
@@ -35236,17 +35225,17 @@ function buildFlows(ctx) {
                     await recorder.shot(view, 'phone-landing-pane-sheet');
                     const glyphOf = (id) => sheet.find((row) => row.id === id)?.glyph ?? '(missing)';
                     recorder.check(
-                        'the sheet lists every pane of the workspace, whatever its type, each with its own glyph',
+                        'the picker lists every pane of the workspace, whatever its type, each with its own glyph',
                         sheet.map((row) => row.id).sort().join(',') === [...workspacePanes].sort().join(',') &&
                             glyphOf(terminalPane) === 'terminal' &&
-                            glyphOf(String(mdPane.id)) === 'document' &&
+                            glyphOf(String(mdPane.id)) === 'doc' &&
                             glyphOf(String(webPane.id)) === 'globe',
                         `rows=${sheet.map((row) => `${row.id.slice(0, 8)}:${row.glyph}`).join(' ')} workspace=${workspacePanes.map((id) => id.slice(0, 8)).join(' ')}`
                     );
 
                     // ── the content pane: the desktop's own component ───────────────────
-                    // Under the thumb first, here and at the two sheet taps below: the sheet is a
-                    // scrolling list and a busy workspace puts a row past its 75vh fold.
+                    // Under the thumb first, here and at the two picker taps below: the list
+                    // scrolls, and a busy workspace puts a row past the card's fold.
                     await tapPhoneTarget(view, recorder, `[data-testid="phone-pane-show-${String(mdPane.id)}"]`, "the markdown pane's row");
                     await view.waitFor(`document.querySelector('[data-testid="pane-body-${String(mdPane.id)}"]') !== null`, {
                         timeoutMs: 10_000,
@@ -35268,10 +35257,10 @@ function buildFlows(ctx) {
                     );
 
                     // ── the web pane: a card, not the desktop's browser chrome ──────────
-                    await view.tap('[data-testid="phone-open-panes"]');
+                    await view.tap('[data-testid="phone-title"]');
                     await view.waitFor(`document.querySelector('[data-testid="phone-pane-show-${String(webPane.id)}"]') !== null`, {
                         timeoutMs: 8000,
-                        label: 'the pane sheet again'
+                        label: 'the picker again'
                     });
                     await tapPhoneTarget(view, recorder, `[data-testid="phone-pane-show-${String(webPane.id)}"]`, "the web pane's row");
                     await view.waitFor(`document.querySelector('[data-testid="phone-web-card-${String(webPane.id)}"]') !== null`, {
@@ -35335,10 +35324,10 @@ function buildFlows(ctx) {
                     });
 
                     // ── back to the terminal: the bar comes back ────────────────────────
-                    await view.tap('[data-testid="phone-open-panes"]');
+                    await view.tap('[data-testid="phone-title"]');
                     await view.waitFor(`document.querySelector('[data-testid="phone-pane-show-${terminalPane}"]') !== null`, {
                         timeoutMs: 8000,
-                        label: 'the pane sheet a third time'
+                        label: 'the picker a third time'
                     });
                     await tapPhoneTarget(view, recorder, `[data-testid="phone-pane-show-${terminalPane}"]`, "the terminal's row");
                     await view.waitFor(`document.querySelector('[data-terminal-key-bar]') !== null`, {
@@ -35352,59 +35341,47 @@ function buildFlows(ctx) {
                         `bodies=${back.bodies.join(',')} keyBar=${String(back.keyBar)}`
                     );
 
-                    // ── one hierarchy, in two places (B9) ───────────────────────────────
-                    await view.tap('[data-testid="phone-open-workspaces"]');
-                    await view.waitFor(`document.querySelector('[data-testid="phone-workspace-drawer"]') !== null`, {
+                    // ── the picker's hosts are Home's hosts ─────────────────────────────
+                    await view.tap('[data-testid="phone-bar-host"]');
+                    await view.waitFor(`document.querySelector('[data-testid="phone-picker-hosts"]') !== null`, {
                         timeoutMs: 8000,
-                        label: 'the drawer over the workspace'
+                        label: 'the picker at its Hosts level'
                     });
-                    const inDrawer = await readTree();
-                    recorder.note(`the drawer's tree: ${JSON.stringify(inDrawer)}`);
+                    const pickerHosts = JSON.parse(
+                        String(
+                            await view.eval(
+                                `JSON.stringify(Array.from(document.querySelectorAll('[data-testid="phone-picker-hosts"] [data-host-kind]')).map((el) => (el.getAttribute('data-testid') ?? '').slice('phone-host-'.length)))`
+                            )
+                        )
+                    );
+                    recorder.note(`the picker's hosts: ${JSON.stringify(pickerHosts)}`);
                     await recorder.shot(view, 'phone-landing-drawer-tree');
-                    await view.tap('[data-testid="phone-workspace-drawer-scrim"]');
-                    await view.waitFor(`document.querySelector('[data-testid="phone-workspace-drawer"]') === null`, {
+                    // Escape rather than a scrim tap: the card can cover the scrim's centre, where a tap lands.
+                    await view.key('Escape');
+                    await view.waitFor(`document.querySelector('[data-testid="phone-picker"]') === null`, {
                         timeoutMs: 8000,
-                        label: 'the drawer to close again'
+                        label: 'the picker to close again'
                     });
 
-                    // ── the way back to the host list, and the place it forgets ─────────
+                    // ── the way back Home, and the place it forgets ─────────────────────
                     await view.tap('[data-testid="phone-open-landing"]');
                     await view.waitFor(`document.querySelector('[data-testid="phone-landing"]') !== null`, {
                         timeoutMs: 8000,
-                        label: 'the landing page again'
+                        label: 'Home again'
                     });
                     const returned = await readShell();
-                    recorder.note(`back at the landing page: ${JSON.stringify(returned)}`);
+                    recorder.note(`back Home: ${JSON.stringify(returned)}`);
                     recorder.check(
-                        'the header returns to the host list, nothing is on screen, and the remembered place is forgotten (the landing page is a place too)',
+                        'the header returns Home, nothing is on screen, and the remembered place is forgotten (Home is a place too)',
                         returned.screen === 'landing' && returned.bodies.length === 0 && returned.place === '(none)',
                         `screen=${String(returned.screen)} bodies=${returned.bodies.join(',')} place=${String(returned.place)}`
                     );
-                    /*
-                     * B9's claim, measured: the drawer and the landing page are ONE hierarchy. The
-                     * heights are dropped from the comparison because the two presentations are
-                     * deliberately different sizes (a card header on the page, a list header in the
-                     * drawer); everything a person reads off a host - which hosts, in what order,
-                     * open or shut, reachable, how much is on it, and which workspaces are under
-                     * it - has to be identical.
-                     */
-                    const backOnLanding = await readTree();
-                    const shape = (tree) =>
-                        JSON.stringify(
-                            tree.map((host) => ({
-                                key: host.key,
-                                kind: host.kind,
-                                expanded: host.expanded,
-                                status: host.status,
-                                summary: host.summary,
-                                rows: host.rows
-                            }))
-                        );
-                    recorder.note(`the landing page's tree: ${JSON.stringify(backOnLanding)}`);
+                    const backOnLanding = await readHome();
+                    const homeHosts = backOnLanding.hosts.map((host) => host.key);
                     recorder.check(
-                        'the drawer and the landing page draw the same hierarchy: the same hosts in the same order, the same headers, the same workspaces under them',
-                        shape(inDrawer) === shape(backOnLanding) && backOnLanding.length >= 1,
-                        `drawer=${shape(inDrawer)} landing=${shape(backOnLanding)}`
+                        "the picker's Hosts level and Home's pager list the same hosts in the same order",
+                        JSON.stringify(pickerHosts) === JSON.stringify(homeHosts) && homeHosts.length >= 1,
+                        `picker=${JSON.stringify(pickerHosts)} home=${JSON.stringify(homeHosts)}`
                     );
                 } finally {
                     await clearPhoneEmulation(view).catch(() => {});

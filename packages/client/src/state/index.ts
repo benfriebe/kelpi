@@ -43,6 +43,7 @@ export {
 export {
     CLIPBOARD_WRITE_MESSAGE,
     createClipboardWriteHandler,
+    offerLink,
     offerSelection,
     onClipboardOffer,
     parseClipboardWrite,

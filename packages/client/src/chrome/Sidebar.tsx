@@ -25,6 +25,7 @@
 
 import { workspaceAgentDeleteWarning, type WorkspaceAgentSummary } from '@kelpi/core/agent';
 import { firstGrapheme } from '@kelpi/core/codec';
+import type { PaneStatus } from '@kelpi/core/layout';
 import type { IconRef, WorkspaceColor } from '@kelpi/daemon/store';
 import {
     memo,
@@ -42,7 +43,7 @@ import {
 import { createPortal } from 'react-dom';
 
 import { ContextMenu, menuAnchorFromEvent, type MenuAvoidRect, type MenuItemSpec } from './ContextMenu';
-import { hoverFill, useHoverKey } from './hover';
+import { hoverFill, hoverText, useHoverKey } from './hover';
 import { useModalPresence } from './modal-presence';
 import { GroupRepoSheet } from './GroupRepoSheet';
 import {
@@ -55,6 +56,7 @@ import {
     type WorktreeCleanupTarget
 } from './WorktreeCleanupList';
 import { NewEntrySheet, type NewWorkspaceAgentChoice } from './NewWorkspaceSheet';
+import { PullRequestGlyph } from './PullRequestGlyph';
 import {
     ChromeIcon,
     CURATED_EMOJI,
@@ -526,11 +528,23 @@ export function groupGuideColor(color: WorkspaceColor | null, bucket: ChromeBuck
     return color === null ? tokens.divider : withAlpha(workspaceColorHex(color, bucket), 0.55);
 }
 
-/** Exported for the remote-daemon sections (§1.7): identical badges, one implementation. */
+/** The row menu's Status ▸, in the pane menu's order and words (agent-lifecycle §5.10). */
+const WORKSPACE_STATUS_ITEMS: readonly (readonly [PaneStatus, string])[] = [
+    ['idle', 'Idle'],
+    ['running', 'Running'],
+    ['waitingForInput', 'Awaiting Input']
+];
+
+/**
+ * Exported for the remote-daemon sections (§1.7): identical badges, one implementation. A
+ * workspace's own hand-set status (agent-lifecycle §5.10) counts as one more pane would.
+ */
 export function agentCounts(workspaces: readonly ChromeWorkspace[]): AgentCounts {
     let running = 0;
     let waiting = 0;
     for (const workspace of workspaces) {
+        if (workspace.status === 'running') running += 1;
+        else if (workspace.status === 'waitingForInput') waiting += 1;
         for (const pane of workspace.panes) {
             if (pane.status === 'running') running += 1;
             else if (pane.status === 'waitingForInput') waiting += 1;
@@ -1362,7 +1376,7 @@ export const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps)
                 <span
                     data-testid="drag-count"
                     className="pointer-events-none absolute top-1/2 -translate-y-1/2 rounded-full px-1.5 py-[2px] font-mono text-[10px] font-semibold"
-                    style={{ right: 4, background: tokens.accent, color: '#fff' }}
+                    style={{ right: 4, background: tokens.accent, color: tokens.onAccent }}
                 >
                     +{props.dragExtra}
                 </span>
@@ -1405,6 +1419,11 @@ export const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps)
                     <ChromeIcon name={childrenHidden ? 'chevron-right' : 'chevron-down'} size={11} strokeWidth={1.6} />
                 </button>
             ) : null}
+            {/*
+             * workspace-feature.md §11: the workspace's PR status, one trailing glyph on the same
+             * line (not a metadata line, so §H5 stands). A `shrink-0` sibling like the bell below.
+             */}
+            <PullRequestGlyph workspaceID={workspace.id} pullRequests={workspace.pullRequests} bucket={props.bucket} />
             {/*
              * Agent-lifecycle §7.6: a muted workspace says so on its row, beside the ⌘N badge, so
              * the silence is never a surprise. The status dot on the avatar still reports the
@@ -1475,6 +1494,11 @@ interface GroupHeaderRowProps {
     readonly onCommitRename: (groupID: string, name: string) => void;
     readonly onCancelRename: () => void;
     readonly registerRow: (key: string, element: HTMLElement | null) => void;
+    /**
+     * The hover "+" beside the chevron: the group menu's "New Workspace", scoped to this group.
+     * Absent (a surface with no create sheet, or a drag in flight) draws no "+".
+     */
+    readonly onNewWorkspace?: ((groupID: string) => void) | undefined;
     /** §WS-008: the entry animation, as for a workspace row. The reorder is the FLIP spring. */
     readonly entering?: boolean | undefined;
     /** L15: this insertion is a SPRING-LOAD reveal, so the entry runs on the 100ms ease. */
@@ -1520,6 +1544,9 @@ export const GroupHeaderRow = memo(function GroupHeaderRow(props: GroupHeaderRow
                 ? 'outlined'
                 : 'filled'
             : null;
+    // The "+" is drawn only while the pointer is over the band, as a native hover affordance.
+    const [hovered, setHovered] = useState(false);
+    const [plusHovered, setPlusHovered] = useState(false);
     return (
         <div
             ref={(element) => {
@@ -1597,6 +1624,13 @@ export const GroupHeaderRow = memo(function GroupHeaderRow(props: GroupHeaderRow
             }}
             onContextMenu={(event) => {
                 props.onContextMenu(group.id, event);
+            }}
+            onMouseEnter={() => {
+                setHovered(true);
+            }}
+            onMouseLeave={() => {
+                setHovered(false);
+                setPlusHovered(false);
             }}
         >
             {/*
@@ -1700,6 +1734,40 @@ export const GroupHeaderRow = memo(function GroupHeaderRow(props: GroupHeaderRow
                     </span>
                 )}
             </span>
+            {props.renaming || !hovered || props.onNewWorkspace === undefined ? null : (
+                <button
+                    type="button"
+                    aria-label={`New Workspace in ${group.name}`}
+                    title="New Workspace"
+                    data-testid="group-new-workspace"
+                    className="shrink-0"
+                    /*
+                     * The chevron's hit box (S46: 21 × 21 target, 11 × 11 margin box). Hovered, the
+                     * glyph takes the ••• toggle's hover ink (`hoverText`); no box is drawn.
+                     */
+                    data-hovered={plusHovered ? 'true' : 'false'}
+                    style={{
+                        color: hoverText(plusHovered, tokens.textTertiary),
+                        padding: 5,
+                        margin: -5
+                    }}
+                    onMouseEnter={() => {
+                        setPlusHovered(true);
+                    }}
+                    onMouseLeave={() => {
+                        setPlusHovered(false);
+                    }}
+                    onClick={(event) => {
+                        event.stopPropagation();
+                        props.onNewWorkspace?.(group.id);
+                    }}
+                    onMouseDown={(event) => {
+                        event.stopPropagation();
+                    }}
+                >
+                    <ChromeIcon name="plus" size={11} strokeWidth={1.6} />
+                </button>
+            )}
             {/*
              * §WS-041: the chevron is HIDDEN while the header is being renamed. The field wants
              * the whole row — a click-drag inside it selects text — and a collapse control
@@ -2678,6 +2746,11 @@ export function Sidebar(props: SidebarProps): ReactElement {
     );
 
     // ── collapse ────────────────────────────────────────────────────────────────
+    /** A group header's hover "+": the group menu's "New Workspace", so the sheet preselects the group. */
+    const openNewWorkspaceInGroup = useCallback((groupID: string): void => {
+        setNewForm({ kind: 'workspace', groupID });
+    }, []);
+
     const toggleCollapse = useCallback(
         (groupID: string): void => {
             const group = groups.find((candidate) => candidate.id === groupID);
@@ -2943,16 +3016,23 @@ export function Sidebar(props: SidebarProps): ReactElement {
             if (source === undefined || body === undefined || body === null) return;
             const ghost = source.cloneNode(true) as HTMLElement;
             /*
-             * The one thing the photograph must NOT bring with it, taken out before the
-             * sanitiser strips the `data-testid` that names it: §WS-007's guide rail, because
+             * What the photograph must NOT bring with it, taken out before the sanitiser
+             * strips the `data-testid` that names it. First, §WS-007's guide rail, because
              * `styleDragGhost` owns the rail from here on and re-mints it per resolved
              * container rather than inheriting one.
              *
              * (§WS-088's insertion line used to need a second line here for the same reason —
              * it marks a slot in the LIST and would have ridden the cursor as a stray accent
              * rule. The line no longer exists, so neither does the guard.)
+             *
+             * The header's hover "+" goes too: the pointer is over the header when its drag
+             * starts, so the source still draws it, and the ghost is the header at rest.
              */
-            for (const part of ghost.querySelectorAll('[data-testid="group-guide"]')) part.remove();
+            for (const part of ghost.querySelectorAll(
+                '[data-testid="group-guide"], [data-testid="group-new-workspace"]'
+            )) {
+                part.remove();
+            }
             sanitizeGhost(ghost);
             ghost.setAttribute('data-testid', 'sidebar-drag-ghost');
             ghost.setAttribute('aria-hidden', 'true');
@@ -4394,6 +4474,27 @@ export function Sidebar(props: SidebarProps): ReactElement {
                               ])
                     ]
                 },
+                // Agent-lifecycle §5.10: the pane menu's Status ▸, set on the whole workspace as a
+                // reminder to come back to it. Its dot is the avatar's, so Awaiting Input reads
+                // exactly as a waiting agent would, and a visit clears it the way focus does.
+                ...(props.onSetWorkspaceStatus === undefined
+                    ? []
+                    : [
+                          {
+                              id: 'status',
+                              label: 'Status',
+                              submenu: WORKSPACE_STATUS_ITEMS.map(
+                                  ([status, label]): MenuItemSpec => ({
+                                      id: `status:${status}`,
+                                      label,
+                                      checked: (workspace.status ?? 'idle') === status,
+                                      onSelect: () => {
+                                          props.onSetWorkspaceStatus?.(workspaceID, status);
+                                      }
+                                  })
+                              )
+                          } satisfies MenuItemSpec
+                      ]),
                 {
                     id: 'move',
                     label: 'Move to Group',
@@ -4974,6 +5075,9 @@ export function Sidebar(props: SidebarProps): ReactElement {
                                 onDragStart={dragStartGroup}
                                 onCommitRename={commitGroupRename}
                                 onCancelRename={cancelRename}
+                                // No "+" while a drag is live: the ghost is `pointer-events: none`,
+                                // so every header the pointer crosses would light one up.
+                                onNewWorkspace={dragActive ? undefined : openNewWorkspaceInGroup}
                                 registerRow={registerRow}
                                 entering={entering.has(row.key)}
                                 enterFast={enteringFast}

@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { buildTerminalLab } from '../build-terminal-lab.mjs';
 import { makeSandbox, startDaemon, waitForHealthz, makeCli, PROTOCOL_VERSION, WS_PROTOCOL_VERSION } from '../ui-audit/lib/stack.mjs';
-import { daemonIDFromSandbox, phoneToLanding, restoreBundledSlots } from '../ui-audit/lib/workbench.mjs';
+import { daemonIDFromSandbox, phoneRevealWorkspace, phoneToLanding, restoreBundledSlots } from '../ui-audit/lib/workbench.mjs';
 
 export const covers = ['examples/plugins/terminal-lab/', 'packages/plugin-sdk/', 'packages/client/src/features/',
     'packages/client/src/plugins/', 'packages/client/src/connection/pty.ts', 'packages/client/src/terminal/',
@@ -471,6 +471,8 @@ export default async function ({ page, cli, sandbox, rec, d, harness, sleep }) {
         if (!await d.settleDom(page, `document.documentElement.dataset.formFactor === 'phone'`))
             throw new Error('the window never resolved to the phone form factor');
         const phoneRow = `[data-testid="phone-shell"] [data-workspace-id="${remote.workspaceID}"]`;
+        // Home shows one host's workspaces: page it to the host that holds this one.
+        await phoneRevealWorkspace(page, d, remote.workspaceID);
         const viewToggle = '[data-testid="phone-view-toggle"]';
         await tapPhone(phoneRow, 'the remote workspace row');
         rec.check('phone remote workspace mounts the same replacement contract', await ready(remote.paneID) && alive(remote));

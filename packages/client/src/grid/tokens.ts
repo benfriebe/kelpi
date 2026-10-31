@@ -16,6 +16,7 @@ export const GRID_TOKEN_FALLBACKS = {
     '--kelpi-fg-tertiary': '#6A6A72', // textTertiary
     '--kelpi-border': '#24242B', // divider
     '--kelpi-accent': '#6F9BD8', // accent
+    '--kelpi-on-accent': '#FFFFFF', // onAccent: text on an accent fill
     /**
      * M13 — the macOS **system** accent, as its own name.
      *
@@ -74,6 +75,7 @@ export const tokens = {
     textTertiary: token('--kelpi-fg-tertiary'),
     divider: token('--kelpi-border'),
     accent: token('--kelpi-accent'),
+    onAccent: token('--kelpi-on-accent'),
     systemAccent: token('--kelpi-system-accent'),
     paneFocus: token('--kelpi-pane-focus'),
     statusRunning: token('--kelpi-status-running'),

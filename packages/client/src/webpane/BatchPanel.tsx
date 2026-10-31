@@ -234,7 +234,7 @@ export function BatchPanel(props: BatchPanelProps): ReactElement {
                                 <span
                                     data-testid={`web-batch-chip-${item.id}`}
                                     className="flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full font-mono text-[10px] font-semibold"
-                                    style={{ background: tokens.accent, color: '#fff' }}
+                                    style={{ background: tokens.accent, color: tokens.onAccent }}
                                 >
                                     {index + 1}
                                 </span>
@@ -414,7 +414,7 @@ export function BatchPanel(props: BatchPanelProps): ReactElement {
                     style={{
                         borderColor: tokens.accent,
                         background: tokens.accent,
-                        color: '#fff',
+                        color: tokens.onAccent,
                         cursor: canSend ? 'pointer' : 'default'
                     }}
                     // The wire's `sendTo` is still `null` for the local queue — that branch is

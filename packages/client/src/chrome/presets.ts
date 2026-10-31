@@ -4,8 +4,9 @@
  * Two things live here, and they are the same data seen from two directions:
  *
  *   - `BUILT_IN_CHROME_THEMES` — the seven one-click presets from
- *     `Nex/Theme/BuiltInChromeThemes.swift`, colour-for-colour. Each names the appearance mode
- *     it was designed for; applying one switches to that mode AND overwrites the styling.
+ *     `Nex/Theme/BuiltInChromeThemes.swift`, colour-for-colour, plus Kelpi's own Monochrome.
+ *     Each names the appearance mode it was designed for; applying one switches to that mode
+ *     AND overwrites the styling.
  *   - `ChromeStyleTheme` — `Nex/Theme/ChromeStyleTheme.swift`'s document: the per-appearance
  *     colour overrides (**both** buckets), the five sidebar knobs and the three sparkline
  *     fields, serialisable as a `.nextheme` file or a one-line `kelpi-theme:<base64>` code.
@@ -137,6 +138,25 @@ export const BUILT_IN_CHROME_THEMES: readonly BuiltInChromeTheme[] = [
             statusRunning: 'A6E3A1',
             statusWaiting: '89B4FA',
             statusInactive: '6C7086'
+        }
+    },
+    {
+        // Kelpi's own: black ground, white accents, greys between. Awaiting input is the white
+        // dot (as the default dark preset's waiting dot is its accent); running is a step down.
+        name: 'Monochrome',
+        appearance: 'dark',
+        palette: {
+            windowBackground: '000000',
+            sidebarBackground: '000000',
+            headerBackground: '121212',
+            footerBackground: '000000',
+            surfaceBackground: '0E0E0E',
+            accent: 'FFFFFF',
+            paneFocus: 'FFFFFF',
+            divider: '262626',
+            statusRunning: 'A3A3A3',
+            statusWaiting: 'FFFFFF',
+            statusInactive: '525252'
         }
     },
     {

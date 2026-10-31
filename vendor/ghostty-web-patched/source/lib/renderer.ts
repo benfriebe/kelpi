@@ -193,18 +193,26 @@ export class CanvasRenderer {
   // Cursor blinking state
   private cursorVisible: boolean = true;
   private cursorBlinkInterval?: number;
-  private lastCursorPosition: { x: number; y: number } = { x: 0, y: 0 };
   /** See `RendererOptions.focused`. */
   private focused: boolean;
   /**
-   * The cursor's TREATMENT changed (focus flipped) without the cursor moving.
+   * The cursor as the last frame left it on the canvas (vendor 0.4.0-kelpi.24).
    *
-   * Filled-block ↔ hollow-outline is a repaint of the cursor cell that nothing else asks for:
-   * the row is not dirty (no bytes arrived), the cursor did not move, and with `cursorBlink`
-   * off the per-frame "redraw the cursor line" branch is not taken either. Without this flag a
-   * pane that lost focus while idle keeps its filled block painted until the next keystroke.
+   * `render()` compares this frame's cursor against it and, on any difference, repaints the
+   * old and new cursor rows and draws the cursor; with no difference it touches neither. That
+   * one comparison covers every way the cursor's pixels change without its row going dirty: a
+   * move, a blink toggle, a focus flip (filled ↔ hollow), a style change, and DECTCEM hiding
+   * it (`CSI ?25l` dirties no row, so before this the old cursor stayed painted).
    */
-  private cursorStateDirty: boolean = false;
+  private paintedCursor: {
+    x: number;
+    y: number;
+    drawn: boolean;
+    style: 'block' | 'underline' | 'bar';
+    focused: boolean;
+  } = { x: 0, y: 0, drawn: false, style: 'block', focused: true };
+  /** The last frame's cursor could show at all (DECTCEM visible, not scrolled back). */
+  private cursorShowable = true;
   /**
    * Paint is SUSPENDED — the canvas is a frozen frame, not a live surface (vendor
    * 0.4.0-kelpi.6). See `setPaintSuspended`.
@@ -238,6 +246,12 @@ export class CanvasRenderer {
   private selectionManager?: SelectionManager;
   // vendor 0.4.0-kelpi.16: every visible search match, and the current one (`search-highlight.ts`)
   private searchHighlighter = new SearchHighlighter();
+  /**
+   * Told whenever something that changes the next frame happened (vendor 0.4.0-kelpi.25). The
+   * terminal's render loop runs on demand rather than every frame, and every public setter here
+   * — the embedder calls several directly — plus the blink timer wakes it through this.
+   */
+  private invalidateListener: (() => void) | null = null;
   private searchHighlightListener: ((spans: readonly ISearchHighlightSpan[]) => void) | null =
     null;
   // Cached selection coordinates for current render pass (viewport-relative)
@@ -346,9 +360,22 @@ export class CanvasRenderer {
   }
 
   /**
+   * Called whenever the next frame would differ (vendor 0.4.0-kelpi.25): every public setter
+   * and the blink timer call it, so the terminal's on-demand render loop wakes.
+   */
+  public setInvalidateListener(listener: (() => void) | null): void {
+    this.invalidateListener = listener;
+  }
+
+  private invalidate(): void {
+    this.invalidateListener?.();
+  }
+
+  /**
    * Remeasure font metrics (call after font loads or changes)
    */
   public remeasureFont(): void {
+    this.invalidate();
     this.metrics = this.measureFont();
   }
 
@@ -439,6 +466,7 @@ export class CanvasRenderer {
    * `false` and nothing else sets it.
    */
   public setPaintSuspended(suspended: boolean): void {
+    this.invalidate();
     this.paintSuspended = suspended;
   }
 
@@ -451,6 +479,7 @@ export class CanvasRenderer {
    * Resize canvas to fit terminal dimensions
    */
   public resize(cols: number, rows: number): void {
+    this.invalidate();
     const cssWidth = cols * this.metrics.width;
     const cssHeight = rows * this.metrics.height;
 
@@ -560,9 +589,13 @@ export class CanvasRenderer {
     this.scrollbarWasPainted = scrollbarPainted;
 
     // Resize canvas if dimensions changed
+    // vendor 0.4.0-kelpi.25: compare against what `resize` actually stores. `canvas.width`
+    // truncates, so at a fractional cell-width x DPR product (a 2.6 DPR phone) the unrounded
+    // compare never matched, and every frame resized, redrew every row and, now that
+    // `resize` wakes the render loop, kept the loop from ever going idle.
     const needsResize =
-      this.canvas.width !== dims.cols * this.metrics.width * this.devicePixelRatio ||
-      this.canvas.height !== dims.rows * this.metrics.height * this.devicePixelRatio;
+      this.canvas.width !== Math.floor(dims.cols * this.metrics.width * this.devicePixelRatio) ||
+      this.canvas.height !== Math.floor(dims.rows * this.metrics.height * this.devicePixelRatio);
 
     if (needsResize) {
       this.resize(dims.cols, dims.rows);
@@ -598,26 +631,37 @@ export class CanvasRenderer {
       }
     }
 
-    // Check if cursor position changed, if blinking, or if the cursor's TREATMENT changed
-    // under it (focus flipped — see `cursorStateDirty`): all three need the cursor line
-    // redrawn so the previous frame's cursor is erased before this one's is painted.
-    const cursorMoved =
-      cursor.x !== this.lastCursorPosition.x || cursor.y !== this.lastCursorPosition.y;
-    if (cursorMoved || this.cursorBlink || this.cursorStateDirty) {
-      // Mark cursor lines as needing redraw
+    // vendor 0.4.0-kelpi.24: compare the cursor this frame would draw against the one on the
+    // canvas (`paintedCursor`), and redraw the cursor lines only when they differ, so the
+    // previous cursor is erased before this one is painted. Upstream redrew the line whenever
+    // `this.cursorBlink` was set: that is the setting, true even with the timer stopped, so
+    // every terminal's cursor line was repainted on every frame (~120 composites/s each).
+    //
+    // The blink PHASE only gates a focused cursor. Unfocused, ghostty shows the hollow box
+    // "always" (`src/renderer/cursor.zig:58-60`) — the terminal's own visibility (DECTCEM,
+    // `cursor.visible`) still hides it, exactly as the `!state.cursor.visible` check that runs
+    // one line earlier over there does. Only drawn at the bottom, not scrolled back.
+    const cursorDrawn =
+      viewportY === 0 && cursor.visible && (this.cursorVisible || !this.focused);
+    const painted = this.paintedCursor;
+    const cursorMoved = cursor.x !== painted.x || cursor.y !== painted.y;
+    const cursorChanged =
+      cursorMoved ||
+      cursorDrawn !== painted.drawn ||
+      (cursorDrawn && (this.cursorStyle !== painted.style || this.focused !== painted.focused));
+    if (cursorChanged) {
       if (!forceAll && !buffer.isRowDirty(cursor.y)) {
-        // Need to redraw cursor line
         const line = buffer.getLine(cursor.y);
         if (line) {
           this.renderLine(line, cursor.y, dims.cols);
         }
       }
-      if (cursorMoved && this.lastCursorPosition.y !== cursor.y) {
+      if (painted.y !== cursor.y) {
         // Also redraw old cursor line if cursor moved to different line
-        if (!forceAll && !buffer.isRowDirty(this.lastCursorPosition.y)) {
-          const line = buffer.getLine(this.lastCursorPosition.y);
+        if (!forceAll && !buffer.isRowDirty(painted.y)) {
+          const line = buffer.getLine(painted.y);
           if (line) {
-            this.renderLine(line, this.lastCursorPosition.y, dims.cols);
+            this.renderLine(line, painted.y, dims.cols);
           }
         }
       }
@@ -793,13 +837,10 @@ export class CanvasRenderer {
 
     // Link underlines are drawn during cell rendering (see renderCell)
 
-    // Render cursor (only if we're at the bottom, not scrolled).
-    //
-    // The blink PHASE only gates a focused cursor. Unfocused, ghostty shows the hollow box
-    // "always" (`src/renderer/cursor.zig:58-60`) — the terminal's own visibility (DECTCEM,
-    // `cursor.visible`) still hides it, exactly as the `!state.cursor.visible` check that runs
-    // one line earlier over there does.
-    if (viewportY === 0 && cursor.visible && (this.cursorVisible || !this.focused)) {
+    // Render cursor (see `cursorDrawn` above). vendor 0.4.0-kelpi.24: only when it changed or
+    // a row walk just painted over its cell; an untouched cursor is already on the canvas, and
+    // drawing it anyway touched every canvas on every frame.
+    if (cursorDrawn && (cursorChanged || rowsToRender.has(cursor.y))) {
       this.renderCursor(cursor.x, cursor.y);
     }
 
@@ -810,10 +851,14 @@ export class CanvasRenderer {
       this.renderScrollbar(scrollbarViewportY, scrollbackLength, dims.rows, scrollbarOpacity);
     }
 
-    // Update last cursor position
-    this.lastCursorPosition = { x: cursor.x, y: cursor.y };
-    // The focus flip has been painted.
-    this.cursorStateDirty = false;
+    this.cursorShowable = viewportY === 0 && cursor.visible;
+    this.paintedCursor = {
+      x: cursor.x,
+      y: cursor.y,
+      drawn: cursorDrawn,
+      style: this.cursorStyle,
+      focused: this.focused,
+    };
 
     // ALWAYS clear dirty flags after rendering, regardless of forceAll.
     // This is critical - if we don't clear after a full redraw, the dirty
@@ -1242,8 +1287,12 @@ export class CanvasRenderer {
   private startCursorBlink(): void {
     // xterm.js uses ~530ms blink interval
     this.cursorBlinkInterval = window.setInterval(() => {
+      // vendor 0.4.0-kelpi.24: `render()` sees the phase change through `paintedCursor`, so a
+      // toggle repaints the cursor line once, and a hidden or scrolled-back cursor not at all.
       this.cursorVisible = !this.cursorVisible;
-      // Note: Render loop should redraw cursor line automatically
+      // vendor 0.4.0-kelpi.25: a toggle the cursor cannot show (hidden by the app, or the view
+      // scrolled back) needs no frame.
+      if (this.cursorShowable) this.invalidate();
     }, 530);
   }
 
@@ -1263,6 +1312,7 @@ export class CanvasRenderer {
    * Update theme colors
    */
   public setTheme(theme: ITheme): void {
+    this.invalidate();
     this.theme = { ...DEFAULT_THEME, ...theme };
     // Kept in step with the background the palette below is derived from, so a theme change
     // cannot leave `isDefaultCellBackground` matching the PREVIOUS background's components.
@@ -1303,6 +1353,7 @@ export class CanvasRenderer {
    * numbers. See `liveThemeColor` for what the renderer does with them.
    */
   public setTerminalDefaultColors(background: number | null, foreground: number | null): void {
+    this.invalidate();
     this.terminalDefaultBackgroundRGB = CanvasRenderer.rgbFromInt(background);
     this.terminalDefaultForegroundRGB = CanvasRenderer.rgbFromInt(foreground);
   }
@@ -1311,6 +1362,7 @@ export class CanvasRenderer {
    * Update font size
    */
   public setFontSize(size: number): void {
+    this.invalidate();
     this.fontSize = size;
     this.metrics = this.measureFont();
   }
@@ -1319,6 +1371,7 @@ export class CanvasRenderer {
    * Update font family
    */
   public setFontFamily(family: string): void {
+    this.invalidate();
     this.fontFamily = family;
     this.metrics = this.measureFont();
   }
@@ -1327,6 +1380,7 @@ export class CanvasRenderer {
    * Update cursor style
    */
   public setCursorStyle(style: 'block' | 'underline' | 'bar'): void {
+    this.invalidate();
     this.cursorStyle = style;
   }
 
@@ -1334,6 +1388,7 @@ export class CanvasRenderer {
    * Enable/disable cursor blinking
    */
   public setCursorBlink(enabled: boolean): void {
+    this.invalidate();
     if (enabled && !this.cursorBlink) {
       this.cursorBlink = true;
       // An unfocused terminal shows a steady outline; its timer starts when it takes focus.
@@ -1359,10 +1414,11 @@ export class CanvasRenderer {
    * embedder that never calls this keeps upstream's always-focused behaviour.
    */
   public setFocused(focused: boolean): void {
+    this.invalidate();
     if (this.focused === focused) return;
     this.focused = focused;
-    // The cursor cell has to be repainted even though nothing in the buffer changed.
-    this.cursorStateDirty = true;
+    // The cursor cell is repainted by the next `render()`, which sees the new treatment
+    // through `paintedCursor` even though nothing in the buffer changed.
     if (focused) {
       this.cursorVisible = true;
       if (this.cursorBlink && this.cursorBlinkInterval === undefined) this.startCursorBlink();
@@ -1440,6 +1496,7 @@ export class CanvasRenderer {
    * Set selection manager (for rendering selection)
    */
   public setSelectionManager(manager: SelectionManager): void {
+    this.invalidate();
     this.selectionManager = manager;
   }
 
@@ -1449,6 +1506,7 @@ export class CanvasRenderer {
 
   /** Highlight every visible occurrence of a needle, or nothing (`null`). Drops the current one. */
   public setSearchHighlight(query: ISearchHighlight | null): void {
+    this.invalidate();
     this.searchHighlighter.setQuery(query);
   }
 
@@ -1462,6 +1520,7 @@ export class CanvasRenderer {
     buffer: IRenderable,
     scrollbackProvider: IScrollbackProvider | undefined
   ): boolean {
+    this.invalidate();
     const query = this.searchHighlighter.getQuery();
     const anchor =
       match === null || query === null
@@ -1567,6 +1626,7 @@ export class CanvasRenderer {
    * Set the currently hovered hyperlink ID for rendering underlines
    */
   public setHoveredHyperlinkId(hyperlinkId: number): void {
+    this.invalidate();
     this.hoveredHyperlinkId = hyperlinkId;
   }
 
@@ -1575,6 +1635,7 @@ export class CanvasRenderer {
    * or none. The rows of the old and the new underline are repainted on the next frame.
    */
   public setLinkUnderline(segments: readonly ILinkUnderlineSegment[] | null): void {
+    this.invalidate();
     const rows = this.linkUnderlineRows;
     if (this.linkUnderline !== null) this.linkUnderline.forEach((segment) => rows.add(segment.row));
     if (segments !== null) segments.forEach((segment) => rows.add(segment.row));
@@ -1603,6 +1664,7 @@ export class CanvasRenderer {
       endY: number;
     } | null
   ): void {
+    this.invalidate();
     this.hoveredLinkRange = range;
   }
 
@@ -1624,6 +1686,7 @@ export class CanvasRenderer {
    * Clear entire canvas
    */
   public clear(): void {
+    this.invalidate();
     this.paintDefaultBackground(0, 0, this.canvas.width, this.canvas.height);
   }
 

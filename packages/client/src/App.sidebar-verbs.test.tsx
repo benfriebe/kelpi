@@ -18,6 +18,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { App } from './App';
 import { completeHandshake, createFakeSocketFactory, type FakeWebSocket } from './connection';
+import { FOCUS_DWELL_MS } from './grid/FocusRing';
 import { createKelpiRuntime, createKelpiStore, type KelpiRuntime } from './state';
 import { createFakeRendererFactory } from './terminal/testing';
 
@@ -38,7 +39,14 @@ const NEW_GROUP = 'CCCCCCCC-0000-4000-8000-000000000009';
  * state the reply is about to refer to. (Pushed as a fresh `snapshot`, not a hand-built delta: a
  * delta the client cannot apply makes it resync, which drops the in-flight command with it.)
  */
-function snapshotState(options: { inactive?: 'visible' | 'parked'; group?: { id: string; name: string; members?: string[] } } = {}): JsonObject {
+function snapshotState(
+    options: {
+        inactive?: 'visible' | 'parked';
+        group?: { id: string; name: string; members?: string[] };
+        /** Hand-set workspace statuses (agent-lifecycle §5.10), applied by the real reducer. */
+        statuses?: Record<string, 'idle' | 'running' | 'waitingForInput'>;
+    } = {}
+): JsonObject {
     const store = createDaemonStore(emptyDaemonState('/Users/test'));
     store.dispatch({ type: 'create-workspace', id: W1, paneID: PANE_A, name: 'alpha', color: 'blue', now: NOW });
     store.dispatch({ type: 'create-workspace', id: W2, paneID: PANE_B, name: 'beta', color: 'green', now: NOW });
@@ -70,6 +78,9 @@ function snapshotState(options: { inactive?: 'visible' | 'parked'; group?: { id:
             initialWorkspaceIDs: options.group.members ?? []
         });
     }
+    for (const [id, status] of Object.entries(options.statuses ?? {})) {
+        store.dispatch({ type: 'set-workspace-status', id, status });
+    }
     store.dispatch({ type: 'set-active-workspace', id: W1, now: NOW });
     return store.getState() as unknown as JsonObject;
 }
@@ -83,7 +94,7 @@ interface Harness {
     reply(extra: Record<string, unknown>): void;
 }
 
-function setup(options: { inactive?: 'visible' | 'parked' } = {}): Harness {
+function setup(options: Parameters<typeof snapshotState>[0] = {}): Harness {
     const sockets = createFakeSocketFactory();
     const store = createKelpiStore();
     const runtime = createKelpiRuntime({
@@ -159,6 +170,58 @@ describe('a row’s Color ▸ (§WS-048)', () => {
             (item) => item.getAttribute('data-checked') === 'true'
         );
         expect(ticked.map((item) => item.getAttribute('data-menu-item'))).toEqual(['color:green']);
+    });
+});
+
+describe('a row’s Status ▸ (agent-lifecycle §5.10)', () => {
+    const dwell = async (): Promise<void> => {
+        await act(async () => {
+            await new Promise((resolve) => setTimeout(resolve, FOCUS_DWELL_MS + 300));
+        });
+    };
+    const sent = (h: Harness): unknown[] => h.commands().map((command) => command['command']);
+
+    it('reaches the daemon as `set-workspace-status` naming that workspace, ticking the current one', () => {
+        const h = setup({ statuses: { [W3]: 'running' } });
+        const submenu = submenuOn('gamma', 'Status');
+        const ticked = [...submenu.querySelectorAll('[data-menu-item]')].filter(
+            (item) => item.getAttribute('data-checked') === 'true'
+        );
+        expect(ticked.map((item) => item.getAttribute('data-menu-item'))).toEqual(['status:running']);
+        fireEvent.click(within(submenu).getByText('Awaiting Input'));
+        expect(h.lastCommand('set-workspace-status')).toMatchObject({ workspace_id: W3, status: 'waitingForInput' });
+    });
+
+    it('lights the row’s avatar dot from the workspace’s own status, with no agent in it', () => {
+        setup({ statuses: { [W3]: 'waitingForInput' } });
+        expect(within(row('gamma')).getByTestId('status-dot').getAttribute('data-status')).toBe('waiting');
+        expect(within(row('alpha')).queryByTestId('status-dot')).toBeNull();
+    });
+
+    it('acknowledges Awaiting Input once the workspace is visited for the dwell', async () => {
+        const h = setup({ statuses: { [W3]: 'waitingForInput' } });
+        await dwell();
+        // Not visited yet: the active workspace is alpha.
+        expect(sent(h)).not.toContain('clear-workspace-status');
+
+        fireEvent.click(row('gamma'));
+        await dwell();
+        expect(h.lastCommand('clear-workspace-status')).toMatchObject({ workspace_id: W3 });
+    });
+
+    /** #108's lesson, for the workspace: a status set where the user sits must not clear itself. */
+    it('keeps Awaiting Input set on the workspace the user is already in', async () => {
+        const h = setup();
+        fireEvent.click(within(submenuOn('alpha', 'Status')).getByText('Awaiting Input'));
+        expect(h.lastCommand('set-workspace-status')).toMatchObject({ workspace_id: W1, status: 'waitingForInput' });
+        h.reply({ workspace_id: W1, status: 'waitingForInput' });
+        // Play the daemon's broadcast: a fresh snapshot carrying the new status.
+        act(() => {
+            h.socket().emit({ type: 'snapshot', seq: 1, state: snapshotState({ statuses: { [W1]: 'waitingForInput' } }) });
+        });
+        expect(within(row('alpha')).getByTestId('status-dot').getAttribute('data-status')).toBe('waiting');
+        await dwell();
+        expect(sent(h)).not.toContain('clear-workspace-status');
     });
 });
 

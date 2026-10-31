@@ -1059,7 +1059,10 @@ kelpi workspace list [--group <name-or-id>] [--parent <name-or-id>] [--json] [--
   parent's group), optional `parent_id`/`parent_name` (both absent unless nested), optional
   `repos` (the repo
   associations: `repo_id`, `repo_name?`, `repo_path?`, `worktree_path`, `branch?`; absent
-  when there are none; `--json` only). Timestamps ISO 8601.
+  when there are none; `--json` only), optional `pull_requests` (the GitHub PRs for those
+  branches, workspace-feature.md §11: `number`, `title`, `url`, `state` (`open`, `draft`,
+  `merged` or `closed`), `repo_id`, `branch`; open first; absent when there are none;
+  `--json` only). Timestamps ISO 8601.
 - `--group` scoping an unknown/ambiguous group is an `ok:false` error (distinct from an
   empty group => empty list, exit 0).
 - `--json`: the array unwrapped, compact, sorted keys.
@@ -1198,8 +1201,13 @@ orphaned group on worktree-add failure). Ambiguous `--group` name => `ok:false`
 workspace muted from its first frame, so a conductor can spawn children that never notify
 (it composes with `--worktree`, `--group` and `--profile`). `--icon` likewise gives the
 workspace its sidebar icon from its first frame, and a refused icon creates nothing. Worktree path is
-`resolvedWorktreeBasePath/<sanitized-name>`; `--branch` defaults to the worktree name;
-`--update-main` fetches the default branch (only that branch, no tags) and branches off
+`resolvedWorktreeBasePath/<sanitized-name>`; `--branch` defaults to the worktree name.
+Without `--update-main` the branch is decided from the refs that exist (graft-git.md §8.3): an
+existing local branch is checked out; a name that already names a commit (a tag, a SHA,
+`origin/<b>`) is checked out detached at it, and no branch is made; a branch only one remote has
+is branched from it (tracking it unless git's `branch.autoSetupMerge` is `false`); anything else is
+a new branch off the current HEAD. Git's own error is the one reported, in whatever language git
+speaks. `--update-main` fetches the default branch (only that branch, no tags) and branches off
 `origin/<default>`; the default branch is the local `origin/HEAD` when it is set, else asked of
 the remote (`git ls-remote --symref`), else `main`. A fetch the New Workspace sheet prefetched
 under a minute ago is reused, so the CLI create skips it (graft-git.md §8.5.1). Every success reply carries `muted`, and

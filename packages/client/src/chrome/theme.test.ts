@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+    BUILT_IN_CHROME_THEMES,
     CHROME_TOKEN_FALLBACKS,
     DARK_CHROME_THEME,
     DEFAULT_SIDEBAR_TINT,
@@ -76,6 +77,24 @@ describe('resolveChromeTheme', () => {
         expect(theme.accent).toBe('#FF8800');
         expect(theme.selectionStroke).toBe('#FF8800');
         expect(theme.selectionFill).toBe('rgba(255, 136, 0, 0.18)');
+    });
+
+    /**
+     * A white accent under the white text every filled button used to hard-code is a button with
+     * no label (Monochrome's Create). Only an accent that light flips: the shipped presets keep
+     * the white text they were drawn with.
+     */
+    it('an accent override picks the text drawn on accent fills', () => {
+        const onAccent = (accent: string): string =>
+            resolveChromeTheme({ appearance: 'dark', overrides: { 'dark:accent': accent } }).onAccent;
+        expect(DARK_CHROME_THEME.onAccent).toBe('#FFFFFF');
+        expect(LIGHT_CHROME_THEME.onAccent).toBe('#FFFFFF');
+        expect(onAccent('FFFFFF')).toBe('#0A0A0C');
+        expect(onAccent('FFFF99')).toBe('#0A0A0C');
+        for (const preset of BUILT_IN_CHROME_THEMES) {
+            if (preset.name === 'Monochrome') continue;
+            expect([preset.name, onAccent(preset.palette.accent)]).toEqual([preset.name, '#FFFFFF']);
+        }
     });
 
     it('ignores malformed hex and non-overridable keys', () => {

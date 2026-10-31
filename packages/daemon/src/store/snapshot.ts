@@ -78,6 +78,11 @@ export interface PersistedWorkspace {
     readonly icon: IconRef | null;
     readonly profileName: string | null;
     readonly muted: boolean;
+    /**
+     * agent-lifecycle §5.10, restored as is (no pane-style reset on load). Optional because a
+     * snapshot built by the legacy importer carries none; absent restores as idle.
+     */
+    readonly status?: PaneStatus | undefined;
     /** The un-zoomed tree (a zoomed workspace persists `savedLayout`). */
     readonly layout: PaneLayout;
     readonly focusedPaneID: string | null;
@@ -172,6 +177,7 @@ function persistWorkspace(workspace: WorkspaceState): PersistedWorkspace {
         icon: workspace.icon,
         profileName: workspace.profileName,
         muted: workspace.muted,
+        status: workspace.status,
         layout: workspace.savedLayout ?? workspace.layout,
         focusedPaneID: workspace.focusedPaneID,
         createdAt: workspace.createdAt,
@@ -347,6 +353,7 @@ export function fromSnapshot(
             icon: record.icon,
             profileName: record.profileName,
             muted: record.muted === true,
+            status: record.status ?? 'idle',
             panes,
             parkedPanes: (record.panes ?? []).filter(pane => pane.parked).map(restorePane),
             layout: record.layout,
@@ -368,7 +375,8 @@ export function fromSnapshot(
             childOrder: record.childOrder ?? [],
             childrenCollapsed: record.childrenCollapsed === true,
             isSyncInputActive: false,
-            syncInputExcluded: []
+            syncInputExcluded: [],
+            pullRequests: []
         } satisfies WorkspaceState;
     });
 

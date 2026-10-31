@@ -346,10 +346,11 @@ describe('Settings Lab reports readiness and draws the rail', () => {
         const { surface } = make({ general: { tcpPort: 19400 } });
         const h = await mount(surface);
         await ready(h);
-        await until(() => found('lab-settings-field').length === 14, "General's fourteen rows");
+        await until(() => found('lab-settings-field').length === 15, "General's fifteen rows");
         expect(fieldIDs()).toEqual([
             'general.worktreeBasePath',
             'general.autoDetectRepos',
+            'general.workspacePrStatus',
             'general.inheritGroupOnNewWorkspace',
             'general.newWorkspacePlacement',
             'general.newGroupPlacement',
@@ -365,6 +366,7 @@ describe('Settings Lab reports readiness and draws the rail', () => {
         ]);
         expect(found('lab-settings-field').map((node) => node.dataset.kind)).toEqual([
             'text',
+            'toggle',
             'toggle',
             'toggle',
             'select',
@@ -394,7 +396,7 @@ describe('Settings Lab reports readiness and draws the rail', () => {
         const { surface } = make({ general: { tcpPort: 19400 } });
         const h = await mount(surface);
         await ready(h);
-        await until(() => found('lab-settings-field').length === 14, 'the General fields');
+        await until(() => found('lab-settings-field').length === 15, 'the General fields');
         // The switch reads "On"/"Off", which names a state and not the setting it belongs to.
         const toggle = inputFor('general.autoDetectRepos');
         expect(toggle.textContent).toBe('On');
@@ -482,7 +484,7 @@ describe('Settings Lab commits one field of every kind', () => {
         const { surface, writes } = make({ general: { tcpPort: 19400 } });
         const h = await mount(surface);
         await ready(h);
-        await until(() => found('lab-settings-field').length === 14, 'the General fields');
+        await until(() => found('lab-settings-field').length === 15, 'the General fields');
         // A switch has no draft phase, so the lab holds and commits in one gesture.
         expect(inputFor('general.autoDetectRepos').getAttribute('aria-checked')).toBe('true');
         inputFor('general.autoDetectRepos').click();
@@ -614,7 +616,7 @@ describe('Settings Lab never sends a value the contract forbids', () => {
         const { surface, writes } = make({ general: { tcpPort: 19400 } });
         const h = await mount(surface);
         await ready(h);
-        await until(() => found('lab-settings-field').length === 14, 'the General fields');
+        await until(() => found('lab-settings-field').length === 15, 'the General fields');
         type(inputFor('general.tcpPort'), '99999');
         await until(() => h.sent('ui.setSettingsDraft').length === 1, 'the clamped draft');
         expect(h.sent('ui.setSettingsDraft')[0]).toEqual({ fieldID: 'general.tcpPort', text: '65535' });
@@ -647,7 +649,7 @@ describe('Settings Lab never sends a value the contract forbids', () => {
         const { surface } = make({ general: { tcpPort: 19400 } });
         const h = await mount(surface);
         await ready(h);
-        await until(() => found('lab-settings-field').length === 14, 'the General fields');
+        await until(() => found('lab-settings-field').length === 15, 'the General fields');
         const port = inputFor('general.tcpPort');
         port.focus();
         expect(document.activeElement).toBe(port);

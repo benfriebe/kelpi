@@ -145,7 +145,7 @@ export function PhoneHostSheet(props: PhoneHostSheetProps): ReactElement | null 
                     type="submit"
                     data-testid="phone-host-add"
                     className="flex items-center justify-center rounded text-[15px] font-semibold"
-                    style={{ minHeight: `${String(PHONE_ROW_MIN_PX)}px`, background: tokens.accent, color: '#fff' }}
+                    style={{ minHeight: `${String(PHONE_ROW_MIN_PX)}px`, background: tokens.accent, color: tokens.onAccent }}
                 >
                     Add host
                 </button>

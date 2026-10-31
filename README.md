@@ -116,7 +116,7 @@ This generation uses protocol 2 and `kelpi-v2.db`; see the
 
 The workspace from the tour, three ways, each a preset paired with the terminal theme of the same
 name. In Settings ▸ Appearance, a preset theme (Dracula, Nord, Gruvbox Dark, Tokyo Night,
-Catppuccin Mocha, Solarized Light or Gruvbox Light) recolours the sidebar, title bar, status bar
+Catppuccin Mocha, Monochrome, Solarized Light or Gruvbox Light) recolours the sidebar, title bar, status bar
 and agent dots in one click and switches between light and dark to suit. The terminal theme
 beside it picks one of ten built-in palettes, saved as `theme = <name>` in
 `~/.config/ghostty/config` and read from Ghostty's theme files. Your own colours can be saved and
@@ -811,6 +811,20 @@ Stop sharing with `tailscale serve reset`. Use `serve`, never `funnel`: `funnel`
 the open internet, and this port is a shell. Proxied requests arrive with Tailscale's identity
 headers (`Tailscale-User-Login`, `Tailscale-User-Name`), which is where per-user gating would
 go if it is ever wanted.
+
+#### On a phone
+
+Opened on a phone, the client is a phone app rather than a small desktop. Home leads with every
+agent waiting for you on every host, with its question and its answers (an answer is sent only
+while the agent's screen still shows the question you saw). Under that are your hosts, one card
+each, and the workspaces of the one you are on. Inside a workspace, the bar at the bottom reads
+`host › workspace › pane`, and each part opens a picker at its level, including New pane (a
+terminal, Claude, Codex, a web page, a scratchpad, a diff or a plugin view) and Add a host (scan
+the Mac's pairing code from Settings → Remote, or paste its URL). Add it to the home screen to
+use it full-screen. Turn on **Notifications** (tap the host name in the bar) and every host you
+added pushes its notifications to the phone while Kelpi is closed or in the background; on an
+iPhone that needs Kelpi on the home screen (iOS 16.4 or later).
+[`docs/phone-ui.md`](docs/phone-ui.md) has the details.
 
 #### Voice dictation records on the machine the session runs on (#268)
 

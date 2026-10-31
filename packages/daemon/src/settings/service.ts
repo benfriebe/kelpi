@@ -332,6 +332,7 @@ export function buildSettingsSnapshot(
             // rather than only being read where it is enforced, because Settings ▸ Repositories
             // renders it and every attached window must agree on its value.
             autoDetectRepos: general.autoDetectRepos,
+            workspacePrStatus: general.workspacePrStatus,
             worktreeBasePath: general.worktreeBasePath,
             newWorkspacePlacement: general.newWorkspacePlacement,
             newGroupPlacement: general.newGroupPlacement,

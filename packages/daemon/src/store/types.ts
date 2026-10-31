@@ -18,6 +18,7 @@
 
 import type { AgentEvent, AgentKind } from '@kelpi/core/agent';
 import type { IconRef, SidebarID, WebTab } from '@kelpi/core/codec';
+import type { PullRequestState, WorkspacePullRequest } from '@kelpi/core/git';
 import type {
     Direction,
     DropZone,
@@ -32,6 +33,7 @@ import type { WorkspaceColor } from '@kelpi/protocol';
 
 export type { AgentKind, Direction, DropZone, IconRef, Pane, PaneLayout, PaneStatus, PaneType };
 export type { PredefinedLayoutKind, SidebarID, SplitDirection, WebTab, WorkspaceColor };
+export type { PullRequestState, WorkspacePullRequest };
 
 // ---------------------------------------------------------------------------
 // State
@@ -133,6 +135,12 @@ export interface WorkspaceState {
     readonly profileName: string | null;
     /** Muted: the workspace's agents raise no attention signals (agent-lifecycle §7.6). */
     readonly muted: boolean;
+    /**
+     * agent-lifecycle §5.10: the row menu's Status, a pane's three statuses set by hand on the
+     * whole workspace. Persisted, unlike a pane's: it describes no PTY, so a restart has nothing
+     * to reset it for. Only a visit clears it, and only `waitingForInput`.
+     */
+    readonly status: PaneStatus;
     /** Visible panes, append order. */
     readonly panes: readonly Pane[];
     /** TRANSIENT: off-layout panes whose PTYs stay alive (`kelpi open --here` sources). */
@@ -178,6 +186,12 @@ export interface WorkspaceState {
     readonly isSyncInputActive: boolean;
     /** TRANSIENT: a set, stored as an ordered array so events/snapshots stay plain JSON. */
     readonly syncInputExcluded: readonly string[];
+    /**
+     * TRANSIENT (§1.11, §11): the GitHub PRs for this workspace's association branches, as the
+     * daemon's poller last found them, sorted by aggregate rank then newest first. Empty until
+     * the first lookup after start, and whenever lookups are off or `gh` is unavailable.
+     */
+    readonly pullRequests: readonly WorkspacePullRequest[];
 }
 
 export interface DaemonState {
@@ -282,6 +296,8 @@ export type DomainAction =
           readonly profileName: string | null;
       }
     | { readonly type: 'set-workspace-muted'; readonly id: string; readonly muted: boolean }
+    | { readonly type: 'set-workspace-status'; readonly id: string; readonly status: PaneStatus }
+    | { readonly type: 'clear-workspace-status'; readonly id: string }
     | {
           readonly type: 'workspace-labels';
           readonly id: string;
@@ -431,6 +447,12 @@ export type DomainAction =
           readonly workspaceID: string;
           readonly associationID: string;
           readonly branchName: string | null;
+      }
+    /** §7.17: replace the workspace's PR list (the poller dispatches only on a change). */
+    | {
+          readonly type: 'set-workspace-pull-requests';
+          readonly id: string;
+          readonly pullRequests: readonly WorkspacePullRequest[];
       }
 
     // ── panes ──────────────────────────────────────────────────────────────
@@ -916,6 +938,7 @@ export interface NewWorkspaceFields {
     readonly icon?: IconRef | null | undefined;
     readonly profileName?: string | null | undefined;
     readonly muted?: boolean | undefined;
+    readonly status?: PaneStatus | undefined;
     readonly labels?: readonly string[] | undefined;
     readonly panes?: readonly Pane[] | undefined;
     readonly layout?: PaneLayout | undefined;
@@ -937,6 +960,7 @@ export function makeWorkspaceState(fields: NewWorkspaceFields): WorkspaceState {
         icon: fields.icon ?? null,
         profileName: fields.profileName ?? null,
         muted: fields.muted ?? false,
+        status: fields.status ?? 'idle',
         panes: fields.panes ?? [],
         parkedPanes: [],
         layout: fields.layout ?? { kind: 'empty' },
@@ -958,7 +982,8 @@ export function makeWorkspaceState(fields: NewWorkspaceFields): WorkspaceState {
         childOrder: fields.childOrder ?? [],
         childrenCollapsed: fields.childrenCollapsed ?? false,
         isSyncInputActive: false,
-        syncInputExcluded: []
+        syncInputExcluded: [],
+        pullRequests: []
     };
 }
 

@@ -68,7 +68,9 @@ interface Harness {
     renderer(): FakeRenderer;
 }
 
-async function mountPane({ coarse = true } = {}): Promise<Harness> {
+type ProbeLinkURL = (paneID: string, row: number, col: number) => Promise<string | null>;
+
+async function mountPane({ coarse = true, probeLinkURL }: { coarse?: boolean; probeLinkURL?: ProbeLinkURL } = {}): Promise<Harness> {
     const win = createFakePhoneWindow({ ...PANE, coarse });
     const renderers = createFakeRendererFactory({ cell: CELL });
     const pty = createFakePtyApi();
@@ -89,6 +91,7 @@ async function mountPane({ coarse = true } = {}): Promise<Harness> {
                     createRenderer={renderers.factory}
                     measure={() => ({ width: PANE.width, height: PANE.height })}
                     formFactorWindow={win}
+                    probeLinkURL={probeLinkURL}
                 />
                 <PhoneKeyBar paneID="pane-touch" contentRow={row} formFactorWindow={win} />
             </div>
@@ -342,7 +345,7 @@ describe('a phone pane under an application that asked for the mouse (#123)', ()
         expect(h.renderer().scrolls).toEqual([]);
     });
 
-    it('a LONG PRESS is the application s press: no word selection, no Copy pill', async () => {
+    it('a LONG PRESS is still the word and the Copy pill, and the application is told nothing', async () => {
         const h = await mountPane();
         h.renderer().wordAtPoint = 'ripgrep';
         const offers: ClipboardOffer[] = [];
@@ -353,15 +356,17 @@ describe('a phone pane under an application that asked for the mouse (#123)', ()
         await act(async () => {
             await vi.advanceTimersByTimeAsync(600);
         });
-        // C3's timer was never armed: an application that reports the mouse asked for the press,
-        // and a contact cannot mean two things at once.
-        expect(h.renderer().wordPresses).toEqual([]);
-        expect(offers).toEqual([]);
-        expect(h.row.querySelector('[data-terminal-copy-pill]')).toBeNull();
+        // The owner, 2026-10-18, on a Claude Code pane (which reports the mouse): "copying on
+        // mobile no longer seems to work, you cant long hold press anymore".
+        expect(h.renderer().wordPresses).toEqual([{ clientX: 45, clientY: 61 }]);
+        expect(offers).toEqual([{ paneID: 'pane-touch', text: 'ripgrep', bytes: 7 }]);
+        expect(h.row.querySelector('[data-terminal-copy-pill]')).not.toBeNull();
 
         touch(h.engine, 'touchend', [finger(61, 45)]);
-        // It reaches the application as the same click a shorter tap does.
-        expect(h.pty.last().directInput).toEqual(['\x1b[<0;5;4M', '\x1b[<0;5;4m']);
+        // No press and no release on the wire, and the engine saw none of the contact.
+        expect(h.pty.last().directInput).toEqual([]);
+        expect(h.pty.last().input).toEqual([]);
+        expect(h.engineEvents).toEqual([]);
         off();
     });
 
@@ -420,6 +425,86 @@ describe('a phone pane under an application that asked for the mouse (#123)', ()
         touch(h.engine, 'touchmove', [finger(460)]);
         touch(h.engine, 'touchend', [finger(460)]);
         expect(h.renderer().scrolls).toEqual([-3]);
+    });
+});
+
+/**
+ * A tap on a link offers it (the owner, 2026-10-18: "you also can't click a link to open it").
+ * The pane asks the daemon at the tap and the window's key bar shows the offer; the tap itself
+ * is still the engine's, or the application's click.
+ */
+describe('a phone pane offers the link a tap lands on', () => {
+    const probing = (answer: string | null) => {
+        const asked: { paneID: string; row: number; col: number }[] = [];
+        const probeLinkURL: ProbeLinkURL = (paneID, row, col) => {
+            asked.push({ paneID, row, col });
+            return Promise.resolve(answer);
+        };
+        return { asked, probeLinkURL };
+    };
+
+    it('asks about the tapped cell, and offers a link with Open and Copy link', async () => {
+        const { asked, probeLinkURL } = probing('https://example.com/abc');
+        const h = await mountPane({ probeLinkURL });
+        const offers: ClipboardOffer[] = [];
+        const off = onClipboardOffer((offer) => offers.push(offer));
+
+        touch(h.engine, 'touchstart', [finger(61, 45)]);
+        touch(h.engine, 'touchend', [finger(61, 45)]);
+        await settle();
+
+        // The cell a mouse report at that point names: column 5, row 4 (one-based), as below.
+        expect(asked).toEqual([{ paneID: 'pane-touch', row: 3, col: 4 }]);
+        expect(offers).toEqual([
+            { paneID: 'pane-touch', text: 'https://example.com/abc', bytes: 23, url: 'https://example.com/abc' }
+        ]);
+        const open = h.row.querySelector('[data-testid="terminal-link-pill-open-pane-touch"]') as HTMLAnchorElement | null;
+        expect(open?.getAttribute('href')).toBe('https://example.com/abc');
+        expect(open?.getAttribute('target')).toBe('_blank');
+        expect(open?.textContent).toBe('Open example.com/abc');
+        expect(h.row.querySelector('[data-terminal-copy-pill] button')?.textContent).toBe('Copy link');
+        // The tap was still the engine's: it is how a phone raises its keyboard.
+        expect(h.engineEvents).toEqual(['touchstart', 'touchend']);
+        off();
+    });
+
+    it('offers nothing for a tap on no link', async () => {
+        const { asked, probeLinkURL } = probing(null);
+        const h = await mountPane({ probeLinkURL });
+        touch(h.engine, 'touchstart', [finger(61, 45)]);
+        touch(h.engine, 'touchend', [finger(61, 45)]);
+        await settle();
+        expect(asked).toHaveLength(1);
+        expect(h.row.querySelector('[data-terminal-copy-pill]')).toBeNull();
+    });
+
+    it('asks after the click an application that reports the mouse is sent', async () => {
+        const { asked, probeLinkURL } = probing('https://example.com/abc');
+        const h = await mountPane({ probeLinkURL });
+        act(() => {
+            h.pty.last().modes({ mouseTracking: 'drag', mouseFormat: 'sgr' });
+        });
+        touch(h.engine, 'touchstart', [finger(61, 45)]);
+        touch(h.engine, 'touchend', [finger(61, 45)]);
+        await settle();
+        expect(h.pty.last().directInput).toEqual(['\x1b[<0;5;4M', '\x1b[<0;5;4m']);
+        expect(asked).toEqual([{ paneID: 'pane-touch', row: 3, col: 4 }]);
+        expect(h.row.querySelector('[data-testid="terminal-link-pill-open-pane-touch"]')).not.toBeNull();
+    });
+
+    it('asks nothing for a drag or a long press', async () => {
+        const { asked, probeLinkURL } = probing('https://example.com/abc');
+        const h = await mountPane({ probeLinkURL });
+        touch(h.engine, 'touchstart', [finger(400)]);
+        touch(h.engine, 'touchmove', [finger(460)]);
+        touch(h.engine, 'touchend', [finger(460)]);
+        touch(h.engine, 'touchstart', [finger(400)]);
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(600);
+        });
+        touch(h.engine, 'touchend', [finger(400)]);
+        await settle();
+        expect(asked).toEqual([]);
     });
 });
 

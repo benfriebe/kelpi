@@ -45,7 +45,7 @@ const repoRoot = path.resolve(here, '..', '..', '..', '..');
 const vendorRoot = path.join(repoRoot, 'vendor', 'ghostty-web-patched');
 
 /** The version the audit evidence and PROVENANCE.md were written against. */
-const EXPECTED_VERSION = '0.4.0-kelpi.23';
+const EXPECTED_VERSION = '0.4.0-kelpi.25';
 
 /** Markers of the caret-anchored IME, in the built ESM bundle the client imports. */
 const CARET_MARKERS = ['data-ime-preedit', 'data-ime-caret', 'syncImeCaret'];
@@ -71,7 +71,7 @@ const TRANSPARENCY_MARKERS = ['paintDefaultBackground', 'allowTransparency'];
  * (`src/renderer/cursor.zig:59-60` — steady, hollow, whatever style the terminal asked for).
  * Take a future npm release wholesale and every pane starts blinking again.
  */
-const CURSOR_FOCUS_MARKERS = ['setFocused', 'renderHollowCursor', 'cursorStateDirty'];
+const CURSOR_FOCUS_MARKERS = ['setFocused', 'renderHollowCursor', 'paintedCursor'];
 
 /**
  * The marker of `-kelpi.5`'s zero-length `write()` guard (§N1 / §N23).
@@ -487,6 +487,31 @@ describe('vendored ghostty-web engine', () => {
         const selectionSource = read(path.join(vendorRoot, 'source', 'lib', 'selection-manager.ts'));
         expect(selectionSource).toContain('if (Math.max(Math.abs(point.x - press.x), Math.abs(point.y - press.y)) < deadZone) return null;');
         expect(selectionSource).toContain(': { start: this.wideGlyphStart(click), end: drag };');
+    });
+
+    it('repaints the cursor when it changes, not on every frame (§-kelpi.24)', () => {
+        // Take a future npm release wholesale and every terminal with the blink SETTING on
+        // (Kelpi's default) repaints its cursor line and redraws its cursor on every frame again,
+        // focused or not, and a DECTCEM-hidden cursor is only erased by that per-frame repaint.
+        const bundle = read(path.join(vendorRoot, 'dist', 'ghostty-web.js'));
+        expect(bundle).toContain('this.paintedCursor = {');
+        expect(bundle).not.toMatch(/if \(\w+ \|\| this\.cursorBlink\b/);
+        const rendererSource = read(path.join(vendorRoot, 'source', 'lib', 'renderer.ts'));
+        expect(rendererSource).toContain('if (cursorDrawn && (cursorChanged || rowsToRender.has(cursor.y))) {');
+        expect(rendererSource).toContain('cursorDrawn !== painted.drawn ||');
+    });
+
+    it('runs the render loop on demand, woken by every frame-changing source (§-kelpi.25)', () => {
+        // Take a future npm release wholesale and every open terminal chains
+        // requestAnimationFrame forever again, keeping the GPU process and WindowServer awake.
+        const bundle = read(path.join(vendorRoot, 'dist', 'ghostty-web.js'));
+        expect(bundle).toContain('RENDER_TAIL_FRAMES');
+        expect(bundle).toContain('setInvalidateListener');
+        const terminalSource = read(path.join(vendorRoot, 'source', 'lib', 'terminal.ts'));
+        expect(terminalSource).toContain('if (++this.idleFrames < Terminal.RENDER_TAIL_FRAMES) {');
+        // The selection manager's own wake: a drag outside the pane reaches no element listener.
+        const selectionSource = read(path.join(vendorRoot, 'source', 'lib', 'selection-manager.ts'));
+        expect(selectionSource).toContain("this.terminal['requestRender']();");
     });
 
     it('keeps the snapshotted source in step with the bundle', () => {

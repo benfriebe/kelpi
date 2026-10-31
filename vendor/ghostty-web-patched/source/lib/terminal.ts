@@ -155,6 +155,9 @@ export class Terminal implements ITerminalCore {
   private isOpen = false;
   private isDisposed = false;
   private animationFrameId?: number;
+  /** Frames rendered since the last wake (vendor 0.4.0-kelpi.25, see `requestRender`). */
+  private idleFrames = 0;
+  private renderHeartbeat?: ReturnType<typeof setInterval>;
 
   // Addons
   private addons: ITerminalAddon[] = [];
@@ -166,7 +169,16 @@ export class Terminal implements ITerminalCore {
   private currentTitle: string = '';
 
   // Phase 2: Viewport and scrolling state
-  public viewportY: number = 0; // Top line of viewport in scrollback buffer (0 = at bottom, can be fractional during smooth scroll)
+  // Top line of viewport in scrollback buffer (0 = at bottom, can be fractional during smooth
+  // scroll). An accessor since vendor 0.4.0-kelpi.25 so every scroll path wakes the render loop.
+  private _viewportY: number = 0;
+  public get viewportY(): number {
+    return this._viewportY;
+  }
+  public set viewportY(value: number) {
+    this._viewportY = value;
+    this.requestRender();
+  }
   private targetViewportY: number = 0; // Target viewport position for smooth scrolling
   private scrollAnimationStartTime?: number;
   private scrollAnimationStartY?: number;
@@ -181,7 +193,15 @@ export class Terminal implements ITerminalCore {
 
   // Scrollbar visibility/auto-hide state
   private scrollbarVisible: boolean = false;
-  private scrollbarOpacity: number = 0;
+  // An accessor for the same reason as `viewportY`: the fade must reach the loop.
+  private _scrollbarOpacity: number = 0;
+  private get scrollbarOpacity(): number {
+    return this._scrollbarOpacity;
+  }
+  private set scrollbarOpacity(value: number) {
+    this._scrollbarOpacity = value;
+    this.requestRender();
+  }
   private scrollbarHideTimeout?: number;
   private readonly SCROLLBAR_HIDE_DELAY_MS = 1500; // Hide after 1.5 seconds
   private readonly SCROLLBAR_FADE_DURATION_MS = 200; // 200ms fade animation
@@ -637,6 +657,7 @@ export class Terminal implements ITerminalCore {
 
       // Forward selection change events
       this.selectionManager.onSelectionChange(() => {
+        this.requestRender();
         this.selectionChangeEmitter.fire();
       });
 
@@ -778,6 +799,7 @@ export class Terminal implements ITerminalCore {
     }
 
     // Render will happen on next animation frame
+    this.requestRender();
   }
 
   /**
@@ -894,6 +916,7 @@ export class Terminal implements ITerminalCore {
     this.assertOpen();
     // Send ANSI clear screen and cursor home sequences
     this.wasmTerm!.write('\x1b[2J\x1b[H');
+    this.requestRender();
   }
 
   /**
@@ -929,6 +952,7 @@ export class Terminal implements ITerminalCore {
     this.scrollAnimationStartY = undefined;
     this.linkDetector?.invalidateCache();
     this.currentTitle = '';
+    this.requestRender();
     return true;
   }
 
@@ -1427,6 +1451,8 @@ export class Terminal implements ITerminalCore {
       cancelAnimationFrame(this.animationFrameId);
       this.animationFrameId = undefined;
     }
+    clearInterval(this.renderHeartbeat);
+    this.renderHeartbeat = undefined;
 
     // Stop smooth scroll animation
     if (this.scrollAnimationFrame) {
@@ -1467,42 +1493,89 @@ export class Terminal implements ITerminalCore {
   // Private Methods
   // ==========================================================================
 
+  /** Frames a wake renders before the loop stops: about 80 ms at 120 Hz. */
+  private static readonly RENDER_TAIL_FRAMES = 10;
+  private static readonly WAKE_EVENTS = [
+    'mousedown',
+    'mousemove',
+    'mouseup',
+    'mouseleave',
+    'wheel',
+    'keydown',
+    'compositionstart',
+    'compositionupdate',
+    'compositionend',
+    'focusin',
+    'focusout',
+  ] as const;
+  // ponytail: a missed wake source would leave a stale frame; this repaints anything dirty within
+  // 2s (a no-op when nothing is). Add the missing source to `requestRender` if it ever fires work.
+  private static readonly RENDER_HEARTBEAT_MS = 2000;
+
   /**
-   * Start the render loop
+   * vendor 0.4.0-kelpi.25: the loop runs ON DEMAND. Upstream chained `requestAnimationFrame`
+   * unconditionally, so an idle terminal still woke the page, the GPU process and the window
+   * server every display frame (120 Hz on ProMotion) — per open terminal. Now anything that
+   * changes the next frame calls `requestRender()`: output (`writeInternal`), every renderer
+   * setter and the blink timer (`setInvalidateListener`), scrolling and the scrollbar fade (the
+   * `viewportY` / `scrollbarOpacity` accessors), selection changes, and pointer / key / IME
+   * events on the element. A wake runs `RENDER_TAIL_FRAMES` frames, so state that settles over
+   * a frame or two (the scrollbar strip restore, the search layer) still lands, then stops.
    */
+  private requestRender = (): void => {
+    if (this.isDisposed || !this.isOpen || !this.renderer || !this.wasmTerm) return;
+    this.idleFrames = 0;
+    if (this.animationFrameId === undefined) {
+      this.animationFrameId = requestAnimationFrame(this.renderLoopFrame);
+    }
+  };
+
+  private renderLoopFrame = (): void => {
+    this.animationFrameId = undefined;
+    if (this.isDisposed || !this.isOpen || !this.renderer || !this.wasmTerm) return;
+    this.renderFrame();
+    if (++this.idleFrames < Terminal.RENDER_TAIL_FRAMES) {
+      this.animationFrameId = requestAnimationFrame(this.renderLoopFrame);
+    }
+  };
+
   private startRenderLoop(): void {
-    const loop = () => {
-      if (!this.isDisposed && this.isOpen) {
-        // Render using WASM's native dirty tracking
-        // The render() method:
-        // 1. Calls update() once to sync state and check dirty flags
-        // 2. Only redraws dirty rows when forceAll=false
-        // 3. Always calls clearDirty() at the end
-        this.renderer!.render(this.wasmTerm!, false, this.viewportY, this, this.scrollbarOpacity);
+    this.renderer!.setInvalidateListener(this.requestRender);
+    for (const type of Terminal.WAKE_EVENTS) {
+      this.element!.addEventListener(type, this.requestRender, { capture: true, passive: true });
+    }
+    this.renderHeartbeat = setInterval(() => {
+      if (this.animationFrameId === undefined && !this.isDisposed && this.isOpen) this.renderFrame();
+    }, Terminal.RENDER_HEARTBEAT_MS);
+    this.requestRender();
+  }
 
-        // Check for cursor movement (Phase 2: onCursorMove event)
-        // Note: getCursor() reads from already-updated render state (from render() above)
-        const cursor = this.wasmTerm!.getCursor();
-        if (cursor.y !== this.lastCursorY) {
-          this.lastCursorY = cursor.y;
-          this.cursorMoveEmitter.fire();
-        }
+  private renderFrame(): void {
+    // Render using WASM's native dirty tracking
+    // The render() method:
+    // 1. Calls update() once to sync state and check dirty flags
+    // 2. Only redraws dirty rows when forceAll=false
+    // 3. Always calls clearDirty() at the end
+    this.renderer!.render(this.wasmTerm!, false, this.viewportY, this, this.scrollbarOpacity);
 
-        // vendor 0.4.0-kelpi.2: keep the IME anchored to the caret. Driven from the render loop
-        // rather than from onCursorMove because a cursor that moves along a ROW (typing) never
-        // fires that event, and because a resize changes the cell box without moving the
-        // cursor at all. Cheap: syncImeCaret returns after four number comparisons unless the
-        // box actually changed.
-        this.syncImeCaret(cursor.x, cursor.y);
+    // Check for cursor movement (Phase 2: onCursorMove event)
+    // Note: getCursor() reads from already-updated render state (from render() above)
+    const cursor = this.wasmTerm!.getCursor();
+    if (cursor.y !== this.lastCursorY) {
+      this.lastCursorY = cursor.y;
+      this.cursorMoveEmitter.fire();
+    }
 
-        // Note: onRender event is intentionally not fired in the render loop
-        // to avoid performance issues. For now, consumers can use requestAnimationFrame
-        // if they need frame-by-frame updates.
+    // vendor 0.4.0-kelpi.2: keep the IME anchored to the caret. Driven from the render loop
+    // rather than from onCursorMove because a cursor that moves along a ROW (typing) never
+    // fires that event, and because a resize changes the cell box without moving the
+    // cursor at all. Cheap: syncImeCaret returns after four number comparisons unless the
+    // box actually changed.
+    this.syncImeCaret(cursor.x, cursor.y);
 
-        this.animationFrameId = requestAnimationFrame(loop);
-      }
-    };
-    loop();
+    // Note: onRender event is intentionally not fired in the render loop
+    // to avoid performance issues. For now, consumers can use requestAnimationFrame
+    // if they need frame-by-frame updates.
   }
 
   // ==========================================================================
@@ -1692,6 +1765,9 @@ export class Terminal implements ITerminalCore {
 
     // Remove event listeners
     if (this.element) {
+      for (const type of Terminal.WAKE_EVENTS) {
+        this.element.removeEventListener(type, this.requestRender, { capture: true });
+      }
       this.element.removeEventListener('wheel', this.handleWheel);
       this.element.removeEventListener('mousedown', this.handleMouseDown, { capture: true });
       this.element.removeEventListener('mousemove', this.handleMouseMove);

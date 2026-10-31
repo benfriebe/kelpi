@@ -104,6 +104,7 @@ Read/write tolerances (`packages/daemon/src/db/codec.ts`):
 | `muted`         | BOOLEAN | no   | 0       | Kelpi-only (v21). 1 = the workspace's agents raise no attention signals (agent-lifecycle.md §7.6). NULL or absent (a pre-v21 row) reads as unmuted. |
 | `childOrderJSON`| TEXT    | yes  |         | Kelpi-only (v26). JSON array of the UUIDs nested under this workspace, in sidebar order (app-state-core.md §2.9). NULL (written when there are none), absent (a pre-v26 row) or undecodable → none. |
 | `childrenCollapsed` | BOOLEAN | no | 0     | Kelpi-only (v26). 1 = the nested workspaces are hidden behind the parent's chevron. NULL or absent reads as expanded. |
+| `status`        | TEXT    | no   | `'idle'`| Kelpi-only (v27). The row menu's hand-set Status (agent-lifecycle.md §5.10), in `pane.status`'s vocabulary and encoding. Unknown, NULL or absent (a pre-v27 row) → `idle`. Unlike `pane.status` it is NOT reset on load. |
 
 Note: there is **no group membership column**. A workspace belongs to a group iff its UUID
 appears in some `workspace_group.childOrderJSON`; it is top-level iff it appears in the
@@ -335,10 +336,11 @@ labels are trimmed, non-empty, order-preserving, deduped case-sensitively.
 ## 4. Migration history
 
 Migration identifiers are strings; each runs once, recorded in `grdb_migrations`
-(`MIGRATIONS`, `packages/daemon/src/db/schema.ts`). There are 26 in total: the 18 shared
+(`MIGRATIONS`, `packages/daemon/src/db/schema.ts`). There are 27 in total: the 18 shared
 with the legacy app plus `v19_pane_agent_profile`, `v20_plugin_panes`,
 `v21_workspace_muted`, `v22_workspace_group_repo`, `v23_pane_csv_header_row`,
-`v24_pane_terminal_font_size`, `v25_pane_scratchpad_wrap` and `v26_workspace_nesting`. From v3 onward, every
+`v24_pane_terminal_font_size`, `v25_pane_scratchpad_wrap`, `v26_workspace_nesting` and
+`v27_workspace_status`. From v3 onward, every
 `ALTER TABLE ADD COLUMN` (and the v15 rename) is **guarded**: it first checks the live column
 list and skips if the column already exists (or, for v15, if the target name already exists /
 the source is missing). This guard exists because pre-release builds of the legacy app
@@ -376,6 +378,7 @@ migration idempotent regardless of ledger drift.
 | `v24_pane_terminal_font_size` | `pane` + `terminalFontSize INTEGER` (nullable, §2.2). Kelpi-only (in `DAEMON_ONLY_MIGRATIONS`) and guarded. Additive, so no new database generation: every existing pane reads back NULL and keeps following the ghostty `font-size`; an older daemon's explicit-column INSERT leaves NULL, so a downgrade drops each pane's own size the first time it saves. |
 | `v25_pane_scratchpad_wrap` | `pane` + `scratchpadWrap BOOLEAN NOT NULL DEFAULT 0` (§2.2). Kelpi-only (in `DAEMON_ONLY_MIGRATIONS`) and guarded. Additive, so no new database generation: every existing scratchpad reads back unwrapped, as it drew before; an older daemon's explicit-column INSERT leaves the default, so a downgrade turns each scratchpad's wrap off the first time it saves. |
 | `v26_workspace_nesting` | `workspace` + `childOrderJSON TEXT` and `childrenCollapsed BOOLEAN NOT NULL DEFAULT 0` (§2.1), guarded per column. Kelpi-only (in `DAEMON_ONLY_MIGRATIONS`). Additive, so no new database generation: every existing workspace reads back with nothing nested, expanded. An older daemon ignores both columns and its sidebar does not show nested workspaces (app-state-core.md §2.9, Downgrade); its save rewrites every row with the defaults, so the nesting is lost once it saves, and a newer daemon's boot repair then places those workspaces at the top level. |
+| `v27_workspace_status` | `workspace` + `status TEXT NOT NULL DEFAULT 'idle'` (§2.1). Kelpi-only (in `DAEMON_ONLY_MIGRATIONS`) and guarded. Additive, so no new database generation: every existing workspace reads back idle; an older daemon's explicit-column INSERT leaves the default, so a downgrade clears every workspace's status the first time it saves. |
 
 ---
 
@@ -645,7 +648,7 @@ create and rename.
 App level: workspace list + order, group list + order + collapse state, top-level sidebar
 order, active workspace id, repo registry, repo associations.
 
-Per workspace: id, name, slug, color, icon, profileName, muted, labels, layout tree
+Per workspace: id, name, slug, color, icon, profileName, muted, status, labels, layout tree
 (un-zoomed), focused pane id, createdAt, lastAccessedAt.
 
 Per pane: id, owning workspace, label, type, workingDirectory, filePath, scratchpad content,
@@ -664,7 +667,8 @@ marker, the snapshot version.
 Workspace: `focusHistory`, parked built-in panes (PTY included; plugin panes persist),
 `recentlyClosedPanes`, `zoomedPaneID` + `savedLayout` (the un-zoomed tree is what gets saved),
 search state (`searchingPaneID`, needle, counts), `currentLayoutIndex` (predefined-layout cycle
-position), `isSyncInputActive` + `syncInputExcluded` (sync-input always starts off).
+position), `isSyncInputActive` + `syncInputExcluded` (sync-input always starts off),
+`pullRequests` (looked up again with `gh` after the restart, workspace-feature.md §11).
 
 Pane: `title` (live terminal/web title), `gitBranch` (re-detected), `isEditing` (recomputed:
 scratchpad → true; a csv pane comes back in grid mode), `externalEditorCommand`, `markdownFontSize` (resets to 14),
@@ -754,7 +758,8 @@ CREATE TABLE workspace (
   profileName    TEXT,
   muted          BOOLEAN NOT NULL DEFAULT 0, -- Kelpi-only (v21)
   childOrderJSON TEXT,                       -- Kelpi-only (v26): nested workspace UUIDs
-  childrenCollapsed BOOLEAN NOT NULL DEFAULT 0 -- Kelpi-only (v26)
+  childrenCollapsed BOOLEAN NOT NULL DEFAULT 0, -- Kelpi-only (v26)
+  status         TEXT NOT NULL DEFAULT 'idle'  -- Kelpi-only (v27): idle|running|waitingForInput
 );
 
 CREATE TABLE pane (
@@ -832,6 +837,8 @@ interface WorkspaceRow {
   createdAt: number; lastAccessedAt: number; sortOrder: number;
   labelsJSON: string; icon: string | null; profileName: string | null;
   muted: number;                              // SQLite BOOLEAN, 0/1
+  childOrderJSON: string | null; childrenCollapsed: number;
+  status: string;                             // idle|running|waitingForInput
 }
 interface PaneRow {
   id: string; workspaceID: string; label: string | null; type: string;

@@ -25,7 +25,7 @@ import { useRef } from 'react';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { bindKeyboardViewport } from '../chrome/keyboard-viewport';
-import { CLIPBOARD_WRITE_MESSAGE, createClipboardWriteHandler, resetClipboardOffersForTests } from '../state/clipboard';
+import { CLIPBOARD_WRITE_MESSAGE, createClipboardWriteHandler, offerLink, resetClipboardOffersForTests } from '../state/clipboard';
 import {
     COPY_PILL_TIMEOUT_MS,
     KEY_BAR_HEIGHT_PX,
@@ -1844,6 +1844,55 @@ describe('KeyBar: the OSC 52 Copy pill', () => {
             handler(offerFrame('pane-1', 'copied-text'));
         });
         expect(document.querySelector('[data-terminal-copy-pill]')).toBeNull();
+    });
+});
+
+/** The same pill for a link a tap landed on (`offerLink`, 2026-10-18). */
+describe('KeyBar: the link pill', () => {
+    afterEach(() => {
+        cleanup();
+        stubClipboard(null);
+        resetClipboardOffersForTests();
+    });
+
+    it('opens the link in this browser from a plain link, and copies it on the other button', () => {
+        const h = mountBar();
+        act(() => {
+            offerLink('pane-1', 'https://example.com/a/long/path/to/somewhere/far/away');
+        });
+        const open = h.root.querySelector('[data-testid="terminal-link-pill-open-pane-1"]') as HTMLAnchorElement;
+        expect(open.getAttribute('href')).toBe('https://example.com/a/long/path/to/somewhere/far/away');
+        expect(open.getAttribute('target')).toBe('_blank');
+        expect(open.getAttribute('rel')).toBe('noopener noreferrer');
+        // The caption the desktop's link menu uses, elided for a phone's width.
+        expect(open.textContent).toBe('Open example.com/a/lon…e/far/away');
+
+        const copy = h.root.querySelector('[data-testid="terminal-copy-pill-button-pane-1"]') as HTMLElement;
+        expect(copy.textContent).toBe('Copy link');
+        tap(copy);
+        expect(h.written).toEqual(['https://example.com/a/long/path/to/somewhere/far/away']);
+        expect(h.query('data-terminal-copy-pill')).toBeNull();
+    });
+
+    it('takes itself down once Open is tapped', () => {
+        const h = mountBar();
+        act(() => {
+            offerLink('pane-1', 'https://example.com/a');
+        });
+        const open = h.root.querySelector('[data-testid="terminal-link-pill-open-pane-1"]') as HTMLElement;
+        // jsdom does not navigate; what is under test is that the pill goes.
+        open.addEventListener('click', (event) => event.preventDefault());
+        tap(open);
+        expect(h.query('data-terminal-copy-pill')).toBeNull();
+        expect(h.written).toEqual([]);
+    });
+
+    it('ignores a link offered to another pane', () => {
+        const h = mountBar();
+        act(() => {
+            offerLink('pane-2', 'https://example.com/a');
+        });
+        expect(h.query('data-terminal-copy-pill')).toBeNull();
     });
 });
 

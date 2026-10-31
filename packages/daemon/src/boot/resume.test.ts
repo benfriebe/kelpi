@@ -138,7 +138,8 @@ function fakeInput(pty: FakePty): TerminalInput {
             pty.writeDirect(paneID, text);
             if (!opts.bare) pty.writeDirect(paneID, '\r');
         },
-        sendNamedKey: () => {}
+        sendNamedKey: () => {},
+        sendKeystroke: () => {}
     };
 }
 

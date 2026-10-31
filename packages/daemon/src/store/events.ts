@@ -7,9 +7,9 @@
  * foundation of the WS state sync (WP2.7): snapshot once, then stream batches.
  *
  * Ownership (disjoint, so a field is never described by two event kinds):
- *   workspace-upserted → workspace meta (name/slug/color/icon/profile/muted/labels/
+ *   workspace-upserted → workspace meta (name/slug/color/icon/profile/muted/status/labels/
  *                        repoAssociations/recentlyClosed/webPanes/search/timestamps/
- *                        childOrder/childrenCollapsed)
+ *                        childOrder/childrenCollapsed/pullRequests)
  *   layout-changed     → layout + zoomedPaneID + savedLayout + currentLayoutIndex
  *   focus-changed      → focusedPaneID + focusHistory
  *   sync-changed       → isSyncInputActive + syncInputExcluded (+ derived syncedPaneIDs)
@@ -45,6 +45,7 @@ function envelopeOf(workspace: WorkspaceState): WorkspaceEnvelope {
         icon: workspace.icon,
         profileName: workspace.profileName,
         muted: workspace.muted,
+        status: workspace.status,
         repoAssociations: workspace.repoAssociations,
         recentlyClosedPanes: workspace.recentlyClosedPanes,
         webPanes: workspace.webPanes,
@@ -56,7 +57,8 @@ function envelopeOf(workspace: WorkspaceState): WorkspaceEnvelope {
         lastAccessedAt: workspace.lastAccessedAt,
         labels: workspace.labels,
         childOrder: workspace.childOrder,
-        childrenCollapsed: workspace.childrenCollapsed
+        childrenCollapsed: workspace.childrenCollapsed,
+        pullRequests: workspace.pullRequests
     };
 }
 
@@ -68,6 +70,7 @@ function envelopeChanged(before: WorkspaceState, after: WorkspaceState): boolean
         before.icon !== after.icon ||
         before.profileName !== after.profileName ||
         before.muted !== after.muted ||
+        before.status !== after.status ||
         before.repoAssociations !== after.repoAssociations ||
         before.recentlyClosedPanes !== after.recentlyClosedPanes ||
         before.webPanes !== after.webPanes ||
@@ -79,7 +82,8 @@ function envelopeChanged(before: WorkspaceState, after: WorkspaceState): boolean
         before.lastAccessedAt !== after.lastAccessedAt ||
         before.labels !== after.labels ||
         before.childOrder !== after.childOrder ||
-        before.childrenCollapsed !== after.childrenCollapsed
+        before.childrenCollapsed !== after.childrenCollapsed ||
+        before.pullRequests !== after.pullRequests
     );
 }
 

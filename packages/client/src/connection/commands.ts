@@ -457,6 +457,60 @@ export class CommandClient {
         return this.raw({ command: 'remote-delete', target }, options ?? {});
     }
 
+    // ── phone push (`daemon push/service.ts`; WS-only, open to paired devices) ──────
+
+    /**
+     * Register this phone's push subscription with the daemon, under the phone's own key for
+     * this host (echoed in every push so a tap opens the right one). Idempotent: the phone sends
+     * it on every connect, which is also what tells the daemon this connection is that phone's.
+     */
+    pushSubscribe(
+        registration: {
+            readonly endpoint: string;
+            readonly p256dh: string;
+            readonly auth: string;
+            readonly vapidPublicKey: string;
+            readonly vapidPrivateKey: string;
+        },
+        host: string,
+        visible: boolean,
+        options?: SendOptions
+    ): Promise<CommandReply> {
+        return this.raw(
+            {
+                command: 'push-subscribe',
+                visible,
+                endpoint: registration.endpoint,
+                p256dh: registration.p256dh,
+                auth: registration.auth,
+                vapid_public_key: registration.vapidPublicKey,
+                vapid_private_key: registration.vapidPrivateKey,
+                host
+            },
+            options ?? {}
+        );
+    }
+
+    /** Forget a push subscription on the daemon. */
+    pushUnsubscribe(endpoint: string, options?: SendOptions): Promise<CommandReply> {
+        return this.raw({ command: 'push-unsubscribe', endpoint }, options ?? {});
+    }
+
+    /**
+     * Tell the daemon whether this phone's page is on screen: while it is, the daemon pushes this
+     * phone nothing (the app shows what waits). Only sent on a live connection, so a stale report
+     * can never be flushed after the `push-subscribe` that carries the current one.
+     */
+    reportPushPresence(visible: boolean): void {
+        if (this.connection.status !== 'connected') return;
+        this.connection.send({ type: 'push-presence', visible });
+    }
+
+    /** Ask the daemon to push a test notification to this connection's subscription, now. */
+    pushTest(options?: SendOptions): Promise<CommandReply> {
+        return this.raw({ command: 'push-test' }, options ?? { timeoutMs: 20_000 });
+    }
+
     /**
      * Which panes this client actually renders + whether its document is visible. Drives
      * notification suppression and the daemon's "app is active" answer.
@@ -563,9 +617,13 @@ export class CommandClient {
         return this.raw(wirePayload('pane-clear', scopeFields(input)), options ?? {});
     }
 
-    /** `bare` suppresses the trailing Enter (compose with `sendKey`). */
+    /**
+     * `bare` suppresses the trailing Enter (compose with `sendKey`). `ifRevision` (#390) writes
+     * only while the pane's screen is still the one a `capturePane` reported, and is refused with
+     * `SCREEN_CHANGED` otherwise; a daemon from before #390 ignores it and writes anyway.
+     */
     sendText(
-        input: PaneScope & { target: string; text: string; bare?: boolean },
+        input: PaneScope & { target: string; text: string; bare?: boolean; ifRevision?: number },
         options?: SendOptions
     ): Promise<CommandReply> {
         return this.raw(
@@ -573,15 +631,16 @@ export class CommandClient {
                 ...scopeFields(input),
                 target: input.target,
                 text: input.text,
-                bare: input.bare ?? false
+                bare: input.bare ?? false,
+                if_revision: input.ifRevision
             }),
             options ?? {}
         );
     }
 
-    sendKey(input: PaneScope & { target: string; key: NamedKey | string }, options?: SendOptions): Promise<CommandReply> {
+    sendKey(input: PaneScope & { target: string; key: NamedKey | string; ifRevision?: number }, options?: SendOptions): Promise<CommandReply> {
         return this.raw(
-            wirePayload('pane-send-key', { ...scopeFields(input), target: input.target, key: input.key }),
+            wirePayload('pane-send-key', { ...scopeFields(input), target: input.target, key: input.key, if_revision: input.ifRevision }),
             options ?? {}
         );
     }
@@ -1124,6 +1183,25 @@ export class CommandClient {
     }
 
     /**
+     * The sidebar row menu's Status submenu (agent-lifecycle.md §5.10): the pane menu's three
+     * statuses, set on the whole workspace.
+     */
+    setWorkspaceStatus(
+        input: { workspaceID: string; status: 'idle' | 'running' | 'waitingForInput' },
+        options?: SendOptions
+    ): Promise<CommandReply> {
+        return this.raw(
+            wirePayload('set-workspace-status', { workspace_id: input.workspaceID, status: input.status }),
+            options ?? {}
+        );
+    }
+
+    /** §5.10: a visit's 600 ms acknowledgment, the workspace twin of `clearPaneStatus`. */
+    clearWorkspaceStatus(input: { workspaceID: string }, options?: SendOptions): Promise<CommandReply> {
+        return this.raw(wirePayload('clear-workspace-status', { workspace_id: input.workspaceID }), options ?? {});
+    }
+
+    /**
      * §2.9: nest workspaces under `parentID` at its post-remove `index`, in ONE change (a drag of
      * a whole selection, like `moveWorkspaces`). The daemon answers with why when it refuses.
      */
@@ -1212,7 +1290,7 @@ export class CommandClient {
     }
 
     /**
-     * The pane context menu's Status submenu (agent-lifecycle.md §5.10 / TERM-107). The daemon's
+     * The pane context menu's Status submenu (agent-lifecycle.md §5.7 / TERM-107). The daemon's
      * state machine owns the whole rule — shell panes only, the elapsed clock arms on a FRESH
      * transition into running, the background count is zeroed — so this only names the target
      * status, and a non-shell pane comes back unchanged rather than as an error.

@@ -17,6 +17,10 @@
  *     on the worktree branch and on a create that associates a repository (§1
  *     reply-before-effect, §6.2a, §6.2d); the worktree branch streams its steps to a WS
  *     requester first (`reply.progress`, #294) and can be cancelled until git is done;
+ *   - a create that asks for an agent (`start_agent`, §6.2 "Starting an agent") is checked, and
+ *     its prompt written to a file, BEFORE anything else on every branch, so a refusal leaves
+ *     nothing behind; every success reply then echoes `start_agent` (and `prompt_file`), a
+ *     failure removes the file, and the launcher gets the first pane right after it spawns;
  *   - delete's guards run in order (resolve → last-workspace → agent panes) and the `path`
  *     field is the first SHELL pane's cwd (port note 17);
  *   - a delete that asks for worktree cleanup (`worktree_paths` / `prune_worktrees`, graft-git.md
@@ -25,7 +29,7 @@
 
 import path from 'node:path';
 
-import { describeAgentSummary } from '@kelpi/core/agent';
+import { describeAgentSummary, normalizeAgentPrompt } from '@kelpi/core/agent';
 import {
     formatIconString,
     iconRefusal,
@@ -45,7 +49,9 @@ import {
 import {
     WORKSPACE_COLORS,
     buildWorkspaceListEntry,
+    parseStartAgent,
     parseWorkspaceColor,
+    unknownStartAgentError,
     type JsonObject,
     type WorkspaceColor,
     type WorkspaceCreateMessage,
@@ -54,6 +60,7 @@ import {
     type WorkspaceNestMessage
 } from '@kelpi/protocol';
 
+import type { AgentLaunchRequest } from '../../agent-launch/index.js';
 import type { ReplyHandle } from '../../seams.js';
 import {
     workspaceAgentSummary,
@@ -182,11 +189,11 @@ function workspacePath(workspace: WorkspaceState): string | undefined {
     return pane?.workingDirectory;
 }
 
-/** Spawn the PTY of a workspace's first pane after a create. */
-function spawnFirstPane(ctx: AppContext, deps: AppDeps, workspaceID: string): void {
+/** Spawn the PTY of a workspace's first pane after a create; returns that pane's id. */
+function spawnFirstPane(ctx: AppContext, deps: AppDeps, workspaceID: string): string | null {
     const workspace = workspaceByID(ctx.store.getState(), workspaceID);
     const pane = workspace?.panes[0];
-    if (workspace === null || pane === undefined) return;
+    if (workspace === null || pane === undefined) return null;
     deps.spawnPane(
         {
             paneID: pane.id,
@@ -196,6 +203,7 @@ function spawnFirstPane(ctx: AppContext, deps: AppDeps, workspaceID: string): vo
         },
         ctx
     );
+    return pane.id;
 }
 
 // ---------------------------------------------------------------------------
@@ -288,6 +296,8 @@ interface CreateInput {
      * `kelpi workspace create --focus`). False creates it in the background.
      */
     readonly focus: boolean;
+    /** `start_agent`: started in the first pane once it has spawned. */
+    readonly agent: AgentStart | undefined;
 }
 
 function dispatchCreate(ctx: AppContext, deps: AppDeps, input: CreateInput): void {
@@ -311,7 +321,17 @@ function dispatchCreate(ctx: AppContext, deps: AppDeps, input: CreateInput): voi
         focus: input.focus
     });
     deps.scrollTarget(workspaceSidebarID(input.workspaceID));
-    spawnFirstPane(ctx, deps, input.workspaceID);
+    const firstPaneID = spawnFirstPane(ctx, deps, input.workspaceID);
+    if (input.agent !== undefined) {
+        // The pane the spawn actually used. Should there be none, the minted id is still the
+        // honest thing to hand over: the launcher finds no such pane and reports `pane-exited`.
+        deps.agentLauncher.start({
+            paneID: firstPaneID ?? paneID,
+            workspaceID: input.workspaceID,
+            request: input.agent.request,
+            originClientID: input.agent.originClientID
+        });
+    }
     refreshSyncGroup(ctx, input.workspaceID);
     deps.persist();
     // #307: only a focusing create is revealed. A background one (an agent's `kelpi workspace
@@ -345,6 +365,104 @@ function revealCreatedWorkspace(ctx: AppContext, workspaceID: string, paneID: st
     const target = workspace.panes.some((pane) => pane.id === paneID) ? paneID : workspace.panes[0]?.id;
     if (target === undefined) return;
     ctx.broadcast({ type: 'reveal-pane', workspaceID, paneID: target });
+}
+
+/** A create's agent, once validated: what to start, and which session hears how it went. */
+interface AgentStart {
+    readonly request: AgentLaunchRequest;
+    readonly originClientID: string | undefined;
+}
+
+/** §6.2 "Starting an agent", check 2. */
+export const AGENT_FIELDS_NEED_START_AGENT_ERROR = 'agent_prompt and send_prompt need start_agent';
+
+/** §6.2 "Starting an agent", check 4: the prefix of the error a failed prompt-file write gives. */
+export const PROMPT_FILE_WRITE_ERROR_PREFIX = 'could not write the prompt file: ';
+
+/**
+ * §6.2 "Starting an agent" (wire-protocol.md §6.3): the agent fields, checked in the contract's
+ * order before anything else the create does, on every branch:
+ *
+ *   1. an unknown `start_agent` (a typo must not quietly start the wrong agent);
+ *   2. `agent_prompt` (even empty) or `send_prompt: true` without an agent;
+ *   3. the prompt's normalization (a NUL, or too long);
+ *   4. writing the prompt file, for a prompt that is not blank.
+ *
+ * Returns undefined when no agent was asked for, null when the request was refused (the reply
+ * has been sent), and the launch request otherwise.
+ */
+function prepareAgentLaunch(
+    msg: WorkspaceCreateMessage,
+    reply: ReplyHandle | null,
+    deps: AppDeps
+): AgentLaunchRequest | null | undefined {
+    const raw = msg.start_agent;
+    const kind = raw === undefined ? undefined : parseStartAgent(raw);
+    if (raw !== undefined && kind === undefined) {
+        fail(reply, unknownStartAgentError(raw));
+        return null;
+    }
+    if (kind === undefined) {
+        if (msg.agent_prompt !== undefined || msg.send_prompt) {
+            fail(reply, AGENT_FIELDS_NEED_START_AGENT_ERROR);
+            return null;
+        }
+        return undefined;
+    }
+    const normalized = normalizeAgentPrompt(msg.agent_prompt ?? '');
+    if (!normalized.ok) {
+        fail(reply, normalized.error);
+        return null;
+    }
+    let promptFile: string | null = null;
+    if (normalized.prompt !== null) {
+        try {
+            promptFile = deps.agentLauncher.preparePromptFile(normalized.prompt);
+        } catch (error) {
+            fail(reply, `${PROMPT_FILE_WRITE_ERROR_PREFIX}${error instanceof Error ? error.message : String(error)}`);
+            return null;
+        }
+    }
+    return { kind, prompt: normalized.prompt, send: msg.send_prompt, promptFile };
+}
+
+/**
+ * The create's reply, seen through the agent request: every success echoes `start_agent` (and
+ * `prompt_file` when one was written), which is how a caller tells this daemon from one that
+ * dropped the fields and created a plain workspace; every failure removes the prompt file first,
+ * whichever branch's check refused (one wrapper rather than a discard beside each of them).
+ * Progress, cancellation and the origin session pass straight through. A null request handle (no
+ * reply wanted) still gets a wrapper, so a failure still removes the file.
+ */
+function agentReply(reply: ReplyHandle | null, request: AgentLaunchRequest, deps: AppDeps): ReplyHandle {
+    const echo = { start_agent: request.kind, ...(request.promptFile !== null ? { prompt_file: request.promptFile } : {}) };
+    let closed = false;
+    return {
+        send(payload) {
+            if (payload['ok'] === true) {
+                reply?.send({ ...payload, ...echo });
+                return;
+            }
+            if (request.promptFile !== null) deps.agentLauncher.discardPromptFile(request.promptFile);
+            reply?.send(payload);
+        },
+        close() {
+            closed = true;
+            reply?.close();
+        },
+        get closed() {
+            return reply === null ? closed : reply.closed;
+        },
+        onDisconnect(callback) {
+            reply?.onDisconnect(callback);
+        },
+        ...(reply?.progress !== undefined
+            ? { progress: (payload: Record<string, unknown>) => reply.progress?.(payload) }
+            : {}),
+        ...(reply?.signal !== undefined ? { signal: reply.signal } : {}),
+        ...(reply?.uncancellable !== undefined ? { uncancellable: () => reply.uncancellable?.() } : {}),
+        ...(reply?.originClientID !== undefined ? { originClientID: reply.originClientID } : {})
+    };
 }
 
 function ambiguousGroupError(name: string): string {
@@ -429,7 +547,8 @@ function handleWorktreeCreate(
     parentID: string | undefined,
     ctx: AppContext,
     reply: ReplyHandle | null,
-    deps: AppDeps
+    deps: AppDeps,
+    agent: AgentStart | undefined
 ): void {
     const state = ctx.store.getState();
     const workspaceName = msg.name ?? DEFAULT_WORKSPACE_NAME;
@@ -608,7 +727,8 @@ function handleWorktreeCreate(
                         branchName: seed.branchName,
                         isAutoDetected: false
                     }
-                ]
+                ],
+                agent
             });
             const created = workspaceByID(ctx.store.getState(), workspaceID);
             steps?.done('create-workspace', created?.name ?? workspaceName);
@@ -659,7 +779,8 @@ function handleCreateWithRepo(
     parentID: string | undefined,
     ctx: AppContext,
     reply: ReplyHandle | null,
-    deps: AppDeps
+    deps: AppDeps,
+    agent: AgentStart | undefined
 ): void {
     const workspaceName = msg.name ?? DEFAULT_WORKSPACE_NAME;
     const trimmedGroup = msg.group?.trim() ?? '';
@@ -710,7 +831,8 @@ function handleCreateWithRepo(
                 parentID,
                 workspaceID,
                 focus: msg.focus === true,
-                repoAssociations: [association]
+                repoAssociations: [association],
+                agent
             });
             const created = workspaceByID(ctx.store.getState(), workspaceID);
             ok(reply, {
@@ -732,14 +854,14 @@ function handleCreateWithRepo(
 function handleWorkspaceCreate(
     msg: WorkspaceCreateMessage,
     ctx: AppContext,
-    reply: ReplyHandle | null,
+    request: ReplyHandle | null,
     deps: AppDeps
 ): void {
     // Refused before any branch runs, so a bad icon never leaves a workspace, a group or a
     // worktree behind.
     const requested = requestedIcon(msg.icon);
     if ('error' in requested) {
-        fail(reply, requested.error);
+        fail(request, requested.error);
         return;
     }
     const icon = requested.icon;
@@ -747,14 +869,22 @@ function handleWorkspaceCreate(
     // §2.9: the parent is resolved up front too, so a bad one leaves nothing behind.
     const nesting = resolveCreateParent(msg, ctx.store.getState());
     if ('error' in nesting) {
-        fail(reply, nesting.error);
+        fail(request, nesting.error);
         return;
     }
     const parentID = nesting.parentID;
 
+    // §6.2 "Starting an agent": checked after the two pure checks above (the last of its own
+    // checks writes the prompt file) and before ANY branch's own checks, mutations or git work.
+    const prepared = prepareAgentLaunch(msg, request, deps);
+    if (prepared === null) return;
+    const agent: AgentStart | undefined =
+        prepared === undefined ? undefined : { request: prepared, originClientID: request?.originClientID };
+    const reply = prepared === undefined ? request : agentReply(request, prepared, deps);
+
     const worktreeName = msg.worktree;
     if (worktreeName !== undefined && worktreeName !== '') {
-        handleWorktreeCreate(msg, worktreeName, icon, parentID, ctx, reply, deps);
+        handleWorktreeCreate(msg, worktreeName, icon, parentID, ctx, reply, deps, agent);
         return;
     }
 
@@ -778,7 +908,7 @@ function handleWorkspaceCreate(
             fail(reply, ambiguousGroupError(trimmedGroup));
             return;
         }
-        handleCreateWithRepo(msg, source, icon, parentID, ctx, reply, deps);
+        handleCreateWithRepo(msg, source, icon, parentID, ctx, reply, deps, agent);
         return;
     }
 
@@ -806,7 +936,8 @@ function handleWorkspaceCreate(
             parentID,
             workspaceID,
             focus: msg.focus === true,
-            repoAssociations: undefined
+            repoAssociations: undefined,
+            agent
         });
         return;
     }
@@ -846,7 +977,8 @@ function handleWorkspaceCreate(
         parentID: undefined,
         workspaceID,
         focus: msg.focus === true,
-        repoAssociations: undefined
+        repoAssociations: undefined,
+        agent
     });
 }
 

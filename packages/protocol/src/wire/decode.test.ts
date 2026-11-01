@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { parseWireLine, decodeWireObject, type WireDecodeSuccess, type WireRejection } from './decode.js';
 import type { WireMessage } from './messages.js';
+import { parseStartAgent, unknownStartAgentError } from './vocab.js';
 
 const PANE = '1b4e4e5a-9f2b-4c58-8d1f-2a81d9a3e111';
 const PANE_UPPER = '1B4E4E5A-9F2B-4C58-8D1F-2A81D9A3E111';
@@ -700,7 +701,10 @@ describe('workspace and group commands', () => {
             muted: false,
             icon: undefined,
             group_defaults: true,
-            focus: false
+            focus: false,
+            start_agent: undefined,
+            agent_prompt: undefined,
+            send_prompt: false
         });
         expect(ok({ command: 'workspace-create', muted: true })).toMatchObject({ muted: true });
         // Verbatim, for the handler to validate (workspace-icon's rule).
@@ -737,6 +741,58 @@ describe('workspace and group commands', () => {
         expect(rejected({ command: 'workspace-create', group_defaults: 'no' })).toMatchObject({
             reason: 'field-type',
             field: 'group_defaults'
+        });
+    });
+
+    it('decodes the agent fields of workspace-create, keeping start_agent raw (§6.3)', () => {
+        expect(
+            ok({ command: 'workspace-create', start_agent: 'codex', agent_prompt: 'Fix ENG-1', send_prompt: true })
+        ).toMatchObject({ start_agent: 'codex', agent_prompt: 'Fix ENG-1', send_prompt: true });
+        // An unknown agent SURVIVES decoding: `agent`'s vocabulary would make it `claude`, and the
+        // handler has to see the typo to refuse it before anything is created.
+        expect(ok({ command: 'workspace-create', start_agent: 'gemini' })).toMatchObject({ start_agent: 'gemini' });
+        expect(ok({ command: 'workspace-create', start_agent: 'Claude' })).toMatchObject({ start_agent: 'Claude' });
+        // Empty `start_agent` is absent (§2.2); an empty prompt stays an empty prompt, so the
+        // handler can still tell "a prompt without an agent" from no prompt at all.
+        expect(ok({ command: 'workspace-create', start_agent: '' })).toMatchObject({ start_agent: undefined });
+        expect(ok({ command: 'workspace-create', agent_prompt: '' })).toMatchObject({ agent_prompt: '' });
+        // The prompt is verbatim: normalizing it is the handler's job, once, for both modes.
+        expect(ok({ command: 'workspace-create', agent_prompt: ' a\r\nb\u001b ' })).toMatchObject({
+            agent_prompt: ' a\r\nb\u001b '
+        });
+        // `agent` (the hook field) is untouched by all of this.
+        const decoded = decode({ command: 'workspace-create', start_agent: 'codex' });
+        expect(decoded.ok && decoded.hook.agent).toBe('claude');
+    });
+
+    it("matches start_agent case-insensitively but never defaults it (the handler's vocabulary)", () => {
+        expect(parseStartAgent('claude')).toBe('claude');
+        expect(parseStartAgent('CODEX')).toBe('codex');
+        expect(parseStartAgent('gemini')).toBeUndefined();
+        expect(parseStartAgent('none')).toBeUndefined();
+        expect(parseStartAgent('')).toBeUndefined();
+        expect(unknownStartAgentError('Gemini')).toBe("unknown agent 'Gemini' (expected claude or codex)");
+    });
+
+    it('poisons a workspace-create whose agent fields have the wrong type', () => {
+        expect(rejected({ command: 'workspace-create', start_agent: 1 })).toMatchObject({
+            reason: 'field-type',
+            field: 'start_agent'
+        });
+        expect(rejected({ command: 'workspace-create', agent_prompt: ['a'] })).toMatchObject({
+            reason: 'field-type',
+            field: 'agent_prompt'
+        });
+        expect(rejected({ command: 'workspace-create', send_prompt: 'true' })).toMatchObject({
+            reason: 'field-type',
+            field: 'send_prompt'
+        });
+        // Type-strict on EVERY command (§2.2): the key poisons a line that never reads it.
+        expect(rejected({ command: 'workspace-list', send_prompt: 1 })).toMatchObject({ field: 'send_prompt' });
+        expect(ok({ command: 'workspace-create', start_agent: null, agent_prompt: null })).toMatchObject({
+            start_agent: undefined,
+            agent_prompt: undefined,
+            send_prompt: false
         });
     });
 

@@ -184,7 +184,13 @@ export interface ClipboardWriteHandlerOptions {
     readonly onResult?: ((outcome: ClipboardWriteOutcome, request: ClipboardWriteRequest) => void) | undefined;
 }
 
-function defaultWriter(): ((text: string) => Promise<void>) | null {
+/**
+ * This page's own clipboard writer, `navigator.clipboard.writeText`, or null where the browser
+ * exposes none (plain HTTP off localhost, an old engine). Shared with `./agent-launch.ts`, whose
+ * undelivered-prompt toast writes from the page in the shell window too: that write answers a
+ * frame meant for THIS window, not a broadcast the shell's main process also hears.
+ */
+export function pageClipboardWriter(): ((text: string) => Promise<void>) | null {
     const clipboard = (globalThis.navigator as Navigator | undefined)?.clipboard;
     if (clipboard?.writeText === undefined) return null;
     return (text) => clipboard.writeText(text);
@@ -224,7 +230,7 @@ export function createClipboardWriteHandler(
             return 'shell';
         }
 
-        const writeText = options.writeText === undefined ? defaultWriter() : options.writeText;
+        const writeText = options.writeText === undefined ? pageClipboardWriter() : options.writeText;
         if (writeText === null) {
             log(`clipboard: pane ${short} wrote ${size} - but this browser exposes no clipboard`);
             options.onResult?.('unavailable', request);

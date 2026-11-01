@@ -118,7 +118,9 @@ export function createDispatcher<Ctx>(options: DispatcherOptions<Ctx>): ControlD
                 // #294: progress and cancellation belong to the request, hooks or not.
                 ...(reply.progress === undefined ? {} : { progress: (value: Record<string, unknown>) => reply.progress?.(value) }),
                 ...(reply.signal === undefined ? {} : { signal: reply.signal }),
-                ...(reply.uncancellable === undefined ? {} : { uncancellable: () => reply.uncancellable?.() })
+                ...(reply.uncancellable === undefined ? {} : { uncancellable: () => reply.uncancellable?.() }),
+                // So does the session a create's later `agent-launch` frame goes to (wire §6.3).
+                ...(reply.originClientID === undefined ? {} : { originClientID: reply.originClientID })
             };
             run(tracked);
         })).then(result => {

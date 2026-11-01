@@ -316,6 +316,26 @@ export interface WorkspaceCreateMessage {
      * own gestures send `true`; `kelpi workspace create --focus` does too.
      */
     focus?: boolean | undefined;
+    /**
+     * Start an agent in the workspace's first pane (§6.3, agent-lifecycle.md §6.5). The RAW
+     * string, never `parseAgentKind`'s answer: that maps an unknown value to `claude`, and a typo
+     * must reach the handler so it can refuse it (`parseStartAgent` / `unknownStartAgentError`)
+     * before anything is created. Empty string = absent. The daemon owns the command it types
+     * (`agent-claude-command` / `agent-codex-command`); a request only ever names the kind.
+     */
+    start_agent?: string | undefined;
+    /**
+     * Text for the agent, verbatim from the wire (no empty-string normalization): the handler
+     * normalizes it once (`@kelpi/core/agent`'s `normalizeAgentPrompt`) for both delivery modes.
+     * Present without `start_agent` is an error, even when empty.
+     */
+    agent_prompt?: string | undefined;
+    /**
+     * True = pass the prompt on the launch line, so the agent submits it at once ("send");
+     * false (the default) = paste it into the agent's input once it is ready ("prefill"). True
+     * without `start_agent` is an error.
+     */
+    send_prompt: boolean;
 }
 
 /**

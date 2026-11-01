@@ -185,6 +185,7 @@ describe('the projection', () => {
             'general-worktrees',
             'general-repositories',
             'general-workspaces',
+            'general-agents',
             'general-network',
             'general-links',
             'general-updates'

@@ -516,6 +516,13 @@ appends the row whatever `placement` says; absent switches to the new workspace,
 internal dispatcher always has (app-state-core.md §4.1). Group membership and sidebar
 placement are app-state-core.md's domain.
 
+The action carries nothing about an agent. A create that asks for one (`start_agent`,
+wire-protocol.md §6.3) is the handler's business: it hands the first pane, by the id it was
+created with, to the daemon's agent launcher once the pane's PTY spawn has been asked for
+(agent-lifecycle.md §6.5), and nothing about the launch is stored on the workspace or the pane.
+The pane is an ordinary shell pane; the agent it ends up running is tracked by the usual hooks
+(§7.10).
+
 Color choice for an appended workspace (`nextRandomColor` in
 `packages/daemon/src/store/derived.ts`, applied by the handler; the reducer itself
 defaults to `"blue"` when the action carries no color): pick a uniformly random

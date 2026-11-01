@@ -17,6 +17,7 @@ import { newUUID } from '@kelpi/core/codec';
 import type { SidebarID } from '@kelpi/core/codec';
 import type { JsonObject, JsonValue } from '@kelpi/protocol';
 
+import { INERT_AGENT_LAUNCHER, type AgentLauncher } from '../../agent-launch/index.js';
 import type { CommandHandler, HandlerContext, HandlerTable, ReplyHandle } from '../../seams.js';
 import type {
     DaemonState,
@@ -187,6 +188,13 @@ export interface AppHandlerOptions {
     /** Default columns/rows for a PTY spawned without a client-reported size. */
     readonly defaultCols?: number | undefined;
     readonly defaultRows?: number | undefined;
+    /**
+     * `workspace-create`'s `start_agent` (wire-protocol.md §6.3, agent-lifecycle.md §6.5): writes
+     * the prompt file before anything is created, and is handed the first pane once it has
+     * spawned. Absent = `INERT_AGENT_LAUNCHER`, which starts nothing and refuses a prompt (it has
+     * nowhere to write one); boot always supplies the real one.
+     */
+    readonly agentLauncher?: AgentLauncher | undefined;
 }
 
 export interface AppDeps {
@@ -212,6 +220,7 @@ export interface AppDeps {
     readonly emitAgentEvent: (event: AgentHookEvent) => void;
     readonly decidePermission: (args: JsonObject, signal: AbortSignal) => PermissionDecisionCall;
     readonly log: (message: string) => void;
+    readonly agentLauncher: AgentLauncher;
 }
 
 const noop = (): void => {};
@@ -282,7 +291,8 @@ export function resolveAppDeps(options: AppHandlerOptions = {}): AppDeps {
         decidePermission:
             options.decidePermission ??
             (() => ({ provider: BUNDLED_PERMISSIONS_PROVIDER, result: Promise.resolve({ behavior: 'abstain' }) })),
-        log: options.log ?? noop
+        log: options.log ?? noop,
+        agentLauncher: options.agentLauncher ?? INERT_AGENT_LAUNCHER
     };
 }
 

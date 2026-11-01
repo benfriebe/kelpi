@@ -57,6 +57,12 @@ export interface CornerToast {
     readonly id: string;
     readonly title: string;
     readonly body: string;
+    /**
+     * A click copies text the toast holds (an undelivered agent prompt, `state/agent-launch.ts`).
+     * Only the mark crosses to the layer: the text stays in the page, which does the copy when
+     * the click is relayed back (`act`). Absent = a click only dismisses.
+     */
+    readonly copy?: boolean;
 }
 
 /** #372's standing card at the bottom of the stack. */

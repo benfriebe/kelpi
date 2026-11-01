@@ -54,6 +54,12 @@ export {
 } from './process-cwd.js';
 export type { ProcessCwdReader, ProcessCwdReaderOptions, SplitDirectoryFs } from './process-cwd.js';
 
+export { FOREGROUND_CHECK_TIMEOUT_MS, createForegroundReader } from './foreground.js';
+export type { ForegroundReader, ForegroundReaderOptions } from './foreground.js';
+
+export { withInputObserver } from './input-observer.js';
+export type { PaneInputObserver } from './input-observer.js';
+
 export {
     SHELL_FOREGROUND_TIMEOUT_MS,
     createShellForegroundProbe,
@@ -65,7 +71,8 @@ export {
     SHELL_INTEGRATION_ENV,
     ZSH_ZDOTDIR_ENV,
     applyShellIntegration,
-    installShellIntegration
+    installShellIntegration,
+    shellGetsIntegration
 } from './shell-integration.js';
 export type { ShellIntegration } from './shell-integration.js';
 

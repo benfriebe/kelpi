@@ -26,7 +26,7 @@ export {
     type SidebarSelectionCommands
 } from './Sidebar';
 /** §WS-075's create sheet — a modal over the window, no longer a form inside the sidebar. */
-export { NewEntrySheet, type NewEntryDraft, type NewEntrySheetProps } from './NewWorkspaceSheet';
+export { NewEntrySheet, type NewEntryDraft, type NewEntrySheetProps, type NewWorkspaceAgentChoice } from './NewWorkspaceSheet';
 export { GroupRepoSheet, type GroupRepoChoice, type GroupRepoSheetProps } from './GroupRepoSheet';
 export { TopBar, identityDotColor, type TopBarProps } from './TopBar';
 export {
@@ -281,11 +281,13 @@ export {
 } from './sidebar-reveal';
 
 export {
+    AGENT_DISPLAY_NAMES,
     WORKSPACE_COLORS,
     type ChromeGroup,
     type ChromeRepo,
     type NewWorkspaceExtras,
     type SubmitResult,
+    type WorkspaceAgentRequest,
     type WorkspaceWorktreeRequest,
     type ChromeLabelPreset,
     type ChromeNestedWorkspaces,

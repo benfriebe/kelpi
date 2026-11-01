@@ -17,6 +17,22 @@ export function parseAgentKind(raw: string | undefined): AgentKind {
     return AGENT_KINDS.find((kind) => kind === lowered) ?? 'claude';
 }
 
+/**
+ * `workspace-create`'s `start_agent` (§6.3): case-insensitive like `agent`, but an unrecognized
+ * value is NOT `claude`. The decoder keeps the raw string (it never routes it through
+ * `parseAgentKind`), so the handler can refuse a typo with `unknownStartAgentError` instead of
+ * quietly starting the wrong agent.
+ */
+export function parseStartAgent(raw: string): AgentKind | undefined {
+    const lowered = raw.toLowerCase();
+    return AGENT_KINDS.find((kind) => kind === lowered);
+}
+
+/** The exact `{"ok":false,"error":…}` text for a `start_agent` outside `AGENT_KINDS`. */
+export function unknownStartAgentError(raw: string): string {
+    return `unknown agent '${raw}' (expected ${AGENT_KINDS.join(' or ')})`;
+}
+
 export const SPLIT_DIRECTIONS = ['horizontal', 'vertical'] as const;
 export type SplitDirection = (typeof SPLIT_DIRECTIONS)[number];
 

@@ -16,6 +16,7 @@
 import type { PaneStatus } from '@kelpi/core/layout';
 import type { Pane, WorkspaceColor, WorkspaceGroup, WorkspacePullRequest, WorkspaceState } from '@kelpi/daemon/store';
 import type { WorktreeStepID, WorktreeStepStatus } from '@kelpi/daemon/git';
+import type { AgentKind } from '@kelpi/protocol';
 import type { WorktreeCleanupChoice } from './WorktreeCleanupList';
 
 /** The pane fields the chrome reads. */
@@ -250,7 +251,46 @@ export interface NewWorkspaceExtras {
     readonly groupDefaults?: boolean | undefined;
     /** app-state-core.md §2.9: create the workspace nested under this one (wins over the group). */
     readonly parentID?: string | undefined;
+    /**
+     * The sheet's Agent row (shell-ui.md §10.1): the agent the daemon starts in the new
+     * workspace's first pane (wire-protocol.md §6.3 `start_agent`). Absent = no agent, which is
+     * every caller but the sheet (the phone's sheet, `phone/new-workspace.ts`, has no agent row).
+     */
+    readonly agent?: WorkspaceAgentRequest | undefined;
 }
+
+/**
+ * The New Workspace sheet's Agent row, as submitted (shell-ui.md §10.1).
+ *
+ * Only the KIND travels: the command typed into the pane is the daemon's own
+ * `agent-claude-command` / `agent-codex-command` (config-keybindings.md §1.2), so a client can
+ * name an agent but never a command line. "None" is not a kind: a create with no agent carries
+ * no request at all (`NewEntryDraft.agent` is null), so `start_agent: 'none'` cannot be sent.
+ */
+export interface WorkspaceAgentRequest {
+    /** Never `'none'`: see `AGENT_DISPLAY_NAMES` for the kinds and how the UI names them. */
+    readonly kind: AgentKind;
+    /**
+     * The prompt box, verbatim (the daemon normalizes it, wire-protocol.md §6.3). Blank = start
+     * the agent and hand it nothing.
+     */
+    readonly prompt: string;
+    /**
+     * "Send immediately": true puts the prompt on the launch line, so the agent submits it as it
+     * starts; false pastes it, unsubmitted, into the agent's input once the agent is ready.
+     */
+    readonly send: boolean;
+}
+
+/**
+ * What the UI calls each agent kind: the products' own names. One table, read by the sheet's
+ * Agent picker, Settings ▸ General ▸ Agents and the undelivered-prompt toast
+ * (`state/agent-launch.ts`), so the three cannot come to name one agent two ways.
+ */
+export const AGENT_DISPLAY_NAMES: Readonly<Record<AgentKind, string>> = Object.freeze({
+    claude: 'Claude Code',
+    codex: 'Codex'
+});
 
 export interface WorkspaceWorktreeRequest {
     readonly repoID: string;

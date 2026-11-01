@@ -17,6 +17,11 @@ export interface ToastCardsProps {
     readonly toasts: readonly CornerToast[];
     /** #372's standing card at the bottom of the stack, or null. */
     readonly oldHosts: CornerOldHosts | null;
+    /**
+     * A click on toast `id`, here or on the shell's layer. App dismisses it, copying a prompt the
+     * toast holds first (`activateToast`): the page's own card is the click's user gesture, and a
+     * click relayed from the layer copies from the page without one.
+     */
     readonly onDismiss: (id: string) => void;
     readonly onRestartOldHosts: () => void;
     readonly onLaterOldHosts: () => void;
@@ -36,6 +41,7 @@ export function ToastCards(props: ToastCardsProps): ReactElement {
                         border: `1px solid ${tokens.divider}`,
                         boxShadow: '0 8px 24px rgba(0,0,0,0.35)'
                     }}
+                    {...(toast.copy === true ? { 'data-copy': 'true' } : {})}
                     onClick={() => props.onDismiss(toast.id)}
                 >
                     <span className="block text-[12px] font-medium" style={{ color: tokens.textPrimary }}>
@@ -62,6 +68,15 @@ export function ToastCards(props: ToastCardsProps): ReactElement {
 }
 
 /**
+ * A store toast as both documents draw it: what the card shows, and whether a click copies. The
+ * text a click copies (`Toast.copyText`) never leaves the page.
+ */
+function cornerToast(toast: CornerToast & { readonly copyText?: string | undefined }): CornerToast {
+    const { id, title, body } = toast;
+    return toast.copyText === undefined ? { id, title, body } : { id, title, body, copy: true };
+}
+
+/**
  * Laid out but not painted: the layer is drawing these cards, and this copy is still the box it
  * draws them in. Not `visibility: hidden`, which would also drop the cards from hit testing and
  * leave a CDP click on a toast landing on whatever is behind it.
@@ -76,7 +91,7 @@ export function ToastStack(props: ToastCardsProps): ReactElement | null {
         () =>
             toasts.length === 0 && oldHosts === null
                 ? null
-                : { toasts: toasts.map(({ id, title, body }) => ({ id, title, body })), oldHosts },
+                : { toasts: toasts.map(cornerToast), oldHosts },
         [toasts, oldHosts]
     );
     const onAction = (action: CornerAction): void => {
@@ -106,7 +121,7 @@ export function ToastStack(props: ToastCardsProps): ReactElement | null {
             className="absolute bottom-8 right-3 z-40 flex flex-col gap-2"
             style={layer ? DRAWN_BY_LAYER : undefined}
         >
-            <ToastCards {...props} />
+            <ToastCards {...props} toasts={content.toasts} />
         </div>
     );
 }

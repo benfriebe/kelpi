@@ -12,7 +12,7 @@ import { describe, expect, it } from 'vitest';
 import { CommandClient, KelpiConnection } from '../connection';
 import { createFakeSocketFactory } from '../connection/testing';
 import { connectStore } from './bridge';
-import { createKelpiStore, hydrateSettings } from './store';
+import { createKelpiStore, hydrateSettings, settingsOfferAgentStart } from './store';
 
 const SETTINGS: WsSettingsSnapshot = {
     remoteDaemons: [{ name: 'werk', url: 'https://werk.taila.ts.net/?token=kd_x' }],
@@ -28,7 +28,11 @@ const SETTINGS: WsSettingsSnapshot = {
         focusFollowsMouse: true,
         focusFollowsMouseDelay: 250,
         theme: 'Nord',
-        confirmWorkspaceDeleteWhenActive: true
+        confirmWorkspaceDeleteWhenActive: true,
+        agentClaudeCommand: 'claude --model opus',
+        agentCodexCommand: '~/bin/codex-wrapper',
+        newWorkspaceAgent: 'codex',
+        newWorkspaceSendPrompt: true
     },
     appearance: {
         backgroundColor: '#ffffff',
@@ -79,6 +83,29 @@ describe('hydrateSettings', () => {
         expect(hydrateSettings({ general: {} })?.general.copyOnSelect).toBe(true);
         expect(hydrateSettings({ general: {} })?.general.middleClickPaste).toBe(true);
         expect(hydrateSettings({ general: {} })?.general.linksReuseWebPane).toBe(true);
+        // The agent-start settings (wire-protocol.md §6.3), absent the way an older daemon sends
+        // them: the shipped defaults stand, and no agent is preselected.
+        expect(hydrateSettings({ general: {} })?.general).toMatchObject({
+            agentClaudeCommand: 'claude',
+            agentCodexCommand: 'codex',
+            newWorkspaceAgent: 'none',
+            newWorkspaceSendPrompt: false
+        });
+        expect(
+            hydrateSettings({
+                general: {
+                    agentClaudeCommand: '  ',
+                    agentCodexCommand: 7,
+                    newWorkspaceAgent: 'gemini',
+                    newWorkspaceSendPrompt: 'true'
+                }
+            })?.general
+        ).toMatchObject({
+            agentClaudeCommand: 'claude',
+            agentCodexCommand: 'codex',
+            newWorkspaceAgent: 'none',
+            newWorkspaceSendPrompt: false
+        });
         expect(hydrated?.appearance.backgroundColor).toBe(DEFAULT_WS_SETTINGS.appearance.backgroundColor);
         expect(hydrated?.appearance.backgroundOpacity).toBe(1);
         expect(hydrated?.appearance.fontSize).toBeNull();
@@ -98,7 +125,9 @@ describe('the settings slice', () => {
             value: DEFAULT_WS_SETTINGS,
             loaded: false,
             // §SET-200: nobody has registered a hotkey, so there is nothing to warn about.
-            hotkeyStatus: null
+            hotkeyStatus: null,
+            // Plan R8: no daemon has said it can start an agent, so the sheet offers none.
+            agentStart: false
         });
     });
 
@@ -115,8 +144,34 @@ describe('the settings slice', () => {
         expect(store.getState().settings).toEqual({
             value: DEFAULT_WS_SETTINGS,
             loaded: false,
-            hotkeyStatus: null
+            hotkeyStatus: null,
+            agentStart: false
         });
+    });
+
+    /*
+     * Plan R8: whether the daemon can start an agent is read off the RAW payload, because the
+     * hydrated value cannot say: a missing `newWorkspaceAgent` hydrates to the shipped `none`,
+     * exactly what a current daemon with nothing configured sends.
+     */
+    it('knows a daemon can start agents only when its payload carries newWorkspaceAgent', () => {
+        const store = createKelpiStore();
+        store.getState().applySettings(SETTINGS);
+        expect(store.getState().settings.agentStart).toBe(true);
+
+        const { newWorkspaceAgent: _dropped, ...olderGeneral } = SETTINGS.general;
+        const older = { ...SETTINGS, general: olderGeneral };
+        store.getState().applySettings(older);
+        // Same hydrated value as a current daemon's `none` would give, and still told apart.
+        expect(store.getState().settings.value.general.newWorkspaceAgent).toBe('none');
+        expect(store.getState().settings.agentStart).toBe(false);
+
+        // The daemon is upgraded under the window: the next broadcast turns the row back on,
+        // even though nothing else in the payload moved.
+        store.getState().applySettings({ ...older, general: { ...olderGeneral, newWorkspaceAgent: 'none' } });
+        expect(store.getState().settings.agentStart).toBe(true);
+        expect(settingsOfferAgentStart({ general: { newWorkspaceAgent: 7 } })).toBe(false);
+        expect(settingsOfferAgentStart('nope')).toBe(false);
     });
 
     it('keeps object identity when an identical payload arrives again', () => {
@@ -192,7 +247,8 @@ describe('the bridge', () => {
         expect(h.store.getState().settings).toEqual({
             value: SETTINGS,
             loaded: true,
-            hotkeyStatus: null
+            hotkeyStatus: null,
+            agentStart: true
         });
         h.dispose();
     });

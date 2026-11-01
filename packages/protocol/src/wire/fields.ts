@@ -114,7 +114,10 @@ export const WIRE_FIELD_TYPES = {
     cwd: 'string',
     permission_mode: 'string',
     settle_ms: 'int',
-    if_revision: 'int'
+    if_revision: 'int',
+    start_agent: 'string',
+    agent_prompt: 'string',
+    send_prompt: 'bool'
 } as const satisfies Record<string, WireFieldKind>;
 
 export type WireFieldName = keyof typeof WIRE_FIELD_TYPES;
@@ -146,7 +149,8 @@ export const EMPTY_STRING_NORMALIZED_FIELDS: ReadonlySet<string> = new Set([
     'mode',
     'block',
     'behavior',
-    'target_path'
+    'target_path',
+    'start_agent'
 ]);
 
 export interface WireFieldTypeError {

@@ -71,6 +71,13 @@ export interface PtyManagerOptions {
 export interface KelpiPtyManager extends PtyManager {
     /** Live child pid, or undefined when the pane has no PTY. */
     pid(paneID: string): number | undefined;
+    /**
+     * The program this daemon spawned for the pane (the resolved `$SHELL`, or `/bin/sh` after a
+     * failed spawn fell back to it), or undefined when the pane has no PTY or this daemon did not
+     * spawn it (an adopted terminal). The agent launcher reads it to choose how it knows the
+     * shell is at its prompt, and whether send mode's line is shell syntax it can run.
+     */
+    shell(paneID: string): string | undefined;
     /** Number of live PTYs (terminal-surface.md §14 `activeSurfaceCount`). */
     count(): number;
     paneIDs(): string[];
@@ -105,6 +112,8 @@ export interface KelpiPtyManager extends PtyManager {
 interface PtyEntry {
     readonly paneID: string;
     readonly proc: PtyProcessHandle;
+    /** What was spawned (`shell()`); undefined for an adopted terminal. */
+    readonly file: string | undefined;
     readonly exited: Promise<void>;
     settleExit: () => void;
     hasExited: boolean;
@@ -228,6 +237,7 @@ class PtyManagerImpl implements KelpiPtyManager {
         }
 
         let proc: PtyProcessHandle;
+        let spawned = file;
         try {
             proc = this.spawner({ file, args, cwd, env, cols, rows, name: term, key: opts.paneID });
         } catch (error) {
@@ -238,6 +248,7 @@ class PtyManagerImpl implements KelpiPtyManager {
             }
             this.onError?.(opts.paneID, error);
             try {
+                spawned = FALLBACK_SHELL;
                 proc = this.spawner({
                     file: FALLBACK_SHELL,
                     args,
@@ -254,12 +265,12 @@ class PtyManagerImpl implements KelpiPtyManager {
             }
         }
 
-        this.register(opts.paneID, proc);
+        this.register(opts.paneID, proc, spawned);
     }
 
     adopt(paneID: string, proc: PtyProcessHandle): void {
         if (this.entries.has(paneID)) return;
-        this.register(paneID, proc);
+        this.register(paneID, proc, undefined);
     }
 
     forget(paneID: string): void {
@@ -276,7 +287,7 @@ class PtyManagerImpl implements KelpiPtyManager {
         return this.entries.get(paneID)?.proc;
     }
 
-    private register(paneID: string, proc: PtyProcessHandle): void {
+    private register(paneID: string, proc: PtyProcessHandle, file: string | undefined): void {
         let settleExit: () => void = () => {};
         const exited = new Promise<void>((resolve) => {
             settleExit = resolve;
@@ -284,6 +295,7 @@ class PtyManagerImpl implements KelpiPtyManager {
         const entry: PtyEntry = {
             paneID,
             proc,
+            file,
             exited,
             settleExit,
             hasExited: false,
@@ -310,6 +322,10 @@ class PtyManagerImpl implements KelpiPtyManager {
         // then must never reach anything signal-shaped (`kill(0)` is the whole process group).
         const pid = this.entries.get(paneID)?.proc.pid;
         return pid === undefined || pid <= 0 ? undefined : pid;
+    }
+
+    shell(paneID: string): string | undefined {
+        return this.entries.get(paneID)?.file;
     }
 
     count(): number {

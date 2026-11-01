@@ -20479,6 +20479,13 @@ function buildFlows(ctx) {
                                 if (has('new-workspace-worktree-toggle')) {
                                     order.push('new-workspace-worktree-toggle');
                                 }
+                                // shell-ui.md §10.1's Agent row, last before Cancel; its Prompt
+                                // and Send immediately stops exist only once an agent is chosen
+                                // (\`new-workspace-agent-prompt\` drives those).
+                                if (has('new-workspace-agent')) order.push('new-workspace-agent');
+                                if (has('new-workspace-agent-prompt')) {
+                                    order.push('new-workspace-agent-prompt', 'new-workspace-agent-send');
+                                }
                                 order.push('new-workspace-cancel', 'new-workspace-submit');
                                 return JSON.stringify(order);
                             })()`

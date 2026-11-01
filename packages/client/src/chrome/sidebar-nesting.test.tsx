@@ -152,6 +152,23 @@ describe('the row menu', () => {
         );
     });
 
+    /* shell-ui.md §10.1: the nested sheet has the Agent row too, and a create carries both. */
+    it('New Nested Workspace… starts an agent under the parent when one is chosen', () => {
+        const onCreateWorkspace = vi.fn(() => null);
+        open(PARENT, { onCreateWorkspace, canStartAgent: true });
+        fireEvent.click(screen.getByText('New Nested Workspace…'));
+        fireEvent.change(screen.getByLabelText('New workspace name'), { target: { value: 'worker-d' } });
+        fireEvent.change(screen.getByTestId('new-workspace-agent'), { target: { value: 'codex' } });
+        fireEvent.change(screen.getByTestId('new-workspace-agent-prompt'), { target: { value: 'Take the tests' } });
+        fireEvent.submit(screen.getByLabelText('New workspace name').closest('form') as HTMLFormElement);
+        expect(onCreateWorkspace).toHaveBeenCalledWith(
+            'worker-d',
+            null,
+            undefined,
+            expect.objectContaining({ parentID: PARENT, agent: { kind: 'codex', prompt: 'Take the tests', send: false } })
+        );
+    });
+
     it('a top-level workspace can nest under any non-nested workspace', () => {
         const onNestWorkspaces = vi.fn();
         open(OTHER, { onNestWorkspaces });

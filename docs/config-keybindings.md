@@ -610,7 +610,7 @@ is platform-independent and always spells what the user wrote.
 
 ## 4. KelpiAction: the complete action list
 
-66 bindable actions + the pseudo-action `unbind` (config-file only; removes a default
+67 bindable actions + the pseudo-action `unbind` (config-file only; removes a default
 trigger, never appears in UI lists). `KELPI_ACTIONS` and `MENU_BAR_ACTIONS` in
 `packages/core/src/config/actions.ts`; the handlers are the `keyActions` table in
 `packages/client/src/App.tsx`.
@@ -659,6 +659,7 @@ Legend:
 | raw value | display name | default | layer |
 |---|---|---|---|
 | `new_workspace` | New Workspace | ⌘N | menu |
+| `new_workspace_from_ticket` | New Workspace from Ticket | ⌘⌥N | monitor (opens the New Workspace sheet with its ticket picker, [integrations.md](integrations.md); not ⇧⌘N, which is New Scratchpad; keys match on `event.code`, so the ⌥N dead key on a US layout is irrelevant) |
 | `next_workspace` | Next Workspace | ⌘⌥↓ | monitor |
 | `previous_workspace` | Previous Workspace | ⌘⌥↑ | monitor |
 | `next_recent_workspace` | Next Recent Workspace | ⌃Tab | monitor (hold-and-release gesture, §7.8) |
@@ -825,13 +826,14 @@ One trigger maps to at most one action. One action may own any number of trigger
 (defaults give `focus_next_pane`/`focus_previous_pane` two each, and
 `increase_terminal_font_size` two that are one chord in two spellings, section 7.6).
 
-### 5.2 The default map (50 triggers)
+### 5.2 The default map (51 triggers)
 
 Exactly the defaults listed in section 4's tables. (`super` here is the primary chord
 modifier — ⌘ on macOS, Ctrl on Windows/Linux; §3.5.)
 
 ```
 super+n=new_workspace                super+o=open_file
+alt+super+n=new_workspace_from_ticket
 shift+super+o=open_web_pane          super+1..super+9=switch_to_workspace_1..9
 shift+super+s=toggle_sidebar         super+i=toggle_inspector
 super+d=split_right                  shift+super+d=split_down
@@ -1841,10 +1843,11 @@ stranding the injected `KELPI_SOCKET` (`compose.ts:752-757`).
 
 Settings is an in-client modal overlay (`packages/client/src/settings/SettingsOverlay.tsx`:
 Escape or a backdrop click closes it, Tab is trapped inside it, width
-`clamp(560px, 92%, 880px)`, height `min(620px, 90%)`) with nine tabs (`SETTINGS_TABS`,
-`packages/client/src/settings/catalog.ts:174-184`): the shipped seven, General,
+`clamp(560px, 92%, 880px)`, height `min(620px, 90%)`) with eleven tabs (`SETTINGS_TABS`,
+`packages/client/src/settings/catalog.ts:202-220`): the shipped seven, General,
 Appearance, Repositories, Labels, Profiles, Keybindings, Web, in that order, then the
-Kelpi-only **Workspaces** and **Remote** appended at the end of the rail. Every settings
+Kelpi-only **Workspaces**, **Remote**, **Integrations** and **Plugins** appended at the end of
+the rail. Every settings
 control persists to `~/.config/kelpi/config` or, for Appearance's terminal keys, to
 `~/.config/ghostty/config` (the Repositories, Labels and Web tabs edit daemon-owned
 registries instead); nothing persists to a per-app preferences store.
@@ -1921,6 +1924,37 @@ registries instead); nothing persists to a per-app preferences store.
    cannot disagree about what the file says.
 9. **Remote** (Kelpi-only): device pairing (`kelpid pair` / `devices` / `url --tailnet`
    in-app) and the section 1.7 daemon registry.
+10. **Integrations** (Kelpi-only; `packages/client/src/settings/IntegrationsTab.tsx`;
+   docs/integrations.md): the daemon's link to GitHub, which the New Workspace sheet's From
+   ticket and `kelpi workspace create --from` use. Nothing here is a config-file setting: the
+   credential lives with the daemon (`integrations.json`, 0600), and the tab reads the status
+   the daemon sends on `welcome` and `integrations-changed`.
+   - *GitHub*: the status (connected as `@login`, signed in with GitHub or a personal access
+     token, its scopes or "a fine-grained token" when GitHub reports none, or why a saved
+     credential cannot be used: revoked, `integrations.json` unreadable, or linked against other
+     GitHub endpoints than the daemon now uses). **Connect…** starts
+     GitHub's device flow: the one-time code is shown large with Copy, a separate **Open
+     GitHub** button opens the verification page (only ever a `https://github.com/` page), a
+     countdown runs to the code's expiry, and Cancel abandons that flow by its id. The daemon
+     waits for GitHub itself, so Settings may close meanwhile; the code is dropped when the link
+     lands, when the flow fails (with GitHub's reason), when another window starts a new
+     sign-in, when it expires, and when the connection to the daemon is reset. **Disconnect**
+     forgets the credential and links to github.com/settings/applications, because Kelpi
+     cannot revoke GitHub's own grant. The section says that paired devices search and open the
+     owner's private issues and pull requests through this link.
+   - *Other ways to connect*: a masked personal-access-token field and **Connect with token**
+     (the daemon checks it with GitHub first; a classic token needs the `repo` scope; warnings
+     such as a fine-grained token's are shown). A build with no GitHub OAuth app offers only
+     this path and says so.
+   - *Searchable repositories*: the registered repositories with a GitHub remote (from the
+     registry's `remote_url`, which the daemon keeps in the spelling that names GitHub when only the
+     one as written does, so a GitHub remote `insteadOf` rewrites onto a mirror is listed, as the
+     daemon's search and resolve match it), each GitHub repository once with the registry rows that
+     point at it, and the ones not searched for want of a GitHub remote.
+   - A paired device's session sees the status read-only (no Connect, Disconnect or token
+     field) with a line saying only the daemon's owner can change it; a daemon that predates
+     integrations gets one line saying it cannot link GitHub.
+11. **Plugins** (Kelpi-only): plugin management and workbench views.
 
 ### 13.1 Keybindings tab
 
@@ -2029,7 +2063,7 @@ lives now:
    state never enter a trigger, and the exact remaining modifier set is compared
    (section 3.1).
 4. **Two dispatch layers collapse into one** in the client (a browser tab has no OS menu
-   bar). All 66 actions go through a single keydown interceptor, and three behaviors of the
+   bar). All 67 actions go through a single keydown interceptor, and three behaviors of the
    original split survive: (a) shortcuts do not fire while a modal/palette/secondary
    surface has focus (the one exception is the `close_pane` chord, which closes the
    overlay, section 7.2); (b) conditional actions FALL THROUGH to the terminal when their
@@ -2090,9 +2124,9 @@ lives now:
     differing from default), reset-all, and the profiles master-detail editor with the
     locked `KELPI_PROFILE` row, `:`/`=` input stripping, reserved `default` name, and
     write-through (on blur, Enter and structural change) against the config file.
-14. **Count sanity for tests**: 67 enum cases total; 66 bindable (excludes `unbind`);
+14. **Count sanity for tests**: 68 enum cases total; 67 bindable (excludes `unbind`);
     19 ship unbound (`open_diff`, `toggle_sync_input`, the three `*_markdown_font_size`,
-    the three single-band toggles, 11 `web_*`); the default map has exactly 50 trigger
-    entries (47 distinct actions bound; focus next/prev and `increase_terminal_font_size`
-    own two triggers each). The Settings table shows 55 actions (66 minus the 11 hidden web
+    the three single-band toggles, 11 `web_*`); the default map has exactly 51 trigger
+    entries (48 distinct actions bound; focus next/prev and `increase_terminal_font_size`
+    own two triggers each). The Settings table shows 56 actions (67 minus the 11 hidden web
     actions).

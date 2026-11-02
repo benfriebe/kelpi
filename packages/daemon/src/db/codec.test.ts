@@ -139,7 +139,8 @@ describe('workspace row decoding', () => {
             labels: ['frontend', 'wip'],
             childOrder: [],
             childrenCollapsed: false,
-            status: 'waitingForInput'
+            status: 'waitingForInput',
+            ticket: null
         } satisfies Omit<PersistedWorkspace, 'panes' | 'repoAssociations'>);
     });
 
@@ -213,6 +214,28 @@ describe('workspace row decoding', () => {
         const legacy = decodeWorkspaceRow(workspaceRow())?.workspace;
         expect(legacy?.childOrder).toEqual([]);
         expect(legacy?.childrenCollapsed).toBe(false);
+    });
+
+    it('reads the ticket (v28), and a pre-v28 row, NULL or anything unreadable as no ticket', () => {
+        const ticket = {
+            provider: 'github',
+            kind: 'pr',
+            repo: 'acme/api',
+            number: 418,
+            key: '#418',
+            url: 'https://github.com/acme/api/pull/418',
+            title: 'Retry login on 401'
+        };
+        expect(decodeWorkspaceRow(workspaceRow({ ticketJSON: JSON.stringify(ticket) }))?.workspace.ticket).toEqual(ticket);
+        // Unknown keys are dropped, not carried.
+        expect(decodeWorkspaceRow(workspaceRow({ ticketJSON: JSON.stringify({ ...ticket, body: 'x' }) }))?.workspace.ticket).toEqual(ticket);
+        expect(decodeWorkspaceRow(workspaceRow())?.workspace.ticket).toBeNull();
+        for (const ticketJSON of [null, '', '{', '[]', '"x"', JSON.stringify({ ...ticket, url: 'javascript:alert(1)' }), JSON.stringify({ ...ticket, kind: 'epic' })]) {
+            const decoded = decodeWorkspaceRow(workspaceRow({ ticketJSON }));
+            // The workspace itself always survives.
+            expect(decoded?.workspace.name, String(ticketJSON)).toBe('kelpi');
+            expect(decoded?.workspace.ticket, String(ticketJSON)).toBeNull();
+        }
     });
 });
 
@@ -508,6 +531,55 @@ describe('encoding (§5.4)', () => {
         const row = encodeWorkspaceRow({ ...base, childOrder: [W2], childrenCollapsed: true }, 0);
         expect(JSON.parse(row.childOrderJSON ?? '[]')).toEqual([W2]);
         expect(row.childrenCollapsed).toBe(1);
+    });
+
+    it('writes the ticket as one JSON object in a fixed key order, and no ticket as NULL', () => {
+        const workspace = {
+            id: W1,
+            name: '#418 Retry login on 401',
+            slug: 'x',
+            color: 'blue',
+            icon: null,
+            profileName: null,
+            muted: false,
+            layout: { kind: 'empty' },
+            focusedPaneID: null,
+            createdAt: 1,
+            lastAccessedAt: 1,
+            labels: [],
+            panes: [],
+            repoAssociations: []
+        } satisfies PersistedWorkspace;
+        expect(encodeWorkspaceRow(workspace, 0).ticketJSON).toBeNull();
+        expect(encodeWorkspaceRow({ ...workspace, ticket: null }, 0).ticketJSON).toBeNull();
+        const row = encodeWorkspaceRow(
+            {
+                ...workspace,
+                ticket: {
+                    title: 'Retry login on 401',
+                    url: 'https://github.com/acme/api/issues/418',
+                    key: '#418',
+                    number: 418,
+                    repo: 'acme/api',
+                    kind: 'issue',
+                    provider: 'github'
+                }
+            },
+            0
+        );
+        expect(row.ticketJSON).toBe(
+            '{"provider":"github","kind":"issue","repo":"acme/api","number":418,"key":"#418","url":"https://github.com/acme/api/issues/418","title":"Retry login on 401"}'
+        );
+        // …and it decodes back to the same ticket.
+        expect(decodeWorkspaceRow(workspaceRow({ ticketJSON: row.ticketJSON }))?.workspace.ticket).toEqual({
+            provider: 'github',
+            kind: 'issue',
+            repo: 'acme/api',
+            number: 418,
+            key: '#418',
+            url: 'https://github.com/acme/api/issues/418',
+            title: 'Retry login on 401'
+        });
     });
 
     it('writes NULL tab columns for private web panes and for non-web panes (§5.4)', () => {

@@ -99,6 +99,14 @@ describe('repo-add (§GIT-068, §GIT-069, §SET-054)', () => {
         expect(f.persists()).toBe(1);
     });
 
+    it('never stores a token that rides in the origin URL: the registry reaches every client', async () => {
+        const f = fixture(stubGit('https://octocat:ghp_SECRET@github.com/acme/app.git'));
+        const reply = await call(f, 'repo-add', { path: '/src/app' });
+        expect(f.store.getState().repos[0]?.remoteURL).toBe('https://github.com/acme/app.git');
+        expect(JSON.stringify(reply)).not.toContain('ghp_SECRET');
+        expect(JSON.stringify(f.store.getState())).not.toContain('ghp_SECRET');
+    });
+
     it('honours an explicit name', async () => {
         const f = fixture();
         await call(f, 'repo-add', { path: '/src/app', name: 'Work App' });
@@ -192,6 +200,13 @@ describe('repo-scan (§GIT-066, §GIT-067, §SET-053)', () => {
         expect(f.store.getState().repos.map((repo) => repo.name).sort()).toEqual(['app', 'beta']);
         // Scanned rows are MANUAL: the user asked for them, so the GC must never take them.
         expect(f.store.getState().repos.every((repo) => !repo.isAutoDiscovered)).toBe(true);
+    });
+
+    it('never stores a token that rides in a found repository\'s origin URL', async () => {
+        const f = fixture(stubGit('https://x-access-token:ghs_SECRET@github.com/acme/app.git'));
+        const reply = await call(f, 'repo-scan', { path: root });
+        expect(f.store.getState().repos.map((repo) => repo.remoteURL)).toEqual(['https://github.com/acme/app.git', 'https://github.com/acme/app.git']);
+        expect(JSON.stringify(reply)).not.toContain('ghs_SECRET');
     });
 
     it('adds nothing twice when run again', async () => {

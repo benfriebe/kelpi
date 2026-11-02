@@ -64,6 +64,8 @@ export {
 } from './gesture-reset';
 export { RepoPicker, type RepoPickerEntry, type RepoPickerProps } from './RepoPicker';
 export { sanitizeGitName, worktreeNameFromWorkspace, worktreePreview, worktreePreviewPath, type WorktreePreview } from './worktree';
+// docs/integrations.md: every GitHub page the daemon names is opened through this one gate.
+export { GITHUB_AUTHORIZED_APPS_URL, openGitHubURL, type GitHubLinkOpener } from './github-links';
 export {
     BUCKET_POPOVER_WIDTH_PX,
     StatusFooter,
@@ -283,11 +285,15 @@ export {
 export {
     AGENT_DISPLAY_NAMES,
     WORKSPACE_COLORS,
+    isTicketCreateFailure,
     type ChromeGroup,
     type ChromeRepo,
+    type CreateFailure,
     type NewWorkspaceExtras,
     type SubmitResult,
     type WorkspaceAgentRequest,
+    type WorkspaceCreateFailureInfo,
+    type WorkspaceTicketRequest,
     type WorkspaceWorktreeRequest,
     type ChromeLabelPreset,
     type ChromeNestedWorkspaces,

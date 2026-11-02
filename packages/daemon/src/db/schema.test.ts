@@ -42,8 +42,8 @@ describe('migration ledger', () => {
             expect(MIGRATION_IDENTIFIERS).toContain(identifier);
         }
         expect(MIGRATION_IDENTIFIERS[0]).toBe('v1_initial');
-        expect(MIGRATION_IDENTIFIERS.at(-1)).toBe('v27_workspace_status');
-        expect(MIGRATION_IDENTIFIERS).toHaveLength(27);
+        expect(MIGRATION_IDENTIFIERS.at(-1)).toBe('v28_workspace_ticket');
+        expect(MIGRATION_IDENTIFIERS).toHaveLength(28);
     });
 
     it('is a no-op on the second run', () => {
@@ -54,7 +54,7 @@ describe('migration ledger', () => {
         db.close();
     });
 
-    it('produces the post-v27 schema (§8 + the daemon-only tail)', () => {
+    it('produces the post-v28 schema (§8 + the daemon-only tail)', () => {
         const db = freshDatabase();
         migrate(db);
 
@@ -74,7 +74,8 @@ describe('migration ledger', () => {
             'muted',
             'childOrderJSON',
             'childrenCollapsed',
-            'status'
+            'status',
+            'ticketJSON'
         ]);
         expect(columnNames(db, 'pane')).toEqual([
             'id',
@@ -340,6 +341,32 @@ describe('migration ledger', () => {
 
         expect(migrate(db).applied).toEqual(['v25_pane_scratchpad_wrap']);
         expect(db.all('SELECT "type", "scratchpadWrap" FROM "pane"')).toEqual([{ type: 'scratchpad', scratchpadWrap: 0 }]);
+        db.close();
+    });
+
+    it('adds the ticket column (v28) leaving existing workspaces with no ticket, and is idempotent', () => {
+        const db = freshDatabase();
+        migrate(db);
+        db.run(`DELETE FROM ${MIGRATIONS_TABLE} WHERE identifier = 'v28_workspace_ticket'`);
+        db.exec('ALTER TABLE "workspace" DROP COLUMN "ticketJSON"');
+        db.run(
+            `INSERT INTO "workspace" ("id","name","color","layoutJSON","createdAt","lastAccessedAt") VALUES (?,?,?,?,?,?)`,
+            'W1',
+            'kept',
+            'blue',
+            '{"empty":{}}',
+            1,
+            1
+        );
+
+        expect(migrate(db).applied).toEqual(['v28_workspace_ticket']);
+        expect(db.all('SELECT "name", "ticketJSON" FROM "workspace"')).toEqual([{ name: 'kept', ticketJSON: null }]);
+        expect(DAEMON_ONLY_MIGRATIONS).toContain('v28_workspace_ticket');
+
+        // A column that grew ahead of its ledger row (ledger drift, §4) is skipped, not re-added.
+        db.run(`DELETE FROM ${MIGRATIONS_TABLE} WHERE identifier = 'v28_workspace_ticket'`);
+        expect(migrate(db).applied).toEqual(['v28_workspace_ticket']);
+        expect(columnNames(db, 'workspace').filter((column) => column === 'ticketJSON')).toHaveLength(1);
         db.close();
     });
 

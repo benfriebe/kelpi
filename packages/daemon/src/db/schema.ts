@@ -246,6 +246,13 @@ export const MIGRATIONS: readonly Migration[] = [
         // back as idle, which is how every row drew before the menu existed.
         identifier: 'v27_workspace_status',
         apply: (db) => addColumn(db, 'workspace', 'status', `TEXT NOT NULL DEFAULT 'idle'`)
+    },
+    {
+        // Kelpi-only: the ticket (GitHub issue or pull request) a workspace was created from, as
+        // one JSON object (docs/integrations.md). NULL = none, which is what every existing
+        // workspace reads back as.
+        identifier: 'v28_workspace_ticket',
+        apply: (db) => addColumn(db, 'workspace', 'ticketJSON', 'TEXT')
     }
 ];
 
@@ -266,7 +273,8 @@ export const DAEMON_ONLY_MIGRATIONS: readonly string[] = [
     'v24_pane_terminal_font_size',
     'v25_pane_scratchpad_wrap',
     'v26_workspace_nesting',
-    'v27_workspace_status'
+    'v27_workspace_status',
+    'v28_workspace_ticket'
 ];
 
 export function ensureMigrationsTable(db: SqlDatabase): void {

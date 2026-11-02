@@ -507,7 +507,9 @@ A brand-new workspace always has exactly one shell pane.
 The `create-workspace` action (`packages/daemon/src/store/types.ts`, reduced in
 `packages/daemon/src/store/reducers/workspaces.ts`) carries the pre-minted workspace and
 pane ids plus optional `workingDirectory`, `color`, `profileName`, `muted`, `groupID`,
-`labels`, `placement`, `repoAssociations` and `focus`. The first pane's cwd is `workingDirectory`
+`labels`, `placement`, `repoAssociations`, `focus` and `ticket` (the `WorkspaceTicket` a create
+from a GitHub ticket keeps, wire-protocol.md §6.3; null otherwise, and never edited afterwards).
+The first pane's cwd is `workingDirectory`
 when it is non-empty, else the home directory; `profileName` goes through
 `normalizedAssignment` (3.4); `muted` defaults to `false`, and a create that carries it is
 muted from its first frame; `labels` and `repoAssociations` default to empty. `focus: false`

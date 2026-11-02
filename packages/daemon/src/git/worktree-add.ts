@@ -422,7 +422,7 @@ export function defaultBranchFetchArgs(remote: string, branch: string, progress 
 }
 
 /** Run git with its meter on, reporting each reading; the error comes back without the meter. */
-async function withProgress(
+export async function withProgress(
     call: (options: WorktreeGitCallOptions) => Promise<string>,
     onProgress: ((progress: GitProgress) => void) | undefined
 ): Promise<string> {
@@ -521,7 +521,7 @@ export interface WorktreeAddSnapshot {
     readonly possibleTips: ReadonlySet<string>;
 }
 
-function pathExists(candidate: string): boolean {
+export function pathExists(candidate: string): boolean {
     return pathState(candidate) !== 'absent';
 }
 
@@ -545,7 +545,7 @@ function pathState(candidate: string): 'exists' | 'absent' | 'unknown' {
  * ref" (exit 1 under `--verify --quiet`), and `undefined` for any other failure (a spawn error,
  * a broken repo), which the cleanup reads as "it existed".
  */
-async function probeRef(ops: WorktreeGitOps, repoPath: string, ref: string): Promise<string | null | undefined> {
+export async function probeRef(ops: WorktreeGitOps, repoPath: string, ref: string): Promise<string | null | undefined> {
     try {
         const out = (await ops.read(['rev-parse', '--verify', '--quiet', ref], repoPath)).trim();
         return out === '' ? null : out;
@@ -558,7 +558,7 @@ async function probeRef(ops: WorktreeGitOps, repoPath: string, ref: string): Pro
  * @param refs every ref whose commit the add could create the branch at: the base ref on the
  *   update-main path; HEAD, `origin/<branch>` and the decided remote-tracking ref on the plain path.
  */
-async function snapshotBeforeAdd(
+export async function snapshotBeforeAdd(
     ops: WorktreeGitOps,
     request: WorktreeAddRequest,
     refs: readonly string[]
@@ -697,7 +697,10 @@ export class WorktreeBusyError extends Error {
  * for the same path or branch would each believe the other's directory or branch was theirs,
  * and a cancelled loser could clean up the winner's worktree. So the second is refused at once.
  */
-export function createWorktreeAddGuard(): { acquire(request: WorktreeAddRequest): () => void } {
+/** What the guard keys a create on: any request that makes a worktree on a branch of a repo. */
+export type WorktreeGuardKey = Pick<WorktreeAddRequest, 'repoPath' | 'worktreePath' | 'branchName'>;
+
+export function createWorktreeAddGuard(): { acquire(request: WorktreeAddRequest | WorktreeGuardKey): () => void } {
     const busy = new Set<string>();
     return {
         acquire(request) {
@@ -720,7 +723,7 @@ export function createWorktreeAddGuard(): { acquire(request: WorktreeAddRequest)
     };
 }
 
-function seconds(ms: number): string {
+export function seconds(ms: number): string {
     return ms < 10_000 ? `${(ms / 1000).toFixed(1)} s` : `${String(Math.round(ms / 1000))} s`;
 }
 

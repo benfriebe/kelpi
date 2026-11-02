@@ -132,6 +132,12 @@ export {
     type RemoteReply,
     type WireDevice
 } from './remote.js';
+export {
+    forbiddenFailure,
+    handleIntegrationCommand,
+    type IntegrationSession,
+    type IntegrationsChannel
+} from './integrations.js';
 
 export {
     PANE_LIFECYCLE_COMMANDS,

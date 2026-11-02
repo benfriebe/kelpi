@@ -12,6 +12,8 @@
 
 import path from 'node:path';
 
+import { remoteURLWithoutSecrets } from '@kelpi/core/git';
+
 import { canonicalizeUserPath } from '../graft/paths.js';
 import type { DomainStore } from '../seams.js';
 import type { DaemonState, DomainAction, DomainEvent, Repo } from '../store/types.js';
@@ -63,25 +65,47 @@ export interface RegisterRepoDeps {
  * row is promoted only when `promote` says so (the plain association add is not the deliberate
  * act the Swift promotes on, §GIT-103).
  *
- * The registry is re-read after the remote-URL await: a concurrent registration of the same
- * path (two creates racing) must not add a second row for it.
+ * The registry is re-read after the remote-URL await (`registerRepo`): a concurrent registration
+ * of the same path (two creates racing) must not add a second row for it.
  */
 export async function ensureRegisteredRepo(
     deps: RegisterRepoDeps,
     repoPath: string,
     options: { readonly promote?: boolean } = {}
 ): Promise<Repo> {
-    const keep = (repo: Repo): Repo => (options.promote === true ? promoteRepo(deps.store, repo) : repo);
     const existing = findRepoByPath(deps.store.getState(), repoPath);
-    if (existing !== undefined) return keep(existing);
-    let remoteURL: string | null = null;
+    if (existing !== undefined) return options.promote === true ? promoteRepo(deps.store, existing) : existing;
+    return registerRepo(deps, repoPath, await readRemoteURL(deps, repoPath), options);
+}
+
+/**
+ * `getRemoteURL`, best effort, as the registry stores it: null on failure, and never with a
+ * secret from the URL's userinfo (the registry reaches every client).
+ */
+export async function readRemoteURL(deps: Pick<RegisterRepoDeps, 'getRemoteURL'>, repoPath: string): Promise<string | null> {
     try {
-        remoteURL = await deps.getRemoteURL(repoPath);
+        const raw = await deps.getRemoteURL(repoPath);
+        return raw === null ? null : remoteURLWithoutSecrets(raw);
     } catch {
-        remoteURL = null;
+        return null;
     }
+}
+
+/**
+ * The synchronous half of `ensureRegisteredRepo`: the row at `repoPath` when the registry holds
+ * one now (promoted when asked), else a new manual row with `remoteURL` (already read with
+ * `readRemoteURL`). A caller that must re-check something before ANY effect (a create whose
+ * parent may have gone, socket-handlers.md §6.2) reads first and registers here, with no await
+ * in between.
+ */
+export function registerRepo(
+    deps: Pick<RegisterRepoDeps, 'store' | 'uuid' | 'now'>,
+    repoPath: string,
+    remoteURL: string | null,
+    options: { readonly promote?: boolean } = {}
+): Repo {
     const raced = findRepoByPath(deps.store.getState(), repoPath);
-    if (raced !== undefined) return keep(raced);
+    if (raced !== undefined) return options.promote === true ? promoteRepo(deps.store, raced) : raced;
     const repo: Repo = {
         id: deps.uuid(),
         path: repoPath,

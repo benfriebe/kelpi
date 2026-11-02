@@ -200,6 +200,23 @@ export function AntennaGlyph(props: GlyphProps): ReactElement {
     );
 }
 
+/**
+ * `link` - the port-only **Integrations** tab (GitHub for workspaces made from tickets). No Swift
+ * tab to copy a symbol from either: two chain links on a diagonal, on the same 12 x 12 grid and
+ * stroke convention as the rest of the rail.
+ */
+export function LinkGlyph(props: GlyphProps): ReactElement {
+    return (
+        <Glyph size={props.size}>
+            <>
+                <path d="M5.2 6.8l1.6-1.6" />
+                <path d="M6.4 3.6l1.1-1.1a2.1 2.1 0 0 1 3 3l-1.1 1.1" />
+                <path d="M5.6 8.4l-1.1 1.1a2.1 2.1 0 0 1-3-3l1.1-1.1" />
+            </>
+        </Glyph>
+    );
+}
+
 /** `folder.badge.gearshape` — the Repositories toolbar's Scan button (L86). */
 export function FolderBadgeGearGlyph(props: GlyphProps): ReactElement {
     return (

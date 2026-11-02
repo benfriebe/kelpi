@@ -14,6 +14,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import { parseGitHubRemote, registryRemoteURL } from '@kelpi/core/tickets';
+
 import {
     createGitRunner,
     GitCommandError,
@@ -83,7 +85,11 @@ export interface GitService {
         targetPath?: string | null,
         options?: { readonly signal?: AbortSignal | undefined }
     ): Promise<string>;
-    /** `git remote get-url origin`; trimmed, empty → null. Never throws. */
+    /**
+     * Origin's URL for the repository registry: `git remote get-url origin` (trimmed, empty →
+     * null), unless only `remote.origin.url` as written names a GitHub repository, then that
+     * (`registryRemoteURL`, `@kelpi/core/tickets`). Never throws.
+     */
     getRemoteURL(repoPath: string): Promise<string | null>;
     /**
      * Local `origin/HEAD` symref (no network) → `ls-remote --symref` → `"main"` (#294's order;
@@ -311,12 +317,24 @@ export function createGitService(options: CreateGitServiceOptions = {}): GitServ
         },
 
         async getRemoteURL(repoPath) {
+            let used: string;
             try {
-                const out = (await readGit(['remote', 'get-url', 'origin'], repoPath)).trim();
-                return out === '' ? null : out;
+                used = (await readGit(['remote', 'get-url', 'origin'], repoPath)).trim();
             } catch {
                 return null;
             }
+            if (used === '') return null;
+            // The registry's URL (`registryRemoteURL`): as written only when that alone names
+            // GitHub, so the config is read only for a URL git rewrote to something else.
+            let written: string | null = null;
+            if (parseGitHubRemote(used) === null) {
+                try {
+                    written = (await readGit(['config', '--get', 'remote.origin.url'], repoPath)).trim() || null;
+                } catch {
+                    written = null;
+                }
+            }
+            return registryRemoteURL(used, written);
         },
 
         async defaultBranch(repoPath) {

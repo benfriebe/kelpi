@@ -15,7 +15,7 @@
  * ordering the port requires, and is what assembly should call.
  */
 
-import type { WsRejectedMessage } from '@kelpi/protocol';
+import { parseIntegrationsChanged, type WsRejectedMessage } from '@kelpi/protocol';
 
 import { forgetStoredToken, type StorageLike } from '../app/config';
 import { CommandClient, KelpiConnection, PtyClient, type KelpiConnectionOptions } from '../connection';
@@ -90,6 +90,21 @@ export function connectStore(options: StoreBridgeOptions): () => void {
             // are in the store before the first snapshot renders — no light/dark flash, no
             // window where the key dispatcher is running on the shipped defaults.
             store.getState().applySettings(message.settings);
+            // docs/integrations.md: each provider's status and whether THIS session may manage
+            // it ride the handshake for the same reason. An older daemon sends neither, which
+            // resets the slice to "not supported" (a reconnect can land on a different daemon).
+            store.getState().applyIntegrationsWelcome(message.integrations, message.integrationsManageable);
+        })
+    );
+
+    offs.push(
+        // `integrations-changed`: the whole status list, whenever any of it moves (a link, an
+        // unlink, a device flow starting, failing or being replaced, a credential revoked). A
+        // fire-and-forget broadcast like `settings-changed`; the latest frame alone is the truth.
+        connection.on('message', (message) => {
+            const integrations = parseIntegrationsChanged(message);
+            if (integrations === null) return;
+            store.getState().applyIntegrations(integrations);
         })
     );
 

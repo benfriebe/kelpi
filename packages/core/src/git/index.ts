@@ -25,4 +25,21 @@ export function sanitizedGitName(name: string): string | null {
     return slug === '' ? null : slug;
 }
 
+/**
+ * `remoteURLWithoutSecrets(url)`: a remote URL fit for the repository registry, which every client
+ * receives (`repo.remoteURL`). A credential can ride in a URL's userinfo
+ * (`https://<token>@github.com/o/r`, `https://user:<token>@…`), so a URL with a scheme loses its
+ * userinfo, except that an SSH URL keeps its user name (`ssh://git@github.com/…` names an account,
+ * not a secret) and loses only a password. An scp-like `git@host:o/r` or a path has nowhere to
+ * hold a password and is returned unchanged.
+ */
+export function remoteURLWithoutSecrets(url: string): string {
+    // Greedy up to the last `@` before the path: a raw `@` in a password stays inside the userinfo.
+    const match = /^([A-Za-z][A-Za-z0-9+.-]*):\/\/([^/?#]*)@/.exec(url);
+    if (match === null) return url;
+    const scheme = match[1] as string;
+    const user = /(^|\+)ssh(\+|$)/i.test(scheme) ? ((match[2] as string).split(':')[0] ?? '') : '';
+    return `${scheme}://${user === '' ? '' : `${user}@`}${url.slice(match[0].length)}`;
+}
+
 export * from './pull-requests.js';

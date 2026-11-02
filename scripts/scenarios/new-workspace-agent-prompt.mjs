@@ -252,12 +252,19 @@ export default async function ({ page, cli, sandbox, daemon, harness, rec, d, sl
 
         // The Tab loop, derived from what is on screen as `workspace-create-full` derives it: what
         // is fixed is the ORDER, with the Agent row's three stops last before Cancel and Create.
+        // A daemon that reports GitHub (any current one) gives the title row From ticket…, which
+        // leads the loop, and a linked ticket's ✕ (and its Switch) follow it (shell-ui.md §10.1).
+        // The walk starts in the name, so it is that order rotated to start after the name.
         await page.eval(`document.querySelector('${NAME}')?.focus()`);
         const expectedStops = JSON.parse(
             String(
                 await page.eval(`(() => {
                     const has = (id) => document.querySelector('[data-testid="' + id + '"]') !== null;
-                    const order = ['New workspace name', 'new-workspace-colors'];
+                    const order = [];
+                    for (const id of ['new-workspace-from-ticket', 'new-workspace-ticket-clear', 'new-workspace-ticket-switch']) {
+                        if (has(id)) order.push(id);
+                    }
+                    order.push('New workspace name', 'new-workspace-colors');
                     if (has('new-workspace-group')) order.push('new-workspace-group');
                     order.push('new-workspace-profile', 'new-workspace-muted');
                     if (has('new-workspace-repos')) {
@@ -276,9 +283,10 @@ export default async function ({ page, cli, sandbox, daemon, harness, rec, d, sl
             await sleep(60);
             walked.push((await sheet()).focus);
         }
-        const expectedWalk = [...expectedStops.slice(1), expectedStops[0]];
+        const fromName = expectedStops.indexOf('New workspace name');
+        const expectedWalk = [...expectedStops.slice(fromName + 1), ...expectedStops.slice(0, fromName + 1)];
         rec.check(
-            'Tab walks Agent → Prompt → Send immediately → Cancel → Create, and wraps',
+            'Tab walks Agent → Prompt → Send immediately → Cancel → Create, and wraps (through From ticket… when it is drawn)',
             JSON.stringify(walked) === JSON.stringify(expectedWalk),
             `${JSON.stringify(walked)} vs ${JSON.stringify(expectedWalk)}`
         );

@@ -167,3 +167,71 @@ describe('worktree step throttling', () => {
         expect(frames).toHaveLength(2);
     });
 });
+
+describe('worktree steps by checkout mode (a create from a ticket)', () => {
+    it('keeps the plain create exactly as it was', () => {
+        expect(worktreeStepsFor(true)).toEqual(worktreeStepsFor({ updateMain: true }));
+        expect(worktreeStepsFor(false)).toEqual(worktreeStepsFor({}));
+        expect(worktreeStepsFor({ checkout: 'new-branch', updateMain: true })).toEqual([
+            'resolve-default-branch',
+            'fetch',
+            'worktree-add',
+            'create-workspace'
+        ]);
+    });
+
+    it('lists each mode with the ticket lookup first', () => {
+        expect(worktreeStepsFor({ ticket: true, checkout: 'new-branch', updateMain: true })).toEqual([
+            'ticket',
+            'resolve-default-branch',
+            'fetch',
+            'worktree-add',
+            'create-workspace'
+        ]);
+        expect(worktreeStepsFor({ ticket: true, checkout: 'pr-head' })).toEqual(['ticket', 'fetch', 'worktree-add', 'create-workspace']);
+        // An attach never fetches: update main does not apply to a branch that already exists.
+        expect(worktreeStepsFor({ ticket: true, checkout: 'attach-branch', updateMain: true })).toEqual([
+            'ticket',
+            'worktree-add',
+            'create-workspace'
+        ]);
+        expect(worktreeStepsFor({ ticket: true, checkout: 'existing-checkout' })).toEqual(['ticket', 'create-workspace']);
+        expect(worktreeStepsFor({ checkout: 'pr-head' })).toEqual(['fetch', 'worktree-add', 'create-workspace']);
+    });
+
+    it('re-plans once the ticket has answered, keeping what already ran and naming the mode', () => {
+        const frames: WorktreeProgressSnapshot[] = [];
+        const steps = createStepTracker({
+            steps: worktreeStepsFor({ ticket: true, checkout: 'new-branch', updateMain: true }),
+            emit: (snapshot) => frames.push(snapshot),
+            intervalMs: 0
+        });
+        steps.running('ticket', 'acme/api#418');
+        steps.done('ticket', 'pull request #418');
+        steps.replan(worktreeStepsFor({ ticket: true, checkout: 'pr-head' }), 'pr-head');
+        expect(steps.snapshot()).toEqual({
+            steps: [
+                { id: 'ticket', status: 'done', detail: 'pull request #418' },
+                { id: 'fetch', status: 'pending' },
+                { id: 'worktree-add', status: 'pending' },
+                { id: 'create-workspace', status: 'pending' }
+            ],
+            checkout: 'pr-head'
+        });
+        expect(frames.at(-1)).toEqual(steps.snapshot());
+        // A step the new plan drops is gone; one it does not list is ignored, as before.
+        steps.running('resolve-default-branch');
+        expect(steps.snapshot().steps.map((step) => step.id)).toEqual(['ticket', 'fetch', 'worktree-add', 'create-workspace']);
+        expect(serializeWorktreeProgress(steps.snapshot())).toMatchObject({ kind: 'worktree-create', checkout: 'pr-head' });
+    });
+
+    it('names the mode from the start when the create knows it, and fails the right step after a re-plan', () => {
+        const steps = createStepTracker({ steps: worktreeStepsFor({ ticket: true, checkout: 'existing-checkout' }), checkout: 'existing-checkout', emit: () => {}, intervalMs: 0 });
+        expect(steps.snapshot().checkout).toBe('existing-checkout');
+        steps.running('ticket');
+        steps.failUnfinished('GitHub is not connected');
+        expect(steps.snapshot().steps[0]).toEqual({ id: 'ticket', status: 'failed', error: 'GitHub is not connected' });
+        // A plain create's snapshot carries no mode at all.
+        expect(serializeWorktreeProgress(tracker(true).steps.snapshot())).not.toHaveProperty('checkout');
+    });
+});

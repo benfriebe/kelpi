@@ -79,6 +79,7 @@ export const ACTION_CATALOG: readonly ActionEntry[] = [
     { action: 'command_palette', category: 'Navigation', label: 'Command Palette' },
 
     { action: 'new_workspace', category: 'Workspaces', label: 'New Workspace' },
+    { action: 'new_workspace_from_ticket', category: 'Workspaces', label: 'New Workspace from Ticket' },
     { action: 'next_workspace', category: 'Workspaces', label: 'Next Workspace' },
     { action: 'previous_workspace', category: 'Workspaces', label: 'Previous Workspace' },
     { action: 'next_recent_workspace', category: 'Workspaces', label: 'Next Recent Workspace' },
@@ -212,6 +213,10 @@ export const SETTINGS_TABS = [
     { id: 'workspaces', label: 'Workspaces', icon: 'square.grid.2x2' },
     // Port-only too: the `kelpid pair`/`devices`/`url --tailnet` flow, in-app (`RemoteTab`).
     { id: 'remote', label: 'Remote', icon: 'antenna.radiowaves' },
+    // Port-only: linking GitHub for workspaces made from tickets (`IntegrationsTab`,
+    // docs/integrations.md). Beside Remote, the other tab about what reaches this daemon from
+    // outside, and before Plugins, which stays last as the rail's open-ended entry.
+    { id: 'integrations', label: 'Integrations', icon: 'link' },
     { id: 'plugins', label: 'Plugins', icon: 'square.grid.2x2' }
 ] as const;
 

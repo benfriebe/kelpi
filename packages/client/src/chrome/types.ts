@@ -14,9 +14,9 @@
  */
 
 import type { PaneStatus } from '@kelpi/core/layout';
-import type { Pane, WorkspaceColor, WorkspaceGroup, WorkspacePullRequest, WorkspaceState } from '@kelpi/daemon/store';
+import type { Pane, WorkspaceColor, WorkspaceGroup, WorkspacePullRequest, WorkspaceState, WorkspaceTicket } from '@kelpi/daemon/store';
 import type { WorktreeStepID, WorktreeStepStatus } from '@kelpi/daemon/git';
-import type { AgentKind } from '@kelpi/protocol';
+import type { AgentKind, IntegrationFailureInfo, WorkspaceCheckoutMode } from '@kelpi/protocol';
 import type { WorktreeCleanupChoice } from './WorktreeCleanupList';
 
 /** The pane fields the chrome reads. */
@@ -84,6 +84,12 @@ export type ChromeWorkspace = Pick<WorkspaceState, 'id' | 'name' | 'color' | 'ic
      * same reason as `profileName`; absent reads as none.
      */
     readonly pullRequests?: readonly WorkspacePullRequest[] | undefined;
+    /**
+     * The GitHub issue or pull request the workspace was created from (docs/integrations.md),
+     * which the inspector links. Optional for the same reason as `profileName`; absent or null
+     * reads as "not created from a ticket".
+     */
+    readonly ticket?: WorkspaceTicket | null | undefined;
 };
 
 /**
@@ -223,6 +229,12 @@ export interface ChromeRepo {
      * these by default, as Settings ▸ Repositories does. Optional: absent reads as manual.
      */
     readonly isAutoDiscovered?: boolean | undefined;
+    /**
+     * The repo's `origin` URL as the registry recorded it (`repo-registry`'s `remote_url`), or
+     * null when it has none or the daemon has not read it yet. Settings ▸ Integrations lists the
+     * GitHub repositories a ticket search covers from it. Optional: absent reads as unknown.
+     */
+    readonly remoteURL?: string | null | undefined;
 }
 
 /**
@@ -257,6 +269,11 @@ export interface NewWorkspaceExtras {
      * every caller but the sheet (the phone's sheet, `phone/new-workspace.ts`, has no agent row).
      */
     readonly agent?: WorkspaceAgentRequest | undefined;
+    /**
+     * The sheet's From ticket (shell-ui.md §10.1): the ticket the workspace starts from. Absent =
+     * a create from nothing, which is every caller but the sheet.
+     */
+    readonly ticket?: WorkspaceTicketRequest | undefined;
 }
 
 /**
@@ -306,6 +323,50 @@ export interface WorkspaceWorktreeRequest {
     readonly onProgress?: ((progress: WorktreeCreateProgress) => void) | undefined;
 }
 
+/**
+ * A create from a GitHub ticket (docs/integrations.md; wire-protocol.md §6.3 `ticket`), as the
+ * New Workspace sheet submits it. The sheet has already shown `ticket-resolve`'s defaults, so the
+ * create goes with `ticket_defaults: false` and carries the user's final fields.
+ */
+export interface WorkspaceTicketRequest {
+    /** The ticket's page URL (or `owner/name#n`): what the daemon resolves. */
+    readonly ref: string;
+    /**
+     * A create with no worktree: the checkout the workspace opens at, sent as `repo` (not as
+     * `path` plus a later association) so the daemon associates it and writes the ticket file
+     * into it. The chosen repository, or for `existing-checkout` the path the branch is already
+     * checked out at. Unused when the create makes a worktree.
+     */
+    readonly repoPath?: string | undefined;
+    /** Without a worktree: the create's own id, so the sheet can cancel it during the lookup. */
+    readonly requestID?: string | undefined;
+    /** Without a worktree: the `ticket` and `create-workspace` steps while the create runs. */
+    readonly onProgress?: ((progress: WorktreeCreateProgress) => void) | undefined;
+}
+
+/**
+ * A create the sheet keeps open on: the daemon's message, and, when the create named a ticket and
+ * failed because of it (`ticket_error`), that failure as `parseIntegrationFailure` reads it, so
+ * the sheet can offer the same way out the ticket picker does (connect, authorize SSO, retry).
+ */
+export interface WorkspaceCreateFailureInfo {
+    readonly error: string;
+    readonly ticket: IntegrationFailureInfo;
+}
+
+/** A failure a create hands back to the sheet: the message alone, or with its ticket failure. */
+export type CreateFailure = string | WorkspaceCreateFailureInfo;
+
+export function isTicketCreateFailure(value: unknown): value is WorkspaceCreateFailureInfo {
+    return (
+        typeof value === 'object' &&
+        value !== null &&
+        typeof (value as { error?: unknown }).error === 'string' &&
+        typeof (value as { ticket?: unknown }).ticket === 'object' &&
+        (value as { ticket?: unknown }).ticket !== null
+    );
+}
+
 /** graft-git.md §8.5.1's steps, in the order a create runs them: the daemon's own names. */
 export type WorktreeCreateStepID = WorktreeStepID;
 export type WorktreeCreateStepStatus = WorktreeStepStatus;
@@ -329,6 +390,12 @@ export interface WorktreeCreateProgress {
      * that predates #294 and sends no frames at all): the sheet shows a plain "Creating…".
      */
     readonly detailed: boolean;
+    /**
+     * How the create checks out, which is what its steps DO (a pull request's fetch is not "Fetch
+     * the latest main"): named by a create from a ticket once the ticket has answered. Absent = a
+     * plain create (`new-branch`).
+     */
+    readonly checkout?: WorkspaceCheckoutMode | undefined;
 }
 
 /**
@@ -336,7 +403,7 @@ export interface WorktreeCreateProgress {
  * (`string`) or `null` when it worked. `void` keeps every older call site working — the form
  * then treats the submit as fire-and-forget and closes immediately.
  */
-export type SubmitResult = Promise<string | null> | string | null | void | boolean;
+export type SubmitResult = Promise<CreateFailure | null> | CreateFailure | null | void | boolean;
 
 /** Top-level group reorder, carried by the `group-move` wire verb. */
 export interface GroupMoveRequest {

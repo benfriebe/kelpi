@@ -20,7 +20,7 @@
  */
 
 import { pullRequestsFrom } from '@kelpi/core/git';
-import { applyDomainEvents, type DaemonState, type DomainEvent } from '@kelpi/daemon/store';
+import { applyDomainEvents, parseWorkspaceTicket, type DaemonState, type DomainEvent } from '@kelpi/daemon/store';
 import {
     DEFAULT_WS_CHROME_SETTINGS,
     DEFAULT_WS_SETTINGS,
@@ -33,6 +33,9 @@ import {
     type WsOldTerminalHost,
     type WsSettingsSnapshot,
     type WsSystemStats,
+    normalizeIntegrationStatuses,
+    type IntegrationProvider,
+    type WsIntegrationStatus,
     type WsTerminalThemeResolution,
     type WsTransportStatus
 } from '@kelpi/protocol';
@@ -65,7 +68,8 @@ function array(value: unknown): unknown[] {
 /**
  * The undo stack never crosses the wire; only its size does (`recentlyClosedCount`). `muted` and
  * `status` are normalized so a mirror of an older daemon, which never sends them, still holds a
- * boolean and a status.
+ * boolean and a status, and `ticket` the same way: absent (an older daemon) or unreadable is null,
+ * never undefined.
  */
 function hydrateWorkspace(raw: unknown): unknown {
     if (!isRecord(raw)) return raw;
@@ -78,6 +82,7 @@ function hydrateWorkspace(raw: unknown): unknown {
         ...raw,
         muted: raw['muted'] === true,
         status: status === 'running' || status === 'waitingForInput' ? status : 'idle',
+        ticket: parseWorkspaceTicket(raw['ticket']),
         childOrder,
         childrenCollapsed: raw['childrenCollapsed'] === true,
         // A daemon older than PR status (workspace-feature.md §11) sends no list: none to draw.
@@ -280,6 +285,30 @@ export interface SystemStatsSlice {
     readonly loaded: boolean;
 }
 
+/**
+ * Integrations (docs/integrations.md): which providers this daemon can link, how each stands,
+ * and whether THIS session may manage them. A FIFTH slice for the reason settings are a third:
+ * it rides `welcome` and the `integrations-changed` broadcast, never the snapshot, so no
+ * `DomainEvent` describes it and a delta replay must never touch it. It never holds a credential
+ * or a device code (the protocol carries neither); the one code a user types at GitHub stays in
+ * the Settings tab that asked for it.
+ */
+export interface IntegrationsSlice {
+    /**
+     * The daemon reported integrations at all (`welcome.integrations` was present). False = a
+     * daemon that predates them: the New Workspace sheet offers no From ticket, and Settings ▸
+     * Integrations says the daemon cannot link anything.
+     */
+    readonly supported: boolean;
+    /**
+     * `welcome.integrationsManageable`: this session may link and unlink (an owner session, not a
+     * paired device). Per session, so only `welcome` sets it; the broadcast never does.
+     */
+    readonly manageable: boolean;
+    /** Every provider's status, the latest `welcome` or `integrations-changed` (or reply echo). */
+    readonly providers: readonly WsIntegrationStatus[];
+}
+
 export interface UiSlice {
     readonly connection: ConnectionStatus;
     readonly connectionError: string | null;
@@ -317,6 +346,16 @@ export interface KelpiActions {
     applyHotkeyStatus(raw: unknown): void;
     /** A `system-stats` broadcast. A malformed payload is ignored, never partially applied. */
     applySystemStats(raw: unknown): void;
+    /**
+     * A `welcome`'s `integrations` and `integrationsManageable`. An absent list (an older daemon)
+     * is "not supported", and resets whatever the previous connection said.
+     */
+    applyIntegrationsWelcome(integrations: unknown, manageable: unknown): void;
+    /**
+     * A later status list: an `integrations-changed` frame, or the `integrations` a link, unlink or
+     * status reply echoes. Not a list = ignored. `manageable` is left alone (it is per session).
+     */
+    applyIntegrations(raw: unknown): void;
     applySnapshot(seq: number, rawState: unknown): void;
     /** False when the batch was out of order (caller must resync the socket). */
     applyDelta(seq: number, rawEvents: unknown): boolean;
@@ -366,6 +405,7 @@ export interface KelpiState extends KelpiActions {
     readonly ui: UiSlice;
     readonly settings: SettingsSlice;
     readonly systemStats: SystemStatsSlice;
+    readonly integrations: IntegrationsSlice;
 }
 
 export const MAX_TOASTS = 5;
@@ -432,6 +472,20 @@ export function hydrateHotkeyStatus(raw: unknown): HotkeyStatus | null {
         error: textOrNull(raw['error']),
         source: source === 'launch' ? 'launch' : 'settings'
     };
+}
+
+function initialIntegrationsSlice(): IntegrationsSlice {
+    return { supported: false, manageable: false, providers: [] };
+}
+
+/** Same list, same answer: identity stability for the slice's consumers (Settings, the sheet). */
+function sameIntegrations(a: readonly WsIntegrationStatus[], b: readonly WsIntegrationStatus[]): boolean {
+    return JSON.stringify(a) === JSON.stringify(b);
+}
+
+/** One provider's status from the slice, or null when the daemon did not report it. */
+export function integrationStatusOf(slice: IntegrationsSlice, provider: IntegrationProvider): WsIntegrationStatus | null {
+    return slice.providers.find((status) => status.provider === provider) ?? null;
 }
 
 function initialSystemStatsSlice(): SystemStatsSlice {
@@ -808,6 +862,31 @@ export function kelpiStateCreator(set: SetState, get: GetState): KelpiState {
         ui: initialUiSlice(),
         settings: initialSettingsSlice(),
         systemStats: initialSystemStatsSlice(),
+        integrations: initialIntegrationsSlice(),
+
+        applyIntegrationsWelcome(integrations, manageable) {
+            const next: IntegrationsSlice = Array.isArray(integrations)
+                ? { supported: true, manageable: manageable === true, providers: normalizeIntegrationStatuses(integrations) }
+                : initialIntegrationsSlice();
+            const current = get().integrations;
+            if (
+                current.supported === next.supported &&
+                current.manageable === next.manageable &&
+                sameIntegrations(current.providers, next.providers)
+            ) {
+                return;
+            }
+            set({ integrations: next });
+        },
+
+        applyIntegrations(raw) {
+            if (!Array.isArray(raw)) return;
+            const providers = normalizeIntegrationStatuses(raw);
+            const current = get().integrations;
+            if (current.supported && sameIntegrations(current.providers, providers)) return;
+            // A frame or an echo is itself proof the daemon has integrations.
+            set({ integrations: { ...current, supported: true, providers } });
+        },
 
         applySystemStats(raw) {
             const next = hydrateSystemStats(raw);

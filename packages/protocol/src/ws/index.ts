@@ -3,3 +3,4 @@ export * from './pty.js';
 export * from './settings.js';
 export * from './stats.js';
 export * from './update.js';
+export * from './integrations.js';

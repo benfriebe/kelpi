@@ -20,13 +20,30 @@
  * host) and ships the text raw: normalising and the size limit are the daemon's. The reply never
  * waits for the agent, so the CLI can only report what the daemon accepted; how the launch went
  * reaches Kelpi windows as an `agent-launch` frame.
+ *
+ * `create --from` starts the workspace from a GitHub issue or pull request (`ticket`,
+ * wire-protocol.md §6.3, integrations.md): the daemon resolves it with its own credential and
+ * fills whatever the command leaves unsaid (name, repository, worktree, branch, the agent's
+ * prompt). So the CLI never sends its cwd as the source repo for it, and refuses locally only what
+ * it can know without GitHub: a reference that does not parse, and `--update-main` for a pull
+ * request URL (an `owner/name#n` does not say which it is, so the daemon judges those). `--branch`
+ * is sent for either: it names the local branch a pull request's head is checked out on
+ * (graft-git.md §8.5.3 allows renaming it), as the daemon accepts for `owner/name#n` too.
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
 
 import { iconRefusal } from '@kelpi/core/codec';
-import { WORKSPACE_COLORS, parseStartAgent, parseWorkspaceColor, unknownStartAgentError } from '@kelpi/protocol';
+import { parseTicketRef } from '@kelpi/core/tickets';
+import {
+    WORKSPACE_COLORS,
+    parseIntegrationFailure,
+    parseStartAgent,
+    parseWorkspaceColor,
+    unknownStartAgentError,
+    type IntegrationFailureInfo
+} from '@kelpi/protocol';
 
 import {
     absoluteUserPath,
@@ -40,9 +57,19 @@ import {
 } from '../args.js';
 import { originPaneID } from '../env.js';
 import { errLine, exit, printLine, writeErr, writeOut } from '../io.js';
-import { asBool, asInt, asString, asStringArray, stableStringify, type JsonObject, type JsonValue } from '../json.js';
+import {
+    asBool,
+    asInt,
+    asNumber,
+    asString,
+    asStringArray,
+    parseJsonObject,
+    stableStringify,
+    type JsonObject,
+    type JsonValue
+} from '../json.js';
 import { runProcess, type ProcessRunner } from '../proc.js';
-import { decodeReply, decodeReplyAllowingFailure } from '../reply.js';
+import { decodeReply, decodeReplyAllowingFailure, parseReplyOrExit, readReplyOrExit } from '../reply.js';
 import { printWorkspaceTable, replyArray } from '../table.js';
 import { sendJSON } from '../transport.js';
 import {
@@ -168,6 +195,7 @@ async function handleWorkspaceCreate(args: string[]): Promise<void> {
     const prompt = parseFlag('--prompt', args);
     const promptFile = parseFlag('--prompt-file', args);
     const send = popSwitch('--send', args);
+    const ticket = parseFlag('--from', args);
     const asJSON = popSwitch('--json', args);
     const focus = popSwitch('--focus', args);
     rejectLeftoverArgs(args, 'kelpi workspace create', { usage: (write) => write(workspaceCreateUsage) });
@@ -215,6 +243,26 @@ async function handleWorkspaceCreate(args: string[]): Promise<void> {
         errLine(`kelpi workspace create: ${unknownStartAgentError(agentRaw ?? '')}`);
         exit(1);
     }
+    if (ticket !== null) {
+        // Parsed with the daemon's own `parseTicketRef`, so what fails here would fail there
+        // (`bad-ref`) too; an empty value would otherwise read as no ticket at all on the wire.
+        const ref = parseTicketRef(ticket);
+        if (ref === null) {
+            errLine(
+                `kelpi workspace create: '${ticket}' is not a GitHub issue or pull request ` +
+                    '(expected its URL or <owner>/<name>#<n>)'
+            );
+            exit(1);
+        }
+        // A pull request is checked out on its own head, so update main (a new branch off the
+        // default branch) does not apply. Only a `/pull/` URL says it is one; for `owner/name#n`
+        // the daemon finds out and judges it itself. `--branch` is fine for both: it only names
+        // the local branch the head is checked out on (graft-git.md §8.5.3).
+        if (ref.kind === 'pr' && updateMain) {
+            errLine("workspace create can't take --update-main with a pull request: it is checked out on its own head branch");
+            exit(1);
+        }
+    }
     // Read last, after every refusal above, so a doomed command never waits on stdin.
     const agentPrompt = promptFile !== null ? await readPromptFile(promptFile) : prompt;
 
@@ -238,13 +286,22 @@ async function handleWorkspaceCreate(args: string[]): Promise<void> {
     // Made absolute here: a relative path means the shell's cwd, not the daemon's.
     if (repo !== null) payload['repo'] = absoluteUserPath(repo);
     if (noRepo) payload['group_defaults'] = false;
-    if (worktree !== null) {
-        payload['worktree'] = worktree;
+    // Raw, as typed: the daemon parses it again. `ticket_defaults` stays at its default (true),
+    // so the daemon fills the name, repository, worktree, branch and prompt left unsaid here.
+    if (ticket !== null) payload['ticket'] = ticket;
+    if (worktree !== null) payload['worktree'] = worktree;
+    // A ticket create usually makes a worktree the command never names, so its branch flags
+    // ride along without --worktree too.
+    if (worktree !== null || ticket !== null) {
         if (branch !== null) payload['branch'] = branch;
         // Only an explicit flag is sent: absent lets a group whose worktree switch is on make
         // update main the default, which `--no-update-main` then opts out of.
         if (updateMain) payload['update_main'] = true;
         if (noUpdateMain) payload['update_main'] = false;
+    }
+    // Never for a ticket: its source is the registered repository whose remotes match the ticket
+    // (or the group's), which only the daemon can find, and the cwd would stand in its way.
+    if (worktree !== null && ticket === null) {
         if (repo === null) {
             if ((group !== null || nesting) && !noRepo) {
                 // Leave the source to the group's default repository (a nested workspace's is
@@ -260,25 +317,41 @@ async function handleWorkspaceCreate(args: string[]): Promise<void> {
     if (agent !== null) {
         payload['start_agent'] = agent;
         // Sent even when empty: the daemon reads a blank prompt as "start the agent, nothing more".
+        // Absent with --from, the daemon renders the ticket's own prompt.
         if (agentPrompt !== null) payload['agent_prompt'] = agentPrompt;
         // Explicit either way: without --send the CLI prefills, as the New Workspace sheet does.
         payload['send_prompt'] = send;
     }
 
     // `git worktree add` (plus a network fetch with --update-main) runs well past the 5s
-    // default, and a slow-but-succeeding create must not read as a failure. A create that
-    // associates a repository (explicitly, or the group's) reads git too, though only briefly.
-    const reply = await decodeReply(
+    // default, and a slow-but-succeeding create must not read as a failure. A ticket create asks
+    // GitHub first and then usually makes a worktree. A create that associates a repository
+    // (explicitly, or the group's) reads git too, though only briefly.
+    const data = await readReplyOrExit(
         payload,
-        'kelpi workspace create',
-        worktree !== null ? { timeoutSeconds: 120 } : repo !== null || group !== null || nesting ? { timeoutSeconds: 30 } : {}
+        CREATE_COMMAND,
+        worktree !== null || ticket !== null
+            ? { timeoutSeconds: 120 }
+            : repo !== null || group !== null || nesting
+              ? { timeoutSeconds: 30 }
+              : {}
     );
+    if (ticket !== null) refuseTicketFailure(data);
+    const reply = parseReplyOrExit(data, CREATE_COMMAND);
     const workspaceName = asString(reply['workspace_name']) ?? name ?? 'Workspace';
     const workspaceID = asString(reply['workspace_id']) ?? '?';
-    // A daemon that predates a field drops it and creates the workspace without it: unmuted for
-    // `muted`, with no agent for `start_agent` (a success echoes it). Either is an outcome the
-    // caller must not miss, so say so (the workspace exists either way) and fail.
+    const ticketEcho = jsonObject(reply['ticket']);
+    // A daemon that predates a field drops it and creates the workspace without it: from
+    // nothing for `ticket`, unmuted for `muted`, with no agent for `start_agent` (a success
+    // echoes each). Any is an outcome the caller must not miss, so say so (the workspace exists
+    // either way) and fail.
     const notApplied: string[] = [];
+    if (ticket !== null && ticketEcho === undefined) {
+        notApplied.push(
+            `the daemon is too old to create workspaces from tickets; restart it on this build ` +
+                `(workspace ${workspaceName} (${workspaceID}) was created as a plain workspace)`
+        );
+    }
     if (muted && asBool(reply['muted']) !== true) {
         notApplied.push(
             `the daemon did not apply --muted; restart it on this build ` +
@@ -293,7 +366,7 @@ async function handleWorkspaceCreate(args: string[]): Promise<void> {
     }
     if (notApplied.length > 0) {
         if (asJSON) printLine(stableStringify(reply));
-        for (const line of notApplied) errLine(`kelpi workspace create: ${line}`);
+        for (const line of notApplied) errLine(`${CREATE_COMMAND}: ${line}`);
         exit(1);
     }
     // The same for `icon`: an older daemon ignores the key and leaves the first letter.
@@ -347,10 +420,103 @@ async function handleWorkspaceCreate(args: string[]): Promise<void> {
         const withRepo = repoPath !== undefined ? ` with repo ${repoPath}` : '';
         printLine(`created workspace ${workspaceName} (${workspaceID})${inGroup}${withRepo}`);
     }
+    if (ticketEcho !== undefined) printTicketOutcome(reply, ticketEcho);
     // The daemon's copy of the prompt. A prefill that falls back is reported only to Kelpi
     // windows, and with none attached this path is where the text still is.
     const promptPath = asString(reply['prompt_file']);
     if (promptPath !== undefined) printLine(`  prompt file: ${promptPath}`);
+    if (ticketEcho !== undefined) {
+        // Advisory, so stderr: the workspace was created either way.
+        const fileError = asString(reply['ticket_file_error']);
+        if (fileError !== undefined) errLine(`Warning: no ticket file was written: ${fileError}`);
+        for (const warning of asStringArray(reply['warnings']) ?? []) errLine(`Warning: ${warning}`);
+    }
+}
+
+const CREATE_COMMAND = 'kelpi workspace create';
+
+function jsonObject(value: JsonValue | undefined): JsonObject | undefined {
+    return typeof value === 'object' && value !== null && !Array.isArray(value) ? value : undefined;
+}
+
+/** What `checkout` (wire-protocol.md §6.3) means, for the human output. */
+const CHECKOUT_MEANINGS: Readonly<Record<string, string>> = {
+    'new-branch': 'a new branch',
+    'pr-head': "the pull request's head branch",
+    'attach-branch': 'an existing local branch',
+    'existing-checkout': 'an existing checkout, no new worktree'
+};
+
+/** The ticket lines under the `created workspace` line: which ticket, how it was checked out, its file. */
+function printTicketOutcome(reply: JsonObject, ticket: JsonObject): void {
+    const kind = asString(ticket['kind']);
+    const kindLabel = kind === 'pr' ? 'pull request' : kind === 'issue' ? 'issue' : 'ticket';
+    const number = asNumber(ticket['number']);
+    const key = asString(ticket['key']) ?? (number !== undefined ? `#${String(number)}` : '');
+    const url = asString(ticket['url']);
+    printLine(`  ticket: ${kindLabel} ${asString(ticket['repo']) ?? ''}${key}${url !== undefined ? ` ${url}` : ''}`);
+    const checkout = asString(reply['checkout']);
+    if (checkout !== undefined) {
+        const meaning = CHECKOUT_MEANINGS[checkout];
+        printLine(`  checkout: ${checkout}${meaning !== undefined ? ` (${meaning})` : ''}`);
+    }
+    const ticketFile = asString(reply['ticket_file']);
+    if (ticketFile !== undefined) printLine(`  ticket file: ${ticketFile}`);
+}
+
+/**
+ * A create refused because of its ticket (`ticket_error`, integrations.md §2.2): the daemon's
+ * error, then a `Repair:` line for the codes a user can act on, exit 1. Any other reply falls
+ * through to the usual pipeline.
+ */
+function refuseTicketFailure(data: string): void {
+    const json = parseJsonObject(data);
+    if (json === null || asBool(json['ok']) !== false || json['ticket_error'] === undefined) return;
+    errLine(`${CREATE_COMMAND}: ${asString(json['error']) ?? 'unknown error'}`);
+    const info = parseIntegrationFailure(json);
+    const repair = info === null ? null : ticketRepair(info);
+    if (repair !== null) errLine(`Repair: ${repair}`);
+    exit(1);
+}
+
+function ticketRepair(info: IntegrationFailureInfo): string | null {
+    switch (info.code) {
+        case 'not-connected':
+            return "link GitHub in Kelpi's Settings ▸ Integrations, then run this again.";
+        case 'unauthorized':
+            return "reconnect GitHub in Kelpi's Settings ▸ Integrations, then run this again.";
+        case 'rate-limited':
+            return info.retry_after_s !== undefined
+                ? `GitHub's rate limit is used up; try again in ${waitText(info.retry_after_s)}.`
+                : "GitHub's rate limit is used up; try again in a few minutes.";
+        case 'sso-required':
+            return info.sso_url !== undefined
+                ? `authorize Kelpi's GitHub credential for the organization's single sign-on: ${info.sso_url}`
+                : "authorize Kelpi's GitHub credential for the organization's single sign-on on github.com.";
+        case 'org-restricted':
+            return info.settings_url !== undefined
+                ? `ask the organization to approve Kelpi (${info.settings_url}), or link a personal access token in Settings ▸ Integrations.`
+                : 'ask the organization to approve Kelpi, or link a personal access token in Settings ▸ Integrations.';
+        case 'not-found':
+            return 'check the reference, and that the GitHub account linked in Settings ▸ Integrations can see the repository.';
+        case 'bad-ref':
+            return 'pass an issue or pull request URL (https://github.com/<owner>/<name>/issues/<n> or .../pull/<n>) or <owner>/<name>#<n>.';
+        case 'unreachable':
+        case 'timeout':
+            return 'check that the Kelpi host can reach github.com, then run this again.';
+        default:
+            return null;
+    }
+}
+
+/** `retry_after_s` as `45 seconds` or, from a minute up, whole minutes rounded up. */
+function waitText(seconds: number): string {
+    if (seconds < 60) {
+        const whole = Math.max(1, Math.ceil(seconds));
+        return `${String(whole)} second${whole === 1 ? '' : 's'}`;
+    }
+    const minutes = Math.ceil(seconds / 60);
+    return `${String(minutes)} minute${minutes === 1 ? '' : 's'}`;
 }
 
 /**

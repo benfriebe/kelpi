@@ -2387,6 +2387,333 @@ describe('workspace create / label / mute', () => {
         });
     });
 
+    describe('starting from a ticket (wire-protocol §6.3, integrations.md)', () => {
+        const PR_URL = 'https://github.com/acme/api/pull/418';
+        const ISSUE_URL = 'https://github.com/acme/api/issues/77';
+        const PR_TICKET = {
+            provider: 'github',
+            kind: 'pr',
+            repo: 'acme/api',
+            number: 418,
+            key: '#418',
+            url: PR_URL,
+            title: 'Retry login on 401'
+        };
+        /** A current daemon: a pull request checked out on its head in a new worktree. */
+        const ticketReply = {
+            ok: true,
+            workspace_id: PANE,
+            workspace_name: '#418 Retry login on 401',
+            muted: false,
+            worktree_path: '/wt/fix-login',
+            branch: 'fix/login',
+            update_main: false,
+            repo_path: '/code/api',
+            ticket: PR_TICKET,
+            checkout: 'pr-head',
+            ticket_file: '/wt/fix-login/.kelpi/ticket-418.md'
+        };
+        const ticketDaemon = (request: Record<string, unknown>): ServerReply => {
+            const reply: Record<string, unknown> = { ...ticketReply };
+            if (typeof request['start_agent'] === 'string') reply['start_agent'] = request['start_agent'];
+            return { lines: [reply] };
+        };
+
+        it('nests, sets the icon and focuses a ticket create like any create, and says where it went', async () => {
+            const PARENT = 'AAAAAAAA-0000-4000-8000-0000000000AA';
+            server.respond((request) => ({
+                lines: [{ ...ticketReply, icon: request['icon'], parent_id: PARENT, parent_name: 'orchestrator' }]
+            }));
+            const home = scratchHome();
+            const nested = await runCLI(['workspace', 'create', '--from', PR_URL, '--parent', 'orchestrator', '--icon', '🐛', '--focus'], {
+                port: server.port,
+                cwd: home
+            });
+            expect(nested.code).toBe(0);
+            expect(await lastRequest()).toEqual({
+                command: 'workspace-create',
+                ticket: PR_URL,
+                parent: 'orchestrator',
+                icon: 'emoji:🐛',
+                focus: true
+            });
+            expect(nested.stdout).toContain('nested under orchestrator');
+
+            // A parent the daemon lost while it resolved the ticket and made the worktree.
+            server.respond(() => ({
+                lines: [{ ...ticketReply, parent_lost: true, parent_lost_reason: "parent 'orchestrator' was deleted while the workspace was being created" }]
+            }));
+            const lost = await runCLI(['workspace', 'create', '--from', PR_URL, '--parent', 'orchestrator'], { port: server.port, cwd: home });
+            expect(lost.code).toBe(1);
+            expect(lost.stderr).toContain("parent 'orchestrator' was deleted while the workspace was being created");
+        });
+
+        it('sends the ticket raw and never the cwd as the source, composing with the other flags', async () => {
+            server.respond(ticketDaemon);
+            const home = scratchHome();
+            const bare = await runCLI(['workspace', 'create', '--from', PR_URL], { port: server.port, cwd: home });
+            expect(bare.code).toBe(0);
+            // `ticket_defaults` is left at its default (true): the daemon fills the rest.
+            expect(await lastRequest()).toEqual({ command: 'workspace-create', ticket: PR_URL });
+
+            // A named worktree, alone or in a group: still no cwd as `repo` or `path`.
+            await runCLI(['workspace', 'create', '--from', 'acme/api#418', '--worktree', 'login'], { port: server.port, cwd: home });
+            expect(await lastRequest()).toEqual({ command: 'workspace-create', ticket: 'acme/api#418', worktree: 'login' });
+            await runCLI(['workspace', 'create', '--from', PR_URL, '--group', 'api', '--worktree', 'login'], {
+                port: server.port,
+                cwd: home
+            });
+            expect(await lastRequest()).toEqual({ command: 'workspace-create', ticket: PR_URL, group: 'api', worktree: 'login' });
+
+            // An issue takes a branch and update main, with or without --worktree; an explicit
+            // repo is made absolute; the agent flags ride along as for any create.
+            await runCLI(
+                [
+                    'workspace', 'create', '--from', ISSUE_URL, '--name', 'login', '--repo', 'code/api',
+                    '--group', 'api', '--branch', 'fix-77', '--update-main', '--agent', 'claude', '--send'
+                ],
+                { port: server.port, cwd: home }
+            );
+            expect(await lastRequest()).toEqual({
+                command: 'workspace-create',
+                ticket: ISSUE_URL,
+                name: 'login',
+                repo: path.join(home, 'code/api'),
+                group: 'api',
+                branch: 'fix-77',
+                update_main: true,
+                start_agent: 'claude',
+                send_prompt: true
+            });
+
+            // Without --prompt the daemon renders the ticket's prompt; --no-repo and
+            // --no-update-main (which a pull request is anyway) pass through.
+            await runCLI(['workspace', 'create', '--from', PR_URL, '--group', 'api', '--no-repo', '--no-update-main', '--agent', 'codex'], {
+                port: server.port
+            });
+            expect(await lastRequest()).toEqual({
+                command: 'workspace-create',
+                ticket: PR_URL,
+                group: 'api',
+                group_defaults: false,
+                update_main: false,
+                start_agent: 'codex',
+                send_prompt: false
+            });
+
+            // `owner/name#n` does not say whether it is a pull request: the daemon judges.
+            await runCLI(['workspace', 'create', '--from', 'acme/api#418', '--branch', 'mine', '--update-main', '--prompt', 'x', '--agent', 'claude'], {
+                port: server.port
+            });
+            expect(await lastRequest()).toEqual({
+                command: 'workspace-create',
+                ticket: 'acme/api#418',
+                branch: 'mine',
+                update_main: true,
+                start_agent: 'claude',
+                agent_prompt: 'x',
+                send_prompt: false
+            });
+        });
+
+        it('sends --branch with a pull request URL (it renames the local branch), refuses --update-main for one, and a reference that does not parse', async () => {
+            // graft-git.md §8.5.3: the head is checked out on the branch the request names, so the
+            // URL form behaves as `owner/name#n --branch` does.
+            server.respond(ticketDaemon);
+            const branch = await runCLI(['workspace', 'create', '--from', `${PR_URL}/files`, '--branch', 'review'], { port: server.port });
+            expect(branch.stderr).toBe('');
+            expect(branch.code).toBe(0);
+            expect(await lastRequest()).toEqual({ command: 'workspace-create', ticket: `${PR_URL}/files`, branch: 'review' });
+
+            const updateMain = await runCLI(['workspace', 'create', '--from', PR_URL, '--worktree', 'x', '--update-main'], {
+                port: server.port
+            });
+            expect(updateMain.code).toBe(1);
+            expect(updateMain.stdout).toBe('');
+            expect(updateMain.stderr).toBe(
+                "workspace create can't take --update-main with a pull request: it is checked out on its own head branch\n"
+            );
+            // --branch with --update-main: the update main refusal, nothing sent.
+            const both = await runCLI(['workspace', 'create', '--from', PR_URL, '--branch', 'review', '--update-main'], { port: server.port });
+            expect(both.code).toBe(1);
+            expect(both.stderr).toContain("can't take --update-main with a pull request");
+
+            for (const ref of ['', '  ', 'acme/api', 'https://gitlab.com/acme/api/issues/7', 'acme/api#0', 'github.com/acme/api/pulls']) {
+                // Before stdin is read, like every other refusal.
+                const bad = await runCLI(['workspace', 'create', '--from', ref, '--agent', 'claude', '--prompt-file', '-'], {
+                    port: server.port,
+                    stdin: 'never read'
+                });
+                expect(bad.code).toBe(1);
+                expect(bad.stderr).toBe(
+                    `kelpi workspace create: '${ref}' is not a GitHub issue or pull request (expected its URL or <owner>/<name>#<n>)\n`
+                );
+            }
+            // `--from` with no value is left over, like any flag in final position.
+            const dangling = await runCLI(['workspace', 'create', '--from'], { port: server.port });
+            expect(dangling.code).toBe(1);
+            // Only the --branch create reached the daemon: every refusal sent nothing.
+            expect(server.requests).toHaveLength(1);
+        });
+
+        it('prints the worktree, branch, ticket, checkout and ticket file, with warnings on stderr', async () => {
+            server.respond(ticketDaemon);
+            const human = await runCLI(['workspace', 'create', '--from', PR_URL, '--agent', 'claude'], { port: server.port });
+            expect(human.code).toBe(0);
+            expect(human.stdout).toBe(
+                [
+                    `created workspace #418 Retry login on 401 (${PANE}) with worktree /wt/fix-login on branch fix/login`,
+                    `  ticket: pull request acme/api#418 ${PR_URL}`,
+                    "  checkout: pr-head (the pull request's head branch)",
+                    '  ticket file: /wt/fix-login/.kelpi/ticket-418.md',
+                    ''
+                ].join('\n')
+            );
+            expect(human.stderr).toBe('');
+
+            // An issue on a new branch off main, with no ticket file and two warnings.
+            const issueReply = {
+                ok: true,
+                workspace_id: PANE,
+                workspace_name: '#77 Flaky test',
+                worktree_path: '/wt/77-flaky-test',
+                branch: '77-flaky-test',
+                update_main: true,
+                group: 'api',
+                start_agent: 'claude',
+                prompt_file: '/kelpid/prompts/1f0e.txt',
+                ticket: { ...PR_TICKET, kind: 'issue', number: 77, key: '#77', url: ISSUE_URL, title: 'Flaky test' },
+                checkout: 'new-branch',
+                ticket_file_error: '.kelpi is tracked in this checkout',
+                warnings: ['the fork acme-fork/api no longer exists', 'second warning']
+            };
+            server.respond(() => ({ lines: [issueReply] }));
+            const issue = await runCLI(['workspace', 'create', '--from', ISSUE_URL, '--group', 'api', '--agent', 'claude'], {
+                port: server.port
+            });
+            expect(issue.code).toBe(0);
+            expect(issue.stdout).toBe(
+                [
+                    `created workspace #77 Flaky test (${PANE}) in group api with worktree /wt/77-flaky-test on branch 77-flaky-test off the latest main`,
+                    `  ticket: issue acme/api#77 ${ISSUE_URL}`,
+                    '  checkout: new-branch (a new branch)',
+                    '  prompt file: /kelpid/prompts/1f0e.txt',
+                    ''
+                ].join('\n')
+            );
+            expect(issue.stderr).toBe(
+                [
+                    'Warning: no ticket file was written: .kelpi is tracked in this checkout',
+                    'Warning: the fork acme-fork/api no longer exists',
+                    'Warning: second warning',
+                    ''
+                ].join('\n')
+            );
+
+            // An existing checkout: no worktree line, the mode says why.
+            server.respond(() => ({
+                lines: [
+                    {
+                        ok: true,
+                        workspace_id: PANE,
+                        workspace_name: '#418 Retry login on 401',
+                        repo_path: '/code/api',
+                        ticket: PR_TICKET,
+                        checkout: 'existing-checkout'
+                    }
+                ]
+            }));
+            const existing = await runCLI(['workspace', 'create', '--from', PR_URL], { port: server.port });
+            expect(existing.stdout).toBe(
+                [
+                    `created workspace #418 Retry login on 401 (${PANE}) with repo /code/api`,
+                    `  ticket: pull request acme/api#418 ${PR_URL}`,
+                    '  checkout: existing-checkout (an existing checkout, no new worktree)',
+                    ''
+                ].join('\n')
+            );
+
+            // --json: the full reply, warnings and all, and nothing on stderr.
+            server.respond(() => ({ lines: [issueReply] }));
+            const json = await runCLI(['workspace', 'create', '--from', ISSUE_URL, '--json'], { port: server.port });
+            expect(json.code).toBe(0);
+            expect(JSON.parse(json.stdout)).toEqual(issueReply);
+            expect(json.stderr).toBe('');
+        });
+
+        it('fails when an older daemon created a plain workspace instead', async () => {
+            // A daemon that predates `ticket` drops it: a plain create, no echo.
+            server.respond(() => ({ lines: [{ ok: true, workspace_id: PANE, workspace_name: 'Workspace', muted: false }] }));
+            const human = await runCLI(['workspace', 'create', '--from', PR_URL], { port: server.port });
+            expect(human.code).toBe(1);
+            expect(human.stdout).toBe('');
+            expect(human.stderr).toBe(
+                `kelpi workspace create: the daemon is too old to create workspaces from tickets; restart it on this build (workspace Workspace (${PANE}) was created as a plain workspace)\n`
+            );
+
+            const json = await runCLI(['workspace', 'create', '--from', PR_URL, '--json'], { port: server.port });
+            expect(json.code).toBe(1);
+            expect(JSON.parse(json.stdout)).toEqual({ ok: true, workspace_id: PANE, workspace_name: 'Workspace', muted: false });
+            expect(json.stderr).toContain('too old to create workspaces from tickets');
+
+            // One that predates the agent fields too gets both lines.
+            server.respond(() => ({ lines: [{ ok: true, workspace_id: PANE, workspace_name: 'Workspace' }] }));
+            const both = await runCLI(['workspace', 'create', '--from', PR_URL, '--agent', 'claude'], { port: server.port });
+            expect(both.code).toBe(1);
+            expect(both.stderr.split('\n').filter((line) => line !== '')).toEqual([
+                `kelpi workspace create: the daemon is too old to create workspaces from tickets; restart it on this build (workspace Workspace (${PANE}) was created as a plain workspace)`,
+                `kelpi workspace create: the daemon is too old to start agents; restart it on this build (workspace Workspace (${PANE}) was created without an agent)`
+            ]);
+        });
+
+        it('gives a repair hint for each ticket refusal it can name', async () => {
+            const refusal = (extra: Record<string, unknown>) => async (): Promise<string> => {
+                server.respond(() => ({ lines: [{ ok: false, error: 'refused', ...extra }] }));
+                const result = await runCLI(['workspace', 'create', '--from', PR_URL, '--json'], { port: server.port });
+                expect(result.code).toBe(1);
+                expect(result.stdout).toBe('');
+                return result.stderr;
+            };
+            const cases: [Record<string, unknown>, string | null][] = [
+                [{ ticket_error: 'not-connected' }, "link GitHub in Kelpi's Settings ▸ Integrations, then run this again."],
+                [{ ticket_error: 'unauthorized' }, "reconnect GitHub in Kelpi's Settings ▸ Integrations, then run this again."],
+                [{ ticket_error: 'rate-limited', retry_after_s: 45 }, "GitHub's rate limit is used up; try again in 45 seconds."],
+                [{ ticket_error: 'rate-limited', retry_after_s: 1 }, "GitHub's rate limit is used up; try again in 1 second."],
+                [{ ticket_error: 'rate-limited', retry_after_s: 125 }, "GitHub's rate limit is used up; try again in 3 minutes."],
+                [{ ticket_error: 'rate-limited' }, "GitHub's rate limit is used up; try again in a few minutes."],
+                [
+                    { ticket_error: 'sso-required', sso_url: 'https://github.com/orgs/acme/sso?authorization_request=x' },
+                    "authorize Kelpi's GitHub credential for the organization's single sign-on: https://github.com/orgs/acme/sso?authorization_request=x"
+                ],
+                // A link that is not GitHub's own page is dropped, never shown.
+                [
+                    { ticket_error: 'sso-required', sso_url: 'https://evil.example/sso' },
+                    "authorize Kelpi's GitHub credential for the organization's single sign-on on github.com."
+                ],
+                [
+                    { ticket_error: 'org-restricted', settings_url: 'https://github.com/settings/connections/applications/abc' },
+                    'ask the organization to approve Kelpi (https://github.com/settings/connections/applications/abc), or link a personal access token in Settings ▸ Integrations.'
+                ],
+                [
+                    { ticket_error: 'not-found' },
+                    'check the reference, and that the GitHub account linked in Settings ▸ Integrations can see the repository.'
+                ],
+                [
+                    { ticket_error: 'bad-ref' },
+                    'pass an issue or pull request URL (https://github.com/<owner>/<name>/issues/<n> or .../pull/<n>) or <owner>/<name>#<n>.'
+                ],
+                [{ ticket_error: 'timeout' }, 'check that the Kelpi host can reach github.com, then run this again.'],
+                // A code this CLI does not know, or none: the error alone.
+                [{ ticket_error: 'from-the-future' }, null],
+                [{}, null]
+            ];
+            for (const [extra, repair] of cases) {
+                const stderr = await refusal(extra)();
+                expect(stderr).toBe(`kelpi workspace create: refused\n${repair === null ? '' : `Repair: ${repair}\n`}`);
+            }
+        });
+    });
+
     it('mutes by default, unmutes with --off and toggles with --toggle', async () => {
         server.respond((request) => ({
             lines: [

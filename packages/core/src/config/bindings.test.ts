@@ -22,9 +22,9 @@ const trigger = (config: string) => {
 };
 
 describe('the action table', () => {
-    it('has the 66 bindable actions and the 20 menu-bar ones', () => {
-        expect(KELPI_ACTIONS).toHaveLength(66);
-        expect(new Set(KELPI_ACTIONS).size).toBe(66);
+    it('has the 67 bindable actions and the 20 menu-bar ones', () => {
+        expect(KELPI_ACTIONS).toHaveLength(67);
+        expect(new Set(KELPI_ACTIONS).size).toBe(67);
         // #175's three text-size actions are NOT among them, deliberately: the menu-bar set is
         // the one that still fires while a chrome text field has the caret.
         expect(MENU_BAR_ACTIONS.size).toBe(20);
@@ -35,8 +35,17 @@ describe('the action table', () => {
 });
 
 describe('the default map', () => {
-    it('ships 50 triggers', () => {
-        expect(DEFAULT_KEYBINDINGS.size).toBe(50);
+    it('ships 51 triggers', () => {
+        expect(DEFAULT_KEYBINDINGS.size).toBe(51);
+    });
+
+    // docs/integrations.md: ⌘⌥N opens the New Workspace sheet's ticket picker. ⇧⌘N stays New
+    // Scratchpad, and the action is not a menu-bar one (no File menu row yet).
+    it('binds New Workspace from Ticket to alt+super+n, leaving shift+super+n to the scratchpad', () => {
+        expect(actionForTrigger(DEFAULT_KEYBINDINGS, trigger('alt+super+n'))).toBe('new_workspace_from_ticket');
+        expect(actionForTrigger(DEFAULT_KEYBINDINGS, trigger('shift+super+n'))).toBe('create_scratchpad');
+        expect(actionForTrigger(DEFAULT_KEYBINDINGS, trigger('super+n'))).toBe('new_workspace');
+        expect(MENU_BAR_ACTIONS.has('new_workspace_from_ticket')).toBe(false);
     });
 
     it('binds ⌃Tab and ⌃⇧Tab to the recent-workspace switcher', () => {

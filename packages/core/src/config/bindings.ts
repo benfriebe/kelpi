@@ -44,9 +44,12 @@ export function parseKeybindValue(value: string): KeybindOverride | null {
     return { trigger, action: actionString };
 }
 
-/** §5.2 - the 50 shipped default triggers, in `<trigger>=<action>` form. */
+/** §5.2 - the 51 shipped default triggers, in `<trigger>=<action>` form. */
 export const DEFAULT_KEYBIND_LINES: readonly string[] = [
     'super+n=new_workspace',
+    // ⌘⌥N, not ⇧⌘N (New Scratchpad). Keys match on `event.code`, so the Option dead key that turns
+    // ⌥N into a tilde on a US layout never reaches the match.
+    'alt+super+n=new_workspace_from_ticket',
     'super+o=open_file',
     'shift+super+o=open_web_pane',
     'super+1=switch_to_workspace_1',

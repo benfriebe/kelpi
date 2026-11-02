@@ -64,8 +64,18 @@ export type {
     ResolvedDefaultBranch,
     WorktreeAddHooks,
     WorktreeAddSnapshot,
-    WorktreeGitOps
+    WorktreeGitCallOptions,
+    WorktreeGitOps,
+    WorktreeGuardKey
 } from './worktree-add.js';
+/** A pull request's checkout and the ticket file (graft-git.md §8.5.3, §8.5.4). */
+export { isUsableBranchName, performPullRequestCheckout, PullRequestCheckoutError } from './pr-checkout.js';
+export type { PullRequestCheckoutHooks, PullRequestCheckoutRequest, PullRequestCheckoutResult } from './pr-checkout.js';
+/** The one reader of a repository's remotes, branches and worktrees (docs/integrations.md §9.6). */
+export { readBranchFacts, readRemoteFacts } from './repo-facts.js';
+export type { BranchFacts, GitRead, RemoteFact } from './repo-facts.js';
+export { writeTicketFile } from './ticket-file.js';
+export type { TicketFileOutcome, TicketFileWrite } from './ticket-file.js';
 export { createGitProgressParser, parseGitProgressLine, stripGitProgress } from './progress.js';
 export type { GitProgress, GitProgressParser } from './progress.js';
 export {
@@ -78,6 +88,7 @@ export {
 export type {
     WorktreeProgressSnapshot,
     WorktreeStepID,
+    WorktreeStepPlan,
     WorktreeStepSink,
     WorktreeStepState,
     WorktreeStepStatus,

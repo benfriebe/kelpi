@@ -95,7 +95,10 @@ export function parseRepos(reply: CommandReply): readonly InspectorRepo[] {
             name: text(row['name']),
             path: text(row['path']),
             worktreeBase: text(row['worktree_base']),
-            ...(row['is_auto_discovered'] === true ? { isAutoDiscovered: true } : {})
+            ...(row['is_auto_discovered'] === true ? { isAutoDiscovered: true } : {}),
+            // The registry's `origin` URL: Settings ▸ Integrations lists the GitHub repositories
+            // a ticket search covers from it. Null (or absent) when the repo has no remote.
+            remoteURL: typeof row['remote_url'] === 'string' && row['remote_url'] !== '' ? row['remote_url'] : null
         });
     }
     return parsed;

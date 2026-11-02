@@ -47,6 +47,14 @@ import type {
 } from '@kelpi/protocol';
 import {
     CHOOSE_FOLDER_DIALOG_ACTION,
+    INTEGRATION_LINK_CANCEL_COMMAND,
+    INTEGRATION_LINK_START_COMMAND,
+    INTEGRATION_LINK_TOKEN_COMMAND,
+    INTEGRATION_UNLINK_COMMAND,
+    INTEGRATIONS_STATUS_COMMAND,
+    TICKET_RESOLVE_COMMAND,
+    TICKET_SEARCH_COMMAND,
+    type IntegrationProvider,
     type RESOLVE_CLIPBOARD_FILES_ACTION,
     type RESOLVE_DROPPED_FILES_ACTION,
     type UPDATE_ACTION_SHELL_ACTION,
@@ -229,6 +237,12 @@ export const RESTART_OLD_TERMINALS_TIMEOUT_MS = 60_000;
  * checkout with a `node_modules` is a lot of files (graft-git.md §8.7).
  */
 export const WORKTREE_REMOVE_TIMEOUT_MS = 300_000;
+/**
+ * The integration verbs that talk to GitHub (search, resolve, a token check, a device-code
+ * request). The daemon bounds each GitHub request at 10 s and a resolve makes a few, so the
+ * default 15 s would fail a slow but healthy answer.
+ */
+export const TICKET_COMMAND_TIMEOUT_MS = 30_000;
 
 /** The shared pane-addressing triple (`PaneTargetScope`, wire §5.7). */
 export interface PaneScope {
@@ -509,6 +523,60 @@ export class CommandClient {
     /** Ask the daemon to push a test notification to this connection's subscription, now. */
     pushTest(options?: SendOptions): Promise<CommandReply> {
         return this.raw({ command: 'push-test' }, options ?? { timeoutMs: 20_000 });
+    }
+
+    // ── Settings ▸ Integrations and the ticket picker (`@kelpi/protocol` ws/integrations.ts) ──
+    //
+    // WS-only like the remote family (docs/integrations.md). The four management verbs are the
+    // owner's: a paired device's session is refused by the daemon with `forbidden`, and Settings
+    // does not offer them there (`welcome.integrationsManageable`). Search and resolve are open to
+    // every session. Replies are read with the protocol's own readers (`parseTicketSearchReply`,
+    // `parseIntegrationFailure`, …), never field by field here.
+
+    /** Every provider's status, and whether this session may manage them. */
+    integrationsStatus(options?: SendOptions): Promise<CommandReply> {
+        return this.raw({ command: INTEGRATIONS_STATUS_COMMAND }, options ?? {});
+    }
+
+    /**
+     * Start GitHub's device flow. The reply carries the `user_code` to type at GitHub, the
+     * `verification_uri` and the `flow_id`; the daemon polls GitHub itself, and the outcome
+     * arrives as `integrations-changed`.
+     */
+    integrationLinkStart(provider: IntegrationProvider, options?: SendOptions): Promise<CommandReply> {
+        return this.raw({ command: INTEGRATION_LINK_START_COMMAND, provider }, options ?? { timeoutMs: TICKET_COMMAND_TIMEOUT_MS });
+    }
+
+    /** Abandon the pending flow; with `flowID`, only that flow (a newer one is left alone). */
+    integrationLinkCancel(provider: IntegrationProvider, flowID?: string | null, options?: SendOptions): Promise<CommandReply> {
+        return this.raw(
+            {
+                command: INTEGRATION_LINK_CANCEL_COMMAND,
+                provider,
+                ...(flowID === undefined || flowID === null || flowID === '' ? {} : { flow_id: flowID })
+            },
+            options ?? {}
+        );
+    }
+
+    /** Link with a personal access token, which the daemon verifies with GitHub before storing it. */
+    integrationLinkToken(provider: IntegrationProvider, token: string, options?: SendOptions): Promise<CommandReply> {
+        return this.raw({ command: INTEGRATION_LINK_TOKEN_COMMAND, provider, token }, options ?? { timeoutMs: TICKET_COMMAND_TIMEOUT_MS });
+    }
+
+    /** Forget the stored credential (GitHub's own grant stays until the user revokes it there). */
+    integrationUnlink(provider: IntegrationProvider, options?: SendOptions): Promise<CommandReply> {
+        return this.raw({ command: INTEGRATION_UNLINK_COMMAND, provider }, options ?? {});
+    }
+
+    /** The picker's lists: the three `@me` lists for an empty query, else one `results` list. */
+    ticketSearch(provider: IntegrationProvider, query: string, options?: SendOptions): Promise<CommandReply> {
+        return this.raw({ command: TICKET_SEARCH_COMMAND, provider, query }, options ?? { timeoutMs: TICKET_COMMAND_TIMEOUT_MS });
+    }
+
+    /** One ticket (a URL or `owner/name#n`), the defaults a create from it would use, and where it is open. */
+    ticketResolve(ref: string, options?: SendOptions): Promise<CommandReply> {
+        return this.raw({ command: TICKET_RESOLVE_COMMAND, ref }, options ?? { timeoutMs: TICKET_COMMAND_TIMEOUT_MS });
     }
 
     /**
@@ -828,11 +896,27 @@ export class CommandClient {
             agentPrompt?: string;
             /** true = on the launch line, submitted at once; absent/false = prefilled. Needs `startAgent`. */
             sendPrompt?: boolean;
+            /**
+             * wire-protocol.md §6.3: the GitHub issue or pull request this workspace starts from
+             * (its URL, or `owner/name#n`). The daemon resolves it with its own credential, records
+             * it on the workspace and writes the ticket file into the checkout. A success reply
+             * echoes it; no echo = a daemon that predates tickets made a plain workspace.
+             */
+            ticket?: string;
+            /**
+             * false = take the request literally and fill nothing from the ticket. The New
+             * Workspace sheet sends false: it has shown `ticket-resolve`'s defaults and sends the
+             * user's final choice. Absent = the daemon fills what the request leaves unsaid.
+             */
+            ticketDefaults?: boolean;
         } = {},
         options?: SendOptions
     ): Promise<CommandReply> {
+        // A ticket create looks the ticket up first (the `ticket` step), so it is a long create
+        // even without a worktree; its progress frames re-arm the deadline like a worktree's.
         const timeout =
-            options?.timeoutMs ?? (input.worktree !== undefined ? WORKTREE_COMMAND_TIMEOUT_MS : undefined);
+            options?.timeoutMs ??
+            (input.worktree !== undefined || input.ticket !== undefined ? WORKTREE_COMMAND_TIMEOUT_MS : undefined);
         return this.raw(
             wirePayload('workspace-create', {
                 request_id: input.requestID,
@@ -851,7 +935,9 @@ export class CommandClient {
                 focus: input.focus ?? true,
                 start_agent: input.startAgent,
                 agent_prompt: input.agentPrompt,
-                send_prompt: input.sendPrompt
+                send_prompt: input.sendPrompt,
+                ticket: input.ticket,
+                ticket_defaults: input.ticketDefaults
             }),
             {
                 ...(timeout !== undefined ? { timeoutMs: timeout } : {}),

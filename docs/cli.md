@@ -1090,6 +1090,10 @@ kelpi workspace create --worktree <name> [--branch <name>] [--repo <path>]
                      [--group <existing> | --parent <name-or-id> | --nested] [--muted]
                      [--icon <emoji>] [--focus] [--json]
 kelpi workspace create ... --agent claude|codex [--prompt "..." | --prompt-file <path|->] [--send]
+kelpi workspace create --from <url|owner/name#n> [--name "..."] [--repo <path> | --no-repo]
+                     [--group <name> | --parent <name-or-id> | --nested] [--worktree <name>]
+                     [--branch <name>] [--update-main | --no-update-main] [--agent ...]
+                     [--muted] [--icon <emoji>] [--focus] [--json]
 ```
 
 - **Background by default (issue #307).** Without `--focus` nothing extra is sent and the
@@ -1110,7 +1114,8 @@ kelpi workspace create ... --agent claude|codex [--prompt "..." | --prompt-file 
   `--worktree` and no `--repo`, a nested create defers the source repo to the parent's group
   exactly as `--group` does (cwd as `path`). Timeout 30 s, as with `--group`.
 - A reply with `parent_lost: true` (the parent was deleted, or nested, while a `--worktree`
-  create's git work ran; the workspace was made at the top level) exits 1 with
+  create's git work ran, or while a `--from` create wrote its ticket file; the workspace was made
+  at the top level) exits 1 with
   `kelpi workspace create: <parent_lost_reason> (workspace <name> (<id>) was created at the top
   level)`. A reply with neither `parent_id` nor `parent_lost` is a daemon that predates nesting,
   and exits 1 with the `restart it on this build` message.
@@ -1131,6 +1136,17 @@ kelpi workspace create ... --agent claude|codex [--prompt "..." | --prompt-file 
   `codex` (case-insensitive) => `kelpi workspace create: unknown agent '<value>' (expected
   claude or codex)`, the daemon's own `unknownStartAgentError` wording, so a typo reads the
   same whichever side refuses it.
+- Ticket flags, checked after those and with the same promise (nothing read from stdin, nothing
+  sent, exit 1): a `--from` that `parseTicketRef` (`@kelpi/core/tickets`, the parser the daemon
+  uses) cannot read => `kelpi workspace create: '<ref>' is not a GitHub issue or pull request
+  (expected its URL or <owner>/<name>#<n>)` (an empty value too, which the wire would read as no
+  ticket at all); a pull request URL (`/pull/<n>`) with `--update-main` => `workspace create
+  can't take --update-main with a pull request: it is checked out on its own head branch`.
+  `<owner>/<name>#<n>` does not say whether it names an issue or a pull request, so with it the
+  flag is sent and the daemon decides (the CLI refuses only what it can know without GitHub).
+  `--branch` is sent with either form: for a pull request it names the local branch the head is
+  checked out on (graft-git.md §8.5.3 allows renaming it), so `--from <pull URL> --branch review`
+  and `--from <owner>/<name>#<n> --branch review` do the same thing.
 - `--prompt-file` is read by the CLI, not the daemon (which may be on another host): a path
   relative to the CLI's cwd, decoded as UTF-8, `-` meaning stdin to EOF (a file named `-` is
   `./-`). Unreadable => `kelpi workspace create: cannot read --prompt-file '<path>': <reason>`
@@ -1154,6 +1170,22 @@ kelpi workspace create ... --agent claude|codex [--prompt "..." | --prompt-file 
   With `--agent`, additionally: `start_agent` (the lowercase kind), `agent_prompt` when
   `--prompt` or `--prompt-file` was given (even empty: the daemon then starts the agent and
   nothing more), and `send_prompt` always, `true` for `--send`, else `false`.
+  With `--from`, additionally `ticket`: the reference exactly as typed (the daemon parses it
+  again). `ticket_defaults` is never sent, so it stays true and the daemon fills the name, the
+  repository, the worktree, the branch, update main and, with `--agent` and no `--prompt` /
+  `--prompt-file`, the prompt from the ticket (wire-protocol.md §6.3, integrations.md §7). So the
+  CLI never sends its cwd for a ticket: not as `repo`, and not as the `path` fallback of a
+  `--group --worktree` create. `--branch`, `--update-main` and `--no-update-main` are sent with
+  `--from` even without `--worktree` (the worktree the defaults choose takes them; when the
+  ticket's branch is already checked out, a `--branch` naming another branch, or `--update-main`,
+  makes a worktree instead of opening at that checkout, socket-handlers.md §6.2), and every
+  other flag composes as for any create: `--name`, `--repo` (the source, which wins over the
+  ticket's matched repository; for a pull request, a repository whose remotes do not include the
+  ticket's is the daemon's refusal), `--no-repo`, `--group`, `--parent` / `--nested` (the
+  workspace is nested, and its group defaults are the parent's group's), `--worktree <name>`,
+  `--path`, `--color`, `--profile`, `--muted`, `--icon`, `--focus` (without it the ticket's
+  workspace is made in the background too) and the agent flags. `--prompt ""` starts the agent
+  with no prompt at all, not the ticket's.
 - Agent semantics (wire-protocol.md §6.3, agent-lifecycle.md §6.5): the daemon types the
   command its own settings name for the agent (`agent-claude-command` /
   `agent-codex-command`) into the first pane once its shell is ready, with or without
@@ -1165,9 +1197,10 @@ kelpi workspace create ... --agent claude|codex [--prompt "..." | --prompt-file 
   frame in Kelpi windows (a prompt that could not be delivered is broadcast to every window,
   since the CLI has no session), never on the control socket. The exit code says nothing about
   the launch.
-- Request/response. Read timeout 120 seconds when `--worktree` present (worktree add plus
-  optional `git fetch`), 30 seconds with `--repo` or `--group` (a repo association reads
-  git), default otherwise.
+- Request/response. Read timeout 120 seconds when `--worktree` or `--from` is present (worktree
+  add plus optional `git fetch`; a ticket create asks GitHub first and usually makes a
+  worktree), 30 seconds with `--repo`, `--group`, `--parent` or `--nested` (a repo association
+  reads git), default otherwise.
 - `--json`: prints the **full reply including `ok`**, compact, sorted keys.
 - `--muted` confirmation: when `--muted` was passed and the reply does not carry
   `muted: true` (a daemon that predates the field drops it and creates the workspace unmuted),
@@ -1184,15 +1217,48 @@ kelpi workspace create ... --agent claude|codex [--prompt "..." | --prompt-file 
   this build (workspace <name> (<id>) was created without an agent)` and the exit code is 1;
   `--json` still prints the reply first. A daemon that dropped both `muted` and
   `start_agent` gets both lines.
+- `--from` confirmation (the same shape, and the first line when there are several): when
+  `--from` was passed and the reply has no `ticket` object, the daemon predates the field and
+  created a plain workspace from nothing, so stderr gets `kelpi workspace create: the daemon is
+  too old to create workspaces from tickets; restart it on this build (workspace <name> (<id>)
+  was created as a plain workspace)` and the exit code is 1; `--json` still prints the reply
+  first.
+- A create refused because of its ticket (`ok:false` with `ticket_error`, read with the
+  protocol's `parseIntegrationFailure`, which also drops an `sso_url` / `settings_url` that is
+  not `https://github.com/…`): the usual `kelpi workspace create: <error>` line, then a
+  `Repair:` line for the codes a user can act on, exit 1, nothing on stdout (`--json` or not):
+
+  | `ticket_error` | `Repair:` |
+  |---|---|
+  | `not-connected` | `link GitHub in Kelpi's Settings ▸ Integrations, then run this again.` |
+  | `unauthorized` | `reconnect GitHub in Kelpi's Settings ▸ Integrations, then run this again.` |
+  | `rate-limited` | `GitHub's rate limit is used up; try again in <n> seconds.` (whole minutes, rounded up, from 60 s; `in a few minutes.` without `retry_after_s`) |
+  | `sso-required` | `authorize Kelpi's GitHub credential for the organization's single sign-on: <sso_url>` (without a usable URL: `... single sign-on on github.com.`) |
+  | `org-restricted` | `ask the organization to approve Kelpi (<settings_url>), or link a personal access token in Settings ▸ Integrations.` |
+  | `not-found` | `check the reference, and that the GitHub account linked in Settings ▸ Integrations can see the repository.` |
+  | `bad-ref` | `pass an issue or pull request URL (https://github.com/<owner>/<name>/issues/<n> or .../pull/<n>) or <owner>/<name>#<n>.` |
+  | `unreachable`, `timeout` | `check that the Kelpi host can reach github.com, then run this again.` |
+
+  Any other code (or one this CLI does not know) gets the error line alone.
 - Default output variants (from reply fields; name falls back to the `--name` argument or
   `"Workspace"`, id to `?`):
   - worktree: `created workspace <name> (<id>)[ in group <g>] with worktree <path> on branch <branch>[ off the latest main]`
     (branch falls back to `?`; the suffix when the reply says `update_main: true`).
   - plain: `created workspace <name> (<id>)[ in group <g>][ with repo <repo_path>]` (the
     repo when the reply names one).
+  - then, for a ticket create (the reply carries `ticket`): `  ticket: <pull request|issue>
+    <repo><key> <url>` (`  ticket: pull request acme/api#418 https://github.com/acme/api/pull/418`),
+    `  checkout: <checkout> (<meaning>)` with the meaning `a new branch` (`new-branch`), `the
+    pull request's head branch` (`pr-head`), `an existing local branch` (`attach-branch`) or `an
+    existing checkout, no new worktree` (`existing-checkout`; that create has no worktree line, so
+    the first line is the plain variant), and `  ticket file: <path>` when the reply names
+    `ticket_file`.
   - then, when the reply carries `prompt_file` (the daemon's copy of a non-blank prompt, kept
-    for a day), a second line `  prompt file: <path>`, so the text is at hand if a prefill
+    for a day), a line `  prompt file: <path>`, so the text is at hand if a prefill
     falls back with no window attached to show it. `--json` has it as `prompt_file`.
+  - a ticket create's advisories go to stderr, and the exit code stays 0: `Warning: no ticket
+    file was written: <ticket_file_error>`, then `Warning: <warning>` for each of `warnings`.
+    `--json` prints the reply alone, with both fields in it, and nothing on stderr.
 
 Server contract highlights: `--group` creates the group if missing UNLESS `--worktree` is
 present (then the group must already exist; unknown/ambiguous => `ok:false`, avoiding an
